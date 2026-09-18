@@ -41,7 +41,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         w.push_str(&format!("    (local $t{i} i64)\n"));
     }
     w.push_str("    (loop $L (result i64)\n");
-    compile_tail(store, body, arity, self_idx, &mut w, 6)?;
+    compile_node(store, body, arity, self_idx, true, &mut w, 6)?;
     w.push_str("    )\n  )\n  (export \"f\" (func $f))\n)\n");
 
     Some(CompiledFragment { arity, wat: w })
@@ -140,14 +140,18 @@ fn cmp_instr(op: PrimOp) -> Option<&'static str> {
     })
 }
 
-/// Compile an expression in *tail position*: the top of the loop body, and
-/// the branches of any `If` reached from there. A fully-saturated self-call
-/// found here becomes a loop-back (`br $L`) instead of a Wasm `call`.
-fn compile_tail(
+/// Compiles one node. `If`'s condition/branch structure, and everything
+/// below a `Prim`, is identical whether or not we're in tail position (Wasm
+/// typechecks an `if`/`else` the same way regardless of what's inside it) --
+/// `tail` only changes what a self-call leaf compiles to: staged locals and
+/// a loop-back (`br $L`, turning recursion into iteration) in tail position,
+/// or an ordinary Wasm `call` otherwise.
+fn compile_node(
     store: &TermStore,
     h: Hash,
     arity: usize,
     self_idx: Option<u32>,
+    tail: bool,
     w: &mut String,
     indent: usize,
 ) -> Option<()> {
@@ -155,47 +159,33 @@ fn compile_tail(
         let (c, t, e) = (*c, *t, *e);
         compile_cond(store, c, arity, self_idx, w, indent)?;
         push_line(w, indent, "if (result i64)");
-        compile_tail(store, t, arity, self_idx, w, indent + 2)?;
+        compile_node(store, t, arity, self_idx, tail, w, indent + 2)?;
         push_line(w, indent, "else");
-        compile_tail(store, e, arity, self_idx, w, indent + 2)?;
+        compile_node(store, e, arity, self_idx, tail, w, indent + 2)?;
         push_line(w, indent, "end");
         return Some(());
     }
 
     if let Some(args) = match_self_call(store, h, arity, self_idx) {
-        // Evaluate all new argument values into temporaries first, so a
-        // recursive call like `f(b, a mod b)` doesn't clobber `a` before
-        // `a mod b` is computed.
-        for (i, a) in args.iter().enumerate() {
-            compile_expr(store, *a, arity, self_idx, w, indent)?;
-            push_line(w, indent, &format!("local.set $t{i}"));
+        if tail {
+            // Evaluate all new argument values into temporaries first, so a
+            // recursive call like `f(b, a mod b)` doesn't clobber `a`
+            // before `a mod b` is computed, then loop back.
+            for (i, a) in args.iter().enumerate() {
+                compile_node(store, *a, arity, self_idx, false, w, indent)?;
+                push_line(w, indent, &format!("local.set $t{i}"));
+            }
+            for i in 0..arity {
+                push_line(w, indent, &format!("local.get $t{i}"));
+                push_line(w, indent, &format!("local.set $p{i}"));
+            }
+            push_line(w, indent, "br $L");
+        } else {
+            for a in &args {
+                compile_node(store, *a, arity, self_idx, false, w, indent)?;
+            }
+            push_line(w, indent, "call $f");
         }
-        for i in 0..arity {
-            push_line(w, indent, &format!("local.get $t{i}"));
-            push_line(w, indent, &format!("local.set $p{i}"));
-        }
-        push_line(w, indent, "br $L");
-        return Some(());
-    }
-
-    compile_expr(store, h, arity, self_idx, w, indent)
-}
-
-/// Compile an expression in ordinary (non-tail) position: leaves one i64 on
-/// the stack. A self-call here becomes a plain Wasm `call`.
-fn compile_expr(
-    store: &TermStore,
-    h: Hash,
-    arity: usize,
-    self_idx: Option<u32>,
-    w: &mut String,
-    indent: usize,
-) -> Option<()> {
-    if let Some(args) = match_self_call(store, h, arity, self_idx) {
-        for a in &args {
-            compile_expr(store, *a, arity, self_idx, w, indent)?;
-        }
-        push_line(w, indent, "call $f");
         return Some(());
     }
 
@@ -208,21 +198,13 @@ fn compile_expr(
         Term::Prim(op, a, b) => {
             let (a, b) = (*a, *b);
             let instr = arith_instr(*op)?;
-            compile_expr(store, a, arity, self_idx, w, indent)?;
-            compile_expr(store, b, arity, self_idx, w, indent)?;
+            compile_node(store, a, arity, self_idx, false, w, indent)?;
+            compile_node(store, b, arity, self_idx, false, w, indent)?;
             push_line(w, indent, instr);
         }
-        Term::If(c, t, e) => {
-            let (c, t, e) = (*c, *t, *e);
-            compile_cond(store, c, arity, self_idx, w, indent)?;
-            push_line(w, indent, "if (result i64)");
-            compile_expr(store, t, arity, self_idx, w, indent + 2)?;
-            push_line(w, indent, "else");
-            compile_expr(store, e, arity, self_idx, w, indent + 2)?;
-            push_line(w, indent, "end");
-        }
-        // Abs, Rec, free App: outside the compilable fragment.
-        Term::Abs(_) | Term::Rec(_) | Term::App(..) => return None,
+        // Abs, Rec, free App: outside the compilable fragment. (`If` was
+        // already handled above.)
+        Term::If(..) | Term::Abs(_) | Term::Rec(_) | Term::App(..) => return None,
     }
     Some(())
 }
@@ -239,8 +221,8 @@ fn compile_cond(
         Term::Prim(op, a, b) => {
             let (a, b) = (*a, *b);
             let instr = cmp_instr(*op)?;
-            compile_expr(store, a, arity, self_idx, w, indent)?;
-            compile_expr(store, b, arity, self_idx, w, indent)?;
+            compile_node(store, a, arity, self_idx, false, w, indent)?;
+            compile_node(store, b, arity, self_idx, false, w, indent)?;
             push_line(w, indent, instr);
             Some(())
         }

@@ -14,7 +14,7 @@
 //! for what's being checked, which is purely *compositional structure*.
 //!
 //! For `Var`/`Lit`/`Prim`/`If` terms (no `Abs`/`App`/`Rec`), `compile.rs`'s
-//! `compile_expr` and `eval.rs`'s `eval` recurse over the term in exactly
+//! `compile_node` and `eval.rs`'s `eval` recurse over the term in exactly
 //! the same shape -- evaluate/compile the operands, then combine with the
 //! same operator -- so `denote` (the single translation below) models both
 //! readings, and the proof that they agree is `refl`. That's not a
@@ -38,7 +38,7 @@
 //! instead of a universal theorem, validate *one specific execution trace*.
 //! For a concrete `(term, args)`, `prove_tail_recursive_call` follows the
 //! interpreter's own concrete trace (which branch is taken at each
-//! unrolling, using the same shape `compile_tail` classifies bodies with),
+//! unrolling, using the same shape `compile_node` classifies bodies with),
 //! and at each tail-call step, symbolically composes the new parameters via
 //! `denote` -- i.e. it relates interpreter state to compiled-loop state at
 //! every step, not just at the end. Once the trace reaches its base case
@@ -147,9 +147,25 @@ impl Default for ArithPostulates {
 }
 
 /// Collects every distinct `Lit` value in `h`, returning `false` if `h`
-/// contains an `Abs`/`App`/`Rec` (outside the pure fragment this module
-/// covers).
-fn collect_literals(store: &TermStore, h: Hash, out: &mut Vec<i64>) -> bool {
+/// contains anything outside the pure fragment this module covers. With
+/// `self_idx: None` (the straight-line case), any `App` at all disqualifies
+/// `h`; with `self_idx: Some(_)` (the tail-recursive case), a
+/// fully-saturated self-call is instead recursed *into* (collecting
+/// literals from its argument expressions) -- any other `App`/`Abs`/`Rec`
+/// (e.g. genuinely non-tail recursion, as in a naive Fibonacci) still
+/// disqualifies it.
+fn collect_literals(
+    store: &TermStore,
+    h: Hash,
+    arity: usize,
+    self_idx: Option<u32>,
+    out: &mut Vec<i64>,
+) -> bool {
+    if let Some(args) = compile::match_self_call(store, h, arity, self_idx) {
+        return args
+            .iter()
+            .all(|&a| collect_literals(store, a, arity, self_idx, out));
+    }
     match store.resolve(h) {
         Term::Var(_) => true,
         Term::Lit(n) => {
@@ -158,11 +174,14 @@ fn collect_literals(store: &TermStore, h: Hash, out: &mut Vec<i64>) -> bool {
             }
             true
         }
-        Term::Prim(_, a, b) => collect_literals(store, *a, out) && collect_literals(store, *b, out),
+        Term::Prim(_, a, b) => {
+            collect_literals(store, *a, arity, self_idx, out)
+                && collect_literals(store, *b, arity, self_idx, out)
+        }
         Term::If(c, t, e) => {
-            collect_literals(store, *c, out)
-                && collect_literals(store, *t, out)
-                && collect_literals(store, *e, out)
+            collect_literals(store, *c, arity, self_idx, out)
+                && collect_literals(store, *t, arity, self_idx, out)
+                && collect_literals(store, *e, arity, self_idx, out)
         }
         Term::Abs(_) | Term::App(..) | Term::Rec(_) => false,
     }
@@ -190,9 +209,11 @@ fn denote(store: &TermStore, h: Hash, arith: &ArithPostulates, params: &[Expr]) 
     }
 }
 
-/// A kernel-checked witness that `h`'s compiled and interpreted readings
-/// agree, for the straight-line (non-recursive) fragment.
-pub struct PureExprProof {
+/// A kernel-checked witness that a term's compiled and interpreted
+/// readings agree: either for *every* input (`prove_pure_expr`, the
+/// straight-line fragment) or for one specific call
+/// (`prove_tail_recursive_call`, the tail-recursive fragment).
+pub struct EquivalenceProof {
     pub ctx: Ctx,
     pub arity: usize,
     pub int_ty: Expr,
@@ -201,18 +222,14 @@ pub struct PureExprProof {
     pub proof: Expr,
 }
 
-/// Attempts to build a [`PureExprProof`] for `h`. Returns `None` for
-/// anything outside the covered fragment: recursive (`Rec`-wrapped)
-/// functions (needs induction -- see module docs), zero-arity terms, or
-/// terms containing `Abs`/`App`.
-pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<PureExprProof> {
-    let (arity, body, is_rec) = compile::peel(store, h)?;
-    if is_rec || arity == 0 {
-        return None;
-    }
-
+/// Shared setup for both proofs below: postulate `Int`/its operators, then
+/// every literal `body` uses (see `collect_literals` for what `self_idx`
+/// means here), then `arity` more fresh `Int` postulates standing for the
+/// function's own parameters (indexed by `Var`, matching `denote`'s
+/// convention). Returns `None` if `body` isn't in the covered fragment.
+fn setup(store: &TermStore, body: Hash, arity: usize, self_idx: Option<u32>) -> Option<(ArithPostulates, Vec<Expr>)> {
     let mut lits = Vec::new();
-    if !collect_literals(store, body, &mut lits) {
+    if !collect_literals(store, body, arity, self_idx, &mut lits) {
         return None;
     }
 
@@ -226,15 +243,21 @@ pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<PureExprProof> {
         let ty = arith.int_ty();
         param_positions.push(arith.p.push(ty));
     }
-    let params: Vec<Expr> = param_positions.iter().map(|&pos| arith.p.get(pos)).collect();
+    let params = param_positions.iter().map(|&pos| arith.p.get(pos)).collect();
 
-    let denotation = denote(store, body, &arith, &params)?;
+    Some((arith, params))
+}
+
+/// Shared finalize for both proofs below: package `denotation` (already
+/// the same symbolic value under both readings, by construction) into a
+/// `refl` proof, and confirm the kernel actually accepts it.
+fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<EquivalenceProof> {
     let int_ty = arith.int_ty();
     let proof = kernel::refl(denotation.clone());
     let proof_ty = kernel::id(int_ty.clone(), denotation.clone(), denotation.clone());
     kernel::check(&arith.p.ctx, &proof, &proof_ty).ok()?;
 
-    Some(PureExprProof {
+    Some(EquivalenceProof {
         ctx: arith.p.ctx,
         arity,
         int_ty,
@@ -243,46 +266,21 @@ pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<PureExprProof> {
     })
 }
 
-// --- tail recursion: relational, per-call proofs ------------------------
-
-/// Like `collect_literals`, but for a tail-recursive `body`: a
-/// fully-saturated self-call (`compile::match_self_call`) is expected and
-/// recursed *into* (collecting literals from its argument expressions)
-/// instead of being rejected as a stray `App`. Any other `App`/`Abs`/`Rec`
-/// (e.g. genuinely non-tail recursion, as in a naive Fibonacci) still
-/// makes this -- and so the whole proof attempt -- fail.
-fn collect_literals_tail(
-    store: &TermStore,
-    h: Hash,
-    arity: usize,
-    self_idx: u32,
-    out: &mut Vec<i64>,
-) -> bool {
-    if let Some(args) = compile::match_self_call(store, h, arity, Some(self_idx)) {
-        return args
-            .iter()
-            .all(|&a| collect_literals_tail(store, a, arity, self_idx, out));
+/// Attempts to build an [`EquivalenceProof`] covering every input of `h`.
+/// Returns `None` for anything outside the covered fragment: recursive
+/// (`Rec`-wrapped) functions (needs induction -- see module docs),
+/// zero-arity terms, or terms containing `Abs`/`App`.
+pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
+    let (arity, body, is_rec) = compile::peel(store, h)?;
+    if is_rec || arity == 0 {
+        return None;
     }
-    match store.resolve(h) {
-        Term::Var(_) => true,
-        Term::Lit(n) => {
-            if !out.contains(n) {
-                out.push(*n);
-            }
-            true
-        }
-        Term::Prim(_, a, b) => {
-            collect_literals_tail(store, *a, arity, self_idx, out)
-                && collect_literals_tail(store, *b, arity, self_idx, out)
-        }
-        Term::If(c, t, e) => {
-            collect_literals_tail(store, *c, arity, self_idx, out)
-                && collect_literals_tail(store, *t, arity, self_idx, out)
-                && collect_literals_tail(store, *e, arity, self_idx, out)
-        }
-        Term::Abs(_) | Term::App(..) | Term::Rec(_) => false,
-    }
+    let (arith, params) = setup(store, body, arity, None)?;
+    let denotation = denote(store, body, &arith, &params)?;
+    finish(arith, arity, denotation)
 }
+
+// --- tail recursion: relational, per-call proofs ------------------------
 
 /// A small, self-contained *concrete* evaluator over the same fragment
 /// `denote` covers (`Var`/`Lit`/`Prim`/`If`, no `App`/`Abs`/`Rec`), used
@@ -345,11 +343,12 @@ enum StepOutcome {
     TailCall(Vec<Hash>),
 }
 
-/// Walks `h` (a `compile_tail`-shaped If-chain) using concrete params to
-/// decide which branch is taken, mirroring `compile::compile_tail`'s own
-/// structure exactly: an `If`'s condition is resolved concretely and we
-/// recurse into the taken branch; a fully-saturated self-call is reported
-/// as a `TailCall`; anything else is the reached base case.
+/// Walks `h` (a `compile_node`-shaped If-chain, in tail position) using
+/// concrete params to decide which branch is taken, mirroring
+/// `compile::compile_node`'s own structure exactly: an `If`'s condition is
+/// resolved concretely and we recurse into the taken branch; a
+/// fully-saturated self-call is reported as a `TailCall`; anything else is
+/// the reached base case.
 fn classify_step(
     store: &TermStore,
     h: Hash,
@@ -379,7 +378,7 @@ fn classify_step(
 /// that case needs a different argument, not this one); or a trace that
 /// doesn't reach a base case within a generous step bound (guards against
 /// a non-terminating or pathologically long call blowing up proof size).
-pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Option<PureExprProof> {
+pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
     const MAX_STEPS: usize = 10_000;
 
     let (arity, body, is_rec) = compile::peel(store, h)?;
@@ -388,22 +387,7 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
     }
     let self_idx = arity as u32;
 
-    let mut lits = Vec::new();
-    if !collect_literals_tail(store, body, arity, self_idx, &mut lits) {
-        return None;
-    }
-
-    let mut arith = ArithPostulates::new();
-    for n in lits {
-        arith.lit(n);
-    }
-
-    let mut param_positions = Vec::with_capacity(arity);
-    for _ in 0..arity {
-        let ty = arith.int_ty();
-        param_positions.push(arith.p.push(ty));
-    }
-    let mut symbolic: Vec<Expr> = param_positions.iter().map(|&pos| arith.p.get(pos)).collect();
+    let (arith, mut symbolic) = setup(store, body, arity, Some(self_idx))?;
     // By-`Var`-index concrete params (`Var(0)` = last-applied), matching
     // `symbolic`'s (and `denote`'s) convention; `args` itself is in
     // application order.
@@ -432,20 +416,7 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
             }
         }
     }
-    let denotation = denotation?;
-
-    let int_ty = arith.int_ty();
-    let proof = kernel::refl(denotation.clone());
-    let proof_ty = kernel::id(int_ty.clone(), denotation.clone(), denotation.clone());
-    kernel::check(&arith.p.ctx, &proof, &proof_ty).ok()?;
-
-    Some(PureExprProof {
-        ctx: arith.p.ctx,
-        arity,
-        int_ty,
-        denotation,
-        proof,
-    })
+    finish(arith, arity, denotation?)
 }
 
 #[cfg(test)]

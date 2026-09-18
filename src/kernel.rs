@@ -3,13 +3,13 @@
 //! only two additions beyond a bare PTS.
 //!
 //! Four primitive term/type formers, total:
-//!   - `Sort(i)`      : the universe hierarchy `Type_0 : Type_1 : Type_2 ...`
+//!   - `Sort(i)`: the universe hierarchy `Type_0 : Type_1 : Type_2 ...`
 //!   - `Pi`/`Lam`/`App`: dependent function types
-//!   - `Id`/`Refl`/`J` : propositional equality, with its eliminator
+//!   - `Id`/`Refl`/`J`: propositional equality, with its eliminator
 //!   - `W`/`Sup`/`WRec`: well-founded trees, i.e. *the* generic strictly
-//!                       positive inductive type former (Bool, Nat, lists,
-//!                       and eventually this crate's own `Term` AST are all
-//!                       instances of one `W`, not separate primitives)
+//!     positive inductive type former (Bool, Nat, lists, and eventually
+//!     this crate's own `Term` AST are all instances of one `W`, not
+//!     separate primitives)
 //!
 //! Everything else (Bool, Nat, pairs, ...) is a *definition* built from
 //! these four, not a fifth primitive. See the tests at the bottom for
@@ -489,15 +489,15 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 }
 
 pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
-    if let Expr::Lam(a, body) = e {
-        if let Expr::Pi(dom, cod) = whnf(expected) {
-            if !def_eq(a, &dom) {
-                return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
-            }
-            let mut ctx2 = ctx.clone();
-            ctx2.push((**a).clone());
-            return check(&ctx2, body, &cod);
+    if let Expr::Lam(a, body) = e
+        && let Expr::Pi(dom, cod) = whnf(expected)
+    {
+        if !def_eq(a, &dom) {
+            return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
         }
+        let mut ctx2 = ctx.clone();
+        ctx2.push((**a).clone());
+        return check(&ctx2, body, &cod);
     }
     let inferred = infer(ctx, e)?;
     if def_eq(&inferred, expected) {
