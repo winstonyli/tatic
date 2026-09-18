@@ -1645,6 +1645,17 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
         scaffold.arith.lit(c);
     }
 
+    // Deliberately *not* wrapped in `kernel::with_shift_cache` here -- this
+    // runs for every sample `jit.rs`'s automatic verification tries
+    // (typically small and cheap on their own), and confirmed empirically:
+    // the cache's own upkeep (a real `HashMap`, grown then dropped --
+    // measured over a million entries total across one demo's routine
+    // small samples) costs more than it saves at that scale, a real
+    // regression on the common path. The win is real but concentrated in
+    // large/branching constructions specifically -- see
+    // `kernel::with_shift_cache`'s own docs -- so it's opt-in: a caller
+    // that expects one (proving a specific large instance on demand, e.g.)
+    // wraps its own call to `prove_tail_recursive_instance` in it.
     let mut budget = WITNESS_NODE_BUDGET;
     let mut memo = HashMap::new();
     let (v, e) = build_ev_witness(
@@ -2498,12 +2509,20 @@ mod tests {
         let abs = s.abs(body);
         let fib = s.rec(abs);
 
+        // Explicitly opts into `kernel::with_shift_cache` around each call
+        // (both building and rechecking) -- unlike `jit.rs`'s own automatic
+        // per-sample verification, this test deliberately proves a large
+        // (n=8) branching-leaf instance, exactly the case that cache is
+        // for (see its own docs, and `instance_from_scaffold`'s for why it
+        // isn't on by default).
         for n in [1, 2, 8] {
-            let proof =
-                prove_tail_recursive_instance(&s, fib, &[n]).unwrap_or_else(|| panic!("fib({n}) should get an instance"));
+            let proof = kernel::with_shift_cache(|| prove_tail_recursive_instance(&s, fib, &[n]))
+                .unwrap_or_else(|| panic!("fib({n}) should get an instance"));
             assert_eq!(proof.arity, 1);
-            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
-                .expect("the recorded instance proof should independently re-typecheck");
+            kernel::with_shift_cache(|| {
+                kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            })
+            .expect("the recorded instance proof should independently re-typecheck");
         }
     }
 

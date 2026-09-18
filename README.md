@@ -175,15 +175,24 @@ This is stated precisely because it would be easy to overclaim here.
   Building this surfaced a real, previously-latent bug in `cong1`/`cong_n`
   themselves: they silently assumed the function being reasoned about had a
   codomain equal to its domain type (every existing caller happened to
-  satisfy that), which
-  broke the moment this needed `Int^arity -> Sort(0)` (`cong1` now takes an
-  explicit `b_ty`). Even with all this, per-call instantiation for a
-  branching leaf isn't fast — `fib(8)`'s instance proof is still a few
-  seconds to build and re-typecheck, since `kernel::check`/`infer`'s `nf`
-  has no memoization across separate top-level calls (see Design notes'
-  `Rc`-sharing entry); fixing *that* needs a memoizing `whnf`/`nf` shared
-  across a whole proof's construction, deliberately not attempted here.
-  The theorem itself was always unaffected either way.
+  satisfy that), which broke the moment this needed `Int^arity -> Sort(0)`
+  (`cong1` now takes an explicit `b_ty`). Per-call instantiation for a
+  branching leaf is now also fast: profiling `fib(8)`'s instance proof
+  found `shift` (via `Anchored::at`) dominating by three orders of
+  magnitude over everything else, with the same subterm reshifted by the
+  same amount repeatedly — not within any one caller, but *across* many
+  (`Anchored::at`, `cong1`, `cong_n`, `trans_proof`, `sym`, `transport`,
+  `arrow`). `kernel::with_shift_cache` scopes a cache across a whole call's
+  construction via a thread-local slot (rather than threading a cache
+  parameter through every function that might call `shift`), giving a
+  measured ~2x on `fib(8)`'s instance proof. Deliberately opt-in, not
+  automatic on every call `instance_from_scaffold` makes: wrapping it
+  unconditionally regressed the common case (routine, small samples,
+  confirmed via the `fib(30)` demo's cold-compile time going from ~120ms to
+  ~220ms) — a real `HashMap`, grown across a construction and then dropped,
+  costs more than it saves at that scale. A caller that specifically
+  expects a large or branching construction wraps its own call in it (see
+  Design notes below for the scoped-vs-standing-cache tradeoff).
 - **Non-capturing ("known") closures**: `prove_closure_expr` gives a closed,
   non-recursive closures term one kernel proof covering every input, the
   same `refl`-on-a-shared-translation argument `prove_pure_expr` makes for
@@ -265,8 +274,26 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   hash-consing — there's no intern table, so two independently-built but
   equal subterms still get distinct allocations — but it removes the real
   cost this crate was paying, worth ~2x on `fib`'s cold-compile time (see
-  Benchmarks). It does *not* fix the branching-leaf witness limitation
-  below — that cost lives in unmemoized normalization, not cloning.
+  Benchmarks). On its own it didn't fix branching-leaf instance proofs
+  being slow — that cost turned out to live in `shift` (see the next
+  entry), not cloning.
+- **A scoped, opt-in `shift` cache, not a standing one**: `kernel::shift`
+  is called constantly while composing a large proof term, and the same
+  subterm gets reshifted by the same amount repeatedly — not within any
+  one caller, but *across* several (`proof.rs`'s `Anchored::at`, plus
+  `cong1`/`cong_n`/`trans_proof`/`sym`/`transport`/`arrow` internally).
+  `kernel::with_shift_cache` runs a closure with a cache active in a
+  thread-local slot for that closure's whole (dynamic) extent, rather than
+  threading a cache parameter through every function that might call
+  `shift` — a scope, not a bare `thread_local`, so it can't leak across
+  unrelated calls the way one never cleared would. It's opt-in, not
+  automatic: wrapping every call `instance_from_scaffold` makes regressed
+  the common case (confirmed via the `fib(30)` demo's cold-compile time,
+  ~120ms → ~220ms) — a real `HashMap`, grown across a construction and then
+  dropped, costs more than it saves for routine small samples. The win
+  (~2x, confirmed on `fib(8)`'s instance proof) is real but concentrated in
+  large/branching constructions, so a caller opts in only when it expects
+  one.
 - **Why a predicative kernel with exactly these four primitives**: see
   `kernel.rs`'s module docs for the full argument, but briefly — `W`-types
   are load-bearing (not derivable from `Pi`/`Sort`/`Id` alone with
@@ -297,19 +324,17 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
 
 ## Future work
 
-- Making branching-leaf instance proofs actually fast. `build_ev_witness`
-  now covers them (a DP `memo` plus a `sym`/`cong_n`/`transport` recast —
-  see "Proof strategies" above), but `fib(8)`'s instance proof is still a
-  few seconds to build and re-typecheck: `kernel::whnf`/`nf` are memoized
-  within one top-level call (see Design notes), but `kernel::check`/`infer`
-  make many separate top-level calls across one proof's construction, none
-  of which share a cache with each other, so a subterm referenced from
-  several of those calls still gets re-normalized once per call. Fixing
-  this for real needs a memoizing `whnf`/`nf` shared across a whole proof's
-  construction (not just within one call), which either means threading an
-  explicit cache through `proof.rs` (the codebase's usual style, but a
-  wide-reaching change) or finding a narrower place to scope it — an open
-  design question, not attempted here.
+- `kernel::with_shift_cache` is opt-in rather than automatic (see "Proof
+  strategies" above) because wrapping every call regressed the common,
+  small-sample case. A caller has to know in advance that its own
+  construction will be large/branching to get the benefit; `jit.rs`'s
+  automatic verification doesn't attempt that judgment call today (it just
+  never opts in), so a branching-leaf function only gets a fast per-call
+  instance proof when something explicitly asks for one at a large input,
+  not from routine compilation. Making that automatic would need either a
+  cheap way to predict "this one's going to be large" in advance, or a
+  cache design whose overhead doesn't scale with size the way a `HashMap`
+  grown-then-dropped does.
 - Allowing an `If` nested inside a leaf's own arithmetic expression (e.g.
   `n + (if c then 1 else 2)`), not just as the whole body of some branch —
   `find_self_calls`/`denote_with_placeholders` currently reject that shape

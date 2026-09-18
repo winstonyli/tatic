@@ -24,9 +24,71 @@
 //! of empirical sampling) is the natural next step once this kernel is
 //! trusted, not something folded into this pass.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+
+// --- scoped shift cache ---------------------------------------------------
+//
+// `shift` is called constantly while composing a large proof term (see
+// `proof.rs`'s `Anchored::at`), and profiling confirmed the same subterm
+// getting reshifted by the same amount over and over -- not just from one
+// caller, but across many (`Anchored::at`, `cong1`, `cong_n`, `trans_proof`,
+// `sym`, `transport`, `arrow`, ...), which is why a cache scoped to just
+// one of those callers (tried first) barely moved the needle: it only
+// caught redundancy *within* that one caller's own calls, missing the
+// redundancy *between* callers entirely. A cache shared across all of them
+// does much better -- confirmed empirically, roughly 2x on a large
+// branching-leaf instance proof.
+//
+// Rather than thread an explicit cache parameter through every function
+// that might call `shift` (`cong1`/`cong_n`/`trans_proof`/`sym`/`transport`
+// included -- a wide-reaching signature change), this uses a thread-local
+// slot that's `None` by default (so `shift` outside any scope stays exactly
+// the plain, zero-allocation recursion it always was) and gets populated by
+// `with_shift_cache` for the duration of one call -- bounded, not a
+// standing global: nothing outside that call's dynamic extent ever sees or
+// grows the cache, so there's no cross-call leak the way a bare `thread_local`
+// cache never cleared would have.
+/// `(Rc` pointer identity as `usize, cutoff, amount) -> (the Rc itself, its
+/// shifted result)` -- the `Rc` rides along so a freed node's address can't
+/// be reused by an unrelated later allocation and produce a false hit.
+type ShiftCacheMap = HashMap<(usize, u32, i32), (Rc<Expr>, Expr)>;
+
+thread_local! {
+    // Checked first, on every `shift_rc` call, so the overwhelmingly common
+    // "no scope active" case (every proof strategy this crate has besides
+    // large branching-leaf instances) costs one cheap `Cell` load and
+    // nothing else -- no `RefCell` borrow, no touching `SHIFT_SCOPE` at all.
+    // An earlier version checked `SHIFT_SCOPE` directly on every call and
+    // measurably slowed down the *unrelated* common case (confirmed via the
+    // `fib(30)` demo's cold-compile time) -- this flag is what fixed that.
+    static SHIFT_SCOPE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SHIFT_SCOPE: RefCell<Option<ShiftCacheMap>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` with a shift cache active for its whole (dynamic) extent --
+/// every `shift` call made while `f` runs, directly or via any of the
+/// composition helpers built on it, shares one cache keyed by `(Rc`
+/// identity of the subterm, `cutoff, amount)`. Restores whatever scope (if
+/// any) was active before on exit, so nesting is safe, though nothing in
+/// this codebase currently does. Opt-in, not automatic -- `proof.rs`'s
+/// `instance_from_scaffold` deliberately does *not* wrap every call in
+/// this (see its own docs: confirmed to regress the common case, routine
+/// small samples, since a real `HashMap` grown to size and then dropped
+/// costs more than it saves at that scale). A caller that specifically
+/// expects a large or branching construction -- proving one instance at a
+/// large concrete input on demand, e.g. -- wraps its own call in this.
+pub fn with_shift_cache<T>(f: impl FnOnce() -> T) -> T {
+    let prev = SHIFT_SCOPE.with(|s| s.replace(Some(HashMap::new())));
+    let prev_was_active = prev.is_some();
+    SHIFT_SCOPE_ACTIVE.with(|c| c.set(true));
+    let result = f();
+    SHIFT_SCOPE.with(|s| *s.borrow_mut() = prev);
+    SHIFT_SCOPE_ACTIVE.with(|c| c.set(prev_was_active));
+    result
+}
 
 /// Recursive fields are `Rc`, not `Box`: `Expr` is built and re-threaded
 /// through deeply nested proof terms (`proof.rs`'s `Anchored`, the Ev-witness
@@ -160,20 +222,14 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
 /// Add `amount` to every free variable at or above `cutoff`. Exposed
 /// (beyond this module's own substitution machinery) for reindexing a
 /// term built at one ambient context depth for reuse at a deeper one --
-/// see `proof.rs`'s `Anchored`.
+/// see `proof.rs`'s `Anchored`. Recurses through [`shift_rc`] for every
+/// `Rc`-held child, which checks whether a [`with_shift_cache`] scope is
+/// active -- so this is the plain, zero-allocation recursion it always was
+/// outside one, and a cached one inside it, with no separate entry point
+/// needed.
 pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     // Adding 0 changes no index, so this is provably the identity on `e`
     // regardless of its content -- skip the full recursive rebuild.
-    // `Anchored::at` calls this constantly (once per resolve, often with
-    // nothing having grown since the value was anchored), and confirmed via
-    // profiling: `shift` is by far the dominant cost in a large proof's
-    // construction (tens of millions of calls for a `fib(8)` instance
-    // witness), so this one-line, always-safe check is worth having even
-    // though it only catches the `amount == 0` case -- see the module docs'
-    // note on what a *general* sharing-aware `shift` would need instead
-    // (this codebase's `Anchored::at` always shifts from cutoff 0, where a
-    // "no free var at or above cutoff" fast path would essentially never
-    // fire, since any `Var` at all disqualifies it).
     if amount == 0 {
         return e.clone();
     }
@@ -186,15 +242,15 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
             }
         }
         Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Pi(a, b) => pi(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
-        Expr::Lam(a, b) => lam(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
-        Expr::App(f, a) => app(shift(f, cutoff, amount), shift(a, cutoff, amount)),
+        Expr::Pi(a, b) => pi(shift_rc(a, cutoff, amount), shift_rc(b, cutoff + 1, amount)),
+        Expr::Lam(a, b) => lam(shift_rc(a, cutoff, amount), shift_rc(b, cutoff + 1, amount)),
+        Expr::App(f, a) => app(shift_rc(f, cutoff, amount), shift_rc(a, cutoff, amount)),
         Expr::Id(a, x, y) => id(
-            shift(a, cutoff, amount),
-            shift(x, cutoff, amount),
-            shift(y, cutoff, amount),
+            shift_rc(a, cutoff, amount),
+            shift_rc(x, cutoff, amount),
+            shift_rc(y, cutoff, amount),
         ),
-        Expr::Refl(a) => refl(shift(a, cutoff, amount)),
+        Expr::Refl(a) => refl(shift_rc(a, cutoff, amount)),
         Expr::J {
             motive,
             base,
@@ -202,24 +258,55 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
             b,
             p,
         } => jelim(
-            shift(motive, cutoff, amount),
-            shift(base, cutoff, amount),
-            shift(a, cutoff, amount),
-            shift(b, cutoff, amount),
-            shift(p, cutoff, amount),
+            shift_rc(motive, cutoff, amount),
+            shift_rc(base, cutoff, amount),
+            shift_rc(a, cutoff, amount),
+            shift_rc(b, cutoff, amount),
+            shift_rc(p, cutoff, amount),
         ),
-        Expr::W(a, b) => wty(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
-        Expr::Sup(a, f) => sup(shift(a, cutoff, amount), shift(f, cutoff, amount)),
+        Expr::W(a, b) => wty(shift_rc(a, cutoff, amount), shift_rc(b, cutoff + 1, amount)),
+        Expr::Sup(a, f) => sup(shift_rc(a, cutoff, amount), shift_rc(f, cutoff, amount)),
         Expr::WRec {
             motive,
             step,
             target,
         } => wrec(
-            shift(motive, cutoff, amount),
-            shift(step, cutoff, amount),
-            shift(target, cutoff, amount),
+            shift_rc(motive, cutoff, amount),
+            shift_rc(step, cutoff, amount),
+            shift_rc(target, cutoff, amount),
         ),
     }
+}
+
+/// `shift`, for a child already held as `Rc<Expr>` (a struct field) --
+/// checks `SHIFT_SCOPE_ACTIVE` first: with no scope active, this is
+/// exactly `shift(e, cutoff, amount)` and nothing more (one cheap `Cell`
+/// load, no `RefCell` touched); with one active, a hit on `SHIFT_SCOPE`
+/// returns without recursing at all, and a miss recurses (through `shift`,
+/// which comes back through here for every `Rc`-held grandchild) and
+/// records its result before returning. Holds the `Rc` alive via the key
+/// so a freed node's address can't be reused by an unrelated later
+/// allocation and produce a false hit -- an address-only key corrupted
+/// results in an earlier version of this check.
+fn shift_rc(e: &Rc<Expr>, cutoff: u32, amount: i32) -> Expr {
+    if amount == 0 {
+        return (**e).clone();
+    }
+    if !SHIFT_SCOPE_ACTIVE.with(|c| c.get()) {
+        return shift(e, cutoff, amount);
+    }
+    let key = (Rc::as_ptr(e) as usize, cutoff, amount);
+    let hit = SHIFT_SCOPE.with(|s| s.borrow().as_ref().and_then(|cache| cache.get(&key).map(|(_, v)| v.clone())));
+    if let Some(hit) = hit {
+        return hit;
+    }
+    let result = shift(e, cutoff, amount);
+    SHIFT_SCOPE.with(|s| {
+        if let Some(cache) = s.borrow_mut().as_mut() {
+            cache.insert(key, (e.clone(), result.clone()));
+        }
+    });
+    result
 }
 
 /// Replace `Var(j)` with `s` throughout `e`.
