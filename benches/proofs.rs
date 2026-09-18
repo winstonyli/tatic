@@ -30,11 +30,21 @@ fn relational_per_call_proof(c: &mut Criterion) {
 }
 
 fn universal_proof(c: &mut Criterion) {
-    let mut store = TermStore::new();
-    let h = common::gcd(&mut store);
-    c.bench_function("gcd_universal_proof_one_time", |b| {
-        b.iter(|| prove_tail_recursive_universal(&store, black_box(h)).unwrap())
+    let mut group = c.benchmark_group("universal_proof_one_time_by_leaf_count");
+
+    let mut store2 = TermStore::new();
+    let h2 = common::gcd(&mut store2); // 1 base leaf, 1 tail leaf
+    group.bench_function("gcd_2_leaves", |b| {
+        b.iter(|| prove_tail_recursive_universal(&store2, black_box(h2)).unwrap())
     });
+
+    let mut store3 = TermStore::new();
+    let h3 = common::gcd_with_two_base_cases(&mut store3); // 2 base leaves, 1 tail leaf (depth 2)
+    group.bench_function("gcd_3_leaves", |b| {
+        b.iter(|| prove_tail_recursive_universal(&store3, black_box(h3)).unwrap())
+    });
+
+    group.finish();
 }
 
 /// The crossover this project's whole "universal vs per-call" argument

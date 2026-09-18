@@ -56,6 +56,27 @@ pub fn gcd(s: &mut TermStore) -> Hash {
     s.rec(abs)
 }
 
+/// `rec f a b = if a == 0 then b else if b == 0 then a else f(b, a mod b)`
+/// -- deeper than `gcd` above: two base leaves and one tail leaf reached
+/// via a depth-2 path, exercising `prove_tail_recursive_universal`'s
+/// per-leaf `Ev` construction instead of the single-base/single-tail
+/// special case.
+pub fn gcd_with_two_base_cases(s: &mut TermStore) -> Hash {
+    let b = s.var(0);
+    let a = s.var(1);
+    let f = s.var(2);
+    let zero = s.lit(0);
+    let cond_a = s.prim(PrimOp::Eq, a, zero);
+    let cond_b = s.prim(PrimOp::Eq, b, zero);
+    let a_mod_b = s.prim(PrimOp::Mod, a, b);
+    let rec_call = s.app2(f, b, a_mod_b);
+    let inner_if = s.if_(cond_b, a, rec_call);
+    let body = s.if_(cond_a, b, inner_if);
+    let inner = s.abs(body);
+    let abs = s.abs(inner);
+    s.rec(abs)
+}
+
 /// `\a b. if a < b then a * 2 else b + 1` -- straight-line, no recursion.
 pub fn straight_line(s: &mut TermStore) -> Hash {
     let a = s.var(1);
