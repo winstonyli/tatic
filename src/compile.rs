@@ -85,6 +85,13 @@ use crate::term::{Hash, PrimOp, Term, TermStore};
 pub struct CompiledFragment {
     pub arity: usize,
     pub wat: String,
+    /// Whether the module exports a mutable `"hp"` global (the bump
+    /// allocator's next-free-byte pointer) that `jit.rs` must reset to 0
+    /// before *every* top-level call -- see `try_compile`'s docs on why
+    /// this has to happen from the host, once per call, rather than
+    /// inside the compiled function itself. `false` for a fragment with
+    /// no capturing closures at all (no allocator, nothing to reset).
+    pub needs_hp_reset: bool,
 }
 
 /// Discovers and compiles lambda values found while compiling a function
@@ -189,8 +196,27 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         }
         w.push_str(" (result i64)))\n");
     }
-    if combinators.captures.iter().any(|c| !c.is_empty()) {
+    let needs_alloc = combinators.captures.iter().any(|c| !c.is_empty());
+    if needs_alloc {
         emit_allocator(&mut w);
+        // Exported so `jit.rs` can reset it to 0 before every top-level
+        // call (see `CompiledFragment::needs_hp_reset`'s docs for why:
+        // in short, `jit.rs` caches and reuses *one* compiled instance
+        // across many separate calls, so without a reset, every
+        // capturing closure any call creates would leak its environment
+        // forever). Resetting *inside* the compiled function itself
+        // (e.g. at `$f`'s own entry) would be unsound: a non-tail
+        // self-recursive call is an ordinary `call $f`, re-entering the
+        // whole function from the top, which would reset `$hp` again
+        // mid-computation and corrupt any closure created earlier in
+        // the *same* top-level call that's still needed after the
+        // recursive call returns. Resetting from outside, once per
+        // top-level call, has no such hazard.
+        w.push_str("  (export \"hp\" (global $hp))\n");
+        // Exported too, purely so tests can observe that resetting `$hp`
+        // between calls actually keeps memory bounded (`jit.rs` itself
+        // never reads this export).
+        w.push_str("  (export \"memory\" (memory 0))\n");
     }
     if !combinators.arities.is_empty() {
         w.push_str(&format!("  (table {} funcref)\n", combinators.arities.len()));
@@ -204,7 +230,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     w.push_str(&fn_wat);
     w.push_str("  (export \"f\" (func $f))\n)\n");
 
-    Some(CompiledFragment { arity, wat: w })
+    Some(CompiledFragment { arity, wat: w, needs_hp_reset: needs_alloc })
 }
 
 /// A function's own identity, everything `compile_function` needs about
@@ -1013,6 +1039,75 @@ mod tests {
             let interpreted = apply_term(&s, term, &[n, acc]).unwrap();
             assert_eq!(compiled, interpreted, "mismatch at n={n} acc={acc}");
         }
+    }
+
+    #[test]
+    fn resetting_hp_between_calls_keeps_memory_bounded_across_many_calls() {
+        // Same term as the test above, but this one exercises the actual
+        // mechanism `jit.rs` relies on: `needs_hp_reset`/the exported
+        // `"hp"` global. Without resetting `hp` to 0 before every call,
+        // repeatedly calling the *same* compiled instance -- exactly
+        // what `jit.rs`'s cache does -- would leak every capturing
+        // closure's environment forever, growing linear memory without
+        // bound across the instance's whole lifetime. This confirms both
+        // halves: memory genuinely does grow within a single call large
+        // enough to cross a page, and resetting `hp` between repeated
+        // calls (what `jit.rs`'s `invoke` now does) keeps it bounded no
+        // matter how many times the instance is called.
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        let acc_captured = s.var(1);
+        let sum = s.prim(PrimOp::Add, acc_captured, y);
+        let closure = s.abs(sum);
+        let n_ref = s.var(1);
+        let new_acc = s.app(closure, n_ref);
+        let n = s.var(1);
+        let acc = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let f = s.var(2);
+        let rec_call = s.app2(f, n_minus_1, new_acc);
+        let body = s.if_(cond, acc, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        let term = s.rec(abs);
+
+        let frag = try_compile(&s, term).expect("should compile");
+        assert!(frag.needs_hp_reset, "this term creates capturing closures, so it should need a reset");
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let hp = instance.get_global(&mut store, "hp").unwrap();
+
+        // One call large enough to allocate past the first page (10,000
+        // closures * 8 bytes each = 80,000 bytes > 65,536).
+        func.call(&mut store, (10_000, 0)).unwrap();
+        let size_after_one_call = memory.size(&store);
+        assert!(size_after_one_call > 1, "a single large call should grow memory past the first page");
+
+        // Reset "hp" (what jit.rs's invoke does before every call) and
+        // call again, many times, with the same large n -- memory should
+        // NOT keep growing call over call.
+        for _ in 0..50 {
+            hp.set(&mut store, wasmtime::Val::I32(0)).unwrap();
+            func.call(&mut store, (10_000, 0)).unwrap();
+        }
+        let size_after_many_resetting_calls = memory.size(&store);
+        assert_eq!(
+            size_after_one_call, size_after_many_resetting_calls,
+            "resetting hp between calls should let memory be reused, not keep growing"
+        );
+
+        // Without resetting: a further call keeps growing it, showing
+        // growth (not the reset) is what caps it above.
+        func.call(&mut store, (10_000, 0)).unwrap();
+        assert!(
+            memory.size(&store) > size_after_many_resetting_calls,
+            "without a reset, one more call should grow memory further"
+        );
     }
 
     #[test]

@@ -123,7 +123,13 @@ fn capturing_closure_loop(c: &mut Criterion) {
                 (store, h, JitEngine::new())
             },
             |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),
-            BatchSize::SmallInput,
+            // Unlike fib_30/gcd_large's cold-compile groups, this one's
+            // per-iteration cost is low enough (~2ms) that `SmallInput`
+            // batches many full `(TermStore, JitEngine)` setups -- each
+            // holding its own `wasmtime::Engine` -- alive simultaneously,
+            // ballooning memory. `PerIteration` keeps exactly one alive at
+            // a time regardless of how fast the operation is.
+            BatchSize::PerIteration,
         )
     });
 

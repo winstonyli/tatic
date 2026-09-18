@@ -55,6 +55,14 @@ enum CacheEntry {
         /// still what actually gates trusting the compiled form either
         /// way; this just records the stronger evidence when it exists.
         kernel_verified: bool,
+        /// The exported `"hp"` global (`compile::CompiledFragment`'s
+        /// `needs_hp_reset` docs), for a fragment with at least one
+        /// capturing closure -- `invoke` resets it to `0` before every
+        /// call, since this same compiled instance is reused across many
+        /// separate calls (that's the whole point of this cache), and
+        /// the bump allocator itself never reclaims anything. `None` for
+        /// a fragment with no capturing closures at all.
+        hp_global: Option<wasmtime::Global>,
     },
     NotCompilable,
     FailedVerification,
@@ -134,13 +142,14 @@ impl JitEngine {
             return eval::apply_term(terms, h, args);
         }
 
-        let Some((module, func)) = self.instantiate(&frag.wat) else {
+        let Some((module, func, hp_global)) = self.instantiate(&frag.wat) else {
             self.cache.insert(h, CacheEntry::NotCompilable);
             self.stats.interpreted += 1;
             return eval::apply_term(terms, h, args);
         };
+        debug_assert_eq!(hp_global.is_some(), frag.needs_hp_reset, "compile.rs's export and needs_hp_reset flag should always agree");
 
-        if self.verify(terms, h, func, frag.arity) {
+        if self.verify(terms, h, func, hp_global, frag.arity) {
             let kernel_verified = self.kernel_verify(terms, h, frag.arity);
             if kernel_verified {
                 self.stats.kernel_proofs_checked += 1;
@@ -152,6 +161,7 @@ impl JitEngine {
                     arity: frag.arity,
                     _module: module,
                     kernel_verified,
+                    hp_global,
                 },
             );
             self.stats.compiled += 1;
@@ -221,10 +231,10 @@ impl JitEngine {
     /// Run the compiled candidate against the interpreter (reference
     /// semantics) on a battery of sample inputs and confirm they agree.
     /// This is the "found to be equivalent" check.
-    fn verify(&mut self, terms: &TermStore, h: Hash, func: wasmtime::Func, arity: usize) -> bool {
+    fn verify(&mut self, terms: &TermStore, h: Hash, func: wasmtime::Func, hp_global: Option<wasmtime::Global>, arity: usize) -> bool {
         for sample in sample_arg_vectors(arity) {
             let interpreted = eval::apply_term(terms, h, &sample);
-            let compiled = self.invoke(func, &sample);
+            let compiled = self.invoke(func, hp_global, &sample);
             let agree = match (interpreted, compiled) {
                 (Ok(a), Ok(b)) => a == b,
                 (Err(_), Err(_)) => true, // both error/trap: agree they're undefined here
@@ -249,15 +259,24 @@ impl JitEngine {
     }
 
     fn call_compiled(&mut self, h: Hash, args: &[i64]) -> Result<i64, EvalError> {
-        let Some(CacheEntry::Compiled { func, arity, .. }) = self.cache.get(&h) else {
+        let Some(CacheEntry::Compiled { func, arity, hp_global, .. }) = self.cache.get(&h) else {
             unreachable!("call_compiled invoked without a compiled cache entry");
         };
         debug_assert_eq!(*arity, args.len());
-        let func = *func;
-        self.invoke(func, args)
+        let (func, hp_global) = (*func, *hp_global);
+        self.invoke(func, hp_global, args)
     }
 
-    fn invoke(&mut self, func: wasmtime::Func, args: &[i64]) -> Result<i64, EvalError> {
+    /// Calls `func`, first resetting `hp_global` to `0` if present (see
+    /// `CacheEntry::Compiled::hp_global`'s docs) -- every call site goes
+    /// through here (both `verify`'s own sample calls and every real,
+    /// cached call `call_compiled` makes), so every actual invocation of
+    /// a compiled function gets a fresh bump allocator regardless of how
+    /// many times this same instance has been called before.
+    fn invoke(&mut self, func: wasmtime::Func, hp_global: Option<wasmtime::Global>, args: &[i64]) -> Result<i64, EvalError> {
+        if let Some(hp) = hp_global {
+            hp.set(&mut self.rt, Val::I32(0)).expect("hp is always a mutable i32 global when exported");
+        }
         let wargs: Vec<Val> = args.iter().map(|&a| Val::I64(a)).collect();
         let mut results = [Val::I64(0)];
         func.call(&mut self.rt, &wargs, &mut results)
@@ -268,12 +287,13 @@ impl JitEngine {
         }
     }
 
-    fn instantiate(&mut self, wat: &str) -> Option<(Module, wasmtime::Func)> {
+    fn instantiate(&mut self, wat: &str) -> Option<(Module, wasmtime::Func, Option<wasmtime::Global>)> {
         let bytes = wat::parse_str(wat).ok()?;
         let module = Module::new(&self.engine, &bytes).ok()?;
         let instance = Instance::new(&mut self.rt, &module, &[]).ok()?;
         let func = instance.get_func(&mut self.rt, "f")?;
-        Some((module, func))
+        let hp_global = instance.get_global(&mut self.rt, "hp");
+        Some((module, func, hp_global))
     }
 }
 
@@ -569,5 +589,53 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1);
         jit.apply(&s, fact_b, &[7]).unwrap();
         assert_eq!(jit.stats.compiled, 1, "same hash must reuse the compiled entry");
+    }
+
+    fn capturing_closure_loop(s: &mut TermStore) -> Hash {
+        // rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)
+        // -- see compile.rs's own test of the same shape.
+        let y = s.var(0);
+        let acc_captured = s.var(1);
+        let sum = s.prim(PrimOp::Add, acc_captured, y);
+        let closure = s.abs(sum);
+        let n_ref = s.var(1);
+        let new_acc = s.app(closure, n_ref);
+        let n = s.var(1);
+        let acc = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let f = s.var(2);
+        let rec_call = s.app2(f, n_minus_1, new_acc);
+        let body = s.if_(cond, acc, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        s.rec(abs)
+    }
+
+    #[test]
+    fn repeated_calls_to_a_capturing_closure_term_stay_correct_and_cached() {
+        // The same cached compiled instance gets called many times here
+        // (that's the whole point of the cache) -- each call creates a
+        // fresh capturing closure, so this exercises the `hp` reset
+        // `invoke` does before every call (see compile.rs's own
+        // `resetting_hp_between_calls_keeps_memory_bounded_across_many_calls`
+        // for the lower-level mechanism this relies on). Not a memory
+        // measurement itself (jit.rs has no public way to inspect Wasm
+        // linear memory) -- just confirms behavior stays correct and the
+        // cache, not recompilation, serves every repeated call.
+        let mut s = TermStore::new();
+        let h = capturing_closure_loop(&mut s);
+        let mut jit = JitEngine::new();
+
+        for i in 0..500 {
+            let n = (i % 50) + 1;
+            let result = jit.apply(&s, h, &[n, 0]).unwrap();
+            let expected = n * (n + 1) / 2; // sum 1..=n
+            assert_eq!(result, expected, "mismatch at n={n}");
+        }
+        assert_eq!(jit.stats.compiled, 1, "should compile once, not once per call");
+        assert_eq!(jit.stats.cache_hits, 500);
     }
 }
