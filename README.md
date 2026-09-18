@@ -48,7 +48,7 @@ proof.
 | Module | Role |
 |---|---|
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
-| `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses. |
+| `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses; `print` is the reverse direction, a precedence-aware pretty-printer back to source text. |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. |
 | `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and non-capturing closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. A closure that doesn't capture anything from an enclosing scope ("known", in the compilers-literature sense) compiles to its own Wasm function, referenced by index into a shared function table — no heap, no environment struct; a literal lambda in function position becomes a direct `call`, one reached only through a parameter becomes `call_indirect`. Capturing closures, and partial application, are still outside the fragment. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. |
@@ -83,6 +83,17 @@ though nothing about the source looks like a capturing closure (see
 It still evaluates correctly either way; it just falls back to the
 interpreter instead of compiling, the same graceful degradation any other
 out-of-scope term gets.
+
+`syntax::print` is the reverse direction — a precedence-aware
+pretty-printer back to source text `parse` accepts, assigning each binder
+a fresh name by nesting depth (`v0`, `v1`, ...) since `Var`/`Abs` don't
+carry names. It round-trips (`parse(print(t))` hashes identically to `t`,
+a strictly stronger check than "looks plausible") for everything the
+grammar can express, with one honest, documented exception: a literal
+built directly as `Term::Lit(n)` for a negative `n` (never produced by
+`parse` itself, which only reaches a negative value via unary-minus
+desugaring) has no exact syntactic round trip, since this grammar has no
+negative-literal syntax at all — only subtraction.
 
 ## What's actually proven, and what isn't
 

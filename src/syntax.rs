@@ -15,7 +15,7 @@
 //! ```text
 //! expr    := "let" IDENT "=" expr "in" expr
 //!          | "\" IDENT+ "." expr
-//!          | "rec" IDENT IDENT+ "=" expr
+//!          | "rec" IDENT IDENT* "=" expr
 //!          | "if" expr "then" expr "else" expr
 //!          | cmp
 //! cmp     := add (("<" | "<=" | "==") add)?
@@ -45,7 +45,7 @@
 //! pushed onto the scope stack in declaration order, so the last one
 //! declared is the last one pushed, and therefore resolves to `Var(0)`.
 
-use crate::term::{Hash, PrimOp, TermStore};
+use crate::term::{Hash, PrimOp, Term, TermStore};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -236,14 +236,25 @@ impl<'a> Parser<'a> {
     /// One or more parameter names, stopping at the first non-identifier
     /// (`.` for `\`, `=` for `rec`).
     fn parse_params(&mut self) -> Result<Vec<String>, ParseError> {
-        let mut params = Vec::new();
-        while let Token::Ident(_) = self.peek() {
-            params.push(self.expect_ident()?);
-        }
+        let params = self.parse_ident_list();
         if params.is_empty() {
             return Err(self.error("expected at least one parameter"));
         }
         Ok(params)
+    }
+
+    /// Like `parse_params`, but allows zero identifiers -- only `rec` uses
+    /// this (`rec f = body`, a zero-arity self-recursive value, is
+    /// unusual and out of `compile.rs`'s fragment, but still a legitimate
+    /// term this grammar can express; `print`, the reverse direction, can
+    /// produce this shape for a `Rec` with no `Abs` layers).
+    fn parse_ident_list(&mut self) -> Vec<String> {
+        let mut names = Vec::new();
+        while let Token::Ident(name) = self.peek() {
+            names.push(name.clone());
+            self.advance();
+        }
+        names
     }
 
     fn resolve_var(&self, name: &str) -> Option<u32> {
@@ -297,7 +308,7 @@ impl<'a> Parser<'a> {
     fn parse_rec(&mut self) -> Result<Hash, ParseError> {
         self.expect(Token::Rec)?;
         let self_name = self.expect_ident()?;
-        let params = self.parse_params()?;
+        let params = self.parse_ident_list();
         self.expect(Token::Eq)?;
         self.scope.push(self_name);
         for p in &params {
@@ -420,11 +431,137 @@ pub fn parse(store: &mut TermStore, src: &str) -> Result<Hash, ParseError> {
     Ok(h)
 }
 
+// --- pretty-printer (the reverse direction) -------------------------------
+//
+// `print` walks a term and reconstructs source text this module's own
+// `parse` accepts, assigning each binder a fresh name (`v0`, `v1`, ... by
+// nesting *depth* at the point it's introduced, not a running counter --
+// two independent binders at the same depth, e.g. two sibling lambdas,
+// safely reuse a name exactly the way ordinary shadowing already allows,
+// since neither's body can see the other's parameter). Precedence-aware:
+// each node knows its own precedence level and the minimum its parent
+// requires, adding parentheses only where the grammar in this module's own
+// docs would otherwise parse the text differently (or not at all) --
+// e.g. an `Abs`/`If`/`Rec` used as a function argument always needs them
+// (juxtaposition has no delimiting keyword to fall back on), but the same
+// node as an `If`'s condition/branch never does (`then`/`else` delimit it
+// unambiguously, matching `parse_if` calling `parse_expr` for each part).
+//
+// Round-trips for everything this grammar can express, with one honest
+// exception: a literal built directly as `Term::Lit(n)` for `n < 0` (never
+// produced by `parse` itself, which only reaches a negative value via
+// unary-minus desugaring to `Prim(Sub, Lit(0), ..)`) prints using Rust's
+// ordinary negative-number formatting, but this grammar has no negative-
+// literal syntax at all -- only subtraction -- so reparsing that text
+// yields the desugared `Prim(Sub, Lit(0), Lit(-n))` form, not the original
+// bare `Lit(n)`. Semantically identical, not hash-identical; see this
+// module's own test for it.
+
+fn fresh_name(depth: usize) -> String {
+    format!("v{depth}")
+}
+
+fn op_symbol(op: PrimOp) -> &'static str {
+    use PrimOp::*;
+    match op {
+        Add => "+",
+        Sub => "-",
+        Mul => "*",
+        Div => "/",
+        Mod => "%",
+        Lt => "<",
+        Le => "<=",
+        Eq => "==",
+    }
+}
+
+/// Precedence level, matching this module's own grammar (higher binds
+/// tighter): 0 = `let`/`\`/`rec`/`if` (`let` never appears here -- it's
+/// pure sugar with no `Term` of its own), 1 = comparison, 2 = `+`/`-`,
+/// 3 = `*`/`/`/`%`, 5 = application, 6 = an atom (`Var`/`Lit`/parenthesized).
+fn op_prec(op: PrimOp) -> u8 {
+    use PrimOp::*;
+    match op {
+        Lt | Le | Eq => 1,
+        Add | Sub => 2,
+        Mul | Div | Mod => 3,
+    }
+}
+
+/// `names[i]` is the name bound to `Var(names.len() - 1 - i)` in the
+/// current scope -- the exact mirror of `Parser::scope`.
+fn print_at(store: &TermStore, h: Hash, names: &mut Vec<String>, min_prec: u8) -> String {
+    let (own_prec, text) = match store.resolve(h) {
+        Term::Var(i) => (6, names[names.len() - 1 - *i as usize].clone()),
+        Term::Lit(n) => (6, n.to_string()),
+        Term::Prim(op, a, b) => {
+            let p = op_prec(*op);
+            // Comparisons don't chain (parse_cmp allows only one), so
+            // *both* sides need strictly-higher precedence to force
+            // parentheses around any nested comparison; the arithmetic
+            // ops are left-associative, so the left side accepts its own
+            // precedence back (matching how the term was actually built)
+            // while the right side needs strictly higher, to disambiguate
+            // right-nesting from the left-nesting parse_add/parse_mul
+            // themselves always produce.
+            let (lp, rp) = if p == 1 { (2, 2) } else { (p, p + 1) };
+            let lhs = print_at(store, *a, names, lp);
+            let rhs = print_at(store, *b, names, rp);
+            (p, format!("{lhs} {} {rhs}", op_symbol(*op)))
+        }
+        Term::If(c, t, e) => {
+            let cs = print_at(store, *c, names, 0);
+            let ts = print_at(store, *t, names, 0);
+            let es = print_at(store, *e, names, 0);
+            (0, format!("if {cs} then {ts} else {es}"))
+        }
+        Term::Abs(body) => {
+            let name = fresh_name(names.len());
+            names.push(name.clone());
+            let bs = print_at(store, *body, names, 0);
+            names.pop();
+            (0, format!("\\{name}. {bs}"))
+        }
+        Term::App(f, a) => {
+            let fs = print_at(store, *f, names, 5);
+            let as_ = print_at(store, *a, names, 6);
+            (5, format!("{fs} {as_}"))
+        }
+        Term::Rec(inner) => {
+            let mut k = 0usize;
+            let mut cur = *inner;
+            while let Term::Abs(next) = store.resolve(cur) {
+                k += 1;
+                cur = *next;
+            }
+            let body_hash = cur;
+            let self_name = fresh_name(names.len());
+            names.push(self_name.clone());
+            let mut param_names = Vec::with_capacity(k);
+            for _ in 0..k {
+                let pname = fresh_name(names.len());
+                names.push(pname.clone());
+                param_names.push(pname);
+            }
+            let bs = print_at(store, body_hash, names, 0);
+            names.truncate(names.len() - k - 1);
+            let params = if param_names.is_empty() { String::new() } else { format!(" {}", param_names.join(" ")) };
+            (0, format!("rec {self_name}{params} = {bs}"))
+        }
+    };
+    if own_prec < min_prec { format!("({text})") } else { text }
+}
+
+/// Prints `h` as source text this module's own `parse` accepts back --
+/// see the section docs above for exactly what round-trips.
+pub fn print(store: &TermStore, h: Hash) -> String {
+    print_at(store, h, &mut Vec::new(), 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::eval;
-    use crate::term::Term;
 
     #[test]
     fn literal() {
@@ -617,5 +754,102 @@ mod tests {
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, parsed, &[270, 192]).unwrap(), 6);
         assert!(jit.is_kernel_verified(parsed));
+    }
+
+    /// `print(store, h)` reparses (into a fresh store) to the exact same
+    /// content hash -- a strictly stronger check than "prints something
+    /// plausible": content-addressing means this only holds if the printed
+    /// text really does denote the identical term structure.
+    fn assert_round_trips(store: &TermStore, h: Hash) {
+        let text = print(store, h);
+        let mut fresh = TermStore::new();
+        let reparsed =
+            parse(&mut fresh, &text).unwrap_or_else(|e| panic!("printed text failed to reparse: {text:?}\nerror: {e}"));
+        assert_eq!(reparsed, h, "round-trip mismatch; printed: {text:?}");
+    }
+
+    #[test]
+    fn round_trips_arithmetic_with_mixed_precedence_and_right_nesting() {
+        let mut s = TermStore::new();
+        // 1 + 2 * 3 -- Mul binds tighter, no parens needed either way.
+        let h1 = parse(&mut s, "1 + 2 * 3").unwrap();
+        assert_round_trips(&s, h1);
+
+        // A hand-built *right*-nested subtraction, which a left-associative
+        // parser would never itself produce -- print must add parens
+        // around the right operand to preserve the grouping, or this
+        // would silently change from (a - (b - c)) to ((a - b) - c).
+        let a = s.lit(10);
+        let b = s.lit(3);
+        let c = s.lit(2);
+        let bc = s.prim(PrimOp::Sub, b, c);
+        let right_nested = s.prim(PrimOp::Sub, a, bc);
+        assert_round_trips(&s, right_nested);
+        assert_eq!(eval::apply_term(&s, right_nested, &[]).unwrap(), 9); // 10 - (3 - 2)
+
+        // A hand-built nested comparison -- parse_cmp doesn't chain, so
+        // this needs parens around the inner comparison on either side.
+        let one = s.lit(1);
+        let two = s.lit(2);
+        let three = s.lit(3);
+        let inner_cmp = s.prim(PrimOp::Lt, one, two);
+        let nested_cmp = s.prim(PrimOp::Eq, inner_cmp, three);
+        assert_round_trips(&s, nested_cmp);
+    }
+
+    #[test]
+    fn round_trips_if_lambda_application_and_rec() {
+        let mut s = TermStore::new();
+        for src in [
+            "if 1 < 2 then 10 else 20",
+            "(\\x y. x - y) 10 3",
+            "rec f n = if n <= 1 then 1 else n * f (n - 1)",
+            "rec f a b = if b == 0 then a else f b (a % b)",
+            "let inc = \\y. y + 1 in let twice = \\f. \\x. f (f x) in twice inc 5",
+            "\\x. \\x. x", // shadowing
+        ] {
+            let h = parse(&mut s, src).unwrap_or_else(|e| panic!("fixture `{src}` failed to parse: {e}"));
+            assert_round_trips(&s, h);
+        }
+    }
+
+    #[test]
+    fn round_trips_an_application_argument_that_is_itself_an_application() {
+        // f (g x) -- without parens around the argument, "f g x" would
+        // parse as a 3-ary call to f instead.
+        let mut s = TermStore::new();
+        let h = parse(&mut s, "\\f. \\g. \\x. f (g x)").unwrap();
+        assert_round_trips(&s, h);
+    }
+
+    #[test]
+    fn round_trips_a_zero_arity_rec() {
+        // rec f = 5 -- unusual (no base case reachable via any argument,
+        // out of compile.rs's fragment too -- see its own docs), but a
+        // legitimate term this grammar can express and print needs to
+        // handle it (zero Abs layers inside the Rec).
+        let mut s = TermStore::new();
+        let h = parse(&mut s, "rec f = 5").unwrap();
+        assert_round_trips(&s, h);
+    }
+
+    #[test]
+    fn a_directly_built_negative_literal_does_not_round_trip_exactly() {
+        // Term::Lit(n) for n < 0 is never produced by parse itself (which
+        // only reaches a negative value via unary-minus desugaring to
+        // Prim(Sub, Lit(0), ..)) -- this grammar simply has no negative-
+        // literal syntax. print still emits something reasonable (Rust's
+        // ordinary negative-number formatting), but reparsing it yields
+        // the desugared Prim form, not the original bare Lit -- a real,
+        // documented gap, not silently worked around.
+        let mut s = TermStore::new();
+        let neg_five = s.lit(-5);
+        let text = print(&s, neg_five);
+        assert_eq!(text, "-5");
+
+        let mut fresh = TermStore::new();
+        let reparsed = parse(&mut fresh, &text).unwrap();
+        assert_ne!(reparsed, neg_five, "a bare negative Lit has no exact round trip in this grammar");
+        assert_eq!(eval::apply_term(&fresh, reparsed, &[]).unwrap(), -5); // still semantically equal
     }
 }

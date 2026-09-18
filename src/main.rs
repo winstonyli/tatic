@@ -134,6 +134,7 @@ fn main() {
         Ok(_) => unreachable!(),
         Err(e) => println!("parse error on `n + 1` (n unbound): {e}"),
     }
+    println!("pretty-printed gcd: {}", syntax::print(&store, gcd_term));
 
     println!("\n-- factorial(10) --");
     println!("interpreted: {}", eval::apply_term(&store, fact, &[10]).unwrap());
