@@ -22,11 +22,16 @@
 //!
 //! Sample verification is the actual trust gate for every compiled term.
 //! Where possible (see `proof.rs`), a kernel-checked `Id`-typed proof is
-//! additionally attempted for the exact same battery of samples and
-//! recorded (`Stats::kernel_proofs_checked`, `is_kernel_verified`) as
-//! stronger evidence alongside it -- a straight-line term gets one proof
-//! covering every input, a tail-recursive term gets a per-sample
-//! relational proof (translation validation, not a universal theorem).
+//! additionally attempted and recorded (`Stats::kernel_proofs_checked`,
+//! `is_kernel_verified`) as stronger evidence alongside it.
+//! `kernel_verify` below tries `proof.rs`'s strategies in order of
+//! strength, first success wins: a straight-line term gets one `refl`
+//! proof covering every input; a tail-recursive term gets the universal
+//! theorem (`prove_tail_recursive_universal`) if its shape allows one --
+//! also covering every input, from real induction rather than per-sample
+//! checking; only if that doesn't apply does it fall back to a per-sample
+//! relational proof (translation validation) for the same battery of
+//! samples `verify()` uses.
 
 use hashbrown::HashMap;
 use wasmtime::{Engine, Instance, Module, Store, Val};
@@ -62,7 +67,8 @@ pub struct Stats {
     pub interpreted: u64,
     pub verification_failures: u64,
     /// Of `compiled`, how many additionally got a kernel-checked proof
-    /// (see `proof::prove_pure_expr`) rather than only sample verification.
+    /// (see `kernel_verify`'s strategy order) rather than only sample
+    /// verification.
     pub kernel_proofs_checked: u64,
 }
 
@@ -152,16 +158,25 @@ impl JitEngine {
     }
 
     /// Attempts a kernel-checked equivalence proof for `h`, on top of (not
-    /// instead of) the sample-based `verify()` above: a straight-line
-    /// (non-recursive) term gets one proof covering every input;
-    /// otherwise, for the tail-recursive fragment, a per-sample relational
-    /// proof (`proof::prove_tail_recursive_call`) is attempted for the same
-    /// battery `verify()` used, and this only reports success if *every*
-    /// one of those samples got its own kernel-checked proof. Anything
-    /// else (non-tail recursion, genuinely higher-order terms) reports
-    /// `false` -- see `proof.rs` for what's in scope and why.
+    /// instead of) the sample-based `verify()` above, trying `proof.rs`'s
+    /// strategies from strongest to weakest and stopping at the first that
+    /// applies:
+    /// 1. `prove_pure_expr` -- a straight-line (non-recursive) term gets
+    ///    one proof covering every input.
+    /// 2. `prove_tail_recursive_universal` -- a tail-recursive term whose
+    ///    shape it covers gets one universal theorem, also covering every
+    ///    input, via real induction rather than per-sample checking.
+    /// 3. `prove_tail_recursive_call`, once per sample in the same battery
+    ///    `verify()` uses, reporting success only if *every* sample got its
+    ///    own per-call relational proof -- the fallback for tail-recursive
+    ///    shapes the universal proof doesn't (yet) cover.
+    /// Anything else (non-tail recursion, genuinely higher-order terms)
+    /// reports `false` -- see `proof.rs` for what's in scope and why.
     fn kernel_verify(&self, terms: &TermStore, h: Hash, arity: usize) -> bool {
         if proof::prove_pure_expr(terms, h).is_some() {
+            return true;
+        }
+        if proof::prove_tail_recursive_universal(terms, h).is_some() {
             return true;
         }
         let samples = sample_arg_vectors(arity);
