@@ -61,16 +61,19 @@ This is stated precisely because it would be easy to overclaim here.
   shape, so the proof is `refl` — an honest witness that a stack-based and
   a tree-walking evaluation of side-effect-free code compute the same
   value by construction, not a shortcut.
-- **Tail-recursive terms** (the fragment compiled to a `loop`): proven by
-  *translation validation* — for one specific call, the proof follows the
-  interpreter's actual execution trace, symbolically composing each
-  iteration's new parameters, until it reaches the base case. This is a
-  genuine per-call certificate, checked by the kernel, stronger than
-  comparing two numbers for equality — but it is not a universal theorem;
-  a fresh (cheap) proof is built per sample point rather than once and for
-  all `n`. A general theorem would need real induction on call depth (a
-  `WRec`-shaped argument — `kernel::cong1`/`trans_proof` exist as the
-  composition lemmas it would need) and is the most natural next step.
+- **Tail-recursive terms** (the fragment compiled to a `loop`): proven two
+  ways. `prove_tail_recursive_call` is *translation validation* — for one
+  specific call, the proof follows the interpreter's actual execution
+  trace, symbolically composing each iteration's new parameters, until it
+  reaches the base case; a genuine per-call certificate, checked by the
+  kernel, but not a universal theorem. `prove_tail_recursive_universal`
+  goes further: it postulates an inductive "evaluates-to" trace family
+  `Ev(params, v)` (the same "postulated inductive family" pattern `Int`
+  itself uses) together with a recursor obeying the same universal-motive
+  shape as `kernel::WRec`, and uses real induction on that recursor —
+  built from `kernel::cong1`/`trans_proof` as its composition lemmas — to
+  prove `loop_val(params, v, e) = v` once, for every `params` and `v`, not
+  per call.
 - **Non-tail recursion** (e.g. naive Fibonacci, compiled to a plain WASM
   `call`): not covered by a kernel proof at all yet. Sample verification
   is currently the only thing standing behind it.
@@ -108,8 +111,9 @@ replacement for it.
 
 ## Future work
 
-- A universal (not per-call) proof for tail recursion, via induction on
-  call depth.
+- Widening `prove_tail_recursive_universal` past its current shape (a
+  single `If` with one base branch and one fully-saturated tail-call
+  branch) to deeper branching.
 - Proof coverage for non-tail recursion (a different argument — bounded
   term-structure induction rather than call-count induction).
 - Widening the compilable fragment itself (e.g. closures, more primitives).

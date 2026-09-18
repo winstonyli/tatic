@@ -143,8 +143,11 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
 
 // --- shifting & substitution (standard de Bruijn machinery) -------------
 
-/// Add `amount` to every free variable at or above `cutoff`.
-fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+/// Add `amount` to every free variable at or above `cutoff`. Exposed
+/// (beyond this module's own substitution machinery) for reindexing a
+/// term built at one ambient context depth for reuse at a deeper one --
+/// see `proof.rs`'s `Anchored`.
+pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     match e {
         Expr::Var(k) => {
             if *k >= cutoff {
@@ -330,6 +333,37 @@ pub fn normalize(e: &Expr) -> Expr {
 // --- typechecking -----------------------------------------------------
 
 pub type Ctx = Vec<Expr>;
+
+/// Wraps `ctx[base_len..]` (everything appended to `ctx` since it had
+/// length `base_len`) as nested `Pi` binders around `body`, which must
+/// have been built using `ctx` in full (i.e. that suffix as ambient
+/// context, the way ordinary `Postulates`-based code already builds
+/// terms). No reindexing is needed beyond what's already stored: `ctx[i]`
+/// was written assuming exactly `i` prior bindings, which is exactly what
+/// `Pi`'s own convention wants for the domain sitting at that same depth.
+///
+/// This turns "N more things were pushed onto the context, then this term
+/// was built" into a single closed `Pi`-type valid in `ctx[..base_len]` --
+/// the general tool for building a postulate's type when its type itself
+/// needs to quantify over freshly-introduced variables (see `proof.rs`'s
+/// `params_and_close`, built on top of this).
+pub fn close_pi(base_len: usize, ctx: &[Expr], body: Expr) -> Expr {
+    ctx[base_len..]
+        .iter()
+        .rev()
+        .fold(body, |acc, dom| pi(dom.clone(), acc))
+}
+
+/// Like `close_pi`, but builds the corresponding *value* (`Lam` binders,
+/// one per domain in `ctx[base_len..]`) instead of the type those binders
+/// have -- for when the goal is a term of that `Pi`-type (e.g. a motive or
+/// a proof to pass as an argument), not the type itself.
+pub fn close_lam(base_len: usize, ctx: &[Expr], body: Expr) -> Expr {
+    ctx[base_len..]
+        .iter()
+        .rev()
+        .fold(body, |acc, dom| lam(dom.clone(), acc))
+}
 
 fn ctx_lookup(ctx: &Ctx, k: u32) -> Option<Expr> {
     let k_usize = k as usize;
@@ -780,5 +814,48 @@ mod tests {
         let chained = trans_proof(&a_ty, &app(f.clone(), a.clone()), &app(f.clone(), b.clone()), &app(f.clone(), c.clone()), c1, c2);
         check(&p.ctx, &chained, &id(a_ty, app(f.clone(), a), app(f, c)))
             .expect("trans(cong1(..p1), cong1(..p2)) : Id(A, f a, f c)");
+    }
+
+    #[test]
+    fn close_pi_matches_hand_built_dependent_pi_chain() {
+        // Postulate A : Type0, push x : A, y : A onto the context, build
+        // body = Id(A, x, y), and check close_pi reproduces exactly the
+        // hand-built `Pi x:A. Pi y:A. Id(A, x, y)`.
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let a_ty = p.get(a_ty_pos); // valid at the pre-push depth captured below
+
+        let base_len = p.ctx.len();
+        let x_pos = p.push(p.get(a_ty_pos)); // fresh reference, not `a_ty.clone()` -- ctx has grown
+        let y_pos = p.push(p.get(a_ty_pos)); // fresh again -- ctx has grown once more
+        let body = id(p.get(a_ty_pos), p.get(x_pos), p.get(y_pos));
+        let closed = close_pi(base_len, &p.ctx, body);
+
+        let expected = pi(a_ty.clone(), pi(shift(&a_ty, 0, 1), id(shift(&a_ty, 0, 2), var(1), var(0))));
+        assert_eq!(closed, expected);
+
+        // And it typechecks as exactly that Pi-type.
+        p.ctx.truncate(base_len);
+        assert!(typecheck(&closed).is_err()); // open term (references A) -- must check in ctx, not standalone
+        check(&p.ctx, &closed, &sort(0)).expect("Pi x:A. Pi y:A. Id(A,x,y) : Type0");
+    }
+
+    #[test]
+    fn close_lam_builds_a_value_of_the_close_pi_type() {
+        // Postulate A : Type0, push x : A, build the TYPE `Pi x:A. Id(A,x,x)`
+        // via close_pi and the VALUE `\x:A. refl x` (of that type) via
+        // close_lam, and check the value against the type.
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+
+        let base_len = p.ctx.len();
+        let x_pos = p.push(p.get(a_ty_pos));
+        let ty_body = id(p.get(a_ty_pos), p.get(x_pos), p.get(x_pos));
+        let value_body = refl(p.get(x_pos));
+        let ty = close_pi(base_len, &p.ctx, ty_body);
+        let value = close_lam(base_len, &p.ctx, value_body);
+
+        p.ctx.truncate(base_len);
+        check(&p.ctx, &value, &ty).expect("\\x:A. refl x : Pi x:A. Id(A,x,x)");
     }
 }
