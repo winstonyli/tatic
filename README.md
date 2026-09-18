@@ -30,7 +30,10 @@ then builds a few more example terms by hand (factorial, gcd, a naive
 Fibonacci, a non-capturing higher-order term, a genuinely capturing
 closure, a straight-line arithmetic function), runs them all through the
 JIT, and prints timing plus which ones got a kernel-checked equivalence
-proof.
+proof. (Two capturing-closure terms appear side by side: one that still
+falls back to the interpreter for an unrelated, pre-existing reason, and
+one that compiles via real closure conversion — see `compile.rs`'s module
+docs and `main.rs`'s comments on each.)
 
 ## Architecture
 
@@ -51,7 +54,7 @@ proof.
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
 | `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses; `print` is the reverse direction, a precedence-aware pretty-printer back to source text. |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. |
-| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and non-capturing closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. A closure that doesn't capture anything from an enclosing scope ("known", in the compilers-literature sense) compiles to its own Wasm function, referenced by index into a shared function table — no heap, no environment struct; a literal lambda in function position becomes a direct `call`, one reached only through a parameter becomes `call_indirect`. A *named self-recursive* value (e.g. one bound by `let fact = rec f n = .. in ..`) goes through this same table-index machinery — it's just another combinator, self-recursive or not. Capturing closures, and partial application, are still outside the fragment. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
+| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. Every closure value is a single packed `i64` (table index, plus a pointer into linear memory to its captured-values environment); a *non-capturing* ("known", in the compilers-literature sense) closure just has a `0` pointer half and reads nothing from it — one uniform representation either way, not two, so a `call_indirect` site never needs to know in advance whether its callee captures anything. A capturing closure's environment is allocated by a small bump allocator (`emit_allocator`, one page of linear memory grown via `memory.grow` on demand, never reclaimed — compiled instances are short-lived and per-call) at the point the closure is created; `free_vars` finds what it captures by walking its body. A literal lambda in function position becomes a direct `call` (with a freshly created environment passed as its first argument), one reached only through a parameter becomes `call_indirect` (unpacking the environment pointer and table index back out first). A *named self-recursive* value (e.g. one bound by `let fact = rec f n = .. in ..`) goes through this same table-index machinery — it's just another combinator, self-recursive or not, capturing or not. Partial application, a parameter called with inconsistent arities, and calling a closure reached through a captured free variable rather than a parameter are still outside the fragment. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. |
 | `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) — four primitives, chosen because that's provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work). Has a real bidirectional typechecker and normalizer. |
 | `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. |
@@ -78,12 +81,15 @@ let fact = rec f n = if n <= 1 then 1 else n * f (n - 1) in fact 10
 
 One honest, non-obvious finding from building this: nesting two `let`s
 where the inner one's body references the outer one's binding can
-desugar into a term `compile.rs` correctly rejects as *capturing* — even
-though nothing about the source looks like a capturing closure (see
-`syntax.rs`'s own tests, `higher_order_let_chain_evaluates_like_the_hand_built_demo_term`).
-It still evaluates correctly either way; it just falls back to the
-interpreter instead of compiling, the same graceful degradation any other
-out-of-scope term gets.
+desugar into a term that's genuinely *capturing* by the time `compile.rs`
+peels its inner lambda standalone — even though nothing about the source
+looks like a capturing closure (see `syntax.rs`'s own tests,
+`higher_order_let_chain_evaluates_like_the_hand_built_demo_term`). Real
+closure conversion (see `compile.rs`'s module docs) compiles this
+correctly now rather than falling back to the interpreter; it still
+doesn't get a *kernel-checked* proof, though, since `proof.rs`'s own
+fragment doesn't cover higher-order terms at all yet (see below) —
+independent of what `compile.rs` itself can compile.
 
 `syntax::print` is the reverse direction — a precedence-aware
 pretty-printer back to source text `parse` accepts, assigning each binder

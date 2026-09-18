@@ -92,9 +92,17 @@ fn higher_order_demo(s: &mut TermStore) -> Hash {
 /// A genuinely *capturing* closure: `(\x. if x > 0 then (\y. x + y) else
 /// (\y. x - y)) 3`, then applied to `4`. The inner lambdas reference `x`,
 /// bound by the *enclosing* function, not their own parameter range --
-/// still outside `compile.rs`'s fragment (see its module docs), so this
-/// demonstrates the JIT degrading gracefully to the interpreter for a term
-/// it can't (and shouldn't try to) compile.
+/// `compile.rs` can compile that on its own now (real closure conversion,
+/// see its module docs), but *this particular* term still falls back to
+/// the interpreter for an unrelated, pre-existing reason: `App(App(inner,
+/// 3), 4)` is exactly the same term shape as a plain 2-ary call
+/// `inner(3, 4)` (`compile.rs`'s own `unwind_app_spine` can't tell curried
+/// application from multi-arg application apart, see its docs), and
+/// `inner`'s own arity is 1, not 2 -- so this is rejected for the same
+/// reason `curried_application_is_indistinguishable_from_multi_arg_calls`
+/// (a `compile.rs` test) documents, not because of the capture. Still a
+/// good demonstration of the JIT degrading gracefully to the interpreter
+/// for a term it can't (and shouldn't try to) compile.
 fn capturing_closure_demo(s: &mut TermStore) -> Hash {
     let x1 = s.var(0);
     let zero = s.lit(0);
@@ -113,6 +121,42 @@ fn capturing_closure_demo(s: &mut TermStore) -> Hash {
     let picked_closure = s.app(inner, three);
     let four = s.lit(4);
     s.app(picked_closure, four)
+}
+
+/// `\x. (\g. g 5) (if x > 0 then (\y. x + y) else (\y. x - y))` -- the
+/// same capturing closure as `capturing_closure_demo`, but applied
+/// through a call to a closure-typed *parameter* (`g`) instead of by
+/// curried application, so `compile.rs`'s `unwind_app_spine` doesn't
+/// collapse the two applications together (see `capturing_closure_demo`'s
+/// docs) -- this one genuinely does compile, exercising real closure
+/// conversion: a fresh heap-allocated environment for whichever inner
+/// lambda gets picked, captured `x` included, packed with its table
+/// index into one `i64`, and unpacked again at the `call_indirect` inside
+/// `g`'s own caller.
+fn compiled_capturing_closure_demo(s: &mut TermStore) -> Hash {
+    let x1 = s.var(0);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, x1);
+    let y_pos = s.var(0);
+    let x_pos = s.var(1);
+    let plus = s.prim(PrimOp::Add, x_pos, y_pos);
+    let then_closure = s.abs(plus);
+    let y_neg = s.var(0);
+    let x_neg = s.var(1);
+    let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
+    let else_closure = s.abs(minus);
+    let picked = s.if_(cond, then_closure, else_closure);
+    let picker = s.abs(picked);
+
+    let g = s.var(0);
+    let five = s.lit(5);
+    let call_g = s.app(g, five);
+    let calls_its_arg = s.abs(call_g);
+
+    let x2 = s.var(0);
+    let chosen = s.app(picker, x2);
+    let called = s.app(calls_its_arg, chosen);
+    s.abs(called)
 }
 
 fn main() {
@@ -159,9 +203,18 @@ fn main() {
     println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(hof));
 
     let capturing = capturing_closure_demo(&mut store);
-    println!("\n-- capturing closure, still out of compile.rs's fragment --");
+    println!("\n-- a capturing closure this particular curried form still falls back on --");
     println!("interpreted: {}", eval::apply_term(&store, capturing, &[]).unwrap());
     println!("jit (falls back to interpreter): {}", jit.apply(&store, capturing, &[]).unwrap());
+
+    let compiled_capturing = compiled_capturing_closure_demo(&mut store);
+    println!("\n-- a capturing closure real closure conversion *does* compile --");
+    for x in [3, -3] {
+        let interp = eval::apply_term(&store, compiled_capturing, &[x]).unwrap();
+        let jitted = jit.apply(&store, compiled_capturing, &[x]).unwrap();
+        println!("x={x}: interpreted={interp}, jit={jitted}");
+    }
+    println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(compiled_capturing));
 
     println!("\n-- fib(30), naive exponential recursion: interpreter vs JIT --");
     let t0 = Instant::now();

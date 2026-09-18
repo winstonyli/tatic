@@ -1729,14 +1729,23 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
 // self-recursion is future work); every `If` branch must denote as `Int`
 // (an `If` choosing between two *closures* is out of scope, though
 // `compile.rs` would compile it); and the whole function's own result must
-// denote as `Int`, not directly return a closure value. Also, unlike
-// `compile.rs`, this doesn't re-verify that each combinator it references
-// is actually non-capturing (`local_index`'s bounds check, which
-// `compile.rs` only applies while *compiling* a combinator's own body) --
-// the same kind of "looser than compile.rs" gap `prove_pure_expr` already
-// has for `If` conditions (compile_cond restricts them to a direct
-// comparison; `denote` doesn't). Harmless in practice since `jit.rs` only
-// ever calls into `proof.rs` after a term already compiled successfully.
+// denote as `Int`, not directly return a closure value. Also *deliberately*
+// narrower than what `compile.rs` itself now compiles: `compile.rs` added
+// real closure conversion for genuinely capturing closures (see its module
+// docs), but this fragment still covers non-capturing ("known-call")
+// closures only -- `ClosureCombinators::register`/`call_ref` explicitly
+// reject a capturing combinator (`compile::free_vars`, the same analysis
+// `compile.rs`'s own `Combinators::register` uses) rather than relying on
+// "already compiled" to imply "non-capturing" the way an earlier version of
+// this comment did; that implication stopped holding the moment
+// `compile.rs` could compile captures too, so the check has to be explicit
+// here now. `combinator_value`/`call_h`'s whole model -- one postulated
+// constant per combinator, referenced by identity, its own body never
+// denoted -- is only an honest reading of a *non-capturing* closure (always
+// the same table-index value, wherever it's referenced); a capturing one
+// gets a different environment, and so a different runtime value, at every
+// creation site, which this fragment doesn't model at all. Combining this
+// with capturing closures is future work, not just an oversight.
 
 /// Either an `Int`-typed or a `Clo`-typed denotation -- `denote_closure`
 /// needs to track which, since an application's arguments and an `If`'s
@@ -1851,11 +1860,26 @@ impl<'a> ClosureCombinators<'a> {
 
     /// The postulated `Clo`-typed identity constant for combinator `h`
     /// (`ClosurePostulates::combinator_value`), for `h` used as a bare
-    /// value. `None` for a zero-arity or self-recursive combinator (out of
-    /// scope -- see section docs).
+    /// value. `None` for a zero-arity, self-recursive, or *capturing*
+    /// combinator (out of scope -- see section docs). Unlike `compile.rs`
+    /// itself, `h` capturing something has to be checked explicitly here
+    /// (`compile::free_vars`, the same analysis `compile.rs`'s own
+    /// `Combinators::register` uses) rather than falling out for free:
+    /// `compile.rs` compiles a genuinely capturing closure successfully
+    /// now (real closure conversion), so this module can no longer rely
+    /// on "already compiled" to mean "non-capturing" the way it used to.
+    /// `combinator_value(h)` models `h` as *one* fixed value regardless
+    /// of where it's referenced -- true for a non-capturing closure
+    /// (always the same table-index constant), false for a capturing one
+    /// (a different environment, and so a different packed value, at
+    /// every creation site) -- so admitting a capturing combinator here
+    /// wouldn't just be incomplete, it would be an honestly wrong model.
     fn register(&mut self, h: Hash) -> Option<Expr> {
-        let (arity, _, is_rec) = compile::peel(self.store, h)?;
+        let (arity, body, is_rec) = compile::peel(self.store, h)?;
         if is_rec || arity == 0 {
+            return None;
+        }
+        if !compile::free_vars(self.store, body, arity, is_rec).is_empty() {
             return None;
         }
         Some(self.cp.combinator_value(h))
@@ -1874,6 +1898,15 @@ impl<'a> ClosureCombinators<'a> {
     fn call_ref(&mut self, h: Hash) -> Option<Expr> {
         if let Some(&pos) = self.cp.combinator_call_pos.get(&h) {
             return Some(self.cp.arith.p.get(pos));
+        }
+        // Same capturing check as `register`, and for the same reason:
+        // `call_h` is one postulated function per combinator, its own
+        // body never denoted -- an honest model only for a genuinely
+        // fixed function, which a capturing combinator (different
+        // environment per creation site) isn't.
+        let (arity, body, is_rec) = compile::peel(self.store, h)?;
+        if !compile::free_vars(self.store, body, arity, is_rec).is_empty() {
+            return None;
         }
         let param_types = param_types_for(self.store, h)?;
         let mut ty = self.cp.arith.int_ty();
@@ -2654,6 +2687,49 @@ mod tests {
 
         assert!(prove_closure_expr(&s, g).is_none());
         assert!(compile::try_compile(&s, g).is_none(), "the compiler should agree this is out of scope too");
+    }
+
+    #[test]
+    fn a_capturing_closure_compiles_but_still_gets_no_closure_proof() {
+        // \x. (\g. g 5) (if 0 < x then (\y. x + y) else (\y. x - y)) --
+        // the same term compile.rs's own
+        // a_capturing_closure_compiles_and_matches_interpreter test uses.
+        // compile.rs compiles this successfully now (real closure
+        // conversion), but prove_closure_expr's own model -- one
+        // postulated constant per combinator, referenced by identity --
+        // is only an honest reading of a *non-capturing* closure (see its
+        // section docs); a capturing combinator gets a different
+        // environment at every creation site, which that model doesn't
+        // represent at all, so this must still come back `None`, not
+        // silently reuse compile.rs's now-broader "does it compile"
+        // scope.
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, x);
+        let y_pos = s.var(0);
+        let x_pos = s.var(1);
+        let plus = s.prim(PrimOp::Add, x_pos, y_pos);
+        let then_closure = s.abs(plus);
+        let y_neg = s.var(0);
+        let x_neg = s.var(1);
+        let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
+        let else_closure = s.abs(minus);
+        let body = s.if_(cond, then_closure, else_closure);
+        let picker = s.abs(body);
+
+        let g = s.var(0);
+        let five = s.lit(5);
+        let call_g = s.app(g, five);
+        let inn = s.abs(call_g);
+
+        let x2 = s.var(0);
+        let chosen = s.app(picker, x2);
+        let called = s.app(inn, chosen);
+        let f = s.abs(called);
+
+        assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
+        assert!(prove_closure_expr(&s, f).is_none(), "prove_closure_expr's non-capturing model must still decline it");
     }
 
     #[test]

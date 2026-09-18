@@ -684,19 +684,23 @@ mod tests {
         // version (an extra App(Abs(..), ..) wrapper per let), not just a
         // different way of writing the same one.
         //
-        // Interesting, honest finding: this term does NOT compile via
-        // compile.rs, and falls back to the interpreter -- correctly.
-        // `let x = e1 in e2` desugars to `App(Abs(e2), e1)`, so nesting a
-        // *second* let inside the first's body makes the inner let's own
-        // `\y. ..` value reference the outer let's binding by `Var`, not
-        // by name -- and when compile.rs peels that inner lambda
-        // *standalone* (as it does for any candidate combinator, per its
-        // non-capturing check), that outer reference is exactly a
+        // Interesting, honest finding: `let x = e1 in e2` desugars to
+        // `App(Abs(e2), e1)`, so nesting a *second* let inside the
+        // first's body makes the inner let's own `\y. ..` value reference
+        // the outer let's binding by `Var`, not by name -- and when
+        // compile.rs peels that inner lambda *standalone* (as it does for
+        // any candidate combinator), that outer reference is exactly a
         // captured free variable. Nothing about the *source* looks like a
         // capturing closure; the capture is an artifact of two lets
-        // nesting this way once desugared. A single, non-nested let (see
-        // `a_single_let_around_a_closure_still_compiles` below) doesn't
-        // have this problem.
+        // nesting this way once desugared. compile.rs's closure
+        // conversion (see its module docs) handles this correctly -- it
+        // compiles and runs, not just falls back to the interpreter --
+        // but it still doesn't get a *kernel-checked* proof: `proof.rs`
+        // only covers straight-line (`Var`/`Lit`/`Prim`/`If`) terms and
+        // tail recursion, no `Abs`/`App` at all, so any higher-order term
+        // (this one included -- see `higher_order_demo` in main.rs, which
+        // has the same gap for the same reason) is out of its fragment
+        // regardless of whether compile.rs itself can compile it.
         let mut s = TermStore::new();
         let parsed = parse(&mut s, "let inc = \\y. y + 1 in let twice = \\f. \\x. f (f x) in twice inc 5").unwrap();
         assert_eq!(eval::apply_term(&s, parsed, &[]).unwrap(), 7);
@@ -704,8 +708,9 @@ mod tests {
         use crate::jit::JitEngine;
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, parsed, &[]).unwrap(), 7);
-        assert!(!jit.is_kernel_verified(parsed), "nested lets across a closure boundary should (still, correctly) capture");
-        assert_eq!(jit.stats.interpreted, 1);
+        assert!(!jit.is_kernel_verified(parsed), "higher-order terms are outside proof.rs's own fragment, independent of compile.rs");
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
     }
 
     #[test]

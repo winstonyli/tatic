@@ -16,38 +16,67 @@
 //! into iteration (constant Wasm call-stack depth); non-tail self-calls
 //! fall back to an ordinary Wasm `call`.
 //!
-//! ## Closures: known calls, not general closure conversion
+//! ## Closures: real closure conversion, uniform representation
 //!
-//! Every value in this fragment is a plain `i64` -- including a closure
-//! value, which is simply the index of a *non-capturing* lambda ("known
-//! function"/"known call" in the compiler literature) in a shared Wasm
-//! function table. This needs no heap, no environment record, and no
-//! change at all to how `Int` is represented: a lambda can only be
-//! compiled this way if, peeled standalone, every one of its free
-//! variables resolves within its *own* parameter range -- i.e. it
-//! captures nothing from any enclosing scope. That's not a separate check
-//! this module runs; it falls out for free from `local_index` already
-//! rejecting an out-of-range `Var` the same way it always has, applied to
-//! a lambda peeled in isolation from wherever it was found.
+//! Every value in this fragment is a plain `i64`, including a closure
+//! value -- but a closure now packs *two* things into that one `i64`: a
+//! table index (low 32 bits) identifying which compiled function to call,
+//! and a pointer into linear memory (high 32 bits) to that closure's
+//! *environment* -- the captured values it closed over, laid out as
+//! consecutive `i64` slots and allocated by the bump allocator (see
+//! `emit_allocator`) at the point the closure is created. A
+//! *non-capturing* lambda ("known function"/"known call" in the compiler
+//! literature) still needs no environment at all -- its pointer half is
+//! just `0`, a constant, and its `$env` parameter goes unread -- so this
+//! is one uniform representation, not two: every combinator takes an
+//! `$env: i32` parameter first, whether or not its own body ever reads
+//! from it, precisely so a `call_indirect` site never needs to know in
+//! advance whether the closure it's calling captures anything.
+//!
+//! `free_vars` finds what a lambda literal captures, relative to its own
+//! parameter range, by walking its body (following *into* further nested
+//! lambdas too, since a closure nested inside another one still captures
+//! from the very same enclosing scope) -- this becomes the environment's
+//! slot layout. At every point a lambda literal is compiled (used as a
+//! plain value, or as a call's callee), `push_closure_env` allocates that
+//! layout's worth of memory and, slot by slot, reads each captured
+//! value's *current* value out of whatever's compiling it right now
+//! (`compile_var_read`, which itself resolves either to one of the
+//! current function's own parameters or, recursively, to one of *its*
+//! own environment slots -- so a closure nested several levels deep
+//! captures through as many levels as it needs to, uniformly). A
+//! self-recursive value's own self-reference is never treated as a
+//! capture (it's bound by `Rec`, resolved separately by
+//! `match_self_call`, and never itself a plain readable value) --
+//! `free_vars` excludes it explicitly rather than have it (wrongly) show
+//! up as an uncapturable free variable in every recursive function.
 //!
 //! A closure value can then be *applied* two ways: through a parameter
 //! that's always called with the same number of arguments everywhere in
 //! its own function (`infer_closure_arities` finds these, and application
-//! compiles to Wasm's `call_indirect` through the shared table), or as a
-//! literal lambda appearing directly in function position
+//! compiles to Wasm's `call_indirect` through the shared table, unpacking
+//! the environment pointer and table index back out of the packed `i64`
+//! first), or as a literal lambda appearing directly in function position
 //! (`Combinators::register` gives it a table slot and its call compiles
-//! to an ordinary, statically-known `call`). Passing a lambda around as a
-//! value it's never applied to (an argument, a branch's result, ...)
-//! just needs its table index as a compile-time constant.
+//! to an ordinary, statically-known `call`, with a freshly created
+//! environment passed as that call's first argument). Passing a lambda
+//! around as a value it's never applied to (an argument, a branch's
+//! result, ...) packs its (possibly-empty) environment and table index
+//! into a single `i64` the same way either path would.
 //!
 //! What's still out of scope: partial application, a parameter applied
-//! with inconsistent arities across call sites, and (structurally, not by
-//! a special check) any *capturing* closure. `Combinators` also doesn't
-//! statically check that a value passed into a closure-typed parameter
-//! actually has the arity that parameter's own body expects of it --
-//! `call_indirect`'s own dynamic type check catches a mismatch as a trap,
-//! caught safely by `jit.rs`'s sample verification the same way any other
-//! compiler bug would be.
+//! with inconsistent arities across call sites, calling a closure reached
+//! through a captured free variable rather than through one of the
+//! current function's own parameters (`scan_for_closure_calls` only infers
+//! closure-call arities for params), and capturing an enclosing
+//! self-recursive binding's own self-reference as a plain value from a
+//! *nested* closure (an honest, structural rejection -- see
+//! `free_vars`'s self-exclusion -- rather than a special-cased check).
+//! `Combinators` also doesn't statically check that a value passed into a
+//! closure-typed parameter actually has the arity that parameter's own
+//! body expects of it -- `call_indirect`'s own dynamic type check catches
+//! a mismatch as a trap, caught safely by `jit.rs`'s sample verification
+//! the same way any other compiler bug would be.
 
 use hashbrown::HashMap;
 
@@ -58,24 +87,33 @@ pub struct CompiledFragment {
     pub wat: String,
 }
 
-/// Discovers and compiles non-capturing lambda values found while
-/// compiling a function (see module docs). `index`/`arities` describe
-/// every combinator registered so far (in registration order, `arities`
-/// parallel to a combinator's assigned index); `pending` holds ones not
-/// yet compiled to Wat; `call_indirect_arities` accumulates every arity
-/// actually used at a `call_indirect` site, for the `(type ...)`
+/// Discovers and compiles lambda values found while compiling a function
+/// (see module docs). `index`/`arities`/`captures` describe every
+/// combinator registered so far (in registration order, parallel to a
+/// combinator's assigned index -- `captures[idx]` is that combinator's
+/// own environment slot layout, from `free_vars`); `pending` holds ones
+/// not yet compiled to Wat; `call_indirect_arities` accumulates every
+/// arity actually used at a `call_indirect` site, for the `(type ...)`
 /// declarations that need to exist once each, not once per site.
 struct Combinators<'a> {
     store: &'a TermStore,
     index: HashMap<Hash, usize>,
     pending: Vec<Hash>,
     arities: Vec<usize>,
+    captures: Vec<Vec<u32>>,
     call_indirect_arities: Vec<usize>,
 }
 
 impl<'a> Combinators<'a> {
     fn new(store: &'a TermStore) -> Self {
-        Combinators { store, index: HashMap::new(), pending: Vec::new(), arities: Vec::new(), call_indirect_arities: Vec::new() }
+        Combinators {
+            store,
+            index: HashMap::new(),
+            pending: Vec::new(),
+            arities: Vec::new(),
+            captures: Vec::new(),
+            call_indirect_arities: Vec::new(),
+        }
     }
 
     /// Registers `h` (a lambda value, i.e. an `Abs`-chain -- or a named
@@ -86,18 +124,21 @@ impl<'a> Combinators<'a> {
     /// there'd be nothing to apply). `is_rec` isn't recorded here -- the
     /// fixpoint loop in `try_compile` re-`peel`s each pending combinator
     /// when it actually compiles its body, and determines `self_idx` from
-    /// that, so this only needs the arity to assign a table slot.
+    /// that; it's only needed here, transiently, for `free_vars` to
+    /// correctly exclude a self-reference from the capture list.
     fn register(&mut self, h: Hash) -> Option<usize> {
         if let Some(&i) = self.index.get(&h) {
             return Some(i);
         }
-        let (arity, _, _) = peel(self.store, h)?;
+        let (arity, body, is_rec) = peel(self.store, h)?;
         if arity == 0 {
             return None;
         }
+        let captures = free_vars(self.store, body, arity, is_rec);
         let idx = self.arities.len();
         self.index.insert(h, idx);
         self.arities.push(arity);
+        self.captures.push(captures);
         self.pending.push(h);
         Some(idx)
     }
@@ -113,7 +154,12 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
 
     let mut combinators = Combinators::new(store);
     let mut fn_wat = String::new();
-    compile_function(store, "f", arity, self_idx, body, &mut combinators, &mut fn_wat)?;
+    // `$f`, the synthetic entry point, is never itself referenced as a
+    // value inside the term being compiled -- unlike every combinator, it
+    // needs no `$env` parameter and (being the top of a closed term) has
+    // no captures of its own to resolve free-variable reads against.
+    let f_spec = FnSpec { name: "f", arity, self_idx, has_env: false, captures: &[] };
+    compile_function(store, body, &f_spec, &mut combinators, &mut fn_wat)?;
 
     // Fixpoint: compiling one combinator's body can discover more.
     let mut combinator_wat = String::new();
@@ -121,7 +167,10 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         let idx = combinators.index[&h_c];
         let (c_arity, c_body, c_is_rec) = peel(store, h_c)?;
         let c_self_idx = if c_is_rec { Some(c_arity as u32) } else { None };
-        compile_function(store, &format!("c{idx}"), c_arity, c_self_idx, c_body, &mut combinators, &mut combinator_wat)?;
+        let captures = combinators.captures[idx].clone();
+        let c_name = format!("c{idx}");
+        let c_spec = FnSpec { name: &c_name, arity: c_arity, self_idx: c_self_idx, has_env: true, captures: &captures };
+        compile_function(store, c_body, &c_spec, &mut combinators, &mut combinator_wat)?;
     }
 
     let mut w = String::new();
@@ -130,11 +179,18 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     used_arities.sort_unstable();
     used_arities.dedup();
     for k in &used_arities {
-        w.push_str(&format!("  (type $ty{k} (func"));
+        // Every combinator uniformly takes its environment pointer as its
+        // first parameter (see module docs), so `call_indirect`'s type
+        // must include it too, regardless of whether the callee at any
+        // particular call actually captures anything.
+        w.push_str(&format!("  (type $ty{k} (func (param i32)"));
         for _ in 0..*k {
             w.push_str(" (param i64)");
         }
         w.push_str(" (result i64)))\n");
+    }
+    if combinators.captures.iter().any(|c| !c.is_empty()) {
+        emit_allocator(&mut w);
     }
     if !combinators.arities.is_empty() {
         w.push_str(&format!("  (table {} funcref)\n", combinators.arities.len()));
@@ -151,24 +207,35 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     Some(CompiledFragment { arity, wat: w })
 }
 
+/// A function's own identity, everything `compile_function` needs about
+/// it besides its body -- bundled together (rather than passed as five
+/// separate arguments) purely to keep `compile_function`'s own signature
+/// down. See `FnCtx`'s fields for what each of these means.
+struct FnSpec<'b> {
+    name: &'b str,
+    arity: usize,
+    self_idx: Option<u32>,
+    has_env: bool,
+    captures: &'b [u32],
+}
+
 /// Compiles `body` (an `arity`-ary function, `self_idx` set iff it's
 /// self-recursive) into a named Wasm function, appended to `w`. Shared by
 /// the top-level term and every combinator `Combinators` discovers --
 /// there's nothing structurally different between them, just where each
-/// one is referenced from.
-fn compile_function(
-    store: &TermStore,
-    name: &str,
-    arity: usize,
-    self_idx: Option<u32>,
-    body: Hash,
-    combinators: &mut Combinators,
-    w: &mut String,
-) -> Option<()> {
+/// one is referenced from. `has_env` is true for every combinator (never
+/// for `$f`, see its call site) -- `captures` is that function's own
+/// environment slot layout (empty for `$f` and any non-capturing
+/// combinator), used to resolve a free-variable read within its body.
+fn compile_function(store: &TermStore, body: Hash, spec: &FnSpec, combinators: &mut Combinators, w: &mut String) -> Option<()> {
+    let FnSpec { name, arity, self_idx, has_env, captures } = *spec;
     let closure_arities = infer_closure_arities(store, body, arity, self_idx)?;
-    let ctx = FnCtx { store, name, arity, self_idx, closure_arities: &closure_arities };
+    let ctx = FnCtx { store, name, arity, self_idx, closure_arities: &closure_arities, has_env, captures };
 
     w.push_str(&format!("  (func ${name}"));
+    if has_env {
+        w.push_str(" (param $env i32)");
+    }
     for i in 0..arity {
         w.push_str(&format!(" (param $p{i} i64)"));
     }
@@ -176,6 +243,12 @@ fn compile_function(
     for i in 0..arity {
         w.push_str(&format!("    (local $t{i} i64)\n"));
     }
+    // Scratch local for `push_closure_env`, holding an in-progress
+    // environment's pointer while its slots are populated -- declared
+    // unconditionally (harmless if unused) since whether *this* function
+    // ever creates a capturing closure isn't known until its body is
+    // walked below.
+    w.push_str("    (local $envtmp i32)\n");
     w.push_str("    (loop $L (result i64)\n");
     compile_node(&ctx, combinators, body, true, w, 6)?;
     w.push_str("    )\n  )\n");
@@ -266,6 +339,78 @@ pub(crate) fn unwind_app_spine(store: &TermStore, mut h: Hash) -> (Hash, Vec<Has
     (h, args)
 }
 
+/// Finds what a lambda literal (peeled to `own_arity`/`body`/`is_rec`,
+/// same shape `peel` returns) captures from its enclosing scope: every
+/// `Var` in `body` that isn't bound within `body` itself, expressed as
+/// how far *beyond* `own_arity` it reaches (`0` = the nearest enclosing
+/// binding, `1` = the next one out, ...), deduped and sorted ascending --
+/// this becomes the closure's environment slot layout (slot `j` holds
+/// whatever denoted relative depth `result[j]` at the point the closure
+/// was created). Follows into a lambda nested inside `body` and used
+/// there as a plain value too (not just `body`'s own top level), since a
+/// closure nested inside another one still captures from the very same
+/// enclosing scope this one does.
+///
+/// A self-recursive value's own self-reference (`Var(own_arity)`, exactly
+/// where `Rec`'s binder sits, whenever `is_rec`) is deliberately excluded
+/// here, at every depth it's found, not just `body`'s own top level --
+/// it's resolved separately by `match_self_call`/an ordinary recursive
+/// `call`, and (like before this function existed at all) still can't be
+/// read as a plain value; without this exclusion *every* self-recursive
+/// function would show up as having an uncapturable "capture" the moment
+/// it made its own recursive call.
+pub(crate) fn free_vars(store: &TermStore, body: Hash, own_arity: usize, is_rec: bool) -> Vec<u32> {
+    let mut found = std::collections::BTreeSet::new();
+    collect_free_vars(store, body, own_arity as u32, is_rec, 0, &mut found);
+    found.into_iter().collect()
+}
+
+fn collect_free_vars(
+    store: &TermStore,
+    h: Hash,
+    own_arity: u32,
+    is_rec: bool,
+    depth: u32,
+    found: &mut std::collections::BTreeSet<u32>,
+) {
+    match store.resolve(h) {
+        Term::Var(i) => {
+            let i = *i;
+            if i < depth {
+                return; // bound by a binder nested inside `body` itself
+            }
+            let rel = i - depth;
+            if rel < own_arity {
+                return; // bound by this lambda's own parameters
+            }
+            if is_rec && rel == own_arity {
+                return; // the self-reference `Rec` binds, not a capture
+            }
+            let capture_base = if is_rec { own_arity + 1 } else { own_arity };
+            found.insert(rel - capture_base);
+        }
+        Term::Lit(_) => {}
+        Term::Abs(inner) => collect_free_vars(store, *inner, own_arity, is_rec, depth + 1, found),
+        Term::Rec(inner) => collect_free_vars(store, *inner, own_arity, is_rec, depth + 1, found),
+        Term::App(f, a) => {
+            let (f, a) = (*f, *a);
+            collect_free_vars(store, f, own_arity, is_rec, depth, found);
+            collect_free_vars(store, a, own_arity, is_rec, depth, found);
+        }
+        Term::Prim(_, a, b) => {
+            let (a, b) = (*a, *b);
+            collect_free_vars(store, a, own_arity, is_rec, depth, found);
+            collect_free_vars(store, b, own_arity, is_rec, depth, found);
+        }
+        Term::If(c, t, e) => {
+            let (c, t, e) = (*c, *t, *e);
+            collect_free_vars(store, c, own_arity, is_rec, depth, found);
+            collect_free_vars(store, t, own_arity, is_rec, depth, found);
+            collect_free_vars(store, e, own_arity, is_rec, depth, found);
+        }
+    }
+}
+
 /// For each of `h`'s own `arity` parameters (indexed the same way
 /// `local_index` does), finds whether it's ever used as an application's
 /// callee and, if so, at what arity -- e.g. `f` in `f(f(x))` is `Some(1)`.
@@ -338,14 +483,10 @@ fn scan_for_closure_calls(
 /// whenever `$hp` would run past the end of what's currently allocated.
 /// Never reclaimed -- compiled instances are short-lived and per-call (see
 /// `jit.rs`), so there's no GC here, just like there's no GC in the
-/// combinator table above. Not wired into `try_compile` yet: nothing in
-/// this module allocates anything (no capturing closures compile here
-/// yet -- see the module docs), so this exists standalone, exercised only
-/// by its own tests below, ready for closure-conversion codegen to emit
-/// calls to `$alloc` once that lands. `#[cfg(test)]` for now since it has
-/// no caller outside its own tests below -- drop that once codegen calls
-/// it for real.
-#[cfg(test)]
+/// combinator table above. `try_compile` emits this only when at least
+/// one registered combinator actually has a non-empty environment
+/// (`push_closure_env` is the only caller of `$alloc`) -- a compiled
+/// fragment with no capturing closures at all gets no memory section.
 fn emit_allocator(w: &mut String) {
     w.push_str("  (memory 1)\n");
     w.push_str("  (global $hp (mut i32) (i32.const 0))\n");
@@ -429,6 +570,15 @@ struct FnCtx<'a, 'b> {
     arity: usize,
     self_idx: Option<u32>,
     closure_arities: &'b [Option<usize>],
+    /// Whether this function itself takes an `$env` parameter (true for
+    /// every combinator, false for `$f` -- see `compile_function`'s call
+    /// sites). A non-tail self-call needs to know this to decide whether
+    /// to forward `$env` to itself.
+    has_env: bool,
+    /// This function's own environment slot layout (from `free_vars`,
+    /// empty if it captures nothing) -- `compile_var_read` resolves a
+    /// free-variable read (`Var(v)` with `v >= arity`) against this.
+    captures: &'b [u32],
 }
 
 /// Compiles one node. `If`'s condition/branch structure, and everything
@@ -473,6 +623,14 @@ fn compile_node(
             }
             push_line(w, indent, "br $L");
         } else {
+            // A non-tail self-call is a genuine, separate Wasm `call` back
+            // into this same function's own activation -- it needs its
+            // own `$env` forwarded unchanged (recursion stays within the
+            // one closure instance that's already running; it never gets
+            // a fresh environment of its own).
+            if ctx.has_env {
+                push_line(w, indent, "local.get $env");
+            }
             for a in &args {
                 compile_node(ctx, combinators, *a, false, w, indent)?;
             }
@@ -490,6 +648,14 @@ fn compile_node(
                 if args.len() != expected {
                     return None;
                 }
+                // Unpack the callee's environment pointer (high 32 bits)
+                // first -- it's `call_indirect`'s first operand, ahead of
+                // the actual arguments -- then its table index (low 32
+                // bits) last, as `call_indirect` itself requires.
+                push_line(w, indent, &format!("local.get $p{li}"));
+                push_line(w, indent, "i64.const 32");
+                push_line(w, indent, "i64.shr_u");
+                push_line(w, indent, "i32.wrap_i64");
                 for a in &args {
                     compile_node(ctx, combinators, *a, false, w, indent)?;
                 }
@@ -504,6 +670,8 @@ fn compile_node(
                 if args.len() != combinators.arities[idx] {
                     return None;
                 }
+                let captures = combinators.captures[idx].clone();
+                push_closure_env(ctx, &captures, w, indent)?;
                 for a in &args {
                     compile_node(ctx, combinators, *a, false, w, indent)?;
                 }
@@ -515,10 +683,7 @@ fn compile_node(
     }
 
     match store.resolve(h) {
-        Term::Var(i) => {
-            let li = local_index(*i, arity)?;
-            push_line(w, indent, &format!("local.get $p{li}"));
-        }
+        Term::Var(i) => compile_var_read(ctx, *i, w, indent)?,
         Term::Lit(n) => push_line(w, indent, &format!("i64.const {n}")),
         Term::Prim(op, a, b) => {
             let (a, b) = (*a, *b);
@@ -530,20 +695,74 @@ fn compile_node(
         Term::Abs(_) | Term::Rec(_) => {
             // A lambda, or a named self-recursive value (e.g. one bound
             // by `let fact = rec f n = .. in ..`), used as a plain value
-            // (e.g. an argument): its value is just its table index, a
-            // compile-time constant, exactly the same as a plain lambda's
-            // -- `Combinators::register`/the fixpoint loop in
+            // (e.g. an argument): packs its (possibly-empty) environment
+            // and table index into one `i64`, high bits first -- see
+            // module docs. `Combinators::register`/the fixpoint loop in
             // `try_compile` already re-`peel` whatever they register and
             // correctly compile a self-recursive combinator's own body
             // with its own `self_idx`, so nothing else here needs to
             // change to support this.
             let idx = combinators.register(h)?;
+            let captures = combinators.captures[idx].clone();
+            push_closure_env(ctx, &captures, w, indent)?;
+            push_line(w, indent, "i64.extend_i32_u");
+            push_line(w, indent, "i64.const 32");
+            push_line(w, indent, "i64.shl");
             push_line(w, indent, &format!("i64.const {idx}"));
+            push_line(w, indent, "i64.or");
         }
         // Free App: outside the compilable fragment. (`If` and
         // known/combinator `App`s were already handled above.)
         Term::If(..) | Term::App(..) => return None,
     }
+    Some(())
+}
+
+/// Resolves a value read for absolute `Var` index `v` within `ctx`'s own
+/// body (at `ctx`'s own top level, no additional binders passed): either
+/// one of `ctx`'s own parameters (`v < ctx.arity`, exactly as before
+/// closures could capture anything), or -- recursively, the same way any
+/// other value read within `ctx` resolves -- one of `ctx`'s own
+/// environment slots. `None` if `v` resolves to neither (out of range
+/// entirely, or `ctx`'s own self-reference used as a plain value, which
+/// was never supported and still isn't).
+fn compile_var_read(ctx: &FnCtx, v: u32, w: &mut String, indent: usize) -> Option<()> {
+    let arity = ctx.arity as u32;
+    if v < arity {
+        let li = local_index(v, ctx.arity)?;
+        push_line(w, indent, &format!("local.get $p{li}"));
+        return Some(());
+    }
+    let rel = v - arity;
+    let slot = ctx.captures.iter().position(|&c| c == rel)?;
+    push_line(w, indent, "local.get $env");
+    push_line(w, indent, &format!("i64.load offset={}", slot * 8));
+    Some(())
+}
+
+/// Pushes an `i32` environment pointer for a closure whose slot layout is
+/// `captures` (from `free_vars`), reading each captured value's current
+/// value out of `ctx` (`compile_var_read`, against `captures`'s own
+/// relative indices directly -- `ctx` is exactly the scope those indices
+/// were computed relative to, since a lambda literal is always found at
+/// `ctx`'s own top level: `compile_node` never itself recurses into an
+/// `Abs`'s body, every nested lambda is peeled off as its own separate
+/// combinator instead). `i32.const 0` (no allocation at all) for an empty
+/// layout -- there's nothing to capture, so `$alloc` isn't even needed.
+fn push_closure_env(ctx: &FnCtx, captures: &[u32], w: &mut String, indent: usize) -> Option<()> {
+    if captures.is_empty() {
+        push_line(w, indent, "i32.const 0");
+        return Some(());
+    }
+    push_line(w, indent, &format!("i32.const {}", captures.len() * 8));
+    push_line(w, indent, "call $alloc");
+    push_line(w, indent, "local.set $envtmp");
+    for (slot, &rel) in captures.iter().enumerate() {
+        push_line(w, indent, "local.get $envtmp");
+        compile_var_read(ctx, rel, w, indent)?;
+        push_line(w, indent, &format!("i64.store offset={}", slot * 8));
+    }
+    push_line(w, indent, "local.get $envtmp");
     Some(())
 }
 
@@ -700,25 +919,58 @@ mod tests {
         assert_eq!(compiled, interpreted);
     }
 
+    /// `\g. g 5` -- calls its own closure-typed parameter.
+    fn calls_its_closure_arg_with_5(s: &mut TermStore) -> Hash {
+        let g = s.var(0);
+        let five = s.lit(5);
+        let call = s.app(g, five);
+        s.abs(call)
+    }
+
     #[test]
-    fn a_capturing_closure_is_still_rejected() {
-        // \x. if x > 0 then (\y. x + y) else 0 -- the inner lambda
-        // references `x`, bound by the *outer* function, not its own
-        // parameter range; peeled standalone (as any combinator is),
-        // that's an out-of-bounds Var, so registering it fails and the
-        // whole compile is rejected, not just that branch.
+    fn a_capturing_closure_compiles_and_matches_interpreter() {
+        // \x. (\g. g 5) (if 0 < x then (\y. x + y) else (\y. x - y)) --
+        // both inner lambdas reference `x`, bound by the *outer* function
+        // (`picker`), not their own parameter range: creating whichever
+        // one the `if` picks allocates a fresh, heap-allocated
+        // environment capturing `x` (`push_closure_env`); passing the
+        // result into `inner`'s `g` parameter and calling it there
+        // exercises the packed env+table-index representation and
+        // unpacking it back out at a `call_indirect` site, all in one
+        // compiled fragment.
         let mut s = TermStore::new();
         let x = s.var(0);
         let zero = s.lit(0);
         let cond = s.prim(PrimOp::Lt, zero, x);
-        let y = s.var(0);
-        let x_outer = s.var(1);
-        let x_plus_y = s.prim(PrimOp::Add, x_outer, y);
-        let capturing = s.abs(x_plus_y);
-        let body = s.if_(cond, capturing, zero);
-        let f = s.abs(body);
+        let y_pos = s.var(0);
+        let x_pos = s.var(1);
+        let plus = s.prim(PrimOp::Add, x_pos, y_pos);
+        let then_closure = s.abs(plus);
+        let y_neg = s.var(0);
+        let x_neg = s.var(1);
+        let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
+        let else_closure = s.abs(minus);
+        let body = s.if_(cond, then_closure, else_closure);
+        let picker = s.abs(body);
 
-        assert!(try_compile(&s, f).is_none());
+        let inn = calls_its_closure_arg_with_5(&mut s);
+        let x2 = s.var(0);
+        let picked = s.app(picker, x2);
+        let called = s.app(inn, picked);
+        let f = s.abs(called);
+
+        let frag = try_compile(&s, f).expect("a capturing closure should compile");
+        assert_eq!(frag.arity, 1);
+        assert!(frag.wat.contains("call $alloc"), "creating the capturing closure should need the allocator");
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
+
+        for x in [-7, -1, 0, 1, 3, 100] {
+            let compiled = func.call(&mut store, x).unwrap();
+            let interpreted = apply_term(&s, f, &[x]).unwrap();
+            assert_eq!(compiled, interpreted, "mismatch at x={x}");
+        }
     }
 
     #[test]
