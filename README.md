@@ -184,6 +184,19 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   is inherently per-call. Sample verification is simple, total, and always
   applicable, so it stays the baseline safety net regardless of how far
   the proof coverage grows.
+- **`Anchored`, and a staleness bug it doesn't automatically prevent**: a
+  postulate's `Expr` reference is only valid relative to the postulate
+  context's length *at the moment it's resolved* (`kernel::Postulates::get`
+  computes a fresh `Var` index each call); `Anchored` reshifts one held
+  across further pushes, but nothing stops code from resolving a plain
+  `Expr` and holding it unwrapped instead. That exact mistake caused two
+  real bugs in this project (the `Ev`-witness builder, then
+  `denote_closure`), each only surfacing as an opaque kernel type-mismatch
+  far from the actual cause. `proof.rs` now has `debug_assert_has_type`/
+  `debug_assert_well_typed` (debug-only, zero-cost in release), called at
+  the return point of every function that composes an `Expr` from more
+  than one recursive sub-call, to turn a future instance of this bug class
+  into an immediate, precisely-located panic instead of a slow bisection.
 
 ## Future work
 

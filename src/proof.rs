@@ -582,6 +582,60 @@ fn apply_n(f: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
     args.into_iter().fold(f, kernel::app)
 }
 
+// --- hardening against the staleness bug class ---------------------------
+//
+// Twice now (the `Ev`-witness builder, then `denote_closure`), a function
+// that composes an `Expr` out of more than one recursive sub-call held an
+// already-resolved sub-`Expr` (or `params`/`param_facts` entry) across a
+// *later* postulate push -- registering a combinator, a fresh `apply_k`, an
+// `assume_prim_fact` axiom -- without reshifting it, the exact staleness
+// `Anchored`'s own docs describe. Both times the only symptom was an opaque
+// kernel type-mismatch far from the actual mistake (or, in the worse case
+// that just hasn't happened yet, two *different* postulates that happen to
+// share a type, producing a well-typed but semantically wrong term with no
+// error at all). The fix each time was the same discipline -- anchor every
+// intermediate value immediately, resolve fresh only once nothing more is
+// left to push -- applied by hand, function by function, after a slow
+// eprintln-driven bisection to find where it broke.
+//
+// These two helpers turn that bisection into an immediate, precisely
+// located panic instead: called once at the *return point* of any function
+// that composes sub-`Expr`s from more than one recursive call
+// (`denote_closure`, `eval_and_prove`, `build_ev_witness`), they confirm
+// the value this call is about to hand back is actually well-typed (or, for
+// `denote_closure`/`eval_and_prove`, has the *exact* type expected -- `Int`
+// or `Clo`, known statically at each call site) before it can be embedded,
+// unchecked, into a caller's own larger expression. Checking once per call,
+// at return, is enough to localize a bug to the exact (innermost) call that
+// introduced it: by induction, a bug in any deeper call would already have
+// panicked there first, before this call ever got to compose its own
+// result from it. Debug-only (`kernel::check`/`infer` cost real time, see
+// the Benchmarks section) -- a no-op, zero-cost in release builds, exactly
+// like the sample-verification/kernel-proof split this whole project
+// already relies on: this is an *additional* internal consistency check on
+// top of (not instead of) the real trust gate, which is still `kernel::check`
+// at each function's own already-existing, unconditional call site.
+#[cfg(debug_assertions)]
+fn debug_assert_has_type(ctx: &Ctx, e: &Expr, expected: &Expr, label: &str) {
+    if let Err(err) = kernel::check(ctx, e, expected) {
+        panic!(
+            "staleness/composition bug in {label}: the value doesn't have its expected type.\n  \
+             error: {err}\n  value: {e:?}\n  expected type: {expected:?}"
+        );
+    }
+}
+#[cfg(not(debug_assertions))]
+fn debug_assert_has_type(_ctx: &Ctx, _e: &Expr, _expected: &Expr, _label: &str) {}
+
+#[cfg(debug_assertions)]
+fn debug_assert_well_typed(ctx: &Ctx, e: &Expr, label: &str) {
+    if let Err(err) = kernel::infer(ctx, e) {
+        panic!("staleness/composition bug in {label}: the value isn't well-typed at all.\n  error: {err}\n  value: {e:?}");
+    }
+}
+#[cfg(not(debug_assertions))]
+fn debug_assert_well_typed(_ctx: &Ctx, _e: &Expr, _label: &str) {}
+
 /// `combine`'s value at `params`/`ihs` (both hoisted to a free function --
 /// not just a closure local to `prove_tail_recursive_universal` -- so
 /// `build_ev_witness` can reuse it too).
@@ -1357,6 +1411,7 @@ fn eval_and_prove(
             let mid = kernel::app2(f, arith.lit_ref(xa), arith.lit_ref(xb));
             let rhs = arith.lit_ref(result);
             let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
+            debug_assert_has_type(&arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: Prim proof");
             Some((result, lhs, proof))
         }
         Term::If(..) | Term::Abs(_) | Term::App(..) | Term::Rec(_) => None,
@@ -1448,6 +1503,13 @@ fn build_ev_witness(
     let args = params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es);
     let e = apply_n(arith.p.get(ev_leaf_positions[leaf_idx]), args);
     let v = combine_of(arith, &combines[leaf_idx], &params, &vs);
+    debug_assert_has_type(&arith.p.ctx, &v, &arith.int_ty(), "build_ev_witness: v");
+    // `e`'s exact expected type (`Ev(params, v)`) isn't available here
+    // (`ev_pos` is scaffold-internal, not threaded into this function) --
+    // confirming it's well-typed at all still catches the staleness this
+    // is aimed at (a stale Var reference is typically outright ill-typed,
+    // not just wrong-but-well-typed).
+    debug_assert_well_typed(&arith.p.ctx, &e, "build_ev_witness: e");
     Some((v, e))
 }
 
@@ -1857,6 +1919,8 @@ fn denote_closure(
                 let callee = callee.at(&combinators.cp.arith);
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(apply_fn, std::iter::once(callee).chain(arg_exprs));
+                let int_ty = combinators.cp.arith.int_ty();
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: call_indirect application");
                 return Some(Denoted::Int(applied));
             }
             // A literal lambda in function position, called directly (a
@@ -1887,6 +1951,8 @@ fn denote_closure(
                 let call_fn = call_fn.at(&combinators.cp.arith);
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(call_fn, arg_exprs);
+                let int_ty = combinators.cp.arith.int_ty();
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: direct combinator call");
                 return Some(Denoted::Int(applied));
             }
             _ => return None,
@@ -1903,7 +1969,10 @@ fn denote_closure(
         let ite = combinators.cp.arith.ite_ref(); // pre-postulated once in ArithPostulates::new -- never pushes
         let dc = dc.at(&combinators.cp.arith);
         let dt = dt.at(&combinators.cp.arith);
-        return Some(Denoted::Int(kernel::app3(ite, dc, dt, de)));
+        let applied = kernel::app3(ite, dc, dt, de);
+        let int_ty = combinators.cp.arith.int_ty();
+        debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: If");
+        return Some(Denoted::Int(applied));
     }
 
     match store.resolve(h) {
@@ -1922,7 +1991,10 @@ fn denote_closure(
             let db = denote_closure(store, *b, combinators, params, param_types)?.int()?;
             let op_ref = combinators.cp.arith.op_ref(*op); // pre-postulated once -- never pushes
             let da = da.at(&combinators.cp.arith);
-            Some(Denoted::Int(kernel::app2(op_ref, da, db)))
+            let applied = kernel::app2(op_ref, da, db);
+            let int_ty = combinators.cp.arith.int_ty();
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: Prim");
+            Some(Denoted::Int(applied))
         }
         Term::Abs(_) => {
             let (arity, _, is_rec) = compile::peel(store, h)?;
