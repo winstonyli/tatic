@@ -90,9 +90,20 @@ This is stated precisely because it would be easy to overclaim here.
   zero or one (tail-position) self-calls is the special case where that
   reduces to the identity/no-op it always was. This is a *reusable lemma*,
   not itself a per-input guarantee: instantiating it at a concrete
-  `params` still needs an actual `Ev`-witness built by following `cond`'s
-  real value at each step (not yet built — see Future work), same as
-  `prove_tail_recursive_call` already does directly.
+  `params` needs an actual `Ev`-witness built by following `cond`'s real
+  value at each step (`prove_tail_recursive_instance`, via
+  `build_ev_witness`/`eval_and_prove`), grounded in one postulated axiom
+  per distinct concrete primitive application the trace performs
+  (`ArithPostulates::assume_prim_fact` — a postulated operator has no
+  built-in computation rule, so a witness for one call has to assume each
+  concrete fact it needs, the same pattern `Int` itself is postulated
+  under). Restricted to leaves with at most one self-call — tail recursion
+  and simple non-tail recursion (`gcd`, factorial) — since `kernel::Expr`
+  isn't hash-consed the way `term::TermStore` is: a witness for a
+  genuinely branching leaf (e.g. Fibonacci's two self-calls) would embed
+  every recursive call's full witness with no sharing, impractically slow
+  even for small inputs. The theorem itself is unaffected either way; only
+  per-call instantiation is out of scope for that shape.
 - **Non-capturing ("known") closures**: compiled, but not yet proven —
   `compile.rs` handles them (see the module table above), `jit.rs`'s
   sample verification is the trust gate exactly as for any other compiled
@@ -117,11 +128,13 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   (cache hit), for a non-tail-recursive term (naive `fib`), a
   tail-recursive one (`gcd`, compiled to a loop), and straight-line
   `factorial`. Shows both the steady-state speedup and how much of it the
-  one-time compile+verify cost eats into — since `prove_tail_recursive_universal`
-  now covers non-tail recursion too, `fib`'s cold-compile cost includes
-  building its (two-self-call) universal proof, which roughly 5x'd that
-  one case's cold time on this machine (~15ms → ~74ms) once the widening
-  landed; the warm (cached) case is unaffected either way.
+  one-time compile+verify cost eats into — `fib`'s cold-compile cost
+  includes building its (two-self-call) universal proof plus a few
+  concrete-instance attempts `jit.rs` tries alongside it (see "Proof
+  strategies" above), which together put that one case's cold time on this
+  machine around ~200ms (versus ~15ms with no kernel proof involved at
+  all); the warm (cached) case is unaffected either way, since none of this
+  runs again for a hash already in the cache.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
   (translation-validation) proof per call, and the one-time universal
@@ -155,12 +168,13 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
 
 ## Future work
 
-- A per-concrete-`params` `Ev`-witness builder, so
-  `prove_tail_recursive_universal`'s lemma can actually be instantiated for
-  a real call (mirroring `prove_tail_recursive_call`'s trace-following, but
-  producing an `Ev`-term rather than composing `refl`/`cong1` directly) —
-  needed before the universal proof adds anything `jit.rs` can act on
-  beyond "this shape typechecks".
+- Instantiating the universal theorem for genuinely branching leaves (e.g.
+  naive Fibonacci's two self-calls) — `build_ev_witness` currently declines
+  these outright, since `kernel::Expr`'s lack of hash-consing makes a
+  witness for them impractically slow even at small inputs (see "Proof
+  strategies" above). Fixing this for real would need `kernel::Expr` (or at
+  least the witness-building path) to share structurally-identical
+  subterms, the same way `term::TermStore` already does.
 - Allowing an `If` nested inside a leaf's own arithmetic expression (e.g.
   `n + (if c then 1 else 2)`), not just as the whole body of some branch —
   `find_self_calls`/`denote_with_placeholders` currently reject that shape

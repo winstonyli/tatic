@@ -122,12 +122,15 @@ use crate::term::{Hash, PrimOp, Term, TermStore};
 
 /// Postulated `Int` and its operators, plus on-demand postulated constants
 /// for whichever literal values a given term actually uses.
+#[derive(Clone)]
 pub struct ArithPostulates {
     pub p: Postulates,
     int_pos: usize,
     op_pos: [usize; 8],
     ite_pos: usize,
     literal_pos: HashMap<i64, usize>,
+    /// Memoized per `(op, x, y)` -- see `assume_prim_fact`.
+    fact_pos: HashMap<(u8, i64, i64), usize>,
 }
 
 impl ArithPostulates {
@@ -165,6 +168,7 @@ impl ArithPostulates {
             op_pos,
             ite_pos,
             literal_pos: HashMap::new(),
+            fact_pos: HashMap::new(),
         }
     }
 
@@ -199,6 +203,33 @@ impl ArithPostulates {
             .literal_pos
             .get(&n)
             .expect("literal not pre-postulated -- collect_literals missed one");
+        self.p.get(pos)
+    }
+
+    /// Postulates (memoized per `(op, x, y)`) that concretely evaluating
+    /// `op` at literals `x`, `y` yields the same result
+    /// `apply_prim_concrete` -- the function `eval_concrete` itself uses --
+    /// computes. This is the concrete counterpart of postulating `Int`'s
+    /// operators abstractly in the first place: a postulated operator has
+    /// no computation rule the kernel could use to *derive* this, so
+    /// building a witness for one specific call has to assume each
+    /// concrete fact it actually needs, one axiom per distinct fact,
+    /// grounded in the same arithmetic function this whole project already
+    /// treats as ground truth (see `eval_and_prove`).
+    fn assume_prim_fact(&mut self, op: PrimOp, x: i64, y: i64) -> Expr {
+        let key = (op as u8, x, y);
+        if let Some(&pos) = self.fact_pos.get(&key) {
+            return self.p.get(pos);
+        }
+        let result = apply_prim_concrete(op, x, y);
+        self.lit(x);
+        self.lit(y);
+        self.lit(result);
+        let lhs = kernel::app2(self.op_ref(op), self.lit_ref(x), self.lit_ref(y));
+        let rhs = self.lit_ref(result);
+        let ty = kernel::id(self.int_ty(), lhs, rhs);
+        let pos = self.p.push(ty);
+        self.fact_pos.insert(key, pos);
         self.p.get(pos)
     }
 }
@@ -551,6 +582,13 @@ fn apply_n(f: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
     args.into_iter().fold(f, kernel::app)
 }
 
+/// `combine`'s value at `params`/`ihs` (both hoisted to a free function --
+/// not just a closure local to `prove_tail_recursive_universal` -- so
+/// `build_ev_witness` can reuse it too).
+fn combine_of(arith: &ArithPostulates, combine: &Anchored, params: &[Expr], ihs: &[Expr]) -> Expr {
+    apply_n(combine.at(arith), params.iter().cloned().chain(ihs.iter().cloned()))
+}
+
 /// `arith.p.get(pos)` for each of `positions`, resolved fresh -- never
 /// cached, same convention as `Params::at` (staleness after a further
 /// push), just for a list of individually-tracked postulate positions
@@ -599,6 +637,7 @@ fn classify_tree(store: &TermStore, h: Hash) -> Option<DecisionTree> {
 /// `denote_with_placeholders` walks the same expression -- the two must
 /// agree, since a leaf's `i`-th `Ev`/induction-hypothesis premise and its
 /// `i`-th occurrence in the rebuilt expression have to be the same call.
+#[derive(Clone)]
 struct Leaf {
     path: Vec<(Hash, i64)>,
     expr: Hash,
@@ -785,13 +824,33 @@ pub struct UniversalTailProof {
     pub theorem_proof: Expr,
 }
 
-/// Attempts to build a [`UniversalTailProof`] for `h`. Returns `None` for
-/// anything outside the covered fragment: not `Rec`-wrapped, zero arity, a
-/// body that doesn't classify as a [`DecisionTree`] (every `If` on the way
-/// to a leaf must be a direct comparison, and no leaf may itself contain a
-/// further nested `If`), or one with no self-call anywhere in it (see
-/// module docs).
-pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
+/// Everything `prove_tail_recursive_universal`'s theorem was built from,
+/// kept around (instead of dropped) so `prove_tail_recursive_instance` can
+/// reuse it to build a concrete `Ev`-witness afterward, without redoing any
+/// of the theorem's own construction. `theorem_ty`/`theorem_proof` are
+/// `Anchored` because witness-building pushes further postulates onto
+/// `arith.p.ctx` (fresh literal constants, `assume_prim_fact` axioms) after
+/// this scaffold is built -- see `Anchored`'s own docs for why that matters.
+///
+/// Cloneable so a caller that wants several concrete instances (`jit.rs`'s
+/// `kernel_verify`, trying a handful of sample calls) can build this once
+/// and clone it per attempt, instead of paying for `build_universal`'s full
+/// construction -- the expensive part, dominated by `kernel::cong_n`/
+/// `trans_proof` chaining and a `kernel::check` re-verification -- again
+/// for every sample.
+#[derive(Clone)]
+struct UniversalScaffold {
+    arith: ArithPostulates,
+    arity: usize,
+    self_call: SelfCall,
+    leaves: Vec<Leaf>,
+    combines: Vec<Anchored>,
+    ev_leaf_positions: Vec<usize>,
+    theorem_ty: Anchored,
+    theorem_proof: Anchored,
+}
+
+fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if !is_rec || arity == 0 {
         return None;
@@ -908,9 +967,6 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
         })?;
         combines.push(Anchored::new(&arith, expr));
     }
-    let combine_of = |arith: &ArithPostulates, combine: &Anchored, params: &[Expr], ihs: &[Expr]| -> Expr {
-        apply_n(combine.at(arith), params.iter().cloned().chain(ihs.iter().cloned()))
-    };
 
     // ev_leaf_i : Pi params. Pi (leaf i's path premises). Pi v_1..v_{k_i}
     //             (e_1:Ev(new_params_1,v_1))..(e_{k_i}:..). Ev(params, combine_i(params,vs))
@@ -1168,11 +1224,342 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
 
     kernel::check(&arith.p.ctx, &theorem_proof, &theorem_ty).ok()?;
 
-    Some(UniversalTailProof {
-        ctx: arith.p.ctx,
-        arity,
+    let theorem_ty = Anchored::new(&arith, theorem_ty);
+    let theorem_proof = Anchored::new(&arith, theorem_proof);
+    Some(UniversalScaffold {
         theorem_ty,
         theorem_proof,
+        arity,
+        self_call,
+        leaves,
+        combines,
+        ev_leaf_positions,
+        arith,
+    })
+}
+
+/// Attempts to build a [`UniversalTailProof`] for `h`. Returns `None` for
+/// anything outside the covered fragment: not `Rec`-wrapped, zero arity, a
+/// body that doesn't classify as a [`DecisionTree`] (every `If` on the way
+/// to a leaf must be a direct comparison, and no leaf may itself contain a
+/// further nested `If`), or one with no self-call anywhere in it (see
+/// module docs).
+pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
+    let scaffold = build_universal(store, h)?;
+    let theorem_ty = scaffold.theorem_ty.at(&scaffold.arith);
+    let theorem_proof = scaffold.theorem_proof.at(&scaffold.arith);
+    Some(UniversalTailProof {
+        ctx: scaffold.arith.p.ctx,
+        arity: scaffold.arity,
+        theorem_ty,
+        theorem_proof,
+    })
+}
+
+// --- instantiating the universal theorem at a concrete call -------------
+//
+// The theorem above is a *reusable lemma*: proved once, it says nothing yet
+// about any specific call until it's applied to an actual `e : Ev(params,
+// v)` witness for that call's `params`. Building that witness is the
+// concrete counterpart of `denote`: `denote` builds a symbolic `Int`
+// expression for a `Var`/`Lit`/`Prim` term; `eval_and_prove` builds that
+// same expression *and* a kernel proof that it computes to a specific
+// literal, by recursing the same way `eval_concrete` does, grounded in
+// `ArithPostulates::assume_prim_fact` for each primitive application (the
+// concrete counterpart of postulating `Int`'s operators abstractly) and, at
+// each `Var`, in a `param_facts` proof supplied by whoever introduced that
+// parameter -- either `refl` for a freshly-postulated top-level literal, or
+// (for a self-call's argument, itself possibly a compound expression) the
+// very proof `eval_and_prove` produced when denoting it one level up.
+// `build_ev_witness` then walks the same leaves `flatten_tree` already
+// found, using `eval_and_prove` to discharge each leaf's path premises and
+// recursing into each self-call occurrence to obtain its own witness,
+// before applying the leaf's `Ev` constructor.
+//
+// Scope: linear recursion only (tail or not, at most *one* self-call per
+// leaf -- e.g. `gcd`, factorial). `kernel::Expr` is a plain `Box`-tree, not
+// hash-consed the way `term::TermStore` is, so a witness for a leaf with
+// two or more self-calls (e.g. naive Fibonacci's `f(n-1) + f(n-2)`) would
+// embed *both* children's full witness trees with no sharing -- and, since
+// each of those children's own witnesses embeds *their* children the same
+// way, the resulting term's size grows with the number of calls the
+// interpreter itself would make for that leaf shape, which is exponential
+// in the input for two-way branching. This isn't just a large-input
+// concern: it's impractically slow even for tiny inputs (confirmed
+// empirically -- `fib(8)`, all of 67 interpreter calls, took over ten
+// seconds to build and re-typecheck), so `build_ev_witness` simply declines
+// a leaf with more than one self-call rather than trying and being
+// unusably slow. `WITNESS_NODE_BUDGET` is a second, cheaper guard for the
+// (now genuinely linear) chains this covers, against a single call chain
+// unexpectedly running long. `prove_tail_recursive_universal`'s theorem
+// itself is unaffected either way -- it covers any number of self-calls per
+// leaf (via `kernel::cong_n`), so a branching-recursion term still gets
+// `kernel_verified = true` from the theorem's existence alone (see
+// `jit.rs`); it just never gets a per-call instance.
+
+/// Recursively evaluates `h` (the `Var`/`Lit`/`Prim` fragment `denote` and
+/// `eval_concrete` both cover) at `concrete`, building a kernel proof
+/// alongside it that `denote(h, arith, params)` -- returned too, so callers
+/// don't need to rebuild it separately -- equals that concrete result.
+/// `param_facts[i] : Id(Int, params[i], lit_ref(concrete[i]))` is the
+/// caller-supplied ground truth for each parameter (see the section docs
+/// above for where it comes from).
+///
+/// `params`/`param_facts` are `Anchored` (not plain `Expr`), and every
+/// intermediate value this function builds is immediately wrapped in
+/// `Anchored` too, resolved fresh only at the point it's actually used --
+/// `assume_prim_fact` (and recursing into a sibling sub-expression) pushes
+/// further postulates onto `arith.p.ctx`, and anything already resolved to
+/// a plain `Expr` before that point would go stale exactly the way
+/// `Anchored`'s own docs describe, one level up (this is what an earlier,
+/// buggy version of this function got wrong: it returned `Var`-index-laden
+/// `Expr`s straight from a callee, which the caller then held across
+/// further pushes without reshifting).
+fn eval_and_prove(
+    store: &TermStore,
+    h: Hash,
+    arith: &mut ArithPostulates,
+    params: &[Anchored],
+    concrete: &[i64],
+    param_facts: &[Anchored],
+) -> Option<(i64, Expr, Expr)> {
+    match store.resolve(h) {
+        Term::Var(i) => {
+            let i = *i as usize;
+            Some((*concrete.get(i)?, params.get(i)?.at(arith), param_facts.get(i)?.at(arith)))
+        }
+        Term::Lit(n) => {
+            let l = arith.lit_ref(*n);
+            Some((*n, l.clone(), kernel::refl(l)))
+        }
+        Term::Prim(op, a, b) => {
+            let (op, a, b) = (*op, *a, *b);
+            let (xa, da, pa) = eval_and_prove(store, a, arith, params, concrete, param_facts)?;
+            let da = Anchored::new(arith, da);
+            let pa = Anchored::new(arith, pa);
+            let (xb, db, pb) = eval_and_prove(store, b, arith, params, concrete, param_facts)?;
+            let db = Anchored::new(arith, db);
+            let pb = Anchored::new(arith, pb);
+            let fact = arith.assume_prim_fact(op, xa, xb);
+            let result = apply_prim_concrete(op, xa, xb);
+
+            // Nothing pushes onto arith.p.ctx from here on, so resolving
+            // everything fresh now (past `assume_prim_fact`'s own push)
+            // keeps it all valid for the rest of this call.
+            let (da, pa, db, pb) = (da.at(arith), pa.at(arith), db.at(arith), pb.at(arith));
+            let int_ty = arith.int_ty();
+            let f = arith.op_ref(op);
+            let cong =
+                kernel::cong_n(&int_ty, &int_ty, &f, &[da.clone(), db.clone()], &[arith.lit_ref(xa), arith.lit_ref(xb)], vec![
+                    pa, pb,
+                ]);
+            let lhs = kernel::app2(f.clone(), da, db);
+            let mid = kernel::app2(f, arith.lit_ref(xa), arith.lit_ref(xb));
+            let rhs = arith.lit_ref(result);
+            let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
+            Some((result, lhs, proof))
+        }
+        Term::If(..) | Term::Abs(_) | Term::App(..) | Term::Rec(_) => None,
+    }
+}
+
+/// See the section docs above for what this guards against.
+const WITNESS_NODE_BUDGET: usize = 256;
+
+/// Builds an actual `e : Ev(params, v)` witness for one specific call,
+/// following the real trace `concrete` determines (mirroring
+/// `classify_step`, but for any leaf `flatten_tree` found, not just a tail
+/// loop) and recursing into every self-call occurrence found along the way.
+/// Returns `(v, e)`, fresh as of the moment this call returns -- a caller
+/// that holds either across further postulate pushes (as every caller here
+/// does) must wrap them in `Anchored` itself, same as `params`/
+/// `param_facts` below. `budget` is shared across the whole recursion, and
+/// a leaf with more than one self-call is declined outright (see the
+/// section docs above for both).
+#[allow(clippy::too_many_arguments)]
+fn build_ev_witness(
+    store: &TermStore,
+    arith: &mut ArithPostulates,
+    self_call: SelfCall,
+    leaves: &[Leaf],
+    ev_leaf_positions: &[usize],
+    combines: &[Anchored],
+    params: &[Anchored],
+    concrete: &[i64],
+    param_facts: &[Anchored],
+    budget: &mut usize,
+) -> Option<(Expr, Expr)> {
+    *budget = budget.checked_sub(1)?;
+
+    let leaf_idx = leaves
+        .iter()
+        .position(|leaf| leaf.path.iter().all(|&(cond, lit)| eval_concrete(store, cond, concrete) == Some(lit)))?;
+    let leaf = &leaves[leaf_idx];
+    if leaf.calls.len() > 1 {
+        return None; // see this function's own docs
+    }
+
+    // Collected across the loop below, which pushes further postulates
+    // (assume_prim_fact, and every self-call's own recursion) -- anchor
+    // each one immediately so it can be resolved fresh once everything is
+    // done growing, at the final assembly below.
+    let mut premises = Vec::with_capacity(leaf.path.len());
+    for &(cond, _lit) in &leaf.path {
+        let (_, _, proof) = eval_and_prove(store, cond, arith, params, concrete, param_facts)?;
+        premises.push(Anchored::new(arith, proof));
+    }
+
+    let mut vs = Vec::with_capacity(leaf.calls.len());
+    let mut es = Vec::with_capacity(leaf.calls.len());
+    for call in &leaf.calls {
+        let mut new_params = Vec::with_capacity(self_call.arity);
+        let mut new_concrete = Vec::with_capacity(self_call.arity);
+        let mut new_param_facts = Vec::with_capacity(self_call.arity);
+        for i in 0..self_call.arity {
+            let arg = call[self_call.arity - 1 - i];
+            let (x, denoted, pf) = eval_and_prove(store, arg, arith, params, concrete, param_facts)?;
+            new_params.push(Anchored::new(arith, denoted));
+            new_concrete.push(x);
+            new_param_facts.push(Anchored::new(arith, pf));
+        }
+        let (v, e) = build_ev_witness(
+            store,
+            arith,
+            self_call,
+            leaves,
+            ev_leaf_positions,
+            combines,
+            &new_params,
+            &new_concrete,
+            &new_param_facts,
+            budget,
+        )?;
+        vs.push(Anchored::new(arith, v));
+        es.push(Anchored::new(arith, e));
+    }
+
+    // Nothing left to grow arith.p.ctx from here -- resolve everything
+    // fresh, once, for the final assembly.
+    let params: Vec<Expr> = params.iter().map(|a| a.at(arith)).collect();
+    let premises: Vec<Expr> = premises.iter().map(|a| a.at(arith)).collect();
+    let vs: Vec<Expr> = vs.iter().map(|a| a.at(arith)).collect();
+    let es: Vec<Expr> = es.iter().map(|a| a.at(arith)).collect();
+
+    let args = params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es);
+    let e = apply_n(arith.p.get(ev_leaf_positions[leaf_idx]), args);
+    let v = combine_of(arith, &combines[leaf_idx], &params, &vs);
+    Some((v, e))
+}
+
+/// A kernel-checked witness, concrete to one call `h(args)`, that the
+/// universal theorem's `loop_val` reconstruction and the value the
+/// recursion actually produces agree -- see `prove_tail_recursive_instance`.
+pub struct UniversalInstanceProof {
+    pub ctx: Ctx,
+    pub arity: usize,
+    pub int_ty: Expr,
+    pub lhs: Expr,
+    pub rhs: Expr,
+    /// `: Id(int_ty, lhs, rhs)`.
+    pub proof: Expr,
+}
+
+/// Instantiates `prove_tail_recursive_universal`'s reusable theorem at one
+/// specific call `h(args)`: builds a concrete `Ev`-witness for it
+/// (`build_ev_witness`) and applies the (already-proved) theorem to that
+/// witness, giving a genuine kernel-checked fact about *this* call rather
+/// than only the theorem's abstract shape -- the payoff `prove_tail_recursive_universal`'s
+/// own docs describe as still missing. Building the witness reuses the
+/// one-time theorem instead of `prove_tail_recursive_call`'s from-scratch
+/// `cong1`/`trans_proof` chaining, so it's cheap per call once the theorem
+/// exists.
+///
+/// Returns `None` for anything `prove_tail_recursive_universal` itself
+/// would, an arity mismatch, a call whose trace reaches a leaf with more
+/// than one self-call, or a witness that would exceed
+/// [`WITNESS_NODE_BUDGET`] (see the section docs above for both).
+///
+/// Builds its own scaffold from scratch (`build_universal`, the expensive
+/// part -- see [`UniversalScaffold`]'s docs). A caller that wants several
+/// instances for the same `h` (`jit.rs`'s `kernel_verify`, trying a handful
+/// of samples) should use [`prove_tail_recursive_universal_with_instances`]
+/// instead, which pays that cost once and clones the scaffold per attempt.
+pub fn prove_tail_recursive_instance(store: &TermStore, h: Hash, args: &[i64]) -> Option<UniversalInstanceProof> {
+    let scaffold = build_universal(store, h)?;
+    instance_from_scaffold(store, scaffold, args)
+}
+
+/// Builds the universal theorem once and, from a clone of the same
+/// scaffold, attempts a concrete instance (`prove_tail_recursive_instance`)
+/// for each of `args_list` -- see [`UniversalScaffold`]'s docs for why
+/// cloning beats rebuilding. Each entry of the returned `Vec` is `None`
+/// exactly where a standalone `prove_tail_recursive_instance` call would
+/// have been. Returns `None` outright for anything
+/// `prove_tail_recursive_universal` itself would.
+pub fn prove_tail_recursive_universal_with_instances(
+    store: &TermStore,
+    h: Hash,
+    args_list: &[Vec<i64>],
+) -> Option<(UniversalTailProof, Vec<Option<UniversalInstanceProof>>)> {
+    let scaffold = build_universal(store, h)?;
+    let theorem = UniversalTailProof {
+        ctx: scaffold.arith.p.ctx.clone(),
+        arity: scaffold.arity,
+        theorem_ty: scaffold.theorem_ty.at(&scaffold.arith),
+        theorem_proof: scaffold.theorem_proof.at(&scaffold.arith),
+    };
+    let instances = args_list
+        .iter()
+        .map(|args| instance_from_scaffold(store, scaffold.clone(), args))
+        .collect();
+    Some((theorem, instances))
+}
+
+fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, args: &[i64]) -> Option<UniversalInstanceProof> {
+    if args.len() != scaffold.arity {
+        return None;
+    }
+
+    let concrete: Vec<i64> = (0..scaffold.arity).map(|i| args[scaffold.arity - 1 - i]).collect();
+    for &c in &concrete {
+        scaffold.arith.lit(c);
+    }
+    let params: Vec<Anchored> =
+        concrete.iter().map(|&c| Anchored::new(&scaffold.arith, scaffold.arith.lit_ref(c))).collect();
+    let param_facts: Vec<Anchored> =
+        params.iter().map(|p| Anchored::new(&scaffold.arith, kernel::refl(p.at(&scaffold.arith)))).collect();
+
+    let mut budget = WITNESS_NODE_BUDGET;
+    let (v, e) = build_ev_witness(
+        store,
+        &mut scaffold.arith,
+        scaffold.self_call,
+        &scaffold.leaves,
+        &scaffold.ev_leaf_positions,
+        &scaffold.combines,
+        &params,
+        &concrete,
+        &param_facts,
+        &mut budget,
+    )?;
+
+    // Fresh past all the growth `build_ev_witness` just did.
+    let theorem_proof = scaffold.theorem_proof.at(&scaffold.arith);
+    let params: Vec<Expr> = params.iter().map(|p| p.at(&scaffold.arith)).collect();
+    let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
+    let ty = kernel::infer(&scaffold.arith.p.ctx, &applied).ok()?;
+    let (lhs, rhs) = match kernel::whnf(&ty) {
+        Expr::Id(_, lhs, rhs) => (*lhs, *rhs),
+        _ => return None,
+    };
+
+    Some(UniversalInstanceProof {
+        int_ty: scaffold.arith.int_ty(),
+        ctx: scaffold.arith.p.ctx,
+        arity: scaffold.arity,
+        lhs,
+        rhs,
+        proof: applied,
     })
 }
 
@@ -1490,5 +1877,113 @@ mod tests {
         let inner = s.abs(sum);
         let f = s.abs(inner);
         assert!(prove_tail_recursive_call(&s, f, &[1, 2]).is_none());
+    }
+
+    #[test]
+    fn tail_recursive_gcd_gets_a_kernel_checked_instance_proof() {
+        let mut s = TermStore::new();
+        let g = gcd(&mut s);
+
+        for (a, b) in [(48, 18), (270, 192), (17, 5), (0, 7)] {
+            let proof = prove_tail_recursive_instance(&s, g, &[a, b])
+                .unwrap_or_else(|| panic!("gcd({a},{b}) should get a kernel-checked instance"));
+            assert_eq!(proof.arity, 2);
+            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+                .expect("the recorded instance proof should independently re-typecheck");
+        }
+    }
+
+    #[test]
+    fn non_tail_recursion_gets_a_kernel_checked_instance_proof() {
+        // rec f n = if n <= 1 then 1 else n * f(n - 1)
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let fv = s.var(1);
+        let one = s.lit(1);
+        let cond = s.prim(PrimOp::Le, n, one);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let rec_call = s.app(fv, n_minus_1);
+        let else_branch = s.prim(PrimOp::Mul, n, rec_call);
+        let body = s.if_(cond, one, else_branch);
+        let abs = s.abs(body);
+        let fact = s.rec(abs);
+
+        for n in [0, 1, 5, 10] {
+            let proof = prove_tail_recursive_instance(&s, fact, &[n])
+                .unwrap_or_else(|| panic!("factorial({n}) should get a kernel-checked instance"));
+            assert_eq!(proof.arity, 1);
+            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+                .expect("the recorded instance proof should independently re-typecheck");
+        }
+    }
+
+    #[test]
+    fn fibonacci_instance_proof_is_declined_for_branching_leaves() {
+        // rec f n = if n < 2 then n else f(n-1) + f(n-2) -- two self-calls
+        // in the recursive leaf. build_ev_witness declines any leaf with
+        // more than one self-call outright (see its own docs): a witness
+        // there would embed both children's full witness trees with no
+        // sharing, which is impractically slow even for small inputs, not
+        // just large ones. n=1 (a pure base case, no self-call reached at
+        // all) still gets an instance; n=2 already needs the declined leaf.
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f = s.var(1);
+        let two = s.lit(2);
+        let cond = s.prim(PrimOp::Lt, n, two);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
+        let call1 = s.app(f, n_minus_1);
+        let call2 = s.app(f, n_minus_2);
+        let else_branch = s.prim(PrimOp::Add, call1, call2);
+        let body = s.if_(cond, n, else_branch);
+        let abs = s.abs(body);
+        let fib = s.rec(abs);
+
+        let proof = prove_tail_recursive_instance(&s, fib, &[1]).expect("fib(1) never reaches the branching leaf");
+        assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            .expect("the recorded instance proof should independently re-typecheck");
+
+        assert!(
+            prove_tail_recursive_instance(&s, fib, &[2]).is_none(),
+            "fib(2) reaches the two-self-call leaf, which instance-witnessing declines"
+        );
+    }
+
+    #[test]
+    fn one_functions_instance_proof_is_rejected_against_anothers_type() {
+        // Same adversarial shape as
+        // one_functions_theorem_proof_is_rejected_against_anothers_type,
+        // one level down: an instance proof built for one function must
+        // not typecheck against another's (unrelated Ev/combine layout,
+        // different concrete call).
+        let mut s = TermStore::new();
+        let g = gcd(&mut s);
+        let gcd_proof = prove_tail_recursive_instance(&s, g, &[48, 18]).expect("gcd instance proof");
+
+        let mut s2 = TermStore::new();
+        let n = s2.var(0);
+        let fv = s2.var(1);
+        let one = s2.lit(1);
+        let cond = s2.prim(PrimOp::Le, n, one);
+        let n_minus_1 = s2.prim(PrimOp::Sub, n, one);
+        let rec_call = s2.app(fv, n_minus_1);
+        let else_branch = s2.prim(PrimOp::Mul, n, rec_call);
+        let body = s2.if_(cond, one, else_branch);
+        let abs = s2.abs(body);
+        let fact = s2.rec(abs);
+        let fact_proof = prove_tail_recursive_instance(&s2, fact, &[5]).expect("factorial instance proof");
+
+        assert!(
+            kernel::check(
+                &gcd_proof.ctx,
+                &gcd_proof.proof,
+                &kernel::id(fact_proof.int_ty.clone(), fact_proof.lhs.clone(), fact_proof.rhs.clone()),
+            )
+            .is_err(),
+            "gcd's instance proof should be rejected against factorial's instance type"
+        );
     }
 }

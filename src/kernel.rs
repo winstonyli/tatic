@@ -241,7 +241,7 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
 // --- reduction ------------------------------------------------------------
 
 /// Weak head normal form: reduce only the outermost redex chain.
-fn whnf(e: &Expr) -> Expr {
+pub fn whnf(e: &Expr) -> Expr {
     match e {
         Expr::App(f, a) => match whnf(f) {
             Expr::Lam(_, body) => whnf(&subst_top(&body, a)),
@@ -563,6 +563,7 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 /// never eliminate into its own level. Predicativity is correctly refusing
 /// what would otherwise be a disguised `Type : Type`. Real kernels sidestep
 /// this by taking a small base type as primitive (or, as here, postulated).
+#[derive(Clone)]
 pub struct Postulates {
     pub ctx: Ctx,
 }

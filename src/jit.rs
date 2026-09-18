@@ -70,6 +70,14 @@ pub struct Stats {
     /// (see `kernel_verify`'s strategy order) rather than only sample
     /// verification.
     pub kernel_proofs_checked: u64,
+    /// How many concrete calls got their own kernel-checked instance of the
+    /// universal theorem (`proof::prove_tail_recursive_instance`), on top
+    /// of `kernel_proofs_checked`'s single per-term theorem. Additional
+    /// evidence only -- `kernel_verified` doesn't depend on this, so it
+    /// stays `0` for terms the universal proof doesn't apply to at all, and
+    /// can also stay low for one it does (branching recursion, e.g. naive
+    /// Fibonacci, declines instances outright -- see `proof.rs`).
+    pub universal_instances_checked: u64,
 }
 
 pub struct JitEngine {
@@ -165,7 +173,17 @@ impl JitEngine {
     ///    one proof covering every input.
     /// 2. `prove_tail_recursive_universal` -- a tail-recursive term whose
     ///    shape it covers gets one universal theorem, also covering every
-    ///    input, via real induction rather than per-sample checking.
+    ///    input, via real induction rather than per-sample checking. Once
+    ///    this succeeds, also tries instantiating that theorem at a few
+    ///    concrete samples in one pass
+    ///    (`proof::prove_tail_recursive_universal_with_instances`) purely to
+    ///    record stronger, call-specific evidence
+    ///    (`Stats::universal_instances_checked`) -- cheap since it clones
+    ///    the already-built scaffold per sample rather than re-deriving the
+    ///    theorem from scratch each time, but not required:
+    ///    `kernel_verified` is already `true` from the theorem alone, so a
+    ///    shape it declines instances for (branching recursion -- see
+    ///    `proof.rs`) is unaffected.
     /// 3. `prove_tail_recursive_call`, once per sample in the same battery
     ///    `verify()` uses, reporting success only if *every* sample got its
     ///    own per-call relational proof -- the fallback for tail-recursive
@@ -173,11 +191,14 @@ impl JitEngine {
     ///
     /// Anything else (non-tail recursion, genuinely higher-order terms)
     /// reports `false` -- see `proof.rs` for what's in scope and why.
-    fn kernel_verify(&self, terms: &TermStore, h: Hash, arity: usize) -> bool {
+    fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> bool {
         if proof::prove_pure_expr(terms, h).is_some() {
             return true;
         }
-        if proof::prove_tail_recursive_universal(terms, h).is_some() {
+        let instance_samples: Vec<Vec<i64>> = sample_arg_vectors(arity).into_iter().take(3).collect();
+        if let Some((_, instances)) = proof::prove_tail_recursive_universal_with_instances(terms, h, &instance_samples)
+        {
+            self.stats.universal_instances_checked += instances.iter().filter(|i| i.is_some()).count() as u64;
             return true;
         }
         let samples = sample_arg_vectors(arity);
@@ -355,21 +376,66 @@ mod tests {
         // gcd is Rec-wrapped but *tail*-recursive -- proof.rs's relational,
         // per-sample proof covers it (every sample verify() tries gets its
         // own kernel-checked proof), so this is kernel-verified too.
+        // gcd's tail-recursive shape (a single self-call in tail position)
+        // gets the universal proof (strategy 2), not the relational
+        // fallback -- and since that's a linear, single-self-call leaf,
+        // kernel_verify also gets concrete per-call instances out of it
+        // (see kernel_verify's own docs).
         let gcd_term = gcd(&mut s);
         assert_eq!(jit.apply(&s, gcd_term, &[48, 18]).unwrap(), 6);
         assert!(jit.is_kernel_verified(gcd_term));
         assert_eq!(jit.stats.kernel_proofs_checked, 2);
+        assert!(jit.stats.universal_instances_checked > 0, "gcd's linear shape should get instance evidence too");
 
         // factorial is Rec-wrapped and *not* tail-recursive (the self-call
         // is nested inside a multiplication, not the relational proof's
         // fragment either -- see proof.rs docs) -- but prove_tail_recursive_universal
         // now covers leaves with any number of self-calls combined
         // arithmetically (via kernel::cong_n), not just tail calls, so
-        // this gets the universal proof too.
+        // this gets the universal proof too -- and, still a single-self-call
+        // (k=1) leaf, instance evidence as well.
         let fact = factorial(&mut s);
+        let instances_before_fact = jit.stats.universal_instances_checked;
         assert_eq!(jit.apply(&s, fact, &[5]).unwrap(), 120);
         assert!(jit.is_kernel_verified(fact));
         assert_eq!(jit.stats.kernel_proofs_checked, 3);
+        assert!(jit.stats.universal_instances_checked > instances_before_fact);
+    }
+
+    fn fib(s: &mut TermStore) -> Hash {
+        let n = s.var(0);
+        let f = s.var(1);
+        let two = s.lit(2);
+        let cond = s.prim(PrimOp::Lt, n, two);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
+        let call1 = s.app(f, n_minus_1);
+        let call2 = s.app(f, n_minus_2);
+        let else_branch = s.prim(PrimOp::Add, call1, call2);
+        let body = s.if_(cond, n, else_branch);
+        let abs = s.abs(body);
+        s.rec(abs)
+    }
+
+    #[test]
+    fn branching_recursion_gets_no_instance_evidence_once_it_actually_branches() {
+        // Naive Fibonacci's else-branch leaf has two self-calls -- the
+        // universal theorem covers it fine (kernel_verified stays true
+        // regardless), but build_ev_witness declines instance-witnessing a
+        // branching leaf outright (see proof.rs docs). kernel_verify tries
+        // instances at SAMPLE_ARGS' first 3 values (0, 1, 2): 0 and 1 never
+        // reach the branching leaf at all (n < 2 is the base case, itself
+        // a trivial zero-self-call leaf), so those two succeed; 2 does
+        // reach it and is declined -- hence exactly 2, not 0 and not 3.
+        let mut s = TermStore::new();
+        let fibonacci = fib(&mut s);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, fibonacci, &[10]).unwrap(), 55);
+        assert!(jit.is_kernel_verified(fibonacci));
+        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+        assert_eq!(jit.stats.universal_instances_checked, 2);
     }
 
     #[test]
