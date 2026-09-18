@@ -50,7 +50,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
 /// Peel a term into `(arity, body, is_recursive)`:
 /// - `Rec(Abs(Abs(...body)))` -> `(k, body, true)`, self bound at `Var(k)`.
 /// - `Abs(Abs(...body))` (no `Rec`)              -> `(k, body, false)`.
-fn peel(store: &TermStore, h: Hash) -> Option<(usize, Hash, bool)> {
+pub(crate) fn peel(store: &TermStore, h: Hash) -> Option<(usize, Hash, bool)> {
     match store.resolve(h) {
         Term::Rec(inner) => {
             let (k, body) = peel_abs(store, *inner);

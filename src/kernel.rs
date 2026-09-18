@@ -516,6 +516,98 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
     infer(&Vec::new(), e).map(|t| nf(&t))
 }
 
+/// Builds a context of *postulated* (assumed) constants: pushes a type and
+/// returns a handle that can be resolved, at any later point while still
+/// building on the same context, to the `Var` that correctly refers to it
+/// (it self-adjusts for how many more postulates have been pushed since).
+///
+/// Used instead of trying to derive base types like Bool/Nat/Int from
+/// nothing. That turns out to be a real dead end, not just tedium: any
+/// "vacuous eliminator" for an empty/base case needs a witness-extractor
+/// shaped like `Pi x : Sort(m). x`, but that type itself only exists at
+/// `Sort(m+1)` — one universe *above* what it can extract into — so it can
+/// never eliminate into its own level. Predicativity is correctly refusing
+/// what would otherwise be a disguised `Type : Type`. Real kernels sidestep
+/// this by taking a small base type as primitive (or, as here, postulated).
+pub struct Postulates {
+    pub ctx: Ctx,
+}
+impl Postulates {
+    pub fn new() -> Self {
+        Postulates { ctx: Vec::new() }
+    }
+    pub fn push(&mut self, ty: Expr) -> usize {
+        let pos = self.ctx.len();
+        self.ctx.push(ty);
+        pos
+    }
+    pub fn get(&self, pos: usize) -> Expr {
+        var((self.ctx.len() - 1 - pos) as u32)
+    }
+}
+impl Default for Postulates {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// --- reusable proof-term builders ---------------------------------------
+//
+// Generic lemmas, built once via `J`, for composing equality proofs.
+// Not yet used by the straight-line proof in `proof.rs` (that fragment's
+// correctness happens to hold by `refl` alone), but they're exactly the
+// building blocks an inductive proof of the tail-call-to-loop compilation
+// (a genuinely nontrivial equivalence) will need, so they belong here as
+// kernel infrastructure rather than being reinvented ad hoc later.
+
+/// `cong1 f a b p : Id(A, f a, f b)`, given `p : Id(A, a, b)`. Congruence
+/// for a unary function -- applying the same function to equal arguments
+/// gives equal results, regardless of what `f` itself computes.
+pub fn cong1(a_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
+    // motive(a', b', _) := Id(A, f a', f b')
+    let motive = lam(
+        a_ty.clone(),
+        lam(
+            shift(a_ty, 0, 1),
+            lam(
+                id(shift(a_ty, 0, 2), var(1), var(0)),
+                id(
+                    shift(a_ty, 0, 3),
+                    app(shift(f, 0, 3), var(2)),
+                    app(shift(f, 0, 3), var(1)),
+                ),
+            ),
+        ),
+    );
+    let base = lam(a_ty.clone(), refl(app(shift(f, 0, 1), var(0))));
+    jelim(motive, base, a, b, p)
+}
+
+/// `trans a_ty x y z p1 p2 : Id(A, x, z)`, given `p1 : Id(A,x,y)` and
+/// `p2 : Id(A,y,z)`. `a_ty`/`x` must be valid in the same context as
+/// `p1`/`p2` (they are held fixed while eliminating on `p2`).
+pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr) -> Expr {
+    // motive(y', z', _) := Id(A, x, y') -> Id(A, x, z')
+    let motive = lam(
+        a_ty.clone(),
+        lam(
+            shift(a_ty, 0, 1),
+            lam(
+                id(shift(a_ty, 0, 2), shift(x, 0, 2), var(1)),
+                arrow(
+                    id(shift(a_ty, 0, 3), shift(x, 0, 3), var(2)),
+                    id(shift(a_ty, 0, 3), shift(x, 0, 3), var(1)),
+                ),
+            ),
+        ),
+    );
+    let base = lam(
+        a_ty.clone(),
+        lam(id(shift(a_ty, 0, 1), shift(x, 0, 1), var(0)), var(0)),
+    );
+    app(jelim(motive, base, y.clone(), z.clone(), p2), p1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,40 +625,6 @@ mod tests {
         let ty = typecheck(&f).unwrap();
         let expected = pi(sort(0), arrow(var(0), var(0)));
         assert!(def_eq(&ty, &expected), "got {ty:?}");
-    }
-
-    /// Builds a context of *postulated* (assumed) constants: pushes a type
-    /// and returns a handle that can be resolved, at any later point while
-    /// still building on the same context, to the `Var` that correctly
-    /// refers to it (i.e. it self-adjusts for how many more postulates have
-    /// been pushed since).
-    ///
-    /// Used below instead of trying to derive base types like Bool/Nat from
-    /// nothing. That turns out to be a real dead end, not just tedium: any
-    /// "vacuous eliminator" for an empty/base case needs a witness-extractor
-    /// shaped like `Pi x : Sort(m). x`, but that type itself only exists at
-    /// `Sort(m+1)` — one universe *above* what it can extract into — so it
-    /// can never eliminate into its own level. Predicativity is correctly
-    /// refusing what would otherwise be a disguised `Type : Type`. Real
-    /// kernels sidestep this by taking a small base type as primitive (or
-    /// as here, postulated); that's a separate, legitimate concern from
-    /// "does the W/Id machinery itself work," which is what these tests
-    /// actually check.
-    struct Postulates {
-        ctx: Ctx,
-    }
-    impl Postulates {
-        fn new() -> Self {
-            Postulates { ctx: Vec::new() }
-        }
-        fn push(&mut self, ty: Expr) -> usize {
-            let pos = self.ctx.len();
-            self.ctx.push(ty);
-            pos
-        }
-        fn get(&self, pos: usize) -> Expr {
-            var((self.ctx.len() - 1 - pos) as u32)
-        }
     }
 
     #[test]
@@ -686,5 +744,41 @@ mod tests {
             refl(a0.clone()),
         );
         assert_eq!(nf(&applied), nf(&refl(a0)));
+    }
+
+    #[test]
+    fn cong1_and_trans_typecheck_and_compose() {
+        // Postulate A, a, b, c and proofs p1:Id(A,a,b), p2:Id(A,b,c), plus
+        // a function f:A->A, then check cong1/trans against their expected
+        // types and that they chain: trans(cong1(f,a,b,p1), cong1(f,b,c,p2))
+        // : Id(A, f a, f c).
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let a_pos = p.push(p.get(a_ty_pos));
+        let b_pos = p.push(p.get(a_ty_pos));
+        let c_pos = p.push(p.get(a_ty_pos));
+        let p1_pos = p.push(id(p.get(a_ty_pos), p.get(a_pos), p.get(b_pos)));
+        let p2_pos = p.push(id(p.get(a_ty_pos), p.get(b_pos), p.get(c_pos)));
+        let f_pos = p.push(arrow(p.get(a_ty_pos), p.get(a_ty_pos)));
+
+        let a_ty = p.get(a_ty_pos);
+        let a = p.get(a_pos);
+        let b = p.get(b_pos);
+        let c = p.get(c_pos);
+        let p1 = p.get(p1_pos);
+        let p2 = p.get(p2_pos);
+        let f = p.get(f_pos);
+
+        let c1 = cong1(&a_ty, &f, a.clone(), b.clone(), p1);
+        check(&p.ctx, &c1, &id(a_ty.clone(), app(f.clone(), a.clone()), app(f.clone(), b.clone())))
+            .expect("cong1(f,a,b,p1) : Id(A, f a, f b)");
+
+        let c2 = cong1(&a_ty, &f, b.clone(), c.clone(), p2);
+        check(&p.ctx, &c2, &id(a_ty.clone(), app(f.clone(), b.clone()), app(f.clone(), c.clone())))
+            .expect("cong1(f,b,c,p2) : Id(A, f b, f c)");
+
+        let chained = trans_proof(&a_ty, &app(f.clone(), a.clone()), &app(f.clone(), b.clone()), &app(f.clone(), c.clone()), c1, c2);
+        check(&p.ctx, &chained, &id(a_ty, app(f.clone(), a), app(f, c)))
+            .expect("trans(cong1(..p1), cong1(..p2)) : Id(A, f a, f c)");
     }
 }

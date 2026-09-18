@@ -50,6 +50,22 @@ fn gcd(s: &mut TermStore) -> Hash {
     s.rec(abs)
 }
 
+/// `\a b. if a < b then a * 2 else b + 1` -- straight-line, no recursion,
+/// so `proof.rs` can build a kernel-checked equivalence proof for it (see
+/// `proof.rs` docs for why the recursive examples above can't get one yet).
+fn straight_line(s: &mut TermStore) -> Hash {
+    let a = s.var(1);
+    let b = s.var(0);
+    let cond = s.prim(PrimOp::Lt, a, b);
+    let two = s.lit(2);
+    let then_branch = s.prim(PrimOp::Mul, a, two);
+    let one = s.lit(1);
+    let else_branch = s.prim(PrimOp::Add, b, one);
+    let body = s.if_(cond, then_branch, else_branch);
+    let inner = s.abs(body);
+    s.abs(inner)
+}
+
 /// A genuinely higher-order, non-numeric closed term: `(twice inc) 5`, where
 /// `twice = \f. \x. f (f x)` and `inc = \y. y + 1`. Outside the compilable
 /// fragment entirely -- demonstrates that the JIT degrades gracefully to
@@ -77,15 +93,25 @@ fn main() {
     let fibonacci = fib(&mut store);
     let gcd_term = gcd(&mut store);
     let hof = higher_order_demo(&mut store);
+    let sl = straight_line(&mut store);
 
     let mut jit = JitEngine::new();
 
     println!("-- factorial(10) --");
     println!("interpreted: {}", eval::apply_term(&store, fact, &[10]).unwrap());
     println!("jit:         {}", jit.apply(&store, fact, &[10]).unwrap());
+    println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(fact));
 
     println!("\n-- gcd(270, 192), 2-ary tail recursion --");
     println!("jit: {}", jit.apply(&store, gcd_term, &[270, 192]).unwrap());
+    println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(gcd_term));
+
+    println!("\n-- straight_line(3, 5), no recursion --");
+    println!("jit: {}", jit.apply(&store, sl, &[3, 5]).unwrap());
+    println!(
+        "kernel-checked equivalence proof: {} (sample verification alone gates trust either way; see proof.rs)",
+        jit.is_kernel_verified(sl)
+    );
 
     println!("\n-- (twice inc) 5, genuinely higher-order, not JIT-able --");
     println!("jit (falls back to interpreter): {}", jit.apply(&store, hof, &[]).unwrap());

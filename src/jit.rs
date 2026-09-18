@@ -25,6 +25,7 @@ use wasmtime::{Engine, Instance, Module, Store, Val};
 
 use crate::compile::try_compile;
 use crate::eval::{self, EvalError};
+use crate::proof;
 use crate::term::{Hash, TermStore};
 
 const SAMPLE_ARGS: &[i64] = &[0, 1, 2, 3, 5, -1, -3, 7, 20];
@@ -35,6 +36,12 @@ enum CacheEntry {
         arity: usize,
         // Kept alive only so the module backing `func` isn't dropped.
         _module: Module,
+        /// Whether `proof.rs` additionally produced a kernel-checked `Id`
+        /// proof for this term (only possible for the non-recursive
+        /// fragment -- see `proof.rs`). Sample-based `verify()` below is
+        /// still what actually gates trusting the compiled form either
+        /// way; this just records the stronger evidence when it exists.
+        kernel_verified: bool,
     },
     NotCompilable,
     FailedVerification,
@@ -46,6 +53,9 @@ pub struct Stats {
     pub cache_hits: u64,
     pub interpreted: u64,
     pub verification_failures: u64,
+    /// Of `compiled`, how many additionally got a kernel-checked proof
+    /// (see `proof::prove_pure_expr`) rather than only sample verification.
+    pub kernel_proofs_checked: u64,
 }
 
 pub struct JitEngine {
@@ -109,12 +119,17 @@ impl JitEngine {
         };
 
         if self.verify(terms, h, func, frag.arity) {
+            let kernel_verified = proof::prove_pure_expr(terms, h).is_some();
+            if kernel_verified {
+                self.stats.kernel_proofs_checked += 1;
+            }
             self.cache.insert(
                 h,
                 CacheEntry::Compiled {
                     func,
                     arity: frag.arity,
                     _module: module,
+                    kernel_verified,
                 },
             );
             self.stats.compiled += 1;
@@ -145,6 +160,17 @@ impl JitEngine {
             }
         }
         true
+    }
+
+    /// Whether the compiled form cached for `h` additionally carries a
+    /// kernel-checked equivalence proof. `false` for anything not yet
+    /// compiled, not compilable, or in the recursive fragment `proof.rs`
+    /// doesn't cover yet.
+    pub fn is_kernel_verified(&self, h: Hash) -> bool {
+        matches!(
+            self.cache.get(&h),
+            Some(CacheEntry::Compiled { kernel_verified: true, .. })
+        )
     }
 
     fn call_compiled(&mut self, h: Hash, args: &[i64]) -> Result<i64, EvalError> {
@@ -243,6 +269,35 @@ mod tests {
         }
         assert_eq!(jit.stats.compiled, 1, "should not recompile on repeat calls");
         assert!(jit.stats.cache_hits > 1);
+    }
+
+    #[test]
+    fn kernel_proof_recorded_for_non_recursive_terms_only() {
+        // \a b. if a < b then a * 2 else b + 1 -- straight-line, no Rec.
+        let mut s = TermStore::new();
+        let a = s.var(1);
+        let b = s.var(0);
+        let cond = s.prim(PrimOp::Lt, a, b);
+        let two = s.lit(2);
+        let then_branch = s.prim(PrimOp::Mul, a, two);
+        let one = s.lit(1);
+        let else_branch = s.prim(PrimOp::Add, b, one);
+        let body = s.if_(cond, then_branch, else_branch);
+        let inner = s.abs(body);
+        let straight_line = s.abs(inner);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, straight_line, &[3, 5]).unwrap(), 6);
+        assert!(jit.is_kernel_verified(straight_line));
+        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+
+        // factorial is Rec-wrapped -- outside proof.rs's fragment (needs
+        // induction, see proof.rs docs) -- so it's compiled and sample-
+        // verified as before, but not kernel-proof-verified.
+        let fact = factorial(&mut s);
+        assert_eq!(jit.apply(&s, fact, &[5]).unwrap(), 120);
+        assert!(!jit.is_kernel_verified(fact));
+        assert_eq!(jit.stats.kernel_proofs_checked, 1, "unchanged");
     }
 
     #[test]
