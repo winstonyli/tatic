@@ -66,10 +66,11 @@ fn straight_line(s: &mut TermStore) -> Hash {
     s.abs(inner)
 }
 
-/// A genuinely higher-order, non-numeric closed term: `(twice inc) 5`, where
-/// `twice = \f. \x. f (f x)` and `inc = \y. y + 1`. Outside the compilable
-/// fragment entirely -- demonstrates that the JIT degrades gracefully to
-/// the interpreter for terms it can't (and shouldn't try to) compile.
+/// A higher-order, non-numeric closed term: `(twice inc) 5`, where
+/// `twice = \f. \x. f (f x)` and `inc = \y. y + 1`. Both `twice` and `inc`
+/// are non-capturing ("known") lambdas, so `compile.rs` compiles this: each
+/// becomes its own Wasm function, `inc` referenced from `twice`'s body
+/// through a shared function table (`call_indirect`).
 fn higher_order_demo(s: &mut TermStore) -> Hash {
     let f = s.var(1);
     let x = s.var(0);
@@ -85,6 +86,32 @@ fn higher_order_demo(s: &mut TermStore) -> Hash {
 
     let five = s.lit(5);
     s.app2(twice, inc, five)
+}
+
+/// A genuinely *capturing* closure: `(\x. if x > 0 then (\y. x + y) else
+/// (\y. x - y)) 3`, then applied to `4`. The inner lambdas reference `x`,
+/// bound by the *enclosing* function, not their own parameter range --
+/// still outside `compile.rs`'s fragment (see its module docs), so this
+/// demonstrates the JIT degrading gracefully to the interpreter for a term
+/// it can't (and shouldn't try to) compile.
+fn capturing_closure_demo(s: &mut TermStore) -> Hash {
+    let x1 = s.var(0);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, x1);
+    let y_pos = s.var(0);
+    let x_pos = s.var(1);
+    let plus = s.prim(PrimOp::Add, x_pos, y_pos);
+    let then_closure = s.abs(plus);
+    let y_neg = s.var(0);
+    let x_neg = s.var(1);
+    let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
+    let else_closure = s.abs(minus);
+    let picked = s.if_(cond, then_closure, else_closure);
+    let inner = s.abs(picked);
+    let three = s.lit(3);
+    let picked_closure = s.app(inner, three);
+    let four = s.lit(4);
+    s.app(picked_closure, four)
 }
 
 fn main() {
@@ -113,8 +140,15 @@ fn main() {
         jit.is_kernel_verified(sl)
     );
 
-    println!("\n-- (twice inc) 5, genuinely higher-order, not JIT-able --");
-    println!("jit (falls back to interpreter): {}", jit.apply(&store, hof, &[]).unwrap());
+    println!("\n-- (twice inc) 5, non-capturing closures via a shared function table --");
+    println!("interpreted: {}", eval::apply_term(&store, hof, &[]).unwrap());
+    println!("jit:         {}", jit.apply(&store, hof, &[]).unwrap());
+    println!("compiled so far: {}, interpreted so far: {}", jit.stats.compiled, jit.stats.interpreted);
+
+    let capturing = capturing_closure_demo(&mut store);
+    println!("\n-- capturing closure, still out of compile.rs's fragment --");
+    println!("interpreted: {}", eval::apply_term(&store, capturing, &[]).unwrap());
+    println!("jit (falls back to interpreter): {}", jit.apply(&store, capturing, &[]).unwrap());
 
     println!("\n-- fib(30), naive exponential recursion: interpreter vs JIT --");
     let t0 = Instant::now();

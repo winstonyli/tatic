@@ -25,9 +25,9 @@ cargo bench           # criterion benchmarks (benches/) -- see below
 ```
 
 The demo builds a few example terms (factorial, gcd, a naive Fibonacci, a
-genuinely higher-order term, a straight-line arithmetic function), runs
-them through the JIT, and prints timing plus which ones got a kernel-checked
-equivalence proof.
+non-capturing higher-order term, a genuinely capturing closure, a
+straight-line arithmetic function), runs them through the JIT, and prints
+timing plus which ones got a kernel-checked equivalence proof.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ equivalence proof.
 |---|---|
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. |
-| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion" fragment (no closures) to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
+| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and non-capturing closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. A closure that doesn't capture anything from an enclosing scope ("known", in the compilers-literature sense) compiles to its own Wasm function, referenced by index into a shared function table — no heap, no environment struct; a literal lambda in function position becomes a direct `call`, one reached only through a parameter becomes `call_indirect`. Capturing closures, and partial application, are still outside the fragment. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. |
 | `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) — four primitives, chosen because that's provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work). Has a real bidirectional typechecker and normalizer. |
 | `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. |
@@ -93,9 +93,13 @@ This is stated precisely because it would be easy to overclaim here.
   `params` still needs an actual `Ev`-witness built by following `cond`'s
   real value at each step (not yet built — see Future work), same as
   `prove_tail_recursive_call` already does directly.
-- **Genuinely higher-order terms**: outside the compilable fragment
-  entirely, so they're just interpreted — correctly, but there's no JIT
-  path (and therefore no compiled-vs-interpreted question) to prove
+- **Non-capturing ("known") closures**: compiled, but not yet proven —
+  `compile.rs` handles them (see the module table above), `jit.rs`'s
+  sample verification is the trust gate exactly as for any other compiled
+  term, but `proof.rs` doesn't yet build a kernel proof for terms in this
+  shape. A genuinely *capturing* closure is still outside the compilable
+  fragment entirely, so it's just interpreted — correctly, but there's no
+  JIT path (and therefore no compiled-vs-interpreted question) to prove
   anything about.
 
 In every case, `jit.rs`'s sample-based verification against the
@@ -161,4 +165,10 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   `n + (if c then 1 else 2)`), not just as the whole body of some branch —
   `find_self_calls`/`denote_with_placeholders` currently reject that shape
   outright.
-- Widening the compilable fragment itself (e.g. closures, more primitives).
+- A kernel proof for non-capturing closures, mirroring what `proof.rs`
+  already does for first-order recursion.
+- Widening the compilable fragment further: capturing closures (would need
+  real closure conversion — an environment representation, plus composing
+  a separate correctness proof for that compilation stage, CompCert/CakeML
+  style, rather than extending the existing one), partial application, more
+  primitives.

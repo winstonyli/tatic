@@ -373,8 +373,12 @@ mod tests {
     }
 
     #[test]
-    fn non_compilable_terms_still_produce_correct_results() {
-        // twice = \f. \x. f (f x); inc = \y. y + 1; (twice inc) applied with no int args.
+    fn non_capturing_higher_order_terms_now_compile() {
+        // twice = \f. \x. f (f x); inc = \y. y + 1; (twice inc) 5 -- both
+        // twice and inc are non-capturing, so compile.rs's known-call
+        // closure support (twice becomes a combinator calling `f` through
+        // a Wasm table, inc becomes another combinator) now compiles this
+        // instead of falling back to the interpreter.
         let mut s = TermStore::new();
         let f = s.var(1);
         let x = s.var(0);
@@ -391,6 +395,45 @@ mod tests {
 
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 7);
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+    }
+
+    #[test]
+    fn a_returned_closure_still_falls_back_to_the_interpreter() {
+        // (\x. if x > 0 then (\y. x + y) else (\y. x - y)) 3, then applied
+        // to 4 -- `compile.rs` only supports applying a parameter or a
+        // *literal* lambda (a statically-known callee); here the callee
+        // of the outer application is itself the *result* of applying
+        // `inner`, which this term representation can't distinguish from
+        // "inner takes 2 arguments" (see
+        // `compile::tests::curried_application_is_indistinguishable_from_multi_arg_calls`)
+        // -- and inner is declared 1-ary, so that reads as an arity
+        // mismatch and compile.rs correctly rejects it (the branches also
+        // capture `x`, a second, independent reason it's out of scope).
+        // Either way, jit.rs still needs to fall back to the interpreter
+        // and get the right answer.
+        let mut s = TermStore::new();
+        let x1 = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, x1);
+        let y_pos = s.var(0);
+        let x_pos = s.var(1);
+        let plus = s.prim(PrimOp::Add, x_pos, y_pos);
+        let then_closure = s.abs(plus);
+        let y_neg = s.var(0);
+        let x_neg = s.var(1);
+        let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
+        let else_closure = s.abs(minus);
+        let picked = s.if_(cond, then_closure, else_closure);
+        let inner = s.abs(picked);
+        let three = s.lit(3);
+        let picked_closure = s.app(inner, three);
+        let four = s.lit(4);
+        let applied = s.app(picked_closure, four);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 7); // 3 > 0, so 3 + 4
         assert_eq!(jit.stats.compiled, 0);
         assert_eq!(jit.stats.interpreted, 1);
     }
