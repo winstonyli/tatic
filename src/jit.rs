@@ -429,15 +429,14 @@ mod tests {
     }
 
     #[test]
-    fn branching_recursion_gets_no_instance_evidence_once_it_actually_branches() {
+    fn branching_recursion_gets_instance_evidence_too() {
         // Naive Fibonacci's else-branch leaf has two self-calls -- the
         // universal theorem covers it fine (kernel_verified stays true
-        // regardless), but build_ev_witness declines instance-witnessing a
-        // branching leaf outright (see proof.rs docs). kernel_verify tries
-        // instances at SAMPLE_ARGS' first 3 values (0, 1, 2): 0 and 1 never
-        // reach the branching leaf at all (n < 2 is the base case, itself
-        // a trivial zero-self-call leaf), so those two succeed; 2 does
-        // reach it and is declined -- hence exactly 2, not 0 and not 3.
+        // regardless), and build_ev_witness now instance-witnesses a
+        // branching leaf too (see proof.rs docs: a memo DP cache plus a
+        // congruence-based recast, not just the at-most-one-self-call
+        // shapes from before). kernel_verify tries instances at
+        // SAMPLE_ARGS' first 3 values (0, 1, 2) -- all three now succeed.
         let mut s = TermStore::new();
         let fibonacci = fib(&mut s);
 
@@ -445,7 +444,7 @@ mod tests {
         assert_eq!(jit.apply(&s, fibonacci, &[10]).unwrap(), 55);
         assert!(jit.is_kernel_verified(fibonacci));
         assert_eq!(jit.stats.kernel_proofs_checked, 1);
-        assert_eq!(jit.stats.universal_instances_checked, 2);
+        assert_eq!(jit.stats.universal_instances_checked, 3);
     }
 
     #[test]

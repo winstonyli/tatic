@@ -692,11 +692,49 @@ impl Default for Postulates {
 // (a genuinely nontrivial equivalence) will need, so they belong here as
 // kernel infrastructure rather than being reinvented ad hoc later.
 
-/// `cong1 f a b p : Id(A, f a, f b)`, given `p : Id(A, a, b)`. Congruence
-/// for a unary function -- applying the same function to equal arguments
-/// gives equal results, regardless of what `f` itself computes.
-pub fn cong1(a_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
-    // motive(a', b', _) := Id(A, f a', f b')
+/// `sym a_ty x y p : Id(A, y, x)`, given `p : Id(A, x, y)` -- propositional
+/// symmetry of equality.
+pub fn sym(a_ty: &Expr, x: &Expr, y: &Expr, p: Expr) -> Expr {
+    // motive(x', y', _) := Id(A, y', x')
+    let motive = lam(
+        a_ty.clone(),
+        lam(
+            shift(a_ty, 0, 1),
+            lam(
+                id(shift(a_ty, 0, 2), var(1), var(0)),
+                id(shift(a_ty, 0, 3), var(1), var(2)),
+            ),
+        ),
+    );
+    let base = lam(a_ty.clone(), refl(var(0)));
+    jelim(motive, base, x.clone(), y.clone(), p)
+}
+
+/// `transport sort_k a_ty b_ty p x : b_ty`, given `p : Id(Sort(sort_k),
+/// a_ty, b_ty)` and `x : a_ty` -- moves an element from one type to a
+/// propositionally equal one (`a_ty`/`b_ty` themselves, as *elements* of
+/// `Sort(sort_k)`), the standard operation `J` derives (sometimes called
+/// `subst`). Built via `J`'s motive `\A B:Sort(k). \_:Id(Sort(k),A,B). A ->
+/// B`, whose base case (`p` a `Refl`) is the identity function.
+pub fn transport(sort_k: u32, a_ty: Expr, b_ty: Expr, p: Expr, x: Expr) -> Expr {
+    let motive = lam(
+        sort(sort_k),
+        lam(
+            sort(sort_k),
+            lam(id(sort(sort_k), var(1), var(0)), arrow(var(2), var(1))),
+        ),
+    );
+    let base = lam(sort(sort_k), lam(var(0), var(0)));
+    app(jelim(motive, base, a_ty, b_ty, p), x)
+}
+
+/// `cong1 f a b p : Id(B, f a, f b)`, given `p : Id(A, a, b)` and `f : A ->
+/// B`. Congruence for a unary function -- applying the same function to
+/// equal arguments gives equal results, regardless of what `f` itself
+/// computes. `b_ty` is `f`'s codomain, independent of `a_ty` (its domain);
+/// callers where `f : A -> A` may pass the same `Expr` for both.
+pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
+    // motive(a', b', _) := Id(B, f a', f b')
     let motive = lam(
         a_ty.clone(),
         lam(
@@ -704,7 +742,7 @@ pub fn cong1(a_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
             lam(
                 id(shift(a_ty, 0, 2), var(1), var(0)),
                 id(
-                    shift(a_ty, 0, 3),
+                    shift(b_ty, 0, 3),
                     app(shift(f, 0, 3), var(2)),
                     app(shift(f, 0, 3), var(1)),
                 ),
@@ -766,7 +804,11 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
             app(acc, if j == i { var(0) } else { shift(a, 0, 1) })
         });
         let g = lam(a_ty.clone(), g_body);
-        let step = cong1(a_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
+        // `g` is `f` with every position but `i` already filled in -- a
+        // *full* application under one open binder, not a curried partial
+        // one, so its codomain is `f`'s own full result type `b_ty`
+        // regardless of `i`.
+        let step = cong1(a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
         cur_args[i] = ys[i].clone();
         let after = apply(&cur_args);
         acc = Some(match acc {
@@ -916,6 +958,57 @@ mod tests {
     }
 
     #[test]
+    fn sym_typechecks_and_flips_the_equality() {
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let a_pos = p.push(p.get(a_ty_pos));
+        let b_pos = p.push(p.get(a_ty_pos));
+        let p1_pos = p.push(id(p.get(a_ty_pos), p.get(a_pos), p.get(b_pos)));
+
+        let a_ty = p.get(a_ty_pos);
+        let a = p.get(a_pos);
+        let b = p.get(b_pos);
+        let p1 = p.get(p1_pos);
+
+        let flipped = sym(&a_ty, &a, &b, p1);
+        check(&p.ctx, &flipped, &id(a_ty, b, a)).expect("sym(x,y,p) : Id(A, y, x)");
+    }
+
+    #[test]
+    fn transport_moves_a_value_across_a_propositional_type_equality() {
+        // Postulate two Sort(0)-level types A, B, a proof p : Id(Sort0,A,B),
+        // and a : A -- transport(p, a) should typecheck at B.
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let b_ty_pos = p.push(sort(0));
+        let p_pos = p.push(id(sort(0), p.get(a_ty_pos), p.get(b_ty_pos)));
+        let a_pos = p.push(p.get(a_ty_pos));
+
+        let a_ty = p.get(a_ty_pos);
+        let b_ty = p.get(b_ty_pos);
+        let proof = p.get(p_pos);
+        let a = p.get(a_pos);
+
+        let moved = transport(0, a_ty, b_ty.clone(), proof, a);
+        check(&p.ctx, &moved, &b_ty).expect("transport(p,a) : B");
+    }
+
+    #[test]
+    fn transport_along_refl_is_the_identity() {
+        // p = refl A : Id(Sort0,A,A) -- transport should reduce to `a`
+        // itself definitionally (the base case of J is the identity fn).
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let a_pos = p.push(p.get(a_ty_pos));
+
+        let a_ty = p.get(a_ty_pos);
+        let a = p.get(a_pos);
+
+        let moved = transport(0, a_ty.clone(), a_ty.clone(), refl(a_ty.clone()), a.clone());
+        assert_eq!(nf(&moved), nf(&a), "transport along refl should compute to the identity");
+    }
+
+    #[test]
     fn cong1_and_trans_typecheck_and_compose() {
         // Postulate A, a, b, c and proofs p1:Id(A,a,b), p2:Id(A,b,c), plus
         // a function f:A->A, then check cong1/trans against their expected
@@ -938,17 +1031,71 @@ mod tests {
         let p2 = p.get(p2_pos);
         let f = p.get(f_pos);
 
-        let c1 = cong1(&a_ty, &f, a.clone(), b.clone(), p1);
+        let c1 = cong1(&a_ty, &a_ty, &f, a.clone(), b.clone(), p1);
         check(&p.ctx, &c1, &id(a_ty.clone(), app(f.clone(), a.clone()), app(f.clone(), b.clone())))
             .expect("cong1(f,a,b,p1) : Id(A, f a, f b)");
 
-        let c2 = cong1(&a_ty, &f, b.clone(), c.clone(), p2);
+        let c2 = cong1(&a_ty, &a_ty, &f, b.clone(), c.clone(), p2);
         check(&p.ctx, &c2, &id(a_ty.clone(), app(f.clone(), b.clone()), app(f.clone(), c.clone())))
             .expect("cong1(f,b,c,p2) : Id(A, f b, f c)");
 
         let chained = trans_proof(&a_ty, &app(f.clone(), a.clone()), &app(f.clone(), b.clone()), &app(f.clone(), c.clone()), c1, c2);
         check(&p.ctx, &chained, &id(a_ty, app(f.clone(), a), app(f, c)))
             .expect("trans(cong1(..p1), cong1(..p2)) : Id(A, f a, f c)");
+    }
+
+    #[test]
+    fn cong1_with_a_different_codomain_than_domain_typechecks() {
+        // f : A -> B (B distinct from A) -- every prior caller of cong1/
+        // cong_n happened to have f's codomain equal its domain, so this
+        // exercises the b_ty-distinct-from-a_ty case on its own for the
+        // first time. cong1(f,a,b,p) : Id(B, f a, f b), not Id(A, ..).
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let b_ty_pos = p.push(sort(0));
+        let a_pos = p.push(p.get(a_ty_pos));
+        let b_pos = p.push(p.get(a_ty_pos));
+        let f_pos = p.push(arrow(p.get(a_ty_pos), p.get(b_ty_pos)));
+        let p1_pos = p.push(id(p.get(a_ty_pos), p.get(a_pos), p.get(b_pos)));
+
+        let a_ty = p.get(a_ty_pos);
+        let b_ty = p.get(b_ty_pos);
+        let a = p.get(a_pos);
+        let b = p.get(b_pos);
+        let f = p.get(f_pos);
+        let p1 = p.get(p1_pos);
+
+        let c1 = cong1(&a_ty, &b_ty, &f, a.clone(), b.clone(), p1);
+        check(&p.ctx, &c1, &id(b_ty, app(f.clone(), a), app(f, b))).expect("cong1(f,a,b,p1) : Id(B, f a, f b)");
+    }
+
+    #[test]
+    fn cong_n_with_a_different_codomain_than_domain_typechecks() {
+        // Same distinction one level up: g : A -> A -> B.
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let b_ty_pos = p.push(sort(0));
+        let g_pos = p.push(arrow(p.get(a_ty_pos), arrow(p.get(a_ty_pos), p.get(b_ty_pos))));
+        let x0_pos = p.push(p.get(a_ty_pos));
+        let y0_pos = p.push(p.get(a_ty_pos));
+        let x1_pos = p.push(p.get(a_ty_pos));
+        let y1_pos = p.push(p.get(a_ty_pos));
+        let p0_pos = p.push(id(p.get(a_ty_pos), p.get(x0_pos), p.get(y0_pos)));
+        let p1_pos = p.push(id(p.get(a_ty_pos), p.get(x1_pos), p.get(y1_pos)));
+
+        let a_ty = p.get(a_ty_pos);
+        let b_ty = p.get(b_ty_pos);
+        let g = p.get(g_pos);
+        let x0 = p.get(x0_pos);
+        let y0 = p.get(y0_pos);
+        let x1 = p.get(x1_pos);
+        let y1 = p.get(y1_pos);
+        let p0 = p.get(p0_pos);
+        let p1 = p.get(p1_pos);
+
+        let proof = cong_n(&a_ty, &b_ty, &g, &[x0.clone(), x1.clone()], &[y0.clone(), y1.clone()], vec![p0, p1]);
+        let expected = id(b_ty, app(app(g.clone(), x0), x1), app(app(g, y0), y1));
+        check(&p.ctx, &proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(B, g x0 x1, g y0 y1)");
     }
 
     #[test]

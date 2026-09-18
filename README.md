@@ -153,23 +153,37 @@ This is stated precisely because it would be easy to overclaim here.
   (`ArithPostulates::assume_prim_fact` — a postulated operator has no
   built-in computation rule, so a witness for one call has to assume each
   concrete fact it needs, the same pattern `Int` itself is postulated
-  under). Restricted to leaves with at most one self-call — tail recursion
-  and simple non-tail recursion (`gcd`, factorial) — since a witness for a
-  genuinely branching leaf (e.g. Fibonacci's two self-calls) has a logical
-  size that grows with the number of calls the interpreter itself makes for
-  that shape, exponential in the input for two-way branching (sibling
-  branches, like the `f(5)` reachable from both `f(7)` and `f(6)` inside
-  `f(8)`, are built by unrelated recursive calls and share no structure with
-  each other). `kernel::Expr`'s recursive fields are `Rc`, not `Box` (see
-  Design notes below), which makes *building* a witness cheap — but
-  confirmed empirically, that alone doesn't fix this: the dominant cost
-  turns out to be `kernel::check`/`infer`'s `nf`, which beta-reduces a
-  type's entire structure with no memoization on `Rc` identity, so it still
-  re-normalizes a shared subterm once per place it's referenced. `fib(8)`
-  (67 interpreter calls) is still single-digit seconds to build and
-  re-typecheck. Fixing this for real needs a memoizing `whnf`/`nf`, not just
-  sharing — future work. The theorem itself is unaffected either way; only
-  per-call instantiation is out of scope for that shape.
+  under). Covers any number of self-calls per leaf, including genuinely
+  branching ones (Fibonacci's two self-calls) — `build_ev_witness` always
+  derives *internally* in terms of the canonical literal params for a call
+  (trivially self-consistent, `refl`-provable, and identical regardless of
+  which call site reaches a given concrete argument tuple), memoized by
+  concrete args (`memo`, a real DP table: without it a branching leaf
+  re-derives every shared subproblem from scratch, exactly mirroring the
+  interpreter's own unmemoized exponential call count — `f(5)` rebuilt once
+  via `f(7)`→`f(6)`→`f(5)` and again via `f(7)`→`f(5)`, and so on
+  recursively). The one place the canonical form doesn't already match what's
+  needed is where a recursive call's result becomes an argument to *its*
+  caller's own `Ev` constructor (which expects the *actual denoted call
+  argument expression*, e.g. `n-1`, not just its value — postulated
+  operators have no built-in reduction, so `Id`/`def_eq` can't equate
+  `sub_ref(8,1)` with `lit_ref(7)` on their own): the caller recasts the
+  canonical witness via `kernel::sym` + `kernel::cong_n` + `kernel::transport`
+  (congruence for `Ev` over the params, then transport along the resulting
+  type equality) — two new, general-purpose kernel primitives, not a
+  special-cased hack, following the same pattern as `cong1`/`trans_proof`.
+  Building this surfaced a real, previously-latent bug in `cong1`/`cong_n`
+  themselves: they silently assumed the function being reasoned about had a
+  codomain equal to its domain type (every existing caller happened to
+  satisfy that), which
+  broke the moment this needed `Int^arity -> Sort(0)` (`cong1` now takes an
+  explicit `b_ty`). Even with all this, per-call instantiation for a
+  branching leaf isn't fast — `fib(8)`'s instance proof is still a few
+  seconds to build and re-typecheck, since `kernel::check`/`infer`'s `nf`
+  has no memoization across separate top-level calls (see Design notes'
+  `Rc`-sharing entry); fixing *that* needs a memoizing `whnf`/`nf` shared
+  across a whole proof's construction, deliberately not attempted here.
+  The theorem itself was always unaffected either way.
 - **Non-capturing ("known") closures**: `prove_closure_expr` gives a closed,
   non-recursive closures term one kernel proof covering every input, the
   same `refl`-on-a-shared-translation argument `prove_pure_expr` makes for
@@ -216,10 +230,12 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   one-time compile+verify cost eats into — `fib`'s cold-compile cost
   includes building its (two-self-call) universal proof plus a few
   concrete-instance attempts `jit.rs` tries alongside it (see "Proof
-  strategies" above), which together put that one case's cold time on this
-  machine around ~95ms (versus ~15ms with no kernel proof involved at all;
-  down from ~200ms before `kernel::Expr` switched to `Rc`-based structural
-  sharing, see Design notes below); the warm (cached) case is unaffected
+  strategies" above, now all 3 of them succeeding since branching-leaf
+  instances stopped being declined), which together put that one case's
+  cold time on this machine around ~140ms (versus ~15ms with no kernel proof
+  involved at all; ~95ms immediately after `kernel::Expr` switched to
+  `Rc`-based structural sharing, before branching instances were attempted
+  at all — see Design notes below); the warm (cached) case is unaffected
   either way, since none of this runs again for a hash already in the cache.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
@@ -273,24 +289,27 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   `Expr` and holding it unwrapped instead. That exact mistake caused two
   real bugs in this project (the `Ev`-witness builder, then
   `denote_closure`), each only surfacing as an opaque kernel type-mismatch
-  far from the actual cause. `proof.rs` now has `debug_assert_has_type`/
-  `debug_assert_well_typed` (debug-only, zero-cost in release), called at
-  the return point of every function that composes an `Expr` from more
-  than one recursive sub-call, to turn a future instance of this bug class
-  into an immediate, precisely-located panic instead of a slow bisection.
+  far from the actual cause. `proof.rs` now has `debug_assert_has_type`
+  (debug-only, zero-cost in release), called at the return point of every
+  function that composes an `Expr` from more than one recursive sub-call,
+  to turn a future instance of this bug class into an immediate,
+  precisely-located panic instead of a slow bisection.
 
 ## Future work
 
-- Instantiating the universal theorem for genuinely branching leaves (e.g.
-  naive Fibonacci's two self-calls) — `build_ev_witness` currently declines
-  these outright (see "Proof strategies" above). Tried and confirmed
-  insufficient: switching `kernel::Expr` to `Rc`-based structural sharing
-  (see Design notes) — `fib(8)` (67 interpreter calls) is still single-digit
-  seconds to build and re-typecheck, because the dominant cost is
-  `kernel::check`/`infer`'s `nf`, which re-normalizes a shared subterm once
-  per place a type references it rather than once. Fixing this for real
-  needs a memoizing `whnf`/`nf` (or checking without fully normalizing), not
-  just sharing.
+- Making branching-leaf instance proofs actually fast. `build_ev_witness`
+  now covers them (a DP `memo` plus a `sym`/`cong_n`/`transport` recast —
+  see "Proof strategies" above), but `fib(8)`'s instance proof is still a
+  few seconds to build and re-typecheck: `kernel::whnf`/`nf` are memoized
+  within one top-level call (see Design notes), but `kernel::check`/`infer`
+  make many separate top-level calls across one proof's construction, none
+  of which share a cache with each other, so a subterm referenced from
+  several of those calls still gets re-normalized once per call. Fixing
+  this for real needs a memoizing `whnf`/`nf` shared across a whole proof's
+  construction (not just within one call), which either means threading an
+  explicit cache through `proof.rs` (the codebase's usual style, but a
+  wide-reaching change) or finding a narrower place to scope it — an open
+  design question, not attempted here.
 - Allowing an `If` nested inside a leaf's own arithmetic expression (e.g.
   `n + (if c then 1 else 2)`), not just as the whole body of some branch —
   `find_self_calls`/`denote_with_placeholders` currently reject that shape

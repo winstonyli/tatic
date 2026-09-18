@@ -583,6 +583,17 @@ fn apply_n(f: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
     args.into_iter().fold(f, kernel::app)
 }
 
+/// `Ev(params, v) : Sort(0)` -- `ev_pos`'s postulate (see `build_universal`)
+/// applied to `params` then `v`. Resolves `ev_pos` fresh via the
+/// caller-supplied `arith` -- the caller is responsible for passing
+/// `params`/`v` resolved *at the current depth* too, same convention as
+/// `Postulates::get` itself. A free function (not just `build_universal`'s
+/// own local closure) so `build_ev_witness`'s branching-leaf recasting can
+/// build the same `Ev(...)` application it does, rather than reimplementing it.
+fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Expr {
+    apply_n(arith.p.get(ev_pos), params.iter().cloned().chain([v]))
+}
+
 // --- hardening against the staleness bug class ---------------------------
 //
 // Twice now (the `Ev`-witness builder, then `denote_closure`), a function
@@ -599,14 +610,15 @@ fn apply_n(f: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
 // left to push -- applied by hand, function by function, after a slow
 // eprintln-driven bisection to find where it broke.
 //
-// These two helpers turn that bisection into an immediate, precisely
-// located panic instead: called once at the *return point* of any function
-// that composes sub-`Expr`s from more than one recursive call
-// (`denote_closure`, `eval_and_prove`, `build_ev_witness`), they confirm
-// the value this call is about to hand back is actually well-typed (or, for
-// `denote_closure`/`eval_and_prove`, has the *exact* type expected -- `Int`
-// or `Clo`, known statically at each call site) before it can be embedded,
-// unchecked, into a caller's own larger expression. Checking once per call,
+// This helper turns that bisection into an immediate, precisely located
+// panic instead: called once at the *return point* of any function that
+// composes sub-`Expr`s from more than one recursive call (`denote_closure`,
+// `eval_and_prove`, `build_ev_witness`), it confirms the value this call is
+// about to hand back has the *exact* type expected -- known statically at
+// each call site (`Int`, `Clo`, or, for `build_ev_witness`, `Ev(params, v)`
+// itself, now that `ev_pos` is available to build it) -- before it can be
+// embedded, unchecked, into a caller's own larger expression. Checking once
+// per call,
 // at return, is enough to localize a bug to the exact (innermost) call that
 // introduced it: by induction, a bug in any deeper call would already have
 // panicked there first, before this call ever got to compose its own
@@ -627,15 +639,6 @@ fn debug_assert_has_type(ctx: &Ctx, e: &Expr, expected: &Expr, label: &str) {
 }
 #[cfg(not(debug_assertions))]
 fn debug_assert_has_type(_ctx: &Ctx, _e: &Expr, _expected: &Expr, _label: &str) {}
-
-#[cfg(debug_assertions)]
-fn debug_assert_well_typed(ctx: &Ctx, e: &Expr, label: &str) {
-    if let Err(err) = kernel::infer(ctx, e) {
-        panic!("staleness/composition bug in {label}: the value isn't well-typed at all.\n  error: {err}\n  value: {e:?}");
-    }
-}
-#[cfg(not(debug_assertions))]
-fn debug_assert_well_typed(_ctx: &Ctx, _e: &Expr, _label: &str) {}
 
 /// `combine`'s value at `params`/`ihs` (both hoisted to a free function --
 /// not just a closure local to `prove_tail_recursive_universal` -- so
@@ -901,6 +904,10 @@ struct UniversalScaffold {
     leaves: Vec<Leaf>,
     combines: Vec<Anchored>,
     ev_leaf_positions: Vec<usize>,
+    /// `Ev`'s own postulate position (see `build_universal`) -- needed by
+    /// `build_ev_witness`'s branching-leaf recasting, which builds `Ev(...)`
+    /// applications directly rather than through a leaf-specific constructor.
+    ev_pos: usize,
     theorem_ty: Anchored,
     theorem_proof: Anchored,
 }
@@ -971,13 +978,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold> {
     // see `ArithPostulates::new`'s `ite_ty` for the same pattern.)
     let ev_ty = (0..=arity).fold(kernel::sort(0), |ty, _| kernel::arrow(arith.int_ty(), ty));
     let ev_pos = arith.p.push(ev_ty);
-    // Resolves `params`/`np` fresh via the caller-supplied slice -- the
-    // caller is responsible for passing one resolved *at the current
-    // depth* (`pp.at(arith)` or a freshly-recomputed `new_params_for`),
-    // not a cached one from before further pushes.
-    let ev_of = |arith: &ArithPostulates, params: &[Expr], v: Expr| -> Expr {
-        apply_n(arith.p.get(ev_pos), params.iter().cloned().chain([v]))
-    };
+    let ev_of = |arith: &ArithPostulates, params: &[Expr], v: Expr| -> Expr { ev_of(arith, ev_pos, params, v) };
 
     // Pushes `v_1:Int .. v_k:Int` then `e_1:Ev(new_params_1,v_1) ..
     // e_k:Ev(new_params_k,v_k)` for a leaf's `calls` (one `(v,e)` pair per
@@ -1289,6 +1290,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold> {
         leaves,
         combines,
         ev_leaf_positions,
+        ev_pos,
         arith,
     })
 }
@@ -1331,36 +1333,42 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
 // recursing into each self-call occurrence to obtain its own witness,
 // before applying the leaf's `Ev` constructor.
 //
-// Scope: linear recursion only (tail or not, at most *one* self-call per
-// leaf -- e.g. `gcd`, factorial). A witness for a leaf with two or more
-// self-calls (e.g. naive Fibonacci's `f(n-1) + f(n-2)`) embeds *both*
-// children's own witnesses, and each of those embeds *their* children the
-// same way, so the resulting proof term's logical size grows with the
-// number of calls the interpreter itself would make for that leaf shape --
-// exponential in the input for two-way branching, since sibling branches
-// (e.g. the `f(5)` reachable from both `f(7)` and `f(6)` inside `f(8)`)
-// are built by unrelated recursive calls here and share no structure with
-// each other. `kernel::Expr`'s recursive fields are `Rc`, so *building* the
-// witness itself is cheap (no deep copies as it's threaded through
-// `Anchored`/composition) -- but the dominant cost turns out to live in
-// `kernel::check`/`infer` themselves: `def_eq`'s `nf` walks and beta-reduces
-// a type's *entire* structure with no memoization on `Rc` identity, so a
-// type that references the same shared subterm from several places (as the
-// composed witness's own `Ev`/`Id` types do) re-normalizes it once per
-// occurrence rather than once. Confirmed empirically post-`Rc`: `fib(8)`
-// (67 interpreter calls) still takes single-digit seconds to build and
-// re-typecheck, not meaningfully faster than pre-`Rc` -- so `build_ev_witness`
-// still simply declines a leaf with more than one self-call rather than
-// trying and being unusably slow. Actually fixing this needs a memoizing
-// `whnf`/`nf` (or checking without fully normalizing), not just sharing;
-// that's future work, not something this change attempted.
-// `WITNESS_NODE_BUDGET` is a second, cheaper guard for the (now genuinely
-// linear) chains this covers, against a single call chain unexpectedly
-// running long. `prove_tail_recursive_universal`'s theorem itself is
-// unaffected either way -- it covers any number of self-calls per leaf (via
-// `kernel::cong_n`), so a branching-recursion term still gets
+// Scope: any number of self-calls per leaf (e.g. naive Fibonacci's
+// `f(n-1) + f(n-2)`), via a DP cache (`memo`) plus a congruence-based
+// "recast" -- worth spelling out why the recast is needed at all. A leaf's
+// own `Ev` constructor (built once, symbolically, in `build_universal`)
+// expects each self-call's `e_i` argument typed *exactly*
+// `Ev(denote(call_i_args, params), v_i)` -- the actual denoted expression
+// of that call's arguments, not just their value (a postulated operator
+// has no built-in reduction rule, so `Id`/`def_eq` can't equate, say,
+// `sub_ref(8,1)` with `lit_ref(7)` on its own, even though both denote 7).
+// That rules out memoizing by concrete value alone: two calls reaching the
+// same value via different argument expressions (`n-1` from one caller,
+// `m-2` from another) would produce witnesses whose types don't match
+// wherever they're used -- confirmed empirically: an earlier attempt at
+// exactly that was correctly rejected by the kernel's own re-check rather
+// than silently accepted.
+//
+// The fix: `build_ev_witness` always computes *internally* in terms of the
+// canonical literal params (`lit_ref(concrete[i])`), never a caller's own
+// denoted call-argument expressions -- trivially self-consistent
+// (`refl`-provable), and identical regardless of which call site reaches a
+// given concrete argument tuple, so `memo` (keyed on `concrete` alone) is
+// always valid to reuse. The one place this canonical form doesn't already
+// match what's needed is exactly where a recursive call's result becomes
+// an argument to *this* leaf's own `Ev` constructor: the caller recasts
+// the canonical witness to the shape its own constructor expects via
+// `kernel::sym` + `kernel::cong_n` + `kernel::transport` (congruence for
+// `Ev` over the params, then transport along the resulting type equality)
+// -- applied identically whether the inner call was a fresh derivation or
+// a `memo` hit, so there's no separate code path for either case.
+// `WITNESS_NODE_BUDGET` still guards the number of newly-*derived* calls
+// (a `memo` hit doesn't count against it, since it does no new derivation).
+// `prove_tail_recursive_universal`'s theorem itself never needed any of
+// this -- it already covers any number of self-calls per leaf (via
+// `kernel::cong_n`), so a branching-recursion term always got
 // `kernel_verified = true` from the theorem's existence alone (see
-// `jit.rs`); it just never gets a per-call instance.
+// `jit.rs`); only per-call instantiation was missing it.
 
 /// Recursively evaluates `h` (the `Var`/`Lit`/`Prim` fragment `denote` and
 /// `eval_concrete` both cover) at `concrete`, building a kernel proof
@@ -1438,10 +1446,11 @@ const WITNESS_NODE_BUDGET: usize = 256;
 /// loop) and recursing into every self-call occurrence found along the way.
 /// Returns `(v, e)`, fresh as of the moment this call returns -- a caller
 /// that holds either across further postulate pushes (as every caller here
-/// does) must wrap them in `Anchored` itself, same as `params`/
-/// `param_facts` below. `budget` is shared across the whole recursion, and
-/// a leaf with more than one self-call is declined outright (see the
-/// section docs above for both).
+/// does) must wrap them in `Anchored` itself. `params`/`param_facts` are
+/// never taken as input (see the section docs above): this function always
+/// works in terms of the canonical literal params for `concrete`, which is
+/// what makes `memo` (keyed on `concrete` alone) sound. `budget` bounds the
+/// number of newly-*derived* calls; a `memo` hit doesn't touch it.
 #[allow(clippy::too_many_arguments)]
 fn build_ev_witness(
     store: &TermStore,
@@ -1450,57 +1459,99 @@ fn build_ev_witness(
     leaves: &[Leaf],
     ev_leaf_positions: &[usize],
     combines: &[Anchored],
-    params: &[Anchored],
+    ev_pos: usize,
     concrete: &[i64],
-    param_facts: &[Anchored],
     budget: &mut usize,
+    memo: &mut HashMap<Vec<i64>, (Anchored, Anchored)>,
 ) -> Option<(Expr, Expr)> {
+    if let Some((v, e)) = memo.get(concrete) {
+        return Some((v.at(arith), e.at(arith)));
+    }
     *budget = budget.checked_sub(1)?;
 
     let leaf_idx = leaves
         .iter()
         .position(|leaf| leaf.path.iter().all(|&(cond, lit)| eval_concrete(store, cond, concrete) == Some(lit)))?;
     let leaf = &leaves[leaf_idx];
-    if leaf.calls.len() > 1 {
-        return None; // see this function's own docs
-    }
 
-    // Collected across the loop below, which pushes further postulates
+    // Canonical params for this level: literals, trivially equal to
+    // themselves -- see the section docs above for why this (not a
+    // caller-supplied denoted expression) is what makes `memo` sound.
+    let params: Vec<Anchored> = concrete.iter().map(|&c| Anchored::new(arith, arith.lit_ref(c))).collect();
+    let param_facts: Vec<Anchored> =
+        params.iter().map(|p| Anchored::new(arith, kernel::refl(p.at(arith)))).collect();
+
+    // Collected across the loops below, which push further postulates
     // (assume_prim_fact, and every self-call's own recursion) -- anchor
     // each one immediately so it can be resolved fresh once everything is
     // done growing, at the final assembly below.
     let mut premises = Vec::with_capacity(leaf.path.len());
     for &(cond, _lit) in &leaf.path {
-        let (_, _, proof) = eval_and_prove(store, cond, arith, params, concrete, param_facts)?;
+        let (_, _, proof) = eval_and_prove(store, cond, arith, &params, concrete, &param_facts)?;
         premises.push(Anchored::new(arith, proof));
     }
 
     let mut vs = Vec::with_capacity(leaf.calls.len());
     let mut es = Vec::with_capacity(leaf.calls.len());
     for call in &leaf.calls {
-        let mut new_params = Vec::with_capacity(self_call.arity);
         let mut new_concrete = Vec::with_capacity(self_call.arity);
-        let mut new_param_facts = Vec::with_capacity(self_call.arity);
+        let mut denoted_args = Vec::with_capacity(self_call.arity);
+        let mut denoted_facts = Vec::with_capacity(self_call.arity);
         for i in 0..self_call.arity {
             let arg = call[self_call.arity - 1 - i];
-            let (x, denoted, pf) = eval_and_prove(store, arg, arith, params, concrete, param_facts)?;
-            new_params.push(Anchored::new(arith, denoted));
+            let (x, denoted, pf) = eval_and_prove(store, arg, arith, &params, concrete, &param_facts)?;
             new_concrete.push(x);
-            new_param_facts.push(Anchored::new(arith, pf));
+            denoted_args.push(Anchored::new(arith, denoted));
+            denoted_facts.push(Anchored::new(arith, pf));
         }
-        let (v, e) = build_ev_witness(
+
+        // The recursive call's own witness, always in canonical
+        // (literal-params) form -- valid regardless of whether this came
+        // from a fresh derivation or a `memo` hit.
+        let (v, e_canonical) = build_ev_witness(
             store,
             arith,
             self_call,
             leaves,
             ev_leaf_positions,
             combines,
-            &new_params,
+            ev_pos,
             &new_concrete,
-            &new_param_facts,
             budget,
+            memo,
         )?;
-        vs.push(Anchored::new(arith, v));
+        let v = Anchored::new(arith, v);
+        let e_canonical = Anchored::new(arith, e_canonical);
+
+        // Recast `e_canonical : Ev(lit_params, v)` to `Ev(denoted_params,
+        // v)` -- what *this* leaf's own `Ev` constructor actually expects
+        // for its e_i (its type was built from the call's real argument
+        // expressions, not just their values) -- via congruence over the
+        // params (`cong_n`, `Ev` held fixed at `v`) and transport along the
+        // resulting type equality.
+        let int_ty = arith.int_ty();
+        let lit_params: Vec<Expr> = new_concrete.iter().map(|&x| arith.lit_ref(x)).collect();
+        let denoted_params: Vec<Expr> = denoted_args.iter().map(|a| a.at(arith)).collect();
+        let ps: Vec<Expr> = denoted_facts
+            .iter()
+            .zip(&denoted_params)
+            .zip(&lit_params)
+            .map(|((pf, dp), lp)| kernel::sym(&int_ty, dp, lp, pf.at(arith)))
+            .collect();
+        let v_resolved = v.at(arith);
+        let v_anchored = Anchored::new(arith, v_resolved.clone());
+        let f = params_and_close(arith, self_call.arity, kernel::close_lam, |arith, pp| {
+            Some(ev_of(arith, ev_pos, &pp.at(arith), v_anchored.at(arith)))
+        })?;
+        let ev_eq = kernel::cong_n(&int_ty, &kernel::sort(0), &f, &lit_params, &denoted_params, ps);
+        let e = kernel::transport(
+            0,
+            ev_of(arith, ev_pos, &lit_params, v_resolved.clone()),
+            ev_of(arith, ev_pos, &denoted_params, v_resolved),
+            ev_eq,
+            e_canonical.at(arith),
+        );
+        vs.push(v);
         es.push(Anchored::new(arith, e));
     }
 
@@ -1515,12 +1566,8 @@ fn build_ev_witness(
     let e = apply_n(arith.p.get(ev_leaf_positions[leaf_idx]), args);
     let v = combine_of(arith, &combines[leaf_idx], &params, &vs);
     debug_assert_has_type(&arith.p.ctx, &v, &arith.int_ty(), "build_ev_witness: v");
-    // `e`'s exact expected type (`Ev(params, v)`) isn't available here
-    // (`ev_pos` is scaffold-internal, not threaded into this function) --
-    // confirming it's well-typed at all still catches the staleness this
-    // is aimed at (a stale Var reference is typically outright ill-typed,
-    // not just wrong-but-well-typed).
-    debug_assert_well_typed(&arith.p.ctx, &e, "build_ev_witness: e");
+    debug_assert_has_type(&arith.p.ctx, &e, &ev_of(arith, ev_pos, &params, v.clone()), "build_ev_witness: e");
+    memo.insert(concrete.to_vec(), (Anchored::new(arith, v.clone()), Anchored::new(arith, e.clone())));
     Some((v, e))
 }
 
@@ -1597,12 +1644,9 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
     for &c in &concrete {
         scaffold.arith.lit(c);
     }
-    let params: Vec<Anchored> =
-        concrete.iter().map(|&c| Anchored::new(&scaffold.arith, scaffold.arith.lit_ref(c))).collect();
-    let param_facts: Vec<Anchored> =
-        params.iter().map(|p| Anchored::new(&scaffold.arith, kernel::refl(p.at(&scaffold.arith)))).collect();
 
     let mut budget = WITNESS_NODE_BUDGET;
+    let mut memo = HashMap::new();
     let (v, e) = build_ev_witness(
         store,
         &mut scaffold.arith,
@@ -1610,15 +1654,15 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
         &scaffold.leaves,
         &scaffold.ev_leaf_positions,
         &scaffold.combines,
-        &params,
+        scaffold.ev_pos,
         &concrete,
-        &param_facts,
         &mut budget,
+        &mut memo,
     )?;
 
     // Fresh past all the growth `build_ev_witness` just did.
     let theorem_proof = scaffold.theorem_proof.at(&scaffold.arith);
-    let params: Vec<Expr> = params.iter().map(|p| p.at(&scaffold.arith)).collect();
+    let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.arith.lit_ref(c)).collect();
     let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
     let ty = kernel::infer(&scaffold.arith.p.ctx, &applied).ok()?;
     let (lhs, rhs) = match kernel::whnf(&ty) {
@@ -2432,14 +2476,13 @@ mod tests {
     }
 
     #[test]
-    fn fibonacci_instance_proof_is_declined_for_branching_leaves() {
+    fn fibonacci_branching_leaves_get_kernel_checked_instances() {
         // rec f n = if n < 2 then n else f(n-1) + f(n-2) -- two self-calls
-        // in the recursive leaf. build_ev_witness declines any leaf with
-        // more than one self-call outright (see its own docs): a witness
-        // there would embed both children's full witness trees with no
-        // sharing, which is impractically slow even for small inputs, not
-        // just large ones. n=1 (a pure base case, no self-call reached at
-        // all) still gets an instance; n=2 already needs the declined leaf.
+        // in the recursive leaf. Once genuinely out of scope (see
+        // build_ev_witness's own docs for the fix: a `memo` DP cache plus a
+        // congruence-based recast of each cached witness to the calling
+        // leaf's own denoted call arguments) -- covers any number of
+        // self-calls per leaf now, not just at most one.
         let mut s = TermStore::new();
         let n = s.var(0);
         let f = s.var(1);
@@ -2455,15 +2498,13 @@ mod tests {
         let abs = s.abs(body);
         let fib = s.rec(abs);
 
-        let proof = prove_tail_recursive_instance(&s, fib, &[1]).expect("fib(1) never reaches the branching leaf");
-        assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
-            .expect("the recorded instance proof should independently re-typecheck");
-
-        assert!(
-            prove_tail_recursive_instance(&s, fib, &[2]).is_none(),
-            "fib(2) reaches the two-self-call leaf, which instance-witnessing declines"
-        );
+        for n in [1, 2, 8] {
+            let proof =
+                prove_tail_recursive_instance(&s, fib, &[n]).unwrap_or_else(|| panic!("fib({n}) should get an instance"));
+            assert_eq!(proof.arity, 1);
+            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+                .expect("the recorded instance proof should independently re-typecheck");
+        }
     }
 
     #[test]
