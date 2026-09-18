@@ -20,7 +20,8 @@ compiled and interpreted readings agree.
 
 ```sh
 cargo run --release   # runs the demo in src/main.rs
-cargo test            # 25 unit tests across all modules
+cargo test            # unit tests across all modules
+cargo bench           # criterion benchmarks (benches/) -- see below
 ```
 
 The demo builds a few example terms (factorial, gcd, a naive Fibonacci, a
@@ -87,6 +88,26 @@ interpreter is the actual trust gate for installing a compiled form. A
 kernel proof, where one exists, is recorded as stronger evidence alongside
 it (`Stats::kernel_proofs_checked`, `JitEngine::is_kernel_verified`), not a
 replacement for it.
+
+## Benchmarks
+
+`benches/` has two [criterion](https://docs.rs/criterion) suites (`cargo
+bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
+
+- `execution.rs` — interpreter vs. JIT, cold (compile + verify) vs. warm
+  (cache hit), for a non-tail-recursive term (naive `fib`), a
+  tail-recursive one (`gcd`, compiled to a loop), and straight-line
+  `factorial`. Shows both the steady-state speedup and how much of it the
+  one-time compile+verify cost eats into.
+- `proofs.rs` — the cost of building each kind of kernel proof from
+  `proof.rs`: one `refl` for a straight-line term, one relational
+  (translation-validation) proof per call, and the one-time universal
+  proof. Includes a direct N-relational-calls-vs.-one-universal-proof
+  comparison, since that crossover is the actual argument for building the
+  universal proof at all — on this machine it lands around 150-200 sample
+  points (a universal proof ≈ 5ms once vs. ≈ 25µs per relational call), so
+  which is cheaper depends entirely on how many sample points
+  `jit.rs` would otherwise verify against.
 
 ## Design notes
 
