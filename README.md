@@ -74,7 +74,15 @@ This is stated precisely because it would be easy to overclaim here.
   shape as `kernel::WRec`, and uses real induction on that recursor —
   built from `kernel::cong1`/`trans_proof` as its composition lemmas — to
   prove `loop_val(params, v, e) = v` once, for every `params` and `v`, not
-  per call.
+  per call. `Ev`'s two constructors are each gated by a hypothesis that
+  `cond` actually denotes to whichever value selects that branch — without
+  that, `Ev(params, v)` would be trivially inhabited for *any* `params`
+  regardless of `cond`, which isn't what "the trace starting at `params`"
+  is supposed to mean. This is a *reusable lemma*, not itself a per-input
+  guarantee: instantiating it at a concrete `params` still needs an actual
+  `Ev`-witness built by following `cond`'s real value at each step (not yet
+  built — see Future work), same as `prove_tail_recursive_call` already
+  does directly.
 - **Non-tail recursion** (e.g. naive Fibonacci, compiled to a plain WASM
   `call`): not covered by a kernel proof at all yet. Sample verification
   is currently the only thing standing behind it.
@@ -132,6 +140,12 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
 
 ## Future work
 
+- A per-concrete-`params` `Ev`-witness builder, so
+  `prove_tail_recursive_universal`'s lemma can actually be instantiated for
+  a real call (mirroring `prove_tail_recursive_call`'s trace-following, but
+  producing an `Ev`-term rather than composing `refl`/`cong1` directly) —
+  needed before the universal proof adds anything `jit.rs` can act on
+  beyond "this shape typechecks".
 - Widening `prove_tail_recursive_universal` past its current shape (a
   single `If` with one base branch and one fully-saturated tail-call
   branch) to deeper branching.
