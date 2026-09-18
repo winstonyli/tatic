@@ -115,6 +115,7 @@
 //! of those needed widening.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::compile;
 use crate::kernel::{self, Ctx, Expr, Postulates};
@@ -1331,23 +1332,33 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
 // before applying the leaf's `Ev` constructor.
 //
 // Scope: linear recursion only (tail or not, at most *one* self-call per
-// leaf -- e.g. `gcd`, factorial). `kernel::Expr` is a plain `Box`-tree, not
-// hash-consed the way `term::TermStore` is, so a witness for a leaf with
-// two or more self-calls (e.g. naive Fibonacci's `f(n-1) + f(n-2)`) would
-// embed *both* children's full witness trees with no sharing -- and, since
-// each of those children's own witnesses embeds *their* children the same
-// way, the resulting term's size grows with the number of calls the
-// interpreter itself would make for that leaf shape, which is exponential
-// in the input for two-way branching. This isn't just a large-input
-// concern: it's impractically slow even for tiny inputs (confirmed
-// empirically -- `fib(8)`, all of 67 interpreter calls, took over ten
-// seconds to build and re-typecheck), so `build_ev_witness` simply declines
-// a leaf with more than one self-call rather than trying and being
-// unusably slow. `WITNESS_NODE_BUDGET` is a second, cheaper guard for the
-// (now genuinely linear) chains this covers, against a single call chain
-// unexpectedly running long. `prove_tail_recursive_universal`'s theorem
-// itself is unaffected either way -- it covers any number of self-calls per
-// leaf (via `kernel::cong_n`), so a branching-recursion term still gets
+// leaf -- e.g. `gcd`, factorial). A witness for a leaf with two or more
+// self-calls (e.g. naive Fibonacci's `f(n-1) + f(n-2)`) embeds *both*
+// children's own witnesses, and each of those embeds *their* children the
+// same way, so the resulting proof term's logical size grows with the
+// number of calls the interpreter itself would make for that leaf shape --
+// exponential in the input for two-way branching, since sibling branches
+// (e.g. the `f(5)` reachable from both `f(7)` and `f(6)` inside `f(8)`)
+// are built by unrelated recursive calls here and share no structure with
+// each other. `kernel::Expr`'s recursive fields are `Rc`, so *building* the
+// witness itself is cheap (no deep copies as it's threaded through
+// `Anchored`/composition) -- but the dominant cost turns out to live in
+// `kernel::check`/`infer` themselves: `def_eq`'s `nf` walks and beta-reduces
+// a type's *entire* structure with no memoization on `Rc` identity, so a
+// type that references the same shared subterm from several places (as the
+// composed witness's own `Ev`/`Id` types do) re-normalizes it once per
+// occurrence rather than once. Confirmed empirically post-`Rc`: `fib(8)`
+// (67 interpreter calls) still takes single-digit seconds to build and
+// re-typecheck, not meaningfully faster than pre-`Rc` -- so `build_ev_witness`
+// still simply declines a leaf with more than one self-call rather than
+// trying and being unusably slow. Actually fixing this needs a memoizing
+// `whnf`/`nf` (or checking without fully normalizing), not just sharing;
+// that's future work, not something this change attempted.
+// `WITNESS_NODE_BUDGET` is a second, cheaper guard for the (now genuinely
+// linear) chains this covers, against a single call chain unexpectedly
+// running long. `prove_tail_recursive_universal`'s theorem itself is
+// unaffected either way -- it covers any number of self-calls per leaf (via
+// `kernel::cong_n`), so a branching-recursion term still gets
 // `kernel_verified = true` from the theorem's existence alone (see
 // `jit.rs`); it just never gets a per-call instance.
 
@@ -1611,7 +1622,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
     let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
     let ty = kernel::infer(&scaffold.arith.p.ctx, &applied).ok()?;
     let (lhs, rhs) = match kernel::whnf(&ty) {
-        Expr::Id(_, lhs, rhs) => (*lhs, *rhs),
+        Expr::Id(_, lhs, rhs) => (Rc::unwrap_or_clone(lhs), Rc::unwrap_or_clone(rhs)),
         _ => return None,
     };
 

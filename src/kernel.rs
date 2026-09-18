@@ -25,7 +25,20 @@
 //! trusted, not something folded into this pass.
 
 use std::fmt;
+use std::rc::Rc;
 
+/// Recursive fields are `Rc`, not `Box`: `Expr` is built and re-threaded
+/// through deeply nested proof terms (`proof.rs`'s `Anchored`, the Ev-witness
+/// builder's per-call-site composition, ...) almost entirely by `.clone()`,
+/// and a `Box`-tree clone is a full deep copy -- cost that scales with the
+/// *entire* accumulated proof term, not with what actually changed. With
+/// `Rc`, `#[derive(Clone)]` on `Expr` clones each field by bumping a
+/// refcount, so cloning any `Expr` (regardless of how large the subtree it
+/// roots is) is O(1) and its children are genuinely shared, not copied. This
+/// is not full hash-consing (two independently-built-but-equal subtrees
+/// still get distinct allocations -- there's no intern table), but it
+/// removes the actual cost this crate was paying: repeated deep copies of
+/// one proof term as it's threaded through several composition steps.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Expr {
     /// De Bruijn index; `Var(0)` is the innermost binder.
@@ -34,36 +47,36 @@ pub enum Expr {
     Sort(u32),
     /// `Pi(A, B)`: `B` is checked one binder deeper than `A` (i.e. `B` may
     /// mention the newly-bound variable of type `A` as `Var(0)`).
-    Pi(Box<Expr>, Box<Expr>),
+    Pi(Rc<Expr>, Rc<Expr>),
     /// `Lam(A, body)`: `A` is the domain annotation; `body` one binder deeper.
-    Lam(Box<Expr>, Box<Expr>),
-    App(Box<Expr>, Box<Expr>),
+    Lam(Rc<Expr>, Rc<Expr>),
+    App(Rc<Expr>, Rc<Expr>),
     /// `Id(A, a, b)`: the type of proofs that `a` and `b` (both `: A`) are equal.
-    Id(Box<Expr>, Box<Expr>, Box<Expr>),
+    Id(Rc<Expr>, Rc<Expr>, Rc<Expr>),
     /// `Refl(a) : Id(A, a, a)`, the only primitive way to construct an equality.
-    Refl(Box<Expr>),
+    Refl(Rc<Expr>),
     /// Eliminator for `Id`. `motive` is `C : Pi x y : A. Id(A,x,y) -> Sort(k)`,
     /// `base` is `c : Pi x : A. C x x (refl x)`, `p : Id(A, a, b)`.
     /// Result type: `C a b p`. Reduces to `base a` when `p` reduces to a `Refl`.
     J {
-        motive: Box<Expr>,
-        base: Box<Expr>,
-        a: Box<Expr>,
-        b: Box<Expr>,
-        p: Box<Expr>,
+        motive: Rc<Expr>,
+        base: Rc<Expr>,
+        a: Rc<Expr>,
+        b: Rc<Expr>,
+        p: Rc<Expr>,
     },
     /// `W(A, B)`: `B` one binder deeper than `A`, i.e. `B` is the family
     /// `B(x)` for `x : A` giving the arity/shape of the children at tag `x`.
-    W(Box<Expr>, Box<Expr>),
+    W(Rc<Expr>, Rc<Expr>),
     /// `Sup(a, f) : W(A,B)` where `a : A` and `f : B(a) -> W(A,B)`.
-    Sup(Box<Expr>, Box<Expr>),
+    Sup(Rc<Expr>, Rc<Expr>),
     /// Eliminator (recursor) for `W`. `motive : W(A,B) -> Sort(k)`,
     /// `step : Pi a:A. Pi f:(B a -> W). (Pi y:B a. motive (f y)) -> motive (sup a f)`.
     /// Reduces on a `Sup` target by recursing into every child.
     WRec {
-        motive: Box<Expr>,
-        step: Box<Expr>,
-        target: Box<Expr>,
+        motive: Rc<Expr>,
+        step: Rc<Expr>,
+        target: Rc<Expr>,
     },
 }
 
@@ -94,13 +107,13 @@ pub fn sort(i: u32) -> Expr {
     Expr::Sort(i)
 }
 pub fn pi(a: Expr, b: Expr) -> Expr {
-    Expr::Pi(Box::new(a), Box::new(b))
+    Expr::Pi(Rc::new(a), Rc::new(b))
 }
 pub fn lam(a: Expr, body: Expr) -> Expr {
-    Expr::Lam(Box::new(a), Box::new(body))
+    Expr::Lam(Rc::new(a), Rc::new(body))
 }
 pub fn app(f: Expr, a: Expr) -> Expr {
-    Expr::App(Box::new(f), Box::new(a))
+    Expr::App(Rc::new(f), Rc::new(a))
 }
 pub fn app2(f: Expr, a: Expr, b: Expr) -> Expr {
     app(app(f, a), b)
@@ -109,31 +122,31 @@ pub fn app3(f: Expr, a: Expr, b: Expr, c: Expr) -> Expr {
     app(app2(f, a, b), c)
 }
 pub fn id(a: Expr, x: Expr, y: Expr) -> Expr {
-    Expr::Id(Box::new(a), Box::new(x), Box::new(y))
+    Expr::Id(Rc::new(a), Rc::new(x), Rc::new(y))
 }
 pub fn refl(a: Expr) -> Expr {
-    Expr::Refl(Box::new(a))
+    Expr::Refl(Rc::new(a))
 }
 pub fn jelim(motive: Expr, base: Expr, a: Expr, b: Expr, p: Expr) -> Expr {
     Expr::J {
-        motive: Box::new(motive),
-        base: Box::new(base),
-        a: Box::new(a),
-        b: Box::new(b),
-        p: Box::new(p),
+        motive: Rc::new(motive),
+        base: Rc::new(base),
+        a: Rc::new(a),
+        b: Rc::new(b),
+        p: Rc::new(p),
     }
 }
 pub fn wty(a: Expr, b: Expr) -> Expr {
-    Expr::W(Box::new(a), Box::new(b))
+    Expr::W(Rc::new(a), Rc::new(b))
 }
 pub fn sup(a: Expr, f: Expr) -> Expr {
-    Expr::Sup(Box::new(a), Box::new(f))
+    Expr::Sup(Rc::new(a), Rc::new(f))
 }
 pub fn wrec(motive: Expr, step: Expr, target: Expr) -> Expr {
     Expr::WRec {
-        motive: Box::new(motive),
-        step: Box::new(step),
-        target: Box::new(target),
+        motive: Rc::new(motive),
+        step: Rc::new(step),
+        target: Rc::new(target),
     }
 }
 /// A non-dependent function type `a -> b`.
@@ -254,13 +267,13 @@ pub fn whnf(e: &Expr) -> Expr {
             b,
             p,
         } => match whnf(p) {
-            Expr::Refl(_) => whnf(&app(*base.clone(), *a.clone())),
+            Expr::Refl(_) => whnf(&app((**base).clone(), (**a).clone())),
             other => Expr::J {
                 motive: motive.clone(),
                 base: base.clone(),
                 a: a.clone(),
                 b: b.clone(),
-                p: Box::new(other),
+                p: Rc::new(other),
             },
         },
         Expr::WRec {
@@ -280,7 +293,7 @@ pub fn whnf(e: &Expr) -> Expr {
                 );
                 whnf(&app3(
                     (**step).clone(),
-                    *a.clone(),
+                    (*a).clone(),
                     (*f).clone(),
                     rec_step,
                 ))
@@ -288,7 +301,7 @@ pub fn whnf(e: &Expr) -> Expr {
             other => Expr::WRec {
                 motive: motive.clone(),
                 step: step.clone(),
-                target: Box::new(other),
+                target: Rc::new(other),
             },
         },
         other => other.clone(),
@@ -388,14 +401,14 @@ fn expect_sort(e: &Expr) -> Result<u32, String> {
 
 fn expect_pi(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
-        Expr::Pi(a, b) => Ok((*a, *b)),
+        Expr::Pi(a, b) => Ok((Rc::unwrap_or_clone(a), Rc::unwrap_or_clone(b))),
         other => Err(format!("expected a Pi type, got {other:?}")),
     }
 }
 
 fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
-        Expr::W(a, b) => Ok((*a, *b)),
+        Expr::W(a, b) => Ok((Rc::unwrap_or_clone(a), Rc::unwrap_or_clone(b))),
         other => Err(format!("expected a W type, got {other:?}")),
     }
 }

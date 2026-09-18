@@ -154,11 +154,21 @@ This is stated precisely because it would be easy to overclaim here.
   built-in computation rule, so a witness for one call has to assume each
   concrete fact it needs, the same pattern `Int` itself is postulated
   under). Restricted to leaves with at most one self-call — tail recursion
-  and simple non-tail recursion (`gcd`, factorial) — since `kernel::Expr`
-  isn't hash-consed the way `term::TermStore` is: a witness for a
-  genuinely branching leaf (e.g. Fibonacci's two self-calls) would embed
-  every recursive call's full witness with no sharing, impractically slow
-  even for small inputs. The theorem itself is unaffected either way; only
+  and simple non-tail recursion (`gcd`, factorial) — since a witness for a
+  genuinely branching leaf (e.g. Fibonacci's two self-calls) has a logical
+  size that grows with the number of calls the interpreter itself makes for
+  that shape, exponential in the input for two-way branching (sibling
+  branches, like the `f(5)` reachable from both `f(7)` and `f(6)` inside
+  `f(8)`, are built by unrelated recursive calls and share no structure with
+  each other). `kernel::Expr`'s recursive fields are `Rc`, not `Box` (see
+  Design notes below), which makes *building* a witness cheap — but
+  confirmed empirically, that alone doesn't fix this: the dominant cost
+  turns out to be `kernel::check`/`infer`'s `nf`, which beta-reduces a
+  type's entire structure with no memoization on `Rc` identity, so it still
+  re-normalizes a shared subterm once per place it's referenced. `fib(8)`
+  (67 interpreter calls) is still single-digit seconds to build and
+  re-typecheck. Fixing this for real needs a memoizing `whnf`/`nf`, not just
+  sharing — future work. The theorem itself is unaffected either way; only
   per-call instantiation is out of scope for that shape.
 - **Non-capturing ("known") closures**: `prove_closure_expr` gives a closed,
   non-recursive closures term one kernel proof covering every input, the
@@ -207,9 +217,10 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   includes building its (two-self-call) universal proof plus a few
   concrete-instance attempts `jit.rs` tries alongside it (see "Proof
   strategies" above), which together put that one case's cold time on this
-  machine around ~200ms (versus ~15ms with no kernel proof involved at
-  all); the warm (cached) case is unaffected either way, since none of this
-  runs again for a hash already in the cache.
+  machine around ~95ms (versus ~15ms with no kernel proof involved at all;
+  down from ~200ms before `kernel::Expr` switched to `Rc`-based structural
+  sharing, see Design notes below); the warm (cached) case is unaffected
+  either way, since none of this runs again for a hash already in the cache.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
   (translation-validation) proof per call, and the one-time universal
@@ -226,6 +237,20 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   are structurally identical hash to the same value, so the JIT cache and
   the kernel's proof cache are keyed by *content*, not by which piece of
   code happened to construct the term.
+- **`kernel::Expr`'s recursive fields are `Rc`, not `Box`**: `Expr` is built
+  once and then threaded through many `.clone()` calls as it's composed into
+  larger proof terms (`proof.rs`'s `Anchored` reshifting pattern especially,
+  but also plain composition like `cong_n`'s per-argument accumulation) —
+  with `Box`, every one of those clones was a full deep copy, cost scaling
+  with however large the accumulated term had grown by that point, not with
+  what actually changed. With `Rc`, `#[derive(Clone)]` clones each field by
+  bumping a refcount, so cloning an `Expr` of any size is O(1) and its
+  children are genuinely shared. This is deliberately *not* full
+  hash-consing — there's no intern table, so two independently-built but
+  equal subterms still get distinct allocations — but it removes the real
+  cost this crate was paying, worth ~2x on `fib`'s cold-compile time (see
+  Benchmarks). It does *not* fix the branching-leaf witness limitation
+  below — that cost lives in unmemoized normalization, not cloning.
 - **Why a predicative kernel with exactly these four primitives**: see
   `kernel.rs`'s module docs for the full argument, but briefly — `W`-types
   are load-bearing (not derivable from `Pi`/`Sort`/`Id` alone with
@@ -258,11 +283,14 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
 
 - Instantiating the universal theorem for genuinely branching leaves (e.g.
   naive Fibonacci's two self-calls) — `build_ev_witness` currently declines
-  these outright, since `kernel::Expr`'s lack of hash-consing makes a
-  witness for them impractically slow even at small inputs (see "Proof
-  strategies" above). Fixing this for real would need `kernel::Expr` (or at
-  least the witness-building path) to share structurally-identical
-  subterms, the same way `term::TermStore` already does.
+  these outright (see "Proof strategies" above). Tried and confirmed
+  insufficient: switching `kernel::Expr` to `Rc`-based structural sharing
+  (see Design notes) — `fib(8)` (67 interpreter calls) is still single-digit
+  seconds to build and re-typecheck, because the dominant cost is
+  `kernel::check`/`infer`'s `nf`, which re-normalizes a shared subterm once
+  per place a type references it rather than once. Fixing this for real
+  needs a memoizing `whnf`/`nf` (or checking without fully normalizing), not
+  just sharing.
 - Allowing an `If` nested inside a leaf's own arithmetic expression (e.g.
   `n + (if c then 1 else 2)`), not just as the whole body of some branch —
   `find_self_calls`/`denote_with_placeholders` currently reject that shape
