@@ -62,32 +62,37 @@ This is stated precisely because it would be easy to overclaim here.
   shape, so the proof is `refl` — an honest witness that a stack-based and
   a tree-walking evaluation of side-effect-free code compute the same
   value by construction, not a shortcut.
-- **Tail-recursive terms** (the fragment compiled to a `loop`): proven two
-  ways. `prove_tail_recursive_call` is *translation validation* — for one
-  specific call, the proof follows the interpreter's actual execution
-  trace, symbolically composing each iteration's new parameters, until it
-  reaches the base case; a genuine per-call certificate, checked by the
-  kernel, but not a universal theorem. `prove_tail_recursive_universal`
-  goes further: it postulates an inductive "evaluates-to" trace family
-  `Ev(params, v)` (the same "postulated inductive family" pattern `Int`
-  itself uses) together with a recursor obeying the same universal-motive
-  shape as `kernel::WRec`, and uses real induction on that recursor —
-  built from `kernel::cong1`/`trans_proof` as its composition lemmas — to
-  prove `loop_val(params, v, e) = v` once, for every `params` and `v`, not
-  per call. `body` can be an arbitrary tree of nested `If`s (not just one
-  top-level `If`), with one `Ev` constructor per leaf, each gated by the
-  *conjunction* of hypotheses that `cond` denotes to whichever value
-  selects that branch at every ancestor `If` on the way to it — without
-  that, a base leaf's constructor would make `Ev(params, v)` trivially
-  inhabited for *any* `params` regardless of `cond`, which isn't what "the
-  trace starting at `params`" is supposed to mean. This is a *reusable lemma*, not itself a per-input
-  guarantee: instantiating it at a concrete `params` still needs an actual
-  `Ev`-witness built by following `cond`'s real value at each step (not yet
-  built — see Future work), same as `prove_tail_recursive_call` already
-  does directly.
-- **Non-tail recursion** (e.g. naive Fibonacci, compiled to a plain WASM
-  `call`): not covered by a kernel proof at all yet. Sample verification
-  is currently the only thing standing behind it.
+- **Recursive terms, tail or not** (`gcd`'s `loop`, factorial's or naive
+  Fibonacci's plain `call`): proven two ways. `prove_tail_recursive_call`
+  is *translation validation* — for one specific call, the proof follows
+  the interpreter's actual execution trace, symbolically composing each
+  step's new parameters (recursing into non-tail self-calls too, wherever
+  they sit), until it reaches a base case; a genuine per-call certificate,
+  checked by the kernel, but not a universal theorem.
+  `prove_tail_recursive_universal` goes further: it postulates an
+  inductive "evaluates-to" trace family `Ev(params, v)` (the same
+  "postulated inductive family" pattern `Int` itself uses) with one
+  constructor per leaf of `body`'s decision tree — `body` can be an
+  arbitrary tree of nested `If`s, and each leaf can itself contain any
+  number of self-calls combined arithmetically (zero for a base case, one
+  in tail position, or several — e.g. Fibonacci's `f(n-1) + f(n-2)`) —
+  together with a recursor obeying the same universal-motive shape as
+  `kernel::WRec`, and uses real induction on that recursor to prove
+  `loop_val(params, v, e) = v` once, for every `params` and `v`, not per
+  call. Each leaf's constructor is gated by the *conjunction* of
+  hypotheses that `cond` denotes to whichever value selects that branch at
+  every ancestor `If` on the way to it — without that, a leaf's
+  constructor would make `Ev(params, v)` trivially inhabited for *any*
+  `params` regardless of `cond`, which isn't what "the trace starting at
+  `params`" is supposed to mean. Recombining a leaf's induction hypotheses
+  (for leaves with more than one self-call) uses `kernel::cong_n`, an
+  `n`-ary congruence lemma built from `cong1`/`trans_proof`; a leaf with
+  zero or one (tail-position) self-calls is the special case where that
+  reduces to the identity/no-op it always was. This is a *reusable lemma*,
+  not itself a per-input guarantee: instantiating it at a concrete
+  `params` still needs an actual `Ev`-witness built by following `cond`'s
+  real value at each step (not yet built — see Future work), same as
+  `prove_tail_recursive_call` already does directly.
 - **Genuinely higher-order terms**: outside the compilable fragment
   entirely, so they're just interpreted — correctly, but there's no JIT
   path (and therefore no compiled-vs-interpreted question) to prove
@@ -108,7 +113,11 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   (cache hit), for a non-tail-recursive term (naive `fib`), a
   tail-recursive one (`gcd`, compiled to a loop), and straight-line
   `factorial`. Shows both the steady-state speedup and how much of it the
-  one-time compile+verify cost eats into.
+  one-time compile+verify cost eats into — since `prove_tail_recursive_universal`
+  now covers non-tail recursion too, `fib`'s cold-compile cost includes
+  building its (two-self-call) universal proof, which roughly 5x'd that
+  one case's cold time on this machine (~15ms → ~74ms) once the widening
+  landed; the warm (cached) case is unaffected either way.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
   (translation-validation) proof per call, and the one-time universal
@@ -148,6 +157,8 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   producing an `Ev`-term rather than composing `refl`/`cong1` directly) —
   needed before the universal proof adds anything `jit.rs` can act on
   beyond "this shape typechecks".
-- Proof coverage for non-tail recursion (a different argument — bounded
-  term-structure induction rather than call-count induction).
+- Allowing an `If` nested inside a leaf's own arithmetic expression (e.g.
+  `n + (if c then 1 else 2)`), not just as the whole body of some branch —
+  `find_self_calls`/`denote_with_placeholders` currently reject that shape
+  outright.
 - Widening the compilable fragment itself (e.g. closures, more primitives).

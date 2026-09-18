@@ -360,16 +360,16 @@ mod tests {
         assert!(jit.is_kernel_verified(gcd_term));
         assert_eq!(jit.stats.kernel_proofs_checked, 2);
 
-        // factorial is Rec-wrapped but *not* tail-recursive (the self-call
-        // is nested inside a multiplication) -- outside proof.rs's
-        // fragment (needs induction over an unbounded call stack, not
-        // covered by the relational per-iteration proof either -- see
-        // proof.rs docs), so it's compiled and sample-verified as before,
-        // but not kernel-proof-verified.
+        // factorial is Rec-wrapped and *not* tail-recursive (the self-call
+        // is nested inside a multiplication, not the relational proof's
+        // fragment either -- see proof.rs docs) -- but prove_tail_recursive_universal
+        // now covers leaves with any number of self-calls combined
+        // arithmetically (via kernel::cong_n), not just tail calls, so
+        // this gets the universal proof too.
         let fact = factorial(&mut s);
         assert_eq!(jit.apply(&s, fact, &[5]).unwrap(), 120);
-        assert!(!jit.is_kernel_verified(fact));
-        assert_eq!(jit.stats.kernel_proofs_checked, 2, "unchanged");
+        assert!(jit.is_kernel_verified(fact));
+        assert_eq!(jit.stats.kernel_proofs_checked, 3);
     }
 
     #[test]

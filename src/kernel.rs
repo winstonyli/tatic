@@ -642,6 +642,43 @@ pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr
     app(jelim(motive, base, y.clone(), z.clone(), p2), p1)
 }
 
+/// `cong_n a_ty b_ty f xs ys ps : Id(B, f x_0 .. x_{n-1}, f y_0 .. y_{n-1})`,
+/// given `ps[i] : Id(A, xs[i], ys[i])` for each `i` -- congruence for a
+/// function of `n` arguments (all of type `A`, result type `B`), built by
+/// rewriting one argument at a time (`cong1` on the partial application
+/// with that argument's position held open as a fresh binder) and chaining
+/// the `n` resulting steps with `trans_proof`. `n == 1` reduces to `cong1`
+/// itself (up to an eta-expansion `cong1` doesn't need); `n == 0` is `refl`.
+pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: Vec<Expr>) -> Expr {
+    assert_eq!(xs.len(), ys.len());
+    assert_eq!(xs.len(), ps.len());
+    let apply = |args: &[Expr]| -> Expr { args.iter().cloned().fold(f.clone(), app) };
+    let lhs_all = apply(xs);
+    if xs.is_empty() {
+        return refl(lhs_all);
+    }
+
+    let mut cur_args: Vec<Expr> = xs.to_vec();
+    let mut acc: Option<(Expr, Expr)> = None; // (running proof, its right-hand value)
+    for i in 0..xs.len() {
+        // g := \z. f cur_args[0] .. cur_args[i-1] z cur_args[i+1] ..,
+        // built fresh under one new binder, so every other (already-fixed)
+        // argument needs reindexing by the binder `g` itself introduces.
+        let g_body = cur_args.iter().enumerate().fold(shift(f, 0, 1), |acc, (j, a)| {
+            app(acc, if j == i { var(0) } else { shift(a, 0, 1) })
+        });
+        let g = lam(a_ty.clone(), g_body);
+        let step = cong1(a_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
+        cur_args[i] = ys[i].clone();
+        let after = apply(&cur_args);
+        acc = Some(match acc {
+            None => (step, after),
+            Some((prev, mid)) => (trans_proof(b_ty, &lhs_all, &mid, &after, prev, step), after),
+        });
+    }
+    acc.unwrap().0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,6 +851,36 @@ mod tests {
         let chained = trans_proof(&a_ty, &app(f.clone(), a.clone()), &app(f.clone(), b.clone()), &app(f.clone(), c.clone()), c1, c2);
         check(&p.ctx, &chained, &id(a_ty, app(f.clone(), a), app(f, c)))
             .expect("trans(cong1(..p1), cong1(..p2)) : Id(A, f a, f c)");
+    }
+
+    #[test]
+    fn cong_n_typechecks_for_a_binary_function() {
+        // Postulate A, a binary g:A->A->A, x0,y0,x1,y1:A and proofs
+        // p0:Id(A,x0,y0), p1:Id(A,x1,y1); check cong_n(g,[x0,x1],[y0,y1],[p0,p1])
+        // : Id(A, g x0 x1, g y0 y1) -- the n=2 case `proof.rs`'s non-tail-
+        // recursion congruence step needs (e.g. for `f(n-1) + f(n-2)`).
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let g_pos = p.push(arrow(p.get(a_ty_pos), arrow(p.get(a_ty_pos), p.get(a_ty_pos))));
+        let x0_pos = p.push(p.get(a_ty_pos));
+        let y0_pos = p.push(p.get(a_ty_pos));
+        let x1_pos = p.push(p.get(a_ty_pos));
+        let y1_pos = p.push(p.get(a_ty_pos));
+        let p0_pos = p.push(id(p.get(a_ty_pos), p.get(x0_pos), p.get(y0_pos)));
+        let p1_pos = p.push(id(p.get(a_ty_pos), p.get(x1_pos), p.get(y1_pos)));
+
+        let a_ty = p.get(a_ty_pos);
+        let g = p.get(g_pos);
+        let x0 = p.get(x0_pos);
+        let y0 = p.get(y0_pos);
+        let x1 = p.get(x1_pos);
+        let y1 = p.get(y1_pos);
+        let p0 = p.get(p0_pos);
+        let p1 = p.get(p1_pos);
+
+        let proof = cong_n(&a_ty, &a_ty, &g, &[x0.clone(), x1.clone()], &[y0.clone(), y1.clone()], vec![p0, p1]);
+        let expected = id(a_ty, app(app(g.clone(), x0), x1), app(app(g, y0), y1));
+        check(&p.ctx, &proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(A, g x0 x1, g y0 y1)");
     }
 
     #[test]
