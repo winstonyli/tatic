@@ -24,6 +24,7 @@
 //! of empirical sampling) is the natural next step once this kernel is
 //! trusted, not something folded into this pass.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
@@ -252,12 +253,65 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
 }
 
 // --- reduction ------------------------------------------------------------
+//
+// `whnf`/`nf` are memoized within one top-level call (not across calls --
+// see `ReductionCache`'s own docs for why, and for the cross-call sharing
+// this deliberately leaves on the table). This is always sound regardless
+// of typing context, since reduction never consults one -- unlike a
+// hypothetical cache for `infer`/`check` themselves, which would need to
+// be keyed on more than just `Expr` identity to stay correct (the same
+// subterm can mean different things under different contexts), memoizing
+// pure reduction has no such caveat.
+
+/// Caches `whnf`/`nf` results for one top-level call, keyed by the `Rc`
+/// pointer identity of the subterm being reduced (see [`PtrKey`]). Two
+/// *equal but independently-allocated* subterms are still cache-distinct
+/// (this is sharing, not hash-consing) -- but a subterm that's genuinely
+/// the same `Rc` allocation, reached from several places while reducing one
+/// larger term (exactly what happens once a proof term embeds the same
+/// `Anchored` value or `cong_n` argument in multiple positions), is
+/// normalized once and reused everywhere else it's referenced, instead of
+/// being re-walked -- and, for `whnf` specifically, potentially
+/// re-beta-reduced, which is where repeated-substitution cost actually
+/// lives -- from scratch at every occurrence.
+#[derive(Default)]
+struct ReductionCache {
+    whnf: HashMap<PtrKey, Expr>,
+    nf: HashMap<PtrKey, Expr>,
+}
+
+/// Wraps an `Rc<Expr>` for use as a `HashMap` key by *pointer* identity
+/// (`Rc::ptr_eq`/`Rc::as_ptr`), not `Expr`'s own structural `PartialEq`/
+/// `Hash` (which aren't even derived for `Rc` fields the way you'd get "two
+/// equal trees hash equal" -- pointer identity is deliberately what we
+/// want here: a cache hit should mean "the literal same allocation was
+/// already reduced," not "an equal one was"). Holds the `Rc` itself, not
+/// just its address, so the entry keeps that allocation alive for as long
+/// as it's in the cache -- without that, a freed node's address could be
+/// reused by an unrelated later allocation within the same top-level call,
+/// turning a cache lookup into a false hit against the wrong `Expr`.
+struct PtrKey(Rc<Expr>);
+impl PartialEq for PtrKey {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for PtrKey {}
+impl std::hash::Hash for PtrKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (Rc::as_ptr(&self.0) as usize).hash(state);
+    }
+}
 
 /// Weak head normal form: reduce only the outermost redex chain.
 pub fn whnf(e: &Expr) -> Expr {
+    whnf_impl(e, &mut ReductionCache::default())
+}
+
+fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
     match e {
-        Expr::App(f, a) => match whnf(f) {
-            Expr::Lam(_, body) => whnf(&subst_top(&body, a)),
+        Expr::App(f, a) => match whnf_rc(f, cache) {
+            Expr::Lam(_, body) => whnf_impl(&subst_top(&body, a), cache),
             other => app(other, (**a).clone()),
         },
         Expr::J {
@@ -266,8 +320,8 @@ pub fn whnf(e: &Expr) -> Expr {
             a,
             b,
             p,
-        } => match whnf(p) {
-            Expr::Refl(_) => whnf(&app((**base).clone(), (**a).clone())),
+        } => match whnf_rc(p, cache) {
+            Expr::Refl(_) => whnf_impl(&app((**base).clone(), (**a).clone()), cache),
             other => Expr::J {
                 motive: motive.clone(),
                 base: base.clone(),
@@ -280,7 +334,7 @@ pub fn whnf(e: &Expr) -> Expr {
             motive,
             step,
             target,
-        } => match whnf(target) {
+        } => match whnf_rc(target, cache) {
             Expr::Sup(a, f) => {
                 // step a f (\y. wrec(motive, step, f y))
                 let rec_step = lam(
@@ -291,12 +345,10 @@ pub fn whnf(e: &Expr) -> Expr {
                         app(shift(&f, 0, 1), var(0)),
                     ),
                 );
-                whnf(&app3(
-                    (**step).clone(),
-                    (*a).clone(),
-                    (*f).clone(),
-                    rec_step,
-                ))
+                whnf_impl(
+                    &app3((**step).clone(), (*a).clone(), (*f).clone(), rec_step),
+                    cache,
+                )
             }
             other => Expr::WRec {
                 motive: motive.clone(),
@@ -308,35 +360,67 @@ pub fn whnf(e: &Expr) -> Expr {
     }
 }
 
+/// `whnf`, cached, for a child already held as `Rc<Expr>` (a struct field)
+/// -- exactly the position where the same subterm recurs many times within
+/// one top-level call once a proof term shares structure.
+fn whnf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
+    let key = PtrKey(e.clone());
+    if let Some(hit) = cache.whnf.get(&key) {
+        return hit.clone();
+    }
+    let result = whnf_impl(e, cache);
+    cache.whnf.insert(key, result.clone());
+    result
+}
+
 /// Full normal form: `whnf`, then recurse structurally into subterms.
 fn nf(e: &Expr) -> Expr {
-    match whnf(e) {
+    nf_impl(e, &mut ReductionCache::default())
+}
+
+fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
+    match whnf_impl(e, cache) {
         Expr::Var(k) => Expr::Var(k),
         Expr::Sort(i) => Expr::Sort(i),
-        Expr::Pi(a, b) => pi(nf(&a), nf(&b)),
-        Expr::Lam(a, b) => lam(nf(&a), nf(&b)),
-        Expr::App(f, a) => app(nf(&f), nf(&a)),
-        Expr::Id(a, x, y) => id(nf(&a), nf(&x), nf(&y)),
-        Expr::Refl(a) => refl(nf(&a)),
+        Expr::Pi(a, b) => pi(nf_rc(&a, cache), nf_rc(&b, cache)),
+        Expr::Lam(a, b) => lam(nf_rc(&a, cache), nf_rc(&b, cache)),
+        Expr::App(f, a) => app(nf_rc(&f, cache), nf_rc(&a, cache)),
+        Expr::Id(a, x, y) => id(nf_rc(&a, cache), nf_rc(&x, cache), nf_rc(&y, cache)),
+        Expr::Refl(a) => refl(nf_rc(&a, cache)),
         Expr::J {
             motive,
             base,
             a,
             b,
             p,
-        } => jelim(nf(&motive), nf(&base), nf(&a), nf(&b), nf(&p)),
-        Expr::W(a, b) => wty(nf(&a), nf(&b)),
-        Expr::Sup(a, f) => sup(nf(&a), nf(&f)),
+        } => jelim(nf_rc(&motive, cache), nf_rc(&base, cache), nf_rc(&a, cache), nf_rc(&b, cache), nf_rc(&p, cache)),
+        Expr::W(a, b) => wty(nf_rc(&a, cache), nf_rc(&b, cache)),
+        Expr::Sup(a, f) => sup(nf_rc(&a, cache), nf_rc(&f, cache)),
         Expr::WRec {
             motive,
             step,
             target,
-        } => wrec(nf(&motive), nf(&step), nf(&target)),
+        } => wrec(nf_rc(&motive, cache), nf_rc(&step, cache), nf_rc(&target, cache)),
     }
 }
 
+fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
+    let key = PtrKey(e.clone());
+    if let Some(hit) = cache.nf.get(&key) {
+        return hit.clone();
+    }
+    let result = nf_impl(e, cache);
+    cache.nf.insert(key, result.clone());
+    result
+}
+
+/// `nf(a) == nf(b)`, sharing one [`ReductionCache`] across both sides --
+/// worthwhile whenever `a`/`b` reference overlapping subterms, which two
+/// sides of a proof obligation very often do (the same postulates, the
+/// same sub-witnesses).
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
-    nf(a) == nf(b)
+    let mut cache = ReductionCache::default();
+    nf_impl(a, &mut cache) == nf_impl(b, &mut cache)
 }
 
 pub fn normalize(e: &Expr) -> Expr {
