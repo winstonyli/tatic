@@ -332,6 +332,58 @@ fn scan_for_closure_calls(
     }
 }
 
+/// Emits a bump allocator: one page (64KiB) of linear memory, a mutable
+/// global `$hp` tracking the next free byte, and an `$alloc` function that
+/// hands out `$n` bytes at a time, growing the memory (via `memory.grow`)
+/// whenever `$hp` would run past the end of what's currently allocated.
+/// Never reclaimed -- compiled instances are short-lived and per-call (see
+/// `jit.rs`), so there's no GC here, just like there's no GC in the
+/// combinator table above. Not wired into `try_compile` yet: nothing in
+/// this module allocates anything (no capturing closures compile here
+/// yet -- see the module docs), so this exists standalone, exercised only
+/// by its own tests below, ready for closure-conversion codegen to emit
+/// calls to `$alloc` once that lands. `#[cfg(test)]` for now since it has
+/// no caller outside its own tests below -- drop that once codegen calls
+/// it for real.
+#[cfg(test)]
+fn emit_allocator(w: &mut String) {
+    w.push_str("  (memory 1)\n");
+    w.push_str("  (global $hp (mut i32) (i32.const 0))\n");
+    w.push_str("  (func $alloc (param $n i32) (result i32)\n");
+    w.push_str("    (local $base i32)\n");
+    w.push_str("    (local $need i32)\n");
+    push_line(w, 4, "global.get $hp");
+    push_line(w, 4, "local.set $base");
+    push_line(w, 4, "local.get $base");
+    push_line(w, 4, "local.get $n");
+    push_line(w, 4, "i32.add");
+    push_line(w, 4, "local.set $need");
+    // Grow if $need would exceed the current memory size in bytes.
+    push_line(w, 4, "local.get $need");
+    push_line(w, 4, "memory.size");
+    push_line(w, 4, "i32.const 65536");
+    push_line(w, 4, "i32.mul");
+    push_line(w, 4, "i32.gt_u");
+    push_line(w, 4, "if");
+    // pages_needed = ceil(($need - current_bytes) / 65536)
+    push_line(w, 6, "local.get $need");
+    push_line(w, 6, "memory.size");
+    push_line(w, 6, "i32.const 65536");
+    push_line(w, 6, "i32.mul");
+    push_line(w, 6, "i32.sub");
+    push_line(w, 6, "i32.const 65535");
+    push_line(w, 6, "i32.add");
+    push_line(w, 6, "i32.const 65536");
+    push_line(w, 6, "i32.div_u");
+    push_line(w, 6, "memory.grow");
+    push_line(w, 6, "drop");
+    push_line(w, 4, "end");
+    push_line(w, 4, "local.get $need");
+    push_line(w, 4, "global.set $hp");
+    push_line(w, 4, "local.get $base");
+    w.push_str("  )\n");
+}
+
 fn push_line(w: &mut String, indent: usize, s: &str) {
     for _ in 0..indent {
         w.push(' ');
@@ -719,6 +771,55 @@ mod tests {
         let y = s.var(3);
         let f = s.abs(y);
         assert!(try_compile(&s, f).is_none());
+    }
+
+    /// Wraps `emit_allocator`'s output in a minimal module that exports
+    /// `$alloc` directly, so the tests below can call it from Rust without
+    /// needing any of the rest of `try_compile`'s machinery.
+    fn instantiate_allocator() -> (wasmtime::Store<()>, wasmtime::Instance) {
+        let mut w = String::new();
+        w.push_str("(module\n");
+        emit_allocator(&mut w);
+        w.push_str("  (export \"alloc\" (func $alloc))\n");
+        w.push_str("  (export \"memory\" (memory 0))\n");
+        w.push_str(")\n");
+        instantiate(&w)
+    }
+
+    #[test]
+    fn alloc_bumps_the_pointer_by_the_requested_size_each_call() {
+        let (mut store, instance) = instantiate_allocator();
+        let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+
+        let a = alloc.call(&mut store, 8).unwrap();
+        let b = alloc.call(&mut store, 16).unwrap();
+        let c = alloc.call(&mut store, 4).unwrap();
+        assert_eq!(a, 0);
+        assert_eq!(b, 8);
+        assert_eq!(c, 24);
+    }
+
+    #[test]
+    fn alloc_grows_memory_once_the_initial_page_is_exhausted() {
+        let (mut store, instance) = instantiate_allocator();
+        let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+
+        assert_eq!(memory.size(&store), 1); // one 64KiB page to start
+
+        // Exhaust the first page, forcing at least one `memory.grow`.
+        let first = alloc.call(&mut store, 60_000).unwrap();
+        let second = alloc.call(&mut store, 60_000).unwrap();
+        assert_eq!(first, 0);
+        assert_eq!(second, 60_000);
+        assert!(memory.size(&store) > 1, "should have grown past the first page");
+
+        // The allocation is actually usable: write through both pointers
+        // and read the bytes back, including past the old page boundary.
+        memory.data_mut(&mut store)[first as usize] = 0xAB;
+        memory.data_mut(&mut store)[second as usize + 59_999] = 0xCD;
+        assert_eq!(memory.data(&store)[first as usize], 0xAB);
+        assert_eq!(memory.data(&store)[second as usize + 59_999], 0xCD);
     }
 
     #[test]
