@@ -53,44 +53,48 @@
 //! (see `kernel`'s docs), there's no bare inductive `Nat` to induct on --
 //! instead, `prove_tail_recursive_universal` postulates a family
 //! `Ev(params, v) : Sort(0)`, "the tail-call trace starting at `params`
-//! evaluates to `v`", with its own two constructors (`ev_base`: the base
-//! case terminates at its own value; `ev_step`: one more tail-call step
-//! prepended to an already-known trace) and a postulated recursor
-//! (`ev_rec`) obeying the same universal-motive shape `kernel::WRec` uses,
-//! just for this specific inductive family instead of a derived `W`-type
-//! (same "postulated inductive family" pattern as `kernel::Postulates`'
-//! docs). Crucially, `ev_base`/`ev_step` each take an extra hypothesis
-//! argument tying them to the branch `cond` actually selects (`cond(params)
-//! = 1` for whichever of `compile.rs`'s two branches is the base case,
-//! `= 0` for the other) -- without that, `Ev(params, v)` would be
-//! inhabited via `ev_base` for *any* `params`, `cond`-blind, making it a
-//! strictly weaker relation than "the real trace" it's meant to model (an
-//! earlier version of this had exactly that gap). Gating doesn't need
-//! `cond` to be *decidable* for symbolic `params` -- it only needs the
-//! premise as an explicit argument any actual witness must supply, exactly
-//! how a big-step evaluation relation is conventionally formalized; for
-//! *concrete* `params` that premise is `refl`, the same way
-//! `prove_tail_recursive_call`'s trace-following already works.
+//! evaluates to `v`", with one constructor per leaf of `body`'s decision
+//! tree (`body` may be an arbitrary tree of nested `If`s, matching what
+//! `compile_node` already compiles -- not just one top-level `If`: a base
+//! leaf's constructor says the trace terminates at its own value, a tail
+//! leaf's constructor says one more tail-call step is prepended to an
+//! already-known trace) and a postulated recursor (`ev_rec`) obeying the
+//! same universal-motive shape `kernel::WRec` uses, just for this specific
+//! inductive family instead of a derived `W`-type (same "postulated
+//! inductive family" pattern as `kernel::Postulates`' docs). Crucially,
+//! each leaf's constructor takes extra hypothesis arguments tying it to
+//! the *whole path* of `If`s that reaches that leaf (`cond_i(params) = 1`
+//! or `= 0` at each ancestor, one premise per ancestor) -- without that,
+//! a base leaf's constructor would make `Ev(params, v)` inhabited for
+//! *any* `params`, `cond`-blind, making it a strictly weaker relation than
+//! "the real trace" it's meant to model (an earlier version of this had
+//! exactly that gap, for the single-leaf-per-kind case). Gating doesn't
+//! need any `cond` to be *decidable* for symbolic `params` -- it only
+//! needs each premise as an explicit argument any actual witness must
+//! supply, exactly how a big-step evaluation relation is conventionally
+//! formalized; for *concrete* `params` each premise is `refl`, the same
+//! way `prove_tail_recursive_call`'s trace-following already works.
 //!
 //! Applying `ev_rec` with the constant-`Int` motive gives `loop_val`, a
-//! term computing exactly what the compiled loop computes, with the two
+//! term computing exactly what the compiled loop computes, with the
 //! computation-rule axioms `loop_val` needs (specific to *this* `loop_val`,
-//! not a generic schema) postulated the same way. The theorem itself --
-//! `loop_val(params, v, e) = v` for every `params`, `v`, and every trace
-//! `e : Ev(params, v)` -- is then a genuine `ev_rec` induction using
-//! `kernel::cong1`/`trans_proof` as its step case's composition lemmas, not
-//! a per-call trace unrolling. Note what this theorem does and doesn't
-//! give you on its own: it's a *reusable lemma*, proved once regardless of
-//! `params`, not itself a per-input guarantee -- instantiating it at a
-//! concrete `params` still needs an actual `e : Ev(params, v)` witness
-//! (built by following `cond`'s real value at each step, same as
-//! `prove_tail_recursive_call` already does), which this function doesn't
-//! build. It covers exactly the same shape `prove_tail_recursive_call`
-//! does (a single `If` whose two branches are a base case and a
-//! fully-saturated tail self-call, with `cond` a direct comparison --
-//! `compile_cond` in `compile.rs` requires that too, and gating above
-//! relies on comparisons denoting to exactly `0` or `1`); deeper branching
-//! is future work.
+//! not a generic schema, one pair-half per leaf) postulated the same way.
+//! The theorem itself -- `loop_val(params, v, e) = v` for every `params`,
+//! `v`, and every trace `e : Ev(params, v)` -- is then a genuine `ev_rec`
+//! induction using `kernel::cong1`/`trans_proof` as each step leaf's
+//! composition lemmas, not a per-call trace unrolling. Note what this
+//! theorem does and doesn't give you on its own: it's a *reusable lemma*,
+//! proved once regardless of `params`, not itself a per-input guarantee --
+//! instantiating it at a concrete `params` still needs an actual
+//! `e : Ev(params, v)` witness (built by following `cond`'s real value at
+//! each step, same as `prove_tail_recursive_call` already does), which
+//! this function doesn't build. Every `If` on the way to a leaf must have
+//! a direct comparison as its condition (`compile_cond` in `compile.rs`
+//! requires that too, and gating above relies on comparisons denoting to
+//! exactly `0` or `1`) and `body` must have at least one base leaf and at
+//! least one tail leaf; `prove_tail_recursive_call` already handles
+//! arbitrary branching on its own (it just follows one concrete path per
+//! call), so this was the one of the two that needed widening.
 
 use std::collections::HashMap;
 
@@ -472,52 +476,144 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // correctness results are: *conditionally* on a witness that the
 // recursion actually terminates, rather than by also proving termination.
 //
-// That witness is `Ev(params, v)`: "unrolling from `params` reaches `v`",
-// an inductively-defined relation with exactly the two constructors
-// `compile_node`'s loop has cases for (reach a base value directly, or
-// take one more tail-call step) -- *each gated* by a hypothesis that
-// `cond` actually denotes to the literal (`1` or `0`) that selects that
-// branch (`cond_premise` below). Without that gate, `ev_base` alone would
-// make `Ev(params, v)` inhabited for any `params` regardless of what
-// `cond` says, which isn't what "unrolling from `params` reaches `v`" is
-// supposed to mean; the gate doesn't require deciding `cond` for symbolic
-// `params` (that's not possible with `Int` postulated abstractly) -- it
-// only requires that whoever builds an actual `Ev` witness supplies that
-// hypothesis, same as any conventionally-formalized big-step relation.
-// Bootstrapping `Ev` as a genuine `W`-type hits the same wall as any other
-// finite-shaped inductive in this kernel (see `kernel::Postulates`' docs),
-// so -- consistent with everything else in this module -- it's postulated:
-// the type family (`Ev`), its two (now gated) constructors
-// (`ev_base`/`ev_step`), and a generic eliminator (`ev_rec`, used twice
-// below, with two different motives).
+// `body` may be an arbitrary tree of nested `If`s (`compile_node` already
+// compiles that shape fine -- it recurses into both branches uniformly in
+// tail position, regardless of depth), with each leaf either a base case
+// (no self-call) or a fully-saturated tail self-call. `classify_tree`
+// turns it into a [`DecisionTree`]; `flatten_tree` reduces that to a list
+// of base leaves and a list of tail leaves, each carrying the *path* of
+// `(cond, literal)` premises -- one per ancestor `If`, `1` for a
+// `then`-branch taken, `0` for an `else`-branch taken -- that must all
+// hold for that leaf to be the one reached. A single top-level `If` (the
+// old, narrower restriction) is just the case where every path has length
+// one.
+//
+// The witness is `Ev(params, v)`: "unrolling from `params` reaches `v`",
+// an inductively-defined relation with one constructor per leaf --
+// `ev_base_i` for base leaf `i`, `ev_step_j` for tail leaf `j` -- *each
+// gated* by its own leaf's whole path (`push_path`/`cond_premise` below),
+// not just one immediate condition. Without that gate, `ev_base_i` alone
+// would make `Ev(params, v)` inhabited for any `params` regardless of
+// what `cond` says, which isn't what "unrolling from `params` reaches
+// `v`" is supposed to mean; the gate doesn't require deciding `cond` for
+// symbolic `params` (that's not possible with `Int` postulated
+// abstractly) -- it only requires that whoever builds an actual `Ev`
+// witness supplies those hypotheses, same as any conventionally-
+// formalized big-step relation. Bootstrapping `Ev` as a genuine `W`-type
+// hits the same wall as any other finite-shaped inductive in this kernel
+// (see `kernel::Postulates`' docs), so -- consistent with everything else
+// in this module -- it's postulated: the type family (`Ev`), its (now
+// gated, and now one-per-leaf) constructors, and a generic eliminator
+// (`ev_rec`, used twice below, with two different motives) whose base-
+// and step-case arguments are correspondingly one-per-leaf too.
 //
 // `loop_val` is then *defined* via that eliminator -- not postulated --
-// with exactly the recursive shape `compile_node`'s loop has: return the
-// base value directly, or return whatever the recursive step already
-// computed. Since a postulated eliminator has no built-in reduction rule
-// the way `WRec` does, its two computation rules for *this specific*
-// `loop_val` are postulated directly as propositional (`Id`-typed) axioms
-// (`loop_val_base_eq`/`loop_val_step_eq`) -- not as a fully generic "for
-// any motive" schema, since `loop_val` is the only thing that needs them.
+// with exactly the recursive shape `compile_node`'s loop has: return
+// whichever base value was reached directly, or return whatever the
+// recursive step already computed (the same trivial pass-through
+// regardless of *which* tail leaf was taken -- only the base case's value
+// actually varies by leaf). Since a postulated eliminator has no built-in
+// reduction rule the way `WRec` does, its computation rules for *this
+// specific* `loop_val` are postulated directly as propositional
+// (`Id`-typed) axioms (`loop_val_base_eq_i`/`loop_val_step_eq_j`, one per
+// leaf) -- not as a fully generic "for any motive" schema, since
+// `loop_val` is the only thing that needs them.
 //
 // The theorem -- `Pi params v (e : Ev(params,v)). Id(Int, loop_val(params,v,e), v)`
 // -- says the witness's own claimed value is always what `loop_val`
 // reconstructs from it, and is proved by one more use of `ev_rec` (motive:
-// the theorem statement itself), whose base case is `loop_val_base_eq`
-// directly and whose step case chains `loop_val_step_eq` with the
-// induction hypothesis via `kernel::trans_proof`.
+// the theorem statement itself), whose base-case arguments are the
+// `loop_val_base_eq_i` axioms directly and whose step-case arguments each
+// chain the corresponding `loop_val_step_eq_j` with the induction
+// hypothesis via `kernel::trans_proof`.
 //
-// Scope: `body` must be `If(cond, branch_a, branch_b)` with exactly one
-// branch a base case and the other a tail call -- i.e. gcd's shape -- and
-// `cond` must be a direct comparison (`compile_cond` in `compile.rs`
-// requires that too; it's also what lets the gating above use plain
-// equality, since a comparison only ever denotes to `0` or `1`). Deeper
-// If-nesting is future work (same kind of restriction as elsewhere in
-// this module: a real gap, not a subtle one).
+// Scope: every `If` on the way to any leaf must have a direct comparison
+// as its condition (`compile_cond` in `compile.rs` requires that too; also
+// what lets the gating above use plain equality, since a comparison only
+// ever denotes to `0` or `1`), and `body` must have at least one base leaf
+// and at least one tail leaf (otherwise it's not a tail-recursive shape at
+// all). `prove_tail_recursive_call` already handles arbitrary branching --
+// it just follows one concrete path through the tree per call -- so this
+// was the only one of the two that needed widening.
 
 /// `f` applied to each of `args` in order (left to right).
 fn apply_n(f: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
     args.into_iter().fold(f, kernel::app)
+}
+
+/// `arith.p.get(pos)` for each of `positions`, resolved fresh -- never
+/// cached, same convention as `Params::at` (staleness after a further
+/// push), just for a list of individually-tracked postulate positions
+/// rather than one `Params` group.
+fn resolve_all(arith: &ArithPostulates, positions: &[usize]) -> Vec<Expr> {
+    positions.iter().map(|&p| arith.p.get(p)).collect()
+}
+
+/// The shape `prove_tail_recursive_universal`'s `body` must be: an
+/// arbitrary tree of nested `If`s (matching what `compile_node` already
+/// compiles), each leaf either a base case (`Base`) or a fully-saturated
+/// tail self-call (`Tail`).
+enum DecisionTree {
+    If { cond: Hash, then_branch: Box<DecisionTree>, else_branch: Box<DecisionTree> },
+    Base(Hash),
+    Tail(Vec<Hash>),
+}
+
+/// Classifies `h` into a [`DecisionTree`]. Every `If`'s condition must be
+/// a direct comparison (same restriction `compile_cond` in `compile.rs`
+/// already imposes, and what lets `cond_premise` below use plain `Id`
+/// equality -- a comparison only ever denotes to `0` or `1`).
+fn classify_tree(store: &TermStore, h: Hash, arity: usize, self_idx: u32) -> Option<DecisionTree> {
+    if let Term::If(c, t, e) = store.resolve(h) {
+        let (c, t, e) = (*c, *t, *e);
+        if !matches!(store.resolve(c), Term::Prim(PrimOp::Lt | PrimOp::Le | PrimOp::Eq, _, _)) {
+            return None;
+        }
+        let then_branch = Box::new(classify_tree(store, t, arity, self_idx)?);
+        let else_branch = Box::new(classify_tree(store, e, arity, self_idx)?);
+        return Some(DecisionTree::If { cond: c, then_branch, else_branch });
+    }
+    if let Some(args) = compile::match_self_call(store, h, arity, Some(self_idx)) {
+        return Some(DecisionTree::Tail(args));
+    }
+    Some(DecisionTree::Base(h))
+}
+
+/// One leaf of a [`DecisionTree`], carrying the path of `(cond, literal)`
+/// premises from the root that must all hold for this leaf to be the one
+/// reached (`1` for a `then`-branch taken, `0` for an `else`-branch).
+struct Leaf<K> {
+    path: Vec<(Hash, i64)>,
+    kind: K,
+}
+
+/// Flattens a [`DecisionTree`] into its base leaves and tail leaves, each
+/// with the path that reaches it.
+fn flatten_tree(tree: &DecisionTree) -> (Vec<Leaf<Hash>>, Vec<Leaf<Vec<Hash>>>) {
+    fn go(
+        tree: &DecisionTree,
+        path: &mut Vec<(Hash, i64)>,
+        bases: &mut Vec<Leaf<Hash>>,
+        tails: &mut Vec<Leaf<Vec<Hash>>>,
+    ) {
+        match tree {
+            DecisionTree::If { cond, then_branch, else_branch } => {
+                path.push((*cond, 1));
+                go(then_branch, path, bases, tails);
+                path.pop();
+                path.push((*cond, 0));
+                go(else_branch, path, bases, tails);
+                path.pop();
+            }
+            DecisionTree::Base(h) => bases.push(Leaf { path: path.clone(), kind: *h }),
+            DecisionTree::Tail(args) => tails.push(Leaf { path: path.clone(), kind: args.clone() }),
+        }
+    }
+    let mut bases = Vec::new();
+    let mut tails = Vec::new();
+    let mut path = Vec::new();
+    go(tree, &mut path, &mut bases, &mut tails);
+    (bases, tails)
 }
 
 /// A term built once via `close_pi`/`close_lam` at a specific ambient
@@ -608,9 +704,8 @@ pub struct UniversalTailProof {
 
 /// Attempts to build a [`UniversalTailProof`] for `h`. Returns `None` for
 /// anything outside the covered fragment: not `Rec`-wrapped, zero arity,
-/// or a body that isn't `If(cond, branch_a, branch_b)` with exactly one
-/// branch a base case and the other a fully-saturated tail self-call (see
-/// module docs).
+/// or a body that doesn't classify as a [`DecisionTree`] with at least one
+/// base leaf and at least one tail leaf (see module docs).
 pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if !is_rec || arity == 0 {
@@ -618,37 +713,14 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
     }
     let self_idx = arity as u32;
 
-    let Term::If(c, ba, bb) = store.resolve(body) else {
-        return None;
-    };
-    let (cond, branch_a, branch_b) = (*c, *ba, *bb);
-    // `cond` must be a direct comparison -- `compile_cond` (compile.rs)
-    // requires exactly that for the term to be compilable at all, and it's
-    // what lets the gating premises below (`cond_premise`) use plain `Id`
-    // equality: a comparison only ever denotes to `0` or `1`.
-    if !matches!(store.resolve(cond), Term::Prim(PrimOp::Lt | PrimOp::Le | PrimOp::Eq, _, _)) {
-        return None;
-    }
-    let (base_expr, tail_args_expr, base_lit) = match (
-        compile::match_self_call(store, branch_a, arity, Some(self_idx)),
-        compile::match_self_call(store, branch_b, arity, Some(self_idx)),
-    ) {
-        (None, Some(args)) => (branch_a, args, 1), // cond=1 selects branch_a (the base case)
-        (Some(args), None) => (branch_b, args, 0), // cond=0 selects branch_b (the base case)
-        _ => return None, // both or neither branch is a tail call -- not this shape
-    };
-    let tail_lit = 1 - base_lit;
-    if tail_args_expr.len() != arity {
-        return None;
+    let tree = classify_tree(store, body, arity, self_idx)?;
+    let (base_leaves, tail_leaves) = flatten_tree(&tree);
+    if base_leaves.is_empty() || tail_leaves.is_empty() {
+        return None; // not a tail-recursive shape: needs at least one of each
     }
 
     let mut lits = Vec::new();
-    let in_fragment = collect_literals(store, cond, arity, None, &mut lits)
-        && collect_literals(store, base_expr, arity, None, &mut lits)
-        && tail_args_expr
-            .iter()
-            .all(|&e| collect_literals(store, e, arity, None, &mut lits));
-    if !in_fragment {
+    if !collect_literals(store, body, arity, Some(self_idx), &mut lits) {
         return None;
     }
 
@@ -659,78 +731,87 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
     arith.lit(0);
     arith.lit(1); // `cond_premise` below needs both regardless of whether the source uses them
 
-    // new_params(params): the tail call's argument expressions denoted in
-    // terms of `params`, reindexed from application order to by-`Var`
-    // order (matching `prove_tail_recursive_call`'s convention exactly).
-    // Always resolves `pp` fresh, so it's safe to call at any point,
-    // however many more things have been pushed since `pp` was created.
-    let new_params = |arith: &ArithPostulates, pp: &Params| -> Option<Vec<Expr>> {
-        let params = pp.at(arith);
-        (0..arity)
-            .map(|i| denote(store, tail_args_expr[arity - 1 - i], arith, &params))
-            .collect()
-    };
-
-    // cond_premise(params, lit): "cond(params) = lit" -- the hypothesis
-    // `ev_base`/`ev_step` each require below, tying `Ev`'s constructors to
-    // whichever branch `cond` actually selects instead of admitting a
-    // witness unconditionally (see module docs). Always resolves fresh via
-    // the caller-supplied `params`, same convention as `ev_of`.
-    let cond_premise = |arith: &ArithPostulates, params: &[Expr], lit: i64| -> Option<Expr> {
+    // cond_premise(cond, params, lit): "cond(params) = lit" -- the
+    // hypothesis each leaf's path premises are built from below, tying
+    // `Ev`'s constructors to whichever branch `cond` actually selects
+    // instead of admitting a witness unconditionally (see module docs).
+    // Always resolves fresh via the caller-supplied `params`, same
+    // convention as `ev_of`.
+    let cond_premise = |arith: &ArithPostulates, cond: Hash, params: &[Expr], lit: i64| -> Option<Expr> {
         let d = denote(store, cond, arith, params)?;
         Some(kernel::id(arith.int_ty(), d, arith.lit_ref(lit)))
+    };
+
+    // Pushes one premise per `(cond, lit)` on `path` (a leaf's whole
+    // ancestry, root to leaf), returning their positions. Each premise's
+    // own type only depends on `params`, but every push grows the
+    // context by one, so `params` is re-resolved fresh immediately before
+    // each individual push rather than reused across them.
+    let push_path = |arith: &mut ArithPostulates, pp: &Params, path: &[(Hash, i64)]| -> Option<Vec<usize>> {
+        let mut positions = Vec::with_capacity(path.len());
+        for &(cond, lit) in path {
+            let pf_ty = cond_premise(arith, cond, &pp.at(arith), lit)?;
+            positions.push(arith.p.push(pf_ty));
+        }
+        Some(positions)
+    };
+
+    // new_params_for(tail_args, params): a tail leaf's own argument
+    // expressions denoted in terms of `params`, reindexed from
+    // application order to by-`Var` order (matching
+    // `prove_tail_recursive_call`'s convention exactly).
+    let new_params_for = |arith: &ArithPostulates, tail_args: &[Hash], params: &[Expr]| -> Option<Vec<Expr>> {
+        (0..arity)
+            .map(|i| denote(store, tail_args[arity - 1 - i], arith, params))
+            .collect()
     };
 
     // Ev : Int^arity -> Int -> Sort(0)  (non-dependent chain: composes
     // correctly via `arrow`'s own shifting regardless of build order --
     // see `ArithPostulates::new`'s `ite_ty` for the same pattern.)
-    let arrow_chain = |arith: &ArithPostulates| -> Expr {
-        let mut ty = kernel::sort(0);
-        for _ in 0..=arity {
-            ty = kernel::arrow(arith.int_ty(), ty);
-        }
-        ty
-    };
-    let ev_ty = arrow_chain(&arith);
+    let ev_ty = (0..=arity).fold(kernel::sort(0), |ty, _| kernel::arrow(arith.int_ty(), ty));
     let ev_pos = arith.p.push(ev_ty);
     // Resolves `params`/`np` fresh via the caller-supplied slice -- the
     // caller is responsible for passing one resolved *at the current
-    // depth* (`pp.at(arith)` or a freshly-recomputed `new_params`), not a
-    // cached one from before further pushes.
+    // depth* (`pp.at(arith)` or a freshly-recomputed `new_params_for`),
+    // not a cached one from before further pushes.
     let ev_of = |arith: &ArithPostulates, params: &[Expr], v: Expr| -> Expr {
         apply_n(arith.p.get(ev_pos), params.iter().cloned().chain([v]))
     };
 
-    // ev_base : Pi params. Pi (_: cond(params)=base_lit). Ev(params, denote(base_expr, params))
-    let ev_base_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), base_lit)?;
-        arith.p.push(pf_ty);
-        let params = pp.at(arith); // fresh, past the `pf` binder just pushed
-        let v = denote(store, base_expr, arith, &params)?;
-        Some(ev_of(arith, &params, v))
-    })?;
-    let ev_base_pos = arith.p.push(ev_base_ty);
+    // ev_base_i : Pi params. Pi (leaf i's path premises). Ev(params, denote(leaf, params))
+    // -- one constructor per base leaf.
+    let mut ev_base_positions = Vec::with_capacity(base_leaves.len());
+    for leaf in &base_leaves {
+        let ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
+            push_path(arith, pp, &leaf.path)?;
+            let params = pp.at(arith); // fresh, past the path premises just pushed
+            let v = denote(store, leaf.kind, arith, &params)?;
+            Some(ev_of(arith, &params, v))
+        })?;
+        ev_base_positions.push(arith.p.push(ty));
+    }
 
-    // ev_step : Pi params. Pi (_: cond(params)=tail_lit). Pi v:Int.
-    //           Ev(new_params, v) -> Ev(params, v)
-    let ev_step_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), tail_lit)?;
-        arith.p.push(pf_ty);
-        let v_pos = arith.p.push(arith.int_ty());
-        // `new_params` resolves `pp` fresh internally, so it's fine to call
-        // this late -- it reflects the depth after `pf`/`v` regardless.
-        let np = new_params(arith, pp)?;
-        let premise = ev_of(arith, &np, arith.p.get(v_pos));
-        let concl = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
-        Some(kernel::arrow(premise, concl))
-    })?;
-    let ev_step_pos = arith.p.push(ev_step_ty);
+    // ev_step_j : Pi params. Pi (leaf j's path premises). Pi v.
+    //             Ev(new_params, v) -> Ev(params, v)
+    // -- one constructor per tail leaf.
+    let mut ev_step_positions = Vec::with_capacity(tail_leaves.len());
+    for leaf in &tail_leaves {
+        let ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
+            push_path(arith, pp, &leaf.path)?;
+            let v_pos = arith.p.push(arith.int_ty());
+            let np = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let premise = ev_of(arith, &np, arith.p.get(v_pos));
+            let concl = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
+            Some(kernel::arrow(premise, concl))
+        })?;
+        ev_step_positions.push(arith.p.push(ty));
+    }
 
     // Generic recursor:
     // ev_rec : Pi P:(Pi params:Int^arity. Pi v:Int. Ev(params,v) -> Sort(0)).
-    //          (Pi params (_: cond=base_lit). P(params, denote(base_expr,params), ev_base(params,_)))
-    //       -> (Pi params (_: cond=tail_lit) v (e:Ev(new_params,v)).
-    //             P(new_params,v,e) -> P(params,v,ev_step(params,_,v,e)))
+    //          (base_case_ty for base leaf 0) -> .. -> (.. for the last base leaf)
+    //       -> (step_case_ty for tail leaf 0) -> .. -> (.. for the last tail leaf)
     //       -> Pi params v (e:Ev(params,v)). P(params,v,e)
     //
     // NB: unlike `ev_ty` above, this is genuinely *dependent* -- P's third
@@ -750,44 +831,48 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
         apply_n(arith.p.get(p_pos), params.iter().cloned().chain([v, e]))
     };
 
-    let base_case_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), base_lit)?;
-        let pf_pos = arith.p.push(pf_ty);
-        // Use phase.
-        let params = pp.at(arith);
-        let pf = arith.p.get(pf_pos);
-        let v = denote(store, base_expr, arith, &params)?;
-        let eb = apply_n(arith.p.get(ev_base_pos), params.iter().cloned().chain([pf]));
-        Some(p_of(arith, &params, v, eb))
-    })?;
-    let step_case_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
-        // Push phase: each push's own type may only use what's already
-        // resolved *so far* (fine -- that's ordinary dependent formation).
-        // `new_params` is called *after* pushing v, immediately before the
-        // one use that needs it, so it reflects this depth correctly.
-        let pf_ty = cond_premise(arith, &pp.at(arith), tail_lit)?;
-        let pf_pos = arith.p.push(pf_ty);
-        let v_pos = arith.p.push(arith.int_ty());
-        let np = new_params(arith, pp)?;
-        let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
-        let e_pos = arith.p.push(ev_np);
-        // Use phase: every push for this closure is done, so resolve
-        // *everything* fresh here rather than reusing anything captured
-        // during the push phase (which would be stale by however many
-        // pushes happened after it).
-        let np2 = new_params(arith, pp)?;
-        let params = pp.at(arith);
-        let pf = arith.p.get(pf_pos);
-        let v = arith.p.get(v_pos);
-        let e = arith.p.get(e_pos);
-        let ih = p_of(arith, &np2, v.clone(), e.clone());
-        let es = apply_n(
-            arith.p.get(ev_step_pos),
-            params.iter().cloned().chain([pf, v.clone(), e]),
-        );
-        let concl = p_of(arith, &params, v, es);
-        Some(kernel::arrow(ih, concl))
-    })?;
+    let mut base_case_tys = Vec::with_capacity(base_leaves.len());
+    for (leaf, &ev_base_pos) in base_leaves.iter().zip(&ev_base_positions) {
+        let ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
+            let path_positions = push_path(arith, pp, &leaf.path)?;
+            // Use phase.
+            let params = pp.at(arith);
+            let premises = resolve_all(arith, &path_positions);
+            let v = denote(store, leaf.kind, arith, &params)?;
+            let eb = apply_n(arith.p.get(ev_base_pos), params.iter().cloned().chain(premises));
+            Some(p_of(arith, &params, v, eb))
+        })?;
+        base_case_tys.push(ty);
+    }
+    let mut step_case_tys = Vec::with_capacity(tail_leaves.len());
+    for (leaf, &ev_step_pos) in tail_leaves.iter().zip(&ev_step_positions) {
+        let ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
+            // Push phase: each push's own type may only use what's already
+            // resolved *so far* (fine -- that's ordinary dependent formation).
+            let path_positions = push_path(arith, pp, &leaf.path)?;
+            let v_pos = arith.p.push(arith.int_ty());
+            let np = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
+            let e_pos = arith.p.push(ev_np);
+            // Use phase: every push for this closure is done, so resolve
+            // *everything* fresh here rather than reusing anything captured
+            // during the push phase (which would be stale by however many
+            // pushes happened after it).
+            let np2 = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let params = pp.at(arith);
+            let premises = resolve_all(arith, &path_positions);
+            let v = arith.p.get(v_pos);
+            let e = arith.p.get(e_pos);
+            let ih = p_of(arith, &np2, v.clone(), e.clone());
+            let es = apply_n(
+                arith.p.get(ev_step_pos),
+                params.iter().cloned().chain(premises).chain([v.clone(), e]),
+            );
+            let concl = p_of(arith, &params, v, es);
+            Some(kernel::arrow(ih, concl))
+        })?;
+        step_case_tys.push(ty);
+    }
     let concl_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
         let v_pos = arith.p.push(arith.int_ty());
         let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
@@ -799,27 +884,36 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
         Some(p_of(arith, &params, v, e))
     })?;
 
-    let ev_rec_ty_body = kernel::arrow(base_case_ty, kernel::arrow(step_case_ty, concl_ty));
+    let ev_rec_ty_body = base_case_tys
+        .iter()
+        .chain(step_case_tys.iter())
+        .rev()
+        .fold(concl_ty, |acc, ty| kernel::arrow(ty.clone(), acc));
     let ev_rec_ty = kernel::close_pi(p_base_len, &arith.p.ctx, ev_rec_ty_body);
     arith.p.ctx.truncate(p_base_len);
     let ev_rec_pos = arith.p.push(ev_rec_ty);
     let ev_rec_ref = |arith: &ArithPostulates,
                        motive: Expr,
-                       base: Expr,
-                       step: Expr,
+                       bases: &[Expr],
+                       steps: &[Expr],
                        params: &[Expr],
                        v: Expr,
                        e: Expr|
      -> Expr {
         apply_n(
             arith.p.get(ev_rec_pos),
-            [motive, base, step].into_iter().chain(params.iter().cloned()).chain([v, e]),
+            [motive]
+                .into_iter()
+                .chain(bases.iter().cloned())
+                .chain(steps.iter().cloned())
+                .chain(params.iter().cloned())
+                .chain([v, e]),
         )
     };
 
-    // loop_val's two arguments to ev_rec, using the constant motive `Int`:
-    //   base' : Pi params. Int  =  \params. denote(base_expr, params)
-    //   step' : Pi params v e. Int -> Int  =  \params v e ih. ih
+    // loop_val's arguments to ev_rec, using the constant motive `Int`:
+    //   base_i' : Pi params (path premises). Int  =  \.. . denote(leaf i, params)
+    //   step_j' : Pi params (path premises) v e. Int -> Int  =  \.. ih. ih
     // The motive's *body* ignores `v`/`e`, but its binder *domains* still
     // have to match `motive_ty` exactly for these to actually have that
     // type -- `e`'s domain is genuinely `Ev(params,v)`, not a placeholder
@@ -832,76 +926,79 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
         Some(arith.int_ty())
     })?;
     let const_int_motive = Anchored::new(&arith, const_int_motive_expr);
-    let loop_base_expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), base_lit)?;
-        arith.p.push(pf_ty); // matches base_case_ty's extra premise binder, unused in the body
-        denote(store, base_expr, arith, &pp.at(arith))
-    })?;
-    let loop_base = Anchored::new(&arith, loop_base_expr);
-    let loop_step_expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), tail_lit)?;
-        arith.p.push(pf_ty); // matches step_case_ty's extra premise binder, unused in the body
-        let v_pos = arith.p.push(arith.int_ty());
-        // Matches `step_case_ty`'s own signature: the step function's `e`
-        // binder is `Ev(new_params, v)`, not `Ev(params, v)` -- it's the
-        // premise about the *recursive call's* trace, not this call's.
-        let np = new_params(arith, pp)?;
-        let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
-        arith.p.push(ev_np); // e : Ev(new_params, v)
-        let ih_pos = arith.p.push(arith.int_ty()); // ih : Int (const_int_motive always gives Int)
-        Some(arith.p.get(ih_pos))
-    })?;
-    let loop_step = Anchored::new(&arith, loop_step_expr);
+
+    let mut loop_bases = Vec::with_capacity(base_leaves.len());
+    for leaf in &base_leaves {
+        let expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
+            push_path(arith, pp, &leaf.path)?; // matches base_case_ty's premise binders, unused in the body
+            denote(store, leaf.kind, arith, &pp.at(arith))
+        })?;
+        loop_bases.push(Anchored::new(&arith, expr));
+    }
+    let mut loop_steps = Vec::with_capacity(tail_leaves.len());
+    for leaf in &tail_leaves {
+        let expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
+            push_path(arith, pp, &leaf.path)?; // matches step_case_ty's premise binders, unused in the body
+            let v_pos = arith.p.push(arith.int_ty());
+            // Matches `step_case_ty`'s own signature: the step function's
+            // `e` binder is `Ev(new_params, v)`, not `Ev(params, v)` --
+            // it's the premise about the *recursive call's* trace, not
+            // this call's.
+            let np = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
+            arith.p.push(ev_np); // e : Ev(new_params, v)
+            let ih_pos = arith.p.push(arith.int_ty()); // ih : Int (const_int_motive always gives Int)
+            Some(arith.p.get(ih_pos))
+        })?;
+        loop_steps.push(Anchored::new(&arith, expr));
+    }
 
     let loop_val = |arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
-        ev_rec_ref(
-            arith,
-            const_int_motive.at(arith),
-            loop_base.at(arith),
-            loop_step.at(arith),
-            params,
-            v,
-            e,
-        )
+        let bases: Vec<Expr> = loop_bases.iter().map(|a| a.at(arith)).collect();
+        let steps: Vec<Expr> = loop_steps.iter().map(|a| a.at(arith)).collect();
+        ev_rec_ref(arith, const_int_motive.at(arith), &bases, &steps, params, v, e)
     };
 
-    // Two specific computation-rule axioms for *this* `loop_val` (not a
-    // generic "for any motive" schema -- see module docs).
-    let loop_val_base_eq_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), base_lit)?;
-        let pf_pos = arith.p.push(pf_ty);
-        // Use phase.
-        let params = pp.at(arith);
-        let pf = arith.p.get(pf_pos);
-        let v = denote(store, base_expr, arith, &params)?;
-        let eb = apply_n(arith.p.get(ev_base_pos), params.iter().cloned().chain([pf]));
-        let lhs = loop_val(arith, &params, v.clone(), eb);
-        Some(kernel::id(arith.int_ty(), lhs, v))
-    })?;
-    let loop_val_base_eq_pos = arith.p.push(loop_val_base_eq_ty);
-
-    let loop_val_step_eq_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), tail_lit)?;
-        let pf_pos = arith.p.push(pf_ty);
-        let v_pos = arith.p.push(arith.int_ty());
-        let np = new_params(arith, pp)?;
-        let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
-        let e_pos = arith.p.push(ev_np);
-        // Use phase.
-        let np2 = new_params(arith, pp)?;
-        let params = pp.at(arith);
-        let pf = arith.p.get(pf_pos);
-        let v = arith.p.get(v_pos);
-        let e = arith.p.get(e_pos);
-        let es = apply_n(
-            arith.p.get(ev_step_pos),
-            params.iter().cloned().chain([pf, v.clone(), e.clone()]),
-        );
-        let lhs = loop_val(arith, &params, v.clone(), es);
-        let rhs = loop_val(arith, &np2, v, e);
-        Some(kernel::id(arith.int_ty(), lhs, rhs))
-    })?;
-    let loop_val_step_eq_pos = arith.p.push(loop_val_step_eq_ty);
+    // Computation-rule axioms for *this* `loop_val` (not a generic "for
+    // any motive" schema -- see module docs) -- one pair-half per leaf.
+    let mut loop_val_base_eq_positions = Vec::with_capacity(base_leaves.len());
+    for (leaf, &ev_base_pos) in base_leaves.iter().zip(&ev_base_positions) {
+        let ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
+            let path_positions = push_path(arith, pp, &leaf.path)?;
+            // Use phase.
+            let params = pp.at(arith);
+            let premises = resolve_all(arith, &path_positions);
+            let v = denote(store, leaf.kind, arith, &params)?;
+            let eb = apply_n(arith.p.get(ev_base_pos), params.iter().cloned().chain(premises));
+            let lhs = loop_val(arith, &params, v.clone(), eb);
+            Some(kernel::id(arith.int_ty(), lhs, v))
+        })?;
+        loop_val_base_eq_positions.push(arith.p.push(ty));
+    }
+    let mut loop_val_step_eq_positions = Vec::with_capacity(tail_leaves.len());
+    for (leaf, &ev_step_pos) in tail_leaves.iter().zip(&ev_step_positions) {
+        let ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
+            let path_positions = push_path(arith, pp, &leaf.path)?;
+            let v_pos = arith.p.push(arith.int_ty());
+            let np = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
+            let e_pos = arith.p.push(ev_np);
+            // Use phase.
+            let np2 = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let params = pp.at(arith);
+            let premises = resolve_all(arith, &path_positions);
+            let v = arith.p.get(v_pos);
+            let e = arith.p.get(e_pos);
+            let es = apply_n(
+                arith.p.get(ev_step_pos),
+                params.iter().cloned().chain(premises).chain([v.clone(), e.clone()]),
+            );
+            let lhs = loop_val(arith, &params, v.clone(), es);
+            let rhs = loop_val(arith, &np2, v, e);
+            Some(kernel::id(arith.int_ty(), lhs, rhs))
+        })?;
+        loop_val_step_eq_positions.push(arith.p.push(ty));
+    }
 
     // Theorem: Pi params v e. Id(Int, loop_val(params,v,e), v), proved via
     // ev_rec with motive `\params v e. Id(Int, loop_val(params,v,e), v)`.
@@ -917,55 +1014,61 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
     })?;
     let id_motive = Anchored::new(&arith, id_motive_expr);
 
-    let theorem_base_expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), base_lit)?;
-        let pf_pos = arith.p.push(pf_ty);
-        let params = pp.at(arith);
-        let pf = arith.p.get(pf_pos);
-        Some(apply_n(arith.p.get(loop_val_base_eq_pos), params.into_iter().chain([pf])))
-    })?;
-    let theorem_base = Anchored::new(&arith, theorem_base_expr);
+    let mut theorem_bases = Vec::with_capacity(base_leaves.len());
+    for (leaf, &loop_val_base_eq_pos) in base_leaves.iter().zip(&loop_val_base_eq_positions) {
+        let expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
+            let path_positions = push_path(arith, pp, &leaf.path)?;
+            let params = pp.at(arith);
+            let premises = resolve_all(arith, &path_positions);
+            Some(apply_n(arith.p.get(loop_val_base_eq_pos), params.into_iter().chain(premises)))
+        })?;
+        theorem_bases.push(Anchored::new(&arith, expr));
+    }
 
-    let theorem_step_expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
-        let pf_ty = cond_premise(arith, &pp.at(arith), tail_lit)?;
-        let pf_pos = arith.p.push(pf_ty);
-        let v_pos = arith.p.push(arith.int_ty());
-        let np = new_params(arith, pp)?;
-        let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
-        let e_pos = arith.p.push(ev_np);
+    let mut theorem_steps = Vec::with_capacity(tail_leaves.len());
+    for (leaf, (&ev_step_pos, &loop_val_step_eq_pos)) in
+        tail_leaves.iter().zip(ev_step_positions.iter().zip(&loop_val_step_eq_positions))
+    {
+        let expr = params_and_close(&mut arith, arity, kernel::close_lam, |arith, pp| {
+            let path_positions = push_path(arith, pp, &leaf.path)?;
+            let v_pos = arith.p.push(arith.int_ty());
+            let np = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
+            let e_pos = arith.p.push(ev_np);
 
-        // ih's type needs v/e fresh (after e's own push).
-        let np2 = new_params(arith, pp)?;
-        let ih_ty = kernel::id(
-            arith.int_ty(),
-            loop_val(arith, &np2, arith.p.get(v_pos), arith.p.get(e_pos)),
-            arith.p.get(v_pos),
-        );
-        let ih_pos = arith.p.push(ih_ty);
+            // ih's type needs v/e fresh (after e's own push).
+            let np2 = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let ih_ty = kernel::id(
+                arith.int_ty(),
+                loop_val(arith, &np2, arith.p.get(v_pos), arith.p.get(e_pos)),
+                arith.p.get(v_pos),
+            );
+            let ih_pos = arith.p.push(ih_ty);
 
-        // Use phase: every push for this closure is done.
-        let np3 = new_params(arith, pp)?;
-        let params = pp.at(arith);
-        let pf = arith.p.get(pf_pos);
-        let v = arith.p.get(v_pos);
-        let e = arith.p.get(e_pos);
-        let ih = arith.p.get(ih_pos);
+            // Use phase: every push for this closure is done.
+            let np3 = new_params_for(arith, &leaf.kind, &pp.at(arith))?;
+            let params = pp.at(arith);
+            let premises = resolve_all(arith, &path_positions);
+            let v = arith.p.get(v_pos);
+            let e = arith.p.get(e_pos);
+            let ih = arith.p.get(ih_pos);
 
-        // step_eq : Id(Int, loop_val(params,v,ev_step(params,pf,v,e)), loop_val(new_params,v,e))
-        let es = apply_n(
-            arith.p.get(ev_step_pos),
-            params.iter().cloned().chain([pf.clone(), v.clone(), e.clone()]),
-        );
-        let step_eq = apply_n(
-            arith.p.get(loop_val_step_eq_pos),
-            params.iter().cloned().chain([pf, v.clone(), e.clone()]),
-        );
+            // step_eq : Id(Int, loop_val(params,v,ev_step(params,..,v,e)), loop_val(new_params,v,e))
+            let es = apply_n(
+                arith.p.get(ev_step_pos),
+                params.iter().cloned().chain(premises.clone()).chain([v.clone(), e.clone()]),
+            );
+            let step_eq = apply_n(
+                arith.p.get(loop_val_step_eq_pos),
+                params.iter().cloned().chain(premises).chain([v.clone(), e.clone()]),
+            );
 
-        let lhs = loop_val(arith, &params, v.clone(), es);
-        let mid = loop_val(arith, &np3, v.clone(), e);
-        Some(kernel::trans_proof(&arith.int_ty(), &lhs, &mid, &v, step_eq, ih))
-    })?;
-    let theorem_step = Anchored::new(&arith, theorem_step_expr);
+            let lhs = loop_val(arith, &params, v.clone(), es);
+            let mid = loop_val(arith, &np3, v.clone(), e);
+            Some(kernel::trans_proof(&arith.int_ty(), &lhs, &mid, &v, step_eq, ih))
+        })?;
+        theorem_steps.push(Anchored::new(&arith, expr));
+    }
 
     let theorem_ty = params_and_close(&mut arith, arity, kernel::close_pi, |arith, pp| {
         let v_pos = arith.p.push(arith.int_ty());
@@ -986,15 +1089,9 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
         let params = pp.at(arith);
         let v = arith.p.get(v_pos);
         let e = arith.p.get(e_pos);
-        Some(ev_rec_ref(
-            arith,
-            id_motive.at(arith),
-            theorem_base.at(arith),
-            theorem_step.at(arith),
-            &params,
-            v,
-            e,
-        ))
+        let bases: Vec<Expr> = theorem_bases.iter().map(|a| a.at(arith)).collect();
+        let steps: Vec<Expr> = theorem_steps.iter().map(|a| a.at(arith)).collect();
+        Some(ev_rec_ref(arith, id_motive.at(arith), &bases, &steps, &params, v, e))
     })?;
 
     kernel::check(&arith.p.ctx, &theorem_proof, &theorem_ty).ok()?;
@@ -1142,6 +1239,37 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, countdown)
             .expect("countdown should get a universal proof");
         assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+            .expect("the recorded theorem should independently re-typecheck");
+    }
+
+    #[test]
+    fn tail_recursive_gcd_with_two_base_cases_gets_a_universal_proof() {
+        // rec f a b = if a == 0 then b else if b == 0 then a else f(b, a mod b)
+        // -- deeper than a single `If`: two base leaves (`b` at path
+        // [a==0], `a` at path [a!=0, b==0]) and one tail leaf (`f(b, a mod
+        // b)` at path [a!=0, b!=0]), exercising the widened
+        // `prove_tail_recursive_universal` (one `Ev` constructor per leaf,
+        // each gated by its own *conjunction* of path premises, not a
+        // single top-level condition).
+        let mut s = TermStore::new();
+        let b = s.var(0);
+        let a = s.var(1);
+        let f = s.var(2);
+        let zero = s.lit(0);
+        let cond_a = s.prim(PrimOp::Eq, a, zero);
+        let cond_b = s.prim(PrimOp::Eq, b, zero);
+        let a_mod_b = s.prim(PrimOp::Mod, a, b);
+        let rec_call = s.app2(f, b, a_mod_b);
+        let inner_if = s.if_(cond_b, a, rec_call);
+        let body = s.if_(cond_a, b, inner_if);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        let g = s.rec(abs);
+
+        let proof =
+            prove_tail_recursive_universal(&s, g).expect("gcd with two base cases should get a universal proof");
+        assert_eq!(proof.arity, 2);
         kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }

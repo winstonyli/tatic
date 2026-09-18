@@ -74,11 +74,13 @@ This is stated precisely because it would be easy to overclaim here.
   shape as `kernel::WRec`, and uses real induction on that recursor —
   built from `kernel::cong1`/`trans_proof` as its composition lemmas — to
   prove `loop_val(params, v, e) = v` once, for every `params` and `v`, not
-  per call. `Ev`'s two constructors are each gated by a hypothesis that
-  `cond` actually denotes to whichever value selects that branch — without
-  that, `Ev(params, v)` would be trivially inhabited for *any* `params`
-  regardless of `cond`, which isn't what "the trace starting at `params`"
-  is supposed to mean. This is a *reusable lemma*, not itself a per-input
+  per call. `body` can be an arbitrary tree of nested `If`s (not just one
+  top-level `If`), with one `Ev` constructor per leaf, each gated by the
+  *conjunction* of hypotheses that `cond` denotes to whichever value
+  selects that branch at every ancestor `If` on the way to it — without
+  that, a base leaf's constructor would make `Ev(params, v)` trivially
+  inhabited for *any* `params` regardless of `cond`, which isn't what "the
+  trace starting at `params`" is supposed to mean. This is a *reusable lemma*, not itself a per-input
   guarantee: instantiating it at a concrete `params` still needs an actual
   `Ev`-witness built by following `cond`'s real value at each step (not yet
   built — see Future work), same as `prove_tail_recursive_call` already
@@ -146,9 +148,6 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   producing an `Ev`-term rather than composing `refl`/`cong1` directly) —
   needed before the universal proof adds anything `jit.rs` can act on
   beyond "this shape typechecks".
-- Widening `prove_tail_recursive_universal` past its current shape (a
-  single `If` with one base branch and one fully-saturated tail-call
-  branch) to deeper branching.
 - Proof coverage for non-tail recursion (a different argument — bounded
   term-structure induction rather than call-count induction).
 - Widening the compilable fragment itself (e.g. closures, more primitives).

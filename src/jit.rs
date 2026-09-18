@@ -170,6 +170,7 @@ impl JitEngine {
     ///    `verify()` uses, reporting success only if *every* sample got its
     ///    own per-call relational proof -- the fallback for tail-recursive
     ///    shapes the universal proof doesn't (yet) cover.
+    ///
     /// Anything else (non-tail recursion, genuinely higher-order terms)
     /// reports `false` -- see `proof.rs` for what's in scope and why.
     fn kernel_verify(&self, terms: &TermStore, h: Hash, arity: usize) -> bool {
