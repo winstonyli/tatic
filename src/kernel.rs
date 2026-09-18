@@ -884,6 +884,56 @@ mod tests {
     }
 
     #[test]
+    fn cong_n_with_swapped_proofs_is_rejected() {
+        // Adversarial: does cong_n's own construction actually get caught
+        // when misused, or does it silently produce something that
+        // typechecks regardless? Same setup as
+        // cong_n_typechecks_for_a_binary_function, but pass p0/p1 in the
+        // WRONG order (p1, meant for position 1, supplied for position 0
+        // and vice versa) -- p1 : Id(A,x1,y1) doesn't witness Id(A,x0,y0)
+        // (x0/x1/y0/y1 are four *distinct* postulates, unrelated to each
+        // other), so the resulting term's underlying `J` node should be
+        // ill-typed, not vacuously accepted.
+        let mut p = Postulates::new();
+        let a_ty_pos = p.push(sort(0));
+        let g_pos = p.push(arrow(p.get(a_ty_pos), arrow(p.get(a_ty_pos), p.get(a_ty_pos))));
+        let x0_pos = p.push(p.get(a_ty_pos));
+        let y0_pos = p.push(p.get(a_ty_pos));
+        let x1_pos = p.push(p.get(a_ty_pos));
+        let y1_pos = p.push(p.get(a_ty_pos));
+        let p0_pos = p.push(id(p.get(a_ty_pos), p.get(x0_pos), p.get(y0_pos)));
+        let p1_pos = p.push(id(p.get(a_ty_pos), p.get(x1_pos), p.get(y1_pos)));
+
+        let a_ty = p.get(a_ty_pos);
+        let g = p.get(g_pos);
+        let x0 = p.get(x0_pos);
+        let y0 = p.get(y0_pos);
+        let x1 = p.get(x1_pos);
+        let y1 = p.get(y1_pos);
+        let p0 = p.get(p0_pos);
+        let p1 = p.get(p1_pos);
+
+        // Sanity: correctly-ordered proofs typecheck (mirrors the test above).
+        let good = cong_n(
+            &a_ty,
+            &a_ty,
+            &g,
+            &[x0.clone(), x1.clone()],
+            &[y0.clone(), y1.clone()],
+            vec![p0.clone(), p1.clone()],
+        );
+        let expected = id(a_ty.clone(), app(app(g.clone(), x0.clone()), x1.clone()), app(app(g.clone(), y0.clone()), y1.clone()));
+        check(&p.ctx, &good, &expected).expect("correctly-ordered cong_n should typecheck");
+
+        // Adversarial: swap the proof order.
+        let bad = cong_n(&a_ty, &a_ty, &g, &[x0, x1], &[y0, y1], vec![p1, p0]);
+        assert!(
+            check(&p.ctx, &bad, &expected).is_err(),
+            "cong_n with mismatched (swapped) proofs should be rejected, not silently accepted"
+        );
+    }
+
+    #[test]
     fn close_pi_matches_hand_built_dependent_pi_chain() {
         // Postulate A : Type0, push x : A, y : A onto the context, build
         // body = Id(A, x, y), and check close_pi reproduces exactly the

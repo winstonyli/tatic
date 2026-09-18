@@ -1290,6 +1290,40 @@ mod tests {
     }
 
     #[test]
+    fn one_functions_theorem_proof_is_rejected_against_anothers_type() {
+        // Adversarial: does the kernel actually discriminate between two
+        // different functions' universal proofs, or would it accept
+        // anything with roughly the right shape? gcd's theorem_proof
+        // (arity 2) checked against factorial's theorem_ty (arity 1, a
+        // completely different Ev/combine/postulate layout) should be
+        // rejected outright, not somehow typecheck by coincidence.
+        let mut s = TermStore::new();
+        let g = gcd(&mut s);
+        let gcd_proof = prove_tail_recursive_universal(&s, g).expect("gcd should get a universal proof");
+
+        let mut s2 = TermStore::new();
+        let n = s2.var(0);
+        let fv = s2.var(1);
+        let one = s2.lit(1);
+        let cond = s2.prim(PrimOp::Le, n, one);
+        let n_minus_1 = s2.prim(PrimOp::Sub, n, one);
+        let rec_call = s2.app(fv, n_minus_1);
+        let else_branch = s2.prim(PrimOp::Mul, n, rec_call);
+        let body = s2.if_(cond, one, else_branch);
+        let abs = s2.abs(body);
+        let fact = s2.rec(abs);
+        let fact_proof = prove_tail_recursive_universal(&s2, fact).expect("factorial should get a universal proof");
+
+        // gcd's proof, checked in gcd's own ctx (a proof is only
+        // meaningful relative to the ctx it was built in), against
+        // factorial's theorem_ty.
+        assert!(
+            kernel::check(&gcd_proof.ctx, &gcd_proof.theorem_proof, &fact_proof.theorem_ty).is_err(),
+            "gcd's proof should be rejected against factorial's theorem type"
+        );
+    }
+
+    #[test]
     fn tail_recursive_countdown_gets_a_universal_proof_with_base_in_the_else_branch() {
         // rec f n = if n > 0 then f(n - 1) else n -- unlike `gcd` above, the
         // tail call is the *then*-branch and the base case is the *else*-
