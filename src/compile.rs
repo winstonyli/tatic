@@ -83,7 +83,12 @@ fn local_index(var: u32, arity: usize) -> Option<u32> {
 
 /// If `h` is a fully-saturated self-application (`self a1 a2 .. a_arity`),
 /// return the argument hashes in application order.
-fn match_self_call(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Option<Vec<Hash>> {
+pub(crate) fn match_self_call(
+    store: &TermStore,
+    h: Hash,
+    arity: usize,
+    self_idx: Option<u32>,
+) -> Option<Vec<Hash>> {
     let self_idx = self_idx?;
     let mut args_rev = Vec::with_capacity(arity);
     let mut cur = h;

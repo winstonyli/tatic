@@ -19,6 +19,14 @@
 //! If verification ever fails (a compiler bug, in principle), the term is
 //! blacklisted and permanently served by the interpreter instead, rather
 //! than risking a silently wrong "optimization".
+//!
+//! Sample verification is the actual trust gate for every compiled term.
+//! Where possible (see `proof.rs`), a kernel-checked `Id`-typed proof is
+//! additionally attempted for the exact same battery of samples and
+//! recorded (`Stats::kernel_proofs_checked`, `is_kernel_verified`) as
+//! stronger evidence alongside it -- a straight-line term gets one proof
+//! covering every input, a tail-recursive term gets a per-sample
+//! relational proof (translation validation, not a universal theorem).
 
 use hashbrown::HashMap;
 use wasmtime::{Engine, Instance, Module, Store, Val};
@@ -119,7 +127,7 @@ impl JitEngine {
         };
 
         if self.verify(terms, h, func, frag.arity) {
-            let kernel_verified = proof::prove_pure_expr(terms, h).is_some();
+            let kernel_verified = self.kernel_verify(terms, h, frag.arity);
             if kernel_verified {
                 self.stats.kernel_proofs_checked += 1;
             }
@@ -141,6 +149,26 @@ impl JitEngine {
             self.stats.interpreted += 1;
             eval::apply_term(terms, h, args)
         }
+    }
+
+    /// Attempts a kernel-checked equivalence proof for `h`, on top of (not
+    /// instead of) the sample-based `verify()` above: a straight-line
+    /// (non-recursive) term gets one proof covering every input;
+    /// otherwise, for the tail-recursive fragment, a per-sample relational
+    /// proof (`proof::prove_tail_recursive_call`) is attempted for the same
+    /// battery `verify()` used, and this only reports success if *every*
+    /// one of those samples got its own kernel-checked proof. Anything
+    /// else (non-tail recursion, genuinely higher-order terms) reports
+    /// `false` -- see `proof.rs` for what's in scope and why.
+    fn kernel_verify(&self, terms: &TermStore, h: Hash, arity: usize) -> bool {
+        if proof::prove_pure_expr(terms, h).is_some() {
+            return true;
+        }
+        let samples = sample_arg_vectors(arity);
+        !samples.is_empty()
+            && samples
+                .iter()
+                .all(|sample| proof::prove_tail_recursive_call(terms, h, sample).is_some())
     }
 
     /// Run the compiled candidate against the interpreter (reference
@@ -271,8 +299,25 @@ mod tests {
         assert!(jit.stats.cache_hits > 1);
     }
 
+    fn gcd(s: &mut TermStore) -> Hash {
+        // rec f a b = if b == 0 then a else f(b, a mod b) -- tail
+        // recursive: compile.rs turns this into a loop, and proof.rs's
+        // relational, per-sample proof covers exactly this shape.
+        let b = s.var(0);
+        let a = s.var(1);
+        let f = s.var(2);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Eq, b, zero);
+        let a_mod_b = s.prim(PrimOp::Mod, a, b);
+        let rec_call = s.app2(f, b, a_mod_b);
+        let body = s.if_(cond, a, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        s.rec(abs)
+    }
+
     #[test]
-    fn kernel_proof_recorded_for_non_recursive_terms_only() {
+    fn kernel_proof_recorded_for_straight_line_and_tail_recursive_terms() {
         // \a b. if a < b then a * 2 else b + 1 -- straight-line, no Rec.
         let mut s = TermStore::new();
         let a = s.var(1);
@@ -291,13 +336,24 @@ mod tests {
         assert!(jit.is_kernel_verified(straight_line));
         assert_eq!(jit.stats.kernel_proofs_checked, 1);
 
-        // factorial is Rec-wrapped -- outside proof.rs's fragment (needs
-        // induction, see proof.rs docs) -- so it's compiled and sample-
-        // verified as before, but not kernel-proof-verified.
+        // gcd is Rec-wrapped but *tail*-recursive -- proof.rs's relational,
+        // per-sample proof covers it (every sample verify() tries gets its
+        // own kernel-checked proof), so this is kernel-verified too.
+        let gcd_term = gcd(&mut s);
+        assert_eq!(jit.apply(&s, gcd_term, &[48, 18]).unwrap(), 6);
+        assert!(jit.is_kernel_verified(gcd_term));
+        assert_eq!(jit.stats.kernel_proofs_checked, 2);
+
+        // factorial is Rec-wrapped but *not* tail-recursive (the self-call
+        // is nested inside a multiplication) -- outside proof.rs's
+        // fragment (needs induction over an unbounded call stack, not
+        // covered by the relational per-iteration proof either -- see
+        // proof.rs docs), so it's compiled and sample-verified as before,
+        // but not kernel-proof-verified.
         let fact = factorial(&mut s);
         assert_eq!(jit.apply(&s, fact, &[5]).unwrap(), 120);
         assert!(!jit.is_kernel_verified(fact));
-        assert_eq!(jit.stats.kernel_proofs_checked, 1, "unchanged");
+        assert_eq!(jit.stats.kernel_proofs_checked, 2, "unchanged");
     }
 
     #[test]

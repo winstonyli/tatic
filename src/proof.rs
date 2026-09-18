@@ -23,16 +23,33 @@
 //! the same value by construction, and a kernel-checked `refl` is an
 //! accurate, honest witness of exactly that fact -- no more, no less.
 //!
-//! This does **not** yet cover the interesting case: `compile.rs` also
-//! turns *tail* self-recursion into a `loop`/`br` (recursion -> iteration),
-//! and proving *that* transformation correct needs real induction (varying
-//! over how many times the loop runs) -- i.e. an actual `WRec`-shaped
-//! argument, not a `refl`. `kernel::cong1`/`trans_proof` exist as the
-//! composition lemmas that proof will need; building it is future work.
-//! `jit::JitEngine` therefore keeps its empirical sampling as the actual
-//! trust gate for every term; a kernel proof, where one exists, is
-//! recorded as additional, stronger evidence alongside it, not a
-//! replacement.
+//! ## Tail recursion: relational, per-call proofs (`prove_tail_recursive_call`)
+//!
+//! `compile.rs` also turns *tail* self-recursion into a `loop`/`br`
+//! (recursion -> iteration) -- the actually interesting transformation.
+//! A *universal* proof of that ("for all n, n recursive calls == n loop
+//! iterations") needs real induction on the call count, i.e. a genuine
+//! `WRec`-shaped argument (`kernel::cong1`/`trans_proof` are the
+//! composition lemmas it would need); that stays future work.
+//!
+//! What's tractable now, and genuinely useful, is the same idea real
+//! verified compilers fall back to for exactly this kind of transformation
+//! when full verification isn't available: **translation validation** --
+//! instead of a universal theorem, validate *one specific execution trace*.
+//! For a concrete `(term, args)`, `prove_tail_recursive_call` follows the
+//! interpreter's own concrete trace (which branch is taken at each
+//! unrolling, using the same shape `compile_tail` classifies bodies with),
+//! and at each tail-call step, symbolically composes the new parameters via
+//! `denote` -- i.e. it relates interpreter state to compiled-loop state at
+//! every step, not just at the end. Once the trace reaches its base case
+//! (guaranteed finite for terminating inputs), the whole thing is exactly
+//! as long a straight-line expression as the trace was, and the proof is
+//! `refl` on it, same as the non-recursive case. This is a genuinely
+//! stronger check than sample verification's `==` (it proves the compiled
+//! and interpreted readings are the *same expression*, not just that their
+//! outputs happened to match), but it's a certificate per call, not a
+//! theorem -- `jit::JitEngine` uses it per sample point, not as a one-time
+//! replacement for sampling.
 
 use std::collections::HashMap;
 
@@ -226,6 +243,211 @@ pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<PureExprProof> {
     })
 }
 
+// --- tail recursion: relational, per-call proofs ------------------------
+
+/// Like `collect_literals`, but for a tail-recursive `body`: a
+/// fully-saturated self-call (`compile::match_self_call`) is expected and
+/// recursed *into* (collecting literals from its argument expressions)
+/// instead of being rejected as a stray `App`. Any other `App`/`Abs`/`Rec`
+/// (e.g. genuinely non-tail recursion, as in a naive Fibonacci) still
+/// makes this -- and so the whole proof attempt -- fail.
+fn collect_literals_tail(
+    store: &TermStore,
+    h: Hash,
+    arity: usize,
+    self_idx: u32,
+    out: &mut Vec<i64>,
+) -> bool {
+    if let Some(args) = compile::match_self_call(store, h, arity, Some(self_idx)) {
+        return args
+            .iter()
+            .all(|&a| collect_literals_tail(store, a, arity, self_idx, out));
+    }
+    match store.resolve(h) {
+        Term::Var(_) => true,
+        Term::Lit(n) => {
+            if !out.contains(n) {
+                out.push(*n);
+            }
+            true
+        }
+        Term::Prim(_, a, b) => {
+            collect_literals_tail(store, *a, arity, self_idx, out)
+                && collect_literals_tail(store, *b, arity, self_idx, out)
+        }
+        Term::If(c, t, e) => {
+            collect_literals_tail(store, *c, arity, self_idx, out)
+                && collect_literals_tail(store, *t, arity, self_idx, out)
+                && collect_literals_tail(store, *e, arity, self_idx, out)
+        }
+        Term::Abs(_) | Term::App(..) | Term::Rec(_) => false,
+    }
+}
+
+/// A small, self-contained *concrete* evaluator over the same fragment
+/// `denote` covers (`Var`/`Lit`/`Prim`/`If`, no `App`/`Abs`/`Rec`), used
+/// only to decide which branch a concrete trace takes at each step, and
+/// what its next/final values are. Deliberately not reusing `eval::eval`
+/// (which handles the full language and unrolls `Rec`/`App`): this only
+/// ever needs to stay self-consistent with `denote`'s shape, and being
+/// structurally identical to it, side by side, is the easiest way to see
+/// that it does. `params` is indexed by `Var` (i.e. `params[i]` is the
+/// value of `Term::Var(i)`), matching `denote`'s convention.
+fn eval_concrete(store: &TermStore, h: Hash, params: &[i64]) -> Option<i64> {
+    match store.resolve(h) {
+        Term::Var(i) => params.get(*i as usize).copied(),
+        Term::Lit(n) => Some(*n),
+        Term::Prim(op, a, b) => {
+            let x = eval_concrete(store, *a, params)?;
+            let y = eval_concrete(store, *b, params)?;
+            Some(apply_prim_concrete(*op, x, y))
+        }
+        Term::If(c, t, e) => {
+            let cv = eval_concrete(store, *c, params)?;
+            if cv != 0 {
+                eval_concrete(store, *t, params)
+            } else {
+                eval_concrete(store, *e, params)
+            }
+        }
+        Term::Abs(_) | Term::App(..) | Term::Rec(_) => None,
+    }
+}
+
+fn apply_prim_concrete(op: PrimOp, x: i64, y: i64) -> i64 {
+    use PrimOp::*;
+    match op {
+        Add => x.wrapping_add(y),
+        Sub => x.wrapping_sub(y),
+        Mul => x.wrapping_mul(y),
+        Div => {
+            if y == 0 {
+                0
+            } else {
+                x.wrapping_div(y)
+            }
+        }
+        Mod => {
+            if y == 0 {
+                0
+            } else {
+                x.wrapping_rem(y)
+            }
+        }
+        Lt => (x < y) as i64,
+        Le => (x <= y) as i64,
+        Eq => (x == y) as i64,
+    }
+}
+
+enum StepOutcome {
+    Base(Hash),
+    TailCall(Vec<Hash>),
+}
+
+/// Walks `h` (a `compile_tail`-shaped If-chain) using concrete params to
+/// decide which branch is taken, mirroring `compile::compile_tail`'s own
+/// structure exactly: an `If`'s condition is resolved concretely and we
+/// recurse into the taken branch; a fully-saturated self-call is reported
+/// as a `TailCall`; anything else is the reached base case.
+fn classify_step(
+    store: &TermStore,
+    h: Hash,
+    arity: usize,
+    self_idx: u32,
+    concrete: &[i64],
+) -> Option<StepOutcome> {
+    if let Term::If(c, t, e) = store.resolve(h) {
+        let (c, t, e) = (*c, *t, *e);
+        let cv = eval_concrete(store, c, concrete)?;
+        return classify_step(store, if cv != 0 { t } else { e }, arity, self_idx, concrete);
+    }
+    if let Some(args) = compile::match_self_call(store, h, arity, Some(self_idx)) {
+        return Some(StepOutcome::TailCall(args));
+    }
+    Some(StepOutcome::Base(h))
+}
+
+/// Attempts to build a kernel-checked equivalence proof for one specific
+/// call `h(args)`, where `h` is a `Rec`-wrapped, *tail*-recursive function
+/// (the fragment `compile.rs` turns into a `loop`/`br`). See the module
+/// docs ("Tail recursion") for what this does and doesn't establish.
+///
+/// Returns `None` for: non-recursive or zero-arity `h`; an arity mismatch;
+/// non-tail recursion anywhere in the body (e.g. naive Fibonacci, which
+/// `compile.rs` itself handles via a plain `call`, not a loop -- proving
+/// that case needs a different argument, not this one); or a trace that
+/// doesn't reach a base case within a generous step bound (guards against
+/// a non-terminating or pathologically long call blowing up proof size).
+pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Option<PureExprProof> {
+    const MAX_STEPS: usize = 10_000;
+
+    let (arity, body, is_rec) = compile::peel(store, h)?;
+    if !is_rec || arity == 0 || arity != args.len() {
+        return None;
+    }
+    let self_idx = arity as u32;
+
+    let mut lits = Vec::new();
+    if !collect_literals_tail(store, body, arity, self_idx, &mut lits) {
+        return None;
+    }
+
+    let mut arith = ArithPostulates::new();
+    for n in lits {
+        arith.lit(n);
+    }
+
+    let mut param_positions = Vec::with_capacity(arity);
+    for _ in 0..arity {
+        let ty = arith.int_ty();
+        param_positions.push(arith.p.push(ty));
+    }
+    let mut symbolic: Vec<Expr> = param_positions.iter().map(|&pos| arith.p.get(pos)).collect();
+    // By-`Var`-index concrete params (`Var(0)` = last-applied), matching
+    // `symbolic`'s (and `denote`'s) convention; `args` itself is in
+    // application order.
+    let mut concrete: Vec<i64> = (0..arity).map(|i| args[arity - 1 - i]).collect();
+
+    let mut denotation = None;
+    for _ in 0..MAX_STEPS {
+        match classify_step(store, body, arity, self_idx, &concrete)? {
+            StepOutcome::Base(leaf) => {
+                denotation = Some(denote(store, leaf, &arith, &symbolic)?);
+                break;
+            }
+            StepOutcome::TailCall(arg_exprs) => {
+                if arg_exprs.len() != arity {
+                    return None;
+                }
+                let mut new_symbolic = Vec::with_capacity(arity);
+                let mut new_concrete = Vec::with_capacity(arity);
+                for i in 0..arity {
+                    let expr = arg_exprs[arity - 1 - i];
+                    new_symbolic.push(denote(store, expr, &arith, &symbolic)?);
+                    new_concrete.push(eval_concrete(store, expr, &concrete)?);
+                }
+                symbolic = new_symbolic;
+                concrete = new_concrete;
+            }
+        }
+    }
+    let denotation = denotation?;
+
+    let int_ty = arith.int_ty();
+    let proof = kernel::refl(denotation.clone());
+    let proof_ty = kernel::id(int_ty.clone(), denotation.clone(), denotation.clone());
+    kernel::check(&arith.p.ctx, &proof, &proof_ty).ok()?;
+
+    Some(PureExprProof {
+        ctx: arith.p.ctx,
+        arity,
+        int_ty,
+        denotation,
+        proof,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +512,72 @@ mod tests {
         let inner = s.abs(ffx);
         let twice = s.abs(inner);
         assert!(prove_pure_expr(&s, twice).is_none());
+    }
+
+    fn gcd(s: &mut TermStore) -> Hash {
+        // rec f a b = if b == 0 then a else f(b, a mod b) -- genuinely tail
+        // recursive: the self-call is the whole else-branch, not nested
+        // inside another operation, so compile.rs turns it into a loop.
+        let b = s.var(0);
+        let a = s.var(1);
+        let f = s.var(2);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Eq, b, zero);
+        let a_mod_b = s.prim(PrimOp::Mod, a, b);
+        let rec_call = s.app2(f, b, a_mod_b);
+        let body = s.if_(cond, a, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        s.rec(abs)
+    }
+
+    #[test]
+    fn tail_recursive_call_gets_a_relational_proof() {
+        let mut s = TermStore::new();
+        let g = gcd(&mut s);
+
+        for (a, b) in [(48, 18), (270, 192), (17, 5), (0, 7)] {
+            let proof = prove_tail_recursive_call(&s, g, &[a, b])
+                .unwrap_or_else(|| panic!("gcd({a},{b}) should get a relational proof"));
+            assert_eq!(proof.arity, 2);
+            kernel::check(
+                &proof.ctx,
+                &proof.proof,
+                &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            )
+            .expect("the recorded proof should independently re-typecheck");
+        }
+    }
+
+    #[test]
+    fn non_tail_recursion_is_out_of_scope_for_the_relational_proof() {
+        // factorial's self-call is nested inside a multiplication (n *
+        // f(n-1)), not a bare tail call -- compile.rs itself compiles this
+        // via a plain `call`, not a loop, so this proof (which specifically
+        // targets the loop transformation) correctly doesn't apply either.
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let fv = s.var(1);
+        let one = s.lit(1);
+        let cond = s.prim(PrimOp::Le, n, one);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let rec_call = s.app(fv, n_minus_1);
+        let else_branch = s.prim(PrimOp::Mul, n, rec_call);
+        let body = s.if_(cond, one, else_branch);
+        let abs = s.abs(body);
+        let fact = s.rec(abs);
+
+        assert!(prove_tail_recursive_call(&s, fact, &[5]).is_none());
+    }
+
+    #[test]
+    fn non_recursive_term_is_out_of_scope_for_the_relational_proof() {
+        let mut s = TermStore::new();
+        let a = s.var(1);
+        let b = s.var(0);
+        let sum = s.prim(PrimOp::Add, a, b);
+        let inner = s.abs(sum);
+        let f = s.abs(inner);
+        assert!(prove_tail_recursive_call(&s, f, &[1, 2]).is_none());
     }
 }
