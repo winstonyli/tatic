@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use tatic::eval;
 use tatic::jit::JitEngine;
+use tatic::syntax;
 use tatic::term::{Hash, PrimOp, TermStore};
 
 /// `rec f n = if n <= 1 then 1 else n * f(n - 1)`
@@ -124,7 +125,17 @@ fn main() {
 
     let mut jit = JitEngine::new();
 
-    println!("-- factorial(10) --");
+    println!("-- syntax.rs: parsing a real source string instead of hand-building De Bruijn terms --");
+    let parsed_fact = syntax::parse(&mut store, "rec f n = if n <= 1 then 1 else n * f (n - 1)")
+        .expect("valid source should parse");
+    println!("parsed factorial == hand-built factorial (same content hash): {}", parsed_fact == fact);
+    println!("jit: factorial(10) = {}", jit.apply(&store, parsed_fact, &[10]).unwrap());
+    match syntax::parse(&mut store, "n + 1") {
+        Ok(_) => unreachable!(),
+        Err(e) => println!("parse error on `n + 1` (n unbound): {e}"),
+    }
+
+    println!("\n-- factorial(10) --");
     println!("interpreted: {}", eval::apply_term(&store, fact, &[10]).unwrap());
     println!("jit:         {}", jit.apply(&store, fact, &[10]).unwrap());
     println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(fact));

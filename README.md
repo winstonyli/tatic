@@ -24,10 +24,12 @@ cargo test            # unit tests across all modules
 cargo bench           # criterion benchmarks (benches/) -- see below
 ```
 
-The demo builds a few example terms (factorial, gcd, a naive Fibonacci, a
-non-capturing higher-order term, a genuinely capturing closure, a
-straight-line arithmetic function), runs them through the JIT, and prints
-timing plus which ones got a kernel-checked equivalence proof.
+The demo starts by parsing a real source string (`syntax.rs`) into a term,
+then builds a few more example terms by hand (factorial, gcd, a naive
+Fibonacci, a non-capturing higher-order term, a genuinely capturing
+closure, a straight-line arithmetic function), runs them all through the
+JIT, and prints timing plus which ones got a kernel-checked equivalence
+proof.
 
 ## Architecture
 
@@ -46,11 +48,41 @@ timing plus which ones got a kernel-checked equivalence proof.
 | Module | Role |
 |---|---|
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
+| `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses. |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. |
 | `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and non-capturing closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. A closure that doesn't capture anything from an enclosing scope ("known", in the compilers-literature sense) compiles to its own Wasm function, referenced by index into a shared function table — no heap, no environment struct; a literal lambda in function position becomes a direct `call`, one reached only through a parameter becomes `call_indirect`. Capturing closures, and partial application, are still outside the fragment. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. |
 | `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) — four primitives, chosen because that's provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work). Has a real bidirectional typechecker and normalizer. |
 | `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. |
+
+## Surface syntax
+
+```rust
+use tatic::{syntax, term::TermStore};
+
+let mut store = TermStore::new();
+let fact = syntax::parse(&mut store, "rec f n = if n <= 1 then 1 else n * f (n - 1)")?;
+```
+
+`let`/`\`/`rec`/`if` all extend as far right as possible, so — as in most
+ML-family languages — they need parentheses as a function argument or an
+operand: `f (\x. x) (if c then 1 else 2)`, not `f \x. x if c then 1 else 2`.
+`let x = e1 in e2` is pure sugar for `(\x. e2) e1` (the term language has no
+separate `let` primitive); a named recursive function reads naturally as
+one `let` binding a `rec` value:
+
+```
+let fact = rec f n = if n <= 1 then 1 else n * f (n - 1) in fact 10
+```
+
+One honest, non-obvious finding from building this: nesting two `let`s
+where the inner one's body references the outer one's binding can
+desugar into a term `compile.rs` correctly rejects as *capturing* — even
+though nothing about the source looks like a capturing closure (see
+`syntax.rs`'s own tests, `higher_order_let_chain_evaluates_like_the_hand_built_demo_term`).
+It still evaluates correctly either way; it just falls back to the
+interpreter instead of compiling, the same graceful degradation any other
+out-of-scope term gets.
 
 ## What's actually proven, and what isn't
 
