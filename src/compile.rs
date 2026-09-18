@@ -78,11 +78,15 @@ impl<'a> Combinators<'a> {
         Combinators { store, index: HashMap::new(), pending: Vec::new(), arities: Vec::new(), call_indirect_arities: Vec::new() }
     }
 
-    /// Registers `h` (a lambda value, i.e. an `Abs`-chain) if not already
-    /// known, returning its assigned table index either way. `None` if
-    /// `h` doesn't even peel as a nonzero-arity function (a bare closure
-    /// value always takes at least one argument -- if it didn't, there'd
-    /// be nothing to apply).
+    /// Registers `h` (a lambda value, i.e. an `Abs`-chain -- or a named
+    /// self-recursive value, an `Abs`-chain wrapped in `Rec`) if not
+    /// already known, returning its assigned table index either way.
+    /// `None` if `h` doesn't even peel as a nonzero-arity function (a bare
+    /// closure value always takes at least one argument -- if it didn't,
+    /// there'd be nothing to apply). `is_rec` isn't recorded here -- the
+    /// fixpoint loop in `try_compile` re-`peel`s each pending combinator
+    /// when it actually compiles its body, and determines `self_idx` from
+    /// that, so this only needs the arity to assign a table slot.
     fn register(&mut self, h: Hash) -> Option<usize> {
         if let Some(&i) = self.index.get(&h) {
             return Some(i);
@@ -162,7 +166,7 @@ fn compile_function(
     w: &mut String,
 ) -> Option<()> {
     let closure_arities = infer_closure_arities(store, body, arity, self_idx)?;
-    let ctx = FnCtx { store, arity, self_idx, closure_arities: &closure_arities };
+    let ctx = FnCtx { store, name, arity, self_idx, closure_arities: &closure_arities };
 
     w.push_str(&format!("  (func ${name}"));
     for i in 0..arity {
@@ -305,8 +309,8 @@ fn scan_for_closure_calls(
                     Some(_) => return None, // inconsistent arity: partial application
                 }
             }
-            Term::Abs(_) => {} // a literal redex callee -- fine, checked again at codegen
-            _ => return None,  // callee is neither a parameter nor a literal lambda
+            Term::Abs(_) | Term::Rec(_) => {} // a literal redex callee (possibly self-recursive) -- fine, checked again at codegen
+            _ => return None,  // callee is neither a parameter nor a literal lambda/combinator
         }
         for a in &args {
             scan_for_closure_calls(store, *a, arity, self_idx, found)?;
@@ -319,8 +323,12 @@ fn scan_for_closure_calls(
             scan_for_closure_calls(store, *a, arity, self_idx, found)?;
             scan_for_closure_calls(store, *b, arity, self_idx, found)
         }
-        Term::Abs(_) => Some(()), // a lambda used as a plain value (an argument, a branch result, ...)
-        Term::If(..) | Term::App(..) | Term::Rec(_) => unreachable!("handled above"),
+        // A lambda -- or a named self-recursive value, e.g. one bound by
+        // `let fact = rec f n = .. in ..` and later called through that
+        // binding -- used as a plain value (an argument, a branch
+        // result, ...).
+        Term::Abs(_) | Term::Rec(_) => Some(()),
+        Term::If(..) | Term::App(..) => unreachable!("handled above"),
     }
 }
 
@@ -362,6 +370,10 @@ fn cmp_instr(op: PrimOp) -> Option<&'static str> {
 /// compiled, not just this one.
 struct FnCtx<'a, 'b> {
     store: &'a TermStore,
+    /// This function's own Wasm name (`f` for the main entry point, `c{idx}`
+    /// for a combinator) -- a non-tail self-call needs this to call back
+    /// into *this* function, not hardcode `$f`.
+    name: &'b str,
     arity: usize,
     self_idx: Option<u32>,
     closure_arities: &'b [Option<usize>],
@@ -412,7 +424,7 @@ fn compile_node(
             for a in &args {
                 compile_node(ctx, combinators, *a, false, w, indent)?;
             }
-            push_line(w, indent, "call $f");
+            push_line(w, indent, &format!("call ${}", ctx.name));
         }
         return Some(());
     }
@@ -435,7 +447,7 @@ fn compile_node(
                 push_line(w, indent, &format!("call_indirect (type $ty{expected})"));
                 return Some(());
             }
-            Term::Abs(_) => {
+            Term::Abs(_) | Term::Rec(_) => {
                 let idx = combinators.register(root)?;
                 if args.len() != combinators.arities[idx] {
                     return None;
@@ -463,15 +475,22 @@ fn compile_node(
             compile_node(ctx, combinators, b, false, w, indent)?;
             push_line(w, indent, instr);
         }
-        Term::Abs(_) => {
-            // A lambda used as a plain value (e.g. an argument): its
-            // value is just its table index, a compile-time constant.
+        Term::Abs(_) | Term::Rec(_) => {
+            // A lambda, or a named self-recursive value (e.g. one bound
+            // by `let fact = rec f n = .. in ..`), used as a plain value
+            // (e.g. an argument): its value is just its table index, a
+            // compile-time constant, exactly the same as a plain lambda's
+            // -- `Combinators::register`/the fixpoint loop in
+            // `try_compile` already re-`peel` whatever they register and
+            // correctly compile a self-recursive combinator's own body
+            // with its own `self_idx`, so nothing else here needs to
+            // change to support this.
             let idx = combinators.register(h)?;
             push_line(w, indent, &format!("i64.const {idx}"));
         }
-        // Rec, free App: outside the compilable fragment. (`If` and
+        // Free App: outside the compilable fragment. (`If` and
         // known/combinator `App`s were already handled above.)
-        Term::If(..) | Term::Rec(_) | Term::App(..) => return None,
+        Term::If(..) | Term::App(..) => return None,
     }
     Some(())
 }
@@ -700,5 +719,35 @@ mod tests {
         let y = s.var(3);
         let f = s.abs(y);
         assert!(try_compile(&s, f).is_none());
+    }
+
+    #[test]
+    fn a_let_bound_self_recursive_function_compiles_and_matches_interpreter() {
+        // (\g. g 10) (rec f n = if n <= 1 then 1 else n * f (n - 1)) --
+        // what `let fact = rec f n = .. in fact 10` desugars to: a named
+        // recursive function passed through the *same* "combinator"
+        // machinery a plain lambda value already uses (registered,
+        // called via a shared table index), not a special case.
+        // Regression test: scan_for_closure_calls used to panic
+        // (`unreachable!`) the moment it encountered a bare `Rec` value
+        // here -- `Rec` was never actually "handled above" the way its
+        // own comment claimed, only `Abs` was.
+        let mut s = TermStore::new();
+        let fact = factorial(&mut s);
+        let inner_var = s.var(0);
+        let ten = s.lit(10);
+        let call = s.app(inner_var, ten);
+        let wrapper = s.abs(call);
+        let applied = s.app(wrapper, fact);
+
+        let frag = try_compile(&s, applied)
+            .expect("a let-bound self-recursive function, called through the table, should compile");
+        assert_eq!(frag.arity, 0);
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
+        let compiled = func.call(&mut store, ()).unwrap();
+        assert_eq!(compiled, 3628800);
+        assert_eq!(compiled, apply_term(&s, applied, &[]).unwrap());
     }
 }

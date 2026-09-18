@@ -479,6 +479,47 @@ mod tests {
     }
 
     #[test]
+    fn a_let_bound_self_recursive_function_compiles_but_is_not_yet_proven() {
+        // (\g. g 10) (rec f n = if n <= 1 then 1 else n * f (n - 1)) --
+        // what `let fact = rec f n = .. in fact 10` desugars to (found via
+        // the REPL, see syntax.rs/repl.rs): a named recursive function
+        // called through the same combinator table a plain closure value
+        // uses. compile.rs now handles this (a bug fix -- see its own
+        // tests), so this genuinely compiles and gives the right answer,
+        // but no proof.rs strategy covers this shape yet: prove_closure_expr
+        // explicitly excludes Rec-valued combinators (closed/non-recursive
+        // only -- see its own docs), and prove_tail_recursive_universal
+        // needs the *top-level* term itself to be Rec-wrapped, which this
+        // isn't (the top level is an application, with Rec several layers
+        // down). An honest, documented gap, not silently papered over --
+        // combining closures with self-recursion is still open (see
+        // README's Future work).
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f = s.var(1);
+        let one = s.lit(1);
+        let cond = s.prim(PrimOp::Le, n, one);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let rec_call = s.app(f, n_minus_1);
+        let else_branch = s.prim(PrimOp::Mul, n, rec_call);
+        let body = s.if_(cond, one, else_branch);
+        let abs = s.abs(body);
+        let fact = s.rec(abs);
+
+        let inner_var = s.var(0);
+        let ten = s.lit(10);
+        let call = s.app(inner_var, ten);
+        let wrapper = s.abs(call);
+        let applied = s.app(wrapper, fact);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 3628800);
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(!jit.is_kernel_verified(applied), "no proof strategy covers this shape yet -- see the comment above");
+    }
+
+    #[test]
     fn a_returned_closure_still_falls_back_to_the_interpreter() {
         // (\x. if x > 0 then (\y. x + y) else (\y. x - y)) 3, then applied
         // to 4 -- `compile.rs` only supports applying a parameter or a

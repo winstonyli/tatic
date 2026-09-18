@@ -19,9 +19,10 @@ compiled and interpreted readings agree.
 ## Quick start
 
 ```sh
-cargo run --release   # runs the demo in src/main.rs
-cargo test            # unit tests across all modules
-cargo bench           # criterion benchmarks (benches/) -- see below
+cargo run --release             # runs the demo in src/main.rs
+cargo run --release --bin repl  # an interactive REPL (src/bin/repl.rs)
+cargo test                      # unit tests across all modules
+cargo bench                     # criterion benchmarks (benches/) -- see below
 ```
 
 The demo starts by parsing a real source string (`syntax.rs`) into a term,
@@ -50,7 +51,7 @@ proof.
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
 | `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses; `print` is the reverse direction, a precedence-aware pretty-printer back to source text. |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. |
-| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and non-capturing closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. A closure that doesn't capture anything from an enclosing scope ("known", in the compilers-literature sense) compiles to its own Wasm function, referenced by index into a shared function table — no heap, no environment struct; a literal lambda in function position becomes a direct `call`, one reached only through a parameter becomes `call_indirect`. Capturing closures, and partial application, are still outside the fragment. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
+| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and non-capturing closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. A closure that doesn't capture anything from an enclosing scope ("known", in the compilers-literature sense) compiles to its own Wasm function, referenced by index into a shared function table — no heap, no environment struct; a literal lambda in function position becomes a direct `call`, one reached only through a parameter becomes `call_indirect`. A *named self-recursive* value (e.g. one bound by `let fact = rec f n = .. in ..`) goes through this same table-index machinery — it's just another combinator, self-recursive or not. Capturing closures, and partial application, are still outside the fragment. Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. |
 | `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) — four primitives, chosen because that's provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work). Has a real bidirectional typechecker and normalizer. |
 | `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. |
@@ -94,6 +95,18 @@ built directly as `Term::Lit(n)` for a negative `n` (never produced by
 `parse` itself, which only reaches a negative value via unary-minus
 desugaring) has no exact syntactic round trip, since this grammar has no
 negative-literal syntax at all — only subtraction.
+
+`src/bin/repl.rs` is a small interactive REPL built on `syntax::parse`/
+`print`: each line is parsed, run through the JIT (falling back to the
+interpreter automatically, same as ever), and reported with whether it
+got a kernel-checked proof. `let NAME = EXPR` (no `in`) defines `NAME` for
+later lines — since `syntax.rs`'s parser has no scope that persists
+across separate calls, this works by re-parsing each new line with every
+prior definition's `let .. in ` prefixed, not by threading parser state.
+Building it is what surfaced two real `compile.rs` bugs (a crash on a
+named recursive function used as a value, and a non-tail self-call that
+hardcoded `call $f` instead of calling back into whichever function it
+was actually compiled as) — see `compile.rs`'s own tests.
 
 ## What's actually proven, and what isn't
 
@@ -258,7 +271,13 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   is closed/non-recursive-only, `prove_tail_recursive_universal` is
   closures-free) and allowing an `If` to choose between two closures, not
   just two `Int`s — both real, documented restrictions of
-  `prove_closure_expr`, not fundamental limits.
+  `prove_closure_expr`, not fundamental limits. One concrete instance of
+  the first: `compile.rs` now compiles a named self-recursive value called
+  through the combinator table (`let fact = rec f n = .. in fact 10`,
+  found via the REPL — see its own tests), but no proof strategy covers
+  that shape yet, since it's neither `prove_closure_expr`'s fragment (which
+  excludes `Rec`) nor `prove_tail_recursive_universal`'s (which needs the
+  *top-level* term itself to be `Rec`-wrapped).
 - Widening the compilable fragment further: capturing closures (would need
   real closure conversion — an environment representation, plus composing
   a separate correctness proof for that compilation stage, CompCert/CakeML

@@ -6,6 +6,9 @@ edition = "2024"
 # pick up benches/common.rs (shared term builders, not a benchmark itself)
 # as its own empty bench target.
 autobenches = false
+# `cargo run` alone (no `--bin`) runs the scripted demo (src/main.rs) --
+# `cargo run --bin repl` for the interactive REPL (src/bin/repl.rs).
+default-run = "tatic"
 
 [dependencies]
 blake3 = "1.8.3"
