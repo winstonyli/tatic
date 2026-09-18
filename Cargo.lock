@@ -1133,6 +1133,7 @@ dependencies = [
  "cranelift-entity",
  "hashbrown 0.16.1",
  "wasmtime",
+ "wat",
 ]
 
 [[package]]
