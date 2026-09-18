@@ -104,14 +104,33 @@ This is stated precisely because it would be easy to overclaim here.
   every recursive call's full witness with no sharing, impractically slow
   even for small inputs. The theorem itself is unaffected either way; only
   per-call instantiation is out of scope for that shape.
-- **Non-capturing ("known") closures**: compiled, but not yet proven —
-  `compile.rs` handles them (see the module table above), `jit.rs`'s
-  sample verification is the trust gate exactly as for any other compiled
-  term, but `proof.rs` doesn't yet build a kernel proof for terms in this
-  shape. A genuinely *capturing* closure is still outside the compilable
-  fragment entirely, so it's just interpreted — correctly, but there's no
-  JIT path (and therefore no compiled-vs-interpreted question) to prove
-  anything about.
+- **Non-capturing ("known") closures**: `prove_closure_expr` gives a closed,
+  non-recursive closures term one kernel proof covering every input, the
+  same `refl`-on-a-shared-translation argument `prove_pure_expr` makes for
+  straight-line arithmetic — nothing here evaluates anything concrete, so
+  it needs no `assume_prim_fact`-style grounding either. A closure value is
+  postulated opaque (`Clo : Sort(0)`, `Int`'s own "postulated type"
+  pattern), one postulated constant per distinct combinator (referenced by
+  identity only — a combinator's own *body* is never unfolded or denoted,
+  so this doesn't need a fixpoint discovery pass the way `compile.rs`'s own
+  codegen does), and postulated call functions mirroring `compile.rs`'s two
+  call shapes exactly: `apply_k : Clo -> Int^k -> Int` for a
+  parameter-typed closure (`call_indirect`, always `Int` arguments per
+  `compile.rs`'s own typed dispatch), and, per combinator, a
+  signature-specific `call_h : T_0 -> .. -> T_{k-1} -> Int` for a direct
+  call (a static Wasm `call`, no `Clo` value involved at all) — needed
+  because a combinator like `twice` takes a mix of closure- and `Int`-typed
+  arguments, which the uniform `apply_k` can't express. Scope, honestly:
+  closed and non-recursive only (combining with self-recursion is future
+  work); every `If` branch must denote as `Int` (an `If` choosing between
+  two closures is out of scope, though `compile.rs` would compile it); and
+  it doesn't re-verify that each combinator it references is actually
+  non-capturing the way `compile.rs` itself does — harmless in practice
+  since `jit.rs` only calls into `proof.rs` after a term already compiled
+  successfully. A genuinely *capturing* closure is still outside the
+  compilable fragment entirely, so it's just interpreted — correctly, but
+  there's no JIT path (and therefore no compiled-vs-interpreted question)
+  to prove anything about.
 
 In every case, `jit.rs`'s sample-based verification against the
 interpreter is the actual trust gate for installing a compiled form. A
@@ -179,8 +198,11 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   `n + (if c then 1 else 2)`), not just as the whole body of some branch —
   `find_self_calls`/`denote_with_placeholders` currently reject that shape
   outright.
-- A kernel proof for non-capturing closures, mirroring what `proof.rs`
-  already does for first-order recursion.
+- Combining closures with self-recursion in one proof (`prove_closure_expr`
+  is closed/non-recursive-only, `prove_tail_recursive_universal` is
+  closures-free) and allowing an `If` to choose between two closures, not
+  just two `Int`s — both real, documented restrictions of
+  `prove_closure_expr`, not fundamental limits.
 - Widening the compilable fragment further: capturing closures (would need
   real closure conversion — an environment representation, plus composing
   a separate correctness proof for that compilation stage, CompCert/CakeML

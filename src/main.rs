@@ -144,6 +144,7 @@ fn main() {
     println!("interpreted: {}", eval::apply_term(&store, hof, &[]).unwrap());
     println!("jit:         {}", jit.apply(&store, hof, &[]).unwrap());
     println!("compiled so far: {}, interpreted so far: {}", jit.stats.compiled, jit.stats.interpreted);
+    println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(hof));
 
     let capturing = capturing_closure_demo(&mut store);
     println!("\n-- capturing closure, still out of compile.rs's fragment --");

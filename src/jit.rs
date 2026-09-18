@@ -171,7 +171,13 @@ impl JitEngine {
     /// applies:
     /// 1. `prove_pure_expr` -- a straight-line (non-recursive) term gets
     ///    one proof covering every input.
-    /// 2. `prove_tail_recursive_universal` -- a tail-recursive term whose
+    /// 2. `prove_closure_expr` -- a closed, non-recursive term built from
+    ///    non-capturing ("known-call") closures gets one proof covering
+    ///    every input too, the same way `prove_pure_expr` does for plain
+    ///    arithmetic -- see its own docs for what's in and out of scope
+    ///    (an `If` between two closures, self-recursion combined with
+    ///    closures, ...).
+    /// 3. `prove_tail_recursive_universal` -- a tail-recursive term whose
     ///    shape it covers gets one universal theorem, also covering every
     ///    input, via real induction rather than per-sample checking. Once
     ///    this succeeds, also tries instantiating that theorem at a few
@@ -184,15 +190,19 @@ impl JitEngine {
     ///    `kernel_verified` is already `true` from the theorem alone, so a
     ///    shape it declines instances for (branching recursion -- see
     ///    `proof.rs`) is unaffected.
-    /// 3. `prove_tail_recursive_call`, once per sample in the same battery
+    /// 4. `prove_tail_recursive_call`, once per sample in the same battery
     ///    `verify()` uses, reporting success only if *every* sample got its
     ///    own per-call relational proof -- the fallback for tail-recursive
     ///    shapes the universal proof doesn't (yet) cover.
     ///
-    /// Anything else (non-tail recursion, genuinely higher-order terms)
-    /// reports `false` -- see `proof.rs` for what's in scope and why.
+    /// Anything else (non-tail recursion combined with closures, genuinely
+    /// *capturing* closures, ...) reports `false` -- see `proof.rs` for
+    /// what's in scope and why.
     fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> bool {
         if proof::prove_pure_expr(terms, h).is_some() {
+            return true;
+        }
+        if proof::prove_closure_expr(terms, h).is_some() {
             return true;
         }
         let instance_samples: Vec<Vec<i64>> = sample_arg_vectors(arity).into_iter().take(3).collect();
@@ -444,7 +454,8 @@ mod tests {
         // twice and inc are non-capturing, so compile.rs's known-call
         // closure support (twice becomes a combinator calling `f` through
         // a Wasm table, inc becomes another combinator) now compiles this
-        // instead of falling back to the interpreter.
+        // instead of falling back to the interpreter, and proof.rs's
+        // prove_closure_expr gives it a kernel-checked proof too.
         let mut s = TermStore::new();
         let f = s.var(1);
         let x = s.var(0);
@@ -463,6 +474,8 @@ mod tests {
         assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 7);
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(applied));
+        assert_eq!(jit.stats.kernel_proofs_checked, 1);
     }
 
     #[test]

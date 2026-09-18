@@ -252,7 +252,7 @@ pub(crate) fn match_self_call(
 /// Unwinds a chain of `App` nodes into `(root, args)` -- `root` is the
 /// first non-`App` node reached, `args` its arguments in application
 /// order. `root == h` with `args` empty if `h` isn't an `App` at all.
-fn unwind_app_spine(store: &TermStore, mut h: Hash) -> (Hash, Vec<Hash>) {
+pub(crate) fn unwind_app_spine(store: &TermStore, mut h: Hash) -> (Hash, Vec<Hash>) {
     let mut args = Vec::new();
     while let Term::App(f, a) = store.resolve(h) {
         args.push(*a);
@@ -268,7 +268,7 @@ fn unwind_app_spine(store: &TermStore, mut h: Hash) -> (Hash, Vec<Hash>) {
 /// Used with an inconsistent arity across call sites (`f(x)` *and*
 /// `f(x,y)`) fails the whole function (partial application isn't
 /// supported); never applied at all (just read as a value) is `None`.
-fn infer_closure_arities(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Option<Vec<Option<usize>>> {
+pub(crate) fn infer_closure_arities(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Option<Vec<Option<usize>>> {
     let mut found = vec![None; arity];
     scan_for_closure_calls(store, h, arity, self_idx, &mut found)?;
     Some(found)
