@@ -98,5 +98,43 @@ fn factorial_10(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, fib_30, gcd_large, factorial_10);
+fn capturing_closure_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("capturing_closure_loop");
+
+    let mut store = TermStore::new();
+    let h = common::capturing_closure_loop(&mut store);
+    // creates+calls 2,000 fresh capturing closures -- kept well under
+    // eval.rs's own native-recursion stack limit (no TCO there, unlike
+    // compile.rs's loop/br; empirically overflows somewhere between 8,000
+    // and 10,000 levels even in release mode) rather than pushed to a
+    // round number that risks it.
+    let args: [i64; 2] = [2_000, 0];
+
+    group.sample_size(20);
+    group.bench_function("interpreter", |b| {
+        b.iter(|| eval::apply_term(&store, h, black_box(&args)).unwrap())
+    });
+
+    group.bench_function("jit_cold_compile_and_verify", |b| {
+        b.iter_batched(
+            || {
+                let mut store = TermStore::new();
+                let h = common::capturing_closure_loop(&mut store);
+                (store, h, JitEngine::new())
+            },
+            |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),
+            BatchSize::SmallInput,
+        )
+    });
+
+    let mut jit = JitEngine::new();
+    jit.apply(&store, h, &args).unwrap();
+    group.bench_function("jit_warm_cache_hit", |b| {
+        b.iter(|| jit.apply(&store, h, black_box(&args)).unwrap())
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, fib_30, gcd_large, factorial_10, capturing_closure_loop);
 criterion_main!(benches);

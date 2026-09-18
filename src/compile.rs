@@ -974,6 +974,48 @@ mod tests {
     }
 
     #[test]
+    fn self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles() {
+        // rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)
+        // -- a tail loop where *each iteration* creates and immediately
+        // calls a fresh closure capturing the current `acc`: exercises
+        // `$env` staying correctly untouched across the tail loop's own
+        // `br $L` (the closure creation/call happens compiling one of the
+        // *new* argument values, not the self-call itself) while
+        // `push_closure_env`/`$alloc` still runs freshly every iteration.
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        let acc_captured = s.var(1);
+        let sum = s.prim(PrimOp::Add, acc_captured, y);
+        let closure = s.abs(sum);
+        let n_ref = s.var(1);
+        let new_acc = s.app(closure, n_ref);
+        let n = s.var(1);
+        let acc = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let f = s.var(2);
+        let rec_call = s.app2(f, n_minus_1, new_acc);
+        let body = s.if_(cond, acc, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        let term = s.rec(abs);
+
+        let frag = try_compile(&s, term).expect("should compile");
+        assert_eq!(frag.arity, 2);
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
+
+        for (n, acc) in [(0, 0), (1, 0), (5, 0), (10, 100)] {
+            let compiled = func.call(&mut store, (n, acc)).unwrap();
+            let interpreted = apply_term(&s, term, &[n, acc]).unwrap();
+            assert_eq!(compiled, interpreted, "mismatch at n={n} acc={acc}");
+        }
+    }
+
+    #[test]
     fn partial_application_is_still_rejected() {
         // \f. f(1) + f(1, 2) -- `f` called with inconsistent arities
         // (1 then 2) at different call sites -- not supported.

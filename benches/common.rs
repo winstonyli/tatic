@@ -77,6 +77,40 @@ pub fn gcd_with_two_base_cases(s: &mut TermStore) -> Hash {
     s.rec(abs)
 }
 
+/// `rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)` --
+/// tail-recursive, but each iteration creates *and immediately calls* a
+/// fresh capturing closure (`\y. acc + y`, capturing `acc`, `f`'s own
+/// second parameter, which changes every iteration) as a literal callee
+/// -- a direct-call site (`push_closure_env` then `call`, no
+/// `call_indirect`), so this isolates the cost of `compile.rs`'s new
+/// closure-conversion path -- one bump-allocator call per iteration --
+/// from `call_indirect`'s own unpacking overhead.
+pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
+    // `\y. acc + y`, referenced at body's own top level (f=Var(2),
+    // n=Var(1), acc=Var(0)) -- inside the closure's own body, one more
+    // binder (y) has been passed, so acc is Var(1), y is Var(0).
+    let y = s.var(0);
+    let acc_captured = s.var(1);
+    let sum = s.prim(PrimOp::Add, acc_captured, y);
+    let closure = s.abs(sum);
+
+    let n_ref = s.var(1);
+    let new_acc = s.app(closure, n_ref);
+
+    let n = s.var(1);
+    let acc = s.var(0);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let f = s.var(2);
+    let rec_call = s.app2(f, n_minus_1, new_acc);
+    let body = s.if_(cond, acc, rec_call);
+    let inner = s.abs(body);
+    let abs = s.abs(inner);
+    s.rec(abs)
+}
+
 /// `\a b. if a < b then a * 2 else b + 1` -- straight-line, no recursion.
 pub fn straight_line(s: &mut TermStore) -> Hash {
     let a = s.var(1);
