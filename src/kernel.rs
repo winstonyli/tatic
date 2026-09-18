@@ -162,6 +162,21 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
 /// term built at one ambient context depth for reuse at a deeper one --
 /// see `proof.rs`'s `Anchored`.
 pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+    // Adding 0 changes no index, so this is provably the identity on `e`
+    // regardless of its content -- skip the full recursive rebuild.
+    // `Anchored::at` calls this constantly (once per resolve, often with
+    // nothing having grown since the value was anchored), and confirmed via
+    // profiling: `shift` is by far the dominant cost in a large proof's
+    // construction (tens of millions of calls for a `fib(8)` instance
+    // witness), so this one-line, always-safe check is worth having even
+    // though it only catches the `amount == 0` case -- see the module docs'
+    // note on what a *general* sharing-aware `shift` would need instead
+    // (this codebase's `Anchored::at` always shifts from cutoff 0, where a
+    // "no free var at or above cutoff" fast path would essentially never
+    // fire, since any `Var` at all disqualifies it).
+    if amount == 0 {
+        return e.clone();
+    }
     match e {
         Expr::Var(k) => {
             if *k >= cutoff {
@@ -822,6 +837,28 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_by_zero_is_the_identity_including_through_binders() {
+        // Exercises every variant, including ones whose subterms sit under
+        // an extra binder (Pi/Lam/W bump `cutoff` for their second field) --
+        // shift's `amount == 0` fast path returns `e.clone()` without
+        // recursing at all, so this confirms that's equivalent to the full
+        // structural recursion for a term where it'd actually matter if the
+        // fast path skipped something it shouldn't.
+        let e = pi(
+            sort(0),
+            jelim(
+                lam(var(0), wty(var(1), sup(var(0), var(2)))),
+                refl(var(0)),
+                var(1),
+                var(2),
+                wrec(var(0), var(1), var(2)),
+            ),
+        );
+        assert_eq!(shift(&e, 0, 0), e);
+        assert_eq!(shift(&e, 3, 0), e);
+    }
 
     #[test]
     fn universes_stratify() {
