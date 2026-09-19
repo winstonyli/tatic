@@ -165,10 +165,9 @@ pub fn partial_application_loop(s: &mut TermStore) -> Hash {
 /// is closed (arity 0) -- a closure-typed *parameter* threaded through
 /// every iteration and called (`call_indirect`) each time, unlike
 /// `capturing_closure_loop`'s own shape above, which creates a fresh
-/// closure every iteration instead of reusing one passed in. Same depth
-/// cap as the other two loop benchmarks, for the same reason (eval.rs's
-/// own non-TCO recursion overflows the stack somewhere between 8,000 and
-/// 10,000 levels even in release mode).
+/// closure every iteration instead of reusing one passed in. Same depth as
+/// the other two loop benchmarks (see `execution.rs`'s own comment on
+/// `capturing_closure_loop` for why 20,000 rather than some other number).
 pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
     let x = s.var(0);
     let g = s.var(1);
@@ -192,7 +191,7 @@ pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
     let inc_body = s.prim(PrimOp::Add, y, one2);
     let inc = s.abs(inc_body);
 
-    let n_lit = s.lit(2_000);
+    let n_lit = s.lit(20_000);
     let x0 = s.lit(0);
     let partial = s.app2(it, n_lit, inc);
     s.app(partial, x0)

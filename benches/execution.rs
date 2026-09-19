@@ -103,12 +103,12 @@ fn capturing_closure_loop(c: &mut Criterion) {
 
     let mut store = TermStore::new();
     let h = common::capturing_closure_loop(&mut store);
-    // creates+calls 2,000 fresh capturing closures -- kept well under
-    // eval.rs's own native-recursion stack limit (no TCO there, unlike
-    // compile.rs's loop/br; empirically overflows somewhere between 8,000
-    // and 10,000 levels even in release mode) rather than pushed to a
-    // round number that risks it.
-    let args: [i64; 2] = [2_000, 0];
+    // creates+calls 20,000 fresh capturing closures -- eval.rs's own App/If
+    // handling is trampolined (see its own module docs) precisely so a
+    // depth like this, or much deeper, never risks the native stack; this
+    // round number is just enough to make steady-state cost dominate over
+    // fixed per-call overhead, not a ceiling.
+    let args: [i64; 2] = [20_000, 0];
 
     group.sample_size(20);
     group.bench_function("interpreter", |b| {
@@ -186,10 +186,9 @@ fn partial_application_loop(c: &mut Criterion) {
 
     let mut store = TermStore::new();
     let h = common::partial_application_loop(&mut store);
-    // Same depth cap as capturing_closure_loop, for the same reason:
-    // eval.rs's own non-TCO recursion overflows the stack somewhere
-    // between 8,000 and 10,000 levels even in release mode.
-    let args: [i64; 2] = [2_000, 0];
+    // Same depth as capturing_closure_loop, for the same reason -- see its
+    // own comment above.
+    let args: [i64; 2] = [20_000, 0];
 
     group.sample_size(20);
     group.bench_function("interpreter", |b| {
