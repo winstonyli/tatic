@@ -259,8 +259,10 @@ This is stated precisely because it would be easy to overclaim here.
   shared by arity) with constructor `mk_env_n : Int -> .. -> Int ->
   Env_n`; `build_env_expr` builds the actual environment argument fresh at
   each creation site, mirroring `compile.rs`'s own `push_closure_env` at
-  the proof level. Scope, honestly: closed and non-recursive only
-  (combining with self-recursion is future work); every `If` branch must
+  the proof level. Scope, honestly: the *main*, top-level term must still
+  be non-recursive (proving a self-recursive function's own body is
+  `prove_tail_recursive_universal`'s job, not this one's — see its own
+  row above); every `If` branch must
   denote as `Int` (an `If` choosing between two closures is out of scope,
   whether or not either branch captures anything); and for a capturing
   combinator specifically, each captured value must resolve *directly* to
@@ -298,7 +300,18 @@ This is stated precisely because it would be easy to overclaim here.
   wrap-order convention, and independently confirmed by a regression test
   built specifically to exercise it (mixed `Clo`/`Int` parameter types,
   where the two slices actually disagree — `add`'s own two `Int`
-  parameters can't tell them apart).
+  parameters can't tell them apart). A combinator called or used as a bare
+  value may itself be self-recursive (`Term::Rec`, not just `Term::Abs`
+  — e.g. `let fact = rec f n = .. in fact 10`, or a direct `fact(10)`) —
+  `register`/`call_ref`/`param_types_for` never look inside a combinator's
+  own body regardless of whether it recurses (a call is always postulated
+  opaque), so this needed only a wider match pattern, no new proof
+  machinery; `compile::peel`/`compile::free_vars`/`compile::infer_closure_arities`
+  were already generic over `is_rec` (`prove_tail_recursive_universal`'s own
+  fragment already relied on that). `pap_ref` keeps rejecting a recursive
+  root specifically, though — the same honest narrowing already applied to
+  a capturing root, and, like that one, a case `compile.rs` itself already
+  compiles (`register_partial_app` never special-cased `is_rec` either).
 
 In every case, `jit.rs`'s sample-based verification against the
 interpreter is the actual trust gate for installing a compiled form. A
@@ -477,20 +490,22 @@ first seed, as expected.
   `n + (if c then 1 else 2)`), not just as the whole body of some branch —
   `find_self_calls`/`denote_with_placeholders` currently reject that shape
   outright.
-- Combining closures with self-recursion more fully in one proof: `prove_tail_recursive_universal`
-  now covers a closure-typed *parameter* threaded through recursion (see
-  the table row above), but still never a closure *created* inside a
-  recursive body — `prove_closure_expr` remains closed/non-recursive-only.
-  Also still open: allowing an `If` to choose between two closures, not
-  just two `Int`s — a real, documented restriction of `prove_closure_expr`,
-  not a fundamental limit. One concrete instance of the closure-creation
-  gap: `compile.rs` now compiles a named self-recursive value called
-  through the combinator table (`let fact = rec f n = .. in fact 10`,
-  found via the REPL — see its own tests), but no proof strategy covers
-  that shape yet, since it's neither `prove_closure_expr`'s fragment (which
-  excludes `Rec`) nor `prove_tail_recursive_universal`'s (which needs the
-  *top-level* term itself to be `Rec`-wrapped, and still rejects any `Abs`
-  in the body regardless).
+- Combining closures with self-recursion more fully in one proof.
+  `prove_tail_recursive_universal` now covers a closure-typed *parameter*
+  threaded through recursion, and `prove_closure_expr` now covers a
+  self-recursive combinator called or used as a value from a non-recursive
+  main term (see the table rows above — this closed the concrete instance
+  cited here previously: `let fact = rec f n = .. in fact 10`, found via
+  the REPL, now gets a closure proof). What's still open is a closure
+  *literal created fresh inside a recursive body* — e.g. `rec f n acc =
+  f(n-1, (\y. acc+y)(n))`, which `compile.rs` already compiles (see its own
+  `self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles`
+  test and the `capturing_closure_loop` benchmark) but which needs
+  `prove_closure_expr`'s own combinator/capture machinery merged into
+  `build_universal`'s induction, a meaningfully bigger lift than either
+  extension so far. Also still open: allowing an `If` to choose between
+  two closures, not just two `Int`s — a real, documented restriction of
+  `prove_closure_expr`, not a fundamental limit.
 - Widening the compilable fragment further: an over-applied literal
   lambda, a variable called with inconsistent arities across sites, more
   primitives. (Capturing closures and partial application of a literal

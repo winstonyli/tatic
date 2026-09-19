@@ -2024,9 +2024,13 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
 // here evaluates anything concrete, so no `assume_prim_fact`-style
 // grounding is needed.
 //
-// Scope, honestly: closed, non-recursive terms only (`Rec` anywhere, main
-// term or any combinator, is out of scope -- combining this with
-// self-recursion is future work); every `If` branch must denote as `Int`
+// Scope, honestly: the *main*, top-level term must still be non-recursive
+// (`prove_closure_expr`'s own top-level check) -- proving what a
+// self-recursive function's *own* body computes is `build_universal`'s
+// job, not this fragment's. A *combinator* referenced or called from
+// within that non-recursive main term, though, may be self-recursive
+// (`Term::Rec`, not just `Term::Abs`) -- see the paragraph below; every
+// `If` branch must denote as `Int`
 // (an `If` choosing between two *closures* is out of scope, though
 // `compile.rs` would compile it, whether or not either branch captures
 // anything); and the whole function's own result must denote as `Int`,
@@ -2062,6 +2066,23 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
 // proving that composition correct is deferred as future work rather than
 // risked getting subtly wrong here. Over-application (more arguments than
 // arity) stays rejected exactly as before.
+//
+// A combinator (called or used as a bare value) may itself be
+// self-recursive (`Term::Rec`, e.g. a named `let fact = rec f n = .. in
+// g fact` or a direct `fact(10)`), not just `Term::Abs`: `register`/
+// `call_ref`/`param_types_for` never look inside a combinator's own body
+// regardless (a call is always postulated opaque, `combinator_value`/
+// `mk_clo_h`/`call_h` alike), so widening every `Term::Abs`-only call/value
+// site to also accept `Term::Rec` needed no new proof machinery -- just the
+// wider pattern, since `compile::peel`/`compile::free_vars`/
+// `compile::infer_closure_arities` were already generic over `is_rec`
+// (`build_universal`'s own fragment already relied on that). `pap_ref`
+// specifically keeps rejecting a recursive root, though -- unlike a direct
+// call or a bare value, composing a partial-application wrapper's own
+// environment with a self-recursive combinator's calling convention hasn't
+// been worked through, the same honest narrowing already applied to a
+// *capturing* root above (and, like that one, `compile.rs` itself already
+// handles it: `register_partial_app` never special-cased `is_rec` either).
 
 /// Either an `Int`-typed or a `Clo`-typed denotation -- `denote_closure`
 /// needs to track which, since an application's arguments and an `If`'s
@@ -2095,12 +2116,15 @@ impl Denoted {
 /// captured-free-variable entry `infer_closure_arities` might also carry
 /// (calling a closure reached that way is compile.rs-only territory,
 /// still out of `prove_closure_expr`'s own scope) is never consulted.
+/// Works for a self-recursive `h` too (`Term::Rec`, not just `Term::Abs`)
+/// -- `infer_closure_arities` already excludes the self-binder from this
+/// classification when given `self_idx` (same as `build_universal`'s own
+/// call), so a self-recursive combinator's *own* parameters classify the
+/// same way a non-recursive one's do.
 fn param_types_for(store: &TermStore, h: Hash) -> Option<Vec<Option<usize>>> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
-    if is_rec {
-        return None;
-    }
-    let found = compile::infer_closure_arities(store, body, arity, None)?;
+    let self_idx = is_rec.then_some(arity as u32);
+    let found = compile::infer_closure_arities(store, body, arity, self_idx)?;
     Some((0..arity as u32).map(|i| found.get(&i).copied()).collect())
 }
 
@@ -2271,11 +2295,13 @@ impl<'a> ClosureCombinators<'a> {
     /// indices (`compile::free_vars`, computed once by the caller and
     /// passed in rather than re-derived here, since the caller needs it
     /// again anyway to build the actual environment via
-    /// `build_env_expr`). `None` for a zero-arity or self-recursive `h`
-    /// (out of scope regardless of capturing -- see section docs).
+    /// `build_env_expr`). `None` for a zero-arity `h` only -- a
+    /// self-recursive `h` (`Term::Rec`) is fine here, the same opaque
+    /// constant/function either way, since a call is never denoted by
+    /// looking inside `h`'s own body regardless of whether it recurses.
     fn register(&mut self, h: Hash, captures: &[u32]) -> Option<Expr> {
-        let (arity, _, is_rec) = compile::peel(self.store, h)?;
-        if is_rec || arity == 0 {
+        let (arity, _, _) = compile::peel(self.store, h)?;
+        if arity == 0 {
             return None;
         }
         if captures.is_empty() {
@@ -2436,7 +2462,7 @@ fn collect_literals_closure(store: &TermStore, h: Hash, param_types: &[Option<us
         let (root, args) = compile::unwind_app_spine(store, h);
         let ok_root = match store.resolve(root) {
             Term::Var(i) => param_types.get(*i as usize).copied().flatten().is_some(),
-            Term::Abs(_) => matches!(compile::peel(store, root), Some((a, _, false)) if a > 0),
+            Term::Abs(_) | Term::Rec(_) => matches!(compile::peel(store, root), Some((a, _, _)) if a > 0),
             _ => false,
         };
         if !ok_root {
@@ -2460,8 +2486,7 @@ fn collect_literals_closure(store: &TermStore, h: Hash, param_types: &[Option<us
                 && collect_literals_closure(store, *t, param_types, out)
                 && collect_literals_closure(store, *e, param_types, out)
         }
-        Term::Abs(_) => true, // a bare value -- opaque, nothing inside it to collect
-        Term::Rec(_) => false,
+        Term::Abs(_) | Term::Rec(_) => true, // a bare value -- opaque, nothing inside it to collect
         Term::App(..) => unreachable!("handled above"),
     }
 }
@@ -2521,18 +2546,23 @@ fn denote_closure(
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: call_indirect application");
                 return Some(Denoted::Int(applied));
             }
-            // A literal lambda in function position, called directly (a
-            // static Wasm `call`, no closure value involved at all): each
-            // argument's expected type matches the *callee's own*
+            // A literal lambda -- or a named self-recursive combinator, the
+            // same table `Term::Abs` uses (compile.rs's own combinator
+            // table doesn't distinguish self-recursive from not; neither
+            // does this, since a call is postulated opaque either way --
+            // see `param_types_for`/`ClosureCombinators::register`/
+            // `call_ref`, all already generic over `is_rec`) -- in function
+            // position, applied to exactly its own arity (a direct static
+            // call), fewer arguments than its own arity (compile.rs's
+            // compile-time-desugared partial application,
+            // `register_partial_app`'s wrapper -- `pap_ref` itself still
+            // rejects a recursive root, so this narrows back down for that
+            // one sub-case), or more (over-application, still rejected).
+            // Each argument's expected type matches the *callee's own*
             // parameter type at that position (`Clo` or `Int`), which is
             // what lets e.g. `twice(inc, 5)` pass a closure and a plain
             // `Int` to the same call.
-            // A literal lambda in function position, applied to exactly its
-            // own arity (a direct static call), fewer arguments than its
-            // own arity (compile.rs's compile-time-desugared partial
-            // application, `register_partial_app`'s wrapper), or more (over-
-            // application, still rejected).
-            Term::Abs(_) => {
+            Term::Abs(_) | Term::Rec(_) => {
                 let callee_param_types = param_types_for(store, root)?;
                 let arity = callee_param_types.len();
                 if args.len() > arity {
@@ -2639,9 +2669,16 @@ fn denote_closure(
             debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: Prim");
             Some(Denoted::Int(applied))
         }
-        Term::Abs(_) => {
+        // A literal lambda used as a bare value -- or a named self-recursive
+        // combinator (`Term::Rec`) used the same way, e.g. `let fact = rec
+        // f n = .. in g fact` -- register/build_env_expr are already
+        // generic over `is_rec` (see the App-root match above), so this
+        // only ever needed widening the pattern, not the logic: whether
+        // `h` recurses is never examined, since a call is postulated
+        // opaque either way.
+        Term::Abs(_) | Term::Rec(_) => {
             let (arity, body, is_rec) = compile::peel(store, h)?;
-            if is_rec || arity == 0 {
+            if arity == 0 {
                 return None;
             }
             let captures = compile::free_vars(store, body, arity, is_rec);
@@ -2660,24 +2697,26 @@ fn denote_closure(
             Some(Denoted::Clo(applied))
         }
         Term::If(..) | Term::App(..) => unreachable!("handled above"),
-        Term::Rec(_) => None,
     }
 }
 
 /// Attempts to build an [`EquivalenceProof`] for `h`, covering every input,
 /// for the closures fragment `compile.rs` compiles, capturing, partially
-/// applied, or neither (see the section docs above for exactly what's in
-/// and out of scope). Returns `None` for anything outside it: a
-/// `Rec`-wrapped term (self-recursion combined with closures isn't
-/// covered), an application whose callee is neither a closure-typed
-/// parameter nor a literal lambda, an inconsistent arity for a
-/// closure-typed parameter, an application of a literal lambda to more
-/// arguments than its own arity, an `If` whose branches aren't both `Int`,
-/// a whole-function result that isn't `Int`, a captured value (for a
-/// capturing combinator) that isn't `Int`-typed or doesn't resolve
-/// directly to one of the calling function's own parameters, or a partial
-/// application (fewer arguments than arity) whose root itself captures
-/// anything.
+/// applied, self-recursive-combinator-calling, or none of those (see the
+/// section docs above for exactly what's in and out of scope). Returns
+/// `None` for anything outside it: `h` *itself* `Rec`-wrapped (proving a
+/// self-recursive function's own body is `build_universal`'s job, not
+/// this one's -- a combinator it calls or uses as a value may still be
+/// self-recursive), an application whose callee is neither a closure-typed
+/// parameter nor a literal lambda/named recursive combinator, an
+/// inconsistent arity for a closure-typed parameter, an application of a
+/// literal lambda or recursive combinator to more arguments than its own
+/// arity, an `If` whose branches aren't both `Int`, a whole-function
+/// result that isn't `Int`, a captured value (for a capturing combinator)
+/// that isn't `Int`-typed or doesn't resolve directly to one of the
+/// calling function's own parameters, or a partial application (fewer
+/// arguments than arity) whose root itself captures anything or is itself
+/// self-recursive.
 pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if is_rec {
@@ -3292,11 +3331,136 @@ mod tests {
         .expect("the recorded proof should independently re-typecheck");
     }
 
+    /// `rec f n = if n <= 1 then 1 else n * f(n-1)`, factorial -- used below
+    /// as a named self-recursive combinator, the same way `twice`/`inc` are
+    /// used as non-recursive ones.
+    fn fact(s: &mut TermStore) -> Hash {
+        let n = s.var(0);
+        let f = s.var(1);
+        let one = s.lit(1);
+        let cond = s.prim(PrimOp::Le, n, one);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let rec_call = s.app(f, n_minus_1);
+        let else_branch = s.prim(PrimOp::Mul, n, rec_call);
+        let body = s.if_(cond, one, else_branch);
+        let abs = s.abs(body);
+        s.rec(abs)
+    }
+
+    #[test]
+    fn a_directly_called_self_recursive_combinator_gets_a_closure_proof() {
+        // fact(10) -- a direct static call to a self-recursive combinator,
+        // the App-root `Term::Rec` branch (mirroring the `Term::Abs`
+        // direct-call path `twice_inc_5` already exercises): the call is
+        // postulated opaque either way, so widening the pattern needed no
+        // new proof machinery.
+        let mut s = TermStore::new();
+        let f = fact(&mut s);
+        let ten = s.lit(10);
+        let applied = s.app(f, ten);
+
+        let proof = prove_closure_expr(&s, applied).expect("fact(10) should get a closure proof");
+        assert_eq!(proof.arity, 0);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        assert!(compile::try_compile(&s, applied).is_some());
+    }
+
+    #[test]
+    fn a_self_recursive_combinator_used_as_a_value_gets_a_closure_proof() {
+        // (\g. g 10) fact -- what `let fact = rec f n = .. in fact 10`
+        // desugars to (found via the REPL -- see syntax.rs/repl.rs, and
+        // jit::tests::a_let_bound_self_recursive_function_compiles_and_is_kernel_verified
+        // for the same shape checked directly against jit.rs): `fact`
+        // itself, a bare `Term::Rec` value, gets registered
+        // (`ClosureCombinators::register`) the same way a non-recursive
+        // literal does, then called through `wrapper`'s own closure-typed
+        // parameter via call_indirect.
+        let mut s = TermStore::new();
+        let f = fact(&mut s);
+        let g = s.var(0);
+        let ten = s.lit(10);
+        let call_g = s.app(g, ten);
+        let wrapper = s.abs(call_g);
+        let applied = s.app(wrapper, f);
+
+        let proof = prove_closure_expr(&s, applied).expect("(\\g. g 10) fact should get a closure proof");
+        assert_eq!(proof.arity, 0);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        assert!(compile::try_compile(&s, applied).is_some());
+    }
+
+    #[test]
+    fn partial_application_of_a_self_recursive_combinator_is_still_out_of_scope_for_the_closure_proof() {
+        // fact(1) supplied as a 1-of-1 partial application isn't a
+        // meaningful example on its own (fact's arity is already 1), so
+        // use a 2-ary self-recursive combinator instead: rec f n acc =
+        // if n <= 0 then acc else f(n-1, n*acc); partial = f(3) (under-
+        // applied by one arg); caller = \g. g(1); top = caller(partial).
+        // pap_ref explicitly rejects a recursive root (see its own docs),
+        // unlike a direct (fully-applied) or bare-value self-recursive
+        // reference, both now in scope -- an honest, still-documented
+        // narrowing, not an oversight. compile.rs's own `register_partial_app`/
+        // `emit_pap_wrapper`, by contrast, never special-cased `is_rec` at
+        // all (a PAP wrapper only ever forwards a static call to its root,
+        // indifferent to whether that root's *own* codegen happens to
+        // loop), so this genuinely compiles already -- an honest,
+        // pre-existing gap between what compile.rs handles and what the
+        // closure proof covers, the same shape as the capturing-PAP one
+        // (see partial_application_of_a_capturing_literal_lambda_is_still_out_of_scope_for_the_closure_proof
+        // above), not something this round's widening introduced.
+        let mut s = TermStore::new();
+        let acc = s.var(0);
+        let n = s.var(1);
+        let f = s.var(2);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_times_acc = s.prim(PrimOp::Mul, n, acc);
+        let rec_call = s.app2(f, n_minus_1, n_times_acc);
+        let body = s.if_(cond, acc, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        let fact2 = s.rec(abs);
+
+        let three = s.lit(3);
+        let partial = s.app(fact2, three);
+
+        let g = s.var(0);
+        let one2 = s.lit(1);
+        let call_g = s.app(g, one2);
+        let caller = s.abs(call_g);
+
+        let top = s.app(caller, partial);
+
+        assert!(prove_closure_expr(&s, top).is_none());
+        assert!(compile::try_compile(&s, top).is_some(), "the compiler already handles this even though the closure proof doesn't yet");
+    }
+
     #[test]
     fn recursion_combined_with_closures_is_out_of_scope() {
         // Even a trivial Rec wrapper puts a closures term out of scope for
-        // prove_closure_expr (see its own docs) -- combining the two is
-        // future work, not (yet) covered.
+        // prove_closure_expr when it's the *top-level* term itself that's
+        // Rec-wrapped (unlike a self-recursive combinator called or used
+        // as a value *inside* an otherwise non-recursive top-level term --
+        // see a_self_recursive_combinator_used_as_a_value_gets_a_closure_proof
+        // and a_directly_called_self_recursive_combinator_gets_a_closure_proof
+        // below for that, now-covered, case): prove_closure_expr's own
+        // top-level check still requires `h` itself to be non-recursive,
+        // since it's `build_universal`'s job, not this fragment's, to
+        // prove what a self-recursive function's *own* body computes.
         let mut s = TermStore::new();
         let t = twice(&mut s);
         let i = inc(&mut s);

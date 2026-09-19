@@ -498,21 +498,17 @@ mod tests {
     }
 
     #[test]
-    fn a_let_bound_self_recursive_function_compiles_but_is_not_yet_proven() {
+    fn a_let_bound_self_recursive_function_compiles_and_is_kernel_verified() {
         // (\g. g 10) (rec f n = if n <= 1 then 1 else n * f (n - 1)) --
         // what `let fact = rec f n = .. in fact 10` desugars to (found via
         // the REPL, see syntax.rs/repl.rs): a named recursive function
         // called through the same combinator table a plain closure value
-        // uses. compile.rs now handles this (a bug fix -- see its own
-        // tests), so this genuinely compiles and gives the right answer,
-        // but no proof.rs strategy covers this shape yet: prove_closure_expr
-        // explicitly excludes Rec-valued combinators (closed/non-recursive
-        // only -- see its own docs), and prove_tail_recursive_universal
-        // needs the *top-level* term itself to be Rec-wrapped, which this
-        // isn't (the top level is an application, with Rec several layers
-        // down). An honest, documented gap, not silently papered over --
-        // combining closures with self-recursion is still open (see
-        // README's Future work).
+        // uses. compile.rs handles this (a bug fix -- see its own tests),
+        // and prove_closure_expr now does too: a call to a combinator is
+        // always postulated opaque (never denoted by looking inside its
+        // own body), so widening `Term::Abs`-only call/value sites to also
+        // accept `Term::Rec` needed no new proof machinery, just the wider
+        // pattern -- see proof.rs's own denote_closure docs.
         let mut s = TermStore::new();
         let n = s.var(0);
         let f = s.var(1);
@@ -535,7 +531,7 @@ mod tests {
         assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 3628800);
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
-        assert!(!jit.is_kernel_verified(applied), "no proof strategy covers this shape yet -- see the comment above");
+        assert!(jit.is_kernel_verified(applied));
     }
 
     #[test]
