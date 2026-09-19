@@ -438,7 +438,27 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   universal proof at all — on this machine it lands around 150-200 sample
   points (a universal proof ≈ 5ms once vs. ≈ 25µs per relational call), so
   which is cheaper depends entirely on how many sample points
-  `jit.rs` would otherwise verify against.
+  `jit.rs` would otherwise verify against. Also `closures_fragment_proof`
+  — `prove_closure_expr`'s own cost across the closures fragment's shapes,
+  none of which touch `build_universal`'s induction machinery at all (the
+  top-level term must be non-recursive for this fragment): on this
+  machine, `twice_inc_5` (non-capturing, the same term `main.rs`'s own
+  demo uses) is the cheapest at ~10.3µs; a directly-called capturing
+  closure costs ~14.4µs (the extra `Env_n` value); a non-capturing partial
+  application ~11.8µs; a capturing one ~21.8µs (paying for both the PAP
+  wrapper postulate and its own `Env_n`, on top of everything the
+  non-capturing PAP case already does). Also
+  `closure_typed_recursion_universal_proof` — `prove_tail_recursive_universal`'s
+  own cost for a closure-typed loop-carried parameter (`iterate`'s
+  shape, see the closures-fragment table row above), which unlike
+  `closures_fragment_proof`'s own group *does* go through
+  `build_universal`'s full induction pipeline
+  (`denote_closure_typed`/`prime_closure_postulates`, not just
+  `denote_closure`): at ~13.7ms, noticeably more than the same 2-leaf
+  shape's plain-arithmetic counterpart (`gcd_2_leaves`, ~9.0ms above) —
+  the closure-typed pipeline's extra bookkeeping costs something even on
+  a term, like this one, that never actually creates a closure inside the
+  loop.
 
 ## Differential testing
 

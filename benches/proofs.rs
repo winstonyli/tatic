@@ -7,7 +7,7 @@
 
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
-use tatic::proof::{prove_pure_expr, prove_tail_recursive_call, prove_tail_recursive_universal};
+use tatic::proof::{prove_closure_expr, prove_pure_expr, prove_tail_recursive_call, prove_tail_recursive_universal};
 use tatic::term::TermStore;
 
 #[path = "common.rs"]
@@ -83,11 +83,65 @@ fn relational_scaling_vs_universal(c: &mut Criterion) {
     group.finish();
 }
 
+/// Cost of `prove_closure_expr` itself, across the closures fragment's own
+/// shapes -- unlike the arithmetic-only groups above, none of these
+/// involve `build_universal`'s induction machinery at all (the top-level
+/// term must be non-recursive for this fragment), so this isolates
+/// `denote_closure`'s own cost: registering/calling a combinator,
+/// building an `Env_n` value, and the PAP wrapper postulate, each
+/// against the non-capturing baseline (`twice_inc_5`, the same term
+/// `main.rs`'s own demo uses).
+fn closures_fragment_proof(c: &mut Criterion) {
+    let mut group = c.benchmark_group("closures_fragment_proof");
+
+    let mut store = TermStore::new();
+    let h = common::twice_inc_5(&mut store);
+    group.bench_function("non_capturing", |b| {
+        b.iter(|| prove_closure_expr(&store, black_box(h)).unwrap())
+    });
+
+    let mut store2 = TermStore::new();
+    let h2 = common::a_capturing_closure_call(&mut store2);
+    group.bench_function("capturing", |b| {
+        b.iter(|| prove_closure_expr(&store2, black_box(h2)).unwrap())
+    });
+
+    let mut store3 = TermStore::new();
+    let h3 = common::a_pap_non_capturing(&mut store3);
+    group.bench_function("partial_application_non_capturing", |b| {
+        b.iter(|| prove_closure_expr(&store3, black_box(h3)).unwrap())
+    });
+
+    let mut store4 = TermStore::new();
+    let h4 = common::a_pap_capturing(&mut store4);
+    group.bench_function("partial_application_capturing", |b| {
+        b.iter(|| prove_closure_expr(&store4, black_box(h4)).unwrap())
+    });
+
+    group.finish();
+}
+
+/// `prove_tail_recursive_universal`'s own cost against a closure-typed
+/// loop-carried parameter (`iterate`'s shape) -- unlike the group above,
+/// this *does* go through `build_universal`'s full induction pipeline
+/// (`denote_closure_typed`/`prime_closure_postulates`, not just
+/// `denote_closure`), so it belongs alongside `universal_proof`'s own
+/// arithmetic-only leaf-count comparison, not the closures-fragment group.
+fn closure_typed_recursion_universal_proof(c: &mut Criterion) {
+    let mut store = TermStore::new();
+    let h = common::iterate(&mut store);
+    c.bench_function("closure_typed_loop_carried_parameter_universal_proof", |b| {
+        b.iter(|| prove_tail_recursive_universal(&store, black_box(h)).unwrap())
+    });
+}
+
 criterion_group!(
     benches,
     straight_line_proof,
     relational_per_call_proof,
     universal_proof,
-    relational_scaling_vs_universal
+    relational_scaling_vs_universal,
+    closures_fragment_proof,
+    closure_typed_recursion_universal_proof
 );
 criterion_main!(benches);

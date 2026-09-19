@@ -210,3 +210,107 @@ pub fn straight_line(s: &mut TermStore) -> Hash {
     let inner = s.abs(body);
     s.abs(inner)
 }
+
+/// `(twice inc) 5` -- non-capturing closures, no recursion (arity 0). The
+/// higher-order demo term `main.rs` itself uses, and the baseline the
+/// other closures-fragment shapes below are measured against.
+pub fn twice_inc_5(s: &mut TermStore) -> Hash {
+    let f = s.var(1);
+    let x = s.var(0);
+    let fx = s.app(f, x);
+    let ffx = s.app(f, fx);
+    let inner = s.abs(ffx);
+    let twice = s.abs(inner);
+
+    let y = s.var(0);
+    let one = s.lit(1);
+    let y_plus_1 = s.prim(PrimOp::Add, y, one);
+    let inc = s.abs(y_plus_1);
+
+    let five = s.lit(5);
+    s.app2(twice, inc, five)
+}
+
+/// `\x. (\y. x + y)(5)` -- a capturing closure, created and directly
+/// called (`mk_clo_h`/`Env_n`/`build_env_expr`), unlike `twice_inc_5`'s
+/// non-capturing one (`combinator_value`).
+pub fn a_capturing_closure_call(s: &mut TermStore) -> Hash {
+    let y = s.var(0);
+    let x_captured = s.var(1);
+    let sum = s.prim(PrimOp::Add, x_captured, y);
+    let closure = s.abs(sum);
+    let five = s.lit(5);
+    let called = s.app(closure, five);
+    s.abs(called)
+}
+
+/// `add = \x y. x + y; partial = add(3); caller = \g. g(4); caller(partial)`
+/// -- partial application of a non-capturing literal lambda (`pap_ref`'s
+/// simplest case).
+pub fn a_pap_non_capturing(s: &mut TermStore) -> Hash {
+    let x = s.var(1);
+    let y = s.var(0);
+    let sum = s.prim(PrimOp::Add, x, y);
+    let inner_add = s.abs(sum);
+    let add = s.abs(inner_add);
+
+    let three = s.lit(3);
+    let partial = s.app(add, three);
+
+    let g = s.var(0);
+    let four = s.lit(4);
+    let call_g = s.app(g, four);
+    let caller = s.abs(call_g);
+
+    s.app(caller, partial)
+}
+
+/// `\z. (\g2. g2(4)) ((\x y. x + y + z)(3))` -- partial application of a
+/// *capturing* literal lambda, exercising `pap_ref`'s leading-`Env_n`
+/// path on top of the plain PAP case above.
+pub fn a_pap_capturing(s: &mut TermStore) -> Hash {
+    let y = s.var(0);
+    let x = s.var(1);
+    let z_captured = s.var(2);
+    let xy = s.prim(PrimOp::Add, x, y);
+    let xyz = s.prim(PrimOp::Add, xy, z_captured);
+    let inner = s.abs(xyz);
+    let capturing_add = s.abs(inner);
+
+    let three = s.lit(3);
+    let partial = s.app(capturing_add, three);
+
+    let g2 = s.var(0);
+    let four = s.lit(4);
+    let call_g2 = s.app(g2, four);
+    let caller = s.abs(call_g2);
+
+    let called = s.app(caller, partial);
+    s.abs(called)
+}
+
+/// `rec f n g x = if n <= 0 then x else f(n-1, g, g x)` -- bare, not
+/// wrapped with an initial closure baked in (unlike
+/// `closure_typed_loop_carried_parameter_loop` above, which is built for
+/// *execution*): `prove_tail_recursive_universal`'s own proof-construction
+/// cost depends only on the self-recursive function's own leaf/call
+/// structure, never on a concrete argument value, so there's no need to
+/// supply one here at all.
+pub fn iterate(s: &mut TermStore) -> Hash {
+    let x = s.var(0);
+    let g = s.var(1);
+    let n = s.var(2);
+    let f = s.var(3);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let gx = s.app(g, x);
+    let f_n1_g = s.app2(f, n_minus_1, g);
+    let rec_call = s.app(f_n1_g, gx);
+    let body = s.if_(cond, x, rec_call);
+    let g_binder = s.abs(body);
+    let n_binder = s.abs(g_binder);
+    let abs = s.abs(n_binder);
+    s.rec(abs)
+}
