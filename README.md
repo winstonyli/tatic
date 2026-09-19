@@ -685,10 +685,18 @@ guards against by hand): caught immediately, at seed 22.
   top-level expression (`(\y. n+y)(5) + f(n-1)`) alike — and
   `prove_closure_expr` now covers a self-recursive combinator called or
   used as a value from a non-recursive main term (see the table rows
-  above). What's still open: a concrete *instance* proof for either
-  closure-creation shape (`eval_and_prove`/`build_ev_witness` remain
-  untouched, still reject `App`/`Abs`) — doesn't affect `kernel_verified`,
-  only weaker, call-specific evidence.
+  above). `eval_and_prove`/`build_ev_witness` now cover a concrete
+  *instance* proof for the fully-applied case too (`call_eq_ref`, a
+  computation-rule axiom postulated once per combinator from its own real
+  body via `denote`, then used through `cong_n`/`cong1`/`trans_proof`
+  congruence at each concrete call — the same move `build_universal`
+  already makes for `loop_val`/`Ev`), as long as the closure created and
+  called is a literal lambda whose own body stays in the `Var`/`Lit`/
+  `Prim`/`If` fragment (no further nested `Abs`/`App`, which would need a
+  fixpoint-queue redesign this module was deliberately built without).
+  Still open: a *partially*-applied or *over*-applied closure creation in
+  this position (`eval_and_prove` only handles `AppShape::LitLambdaExact`)
+  — doesn't affect `kernel_verified`, only weaker, call-specific evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
   too (`ite_clo`, lazily postulated — see the table row above), when the
   `If`'s own result is used as a *value* — and, separately, `call_ref`'s

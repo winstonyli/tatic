@@ -2406,46 +2406,71 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
 fn eval_and_prove(
     store: &TermStore,
     h: Hash,
-    arith: &mut ArithPostulates,
+    combinators: &mut ClosureCombinators<'_>,
     params: &[Anchored],
     concrete: &[i64],
     param_facts: &[Anchored],
 ) -> Option<(i64, Expr, Expr)> {
+    if matches!(store.resolve(h), Term::App(..)) {
+        // `param_types` is always empty here: every caller of this
+        // function (via `instance_from_scaffold`'s own precondition) only
+        // ever runs where the *outer* frame is entirely `Int`-typed, so
+        // `AppShape::ParamCall` can never legitimately classify -- passing
+        // `&[]` makes `classify_app_node`'s own `Var`-root case fail
+        // cleanly (an out-of-range lookup), the same as an explicit
+        // all-`None` array would, without needing to fabricate one.
+        return match classify_app_node(store, h, &[])? {
+            AppShape::LitLambdaExact { root, args, callee_param_types } => {
+                eval_and_prove_call(store, root, &args, &callee_param_types, combinators, params, concrete, param_facts)
+            }
+            // A `Clo`-typed result (`LitLambdaPartial`) has no concrete
+            // representation at all (see `instance_from_scaffold`'s own
+            // docs); over-application (`LitLambdaOver`) would need this
+            // same treatment plus an `apply_ref`-level congruence step on
+            // top -- a natural follow-up, not attempted here; `ParamCall`
+            // is structurally unreachable (see above).
+            AppShape::ParamCall { .. } | AppShape::LitLambdaPartial { .. } | AppShape::LitLambdaOver { .. } => None,
+        };
+    }
     match store.resolve(h) {
         Term::Var(i) => {
             let i = *i as usize;
-            Some((*concrete.get(i)?, params.get(i)?.at(arith), param_facts.get(i)?.at(arith)))
+            Some((*concrete.get(i)?, params.get(i)?.at(&combinators.cp.arith), param_facts.get(i)?.at(&combinators.cp.arith)))
         }
         Term::Lit(n) => {
-            let l = arith.lit_ref(*n);
+            let l = combinators.cp.arith.lit_ref(*n);
             Some((*n, l.clone(), kernel::refl(l)))
         }
         Term::Prim(op, a, b) => {
             let (op, a, b) = (*op, *a, *b);
-            let (xa, da, pa) = eval_and_prove(store, a, arith, params, concrete, param_facts)?;
-            let da = Anchored::new(arith, da);
-            let pa = Anchored::new(arith, pa);
-            let (xb, db, pb) = eval_and_prove(store, b, arith, params, concrete, param_facts)?;
-            let db = Anchored::new(arith, db);
-            let pb = Anchored::new(arith, pb);
-            let fact = arith.assume_prim_fact(op, xa, xb);
+            let (xa, da, pa) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
+            let da = Anchored::new(&combinators.cp.arith, da);
+            let pa = Anchored::new(&combinators.cp.arith, pa);
+            let (xb, db, pb) = eval_and_prove(store, b, combinators, params, concrete, param_facts)?;
+            let db = Anchored::new(&combinators.cp.arith, db);
+            let pb = Anchored::new(&combinators.cp.arith, pb);
+            let fact = combinators.cp.arith.assume_prim_fact(op, xa, xb);
             let result = apply_prim_concrete(op, xa, xb);
 
             // Nothing pushes onto arith.p.ctx from here on, so resolving
             // everything fresh now (past `assume_prim_fact`'s own push)
             // keeps it all valid for the rest of this call.
-            let (da, pa, db, pb) = (da.at(arith), pa.at(arith), db.at(arith), pb.at(arith));
-            let int_ty = arith.int_ty();
-            let f = arith.op_ref(op);
-            let cong =
-                kernel::cong_n(&int_ty, &int_ty, &f, &[da.clone(), db.clone()], &[arith.lit_ref(xa), arith.lit_ref(xb)], vec![
-                    pa, pb,
-                ]);
+            let (da, pa, db, pb) = (da.at(&combinators.cp.arith), pa.at(&combinators.cp.arith), db.at(&combinators.cp.arith), pb.at(&combinators.cp.arith));
+            let int_ty = combinators.cp.arith.int_ty();
+            let f = combinators.cp.arith.op_ref(op);
+            let cong = kernel::cong_n(
+                &int_ty,
+                &int_ty,
+                &f,
+                &[da.clone(), db.clone()],
+                &[combinators.cp.arith.lit_ref(xa), combinators.cp.arith.lit_ref(xb)],
+                vec![pa, pb],
+            );
             let lhs = kernel::app2(f.clone(), da, db);
-            let mid = kernel::app2(f, arith.lit_ref(xa), arith.lit_ref(xb));
-            let rhs = arith.lit_ref(result);
+            let mid = kernel::app2(f, combinators.cp.arith.lit_ref(xa), combinators.cp.arith.lit_ref(xb));
+            let rhs = combinators.cp.arith.lit_ref(result);
             let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
-            debug_assert_has_type(&arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: Prim proof");
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: Prim proof");
             Some((result, lhs, proof))
         }
         // Mirrors the `Prim` case just above, via `assume_ite_fact`
@@ -2457,38 +2482,273 @@ fn eval_and_prove(
         // to discharge `app3(ite_ref, dc, dt, de) = lit_ref(result)`.
         Term::If(c, t, e) => {
             let (c, t, e) = (*c, *t, *e);
-            let (xc, dc, pc) = eval_and_prove(store, c, arith, params, concrete, param_facts)?;
-            let dc = Anchored::new(arith, dc);
-            let pc = Anchored::new(arith, pc);
-            let (xt, dt, pt) = eval_and_prove(store, t, arith, params, concrete, param_facts)?;
-            let dt = Anchored::new(arith, dt);
-            let pt = Anchored::new(arith, pt);
-            let (xe, de, pe) = eval_and_prove(store, e, arith, params, concrete, param_facts)?;
-            let de = Anchored::new(arith, de);
-            let pe = Anchored::new(arith, pe);
-            let fact = arith.assume_ite_fact(xc, xt, xe);
+            let (xc, dc, pc) = eval_and_prove(store, c, combinators, params, concrete, param_facts)?;
+            let dc = Anchored::new(&combinators.cp.arith, dc);
+            let pc = Anchored::new(&combinators.cp.arith, pc);
+            let (xt, dt, pt) = eval_and_prove(store, t, combinators, params, concrete, param_facts)?;
+            let dt = Anchored::new(&combinators.cp.arith, dt);
+            let pt = Anchored::new(&combinators.cp.arith, pt);
+            let (xe, de, pe) = eval_and_prove(store, e, combinators, params, concrete, param_facts)?;
+            let de = Anchored::new(&combinators.cp.arith, de);
+            let pe = Anchored::new(&combinators.cp.arith, pe);
+            let fact = combinators.cp.arith.assume_ite_fact(xc, xt, xe);
             let result = if xc != 0 { xt } else { xe };
 
-            let (dc, pc, dt, pt, de, pe) = (dc.at(arith), pc.at(arith), dt.at(arith), pt.at(arith), de.at(arith), pe.at(arith));
-            let int_ty = arith.int_ty();
-            let f = arith.ite_ref();
+            let (dc, pc, dt, pt, de, pe) = (
+                dc.at(&combinators.cp.arith),
+                pc.at(&combinators.cp.arith),
+                dt.at(&combinators.cp.arith),
+                pt.at(&combinators.cp.arith),
+                de.at(&combinators.cp.arith),
+                pe.at(&combinators.cp.arith),
+            );
+            let int_ty = combinators.cp.arith.int_ty();
+            let f = combinators.cp.arith.ite_ref();
             let cong = kernel::cong_n(
                 &int_ty,
                 &int_ty,
                 &f,
                 &[dc.clone(), dt.clone(), de.clone()],
-                &[arith.lit_ref(xc), arith.lit_ref(xt), arith.lit_ref(xe)],
+                &[combinators.cp.arith.lit_ref(xc), combinators.cp.arith.lit_ref(xt), combinators.cp.arith.lit_ref(xe)],
                 vec![pc, pt, pe],
             );
             let lhs = kernel::app3(f.clone(), dc, dt, de);
-            let mid = kernel::app3(f, arith.lit_ref(xc), arith.lit_ref(xt), arith.lit_ref(xe));
-            let rhs = arith.lit_ref(result);
+            let mid = kernel::app3(f, combinators.cp.arith.lit_ref(xc), combinators.cp.arith.lit_ref(xt), combinators.cp.arith.lit_ref(xe));
+            let rhs = combinators.cp.arith.lit_ref(result);
             let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
-            debug_assert_has_type(&arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: If proof");
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: If proof");
             Some((result, lhs, proof))
         }
         Term::Abs(_) | Term::App(..) | Term::Rec(_) => None,
     }
+}
+
+/// `eval_and_prove`'s own `AppShape::LitLambdaExact` case, split out for
+/// its own size: a self-call argument (or leaf expression) that creates
+/// and calls a literal lambda `root` (own arity `root_arity`) to produce a
+/// fresh `Int`. See `call_eq_ref`'s own docs for why this needs a
+/// computation-rule axiom rather than denoting `root`'s body directly, and
+/// this module's own docs for the restriction this is scoped to (`root`'s
+/// own body must be `Var`/`Lit`/`Prim`/`If`, no further `Abs`/`App`, and
+/// every one of `root`'s own params/captures must be `Int`-typed --
+/// `call_eq_ref` itself enforces both and returns `None` otherwise).
+///
+/// `args` is in *application* order (`args[0]` is `root`'s first-applied
+/// argument, `Var(root_arity-1)`) -- this already matches `call_ref`'s own
+/// argument order directly (no `arity-1-j` remapping needed the way
+/// `denote_closure`'s own arm needs it, since that also has to look up
+/// each argument's own *type*, `Int` or `Clo`; here every argument is
+/// already known to be `Int`).
+#[allow(clippy::too_many_arguments)]
+fn eval_and_prove_call(
+    store: &TermStore,
+    root: Hash,
+    args: &[Hash],
+    callee_param_types: &[Option<usize>],
+    combinators: &mut ClosureCombinators<'_>,
+    params: &[Anchored],
+    concrete: &[i64],
+    param_facts: &[Anchored],
+) -> Option<(i64, Expr, Expr)> {
+    if callee_param_types.iter().any(Option::is_some) {
+        return None;
+    }
+
+    // Evaluate each argument in the *outer* frame, application order.
+    let mut arg_triples = Vec::with_capacity(args.len());
+    for &a in args {
+        let (x, d, p) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
+        arg_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+    }
+
+    // Resolve `root`'s own captures against the *outer* frame too --
+    // mirrors this function's sibling's own `Term::Var(i)` case, just
+    // picking existing entries (`rel`, the capture's own relative index,
+    // is the outer frame's own absolute `Var` index) rather than
+    // recursing, the same way `build_env_expr` does for the symbolic
+    // side.
+    let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
+    let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
+    let mut cap_triples = Vec::with_capacity(root_captures.len());
+    for &rel in &root_captures {
+        let rel = rel as usize;
+        let x = *concrete.get(rel)?;
+        let d = Anchored::new(&combinators.cp.arith, params.get(rel)?.at(&combinators.cp.arith));
+        let p = Anchored::new(&combinators.cp.arith, param_facts.get(rel)?.at(&combinators.cp.arith));
+        cap_triples.push((x, d, p));
+    }
+    let n = root_captures.len();
+
+    // The computation-rule axiom for `root` -- its own first use for this
+    // `Hash` may lazily push (and, transitively, prime `call_ref`/
+    // `mk_env_ref` for this exact shape too), so fetched before anything
+    // above is combined into a larger term.
+    let axiom = combinators.call_eq_ref(root)?;
+    let axiom = Anchored::new(&combinators.cp.arith, axiom);
+
+    let sig: Vec<Option<usize>> = vec![None; n];
+    let int_ty = combinators.cp.arith.int_ty();
+
+    // Congruence bridge: `call_ref(root)` applied to the outer frame's own
+    // *denoted* env/args equals `call_ref(root)` applied to their
+    // *literal* values -- in up to two steps (the `Env_sig` argument, then
+    // the `root_arity` `Int` arguments), since `kernel::cong_n` needs one
+    // uniform domain type and `call_ref`'s own argument list mixes
+    // `Env_sig` (if `root` captures) with `Int`.
+    let env_bridge = if n > 0 {
+        let mk_env_expr = combinators.cp.mk_env_ref(&sig);
+        let env_ty_expr = combinators.cp.env_ty(&sig);
+        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+        let lit_c: Vec<Expr> = cap_triples
+            .iter()
+            .map(|&(x, _, _)| {
+                combinators.cp.arith.lit(x);
+                combinators.cp.arith.lit_ref(x)
+            })
+            .collect();
+        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| p.at(&combinators.cp.arith)).collect();
+        let env_eq = kernel::cong_n(&int_ty, &env_ty_expr, &mk_env_expr, &cd, &lit_c, cp);
+        let denoted_env = apply_n(mk_env_expr.clone(), cd);
+        let lit_env = apply_n(mk_env_expr, lit_c);
+        Some((denoted_env, lit_env, env_eq, env_ty_expr))
+    } else {
+        None
+    };
+
+    let call_fn = combinators.call_ref(root, &root_captures, &[])?; // cache hit -- primed by call_eq_ref above
+    let d_args: Vec<Expr> = arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+    let lit_args: Vec<Expr> = arg_triples
+        .iter()
+        .map(|&(x, _, _)| {
+            combinators.cp.arith.lit(x);
+            combinators.cp.arith.lit_ref(x)
+        })
+        .collect();
+    let p_args: Vec<Expr> = arg_triples.iter().map(|(_, _, p)| p.at(&combinators.cp.arith)).collect();
+
+    let (call_at_denoted, call_env_to_lit_step) = match &env_bridge {
+        Some((denoted_env, lit_env, env_eq, env_ty_expr)) => {
+            // cong1 over call_ref(root)'s own `Env_sig` argument, the
+            // `root_arity` `Int` args held fixed at their *denoted*
+            // values.
+            let mut f_env_body = kernel::app(kernel::shift(&call_fn, 0, 1), kernel::var(0));
+            for d in &d_args {
+                f_env_body = kernel::app(f_env_body, kernel::shift(d, 0, 1));
+            }
+            let f_env = kernel::lam(env_ty_expr.clone(), f_env_body);
+            let step = kernel::cong1(env_ty_expr, &int_ty, &f_env, denoted_env.clone(), lit_env.clone(), env_eq.clone());
+            let call_at_denoted = apply_n(call_fn.clone(), std::iter::once(denoted_env.clone()).chain(d_args.iter().cloned()));
+            (call_at_denoted, step)
+        }
+        None => {
+            let call_at_denoted = apply_n(call_fn.clone(), d_args.iter().cloned());
+            let step = kernel::refl(call_at_denoted.clone());
+            (call_at_denoted, step)
+        }
+    };
+
+    // cong_n over call_ref(root)'s own `root_arity` `Int` arguments,
+    // `Env_sig` (if any) held fixed at its *literal* value from the step
+    // above.
+    let f_ints = match &env_bridge {
+        Some((_, lit_env, _, _)) => apply_n(call_fn.clone(), std::iter::once(lit_env.clone())),
+        None => call_fn.clone(),
+    };
+    let args_eq = kernel::cong_n(&int_ty, &int_ty, &f_ints, &d_args, &lit_args, p_args);
+    let call_at_lit_env_denoted_args = apply_n(f_ints.clone(), d_args);
+    let call_at_lit_env_lit_args = apply_n(f_ints, lit_args);
+
+    let bridge = kernel::trans_proof(
+        &int_ty,
+        &call_at_denoted,
+        &call_at_lit_env_denoted_args,
+        &call_at_lit_env_lit_args,
+        call_env_to_lit_step,
+        args_eq,
+    );
+
+    // Instantiate the axiom at the literal captures/args -- ascending
+    // `Var`-index order, matching `call_eq_ref`'s own quantification
+    // order (captures, slot order, then `root`'s own params, ascending;
+    // `args` is in application order, i.e. *descending* `Var`-index order,
+    // so only it needs reversing).
+    let axiom_args: Vec<Expr> = cap_triples
+        .iter()
+        .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)) // already lit()'d building `lit_c` above
+        .chain(arg_triples.iter().rev().map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)))
+        .collect();
+    let axiom_at_literals = apply_n(axiom.at(&combinators.cp.arith), axiom_args);
+
+    // Concrete value of `root`'s own body, at the literal args/captures --
+    // recurses into the *same* `Var`/`Lit`/`Prim`/`If` fragment
+    // `eval_and_prove` already covers (`root`'s own body is restricted to
+    // it by `call_eq_ref`), so no new base cases are needed. Frame layout
+    // mirrors `call_eq_ref`'s own `params_full` construction exactly:
+    // `root`'s own params first (ascending `Var` order), then captures
+    // sparsely placed at `root_arity + rel` for each one's own relative
+    // index.
+    let mut inner_params = Vec::with_capacity(root_arity + n);
+    let mut inner_concrete = Vec::with_capacity(root_arity + n);
+    let mut inner_facts = Vec::with_capacity(root_arity + n);
+    for &(x, _, _) in arg_triples.iter().rev() {
+        combinators.cp.arith.lit(x);
+        let l = combinators.cp.arith.lit_ref(x);
+        inner_params.push(Anchored::new(&combinators.cp.arith, l.clone()));
+        inner_concrete.push(x);
+        inner_facts.push(Anchored::new(&combinators.cp.arith, kernel::refl(l)));
+    }
+    if let Some(&max_rel) = root_captures.iter().max() {
+        let pad_len = root_arity + max_rel as usize + 1;
+        let (fx0, _, _) = cap_triples[0];
+        combinators.cp.arith.lit(fx0);
+        let filler = combinators.cp.arith.lit_ref(fx0);
+        while inner_params.len() < pad_len {
+            inner_concrete.push(fx0);
+            inner_params.push(Anchored::new(&combinators.cp.arith, filler.clone()));
+            inner_facts.push(Anchored::new(&combinators.cp.arith, kernel::refl(filler.clone())));
+        }
+        for (j, &rel) in root_captures.iter().enumerate() {
+            let (cx, _, _) = cap_triples[j];
+            combinators.cp.arith.lit(cx);
+            let l = combinators.cp.arith.lit_ref(cx);
+            let idx = root_arity + rel as usize;
+            inner_concrete[idx] = cx;
+            inner_params[idx] = Anchored::new(&combinators.cp.arith, l.clone());
+            inner_facts[idx] = Anchored::new(&combinators.cp.arith, kernel::refl(l));
+        }
+    }
+    // `eval_and_prove`'s own recursion below (over `root_body`) may lazily
+    // push further postulates (`assume_prim_fact`/`assume_ite_fact`,
+    // fresh literals), shifting the ambient depth -- so everything built
+    // above (still at the pre-recursion depth) is anchored here and
+    // re-resolved fresh, via `.at()`, only once nothing more is left to
+    // push, mirroring `build_ev_witness`'s own documented discipline.
+    let call_at_denoted = Anchored::new(&combinators.cp.arith, call_at_denoted);
+    let call_at_lit_env_lit_args = Anchored::new(&combinators.cp.arith, call_at_lit_env_lit_args);
+    let bridge = Anchored::new(&combinators.cp.arith, bridge);
+    let axiom_at_literals = Anchored::new(&combinators.cp.arith, axiom_at_literals);
+
+    let (result, denote_lit, proof_d) = eval_and_prove(store, root_body, combinators, &inner_params, &inner_concrete, &inner_facts)?;
+
+    // Chain: call_at_denoted = call_at_lit_env_lit_args (bridge)
+    //      = denote(root_body, [lit_args, lit_caps]) (axiom_at_literals)
+    //      = lit_ref(result) (proof_d)
+    let int_ty2 = combinators.cp.arith.int_ty();
+    let result_ref = combinators.cp.arith.lit_ref(result);
+    let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
+    let call_at_lit_env_lit_args = call_at_lit_env_lit_args.at(&combinators.cp.arith);
+    let bridge = bridge.at(&combinators.cp.arith);
+    let axiom_at_literals = axiom_at_literals.at(&combinators.cp.arith);
+    let bridge_to_denote =
+        kernel::trans_proof(&int_ty2, &call_at_denoted, &call_at_lit_env_lit_args, &denote_lit, bridge, axiom_at_literals);
+    let final_proof = kernel::trans_proof(&int_ty2, &call_at_denoted, &denote_lit, &result_ref, bridge_to_denote, proof_d);
+    debug_assert_has_type(
+        &combinators.cp.arith.p.ctx,
+        &final_proof,
+        &kernel::id(int_ty2, call_at_denoted.clone(), result_ref),
+        "eval_and_prove_call: final proof",
+    );
+    Some((result, call_at_denoted, final_proof))
 }
 
 /// See the section docs above for what this guards against.
@@ -2508,7 +2768,7 @@ const WITNESS_NODE_BUDGET: usize = 256;
 #[allow(clippy::too_many_arguments)]
 fn build_ev_witness(
     store: &TermStore,
-    arith: &mut ArithPostulates,
+    combinators: &mut ClosureCombinators<'_>,
     self_call: SelfCall,
     leaves: &[Leaf],
     ev_leaf_positions: &[usize],
@@ -2519,7 +2779,7 @@ fn build_ev_witness(
     memo: &mut HashMap<Vec<i64>, (Anchored, Anchored)>,
 ) -> Option<(Expr, Expr)> {
     if let Some((v, e)) = memo.get(concrete) {
-        return Some((v.at(arith), e.at(arith)));
+        return Some((v.at(&combinators.cp.arith), e.at(&combinators.cp.arith)));
     }
     *budget = budget.checked_sub(1)?;
 
@@ -2531,9 +2791,12 @@ fn build_ev_witness(
     // Canonical params for this level: literals, trivially equal to
     // themselves -- see the section docs above for why this (not a
     // caller-supplied denoted expression) is what makes `memo` sound.
-    let params: Vec<Anchored> = concrete.iter().map(|&c| Anchored::new(arith, arith.lit_ref(c))).collect();
-    let param_facts: Vec<Anchored> =
-        params.iter().map(|p| Anchored::new(arith, kernel::refl(p.at(arith)))).collect();
+    let params: Vec<Anchored> =
+        concrete.iter().map(|&c| Anchored::new(&combinators.cp.arith, combinators.cp.arith.lit_ref(c))).collect();
+    let param_facts: Vec<Anchored> = params
+        .iter()
+        .map(|p| Anchored::new(&combinators.cp.arith, kernel::refl(p.at(&combinators.cp.arith))))
+        .collect();
 
     // Collected across the loops below, which push further postulates
     // (assume_prim_fact, and every self-call's own recursion) -- anchor
@@ -2541,8 +2804,8 @@ fn build_ev_witness(
     // done growing, at the final assembly below.
     let mut premises = Vec::with_capacity(leaf.path.len());
     for &(cond, _lit) in &leaf.path {
-        let (_, _, proof) = eval_and_prove(store, cond, arith, &params, concrete, &param_facts)?;
-        premises.push(Anchored::new(arith, proof));
+        let (_, _, proof) = eval_and_prove(store, cond, combinators, &params, concrete, &param_facts)?;
+        premises.push(Anchored::new(&combinators.cp.arith, proof));
     }
 
     let mut vs = Vec::with_capacity(leaf.calls.len());
@@ -2553,10 +2816,10 @@ fn build_ev_witness(
         let mut denoted_facts = Vec::with_capacity(self_call.arity);
         for i in 0..self_call.arity {
             let arg = call[self_call.arity - 1 - i];
-            let (x, denoted, pf) = eval_and_prove(store, arg, arith, &params, concrete, &param_facts)?;
+            let (x, denoted, pf) = eval_and_prove(store, arg, combinators, &params, concrete, &param_facts)?;
             new_concrete.push(x);
-            denoted_args.push(Anchored::new(arith, denoted));
-            denoted_facts.push(Anchored::new(arith, pf));
+            denoted_args.push(Anchored::new(&combinators.cp.arith, denoted));
+            denoted_facts.push(Anchored::new(&combinators.cp.arith, pf));
         }
 
         // The recursive call's own witness, always in canonical
@@ -2564,7 +2827,7 @@ fn build_ev_witness(
         // from a fresh derivation or a `memo` hit.
         let (v, e_canonical) = build_ev_witness(
             store,
-            arith,
+            combinators,
             self_call,
             leaves,
             ev_leaf_positions,
@@ -2574,8 +2837,8 @@ fn build_ev_witness(
             budget,
             memo,
         )?;
-        let v = Anchored::new(arith, v);
-        let e_canonical = Anchored::new(arith, e_canonical);
+        let v = Anchored::new(&combinators.cp.arith, v);
+        let e_canonical = Anchored::new(&combinators.cp.arith, e_canonical);
 
         // Recast `e_canonical : Ev(lit_params, v)` to `Ev(denoted_params,
         // v)` -- what *this* leaf's own `Ev` constructor actually expects
@@ -2583,45 +2846,47 @@ fn build_ev_witness(
         // expressions, not just their values) -- via congruence over the
         // params (`cong_n`, `Ev` held fixed at `v`) and transport along the
         // resulting type equality.
-        let int_ty = arith.int_ty();
-        let lit_params: Vec<Expr> = new_concrete.iter().map(|&x| arith.lit_ref(x)).collect();
-        let denoted_params: Vec<Expr> = denoted_args.iter().map(|a| a.at(arith)).collect();
+        let int_ty = combinators.cp.arith.int_ty();
+        let lit_params: Vec<Expr> = new_concrete.iter().map(|&x| combinators.cp.arith.lit_ref(x)).collect();
+        let denoted_params: Vec<Expr> = denoted_args.iter().map(|a| a.at(&combinators.cp.arith)).collect();
         let ps: Vec<Expr> = denoted_facts
             .iter()
             .zip(&denoted_params)
             .zip(&lit_params)
-            .map(|((pf, dp), lp)| kernel::sym(&int_ty, dp, lp, pf.at(arith)))
+            .map(|((pf, dp), lp)| kernel::sym(&int_ty, dp, lp, pf.at(&combinators.cp.arith)))
             .collect();
-        let v_resolved = v.at(arith);
-        let v_anchored = Anchored::new(arith, v_resolved.clone());
-        let f = params_and_close(arith, self_call.arity, kernel::close_lam, |arith, pp| {
+        let v_resolved = v.at(&combinators.cp.arith);
+        let v_anchored = Anchored::new(&combinators.cp.arith, v_resolved.clone());
+        let f = params_and_close(&mut combinators.cp.arith, self_call.arity, kernel::close_lam, |arith, pp| {
             Some(ev_of(arith, ev_pos, &pp.at(arith), v_anchored.at(arith)))
         })?;
         let ev_eq = kernel::cong_n(&int_ty, &kernel::sort(0), &f, &lit_params, &denoted_params, ps);
         let e = kernel::transport(
             0,
-            ev_of(arith, ev_pos, &lit_params, v_resolved.clone()),
-            ev_of(arith, ev_pos, &denoted_params, v_resolved),
+            ev_of(&combinators.cp.arith, ev_pos, &lit_params, v_resolved.clone()),
+            ev_of(&combinators.cp.arith, ev_pos, &denoted_params, v_resolved),
             ev_eq,
-            e_canonical.at(arith),
+            e_canonical.at(&combinators.cp.arith),
         );
         vs.push(v);
-        es.push(Anchored::new(arith, e));
+        es.push(Anchored::new(&combinators.cp.arith, e));
     }
 
     // Nothing left to grow arith.p.ctx from here -- resolve everything
     // fresh, once, for the final assembly.
-    let params: Vec<Expr> = params.iter().map(|a| a.at(arith)).collect();
-    let premises: Vec<Expr> = premises.iter().map(|a| a.at(arith)).collect();
-    let vs: Vec<Expr> = vs.iter().map(|a| a.at(arith)).collect();
-    let es: Vec<Expr> = es.iter().map(|a| a.at(arith)).collect();
+    let params: Vec<Expr> = params.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+    let premises: Vec<Expr> = premises.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+    let vs: Vec<Expr> = vs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+    let es: Vec<Expr> = es.iter().map(|a| a.at(&combinators.cp.arith)).collect();
 
     let args = params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es);
-    let e = apply_n(arith.p.get(ev_leaf_positions[leaf_idx]), args);
-    let v = combine_of(arith, &combines[leaf_idx], &params, &vs);
-    debug_assert_has_type(&arith.p.ctx, &v, &arith.int_ty(), "build_ev_witness: v");
-    debug_assert_has_type(&arith.p.ctx, &e, &ev_of(arith, ev_pos, &params, v.clone()), "build_ev_witness: e");
-    memo.insert(concrete.to_vec(), (Anchored::new(arith, v.clone()), Anchored::new(arith, e.clone())));
+    let e = apply_n(combinators.cp.arith.p.get(ev_leaf_positions[leaf_idx]), args);
+    let v = combine_of(&combinators.cp.arith, &combines[leaf_idx], &params, &vs);
+    let int_ty_check = combinators.cp.arith.int_ty();
+    debug_assert_has_type(&combinators.cp.arith.p.ctx, &v, &int_ty_check, "build_ev_witness: v");
+    let ev_check = ev_of(&combinators.cp.arith, ev_pos, &params, v.clone());
+    debug_assert_has_type(&combinators.cp.arith.p.ctx, &e, &ev_check, "build_ev_witness: e");
+    memo.insert(concrete.to_vec(), (Anchored::new(&combinators.cp.arith, v.clone()), Anchored::new(&combinators.cp.arith, e.clone())));
     Some((v, e))
 }
 
@@ -3095,6 +3360,8 @@ struct ClosurePostulates {
     mk_clo_pos: HashMap<Hash, usize>,
     pap_pos: HashMap<(Hash, usize), usize>,
     ite_clo_pos: HashMap<usize, usize>,
+    /// `call_eq_ref`'s own memoization -- see its docs.
+    call_eq_pos: HashMap<Hash, usize>,
 }
 
 /// Lets code holding a `&(mut) ClosurePostulates` -- `build_universal`'s own
@@ -3131,6 +3398,7 @@ impl ClosurePostulates {
             mk_clo_pos: HashMap::new(),
             pap_pos: HashMap::new(),
             ite_clo_pos: HashMap::new(),
+            call_eq_pos: HashMap::new(),
         }
     }
 
@@ -3548,6 +3816,140 @@ impl<'a> ClosureCombinators<'a> {
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.pap_pos.insert((h, k), pos);
+        Some(self.cp.arith.p.get(pos))
+    }
+
+    /// A computation-rule axiom for `call_ref(h)`: `call_ref`'s own
+    /// postulate is deliberately opaque (see this struct's own docs -- a
+    /// combinator's body is never denoted for the universal/type-level
+    /// proof), which is fine for that proof's own purely-structural
+    /// guarantee, but a *concrete instance* proof (`eval_and_prove`) needs
+    /// to claim an actual value for a call, not just its type, and there's
+    /// no honest way to get one out of an opaque postulate directly. This
+    /// mirrors `build_universal`'s own `loop_val_leaf_eq_i` one level down:
+    /// a postulated function has no built-in reduction rule, so its
+    /// computation rule is postulated directly as a propositional
+    /// (`Id`-typed) axiom -- sourced from `h`'s own *real* body via
+    /// `denote`, not asserted per call site, so it can't be circular the
+    /// way a per-instance "trust the interpreter" axiom would be: nothing
+    /// else in this file ever asserts an equation about `call_ref(h)`, so
+    /// this axiom is the *only* thing that gives it defined behavior,
+    /// exactly the way `assume_prim_fact` is the only thing that defines
+    /// what `op_ref` computes on given literals.
+    ///
+    /// Restricted to `h`'s own body being `Var`/`Lit`/`Prim`/`If` only (no
+    /// further `Abs`/`App`) and every one of `h`'s own params being
+    /// `Int`-typed, `None` otherwise (a genuine restriction, not an error):
+    /// both are required for the axiom's own RHS to be buildable via
+    /// `denote` at all (which has no `Abs`/`App` support), and widening
+    /// either would mean *this* axiom's own construction might itself need
+    /// to register further combinators -- reintroducing the fixpoint-queue
+    /// machinery this module was deliberately built without (see its own
+    /// docs).
+    ///
+    /// `h`'s own captures are always resolved, by every caller of this
+    /// method, against an outer frame that's entirely `Int`-typed (the only
+    /// caller, `eval_and_prove`, only ever reaches this from
+    /// `instance_from_scaffold`'s own all-`Int`-params precondition) -- so
+    /// `h`'s own capture signature is always all-`None` here, computed
+    /// directly rather than looked up against any one real calling scope:
+    /// this axiom is universal, built once per `Hash`, reused at every call
+    /// site, not tied to a specific one.
+    fn call_eq_ref(&mut self, h: Hash) -> Option<Expr> {
+        if let Some(&pos) = self.cp.call_eq_pos.get(&h) {
+            return Some(self.cp.arith.p.get(pos));
+        }
+        let (arity, body, is_rec) = compile::peel(self.store, h)?;
+        if is_rec {
+            return None; // a literal lambda encountered mid-expression is never self-recursive
+        }
+        let param_types = param_types_for(self.store, h)?;
+        if param_types.iter().any(Option::is_some) {
+            return None;
+        }
+        if combinator_return_type(self.store, h) != Some(None) {
+            return None;
+        }
+        let captures = compile::free_vars(self.store, body, arity, is_rec);
+        let n_captures = captures.len();
+        // A dummy all-`None` caller scope, long enough to cover every
+        // relative index `captures` mentions -- `capture_sig`/`call_ref`
+        // only ever read it at those positions, and every one of them is
+        // `None` regardless of which real outer scope this axiom later
+        // gets used from (see this method's own docs).
+        let dummy_caller_param_types: Vec<Option<usize>> = vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
+        let sig = capture_sig(&captures, &dummy_caller_param_types)?;
+
+        // `h`'s own body's literals are never collected by any existing
+        // pass (a combinator's body is always opaque to
+        // `collect_literals`/`collect_literals_closure`, by the same
+        // design that keeps it opaque to `denote_closure` -- see their own
+        // docs) -- collected here, explicitly, before `denote` below needs
+        // to read any of them back via `lit_ref`.
+        let mut lits = Vec::new();
+        if !collect_literals(self.store, body, arity, None, None, &mut lits) {
+            return None;
+        }
+        for lit_n in lits {
+            self.cp.arith.lit(lit_n);
+        }
+
+        // Prime `call_ref` for this exact shape first (which itself primes
+        // `mk_env_ref`/`clo_ty` etc. as needed) -- may lazily push, and the
+        // quantified construction below needs a stable base depth to build
+        // from.
+        let call_fn = self.call_ref(h, &captures, &dummy_caller_param_types)?;
+        let call_fn = Anchored::new(&self.cp.arith, call_fn);
+
+        // Quantify `n_captures + arity` fresh `Int` postulates -- captures
+        // first, then `h`'s own params, an arbitrary but fixed order (only
+        // the *values* pulled out of `pp` below need to match this).
+        let quant_types = vec![None; n_captures + arity];
+        let store = self.store;
+        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+            let all = pp.at(&combinators.cp.arith);
+            let (cs, ps) = all.split_at(n_captures);
+            let call_fn_here = call_fn.at(&combinators.cp.arith);
+
+            // LHS: `call_ref(h)` applied to `(env?, p_{arity-1}, ..,
+            // p_0)` -- *descending* `Var` order, matching `call_ref`'s own
+            // convention (`Var(0)` is last-applied, `Var(arity-1)` is
+            // first-applied -- see `call_ref`'s own docs and
+            // `denote_closure`'s identical `AppShape::LitLambdaExact` arm).
+            let mut call_args = Vec::with_capacity(1 + arity);
+            if n_captures > 0 {
+                let mk_env_expr = combinators.cp.mk_env_ref(&sig);
+                call_args.push(apply_n(mk_env_expr, cs.iter().cloned()));
+            }
+            call_args.extend(ps.iter().rev().cloned());
+            let lhs = apply_n(call_fn_here, call_args);
+
+            // RHS: `h`'s own body, denoted with `params_full[i]` standing
+            // for `Var(i)` (`denote`'s own convention) -- `0..arity` are
+            // `h`'s own params (`ps`, in order); a capture's own `Var`
+            // index is `arity + rel` for whatever relative index
+            // `free_vars` found it at (`captures[j]`), *not* `arity + j`
+            // -- `captures` isn't necessarily a dense `0..n_captures`
+            // range, so `params_full` is sized to the largest relative
+            // index actually used and filled sparsely, matching each
+            // capture's own real `Var` position; any padding position
+            // (never referenced by `body`, since `denote` only ever reads
+            // a position some `Var(i)` in `body` actually names) holds an
+            // arbitrary but well-typed filler.
+            let mut params_full = ps.to_vec();
+            if let Some(&max_rel) = captures.iter().max() {
+                params_full.resize(arity + max_rel as usize + 1, cs[0].clone());
+                for (j, &rel) in captures.iter().enumerate() {
+                    params_full[arity + rel as usize] = cs[j].clone();
+                }
+            }
+            let rhs = denote(store, body, &combinators.cp.arith, &params_full)?;
+
+            let int_ty = combinators.cp.arith.int_ty();
+            Some(kernel::id(int_ty, lhs, rhs))
+        })?;
+        let pos = self.cp.arith.p.push(ty);
+        self.cp.call_eq_pos.insert(h, pos);
         Some(self.cp.arith.p.get(pos))
     }
 }
@@ -4247,17 +4649,60 @@ mod tests {
 
         // Instance specialization (the weaker, sample-oriented proof --
         // `kernel_verified` never depended on it, see `jit.rs`'s own docs)
-        // still declines here, an honest gap this round didn't close:
-        // `eval_and_prove` -- unchanged, deliberately out of scope -- still
-        // rejects `App`/`Abs` outright, so a self-call argument that
-        // *creates* a closure can't get a concrete witness yet, unlike a
-        // closure-typed *parameter* (which `instance_from_scaffold`'s own
-        // `param_types`-based guard declines explicitly; this term's
-        // `param_types` are all `None`, so that guard never even triggers
-        // -- `eval_and_prove` itself is what says no here).
-        assert!(prove_tail_recursive_instance(&s, h, &[5, 0]).is_none());
+        // now succeeds here too: `eval_and_prove`'s own `call_eq_ref`
+        // computation-rule axiom (see its docs) covers exactly this shape
+        // -- a self-call argument that creates and calls a *capturing*
+        // literal lambda (`root`'s own single capture, `acc`, resolved
+        // against the outer, all-`Int` frame) whose body is a single
+        // `Prim` node.
+        assert_eq!(eval::apply_term(&s, h, &[5, 0]).unwrap(), 15, "interpreter sanity check: 5+4+3+2+1");
+        let instance = prove_tail_recursive_instance(&s, h, &[5, 0])
+            .expect("a self-call argument creating and calling a capturing closure should now get a concrete instance");
+        kernel::check(&instance.ctx, &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
+            .expect("the recorded instance proof should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
+    }
+
+    #[test]
+    fn eval_and_prove_call_respects_call_refs_own_argument_order_for_a_non_symmetric_root() {
+        // A wrong argument order in `call_eq_ref`'s own axiom construction
+        // (or in `eval_and_prove_call`'s own instantiation of it) would
+        // still typecheck -- every position here is `Int`, so a swapped
+        // axiom is just a *different*, still well-typed, universally
+        // quantified fact -- so only comparing the *concrete value*
+        // against an independent interpretation (not `kernel::check`
+        // alone) can catch it. `x - y` is non-commutative, so swapping
+        // `x`/`y` gives a visibly wrong answer rather than one that
+        // happens to coincide. This calls the private `eval_and_prove`
+        // directly (this module's own test submodule can) rather than
+        // going through a full self-recursive scaffold, since the bug
+        // this guards is local to `eval_and_prove_call` itself.
+        let mut s = TermStore::new();
+        let x = s.var(1); // first-applied
+        let y = s.var(0); // last-applied
+        let diff = s.prim(PrimOp::Sub, x, y);
+        let inner = s.abs(diff);
+        let root = s.abs(inner);
+        let five = s.lit(5);
+        let three = s.lit(3);
+        let applied_to_x = s.app(root, five);
+        let h = s.app(applied_to_x, three);
+
+        assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), 2, "interpreter sanity check: 5 - 3 = 2");
+
+        let mut combinators = ClosureCombinators::new(&s);
+        combinators.cp.arith.lit(5);
+        combinators.cp.arith.lit(3);
+        let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
+            .expect("a non-capturing literal-lambda self-call-argument should get a concrete witness");
+        assert_eq!(result, 2, "eval_and_prove_call must not swap call_ref's own argument order");
+        kernel::check(
+            &combinators.cp.arith.p.ctx,
+            &proof,
+            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(2)),
+        )
+        .expect("the recorded witness should independently re-typecheck");
     }
 
     #[test]
