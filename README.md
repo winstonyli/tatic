@@ -241,25 +241,26 @@ This is stated precisely because it would be easy to overclaim here.
   `ClosureCombinators` (not just `ClosurePostulates`) — registering a
   combinator, calling one directly, or partially applying one (still never
   a *recursive* root, matching `pap_ref`'s own restriction) all reuse the
-  exact same methods `prove_closure_expr` does. Scoped deliberately
-  narrower than that fragment, though: a leaf's own *top-level* expression
-  still rejects any `Abs` outright, unchanged — only a self-call argument
-  may create a closure, not a leaf's own arithmetic combining a
-  closure-call's result with something else directly. Caught the *same
-  class* of staleness bug a second time, in a new place:
+  exact same methods `prove_closure_expr` does. A leaf's own *top-level*
+  expression gets the identical treatment (`denote_with_placeholders`/
+  `find_self_calls`, widened the same way) — e.g. `(\y. n+y)(5) + f(n-1)`,
+  a closure-call's result combined arithmetically with the recursive call
+  directly, not nested inside any self-call's own argument list. Caught
+  the *same class* of staleness bug a second time, in a new place:
   `register`/`call_ref`/`pap_ref`, and transitively `mk_env_ref`/`env_ty`
   for a capturing one, are all lazily memoized exactly like `apply_ref`,
   and could just as easily be triggered for the first time from inside a
   temporary scope. Since these registrations depend only on a combinator's
   hash and a capture *count* — never the actual parameter values —
   `prime_closure_postulates` pre-triggers every one a self-call argument
-  will need via a lightweight structural walk (no parameter values needed
-  at all), the same upfront-priming fix widened to cover closure creation,
-  not just a call through a parameter. Also honestly scoped: the *instance*
-  (per-call) specialization remains untouched and still rejects a self-call
-  argument that creates a closure — `kernel_verified` doesn't depend on
-  that, so this doesn't weaken what actually gets verified, only what gets
-  additional, call-specific evidence.
+  *or a leaf's own expression* will need via a lightweight structural walk
+  (no parameter values needed at all), the same upfront-priming fix
+  widened to cover closure creation, not just a call through a parameter.
+  Also honestly scoped: the *instance* (per-call) specialization remains
+  untouched and still rejects a self-call argument or leaf expression that
+  creates a closure — `kernel_verified` doesn't depend on that, so this
+  doesn't weaken what actually gets verified, only what gets additional,
+  call-specific evidence.
 - **Closures, non-capturing, capturing, and partially applied**: `prove_closure_expr` gives a
   closed, non-recursive closures term one kernel proof covering every
   input, the same `refl`-on-a-shared-translation argument `prove_pure_expr`
@@ -521,26 +522,19 @@ first seed, as expected.
   outright.
 - Combining closures with self-recursion more fully in one proof.
   `prove_tail_recursive_universal` now covers a closure-typed *parameter*
-  threaded through recursion, a self-call *argument* that creates a
-  closure and calls it right there (`f(n-1, (\y. acc+y)(n))`, the exact
-  `capturing_closure_loop` shape previously cited here as open), and
+  threaded through recursion, *and* a closure genuinely created and
+  called anywhere in the body — a self-call argument (`f(n-1, (\y.
+  acc+y)(n))`, the `capturing_closure_loop` shape) or a leaf's own
+  top-level expression (`(\y. n+y)(5) + f(n-1)`) alike — and
   `prove_closure_expr` now covers a self-recursive combinator called or
   used as a value from a non-recursive main term (see the table rows
-  above). What's still open: a leaf's own *top-level* expression creating
-  a closure (not nested inside a self-call argument — e.g. `rec f n = if
-  n<=0 then 0 else (\y. n+y)(5) + f(n-1)`, where the closure-call result
-  is combined arithmetically with the recursive call directly) —
-  `denote_with_placeholders`/`find_self_calls` still reject any `Abs`
-  outright, a real, deliberate narrowing (see `build_universal`'s own
-  docs), not a fundamental limit: extending them mirrors the self-call-
-  argument extension `denote_closure_typed` just got, just for the
-  placeholder-substitution-aware side of the pipeline instead. Also
-  open: a concrete *instance* proof for a self-call argument that creates
-  a closure (`eval_and_prove`/`build_ev_witness` remain untouched, still
-  reject `App`/`Abs`) — doesn't affect `kernel_verified`, only weaker,
-  call-specific evidence. And still open regardless of recursion: allowing
-  an `If` to choose between two closures, not just two `Int`s — a real,
-  documented restriction of `prove_closure_expr`, not a fundamental limit.
+  above). What's still open: a concrete *instance* proof for either
+  closure-creation shape (`eval_and_prove`/`build_ev_witness` remain
+  untouched, still reject `App`/`Abs`) — doesn't affect `kernel_verified`,
+  only weaker, call-specific evidence. And still open regardless of
+  recursion: allowing an `If` to choose between two closures, not just two
+  `Int`s — a real, documented restriction of `prove_closure_expr`, not a
+  fundamental limit.
 - Widening the compilable fragment further: an over-applied literal
   lambda, a variable called with inconsistent arities across sites, more
   primitives. (Capturing closures and partial application of a literal

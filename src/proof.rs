@@ -652,28 +652,36 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // full `ClosureCombinators` (not just `ClosurePostulates`) -- registering a
 // combinator, calling one directly, or partially applying one (still never
 // a *recursive* root, per `pap_ref`'s own restriction) all reuse the exact
-// same methods `prove_closure_expr` does. Scoped deliberately narrower
-// than that fragment, though: a leaf's own *top-level* expression
-// (`denote_with_placeholders`/`find_self_calls`) still rejects any `Abs`
-// outright, unchanged -- only a self-call *argument* may create a closure,
-// not a leaf's own arithmetic combining a closure-call's result with
-// something else directly. Caught the *same class* of staleness bug a
-// second time, in a new place: `register`/`call_ref`/`pap_ref`, and
-// transitively `mk_env_ref`/`env_ty` for a capturing one, are *all*
-// lazily memoized exactly like `apply_ref`, and `denote_closure_typed`'s
+// same methods `prove_closure_expr` does. A leaf's own *top-level*
+// expression gets the identical treatment: `denote_with_placeholders`
+// (the placeholder-substitution-aware sibling `combine_i`'s body uses)
+// and `find_self_calls` (which recurses into a closure call's own
+// arguments, or treats a bare closure value as opaque, the same way
+// `collect_literals` already does) mirror `denote_closure_typed`'s/
+// `denote_closure`'s handling too -- e.g. `(\y. n+y)(5) + f(n-1)`, a
+// closure-call's result combined arithmetically with the recursive call
+// directly, not nested inside any self-call's own argument list. Caught
+// the *same class* of staleness bug a second time, in a new place:
+// `register`/`call_ref`/`pap_ref`, and transitively `mk_env_ref`/`env_ty`
+// for a capturing one, are *all* lazily memoized exactly like `apply_ref`,
+// and either `denote_closure_typed`'s or `denote_with_placeholders`'s
 // first real call (from inside a temporary scope) could trigger any of
 // them for the first time just as easily. Since these registrations
 // depend only on a combinator's `Hash` and a capture *count* -- never the
 // actual parameter *values* -- `prime_closure_postulates` pre-triggers
-// every one a self-call argument will need via a lightweight structural
-// walk (no `params` needed at all), the same upfront-priming fix widened
-// to cover closure creation, not just a call through a parameter. Also
-// honestly scoped: `eval_and_prove`/`build_ev_witness` (the *instance*,
-// per-call specialization) remain untouched and still reject `App`/`Abs`
-// outright, so a concrete instance proof for a self-call argument that
-// creates a closure still declines -- `kernel_verified` doesn't depend on
-// that (see `jit.rs`'s own docs), so this doesn't weaken what actually
-// gets verified, only what gets additional, call-specific evidence.
+// every one a self-call argument *or a leaf's own expression* will need
+// via a lightweight structural walk (no `params` needed at all, and now
+// itself self-call-aware -- matching `find_self_calls`'s own precedence,
+// stopping at a self-call occurrence rather than walking into it, since
+// that occurrence's own arguments are primed separately), the same
+// upfront-priming fix widened to cover closure creation, not just a call
+// through a parameter. Also honestly scoped: `eval_and_prove`/
+// `build_ev_witness` (the *instance*, per-call specialization) remain
+// untouched and still reject `App`/`Abs` outright, so a concrete instance
+// proof for either shape still declines -- `kernel_verified` doesn't
+// depend on that (see `jit.rs`'s own docs), so this doesn't weaken what
+// actually gets verified, only what gets additional, call-specific
+// evidence.
 
 /// `f` applied to each of `args` in order (left to right).
 fn apply_n(f: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
@@ -859,6 +867,16 @@ fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types:
         let (root, args) = compile::unwind_app_spine(store, h);
         let ok = match store.resolve(root) {
             Term::Var(i) => param_types.get(*i as usize).copied().flatten() == Some(args.len()),
+            // A closure created and (fully or partially) called right
+            // here -- see `denote_with_placeholders`'s own docs. Recurses
+            // into the arguments only, never into the combinator's own
+            // body: a genuine self-call occurring *inside* a nested
+            // closure's body would need `self_call.idx` shifted by that
+            // closure's own arity to still refer to the same absolute
+            // position, which `compile::match_self_call`'s unadjusted
+            // check can't see -- the combinator's body is opaque here for
+            // the same reason it already is to `collect_literals`.
+            Term::Abs(_) | Term::Rec(_) => matches!(compile::peel(store, root), Some((a, _, _)) if a > 0),
             _ => false,
         };
         if !ok {
@@ -871,77 +889,174 @@ fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types:
         Term::Prim(_, a, b) => {
             find_self_calls(store, *a, self_call, param_types, out) && find_self_calls(store, *b, self_call, param_types, out)
         }
-        Term::If(..) | Term::Abs(_) | Term::App(..) | Term::Rec(_) => false,
+        // A closure used as a bare value (not applied here) -- opaque,
+        // nothing inside it to search for a self-call occurrence, the
+        // same reasoning as the App-root case just above.
+        Term::Abs(_) => true,
+        Term::If(..) | Term::App(..) | Term::Rec(_) => false,
     }
 }
 
-/// Like `denote`, but for a leaf already classified by `find_self_calls`:
-/// each self-call occurrence is replaced by the next entry of
-/// `placeholders` (consumed left-to-right, matching `find_self_calls`'
-/// order) instead of failing on the `App`. Used both to build a leaf's
-/// `combine` function's body (`placeholders` = the `Ev`-bound values) and,
-/// nowhere else -- everywhere `combine` is *used* at a different
-/// instantiation, it's applied as a value via `combine_of`, not re-walked.
 /// Like [`denote_closure_typed`] below, but for a leaf already classified
 /// by `find_self_calls`: each self-call occurrence is replaced by the next
 /// entry of `placeholders` (consumed left-to-right, matching
 /// `find_self_calls`'s order, always `Int`-typed -- a self-call's own
-/// result is always `Int`) instead of failing. A nested `If` (a real,
-/// documented restriction unrelated to closures -- see the module docs)
-/// still fails, unlike `denote_closure_typed`, which allows one for a
-/// self-call *argument*.
+/// result is always `Int`) instead of failing. Used both to build a leaf's
+/// `combine` function's body (`placeholders` = the `Ev`-bound values) and
+/// nowhere else -- everywhere `combine` is *used* at a different
+/// instantiation, it's applied as a value via `combine_of`, not re-walked.
+/// A nested `If` (a real, documented restriction unrelated to closures --
+/// see the module docs) still fails, unlike `denote_closure_typed`, which
+/// allows one for a self-call *argument*. `params` is `Params`'s own raw
+/// positions, same rationale (and same staleness-avoidance) as
+/// `denote_closure_typed`'s own docs.
 #[allow(clippy::too_many_arguments)]
 fn denote_with_placeholders(
     store: &TermStore,
     h: Hash,
     self_call: SelfCall,
     param_types: &[Option<usize>],
-    cp: &mut ClosurePostulates,
-    params: &[Expr],
-    placeholders: &[Expr],
+    combinators: &mut ClosureCombinators<'_>,
+    params: &[usize],
+    placeholders: &[usize],
     next: &mut usize,
 ) -> Option<Denoted> {
     if compile::match_self_call(store, h, self_call.arity, Some(self_call.idx)).is_some() {
-        let v = placeholders.get(*next).cloned();
+        let v = placeholders.get(*next).map(|&pos| combinators.cp.arith.p.get(pos));
         *next += 1;
         return v.map(Denoted::Int);
     }
     if matches!(store.resolve(h), Term::App(..)) {
         let (root, args) = compile::unwind_app_spine(store, h);
-        let i = match store.resolve(root) {
-            Term::Var(i) => *i as usize,
+        match store.resolve(root) {
+            Term::Var(i) => {
+                let k = (*param_types.get(*i as usize)?)?;
+                if args.len() != k {
+                    return None;
+                }
+                let callee = denote_with_placeholders(store, root, self_call, param_types, combinators, params, placeholders, next)?.clo()?;
+                let callee = Anchored::new(&combinators.cp.arith, callee);
+                let mut arg_exprs = Vec::with_capacity(k);
+                for &a in &args {
+                    let e = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
+                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                }
+                let apply_fn = combinators.cp.apply_ref(k);
+                let callee = callee.at(&combinators.cp.arith);
+                let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                let applied = apply_n(apply_fn, std::iter::once(callee).chain(arg_exprs));
+                let int_ty = combinators.cp.arith.int_ty();
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: call_indirect application");
+                return Some(Denoted::Int(applied));
+            }
+            // A closure created and (fully or partially) called right
+            // here, within the leaf's own expression -- mirrors
+            // `denote_closure_typed`'s own `Term::Abs | Term::Rec` case
+            // (and, through it, `denote_closure`'s) exactly, just checking
+            // for a self-call occurrence in each argument first.
+            Term::Abs(_) | Term::Rec(_) => {
+                let callee_param_types = param_types_for(store, root)?;
+                let arity = callee_param_types.len();
+                if args.len() > arity {
+                    return None; // over-application
+                }
+                if args.len() < arity {
+                    let k = args.len();
+                    let pap_fn = combinators.pap_ref(root, k)?;
+                    let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
+                    let mut arg_exprs = Vec::with_capacity(k);
+                    for (j, &a) in args.iter().enumerate() {
+                        let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
+                        let e = match callee_param_types[arity - 1 - j] {
+                            Some(_) => d.clo()?,
+                            None => d.int()?,
+                        };
+                        arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    }
+                    let pap_fn = pap_fn.at(&combinators.cp.arith);
+                    let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                    let applied = apply_n(pap_fn, arg_exprs);
+                    let clo_ty = combinators.cp.clo_ty();
+                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: partial application");
+                    return Some(Denoted::Clo(applied));
+                }
+                let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
+                let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
+                let call_fn = combinators.call_ref(root, &captures)?;
+                let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
+                let env_expr = if captures.is_empty() {
+                    None
+                } else {
+                    let e = build_env_expr(combinators, &captures, params, param_types)?;
+                    Some(Anchored::new(&combinators.cp.arith, e))
+                };
+                let mut arg_exprs = Vec::with_capacity(args.len());
+                for (j, &a) in args.iter().enumerate() {
+                    let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
+                    let e = match callee_param_types[arity - 1 - j] {
+                        Some(_) => d.clo()?,
+                        None => d.int()?,
+                    };
+                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                }
+                let call_fn = call_fn.at(&combinators.cp.arith);
+                let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
+                if let Some(env_expr) = &env_expr {
+                    all_args.push(env_expr.at(&combinators.cp.arith));
+                }
+                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                let applied = apply_n(call_fn, all_args);
+                let int_ty = combinators.cp.arith.int_ty();
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: direct combinator call");
+                return Some(Denoted::Int(applied));
+            }
             _ => return None,
-        };
-        let k = (*param_types.get(i)?)?;
-        if args.len() != k {
-            return None;
         }
-        let callee = denote_with_placeholders(store, root, self_call, param_types, cp, params, placeholders, next)?.clo()?;
-        let mut arg_exprs = Vec::with_capacity(k);
-        for &a in &args {
-            let e = denote_with_placeholders(store, a, self_call, param_types, cp, params, placeholders, next)?.int()?;
-            arg_exprs.push(e);
-        }
-        let apply_fn = cp.apply_ref(k);
-        let applied = apply_n(apply_fn, std::iter::once(callee).chain(arg_exprs));
-        return Some(Denoted::Int(applied));
     }
     match store.resolve(h) {
         Term::Var(i) => {
             let i = *i as usize;
-            let p = params.get(i)?.clone();
+            let p = combinators.cp.arith.p.get(*params.get(i)?);
             match *param_types.get(i)? {
                 Some(_) => Some(Denoted::Clo(p)),
                 None => Some(Denoted::Int(p)),
             }
         }
-        Term::Lit(n) => Some(Denoted::Int(cp.lit_ref(*n))),
+        Term::Lit(n) => Some(Denoted::Int(combinators.cp.arith.lit_ref(*n))),
         Term::Prim(op, a, b) => {
-            let da = denote_with_placeholders(store, *a, self_call, param_types, cp, params, placeholders, next)?.int()?;
-            let db = denote_with_placeholders(store, *b, self_call, param_types, cp, params, placeholders, next)?.int()?;
-            Some(Denoted::Int(kernel::app2(cp.op_ref(*op), da, db)))
+            let da = denote_with_placeholders(store, *a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
+            let da = Anchored::new(&combinators.cp.arith, da);
+            let db = denote_with_placeholders(store, *b, self_call, param_types, combinators, params, placeholders, next)?.int()?;
+            let op_ref = combinators.cp.arith.op_ref(*op);
+            let da = da.at(&combinators.cp.arith);
+            let applied = kernel::app2(op_ref, da, db);
+            let int_ty = combinators.cp.arith.int_ty();
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: Prim");
+            Some(Denoted::Int(applied))
         }
-        Term::If(..) | Term::Abs(_) | Term::App(..) | Term::Rec(_) => None,
+        // A freshly-created closure *value*, not (yet) called -- mirrors
+        // `denote_closure`'s own value-leaf `Term::Abs | Term::Rec` case.
+        Term::Abs(_) => {
+            let (arity, body, is_rec) = compile::peel(store, h)?;
+            if arity == 0 {
+                return None;
+            }
+            let captures = compile::free_vars(store, body, arity, is_rec);
+            let sym = combinators.register(h, &captures)?;
+            if captures.is_empty() {
+                return Some(Denoted::Clo(sym));
+            }
+            let sym = Anchored::new(&combinators.cp.arith, sym);
+            let env = build_env_expr(combinators, &captures, params, param_types)?;
+            let env_expr = Anchored::new(&combinators.cp.arith, env);
+            let sym = sym.at(&combinators.cp.arith);
+            let env_expr = env_expr.at(&combinators.cp.arith);
+            let applied = kernel::app(sym, env_expr);
+            let clo_ty = combinators.cp.clo_ty();
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: capturing closure value");
+            Some(Denoted::Clo(applied))
+        }
+        Term::If(..) | Term::Rec(_) | Term::App(..) => None,
     }
 }
 
@@ -1137,28 +1252,38 @@ fn denote_closure_typed(
     }
 }
 
-/// A structural pre-pass over one self-call argument, mirroring exactly
-/// which shapes `denote_closure_typed` will recognize when it later
-/// denotes this same term for real, but never resolving an actual `Var`
-/// value (unlike `denote_closure_typed`, no `params` needed) -- purely to
-/// force every lazy postulate a nested closure creation/call site will
-/// need (`ClosureCombinators::register`/`call_ref`/`pap_ref`, and
-/// transitively `ClosurePostulates::mk_env_ref`/`env_ty` for a capturing
-/// one) to get pushed *now*, before any temporary `params_and_close_typed`
-/// scope gets the chance to trigger one itself and go stale -- see
-/// `build_universal`'s own call site for the full rationale (the same
-/// class of bug `apply_ref`'s own upfront pre-push already fixed).
-/// Returns `None` for exactly the shapes `denote_closure_typed` would
-/// itself reject, so a priming failure here means the real call would
-/// have failed anyway -- `build_universal` propagates it with `?`,
-/// failing fast before any of the expensive `Ev`/leaf/theorem
-/// construction below.
+/// A structural pre-pass over one self-call argument *or* one leaf's own
+/// expression, mirroring exactly which shapes `denote_closure_typed`/
+/// `denote_with_placeholders` will recognize when they later denote this
+/// same term for real, but never resolving an actual `Var` value (unlike
+/// either of those, no `params` needed) -- purely to force every lazy
+/// postulate a nested closure creation/call site will need
+/// (`ClosureCombinators::register`/`call_ref`/`pap_ref`, and transitively
+/// `ClosurePostulates::mk_env_ref`/`env_ty` for a capturing one) to get
+/// pushed *now*, before any temporary `params_and_close_typed` scope gets
+/// the chance to trigger one itself and go stale -- see `build_universal`'s
+/// own call sites for the full rationale (the same class of bug
+/// `apply_ref`'s own upfront pre-push already fixed). Returns `None` for
+/// exactly the shapes the real denotation would itself reject, so a
+/// priming failure here means the real call would have failed anyway --
+/// `build_universal` propagates it with `?`, failing fast before any of
+/// the expensive `Ev`/leaf/theorem construction below.
 fn prime_closure_postulates(
     store: &TermStore,
     h: Hash,
+    self_call: SelfCall,
     param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
 ) -> Option<()> {
+    // Mirrors `find_self_calls`'s own precedence: a self-call occurrence
+    // (never appearing inside a self-call argument itself, per
+    // `find_self_calls`'s own invariant, so this only ever actually fires
+    // when priming a *leaf's own* expression) is a stopping point, not
+    // walked into -- its own arguments are primed separately, by
+    // `build_universal`'s dedicated pass over `leaf.calls`.
+    if compile::match_self_call(store, h, self_call.arity, Some(self_call.idx)).is_some() {
+        return Some(());
+    }
     if matches!(store.resolve(h), Term::App(..)) {
         let (root, args) = compile::unwind_app_spine(store, h);
         match store.resolve(root) {
@@ -1168,7 +1293,7 @@ fn prime_closure_postulates(
                     return None;
                 }
                 for &a in &args {
-                    prime_closure_postulates(store, a, param_types, combinators)?;
+                    prime_closure_postulates(store, a, self_call, param_types, combinators)?;
                 }
                 Some(())
             }
@@ -1189,7 +1314,7 @@ fn prime_closure_postulates(
                     }
                 }
                 for &a in &args {
-                    prime_closure_postulates(store, a, param_types, combinators)?;
+                    prime_closure_postulates(store, a, self_call, param_types, combinators)?;
                 }
                 Some(())
             }
@@ -1199,13 +1324,13 @@ fn prime_closure_postulates(
         match store.resolve(h) {
             Term::Var(_) | Term::Lit(_) => Some(()),
             Term::Prim(_, a, b) => {
-                prime_closure_postulates(store, *a, param_types, combinators)?;
-                prime_closure_postulates(store, *b, param_types, combinators)
+                prime_closure_postulates(store, *a, self_call, param_types, combinators)?;
+                prime_closure_postulates(store, *b, self_call, param_types, combinators)
             }
             Term::If(c, t, e) => {
-                prime_closure_postulates(store, *c, param_types, combinators)?;
-                prime_closure_postulates(store, *t, param_types, combinators)?;
-                prime_closure_postulates(store, *e, param_types, combinators)
+                prime_closure_postulates(store, *c, self_call, param_types, combinators)?;
+                prime_closure_postulates(store, *t, self_call, param_types, combinators)?;
+                prime_closure_postulates(store, *e, self_call, param_types, combinators)
             }
             Term::Abs(_) => {
                 let (arity, body, is_rec) = compile::peel(store, h)?;
@@ -1503,22 +1628,25 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         arith.apply_ref(*k);
     }
 
-    // Same fix, widened: a self-call argument may itself *create* a
-    // closure and (fully or partially) call it (`denote_closure_typed`'s
-    // own `Term::Abs | Term::Rec` cases) -- `ClosureCombinators::register`/
+    // Same fix, widened: a self-call argument, or a leaf's own top-level
+    // expression, may itself *create* a closure and (fully or partially)
+    // call it (`denote_closure_typed`'s/`denote_with_placeholders`'s own
+    // `Term::Abs | Term::Rec` cases) -- `ClosureCombinators::register`/
     // `call_ref`/`pap_ref`, and transitively `ClosurePostulates::env_ty`/
     // `mk_env_ref` for a capturing one, are *all* lazily memoized the same
     // way `apply_ref` is, so each needs the same upfront priming before
-    // `new_params_for`'s first real call (from inside a temporary scope)
-    // gets the chance to trigger one itself. Every self-call occurrence's
-    // own argument list is scanned once, structurally (`prime_closure_postulates`,
-    // which needs no actual parameter *values* -- these registrations
-    // depend only on a combinator's `Hash` and a capture *count*, not what
-    // the captures currently hold), for every leaf.
+    // `new_params_for`'s/`combines`' first real call (from inside a
+    // temporary scope) gets the chance to trigger one itself. Every leaf,
+    // both its own expression and every self-call occurrence's own
+    // argument list, is scanned once, structurally
+    // (`prime_closure_postulates`, which needs no actual parameter
+    // *values* -- these registrations depend only on a combinator's
+    // `Hash` and a capture *count*, not what the captures currently hold).
     for leaf in &leaves {
+        prime_closure_postulates(store, leaf.expr, self_call, &param_types, &mut arith)?;
         for call in &leaf.calls {
             for &a in call {
-                prime_closure_postulates(store, a, &param_types, &mut arith)?;
+                prime_closure_postulates(store, a, self_call, &param_types, &mut arith)?;
             }
         }
     }
@@ -1560,9 +1688,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     for leaf in &leaves {
         let expr = params_and_close_typed(&mut arith, &param_types, kernel::close_lam, |arith, pp| {
             params_and_close_typed(arith, &no_closures(leaf.calls.len()), kernel::close_lam, |arith, pp2| {
-                let params = pp.at(arith);
-                let placeholders = pp2.at(arith);
-                denote_with_placeholders(store, leaf.expr, self_call, &param_types, arith, &params, &placeholders, &mut 0)?.int()
+                denote_with_placeholders(store, leaf.expr, self_call, &param_types, arith, &pp.0, &pp2.0, &mut 0)?.int()
             })
         })?;
         combines.push(Anchored::new(&arith, expr));
@@ -1846,10 +1972,10 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 /// to a leaf must be a direct comparison, and no leaf may itself contain a
 /// further nested `If`), or one with no self-call anywhere in it. A
 /// closure-typed *parameter*, threaded through the recursion or called via
-/// `apply_k`, is covered; so is a self-call *argument* that creates a
-/// closure and calls it right there (`f(n-1, (\y. acc+y)(n))`) -- but not
-/// a leaf's own top-level expression doing the same (see module docs for
-/// both).
+/// `apply_k`, is covered; so is a closure genuinely created and (fully or
+/// partially) called anywhere in the body -- a self-call argument
+/// (`f(n-1, (\y. acc+y)(n))`) or a leaf's own top-level expression
+/// (`(\y. n+y)(5) + f(n-1)`) alike (see module docs).
 pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
     let scaffold = build_universal(store, h)?;
     let theorem_ty = scaffold.theorem_ty.at(&scaffold.combinators);
@@ -3278,17 +3404,14 @@ mod tests {
     }
 
     #[test]
-    fn a_closure_created_outside_a_self_call_argument_is_still_out_of_scope() {
+    fn a_closure_created_in_a_leafs_own_top_level_expression_gets_a_universal_proof() {
         // rec f n = if n <= 0 then 0 else (\y. n+y)(5) + f(n-1) -- the
         // closure creation+call sits in the leaf's own top-level
         // expression (combined arithmetically with the recursive call),
-        // not nested inside a self-call's own argument list -- out of
-        // scope on purpose: this round only extended
-        // `denote_closure_typed` (used for self-call arguments via
-        // `new_params_for`), not `denote_with_placeholders`/
-        // `find_self_calls` (used for a leaf's own top-level expression),
-        // which still reject any `Abs` outright. A real, deliberate
-        // narrowing, not an oversight -- see `build_universal`'s own docs.
+        // not nested inside a self-call's own argument list --
+        // find_self_calls/denote_with_placeholders now cover this too
+        // (mirroring denote_closure_typed's own Term::Abs | Term::Rec
+        // handling), not just a self-call argument's own closure creation.
         let mut s = TermStore::new();
         let y = s.var(0);
         let n_captured = s.var(1);
@@ -3308,8 +3431,13 @@ mod tests {
         let abs = s.abs(body);
         let h = s.rec(abs);
 
-        assert!(prove_tail_recursive_universal(&s, h).is_none());
-        assert!(compile::try_compile(&s, h).is_some(), "the compiler should still handle this even though the proof doesn't yet");
+        let proof = prove_tail_recursive_universal(&s, h)
+            .expect("a closure created in a leaf's own top-level expression should get a universal proof");
+        assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+            .expect("the recorded theorem should independently re-typecheck");
+
+        assert!(compile::try_compile(&s, h).is_some());
     }
 
     #[test]
