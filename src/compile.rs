@@ -379,11 +379,13 @@ fn compile_function(store: &TermStore, body: Hash, spec: &FnSpec, combinators: &
     // ever creates a capturing closure isn't known until its body is
     // walked below.
     w.push_str("    (local $envtmp i32)\n");
-    // Second scratch local, for `push_pap_env`: it needs `root`'s own
-    // (packed-then-extended) environment stashed *somewhere* while it
-    // computes its own wrapper's environment via the same `$envtmp` --
-    // both would otherwise collide, since `push_closure_env` (called to
-    // get `root`'s own environment) uses `$envtmp` as scratch space too.
+    // Second scratch local, for `push_pap_env`: once every value its own
+    // environment needs (root's own environment plus each supplied
+    // argument) has been computed and left safely on the value stack --
+    // see its own docs for why it's the stack, not this or `$envtmp`,
+    // that carries them across a supplied argument's own, possibly
+    // recursive, evaluation -- this is reused purely as pop-scratch to
+    // reorder each value for its own `i64.store`.
     w.push_str("    (local $papenv i64)\n");
     w.push_str("    (loop $L (result i64)\n");
     compile_node(&ctx, combinators, body, true, w, 6)?;
@@ -1000,22 +1002,46 @@ fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, supplied: us
 /// slot-filling use `$envtmp` as scratch space, so they can't be "in
 /// flight" at the same time.
 fn push_pap_env(ctx: &FnCtx, combinators: &mut Combinators, root_captures: &[u32], args: &[Hash], w: &mut String, indent: usize) -> Option<()> {
+    // Evaluate root's own environment and every supplied argument *before*
+    // allocating this wrapper's own environment, leaving all
+    // `1 + args.len()` values purely on the Wasm value stack rather than
+    // round-tripping any of them through `$envtmp`/`$papenv`. A supplied
+    // argument is an arbitrary expression (`f(g(x))`), so `compile_node`
+    // here can itself recurse into more closure/PAP construction, which
+    // reuses those same two locals as scratch -- a value already sitting
+    // on the stack is immune to that (Wasm's stack is properly nested by
+    // construction); a value stashed in either local is not, and an
+    // earlier version of this function stashed *both* the newly-allocated
+    // environment's own address (in `$envtmp`, across the whole loop
+    // below) and, in the general multi-argument case, would have needed
+    // to do the same for `$papenv` -- corrupted the moment any argument's
+    // own evaluation happened to create a capturing closure or another
+    // partial application, which a real fuzz-found regression traced back
+    // to exactly this.
     push_closure_env(ctx, root_captures, w, indent)?;
     push_line(w, indent, "i64.extend_i32_u");
-    push_line(w, indent, "local.set $papenv");
+    for &a in args {
+        compile_node(ctx, combinators, a, false, w, indent)?;
+    }
 
+    // Nothing from here on recurses, so `$envtmp`/`$papenv` are ordinary,
+    // safe-to-reuse scratch again.
     push_line(w, indent, &format!("i32.const {}", (1 + args.len()) * 8));
     push_line(w, indent, "call $alloc");
     push_line(w, indent, "local.set $envtmp");
 
-    push_line(w, indent, "local.get $envtmp");
-    push_line(w, indent, "local.get $papenv");
-    push_line(w, indent, "i64.store offset=0");
-
-    for (slot, &a) in args.iter().enumerate() {
+    // The stack now holds, deepest to shallowest, root's own environment
+    // followed by each argument's value in order -- pop them off from the
+    // top (last argument first) into `$papenv`, pairing each with a fresh
+    // `$envtmp` read for its own store: `i64.store` wants (address, value)
+    // with the address pushed first, which the values' own stack order
+    // doesn't already match, so each one is round-tripped through
+    // `$papenv` to fix that up.
+    for slot in (0..=args.len()).rev() {
+        push_line(w, indent, "local.set $papenv");
         push_line(w, indent, "local.get $envtmp");
-        compile_node(ctx, combinators, a, false, w, indent)?;
-        push_line(w, indent, &format!("i64.store offset={}", (slot + 1) * 8));
+        push_line(w, indent, "local.get $papenv");
+        push_line(w, indent, &format!("i64.store offset={}", slot * 8));
     }
     push_line(w, indent, "local.get $envtmp");
     Some(())
@@ -1535,6 +1561,167 @@ mod tests {
             assert_eq!(compiled, 7 + z, "mismatch at z={z}");
             assert_eq!(compiled, interpreted, "mismatch at z={z}");
         }
+    }
+
+    #[test]
+    fn a_pap_wrappers_own_supplied_argument_creating_more_closures_does_not_corrupt_its_environment() {
+        // Regression test for a real bug `tests/compile_fuzz.rs` found when
+        // stress-tested well past its own default seed count (250; this
+        // reproduces at seed 2117, only reachable at 3,000+): a partially-
+        // applied literal lambda whose *supplied* argument itself creates
+        // more closures/partial applications -- exactly the general shape
+        // `partial_application_of_a_capturing_literal_lambda_compiles`
+        // above already covers for the *root*'s own captures, but not
+        // for an arbitrary supplied-argument expression.
+        //
+        // `push_pap_env`'s own docs explain the mechanism: it used to
+        // stash the newly-allocated environment's own address in
+        // `$envtmp` across the whole loop building it, relying on that
+        // local surviving each supplied argument's own `compile_node`
+        // call -- but a supplied argument is an arbitrary expression, so
+        // that call can itself recurse into more `push_closure_env`/
+        // `push_pap_env` emission, which reuses `$envtmp` as scratch too,
+        // silently corrupting the *outer* wrapper's own remembered
+        // address. Fixed by keeping every value the environment needs on
+        // the Wasm value stack instead of round-tripping any of it
+        // through a local.
+        //
+        // Reproduces the exact random term `compile_fuzz.rs`'s own
+        // generator builds at seed 2117 (its `gen_tail_recursive`, whose
+        // `payload` is a `gen_closure_block` under-applying a literal
+        // lambda whose own supplied argument is itself another
+        // `gen_closure_block`) -- embedded here, self-contained, as a
+        // permanent regression rather than relying on stumbling into
+        // this seed again during a future stress run.
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: u32) -> u32 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                ((z ^ (z >> 31)) % n as u64) as u32
+            }
+            fn i64_range(&mut self, lo: i64, hi: i64) -> i64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                lo + ((z ^ (z >> 31)) % ((hi - lo + 1) as u64)) as i64
+            }
+        }
+        const MAX_LIT: i64 = 50;
+        fn random_arith_op(rng: &mut Rng) -> PrimOp {
+            [PrimOp::Add, PrimOp::Sub, PrimOp::Mul][rng.below(3) as usize]
+        }
+        fn random_cmp_op(rng: &mut Rng) -> PrimOp {
+            [PrimOp::Lt, PrimOp::Le, PrimOp::Eq][rng.below(3) as usize]
+        }
+        fn gen_leaf(rng: &mut Rng, s: &mut TermStore, scope: u32) -> Hash {
+            if scope > 0 && rng.below(2) == 0 {
+                s.var(rng.below(scope))
+            } else {
+                s.lit(rng.i64_range(-MAX_LIT, MAX_LIT))
+            }
+        }
+        fn gen_cond(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
+            let a = gen_expr(rng, s, scope, fuel);
+            let b = gen_expr(rng, s, scope, fuel);
+            let op = random_cmp_op(rng);
+            s.prim(op, a, b)
+        }
+        fn gen_expr(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
+            if fuel == 0 || rng.below(3) == 0 {
+                return gen_leaf(rng, s, scope);
+            }
+            match rng.below(4) {
+                0 => {
+                    let a = gen_expr(rng, s, scope, fuel - 1);
+                    let b = gen_expr(rng, s, scope, fuel - 1);
+                    let op = random_arith_op(rng);
+                    s.prim(op, a, b)
+                }
+                1 => {
+                    let c = gen_cond(rng, s, scope, fuel - 1);
+                    let t = gen_expr(rng, s, scope, fuel - 1);
+                    let e = gen_expr(rng, s, scope, fuel - 1);
+                    s.if_(c, t, e)
+                }
+                _ => gen_closure_block(rng, s, scope, fuel - 1),
+            }
+        }
+        fn gen_closure_block(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
+            let inner_arity = 1 + rng.below(2);
+            let inner_scope = scope + inner_arity;
+            let inner_body = gen_expr(rng, s, inner_scope, fuel);
+            let mut inner = inner_body;
+            for _ in 0..inner_arity {
+                inner = s.abs(inner);
+            }
+            let supplied = rng.below(inner_arity + 1);
+            let mut applied = inner;
+            for _ in 0..supplied {
+                let arg = gen_expr(rng, s, scope, fuel);
+                applied = s.app(applied, arg);
+            }
+            if supplied == inner_arity {
+                return applied;
+            }
+            let remaining = inner_arity - supplied;
+            let mut remaining_args = Vec::new();
+            for _ in 0..remaining {
+                remaining_args.push(gen_expr(rng, s, scope, fuel));
+            }
+            let g_var = s.var(remaining);
+            let mut call_g = g_var;
+            for i in 0..remaining {
+                let y_i = s.var(remaining - 1 - i);
+                call_g = s.app(call_g, y_i);
+            }
+            let mut caller = call_g;
+            for _ in 0..(1 + remaining) {
+                caller = s.abs(caller);
+            }
+            let mut call_caller = s.app(caller, applied);
+            for r in remaining_args {
+                call_caller = s.app(call_caller, r);
+            }
+            call_caller
+        }
+
+        let mut rng = Rng(0x00C0_FFEE_1E55_u64 ^ 2117);
+        let choice = rng.below(4); // gen_program's own dispatch draw -- must be consumed first to match its RNG state exactly
+        assert_eq!(choice, 1, "seed 2117 should still pick gen_tail_recursive first");
+        let mut s = TermStore::new();
+        let n = s.var(1);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let base = s.var(0);
+        let n2 = s.var(1);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n2, one);
+        let f = s.var(2);
+        let payload = gen_expr(&mut rng, &mut s, 2, 3);
+        let op = random_arith_op(&mut rng);
+        let acc2 = s.var(0);
+        let new_acc = s.prim(op, acc2, payload);
+        let rec_call = s.app2(f, n_minus_1, new_acc);
+        let body = s.if_(cond, base, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        let h = s.rec(abs);
+
+        assert_eq!(
+            apply_term(&s, h, &[10, -20]).unwrap(),
+            -370,
+            "interpreter itself should still agree with this hand-derivation"
+        );
+
+        let frag = try_compile(&s, h).expect("this term should still compile");
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
+        let compiled = func.call(&mut store, (10, -20)).unwrap();
+        assert_eq!(compiled, -370, "compiled and interpreted must agree");
     }
 
     #[test]
