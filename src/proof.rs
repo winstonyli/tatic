@@ -2435,11 +2435,14 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // job, not this fragment's. A *combinator* referenced or called from
 // within that non-recursive main term, though, may be self-recursive
 // (`Term::Rec`, not just `Term::Abs`) -- see the paragraph below; every
-// `If` branch must denote as `Int`
-// (an `If` choosing between two *closures* is out of scope, though
-// `compile.rs` would compile it, whether or not either branch captures
-// anything); and the whole function's own result must denote as `Int`,
-// not directly return a closure value. For a capturing combinator
+// `If` branch must denote as `Int`, or *both* as `Clo` (via `ite_clo`, see
+// its own docs -- reachable when the `If`'s own result is used as a
+// value, e.g. an argument to a closure-typed parameter, but *not* when
+// the `If` is a directly-called literal lambda's own top-level body:
+// `call_ref`'s postulated type always assumes `Int`, since it never
+// denotes the callee's body to know any better); and the whole function's
+// own result must denote as `Int`, not directly return a closure value.
+// For a capturing combinator
 // specifically, `build_env_expr` narrows further: each captured value
 // must resolve *directly* to one of the calling function's own
 // parameters (not, transitively, to one of *that* function's own
@@ -2546,6 +2549,7 @@ struct ClosurePostulates {
     mk_env_pos: HashMap<usize, usize>,
     mk_clo_pos: HashMap<Hash, usize>,
     pap_pos: HashMap<(Hash, usize), usize>,
+    ite_clo_pos: Option<usize>,
 }
 
 /// Lets code holding a `&(mut) ClosurePostulates` -- `build_universal`'s own
@@ -2582,6 +2586,7 @@ impl ClosurePostulates {
             mk_env_pos: HashMap::new(),
             mk_clo_pos: HashMap::new(),
             pap_pos: HashMap::new(),
+            ite_clo_pos: None,
         }
     }
 
@@ -2605,6 +2610,24 @@ impl ClosurePostulates {
         let ty = kernel::arrow(self.clo_ty(), ty);
         let pos = self.arith.p.push(ty);
         self.apply_pos.insert(k, pos);
+        self.arith.p.get(pos)
+    }
+
+    /// `ite_clo : Int -> Clo -> Clo -> Clo`, postulated once (lazily,
+    /// unlike `ArithPostulates::ite_ref`'s eager one -- a term never
+    /// choosing between two closures shouldn't pay for this postulate) --
+    /// the `Clo`-valued counterpart to `ite_ref`, needed for an `If` that
+    /// chooses between two closures rather than two `Int`s (e.g. `if c
+    /// then (\y. x+y) else (\y. x-y)`). The condition itself stays `Int`
+    /// either way -- only the two branches (and the result) differ.
+    fn ite_clo_ref(&mut self) -> Expr {
+        if let Some(pos) = self.ite_clo_pos {
+            return self.arith.p.get(pos);
+        }
+        let clo_ty = self.clo_ty();
+        let ty = kernel::arrow(self.arith.int_ty(), kernel::arrow(clo_ty.clone(), kernel::arrow(clo_ty.clone(), clo_ty)));
+        let pos = self.arith.p.push(ty);
+        self.ite_clo_pos = Some(pos);
         self.arith.p.get(pos)
     }
 
@@ -3061,16 +3084,51 @@ fn denote_closure(
         let (c, t, e) = (*c, *t, *e);
         let dc = denote_closure(store, c, combinators, params, param_types)?.int()?;
         let dc = Anchored::new(&combinators.cp.arith, dc);
-        let dt = denote_closure(store, t, combinators, params, param_types)?.int()?;
-        let dt = Anchored::new(&combinators.cp.arith, dt);
-        let de = denote_closure(store, e, combinators, params, param_types)?.int()?;
-        let ite = combinators.cp.arith.ite_ref(); // pre-postulated once in ArithPostulates::new -- never pushes
-        let dc = dc.at(&combinators.cp.arith);
-        let dt = dt.at(&combinators.cp.arith);
-        let applied = kernel::app3(ite, dc, dt, de);
-        let int_ty = combinators.cp.arith.int_ty();
-        debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: If");
-        return Some(Denoted::Int(applied));
+        let dt = denote_closure(store, t, combinators, params, param_types)?;
+        let dt_is_clo = matches!(dt, Denoted::Clo(_));
+        let dt = Anchored::new(&combinators.cp.arith, match dt {
+            Denoted::Int(e) | Denoted::Clo(e) => e,
+        });
+        let de = denote_closure(store, e, combinators, params, param_types)?;
+        let de_is_clo = matches!(de, Denoted::Clo(_));
+        // Anchored *before* branching on `dt_is_clo`/`de_is_clo`, not just
+        // resolved inline in each arm below: `ite_clo_ref` (unlike
+        // `ite_ref`, which never pushes) lazily postulates on its first
+        // use, which would otherwise silently invalidate an unanchored
+        // `dt`/`de` held across that push -- the exact staleness class
+        // `Anchored`'s own docs describe (caught immediately by
+        // `debug_assert_has_type` on the very first Clo-branch test,
+        // before it could reach anything outside this module).
+        let de = Anchored::new(&combinators.cp.arith, match de {
+            Denoted::Int(e) | Denoted::Clo(e) => e,
+        });
+        // Both branches Int (the common case) or both Clo (an If choosing
+        // between two closures, e.g. `if c then (\y.x+y) else (\y.x-y)`) --
+        // a mismatch (one of each) is rejected, same as any other
+        // Int/Clo confusion in this fragment.
+        return match (dt_is_clo, de_is_clo) {
+            (false, false) => {
+                let ite = combinators.cp.arith.ite_ref(); // pre-postulated once in ArithPostulates::new -- never pushes
+                let dc = dc.at(&combinators.cp.arith);
+                let dt = dt.at(&combinators.cp.arith);
+                let de = de.at(&combinators.cp.arith);
+                let applied = kernel::app3(ite, dc, dt, de);
+                let int_ty = combinators.cp.arith.int_ty();
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: If (Int branches)");
+                Some(Denoted::Int(applied))
+            }
+            (true, true) => {
+                let ite_clo = combinators.cp.ite_clo_ref();
+                let dc = dc.at(&combinators.cp.arith);
+                let dt = dt.at(&combinators.cp.arith);
+                let de = de.at(&combinators.cp.arith);
+                let applied = kernel::app3(ite_clo, dc, dt, de);
+                let clo_ty = combinators.cp.clo_ty();
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: If (Clo branches)");
+                Some(Denoted::Clo(applied))
+            }
+            _ => None,
+        };
     }
 
     match store.resolve(h) {
@@ -3136,8 +3194,9 @@ fn denote_closure(
 /// parameter nor a literal lambda/named recursive combinator, an
 /// inconsistent arity for a closure-typed parameter, an application of a
 /// literal lambda or recursive combinator to more arguments than its own
-/// arity, an `If` whose branches aren't both `Int`, a whole-function
-/// result that isn't `Int`, a captured value (for a capturing combinator)
+/// arity, an `If` whose branches aren't both `Int` or both `Clo` (or one
+/// of each), a whole-function result that isn't `Int`, a captured value
+/// (for a capturing combinator)
 /// that isn't `Int`-typed or doesn't resolve directly to one of the
 /// calling function's own parameters, or a partial application (fewer
 /// arguments than arity) whose root itself captures anything or is itself
@@ -4157,23 +4216,29 @@ mod tests {
     }
 
     #[test]
-    fn an_if_between_two_capturing_closures_still_gets_no_closure_proof() {
+    fn calling_a_literal_lambda_whose_own_body_picks_between_two_closures_is_still_out_of_scope() {
         // \x. (\g. g 5) (if 0 < x then (\y. x + y) else (\y. x - y)) --
         // the same term compile.rs's own
         // a_capturing_closure_compiles_and_matches_interpreter test uses.
         // compile.rs compiles this successfully (real closure conversion),
-        // and prove_closure_expr now covers genuinely capturing closures
-        // too (see build_env_expr) -- but this *particular* term is still
-        // rejected, for an orthogonal, pre-existing reason: it's an `If`
-        // choosing between two closures (then_closure/else_closure), and
-        // denote_closure's own `Term::If` case requires *both* branches to
-        // denote as `Int` (see an_if_choosing_between_two_closures_is_out_of_scope
-        // above) -- unrelated to whether either branch happens to capture
-        // anything. See
-        // a_capturing_closure_used_as_a_value_gets_a_closure_proof and
-        // a_directly_called_capturing_closure_gets_a_closure_proof below
-        // for the same kind of capture actually getting a proof, once
-        // that unrelated restriction isn't also in the way.
+        // and denote_closure's own `Term::If` case now covers two `Clo`
+        // branches too (`ite_clo` -- see
+        // a_closure_typed_ifs_own_result_used_as_a_value_gets_a_closure_proof
+        // below for that, now-covered, case directly) -- but this
+        // *particular* term still isn't reached by that widening: `picker`
+        // (whose own body is the If) is *directly called*
+        // (`chosen = picker(x2)`, a fully-saturated application of a
+        // literal lambda), and `call_ref`'s own postulated type always
+        // assumes a directly-called combinator returns `Int` -- honest for
+        // every existing case, since `call_ref` never denotes a
+        // combinator's own body to check, but wrong here, where `picker`'s
+        // body actually resolves to `Clo`. The mismatch is caught cleanly
+        // (`chosen`'s claimed `Int` type fails `inn`'s own `.clo()?` check
+        // where it's used as `g`), not silently accepted. Widening
+        // `call_ref` itself to sometimes claim `Clo` would mean denoting a
+        // callee's body just to learn its return type, undermining the
+        // whole point of treating a call as opaque -- a real, deliberate
+        // narrowing, not an oversight.
         let mut s = TermStore::new();
         let x = s.var(0);
         let zero = s.lit(0);
@@ -4200,7 +4265,7 @@ mod tests {
         let f = s.abs(called);
 
         assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
-        assert!(prove_closure_expr(&s, f).is_none(), "an If choosing between two closures is still out of scope");
+        assert!(prove_closure_expr(&s, f).is_none(), "a directly-called combinator's own Clo-typed body still isn't reachable through call_ref");
     }
 
     #[test]
@@ -4294,11 +4359,15 @@ mod tests {
     }
 
     #[test]
-    fn an_if_choosing_between_two_closures_is_out_of_scope() {
-        // \x. if x > 0 then inc else inc -- compile.rs would happily
-        // compile this (both branches are just i64 table indices), but
-        // prove_closure_expr requires both If branches to denote as Int
-        // (see its own docs) -- a real, documented restriction, not a bug.
+    fn a_whole_functions_result_being_a_closure_is_still_out_of_scope() {
+        // \x. if x > 0 then inc else inc -- an `If` choosing between two
+        // closures is *not* the restriction that rejects this one anymore
+        // (denote_closure's own `Term::If` now covers Clo branches via
+        // `ite_clo` -- see a_closure_typed_ifs_own_result_used_as_a_value_gets_a_closure_proof
+        // below for that, now-covered, case): this term's own rejection
+        // reason is orthogonal -- `f`'s own body (the whole function's
+        // result) denotes as `Clo`, not `Int`, and prove_closure_expr's
+        // top-level call always requires `Int` there, closures or not.
         let mut s = TermStore::new();
         let x = s.var(0);
         let zero = s.lit(0);
@@ -4307,6 +4376,79 @@ mod tests {
         let i2 = inc(&mut s);
         let picked = s.if_(cond, i1, i2);
         let f = s.abs(picked);
+
+        assert!(prove_closure_expr(&s, f).is_none());
+    }
+
+    /// `\z. z - 1`.
+    fn dec(s: &mut TermStore) -> Hash {
+        let z = s.var(0);
+        let one = s.lit(1);
+        let z_minus_1 = s.prim(PrimOp::Sub, z, one);
+        s.abs(z_minus_1)
+    }
+
+    #[test]
+    fn a_closure_typed_ifs_own_result_used_as_a_value_gets_a_closure_proof() {
+        // \w. caller(if 0 < w then inc else dec, 5) where
+        // caller = \g x. g(x) -- the If's own result (Denoted::Clo, via
+        // the new `ite_clo` postulate) is used as caller's *argument*
+        // (matching caller's own closure-typed parameter `g`), not as a
+        // directly-called combinator's implicit return -- exactly the
+        // shape `ite_clo` actually needs to be reachable (see
+        // calling_a_literal_lambda_whose_own_body_picks_between_two_closures_is_still_out_of_scope
+        // above for the shape that still isn't).
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let g = s.var(1);
+        let call_gx = s.app(g, x);
+        let caller_inner = s.abs(call_gx);
+        let caller = s.abs(caller_inner);
+
+        let w = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, w);
+        let i = inc(&mut s);
+        let d = dec(&mut s);
+        let picked = s.if_(cond, i, d);
+        let five = s.lit(5);
+        let top = s.app2(caller, picked, five);
+        let f = s.abs(top);
+
+        let proof = prove_closure_expr(&s, f).expect("an If between two closures used as a value should get a closure proof");
+        assert_eq!(proof.arity, 1);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        assert!(compile::try_compile(&s, f).is_some());
+    }
+
+    #[test]
+    fn an_if_mismatching_int_and_clo_branches_is_out_of_scope() {
+        // \w. caller(if 0 < w then inc else 5, 5) -- one branch Clo
+        // (`inc`), the other Int (`5`) -- neither ite_ref nor ite_clo
+        // applies; rejected as a genuine type mismatch, not silently
+        // accepted as either.
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let g = s.var(1);
+        let call_gx = s.app(g, x);
+        let caller_inner = s.abs(call_gx);
+        let caller = s.abs(caller_inner);
+
+        let w = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, w);
+        let i = inc(&mut s);
+        let five_branch = s.lit(5);
+        let picked = s.if_(cond, i, five_branch);
+        let five = s.lit(5);
+        let top = s.app2(caller, picked, five);
+        let f = s.abs(top);
 
         assert!(prove_closure_expr(&s, f).is_none());
     }

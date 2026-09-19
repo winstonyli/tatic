@@ -292,9 +292,16 @@ This is stated precisely because it would be easy to overclaim here.
   the proof level. Scope, honestly: the *main*, top-level term must still
   be non-recursive (proving a self-recursive function's own body is
   `prove_tail_recursive_universal`'s job, not this one's — see its own
-  row above); every `If` branch must
-  denote as `Int` (an `If` choosing between two closures is out of scope,
-  whether or not either branch captures anything); and for a capturing
+  row above); every `If` branch must denote as `Int`, or *both* as `Clo`
+  (via `ite_clo : Int -> Clo -> Clo -> Clo`, postulated lazily since a
+  term never choosing between two closures shouldn't pay for it) —
+  reachable when the `If`'s own result is used as a value (an argument to
+  a closure-typed parameter, say), but *not* when the `If` is a
+  directly-called literal lambda's own top-level body: `call_ref`'s
+  postulated type always assumes `Int`, since it never denotes the
+  callee's body to know any better, so a combinator whose own body
+  resolves to `Clo` only gets an honest proof when it's used as a bare
+  *value*, not when it's *called* directly; and for a capturing
   combinator specifically, each captured value must resolve *directly* to
   one of the calling function's own parameters (not, transitively, to one
   of *that* function's own captures — one level of nesting only for now)
@@ -531,10 +538,16 @@ first seed, as expected.
   above). What's still open: a concrete *instance* proof for either
   closure-creation shape (`eval_and_prove`/`build_ev_witness` remain
   untouched, still reject `App`/`Abs`) — doesn't affect `kernel_verified`,
-  only weaker, call-specific evidence. And still open regardless of
-  recursion: allowing an `If` to choose between two closures, not just two
-  `Int`s — a real, documented restriction of `prove_closure_expr`, not a
-  fundamental limit.
+  only weaker, call-specific evidence.
+- `prove_closure_expr` now covers an `If` choosing between two closures
+  too (`ite_clo`, lazily postulated — see the table row above), when the
+  `If`'s own result is used as a *value*. Still open: the same widening
+  for a *directly-called* combinator whose own top-level body is such an
+  `If` — `call_ref`'s postulated type always assumes `Int`, since it never
+  denotes a callee's body to check, so this stays a real, deliberate
+  narrowing rather than a fundamental limit (widening it would mean
+  denoting a callee's body just to learn its return type, undermining the
+  whole point of treating a call as opaque).
 - Widening the compilable fragment further: an over-applied literal
   lambda, a variable called with inconsistent arities across sites, more
   primitives. (Capturing closures and partial application of a literal
