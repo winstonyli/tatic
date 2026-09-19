@@ -460,9 +460,9 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   a term, like this one, that never actually creates a closure inside the
   loop.
 
-## Differential testing
+## Fuzzing
 
-`tests/compile_fuzz.rs` (`cargo test --test compile_fuzz`) generates
+**Differential**: `tests/compile_fuzz.rs` (`cargo test --test compile_fuzz`) generates
 random terms — biased toward the closure/capture/self-recursion
 interactions two real indexing bugs turned up in earlier, hand-derived
 rather than found by any test failure — and checks that `jit::JitEngine`
@@ -517,6 +517,29 @@ not redundancy for its own sake), but weakening *both* of the
 inconsistent-arity checks (`scan_for_closure_calls`'s and `compile_node`'s
 own per-call-site check) together immediately failed the test on the
 first seed, as expected.
+
+**Robustness**: `tests/kernel_fuzz.rs` fuzzes a different layer entirely: `kernel.rs`'s
+own type-checker, directly, with no well-typedness discipline on the
+generated terms at all (unlike `compile_fuzz.rs`, which only ever feeds
+terms already known to be well-typed on both readings). Random `Expr`
+trees — `Var`s sometimes genuinely in scope, sometimes deliberately just
+past it, sometimes wildly unbound; `Sort`s occasionally at `u32::MAX` —
+are checked only for one property: `infer`/`check`/`typecheck` never
+panic, whatever nonsense they're asked to type-check; almost every
+generated tree is simply rejected with an ordinary `Err`, which is the
+expected, uninteresting outcome. A second test targets `check`'s own
+top-level `Lam`-against-`Pi` special case directly (an independently
+generated lambda checked against an independently generated `Pi`), since
+nothing built on `typecheck` alone (a bare `infer` call at the root) ever
+reaches it. This fuzzer's first run caught a real bug immediately: `infer`'s
+`Sort(i) => Sort(i + 1)` case overflowed (a checked-in-debug-builds panic,
+not a clean type error) for `Sort(u32::MAX)` — fixed with `checked_add`,
+returning an honest `Err` ("universe overflow") instead. Verified test
+teeth by reverting the fix: the fuzzer catches it again immediately (seed
+16 out of 5,000, on the very first run at that seed count). Stress-tested
+at 100,000 seeds (release) and 30,000 (debug, where the now-fixed overflow
+check would have fired) with zero further failures before settling back
+on the file's own 5,000-seed default.
 
 ## Design notes
 

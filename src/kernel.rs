@@ -602,7 +602,7 @@ fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
 pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
     match e {
         Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
-        Expr::Sort(i) => Ok(Expr::Sort(i + 1)),
+        Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
         Expr::Pi(a, b) => {
             let i = expect_sort(&infer(ctx, a)?)?;
             let mut ctx2 = ctx.clone();
@@ -951,6 +951,18 @@ mod tests {
     fn universes_stratify() {
         assert_eq!(typecheck(&sort(0)).unwrap(), sort(1));
         assert_eq!(typecheck(&sort(5)).unwrap(), sort(6));
+    }
+
+    #[test]
+    fn a_maximal_universe_level_is_a_clean_type_error_not_an_overflow_panic() {
+        // Type_{u32::MAX} has no successor sort representable in this
+        // encoding -- infer's own `i.checked_add(1)` reports that as an
+        // ordinary Err, rather than panicking on the arithmetic overflow
+        // `i + 1` would otherwise trigger (checked in debug builds, wrapping
+        // silently to Type0 in release -- neither of which is the honest
+        // "this term doesn't typecheck" answer every other rejection here
+        // gives).
+        assert!(typecheck(&sort(u32::MAX)).is_err());
     }
 
     #[test]
