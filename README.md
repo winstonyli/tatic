@@ -325,11 +325,13 @@ This is stated precisely because it would be easy to overclaim here.
   the `k` supplied arguments are ordinary call-site subexpressions, denoted
   the normal recursive way rather than through any `Env_n`-style
   machinery, which makes this piece simpler than the capturing-closures
-  one above. Scoped to a *non-capturing* root only, for now — `compile.rs`
-  itself already handles partially applying a capturing literal
-  (`push_pap_env` composes the wrapper's own environment with a copy of
-  the root's), but proving that composition is deferred as future work.
-  Caught the same class of indexing bug this fragment already had one
+  one above. Now covers a *capturing* root too, mirroring `compile.rs`'s
+  own `push_pap_env`: when the root captures, `mk_pap_h_k`'s postulated
+  type takes the root's own `Env_n` as an extra leading parameter
+  (`Env_n -> T_0 -> .. -> T_{k-1} -> Clo`, the same environment-first
+  convention `call_h` uses), and every call site builds that environment
+  via `build_env_expr` and prepends it to the supplied arguments. Caught
+  the same class of indexing bug this fragment already had one
   example of: the postulate's own parameter types must be sliced from the
   *last* `k` entries of `h`'s `param_types` (the first-`k`-applied
   positions), not the first `k` — an initially-mis-drafted `param_types[..k]`
@@ -346,9 +348,19 @@ This is stated precisely because it would be easy to overclaim here.
   machinery; `compile::peel`/`compile::free_vars`/`compile::infer_closure_arities`
   were already generic over `is_rec` (`prove_tail_recursive_universal`'s own
   fragment already relied on that). `pap_ref` keeps rejecting a recursive
-  root specifically, though — the same honest narrowing already applied to
-  a capturing root, and, like that one, a case `compile.rs` itself already
-  compiles (`register_partial_app` never special-cased `is_rec` either).
+  root specifically, though — an honest narrowing, and, unlike the
+  now-lifted capturing-root one, still a case `compile.rs` itself already
+  compiles (`register_partial_app` never special-cased `is_rec` either)
+  but the closure proof doesn't yet reach. Widening the capturing-PAP case
+  surfaced a real bug in `prime_closure_postulates`'s own pre-priming pass:
+  its partial-application branch primed `pap_ref` but not the transitive
+  `mk_env_ref` a capturing root's `build_env_expr` call also needs, so
+  that lazy push could still happen for the first time from inside a
+  rolled-back `params_and_close_typed` scope — the exact staleness class
+  this whole pre-priming mechanism exists to prevent, caught by
+  `compile_fuzz`'s random-term fuzzing (not by any hand-written test) via
+  a `debug_assert_has_type` panic in `denote_closure_typed`'s own partial
+  application case.
 
 In every case, `jit.rs`'s sample-based verification against the
 interpreter is the actual trust gate for installing a compiled form. A
@@ -567,9 +579,12 @@ first seed, as expected.
   doesn't mirror that recursion yet.
 - `prove_closure_expr` now covers partial application of a literal lambda
   too (`mk_pap_h_k`/`pap_ref` — see the table row above and `proof.rs`'s
-  own section docs), but only when the root being partially applied
-  doesn't itself capture anything — `compile.rs`'s `push_pap_env` already
-  handles partially applying a *capturing* literal (composing the
-  wrapper's own environment with a copy of the root's), `pap_ref` just
-  doesn't mirror that composition yet. Over-application (more arguments
-  than arity) stays out of scope on both readings.
+  own section docs), including a *capturing* root: `pap_ref`'s postulated
+  type takes the root's own `Env_n` as a leading parameter (mirroring
+  `call_ref`'s own environment-first convention) when the root captures,
+  and every call site builds that environment via `build_env_expr` and
+  prepends it, mirroring `compile.rs`'s own `push_pap_env`, which composes
+  a PAP wrapper's own environment with a copy of the root's. Partial
+  application of a *self-recursive* combinator stays out of scope (`pap_ref`
+  still rejects `is_rec`), and over-application (more arguments than
+  arity) stays out of scope on both readings.

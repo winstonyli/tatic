@@ -691,14 +691,17 @@ mod tests {
     }
 
     #[test]
-    fn partial_application_of_a_capturing_root_compiles_but_is_not_yet_proven() {
+    fn partial_application_of_a_capturing_root_compiles_and_is_kernel_verified() {
         // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- same shape as
         // compile::tests::partial_application_of_a_capturing_literal_lambda_compiles.
         // compile.rs's push_pap_env composes the wrapper's own environment
-        // with a copy of the (capturing) root's environment just fine, but
-        // proof.rs's pap_ref only covers a non-capturing root -- see its
-        // own docs -- so this still gets no kernel-checked proof, an
-        // honest, documented gap (not a regression).
+        // with a copy of the (capturing) root's environment, and proof.rs's
+        // pap_ref now mirrors that (a leading Env_n parameter when the root
+        // captures, built at every call site via build_env_expr) -- see
+        // proof::tests::a_partially_applied_capturing_literal_lambda_used_as_a_value_gets_a_closure_proof
+        // for the same shape checked directly against proof.rs -- so this
+        // now gets a kernel-checked proof, not just empirical sample
+        // verification.
         let mut s = TermStore::new();
         let y = s.var(0);
         let x = s.var(1);
@@ -723,6 +726,6 @@ mod tests {
         assert_eq!(jit.apply(&s, g, &[10]).unwrap(), 17); // (3 + 4 + 10)
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
-        assert!(!jit.is_kernel_verified(g), "proof.rs's pap_ref only covers a non-capturing root");
+        assert!(jit.is_kernel_verified(g));
     }
 }

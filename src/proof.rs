@@ -962,8 +962,16 @@ fn denote_with_placeholders(
                 }
                 if args.len() < arity {
                     let k = args.len();
+                    let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
+                    let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
                     let pap_fn = combinators.pap_ref(root, k)?;
                     let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
+                    let env_expr = if root_captures.is_empty() {
+                        None
+                    } else {
+                        let e = build_env_expr(combinators, &root_captures, params, param_types)?;
+                        Some(Anchored::new(&combinators.cp.arith, e))
+                    };
                     let mut arg_exprs = Vec::with_capacity(k);
                     for (j, &a) in args.iter().enumerate() {
                         let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
@@ -974,8 +982,12 @@ fn denote_with_placeholders(
                         arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                     }
                     let pap_fn = pap_fn.at(&combinators.cp.arith);
-                    let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                    let applied = apply_n(pap_fn, arg_exprs);
+                    let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
+                    if let Some(env_expr) = &env_expr {
+                        all_args.push(env_expr.at(&combinators.cp.arith));
+                    }
+                    all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                    let applied = apply_n(pap_fn, all_args);
                     let clo_ty = combinators.cp.clo_ty();
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: partial application");
                     return Some(Denoted::Clo(applied));
@@ -1138,8 +1150,16 @@ fn denote_closure_typed(
                 }
                 if args.len() < arity {
                     let k = args.len();
+                    let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
+                    let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
                     let pap_fn = combinators.pap_ref(root, k)?;
                     let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
+                    let env_expr = if root_captures.is_empty() {
+                        None
+                    } else {
+                        let e = build_env_expr(combinators, &root_captures, params, param_types)?;
+                        Some(Anchored::new(&combinators.cp.arith, e))
+                    };
                     let mut arg_exprs = Vec::with_capacity(k);
                     for (j, &a) in args.iter().enumerate() {
                         let d = denote_closure_typed(store, a, param_types, combinators, params)?;
@@ -1150,8 +1170,12 @@ fn denote_closure_typed(
                         arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                     }
                     let pap_fn = pap_fn.at(&combinators.cp.arith);
-                    let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                    let applied = apply_n(pap_fn, arg_exprs);
+                    let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
+                    if let Some(env_expr) = &env_expr {
+                        all_args.push(env_expr.at(&combinators.cp.arith));
+                    }
+                    all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                    let applied = apply_n(pap_fn, all_args);
                     let clo_ty = combinators.cp.clo_ty();
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: partial application");
                     return Some(Denoted::Clo(applied));
@@ -1305,6 +1329,18 @@ fn prime_closure_postulates(
                 }
                 if args.len() < arity {
                     combinators.pap_ref(root, args.len())?;
+                    // `pap_ref` itself only primes the pap combinator's own
+                    // postulate, not the transitive `mk_env_ref` a
+                    // capturing root's own `build_env_expr` call will need
+                    // -- that has to be primed here too, the same way the
+                    // direct-call branch below primes it, or its first push
+                    // can still happen from inside a temporary
+                    // `params_and_close_typed` scope and go stale.
+                    let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
+                    let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
+                    if !root_captures.is_empty() {
+                        combinators.cp.mk_env_ref(root_captures.len());
+                    }
                 } else {
                     let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                     let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
@@ -2466,14 +2502,15 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // ordinary call-site subexpressions -- denoted the normal recursive way, not
 // resolved through any `Env_n`/`build_env_expr`-style machinery -- so this
 // piece is structurally simpler than the capturing-closures one above.
-// Scoped to a *non-capturing* root only, for now: `pap_ref` returns `None` if
-// `h`'s own body captures anything, the same honest narrowing
-// `build_env_expr` applies to a `Clo`-typed capture -- `compile.rs` itself
-// (`push_pap_env`) already handles partially applying a capturing literal,
-// composing the wrapper's own environment with a copy of the root's, but
-// proving that composition correct is deferred as future work rather than
-// risked getting subtly wrong here. Over-application (more arguments than
-// arity) stays rejected exactly as before.
+// Now covers a *capturing* root too, mirroring `compile.rs`'s own
+// `push_pap_env`: when `h`'s own body captures anything, `pap_ref`'s
+// postulated type takes an extra leading `Env_n` parameter (the same
+// environment-first convention `call_ref` already uses for a direct call),
+// and every call site builds that environment via `build_env_expr` and
+// prepends it to the wrapper's own supplied arguments -- composing the
+// wrapper's own environment with a copy of the root's, exactly the way
+// `push_pap_env` composes them at the compiled-code level. Over-application
+// (more arguments than arity) stays rejected exactly as before.
 //
 // A combinator (called or used as a bare value) may itself be
 // self-recursive (`Term::Rec`, e.g. a named `let fact = rec f n = .. in
@@ -2486,11 +2523,11 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // `compile::infer_closure_arities` were already generic over `is_rec`
 // (`build_universal`'s own fragment already relied on that). `pap_ref`
 // specifically keeps rejecting a recursive root, though -- unlike a direct
-// call or a bare value, composing a partial-application wrapper's own
-// environment with a self-recursive combinator's calling convention hasn't
-// been worked through, the same honest narrowing already applied to a
-// *capturing* root above (and, like that one, `compile.rs` itself already
-// handles it: `register_partial_app` never special-cased `is_rec` either).
+// call, a bare value, or now a capturing root, composing a
+// partial-application wrapper's own environment with a self-recursive
+// combinator's calling convention hasn't been worked through -- an honest
+// narrowing (and `compile.rs` itself already handles it:
+// `register_partial_app` never special-cased `is_rec` either).
 
 /// Either an `Int`-typed or a `Clo`-typed denotation -- `denote_closure`
 /// needs to track which, since an application's arguments and an `If`'s
@@ -2828,16 +2865,19 @@ impl<'a> ClosureCombinators<'a> {
     /// matching `call_ref`'s own `Var(0)`-innermost/`Var(arity-1)`-outermost
     /// convention and this function's own ascending iteration order below).
     ///
-    /// Unlike `call_ref`, no `Anchored`-staleness reordering is needed here:
-    /// the loop only reads `clo_ty()`/`int_ty()`, which never push a fresh
-    /// postulate (unlike `call_ref`'s `env_ty()`), so there's no shallower
-    /// depth for an earlier read to go stale relative to.
+    /// If `h` itself captures (`compile.rs`'s own `push_pap_env` composes
+    /// the wrapper's own environment with a copy of `h`'s -- see its own
+    /// docs), `mk_pap_h_k` takes `h`'s own `Env_n` first, ahead of the `k`
+    /// supplied arguments, mirroring `call_h`'s own environment-first
+    /// convention: `Env_n -> T_0 -> .. -> T_{k-1} -> Clo`. `env_ty` is
+    /// computed *before* the loop below, same as `call_ref`'s own fix for
+    /// the identical hazard: it may push a fresh `Env_n` postulate on its
+    /// own first use, which would silently invalidate the loop's `clo_ty`/
+    /// `int_ty` reads (already-resolved `Expr`s, not re-resolved after the
+    /// fact) if it ran after them instead.
     ///
-    /// `None` for a self-recursive, zero-`k`, over-`k` (`k >= arity`), or
-    /// *capturing* root -- partial application of a capturing literal is
-    /// out of scope for now, the same way a captured `Clo` value is out of
-    /// scope for `build_env_expr`: documented future work, not attempted
-    /// here to avoid getting the composition subtly wrong.
+    /// `None` for a self-recursive, zero-`k`, or over-`k` (`k >= arity`)
+    /// root.
     fn pap_ref(&mut self, h: Hash, k: usize) -> Option<Expr> {
         if let Some(&pos) = self.cp.pap_pos.get(&(h, k)) {
             return Some(self.cp.arith.p.get(pos));
@@ -2846,10 +2886,9 @@ impl<'a> ClosureCombinators<'a> {
         if is_rec || k == 0 || k >= arity {
             return None;
         }
-        if !compile::free_vars(self.store, body, arity, is_rec).is_empty() {
-            return None; // a capturing root -- out of scope for now
-        }
+        let captures = compile::free_vars(self.store, body, arity, is_rec);
         let param_types = param_types_for(self.store, h)?;
+        let env_ty = (!captures.is_empty()).then(|| self.cp.env_ty(captures.len()));
         let mut ty = self.cp.clo_ty();
         for pt in &param_types[arity - k..] {
             let dom = match pt {
@@ -2857,6 +2896,9 @@ impl<'a> ClosureCombinators<'a> {
                 None => self.cp.arith.int_ty(),
             };
             ty = kernel::arrow(dom, ty);
+        }
+        if let Some(env_ty) = env_ty {
+            ty = kernel::arrow(env_ty, ty);
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.pap_pos.insert((h, k), pos);
@@ -3021,10 +3063,21 @@ fn denote_closure(
                     // mk_pap_root_k(a_1,...,a_k), a Clo-typed value -- see
                     // pap_ref's own docs for why the supplied arguments are
                     // denoted normally here rather than resolved through any
-                    // Env_n/build_env_expr-style machinery.
+                    // Env_n/build_env_expr-style machinery (unlike root's
+                    // *own* environment, when it captures, which does need
+                    // build_env_expr, exactly as a direct call to a
+                    // capturing root does above).
                     let k = args.len();
+                    let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
+                    let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
                     let pap_fn = combinators.pap_ref(root, k)?;
                     let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
+                    let env_expr = if root_captures.is_empty() {
+                        None
+                    } else {
+                        let e = build_env_expr(combinators, &root_captures, params, param_types)?;
+                        Some(Anchored::new(&combinators.cp.arith, e))
+                    };
                     let mut arg_exprs = Vec::with_capacity(k);
                     for (j, &a) in args.iter().enumerate() {
                         // args[j] (application order) is Var(arity-1-j) --
@@ -3038,8 +3091,12 @@ fn denote_closure(
                         arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                     }
                     let pap_fn = pap_fn.at(&combinators.cp.arith);
-                    let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                    let applied = apply_n(pap_fn, arg_exprs);
+                    let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
+                    if let Some(env_expr) = &env_expr {
+                        all_args.push(env_expr.at(&combinators.cp.arith));
+                    }
+                    all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                    let applied = apply_n(pap_fn, all_args);
                     let clo_ty = combinators.cp.clo_ty();
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: partial application");
                     return Some(Denoted::Clo(applied));
@@ -3458,6 +3515,64 @@ mod tests {
         // `param_types` are all `None`, so that guard never even triggers
         // -- `eval_and_prove` itself is what says no here).
         assert!(prove_tail_recursive_instance(&s, h, &[5, 0]).is_none());
+
+        assert!(compile::try_compile(&s, h).is_some());
+    }
+
+    #[test]
+    fn a_capturing_partial_application_created_inside_a_self_call_argument_gets_a_universal_proof() {
+        // rec f n acc = if n <= 0 then acc else f(n-1, caller(capturing_add(n)))
+        // where capturing_add = \x y. x + y + acc (captures f's own second
+        // parameter) and caller = \g. g(4) -- same shape as
+        // capturing_closure_loop above, but the self-call argument
+        // partially applies a *capturing* literal lambda (one argument
+        // short) and completes it through caller, rather than creating and
+        // immediately calling a fully-applied closure. This is exactly the
+        // shape that exposed a real staleness bug: prime_closure_postulates's
+        // own partial-application branch primed pap_ref but not the
+        // transitive mk_env_ref a capturing root's build_env_expr call also
+        // needs, so that lazy push could still happen for the first time
+        // from inside a rolled-back params_and_close_typed scope -- caught
+        // by compile_fuzz's random-term fuzzing before this dedicated
+        // regression test existed.
+        let mut s = TermStore::new();
+        let x = s.var(1);
+        let y = s.var(0);
+        let acc_captured = s.var(2); // acc, shifted by capturing_add's own 2 binders
+        let xy = s.prim(PrimOp::Add, x, y);
+        let xyz = s.prim(PrimOp::Add, xy, acc_captured);
+        let inner_ca = s.abs(xyz);
+        let capturing_add = s.abs(inner_ca);
+
+        let n_ref = s.var(1);
+        let partial = s.app(capturing_add, n_ref); // capturing_add(n) -- one arg short
+
+        let g = s.var(0);
+        let four = s.lit(4);
+        let call_g = s.app(g, four);
+        let caller = s.abs(call_g);
+
+        let new_acc = s.app(caller, partial); // caller(partial) = n + 4 + acc
+
+        let n = s.var(1);
+        let acc = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let f = s.var(2);
+        let f_n1 = s.app(f, n_minus_1);
+        let rec_call = s.app(f_n1, new_acc);
+        let body = s.if_(cond, acc, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        let h = s.rec(abs);
+
+        let proof = prove_tail_recursive_universal(&s, h)
+            .expect("a self-recursive loop partially applying a fresh capturing literal each iteration should get a universal proof");
+        assert_eq!(proof.arity, 2);
+        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+            .expect("the recorded theorem should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
     }
@@ -3999,9 +4114,10 @@ mod tests {
         // indifferent to whether that root's *own* codegen happens to
         // loop), so this genuinely compiles already -- an honest,
         // pre-existing gap between what compile.rs handles and what the
-        // closure proof covers, the same shape as the capturing-PAP one
-        // (see partial_application_of_a_capturing_literal_lambda_is_still_out_of_scope_for_the_closure_proof
-        // above), not something this round's widening introduced.
+        // closure proof covers. Unlike a *capturing* root (now covered --
+        // see a_partially_applied_capturing_literal_lambda_used_as_a_value_gets_a_closure_proof
+        // above), a *recursive* one is still deliberately out of scope, a
+        // rejection this round's widening didn't touch.
         let mut s = TermStore::new();
         let acc = s.var(0);
         let n = s.var(1);
@@ -4156,19 +4272,17 @@ mod tests {
     }
 
     #[test]
-    fn partial_application_of_a_capturing_literal_lambda_is_still_out_of_scope_for_the_closure_proof() {
+    fn a_partially_applied_capturing_literal_lambda_used_as_a_value_gets_a_closure_proof() {
         // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- same shape as
         // compile::tests::partial_application_of_a_capturing_literal_lambda_compiles,
-        // which *does* compile (push_pap_env forwards root's own captured
-        // environment through the wrapper just fine) -- but pap_ref only
-        // covers a non-capturing root (see its own docs: composing a fresh
-        // per-site environment with a partial-application wrapper's own
-        // supplied-argument environment is meaningfully more machinery,
-        // deferred the same way a captured Clo value is deferred by
-        // build_env_expr), so the closure proof still doesn't reach this
-        // one -- an honest, documented gap between what compile.rs handles
-        // and what's proven, distinct from the inconsistent-arity and
-        // over-application cases which are rejected by *both* readings.
+        // which compiles via push_pap_env composing the wrapper's own
+        // environment with a copy of the (capturing) root's own
+        // environment. pap_ref now mirrors that: when the root captures,
+        // its postulated type takes the root's own Env_n as a leading
+        // parameter (the same convention call_ref already uses), and every
+        // PAP call site builds that environment via build_env_expr and
+        // prepends it to the wrapper's own arguments -- so this now gets a
+        // kernel-checked proof too, not just empirical sample verification.
         let mut s = TermStore::new();
         let y = s.var(0);
         let x = s.var(1);
@@ -4189,8 +4303,16 @@ mod tests {
         let called = s.app(caller, partial);
         let g = s.abs(called);
 
-        assert!(prove_closure_expr(&s, g).is_none());
-        assert!(compile::try_compile(&s, g).is_some(), "the compiler covers this case even though the closure proof doesn't yet");
+        let proof = prove_closure_expr(&s, g).expect("a partially applied capturing literal lambda used as a value should get a closure proof");
+        assert_eq!(proof.arity, 1);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        assert!(compile::try_compile(&s, g).is_some());
     }
 
     #[test]
