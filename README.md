@@ -199,38 +199,67 @@ This is stated precisely because it would be easy to overclaim here.
   costs more than it saves at that scale. A caller that specifically
   expects a large or branching construction wraps its own call in it (see
   Design notes below for the scoped-vs-standing-cache tradeoff).
-- **A closure-typed parameter threaded through recursion**: `prove_tail_recursive_universal`
-  also covers a self-recursive function whose own parameters may be
+- **Closures combined with self-recursion, in `prove_tail_recursive_universal`**:
+  covers a self-recursive function whose own parameters may be
   `Clo`-typed — threaded through the recursion unchanged, or called via
   `apply_k` within a leaf or a self-call argument — e.g. "iterate a closure
   `n` times": `rec f n g x = if n<=0 then x else f(n-1, g, g(x))`, a shape
   `compile.rs` already compiled (its own `infer_closure_arities`/
   `compile_node` machinery is generic over self-recursion vs. not) but that
-  had no proof strategy at all before this. Scoped to a parameter only —
-  the body may never *create* a closure (no `Abs` anywhere), so none of
-  `prove_closure_expr`'s own combinator/capture/partial-application
-  machinery is needed; `Clo`/`apply_k` alone suffice, reused directly via
-  `ClosurePostulates: Deref<Target = ArithPostulates>`, which lets the
-  whole induction pipeline (`Ev`, `loop_val`, the congruence/transitivity
-  chaining) keep calling every plain-arithmetic postulate method
-  unchanged. `prove_tail_recursive_instance`/`_with_instances`'s own
-  per-call specialization still declines whenever any parameter is
-  `Clo`-typed (there's no way to represent a closure value as the concrete
-  `i64` its model needs), but that's the weaker, sample-oriented proof —
-  the *theorem* itself (what `jit.rs`'s `kernel_verified` actually depends
-  on) covers every input regardless. Caught a real bug while building this:
-  `ClosurePostulates::apply_ref`'s lazy-postulate memoization was designed
-  for `prove_closure_expr`'s own usage, where the postulate context only
-  ever grows; here, the induction machinery repeatedly pushes-then-rolls-back
-  the same scratch space, and `apply_ref`'s *first* call for a given arity,
-  triggered from inside one of those temporary scopes, memoized a position
-  that then got rolled back while the memo entry stayed — silently going
-  stale. `kernel::check`'s own final re-verification caught it immediately
-  (a lambda-domain mismatch), not a silent acceptance; fixed by pre-pushing
-  every needed arity once, before any temporary scope gets the chance, and
-  confirmed via a dedicated regression test (mixed `Clo`/`Int` parameters,
-  needed since the bug isn't observable when every parameter happens to be
+  had no proof strategy at all before this. This part needs only `Clo`/
+  `apply_k`, reused directly via `ClosurePostulates: Deref<Target =
+  ArithPostulates>`, which lets the whole induction pipeline (`Ev`,
+  `loop_val`, the congruence/transitivity chaining) keep calling every
+  plain-arithmetic postulate method unchanged. `prove_tail_recursive_instance`/
+  `_with_instances`'s own per-call specialization still declines whenever
+  any parameter is `Clo`-typed (there's no way to represent a closure value
+  as the concrete `i64` its model needs), but that's the weaker,
+  sample-oriented proof — the *theorem* itself (what `jit.rs`'s
+  `kernel_verified` actually depends on) covers every input regardless.
+  Caught a real bug while building this: `ClosurePostulates::apply_ref`'s
+  lazy-postulate memoization was designed for `prove_closure_expr`'s own
+  usage, where the postulate context only ever grows; here, the induction
+  machinery repeatedly pushes-then-rolls-back the same scratch space, and
+  `apply_ref`'s *first* call for a given arity, triggered from inside one
+  of those temporary scopes, memoized a position that then got rolled
+  back while the memo entry stayed — silently going stale. `kernel::check`'s
+  own final re-verification caught it immediately (a lambda-domain
+  mismatch), not a silent acceptance; fixed by pre-pushing every needed
+  arity once, before any temporary scope gets the chance, and confirmed
+  via a dedicated regression test (mixed `Clo`/`Int` parameters, needed
+  since the bug isn't observable when every parameter happens to be
   `Int`) that fails the same way when the fix is reverted.
+
+  A self-call *argument* may also genuinely *create* a closure and call it
+  right there, e.g. `f(n-1, (\y. acc+y)(n))` — exactly the shape
+  `compile.rs`'s own `self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles`
+  test and `capturing_closure_loop` benchmark already exercise, previously
+  compiled but never proven. `denote_closure_typed` (the self-call-argument
+  denotation `new_params_for` uses) mirrors `denote_closure`'s own
+  `Term::Abs`/`Term::Rec` handling almost verbatim, now that the induction
+  pipeline's own postulate-and-combinator bookkeeping is a full
+  `ClosureCombinators` (not just `ClosurePostulates`) — registering a
+  combinator, calling one directly, or partially applying one (still never
+  a *recursive* root, matching `pap_ref`'s own restriction) all reuse the
+  exact same methods `prove_closure_expr` does. Scoped deliberately
+  narrower than that fragment, though: a leaf's own *top-level* expression
+  still rejects any `Abs` outright, unchanged — only a self-call argument
+  may create a closure, not a leaf's own arithmetic combining a
+  closure-call's result with something else directly. Caught the *same
+  class* of staleness bug a second time, in a new place:
+  `register`/`call_ref`/`pap_ref`, and transitively `mk_env_ref`/`env_ty`
+  for a capturing one, are all lazily memoized exactly like `apply_ref`,
+  and could just as easily be triggered for the first time from inside a
+  temporary scope. Since these registrations depend only on a combinator's
+  hash and a capture *count* — never the actual parameter values —
+  `prime_closure_postulates` pre-triggers every one a self-call argument
+  will need via a lightweight structural walk (no parameter values needed
+  at all), the same upfront-priming fix widened to cover closure creation,
+  not just a call through a parameter. Also honestly scoped: the *instance*
+  (per-call) specialization remains untouched and still rejects a self-call
+  argument that creates a closure — `kernel_verified` doesn't depend on
+  that, so this doesn't weaken what actually gets verified, only what gets
+  additional, call-specific evidence.
 - **Closures, non-capturing, capturing, and partially applied**: `prove_closure_expr` gives a
   closed, non-recursive closures term one kernel proof covering every
   input, the same `refl`-on-a-shared-translation argument `prove_pure_expr`
@@ -492,20 +521,26 @@ first seed, as expected.
   outright.
 - Combining closures with self-recursion more fully in one proof.
   `prove_tail_recursive_universal` now covers a closure-typed *parameter*
-  threaded through recursion, and `prove_closure_expr` now covers a
-  self-recursive combinator called or used as a value from a non-recursive
-  main term (see the table rows above — this closed the concrete instance
-  cited here previously: `let fact = rec f n = .. in fact 10`, found via
-  the REPL, now gets a closure proof). What's still open is a closure
-  *literal created fresh inside a recursive body* — e.g. `rec f n acc =
-  f(n-1, (\y. acc+y)(n))`, which `compile.rs` already compiles (see its own
-  `self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles`
-  test and the `capturing_closure_loop` benchmark) but which needs
-  `prove_closure_expr`'s own combinator/capture machinery merged into
-  `build_universal`'s induction, a meaningfully bigger lift than either
-  extension so far. Also still open: allowing an `If` to choose between
-  two closures, not just two `Int`s — a real, documented restriction of
-  `prove_closure_expr`, not a fundamental limit.
+  threaded through recursion, a self-call *argument* that creates a
+  closure and calls it right there (`f(n-1, (\y. acc+y)(n))`, the exact
+  `capturing_closure_loop` shape previously cited here as open), and
+  `prove_closure_expr` now covers a self-recursive combinator called or
+  used as a value from a non-recursive main term (see the table rows
+  above). What's still open: a leaf's own *top-level* expression creating
+  a closure (not nested inside a self-call argument — e.g. `rec f n = if
+  n<=0 then 0 else (\y. n+y)(5) + f(n-1)`, where the closure-call result
+  is combined arithmetically with the recursive call directly) —
+  `denote_with_placeholders`/`find_self_calls` still reject any `Abs`
+  outright, a real, deliberate narrowing (see `build_universal`'s own
+  docs), not a fundamental limit: extending them mirrors the self-call-
+  argument extension `denote_closure_typed` just got, just for the
+  placeholder-substitution-aware side of the pipeline instead. Also
+  open: a concrete *instance* proof for a self-call argument that creates
+  a closure (`eval_and_prove`/`build_ev_witness` remain untouched, still
+  reject `App`/`Abs`) — doesn't affect `kernel_verified`, only weaker,
+  call-specific evidence. And still open regardless of recursion: allowing
+  an `If` to choose between two closures, not just two `Int`s — a real,
+  documented restriction of `prove_closure_expr`, not a fundamental limit.
 - Widening the compilable fragment further: an over-applied literal
   lambda, a variable called with inconsistent arities across sites, more
   primitives. (Capturing closures and partial application of a literal

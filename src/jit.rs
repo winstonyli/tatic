@@ -636,6 +636,25 @@ mod tests {
     }
 
     #[test]
+    fn a_self_recursive_closure_created_and_called_each_iteration_is_kernel_verified() {
+        // Same term as capturing_closure_loop above -- rec f n acc = if
+        // n <= 0 then acc else f(n-1, (\y. acc+y)(n)) -- but now checked
+        // directly against proof.rs: prove_tail_recursive_universal covers
+        // a closure *created and called* inside a self-call argument too,
+        // not just a closure-typed *parameter* (see proof.rs's own
+        // denote_closure_typed/prime_closure_postulates docs), so this
+        // gets the universal theorem, not just per-sample relational
+        // proofs.
+        let mut s = TermStore::new();
+        let h = capturing_closure_loop(&mut s);
+        let mut jit = JitEngine::new();
+
+        assert_eq!(jit.apply(&s, h, &[5, 0]).unwrap(), 15); // sum 1..=5
+        assert!(jit.is_kernel_verified(h));
+        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+    }
+
+    #[test]
     fn partial_application_of_a_non_capturing_root_compiles_and_is_kernel_verified() {
         // add = \x y. x + y; partial = add(3); caller = \g. g(4);
         // top = caller(partial) -- same shape as
