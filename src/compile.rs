@@ -5,12 +5,13 @@
 //!
 //! Only a subset of terms fall in this fragment: closed expressions built
 //! from `Var`/`Lit`/`Prim`/`If`, fully-saturated self-calls (optionally
-//! wrapped in `Rec` for recursion), and fully-saturated applications of
+//! wrapped in `Rec` for recursion), fully-saturated applications of
 //! either a variable (a parameter *or* a captured free variable -- see
 //! "Closures" below) or a literal lambda value ("combinator" below,
-//! *capturing* or not) holding a closure. Anything else (partial
-//! application, a parameter or captured variable applied with
-//! inconsistent arities across call sites, a genuinely free/unbound
+//! *capturing* or not) holding a closure, and an *under*-applied literal
+//! lambda (real partial application -- see "Partial application" below).
+//! Anything else (a variable applied with inconsistent arities across
+//! call sites, an over-applied literal lambda, a genuinely free/unbound
 //! variable, ...) is rejected by returning `None`, and the caller falls
 //! back to the interpreter — the JIT never has to be complete, only
 //! sound about what it accepts.
@@ -70,17 +71,50 @@
 //! result, ...) packs its (possibly-empty) environment and table index
 //! into a single `i64` the same way either path would.
 //!
-//! What's still out of scope: partial application, a variable (parameter
-//! or captured free variable) applied with inconsistent arities across
-//! call sites, and capturing an enclosing self-recursive binding's own
-//! self-reference as a plain value from a *nested* closure (an honest,
-//! structural rejection -- see `free_vars`'s self-exclusion -- rather
-//! than a special-cased check). `Combinators` also doesn't statically
-//! check that a value passed into a closure-typed parameter actually has
-//! the arity that parameter's own body expects of it -- `call_indirect`'s
-//! own dynamic type check catches a mismatch as a trap, caught safely by
-//! `jit.rs`'s sample verification the same way any other compiler bug
-//! would be.
+//! What's still out of scope: a variable (parameter or captured free
+//! variable) applied with inconsistent arities across call sites, an
+//! over-applied literal lambda, and capturing an enclosing self-recursive
+//! binding's own self-reference as a plain value from a *nested* closure
+//! (an honest, structural rejection -- see `free_vars`'s self-exclusion
+//! -- rather than a special-cased check). `Combinators` also doesn't
+//! statically check that a value passed into a closure-typed parameter
+//! actually has the arity that parameter's own body expects of it --
+//! `call_indirect`'s own dynamic type check catches a mismatch as a
+//! trap, caught safely by `jit.rs`'s sample verification the same way
+//! any other compiler bug would be.
+//!
+//! ## Partial application: compile-time desugaring, not a runtime object
+//!
+//! An *under*-applied literal lambda (`root`, own arity `n`, applied to
+//! only `k < n` arguments) is a genuine partial application: the
+//! expression's value is a fresh closure of arity `n - k`, waiting for
+//! the rest. Since every call site in this fragment has a statically
+//! known argument count (that's the whole premise `infer_closure_arities`
+//! relies on), there's never a need for a fully general runtime
+//! mechanism that dispatches on arity dynamically (the way, say, GHC's
+//! PAP objects do) -- the missing argument count is always known at
+//! compile time, so it's resolved then: `register_partial_app` registers
+//! a synthesized wrapper combinator, keyed by `(root, k)` alone (*not*
+//! the actual argument values supplied -- those only matter at each
+//! creation site, not to the wrapper's own compiled code, which every
+//! call site with the same `(root, k)` shares), and `compile_node`
+//! creates a value of it (`push_pap_env`) exactly the way it creates a
+//! value of any other closure. `emit_pap_wrapper` needs no
+//! `compile_node`/`FnCtx` at all to compile the wrapper's own body --
+//! its environment layout is entirely fixed by `(root, k)` (slot `0` is
+//! `root`'s own environment pointer, slots `1..=k` are the already-
+//! supplied arguments), so it's just a handful of fixed loads forwarded
+//! into one statically-known `call`.
+//!
+//! What this doesn't handle: an over-applied literal lambda (calling the
+//! *result* of a saturated call with more arguments -- a different,
+//! harder problem: the result would itself need to be a callable
+//! closure value, recursing into "calling a closure reached through an
+//! arbitrary computed expression", still out of scope generally), and a
+//! variable (not a literal lambda) applied with inconsistent arities --
+//! compile.rs has no fixed arity for a variable to compare against in
+//! the first place, only whatever it's consistently called with, so
+//! there's no missing-argument count to desugar around.
 
 use hashbrown::HashMap;
 
@@ -98,21 +132,39 @@ pub struct CompiledFragment {
     pub needs_hp_reset: bool,
 }
 
+/// One entry of `Combinators::pending` -- either an ordinary lambda
+/// literal (`register`), or a synthesized partial-application wrapper
+/// (`register_partial_app`, see its own docs and `emit_pap_wrapper`).
+/// Both share the same `arities`/`captures`/table-index space; this only
+/// distinguishes *how* the fixpoint loop in `try_compile` compiles each
+/// one's body once dequeued.
+enum PendingCombinator {
+    Literal(Hash),
+    PartialApp { root: Hash, supplied: usize },
+}
+
 /// Discovers and compiles lambda values found while compiling a function
 /// (see module docs). `index`/`arities`/`captures` describe every
 /// combinator registered so far (in registration order, parallel to a
 /// combinator's assigned index -- `captures[idx]` is that combinator's
-/// own environment slot layout, from `free_vars`); `pending` holds ones
-/// not yet compiled to Wat; `call_indirect_arities` accumulates every
-/// arity actually used at a `call_indirect` site, for the `(type ...)`
+/// own environment slot layout, from `free_vars`, meaningless for a
+/// partial-application wrapper, which never reads it -- see
+/// `emit_pap_wrapper`/`push_pap_env` instead); `pending` holds ones not
+/// yet compiled to Wat; `call_indirect_arities` accumulates every arity
+/// actually used at a `call_indirect` site, for the `(type ...)`
 /// declarations that need to exist once each, not once per site.
+/// `pap_index`/`has_pap_wrappers` are `register_partial_app`'s own
+/// bookkeeping, kept separate from `index` since a wrapper's identity
+/// (`root`, `supplied`) isn't a `Hash` at all.
 struct Combinators<'a> {
     store: &'a TermStore,
     index: HashMap<Hash, usize>,
-    pending: Vec<Hash>,
+    pending: Vec<PendingCombinator>,
     arities: Vec<usize>,
     captures: Vec<Vec<u32>>,
     call_indirect_arities: Vec<usize>,
+    pap_index: HashMap<(Hash, usize), usize>,
+    has_pap_wrappers: bool,
 }
 
 impl<'a> Combinators<'a> {
@@ -124,6 +176,8 @@ impl<'a> Combinators<'a> {
             arities: Vec::new(),
             captures: Vec::new(),
             call_indirect_arities: Vec::new(),
+            pap_index: HashMap::new(),
+            has_pap_wrappers: false,
         }
     }
 
@@ -150,7 +204,43 @@ impl<'a> Combinators<'a> {
         self.index.insert(h, idx);
         self.arities.push(arity);
         self.captures.push(captures);
-        self.pending.push(h);
+        self.pending.push(PendingCombinator::Literal(h));
+        Some(idx)
+    }
+
+    /// Registers a synthesized wrapper for `root` (a literal combinator,
+    /// already registered at `root_idx`) applied to only `supplied` of
+    /// its own `arities[root_idx]` arguments -- the compile-time
+    /// desugaring of partial application (see `compile_node`'s
+    /// under-application handling in its `Term::Abs`/`Term::Rec`
+    /// App-callee branch). `None` if this isn't actually a partial
+    /// application (`supplied` is `0`, i.e. no arguments were supplied at
+    /// all -- already handled as a plain value -- or `>=` `root`'s own
+    /// arity -- fully saturated or over-applied, handled elsewhere).
+    ///
+    /// Deduplicated by `(root, supplied)` alone, *not* by the actual
+    /// argument values supplied at any particular call site: the
+    /// wrapper's own compiled body (`emit_pap_wrapper`) only depends on
+    /// which function is being partially applied and how many of its
+    /// arguments are already fixed, never on what those arguments
+    /// actually evaluate to -- that happens at each creation site
+    /// instead (`push_pap_env`), the same way any other closure's
+    /// captured *values* are filled in fresh at its own creation site
+    /// while its *code* is compiled once.
+    fn register_partial_app(&mut self, root: Hash, root_idx: usize, supplied: usize) -> Option<usize> {
+        if let Some(&idx) = self.pap_index.get(&(root, supplied)) {
+            return Some(idx);
+        }
+        let root_arity = self.arities[root_idx];
+        if supplied == 0 || supplied >= root_arity {
+            return None;
+        }
+        let idx = self.arities.len();
+        self.arities.push(root_arity - supplied);
+        self.captures.push(Vec::new()); // unused by a PAP wrapper -- see struct docs
+        self.pap_index.insert((root, supplied), idx);
+        self.pending.push(PendingCombinator::PartialApp { root, supplied });
+        self.has_pap_wrappers = true;
         Some(idx)
     }
 }
@@ -174,14 +264,24 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
 
     // Fixpoint: compiling one combinator's body can discover more.
     let mut combinator_wat = String::new();
-    while let Some(h_c) = combinators.pending.pop() {
-        let idx = combinators.index[&h_c];
-        let (c_arity, c_body, c_is_rec) = peel(store, h_c)?;
-        let c_self_idx = if c_is_rec { Some(c_arity as u32) } else { None };
-        let captures = combinators.captures[idx].clone();
-        let c_name = format!("c{idx}");
-        let c_spec = FnSpec { name: &c_name, arity: c_arity, self_idx: c_self_idx, has_env: true, captures: &captures };
-        compile_function(store, c_body, &c_spec, &mut combinators, &mut combinator_wat)?;
+    while let Some(pc) = combinators.pending.pop() {
+        match pc {
+            PendingCombinator::Literal(h_c) => {
+                let idx = combinators.index[&h_c];
+                let (c_arity, c_body, c_is_rec) = peel(store, h_c)?;
+                let c_self_idx = if c_is_rec { Some(c_arity as u32) } else { None };
+                let captures = combinators.captures[idx].clone();
+                let c_name = format!("c{idx}");
+                let c_spec = FnSpec { name: &c_name, arity: c_arity, self_idx: c_self_idx, has_env: true, captures: &captures };
+                compile_function(store, c_body, &c_spec, &mut combinators, &mut combinator_wat)?;
+            }
+            PendingCombinator::PartialApp { root, supplied } => {
+                let idx = combinators.pap_index[&(root, supplied)];
+                let root_idx = combinators.index[&root];
+                let root_arity = combinators.arities[root_idx];
+                emit_pap_wrapper(&format!("c{idx}"), root_idx, root_arity, supplied, &mut combinator_wat);
+            }
+        }
     }
 
     let mut w = String::new();
@@ -200,7 +300,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         }
         w.push_str(" (result i64)))\n");
     }
-    let needs_alloc = combinators.captures.iter().any(|c| !c.is_empty());
+    let needs_alloc = combinators.captures.iter().any(|c| !c.is_empty()) || combinators.has_pap_wrappers;
     if needs_alloc {
         emit_allocator(&mut w);
         // Exported so `jit.rs` can reset it to 0 before every top-level
@@ -279,6 +379,12 @@ fn compile_function(store: &TermStore, body: Hash, spec: &FnSpec, combinators: &
     // ever creates a capturing closure isn't known until its body is
     // walked below.
     w.push_str("    (local $envtmp i32)\n");
+    // Second scratch local, for `push_pap_env`: it needs `root`'s own
+    // (packed-then-extended) environment stashed *somewhere* while it
+    // computes its own wrapper's environment via the same `$envtmp` --
+    // both would otherwise collide, since `push_closure_env` (called to
+    // get `root`'s own environment) uses `$envtmp` as scratch space too.
+    w.push_str("    (local $papenv i64)\n");
     w.push_str("    (loop $L (result i64)\n");
     compile_node(&ctx, combinators, body, true, w, 6)?;
     w.push_str("    )\n  )\n");
@@ -717,15 +823,32 @@ fn compile_node(
             }
             Term::Abs(_) | Term::Rec(_) => {
                 let idx = combinators.register(root)?;
-                if args.len() != combinators.arities[idx] {
-                    return None;
+                let root_arity = combinators.arities[idx];
+                if args.len() == root_arity {
+                    let captures = combinators.captures[idx].clone();
+                    push_closure_env(ctx, &captures, w, indent)?;
+                    for a in &args {
+                        compile_node(ctx, combinators, *a, false, w, indent)?;
+                    }
+                    push_line(w, indent, &format!("call $c{idx}"));
+                    return Some(());
                 }
-                let captures = combinators.captures[idx].clone();
-                push_closure_env(ctx, &captures, w, indent)?;
-                for a in &args {
-                    compile_node(ctx, combinators, *a, false, w, indent)?;
+                if args.len() > root_arity {
+                    return None; // over-application: still out of scope
                 }
-                push_line(w, indent, &format!("call $c{idx}"));
+                // Under-applied: a genuine partial application. This
+                // expression's *value* is a fresh closure over a
+                // synthesized wrapper (see `register_partial_app`) --
+                // not a call's result at all, since `root` isn't
+                // actually being called here (only readied to be).
+                let root_captures = combinators.captures[idx].clone();
+                let wrapper_idx = combinators.register_partial_app(root, idx, args.len())?;
+                push_pap_env(ctx, combinators, &root_captures, &args, w, indent)?;
+                push_line(w, indent, "i64.extend_i32_u");
+                push_line(w, indent, "i64.const 32");
+                push_line(w, indent, "i64.shl");
+                push_line(w, indent, &format!("i64.const {wrapper_idx}"));
+                push_line(w, indent, "i64.or");
                 return Some(());
             }
             _ => return None,
@@ -820,6 +943,79 @@ fn push_closure_env(ctx: &FnCtx, captures: &[u32], w: &mut String, indent: usize
         push_line(w, indent, "local.get $envtmp");
         compile_var_read(ctx, rel, w, indent)?;
         push_line(w, indent, &format!("i64.store offset={}", slot * 8));
+    }
+    push_line(w, indent, "local.get $envtmp");
+    Some(())
+}
+
+/// Emits a synthesized partial-application wrapper (`name` = `$c{idx}`,
+/// its assigned table index) -- `root` (a literal combinator, already
+/// registered at `root_idx` with its own arity `root_arity`) was applied
+/// to only `supplied` of its arguments (`compile_node`'s under-application
+/// handling); this wrapper takes the remaining `root_arity - supplied`
+/// arguments and completes the call. Its own environment layout is fixed
+/// by `(root_idx, supplied)` alone -- slot `0` is `root`'s own
+/// environment pointer (as an `i64`, zero-extended, for slot uniformity
+/// with every other slot), slots `1..=supplied` are the values of the
+/// arguments `root` was already applied to -- see `push_pap_env`, which
+/// builds exactly this layout at each creation site. Entirely
+/// self-contained (no `compile_node`/`FnCtx` needed, unlike an ordinary
+/// combinator's body): every value here is just a fixed offset into
+/// `$env`, or one of this function's own parameters, forwarded straight
+/// into a single, statically-known `call`.
+fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, supplied: usize, w: &mut String) {
+    let remaining = root_arity - supplied;
+    w.push_str(&format!("  (func ${name} (param $env i32)"));
+    for i in 0..remaining {
+        w.push_str(&format!(" (param $p{i} i64)"));
+    }
+    w.push_str(" (result i64)\n");
+    push_line(w, 4, "local.get $env");
+    push_line(w, 4, "i64.load offset=0");
+    push_line(w, 4, "i32.wrap_i64");
+    for slot in 0..supplied {
+        push_line(w, 4, "local.get $env");
+        push_line(w, 4, &format!("i64.load offset={}", (slot + 1) * 8));
+    }
+    for i in 0..remaining {
+        push_line(w, 4, &format!("local.get $p{i}"));
+    }
+    push_line(w, 4, &format!("call $c{root_idx}"));
+    w.push_str("  )\n");
+}
+
+/// Creates the environment for a partial-application wrapper over `root`
+/// (`root_captures`, `root`'s own environment slot layout) applied so far
+/// to `args` -- the counterpart, at each creation site, to
+/// `emit_pap_wrapper`'s fixed body: slot `0` = `root`'s own environment
+/// pointer (`push_closure_env`, exactly as if creating a plain value of
+/// `root` right here), slots `1..=args.len()` = each already-supplied
+/// argument's *current* value, evaluated via `compile_node` in `ctx` --
+/// not `compile_var_read`, since an already-supplied argument is an
+/// arbitrary expression (`f(x + 1)`), not necessarily a bare variable.
+///
+/// Computes `root`'s own environment *before* starting this wrapper's
+/// own allocation, stashing it in the dedicated `$papenv` local: both
+/// that computation (`push_closure_env`) and this wrapper's own
+/// slot-filling use `$envtmp` as scratch space, so they can't be "in
+/// flight" at the same time.
+fn push_pap_env(ctx: &FnCtx, combinators: &mut Combinators, root_captures: &[u32], args: &[Hash], w: &mut String, indent: usize) -> Option<()> {
+    push_closure_env(ctx, root_captures, w, indent)?;
+    push_line(w, indent, "i64.extend_i32_u");
+    push_line(w, indent, "local.set $papenv");
+
+    push_line(w, indent, &format!("i32.const {}", (1 + args.len()) * 8));
+    push_line(w, indent, "call $alloc");
+    push_line(w, indent, "local.set $envtmp");
+
+    push_line(w, indent, "local.get $envtmp");
+    push_line(w, indent, "local.get $papenv");
+    push_line(w, indent, "i64.store offset=0");
+
+    for (slot, &a) in args.iter().enumerate() {
+        push_line(w, indent, "local.get $envtmp");
+        compile_node(ctx, combinators, a, false, w, indent)?;
+        push_line(w, indent, &format!("i64.store offset={}", (slot + 1) * 8));
     }
     push_line(w, indent, "local.get $envtmp");
     Some(())
@@ -1234,9 +1430,14 @@ mod tests {
     }
 
     #[test]
-    fn partial_application_is_still_rejected() {
-        // \f. f(1) + f(1, 2) -- `f` called with inconsistent arities
-        // (1 then 2) at different call sites -- not supported.
+    fn inconsistent_call_arity_for_a_parameter_is_still_rejected() {
+        // \f. f(1) + f(1, 2) -- `f`, a *parameter*, called with
+        // inconsistent arities (1 then 2) at different call sites --
+        // still not supported: unlike a literal lambda (see
+        // `partial_application_of_a_literal_lambda_compiles` below),
+        // compile.rs has no fixed arity for a parameter to compare
+        // against in the first place, only what it's consistently
+        // called with, so there's nothing to desugar around here.
         let mut s = TermStore::new();
         let f1 = s.var(0);
         let one = s.lit(1);
@@ -1248,6 +1449,92 @@ mod tests {
         let g = s.abs(body);
 
         assert!(try_compile(&s, g).is_none());
+    }
+
+    #[test]
+    fn partial_application_of_a_literal_lambda_compiles() {
+        // add = \x y. x + y; partial = add(3) (under-applied by one
+        // argument); caller = \g. g(4); top = caller(partial) -- `add(3)`
+        // used as a value (an argument to `caller`, not immediately
+        // re-applied at the same App-chain, so `unwind_app_spine` can't
+        // collapse it into a single 2-ary call the way curried
+        // application normally would -- see
+        // `curried_application_is_indistinguishable_from_multi_arg_calls`)
+        // is a genuine under-application: exercises the compile-time
+        // desugaring into a synthesized wrapper (`register_partial_app`),
+        // creating one closure value that, once called with the
+        // remaining argument through `caller`'s own `call_indirect`,
+        // completes the call.
+        let mut s = TermStore::new();
+        let x = s.var(1);
+        let y = s.var(0);
+        let sum = s.prim(PrimOp::Add, x, y);
+        let inner_add = s.abs(sum);
+        let add = s.abs(inner_add);
+
+        let three = s.lit(3);
+        let partial = s.app(add, three);
+
+        let g = s.var(0);
+        let four = s.lit(4);
+        let call_g = s.app(g, four);
+        let caller = s.abs(call_g);
+
+        let top = s.app(caller, partial);
+
+        let frag = try_compile(&s, top).expect("a partially applied literal lambda should compile");
+        assert_eq!(frag.arity, 0);
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
+        let compiled = func.call(&mut store, ()).unwrap();
+        let interpreted = apply_term(&s, top, &[]).unwrap();
+        assert_eq!(compiled, 7);
+        assert_eq!(compiled, interpreted);
+    }
+
+    #[test]
+    fn partial_application_of_a_capturing_literal_lambda_compiles() {
+        // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- the literal
+        // lambda being partially applied (`\x y. x + y + z`) itself
+        // captures `z`, from `g`'s own scope -- exercises the trickiest
+        // part of `push_pap_env`: the wrapper's own environment needs
+        // both the already-supplied argument (`3`) *and* a copy of
+        // `root`'s own environment (holding `z`), computed at the
+        // partial-application site and forwarded to `root`'s own call
+        // once the wrapper is completed.
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        let x = s.var(1);
+        let z_captured = s.var(2);
+        let xy = s.prim(PrimOp::Add, x, y);
+        let xyz = s.prim(PrimOp::Add, xy, z_captured);
+        let inner = s.abs(xyz);
+        let capturing_add = s.abs(inner);
+
+        let three = s.lit(3);
+        let partial = s.app(capturing_add, three);
+
+        let g2 = s.var(0);
+        let four = s.lit(4);
+        let call_g2 = s.app(g2, four);
+        let caller = s.abs(call_g2);
+
+        let called = s.app(caller, partial);
+        let g = s.abs(called);
+
+        let frag = try_compile(&s, g).expect("a partially applied capturing lambda should compile");
+        assert_eq!(frag.arity, 1);
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
+
+        for z in [-5, 0, 1, 100] {
+            let compiled = func.call(&mut store, z).unwrap();
+            let interpreted = apply_term(&s, g, &[z]).unwrap();
+            assert_eq!(compiled, 7 + z, "mismatch at z={z}");
+            assert_eq!(compiled, interpreted, "mismatch at z={z}");
+        }
     }
 
     #[test]

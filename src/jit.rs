@@ -638,4 +638,40 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1, "should compile once, not once per call");
         assert_eq!(jit.stats.cache_hits, 500);
     }
+
+    #[test]
+    fn partial_application_compiles_but_is_not_yet_proven() {
+        // add = \x y. x + y; partial = add(3); caller = \g. g(4);
+        // top = caller(partial) -- same shape as
+        // compile::tests::partial_application_of_a_literal_lambda_compiles.
+        // compile.rs now desugars this at compile time (a synthesized
+        // wrapper combinator), so it genuinely compiles and runs -- but,
+        // like a capturing closure, gets no kernel-checked proof yet:
+        // proof.rs's own denote_closure independently checks
+        // `args.len() != arity` for a literal-lambda callee and declines
+        // (an honest gap, not a regression -- proof.rs never knew about
+        // compile.rs's synthesized wrappers to begin with).
+        let mut s = TermStore::new();
+        let x = s.var(1);
+        let y = s.var(0);
+        let sum = s.prim(PrimOp::Add, x, y);
+        let inner_add = s.abs(sum);
+        let add = s.abs(inner_add);
+
+        let three = s.lit(3);
+        let partial = s.app(add, three);
+
+        let g = s.var(0);
+        let four = s.lit(4);
+        let call_g = s.app(g, four);
+        let caller = s.abs(call_g);
+
+        let top = s.app(caller, partial);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[]).unwrap(), 7);
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(!jit.is_kernel_verified(top), "proof.rs doesn't know about synthesized wrappers yet");
+    }
 }
