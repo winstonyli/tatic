@@ -837,4 +837,49 @@ mod tests {
         assert_eq!(jit.stats.interpreted, 0);
         assert!(jit.is_kernel_verified(top));
     }
+
+    #[test]
+    fn partial_application_of_a_capturing_self_recursive_root_compiles_and_is_kernel_verified() {
+        // \z. caller(fact2(3)) where fact2 = rec f n acc = if n <= 0 then
+        // acc else f(n-1, n*acc+z) -- same shape as proof::tests::
+        // partial_application_of_a_capturing_self_recursive_combinator_gets_a_closure_proof,
+        // combining the two pap_ref restrictions lifted independently this
+        // session (a capturing root, then a self-recursive root) in one
+        // term, run for real. fact2(n=3, acc=1, z) unrolls to
+        // acc=6+4z, so top(z) = 6 + 4*z.
+        let mut s = TermStore::new();
+        let acc = s.var(0);
+        let n = s.var(1);
+        let f = s.var(2);
+        let z = s.var(3);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_times_acc = s.prim(PrimOp::Mul, n, acc);
+        let plus_z = s.prim(PrimOp::Add, n_times_acc, z);
+        let rec_call = s.app2(f, n_minus_1, plus_z);
+        let body = s.if_(cond, acc, rec_call);
+        let acc_abs = s.abs(body);
+        let n_abs = s.abs(acc_abs);
+        let fact2 = s.rec(n_abs);
+
+        let three = s.lit(3);
+        let partial = s.app(fact2, three);
+
+        let g = s.var(0);
+        let one2 = s.lit(1);
+        let call_g = s.app(g, one2);
+        let caller = s.abs(call_g);
+
+        let top_inner = s.app(caller, partial);
+        let top = s.abs(top_inner);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[0]).unwrap(), 6);
+        assert_eq!(jit.apply(&s, top, &[10]).unwrap(), 46);
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(top));
+    }
 }
