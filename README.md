@@ -694,9 +694,22 @@ guards against by hand): caught immediately, at seed 22.
   called is a literal lambda whose own body stays in the `Var`/`Lit`/
   `Prim`/`If` fragment (no further nested `Abs`/`App`, which would need a
   fixpoint-queue redesign this module was deliberately built without).
-  Still open: a *partially*-applied or *over*-applied closure creation in
-  this position (`eval_and_prove` only handles `AppShape::LitLambdaExact`)
-  — doesn't affect `kernel_verified`, only weaker, call-specific evidence.
+  `eval_and_prove` now also covers the *over-applied* case
+  (`AppShape::LitLambdaOver`: `root`'s own saturated call returns a
+  further `Clo_k`, then the extra arguments dispatch against it via
+  `apply_ref`) for the canonical shape — `root`'s own body an `If`
+  choosing between two same-arity literal lambdas (e.g. `f = \a b. if
+  0<a then (\c. a+b+c) else (\c. a-b+c)`, called as `f(a,b,c)`) — via two
+  more computation-rule axioms in the same idiom: `clo_eq_ref` (a
+  `Clo_k`-typed sibling of `call_eq_ref`) and `apply_clo_eq_ref` (ties
+  `apply_ref` to whichever closure value is concretely produced), plus a
+  small `ite_clo_eq_ref` bridge for the concrete branch selection. Still
+  open: a *partially*-applied closure creation in this position (no
+  concrete `Clo` representation to hand back), a PAP-producing or further
+  nested-call-producing `root`, and a further-nested `If` inside either
+  branch — all "sound, not complete", the same standing tradeoff this
+  fragment makes everywhere else; none affect `kernel_verified`, only
+  weaker, call-specific evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
   too (`ite_clo`, lazily postulated — see the table row above), when the
   `If`'s own result is used as a *value* — and, separately, `call_ref`'s
