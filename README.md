@@ -293,6 +293,22 @@ argument trials each, ~99% of generated terms actually compile (the rest
 fall outside the fragment by construction, e.g. curried-application
 ambiguity), zero mismatches found so far.
 
+The same file's second test, `compile_rejects_out_of_scope_terms_cleanly`,
+checks the complementary property: terms deliberately built *outside* the
+fragment (an over-applied literal lambda, a parameter called with
+inconsistent arities, a genuinely unbound variable) must always come back
+`None` from `try_compile`, never get silently accepted and miscompiled —
+a property the first test's generator, which only ever produces
+in-fragment terms, has nothing to say about. Verified these checks
+actually have teeth (not just vacuously passing) by deliberately
+weakening `compile.rs`'s own arity checks one at a time: removing just
+the over-application check alone didn't expose a gap (`register_partial_app`'s
+own arity guard already covers it independently — real defense in depth,
+not redundancy for its own sake), but weakening *both* of the
+inconsistent-arity checks (`scan_for_closure_calls`'s and `compile_node`'s
+own per-call-site check) together immediately failed the test on the
+first seed, as expected.
+
 ## Design notes
 
 - **Why hash-consing, not just a tree**: two independently-built terms that

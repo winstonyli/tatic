@@ -18,7 +18,17 @@
 //! Deterministic (a tiny splitmix64 PRNG, no new dependency) and
 //! seed-scanned rather than reliant on one lucky draw -- a failure prints
 //! the seed and argument trial that triggered it, enough to reproduce.
+//!
+//! A second test, `compile_rejects_out_of_scope_terms_cleanly`, checks
+//! the complementary property: terms deliberately built *outside* the
+//! fragment (over-applying a literal lambda, calling a parameter with
+//! inconsistent arities, a genuinely unbound variable) must always come
+//! back `None` from `try_compile`, not get silently accepted and
+//! miscompiled. The first test alone couldn't catch a regression here --
+//! a generator that only ever produces in-fragment terms has nothing to
+//! say about what should be rejected.
 
+use tatic::compile;
 use tatic::eval;
 use tatic::jit::JitEngine;
 use tatic::term::{Hash, PrimOp, TermStore};
@@ -270,4 +280,92 @@ fn compiled_and_interpreted_agree_on_random_terms() {
         "hit rate suspiciously low ({compiled_count}/{SEEDS}) -- check the generator itself, \
          not just compile.rs"
     );
+}
+
+/// A literal lambda (arity 1 or 2, an arbitrary `gen_expr`-generated body)
+/// applied to more arguments than its own arity -- always over-applied,
+/// unconditionally outside the fragment (see `compile.rs`'s module docs).
+fn gen_over_applied(rng: &mut Rng, s: &mut TermStore) -> Hash {
+    let arity = 1 + rng.below(2);
+    let body = gen_expr(rng, s, arity, 2);
+    let mut lit = body;
+    for _ in 0..arity {
+        lit = s.abs(lit);
+    }
+    let extra = 1 + rng.below(2);
+    let mut applied = lit;
+    for _ in 0..(arity + extra) {
+        let arg = s.lit(rng.i64_range(-MAX_LIT, MAX_LIT));
+        applied = s.app(applied, arg);
+    }
+    applied
+}
+
+/// `\f. f(a_1..a_k1) OP f(b_1..b_k2)`, `k1 != k2` -- a parameter called
+/// with inconsistent arities at two different call sites in the same
+/// function. Unlike an under-applied *literal* lambda, there's no fixed
+/// arity for a parameter to desugar around, so this stays unconditionally
+/// outside the fragment.
+fn gen_inconsistent_arity(rng: &mut Rng, s: &mut TermStore) -> Hash {
+    let k1 = 1 + rng.below(2);
+    let k2 = k1 + 1 + rng.below(2); // always different from k1
+    let f1 = s.var(0);
+    let mut call1 = f1;
+    for _ in 0..k1 {
+        let arg = s.lit(rng.i64_range(-MAX_LIT, MAX_LIT));
+        call1 = s.app(call1, arg);
+    }
+    let f2 = s.var(0);
+    let mut call2 = f2;
+    for _ in 0..k2 {
+        let arg = s.lit(rng.i64_range(-MAX_LIT, MAX_LIT));
+        call2 = s.app(call2, arg);
+    }
+    let op = random_arith_op(rng);
+    let body = s.prim(op, call1, call2);
+    s.abs(body)
+}
+
+/// `\x1..xn. Var(k)` with `k` clearly beyond `n` -- genuinely unbound (no
+/// enclosing scope at all, since this term *is* the whole top-level
+/// entry point), not a capture of anything.
+fn gen_unbound_variable(rng: &mut Rng, s: &mut TermStore) -> Hash {
+    let arity = 1 + rng.below(2);
+    let out_of_range = arity + 1 + rng.below(3);
+    let unbound = s.var(out_of_range);
+    let mut term = unbound;
+    for _ in 0..arity {
+        term = s.abs(term);
+    }
+    term
+}
+
+#[test]
+fn compile_rejects_out_of_scope_terms_cleanly() {
+    const SEEDS: u64 = 300;
+
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0x00BA_D000_0000_u64 ^ seed);
+
+        let mut s1 = TermStore::new();
+        let over_applied = gen_over_applied(&mut rng, &mut s1);
+        assert!(
+            compile::try_compile(&s1, over_applied).is_none(),
+            "seed={seed}: an over-applied literal lambda should be rejected"
+        );
+
+        let mut s2 = TermStore::new();
+        let inconsistent = gen_inconsistent_arity(&mut rng, &mut s2);
+        assert!(
+            compile::try_compile(&s2, inconsistent).is_none(),
+            "seed={seed}: a parameter called with inconsistent arities should be rejected"
+        );
+
+        let mut s3 = TermStore::new();
+        let unbound = gen_unbound_variable(&mut rng, &mut s3);
+        assert!(
+            compile::try_compile(&s3, unbound).is_none(),
+            "seed={seed}: a genuinely unbound variable should be rejected"
+        );
+    }
 }
