@@ -1043,7 +1043,18 @@ fn denote_with_placeholders(
                     }
                     all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
                     let applied = apply_n(pap_fn, all_args);
-                    let clo_ty = combinators.cp.clo_ty();
+                    // Anchored *before* computing `clo_ty(arity - k)`
+                    // below: that lookup may itself lazily push a fresh
+                    // postulate on this particular arity's first use,
+                    // which would otherwise leave `applied` (built just
+                    // above from already-`.at()`-reshifted pieces) stale
+                    // by the time it's finally compared -- the same
+                    // staleness class `Anchored`'s own docs describe, one
+                    // step later than usual (escaping a *value*'s own
+                    // construction, not a recursive call boundary).
+                    let applied = Anchored::new(&combinators.cp.arith, applied);
+                    let clo_ty = combinators.cp.clo_ty(arity - k);
+                    let applied = applied.at(&combinators.cp.arith);
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: partial application");
                     return Some(Denoted::Clo(applied));
                 }
@@ -1074,8 +1085,20 @@ fn denote_with_placeholders(
                 }
                 all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
                 let sat_applied = apply_n(call_fn, all_args);
-                let returns_clo = combinator_return_type(store, root).unwrap_or(false);
-                let sat_ty = if returns_clo { combinators.cp.clo_ty() } else { combinators.cp.arith.int_ty() };
+                // Anchored *before* `combinator_return_type`'s own
+                // `clo_ty(k)` lookup below, same rationale as the partial
+                // application case above: that lookup may itself lazily
+                // push a fresh postulate, which would otherwise leave
+                // `sat_applied` (already fully built) stale by the time
+                // it's finally compared.
+                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
+                let return_ty = combinator_return_type(store, root).unwrap_or(None);
+                let returns_clo = return_ty.is_some();
+                let sat_ty = match return_ty {
+                    Some(k) => combinators.cp.clo_ty(k),
+                    None => combinators.cp.arith.int_ty(),
+                };
+                let sat_applied = sat_applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_with_placeholders: direct combinator call");
 
                 if args.len() == arity {
@@ -1142,7 +1165,7 @@ fn denote_with_placeholders(
             let sym = sym.at(&combinators.cp.arith);
             let env_expr = env_expr.at(&combinators.cp.arith);
             let applied = kernel::app(sym, env_expr);
-            let clo_ty = combinators.cp.clo_ty();
+            let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: capturing closure value");
             Some(Denoted::Clo(applied))
         }
@@ -1184,12 +1207,25 @@ fn denote_with_placeholders(
                     Some(Denoted::Int(applied))
                 }
                 (true, true) => {
-                    let ite_clo = combinators.cp.ite_clo_ref();
+                    // Which arity's `ite_clo_ref`/`clo_ty` to use isn't
+                    // carried by `Denoted::Clo` itself -- re-derived
+                    // structurally via `return_type_of`, kept in lockstep
+                    // with every `Denoted::Clo`-producing case above (see
+                    // its own docs); a mismatch between `t`'s and `e`'s own
+                    // arity is rejected here, at the Rust level, rather
+                    // than left for the kernel to reject a mismatched
+                    // `ite_clo_arity` application after the fact.
+                    let t_arity = return_type_of(store, *t, self_call.arity, Some(self_call.idx), param_types).flatten()?;
+                    let e_arity = return_type_of(store, *e, self_call.arity, Some(self_call.idx), param_types).flatten()?;
+                    if t_arity != e_arity {
+                        return None;
+                    }
+                    let ite_clo = combinators.cp.ite_clo_ref(t_arity);
                     let dc = dc.at(&combinators.cp.arith);
                     let dt = dt.at(&combinators.cp.arith);
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite_clo, dc, dt, de);
-                    let clo_ty = combinators.cp.clo_ty();
+                    let clo_ty = combinators.cp.clo_ty(t_arity);
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: nested If (Clo branches)");
                     Some(Denoted::Clo(applied))
                 }
@@ -1236,6 +1272,7 @@ fn denote_with_placeholders(
 fn denote_closure_typed(
     store: &TermStore,
     h: Hash,
+    self_call: SelfCall,
     param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
     params: &[usize],
@@ -1248,11 +1285,11 @@ fn denote_closure_typed(
                 if args.len() != k {
                     return None;
                 }
-                let callee = denote_closure_typed(store, root, param_types, combinators, params)?.clo()?;
+                let callee = denote_closure_typed(store, root, self_call, param_types, combinators, params)?.clo()?;
                 let callee = Anchored::new(&combinators.cp.arith, callee);
                 let mut arg_exprs = Vec::with_capacity(k);
                 for &a in &args {
-                    let e = denote_closure_typed(store, a, param_types, combinators, params)?.int()?;
+                    let e = denote_closure_typed(store, a, self_call, param_types, combinators, params)?.int()?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let apply_fn = combinators.cp.apply_ref(k);
@@ -1289,7 +1326,7 @@ fn denote_closure_typed(
                     };
                     let mut arg_exprs = Vec::with_capacity(k);
                     for (j, &a) in args.iter().enumerate() {
-                        let d = denote_closure_typed(store, a, param_types, combinators, params)?;
+                        let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
                         let e = match callee_param_types[arity - 1 - j] {
                             Some(_) => d.clo()?,
                             None => d.int()?,
@@ -1303,7 +1340,12 @@ fn denote_closure_typed(
                     }
                     all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
                     let applied = apply_n(pap_fn, all_args);
-                    let clo_ty = combinators.cp.clo_ty();
+                    // Anchored *before* computing `clo_ty(arity - k)`
+                    // below -- see `denote_with_placeholders`'s identical
+                    // case for the rationale.
+                    let applied = Anchored::new(&combinators.cp.arith, applied);
+                    let clo_ty = combinators.cp.clo_ty(arity - k);
+                    let applied = applied.at(&combinators.cp.arith);
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: partial application");
                     return Some(Denoted::Clo(applied));
                 }
@@ -1320,7 +1362,7 @@ fn denote_closure_typed(
                 };
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
-                    let d = denote_closure_typed(store, a, param_types, combinators, params)?;
+                    let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
                     let e = match callee_param_types[arity - 1 - j] {
                         Some(_) => d.clo()?,
                         None => d.int()?,
@@ -1334,8 +1376,18 @@ fn denote_closure_typed(
                 }
                 all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
                 let sat_applied = apply_n(call_fn, all_args);
-                let returns_clo = combinator_return_type(store, root).unwrap_or(false);
-                let sat_ty = if returns_clo { combinators.cp.clo_ty() } else { combinators.cp.arith.int_ty() };
+                // Anchored *before* `combinator_return_type`'s own
+                // `clo_ty(k)` lookup below -- see
+                // `denote_with_placeholders`'s identical case for the
+                // rationale.
+                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
+                let return_ty = combinator_return_type(store, root).unwrap_or(None);
+                let returns_clo = return_ty.is_some();
+                let sat_ty = match return_ty {
+                    Some(k) => combinators.cp.clo_ty(k),
+                    None => combinators.cp.arith.int_ty(),
+                };
+                let sat_applied = sat_applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_closure_typed: direct combinator call");
 
                 if args.len() == arity {
@@ -1349,7 +1401,7 @@ fn denote_closure_typed(
                 let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
                 let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
                 for &a in extra_args {
-                    let e = denote_closure_typed(store, a, param_types, combinators, params)?.int()?;
+                    let e = denote_closure_typed(store, a, self_call, param_types, combinators, params)?.int()?;
                     extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let apply_fn = combinators.cp.apply_ref(extra_args.len());
@@ -1374,9 +1426,9 @@ fn denote_closure_typed(
         }
         Term::Lit(n) => Some(Denoted::Int(combinators.cp.arith.lit_ref(*n))),
         Term::Prim(op, a, b) => {
-            let da = denote_closure_typed(store, *a, param_types, combinators, params)?.int()?;
+            let da = denote_closure_typed(store, *a, self_call, param_types, combinators, params)?.int()?;
             let da = Anchored::new(&combinators.cp.arith, da);
-            let db = denote_closure_typed(store, *b, param_types, combinators, params)?.int()?;
+            let db = denote_closure_typed(store, *b, self_call, param_types, combinators, params)?.int()?;
             let op_ref = combinators.cp.arith.op_ref(*op);
             let da = da.at(&combinators.cp.arith);
             let applied = kernel::app2(op_ref, da, db);
@@ -1390,14 +1442,14 @@ fn denote_closure_typed(
         // choosing which `Clo`-typed value to thread onward), a mismatch
         // rejected.
         Term::If(c, t, e) => {
-            let dc = denote_closure_typed(store, *c, param_types, combinators, params)?.int()?;
+            let dc = denote_closure_typed(store, *c, self_call, param_types, combinators, params)?.int()?;
             let dc = Anchored::new(&combinators.cp.arith, dc);
-            let dt = denote_closure_typed(store, *t, param_types, combinators, params)?;
+            let dt = denote_closure_typed(store, *t, self_call, param_types, combinators, params)?;
             let dt_is_clo = matches!(dt, Denoted::Clo(_));
             let dt = Anchored::new(&combinators.cp.arith, match dt {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
             });
-            let de = denote_closure_typed(store, *e, param_types, combinators, params)?;
+            let de = denote_closure_typed(store, *e, self_call, param_types, combinators, params)?;
             let de_is_clo = matches!(de, Denoted::Clo(_));
             // Anchored before branching -- same staleness reasoning as
             // `denote_closure`'s own identical match.
@@ -1416,12 +1468,20 @@ fn denote_closure_typed(
                     Some(Denoted::Int(applied))
                 }
                 (true, true) => {
-                    let ite_clo = combinators.cp.ite_clo_ref();
+                    // See `denote_with_placeholders`'s identical case for
+                    // why `return_type_of` (not `Denoted::Clo` itself) is
+                    // the source of the shared arity here.
+                    let t_arity = return_type_of(store, *t, self_call.arity, Some(self_call.idx), param_types).flatten()?;
+                    let e_arity = return_type_of(store, *e, self_call.arity, Some(self_call.idx), param_types).flatten()?;
+                    if t_arity != e_arity {
+                        return None;
+                    }
+                    let ite_clo = combinators.cp.ite_clo_ref(t_arity);
                     let dc = dc.at(&combinators.cp.arith);
                     let dt = dt.at(&combinators.cp.arith);
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite_clo, dc, dt, de);
-                    let clo_ty = combinators.cp.clo_ty();
+                    let clo_ty = combinators.cp.clo_ty(t_arity);
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: If (Clo branches)");
                     Some(Denoted::Clo(applied))
                 }
@@ -1448,7 +1508,7 @@ fn denote_closure_typed(
             let sym = sym.at(&combinators.cp.arith);
             let env_expr = env_expr.at(&combinators.cp.arith);
             let applied = kernel::app(sym, env_expr);
-            let clo_ty = combinators.cp.clo_ty();
+            let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: capturing closure value");
             Some(Denoted::Clo(applied))
         }
@@ -1656,10 +1716,14 @@ fn params_and_close(
 
 /// Like [`params_and_close`], but for `build_universal`'s own closure-aware
 /// pipeline: pushes one fresh postulate per entry of `param_types`, typed
-/// `Clo` or `Int` to match (resolved fresh immediately before each
-/// individual push -- `clo_ty()`/`int_ty()` are pure lookups that never
-/// themselves push, so, unlike `Ev`'s own type below, no staleness ordering
-/// trick is needed here), so `build`'s own params may be mixed-typed.
+/// `Clo_k` or `Int` to match (resolved fresh immediately before each
+/// individual push and used right away, so even though `clo_ty(k)` may
+/// itself lazily push a postulate on a new arity's first use, unlike
+/// `Ev`'s own type below, no staleness ordering trick is needed here --
+/// see `build_universal`'s own upfront `clo_ty` priming loop, which
+/// ensures every arity `param_types` mentions is already primed well
+/// before this ever runs, so in practice this never observes a first use
+/// anyway), so `build`'s own params may be mixed-typed.
 fn params_and_close_typed(
     arith: &mut ClosureCombinators<'_>,
     param_types: &[Option<usize>],
@@ -1670,7 +1734,7 @@ fn params_and_close_typed(
     let mut positions = Vec::with_capacity(param_types.len());
     for pt in param_types {
         let ty = match pt {
-            Some(_) => arith.clo_ty(),
+            Some(k) => arith.clo_ty(*k),
             None => arith.int_ty(),
         };
         positions.push(arith.p.push(ty));
@@ -1808,7 +1872,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let new_params_for = |arith: &mut ClosureCombinators<'_>, call_args: &[Hash], params: &[usize]| -> Option<Vec<Expr>> {
         (0..arity)
             .map(|i| {
-                let d = denote_closure_typed(store, call_args[arity - 1 - i], &param_types, arith, params)?;
+                let d = denote_closure_typed(store, call_args[arity - 1 - i], self_call, &param_types, arith, params)?;
                 match param_types[i] {
                     Some(_) => d.clo(),
                     None => d.int(),
@@ -1829,7 +1893,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         let mut ty = kernel::arrow(arith.int_ty(), kernel::sort(0)); // v : Int
         for pt in param_types.iter().rev() {
             let dom = match pt {
-                Some(_) => arith.clo_ty(),
+                Some(k) => arith.clo_ty(*k),
                 None => arith.int_ty(),
             };
             ty = kernel::arrow(dom, ty);
@@ -1840,43 +1904,38 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let ev_of = |arith: &ArithPostulates, params: &[Expr], v: Expr| -> Expr { ev_of(arith, ev_pos, params, v) };
 
     // Pre-push every `apply_k` arity a closure-typed parameter's own call
-    // sites will need, *before* any of the temporary, later-rolled-back
-    // `params_and_close_typed` scopes below gets a chance to trigger
-    // `apply_ref`'s lazy push itself. `apply_ref`'s memoization
-    // (`ClosurePostulates::apply_pos`) was designed for `prove_closure_expr`'s
-    // own usage, where `arith.p.ctx` only ever grows -- there, a postulate's
-    // absolute position, once recorded, stays valid forever. Here,
-    // `params_and_close_typed` repeatedly pushes-then-truncates the very
-    // same scratch space; if `apply_ref(k)`'s *first* call for a given `k`
-    // happened from inside one of those temporary scopes, its pushed
-    // postulate would be rolled back while the memoized position stayed
-    // recorded, silently going stale (a real bug this caused: `kernel::check`
-    // rejected the resulting proof with a lambda-domain mismatch, caught
-    // immediately rather than silently accepted -- the memo pointed at
-    // whatever postulate happened to occupy that position after later,
-    // unrelated growth).
+    // sites will need, and every `clo_ty(k)`/`ite_clo_ref(k)` (see its own
+    // docs -- `clo_ty` eagerly primes both at once) that same parameter's
+    // own arity `k` will need, *before* any of the temporary, later-rolled-
+    // back `params_and_close_typed` scopes below gets a chance to trigger
+    // either's lazy push itself. This memoization
+    // (`ClosurePostulates::apply_pos`/`clo_pos`/`ite_clo_pos`) was designed
+    // for `prove_closure_expr`'s own usage, where `arith.p.ctx` only ever
+    // grows -- there, a postulate's absolute position, once recorded, stays
+    // valid forever. Here, `params_and_close_typed` repeatedly
+    // pushes-then-truncates the very same scratch space; if a given `k`'s
+    // *first* use happened from inside one of those temporary scopes, its
+    // pushed postulate would be rolled back while the memoized position
+    // stayed recorded, silently going stale (a real bug this caused:
+    // `kernel::check` rejected the resulting proof with a lambda-domain
+    // mismatch, caught immediately rather than silently accepted -- the
+    // memo pointed at whatever postulate happened to occupy that position
+    // after later, unrelated growth). Unlike the single, arity-blind `Clo`
+    // this fragment used to postulate, there's no longer one universal
+    // `clo_ty`/`ite_clo_ref` to prime unconditionally regardless of which
+    // arities the term actually uses -- every arity `param_types` mentions
+    // is primed here; every *other* arity a `Clo`-typed value could turn
+    // out to have (a directly-called combinator's own return type, a
+    // partial application's own resulting arity, a freshly-created
+    // closure's own peeled arity) is primed transitively below, by
+    // `prime_closure_postulates`'s own structural walk through
+    // `register`/`call_ref`/`pap_ref` (each of which calls `clo_ty` with
+    // the *correct* arity for its own postulate's domain/codomain as part
+    // of building it, priming or real construction alike).
     for k in param_types.iter().flatten() {
         arith.apply_ref(*k);
+        arith.clo_ty(*k);
     }
-
-    // Same fix, a third time: `ite_clo_ref` (needed once `denote_closure_typed`/
-    // `denote_with_placeholders` widened to allow a nested `If` choosing
-    // between two `Clo`-typed values -- see the module docs) is memoized
-    // exactly like `apply_ref`, but isn't tied to any one `Hash`/capture
-    // count the way `register`/`call_ref`/`pap_ref` are, so it doesn't fit
-    // `prime_closure_postulates`'s per-node structural walk below; primed
-    // unconditionally here instead, once per proof attempt, regardless of
-    // whether the term actually contains a `Clo`-typed nested `If` at all
-    // (cheap and term-independent, so there's nothing to gain from
-    // detecting that precisely). Without this, a term whose *first*
-    // `Clo`-typed nested `If` is encountered from inside a temporary
-    // `params_and_close_typed` scope goes stale the exact same way
-    // `apply_ref` used to: `ite_clo_pos` stays recorded after that scope's
-    // own postulate is truncated away, and a *later* scope's unrelated
-    // growth ends up reusing that same position for something else
-    // entirely -- caught immediately by `debug_assert_has_type` rejecting
-    // a non-`Pi` type rather than silently miscompiling a proof.
-    arith.ite_clo_ref();
 
     // Same fix, widened: a self-call argument, or a leaf's own top-level
     // expression, may itself *create* a closure and (fully or partially)
@@ -2899,7 +2958,7 @@ fn param_types_for(store: &TermStore, h: Hash) -> Option<Vec<Option<usize>>> {
 /// -> Int` convention `denote_closure`'s own `Term::Var(i)` case already
 /// relies on), so this only ever needs `h`'s *own* declared parameters'
 /// types (`param_types_for`), never a capture's.
-fn combinator_return_type(store: &TermStore, h: Hash) -> Option<bool> {
+fn combinator_return_type(store: &TermStore, h: Hash) -> Option<Option<usize>> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     let self_idx = is_rec.then_some(arity as u32);
     let param_types = param_types_for(store, h)?;
@@ -2909,10 +2968,25 @@ fn combinator_return_type(store: &TermStore, h: Hash) -> Option<bool> {
 /// `combinator_return_type`'s own recursive walk over one combinator's
 /// body (`arity`/`self_idx`/`param_types` all describe *that* combinator,
 /// unchanged across the whole walk -- only `h` itself moves, the same
-/// convention `find_self_calls`'s own recursion uses).
-fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, param_types: &[Option<usize>]) -> Option<bool> {
+/// convention `find_self_calls`'s own recursion uses) -- also reused
+/// directly (with `self_idx` possibly `None`, and `arity`/`param_types`
+/// describing whatever ambient scope `h` sits in) by `denote_closure`/
+/// `denote_closure_typed`/`denote_with_placeholders`'s own nested-`If`
+/// case, to learn *which* arity's `ite_clo_ref`/`clo_ty` two `Clo`-typed
+/// branches share -- a fully general "what does this expression denote"
+/// structural classifier, not just a combinator-body-specific one; every
+/// shape it recognizes here is kept in exact lockstep with the shapes
+/// those functions' own `Denoted::Clo`-producing cases recognize, so the
+/// two never disagree when both succeed. `None` for anything this doesn't
+/// confidently recognize -- callers fall back to assuming `Int` (a
+/// combinator's own return type) or rejecting outright (a nested `If`'s
+/// own branch arity, where guessing wrong would be unsound), the same
+/// "sound, not complete" tradeoff this whole fragment already makes
+/// everywhere else. The outer `Option` is "undetermined"; the inner one is
+/// the actual type, `None` for `Int`, `Some(k)` for `Clo_k`.
+fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, param_types: &[Option<usize>]) -> Option<Option<usize>> {
     if compile::match_self_call(store, h, arity, self_idx).is_some() {
-        return Some(false); // a self-call's own result is always Int
+        return Some(None); // a self-call's own result is always Int
     }
     if matches!(store.resolve(h), Term::App(..)) {
         let (root, args) = compile::unwind_app_spine(store, h);
@@ -2920,14 +2994,17 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
             // Calling a parameter, a capture, or (recursively) another
             // directly-called combinator's own result: always Int, the
             // uniform `apply_k`/over-application-dispatch convention.
-            Term::Var(_) => Some(false),
+            Term::Var(_) => Some(None),
             Term::Abs(_) | Term::Rec(_) => {
                 let callee_param_types = param_types_for(store, root)?;
                 let callee_arity = callee_param_types.len();
                 match args.len().cmp(&callee_arity) {
                     std::cmp::Ordering::Equal => combinator_return_type(store, root),
-                    std::cmp::Ordering::Less => Some(true), // a partial-application value is always Clo
-                    std::cmp::Ordering::Greater => Some(false), // over-application's own dispatch is always Int
+                    // a partial-application value is always Clo, of the
+                    // *remaining* arity (the wrapper still expects
+                    // `callee_arity - args.len()` more arguments).
+                    std::cmp::Ordering::Less => Some(Some(callee_arity - args.len())),
+                    std::cmp::Ordering::Greater => Some(None), // over-application's own dispatch is always Int
                 }
             }
             _ => None,
@@ -2940,15 +3017,19 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
         // unsupported) is undetermined, not an error.
         Term::Var(i) => {
             let i = *i as usize;
-            if i < arity { Some(param_types.get(i)?.is_some()) } else { None }
+            if i < arity { Some(*param_types.get(i)?) } else { None }
         }
-        Term::Lit(_) | Term::Prim(..) => Some(false),
+        Term::Lit(_) | Term::Prim(..) => Some(None),
         Term::If(_, t, e) => {
             let dt = return_type_of(store, *t, arity, self_idx, param_types)?;
             let de = return_type_of(store, *e, arity, self_idx, param_types)?;
             (dt == de).then_some(dt)
         }
-        Term::Abs(_) | Term::Rec(_) => Some(true), // a fresh closure value
+        // A fresh closure value, of its own peeled arity.
+        Term::Abs(_) | Term::Rec(_) => {
+            let (own_arity, _, _) = compile::peel(store, h)?;
+            Some(Some(own_arity))
+        }
         Term::App(..) => unreachable!("handled above"),
     }
 }
@@ -2958,15 +3039,15 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
 #[derive(Clone)]
 struct ClosurePostulates {
     arith: ArithPostulates,
-    clo_pos: usize,
+    clo_pos: HashMap<usize, usize>,
     apply_pos: HashMap<usize, usize>,
     combinator_value_pos: HashMap<Hash, usize>,
     combinator_call_pos: HashMap<Hash, usize>,
-    env_ty_pos: HashMap<Vec<bool>, usize>,
-    mk_env_pos: HashMap<Vec<bool>, usize>,
+    env_ty_pos: HashMap<Vec<Option<usize>>, usize>,
+    mk_env_pos: HashMap<Vec<Option<usize>>, usize>,
     mk_clo_pos: HashMap<Hash, usize>,
     pap_pos: HashMap<(Hash, usize), usize>,
-    ite_clo_pos: Option<usize>,
+    ite_clo_pos: HashMap<usize, usize>,
 }
 
 /// Lets code holding a `&(mut) ClosurePostulates` -- `build_universal`'s own
@@ -2991,11 +3072,10 @@ impl std::ops::DerefMut for ClosurePostulates {
 
 impl ClosurePostulates {
     fn new() -> Self {
-        let mut arith = ArithPostulates::new();
-        let clo_pos = arith.p.push(kernel::sort(0));
+        let arith = ArithPostulates::new();
         ClosurePostulates {
             arith,
-            clo_pos,
+            clo_pos: HashMap::new(),
             apply_pos: HashMap::new(),
             combinator_value_pos: HashMap::new(),
             combinator_call_pos: HashMap::new(),
@@ -3003,12 +3083,46 @@ impl ClosurePostulates {
             mk_env_pos: HashMap::new(),
             mk_clo_pos: HashMap::new(),
             pap_pos: HashMap::new(),
-            ite_clo_pos: None,
+            ite_clo_pos: HashMap::new(),
         }
     }
 
-    fn clo_ty(&self) -> Expr {
-        self.arith.p.get(self.clo_pos)
+    /// `Clo_arity : Sort(0)`, one postulate per distinct arity, mirroring
+    /// how `Env_sig` is already postulated per capture signature -- the
+    /// kernel-level fix for the "arity-blind `Clo`" gap `TYPES.md` (section
+    /// 7) describes: two closures of different real arity now get
+    /// genuinely distinct, definitionally-unequal kernel types instead of
+    /// sharing one opaque `Clo`, so `kernel::check`'s own definitional-
+    /// equality checking rejects an arity mismatch (a call, a capture, an
+    /// `If` between two differently-sized closures) on its own, without any
+    /// new Rust-level bookkeeping to detect it -- every call site below
+    /// just has to ask for the *correct* arity, already available locally
+    /// (a parameter's own declared arity, a literal lambda's own peeled
+    /// arity, or `combinator_return_type`'s own classification), the same
+    /// discipline `Env_sig` already required for capture signatures.
+    /// Also eagerly primes `ite_clo_ref(arity)`'s own postulate at the same
+    /// time (see its own docs for why bundling here, rather than a
+    /// separate inference pass, is enough to prime it safely).
+    fn clo_ty(&mut self, arity: usize) -> Expr {
+        if let Some(&pos) = self.clo_pos.get(&arity) {
+            return self.arith.p.get(pos);
+        }
+        let pos = self.arith.p.push(kernel::sort(0));
+        self.clo_pos.insert(arity, pos);
+        let clo_ty = self.arith.p.get(pos);
+        let ite_ty = kernel::arrow(self.arith.int_ty(), kernel::arrow(clo_ty.clone(), kernel::arrow(clo_ty.clone(), clo_ty)));
+        let ite_pos = self.arith.p.push(ite_ty);
+        self.ite_clo_pos.insert(arity, ite_pos);
+        // Re-resolve fresh, rather than returning the `clo_ty` value
+        // captured above: the `ite_clo` push just above grew `p.ctx` by
+        // one more since that value was itself resolved, which would
+        // otherwise leave it stale by exactly one at the depth this
+        // function actually returns to its caller -- the same staleness
+        // class `Anchored`'s own docs describe, here escaping this
+        // function's own boundary (a caller holding the returned `Expr`
+        // unanchored across any further push of its own) rather than a
+        // caller's own already-anchored value.
+        self.arith.p.get(pos)
     }
 
     /// `apply_k : Clo -> Int -> .. -> Int` (`k` `Int` params), postulated
@@ -3020,45 +3134,53 @@ impl ClosurePostulates {
         if let Some(&pos) = self.apply_pos.get(&k) {
             return self.arith.p.get(pos);
         }
+        // `clo_ty(k)` first, before either `int_ty()` read below: it may
+        // lazily push a fresh `Clo_k`/`ite_clo_k` pair (the first time
+        // this particular arity is seen), which would silently invalidate
+        // an `int_ty()` reference already folded into `ty` if it ran
+        // after instead -- the same staleness class `Anchored`'s own docs
+        // describe, just inside a single function's own type
+        // construction. `int_ty()` itself never pushes, so once `clo_ty`
+        // is out of the way, nothing below can invalidate anything else.
+        let dom = self.clo_ty(k);
         let mut ty = self.arith.int_ty();
         for _ in 0..k {
             ty = kernel::arrow(self.arith.int_ty(), ty);
         }
-        let ty = kernel::arrow(self.clo_ty(), ty);
+        let ty = kernel::arrow(dom, ty);
         let pos = self.arith.p.push(ty);
         self.apply_pos.insert(k, pos);
         self.arith.p.get(pos)
     }
 
-    /// `ite_clo : Int -> Clo -> Clo -> Clo`, postulated once (lazily,
-    /// unlike `ArithPostulates::ite_ref`'s eager one -- a term never
-    /// choosing between two closures shouldn't pay for this postulate) --
-    /// the `Clo`-valued counterpart to `ite_ref`, needed for an `If` that
-    /// chooses between two closures rather than two `Int`s (e.g. `if c
-    /// then (\y. x+y) else (\y. x-y)`). The condition itself stays `Int`
-    /// either way -- only the two branches (and the result) differ.
-    fn ite_clo_ref(&mut self) -> Expr {
-        if let Some(pos) = self.ite_clo_pos {
-            return self.arith.p.get(pos);
-        }
-        let clo_ty = self.clo_ty();
-        let ty = kernel::arrow(self.arith.int_ty(), kernel::arrow(clo_ty.clone(), kernel::arrow(clo_ty.clone(), clo_ty)));
-        let pos = self.arith.p.push(ty);
-        self.ite_clo_pos = Some(pos);
+    /// `ite_clo_arity : Int -> Clo_arity -> Clo_arity -> Clo_arity`,
+    /// postulated once per distinct `arity` (lazily, unlike
+    /// `ArithPostulates::ite_ref`'s eager one -- a term never choosing
+    /// between two closures of that particular arity shouldn't pay for
+    /// this postulate) -- the `Clo_arity`-valued counterpart to `ite_ref`,
+    /// needed for an `If` that chooses between two same-arity closures
+    /// rather than two `Int`s (e.g. `if c then (\y. x+y) else (\y. x-y)`).
+    /// The condition itself stays `Int` either way -- only the two
+    /// branches (and the result) differ. Always primed as a side effect of
+    /// `clo_ty(arity)`'s own first call (see its docs) -- this just looks
+    /// up the now-guaranteed-present position.
+    fn ite_clo_ref(&mut self, arity: usize) -> Expr {
+        self.clo_ty(arity);
+        let pos = self.ite_clo_pos[&arity];
         self.arith.p.get(pos)
     }
 
-    /// A fresh `Clo`-typed constant for combinator `h`, memoized by hash --
-    /// for a *non-capturing* combinator used as a bare value (an argument,
-    /// a branch result, ...), mirroring `compile.rs`'s "its value is just
-    /// its table index" reading. A *capturing* combinator's own value
-    /// needs `mk_clo_ref` instead -- see its docs for why one fixed
-    /// constant isn't an honest model there.
-    fn combinator_value(&mut self, h: Hash) -> Expr {
+    /// A fresh `Clo_arity`-typed constant for combinator `h` (own arity
+    /// `arity`), memoized by hash -- for a *non-capturing* combinator used
+    /// as a bare value (an argument, a branch result, ...), mirroring
+    /// `compile.rs`'s "its value is just its table index" reading. A
+    /// *capturing* combinator's own value needs `mk_clo_ref` instead --
+    /// see its docs for why one fixed constant isn't an honest model there.
+    fn combinator_value(&mut self, h: Hash, arity: usize) -> Expr {
         if let Some(&pos) = self.combinator_value_pos.get(&h) {
             return self.arith.p.get(pos);
         }
-        let clo_ty = self.clo_ty();
+        let clo_ty = self.clo_ty(arity);
         let pos = self.arith.p.push(clo_ty);
         self.combinator_value_pos.insert(h, pos);
         self.arith.p.get(pos)
@@ -3066,18 +3188,19 @@ impl ClosurePostulates {
 
     /// `Env_sig : Sort(0)`, postulated once per distinct capture
     /// *signature* (never per-combinator) -- an opaque bundle of
-    /// `sig.len()` captured values, `Clo`-typed wherever `sig[i]` is
-    /// `true`, `Int`-typed otherwise -- mirroring `compile.rs`'s own
-    /// uniform, combinator-agnostic environment-slot layout at the proof
-    /// level (every slot is just an `i64` there, whatever it holds).
-    /// Shared across every combinator whose captures happen to match this
-    /// exact signature, the same way `apply_k` is shared across every
-    /// closure called with `k` arguments regardless of which combinator
-    /// it turns out to be -- two combinators that both capture, say,
-    /// three plain `Int`s still share one `Env` (the common case, keyed
-    /// by an all-`false` signature exactly as it used to be keyed by the
-    /// count `3` alone); only a genuinely mixed signature gets its own.
-    fn env_ty(&mut self, sig: &[bool]) -> Expr {
+    /// `sig.len()` captured values, `Clo_k`-typed wherever `sig[i]` is
+    /// `Some(k)`, `Int`-typed wherever it's `None` -- mirroring
+    /// `compile.rs`'s own uniform, combinator-agnostic environment-slot
+    /// layout at the proof level (every slot is just an `i64` there,
+    /// whatever it holds). Shared across every combinator whose captures
+    /// happen to match this exact signature, the same way `apply_k` is
+    /// shared across every closure called with `k` arguments regardless of
+    /// which combinator it turns out to be -- two combinators that both
+    /// capture, say, three plain `Int`s still share one `Env` (the common
+    /// case, keyed by an all-`None` signature exactly as it used to be
+    /// keyed by the count `3` alone); only a genuinely mixed, or
+    /// genuinely differently-sized-closure, signature gets its own.
+    fn env_ty(&mut self, sig: &[Option<usize>]) -> Expr {
         if let Some(&pos) = self.env_ty_pos.get(sig) {
             return self.arith.p.get(pos);
         }
@@ -3086,43 +3209,69 @@ impl ClosurePostulates {
         self.arith.p.get(pos)
     }
 
-    /// `mk_env_sig : T_0 -> .. -> T_{n-1} -> Env_sig` (`T_i` = `Clo` if
-    /// `sig[i]` else `Int`) -- `env_ty(sig)`'s constructor, postulated
-    /// once per signature.
-    fn mk_env_ref(&mut self, sig: &[bool]) -> Expr {
+    /// `mk_env_sig : T_0 -> .. -> T_{n-1} -> Env_sig` (`T_i` = `Clo_k` if
+    /// `sig[i] == Some(k)` else `Int`) -- `env_ty(sig)`'s constructor,
+    /// postulated once per signature.
+    fn mk_env_ref(&mut self, sig: &[Option<usize>]) -> Expr {
         if let Some(&pos) = self.mk_env_pos.get(sig) {
             return self.arith.p.get(pos);
         }
-        let mut ty = self.env_ty(sig);
+        // Unlike the single, arity-blind `Clo` this fragment used to
+        // postulate, `env_ty`/`clo_ty` here can *each* lazily push their
+        // own postulate on first use -- possibly several times over, once
+        // per distinct arity `sig` mentions -- so no single "resolve the
+        // one lazy thing first" ordering trick (like `apply_ref`'s own
+        // fix) suffices. Each is anchored immediately after resolving it
+        // instead, and only re-resolved (`.at`), fresh, once nothing more
+        // is left to push -- the same discipline `denote_closure`'s own
+        // composite cases use for a whole built term, one level up.
+        let env_ty = self.env_ty(sig);
+        let env_ty = Anchored::new(&self.arith, env_ty);
+        let doms: Vec<Anchored> = sig
+            .iter()
+            .map(|slot| {
+                let dom = match slot {
+                    Some(k) => self.clo_ty(*k),
+                    None => self.arith.int_ty(),
+                };
+                Anchored::new(&self.arith, dom)
+            })
+            .collect();
+        let mut ty = env_ty.at(&self.arith);
         // Fold from the *last* capture outward, so the final iteration
         // (sig[0]) ends up as the outermost/first-applied parameter,
         // matching `apply_n`'s left-to-right application order (the same
         // convention `call_ref`'s own loop documents).
-        for &is_clo in sig.iter().rev() {
-            let dom = if is_clo { self.clo_ty() } else { self.arith.int_ty() };
-            ty = kernel::arrow(dom, ty);
+        for dom in doms.iter().rev() {
+            ty = kernel::arrow(dom.at(&self.arith), ty);
         }
         let pos = self.arith.p.push(ty);
         self.mk_env_pos.insert(sig.to_vec(), pos);
         self.arith.p.get(pos)
     }
 
-    /// `mk_clo_h : Env_sig -> Clo`, for a *capturing* combinator `h` (own
-    /// capture signature `sig`) used as a bare value -- the capturing
-    /// counterpart to `combinator_value`, one postulated constant
-    /// (function, here) per combinator just like it, but correctly
-    /// varying with `h`'s own environment (built fresh from the *actual*
-    /// captured values at each creation site by `build_env_expr`, not
-    /// baked into `mk_clo_h` itself) instead of being one fixed value
-    /// wherever `h` is referenced -- an honest reading of "a different
-    /// runtime environment pointer at every creation site" the way
-    /// `combinator_value`'s single constant only ever was for a
-    /// non-capturing closure.
-    fn mk_clo_ref(&mut self, h: Hash, sig: &[bool]) -> Expr {
+    /// `mk_clo_h : Env_sig -> Clo_arity`, for a *capturing* combinator `h`
+    /// (own arity `arity`, own capture signature `sig`) used as a bare
+    /// value -- the capturing counterpart to `combinator_value`, one
+    /// postulated constant (function, here) per combinator just like it,
+    /// but correctly varying with `h`'s own environment (built fresh from
+    /// the *actual* captured values at each creation site by
+    /// `build_env_expr`, not baked into `mk_clo_h` itself) instead of
+    /// being one fixed value wherever `h` is referenced -- an honest
+    /// reading of "a different runtime environment pointer at every
+    /// creation site" the way `combinator_value`'s single constant only
+    /// ever was for a non-capturing closure.
+    fn mk_clo_ref(&mut self, h: Hash, sig: &[Option<usize>], arity: usize) -> Expr {
         if let Some(&pos) = self.mk_clo_pos.get(&h) {
             return self.arith.p.get(pos);
         }
-        let ty = kernel::arrow(self.env_ty(sig), self.clo_ty());
+        // `env_ty(sig)` and `clo_ty(arity)` may *each* lazily push their
+        // own postulate on first use -- same discipline as `mk_env_ref`'s
+        // identical fix, just for two pieces instead of `sig.len() + 1`.
+        let env_ty = self.env_ty(sig);
+        let env_ty = Anchored::new(&self.arith, env_ty);
+        let clo_ty = self.clo_ty(arity);
+        let ty = kernel::arrow(env_ty.at(&self.arith), clo_ty);
         let pos = self.arith.p.push(ty);
         self.mk_clo_pos.insert(h, pos);
         self.arith.p.get(pos)
@@ -3186,10 +3335,10 @@ impl<'a> ClosureCombinators<'a> {
             return None;
         }
         if captures.is_empty() {
-            Some(self.cp.combinator_value(h))
+            Some(self.cp.combinator_value(h, arity))
         } else {
             let sig = capture_sig(captures, caller_param_types)?;
-            Some(self.cp.mk_clo_ref(h, &sig))
+            Some(self.cp.mk_clo_ref(h, &sig, arity))
         }
     }
 
@@ -3225,30 +3374,47 @@ impl<'a> ClosureCombinators<'a> {
             return Some(self.cp.arith.p.get(pos));
         }
         let param_types = param_types_for(self.store, h)?;
-        let returns_clo = combinator_return_type(self.store, h).unwrap_or(false);
+        let return_ty = combinator_return_type(self.store, h).unwrap_or(None);
         let sig = capture_sig(captures, caller_param_types)?;
-        // `env_ty` first, *before* any of the `int_ty`/`clo_ty` reads
-        // below: it may push a fresh `Env` postulate (the first time
-        // this particular capture signature is seen), which would silently
-        // invalidate any of those reads already taken at the shallower,
-        // pre-push depth if it ran after them instead -- the same
-        // staleness class `Anchored`'s own docs describe, just inside a
-        // single function's own type construction rather than across
-        // `denote_closure`'s recursive calls.
-        let env_ty = (!sig.is_empty()).then(|| self.cp.env_ty(&sig));
-        let mut ty = if returns_clo { self.cp.clo_ty() } else { self.cp.arith.int_ty() };
+        // Every piece below (`env_ty`, the return type's own `clo_ty`,
+        // each parameter's own `clo_ty`) may lazily push its own
+        // postulate on first use -- possibly several times over, once per
+        // distinct arity involved -- so unlike when only `env_ty` itself
+        // could ever push (back when `Clo` was a single, always-eager
+        // postulate), no single "resolve the one lazy thing first"
+        // ordering trick suffices any more. Each piece is anchored
+        // immediately after resolving it instead, and only re-resolved
+        // (`.at`), fresh, once nothing more is left to push -- the same
+        // discipline `denote_closure`'s own composite cases use for a
+        // whole built term, one level up.
+        let env_ty = (!sig.is_empty()).then(|| {
+            let e = self.cp.env_ty(&sig);
+            Anchored::new(&self.cp.arith, e)
+        });
+        let ret = match return_ty {
+            Some(k) => self.cp.clo_ty(k),
+            None => self.cp.arith.int_ty(),
+        };
+        let ret = Anchored::new(&self.cp.arith, ret);
+        let doms: Vec<Anchored> = param_types
+            .iter()
+            .map(|pt| {
+                let dom = match pt {
+                    Some(k) => self.cp.clo_ty(*k),
+                    None => self.cp.arith.int_ty(),
+                };
+                Anchored::new(&self.cp.arith, dom)
+            })
+            .collect();
+        let mut ty = ret.at(&self.cp.arith);
         // Var(0) is last-applied (innermost -- wrap it first, so the
         // final iteration, Var(arity-1) = first-applied, ends up
         // outermost, matching apply_n's left-to-right application order).
-        for pt in &param_types {
-            let dom = match pt {
-                Some(_) => self.cp.clo_ty(),
-                None => self.cp.arith.int_ty(),
-            };
-            ty = kernel::arrow(dom, ty);
+        for dom in &doms {
+            ty = kernel::arrow(dom.at(&self.cp.arith), ty);
         }
         if let Some(env_ty) = env_ty {
-            ty = kernel::arrow(env_ty, ty);
+            ty = kernel::arrow(env_ty.at(&self.cp.arith), ty);
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.combinator_call_pos.insert(h, pos);
@@ -3281,12 +3447,11 @@ impl<'a> ClosureCombinators<'a> {
     /// convention: `Env -> T_0 -> .. -> T_{k-1} -> Clo`. `caller_param_types`
     /// (the *calling* scope's own `param_types`) resolves `h`'s own
     /// captures' `Clo`/`Int` signature, the same way `register`/`call_ref`
-    /// do. `env_ty` is computed *before* the loop below, same as
-    /// `call_ref`'s own fix for the identical hazard: it may push a fresh
-    /// `Env` postulate on its own first use, which would silently
-    /// invalidate the loop's `clo_ty`/`int_ty` reads (already-resolved
-    /// `Expr`s, not re-resolved after the fact) if it ran after them
-    /// instead.
+    /// do. `env_ty`/`clo_ty` are each individually anchored below, same as
+    /// `call_ref`'s own fix for the identical hazard: any of them may
+    /// lazily push a fresh postulate on its own first use, which would
+    /// silently invalidate an already-resolved sibling `Expr` if held
+    /// past that push unshifted.
     ///
     /// `None` for a zero-`k` or over-`k` (`k >= arity`) root -- `h` may
     /// itself be self-recursive (`Term::Rec`, not just `Term::Abs`):
@@ -3307,17 +3472,32 @@ impl<'a> ClosureCombinators<'a> {
         let captures = compile::free_vars(self.store, body, arity, is_rec);
         let param_types = param_types_for(self.store, h)?;
         let sig = capture_sig(&captures, caller_param_types)?;
-        let env_ty = (!sig.is_empty()).then(|| self.cp.env_ty(&sig));
-        let mut ty = self.cp.clo_ty();
-        for pt in &param_types[arity - k..] {
-            let dom = match pt {
-                Some(_) => self.cp.clo_ty(),
-                None => self.cp.arith.int_ty(),
-            };
-            ty = kernel::arrow(dom, ty);
+        // Same discipline as `call_ref`'s identical fix: `env_ty` and
+        // every `clo_ty` below may each lazily push their own postulate,
+        // so each is anchored immediately and only re-resolved (`.at`)
+        // once nothing more is left to push.
+        let env_ty = (!sig.is_empty()).then(|| {
+            let e = self.cp.env_ty(&sig);
+            Anchored::new(&self.cp.arith, e)
+        });
+        let ret = self.cp.clo_ty(arity - k);
+        let ret = Anchored::new(&self.cp.arith, ret);
+        let doms: Vec<Anchored> = param_types[arity - k..]
+            .iter()
+            .map(|pt| {
+                let dom = match pt {
+                    Some(j) => self.cp.clo_ty(*j),
+                    None => self.cp.arith.int_ty(),
+                };
+                Anchored::new(&self.cp.arith, dom)
+            })
+            .collect();
+        let mut ty = ret.at(&self.cp.arith);
+        for dom in &doms {
+            ty = kernel::arrow(dom.at(&self.cp.arith), ty);
         }
         if let Some(env_ty) = env_ty {
-            ty = kernel::arrow(env_ty, ty);
+            ty = kernel::arrow(env_ty.at(&self.cp.arith), ty);
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.pap_pos.insert((h, k), pos);
@@ -3325,10 +3505,11 @@ impl<'a> ClosureCombinators<'a> {
     }
 }
 
-/// The `Clo`/`Int` signature of a capture list, relative to the *calling*
-/// scope's own `param_types` -- `sig[i]` is `true` iff `captures[i]`
-/// resolves to a `Clo`-typed value there. `Env`/`mk_env` are keyed by
-/// this signature rather than by `captures.len()` alone, the same way
+/// The `Clo_k`/`Int` signature of a capture list, relative to the *calling*
+/// scope's own `param_types` -- `sig[i]` is `Some(k)` iff `captures[i]`
+/// resolves to a `Clo_k`-typed value there, `None` for an `Int`-typed one.
+/// `Env`/`mk_env` are keyed by this signature rather than by
+/// `captures.len()` alone, the same way
 /// `call_ref`/`pap_ref` already vary their own call-argument types by
 /// `param_types` at each position: two combinators that happen to
 /// capture the same *number* of values still share one `Env` postulate
@@ -3339,8 +3520,8 @@ impl<'a> ClosureCombinators<'a> {
 /// happen (every capture is relative to exactly the ambient scope
 /// `caller_param_types` describes), but this stays a clean rejection
 /// rather than a panic if it somehow did.
-fn capture_sig(captures: &[u32], caller_param_types: &[Option<usize>]) -> Option<Vec<bool>> {
-    captures.iter().map(|&rel| caller_param_types.get(rel as usize).map(|t| t.is_some())).collect()
+fn capture_sig(captures: &[u32], caller_param_types: &[Option<usize>]) -> Option<Vec<Option<usize>>> {
+    captures.iter().map(|&rel| caller_param_types.get(rel as usize).copied()).collect()
 }
 
 /// Builds `mk_env(v_1,...,v_n)` for a combinator whose relative capture
@@ -3527,7 +3708,12 @@ fn denote_closure(
                     }
                     all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
                     let applied = apply_n(pap_fn, all_args);
-                    let clo_ty = combinators.cp.clo_ty();
+                    // Anchored *before* computing `clo_ty(arity - k)`
+                    // below -- see `denote_with_placeholders`'s identical
+                    // case for the rationale.
+                    let applied = Anchored::new(&combinators.cp.arith, applied);
+                    let clo_ty = combinators.cp.clo_ty(arity - k);
+                    let applied = applied.at(&combinators.cp.arith);
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: partial application");
                     return Some(Denoted::Clo(applied));
                 }
@@ -3563,8 +3749,18 @@ fn denote_closure(
                 }
                 all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
                 let sat_applied = apply_n(call_fn, all_args);
-                let returns_clo = combinator_return_type(store, root).unwrap_or(false);
-                let sat_ty = if returns_clo { combinators.cp.clo_ty() } else { combinators.cp.arith.int_ty() };
+                // Anchored *before* `combinator_return_type`'s own
+                // `clo_ty(k)` lookup below -- see
+                // `denote_with_placeholders`'s identical case for the
+                // rationale.
+                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
+                let return_ty = combinator_return_type(store, root).unwrap_or(None);
+                let returns_clo = return_ty.is_some();
+                let sat_ty = match return_ty {
+                    Some(k) => combinators.cp.clo_ty(k),
+                    None => combinators.cp.arith.int_ty(),
+                };
+                let sat_applied = sat_applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_closure: direct combinator call");
 
                 if args.len() == arity {
@@ -3643,12 +3839,26 @@ fn denote_closure(
                 Some(Denoted::Int(applied))
             }
             (true, true) => {
-                let ite_clo = combinators.cp.ite_clo_ref();
+                // See `denote_with_placeholders`'s identical case for why
+                // `return_type_of` (not `Denoted::Clo` itself) is the
+                // source of the shared arity here; `denote_closure` has no
+                // self-call concept of its own (`prove_closure_expr` never
+                // sets one up), so `self_idx` is always `None` and `arity`
+                // is this whole function's own top-level arity
+                // (`param_types.len()`), the same pair `Var(i)`'s own
+                // in-range check just below already relies on.
+                let top_arity = param_types.len();
+                let t_arity = return_type_of(store, t, top_arity, None, param_types).flatten()?;
+                let e_arity = return_type_of(store, e, top_arity, None, param_types).flatten()?;
+                if t_arity != e_arity {
+                    return None;
+                }
+                let ite_clo = combinators.cp.ite_clo_ref(t_arity);
                 let dc = dc.at(&combinators.cp.arith);
                 let dt = dt.at(&combinators.cp.arith);
                 let de = de.at(&combinators.cp.arith);
                 let applied = kernel::app3(ite_clo, dc, dt, de);
-                let clo_ty = combinators.cp.clo_ty();
+                let clo_ty = combinators.cp.clo_ty(t_arity);
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: If (Clo branches)");
                 Some(Denoted::Clo(applied))
             }
@@ -3700,7 +3910,7 @@ fn denote_closure(
             let sym = sym.at(&combinators.cp.arith);
             let env_expr = env_expr.at(&combinators.cp.arith);
             let applied = kernel::app(sym, env_expr);
-            let clo_ty = combinators.cp.clo_ty();
+            let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: capturing closure value");
             Some(Denoted::Clo(applied))
         }
@@ -3750,8 +3960,8 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
     let mut params = Vec::with_capacity(arity);
     for &ty in &param_types {
         let pos = match ty {
-            Some(_) => {
-                let clo_ty = combinators.cp.clo_ty();
+            Some(k) => {
+                let clo_ty = combinators.cp.clo_ty(k);
                 combinators.cp.arith.p.push(clo_ty)
             }
             None => {
@@ -5083,6 +5293,61 @@ mod tests {
         assert_eq!(proof.arity, 1);
         kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
+    }
+
+    #[test]
+    fn a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope() {
+        // Same shape as the test above -- `\x. (\g. g 5) (if 0 < x then
+        // (\y. x + y) else (\y. \z. x - y - z))` -- except `picker`'s own
+        // `else` branch now has arity *2*, not 1: `Clo`, before the
+        // arity-indexed `Clo_k` refactor (`TYPES.md` section 7), was a
+        // single, arity-blind kernel type, so this exact shape would have
+        // kernel-*typechecked* under the old scheme (`ite_clo : Int -> Clo
+        // -> Clo -> Clo` accepts any two `Clo`-typed branches, whatever
+        // their underlying arity) while being genuinely unsound --
+        // `inn`'s own `g 5` call commits to arity 1, silently wrong
+        // whenever `picker` actually took the `else` branch. Both
+        // `return_type_of`'s own arity-consistency check (in
+        // `combinator_return_type`'s classification of `picker`'s body)
+        // and, independently, `kernel::check`'s definitional-inequality
+        // between `Clo_1` and `Clo_2` now reject this -- `call_ref` falls
+        // back to assuming `picker`'s call is plain `Int`-typed (the
+        // classifier can't determine a single consistent arity), which
+        // then fails `inn`'s own `.clo()?` check on `g`, so
+        // `prove_closure_expr` returns `None` rather than a
+        // kernel-"verified" but unsound proof.
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, x);
+        let y_pos = s.var(0);
+        let x_pos = s.var(1);
+        let plus = s.prim(PrimOp::Add, x_pos, y_pos);
+        let then_closure = s.abs(plus); // arity 1: \y. x + y
+        let z_neg = s.var(0);
+        let y_neg = s.var(1);
+        let x_neg = s.var(2);
+        let x_minus_y = s.prim(PrimOp::Sub, x_neg, y_neg);
+        let minus_z = s.prim(PrimOp::Sub, x_minus_y, z_neg);
+        let else_inner = s.abs(minus_z);
+        let else_closure = s.abs(else_inner); // arity 2: \y. \z. x - y - z
+        let body = s.if_(cond, then_closure, else_closure);
+        let picker = s.abs(body);
+
+        let g = s.var(0);
+        let five = s.lit(5);
+        let call_g = s.app(g, five);
+        let inn = s.abs(call_g);
+
+        let x2 = s.var(0);
+        let chosen = s.app(picker, x2);
+        let called = s.app(inn, chosen);
+        let f = s.abs(called);
+
+        assert!(
+            prove_closure_expr(&s, f).is_none(),
+            "an If between two different-arity closures should be rejected, not accepted as a single blind Clo"
+        );
     }
 
     #[test]

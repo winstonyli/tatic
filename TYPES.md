@@ -36,16 +36,21 @@ other:
 ```
 
 `Int` is the kernel's postulated `Int : Sort(0)` (`ArithPostulates::new`).
-`Clo` is the kernel's postulated `Clo : Sort(0)` (`ClosurePostulates::new`)
-— **one single type**, not a family indexed by arity. This is the crux of
-section 6 below: every closure value in this fragment, whatever its real
-arity, has exactly the same kernel-level type. Arity is tracked entirely
-*outside* the kernel type, as a side channel threaded through Rust values
-(`Option<usize>`, `None` meaning `Int` and `Some(k)` meaning "a closure
-always called with exactly `k` arguments" — this document writes that as
-`Clo_k` where the distinction matters, but stress: `Clo_k` is not a real
-kernel type; it's `Clo` plus an out-of-band arity `k` that nothing at the
-kernel level ever inspects).
+`Clo` is really a **family of kernel types, `Clo_k : Sort(0)`, one per
+distinct arity `k`** actually used (`ClosurePostulates::clo_ty`), lazily
+postulated the same way `Env_γ` already was per capture signature — see
+section 6.2/7 (kept as history: this family is what section 7 originally
+*proposed*, and what's now actually implemented). `Clo_k` and `Clo_j` are
+separate postulates, hence definitionally *unequal* whenever `k ≠ j`, so
+`kernel::check` itself rejects a `Clo_j` value supplied where `Clo_k` is
+expected — arity agreement is a genuine kernel-checked property, not
+Rust-asserted. Rust-level code (`Option<usize>`, `None` meaning `Int` and
+`Some(k)` meaning "a closure always called with exactly `k` arguments")
+still decides *which* `k` to ask `clo_ty`/`apply_ref`/etc. for at each
+call site — the type system's rules (section 4) are unchanged in shape,
+each one keyed by whatever `k` its own `Γ`/`param_types`/
+`combinator_return_type` already carries — but the kernel-level type that
+choice produces is no longer a single blind `Clo`.
 
 ## 3. Contexts
 
@@ -318,29 +323,42 @@ asymmetry — one side type-erased and externally verified, the other
 type-directed and internally checked — is why `proof.rs` needed an actual
 (if scattered) type system and `compile.rs` never did.
 
-### 6.2 The kernel-checked proof doesn't actually verify arity
+### 6.2 The kernel-checked proof now verifies arity too (history: it didn't)
 
-This is the sharpest finding from writing the system down as one thing:
-**`Clo` is a single, arity-blind kernel type** (section 2). Every rule in
-section 4 that involves a `Clo` value — `Var-App`'s `apply_ref(k)`,
-`LitLambda-Sat`'s own parameter types, `LitLambda-Over`'s dispatch,
-`Capture`'s `Env_γ` — gets its arity from **Rust-level bookkeeping**
-(`Γ`, `param_types_for`, `capture_sig`, `combinator_return_type`), never
-from anything the kernel itself inspects. `kernel::check`ing the resulting
-proof confirms the *elaborated expression* type-checks against `Int`/
-`Clo`/`Env_γ` as postulated — it does not, and structurally cannot,
-confirm that the `k` baked into `apply_ref(k)`'s own postulate actually
-matches the real arity of whatever `Clo` value flows through it at
-runtime. That agreement is established entirely by the Rust code building
-the proof being correct, checked by this project's own tests (unit tests,
-three fuzzers, `debug_assert_has_type`) — not by the kernel-checked proof
-itself. It's a real, working safety net (this whole session's `push_pap_env`
-and `ite_clo_ref` bugs were both caught by it), but it's a different kind
-of guarantee than "the kernel verified this," and the project's own
-framing ("checked, not just asserted") is, on this one point, narrower
-than it reads: checked that the *structure* agrees, assuming arities
-already line up; arity itself is asserted, by Rust, not checked, by the
-kernel.
+**As originally written down, this section's finding was: `Clo` is a
+single, arity-blind kernel type.** Every rule in section 4 that involves a
+`Clo` value — `Var-App`'s `apply_ref(k)`, `LitLambda-Sat`'s own parameter
+types, `LitLambda-Over`'s dispatch, `Capture`'s `Env_γ` — got its arity
+from **Rust-level bookkeeping** (`Γ`, `param_types_for`, `capture_sig`,
+`combinator_return_type`), never from anything the kernel itself
+inspected. `kernel::check`ing the resulting proof confirmed the
+*elaborated expression* type-checked against `Int`/`Clo`/`Env_γ` as
+postulated — it did not, and structurally could not, confirm that the `k`
+baked into `apply_ref(k)`'s own postulate actually matched the real arity
+of whatever `Clo` value flowed through it at runtime. This was a real gap:
+an `If` choosing between two literal-lambda values of genuinely different
+arity kernel-*typechecked* under this scheme (both sides were just
+`Clo`), which was unsound in exactly the way `Clo_1 = Clo_2` would be.
+
+Section 7 (below, also kept as history) proposed the fix; it's now
+implemented. `Clo` is the arity-indexed family described in section 2 —
+`Clo_k`, postulated lazily per distinct `k`, definitionally distinct from
+`Clo_j` for any `j ≠ k`. Every one of the call sites named above already
+had the correct `k` available locally (from `Γ`, a literal lambda's own
+peeled arity, or `combinator_return_type`'s own classification); the
+Rust-level bookkeeping didn't need to grow, only to ask `clo_ty`/
+`apply_ref`/`env_ty`/etc. for the *specific* `k` rather than one universal
+`Clo`. `kernel::check` now rejects an arity mismatch on its own (a `Clo_2`
+value where `Clo_1` was postulated is a domain mismatch, exactly like any
+other `Int`/`Clo` confusion always was) — see
+`a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope`
+in `proof.rs`, which confirms the previously-unsound If-between-different-
+arity-closures shape is now rejected. The remaining honest caveat: the
+kernel still isn't asked to *infer* `k` — Rust still picks which `Clo_k`
+to postulate at each site, exactly as it always picked which `Clo`/`Int`
+to postulate. What changed is that a *wrong* pick (an inconsistent `k`
+somewhere) is now a kernel-checked type error instead of two `Clo`s
+quietly unifying; that's the entire soundness gain, no more, no less.
 
 ### 6.3 Every "still out of scope" case traces to a specific missing rule
 
@@ -356,18 +374,44 @@ kernel.
   section 5) — the shape can't arise given how `Γ` is scoped and how
   `peel` folds consecutive `Abs`.
 
-## 7. A desired type system: arity-indexed `Clo`
+## 7. Arity-indexed `Clo` (implemented)
 
-The one change section 6.2 suggests: replace the single postulated `Clo :
+*This section originally proposed the change described here as future
+work; it's since been implemented (section 2, section 6.2), and the
+section is kept as-is, describing what was actually built, with the one
+correction noted below.*
+
+The one change section 6.2 suggested: replace the single postulated `Clo :
 Sort(0)` with a family `Clo_k : Sort(0)`, one per arity actually used
 (mirroring how `Env_γ` is *already* postulated per signature, not
 universally) — `param_types`/`callee_param_types` already carry the `k`
 needed to pick the right member of the family at every existing call
-site, so this is a change to *which* postulate `clo_ty()` returns, not a
-new inference pass. `apply_ref(k) : Clo_k -> Int -> .. -> Int` would then
-make the kernel itself reject a `Clo_j` value, `j ≠ k`, supplied where
-`Clo_k` is expected — closing the exact gap section 6.2 identifies, for
-the parts of the fragment already tracking `k` correctly in Rust.
+site. `apply_ref(k) : Clo_k -> Int -> .. -> Int` now makes the kernel
+itself reject a `Clo_j` value, `j ≠ k`, supplied where `Clo_k` is
+expected — closing the exact gap section 6.2 identified, for the parts of
+the fragment already tracking `k` correctly in Rust.
+
+One correction to how this section originally described the change:
+it's *not*, in the end, merely "a change to which postulate `clo_ty()`
+returns" — that undersold the actual scope. `capture_sig`/`env_ty`/
+`mk_env_ref` also discarded arity (a `Vec<bool>` "is this capture `Clo`
+at all" signature, not "which `Clo_k`"), and every function building a
+composite postulate type from more than one lazily-postulated piece
+(`mk_env_ref`, `mk_clo_ref`, `call_ref`, `pap_ref`) needed the same
+`Anchored`-based staleness discipline `denote_closure`'s own recursive
+calls already used, extended to cover a *lazy postulate push* (not just a
+recursive call) invalidating an already-resolved sibling `Expr` — because
+unlike the old single, always-eagerly-postulated `Clo`, `clo_ty(k)` now
+genuinely can push on first use for any given `k`, possibly more than
+once within one function if several distinct arities are involved. All of
+that had to land together, in one pass, or a partial version would have
+kernel-type-mismatched — and hence rejected — currently-working capturing
+closures. `Denoted` itself, notably, did **not** need to grow an arity
+field: every site that needs a specific `k` to build an `ite_clo_ref`/
+`clo_ty` reference already has it available structurally (via
+`return_type_of`, reused directly against an arbitrary subexpression, not
+just a combinator's own body) rather than needing it carried on the
+denoted value itself.
 
 What this *doesn't* buy: none of section 6.3's three restrictions move.
 Arity-indexing makes the *existing* guarantee genuinely kernel-checked
@@ -375,6 +419,4 @@ instead of Rust-asserted; it doesn't add arity polymorphism (still no
 rule for an inconsistently-called variable), doesn't add a top-level
 `Clo` result (a separate, deliberate restriction, not a typing gap), and
 doesn't touch the capture-of-a-capture non-issue at all. It's a
-soundness-depth improvement, not a coverage improvement — genuinely
-worth doing on its own merits, but a materially different, separate piece
-of work from every widening this session has otherwise done.
+soundness-depth improvement, not a coverage improvement.

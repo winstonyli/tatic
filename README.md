@@ -64,9 +64,16 @@ The closures fragment's own `Int`/`Clo` type system — implicit, spread
 across `compile.rs` and `proof.rs`, never written down as one thing until
 now — is formalized in [`TYPES.md`](TYPES.md): its grammar, its typing
 judgment (with each rule tied to where it's actually implemented), and a
-real finding the writeup surfaced — the kernel-checked proof verifies
-*structural* agreement, not closure arity, which is tracked entirely by
-Rust-level bookkeeping the kernel itself never inspects.
+real finding the writeup surfaced — `Clo` used to be a single,
+arity-blind kernel type, so the kernel-checked proof verified
+*structural* agreement but not closure arity, which was tracked entirely
+by Rust-level bookkeeping the kernel itself never inspected. `Clo` is now
+`Clo_k`, a family of kernel types indexed by arity (one postulate per
+distinct `k` actually used, mirroring how captures were already
+postulated per signature), so an arity mismatch — e.g. an `If` choosing
+between two closures of genuinely different arity — is now a
+kernel-checked type error instead of two `Clo`s silently unifying; see
+`TYPES.md` section 7.
 
 ## Surface syntax
 
@@ -742,3 +749,19 @@ guards against by hand): caught immediately, at seed 22.
   value (`compile.rs`'s own `register_partial_app`/`emit_pap_wrapper` never
   special-cased `is_rec` either). Over-application (more arguments than
   arity) stays out of scope on both readings.
+- The closures fragment's kernel-checked proof now verifies closure
+  *arity*, not just structural agreement: `Clo` was a single, arity-blind
+  postulate (`TYPES.md` section 6.2's own finding), so an `If` choosing
+  between two literal-lambda values of genuinely different arity
+  kernel-typechecked despite being unsound. `Clo` is now `Clo_k`, a family
+  postulated lazily per distinct arity (`ClosurePostulates::clo_ty`,
+  mirroring how a capture signature was already postulated per shape, not
+  a global count) — `Clo_k`/`Clo_j` are definitionally distinct whenever
+  `k ≠ j`, so `kernel::check` rejects an arity mismatch on its own, for
+  every rule that already tracked the correct `k` in Rust (a parameter's
+  declared arity, a literal lambda's own peeled arity,
+  `combinator_return_type`'s own classification). See `TYPES.md` section 7
+  for the full design and
+  `a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope`
+  (`proof.rs`) for the regression test confirming the previously-unsound
+  shape is now rejected.
