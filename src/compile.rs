@@ -6,13 +6,14 @@
 //! Only a subset of terms fall in this fragment: closed expressions built
 //! from `Var`/`Lit`/`Prim`/`If`, fully-saturated self-calls (optionally
 //! wrapped in `Rec` for recursion), and fully-saturated applications of
-//! either a parameter or a literal lambda value ("combinator" below,
-//! *capturing* or not -- see "Closures" below). Anything else (partial
-//! application, a genuinely free/unbound variable, calling a closure
-//! reached through a captured free variable rather than a parameter,
-//! ...) is rejected by returning `None`, and the caller falls back to
-//! the interpreter — the JIT never has to be complete, only sound about
-//! what it accepts.
+//! either a variable (a parameter *or* a captured free variable -- see
+//! "Closures" below) or a literal lambda value ("combinator" below,
+//! *capturing* or not) holding a closure. Anything else (partial
+//! application, a parameter or captured variable applied with
+//! inconsistent arities across call sites, a genuinely free/unbound
+//! variable, ...) is rejected by returning `None`, and the caller falls
+//! back to the interpreter — the JIT never has to be complete, only
+//! sound about what it accepts.
 //!
 //! Tail self-calls are compiled into a `loop`/`br`, turning tail recursion
 //! into iteration (constant Wasm call-stack depth); non-tail self-calls
@@ -53,11 +54,14 @@
 //! `free_vars` excludes it explicitly rather than have it (wrongly) show
 //! up as an uncapturable free variable in every recursive function.
 //!
-//! A closure value can then be *applied* two ways: through a parameter
-//! that's always called with the same number of arguments everywhere in
-//! its own function (`infer_closure_arities` finds these, and application
-//! compiles to Wasm's `call_indirect` through the shared table, unpacking
-//! the environment pointer and table index back out of the packed `i64`
+//! A closure value can then be *applied* two ways: through a variable
+//! (a parameter *or* a captured free variable -- either resolves via
+//! `compile_var_read` the same way, see above) that's always called with
+//! the same number of arguments everywhere in its own function
+//! (`infer_closure_arities` finds these, keyed by absolute `Var` index so
+//! it doesn't need to distinguish the two, and application compiles to
+//! Wasm's `call_indirect` through the shared table, unpacking the
+//! environment pointer and table index back out of the packed `i64`
 //! first), or as a literal lambda appearing directly in function position
 //! (`Combinators::register` gives it a table slot and its call compiles
 //! to an ordinary, statically-known `call`, with a freshly created
@@ -66,19 +70,17 @@
 //! result, ...) packs its (possibly-empty) environment and table index
 //! into a single `i64` the same way either path would.
 //!
-//! What's still out of scope: partial application, a parameter applied
-//! with inconsistent arities across call sites, calling a closure reached
-//! through a captured free variable rather than through one of the
-//! current function's own parameters (`scan_for_closure_calls` only infers
-//! closure-call arities for params), and capturing an enclosing
-//! self-recursive binding's own self-reference as a plain value from a
-//! *nested* closure (an honest, structural rejection -- see
-//! `free_vars`'s self-exclusion -- rather than a special-cased check).
-//! `Combinators` also doesn't statically check that a value passed into a
-//! closure-typed parameter actually has the arity that parameter's own
-//! body expects of it -- `call_indirect`'s own dynamic type check catches
-//! a mismatch as a trap, caught safely by `jit.rs`'s sample verification
-//! the same way any other compiler bug would be.
+//! What's still out of scope: partial application, a variable (parameter
+//! or captured free variable) applied with inconsistent arities across
+//! call sites, and capturing an enclosing self-recursive binding's own
+//! self-reference as a plain value from a *nested* closure (an honest,
+//! structural rejection -- see `free_vars`'s self-exclusion -- rather
+//! than a special-cased check). `Combinators` also doesn't statically
+//! check that a value passed into a closure-typed parameter actually has
+//! the arity that parameter's own body expects of it -- `call_indirect`'s
+//! own dynamic type check catches a mismatch as a trap, caught safely by
+//! `jit.rs`'s sample verification the same way any other compiler bug
+//! would be.
 
 use hashbrown::HashMap;
 
@@ -439,14 +441,17 @@ fn collect_free_vars(
     }
 }
 
-/// For each of `h`'s own `arity` parameters (indexed the same way
-/// `local_index` does), finds whether it's ever used as an application's
-/// callee and, if so, at what arity -- e.g. `f` in `f(f(x))` is `Some(1)`.
-/// Used with an inconsistent arity across call sites (`f(x)` *and*
-/// `f(x,y)`) fails the whole function (partial application isn't
-/// supported); never applied at all (just read as a value) is `None`.
-pub(crate) fn infer_closure_arities(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Option<Vec<Option<usize>>> {
-    let mut found = vec![None; arity];
+/// For every absolute `Var` index in `h` (a parameter of the function
+/// being compiled, *or* a captured free variable -- this doesn't
+/// distinguish the two, since a closure-typed value read resolves the
+/// same way either way, see `compile_var_read`), finds whether it's ever
+/// used as an application's callee and, if so, at what arity -- e.g. `f`
+/// in `f(f(x))` is `Some(1)`. Used with an inconsistent arity across call
+/// sites (`f(x)` *and* `f(x,y)`) fails the whole function (partial
+/// application isn't supported); never applied at all (just read as a
+/// value) simply has no entry.
+pub(crate) fn infer_closure_arities(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Option<HashMap<u32, usize>> {
+    let mut found = HashMap::new();
     scan_for_closure_calls(store, h, arity, self_idx, &mut found)?;
     Some(found)
 }
@@ -456,7 +461,7 @@ fn scan_for_closure_calls(
     h: Hash,
     arity: usize,
     self_idx: Option<u32>,
-    found: &mut [Option<usize>],
+    found: &mut HashMap<u32, usize>,
 ) -> Option<()> {
     if let Term::If(c, t, e) = store.resolve(h) {
         let (c, t, e) = (*c, *t, *e);
@@ -474,16 +479,22 @@ fn scan_for_closure_calls(
     if matches!(store.resolve(h), Term::App(..)) {
         let (root, args) = unwind_app_spine(store, h);
         match store.resolve(root) {
-            Term::Var(i) if (*i as usize) < arity => {
-                let li = local_index(*i, arity)? as usize;
-                match found[li] {
-                    None => found[li] = Some(args.len()),
-                    Some(k) if k == args.len() => {}
+            // A parameter *or* a captured free variable used as a
+            // callee -- both resolve to a packed closure value the same
+            // way (`compile_var_read`), so both get tracked here
+            // uniformly; whether `i` actually resolves to anything at
+            // all is checked later, at codegen.
+            Term::Var(i) => {
+                match found.get(i) {
+                    None => {
+                        found.insert(*i, args.len());
+                    }
+                    Some(&k) if k == args.len() => {}
                     Some(_) => return None, // inconsistent arity: partial application
                 }
             }
             Term::Abs(_) | Term::Rec(_) => {} // a literal redex callee (possibly self-recursive) -- fine, checked again at codegen
-            _ => return None,  // callee is neither a parameter nor a literal lambda/combinator
+            _ => return None,  // callee is neither a variable nor a literal lambda/combinator
         }
         for a in &args {
             scan_for_closure_calls(store, *a, arity, self_idx, found)?;
@@ -597,7 +608,10 @@ struct FnCtx<'a, 'b> {
     name: &'b str,
     arity: usize,
     self_idx: Option<u32>,
-    closure_arities: &'b [Option<usize>],
+    /// From `infer_closure_arities`: absolute `Var` index -> the arity
+    /// it's always called with, whether that index resolves to one of
+    /// this function's own parameters or to one of its captures.
+    closure_arities: &'b HashMap<u32, usize>,
     /// Whether this function itself takes an `$env` parameter (true for
     /// every combinator, false for `$f` -- see `compile_function`'s call
     /// sites). A non-tail self-call needs to know this to decide whether
@@ -670,24 +684,32 @@ fn compile_node(
     if matches!(store.resolve(h), Term::App(..)) {
         let (root, args) = unwind_app_spine(store, h);
         match store.resolve(root) {
-            Term::Var(i) if (*i as usize) < arity => {
-                let li = local_index(*i, arity)?;
-                let expected = ctx.closure_arities[li as usize]?;
+            // A closure-typed variable used as a callee -- a parameter
+            // (`i < arity`) *or* a captured free variable (`i >= arity`):
+            // `compile_var_read` resolves either the same way, so this
+            // doesn't need to distinguish them; calling a closure reached
+            // through a captured variable works exactly like calling one
+            // reached through a parameter, just resolved differently.
+            Term::Var(i) => {
+                let expected = *ctx.closure_arities.get(i)?;
                 if args.len() != expected {
                     return None;
                 }
                 // Unpack the callee's environment pointer (high 32 bits)
                 // first -- it's `call_indirect`'s first operand, ahead of
                 // the actual arguments -- then its table index (low 32
-                // bits) last, as `call_indirect` itself requires.
-                push_line(w, indent, &format!("local.get $p{li}"));
+                // bits) last, as `call_indirect` itself requires. Reading
+                // the packed value twice (once per half) is fine -- it's
+                // a pure local/memory read either way, nothing mutates
+                // it in between.
+                compile_var_read(ctx, *i, w, indent)?;
                 push_line(w, indent, "i64.const 32");
                 push_line(w, indent, "i64.shr_u");
                 push_line(w, indent, "i32.wrap_i64");
                 for a in &args {
                     compile_node(ctx, combinators, *a, false, w, indent)?;
                 }
-                push_line(w, indent, &format!("local.get $p{li}"));
+                compile_var_read(ctx, *i, w, indent)?;
                 push_line(w, indent, "i32.wrap_i64");
                 combinators.call_indirect_arities.push(expected);
                 push_line(w, indent, &format!("call_indirect (type $ty{expected})"));
@@ -1167,6 +1189,48 @@ mod tests {
             let interpreted = apply_term(&s, g, &[z]).unwrap();
             assert_eq!(compiled, interpreted, "mismatch at z={z}");
         }
+    }
+
+    #[test]
+    fn calling_a_closure_reached_through_a_captured_free_variable_compiles() {
+        // g = \cb. \x. (\y. cb y) x -- the nested closure `\y. cb y`
+        // calls `cb`, a variable captured from g's own scope (not `y`,
+        // its own parameter) -- exercises the widened call-site support:
+        // calling a closure reached through a captured free variable,
+        // not just through one of the calling function's own parameters
+        // (see `infer_closure_arities`'s docs).
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        // `cb` needs to skip both `y`'s own binder (1) and reach `cb`'s
+        // own slot in g's 2-var scope (1 more, since `cb` is g's outer/
+        // first-bound, hence-higher-indexed param) -- var(2), not var(1).
+        let cb_captured = s.var(2);
+        let cb_call = s.app(cb_captured, y);
+        let inner_closure = s.abs(cb_call);
+        let x = s.var(0);
+        let applied = s.app(inner_closure, x);
+        let inner = s.abs(applied);
+        let g = s.abs(inner);
+
+        // inc = \z. z + 1
+        let z = s.var(0);
+        let one = s.lit(1);
+        let z_plus_1 = s.prim(PrimOp::Add, z, one);
+        let inc = s.abs(z_plus_1);
+
+        let five = s.lit(5);
+        let top = s.app2(g, inc, five);
+
+        let frag = try_compile(&s, top).expect("calling a closure through a capture should compile");
+        assert_eq!(frag.arity, 0);
+        assert!(frag.wat.contains("call_indirect"), "cb y should still compile to call_indirect");
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
+        let compiled = func.call(&mut store, ()).unwrap();
+        let interpreted = apply_term(&s, top, &[]).unwrap();
+        assert_eq!(compiled, 6);
+        assert_eq!(compiled, interpreted);
     }
 
     #[test]

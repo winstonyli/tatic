@@ -1770,18 +1770,22 @@ impl Denoted {
     }
 }
 
-/// `h`'s own parameter types, `compile::infer_closure_arities`'s
-/// classification on `h`'s *own* body/arity, reindexed from its positional
-/// convention to `denote`'s by-`Var`-index one (see `denote_closure`'s
+/// `h`'s own parameter types, from `compile::infer_closure_arities`'s
+/// classification on `h`'s *own* body/arity (already keyed by absolute
+/// `Var` index, the same convention `denote_closure` uses -- see its own
 /// docs) -- shared by `prove_closure_expr`'s top-level call and
-/// `ClosureCombinators::call_ref`'s per-combinator call signature.
+/// `ClosureCombinators::call_ref`'s per-combinator call signature. Only
+/// ever looks up indices `0..arity` (this fragment's own params), so a
+/// captured-free-variable entry `infer_closure_arities` might also carry
+/// (calling a closure reached that way is compile.rs-only territory,
+/// still out of `prove_closure_expr`'s own scope) is never consulted.
 fn param_types_for(store: &TermStore, h: Hash) -> Option<Vec<Option<usize>>> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if is_rec {
         return None;
     }
     let found = compile::infer_closure_arities(store, body, arity, None)?;
-    Some((0..arity).map(|i| found[arity - 1 - i]).collect())
+    Some((0..arity as u32).map(|i| found.get(&i).copied()).collect())
 }
 
 /// Extends `ArithPostulates` with postulated closure-value support -- see
@@ -2122,7 +2126,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
     }
 
     let found = compile::infer_closure_arities(store, body, arity, None)?;
-    let param_types: Vec<Option<usize>> = (0..arity).map(|i| found[arity - 1 - i]).collect();
+    let param_types: Vec<Option<usize>> = (0..arity as u32).map(|i| found.get(&i).copied()).collect();
 
     let mut lits = Vec::new();
     if !collect_literals_closure(store, body, &param_types, &mut lits) {
