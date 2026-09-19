@@ -314,7 +314,14 @@ fn gen_program(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Option<Hash>) 
 
 #[test]
 fn compiled_and_interpreted_agree_on_random_terms() {
-    const SEEDS: u64 = 250;
+    // Raised from 250: that default silently missed a real push_pap_env
+    // clobbering bug (src/compile.rs) for the entire time it was in the
+    // tree -- only a background stress run at 3,000 seeds caught it. The
+    // bug itself is now permanently pinned by its own regression test in
+    // compile.rs, but this bump is about future, still-unknown bugs: a
+    // default four times stronger, without inflating routine `cargo test`
+    // runs to the 4-5 minute range 3,000 seeds costs in a debug build.
+    const SEEDS: u64 = 1000;
     const TRIALS_PER_SEED: u32 = 12;
     const SAMPLE_VALUES: [i64; 7] = [0, 1, -1, 2, -3, 10, -20];
 
