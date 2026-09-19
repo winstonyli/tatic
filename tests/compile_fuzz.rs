@@ -96,7 +96,7 @@ fn gen_expr(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
     if fuel == 0 || rng.below(3) == 0 {
         return gen_leaf(rng, s, scope);
     }
-    match rng.below(4) {
+    match rng.below(5) {
         0 => {
             let a = gen_expr(rng, s, scope, fuel - 1);
             let b = gen_expr(rng, s, scope, fuel - 1);
@@ -109,7 +109,8 @@ fn gen_expr(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
             let e = gen_expr(rng, s, scope, fuel - 1);
             s.if_(c, t, e)
         }
-        _ => gen_closure_block(rng, s, scope, fuel - 1),
+        2 | 3 => gen_closure_block(rng, s, scope, fuel - 1),
+        _ => gen_over_application_block(rng, s, scope, fuel - 1),
     }
 }
 
@@ -167,6 +168,51 @@ fn gen_closure_block(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) ->
         call_caller = s.app(call_caller, r);
     }
     call_caller
+}
+
+/// Builds a literal lambda (arity 1 or 2) whose own body, once saturated,
+/// resolves to a *further* closure -- an `If` between two literal lambdas
+/// of the same arity, the only shape `compile::peel` can't already fold
+/// into one flat combinator (see `compile.rs`'s own "Over-application"
+/// docs) -- then over-applies it with exactly that closure's own arity of
+/// extra arguments, exercising compile.rs's/proof.rs's over-application
+/// dispatch (`combinator_return_type` correctly classifying the root as
+/// `Clo`-returning) on a genuinely well-typed term, distinct from
+/// `gen_over_applied`'s own ill-typed, arithmetic-bodied terms in
+/// `compile_rejects_out_of_scope_terms_cleanly`. Both inner closures may
+/// capture from the root's own parameters, not just the outer `scope`,
+/// matching `gen_closure_block`'s own capturing convention. Always
+/// resolves to a plain `Int`, safe to embed anywhere `gen_expr` is used.
+fn gen_over_application_block(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
+    let root_arity = 1 + rng.below(2); // 1 or 2
+    let extra_arity = 1 + rng.below(2); // 1 or 2
+    let inner_scope = root_arity + extra_arity;
+
+    let inner_body1 = gen_expr(rng, s, inner_scope, fuel);
+    let mut closure1 = inner_body1;
+    for _ in 0..extra_arity {
+        closure1 = s.abs(closure1);
+    }
+
+    let inner_body2 = gen_expr(rng, s, inner_scope, fuel);
+    let mut closure2 = inner_body2;
+    for _ in 0..extra_arity {
+        closure2 = s.abs(closure2);
+    }
+
+    let cond = gen_cond(rng, s, root_arity, fuel);
+    let root_body = s.if_(cond, closure1, closure2);
+    let mut root = root_body;
+    for _ in 0..root_arity {
+        root = s.abs(root);
+    }
+
+    let mut applied = root;
+    for _ in 0..(root_arity + extra_arity) {
+        let arg = gen_expr(rng, s, scope, fuel);
+        applied = s.app(applied, arg);
+    }
+    applied
 }
 
 /// `\x1..xn. gen_expr(...)` -- not self-recursive, arity 1 or 2.
@@ -523,4 +569,71 @@ fn over_applied_ill_typed_terms_still_agree_with_the_interpreter() {
              interpreted={interpreted:?} jit={jitted:?}"
         );
     }
+}
+
+#[test]
+fn over_application_block_terms_compile_and_mostly_get_kernel_checked_proofs() {
+    // The complementary, *well-typed* counterpart to `gen_over_applied`:
+    // `gen_over_application_block` (woven into `gen_expr`'s own dispatch,
+    // so `compiled_and_interpreted_agree_on_random_terms` already
+    // exercises it indirectly) is called *directly* here, bypassing the
+    // rest of the generator tree, so a regression in over-application's
+    // own compile.rs/proof.rs support shows up as a compilation or
+    // kernel-verification rate drop rather than being masked by
+    // `compiled_and_interpreted_agree_on_random_terms`'s own "agree"
+    // check -- which a rejected-and-fallen-back-to-the-interpreter term
+    // would trivially satisfy too, so it alone can't tell "compiles
+    // correctly" from "never even tries."
+    const SEEDS: u64 = 300;
+    const TRIALS_PER_SEED: u32 = 12;
+    const SAMPLE_VALUES: [i64; 7] = [0, 1, -1, 2, -3, 10, -20];
+
+    let mut compiled_count = 0u32;
+    let mut kernel_verified_count = 0u32;
+
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0x0BE5_7A55_0000_u64 ^ seed);
+        let mut s = TermStore::new();
+        let arity = 1 + rng.below(2) as usize;
+        let body = gen_over_application_block(&mut rng, &mut s, arity as u32, 3);
+        let mut term = body;
+        for _ in 0..arity {
+            term = s.abs(term);
+        }
+
+        let mut jit = JitEngine::new();
+        let mut args = vec![0i64; arity];
+        for trial in 0..TRIALS_PER_SEED {
+            for a in args.iter_mut() {
+                *a = SAMPLE_VALUES[rng.below(SAMPLE_VALUES.len() as u32) as usize];
+            }
+            let interpreted = eval::apply_term(&s, term, &args);
+            let jitted = jit.apply(&s, term, &args);
+            let agree = match (&interpreted, &jitted) {
+                (Ok(a), Ok(b)) => a == b,
+                (Err(_), Err(_)) => true,
+                _ => false,
+            };
+            assert!(
+                agree,
+                "seed={seed} trial={trial} args={args:?}: over-application block term mismatch\n\
+                 interpreted={interpreted:?} jit={jitted:?}"
+            );
+        }
+        if jit.stats.compiled > 0 {
+            compiled_count += 1;
+        }
+        if jit.is_kernel_verified(term) {
+            kernel_verified_count += 1;
+        }
+    }
+
+    assert!(
+        compiled_count > SEEDS as u32 / 2,
+        "well-typed over-application terms should mostly compile ({compiled_count}/{SEEDS}) -- check compile.rs's own over-application support, not just this generator"
+    );
+    assert!(
+        kernel_verified_count > 0,
+        "at least some well-typed over-application terms should get a kernel-checked proof -- check combinator_return_type/call_ref"
+    );
 }
