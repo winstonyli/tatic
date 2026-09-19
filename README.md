@@ -281,15 +281,18 @@ This is stated precisely because it would be easy to overclaim here.
   *capturing* one can't use one fixed constant honestly — `compile.rs`
   builds a fresh environment at every creation site, so the same
   combinator denotes differently depending on where it's referenced — so
-  instead `mk_clo_h : Env_n -> Clo` (a function of the environment) and
-  `call_h : Env_n -> T_0 -> .. -> T_{k-1} -> Int` (environment prepended,
+  instead `mk_clo_h : Env -> Clo` (a function of the environment) and
+  `call_h : Env -> T_0 -> .. -> T_{k-1} -> Int` (environment prepended,
   mirroring `compile.rs`'s own `$env`-first calling convention), where
-  `Env_n : Sort(0)` is postulated once *per capture count* (shared across
-  every combinator with that many captures, the same way `apply_k` is
-  shared by arity) with constructor `mk_env_n : Int -> .. -> Int ->
-  Env_n`; `build_env_expr` builds the actual environment argument fresh at
-  each creation site, mirroring `compile.rs`'s own `push_closure_env` at
-  the proof level. Scope, honestly: the *main*, top-level term must still
+  `Env : Sort(0)` is postulated once *per capture signature* (`capture_sig`
+  — which slots are `Clo`-typed, which are `Int`; shared across every
+  combinator whose captures match that exact signature, the same way
+  `apply_k` is shared by arity) with constructor `mk_env : T_0 -> .. ->
+  T_{n-1} -> Env`; `build_env_expr` builds the actual environment argument
+  fresh at each creation site, mirroring `compile.rs`'s own
+  `push_closure_env` at the proof level — including a `Clo`-typed capture
+  (e.g. capturing a closure-typed loop-carried parameter), not just `Int`.
+  Scope, honestly: the *main*, top-level term must still
   be non-recursive (proving a self-recursive function's own body is
   `prove_tail_recursive_universal`'s job, not this one's — see its own
   row above); every `If` branch must denote as `Int`, or *both* as `Clo`
@@ -311,7 +314,7 @@ This is stated precisely because it would be easy to overclaim here.
   meaningfully more machinery for comparatively little of what
   `compile.rs` actually exercises. Caught a real bug while building this:
   `ClosureCombinators::call_ref`'s own type construction read `int_ty`/
-  `clo_ty` in a loop *before* possibly pushing a fresh `Env_n` postulate
+  `clo_ty` in a loop *before* possibly pushing a fresh `Env` postulate
   afterward, silently invalidating those earlier reads — the same
   staleness class `Anchored` exists to prevent, just inside one function's
   own type construction rather than across `denote_closure`'s recursive
@@ -323,12 +326,12 @@ This is stated precisely because it would be easy to overclaim here.
   gets a value, `mk_pap_h_k : T_0 -> .. -> T_{k-1} -> Clo`, postulated once
   per `(h, k)` pair the same way `register_partial_app` itself dedups —
   the `k` supplied arguments are ordinary call-site subexpressions, denoted
-  the normal recursive way rather than through any `Env_n`-style
+  the normal recursive way rather than through any `Env`-style
   machinery, which makes this piece simpler than the capturing-closures
   one above. Now covers a *capturing* root too, mirroring `compile.rs`'s
   own `push_pap_env`: when the root captures, `mk_pap_h_k`'s postulated
-  type takes the root's own `Env_n` as an extra leading parameter
-  (`Env_n -> T_0 -> .. -> T_{k-1} -> Clo`, the same environment-first
+  type takes the root's own `Env` as an extra leading parameter
+  (`Env -> T_0 -> .. -> T_{k-1} -> Clo`, the same environment-first
   convention `call_h` uses), and every call site builds that environment
   via `build_env_expr` and prepends it to the supplied arguments. Caught
   the same class of indexing bug this fragment already had one
@@ -444,9 +447,9 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   top-level term must be non-recursive for this fragment): on this
   machine, `twice_inc_5` (non-capturing, the same term `main.rs`'s own
   demo uses) is the cheapest at ~10.3µs; a directly-called capturing
-  closure costs ~14.4µs (the extra `Env_n` value); a non-capturing partial
+  closure costs ~14.4µs (the extra `Env` value); a non-capturing partial
   application ~11.8µs; a capturing one ~21.8µs (paying for both the PAP
-  wrapper postulate and its own `Env_n`, on top of everything the
+  wrapper postulate and its own `Env`, on top of everything the
   non-capturing PAP case already does). Also
   `closure_typed_recursion_universal_proof` — `prove_tail_recursive_universal`'s
   own cost for a closure-typed loop-carried parameter (`iterate`'s
@@ -675,19 +678,26 @@ guards against by hand): caught immediately, at seed 22.
   compile-time-desugared synthesized wrapper for an under-applied literal
   — landed; see `compile.rs`'s own module docs.)
 - `prove_closure_expr` now covers *capturing* closures too (`mk_clo_h`/
-  `Env_n`/`build_env_expr` — see the table row above and `proof.rs`'s own
-  section docs), but only when every captured value is `Int`-typed and
-  resolves directly to the calling function's own parameters (not,
-  transitively, to one of *that* function's own captures) — widening to a
-  captured `Clo` value, or nested capturing (a capturing closure inside
-  another capturing closure's own captures), is future work, not a
-  fundamental limit: `compile.rs` itself already handles both via
-  `compile_var_read`'s own recursive resolution, `build_env_expr` just
-  doesn't mirror that recursion yet.
+  `Env`/`build_env_expr` — see the table row above and `proof.rs`'s own
+  section docs), including a captured `Clo` value (e.g. capturing a
+  closure-typed loop-carried parameter), not just `Int` — `Env`/`mk_env`
+  are keyed by the whole capture signature (`capture_sig`), not a count,
+  so a mixed-type environment gets its own honestly-typed postulate.
+  Each captured index must still resolve directly to one of the calling
+  scope's own parameters; a captured value that's itself a capture of
+  that scope (`compile_var_read`'s own recursive case, for a function
+  that's itself a capturing closure) has no proof-side counterpart, not
+  because it's deferred, but because it can't arise here: `denote_closure`
+  never enters a registered combinator's own body, and `compile::peel`
+  always folds consecutive `Abs` layers into one combinator before it's
+  ever registered, so there's no way for this fragment to encounter one
+  combinator's own body containing another, separately registered one —
+  every capture list is always relative to the one flat ambient scope
+  currently being denoted.
 - `prove_closure_expr` now covers partial application of a literal lambda
   too (`mk_pap_h_k`/`pap_ref` — see the table row above and `proof.rs`'s
   own section docs), including a *capturing* root: `pap_ref`'s postulated
-  type takes the root's own `Env_n` as a leading parameter (mirroring
+  type takes the root's own `Env` as a leading parameter (mirroring
   `call_ref`'s own environment-first convention) when the root captures,
   and every call site builds that environment via `build_env_expr` and
   prepends it, mirroring `compile.rs`'s own `push_pap_env`, which composes

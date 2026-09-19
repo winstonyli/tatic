@@ -721,6 +721,67 @@ mod tests {
     }
 
     #[test]
+    fn a_closure_created_in_a_self_call_argument_capturing_a_closure_typed_loop_parameter_compiles_and_gets_a_universal_proof() {
+        // Same shape as proof::tests::
+        // a_closure_created_in_a_self_call_argument_capturing_a_closure_typed_loop_parameter_gets_a_universal_proof,
+        // run for real here: rec f n g x = if n <= 0 then x else
+        // f(n-1, g, g x + (\y. g y + 1) x) -- each iteration creates a
+        // fresh closure that captures `g` itself (a Clo-typed value, not
+        // an Int). `g x` (a direct call) is what makes `it`'s own scan
+        // classify `g` as Clo-typed in the first place -- `infer_closure_arities`
+        // never looks inside the wrapper's own body, matching
+        // `denote_closure`'s own "never look inside a body" discipline.
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let g = s.var(1);
+        let n = s.var(2);
+        let f = s.var(3);
+
+        let gx = s.app(g, x);
+
+        let y = s.var(0);
+        let g_captured = s.var(2);
+        let gy = s.app(g_captured, y);
+        let one = s.lit(1);
+        let gy_plus_1 = s.prim(PrimOp::Add, gy, one);
+        let wrapper = s.abs(gy_plus_1);
+        let wrapper_call = s.app(wrapper, x);
+
+        let new_x = s.prim(PrimOp::Add, gx, wrapper_call);
+
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one2 = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one2);
+        let f_n1_g = s.app2(f, n_minus_1, g);
+        let rec_call = s.app(f_n1_g, new_x);
+        let body = s.if_(cond, x, rec_call);
+        let g_binder = s.abs(body);
+        let n_binder = s.abs(g_binder);
+        let abs = s.abs(n_binder);
+        let it = s.rec(abs);
+
+        let y2 = s.var(0);
+        let one3 = s.lit(1);
+        let inc_body = s.prim(PrimOp::Add, y2, one3);
+        let inc = s.abs(inc_body);
+
+        let n_lit = s.lit(5);
+        let x0 = s.lit(0);
+        let partial = s.app2(it, n_lit, inc);
+        let top = s.app(partial, x0);
+
+        let mut jit = JitEngine::new();
+        // new_x = g(x) + (g(x)+1) = 2*inc(x)+1 = 2x+3; from x=0: 3, 9,
+        // 21, 45, 93 after 1..5 iterations (same derivation as proof.rs's
+        // own test).
+        assert_eq!(jit.apply(&s, top, &[]).unwrap(), 93);
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(proof::prove_tail_recursive_universal(&s, it).is_some());
+    }
+
+    #[test]
     fn partial_application_of_a_non_capturing_root_compiles_and_is_kernel_verified() {
         // add = \x y. x + y; partial = add(3); caller = \g. g(4);
         // top = caller(partial) -- same shape as
