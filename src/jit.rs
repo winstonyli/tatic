@@ -640,17 +640,17 @@ mod tests {
     }
 
     #[test]
-    fn partial_application_compiles_but_is_not_yet_proven() {
+    fn partial_application_of_a_non_capturing_root_compiles_and_is_kernel_verified() {
         // add = \x y. x + y; partial = add(3); caller = \g. g(4);
         // top = caller(partial) -- same shape as
         // compile::tests::partial_application_of_a_literal_lambda_compiles.
-        // compile.rs now desugars this at compile time (a synthesized
-        // wrapper combinator), so it genuinely compiles and runs -- but,
-        // like a capturing closure, gets no kernel-checked proof yet:
-        // proof.rs's own denote_closure independently checks
-        // `args.len() != arity` for a literal-lambda callee and declines
-        // (an honest gap, not a regression -- proof.rs never knew about
-        // compile.rs's synthesized wrappers to begin with).
+        // compile.rs desugars this at compile time (a synthesized wrapper
+        // combinator), and proof.rs's own denote_closure now covers a
+        // partial application of a *non-capturing* literal too (pap_ref),
+        // so this gets a kernel-checked proof, not just empirical sample
+        // verification -- see proof::tests::
+        // a_partially_applied_literal_lambda_used_as_a_value_gets_a_closure_proof
+        // for the same shape checked directly against proof.rs.
         let mut s = TermStore::new();
         let x = s.var(1);
         let y = s.var(0);
@@ -672,6 +672,42 @@ mod tests {
         assert_eq!(jit.apply(&s, top, &[]).unwrap(), 7);
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
-        assert!(!jit.is_kernel_verified(top), "proof.rs doesn't know about synthesized wrappers yet");
+        assert!(jit.is_kernel_verified(top));
+    }
+
+    #[test]
+    fn partial_application_of_a_capturing_root_compiles_but_is_not_yet_proven() {
+        // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- same shape as
+        // compile::tests::partial_application_of_a_capturing_literal_lambda_compiles.
+        // compile.rs's push_pap_env composes the wrapper's own environment
+        // with a copy of the (capturing) root's environment just fine, but
+        // proof.rs's pap_ref only covers a non-capturing root -- see its
+        // own docs -- so this still gets no kernel-checked proof, an
+        // honest, documented gap (not a regression).
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        let x = s.var(1);
+        let z_captured = s.var(2);
+        let xy = s.prim(PrimOp::Add, x, y);
+        let xyz = s.prim(PrimOp::Add, xy, z_captured);
+        let inner = s.abs(xyz);
+        let capturing_add = s.abs(inner);
+
+        let three = s.lit(3);
+        let partial = s.app(capturing_add, three);
+
+        let g2 = s.var(0);
+        let four = s.lit(4);
+        let call_g2 = s.app(g2, four);
+        let caller = s.abs(call_g2);
+
+        let called = s.app(caller, partial);
+        let g = s.abs(called);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, g, &[10]).unwrap(), 17); // (3 + 4 + 10)
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(!jit.is_kernel_verified(g), "proof.rs's pap_ref only covers a non-capturing root");
     }
 }

@@ -199,7 +199,7 @@ This is stated precisely because it would be easy to overclaim here.
   costs more than it saves at that scale. A caller that specifically
   expects a large or branching construction wraps its own call in it (see
   Design notes below for the scoped-vs-standing-cache tradeoff).
-- **Closures, non-capturing and capturing**: `prove_closure_expr` gives a
+- **Closures, non-capturing, capturing, and partially applied**: `prove_closure_expr` gives a
   closed, non-recursive closures term one kernel proof covering every
   input, the same `refl`-on-a-shared-translation argument `prove_pure_expr`
   makes for straight-line arithmetic — nothing here evaluates anything
@@ -246,7 +246,27 @@ This is stated precisely because it would be easy to overclaim here.
   own type construction rather than across `denote_closure`'s recursive
   calls. Caught by the `#[cfg(debug_assertions)]` `debug_assert_has_type`
   checks on the very first test exercising a direct call to a capturing
-  combinator, before it could reach anything outside this module.
+  combinator, before it could reach anything outside this module. A
+  literal lambda applied to *fewer* arguments than its own arity (a
+  partial application, `compile.rs`'s own `register_partial_app`) also
+  gets a value, `mk_pap_h_k : T_0 -> .. -> T_{k-1} -> Clo`, postulated once
+  per `(h, k)` pair the same way `register_partial_app` itself dedups —
+  the `k` supplied arguments are ordinary call-site subexpressions, denoted
+  the normal recursive way rather than through any `Env_n`-style
+  machinery, which makes this piece simpler than the capturing-closures
+  one above. Scoped to a *non-capturing* root only, for now — `compile.rs`
+  itself already handles partially applying a capturing literal
+  (`push_pap_env` composes the wrapper's own environment with a copy of
+  the root's), but proving that composition is deferred as future work.
+  Caught the same class of indexing bug this fragment already had one
+  example of: the postulate's own parameter types must be sliced from the
+  *last* `k` entries of `h`'s `param_types` (the first-`k`-applied
+  positions), not the first `k` — an initially-mis-drafted `param_types[..k]`
+  slice, caught before being written by re-deriving `call_ref`'s existing
+  wrap-order convention, and independently confirmed by a regression test
+  built specifically to exercise it (mixed `Clo`/`Int` parameter types,
+  where the two slices actually disagree — `add`'s own two `Int`
+  parameters can't tell them apart).
 
 In every case, `jit.rs`'s sample-based verification against the
 interpreter is the actual trust gate for installing a compiled form. A
@@ -453,8 +473,11 @@ first seed, as expected.
   fundamental limit: `compile.rs` itself already handles both via
   `compile_var_read`'s own recursive resolution, `build_env_expr` just
   doesn't mirror that recursion yet.
-- Extending `prove_closure_expr` to cover partial application of a literal
-  lambda now that `compile.rs` compiles those too (compile-time-desugared
-  synthesized wrappers) — `denote_closure` already declines one outright
-  (an arity mismatch against the callee's *own* arity), so no proof is
-  silently over-claimed, just none is offered yet.
+- `prove_closure_expr` now covers partial application of a literal lambda
+  too (`mk_pap_h_k`/`pap_ref` — see the table row above and `proof.rs`'s
+  own section docs), but only when the root being partially applied
+  doesn't itself capture anything — `compile.rs`'s `push_pap_env` already
+  handles partially applying a *capturing* literal (composing the
+  wrapper's own environment with a copy of the root's), `pap_ref` just
+  doesn't mirror that composition yet. Over-application (more arguments
+  than arity) stays out of scope on both readings.

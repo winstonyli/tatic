@@ -1691,7 +1691,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
     })
 }
 
-// --- closures (non-capturing and, now, capturing) --------------------------
+// --- closures (non-capturing, capturing, and partially-applied) ------------
 //
 // Mirrors `compile.rs`'s own closure-conversion reading (see its module
 // docs) at the proof level, for the same fragment it compiles: a closed,
@@ -1763,6 +1763,25 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
 // meaningfully more machinery for comparatively little of the fragment
 // `compile.rs` actually exercises -- narrowing here first, honestly,
 // rather than getting that recursion subtly wrong.
+//
+// A literal lambda applied to *fewer* arguments than its own arity mirrors
+// `compile.rs`'s own compile-time desugaring (`register_partial_app`): a
+// `Clo`-typed value, `mk_pap_h_k : T_0 -> .. -> T_{k-1} -> Clo`, postulated
+// once per `(h, k)` pair (`pap_ref`, memoized the same way `register_partial_app`
+// dedups by `(root, supplied)` alone, since the wrapper's own compiled body
+// depends only on that shape, not on the actual argument *values*). Unlike a
+// capturing combinator's environment, the `k` supplied arguments here are
+// ordinary call-site subexpressions -- denoted the normal recursive way, not
+// resolved through any `Env_n`/`build_env_expr`-style machinery -- so this
+// piece is structurally simpler than the capturing-closures one above.
+// Scoped to a *non-capturing* root only, for now: `pap_ref` returns `None` if
+// `h`'s own body captures anything, the same honest narrowing
+// `build_env_expr` applies to a `Clo`-typed capture -- `compile.rs` itself
+// (`push_pap_env`) already handles partially applying a capturing literal,
+// composing the wrapper's own environment with a copy of the root's, but
+// proving that composition correct is deferred as future work rather than
+// risked getting subtly wrong here. Over-application (more arguments than
+// arity) stays rejected exactly as before.
 
 /// Either an `Int`-typed or a `Clo`-typed denotation -- `denote_closure`
 /// needs to track which, since an application's arguments and an `If`'s
@@ -1816,6 +1835,7 @@ struct ClosurePostulates {
     env_ty_pos: HashMap<usize, usize>,
     mk_env_pos: HashMap<usize, usize>,
     mk_clo_pos: HashMap<Hash, usize>,
+    pap_pos: HashMap<(Hash, usize), usize>,
 }
 
 impl ClosurePostulates {
@@ -1831,6 +1851,7 @@ impl ClosurePostulates {
             env_ty_pos: HashMap::new(),
             mk_env_pos: HashMap::new(),
             mk_clo_pos: HashMap::new(),
+            pap_pos: HashMap::new(),
         }
     }
 
@@ -2012,6 +2033,60 @@ impl<'a> ClosureCombinators<'a> {
         self.cp.combinator_call_pos.insert(h, pos);
         Some(self.cp.arith.p.get(pos))
     }
+
+    /// A postulated `Clo`-typed value for the `compile.rs`-synthesized
+    /// wrapper combinator that partially applies non-capturing literal `h`
+    /// to its first `k` arguments (`register_partial_app`'s own `(root,
+    /// supplied)` shape): `T_0 -> .. -> T_{k-1} -> Clo`, memoized by
+    /// `(h, k)` -- like `register_partial_app` itself, the wrapper's
+    /// compiled body only depends on the *shape* `(h, k)`, never on the
+    /// actual supplied argument values, so those are denoted normally by
+    /// the caller and applied here, not folded into the postulate's own
+    /// identity the way a captured value is folded into `Env_n`.
+    ///
+    /// Each `T_j` is `h`'s own `param_types` at the position `args[j]`
+    /// (application order) actually fills: for a `k`-of-`arity` partial
+    /// application, that's the *first* `k`-applied positions, i.e. the
+    /// **last** `k` entries of `param_types` (`param_types[arity-k..]`,
+    /// not the first `k` -- `param_types[i]` describes `Var(i)`, and
+    /// `Var(arity-1)` is first-applied, `Var(arity-k)` is `k`-th-applied,
+    /// matching `call_ref`'s own `Var(0)`-innermost/`Var(arity-1)`-outermost
+    /// convention and this function's own ascending iteration order below).
+    ///
+    /// Unlike `call_ref`, no `Anchored`-staleness reordering is needed here:
+    /// the loop only reads `clo_ty()`/`int_ty()`, which never push a fresh
+    /// postulate (unlike `call_ref`'s `env_ty()`), so there's no shallower
+    /// depth for an earlier read to go stale relative to.
+    ///
+    /// `None` for a self-recursive, zero-`k`, over-`k` (`k >= arity`), or
+    /// *capturing* root -- partial application of a capturing literal is
+    /// out of scope for now, the same way a captured `Clo` value is out of
+    /// scope for `build_env_expr`: documented future work, not attempted
+    /// here to avoid getting the composition subtly wrong.
+    fn pap_ref(&mut self, h: Hash, k: usize) -> Option<Expr> {
+        if let Some(&pos) = self.cp.pap_pos.get(&(h, k)) {
+            return Some(self.cp.arith.p.get(pos));
+        }
+        let (arity, body, is_rec) = compile::peel(self.store, h)?;
+        if is_rec || k == 0 || k >= arity {
+            return None;
+        }
+        if !compile::free_vars(self.store, body, arity, is_rec).is_empty() {
+            return None; // a capturing root -- out of scope for now
+        }
+        let param_types = param_types_for(self.store, h)?;
+        let mut ty = self.cp.clo_ty();
+        for pt in &param_types[arity - k..] {
+            let dom = match pt {
+                Some(_) => self.cp.clo_ty(),
+                None => self.cp.arith.int_ty(),
+            };
+            ty = kernel::arrow(dom, ty);
+        }
+        let pos = self.cp.arith.p.push(ty);
+        self.cp.pap_pos.insert((h, k), pos);
+        Some(self.cp.arith.p.get(pos))
+    }
 }
 
 /// Builds `mk_env_n(v_1,...,v_n)` for a combinator whose relative capture
@@ -2151,11 +2226,44 @@ fn denote_closure(
             // parameter type at that position (`Clo` or `Int`), which is
             // what lets e.g. `twice(inc, 5)` pass a closure and a plain
             // `Int` to the same call.
+            // A literal lambda in function position, applied to exactly its
+            // own arity (a direct static call), fewer arguments than its
+            // own arity (compile.rs's compile-time-desugared partial
+            // application, `register_partial_app`'s wrapper), or more (over-
+            // application, still rejected).
             Term::Abs(_) => {
                 let callee_param_types = param_types_for(store, root)?;
                 let arity = callee_param_types.len();
-                if args.len() != arity {
-                    return None;
+                if args.len() > arity {
+                    return None; // over-application
+                }
+                if args.len() < arity {
+                    // Compile-time-desugared partial application: build
+                    // mk_pap_root_k(a_1,...,a_k), a Clo-typed value -- see
+                    // pap_ref's own docs for why the supplied arguments are
+                    // denoted normally here rather than resolved through any
+                    // Env_n/build_env_expr-style machinery.
+                    let k = args.len();
+                    let pap_fn = combinators.pap_ref(root, k)?;
+                    let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
+                    let mut arg_exprs = Vec::with_capacity(k);
+                    for (j, &a) in args.iter().enumerate() {
+                        // args[j] (application order) is Var(arity-1-j) --
+                        // see param_types_for's/denote's own convention;
+                        // unchanged by only k of arity args being supplied.
+                        let d = denote_closure(store, a, combinators, params, param_types)?;
+                        let e = match callee_param_types[arity - 1 - j] {
+                            Some(_) => d.clo()?,
+                            None => d.int()?,
+                        };
+                        arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    }
+                    let pap_fn = pap_fn.at(&combinators.cp.arith);
+                    let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                    let applied = apply_n(pap_fn, arg_exprs);
+                    let clo_ty = combinators.cp.clo_ty();
+                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: partial application");
+                    return Some(Denoted::Clo(applied));
                 }
                 let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                 let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
@@ -2256,16 +2364,19 @@ fn denote_closure(
 }
 
 /// Attempts to build an [`EquivalenceProof`] for `h`, covering every input,
-/// for the closures fragment `compile.rs` compiles, capturing or not (see
-/// the section docs above for exactly what's in and out of scope).
-/// Returns `None` for anything outside it: a `Rec`-wrapped term
-/// (self-recursion combined with closures isn't covered), an application
-/// whose callee is neither a closure-typed parameter nor a literal
-/// lambda, an inconsistent arity for a closure-typed parameter, an `If`
-/// whose branches aren't both `Int`, a whole-function result that isn't
-/// `Int`, or (for a capturing combinator specifically) a captured value
-/// that isn't `Int`-typed or doesn't resolve directly to one of the
-/// calling function's own parameters.
+/// for the closures fragment `compile.rs` compiles, capturing, partially
+/// applied, or neither (see the section docs above for exactly what's in
+/// and out of scope). Returns `None` for anything outside it: a
+/// `Rec`-wrapped term (self-recursion combined with closures isn't
+/// covered), an application whose callee is neither a closure-typed
+/// parameter nor a literal lambda, an inconsistent arity for a
+/// closure-typed parameter, an application of a literal lambda to more
+/// arguments than its own arity, an `If` whose branches aren't both `Int`,
+/// a whole-function result that isn't `Int`, a captured value (for a
+/// capturing combinator) that isn't `Int`-typed or doesn't resolve
+/// directly to one of the calling function's own parameters, or a partial
+/// application (fewer arguments than arity) whose root itself captures
+/// anything.
 pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if is_rec {
@@ -2824,9 +2935,18 @@ mod tests {
     }
 
     #[test]
-    fn partial_application_is_still_out_of_scope_for_the_closure_proof() {
-        // \f. f(1) + f(1, 2) -- same adversarial shape as
-        // compile::tests::partial_application_is_still_rejected.
+    fn inconsistent_call_arity_for_a_parameter_is_still_out_of_scope_for_the_closure_proof() {
+        // \f. f(1) + f(1, 2) -- `f`, a *parameter*, called with
+        // inconsistent arities (1 then 2) at different call sites -- same
+        // adversarial shape as
+        // compile::tests::inconsistent_call_arity_for_a_parameter_is_still_rejected.
+        // Unrelated to partial application of a *literal lambda* (see
+        // a_partially_applied_literal_lambda_used_as_a_value_gets_a_closure_proof
+        // below for that, now-covered, case): param_types_for/
+        // infer_closure_arities already reject an inconsistent-arity
+        // parameter outright, before denote_closure's own PAP handling
+        // (which only ever applies to a literal Abs root) ever comes into
+        // play.
         let mut s = TermStore::new();
         let f1 = s.var(0);
         let one = s.lit(1);
@@ -2839,6 +2959,140 @@ mod tests {
 
         assert!(prove_closure_expr(&s, g).is_none());
         assert!(compile::try_compile(&s, g).is_none(), "the compiler should agree this is out of scope too");
+    }
+
+    #[test]
+    fn a_partially_applied_literal_lambda_used_as_a_value_gets_a_closure_proof() {
+        // add = \x y. x + y; partial = add(3) (under-applied by one
+        // argument); caller = \g. g(4); top = caller(partial) -- same
+        // shape as compile::tests::partial_application_of_a_literal_lambda_compiles.
+        // `partial` is denoted via pap_ref's new `Less`-arity branch (a
+        // Clo-typed value), then completed through caller's own
+        // call_indirect the same way any other Clo-typed argument would be.
+        let mut s = TermStore::new();
+        let x = s.var(1);
+        let y = s.var(0);
+        let sum = s.prim(PrimOp::Add, x, y);
+        let inner_add = s.abs(sum);
+        let add = s.abs(inner_add);
+
+        let three = s.lit(3);
+        let partial = s.app(add, three);
+
+        let g = s.var(0);
+        let four = s.lit(4);
+        let call_g = s.app(g, four);
+        let caller = s.abs(call_g);
+
+        let top = s.app(caller, partial);
+
+        let proof = prove_closure_expr(&s, top).expect("a partially applied literal lambda used as a value should get a closure proof");
+        assert_eq!(proof.arity, 0);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        // Also actually compiles, and the two readings agree on scope.
+        assert!(compile::try_compile(&s, top).is_some());
+    }
+
+    #[test]
+    fn a_partially_applied_literal_lambda_with_mixed_parameter_types_gets_a_closure_proof() {
+        // caller2(twice(inc)) -- `twice`'s own param_types are
+        // [None(x), Some(1)(f)] (mixed: x plain Int, f closure-typed),
+        // unlike the add-based test above where both parameters happen to
+        // be Int and so can't distinguish a correct `pap_ref` type slice
+        // from an incorrectly-shifted one. Supplying only `f` (`inc`) is a
+        // 1-of-2 partial application, so pap_ref's type must be built from
+        // param_types[arity-k..] = param_types[1..2] = [Some(1)] (f's own
+        // Clo type) -- not param_types[..k] = param_types[0..1] (x's Int
+        // type, wrong parameter entirely). caller2 = \h. h(5) then
+        // completes the wrapper with the missing `x` argument.
+        let mut s = TermStore::new();
+        let t = twice(&mut s);
+        let i = inc(&mut s);
+        let partial = s.app(t, i); // twice(inc) -- under-applied by one arg (x)
+
+        let h = s.var(0);
+        let five = s.lit(5);
+        let call_h = s.app(h, five);
+        let caller2 = s.abs(call_h);
+
+        let top = s.app(caller2, partial);
+
+        let proof = prove_closure_expr(&s, top).expect("a partially applied combinator with mixed parameter types should get a closure proof");
+        assert_eq!(proof.arity, 0);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        assert!(compile::try_compile(&s, top).is_some());
+    }
+
+    #[test]
+    fn partial_application_of_a_capturing_literal_lambda_is_still_out_of_scope_for_the_closure_proof() {
+        // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- same shape as
+        // compile::tests::partial_application_of_a_capturing_literal_lambda_compiles,
+        // which *does* compile (push_pap_env forwards root's own captured
+        // environment through the wrapper just fine) -- but pap_ref only
+        // covers a non-capturing root (see its own docs: composing a fresh
+        // per-site environment with a partial-application wrapper's own
+        // supplied-argument environment is meaningfully more machinery,
+        // deferred the same way a captured Clo value is deferred by
+        // build_env_expr), so the closure proof still doesn't reach this
+        // one -- an honest, documented gap between what compile.rs handles
+        // and what's proven, distinct from the inconsistent-arity and
+        // over-application cases which are rejected by *both* readings.
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        let x = s.var(1);
+        let z_captured = s.var(2);
+        let xy = s.prim(PrimOp::Add, x, y);
+        let xyz = s.prim(PrimOp::Add, xy, z_captured);
+        let inner = s.abs(xyz);
+        let capturing_add = s.abs(inner);
+
+        let three = s.lit(3);
+        let partial = s.app(capturing_add, three);
+
+        let g2 = s.var(0);
+        let four = s.lit(4);
+        let call_g2 = s.app(g2, four);
+        let caller = s.abs(call_g2);
+
+        let called = s.app(caller, partial);
+        let g = s.abs(called);
+
+        assert!(prove_closure_expr(&s, g).is_none());
+        assert!(compile::try_compile(&s, g).is_some(), "the compiler covers this case even though the closure proof doesn't yet");
+    }
+
+    #[test]
+    fn over_application_of_a_literal_lambda_is_still_out_of_scope_for_the_closure_proof() {
+        // add = \x y. x + y, called with three arguments -- rejected by
+        // denote_closure's own args.len() > arity check, the same way
+        // compile.rs's compile_node rejects it.
+        let mut s = TermStore::new();
+        let x = s.var(1);
+        let y = s.var(0);
+        let sum = s.prim(PrimOp::Add, x, y);
+        let inner_add = s.abs(sum);
+        let add = s.abs(inner_add);
+
+        let one = s.lit(1);
+        let two = s.lit(2);
+        let three = s.lit(3);
+        let partial = s.app2(add, one, two);
+        let over_applied = s.app(partial, three);
+
+        assert!(prove_closure_expr(&s, over_applied).is_none());
+        assert!(compile::try_compile(&s, over_applied).is_none(), "the compiler should agree this is out of scope too");
     }
 
     #[test]
