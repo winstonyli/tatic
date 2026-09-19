@@ -138,9 +138,12 @@ This is stated precisely because it would be easy to overclaim here.
   arbitrary tree of nested `If`s, and each leaf can itself contain any
   number of self-calls combined arithmetically (zero for a base case, one
   in tail position, or several — e.g. Fibonacci's `f(n-1) + f(n-2)`), even
-  when some of those self-calls sit inside a further, purely-arithmetic
-  `If` nested in the leaf itself (e.g. `n + (if c then f(n-1) else
-  f(n-2))`), not just as the whole body of some branch —
+  when some of those self-calls sit inside a further `If` nested in the
+  leaf itself, not just as the whole body of some branch — either purely
+  arithmetic (e.g. `n + (if c then f(n-1) else f(n-2))`), or choosing
+  between two `Clo`-typed values (e.g. a self-call argument
+  `f(n-1, if c then g else h)`, via `ite_clo`, same as `prove_closure_expr`
+  below) —
   together with a recursor obeying the same universal-motive shape as
   `kernel::WRec`, and uses real induction on that recursor to prove
   `loop_val(params, v, e) = v` once, for every `params` and `v`, not per

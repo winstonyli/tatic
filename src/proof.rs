@@ -107,16 +107,16 @@
 //! `compile.rs` requires that too, and gating above relies on comparisons
 //! denoting to exactly `0` or `1`); `body` must have at least one leaf
 //! with a self-call somewhere in it (otherwise there's no recursion to
-//! induct on at all). A leaf's own arithmetic expression *may* itself
-//! contain a further nested `If` (e.g. `n + (if c then 1 else 2)`) --
+//! induct on at all). A leaf's own expression *may* itself contain a
+//! further nested `If`, either purely arithmetic (e.g.
+//! `n + (if c then 1 else 2)`) or choosing between two `Clo`-typed values
+//! (e.g. a self-call argument `f(n-1, if c then g else h)`) --
 //! `find_self_calls`/`denote_with_placeholders` recurse into it exactly
-//! like a `Prim`, treating it as fully opaque via `ite_ref` the same way
-//! `denote` already does for `prove_pure_expr` (no branch is ever
-//! resolved concretely at this, the universal, all-inputs level; a
-//! self-call inside either branch just becomes one more placeholder of
-//! the leaf's `combine` function) -- as long as it stays purely
-//! arithmetic: a nested `If` used as a `Clo`-typed *value* inside a leaf
-//! is still out of scope. `prove_tail_recursive_call` already handles
+//! like a `Prim`, treating it as fully opaque via `ite_ref`/`ite_clo_ref`
+//! the same way `denote_closure` already does (no branch is ever resolved
+//! concretely at this, the universal, all-inputs level; a self-call
+//! inside either branch just becomes one more placeholder of the leaf's
+//! `combine` function). `prove_tail_recursive_call` already handles
 //! arbitrary branching *and* arbitrary self-call placement on its own (it
 //! just follows one concrete path per call, denoting whatever it finds
 //! along the way), so neither of those needed widening.
@@ -641,11 +641,11 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // what lets the gating above use plain equality, since a comparison only
 // ever denotes to `0` or `1`); `body` must have at least one leaf with a
 // self-call in it somewhere. A leaf's own expression *may* contain a
-// further, purely-arithmetic nested `If` (`find_self_calls`/
-// `denote_with_placeholders` both recurse into one, embedding it opaquely
-// via `ite_ref`, same as `denote` always has for `prove_pure_expr`) -- a
-// nested `If` used as a `Clo`-typed value inside a leaf is still out of
-// scope. `prove_tail_recursive_call` already handles arbitrary branching
+// further nested `If`, purely arithmetic or choosing between two
+// `Clo`-typed values (`find_self_calls`/`denote_with_placeholders` both
+// recurse into one, embedding it opaquely via `ite_ref`/`ite_clo_ref`,
+// same as `denote_closure` always has). `prove_tail_recursive_call`
+// already handles arbitrary branching
 // *and* arbitrary self-call placement on its own (it just follows one
 // concrete path through the tree per call, denoting whatever it finds
 // along the way), so neither of those needed widening.
@@ -898,10 +898,12 @@ fn flatten_tree(store: &TermStore, tree: &DecisionTree, self_call: SelfCall, par
 /// closures-blind behavior as before) is recursed into (its own arguments
 /// may still contain further self-call occurrences), not rejected outright.
 /// A nested `If`'s condition/branches are recursed into the same way (a
-/// self-call may occur in any of them), always as plain `Int`-typed
-/// arithmetic -- a nested `If` used as a `Clo`-typed *value* (e.g.
-/// `f(n-1, if c then g else h)`) is still out of scope, unlike a nested
-/// `If` that stays purely arithmetic.
+/// self-call may occur in any of them), whether it stays purely
+/// arithmetic or chooses between two `Clo`-typed values (e.g. a self-call
+/// argument `f(n-1, if c then g else h)`) -- which of those it is doesn't
+/// matter here (only to `denote_with_placeholders`'s own type-directed
+/// dispatch), since finding a self-call occurrence never depends on the
+/// type of the expression it's found in.
 fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types: &[Option<usize>], out: &mut Vec<Vec<Hash>>) -> bool {
     if let Some(args) = compile::match_self_call(store, h, self_call.arity, Some(self_call.idx)) {
         out.push(args);
@@ -959,10 +961,9 @@ fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types:
 /// `combine` function's body (`placeholders` = the `Ev`-bound values) and
 /// nowhere else -- everywhere `combine` is *used* at a different
 /// instantiation, it's applied as a value via `combine_of`, not re-walked.
-/// A purely-arithmetic nested `If` is handled the same way
-/// `denote_closure_typed` handles one; a `Clo`-typed nested-`If` value
-/// (a real, documented restriction -- see the module docs) still fails.
-/// `params` is `Params`'s own raw
+/// A nested `If` is handled the same way `denote_closure_typed` handles
+/// one, purely arithmetic or choosing between two `Clo`-typed values
+/// alike. `params` is `Params`'s own raw
 /// positions, same rationale (and same staleness-avoidance) as
 /// `denote_closure_typed`'s own docs.
 #[allow(clippy::too_many_arguments)]
@@ -1123,25 +1124,55 @@ fn denote_with_placeholders(
             debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: capturing closure value");
             Some(Denoted::Clo(applied))
         }
-        // A nested `If`, purely arithmetic (see `find_self_calls`'s own
-        // docs for the Clo-typed-value case this still doesn't cover):
-        // mirrors `denote_closure_typed`'s identical `Term::If` arm,
-        // threading `placeholders`/`next` through each branch so a
-        // self-call inside either one still gets substituted, in the same
-        // left-to-right order `find_self_calls` just walked it in.
+        // A nested `If`: mirrors `denote_closure`'s identical three-way
+        // match (both branches `Int` via `ite_ref`, both `Clo` via
+        // `ite_clo_ref`, a mismatch rejected), threading
+        // `placeholders`/`next` through each branch so a self-call inside
+        // any of them still gets substituted, in the same left-to-right
+        // order `find_self_calls` just walked it in -- e.g. a self-call
+        // argument `f(n-1, if c then g else h)`, choosing which
+        // `Clo`-typed value to thread into the next iteration.
         Term::If(c, t, e) => {
             let dc = denote_with_placeholders(store, *c, self_call, param_types, combinators, params, placeholders, next)?.int()?;
             let dc = Anchored::new(&combinators.cp.arith, dc);
-            let dt = denote_with_placeholders(store, *t, self_call, param_types, combinators, params, placeholders, next)?.int()?;
-            let dt = Anchored::new(&combinators.cp.arith, dt);
-            let de = denote_with_placeholders(store, *e, self_call, param_types, combinators, params, placeholders, next)?.int()?;
-            let ite = combinators.cp.arith.ite_ref();
-            let dc = dc.at(&combinators.cp.arith);
-            let dt = dt.at(&combinators.cp.arith);
-            let applied = kernel::app3(ite, dc, dt, de);
-            let int_ty = combinators.cp.arith.int_ty();
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: nested If");
-            Some(Denoted::Int(applied))
+            let dt = denote_with_placeholders(store, *t, self_call, param_types, combinators, params, placeholders, next)?;
+            let dt_is_clo = matches!(dt, Denoted::Clo(_));
+            let dt = Anchored::new(&combinators.cp.arith, match dt {
+                Denoted::Int(e) | Denoted::Clo(e) => e,
+            });
+            let de = denote_with_placeholders(store, *e, self_call, param_types, combinators, params, placeholders, next)?;
+            let de_is_clo = matches!(de, Denoted::Clo(_));
+            // Anchored *before* branching on `dt_is_clo`/`de_is_clo` --
+            // `ite_clo_ref`'s lazy first-use postulate push would
+            // otherwise invalidate an unanchored `dt`/`de`, the same
+            // staleness class `denote_closure`'s identical match guards
+            // against (see its own comment).
+            let de = Anchored::new(&combinators.cp.arith, match de {
+                Denoted::Int(e) | Denoted::Clo(e) => e,
+            });
+            match (dt_is_clo, de_is_clo) {
+                (false, false) => {
+                    let ite = combinators.cp.arith.ite_ref();
+                    let dc = dc.at(&combinators.cp.arith);
+                    let dt = dt.at(&combinators.cp.arith);
+                    let de = de.at(&combinators.cp.arith);
+                    let applied = kernel::app3(ite, dc, dt, de);
+                    let int_ty = combinators.cp.arith.int_ty();
+                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: nested If (Int branches)");
+                    Some(Denoted::Int(applied))
+                }
+                (true, true) => {
+                    let ite_clo = combinators.cp.ite_clo_ref();
+                    let dc = dc.at(&combinators.cp.arith);
+                    let dt = dt.at(&combinators.cp.arith);
+                    let de = de.at(&combinators.cp.arith);
+                    let applied = kernel::app3(ite_clo, dc, dt, de);
+                    let clo_ty = combinators.cp.clo_ty();
+                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: nested If (Clo branches)");
+                    Some(Denoted::Clo(applied))
+                }
+                _ => None,
+            }
         }
         Term::Rec(_) | Term::App(..) => None,
     }
@@ -1165,10 +1196,10 @@ fn denote_with_placeholders(
 /// falls outside it, so a self-call's own `Var(self_idx)` callee position
 /// simply fails to resolve as a closure call and is rejected, the same as
 /// any other unrecognized shape); like `denote_with_placeholders`, does
-/// allow a purely-arithmetic nested `If` (both branches `Int` -- an `If`
-/// between two closures is out of scope, matching `denote_closure`'s own
-/// restriction), since a self-call argument was already allowed to be
-/// `if c then x else y` before closures existed here.
+/// allow a nested `If`, both branches `Int` (via `ite_ref`) or both `Clo`
+/// (via `ite_clo_ref`, matching `denote_closure`'s own three-way match),
+/// since a self-call argument was already allowed to be `if c then x
+/// else y` before closures existed here.
 ///
 /// `params` is `Params`'s own raw positions (`&[usize]`, resolved fresh
 /// via `combinators.p.get` at each individual use), not pre-resolved
@@ -1309,19 +1340,49 @@ fn denote_closure_typed(
             debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: Prim");
             Some(Denoted::Int(applied))
         }
+        // Mirrors `denote_closure`'s identical three-way match: both
+        // branches `Int` via `ite_ref`, both `Clo` via `ite_clo_ref`
+        // (e.g. a self-call argument `f(n-1, if c then g else h)`,
+        // choosing which `Clo`-typed value to thread onward), a mismatch
+        // rejected.
         Term::If(c, t, e) => {
             let dc = denote_closure_typed(store, *c, param_types, combinators, params)?.int()?;
             let dc = Anchored::new(&combinators.cp.arith, dc);
-            let dt = denote_closure_typed(store, *t, param_types, combinators, params)?.int()?;
-            let dt = Anchored::new(&combinators.cp.arith, dt);
-            let de = denote_closure_typed(store, *e, param_types, combinators, params)?.int()?;
-            let ite = combinators.cp.arith.ite_ref();
-            let dc = dc.at(&combinators.cp.arith);
-            let dt = dt.at(&combinators.cp.arith);
-            let applied = kernel::app3(ite, dc, dt, de);
-            let int_ty = combinators.cp.arith.int_ty();
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: If");
-            Some(Denoted::Int(applied))
+            let dt = denote_closure_typed(store, *t, param_types, combinators, params)?;
+            let dt_is_clo = matches!(dt, Denoted::Clo(_));
+            let dt = Anchored::new(&combinators.cp.arith, match dt {
+                Denoted::Int(e) | Denoted::Clo(e) => e,
+            });
+            let de = denote_closure_typed(store, *e, param_types, combinators, params)?;
+            let de_is_clo = matches!(de, Denoted::Clo(_));
+            // Anchored before branching -- same staleness reasoning as
+            // `denote_closure`'s own identical match.
+            let de = Anchored::new(&combinators.cp.arith, match de {
+                Denoted::Int(e) | Denoted::Clo(e) => e,
+            });
+            match (dt_is_clo, de_is_clo) {
+                (false, false) => {
+                    let ite = combinators.cp.arith.ite_ref();
+                    let dc = dc.at(&combinators.cp.arith);
+                    let dt = dt.at(&combinators.cp.arith);
+                    let de = de.at(&combinators.cp.arith);
+                    let applied = kernel::app3(ite, dc, dt, de);
+                    let int_ty = combinators.cp.arith.int_ty();
+                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: If (Int branches)");
+                    Some(Denoted::Int(applied))
+                }
+                (true, true) => {
+                    let ite_clo = combinators.cp.ite_clo_ref();
+                    let dc = dc.at(&combinators.cp.arith);
+                    let dt = dt.at(&combinators.cp.arith);
+                    let de = de.at(&combinators.cp.arith);
+                    let applied = kernel::app3(ite_clo, dc, dt, de);
+                    let clo_ty = combinators.cp.clo_ty();
+                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: If (Clo branches)");
+                    Some(Denoted::Clo(applied))
+                }
+                _ => None,
+            }
         }
         // A freshly-created closure *value*, not (yet) called -- e.g.
         // threaded onward as the next iteration's own closure-typed
@@ -1742,6 +1803,25 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         arith.apply_ref(*k);
     }
 
+    // Same fix, a third time: `ite_clo_ref` (needed once `denote_closure_typed`/
+    // `denote_with_placeholders` widened to allow a nested `If` choosing
+    // between two `Clo`-typed values -- see the module docs) is memoized
+    // exactly like `apply_ref`, but isn't tied to any one `Hash`/capture
+    // count the way `register`/`call_ref`/`pap_ref` are, so it doesn't fit
+    // `prime_closure_postulates`'s per-node structural walk below; primed
+    // unconditionally here instead, once per proof attempt, regardless of
+    // whether the term actually contains a `Clo`-typed nested `If` at all
+    // (cheap and term-independent, so there's nothing to gain from
+    // detecting that precisely). Without this, a term whose *first*
+    // `Clo`-typed nested `If` is encountered from inside a temporary
+    // `params_and_close_typed` scope goes stale the exact same way
+    // `apply_ref` used to: `ite_clo_pos` stays recorded after that scope's
+    // own postulate is truncated away, and a *later* scope's unrelated
+    // growth ends up reusing that same position for something else
+    // entirely -- caught immediately by `debug_assert_has_type` rejecting
+    // a non-`Pi` type rather than silently miscompiling a proof.
+    arith.ite_clo_ref();
+
     // Same fix, widened: a self-call argument, or a leaf's own top-level
     // expression, may itself *create* a closure and (fully or partially)
     // call it (`denote_closure_typed`'s/`denote_with_placeholders`'s own
@@ -2089,9 +2169,8 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 /// genuinely created and (fully or partially) called anywhere in the body
 /// -- a self-call argument (`f(n-1, (\y. acc+y)(n))`) or a leaf's own
 /// top-level expression (`(\y. n+y)(5) + f(n-1)`) alike (see module
-/// docs). A leaf may itself contain a further nested `If`, as long as it
-/// stays purely arithmetic (a `Clo`-typed nested-`If` value is still out
-/// of scope).
+/// docs). A leaf may itself contain a further nested `If`, purely
+/// arithmetic or choosing between two `Clo`-typed values.
 pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
     let scaffold = build_universal(store, h)?;
     let theorem_ty = scaffold.theorem_ty.at(&scaffold.combinators);
@@ -4039,6 +4118,128 @@ mod tests {
         let instance = prove_tail_recursive_instance(&s, g, &[5]).expect("f(5) should get an instance");
         kernel::check(&instance.ctx, &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
             .expect("the recorded instance proof should independently re-typecheck");
+    }
+
+    #[test]
+    fn a_clo_typed_nested_if_as_a_direct_self_call_argument_gets_a_universal_proof() {
+        // rec f n g h = if n <= 0 then 0
+        //               else f(n-1, (if n mod 2 == 0 then g else h), h) + g(n) + h(n)
+        // -- `chosen = if n mod 2 == 0 then g else h` is a self-call's own
+        // argument (threaded into the next iteration's `g` slot), and both
+        // branches are `Clo`-typed parameters, not `Int`s -- exercises
+        // `denote_closure_typed`'s widened `Term::If` arm (mirroring
+        // `denote_closure`'s three-way Int/Int-or-Clo/Clo match via
+        // `ite_clo_ref`), which builds each self-call argument's own
+        // denotation for the leaf's `Ev` constructor. `g`/`h` are each
+        // called directly (`g(n)`/`h(n)`) so `infer_closure_arities`
+        // classifies both as `Clo`-typed arity-1 parameters in the first
+        // place.
+        let mut s = TermStore::new();
+        let n = s.var(2);
+        let g = s.var(1);
+        let h = s.var(0);
+        let f = s.var(3);
+
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let two = s.lit(2);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_mod_2 = s.prim(PrimOp::Mod, n, two);
+        let inner_cond = s.prim(PrimOp::Eq, n_mod_2, zero);
+        let chosen = s.if_(inner_cond, g, h);
+
+        let f_n1 = s.app(f, n_minus_1);
+        let f_n1_chosen = s.app(f_n1, chosen);
+        let self_call = s.app(f_n1_chosen, h);
+
+        let call_g_n = s.app(g, n);
+        let call_h_n = s.app(h, n);
+        let sum1 = s.prim(PrimOp::Add, self_call, call_g_n);
+        let leaf = s.prim(PrimOp::Add, sum1, call_h_n);
+
+        let body = s.if_(cond, zero, leaf);
+        let b1 = s.abs(body);
+        let b2 = s.abs(b1);
+        let abs = s.abs(b2);
+        let top = s.rec(abs);
+
+        let proof = prove_tail_recursive_universal(&s, top)
+            .expect("a Clo-typed nested If as a direct self-call argument should get a universal proof");
+        assert_eq!(proof.arity, 3);
+        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+            .expect("the recorded theorem should independently re-typecheck");
+    }
+
+    #[test]
+    fn a_clo_typed_nested_if_as_an_ad_hoc_closures_own_argument_gets_a_universal_proof() {
+        // rec f n g g2 x =
+        //   if n <= 0 then x
+        //   else g(0) + g2(0) + (\h. h(x))(if n mod 2 == 0 then g else g2)
+        //        + f(n-1, g, g2, x)
+        // -- unlike the test above, the nested If here isn't a self-call's
+        // own argument (find_self_calls's early self-call match would
+        // consume the whole call node before ever walking into it); it's
+        // the argument to an ad-hoc closure (`\h. h(x)`, itself capturing
+        // `x` and calling its own `h` parameter, so `h` is itself
+        // Clo-typed) created and called within the leaf, *alongside* a
+        // separate, visible self-call in the same leaf's `Prim` tree. This
+        // exercises `denote_with_placeholders`'s own widened `Term::If`
+        // arm -- the leaf-specific walker that builds the leaf's `combine`
+        // function body -- rather than `denote_closure_typed`'s. `g`/`g2`
+        // are each called directly (`g(0)`/`g2(0)`) purely so
+        // `infer_closure_arities` classifies both as `Clo`-typed.
+        let mut s = TermStore::new();
+        let n = s.var(3);
+        let g = s.var(2);
+        let g2 = s.var(1);
+        let x = s.var(0);
+        let f = s.var(4);
+
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let two = s.lit(2);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_mod_2 = s.prim(PrimOp::Mod, n, two);
+        let inner_cond = s.prim(PrimOp::Eq, n_mod_2, zero);
+        let chosen = s.if_(inner_cond, g, g2);
+
+        let call_g0 = s.app(g, zero);
+        let call_g20 = s.app(g2, zero);
+        let ab = s.prim(PrimOp::Add, call_g0, call_g20);
+
+        // `\h. h(x)`, capturing `x` (Var(1) inside the closure's own
+        // body, shifted by `h`'s own binder), h itself Clo-typed since
+        // it's called right there.
+        let h_var = s.var(0);
+        let x_in_closure = s.var(1);
+        let h_call = s.app(h_var, x_in_closure);
+        let closure = s.abs(h_call);
+        let closure_applied = s.app(closure, chosen);
+
+        let abc = s.prim(PrimOp::Add, ab, closure_applied);
+
+        let f_n1 = s.app(f, n_minus_1);
+        let f_n1_g = s.app(f_n1, g);
+        let f_n1_g_g2 = s.app(f_n1_g, g2);
+        let self_call = s.app(f_n1_g_g2, x);
+
+        let leaf = s.prim(PrimOp::Add, abc, self_call);
+        let body = s.if_(cond, x, leaf);
+
+        let b1 = s.abs(body);
+        let b2 = s.abs(b1);
+        let b3 = s.abs(b2);
+        let abs = s.abs(b3);
+        let top = s.rec(abs);
+
+        let proof = prove_tail_recursive_universal(&s, top).expect(
+            "a Clo-typed nested If used as an ad-hoc closure's own argument, alongside a separate self-call in the same leaf, should get a universal proof",
+        );
+        assert_eq!(proof.arity, 4);
+        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+            .expect("the recorded theorem should independently re-typecheck");
     }
 
     #[test]
