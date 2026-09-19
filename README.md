@@ -413,11 +413,21 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   *parameter* (`inc`, non-capturing) threaded through every iteration and
   called via `call_indirect` each time, rather than a fresh closure
   created per iteration, isolating `call_indirect`'s own unpacking cost
-  from closure-conversion's allocation cost. Also gets a kernel-checked
-  universal proof (`prove_tail_recursive_universal` covers a closure-typed
-  loop-carried parameter, see "Proof strategies" above); on this machine,
-  warm calls run at ~5.8µs each, cheaper than either loop above (no
-  environment to build at all, every iteration).
+  from closure-conversion's allocation cost. On this machine, warm calls
+  run at ~5.8µs each, cheaper than either loop above (no environment to
+  build at all, every iteration). The self-recursive function itself
+  (`prove_tail_recursive_universal` covers a closure-typed loop-carried
+  parameter, see "Proof strategies" above) gets the universal theorem,
+  checked directly against it — but since a `Clo`-typed parameter can't be
+  supplied through `jit.apply`'s plain-`i64` args from the outside, the
+  benchmark itself bakes an initial closure in and calls through a
+  wrapper, and `is_kernel_verified` on *that* wrapped term actually
+  reflects `prove_closure_expr`'s own, separate "self-recursive combinator
+  called directly" postulate (opaque either way) rather than the
+  universal theorem — an honest distinction, not a weaker guarantee: the
+  sample-based `verify()` against the interpreter is what actually gates
+  trusting the compiled form regardless of which kernel proof accompanies
+  it.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
   (translation-validation) proof per call, and the one-time universal

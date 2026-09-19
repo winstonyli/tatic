@@ -660,10 +660,26 @@ mod tests {
         // as proof::tests::iterate, but here actually run: a closure-typed
         // *parameter* threaded through every iteration and called
         // (call_indirect) rather than a fresh closure created each
-        // iteration (capturing_closure_loop's own shape above). `inc`, a
-        // non-capturing literal lambda, is baked in as the initial `g` so
-        // the whole term is closed (arity 0) and runnable through
-        // jit.apply directly.
+        // iteration (capturing_closure_loop's own shape above). Since `g`
+        // is Clo-typed, `it` can't be called directly through jit.apply's
+        // plain-i64 args the way gcd/fib/capturing_closure_loop are --
+        // there's no way to hand it a real packed closure value from the
+        // outside -- so `inc` (a non-capturing literal lambda) is baked in
+        // as the initial `g` and wrapped in a fully-applied outer call
+        // (`top`), making the whole term closed (arity 0).
+        //
+        // That wrapping matters for *which* proof `is_kernel_verified`
+        // below actually reflects: `kernel_verify` tries
+        // `prove_closure_expr` before `prove_tail_recursive_universal`,
+        // and `top` -- an application whose root resolves to `it`, fully
+        // applied -- is exactly the "self-recursive combinator called
+        // directly" shape `prove_closure_expr` already covers opaquely
+        // (`call_ref`, never unfolding `it`'s own body), so *that* is what
+        // succeeds here, not the universal theorem `it` gets on its own
+        // (checked directly below) -- an honest distinction, not a
+        // weaker guarantee: `jit.rs`'s own sample-based `verify()` against
+        // the interpreter is still the actual trust gate installing the
+        // compiled form either way (see this module's own docs).
         let mut s = TermStore::new();
         let x = s.var(0);
         let g = s.var(1);
@@ -697,6 +713,11 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
         assert!(jit.is_kernel_verified(top));
+
+        // The universal theorem this recursion path is actually about --
+        // checked directly against `it`, not through `top`'s own opaque
+        // wrapping call.
+        assert!(proof::prove_tail_recursive_universal(&s, it).is_some());
     }
 
     #[test]
