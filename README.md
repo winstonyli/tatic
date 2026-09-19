@@ -60,6 +60,14 @@ each.)
 | `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) — four primitives, chosen because that's provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work). Has a real bidirectional typechecker and normalizer. |
 | `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. |
 
+The closures fragment's own `Int`/`Clo` type system — implicit, spread
+across `compile.rs` and `proof.rs`, never written down as one thing until
+now — is formalized in [`TYPES.md`](TYPES.md): its grammar, its typing
+judgment (with each rule tied to where it's actually implemented), and a
+real finding the writeup surfaced — the kernel-checked proof verifies
+*structural* agreement, not closure arity, which is tracked entirely by
+Rust-level bookkeeping the kernel itself never inspects.
+
 ## Surface syntax
 
 ```rust
