@@ -161,12 +161,15 @@ fn compiled_capturing_closure_demo(s: &mut TermStore) -> Hash {
 /// `dec = \z. z - 1`, `caller = \g x. g x` -- an `If` choosing between two
 /// closures, same shape as `compiled_capturing_closure_demo`'s own
 /// `picker`, but *used as a value* (an argument to `caller`) instead of
-/// *directly called*. `denote_closure`'s own `If` case now covers two
-/// `Clo` branches too (`ite_clo`, postulated lazily), so unlike that demo
-/// -- where `picker` is called directly and `call_ref`'s postulated type
-/// always assumes an `Int` return -- this one gets a kernel-checked proof:
-/// the deciding factor is never whether the term compiles (both do), only
-/// whether the `If`'s own result is handed onward as a value or called.
+/// *directly called*. `denote_closure`'s own `If` case covers two `Clo`
+/// branches too (`ite_clo`, postulated lazily), the same way `call_ref`
+/// now covers a *directly-called* combinator whose own body is such an
+/// `If` (`combinator_return_type`, see its docs) -- both dispatch paths
+/// get a kernel-checked proof now, so this demo and
+/// `compiled_capturing_closure_demo` no longer contrast on that front;
+/// kept side by side to show the two are handled by genuinely different
+/// machinery (`ite_clo` here, `call_ref`'s own return-type classification
+/// there), not because only one of them compiles or proves.
 fn ite_between_closures_used_as_a_value_demo(s: &mut TermStore) -> Hash {
     let y = s.var(0);
     let one = s.lit(1);

@@ -1008,14 +1008,13 @@ fn denote_with_placeholders(
             // A closure created and (fully or partially) called right
             // here, within the leaf's own expression -- mirrors
             // `denote_closure_typed`'s own `Term::Abs | Term::Rec` case
-            // (and, through it, `denote_closure`'s) exactly, just checking
-            // for a self-call occurrence in each argument first.
+            // (and, through it, `denote_closure`'s) exactly, including its
+            // `combinator_return_type`-gated over-application dispatch,
+            // just checking for a self-call occurrence in each argument
+            // first.
             Term::Abs(_) | Term::Rec(_) => {
                 let callee_param_types = param_types_for(store, root)?;
                 let arity = callee_param_types.len();
-                if args.len() > arity {
-                    return None; // over-application
-                }
                 if args.len() < arity {
                     let k = args.len();
                     let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
@@ -1048,6 +1047,7 @@ fn denote_with_placeholders(
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: partial application");
                     return Some(Denoted::Clo(applied));
                 }
+                let sat_args = &args[..arity];
                 let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                 let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
                 let call_fn = combinators.call_ref(root, &captures, param_types)?;
@@ -1058,8 +1058,8 @@ fn denote_with_placeholders(
                     let e = build_env_expr(combinators, &captures, params, param_types)?;
                     Some(Anchored::new(&combinators.cp.arith, e))
                 };
-                let mut arg_exprs = Vec::with_capacity(args.len());
-                for (j, &a) in args.iter().enumerate() {
+                let mut arg_exprs = Vec::with_capacity(arity);
+                for (j, &a) in sat_args.iter().enumerate() {
                     let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
                     let e = match callee_param_types[arity - 1 - j] {
                         Some(_) => d.clo()?,
@@ -1073,9 +1073,31 @@ fn denote_with_placeholders(
                     all_args.push(env_expr.at(&combinators.cp.arith));
                 }
                 all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
-                let applied = apply_n(call_fn, all_args);
+                let sat_applied = apply_n(call_fn, all_args);
+                let returns_clo = combinator_return_type(store, root).unwrap_or(false);
+                let sat_ty = if returns_clo { combinators.cp.clo_ty() } else { combinators.cp.arith.int_ty() };
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_with_placeholders: direct combinator call");
+
+                if args.len() == arity {
+                    return Some(if returns_clo { Denoted::Clo(sat_applied) } else { Denoted::Int(sat_applied) });
+                }
+
+                if !returns_clo {
+                    return None; // over-application of a plain Int result: genuinely out of scope
+                }
+                let extra_args = &args[arity..];
+                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
+                let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
+                for &a in extra_args {
+                    let e = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
+                    extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                }
+                let apply_fn = combinators.cp.apply_ref(extra_args.len());
+                let sat_applied = sat_applied.at(&combinators.cp.arith);
+                let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                let applied = apply_n(apply_fn, std::iter::once(sat_applied).chain(extra_arg_exprs));
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: direct combinator call");
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: over-application dispatch");
                 return Some(Denoted::Int(applied));
             }
             _ => return None,
@@ -1245,15 +1267,14 @@ fn denote_closure_typed(
             // created and (fully or partially) called right here, in a
             // self-call argument position: mirrors `denote_closure`'s own
             // App-root `Term::Abs | Term::Rec` case exactly (same
-            // direct-call/partial-application/over-application 3-way, same
-            // `pap_ref`-still-rejects-a-recursive-root narrowing), just
-            // against `combinators` directly instead of through a wrapper.
+            // direct-call/partial-application/over-application 3-way,
+            // same `pap_ref`-still-rejects-a-recursive-root narrowing,
+            // same `combinator_return_type`-gated over-application
+            // dispatch), just against `combinators` directly instead of
+            // through a wrapper.
             Term::Abs(_) | Term::Rec(_) => {
                 let callee_param_types = param_types_for(store, root)?;
                 let arity = callee_param_types.len();
-                if args.len() > arity {
-                    return None; // over-application
-                }
                 if args.len() < arity {
                     let k = args.len();
                     let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
@@ -1286,6 +1307,7 @@ fn denote_closure_typed(
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: partial application");
                     return Some(Denoted::Clo(applied));
                 }
+                let sat_args = &args[..arity];
                 let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                 let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
                 let call_fn = combinators.call_ref(root, &captures, param_types)?;
@@ -1296,8 +1318,8 @@ fn denote_closure_typed(
                     let e = build_env_expr(combinators, &captures, params, param_types)?;
                     Some(Anchored::new(&combinators.cp.arith, e))
                 };
-                let mut arg_exprs = Vec::with_capacity(args.len());
-                for (j, &a) in args.iter().enumerate() {
+                let mut arg_exprs = Vec::with_capacity(arity);
+                for (j, &a) in sat_args.iter().enumerate() {
                     let d = denote_closure_typed(store, a, param_types, combinators, params)?;
                     let e = match callee_param_types[arity - 1 - j] {
                         Some(_) => d.clo()?,
@@ -1311,9 +1333,31 @@ fn denote_closure_typed(
                     all_args.push(env_expr.at(&combinators.cp.arith));
                 }
                 all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
-                let applied = apply_n(call_fn, all_args);
+                let sat_applied = apply_n(call_fn, all_args);
+                let returns_clo = combinator_return_type(store, root).unwrap_or(false);
+                let sat_ty = if returns_clo { combinators.cp.clo_ty() } else { combinators.cp.arith.int_ty() };
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_closure_typed: direct combinator call");
+
+                if args.len() == arity {
+                    return Some(if returns_clo { Denoted::Clo(sat_applied) } else { Denoted::Int(sat_applied) });
+                }
+
+                if !returns_clo {
+                    return None; // over-application of a plain Int result: genuinely out of scope
+                }
+                let extra_args = &args[arity..];
+                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
+                let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
+                for &a in extra_args {
+                    let e = denote_closure_typed(store, a, param_types, combinators, params)?.int()?;
+                    extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                }
+                let apply_fn = combinators.cp.apply_ref(extra_args.len());
+                let sat_applied = sat_applied.at(&combinators.cp.arith);
+                let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                let applied = apply_n(apply_fn, std::iter::once(sat_applied).chain(extra_arg_exprs));
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: direct combinator call");
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: over-application dispatch");
                 return Some(Denoted::Int(applied));
             }
             _ => return None,
@@ -1460,9 +1504,6 @@ fn prime_closure_postulates(
             Term::Abs(_) | Term::Rec(_) => {
                 let callee_param_types = param_types_for(store, root)?;
                 let arity = callee_param_types.len();
-                if args.len() > arity {
-                    return None;
-                }
                 if args.len() < arity {
                     combinators.pap_ref(root, args.len(), param_types)?;
                     // `pap_ref` itself only primes the pap combinator's own
@@ -1479,12 +1520,27 @@ fn prime_closure_postulates(
                         combinators.cp.mk_env_ref(&sig);
                     }
                 } else {
+                    // `args.len() >= arity`: primes `call_ref` for root's
+                    // own saturated call, shared between an exact match
+                    // and an over-application's own leading portion; an
+                    // over-application also needs `apply_ref` primed for
+                    // its own extra-argument count -- whether the
+                    // saturated call's result is actually `Clo`-typed
+                    // (required for the real denotation to accept this at
+                    // all -- see `combinator_return_type`) isn't checked
+                    // here, deliberately: priming just needs to cover
+                    // every postulate the real pass *might* touch, and an
+                    // unneeded prime for a term the real pass later
+                    // rejects anyway is harmless, not unsound.
                     let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                     let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
                     combinators.call_ref(root, &captures, param_types)?;
                     if !captures.is_empty() {
                         let sig = capture_sig(&captures, param_types)?;
                         combinators.cp.mk_env_ref(&sig);
+                    }
+                    if args.len() > arity {
+                        combinators.cp.apply_ref(args.len() - arity);
                     }
                 }
                 for &a in &args {
@@ -2701,11 +2757,13 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // within that non-recursive main term, though, may be self-recursive
 // (`Term::Rec`, not just `Term::Abs`) -- see the paragraph below; every
 // `If` branch must denote as `Int`, or *both* as `Clo` (via `ite_clo`, see
-// its own docs -- reachable when the `If`'s own result is used as a
-// value, e.g. an argument to a closure-typed parameter, but *not* when
-// the `If` is a directly-called literal lambda's own top-level body:
-// `call_ref`'s postulated type always assumes `Int`, since it never
-// denotes the callee's body to know any better); and the whole function's
+// its own docs -- reachable both when the `If`'s own result is used as a
+// value, e.g. an argument to a closure-typed parameter, and when the
+// `If` is a directly-called literal lambda's own top-level body:
+// `call_ref`'s postulated return type is no longer a blanket `Int`
+// assumption -- `combinator_return_type` classifies it structurally, per
+// `Hash`, once, without denoting the callee's body in the usual sense --
+// see its own docs); and the whole function's
 // own result must denote as `Int`, not directly return a closure value.
 // For a capturing combinator specifically, `build_env_expr` requires each
 // captured value to resolve *directly* to one of the calling scope's own
@@ -2811,6 +2869,88 @@ fn param_types_for(store: &TermStore, h: Hash) -> Option<Vec<Option<usize>>> {
     let self_idx = is_rec.then_some(arity as u32);
     let found = compile::infer_closure_arities(store, body, arity, self_idx)?;
     Some((0..arity as u32).map(|i| found.get(&i).copied()).collect())
+}
+
+/// Structurally determines whether `h`'s own saturated call denotes an
+/// `Int` (`false`) or a further `Clo` (`true`) -- a per-`Hash`, purely
+/// syntactic property of `h`'s own body, needed for a directly-called
+/// literal lambda whose saturated result is itself treated as a `Clo`
+/// value (over-application, or passing a direct call's result where a
+/// `Clo` is expected -- see `ClosureCombinators::call_ref`'s own use of
+/// this). `None` for anything this doesn't confidently recognize --
+/// callers fall back to assuming `Int`, `call_ref`'s own historical
+/// default, which stays sound for every shape this doesn't classify (a
+/// term that's genuinely `Clo`-typed but unrecognized here just misses
+/// out on the widening, the same "sound, not complete" tradeoff this
+/// whole fragment already makes everywhere else).
+///
+/// Well-founded, so no memoization is needed: a self-call (`Var(self_idx)`)
+/// is always `Int` by this whole fragment's own convention, so recursing
+/// into `h`'s own body never needs `h`'s *own* classification to classify
+/// itself; calling a *different* literal lambda recurses into *that*
+/// lambda's own body instead, a distinct, already-fully-built term
+/// (hash-consing only ever lets a term reference an *already-existing*
+/// sub-hash, so the "calls" relation between distinct combinators is a
+/// strict partial order matching construction order -- it can't cycle
+/// back to `h`). A captured free variable's own type never needs
+/// resolving either: calling *any* closure-typed value -- a parameter, a
+/// capture, or (now) another directly-called combinator's own saturated
+/// result -- always denotes `Int` (the same `apply_k : Clo -> Int -> ..
+/// -> Int` convention `denote_closure`'s own `Term::Var(i)` case already
+/// relies on), so this only ever needs `h`'s *own* declared parameters'
+/// types (`param_types_for`), never a capture's.
+fn combinator_return_type(store: &TermStore, h: Hash) -> Option<bool> {
+    let (arity, body, is_rec) = compile::peel(store, h)?;
+    let self_idx = is_rec.then_some(arity as u32);
+    let param_types = param_types_for(store, h)?;
+    return_type_of(store, body, arity, self_idx, &param_types)
+}
+
+/// `combinator_return_type`'s own recursive walk over one combinator's
+/// body (`arity`/`self_idx`/`param_types` all describe *that* combinator,
+/// unchanged across the whole walk -- only `h` itself moves, the same
+/// convention `find_self_calls`'s own recursion uses).
+fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, param_types: &[Option<usize>]) -> Option<bool> {
+    if compile::match_self_call(store, h, arity, self_idx).is_some() {
+        return Some(false); // a self-call's own result is always Int
+    }
+    if matches!(store.resolve(h), Term::App(..)) {
+        let (root, args) = compile::unwind_app_spine(store, h);
+        return match store.resolve(root) {
+            // Calling a parameter, a capture, or (recursively) another
+            // directly-called combinator's own result: always Int, the
+            // uniform `apply_k`/over-application-dispatch convention.
+            Term::Var(_) => Some(false),
+            Term::Abs(_) | Term::Rec(_) => {
+                let callee_param_types = param_types_for(store, root)?;
+                let callee_arity = callee_param_types.len();
+                match args.len().cmp(&callee_arity) {
+                    std::cmp::Ordering::Equal => combinator_return_type(store, root),
+                    std::cmp::Ordering::Less => Some(true), // a partial-application value is always Clo
+                    std::cmp::Ordering::Greater => Some(false), // over-application's own dispatch is always Int
+                }
+            }
+            _ => None,
+        };
+    }
+    match store.resolve(h) {
+        // A bare parameter, read as a value (not called) -- its own
+        // declared type; out of range (a bare captured free variable, or
+        // this combinator's own self-reference as a plain value, still
+        // unsupported) is undetermined, not an error.
+        Term::Var(i) => {
+            let i = *i as usize;
+            if i < arity { Some(param_types.get(i)?.is_some()) } else { None }
+        }
+        Term::Lit(_) | Term::Prim(..) => Some(false),
+        Term::If(_, t, e) => {
+            let dt = return_type_of(store, *t, arity, self_idx, param_types)?;
+            let de = return_type_of(store, *e, arity, self_idx, param_types)?;
+            (dt == de).then_some(dt)
+        }
+        Term::Abs(_) | Term::Rec(_) => Some(true), // a fresh closure value
+        Term::App(..) => unreachable!("handled above"),
+    }
 }
 
 /// Extends `ArithPostulates` with postulated closure-value support -- see
@@ -3056,8 +3196,8 @@ impl<'a> ClosureCombinators<'a> {
     /// A postulated function for *directly calling* combinator `h` (a
     /// static Wasm `call`, not dispatched through any `Clo` value at all
     /// -- unlike `apply_ref`, there's no leading `Clo` argument here),
-    /// memoized by hash: `T_0 -> T_1 -> .. -> T_{k-1} -> Int` if `h`
-    /// doesn't capture anything, or `Env -> T_0 -> .. -> T_{k-1} -> Int`
+    /// memoized by hash: `T_0 -> T_1 -> .. -> T_{k-1} -> R` if `h`
+    /// doesn't capture anything, or `Env -> T_0 -> .. -> T_{k-1} -> R`
     /// (`n` = `captures.len()`) if it does -- the environment, when
     /// present, is always the *first* parameter, ahead of `h`'s own
     /// call arguments, mirroring `compile.rs`'s own calling convention
@@ -3068,17 +3208,24 @@ impl<'a> ClosureCombinators<'a> {
     /// position -- this is what lets a combinator like `twice`
     /// (`Clo -> Int -> Int`, since its own `f` parameter is itself
     /// closure-typed) be called with a mix of closure and plain-`Int`
-    /// arguments, which the uniform `apply_k` can't express. `captures`,
-    /// as in `register`, is computed once by the caller and passed in;
-    /// `caller_param_types` (the *calling* scope's own `param_types`,
-    /// distinct from `h`'s own `param_types` used for `T_0..T_{k-1}`
-    /// above) resolves each capture's own `Clo`/`Int` signature the same
-    /// way `register` does.
+    /// arguments, which the uniform `apply_k` can't express. `R` itself
+    /// is `Clo` when `combinator_return_type(h)` says so (over-application
+    /// dispatches on it, or a caller elsewhere treats a directly-called
+    /// combinator's own result as a value -- see either use site), `Int`
+    /// otherwise, including whenever the classifier can't tell -- the
+    /// same conservative default it's always had, now just sometimes
+    /// overridden by a real answer instead of universally assumed.
+    /// `captures`, as in `register`, is computed once by the caller and
+    /// passed in; `caller_param_types` (the *calling* scope's own
+    /// `param_types`, distinct from `h`'s own `param_types` used for
+    /// `T_0..T_{k-1}` above) resolves each capture's own `Clo`/`Int`
+    /// signature the same way `register` does.
     fn call_ref(&mut self, h: Hash, captures: &[u32], caller_param_types: &[Option<usize>]) -> Option<Expr> {
         if let Some(&pos) = self.cp.combinator_call_pos.get(&h) {
             return Some(self.cp.arith.p.get(pos));
         }
         let param_types = param_types_for(self.store, h)?;
+        let returns_clo = combinator_return_type(self.store, h).unwrap_or(false);
         let sig = capture_sig(captures, caller_param_types)?;
         // `env_ty` first, *before* any of the `int_ty`/`clo_ty` reads
         // below: it may push a fresh `Env` postulate (the first time
@@ -3089,7 +3236,7 @@ impl<'a> ClosureCombinators<'a> {
         // single function's own type construction rather than across
         // `denote_closure`'s recursive calls.
         let env_ty = (!sig.is_empty()).then(|| self.cp.env_ty(&sig));
-        let mut ty = self.cp.arith.int_ty();
+        let mut ty = if returns_clo { self.cp.clo_ty() } else { self.cp.arith.int_ty() };
         // Var(0) is last-applied (innermost -- wrap it first, so the
         // final iteration, Var(arity-1) = first-applied, ends up
         // outermost, matching apply_n's left-to-right application order).
@@ -3328,7 +3475,12 @@ fn denote_closure(
             // compile-time-desugared partial application,
             // `register_partial_app`'s wrapper -- `pap_ref` covers a
             // self-recursive root here too, the same opaque-call reasoning),
-            // or more (over-application, still rejected).
+            // or more (over-application: `root`'s own saturated call is
+            // built first, exactly as the direct-call case below does, then
+            // whatever it denotes is dispatched on the extra arguments via
+            // `apply_ref`, exactly like the `Term::Var(i)` case above --
+            // see `combinator_return_type`'s own docs for why this is sound
+            // without denoting `root`'s body in the usual sense).
             // Each argument's expected type matches the *callee's own*
             // parameter type at that position (`Clo` or `Int`), which is
             // what lets e.g. `twice(inc, 5)` pass a closure and a plain
@@ -3336,9 +3488,6 @@ fn denote_closure(
             Term::Abs(_) | Term::Rec(_) => {
                 let callee_param_types = param_types_for(store, root)?;
                 let arity = callee_param_types.len();
-                if args.len() > arity {
-                    return None; // over-application
-                }
                 if args.len() < arity {
                     // Compile-time-desugared partial application: build
                     // mk_pap_root_k(a_1,...,a_k), a Clo-typed value -- see
@@ -3382,6 +3531,10 @@ fn denote_closure(
                     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: partial application");
                     return Some(Denoted::Clo(applied));
                 }
+                // `args.len() >= arity`: build `root`'s own saturated call
+                // first -- shared between an exact match and an
+                // over-application's own leading portion.
+                let sat_args = &args[..arity];
                 let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                 let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
                 let call_fn = combinators.call_ref(root, &captures, param_types)?;
@@ -3392,8 +3545,8 @@ fn denote_closure(
                     let e = build_env_expr(combinators, &captures, params, param_types)?;
                     Some(Anchored::new(&combinators.cp.arith, e))
                 };
-                let mut arg_exprs = Vec::with_capacity(args.len());
-                for (j, &a) in args.iter().enumerate() {
+                let mut arg_exprs = Vec::with_capacity(arity);
+                for (j, &a) in sat_args.iter().enumerate() {
                     // args[j] (application order) is Var(arity-1-j) --
                     // see param_types_for's/denote's own convention.
                     let d = denote_closure(store, a, combinators, params, param_types)?;
@@ -3409,9 +3562,43 @@ fn denote_closure(
                     all_args.push(env_expr.at(&combinators.cp.arith));
                 }
                 all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
-                let applied = apply_n(call_fn, all_args);
+                let sat_applied = apply_n(call_fn, all_args);
+                let returns_clo = combinator_return_type(store, root).unwrap_or(false);
+                let sat_ty = if returns_clo { combinators.cp.clo_ty() } else { combinators.cp.arith.int_ty() };
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_closure: direct combinator call");
+
+                if args.len() == arity {
+                    return Some(if returns_clo { Denoted::Clo(sat_applied) } else { Denoted::Int(sat_applied) });
+                }
+
+                // Over-application: dispatch the extra arguments on
+                // `root`'s own saturated result through `apply_ref`,
+                // exactly like calling a closure-typed variable (the
+                // `Term::Var(i)` case above), just with the callee
+                // freshly computed rather than read from `params`. Only
+                // sound when that result genuinely denotes a further
+                // `Clo` -- unlike compile.rs (which has no type system to
+                // check this at all, relying entirely on jit.rs's sample
+                // verification), an unsound premise here would let the
+                // kernel "prove" something false, so a plain-`Int`
+                // `sat_applied` rejects outright rather than compiling a
+                // bad proof.
+                if !returns_clo {
+                    return None;
+                }
+                let extra_args = &args[arity..];
+                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
+                let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
+                for &a in extra_args {
+                    let e = denote_closure(store, a, combinators, params, param_types)?.int()?;
+                    extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                }
+                let apply_fn = combinators.cp.apply_ref(extra_args.len());
+                let sat_applied = sat_applied.at(&combinators.cp.arith);
+                let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                let applied = apply_n(apply_fn, std::iter::once(sat_applied).chain(extra_arg_exprs));
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: direct combinator call");
+                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: over-application dispatch");
                 return Some(Denoted::Int(applied));
             }
             _ => return None,
@@ -4849,29 +5036,21 @@ mod tests {
     }
 
     #[test]
-    fn calling_a_literal_lambda_whose_own_body_picks_between_two_closures_is_still_out_of_scope() {
+    fn calling_a_literal_lambda_whose_own_body_picks_between_two_closures_gets_a_closure_proof() {
         // \x. (\g. g 5) (if 0 < x then (\y. x + y) else (\y. x - y)) --
         // the same term compile.rs's own
         // a_capturing_closure_compiles_and_matches_interpreter test uses.
-        // compile.rs compiles this successfully (real closure conversion),
-        // and denote_closure's own `Term::If` case now covers two `Clo`
-        // branches too (`ite_clo` -- see
-        // a_closure_typed_ifs_own_result_used_as_a_value_gets_a_closure_proof
-        // below for that, now-covered, case directly) -- but this
-        // *particular* term still isn't reached by that widening: `picker`
-        // (whose own body is the If) is *directly called*
+        // `picker` (whose own body is the If) is *directly called*
         // (`chosen = picker(x2)`, a fully-saturated application of a
-        // literal lambda), and `call_ref`'s own postulated type always
-        // assumes a directly-called combinator returns `Int` -- honest for
-        // every existing case, since `call_ref` never denotes a
-        // combinator's own body to check, but wrong here, where `picker`'s
-        // body actually resolves to `Clo`. The mismatch is caught cleanly
-        // (`chosen`'s claimed `Int` type fails `inn`'s own `.clo()?` check
-        // where it's used as `g`), not silently accepted. Widening
-        // `call_ref` itself to sometimes claim `Clo` would mean denoting a
-        // callee's body just to learn its return type, undermining the
-        // whole point of treating a call as opaque -- a real, deliberate
-        // narrowing, not an oversight.
+        // literal lambda) -- `call_ref`'s own postulated type used to
+        // always assume a directly-called combinator returns `Int`,
+        // causing `chosen`'s claimed `Int` type to fail `inn`'s own
+        // `.clo()?` check where it's used as `g`. `call_ref` now consults
+        // `combinator_return_type` for its own return type instead of
+        // universally assuming `Int` -- correctly classifying `picker`'s
+        // body (an `If` between two closures) as `Clo`-typed, without
+        // `call_ref` itself ever denoting `picker`'s own body -- so this
+        // now gets a genuine kernel-checked proof.
         let mut s = TermStore::new();
         let x = s.var(0);
         let zero = s.lit(0);
@@ -4898,7 +5077,64 @@ mod tests {
         let f = s.abs(called);
 
         assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
-        assert!(prove_closure_expr(&s, f).is_none(), "a directly-called combinator's own Clo-typed body still isn't reachable through call_ref");
+        let proof = prove_closure_expr(&s, f).expect("picker's own Clo-typed body should now be reachable through call_ref");
+        assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+            .expect("the recorded proof should independently re-typecheck");
+    }
+
+    #[test]
+    fn an_over_applied_literal_lambda_returning_a_closure_gets_a_closure_proof() {
+        // f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(a,b,c) --
+        // same shape as compile::tests::
+        // an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter/
+        // jit::tests::an_over_applied_literal_lambda_returning_a_closure_compiles_and_is_kernel_verified.
+        // Unlike the test above (a directly-called combinator's own
+        // Clo-typed result used as a *value*), this is genuine
+        // over-application: `f`'s own saturated call (`f(a,b)`) is
+        // denoted first via `call_ref` (now correctly `Clo`-typed, same
+        // classifier), then dispatched on the extra argument `c` through
+        // `apply_ref`, exactly the way calling a closure-typed variable
+        // already denotes.
+        let mut s = TermStore::new();
+        let c1 = s.var(0);
+        let b1 = s.var(1);
+        let a1 = s.var(2);
+        let ab1 = s.prim(PrimOp::Add, a1, b1);
+        let abc1 = s.prim(PrimOp::Add, ab1, c1);
+        let closure1 = s.abs(abc1);
+
+        let c2 = s.var(0);
+        let b2 = s.var(1);
+        let a2 = s.var(2);
+        let amb2 = s.prim(PrimOp::Sub, a2, b2);
+        let ambc2 = s.prim(PrimOp::Add, amb2, c2);
+        let closure2 = s.abs(ambc2);
+
+        let a_body = s.var(1);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, a_body);
+        let body = s.if_(cond, closure1, closure2);
+        let b_binder = s.abs(body);
+        let f = s.abs(b_binder);
+
+        let a_param = s.var(2);
+        let b_param = s.var(1);
+        let c_param = s.var(0);
+        let fa = s.app(f, a_param);
+        let fab = s.app(fa, b_param);
+        let fabc = s.app(fab, c_param);
+        let c_binder = s.abs(fabc);
+        let bc_binder = s.abs(c_binder);
+        let top = s.abs(bc_binder);
+
+        assert_eq!(eval::apply_term(&s, top, &[10, 3, 100]).unwrap(), 113, "interpreter sanity check");
+        assert_eq!(eval::apply_term(&s, top, &[-5, 3, 100]).unwrap(), 92, "interpreter sanity check");
+
+        let proof = prove_closure_expr(&s, top).expect("an over-applied literal lambda returning a closure should get a proof");
+        assert_eq!(proof.arity, 3);
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+            .expect("the recorded proof should independently re-typecheck");
     }
 
     #[test]

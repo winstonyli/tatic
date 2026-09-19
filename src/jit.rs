@@ -547,11 +547,11 @@ mod tests {
         // `call_indirect` the same way a closure-typed variable would be
         // (see `compile.rs`'s module docs on over-application). Was
         // previously rejected outright, falling back to the interpreter;
-        // now compiles and gets the right, sample-verified answer.
-        // proof.rs has no fragment for over-application at all (see
-        // `proof::tests::over_application_of_a_literal_lambda_is_still_out_of_scope_for_the_closure_proof`),
-        // so this still isn't kernel-verified, same as any other
-        // over-application.
+        // now compiles and gets the right, sample-verified answer --
+        // *and* proof.rs's own `denote_closure`/`combinator_return_type`
+        // widening (see `proof::tests::
+        // an_over_applied_literal_lambda_returning_a_closure_gets_a_closure_proof`)
+        // covers this shape too, so it's kernel-verified as well.
         let mut s = TermStore::new();
         let x1 = s.var(0);
         let zero = s.lit(0);
@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 7); // 3 > 0, so 3 + 4
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
-        assert!(!jit.is_kernel_verified(applied));
+        assert!(jit.is_kernel_verified(applied));
     }
 
     #[test]
@@ -950,19 +950,18 @@ mod tests {
     }
 
     #[test]
-    fn an_over_applied_literal_lambda_returning_a_closure_compiles_but_isnt_kernel_verified() {
+    fn an_over_applied_literal_lambda_returning_a_closure_compiles_and_is_kernel_verified() {
         // f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(a,b,c) --
         // same shape as compile::tests::
         // an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter,
         // run through the real cache (compile + sample-verify) rather than
         // raw wasmtime, at both a positive and a negative `a` so both
-        // branches get exercised. proof.rs has no fragment for
-        // over-application at all (an over-applied literal lambda fails
-        // every `args.len() == k` check `denote`/`denote_closure` make the
-        // same way `collect_literals` does) -- compiled and sample-
-        // verified, but never kernel-verified, the same honest "no proof,
-        // but still trusted via verify()" position `jit.rs`'s own module
-        // docs describe for the rest of this fragment.
+        // branches get exercised. `denote_closure`'s own `Term::Abs | Term::Rec`
+        // case now covers over-application too, gated by
+        // `combinator_return_type` correctly classifying `f`'s own
+        // saturated call as `Clo`-typed (the `If` between `closure1`/
+        // `closure2`) -- see proof::tests::
+        // an_over_applied_literal_lambda_returning_a_closure_gets_a_closure_proof.
         let mut s = TermStore::new();
         let c1 = s.var(0);
         let b1 = s.var(1);
@@ -1000,6 +999,6 @@ mod tests {
         assert_eq!(jit.apply(&s, top, &[-5, 3, 100]).unwrap(), 92);
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
-        assert!(!jit.is_kernel_verified(top), "proof.rs has no fragment for over-application");
+        assert!(jit.is_kernel_verified(top));
     }
 }

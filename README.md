@@ -305,13 +305,15 @@ This is stated precisely because it would be easy to overclaim here.
   row above); every `If` branch must denote as `Int`, or *both* as `Clo`
   (via `ite_clo : Int -> Clo -> Clo -> Clo`, postulated lazily since a
   term never choosing between two closures shouldn't pay for it) —
-  reachable when the `If`'s own result is used as a value (an argument to
-  a closure-typed parameter, say), but *not* when the `If` is a
+  reachable both when the `If`'s own result is used as a value (an
+  argument to a closure-typed parameter, say) *and* when the `If` is a
   directly-called literal lambda's own top-level body: `call_ref`'s
-  postulated type always assumes `Int`, since it never denotes the
-  callee's body to know any better, so a combinator whose own body
-  resolves to `Clo` only gets an honest proof when it's used as a bare
-  *value*, not when it's *called* directly; and for a capturing
+  postulated return type is no longer a blanket `Int` assumption
+  (`combinator_return_type` classifies it structurally, per `Hash`, once
+  — see the "Future work" section below for how), so a combinator whose
+  own body resolves to `Clo` gets an honest proof whether it's used as a
+  bare *value* or *called* directly (including over-applied — see
+  `compile.rs`'s own row above); and for a capturing
   combinator specifically, each captured value must resolve *directly* to
   one of the calling function's own parameters (not, transitively, to one
   of *that* function's own captures — one level of nesting only for now)
@@ -670,13 +672,23 @@ guards against by hand): caught immediately, at seed 22.
   only weaker, call-specific evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
   too (`ite_clo`, lazily postulated — see the table row above), when the
-  `If`'s own result is used as a *value*. Still open: the same widening
-  for a *directly-called* combinator whose own top-level body is such an
-  `If` — `call_ref`'s postulated type always assumes `Int`, since it never
-  denotes a callee's body to check, so this stays a real, deliberate
-  narrowing rather than a fundamental limit (widening it would mean
-  denoting a callee's body just to learn its return type, undermining the
-  whole point of treating a call as opaque).
+  `If`'s own result is used as a *value* — and, separately, `call_ref`'s
+  own postulated return type is no longer a blanket `Int` assumption:
+  `combinator_return_type` structurally classifies a literal lambda's own
+  saturated-call return type (`Int` or `Clo`) once per `Hash`, without
+  denoting its body in the usual (postulate-building) sense — well-founded
+  since a self-call is always `Int` by this fragment's own convention and
+  calling *any* closure value (a parameter, a capture, or another
+  directly-called combinator's own result) is too, so the classifier only
+  ever needs to look at each combinator's own declared parameters and its
+  own `If`/literal-lambda-call shape, never a captured free variable's
+  actual type. This closes two previously-open cases at once: a
+  *directly-called* combinator whose own body is an `If` between two
+  closures (see the table row above), and over-application of a literal
+  lambda (`root`'s own saturated call, now denoted via the same
+  `call_ref`, dispatched on the extra arguments through `apply_ref`
+  exactly like calling a closure-typed variable — see `compile.rs`'s own
+  "Over-application" docs for the compiled-code-level counterpart).
 - Widening the compilable fragment further: a variable called with
   inconsistent arities across sites (a genuinely different, harder problem
   than over-application — there's no fixed arity to desugar around at
