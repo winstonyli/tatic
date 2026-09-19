@@ -1845,6 +1845,36 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         }
     }
 
+    // Audited (prompted by the `ite_clo_ref` staleness bug above): every
+    // lazily-memoized `ClosurePostulates` field --
+    // `apply_pos`/`combinator_value_pos`/`combinator_call_pos`/
+    // `env_ty_pos`/`mk_env_pos`/`mk_clo_pos`/`pap_pos`/`ite_clo_pos` -- is
+    // now primed above, before any `params_and_close_typed` scope below
+    // gets a chance to trigger a first-ever lazy push itself. `literal_pos`
+    // is primed even earlier, via the `collect_literals`/`arith.lit(n)`
+    // pass this function starts with; `fact_pos`/`ite_fact_pos`
+    // (`assume_prim_fact`/`assume_ite_fact`) are exempt on a different
+    // footing -- they're only ever touched by `eval_and_prove`, called
+    // from `build_ev_witness`/`instance_from_scaffold` *after*
+    // `build_universal` has already returned a stable, no-longer-truncated
+    // `ctx`, the same non-truncating regime `prove_closure_expr`'s own
+    // usage of `apply_ref`/`ite_clo_ref` relies on. A *new* lazily-memoized
+    // postulate added to `ClosurePostulates` in the future, reachable from
+    // inside `denote_closure_typed`/`denote_with_placeholders`, needs the
+    // same treatment (either priming here, if it's `Hash`/signature-keyed
+    // like `register`/`call_ref`/`pap_ref`/`mk_env_ref`, or an unconditional
+    // prime call like `ite_clo_ref`'s above if it isn't) -- silently
+    // missing it doesn't fail loudly the way a compile error would; it
+    // waits for a term that happens to hit it from inside a truncating
+    // scope. The final `kernel::check` on the assembled theorem
+    // (`prove_tail_recursive_universal`'s own trust boundary, unaffected
+    // by `debug_assertions`) still catches the resulting ill-typed
+    // sub-expression either way, so this never produces an accepted-but-
+    // wrong proof -- in a debug build it's a `debug_assert_has_type` panic
+    // pinpointing the exact node; in release, `build_universal` just
+    // returns `None`, spuriously rejecting a term this fragment should
+    // have covered, with no clue *why* beyond re-running under `debug_assertions`.
+
     // Pushes `v_1:Int .. v_k:Int` then `e_1:Ev(new_params_1,v_1) ..
     // e_k:Ev(new_params_k,v_k)` for a leaf's `calls` (one `(v,e)` pair per
     // self-call occurrence, grouped -- all `v`s then all `e`s -- rather
