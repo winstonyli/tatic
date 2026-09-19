@@ -1,16 +1,18 @@
 //! Compiles a restricted "first-order arithmetic with self-recursion and
-//! non-capturing closures" fragment of the term language down to
-//! WebAssembly text (WAT) — our formalization of the target machine.
-//! `wasmtime` then JIT-compiles that WAT (via Cranelift) to native code.
+//! closures" fragment of the term language down to WebAssembly text (WAT)
+//! — our formalization of the target machine. `wasmtime` then
+//! JIT-compiles that WAT (via Cranelift) to native code.
 //!
 //! Only a subset of terms fall in this fragment: closed expressions built
 //! from `Var`/`Lit`/`Prim`/`If`, fully-saturated self-calls (optionally
 //! wrapped in `Rec` for recursion), and fully-saturated applications of
-//! either a parameter or a literal lambda value ("combinator" below).
-//! Anything else (partial application, free variables, a closure that
-//! *captures* a variable from an enclosing scope, ...) is rejected by
-//! returning `None`, and the caller falls back to the interpreter — the
-//! JIT never has to be complete, only sound about what it accepts.
+//! either a parameter or a literal lambda value ("combinator" below,
+//! *capturing* or not -- see "Closures" below). Anything else (partial
+//! application, a genuinely free/unbound variable, calling a closure
+//! reached through a captured free variable rather than a parameter,
+//! ...) is rejected by returning `None`, and the caller falls back to
+//! the interpreter — the JIT never has to be complete, only sound about
+//! what it accepts.
 //!
 //! Tail self-calls are compiled into a `loop`/`br`, turning tail recursion
 //! into iteration (constant Wasm call-stack depth); non-tail self-calls
@@ -759,7 +761,16 @@ fn compile_var_read(ctx: &FnCtx, v: u32, w: &mut String, indent: usize) -> Optio
         push_line(w, indent, &format!("local.get $p{li}"));
         return Some(());
     }
-    let rel = v - arity;
+    // Must match `free_vars`'s own `capture_base` exactly: when `ctx` is
+    // self-recursive, `Rec` binds one more slot (self, at exactly
+    // `arity`) *before* any genuine outward capture begins, so a
+    // capture's relative index in `ctx.captures` is offset by one beyond
+    // `ctx`'s own parameters, not zero.
+    let capture_base = if ctx.self_idx.is_some() { arity + 1 } else { arity };
+    if v < capture_base {
+        return None; // exactly `ctx`'s own self-reference, used as a plain value
+    }
+    let rel = v - capture_base;
     let slot = ctx.captures.iter().position(|&c| c == rel)?;
     push_line(w, indent, "local.get $env");
     push_line(w, indent, &format!("i64.load offset={}", slot * 8));
@@ -1108,6 +1119,54 @@ mod tests {
             memory.size(&store) > size_after_many_resetting_calls,
             "without a reset, one more call should grow memory further"
         );
+    }
+
+    #[test]
+    fn a_self_recursive_combinator_can_also_capture_from_an_enclosing_scope() {
+        // \z. (\h. h 5) (rec f n = if n <= 0 then z else n + f (n - 1)) --
+        // `f` is both self-recursive *and* captures `z` from `g`'s own
+        // scope (two levels out: past its own `n` param and past `Rec`'s
+        // own self-binder). Regression test for a real bug found while
+        // re-deriving this indexing by hand: `compile_var_read`'s own
+        // capture-resolution formula didn't account for the extra slot
+        // `Rec` binds for self, so it disagreed with `free_vars`'s
+        // (which does) -- silently reading the *wrong* environment slot
+        // whenever a self-recursive combinator captured more than one
+        // outward value, or failing to resolve a genuine capture
+        // (falling back to the interpreter) with exactly one.
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f_self = s.var(1);
+        let z = s.var(2);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let rec_call = s.app(f_self, n_minus_1);
+        let else_branch = s.prim(PrimOp::Add, n, rec_call);
+        let body = s.if_(cond, z, else_branch);
+        let abs = s.abs(body);
+        let f_term = s.rec(abs);
+
+        let h = s.var(0);
+        let five = s.lit(5);
+        let call = s.app(h, five);
+        let h_wrapper = s.abs(call);
+
+        let applied = s.app(h_wrapper, f_term);
+        let g = s.abs(applied);
+
+        let frag = try_compile(&s, g).expect("a self-recursive capturing combinator should compile");
+        assert_eq!(frag.arity, 1);
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
+
+        for z in [-10, 0, 1, 7, 100] {
+            let compiled = func.call(&mut store, z).unwrap();
+            let interpreted = apply_term(&s, g, &[z]).unwrap();
+            assert_eq!(compiled, interpreted, "mismatch at z={z}");
+        }
     }
 
     #[test]
