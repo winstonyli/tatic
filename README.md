@@ -541,6 +541,28 @@ at 100,000 seeds (release) and 30,000 (debug, where the now-fixed overflow
 check would have fired) with zero further failures before settling back
 on the file's own 5,000-seed default.
 
+**Round-trip**: `tests/syntax_fuzz.rs` fuzzes a third property, on a third
+layer: `syntax.rs`'s own `parse(print(h)) == h` (exact content-hash
+equality) for a random, well-scoped term across every constructor
+(`Prim` with all eight operators, `If`, `Abs`, `App`, `Rec` of random
+arity), with random right/left nesting — the same kind of shape
+`syntax.rs`'s own hand-written tests cover with a handful of hand-picked
+precedence traps (a right-nested subtraction a left-associative parser
+would never itself produce, a nested comparison, an application argument
+that's itself an application), generated far more broadly than anyone
+would think to hand-pick. Deliberately stays inside `print`'s own
+documented contract — every generated `Var` is genuinely bound (`print`
+isn't written to handle an out-of-scope one; it isn't even a `Result`-
+returning function) and every literal is non-negative (the one
+documented, accepted round-trip gap, since this grammar has no negative-
+literal syntax at all). Passed clean on its first run and stress-tested
+at 200,000 seeds and, separately, depth 10 (up from the file's own
+default of 6) with zero failures — confirmed real teeth anyway by
+deliberately weakening `print_at`'s own right-hand-side strictness rule
+for left-associative operators (`(p, p + 1)` → `(p, p)`, exactly the bug
+class `round_trips_arithmetic_with_mixed_precedence_and_right_nesting`
+guards against by hand): caught immediately, at seed 22.
+
 ## Design notes
 
 - **Why hash-consing, not just a tree**: two independently-built terms that
