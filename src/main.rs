@@ -159,6 +159,72 @@ fn compiled_capturing_closure_demo(s: &mut TermStore) -> Hash {
     s.abs(called)
 }
 
+/// `\w. caller(if 0 < w then inc else dec, 5)` where `inc = \y. y + 1`,
+/// `dec = \z. z - 1`, `caller = \g x. g x` -- an `If` choosing between two
+/// closures, same shape as `compiled_capturing_closure_demo`'s own
+/// `picker`, but *used as a value* (an argument to `caller`) instead of
+/// *directly called*. `denote_closure`'s own `If` case now covers two
+/// `Clo` branches too (`ite_clo`, postulated lazily), so unlike that demo
+/// -- where `picker` is called directly and `call_ref`'s postulated type
+/// always assumes an `Int` return -- this one gets a kernel-checked proof:
+/// the deciding factor is never whether the term compiles (both do), only
+/// whether the `If`'s own result is handed onward as a value or called.
+fn ite_between_closures_used_as_a_value_demo(s: &mut TermStore) -> Hash {
+    let y = s.var(0);
+    let one = s.lit(1);
+    let inc_body = s.prim(PrimOp::Add, y, one);
+    let inc = s.abs(inc_body);
+
+    let z = s.var(0);
+    let one2 = s.lit(1);
+    let dec_body = s.prim(PrimOp::Sub, z, one2);
+    let dec = s.abs(dec_body);
+
+    let w = s.var(0);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, w);
+    let chosen = s.if_(cond, inc, dec);
+
+    let g = s.var(1);
+    let x = s.var(0);
+    let gx = s.app(g, x);
+    let inner_caller = s.abs(gx);
+    let caller = s.abs(inner_caller);
+
+    let five = s.lit(5);
+    let applied = s.app2(caller, chosen, five);
+    s.abs(applied)
+}
+
+/// `\z. (\g2. g2 4) ((\x y. x + y + z) 3)` -- partial application of a
+/// *capturing* literal lambda (`\x y. x + y + z`, captures `z`, under-
+/// applied by one argument), completed through a wrapper the same way any
+/// other closure value would be. `compile.rs`'s own `push_pap_env` already
+/// composed the wrapper's own environment with a copy of the root's;
+/// `pap_ref` now mirrors that (a leading `Env_n` parameter when the root
+/// captures), so this gets a kernel-checked proof too, not just empirical
+/// sample verification.
+fn capturing_partial_application_demo(s: &mut TermStore) -> Hash {
+    let y = s.var(0);
+    let x = s.var(1);
+    let z_captured = s.var(2);
+    let xy = s.prim(PrimOp::Add, x, y);
+    let xyz = s.prim(PrimOp::Add, xy, z_captured);
+    let inner = s.abs(xyz);
+    let capturing_add = s.abs(inner);
+
+    let three = s.lit(3);
+    let partial = s.app(capturing_add, three);
+
+    let g2 = s.var(0);
+    let four = s.lit(4);
+    let call_g2 = s.app(g2, four);
+    let caller = s.abs(call_g2);
+
+    let called = s.app(caller, partial);
+    s.abs(called)
+}
+
 fn main() {
     let mut store = TermStore::new();
     let fact = factorial(&mut store);
@@ -215,6 +281,24 @@ fn main() {
         println!("x={x}: interpreted={interp}, jit={jitted}");
     }
     println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(compiled_capturing));
+
+    let ite_closures = ite_between_closures_used_as_a_value_demo(&mut store);
+    println!("\n-- the same If-between-closures shape, but used as a value instead of called --");
+    for w in [3, -3] {
+        let interp = eval::apply_term(&store, ite_closures, &[w]).unwrap();
+        let jitted = jit.apply(&store, ite_closures, &[w]).unwrap();
+        println!("w={w}: interpreted={interp}, jit={jitted}");
+    }
+    println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(ite_closures));
+
+    let capturing_pap = capturing_partial_application_demo(&mut store);
+    println!("\n-- partial application of a capturing closure --");
+    for z in [10, -3] {
+        let interp = eval::apply_term(&store, capturing_pap, &[z]).unwrap();
+        let jitted = jit.apply(&store, capturing_pap, &[z]).unwrap();
+        println!("z={z}: interpreted={interp}, jit={jitted}");
+    }
+    println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(capturing_pap));
 
     println!("\n-- fib(30), naive exponential recursion: interpreter vs JIT --");
     let t0 = Instant::now();
