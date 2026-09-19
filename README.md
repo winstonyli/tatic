@@ -282,7 +282,19 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   allocator's pointer was never being reset between the many separate
   calls this cache makes to one compiled instance (see `jit.rs`'s table
   row above) — fixed, and now warm calls run at ~7.7µs each with memory
-  staying bounded regardless of call count.
+  staying bounded regardless of call count. Also `partial_application_loop`
+  — the same idea for the compile-time partial-application desugaring
+  (`register_partial_app`/`push_pap_env`): each iteration partially
+  applies a literal lambda and completes it through a wrapper, so the
+  synthesized wrapper combinator compiles once but its environment (the
+  partially-applied function's own, empty, environment plus the
+  newly-supplied argument) gets allocated fresh every time. Ran clean —
+  no repeat of the capturing-closure bug, memory stays bounded across
+  250k+ warm iterations — but noticeably slower than a plain capturing
+  closure's warm call (~19.9µs vs. ~7.7µs), the expected cost of the
+  extra indirection: creating the underlying function's own environment,
+  then the wrapper's own, then a call through the wrapper on top of the
+  real one.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
   (translation-validation) proof per call, and the one-time universal

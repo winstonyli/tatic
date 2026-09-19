@@ -111,6 +111,55 @@ pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
     s.rec(abs)
 }
 
+/// `rec f n acc = if n <= 0 then acc else f (n - 1) (caller (add acc) n)`
+/// where `add = \x y. x + y` and `caller = \g z. g z` -- tail-recursive,
+/// and each iteration partially applies `add` to `acc` (one argument
+/// short), then completes that partial application through `caller`
+/// (avoiding the curried-application ambiguity the same way
+/// `capturing_closure_loop` avoids it for a plain capturing closure). The
+/// wrapper combinator `register_partial_app` synthesizes for `(add, 1)`
+/// compiles once and is shared across every iteration -- only its
+/// environment (holding `add`'s own, empty, environment plus the current
+/// `acc`) gets allocated fresh each time, via `push_pap_env` -- so this
+/// isolates the partial-application path's own per-iteration allocation
+/// cost, the same way `capturing_closure_loop` isolates a plain
+/// capturing closure's.
+pub fn partial_application_loop(s: &mut TermStore) -> Hash {
+    // add = \x y. x + y
+    let x = s.var(1);
+    let y = s.var(0);
+    let add_body = s.prim(PrimOp::Add, x, y);
+    let add_inner = s.abs(add_body);
+    let add = s.abs(add_inner);
+
+    // caller = \g z. g z
+    let g = s.var(1);
+    let z = s.var(0);
+    let call_gz = s.app(g, z);
+    let caller_inner = s.abs(call_gz);
+    let caller = s.abs(caller_inner);
+
+    let n = s.var(1);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let base = s.var(0);
+    let n2 = s.var(1);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n2, one);
+    let f = s.var(2);
+
+    let acc2 = s.var(0);
+    let partial = s.app(add, acc2); // add(acc) -- under-applied by one arg
+    let n3 = s.var(1);
+    let new_acc = s.app2(caller, partial, n3); // caller(partial, n) = add(acc, n)
+
+    let rec_call = s.app2(f, n_minus_1, new_acc);
+    let body = s.if_(cond, base, rec_call);
+    let inner = s.abs(body);
+    let abs = s.abs(inner);
+    s.rec(abs)
+}
+
 /// `\a b. if a < b then a * 2 else b + 1` -- straight-line, no recursion.
 pub fn straight_line(s: &mut TermStore) -> Hash {
     let a = s.var(1);
