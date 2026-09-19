@@ -3717,15 +3717,17 @@ fn denote_closure(
 /// this one's -- a combinator it calls or uses as a value may still be
 /// self-recursive), an application whose callee is neither a closure-typed
 /// parameter nor a literal lambda/named recursive combinator, an
-/// inconsistent arity for a closure-typed parameter, an application of a
-/// literal lambda or recursive combinator to more arguments than its own
-/// arity, an `If` whose branches aren't both `Int` or both `Clo` (or one
-/// of each), a whole-function result that isn't `Int`, a captured value
-/// (for a capturing combinator)
-/// that isn't `Int`-typed or doesn't resolve directly to one of the
-/// calling function's own parameters, or a partial application (fewer
-/// arguments than arity) whose root itself captures anything or is itself
-/// self-recursive.
+/// inconsistent arity for a closure-typed parameter, an over-application
+/// of a literal lambda or recursive combinator whose own saturated result
+/// doesn't itself denote `Clo` (see `combinator_return_type`; a `Clo`-
+/// returning one is covered, dispatched via `apply_ref` on the extra
+/// arguments), an `If` whose branches aren't both `Int` or both `Clo` (or
+/// one of each), a whole-function result that isn't `Int`, a captured
+/// value (for a capturing combinator) that doesn't resolve directly to
+/// one of the calling function's own parameters (freely `Int`- or
+/// `Clo`-typed -- see `build_env_expr`'s own docs), or a partial
+/// application (fewer arguments than arity) whose root itself captures
+/// anything or is itself self-recursive.
 pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if is_rec {

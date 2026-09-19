@@ -315,13 +315,17 @@ This is stated precisely because it would be easy to overclaim here.
   bare *value* or *called* directly (including over-applied — see
   `compile.rs`'s own row above); and for a capturing
   combinator specifically, each captured value must resolve *directly* to
-  one of the calling function's own parameters (not, transitively, to one
-  of *that* function's own captures — one level of nesting only for now)
-  and must be `Int`-typed, not `Clo` — `compile.rs` itself handles both
-  more general cases fine, but extending this fragment's own `Int`/`Clo`
-  discipline to a capture that might itself need *another* environment is
-  meaningfully more machinery for comparatively little of what
-  `compile.rs` actually exercises. Caught a real bug while building this:
+  one of the calling function's own parameters, freely `Int`- or
+  `Clo`-typed (`Env`/`mk_env` keyed by the whole capture *signature*, not
+  just a count, so a mixed-type environment gets its own honestly-typed
+  postulate). A captured value that's itself a capture of the *calling*
+  scope isn't a deferred restriction at all — it can't arise: a call is
+  always postulated opaque (this fragment never enters a registered
+  combinator's own body), and `compile::peel` always folds consecutive
+  `Abs` layers into one combinator before it's ever registered, so there's
+  no way to encounter one combinator's own body containing *another*,
+  separately-registered one — every capture list is always relative to
+  the one flat ambient scope currently being denoted. Caught a real bug while building this:
   `ClosureCombinators::call_ref`'s own type construction read `int_ty`/
   `clo_ty` in a loop *before* possibly pushing a fresh `Env` postulate
   afterward, silently invalidating those earlier reads — the same
