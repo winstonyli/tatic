@@ -272,6 +272,27 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   which is cheaper depends entirely on how many sample points
   `jit.rs` would otherwise verify against.
 
+## Differential testing
+
+`tests/compile_fuzz.rs` (`cargo test --test compile_fuzz`) generates
+random terms — biased toward the closure/capture/self-recursion
+interactions two real indexing bugs turned up in earlier, hand-derived
+rather than found by any test failure — and checks that `jit::JitEngine`
+(compiled, whenever `compile.rs` accepts the term) and `eval::apply_term`
+(the reference interpreter) agree, across a battery of argument values
+per term, not just the fixed small sample set `jit.rs`'s own internal
+`verify()` checks before trusting a compile. Every generated term is
+built to be well-typed on both readings (a generated closure sub-
+expression always gets fully resolved back to an `Int` before it's used
+anywhere an `Int` is expected), so a mismatch here means a genuine
+divergence, not one side being fed a value it doesn't know how to
+interpret. A tiny deterministic PRNG (splitmix64, no new dependency),
+seed-scanned rather than relying on one lucky draw — a failure prints the
+seed and argument trial that triggered it. Currently: 250 seeds × 12
+argument trials each, ~99% of generated terms actually compile (the rest
+fall outside the fragment by construction, e.g. curried-application
+ambiguity), zero mismatches found so far.
+
 ## Design notes
 
 - **Why hash-consing, not just a tree**: two independently-built terms that
