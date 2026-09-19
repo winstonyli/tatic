@@ -408,7 +408,16 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   closure's warm call (~19.9µs vs. ~7.7µs), the expected cost of the
   extra indirection: creating the underlying function's own environment,
   then the wrapper's own, then a call through the wrapper on top of the
-  real one.
+  real one. Also `closure_typed_loop_carried_parameter_loop` — the
+  opposite shape from `capturing_closure_loop`: a closure-typed
+  *parameter* (`inc`, non-capturing) threaded through every iteration and
+  called via `call_indirect` each time, rather than a fresh closure
+  created per iteration, isolating `call_indirect`'s own unpacking cost
+  from closure-conversion's allocation cost. Also gets a kernel-checked
+  universal proof (`prove_tail_recursive_universal` covers a closure-typed
+  loop-carried parameter, see "Proof strategies" above); on this machine,
+  warm calls run at ~5.8µs each, cheaper than either loop above (no
+  environment to build at all, every iteration).
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
   (translation-validation) proof per call, and the one-time universal

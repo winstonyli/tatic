@@ -160,6 +160,44 @@ pub fn partial_application_loop(s: &mut TermStore) -> Hash {
     s.rec(abs)
 }
 
+/// `rec f n g x = if n <= 0 then x else f(n-1, g, g x)`, with `inc = \y. y+1`
+/// baked in as the initial `g` and `n`/`x` baked in too, so the whole term
+/// is closed (arity 0) -- a closure-typed *parameter* threaded through
+/// every iteration and called (`call_indirect`) each time, unlike
+/// `capturing_closure_loop`'s own shape above, which creates a fresh
+/// closure every iteration instead of reusing one passed in. Same depth
+/// cap as the other two loop benchmarks, for the same reason (eval.rs's
+/// own non-TCO recursion overflows the stack somewhere between 8,000 and
+/// 10,000 levels even in release mode).
+pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
+    let x = s.var(0);
+    let g = s.var(1);
+    let n = s.var(2);
+    let f = s.var(3);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let gx = s.app(g, x);
+    let f_n1_g = s.app2(f, n_minus_1, g);
+    let rec_call = s.app(f_n1_g, gx);
+    let body = s.if_(cond, x, rec_call);
+    let g_binder = s.abs(body);
+    let n_binder = s.abs(g_binder);
+    let abs = s.abs(n_binder);
+    let it = s.rec(abs);
+
+    let y = s.var(0);
+    let one2 = s.lit(1);
+    let inc_body = s.prim(PrimOp::Add, y, one2);
+    let inc = s.abs(inc_body);
+
+    let n_lit = s.lit(2_000);
+    let x0 = s.lit(0);
+    let partial = s.app2(it, n_lit, inc);
+    s.app(partial, x0)
+}
+
 /// `\a b. if a < b then a * 2 else b + 1` -- straight-line, no recursion.
 pub fn straight_line(s: &mut TermStore) -> Hash {
     let a = s.var(1);

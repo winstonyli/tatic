@@ -655,6 +655,51 @@ mod tests {
     }
 
     #[test]
+    fn a_closure_typed_loop_carried_parameter_compiles_and_is_kernel_verified() {
+        // rec f n g x = if n <= 0 then x else f(n-1, g, g x) -- same shape
+        // as proof::tests::iterate, but here actually run: a closure-typed
+        // *parameter* threaded through every iteration and called
+        // (call_indirect) rather than a fresh closure created each
+        // iteration (capturing_closure_loop's own shape above). `inc`, a
+        // non-capturing literal lambda, is baked in as the initial `g` so
+        // the whole term is closed (arity 0) and runnable through
+        // jit.apply directly.
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let g = s.var(1);
+        let n = s.var(2);
+        let f = s.var(3);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let gx = s.app(g, x);
+        let f_n1_g = s.app2(f, n_minus_1, g);
+        let rec_call = s.app(f_n1_g, gx);
+        let body = s.if_(cond, x, rec_call);
+        let g_binder = s.abs(body);
+        let n_binder = s.abs(g_binder);
+        let abs = s.abs(n_binder);
+        let it = s.rec(abs);
+
+        let y = s.var(0);
+        let one2 = s.lit(1);
+        let inc_body = s.prim(PrimOp::Add, y, one2);
+        let inc = s.abs(inc_body);
+
+        let n_lit = s.lit(10);
+        let x0 = s.lit(0);
+        let partial = s.app2(it, n_lit, inc);
+        let top = s.app(partial, x0);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[]).unwrap(), 10); // 0 incremented 10 times
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(top));
+    }
+
+    #[test]
     fn partial_application_of_a_non_capturing_root_compiles_and_is_kernel_verified() {
         // add = \x y. x + y; partial = add(3); caller = \g. g(4);
         // top = caller(partial) -- same shape as
