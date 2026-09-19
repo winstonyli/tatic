@@ -8,13 +8,14 @@
 //! wrapped in `Rec` for recursion), fully-saturated applications of
 //! either a variable (a parameter *or* a captured free variable -- see
 //! "Closures" below) or a literal lambda value ("combinator" below,
-//! *capturing* or not) holding a closure, and an *under*-applied literal
-//! lambda (real partial application -- see "Partial application" below).
+//! *capturing* or not) holding a closure, an *under*-applied literal
+//! lambda (real partial application -- see "Partial application" below),
+//! and an *over*-applied literal lambda (calling whatever its saturated
+//! call returns with more arguments -- see "Over-application" below).
 //! Anything else (a variable applied with inconsistent arities across
-//! call sites, an over-applied literal lambda, a genuinely free/unbound
-//! variable, ...) is rejected by returning `None`, and the caller falls
-//! back to the interpreter — the JIT never has to be complete, only
-//! sound about what it accepts.
+//! call sites, a genuinely free/unbound variable, ...) is rejected by
+//! returning `None`, and the caller falls back to the interpreter — the
+//! JIT never has to be complete, only sound about what it accepts.
 //!
 //! Tail self-calls are compiled into a `loop`/`br`, turning tail recursion
 //! into iteration (constant Wasm call-stack depth); non-tail self-calls
@@ -72,9 +73,11 @@
 //! into a single `i64` the same way either path would.
 //!
 //! What's still out of scope: a variable (parameter or captured free
-//! variable) applied with inconsistent arities across call sites, an
-//! over-applied literal lambda, and capturing an enclosing self-recursive
-//! binding's own self-reference as a plain value from a *nested* closure
+//! variable) applied with inconsistent arities across call sites (see
+//! "Over-application" below for why an over-applied *literal lambda* is a
+//! different, narrower problem that *is* in scope), and capturing an
+//! enclosing self-recursive binding's own self-reference as a plain value
+//! from a *nested* closure
 //! (an honest, structural rejection -- see `free_vars`'s self-exclusion
 //! -- rather than a special-cased check). `Combinators` also doesn't
 //! statically check that a value passed into a closure-typed parameter
@@ -106,15 +109,65 @@
 //! supplied arguments), so it's just a handful of fixed loads forwarded
 //! into one statically-known `call`.
 //!
-//! What this doesn't handle: an over-applied literal lambda (calling the
-//! *result* of a saturated call with more arguments -- a different,
-//! harder problem: the result would itself need to be a callable
-//! closure value, recursing into "calling a closure reached through an
-//! arbitrary computed expression", still out of scope generally), and a
-//! variable (not a literal lambda) applied with inconsistent arities --
-//! compile.rs has no fixed arity for a variable to compare against in
-//! the first place, only whatever it's consistently called with, so
-//! there's no missing-argument count to desugar around.
+//! What this doesn't handle: a variable (not a literal lambda) applied
+//! with inconsistent arities -- compile.rs has no fixed arity for a
+//! variable to compare against in the first place, only whatever it's
+//! consistently called with, so there's no missing-argument count to
+//! desugar around. Over-application of a literal lambda -- calling the
+//! *result* of a saturated call with more arguments -- is a different,
+//! *narrower* problem than that: `root`'s own identity and arity are
+//! still statically known here (it's *what its body computes* that
+//! isn't), so it doesn't need any of the runtime arity-dispatch mechanism
+//! above -- see "Over-application" below.
+//!
+//! ## Over-application: dispatching a saturated call's own result
+//!
+//! An *over*-applied literal lambda (`root`, own arity `n`, applied to
+//! `k > n` arguments) means the *first* `n` arguments saturate `root`
+//! itself, and the remaining `k - n` are applied to whatever `root`'s own
+//! body evaluates to once called -- which only makes sense if that's
+//! itself a closure (e.g. `root = \a b. if a > 0 then (\c. ..) else (\c.
+//! ..)`, returning one of two further, possibly-capturing closures
+//! depending on `a`). Unlike partial application, this isn't resolved at
+//! compile time via a synthesized wrapper: `root`'s own saturated call
+//! (`root`'s first `n` arguments) is compiled exactly as an ordinary
+//! saturated call would be, and the packed `i64` it returns is dispatched
+//! through `call_indirect` on the remaining `k - n` arguments, exactly
+//! the way calling a closure-typed *variable* already works (see above)
+//! -- the only difference is that the callee here is a freshly computed
+//! value rather than one read from a local or capture slot.
+//!
+//! This pass has no real type system, just term shape, so nothing here
+//! checks that `root`'s body genuinely denotes a closure once applied --
+//! an over-applied literal lambda whose body is a plain `Int` still
+//! compiles, into a `call_indirect` on a garbage table index that either
+//! traps or (astronomically unlikely) coincidentally lands on some
+//! unrelated table entry. Either way, `jit.rs`'s sample verification
+//! catches it: the interpreter genuinely type-errors on such a term, so
+//! any disagreement -- a trap, or a wrong answer -- fails verification
+//! and falls back to the interpreter, the same safety net every other
+//! shape this fragment accepts already relies on (`compile.rs` only needs
+//! to be sound, not complete, and this doesn't even need to be *sound* on
+//! its own -- verification is).
+//!
+//! `call_indirect`'s own operand order needs `root`'s packed result split
+//! across *both* ends of the call (environment pointer first, table index
+//! last, with the `k - n` extra arguments' own compilation -- and any
+//! nested closure/PAP construction it might trigger -- necessarily
+//! happening in between). Rather than stash that result in a local across
+//! the extra arguments' own recursive compilation (exactly the hazard
+//! `push_pap_env`'s own docs describe, and that bit `push_pap_env` for
+//! real once), `root`'s saturated call is simply compiled twice, once for
+//! each half -- a pure, deterministic Wasm function call with no
+//! observable side effect beyond bump-allocator growth (which doesn't
+//! affect the result), so recomputing it is correct, if not free: a
+//! deeply left-nested chain of over-applications would recompile its own
+//! innermost saturated call once per enclosing over-application. Left as
+//! a known, documented tradeoff rather than a `push_pap_env`-style
+//! stack-based reordering, which would need `O(k - n)` dedicated scratch
+//! storage per call site (not just the one or two locals a fixed-shape
+//! wrapper needs) to reassemble the extra arguments in order after
+//! popping them off to reach the callee underneath.
 
 use hashbrown::HashMap;
 
@@ -836,7 +889,72 @@ fn compile_node(
                     return Some(());
                 }
                 if args.len() > root_arity {
-                    return None; // over-application: still out of scope
+                    // Over-application: `root`'s own saturated call
+                    // (`root`'s first `root_arity` args) is compiled, then
+                    // whatever it *returns* is called again, dynamically,
+                    // through `call_indirect` -- exactly the same dispatch
+                    // a closure-typed *variable* callee already uses (see
+                    // the `Term::Var(i)` arm above), just with the callee
+                    // itself freshly computed here instead of read from a
+                    // local/capture slot. This only makes sense if the
+                    // saturated call's own result genuinely is a packed
+                    // `Clo` value (i.e. `root`'s body, once its own
+                    // parameters are supplied, itself denotes a further
+                    // closure) -- nothing here checks that statically
+                    // (this pass has no real type system, just term
+                    // shape), so an over-application of a plain
+                    // `Int`-returning function still compiles, but
+                    // produces a garbage `call_indirect` target that
+                    // either traps or (extremely unlikely) coincidentally
+                    // lands on some unrelated table entry -- caught either
+                    // way by `jit.rs`'s sample verification disagreeing
+                    // with the interpreter (which genuinely type-errors on
+                    // such a term), the same safety net every other shape
+                    // this fragment accepts already relies on.
+                    //
+                    // `call_indirect`'s own operand order needs the
+                    // callee's env-ptr *before* the extra arguments and
+                    // its table index *after* them (see the `Term::Var(i)`
+                    // arm), so the extra arguments' own compilation -- and
+                    // any nested closure/PAP construction it might
+                    // trigger -- necessarily happens *between* the two
+                    // halves. Rather than stash the saturated call's
+                    // result in a local across that recursion (exactly
+                    // the hazard `push_pap_env`'s own docs describe, and
+                    // that bit `push_pap_env` for real once), the
+                    // saturated call is simply compiled twice -- once for
+                    // each half. It's a pure, deterministic Wasm function
+                    // call (no observable side effect beyond bump-
+                    // allocator growth, which doesn't affect the result),
+                    // so recomputing it is correct, if not free; see this
+                    // function's own module docs for the tradeoff.
+                    let sat_args = &args[..root_arity];
+                    let extra_args = &args[root_arity..];
+                    let captures = combinators.captures[idx].clone();
+
+                    push_closure_env(ctx, &captures, w, indent)?;
+                    for a in sat_args {
+                        compile_node(ctx, combinators, *a, false, w, indent)?;
+                    }
+                    push_line(w, indent, &format!("call $c{idx}"));
+                    push_line(w, indent, "i64.const 32");
+                    push_line(w, indent, "i64.shr_u");
+                    push_line(w, indent, "i32.wrap_i64");
+
+                    for a in extra_args {
+                        compile_node(ctx, combinators, *a, false, w, indent)?;
+                    }
+
+                    push_closure_env(ctx, &captures, w, indent)?;
+                    for a in sat_args {
+                        compile_node(ctx, combinators, *a, false, w, indent)?;
+                    }
+                    push_line(w, indent, &format!("call $c{idx}"));
+                    push_line(w, indent, "i32.wrap_i64");
+
+                    combinators.call_indirect_arities.push(extra_args.len());
+                    push_line(w, indent, &format!("call_indirect (type $ty{})", extra_args.len()));
+                    return Some(());
                 }
                 // Under-applied: a genuine partial application. This
                 // expression's *value* is a fresh closure over a
@@ -1746,6 +1864,67 @@ mod tests {
         let frag = try_compile(&s, g).expect("compiles as a 2-ary call to f");
         assert_eq!(frag.arity, 2);
         assert!(frag.wat.contains("call_indirect (type $ty2)"));
+    }
+
+    #[test]
+    fn an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter() {
+        // f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(x,y,z) --
+        // `f`'s own arity is 2 (`peel` stops there: its body is an `If`,
+        // not a further bare `Abs`, so the two branches don't get folded
+        // into `f`'s own combinator the way `\a b c. ..` would), and each
+        // branch is itself a fresh, arity-1 closure -- already compiled
+        // correctly today as an `If`-between-closures *value* (see
+        // `a_capturing_closure_compiles_and_matches_interpreter`). What's
+        // new is over-applying `f` with a 3rd argument `z`: `f`'s own
+        // saturated call (`f(x,y)`) is compiled, then whatever it
+        // *returns* is called again through `call_indirect`, exactly like
+        // calling a closure-typed variable -- see `compile_node`'s own
+        // docs on the exact mechanism (evaluating the saturated call
+        // twice rather than stashing it in a local across the extra
+        // argument's own compilation). Tried at both a positive and a
+        // negative `x` so both branches -- and hence both closures
+        // registered as separate combinators -- actually get exercised.
+        let mut s = TermStore::new();
+        let c1 = s.var(0);
+        let b1 = s.var(1);
+        let a1 = s.var(2);
+        let ab1 = s.prim(PrimOp::Add, a1, b1);
+        let abc1 = s.prim(PrimOp::Add, ab1, c1);
+        let closure1 = s.abs(abc1); // \c. a+b+c
+
+        let c2 = s.var(0);
+        let b2 = s.var(1);
+        let a2 = s.var(2);
+        let amb2 = s.prim(PrimOp::Sub, a2, b2);
+        let ambc2 = s.prim(PrimOp::Add, amb2, c2);
+        let closure2 = s.abs(ambc2); // \c. a-b+c
+
+        let a_body = s.var(1);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, a_body);
+        let body = s.if_(cond, closure1, closure2);
+        let b_binder = s.abs(body);
+        let f = s.abs(b_binder); // \a b. if 0 < a then closure1 else closure2
+
+        for (a_val, b_val, c_val, expected) in [(10i64, 3i64, 100i64, 113i64), (-5, 3, 100, 92)] {
+            let xa = s.lit(a_val);
+            let yb = s.lit(b_val);
+            let zc = s.lit(c_val);
+            let fx = s.app(f, xa);
+            let fxy = s.app(fx, yb);
+            let fxyz = s.app(fxy, zc);
+
+            let frag = try_compile(&s, fxyz).expect("an over-applied literal lambda returning a closure should compile");
+            assert_eq!(frag.arity, 0);
+            assert!(frag.wat.contains("call_indirect"));
+
+            let (mut store, instance) = instantiate(&frag.wat);
+            let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
+            let compiled = func.call(&mut store, ()).unwrap();
+            let interpreted = apply_term(&s, fxyz, &[]).unwrap();
+            assert_eq!(compiled, expected, "a={a_val} b={b_val} c={c_val}");
+            assert_eq!(compiled, interpreted, "a={a_val} b={b_val} c={c_val}");
+        }
     }
 
     #[test]

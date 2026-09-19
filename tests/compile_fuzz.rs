@@ -388,8 +388,18 @@ fn compiled_and_interpreted_agree_on_random_terms() {
 }
 
 /// A literal lambda (arity 1 or 2, an arbitrary `gen_expr`-generated body)
-/// applied to more arguments than its own arity -- always over-applied,
-/// unconditionally outside the fragment (see `compile.rs`'s module docs).
+/// applied to more arguments than its own arity. `compile.rs` now compiles
+/// this shape (see its module docs: a saturated call whose own result is
+/// dispatched through `call_indirect`, exactly like calling a closure-typed
+/// variable) -- but `gen_expr`'s bodies are always plain arithmetic, never
+/// a further closure, so every term this generates is genuinely ill-typed
+/// (over-applying an `Int`), still outside what compile.rs can *correctly*
+/// compile even though `try_compile` itself no longer rejects the shape
+/// outright. Used by `over_applied_ill_typed_terms_still_agree_with_the_interpreter`
+/// to confirm `jit.rs`'s own sample verification catches exactly this case
+/// and falls back to the interpreter, rather than by
+/// `compile_rejects_out_of_scope_terms_cleanly` (which is about `try_compile`
+/// alone).
 fn gen_over_applied(rng: &mut Rng, s: &mut TermStore) -> Hash {
     let arity = 1 + rng.below(2);
     let body = gen_expr(rng, s, arity, 2);
@@ -452,12 +462,17 @@ fn compile_rejects_out_of_scope_terms_cleanly() {
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0x00BA_D000_0000_u64 ^ seed);
 
+        // Over-application is no longer unconditionally rejected here --
+        // see `gen_over_applied`'s own docs and
+        // `over_applied_ill_typed_terms_still_agree_with_the_interpreter`
+        // below, which covers the complementary property for this shape
+        // (jit.rs's verification catches the ill-typed case this
+        // generator always produces, rather than try_compile rejecting it
+        // outright). Still draws from `rng` here, unused, so every other
+        // sub-case below keeps drawing the exact same random values per
+        // seed it always has.
         let mut s1 = TermStore::new();
-        let over_applied = gen_over_applied(&mut rng, &mut s1);
-        assert!(
-            compile::try_compile(&s1, over_applied).is_none(),
-            "seed={seed}: an over-applied literal lambda should be rejected"
-        );
+        let _ = gen_over_applied(&mut rng, &mut s1);
 
         let mut s2 = TermStore::new();
         let inconsistent = gen_inconsistent_arity(&mut rng, &mut s2);
@@ -471,6 +486,41 @@ fn compile_rejects_out_of_scope_terms_cleanly() {
         assert!(
             compile::try_compile(&s3, unbound).is_none(),
             "seed={seed}: a genuinely unbound variable should be rejected"
+        );
+    }
+}
+
+#[test]
+fn over_applied_ill_typed_terms_still_agree_with_the_interpreter() {
+    // gen_over_applied always produces a genuinely ill-typed term
+    // (over-applying a plain Int-returning literal lambda, never one that
+    // returns a further closure -- see its own docs). compile.rs now
+    // compiles the shape rather than rejecting it outright, so this is
+    // the test that actually matters for soundness: jit.rs's own sample
+    // verification must catch every one of these (the interpreter
+    // type-errors, the compiled form traps or -- vanishingly unlikely --
+    // coincidentally produces some value through a garbage
+    // `call_indirect` target) and fall back to the interpreter, so
+    // `JitEngine::apply` still agrees with `eval::apply_term` regardless.
+    const SEEDS: u64 = 300;
+
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0x00BA_D111_0000_u64 ^ seed);
+        let mut s = TermStore::new();
+        let over_applied = gen_over_applied(&mut rng, &mut s);
+
+        let interpreted = eval::apply_term(&s, over_applied, &[]);
+        let mut jit = JitEngine::new();
+        let jitted = jit.apply(&s, over_applied, &[]);
+        let agree = match (&interpreted, &jitted) {
+            (Ok(a), Ok(b)) => a == b,
+            (Err(_), Err(_)) => true,
+            _ => false,
+        };
+        assert!(
+            agree,
+            "seed={seed}: an ill-typed over-application should still agree via jit.rs's own verification\n\
+             interpreted={interpreted:?} jit={jitted:?}"
         );
     }
 }

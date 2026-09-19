@@ -91,19 +91,18 @@ fn higher_order_demo(s: &mut TermStore) -> Hash {
 
 /// A genuinely *capturing* closure: `(\x. if x > 0 then (\y. x + y) else
 /// (\y. x - y)) 3`, then applied to `4`. The inner lambdas reference `x`,
-/// bound by the *enclosing* function, not their own parameter range --
-/// `compile.rs` can compile that on its own now (real closure conversion,
-/// see its module docs), but *this particular* term still falls back to
-/// the interpreter for an unrelated, pre-existing reason: `App(App(inner,
-/// 3), 4)` is exactly the same term shape as a plain 2-ary call
-/// `inner(3, 4)` (`compile.rs`'s own `unwind_app_spine` can't tell curried
-/// application from multi-arg application apart, see its docs), and
-/// `inner`'s own arity is 1, not 2 -- so this is rejected for the same
-/// reason `curried_application_is_indistinguishable_from_multi_arg_calls`
-/// (a `compile.rs` test) documents, not because of the capture. Still a
-/// good demonstration of the JIT degrading gracefully to the interpreter
-/// for a term it can't (and shouldn't try to) compile.
-fn capturing_closure_demo(s: &mut TermStore) -> Hash {
+/// bound by the *enclosing* function, not their own parameter range.
+/// `App(App(inner, 3), 4)` is exactly the same term shape as a plain
+/// 2-ary call `inner(3, 4)` (`compile.rs`'s own `unwind_app_spine` can't
+/// tell curried application from multi-arg application apart, see its
+/// docs), and `inner`'s own arity is 1, not 2 -- so this reads as
+/// `inner` *over-applied* by one argument. Used to be rejected outright
+/// for exactly that reason; `compile.rs`'s own "Over-application" docs
+/// now cover this shape: `inner`'s saturated call (`inner(3)`) compiles
+/// normally, and whatever closure it returns (capturing `x`, allocated
+/// fresh) is dispatched on the extra argument through `call_indirect`,
+/// the same way calling a closure-typed variable already works.
+fn over_applied_capturing_closure_demo(s: &mut TermStore) -> Hash {
     let x1 = s.var(0);
     let zero = s.lit(0);
     let cond = s.prim(PrimOp::Lt, zero, x1);
@@ -124,15 +123,14 @@ fn capturing_closure_demo(s: &mut TermStore) -> Hash {
 }
 
 /// `\x. (\g. g 5) (if x > 0 then (\y. x + y) else (\y. x - y))` -- the
-/// same capturing closure as `capturing_closure_demo`, but applied
-/// through a call to a closure-typed *parameter* (`g`) instead of by
-/// curried application, so `compile.rs`'s `unwind_app_spine` doesn't
-/// collapse the two applications together (see `capturing_closure_demo`'s
-/// docs) -- this one genuinely does compile, exercising real closure
-/// conversion: a fresh heap-allocated environment for whichever inner
-/// lambda gets picked, captured `x` included, packed with its table
-/// index into one `i64`, and unpacked again at the `call_indirect` inside
-/// `g`'s own caller.
+/// same capturing closure as `over_applied_capturing_closure_demo`, but
+/// applied through a call to a closure-typed *parameter* (`g`) instead of
+/// by over-application, exercising real closure conversion via the
+/// *other* dispatch path (`call_indirect` through a variable rather than
+/// through a freshly computed saturated-call result): a fresh
+/// heap-allocated environment for whichever inner lambda gets picked,
+/// captured `x` included, packed with its table index into one `i64`,
+/// and unpacked again at the `call_indirect` inside `g`'s own caller.
 fn compiled_capturing_closure_demo(s: &mut TermStore) -> Hash {
     let x1 = s.var(0);
     let zero = s.lit(0);
@@ -268,10 +266,12 @@ fn main() {
     println!("compiled so far: {}, interpreted so far: {}", jit.stats.compiled, jit.stats.interpreted);
     println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(hof));
 
-    let capturing = capturing_closure_demo(&mut store);
-    println!("\n-- a capturing closure this particular curried form still falls back on --");
+    let capturing = over_applied_capturing_closure_demo(&mut store);
+    println!("\n-- over-applying a literal lambda that returns a capturing closure --");
     println!("interpreted: {}", eval::apply_term(&store, capturing, &[]).unwrap());
-    println!("jit (falls back to interpreter): {}", jit.apply(&store, capturing, &[]).unwrap());
+    println!("jit:         {}", jit.apply(&store, capturing, &[]).unwrap());
+    println!("compiled so far: {}, interpreted so far: {}", jit.stats.compiled, jit.stats.interpreted);
+    println!("kernel-checked equivalence proof: {}", jit.is_kernel_verified(capturing));
 
     let compiled_capturing = compiled_capturing_closure_demo(&mut store);
     println!("\n-- a capturing closure real closure conversion *does* compile --");

@@ -4824,8 +4824,14 @@ mod tests {
     #[test]
     fn over_application_of_a_literal_lambda_is_still_out_of_scope_for_the_closure_proof() {
         // add = \x y. x + y, called with three arguments -- rejected by
-        // denote_closure's own args.len() > arity check, the same way
-        // compile.rs's compile_node rejects it.
+        // denote_closure's own args.len() > arity check (proof.rs has no
+        // fragment for over-application at all, unlike compile.rs, which
+        // now compiles the shape -- see compile.rs's own module docs and
+        // compile::tests::an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter
+        // -- though not *this* term specifically: `add`'s body is a plain
+        // `Int`, never a further closure, so this one is genuinely
+        // ill-typed and would only ever be trusted via jit.rs's own
+        // sample verification, never a kernel-checked proof).
         let mut s = TermStore::new();
         let x = s.var(1);
         let y = s.var(0);
@@ -4840,7 +4846,6 @@ mod tests {
         let over_applied = s.app(partial, three);
 
         assert!(prove_closure_expr(&s, over_applied).is_none());
-        assert!(compile::try_compile(&s, over_applied).is_none(), "the compiler should agree this is out of scope too");
     }
 
     #[test]

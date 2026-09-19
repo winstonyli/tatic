@@ -535,19 +535,23 @@ mod tests {
     }
 
     #[test]
-    fn a_returned_closure_still_falls_back_to_the_interpreter() {
+    fn a_returned_closure_now_compiles_via_over_application() {
         // (\x. if x > 0 then (\y. x + y) else (\y. x - y)) 3, then applied
-        // to 4 -- `compile.rs` only supports applying a parameter or a
-        // *literal* lambda (a statically-known callee); here the callee
-        // of the outer application is itself the *result* of applying
-        // `inner`, which this term representation can't distinguish from
-        // "inner takes 2 arguments" (see
-        // `compile::tests::curried_application_is_indistinguishable_from_multi_arg_calls`)
-        // -- and inner is declared 1-ary, so that reads as an arity
-        // mismatch and compile.rs correctly rejects it (the branches also
-        // capture `x`, a second, independent reason it's out of scope).
-        // Either way, jit.rs still needs to fall back to the interpreter
-        // and get the right answer.
+        // to 4 -- `unwind_app_spine` can't distinguish this from "inner
+        // takes 2 arguments" (see `compile::tests::
+        // curried_application_is_indistinguishable_from_multi_arg_calls`),
+        // and `inner` is declared 1-ary, so this reads as `inner`
+        // over-applied by one argument: `inner`'s own saturated call
+        // (`inner(3)`) is compiled, and whatever it returns -- one of two
+        // *capturing* closures, depending on `x` -- is dispatched via
+        // `call_indirect` the same way a closure-typed variable would be
+        // (see `compile.rs`'s module docs on over-application). Was
+        // previously rejected outright, falling back to the interpreter;
+        // now compiles and gets the right, sample-verified answer.
+        // proof.rs has no fragment for over-application at all (see
+        // `proof::tests::over_application_of_a_literal_lambda_is_still_out_of_scope_for_the_closure_proof`),
+        // so this still isn't kernel-verified, same as any other
+        // over-application.
         let mut s = TermStore::new();
         let x1 = s.var(0);
         let zero = s.lit(0);
@@ -569,8 +573,9 @@ mod tests {
 
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 7); // 3 > 0, so 3 + 4
-        assert_eq!(jit.stats.compiled, 0);
-        assert_eq!(jit.stats.interpreted, 1);
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(!jit.is_kernel_verified(applied));
     }
 
     #[test]
@@ -942,5 +947,59 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
         assert!(jit.is_kernel_verified(top));
+    }
+
+    #[test]
+    fn an_over_applied_literal_lambda_returning_a_closure_compiles_but_isnt_kernel_verified() {
+        // f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(a,b,c) --
+        // same shape as compile::tests::
+        // an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter,
+        // run through the real cache (compile + sample-verify) rather than
+        // raw wasmtime, at both a positive and a negative `a` so both
+        // branches get exercised. proof.rs has no fragment for
+        // over-application at all (an over-applied literal lambda fails
+        // every `args.len() == k` check `denote`/`denote_closure` make the
+        // same way `collect_literals` does) -- compiled and sample-
+        // verified, but never kernel-verified, the same honest "no proof,
+        // but still trusted via verify()" position `jit.rs`'s own module
+        // docs describe for the rest of this fragment.
+        let mut s = TermStore::new();
+        let c1 = s.var(0);
+        let b1 = s.var(1);
+        let a1 = s.var(2);
+        let ab1 = s.prim(PrimOp::Add, a1, b1);
+        let abc1 = s.prim(PrimOp::Add, ab1, c1);
+        let closure1 = s.abs(abc1);
+
+        let c2 = s.var(0);
+        let b2 = s.var(1);
+        let a2 = s.var(2);
+        let amb2 = s.prim(PrimOp::Sub, a2, b2);
+        let ambc2 = s.prim(PrimOp::Add, amb2, c2);
+        let closure2 = s.abs(ambc2);
+
+        let a_body = s.var(1);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, a_body);
+        let body = s.if_(cond, closure1, closure2);
+        let b_binder = s.abs(body);
+        let f = s.abs(b_binder);
+
+        let a_param = s.var(2);
+        let b_param = s.var(1);
+        let c_param = s.var(0);
+        let fa = s.app(f, a_param);
+        let fab = s.app(fa, b_param);
+        let fabc = s.app(fab, c_param);
+        let c_binder = s.abs(fabc);
+        let bc_binder = s.abs(c_binder);
+        let top = s.abs(bc_binder);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[10, 3, 100]).unwrap(), 113);
+        assert_eq!(jit.apply(&s, top, &[-5, 3, 100]).unwrap(), 92);
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(!jit.is_kernel_verified(top), "proof.rs has no fragment for over-application");
     }
 }
