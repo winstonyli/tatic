@@ -794,4 +794,47 @@ mod tests {
         assert_eq!(jit.stats.interpreted, 0);
         assert!(jit.is_kernel_verified(g));
     }
+
+    #[test]
+    fn partial_application_of_a_self_recursive_root_compiles_and_is_kernel_verified() {
+        // rec f n acc = if n <= 0 then acc else f(n-1, n*acc); partial =
+        // f(3) (under-applied by one arg); caller = \g. g(1); top =
+        // caller(partial) -- same shape as proof::tests::
+        // a_partially_applied_self_recursive_combinator_used_as_a_value_gets_a_closure_proof.
+        // compile.rs's register_partial_app/emit_pap_wrapper never
+        // special-cased is_rec (a PAP wrapper only ever forwards a static
+        // call to its root, indifferent to whether that root's own codegen
+        // happens to loop), and now neither does proof.rs's pap_ref, so
+        // this gets a kernel-checked proof too.
+        let mut s = TermStore::new();
+        let acc = s.var(0);
+        let n = s.var(1);
+        let f = s.var(2);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_times_acc = s.prim(PrimOp::Mul, n, acc);
+        let rec_call = s.app2(f, n_minus_1, n_times_acc);
+        let body = s.if_(cond, acc, rec_call);
+        let inner = s.abs(body);
+        let abs = s.abs(inner);
+        let fact2 = s.rec(abs);
+
+        let three = s.lit(3);
+        let partial = s.app(fact2, three);
+
+        let g = s.var(0);
+        let one2 = s.lit(1);
+        let call_g = s.app(g, one2);
+        let caller = s.abs(call_g);
+
+        let top = s.app(caller, partial);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[]).unwrap(), 6); // fact2(3,1) = 3*2*1
+        assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(top));
+    }
 }

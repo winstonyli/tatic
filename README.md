@@ -347,11 +347,12 @@ This is stated precisely because it would be easy to overclaim here.
   opaque), so this needed only a wider match pattern, no new proof
   machinery; `compile::peel`/`compile::free_vars`/`compile::infer_closure_arities`
   were already generic over `is_rec` (`prove_tail_recursive_universal`'s own
-  fragment already relied on that). `pap_ref` keeps rejecting a recursive
-  root specifically, though — an honest narrowing, and, unlike the
-  now-lifted capturing-root one, still a case `compile.rs` itself already
-  compiles (`register_partial_app` never special-cased `is_rec` either)
-  but the closure proof doesn't yet reach. Widening the capturing-PAP case
+  fragment already relied on that). `pap_ref` now covers a self-recursive
+  root too, the same way: `compile.rs`'s own `register_partial_app`/
+  `emit_pap_wrapper` never special-cased `is_rec` either (a PAP wrapper only
+  ever forwards a static call to its root, indifferent to whether that
+  root's own codegen happens to loop), so `pap_ref`'s own extra `is_rec`
+  check was the only thing left rejecting it. Widening the capturing-PAP case
   surfaced a real bug in `prime_closure_postulates`'s own pre-priming pass:
   its partial-application branch primed `pap_ref` but not the transitive
   `mk_env_ref` a capturing root's `build_env_expr` call also needs, so
@@ -625,7 +626,9 @@ first seed, as expected.
   `call_ref`'s own environment-first convention) when the root captures,
   and every call site builds that environment via `build_env_expr` and
   prepends it, mirroring `compile.rs`'s own `push_pap_env`, which composes
-  a PAP wrapper's own environment with a copy of the root's. Partial
-  application of a *self-recursive* combinator stays out of scope (`pap_ref`
-  still rejects `is_rec`), and over-application (more arguments than
+  a PAP wrapper's own environment with a copy of the root's. Also covers
+  partial application of a *self-recursive* combinator, the same opaque-call
+  reasoning `register`/`call_ref` already use for a direct call or bare
+  value (`compile.rs`'s own `register_partial_app`/`emit_pap_wrapper` never
+  special-cased `is_rec` either). Over-application (more arguments than
   arity) stays out of scope on both readings.

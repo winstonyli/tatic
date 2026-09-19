@@ -2521,13 +2521,14 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // site to also accept `Term::Rec` needed no new proof machinery -- just the
 // wider pattern, since `compile::peel`/`compile::free_vars`/
 // `compile::infer_closure_arities` were already generic over `is_rec`
-// (`build_universal`'s own fragment already relied on that). `pap_ref`
-// specifically keeps rejecting a recursive root, though -- unlike a direct
-// call, a bare value, or now a capturing root, composing a
-// partial-application wrapper's own environment with a self-recursive
-// combinator's calling convention hasn't been worked through -- an honest
-// narrowing (and `compile.rs` itself already handles it:
-// `register_partial_app` never special-cased `is_rec` either).
+// (`build_universal`'s own fragment already relied on that). `pap_ref` now
+// covers a self-recursive root too, the same way: `compile::peel`/
+// `compile::free_vars`/`param_types_for` were already generic over
+// `is_rec`, and `compile.rs`'s own `register_partial_app`/`emit_pap_wrapper`
+// never special-cased it either (a PAP wrapper only ever forwards a static
+// call to its root, indifferent to whether that root's own codegen happens
+// to loop) -- `pap_ref`'s own extra `is_rec` check was the only thing left
+// standing in the way.
 
 /// Either an `Int`-typed or a `Clo`-typed denotation -- `denote_closure`
 /// needs to track which, since an application's arguments and an `If`'s
@@ -2847,8 +2848,8 @@ impl<'a> ClosureCombinators<'a> {
     }
 
     /// A postulated `Clo`-typed value for the `compile.rs`-synthesized
-    /// wrapper combinator that partially applies non-capturing literal `h`
-    /// to its first `k` arguments (`register_partial_app`'s own `(root,
+    /// wrapper combinator that partially applies `h` to its first `k`
+    /// arguments (`register_partial_app`'s own `(root,
     /// supplied)` shape): `T_0 -> .. -> T_{k-1} -> Clo`, memoized by
     /// `(h, k)` -- like `register_partial_app` itself, the wrapper's
     /// compiled body only depends on the *shape* `(h, k)`, never on the
@@ -2876,14 +2877,20 @@ impl<'a> ClosureCombinators<'a> {
     /// `int_ty` reads (already-resolved `Expr`s, not re-resolved after the
     /// fact) if it ran after them instead.
     ///
-    /// `None` for a self-recursive, zero-`k`, or over-`k` (`k >= arity`)
-    /// root.
+    /// `None` for a zero-`k` or over-`k` (`k >= arity`) root -- `h` may
+    /// itself be self-recursive (`Term::Rec`, not just `Term::Abs`):
+    /// `compile::peel`/`compile::free_vars`/`param_types_for` are all
+    /// already generic over that (a call is always postulated opaque
+    /// regardless), and `compile.rs`'s own `register_partial_app`/
+    /// `emit_pap_wrapper` never special-cased it either -- a static
+    /// forwarding call to `root`'s own table entry, indifferent to
+    /// whether that entry's *own* codegen happens to loop.
     fn pap_ref(&mut self, h: Hash, k: usize) -> Option<Expr> {
         if let Some(&pos) = self.cp.pap_pos.get(&(h, k)) {
             return Some(self.cp.arith.p.get(pos));
         }
         let (arity, body, is_rec) = compile::peel(self.store, h)?;
-        if is_rec || k == 0 || k >= arity {
+        if k == 0 || k >= arity {
             return None;
         }
         let captures = compile::free_vars(self.store, body, arity, is_rec);
@@ -3045,9 +3052,9 @@ fn denote_closure(
             // position, applied to exactly its own arity (a direct static
             // call), fewer arguments than its own arity (compile.rs's
             // compile-time-desugared partial application,
-            // `register_partial_app`'s wrapper -- `pap_ref` itself still
-            // rejects a recursive root, so this narrows back down for that
-            // one sub-case), or more (over-application, still rejected).
+            // `register_partial_app`'s wrapper -- `pap_ref` covers a
+            // self-recursive root here too, the same opaque-call reasoning),
+            // or more (over-application, still rejected).
             // Each argument's expected type matches the *callee's own*
             // parameter type at that position (`Clo` or `Int`), which is
             // what lets e.g. `twice(inc, 5)` pass a closure and a plain
@@ -4099,25 +4106,20 @@ mod tests {
     }
 
     #[test]
-    fn partial_application_of_a_self_recursive_combinator_is_still_out_of_scope_for_the_closure_proof() {
+    fn a_partially_applied_self_recursive_combinator_used_as_a_value_gets_a_closure_proof() {
         // fact(1) supplied as a 1-of-1 partial application isn't a
         // meaningful example on its own (fact's arity is already 1), so
         // use a 2-ary self-recursive combinator instead: rec f n acc =
         // if n <= 0 then acc else f(n-1, n*acc); partial = f(3) (under-
         // applied by one arg); caller = \g. g(1); top = caller(partial).
-        // pap_ref explicitly rejects a recursive root (see its own docs),
-        // unlike a direct (fully-applied) or bare-value self-recursive
-        // reference, both now in scope -- an honest, still-documented
-        // narrowing, not an oversight. compile.rs's own `register_partial_app`/
-        // `emit_pap_wrapper`, by contrast, never special-cased `is_rec` at
-        // all (a PAP wrapper only ever forwards a static call to its root,
-        // indifferent to whether that root's *own* codegen happens to
-        // loop), so this genuinely compiles already -- an honest,
-        // pre-existing gap between what compile.rs handles and what the
-        // closure proof covers. Unlike a *capturing* root (now covered --
-        // see a_partially_applied_capturing_literal_lambda_used_as_a_value_gets_a_closure_proof
-        // above), a *recursive* one is still deliberately out of scope, a
-        // rejection this round's widening didn't touch.
+        // pap_ref no longer rejects a recursive root -- compile::peel/
+        // compile::free_vars/param_types_for were already generic over
+        // is_rec (a call is always postulated opaque regardless), and
+        // compile.rs's own register_partial_app/emit_pap_wrapper never
+        // special-cased it either (a PAP wrapper only ever forwards a
+        // static call to its root, indifferent to whether that root's own
+        // codegen happens to loop), so the only thing standing in the way
+        // was pap_ref's own extra is_rec check.
         let mut s = TermStore::new();
         let acc = s.var(0);
         let n = s.var(1);
@@ -4143,8 +4145,17 @@ mod tests {
 
         let top = s.app(caller, partial);
 
-        assert!(prove_closure_expr(&s, top).is_none());
-        assert!(compile::try_compile(&s, top).is_some(), "the compiler already handles this even though the closure proof doesn't yet");
+        let proof = prove_closure_expr(&s, top)
+            .expect("a partially applied self-recursive combinator used as a value should get a closure proof");
+        assert_eq!(proof.arity, 0);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        assert!(compile::try_compile(&s, top).is_some());
     }
 
     #[test]
