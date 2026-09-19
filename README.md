@@ -137,7 +137,10 @@ This is stated precisely because it would be easy to overclaim here.
   constructor per leaf of `body`'s decision tree — `body` can be an
   arbitrary tree of nested `If`s, and each leaf can itself contain any
   number of self-calls combined arithmetically (zero for a base case, one
-  in tail position, or several — e.g. Fibonacci's `f(n-1) + f(n-2)`) —
+  in tail position, or several — e.g. Fibonacci's `f(n-1) + f(n-2)`), even
+  when some of those self-calls sit inside a further, purely-arithmetic
+  `If` nested in the leaf itself (e.g. `n + (if c then f(n-1) else
+  f(n-2))`), not just as the whole body of some branch —
   together with a recursor obeying the same universal-motive shape as
   `kernel::WRec`, and uses real induction on that recursor to prove
   `loop_val(params, v, e) = v` once, for every `params` and `v`, not per
@@ -645,10 +648,6 @@ guards against by hand): caught immediately, at seed 22.
   cheap way to predict "this one's going to be large" in advance, or a
   cache design whose overhead doesn't scale with size the way a `HashMap`
   grown-then-dropped does.
-- Allowing an `If` nested inside a leaf's own arithmetic expression (e.g.
-  `n + (if c then 1 else 2)`), not just as the whole body of some branch —
-  `find_self_calls`/`denote_with_placeholders` currently reject that shape
-  outright.
 - Combining closures with self-recursion more fully in one proof.
   `prove_tail_recursive_universal` now covers a closure-typed *parameter*
   threaded through recursion, *and* a closure genuinely created and

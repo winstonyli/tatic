@@ -101,18 +101,25 @@
 //! `cond`'s real value at each step, same as `prove_tail_recursive_call`
 //! already does), which this function doesn't build.
 //!
-//! Scope: every `If` on the way to a leaf must have a direct comparison as
-//! its condition (`compile_cond` in `compile.rs` requires that too, and
-//! gating above relies on comparisons denoting to exactly `0` or `1`);
-//! `body` must have at least one leaf with a self-call somewhere in it
-//! (otherwise there's no recursion to induct on at all); and a leaf may
-//! not itself contain a further nested `If` as a sub-expression (only as
-//! the *whole* body of some branch, which `classify_tree` already
-//! extracts) -- a real, documented restriction, not a subtle gap.
-//! `prove_tail_recursive_call` already handles arbitrary branching *and*
-//! arbitrary self-call placement on its own (it just follows one concrete
-//! path per call, denoting whatever it finds along the way), so neither
-//! of those needed widening.
+//! Scope: every `If` on the way to a leaf (i.e. one `classify_tree` pulls
+//! into the [`DecisionTree`] itself, gating which leaf is reached) must
+//! have a direct comparison as its condition (`compile_cond` in
+//! `compile.rs` requires that too, and gating above relies on comparisons
+//! denoting to exactly `0` or `1`); `body` must have at least one leaf
+//! with a self-call somewhere in it (otherwise there's no recursion to
+//! induct on at all). A leaf's own arithmetic expression *may* itself
+//! contain a further nested `If` (e.g. `n + (if c then 1 else 2)`) --
+//! `find_self_calls`/`denote_with_placeholders` recurse into it exactly
+//! like a `Prim`, treating it as fully opaque via `ite_ref` the same way
+//! `denote` already does for `prove_pure_expr` (no branch is ever
+//! resolved concretely at this, the universal, all-inputs level; a
+//! self-call inside either branch just becomes one more placeholder of
+//! the leaf's `combine` function) -- as long as it stays purely
+//! arithmetic: a nested `If` used as a `Clo`-typed *value* inside a leaf
+//! is still out of scope. `prove_tail_recursive_call` already handles
+//! arbitrary branching *and* arbitrary self-call placement on its own (it
+//! just follows one concrete path per call, denoting whatever it finds
+//! along the way), so neither of those needed widening.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -132,6 +139,9 @@ pub struct ArithPostulates {
     literal_pos: HashMap<i64, usize>,
     /// Memoized per `(op, x, y)` -- see `assume_prim_fact`.
     fact_pos: HashMap<(u8, i64, i64), usize>,
+    /// Memoized per `(c, t, e)` -- see `assume_ite_fact`, `assume_prim_fact`'s
+    /// counterpart for a nested `If` inside a leaf.
+    ite_fact_pos: HashMap<(i64, i64, i64), usize>,
 }
 
 impl ArithPostulates {
@@ -170,6 +180,7 @@ impl ArithPostulates {
             ite_pos,
             literal_pos: HashMap::new(),
             fact_pos: HashMap::new(),
+            ite_fact_pos: HashMap::new(),
         }
     }
 
@@ -231,6 +242,31 @@ impl ArithPostulates {
         let ty = kernel::id(self.int_ty(), lhs, rhs);
         let pos = self.p.push(ty);
         self.fact_pos.insert(key, pos);
+        self.p.get(pos)
+    }
+
+    /// `assume_prim_fact`'s counterpart for `ite_ref`: postulates (memoized
+    /// per `(c, t, e)`) that concretely evaluating a nested `If` at literals
+    /// `c`/`t`/`e` yields `eval_concrete`'s own `If` result (`t` if `c != 0`
+    /// else `e`) -- needed once a leaf may itself contain a further nested
+    /// `If` (see the module docs), since `eval_and_prove` then has to
+    /// discharge `app3(ite_ref, ..)` concretely the same way it already
+    /// does for a `Prim` application.
+    fn assume_ite_fact(&mut self, c: i64, t: i64, e: i64) -> Expr {
+        let key = (c, t, e);
+        if let Some(&pos) = self.ite_fact_pos.get(&key) {
+            return self.p.get(pos);
+        }
+        let result = if c != 0 { t } else { e };
+        self.lit(c);
+        self.lit(t);
+        self.lit(e);
+        self.lit(result);
+        let lhs = kernel::app3(self.ite_ref(), self.lit_ref(c), self.lit_ref(t), self.lit_ref(e));
+        let rhs = self.lit_ref(result);
+        let ty = kernel::id(self.int_ty(), lhs, rhs);
+        let pos = self.p.push(ty);
+        self.ite_fact_pos.insert(key, pos);
         self.p.get(pos)
     }
 }
@@ -604,11 +640,12 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // as its condition (`compile_cond` in `compile.rs` requires that too; also
 // what lets the gating above use plain equality, since a comparison only
 // ever denotes to `0` or `1`); `body` must have at least one leaf with a
-// self-call in it somewhere; and a leaf's own expression may not contain a
-// further nested `If` (`find_self_calls`/`denote_with_placeholders` both
-// reject one, same as `denote` always has) -- only as the *whole* body of
-// some branch, which `classify_tree` already extracts as its own tree
-// node. `prove_tail_recursive_call` already handles arbitrary branching
+// self-call in it somewhere. A leaf's own expression *may* contain a
+// further, purely-arithmetic nested `If` (`find_self_calls`/
+// `denote_with_placeholders` both recurse into one, embedding it opaquely
+// via `ite_ref`, same as `denote` always has for `prove_pure_expr`) -- a
+// nested `If` used as a `Clo`-typed value inside a leaf is still out of
+// scope. `prove_tail_recursive_call` already handles arbitrary branching
 // *and* arbitrary self-call placement on its own (it just follows one
 // concrete path through the tree per call, denoting whatever it finds
 // along the way), so neither of those needed widening.
@@ -762,14 +799,16 @@ fn resolve_all(arith: &ArithPostulates, positions: &[usize]) -> Vec<Expr> {
 
 /// The shape `prove_tail_recursive_universal`'s `body` must be: an
 /// arbitrary tree of nested `If`s (matching what `compile_node` already
-/// compiles), each leaf an arithmetic expression (`Var`/`Lit`/`Prim`) that
-/// may itself contain any number of self-call occurrences (zero, for a
-/// base case; one in tail position, for the old tail-recursion special
-/// case; one or more anywhere else, e.g. `f(n-1) + f(n-2)`) -- but *not* a
-/// further nested `If` (a real, documented restriction: `classify_tree`
-/// already extracts every `If` that's the *whole* body of some branch,
-/// but one embedded as a sub-expression of an arithmetic leaf, e.g.
-/// `n + (if c then 1 else 2)`, is out of scope for now).
+/// compiles), each leaf an arithmetic expression (`Var`/`Lit`/`Prim`/`If`)
+/// that may itself contain any number of self-call occurrences (zero, for
+/// a base case; one in tail position, for the old tail-recursion special
+/// case; one or more anywhere else, e.g. `f(n-1) + f(n-2)`, including
+/// inside a further, purely-arithmetic nested `If`, e.g.
+/// `n + (if c then f(n-1) else f(n-2))`) -- `classify_tree` only extracts
+/// an `If` that's the *whole* body of some branch into the tree itself;
+/// one embedded as a sub-expression of a leaf just stays part of that
+/// leaf's own expression, handled by `find_self_calls`/
+/// `denote_with_placeholders` the same way a `Prim` is.
 enum DecisionTree {
     If { cond: Hash, then_branch: Box<DecisionTree>, else_branch: Box<DecisionTree> },
     Leaf(Hash),
@@ -819,8 +858,8 @@ struct SelfCall {
 /// Flattens a [`DecisionTree`] into its leaves (with their paths), then
 /// locates each leaf's self-call occurrences via `find_self_calls`.
 /// Returns `None` if any leaf falls outside the fragment `denote`/
-/// `find_self_calls` cover (a nested `If`, a non-tail-recursion `Abs`,
-/// a free `App`, ...).
+/// `find_self_calls` cover (a `Clo`-typed nested-`If` value, a
+/// non-tail-recursion `Abs`, a free `App`, ...).
 fn flatten_tree(store: &TermStore, tree: &DecisionTree, self_call: SelfCall, param_types: &[Option<usize>]) -> Option<Vec<Leaf>> {
     fn go(tree: &DecisionTree, path: &mut Vec<(Hash, i64)>, out: &mut Vec<(Vec<(Hash, i64)>, Hash)>) {
         match tree {
@@ -849,15 +888,20 @@ fn flatten_tree(store: &TermStore, tree: &DecisionTree, self_call: SelfCall, par
         .collect()
 }
 
-/// Walks a leaf's `Var`/`Lit`/`Prim`/closure-call structure (a nested `If`
-/// or anything else outside the fragment fails), appending each self-call
-/// occurrence's argument list to `out` in the same left-to-right order
+/// Walks a leaf's `Var`/`Lit`/`Prim`/`If`/closure-call structure (anything
+/// else outside the fragment fails), appending each self-call occurrence's
+/// argument list to `out` in the same left-to-right, depth-first order
 /// `denote_with_placeholders` will later substitute them in. A fully-
 /// saturated call through a `Clo`-typed parameter (`Var(i)` with
 /// `param_types[i] = Some(k)`, `k` arguments -- `param_types[i] = None`
 /// throughout for a term with no closures at all, the same
 /// closures-blind behavior as before) is recursed into (its own arguments
 /// may still contain further self-call occurrences), not rejected outright.
+/// A nested `If`'s condition/branches are recursed into the same way (a
+/// self-call may occur in any of them), always as plain `Int`-typed
+/// arithmetic -- a nested `If` used as a `Clo`-typed *value* (e.g.
+/// `f(n-1, if c then g else h)`) is still out of scope, unlike a nested
+/// `If` that stays purely arithmetic.
 fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types: &[Option<usize>], out: &mut Vec<Vec<Hash>>) -> bool {
     if let Some(args) = compile::match_self_call(store, h, self_call.arity, Some(self_call.idx)) {
         out.push(args);
@@ -893,7 +937,17 @@ fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types:
         // nothing inside it to search for a self-call occurrence, the
         // same reasoning as the App-root case just above.
         Term::Abs(_) => true,
-        Term::If(..) | Term::App(..) | Term::Rec(_) => false,
+        // A nested `If` (only Int-typed condition/branches -- see
+        // `denote_with_placeholders`'s matching arm): recurse into all
+        // three the same way `Term::Prim` does, so a self-call inside
+        // either branch is still found, in the same left-to-right,
+        // depth-first order `denote_with_placeholders` will later walk.
+        Term::If(c, t, e) => {
+            find_self_calls(store, *c, self_call, param_types, out)
+                && find_self_calls(store, *t, self_call, param_types, out)
+                && find_self_calls(store, *e, self_call, param_types, out)
+        }
+        Term::App(..) | Term::Rec(_) => false,
     }
 }
 
@@ -905,9 +959,10 @@ fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types:
 /// `combine` function's body (`placeholders` = the `Ev`-bound values) and
 /// nowhere else -- everywhere `combine` is *used* at a different
 /// instantiation, it's applied as a value via `combine_of`, not re-walked.
-/// A nested `If` (a real, documented restriction unrelated to closures --
-/// see the module docs) still fails, unlike `denote_closure_typed`, which
-/// allows one for a self-call *argument*. `params` is `Params`'s own raw
+/// A purely-arithmetic nested `If` is handled the same way
+/// `denote_closure_typed` handles one; a `Clo`-typed nested-`If` value
+/// (a real, documented restriction -- see the module docs) still fails.
+/// `params` is `Params`'s own raw
 /// positions, same rationale (and same staleness-avoidance) as
 /// `denote_closure_typed`'s own docs.
 #[allow(clippy::too_many_arguments)]
@@ -1068,7 +1123,27 @@ fn denote_with_placeholders(
             debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: capturing closure value");
             Some(Denoted::Clo(applied))
         }
-        Term::If(..) | Term::Rec(_) | Term::App(..) => None,
+        // A nested `If`, purely arithmetic (see `find_self_calls`'s own
+        // docs for the Clo-typed-value case this still doesn't cover):
+        // mirrors `denote_closure_typed`'s identical `Term::If` arm,
+        // threading `placeholders`/`next` through each branch so a
+        // self-call inside either one still gets substituted, in the same
+        // left-to-right order `find_self_calls` just walked it in.
+        Term::If(c, t, e) => {
+            let dc = denote_with_placeholders(store, *c, self_call, param_types, combinators, params, placeholders, next)?.int()?;
+            let dc = Anchored::new(&combinators.cp.arith, dc);
+            let dt = denote_with_placeholders(store, *t, self_call, param_types, combinators, params, placeholders, next)?.int()?;
+            let dt = Anchored::new(&combinators.cp.arith, dt);
+            let de = denote_with_placeholders(store, *e, self_call, param_types, combinators, params, placeholders, next)?.int()?;
+            let ite = combinators.cp.arith.ite_ref();
+            let dc = dc.at(&combinators.cp.arith);
+            let dt = dt.at(&combinators.cp.arith);
+            let applied = kernel::app3(ite, dc, dt, de);
+            let int_ty = combinators.cp.arith.int_ty();
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: nested If");
+            Some(Denoted::Int(applied))
+        }
+        Term::Rec(_) | Term::App(..) => None,
     }
 }
 
@@ -1089,11 +1164,11 @@ fn denote_with_placeholders(
 /// `param_types` is only ever indexed `0..arity`, `self_idx == arity`
 /// falls outside it, so a self-call's own `Var(self_idx)` callee position
 /// simply fails to resolve as a closure call and is rejected, the same as
-/// any other unrecognized shape); unlike `denote_with_placeholders`, does
-/// allow a nested `If` (both branches `Int` -- an `If` between two
-/// closures is out of scope, matching `denote_closure`'s own restriction),
-/// since a self-call argument was already allowed to be `if c then x else
-/// y` before closures existed here.
+/// any other unrecognized shape); like `denote_with_placeholders`, does
+/// allow a purely-arithmetic nested `If` (both branches `Int` -- an `If`
+/// between two closures is out of scope, matching `denote_closure`'s own
+/// restriction), since a self-call argument was already allowed to be
+/// `if c then x else y` before closures existed here.
 ///
 /// `params` is `Params`'s own raw positions (`&[usize]`, resolved fresh
 /// via `combinators.p.get` at each individual use), not pre-resolved
@@ -2008,13 +2083,15 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 /// Attempts to build a [`UniversalTailProof`] for `h`. Returns `None` for
 /// anything outside the covered fragment: not `Rec`-wrapped, zero arity, a
 /// body that doesn't classify as a [`DecisionTree`] (every `If` on the way
-/// to a leaf must be a direct comparison, and no leaf may itself contain a
-/// further nested `If`), or one with no self-call anywhere in it. A
-/// closure-typed *parameter*, threaded through the recursion or called via
-/// `apply_k`, is covered; so is a closure genuinely created and (fully or
-/// partially) called anywhere in the body -- a self-call argument
-/// (`f(n-1, (\y. acc+y)(n))`) or a leaf's own top-level expression
-/// (`(\y. n+y)(5) + f(n-1)`) alike (see module docs).
+/// to a leaf must be a direct comparison), or one with no self-call
+/// anywhere in it. A closure-typed *parameter*, threaded through the
+/// recursion or called via `apply_k`, is covered; so is a closure
+/// genuinely created and (fully or partially) called anywhere in the body
+/// -- a self-call argument (`f(n-1, (\y. acc+y)(n))`) or a leaf's own
+/// top-level expression (`(\y. n+y)(5) + f(n-1)`) alike (see module
+/// docs). A leaf may itself contain a further nested `If`, as long as it
+/// stays purely arithmetic (a `Clo`-typed nested-`If` value is still out
+/// of scope).
 pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
     let scaffold = build_universal(store, h)?;
     let theorem_ty = scaffold.theorem_ty.at(&scaffold.combinators);
@@ -2147,7 +2224,46 @@ fn eval_and_prove(
             debug_assert_has_type(&arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: Prim proof");
             Some((result, lhs, proof))
         }
-        Term::If(..) | Term::Abs(_) | Term::App(..) | Term::Rec(_) => None,
+        // Mirrors the `Prim` case just above, via `assume_ite_fact`
+        // instead of `assume_prim_fact`: `denote`/`ite_ref` embeds an `If`
+        // as fully opaque (both branches always denoted, never
+        // short-circuited), so a concrete witness needs the concrete
+        // evaluation of *all three* subterms -- `t` and `e` alike, even
+        // though only one is the branch `eval_concrete` actually takes --
+        // to discharge `app3(ite_ref, dc, dt, de) = lit_ref(result)`.
+        Term::If(c, t, e) => {
+            let (c, t, e) = (*c, *t, *e);
+            let (xc, dc, pc) = eval_and_prove(store, c, arith, params, concrete, param_facts)?;
+            let dc = Anchored::new(arith, dc);
+            let pc = Anchored::new(arith, pc);
+            let (xt, dt, pt) = eval_and_prove(store, t, arith, params, concrete, param_facts)?;
+            let dt = Anchored::new(arith, dt);
+            let pt = Anchored::new(arith, pt);
+            let (xe, de, pe) = eval_and_prove(store, e, arith, params, concrete, param_facts)?;
+            let de = Anchored::new(arith, de);
+            let pe = Anchored::new(arith, pe);
+            let fact = arith.assume_ite_fact(xc, xt, xe);
+            let result = if xc != 0 { xt } else { xe };
+
+            let (dc, pc, dt, pt, de, pe) = (dc.at(arith), pc.at(arith), dt.at(arith), pt.at(arith), de.at(arith), pe.at(arith));
+            let int_ty = arith.int_ty();
+            let f = arith.ite_ref();
+            let cong = kernel::cong_n(
+                &int_ty,
+                &int_ty,
+                &f,
+                &[dc.clone(), dt.clone(), de.clone()],
+                &[arith.lit_ref(xc), arith.lit_ref(xt), arith.lit_ref(xe)],
+                vec![pc, pt, pe],
+            );
+            let lhs = kernel::app3(f.clone(), dc, dt, de);
+            let mid = kernel::app3(f, arith.lit_ref(xc), arith.lit_ref(xt), arith.lit_ref(xe));
+            let rhs = arith.lit_ref(result);
+            let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
+            debug_assert_has_type(&arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: If proof");
+            Some((result, lhs, proof))
+        }
+        Term::Abs(_) | Term::App(..) | Term::Rec(_) => None,
     }
 }
 
@@ -3852,13 +3968,14 @@ mod tests {
     }
 
     #[test]
-    fn an_if_nested_inside_an_arithmetic_leaf_is_still_out_of_scope() {
+    fn an_if_nested_inside_an_arithmetic_leaf_gets_a_universal_proof() {
         // rec f n = if n <= 0 then (n + (if n == 0 then 1 else 2)) else f(n-1)
         // -- the base leaf has an `If` embedded as a *sub-expression* of a
-        // `Prim`, not as the whole body of some branch, which
-        // `classify_tree` doesn't extract (a real, documented restriction,
-        // not a subtle gap: `find_self_calls`/`denote_with_placeholders`
-        // both reject a bare `If` node the same way `denote` always has).
+        // `Prim`, not as the whole body of some branch, so `classify_tree`
+        // doesn't extract it into the DecisionTree itself; it stays part
+        // of the leaf's own expression instead, and (with no self-call
+        // inside it here) `find_self_calls`/`denote_with_placeholders`
+        // just walk through it the same way they already walk a `Prim`.
         let mut s = TermStore::new();
         let n = s.var(0);
         let f = s.var(1);
@@ -3875,7 +3992,53 @@ mod tests {
         let abs = s.abs(body);
         let g = s.rec(abs);
 
-        assert!(prove_tail_recursive_universal(&s, g).is_none());
+        let proof = prove_tail_recursive_universal(&s, g).expect("a purely-arithmetic nested If should get a universal proof");
+        assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+            .expect("the recorded theorem should independently re-typecheck");
+    }
+
+    #[test]
+    fn a_self_call_inside_a_nested_if_branch_gets_a_universal_proof_and_a_correct_instance() {
+        // rec f n = if n <= 0 then 0
+        //           else n + (if n mod 2 == 0 then f(n-1) else f(n-1) + 1)
+        // -- the recursive leaf's own `If` isn't the whole branch body
+        // either (it's the right-hand operand of the outer `+`), and this
+        // time each of its two branches contains its own self-call
+        // occurrence: `find_self_calls` must find both (in the same
+        // left-to-right order `denote_with_placeholders` substitutes them
+        // in), each becoming its own placeholder of the leaf's `combine`
+        // function.
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f = s.var(1);
+        let zero = s.lit(0);
+        let outer_cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let two = s.lit(2);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let call = s.app(f, n_minus_1);
+        let odd_branch = s.prim(PrimOp::Add, call, one);
+        let n_mod_2 = s.prim(PrimOp::Mod, n, two);
+        let inner_cond = s.prim(PrimOp::Eq, n_mod_2, zero);
+        let inner_if = s.if_(inner_cond, call, odd_branch);
+        let base_leaf = s.prim(PrimOp::Add, n, inner_if);
+        let body = s.if_(outer_cond, zero, base_leaf);
+        let abs = s.abs(body);
+        let g = s.rec(abs);
+
+        let proof = prove_tail_recursive_universal(&s, g).expect("a nested If with a self-call in each branch should still get a universal proof");
+        assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+            .expect("the recorded theorem should independently re-typecheck");
+
+        // f(0)=0, f(1)=1+(f(0)+1)=2, f(2)=2+f(1)=4, f(3)=3+(f(2)+1)=8,
+        // f(4)=4+f(3)=12, f(5)=5+(f(4)+1)=18.
+        assert_eq!(eval::apply_term(&s, g, &[5]).unwrap(), 18, "interpreter sanity check");
+
+        let instance = prove_tail_recursive_instance(&s, g, &[5]).expect("f(5) should get an instance");
+        kernel::check(&instance.ctx, &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
+            .expect("the recorded instance proof should independently re-typecheck");
     }
 
     #[test]
