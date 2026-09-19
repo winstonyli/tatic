@@ -1691,61 +1691,78 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold, ar
     })
 }
 
-// --- non-capturing ("known-call") closures --------------------------------
+// --- closures (non-capturing and, now, capturing) --------------------------
 //
-// Mirrors `compile.rs`'s own known-call/table-index reading of closures
-// (see its module docs) at the proof level, for the same fragment it
-// compiles: a closed, non-recursive term whose body, plus every
-// non-capturing lambda ("combinator") it calls, is built from
-// `Var`/`Lit`/`Prim`/`If` and fully-saturated applications of either a
-// closure-typed parameter or a literal lambda -- exactly what
+// Mirrors `compile.rs`'s own closure-conversion reading (see its module
+// docs) at the proof level, for the same fragment it compiles: a closed,
+// non-recursive term whose body, plus every combinator it calls
+// (capturing or not), is built from `Var`/`Lit`/`Prim`/`If` and
+// fully-saturated applications of either a closure-typed parameter or a
+// literal lambda -- exactly what
 // `compile::unwind_app_spine`/`compile::infer_closure_arities` already
 // classify, reused directly here rather than re-derived, so the two
 // readings can't silently diverge on "what counts as a closure call".
 //
 // A closure value is postulated opaque (`Clo : Sort(0)`, the same
-// "postulated type" pattern `Int` itself uses), one postulated `Clo`-typed
-// constant per distinct combinator (memoized by hash, mirroring
-// `ArithPostulates::lit`'s per-literal memoization), and one postulated
-// `apply_k : Clo -> Int^k -> Int` per distinct arity a closure is actually
-// called with (mirroring `compile.rs`'s own `(type $tyK ...)` declarations,
-// one per arity actually used at a `call_indirect` site).
+// "postulated type" pattern `Int` itself uses), and applying one *through
+// a parameter* (`call_indirect`) goes through `apply_k : Clo -> Int^k ->
+// Int`, postulated once per distinct arity `k` a closure is actually
+// called with that way (mirroring `compile.rs`'s own `(type $tyK ...)`
+// declarations, one per arity actually used at a `call_indirect` site) --
+// this part is unaffected by whether the underlying closure happens to
+// capture anything, the same way `compile.rs`'s own `call_indirect`
+// dispatch doesn't need to know either.
 //
-// Crucially, a combinator's own *body* is never unfolded or denoted here --
-// it's referenced only by its postulated identity constant. That's not a
-// shortcut: `apply_k(combinator_const, args)` faithfully represents "call
-// this specific combinator with these arguments" on *both* readings (a
-// Wasm `call`/`call_indirect` to a table slot uniquely identified by hash,
-// and a non-capturing `Value::Closure` application, which needs nothing
-// from its environment beyond the combinator's own definition) --
-// identically, symbol for symbol, the same way `denote`'s postulated `Int`
-// operators represent an arithmetic primitive on both readings without
-// either being numerically verified. The proof is `refl`, same as
-// `prove_pure_expr`'s straight-line argument: nothing here evaluates
-// anything concrete, so no `assume_prim_fact`-style grounding is needed.
+// A combinator's own *body* is never unfolded or denoted here -- it's
+// referenced only by postulated symbols. For a *non-capturing* combinator
+// this is one `Clo`-typed constant (`combinator_value`, for `h` used as a
+// bare value) and one `call_h : T_0 -> .. -> T_{k-1} -> Int` (for a direct
+// call), each memoized by hash: faithful on both readings, since a
+// non-capturing closure really is the same value everywhere it's
+// referenced, and calling it really doesn't need anything beyond its own
+// definition. For a *capturing* combinator, one fixed value per
+// combinator would be dishonest -- `compile.rs` builds a fresh
+// environment at every creation site, so the same combinator denotes
+// differently depending on *where* it's referenced -- so instead:
+// `mk_clo_h : Env_n -> Clo` (a function of the environment, not a bare
+// constant) and `call_h : Env_n -> T_0 -> .. -> T_{k-1} -> Int` (the
+// environment prepended, mirroring `compile.rs`'s own calling convention
+// of `$env` as every combinator's first Wasm parameter), where `Env_n :
+// Sort(0)` is postulated once *per capture count* `n` (shared across
+// every combinator that happens to capture `n` values, the same way
+// `apply_k` is shared by arity, not memoized per combinator) with
+// constructor `mk_env_n : Int -> .. -> Int -> Env_n`. `build_env_expr`
+// builds the actual `mk_env_n(v_1,...,v_n)` argument fresh at each
+// creation site, from whatever the captured values currently are in the
+// *calling* function's own frame -- exactly mirroring `compile.rs`'s own
+// `push_closure_env` at the proof level. Either way, `apply_k`/`call_h`
+// applied to its arguments faithfully represents "call this closure" on
+// *both* readings, identically, symbol for symbol, the same way
+// `denote`'s postulated `Int` operators represent an arithmetic primitive
+// without either reading being numerically verified. The proof is
+// `refl`, same as `prove_pure_expr`'s straight-line argument: nothing
+// here evaluates anything concrete, so no `assume_prim_fact`-style
+// grounding is needed.
 //
 // Scope, honestly: closed, non-recursive terms only (`Rec` anywhere, main
 // term or any combinator, is out of scope -- combining this with
 // self-recursion is future work); every `If` branch must denote as `Int`
 // (an `If` choosing between two *closures* is out of scope, though
-// `compile.rs` would compile it); and the whole function's own result must
-// denote as `Int`, not directly return a closure value. Also *deliberately*
-// narrower than what `compile.rs` itself now compiles: `compile.rs` added
-// real closure conversion for genuinely capturing closures (see its module
-// docs), but this fragment still covers non-capturing ("known-call")
-// closures only -- `ClosureCombinators::register`/`call_ref` explicitly
-// reject a capturing combinator (`compile::free_vars`, the same analysis
-// `compile.rs`'s own `Combinators::register` uses) rather than relying on
-// "already compiled" to imply "non-capturing" the way an earlier version of
-// this comment did; that implication stopped holding the moment
-// `compile.rs` could compile captures too, so the check has to be explicit
-// here now. `combinator_value`/`call_h`'s whole model -- one postulated
-// constant per combinator, referenced by identity, its own body never
-// denoted -- is only an honest reading of a *non-capturing* closure (always
-// the same table-index value, wherever it's referenced); a capturing one
-// gets a different environment, and so a different runtime value, at every
-// creation site, which this fragment doesn't model at all. Combining this
-// with capturing closures is future work, not just an oversight.
+// `compile.rs` would compile it, whether or not either branch captures
+// anything); and the whole function's own result must denote as `Int`,
+// not directly return a closure value. For a capturing combinator
+// specifically, `build_env_expr` narrows further: each captured value
+// must resolve *directly* to one of the calling function's own
+// parameters (not, transitively, to one of *that* function's own
+// captures -- one level of capturing nesting only, for now), and must
+// denote as `Int`, not `Clo` -- `compile.rs` itself handles a captured
+// value that's itself a capture, and a `Clo`-typed capture, just fine
+// (`compile_var_read`'s own recursive case), but extending
+// `denote_closure`'s two-case (`Int`/`Clo`) discipline to captures that
+// might themselves need *another* environment, transitively, is
+// meaningfully more machinery for comparatively little of the fragment
+// `compile.rs` actually exercises -- narrowing here first, honestly,
+// rather than getting that recursion subtly wrong.
 
 /// Either an `Int`-typed or a `Clo`-typed denotation -- `denote_closure`
 /// needs to track which, since an application's arguments and an `If`'s
@@ -1796,6 +1813,9 @@ struct ClosurePostulates {
     apply_pos: HashMap<usize, usize>,
     combinator_value_pos: HashMap<Hash, usize>,
     combinator_call_pos: HashMap<Hash, usize>,
+    env_ty_pos: HashMap<usize, usize>,
+    mk_env_pos: HashMap<usize, usize>,
+    mk_clo_pos: HashMap<Hash, usize>,
 }
 
 impl ClosurePostulates {
@@ -1808,6 +1828,9 @@ impl ClosurePostulates {
             apply_pos: HashMap::new(),
             combinator_value_pos: HashMap::new(),
             combinator_call_pos: HashMap::new(),
+            env_ty_pos: HashMap::new(),
+            mk_env_pos: HashMap::new(),
+            mk_clo_pos: HashMap::new(),
         }
     }
 
@@ -1835,9 +1858,11 @@ impl ClosurePostulates {
     }
 
     /// A fresh `Clo`-typed constant for combinator `h`, memoized by hash --
-    /// for a combinator used as a bare *value* (an argument, a branch
-    /// result, ...), mirroring `compile.rs`'s "its value is just its table
-    /// index" reading.
+    /// for a *non-capturing* combinator used as a bare value (an argument,
+    /// a branch result, ...), mirroring `compile.rs`'s "its value is just
+    /// its table index" reading. A *capturing* combinator's own value
+    /// needs `mk_clo_ref` instead -- see its docs for why one fixed
+    /// constant isn't an honest model there.
     fn combinator_value(&mut self, h: Hash) -> Expr {
         if let Some(&pos) = self.combinator_value_pos.get(&h) {
             return self.arith.p.get(pos);
@@ -1845,6 +1870,59 @@ impl ClosurePostulates {
         let clo_ty = self.clo_ty();
         let pos = self.arith.p.push(clo_ty);
         self.combinator_value_pos.insert(h, pos);
+        self.arith.p.get(pos)
+    }
+
+    /// `Env_n : Sort(0)`, postulated once per distinct capture count `n`
+    /// (never per-combinator) -- an opaque bundle of `n` `Int`-typed
+    /// captured values, mirroring `compile.rs`'s own uniform,
+    /// combinator-agnostic environment-slot layout at the proof level.
+    /// Shared across every combinator that happens to capture exactly
+    /// `n` values, the same way `apply_k` is shared across every closure
+    /// called with `k` arguments regardless of which combinator it turns
+    /// out to be.
+    fn env_ty(&mut self, n: usize) -> Expr {
+        if let Some(&pos) = self.env_ty_pos.get(&n) {
+            return self.arith.p.get(pos);
+        }
+        let pos = self.arith.p.push(kernel::sort(0));
+        self.env_ty_pos.insert(n, pos);
+        self.arith.p.get(pos)
+    }
+
+    /// `mk_env_n : Int -> .. -> Int -> Env_n` (`n` `Int` params) --
+    /// `env_ty(n)`'s constructor, postulated once per `n`.
+    fn mk_env_ref(&mut self, n: usize) -> Expr {
+        if let Some(&pos) = self.mk_env_pos.get(&n) {
+            return self.arith.p.get(pos);
+        }
+        let mut ty = self.env_ty(n);
+        for _ in 0..n {
+            ty = kernel::arrow(self.arith.int_ty(), ty);
+        }
+        let pos = self.arith.p.push(ty);
+        self.mk_env_pos.insert(n, pos);
+        self.arith.p.get(pos)
+    }
+
+    /// `mk_clo_h : Env_n -> Clo`, for a *capturing* combinator `h` (own
+    /// capture count `n`) used as a bare value -- the capturing
+    /// counterpart to `combinator_value`, one postulated constant
+    /// (function, here) per combinator just like it, but correctly
+    /// varying with `h`'s own environment (built fresh from the *actual*
+    /// captured values at each creation site by `build_env_expr`, not
+    /// baked into `mk_clo_h` itself) instead of being one fixed value
+    /// wherever `h` is referenced -- an honest reading of "a different
+    /// runtime environment pointer at every creation site" the way
+    /// `combinator_value`'s single constant only ever was for a
+    /// non-capturing closure.
+    fn mk_clo_ref(&mut self, h: Hash, n: usize) -> Expr {
+        if let Some(&pos) = self.mk_clo_pos.get(&h) {
+            return self.arith.p.get(pos);
+        }
+        let ty = kernel::arrow(self.env_ty(n), self.clo_ty());
+        let pos = self.arith.p.push(ty);
+        self.mk_clo_pos.insert(h, pos);
         self.arith.p.get(pos)
     }
 }
@@ -1862,57 +1940,60 @@ impl<'a> ClosureCombinators<'a> {
         ClosureCombinators { store, cp: ClosurePostulates::new() }
     }
 
-    /// The postulated `Clo`-typed identity constant for combinator `h`
-    /// (`ClosurePostulates::combinator_value`), for `h` used as a bare
-    /// value. `None` for a zero-arity, self-recursive, or *capturing*
-    /// combinator (out of scope -- see section docs). Unlike `compile.rs`
-    /// itself, `h` capturing something has to be checked explicitly here
-    /// (`compile::free_vars`, the same analysis `compile.rs`'s own
-    /// `Combinators::register` uses) rather than falling out for free:
-    /// `compile.rs` compiles a genuinely capturing closure successfully
-    /// now (real closure conversion), so this module can no longer rely
-    /// on "already compiled" to mean "non-capturing" the way it used to.
-    /// `combinator_value(h)` models `h` as *one* fixed value regardless
-    /// of where it's referenced -- true for a non-capturing closure
-    /// (always the same table-index constant), false for a capturing one
-    /// (a different environment, and so a different packed value, at
-    /// every creation site) -- so admitting a capturing combinator here
-    /// wouldn't just be incomplete, it would be an honestly wrong model.
-    fn register(&mut self, h: Hash) -> Option<Expr> {
-        let (arity, body, is_rec) = compile::peel(self.store, h)?;
+    /// The postulated `Clo`-typed value for combinator `h` used as a bare
+    /// value: `combinator_value(h)` (one fixed constant) if `h` doesn't
+    /// capture anything, or `mk_clo_ref(h, captures.len())` (a function
+    /// from environment to `Clo`, applied to its own environment by
+    /// `denote_closure` -- this only returns the bare, unapplied
+    /// constructor) if it does. `captures` is `h`'s own relative capture
+    /// indices (`compile::free_vars`, computed once by the caller and
+    /// passed in rather than re-derived here, since the caller needs it
+    /// again anyway to build the actual environment via
+    /// `build_env_expr`). `None` for a zero-arity or self-recursive `h`
+    /// (out of scope regardless of capturing -- see section docs).
+    fn register(&mut self, h: Hash, captures: &[u32]) -> Option<Expr> {
+        let (arity, _, is_rec) = compile::peel(self.store, h)?;
         if is_rec || arity == 0 {
             return None;
         }
-        if !compile::free_vars(self.store, body, arity, is_rec).is_empty() {
-            return None;
+        if captures.is_empty() {
+            Some(self.cp.combinator_value(h))
+        } else {
+            Some(self.cp.mk_clo_ref(h, captures.len()))
         }
-        Some(self.cp.combinator_value(h))
     }
 
-    /// A postulated function `call_h : T_0 -> T_1 -> .. -> T_{k-1} -> Int`
-    /// for *directly calling* combinator `h` (a static Wasm `call`, not
-    /// dispatched through any `Clo` value at all -- unlike `apply_ref`,
-    /// there's no leading `Clo` argument here), memoized by hash. Each
-    /// `T_j` (`j` in application order, i.e. `T_0` is the *first*-applied
-    /// argument's type) is `Clo` or `Int` matching `h`'s own `param_types`
-    /// at that position -- this is what lets a combinator like `twice`
+    /// A postulated function for *directly calling* combinator `h` (a
+    /// static Wasm `call`, not dispatched through any `Clo` value at all
+    /// -- unlike `apply_ref`, there's no leading `Clo` argument here),
+    /// memoized by hash: `T_0 -> T_1 -> .. -> T_{k-1} -> Int` if `h`
+    /// doesn't capture anything, or `Env_n -> T_0 -> .. -> T_{k-1} -> Int`
+    /// (`n` = `captures.len()`) if it does -- the environment, when
+    /// present, is always the *first* parameter, ahead of `h`'s own
+    /// call arguments, mirroring `compile.rs`'s own calling convention
+    /// (every combinator takes `$env` as its first Wasm parameter,
+    /// whether or not its own body reads from it). Each `T_j` (`j` in
+    /// application order, i.e. `T_0` is the *first*-applied argument's
+    /// type) is `Clo` or `Int` matching `h`'s own `param_types` at that
+    /// position -- this is what lets a combinator like `twice`
     /// (`Clo -> Int -> Int`, since its own `f` parameter is itself
     /// closure-typed) be called with a mix of closure and plain-`Int`
-    /// arguments, which the uniform `apply_k` can't express.
-    fn call_ref(&mut self, h: Hash) -> Option<Expr> {
+    /// arguments, which the uniform `apply_k` can't express. `captures`,
+    /// as in `register`, is computed once by the caller and passed in.
+    fn call_ref(&mut self, h: Hash, captures: &[u32]) -> Option<Expr> {
         if let Some(&pos) = self.cp.combinator_call_pos.get(&h) {
             return Some(self.cp.arith.p.get(pos));
         }
-        // Same capturing check as `register`, and for the same reason:
-        // `call_h` is one postulated function per combinator, its own
-        // body never denoted -- an honest model only for a genuinely
-        // fixed function, which a capturing combinator (different
-        // environment per creation site) isn't.
-        let (arity, body, is_rec) = compile::peel(self.store, h)?;
-        if !compile::free_vars(self.store, body, arity, is_rec).is_empty() {
-            return None;
-        }
         let param_types = param_types_for(self.store, h)?;
+        // `env_ty` first, *before* any of the `int_ty`/`clo_ty` reads
+        // below: it may push a fresh `Env_n` postulate (the first time
+        // this particular capture count is seen), which would silently
+        // invalidate any of those reads already taken at the shallower,
+        // pre-push depth if it ran after them instead -- the same
+        // staleness class `Anchored`'s own docs describe, just inside a
+        // single function's own type construction rather than across
+        // `denote_closure`'s recursive calls.
+        let env_ty = (!captures.is_empty()).then(|| self.cp.env_ty(captures.len()));
         let mut ty = self.cp.arith.int_ty();
         // Var(0) is last-applied (innermost -- wrap it first, so the
         // final iteration, Var(arity-1) = first-applied, ends up
@@ -1924,10 +2005,48 @@ impl<'a> ClosureCombinators<'a> {
             };
             ty = kernel::arrow(dom, ty);
         }
+        if let Some(env_ty) = env_ty {
+            ty = kernel::arrow(env_ty, ty);
+        }
         let pos = self.cp.arith.p.push(ty);
         self.cp.combinator_call_pos.insert(h, pos);
         Some(self.cp.arith.p.get(pos))
     }
+}
+
+/// Builds `mk_env_n(v_1,...,v_n)` for a combinator whose relative capture
+/// indices are `captures` (`compile::free_vars`), reading each captured
+/// value's *current* value out of the *calling* function's own
+/// `(params, param_types)` frame -- mirroring `compile.rs`'s
+/// `push_closure_env`, but resolving each slot directly against `params`
+/// rather than through a `compile_var_read`-style recursive lookup.
+///
+/// Scope, honestly: each captured index must resolve directly to one of
+/// the caller's own parameters (`rel < params.len()`), and must denote as
+/// `Int`. Neither restriction is fundamental -- `compile.rs` itself
+/// handles a captured value that's *itself* a capture (nested capturing
+/// closures, `compile_var_read`'s own recursive case) and a `Clo`-typed
+/// capture just fine -- but extending `denote_closure`'s own two-case
+/// (`Int`/`Clo`) discipline to a captured value that might itself need
+/// *another* environment, transitively, is meaningfully more machinery
+/// for comparatively little of the fragment `compile.rs` actually
+/// exercises; narrowing here first, honestly, rather than attempting it
+/// and getting the recursion subtly wrong.
+fn build_env_expr(combinators: &mut ClosureCombinators, captures: &[u32], params: &[usize], param_types: &[Option<usize>]) -> Option<Expr> {
+    let mut values = Vec::with_capacity(captures.len());
+    for &rel in captures {
+        let rel = rel as usize;
+        if param_types.get(rel)?.is_some() {
+            return None; // a captured Clo value -- out of scope for now
+        }
+        let v = combinators.cp.arith.p.get(*params.get(rel)?);
+        values.push(Anchored::new(&combinators.cp.arith, v));
+    }
+    let mk_env_expr = combinators.cp.mk_env_ref(captures.len());
+    let mk_env = Anchored::new(&combinators.cp.arith, mk_env_expr);
+    let mk_env = mk_env.at(&combinators.cp.arith);
+    let values: Vec<Expr> = values.iter().map(|v| v.at(&combinators.cp.arith)).collect();
+    Some(apply_n(mk_env, values))
 }
 
 /// Like `collect_literals`, but for the closures fragment: an `App` chain
@@ -2038,8 +2157,16 @@ fn denote_closure(
                 if args.len() != arity {
                     return None;
                 }
-                let call_fn = combinators.call_ref(root)?;
+                let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
+                let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
+                let call_fn = combinators.call_ref(root, &captures)?;
                 let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
+                let env_expr = if captures.is_empty() {
+                    None
+                } else {
+                    let e = build_env_expr(combinators, &captures, params, param_types)?;
+                    Some(Anchored::new(&combinators.cp.arith, e))
+                };
                 let mut arg_exprs = Vec::with_capacity(args.len());
                 for (j, &a) in args.iter().enumerate() {
                     // args[j] (application order) is Var(arity-1-j) --
@@ -2052,8 +2179,12 @@ fn denote_closure(
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let call_fn = call_fn.at(&combinators.cp.arith);
-                let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                let applied = apply_n(call_fn, arg_exprs);
+                let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
+                if let Some(env_expr) = &env_expr {
+                    all_args.push(env_expr.at(&combinators.cp.arith));
+                }
+                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                let applied = apply_n(call_fn, all_args);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: direct combinator call");
                 return Some(Denoted::Int(applied));
@@ -2100,11 +2231,24 @@ fn denote_closure(
             Some(Denoted::Int(applied))
         }
         Term::Abs(_) => {
-            let (arity, _, is_rec) = compile::peel(store, h)?;
+            let (arity, body, is_rec) = compile::peel(store, h)?;
             if is_rec || arity == 0 {
                 return None;
             }
-            Some(Denoted::Clo(combinators.register(h)?))
+            let captures = compile::free_vars(store, body, arity, is_rec);
+            let sym = combinators.register(h, &captures)?;
+            if captures.is_empty() {
+                return Some(Denoted::Clo(sym));
+            }
+            let sym = Anchored::new(&combinators.cp.arith, sym);
+            let env = build_env_expr(combinators, &captures, params, param_types)?;
+            let env_expr = Anchored::new(&combinators.cp.arith, env);
+            let sym = sym.at(&combinators.cp.arith);
+            let env_expr = env_expr.at(&combinators.cp.arith);
+            let applied = kernel::app(sym, env_expr);
+            let clo_ty = combinators.cp.clo_ty();
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: capturing closure value");
+            Some(Denoted::Clo(applied))
         }
         Term::If(..) | Term::App(..) => unreachable!("handled above"),
         Term::Rec(_) => None,
@@ -2112,13 +2256,16 @@ fn denote_closure(
 }
 
 /// Attempts to build an [`EquivalenceProof`] for `h`, covering every input,
-/// for the non-capturing-closures fragment `compile.rs` compiles (see the
-/// section docs above for exactly what's in and out of scope). Returns
-/// `None` for anything outside it: a `Rec`-wrapped term (self-recursion
-/// combined with closures isn't covered), an application whose callee is
-/// neither a closure-typed parameter nor a literal lambda, an inconsistent
-/// arity for a closure-typed parameter, an `If` whose branches aren't both
-/// `Int`, or a whole-function result that isn't `Int`.
+/// for the closures fragment `compile.rs` compiles, capturing or not (see
+/// the section docs above for exactly what's in and out of scope).
+/// Returns `None` for anything outside it: a `Rec`-wrapped term
+/// (self-recursion combined with closures isn't covered), an application
+/// whose callee is neither a closure-typed parameter nor a literal
+/// lambda, an inconsistent arity for a closure-typed parameter, an `If`
+/// whose branches aren't both `Int`, a whole-function result that isn't
+/// `Int`, or (for a capturing combinator specifically) a captured value
+/// that isn't `Int`-typed or doesn't resolve directly to one of the
+/// calling function's own parameters.
 pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if is_rec {
@@ -2172,6 +2319,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval;
     use crate::term::TermStore;
 
     #[test]
@@ -2694,19 +2842,23 @@ mod tests {
     }
 
     #[test]
-    fn a_capturing_closure_compiles_but_still_gets_no_closure_proof() {
+    fn an_if_between_two_capturing_closures_still_gets_no_closure_proof() {
         // \x. (\g. g 5) (if 0 < x then (\y. x + y) else (\y. x - y)) --
         // the same term compile.rs's own
         // a_capturing_closure_compiles_and_matches_interpreter test uses.
-        // compile.rs compiles this successfully now (real closure
-        // conversion), but prove_closure_expr's own model -- one
-        // postulated constant per combinator, referenced by identity --
-        // is only an honest reading of a *non-capturing* closure (see its
-        // section docs); a capturing combinator gets a different
-        // environment at every creation site, which that model doesn't
-        // represent at all, so this must still come back `None`, not
-        // silently reuse compile.rs's now-broader "does it compile"
-        // scope.
+        // compile.rs compiles this successfully (real closure conversion),
+        // and prove_closure_expr now covers genuinely capturing closures
+        // too (see build_env_expr) -- but this *particular* term is still
+        // rejected, for an orthogonal, pre-existing reason: it's an `If`
+        // choosing between two closures (then_closure/else_closure), and
+        // denote_closure's own `Term::If` case requires *both* branches to
+        // denote as `Int` (see an_if_choosing_between_two_closures_is_out_of_scope
+        // above) -- unrelated to whether either branch happens to capture
+        // anything. See
+        // a_capturing_closure_used_as_a_value_gets_a_closure_proof and
+        // a_directly_called_capturing_closure_gets_a_closure_proof below
+        // for the same kind of capture actually getting a proof, once
+        // that unrelated restriction isn't also in the way.
         let mut s = TermStore::new();
         let x = s.var(0);
         let zero = s.lit(0);
@@ -2733,7 +2885,97 @@ mod tests {
         let f = s.abs(called);
 
         assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
-        assert!(prove_closure_expr(&s, f).is_none(), "prove_closure_expr's non-capturing model must still decline it");
+        assert!(prove_closure_expr(&s, f).is_none(), "an If choosing between two closures is still out of scope");
+    }
+
+    #[test]
+    fn a_capturing_closure_used_as_a_value_gets_a_closure_proof() {
+        // g = \x. (\h. h 5) (\y. x + y) -- `\y. x + y` captures `x`, g's
+        // own parameter, and is used as a plain *value* (an argument to
+        // `\h. h 5`), not directly called -- exercises
+        // ClosureCombinators::register's new mk_clo_ref path and
+        // build_env_expr together with the pre-existing apply_ref
+        // (call-through-a-parameter) path, unmodified.
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        let x = s.var(1);
+        let sum = s.prim(PrimOp::Add, x, y);
+        let closure = s.abs(sum);
+
+        let h = s.var(0);
+        let five = s.lit(5);
+        let call_h = s.app(h, five);
+        let inn = s.abs(call_h);
+
+        let applied = s.app(inn, closure);
+        let g = s.abs(applied);
+
+        let proof = prove_closure_expr(&s, g).expect("a capturing closure used as a value should get a proof now");
+        assert_eq!(proof.arity, 1);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+
+        for x_val in [-5, 0, 1, 42] {
+            let interpreted = eval::apply_term(&s, g, &[x_val]).unwrap();
+            assert_eq!(interpreted, x_val + 5, "sanity check on the term itself, not the proof");
+        }
+    }
+
+    #[test]
+    fn a_directly_called_capturing_closure_gets_a_closure_proof() {
+        // g = \x. (\y. x + y) 5 -- `\y. x + y` captures g's own `x`, and
+        // is called *directly* (a literal lambda in function position),
+        // exercising call_ref's new Env_n-prefixed signature and
+        // build_env_expr in the direct-call branch of denote_closure.
+        let mut s = TermStore::new();
+        let y = s.var(0);
+        let x = s.var(1);
+        let sum = s.prim(PrimOp::Add, x, y);
+        let closure = s.abs(sum);
+        let five = s.lit(5);
+        let called = s.app(closure, five);
+        let g = s.abs(called);
+
+        let proof = prove_closure_expr(&s, g).expect("a directly called capturing closure should get a proof now");
+        assert_eq!(proof.arity, 1);
+        kernel::check(
+            &proof.ctx,
+            &proof.proof,
+            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+        )
+        .expect("the recorded proof should independently re-typecheck");
+    }
+
+    #[test]
+    fn a_capture_of_a_closure_typed_value_is_still_out_of_scope() {
+        // g = \cb. cb(1) + (\h. h 5) (\y. cb) -- `cb(1)` makes g's own
+        // scan recognize `cb` as closure-typed (Some(1)); `\y. cb`
+        // separately captures that same `cb` -- build_env_expr's own
+        // documented scope limit (a captured value must be Int-typed)
+        // must reject this, not silently build an ill-typed environment
+        // for a `Clo` masquerading as an `Int` slot.
+        let mut s = TermStore::new();
+        let cb1 = s.var(0);
+        let one = s.lit(1);
+        let call_cb = s.app(cb1, one);
+
+        let cb_captured = s.var(1); // \y. cb -- ignores y, returns the captured cb
+        let closure = s.abs(cb_captured);
+
+        let h = s.var(0);
+        let five = s.lit(5);
+        let call_h = s.app(h, five);
+        let inn = s.abs(call_h);
+
+        let applied = s.app(inn, closure);
+        let body = s.prim(PrimOp::Add, call_cb, applied);
+        let g = s.abs(body);
+
+        assert!(prove_closure_expr(&s, g).is_none());
     }
 
     #[test]

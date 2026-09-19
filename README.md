@@ -199,33 +199,54 @@ This is stated precisely because it would be easy to overclaim here.
   costs more than it saves at that scale. A caller that specifically
   expects a large or branching construction wraps its own call in it (see
   Design notes below for the scoped-vs-standing-cache tradeoff).
-- **Non-capturing ("known") closures**: `prove_closure_expr` gives a closed,
-  non-recursive closures term one kernel proof covering every input, the
-  same `refl`-on-a-shared-translation argument `prove_pure_expr` makes for
-  straight-line arithmetic — nothing here evaluates anything concrete, so
-  it needs no `assume_prim_fact`-style grounding either. A closure value is
-  postulated opaque (`Clo : Sort(0)`, `Int`'s own "postulated type"
-  pattern), one postulated constant per distinct combinator (referenced by
-  identity only — a combinator's own *body* is never unfolded or denoted,
-  so this doesn't need a fixpoint discovery pass the way `compile.rs`'s own
-  codegen does), and postulated call functions mirroring `compile.rs`'s two
-  call shapes exactly: `apply_k : Clo -> Int^k -> Int` for a
-  parameter-typed closure (`call_indirect`, always `Int` arguments per
-  `compile.rs`'s own typed dispatch), and, per combinator, a
+- **Closures, non-capturing and capturing**: `prove_closure_expr` gives a
+  closed, non-recursive closures term one kernel proof covering every
+  input, the same `refl`-on-a-shared-translation argument `prove_pure_expr`
+  makes for straight-line arithmetic — nothing here evaluates anything
+  concrete, so it needs no `assume_prim_fact`-style grounding either. A
+  closure value is postulated opaque (`Clo : Sort(0)`, `Int`'s own
+  "postulated type" pattern). Calling one *through a parameter*
+  (`call_indirect`) goes through `apply_k : Clo -> Int^k -> Int`, one per
+  distinct arity actually used that way — unaffected by whether the
+  underlying closure captures anything, the same way `compile.rs`'s own
+  `call_indirect` dispatch doesn't need to know either. A combinator's own
+  *body* is never unfolded or denoted (no fixpoint discovery pass the way
+  `compile.rs`'s own codegen needs): a *non-capturing* one gets one fixed
+  `Clo`-typed constant (`combinator_value`, referenced by identity) and one
   signature-specific `call_h : T_0 -> .. -> T_{k-1} -> Int` for a direct
-  call (a static Wasm `call`, no `Clo` value involved at all) — needed
-  because a combinator like `twice` takes a mix of closure- and `Int`-typed
-  arguments, which the uniform `apply_k` can't express. Scope, honestly:
-  closed and non-recursive only (combining with self-recursion is future
-  work); every `If` branch must denote as `Int` (an `If` choosing between
-  two closures is out of scope, though `compile.rs` would compile it); and
-  it doesn't re-verify that each combinator it references is actually
-  non-capturing the way `compile.rs` itself does — harmless in practice
-  since `jit.rs` only calls into `proof.rs` after a term already compiled
-  successfully. A genuinely *capturing* closure is still outside the
-  compilable fragment entirely, so it's just interpreted — correctly, but
-  there's no JIT path (and therefore no compiled-vs-interpreted question)
-  to prove anything about.
+  call — needed because a combinator like `twice` takes a mix of closure-
+  and `Int`-typed arguments, which the uniform `apply_k` can't express. A
+  *capturing* one can't use one fixed constant honestly — `compile.rs`
+  builds a fresh environment at every creation site, so the same
+  combinator denotes differently depending on where it's referenced — so
+  instead `mk_clo_h : Env_n -> Clo` (a function of the environment) and
+  `call_h : Env_n -> T_0 -> .. -> T_{k-1} -> Int` (environment prepended,
+  mirroring `compile.rs`'s own `$env`-first calling convention), where
+  `Env_n : Sort(0)` is postulated once *per capture count* (shared across
+  every combinator with that many captures, the same way `apply_k` is
+  shared by arity) with constructor `mk_env_n : Int -> .. -> Int ->
+  Env_n`; `build_env_expr` builds the actual environment argument fresh at
+  each creation site, mirroring `compile.rs`'s own `push_closure_env` at
+  the proof level. Scope, honestly: closed and non-recursive only
+  (combining with self-recursion is future work); every `If` branch must
+  denote as `Int` (an `If` choosing between two closures is out of scope,
+  whether or not either branch captures anything); and for a capturing
+  combinator specifically, each captured value must resolve *directly* to
+  one of the calling function's own parameters (not, transitively, to one
+  of *that* function's own captures — one level of nesting only for now)
+  and must be `Int`-typed, not `Clo` — `compile.rs` itself handles both
+  more general cases fine, but extending this fragment's own `Int`/`Clo`
+  discipline to a capture that might itself need *another* environment is
+  meaningfully more machinery for comparatively little of what
+  `compile.rs` actually exercises. Caught a real bug while building this:
+  `ClosureCombinators::call_ref`'s own type construction read `int_ty`/
+  `clo_ty` in a loop *before* possibly pushing a fresh `Env_n` postulate
+  afterward, silently invalidating those earlier reads — the same
+  staleness class `Anchored` exists to prevent, just inside one function's
+  own type construction rather than across `denote_closure`'s recursive
+  calls. Caught by the `#[cfg(debug_assertions)]` `debug_assert_has_type`
+  checks on the very first test exercising a direct call to a capturing
+  combinator, before it could reach anything outside this module.
 
 In every case, `jit.rs`'s sample-based verification against the
 interpreter is the actual trust gate for installing a compiled form. A
@@ -410,15 +431,18 @@ first seed, as expected.
   calling a closure reached through a captured free variable, a
   compile-time-desugared synthesized wrapper for an under-applied literal
   — landed; see `compile.rs`'s own module docs.)
-- Extending `prove_closure_expr` to cover *capturing* closures, not just
-  non-capturing ones — `compile.rs` compiles them now, but the proof's
-  own model (one postulated `Clo` constant per combinator, referenced by
-  identity, never denoting its body) is only an honest reading of a
-  non-capturing closure (always the same value, wherever it's
-  referenced); a capturing one gets a different environment at every
-  creation site, which that model doesn't represent at all yet (see
-  `ClosureCombinators::register`'s own docs in `proof.rs`). The same gap
-  applies to a partial application of a literal lambda now that
-  `compile.rs` compiles those too — `denote_closure` already declines
-  one outright (an arity mismatch against the callee's *own* arity), so
-  no proof is silently over-claimed, just none is offered yet.
+- `prove_closure_expr` now covers *capturing* closures too (`mk_clo_h`/
+  `Env_n`/`build_env_expr` — see the table row above and `proof.rs`'s own
+  section docs), but only when every captured value is `Int`-typed and
+  resolves directly to the calling function's own parameters (not,
+  transitively, to one of *that* function's own captures) — widening to a
+  captured `Clo` value, or nested capturing (a capturing closure inside
+  another capturing closure's own captures), is future work, not a
+  fundamental limit: `compile.rs` itself already handles both via
+  `compile_var_read`'s own recursive resolution, `build_env_expr` just
+  doesn't mirror that recursion yet.
+- Extending `prove_closure_expr` to cover partial application of a literal
+  lambda now that `compile.rs` compiles those too (compile-time-desugared
+  synthesized wrappers) — `denote_closure` already declines one outright
+  (an arity mismatch against the callee's *own* arity), so no proof is
+  silently over-claimed, just none is offered yet.
