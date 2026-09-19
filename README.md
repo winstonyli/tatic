@@ -765,3 +765,14 @@ guards against by hand): caught immediately, at seed 22.
   `a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope`
   (`proof.rs`) for the regression test confirming the previously-unsound
   shape is now rejected.
+- `prove_closure_expr` now covers a `Clo`-typed *top-level* result too --
+  previously hardcoded to require the whole function's own body to denote
+  `Int` (`.int()?` at its own entry point), regardless of whether
+  everything beneath it already supported `Clo` (an `If` between two
+  closures, a bare closure-typed parameter read, ...). Now picks
+  `EquivalenceProof`'s own `result_ty` from `denote_closure`'s `Denoted`
+  tag directly -- `Int`'s postulate, or the specific `Clo_k` (re-derived
+  via `return_type_of` applied to the whole body), covering e.g. `\x. \y.
+  x+y` used bare or `\f. if (f 0) then f else f`. See
+  `a_whole_functions_result_being_a_closure_now_gets_a_closure_proof`/
+  `a_bare_closure_typed_parameter_read_gets_a_closure_proof` (`proof.rs`).

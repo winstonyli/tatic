@@ -365,14 +365,26 @@ quietly unifying; that's the entire soundness gain, no more, no less.
 - **A variable applied with inconsistent arities** (`compile.rs`'s last
   open restriction): no rule in section 3.1 can assign one `Γ(i)` correct
   at two different arities; the fragment has no arity polymorphism.
-- **A genuinely higher-order top-level result**: `prove_closure_expr`'s
-  own entry point hardcodes the top-level judgment as `Γ ⊢ body : Int`
-  (`.int()?` at its own call site) — there is no rule permitting `Γ ⊢
-  body : Clo` at the outermost level, only at and beneath section 4's
-  own internal rules.
 - **A capture of a capture**: not a missing rule at all (section 3.1,
   section 5) — the shape can't arise given how `Γ` is scoped and how
   `peel` folds consecutive `Abs`.
+
+**No longer on this list**: a genuinely higher-order top-level result. As
+originally written, this section noted `prove_closure_expr`'s own entry
+point hardcoded the top-level judgment as `Γ ⊢ body : Int` (`.int()?` at
+its own call site), with no rule permitting `Γ ⊢ body : Clo`. That
+restriction is gone — `prove_closure_expr` now accepts either
+`Denoted::Int` or `Denoted::Clo` for `body` itself, picking `Int`'s
+postulate or the specific `Clo_k` (re-derived via `return_type_of`
+applied to `body` at the top level) as the resulting `EquivalenceProof`'s
+own `result_ty` accordingly. This was a comparatively easy widening once
+section 7's arity-indexing landed: with `Clo` arity-blind, a top-level
+`Clo` result could still have kernel-typechecked, but with the *wrong*
+arity silently accepted; with `Clo_k`, the same `result_ty` construction
+already used throughout section 4 just needed to run once more, at the
+one place that used to skip it. See `proof.rs`'s
+`a_whole_functions_result_being_a_closure_now_gets_a_closure_proof` and
+`a_bare_closure_typed_parameter_read_gets_a_closure_proof`.
 
 ## 7. Arity-indexed `Clo` (implemented)
 
@@ -413,10 +425,10 @@ field: every site that needs a specific `k` to build an `ite_clo_ref`/
 just a combinator's own body) rather than needing it carried on the
 denoted value itself.
 
-What this *doesn't* buy: none of section 6.3's three restrictions move.
-Arity-indexing makes the *existing* guarantee genuinely kernel-checked
-instead of Rust-asserted; it doesn't add arity polymorphism (still no
-rule for an inconsistently-called variable), doesn't add a top-level
-`Clo` result (a separate, deliberate restriction, not a typing gap), and
-doesn't touch the capture-of-a-capture non-issue at all. It's a
-soundness-depth improvement, not a coverage improvement.
+What this *doesn't* buy, on its own: arity polymorphism (still no rule
+for an inconsistently-called variable) or the capture-of-a-capture
+non-issue (still not a real gap). Arity-indexing itself is a
+soundness-depth improvement to the *existing* guarantee, not a coverage
+one. It did, separately, make one coverage widening easy: a genuinely
+higher-order top-level result, previously section 6.3's second
+restriction, is no longer out of scope — see section 6.3's own update.

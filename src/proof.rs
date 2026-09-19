@@ -378,13 +378,16 @@ fn denote(store: &TermStore, h: Hash, arith: &ArithPostulates, params: &[Expr]) 
 /// A kernel-checked witness that a term's compiled and interpreted
 /// readings agree: either for *every* input (`prove_pure_expr`, the
 /// straight-line fragment) or for one specific call
-/// (`prove_tail_recursive_call`, the tail-recursive fragment).
+/// (`prove_tail_recursive_call`, the tail-recursive fragment) -- both
+/// always `Int`-typed, unlike `prove_closure_expr`'s own use of this same
+/// struct, where `result_ty` may be `Int` or a `Clo_k` (a closure-typed
+/// top-level result, e.g. `\x. \y. x+y` used bare).
 pub struct EquivalenceProof {
     pub ctx: Ctx,
     pub arity: usize,
-    pub int_ty: Expr,
+    pub result_ty: Expr,
     pub denotation: Expr,
-    /// `: Id(Int, denotation, denotation)`.
+    /// `: Id(result_ty, denotation, denotation)`.
     pub proof: Expr,
 }
 
@@ -418,15 +421,15 @@ fn setup(store: &TermStore, body: Hash, arity: usize, self_idx: Option<u32>) -> 
 /// the same symbolic value under both readings, by construction) into a
 /// `refl` proof, and confirm the kernel actually accepts it.
 fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<EquivalenceProof> {
-    let int_ty = arith.int_ty();
+    let result_ty = arith.int_ty();
     let proof = kernel::refl(denotation.clone());
-    let proof_ty = kernel::id(int_ty.clone(), denotation.clone(), denotation.clone());
+    let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
     kernel::check(&arith.p.ctx, &proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
         ctx: arith.p.ctx,
         arity,
-        int_ty,
+        result_ty,
         denotation,
         proof,
     })
@@ -3932,12 +3935,15 @@ fn denote_closure(
 /// doesn't itself denote `Clo` (see `combinator_return_type`; a `Clo`-
 /// returning one is covered, dispatched via `apply_ref` on the extra
 /// arguments), an `If` whose branches aren't both `Int` or both `Clo` (or
-/// one of each), a whole-function result that isn't `Int`, a captured
-/// value (for a capturing combinator) that doesn't resolve directly to
-/// one of the calling function's own parameters (freely `Int`- or
-/// `Clo`-typed -- see `build_env_expr`'s own docs), or a partial
-/// application (fewer arguments than arity) whose root itself captures
-/// anything or is itself self-recursive.
+/// one of each), a captured value (for a capturing combinator) that
+/// doesn't resolve directly to one of the calling function's own
+/// parameters (freely `Int`- or `Clo`-typed -- see `build_env_expr`'s own
+/// docs), or a partial application (fewer arguments than arity) whose
+/// root itself captures anything or is itself self-recursive. A
+/// whole-function result may be `Int` *or* `Clo_k` (e.g. `\x. \y. x+y`
+/// used bare, or a term ending in a bare closure-typed parameter read) --
+/// `result_ty` on the returned proof is `Int`'s or that `Clo_k`'s own
+/// postulate accordingly, never hardcoded.
 pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if is_rec {
@@ -3972,17 +3978,33 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
         params.push(pos);
     }
 
-    let denotation = denote_closure(store, body, &mut combinators, &params, &param_types)?.int()?;
-
-    let int_ty = combinators.cp.arith.int_ty();
+    let denoted = denote_closure(store, body, &mut combinators, &params, &param_types)?;
+    // `result_ty` mirrors `denoted`'s own tag: `Int`'s postulate for a
+    // `Denoted::Int`, or the specific `Clo_k` for a `Denoted::Clo` --
+    // `k` re-derived structurally via `return_type_of` applied to the
+    // whole body (no self-call concept at this top level, so `self_idx`
+    // is `None`, same as the nested-`If` case in `denote_closure` itself),
+    // kept in lockstep with every `Denoted::Clo`-producing shape
+    // `denote_closure` recognizes -- see `return_type_of`'s own docs.
+    // `clo_ty(k)` here is always a cache hit, never a fresh push:
+    // `denote_closure` itself already had to call `clo_ty(k)` for this
+    // exact `k` somewhere while building `denoted`, to type its own
+    // `debug_assert_has_type` checks along the way.
+    let (result_ty, denotation) = match denoted {
+        Denoted::Int(e) => (combinators.cp.arith.int_ty(), e),
+        Denoted::Clo(e) => {
+            let k = return_type_of(store, body, arity, None, &param_types).flatten()?;
+            (combinators.cp.clo_ty(k), e)
+        }
+    };
     let proof = kernel::refl(denotation.clone());
-    let proof_ty = kernel::id(int_ty.clone(), denotation.clone(), denotation.clone());
+    let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
     kernel::check(&combinators.cp.arith.p.ctx, &proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
         ctx: combinators.cp.arith.p.ctx,
         arity,
-        int_ty,
+        result_ty,
         denotation,
         proof,
     })
@@ -4016,7 +4038,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -4084,7 +4106,7 @@ mod tests {
             kernel::check(
                 &proof.ctx,
                 &proof.proof,
-                &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+                &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
             )
             .expect("the recorded proof should independently re-typecheck");
         }
@@ -4851,7 +4873,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -4872,7 +4894,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
     }
@@ -4910,7 +4932,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -4940,7 +4962,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -4993,7 +5015,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5045,7 +5067,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5132,7 +5154,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5169,7 +5191,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5213,7 +5235,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5291,7 +5313,7 @@ mod tests {
         assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
         let proof = prove_closure_expr(&s, f).expect("picker's own Clo-typed body should now be reachable through call_ref");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -5400,7 +5422,7 @@ mod tests {
 
         let proof = prove_closure_expr(&s, top).expect("an over-applied literal lambda returning a closure should get a proof");
         assert_eq!(proof.arity, 3);
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -5431,7 +5453,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5461,7 +5483,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
     }
@@ -5515,7 +5537,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5598,15 +5620,19 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_functions_result_being_a_closure_is_still_out_of_scope() {
+    fn a_whole_functions_result_being_a_closure_now_gets_a_closure_proof() {
         // \x. if x > 0 then inc else inc -- an `If` choosing between two
-        // closures is *not* the restriction that rejects this one anymore
-        // (denote_closure's own `Term::If` now covers Clo branches via
-        // `ite_clo` -- see a_closure_typed_ifs_own_result_used_as_a_value_gets_a_closure_proof
-        // below for that, now-covered, case): this term's own rejection
-        // reason is orthogonal -- `f`'s own body (the whole function's
-        // result) denotes as `Clo`, not `Int`, and prove_closure_expr's
-        // top-level call always requires `Int` there, closures or not.
+        // closures was already covered (denote_closure's own `Term::If`
+        // via `ite_clo` -- see
+        // a_closure_typed_ifs_own_result_used_as_a_value_gets_a_closure_proof
+        // below), but `prove_closure_expr`'s own *top-level* call still
+        // hardcoded `.int()?`, rejecting this term for an orthogonal
+        // reason: `f`'s own body (the whole function's result) denotes as
+        // `Clo`, not `Int`. Now that `Clo` is arity-indexed (`Clo_k`),
+        // `prove_closure_expr` picks `result_ty` from `denote_closure`'s
+        // own `Denoted` tag instead of assuming `Int` -- `Clo_1` here,
+        // both `inc`s sharing arity 1 -- so this is now proven, not
+        // rejected.
         let mut s = TermStore::new();
         let x = s.var(0);
         let zero = s.lit(0);
@@ -5616,7 +5642,33 @@ mod tests {
         let picked = s.if_(cond, i1, i2);
         let f = s.abs(picked);
 
-        assert!(prove_closure_expr(&s, f).is_none());
+        let proof = prove_closure_expr(&s, f).expect("a Clo-typed top-level result should now get a closure proof");
+        assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+            .expect("the recorded proof should independently re-typecheck");
+    }
+
+    #[test]
+    fn a_bare_closure_typed_parameter_read_gets_a_closure_proof() {
+        // \f. if (f 0) then f else f -- `f`'s own arity is inferred as 1
+        // only because `infer_closure_arities` needs *some* use-site call
+        // to assign it one at all (see `TYPES.md` section 3.1's own
+        // "Default" rule), supplied here by the condition `f 0` (its own
+        // value otherwise unused); both branches then read `f` itself as
+        // a bare value, exercising `Term::Var(i)`'s own `Denoted::Clo`
+        // case as `prove_closure_expr`'s own top-level result -- the
+        // simplest possible instance of the new capability.
+        let mut s = TermStore::new();
+        let f = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.app(f, zero);
+        let body = s.if_(cond, f, f);
+        let h = s.abs(body);
+
+        let proof = prove_closure_expr(&s, h).expect("a bare Clo-typed parameter read should get a closure proof");
+        assert_eq!(proof.arity, 1);
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+            .expect("the recorded proof should independently re-typecheck");
     }
 
     /// `\z. z - 1`.
@@ -5659,7 +5711,7 @@ mod tests {
         kernel::check(
             &proof.ctx,
             &proof.proof,
-            &kernel::id(proof.int_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
+            &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
         .expect("the recorded proof should independently re-typecheck");
 
@@ -5711,7 +5763,7 @@ mod tests {
             kernel::check(
                 &applied_proof.ctx,
                 &applied_proof.proof,
-                &kernel::id(alone_proof.int_ty.clone(), alone_proof.denotation.clone(), alone_proof.denotation.clone()),
+                &kernel::id(alone_proof.result_ty.clone(), alone_proof.denotation.clone(), alone_proof.denotation.clone()),
             )
             .is_err(),
             "(twice inc) 5's proof should be rejected against twice-alone's type"
