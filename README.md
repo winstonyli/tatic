@@ -459,6 +459,27 @@ argument trials each, ~99% of generated terms actually compile (the rest
 fall outside the fragment by construction, e.g. curried-application
 ambiguity), zero mismatches found so far.
 
+One of the four program shapes it picks from, `gen_closure_typed_recursive`
+(`rec f g n x = if n <= 0 then x else f(g, n-1, (g x) OP payload)`), is
+also the only way this fuzzer's random bodies ever reach `proof.rs`'s
+closure-typed-parameter pipeline directly: wrapping a fresh initial
+closure in so the term is runnable through `jit.apply` (there's no way to
+hand a real `Clo` value in through a plain-`i64` arg otherwise) means
+`jit.rs`'s own `kernel_verify` cascade is satisfied by `prove_closure_expr`'s
+opaque "self-recursive combinator called directly" postulate before it
+ever reaches `prove_tail_recursive_universal` — so the test checks the
+bare self-recursive combinator against `prove_tail_recursive_universal`
+directly too, on every trial that generates this shape (~25% of seeds).
+This generator's `payload` can itself be a `gen_closure_block`, so it
+sometimes combines a loop-carried closure *parameter* with a second,
+independently created-and-called closure in the same self-call argument —
+a shape nothing else here produces. `gen_tail_recursive`'s own
+`gen_closure_block` payload is what originally surfaced the
+`prime_closure_postulates`/`mk_env_ref` staleness bug documented in "Proof
+strategies" above, this fuzzer's first genuine catch (not by any
+hand-written test) — `gen_closure_typed_recursive` widens the same kind of
+coverage to a recursion shape that generator can't produce at all.
+
 The same file's second test, `compile_rejects_out_of_scope_terms_cleanly`,
 checks the complementary property: terms deliberately built *outside* the
 fragment (an over-applied literal lambda, a parameter called with

@@ -31,6 +31,7 @@
 use tatic::compile;
 use tatic::eval;
 use tatic::jit::JitEngine;
+use tatic::proof;
 use tatic::term::{Hash, PrimOp, TermStore};
 
 struct Rng(u64);
@@ -228,11 +229,86 @@ fn gen_non_tail_recursive(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize) {
     (s.rec(abs), 1)
 }
 
-fn gen_program(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize) {
-    match rng.below(3) {
-        0 => gen_non_recursive(rng, s),
-        1 => gen_tail_recursive(rng, s),
-        _ => gen_non_tail_recursive(rng, s),
+/// `rec f g n x = if n <= 0 then x else f(g, n-1, (g x) OP payload)`,
+/// wrapped as `\n2 x2. it(g_init, n2, x2)` -- `g_init` (a fresh,
+/// non-capturing `\y. ...`) baked in as the initial closure-typed
+/// loop-carried parameter, since there's no way to hand a real `Clo`
+/// value in through a plain-`i64` arg the way `n2`/`x2` are.
+///
+/// This is a recursion *signature* `gen_tail_recursive` never produces
+/// (always `(n, acc)`, no closure-typed formal parameter at all), so it's
+/// the only generator here that exercises `call_indirect` on a
+/// loop-carried closure parameter every iteration -- and, since `payload`
+/// can itself be a `gen_closure_block`, sometimes combines that with a
+/// *second*, independently created-and-called closure inside the same
+/// self-call argument, a shape nothing else here produces either.
+///
+/// Returns the wrapped, runnable term (`Hash`, arity 2) plus the bare
+/// self-recursive `it` on its own -- `jit.rs`'s own `kernel_verify`
+/// cascade tries `prove_closure_expr`'s opaque "self-recursive combinator
+/// called directly" postulate on the *wrapped* term before ever reaching
+/// `prove_tail_recursive_universal` (see `jit::tests::
+/// a_closure_typed_loop_carried_parameter_compiles_and_is_kernel_verified`'s
+/// own docs for why), so fuzzing the wrapped term alone would never
+/// actually exercise `build_universal`'s closure-typed-parameter pipeline
+/// at all -- `it` is checked directly against
+/// `prove_tail_recursive_universal` instead, below.
+fn gen_closure_typed_recursive(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Hash) {
+    let x = s.var(0);
+    let n = s.var(1);
+    let g = s.var(2);
+    let payload = gen_expr(rng, s, 2, 2); // scope: x=Var(0), n=Var(1) -- g excluded, it's Clo-typed
+    let op = random_arith_op(rng);
+    let gx = s.app(g, x);
+    let new_x = s.prim(op, gx, payload);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let f = s.var(3);
+    let f_g = s.app(f, g);
+    let f_g_n1 = s.app(f_g, n_minus_1);
+    let rec_call = s.app(f_g_n1, new_x);
+    let body = s.if_(cond, x, rec_call);
+    let x_abs = s.abs(body);
+    let n_abs = s.abs(x_abs);
+    let g_abs = s.abs(n_abs);
+    let it = s.rec(g_abs);
+
+    // g_init = \y. gen_expr(...) -- non-capturing, matching the `inc` used
+    // by benches::closure_typed_loop_carried_parameter_loop and
+    // jit::tests::a_closure_typed_loop_carried_parameter_compiles_and_is_kernel_verified.
+    let g_body = gen_expr(rng, s, 1, 2);
+    let g_init = s.abs(g_body);
+
+    let n2 = s.var(1);
+    let x2 = s.var(0);
+    let g_n2 = s.app(it, g_init);
+    let g_n2_n2 = s.app(g_n2, n2);
+    let top_body = s.app(g_n2_n2, x2);
+    let x2_abs = s.abs(top_body);
+    let top = s.abs(x2_abs);
+    (top, 2, it)
+}
+
+fn gen_program(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Option<Hash>) {
+    match rng.below(4) {
+        0 => {
+            let (h, arity) = gen_non_recursive(rng, s);
+            (h, arity, None)
+        }
+        1 => {
+            let (h, arity) = gen_tail_recursive(rng, s);
+            (h, arity, None)
+        }
+        2 => {
+            let (h, arity) = gen_non_tail_recursive(rng, s);
+            (h, arity, None)
+        }
+        _ => {
+            let (h, arity, it) = gen_closure_typed_recursive(rng, s);
+            (h, arity, Some(it))
+        }
     }
 }
 
@@ -243,11 +319,29 @@ fn compiled_and_interpreted_agree_on_random_terms() {
     const SAMPLE_VALUES: [i64; 7] = [0, 1, -1, 2, -3, 10, -20];
 
     let mut compiled_count = 0u32;
+    let mut universal_proof_count = 0u32;
 
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0x00C0_FFEE_1E55_u64 ^ seed);
         let mut s = TermStore::new();
-        let (h, arity) = gen_program(&mut rng, &mut s);
+        let (h, arity, closure_typed_recursive) = gen_program(&mut rng, &mut s);
+
+        // Fuzzes proof.rs's own closure-typed-parameter pipeline directly:
+        // jit.rs's kernel_verify cascade never reaches
+        // prove_tail_recursive_universal for `h` itself here (see
+        // gen_closure_typed_recursive's own docs for why), so this is the
+        // only way this generator's random bodies ever exercise it.
+        // prove_tail_recursive_universal already gates its own result on
+        // kernel::check internally (see proof.rs), so `is_some()` here is
+        // already a real, independently re-typechecked proof, not just a
+        // "didn't crash" check.
+        if let Some(it) = closure_typed_recursive {
+            assert!(
+                proof::prove_tail_recursive_universal(&s, it).is_some(),
+                "seed={seed}: a closure-typed loop-carried parameter recursion should always get a universal proof"
+            );
+            universal_proof_count += 1;
+        }
 
         let mut jit = JitEngine::new();
         let mut args = vec![0i64; arity];
@@ -274,11 +368,15 @@ fn compiled_and_interpreted_agree_on_random_terms() {
         }
     }
 
-    eprintln!("compile_fuzz: {compiled_count}/{SEEDS} generated programs actually compiled");
+    eprintln!("compile_fuzz: {compiled_count}/{SEEDS} generated programs actually compiled ({universal_proof_count} closure-typed-recursive)");
     assert!(
         compiled_count > SEEDS as u32 / 10,
         "hit rate suspiciously low ({compiled_count}/{SEEDS}) -- check the generator itself, \
          not just compile.rs"
+    );
+    assert!(
+        universal_proof_count > 0,
+        "no closure-typed loop-carried parameter recursion was ever generated -- check gen_program's own odds"
     );
 }
 
