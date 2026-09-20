@@ -49,9 +49,18 @@
 //!
 //! A *universal* proof ("for every input, the recursive reading and the
 //! compiled reading agree", not just at the sampled/traced points) needs
-//! real induction on the call depth. Since this project's kernel is
-//! predicative (see `kernel`'s docs), there's no bare inductive `Nat` to
-//! induct on -- instead, `prove_tail_recursive_universal` postulates a
+//! real induction on the call depth. At the time this was built, there
+//! was no bare inductive `Nat` to induct on in this predicative kernel
+//! (see `kernel`'s docs) -- `kernel::tests::
+//! nat_via_w_is_a_genuinely_computing_inductive_type` has since shown a
+//! real one is buildable from the kernel's own existing primitives alone
+//! (predicativity was never actually the obstacle -- `WRec` already
+//! supports eliminating into any `Sort(k)`), but wiring it in as a
+//! replacement for the postulated family below is a separate, not yet
+//! attempted follow-on (see `RELATED_WORK.md`) -- `Ev` itself is also an
+//! *indexed* family (depends on `params`/`v`), which a plain `Nat`'s own
+//! structural recursor doesn't directly hand you either way. So, for
+//! now, `prove_tail_recursive_universal` postulates a
 //! family `Ev(params, v) : Sort(0)`, "unrolling from `params` reaches
 //! `v`", with one constructor per leaf of `body`'s decision tree (`body`
 //! may be an arbitrary tree of nested `If`s, matching what `compile_node`

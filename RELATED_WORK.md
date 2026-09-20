@@ -54,12 +54,58 @@ recursive type theory, guarded cubical type theory) let a type system
 check that a self-referential/recursive definition is well-formed
 *structurally*, via the modality guarding the recursive occurrence,
 without a separate syntactic termination/positivity checker layered on
-top. This is the mathematically standard answer to exactly the problem
-`build_universal`'s own `Ev` postulate (`src/proof.rs`) works around by
-hand: a guarded-recursion-native kernel wouldn't need a bespoke
-per-strategy recursor at all — the recursion would simply typecheck.
-Adopting this would be a kernel-level (not proof.rs-level) change, well
-outside anything scoped so far.
+top. On closer inspection this is the right tool for *coinduction*
+(productive corecursion over infinite/streaming structures) — a genuine
+capability this project has no story for at all — but it does *not*
+actually address `Ev`'s own duplication: `Ev` encodes a well-founded,
+*finite* recursion relation, which needs ordinary induction, not guarding
+a self-reference against premature use. Parked for whenever coinductive
+reasoning becomes the actual goal, not as `Ev`'s own fix. Adopting it
+would be a kernel-level (not `proof.rs`-level) change with real soundness
+risk if the guard discipline isn't enforced correctly (real guarded type
+theories generally need step-indexed semantics or a clock/tick context
+discipline to stay consistent), well outside anything scoped so far.
+
+**Since built instead: a real `Nat`, from existing primitives alone.**
+`kernel::tests::nat_via_w_is_a_genuinely_computing_inductive_type`
+(`src/kernel.rs`) builds a genuine `Nat` — `Zero`/`Succ` and a real
+structural recursor — entirely from this kernel's own four existing
+primitives (`Pi`/`Lam`/`App`, `Id`/`Refl`/`J`, `W`/`Sup`/`WRec`), no new
+kernel-level machinery at all. The premise behind reaching for guarded
+recursion (or `Ev`'s own ad hoc postulation) was that predicativity
+blocks a generic recursion principle — but `WRec` already supports
+eliminating into *any* `Sort(k)` unconditionally, unlike Coq's own
+`Prop`, which restricts this specifically to avoid inconsistency; nothing
+about predicativity here ever actually blocked a real, computing `Nat`,
+it just hadn't been built. `Bool`/`Unit`/`Empty` are postulated once (the
+standard, accepted way to seed a predicative kernel with no fifth
+primitive — see `Postulates`' own docs), and `Nat := W(Bool, ChildTy)`;
+the identity recursor (mirroring `w_recursor_computes_definitionally`'s
+own shape) confirms `Zero`/`Succ(pred)` reduce back to themselves
+*definitionally* via `WRec`'s free `Sup`-reduction alone.
+
+A genuinely per-case recursor (`bool_rec`, Bool's own postulated
+eliminator, dispatching differently per tag rather than ignoring it) is
+also built and shown to produce a well-typed step function — but proving
+a *concrete* result of such a recursor (e.g. `is_zero(Zero) = true`)
+surfaced a real, separate obstacle: `WRec`'s own automatic reduction
+(`whnf_impl`) builds its induction-hypothesis closure with an inert
+placeholder `Lam` domain annotation (`sort(0)`, deliberately irrelevant
+to reduction, since beta substitution never consults a `Lam`'s domain
+field) — but `Expr`'s own structural equality (what `def_eq` uses) *does*
+compare it. A hand-built alternative using the domain a real step
+signature actually requires (`ChildTy(b)`, needed for it to type-check as
+a standalone value) is therefore never `def_eq` to what `WRec` produces
+automatically, even though both compute identically for every input.
+Bridging the two needs something equivalent to function extensionality —
+two functions provably equal pointwise are equal outright — which this
+kernel doesn't have. A real, bounded follow-on (postulating extensionality
+is a standard, safe, well-precedented move — see the "add impredicative
+`Prop`" option surveyed alongside this one), not a flaw in the `Nat`
+construction itself: confirmed by deliberately attempting it and finding
+this exact wall, not a fixable index bug. Also not yet done: extracting a
+clean, reusable public API, or wiring any of this into `proof.rs`'s own
+`Ev`-based strategies as a replacement.
 
 ## 4. Higher-order abstract syntax / logical frameworks — the fix for this session's own recurring bug class
 

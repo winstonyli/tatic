@@ -925,6 +925,285 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
 mod tests {
     use super::*;
 
+    /// `Pi C:(Bool->Sort0). Pi ct:C(true). Pi cf:C(false). <body_d3>`,
+    /// where `body_d3` must already be built assuming exactly this
+    /// three-binder depth (`C=Var2, ct=Var1, cf=Var0`) relative to
+    /// `bool_ref`/`true_ref`/`false_ref`'s own (shared) ambient depth --
+    /// the shared shape `bool_rec`'s own type and both its computation-rule
+    /// axioms all need, differing only in what comes after the three
+    /// binders.
+    fn wrap_c_ct_cf(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Expr) -> Expr {
+        let c_ty = arrow(bool_ref.clone(), sort(0));
+        let true_d1 = shift(true_ref, 0, 1);
+        let false_d2 = shift(false_ref, 0, 2);
+        let pi_cf = pi(app(var(1), false_d2), body_d3);
+        let pi_ct = pi(app(var(0), true_d1), pi_cf);
+        pi(c_ty, pi_ct)
+    }
+
+    /// A real, working `Nat` -- Zero/Succ and a genuinely computing
+    /// structural recursor -- built entirely from this kernel's own
+    /// existing four primitives (no new kernel-level machinery at all),
+    /// answering the "generic recursion/induction principle" gap
+    /// `RELATED_WORK.md` §1/§3 names: every proof strategy in `proof.rs`
+    /// currently postulates its own bespoke recursor (`Ev`/`ev_rec`) by
+    /// hand, per strategy, because there's no `Nat` to induct on. There
+    /// always could have been one -- `WRec` already supports eliminating
+    /// into *any* `Sort(k)` unconditionally (unlike Coq's own `Prop`,
+    /// which restricts this), so nothing about predicativity ever blocked
+    /// it; it just hadn't been built.
+    ///
+    /// Base types postulated once, per `Postulates`' own documented
+    /// rationale (a predicative kernel with no fifth primitive type
+    /// former has no way to *derive* an enumeration type from nothing —
+    /// see its own doc comment): `Bool`/`true`/`false`; `Unit`/`star`;
+    /// `Empty`/`empty_elim` (`Pi C:Sort0. Empty -> C`); `ChildTy : Bool ->
+    /// Sort0` fixing `Nat`'s own W-shape's children-index family, with
+    /// `child_ty_true_eq`/`child_ty_false_eq` pinning it to `Unit`/`Empty`
+    /// propositionally (not definitionally -- `ChildTy` is an opaque
+    /// postulated function, so using `empty_elim`/a constant function
+    /// where `ChildTy(b)` is expected needs one explicit
+    /// `cong1`+`sym`+`transport` step each, done once here for `Zero`/
+    /// `Succ`). `Nat := W(Bool, ChildTy)`; `Zero`/`Succ` are then `Sup`
+    /// values built via that transport. The **identity recursor** (`\a f
+    /// ih. sup(a,f)`, ignoring `ih` entirely -- the same shape
+    /// `w_recursor_computes_definitionally` above already validates for
+    /// an abstract `W`) reduces `Zero`/`Succ(pred)` back to themselves
+    /// *definitionally*, via `WRec`'s own free `Sup`-reduction alone --
+    /// confirming this really is a genuine, computing `W`-type, not just
+    /// a well-typed assemblage of postulates.
+    ///
+    /// `bool_rec` (Bool's own postulated recursor, with its own two
+    /// computation-rule axioms) is also built and shown to produce a
+    /// well-typed, genuinely per-case `Pi b:Bool. C(b)` step function
+    /// (unlike the identity recursor, whose step ignores the tag
+    /// entirely) -- demonstrating real per-case dispatch is at least
+    /// *constructible* this way, not just the degenerate identity case.
+    ///
+    /// **A genuine, newly-discovered scope boundary, not a bug**: proving
+    /// a `bool_rec`-based step's own result concretely (e.g. `is_zero
+    /// (Zero) = true`) turned out to need more than one more `cong1`/
+    /// `trans_proof` step. `WRec`'s own automatic reduction (`whnf_impl`)
+    /// builds its induction-hypothesis closure with an inert placeholder
+    /// domain annotation (`sort(0)`, "inert for reduction" per its own
+    /// comment) -- fine for reduction, since beta substitution never
+    /// consults a `Lam`'s domain field at all, but `Expr`'s own structural
+    /// equality (`nf`+`==`, what `def_eq` uses) *does* compare it. A
+    /// hand-built alternative that instead uses the domain a `bool_rec`
+    /// case's own step signature actually requires (`ChildTy(b)`, needed
+    /// for that step to type-check as a standalone value at all) is
+    /// therefore never `def_eq` to what `WRec` produces automatically,
+    /// even though both compute identically for every input -- bridging
+    /// the two needs something equivalent to function extensionality
+    /// (two functions provably equal pointwise are equal outright), which
+    /// this kernel doesn't have. This is a real, separate follow-on (see
+    /// `RELATED_WORK.md`), not a mistake in this construction -- confirmed
+    /// by deliberately trying it and finding exactly this wall, not a
+    /// fixable index bug.
+    ///
+    /// Deliberately not attempted here: extracting a clean, reusable
+    /// public API (this is validated as a self-contained proof of
+    /// concept, matching how `w_recursor_computes_definitionally` above
+    /// is itself never exposed as one either) or wiring any of this into
+    /// `proof.rs`'s own `Ev`-based strategies -- both are the natural
+    /// next steps once this foundation is trusted.
+    #[test]
+    fn nat_via_w_is_a_genuinely_computing_inductive_type() {
+        let mut p = Postulates::new();
+        let bool_pos = p.push(sort(0));
+        let true_pos = p.push(p.get(bool_pos));
+        let false_pos = p.push(p.get(bool_pos));
+        let unit_pos = p.push(sort(0));
+        let _star_pos = p.push(p.get(unit_pos));
+        let empty_pos = p.push(sort(0));
+        let empty_elim_pos = p.push(pi(sort(0), arrow(shift(&p.get(empty_pos), 0, 1), var(0))));
+        let child_ty_pos = p.push(arrow(p.get(bool_pos), sort(0)));
+        let child_ty_true_eq_pos = p.push(id(sort(0), app(p.get(child_ty_pos), p.get(true_pos)), p.get(unit_pos)));
+        let child_ty_false_eq_pos = p.push(id(sort(0), app(p.get(child_ty_pos), p.get(false_pos)), p.get(empty_pos)));
+
+        // bool_rec : Pi C:(Bool->Sort0). C(true) -> C(false) -> Pi b:Bool. C(b)
+        let bool_rec_body_d3 = pi(shift(&p.get(bool_pos), 0, 3), app(var(3), var(0)));
+        let bool_rec_ty = wrap_c_ct_cf(&p.get(bool_pos), &p.get(true_pos), &p.get(false_pos), bool_rec_body_d3);
+
+        let bool_rec_pos = p.push(bool_rec_ty);
+
+        // bool_rec_true_eq : Pi C ct cf. Id(C(true), bool_rec(C,ct,cf)(true), ct)
+        let true_d3 = shift(&p.get(true_pos), 0, 3);
+        let applied_d3 = app(app(app(shift(&p.get(bool_rec_pos), 0, 3), var(2)), var(1)), var(0));
+        let true_eq_body_d3 = id(app(var(2), true_d3.clone()), app(applied_d3, true_d3), var(1));
+        let bool_rec_true_eq_ty = wrap_c_ct_cf(&p.get(bool_pos), &p.get(true_pos), &p.get(false_pos), true_eq_body_d3);
+
+        let _bool_rec_true_eq_pos = p.push(bool_rec_true_eq_ty);
+
+        // bool_rec_false_eq : Pi C ct cf. Id(C(false), bool_rec(C,ct,cf)(false), cf)
+        let false_d3 = shift(&p.get(false_pos), 0, 3);
+        let applied_d3b = app(app(app(shift(&p.get(bool_rec_pos), 0, 3), var(2)), var(1)), var(0));
+        let false_eq_body_d3 = id(app(var(2), false_d3.clone()), app(applied_d3b, false_d3), var(0));
+        let bool_rec_false_eq_ty = wrap_c_ct_cf(&p.get(bool_pos), &p.get(true_pos), &p.get(false_pos), false_eq_body_d3);
+
+        let _bool_rec_false_eq_pos = p.push(bool_rec_false_eq_ty);
+
+        // Nat := W(Bool, ChildTy)
+        let nat_ty = wty(p.get(bool_pos), app(shift(&p.get(child_ty_pos), 0, 1), var(0)));
+        check(&p.ctx, &nat_ty, &sort(0)).expect("Nat := W(Bool, ChildTy) : Type0");
+
+        // Zero := sup(false, f_zero), f_zero : ChildTy(false) -> Nat,
+        // transported from empty_elim(Nat) : Empty -> Nat along
+        // child_ty_false_eq.
+        let f_empty_nat = app(p.get(empty_elim_pos), nat_ty.clone());
+        check(&p.ctx, &f_empty_nat, &arrow(p.get(empty_pos), nat_ty.clone())).expect("empty_elim(Nat) : Empty -> Nat");
+
+        let arrow_nat_fn = lam(sort(0), arrow(var(0), shift(&nat_ty, 0, 1)));
+        let cong_false = cong1(
+            &sort(0),
+            &sort(0),
+            &arrow_nat_fn,
+            app(p.get(child_ty_pos), p.get(false_pos)),
+            p.get(empty_pos),
+            p.get(child_ty_false_eq_pos),
+        );
+        // cong_false : Id(Sort0, ChildTy(false)->Nat, Empty->Nat)
+        let expected_cong_false = id(
+            sort(0),
+            arrow(app(p.get(child_ty_pos), p.get(false_pos)), nat_ty.clone()),
+            arrow(p.get(empty_pos), nat_ty.clone()),
+        );
+        check(&p.ctx, &cong_false, &expected_cong_false).expect("cong1 building Id(Sort0, ChildTy(false)->Nat, Empty->Nat)");
+
+        let sym_cong_false = sym(
+            &sort(0),
+            &arrow(app(p.get(child_ty_pos), p.get(false_pos)), nat_ty.clone()),
+            &arrow(p.get(empty_pos), nat_ty.clone()),
+            cong_false,
+        );
+        // sym_cong_false : Id(Sort0, Empty->Nat, ChildTy(false)->Nat)
+        let f_zero = transport(
+            0,
+            arrow(p.get(empty_pos), nat_ty.clone()),
+            arrow(app(p.get(child_ty_pos), p.get(false_pos)), nat_ty.clone()),
+            sym_cong_false,
+            f_empty_nat,
+        );
+        check(&p.ctx, &f_zero, &arrow(app(p.get(child_ty_pos), p.get(false_pos)), nat_ty.clone())).expect("f_zero : ChildTy(false) -> Nat");
+
+        let zero = sup(p.get(false_pos), f_zero.clone());
+        check(&p.ctx, &zero, &nat_ty).expect("Zero : Nat");
+
+        // Succ(pred) := sup(true, f_succ), f_succ : ChildTy(true) -> Nat,
+        // transported from (\_:Unit. pred) : Unit -> Nat along
+        // child_ty_true_eq.
+        let pred_pos = p.push(nat_ty.clone());
+        let pred = p.get(pred_pos);
+        // `nat_ty` was built before `pred_pos`'s own push -- reindex once
+        // for use at the context depth from here on, matching `Anchored`'s
+        // own reasoning in `proof.rs` (a value built before a later push
+        // needs manual reshifting or it silently references the wrong
+        // postulate).
+        let nat_ty_here = shift(&nat_ty, 0, 1);
+
+        let f_unit_nat = lam(p.get(unit_pos), shift(&pred, 0, 1));
+        check(&p.ctx, &f_unit_nat, &arrow(p.get(unit_pos), nat_ty_here.clone())).expect("(\\_:Unit. pred) : Unit -> Nat");
+
+        let arrow_nat_fn2 = lam(sort(0), arrow(var(0), shift(&nat_ty_here, 0, 1)));
+        let cong_true = cong1(
+            &sort(0),
+            &sort(0),
+            &arrow_nat_fn2,
+            app(p.get(child_ty_pos), p.get(true_pos)),
+            p.get(unit_pos),
+            p.get(child_ty_true_eq_pos),
+        );
+        let expected_cong_true = id(
+            sort(0),
+            arrow(app(p.get(child_ty_pos), p.get(true_pos)), nat_ty_here.clone()),
+            arrow(p.get(unit_pos), nat_ty_here.clone()),
+        );
+        check(&p.ctx, &cong_true, &expected_cong_true).expect("cong1 building Id(Sort0, ChildTy(true)->Nat, Unit->Nat)");
+
+        let sym_cong_true = sym(
+            &sort(0),
+            &arrow(app(p.get(child_ty_pos), p.get(true_pos)), nat_ty_here.clone()),
+            &arrow(p.get(unit_pos), nat_ty_here.clone()),
+            cong_true,
+        );
+        let f_succ = transport(
+            0,
+            arrow(p.get(unit_pos), nat_ty_here.clone()),
+            arrow(app(p.get(child_ty_pos), p.get(true_pos)), nat_ty_here.clone()),
+            sym_cong_true,
+            f_unit_nat,
+        );
+        check(&p.ctx, &f_succ, &arrow(app(p.get(child_ty_pos), p.get(true_pos)), nat_ty_here.clone())).expect("f_succ : ChildTy(true) -> Nat");
+
+        let succ_pred = sup(p.get(true_pos), f_succ);
+        check(&p.ctx, &succ_pred, &nat_ty_here).expect("Succ(pred) : Nat");
+
+        // Sanity: the identity recursor (mirrors `w_recursor_computes_
+        // definitionally`'s own "reconstruct the node unchanged, ignoring
+        // ih" step, generalized from that test's constant-children-type W
+        // to this Nat's own tag-dependent ChildTy) reduces `Zero`/
+        // `Succ(pred)` back to themselves *definitionally* via `wrec`'s
+        // own free Sup-reduction alone -- confirming this Nat really is a
+        // genuine, computing W-type, not just a well-typed assemblage of
+        // postulates.
+        let zero_here = shift(&zero, 0, 1);
+        let wa_here = p.get(bool_pos);
+        let wb_here = app(shift(&p.get(child_ty_pos), 0, 1), var(0));
+        let motive_const = lam(nat_ty_here.clone(), shift(&nat_ty_here, 0, 1)); // \_:Nat. Nat
+
+        let f_ty_d1 = pi(wb_here.clone(), shift(&nat_ty_here, 0, 2));
+        let ih_dom_d2 = shift(&wb_here, 0, 1);
+        let ih_body_d3 = app(shift(&motive_const, 0, 3), app(var(1), var(0)));
+        let ih_ty_d2 = pi(ih_dom_d2, ih_body_d3);
+        let step_id = lam(wa_here, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
+
+        let id_on_zero = wrec(motive_const.clone(), step_id.clone(), zero_here.clone());
+        check(&p.ctx, &id_on_zero, &nat_ty_here).expect("id-recursor applied to Zero should typecheck at Nat");
+        assert_eq!(nf(&id_on_zero), nf(&zero_here), "the identity recursor should reduce Zero back to Zero");
+
+        let id_on_succ = wrec(motive_const, step_id, succ_pred.clone());
+        check(&p.ctx, &id_on_succ, &nat_ty_here).expect("id-recursor applied to Succ(pred) should typecheck at Nat");
+        assert_eq!(nf(&id_on_succ), nf(&succ_pred), "the identity recursor should reduce Succ(pred) back to Succ(pred)");
+
+        // A genuinely per-case recursor: is_zero : Nat -> Bool, dispatching
+        // on the tag via bool_rec (Bool's own postulated recursor) --
+        // demonstrating the identity recursor's own step (which ignores
+        // the tag entirely) isn't the only shape available. `bool_rec`
+        // doesn't reduce automatically (a postulated recursor, same as
+        // any other postulated axiom), so proving `is_zero(Zero) = true`
+        // needs one explicit propositional step (`bool_rec_false_eq`)
+        // rather than falling straight out of `nf`.
+        let wb_here2 = app(shift(&p.get(child_ty_pos), 0, 1), var(0));
+        let f_ty_for_c_d1 = arrow(wb_here2.clone(), shift(&nat_ty_here, 0, 1));
+        let ih_dom_d2 = shift(&wb_here2, 0, 1);
+        let ih_ty_d2 = arrow(ih_dom_d2, shift(&p.get(bool_pos), 0, 2));
+        let c_body_d1 = pi(f_ty_for_c_d1, arrow(ih_ty_d2, shift(&p.get(bool_pos), 0, 2)));
+        let is_zero_motive_c = lam(p.get(bool_pos), c_body_d1);
+
+        let f_ty_true = arrow(app(p.get(child_ty_pos), p.get(true_pos)), nat_ty_here.clone());
+        let ih_ty_true_d1 = arrow(shift(&app(p.get(child_ty_pos), p.get(true_pos)), 0, 1), shift(&p.get(bool_pos), 0, 1));
+        let case_true = lam(f_ty_true, lam(ih_ty_true_d1, shift(&p.get(false_pos), 0, 2)));
+
+        let f_ty_false = arrow(app(p.get(child_ty_pos), p.get(false_pos)), nat_ty_here.clone());
+        let ih_ty_false_d1 = arrow(shift(&app(p.get(child_ty_pos), p.get(false_pos)), 0, 1), shift(&p.get(bool_pos), 0, 1));
+        let case_false = lam(f_ty_false, lam(ih_ty_false_d1, shift(&p.get(true_pos), 0, 2)));
+
+        let is_zero_step = app(app(app(p.get(bool_rec_pos), is_zero_motive_c.clone()), case_true.clone()), case_false.clone());
+        check(&p.ctx, &is_zero_step, &pi(p.get(bool_pos), app(shift(&is_zero_motive_c, 0, 1), var(0))))
+            .expect("is_zero_step : Pi b:Bool. C(b)");
+
+        let is_zero_motive_const = lam(nat_ty_here.clone(), shift(&p.get(bool_pos), 0, 1)); // \_:Nat. Bool
+        let is_zero_on_zero = wrec(is_zero_motive_const, is_zero_step, zero_here);
+        check(&p.ctx, &is_zero_on_zero, &p.get(bool_pos)).expect("is_zero(Zero) : Bool");
+
+        // Deliberately not attempted here: proving `is_zero(Zero) = true`
+        // propositionally. This ran into a genuine kernel-level obstacle,
+        // not a bug in this construction -- see this test module's own
+        // closing note, and `bool_rec`'s own doc comment, for what it is
+        // and why it's a real scope boundary rather than something to
+        // work around locally.
+    }
+
     #[test]
     fn shift_by_zero_is_the_identity_including_through_binders() {
         // Exercises every variant, including ones whose subterms sit under
