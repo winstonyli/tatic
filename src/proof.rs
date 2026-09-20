@@ -5584,6 +5584,34 @@ fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, c
     Some(apply_n(mk_env, values))
 }
 
+/// Bounds how much work following one concrete `eval_dyn` trace may do,
+/// shared (via `&mut`) across the whole walk, including through mutual
+/// recursion with `eval_dyn` itself (see its own docs). Two separate
+/// counters, not one, because they bound genuinely different things:
+/// `tail_steps` bounds `eval_dyn_tail_recursive`'s own flat loop --
+/// unaffected by whether any *non*-tail self-call is also present, since
+/// the loop itself never recurses through Rust's own call stack, so a
+/// generous bound (matching `prove_tail_recursive_call`'s own) costs
+/// nothing extra; `recursion_depth` separately bounds how many *embedded*
+/// (non-tail) self-calls `eval_dyn` may follow, since -- unlike the tail
+/// loop -- each one genuinely recurses through Rust's own call stack
+/// (`eval_dyn` calling back into `eval_dyn_tail_recursive`, which may
+/// itself call back into `eval_dyn` for the next embedded self-call), so
+/// this needs a much smaller bound to stay well clear of a real stack
+/// overflow -- see `eval.rs`'s own docs on the same native-stack limit
+/// for non-tail recursion (~8,000-10,000 levels there, for far lighter
+/// per-frame work than building up a kernel proof term does).
+struct DynBudget {
+    tail_steps: usize,
+    recursion_depth: usize,
+}
+
+impl DynBudget {
+    fn new() -> Self {
+        DynBudget { tail_steps: 10_000, recursion_depth: 50 }
+    }
+}
+
 /// Follows one concrete trace through a `Rec`-wrapped, *tail*-recursive
 /// `body` (`arity` params plus the self-reference at `Var(arity)`,
 /// matching `peel`'s own convention), starting from `frame` -- the
@@ -5599,15 +5627,14 @@ fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, c
 /// "recursive use of curried dispatch has no kernel-proof coverage"
 /// gap is precisely this case.
 ///
-/// Scoped the same way `prove_tail_recursive_call` is: only a *tail*
-/// self-call is followed (a self-call embedded inside a larger
-/// expression is never recognized by `classify_step`'s own
-/// `match_self_call`, so the base case `eval_dyn` is finally called on
-/// still has an unresolvable `Var(arity)` in it -- `eval_dyn`'s own
-/// `frame.get` on an out-of-range index declines cleanly rather than
-/// mis-evaluating, the same "sound, not complete" tolerance every other
-/// decline in this section already has); bounded to `MAX_STEPS`
-/// iterations, matching `prove_tail_recursive_call`'s own bound.
+/// A *non*-tail self-call (embedded inside a larger expression, not
+/// recognized by `classify_step`'s own `match_self_call`, which only
+/// matches when the self-call is the *entire* remaining leaf) isn't
+/// handled by this loop directly -- `eval_dyn` itself now recognizes one
+/// (see its own docs) and calls back into this function, mutually
+/// recursive, one Rust stack frame per embedded self-call actually
+/// followed, bounded by `budget.recursion_depth` separately from this
+/// loop's own `budget.tail_steps`.
 ///
 /// `combinators`' `register`/`call_ref` memoization is keyed by `Hash`
 /// alone (see `eval_dyn_direct_call`'s own docs on this) -- safe here as
@@ -5621,15 +5648,20 @@ fn eval_dyn_tail_recursive(
     body: Hash,
     arity: usize,
     combinators: &mut ClosureCombinators,
+    budget: &mut DynBudget,
     mut frame: Vec<DynVal>,
 ) -> Option<DynDenoted> {
-    const MAX_STEPS: usize = 10_000;
     let self_idx = arity as u32;
+    let self_ctx = Some((body, arity));
 
-    for _ in 0..MAX_STEPS {
+    loop {
+        if budget.tail_steps == 0 {
+            return None;
+        }
+        budget.tail_steps -= 1;
         let concrete = dyn_frame_concrete_ints(&frame);
         match classify_step(store, body, arity, self_idx, &concrete)? {
-            StepOutcome::Base(leaf) => return eval_dyn(store, leaf, combinators, &frame),
+            StepOutcome::Base(leaf) => return eval_dyn(store, leaf, combinators, self_ctx, budget, &frame),
             StepOutcome::TailCall(arg_exprs) => {
                 if arg_exprs.len() != arity {
                     return None;
@@ -5637,7 +5669,7 @@ fn eval_dyn_tail_recursive(
                 let mut new_frame = Vec::with_capacity(arity);
                 for i in 0..arity {
                     let expr = arg_exprs[arity - 1 - i];
-                    let val = match eval_dyn(store, expr, combinators, &frame)? {
+                    let val = match eval_dyn(store, expr, combinators, self_ctx, budget, &frame)? {
                         DynDenoted::Int(e) => {
                             let n = eval_concrete_dyn(store, expr, &frame)?;
                             DynVal::Int(e, n)
@@ -5650,7 +5682,6 @@ fn eval_dyn_tail_recursive(
             }
         }
     }
-    None
 }
 
 /// Resolves a call to `root` (a literal lambda, or a named self-recursive
@@ -5675,8 +5706,8 @@ fn eval_dyn_tail_recursive(
 /// but `root`'s static classification declined to type that parameter as
 /// one -- only ever inlines a non-capturing `root` (`Rec`-wrapped or not
 /// -- a `Rec`-wrapped `root` is traced through its own self-calls via
-/// `eval_dyn_tail_recursive`, tail-recursive shapes only, see its own
-/// docs).
+/// `eval_dyn_tail_recursive`, tail *or non-tail*, see its own and
+/// `eval_dyn`'s own docs).
 ///
 /// One more constraint worth being explicit about, found while verifying
 /// this by deliberately feeding `call_ref` the wrong frame here and
@@ -5696,12 +5727,15 @@ fn eval_dyn_tail_recursive(
 /// wrong frame to know it disagrees with a different call site's own
 /// correct one -- can catch on its own if a future generalization ever
 /// violated it.
+#[allow(clippy::too_many_arguments)]
 fn eval_dyn_direct_call(
     store: &TermStore,
     combinators: &mut ClosureCombinators,
     root: Hash,
     root_frame: &[DynVal],
     args: &[Hash],
+    calling_self_ctx: Option<(Hash, usize)>,
+    budget: &mut DynBudget,
     calling_frame: &[DynVal],
 ) -> Option<DynDenoted> {
     let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
@@ -5713,7 +5747,7 @@ fn eval_dyn_direct_call(
 
     let mut arg_vals = Vec::with_capacity(args.len());
     for &a in args {
-        arg_vals.push(eval_dyn(store, a, combinators, calling_frame)?);
+        arg_vals.push(eval_dyn(store, a, combinators, calling_self_ctx, budget, calling_frame)?);
     }
     let needs_inline = return_ty.is_some()
         || arg_vals
@@ -5743,9 +5777,9 @@ fn eval_dyn_direct_call(
         }
         let child: Vec<DynVal> = child.into_iter().collect::<Option<Vec<_>>>()?;
         if root_is_rec {
-            return eval_dyn_tail_recursive(store, root_body, root_arity, combinators, child);
+            return eval_dyn_tail_recursive(store, root_body, root_arity, combinators, budget, child);
         }
-        return eval_dyn(store, root_body, combinators, &child);
+        return eval_dyn(store, root_body, combinators, None, budget, &child);
     }
 
     // Ordinary opaque call: mirrors `denote_closure`'s own
@@ -5800,24 +5834,75 @@ fn eval_dyn_direct_call(
 /// `frame`'s own length must match whatever scope `h` is being evaluated
 /// in (`Var(i)` resolves to `frame[i]`, the same convention
 /// `denote_closure`'s `params`/`param_types` share).
-fn eval_dyn(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, frame: &[DynVal]) -> Option<DynDenoted> {
+///
+/// `self_ctx`, when `Some((body, arity))`, means `h` is being walked
+/// inside a `Rec`-wrapped combinator's own body (that same `body`/`arity`
+/// pair), so `Var(arity)` there is a self-reference, exactly matching
+/// `peel`'s own convention -- `None` in every other scope (a
+/// non-recursive body, or once inlined into a *different* combinator's
+/// own body via `eval_dyn_direct_call`, which computes the callee's own
+/// fresh `self_ctx` rather than inheriting the caller's). This is what
+/// lets a *non*-tail self-call (embedded inside a larger expression, not
+/// recognized by `eval_dyn_tail_recursive`'s own `classify_step`, which
+/// only matches when a self-call is the *entire* remaining leaf) still
+/// be followed: the `App`/`Var` case below recognizes one directly and
+/// calls back into `eval_dyn_tail_recursive`, mutually recursive with
+/// this function, one more Rust stack frame per embedded self-call
+/// actually reached -- bounded by `budget.recursion_depth` (see
+/// `DynBudget`'s own docs for why that's a separate, much smaller bound
+/// than `eval_dyn_tail_recursive`'s own flat-loop one). A *branching*
+/// non-tail shape (more than one self-call in the same leaf, e.g.
+/// `f(n-1) + f(n-2)`) falls out of this for free -- each occurrence is
+/// just another embedded self-call, evaluated independently -- but is
+/// exponential in trace length the same way any per-instance trace of a
+/// branching recursive shape is, so it's only practical for the small,
+/// fixed samples this whole methodology is ever run against, never a
+/// substitute for `prove_tail_recursive_universal`'s own genuine
+/// induction on shapes it already covers.
+fn eval_dyn(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, self_ctx: Option<(Hash, usize)>, budget: &mut DynBudget, frame: &[DynVal]) -> Option<DynDenoted> {
     if let Term::If(c, t, e) = store.resolve(h) {
         let (c, t, e) = (*c, *t, *e);
         let concrete = dyn_frame_concrete_ints(frame);
         let cv = eval_concrete(store, c, &concrete)?;
-        return eval_dyn(store, if cv != 0 { t } else { e }, combinators, frame);
+        return eval_dyn(store, if cv != 0 { t } else { e }, combinators, self_ctx, budget, frame);
     }
 
     if matches!(store.resolve(h), Term::App(..)) {
         let (root, args) = compile::unwind_app_spine(store, h);
+        if let Term::Var(i) = store.resolve(root)
+            && let Some((self_body, self_arity)) = self_ctx
+            && *i as usize == self_arity
+            && args.len() == self_arity
+        {
+            // An embedded (non-tail) self-call -- see this function's
+            // own docs.
+            if budget.recursion_depth == 0 {
+                return None;
+            }
+            budget.recursion_depth -= 1;
+            let mut new_frame: Vec<Option<DynVal>> = vec![None; self_arity];
+            for (j, &a) in args.iter().enumerate() {
+                let pos = self_arity - 1 - j;
+                let denoted = eval_dyn(store, a, combinators, self_ctx, budget, frame)?;
+                new_frame[pos] = Some(match denoted {
+                    DynDenoted::Int(e) => {
+                        let n = eval_concrete_dyn(store, a, frame)?;
+                        DynVal::Int(e, n)
+                    }
+                    DynDenoted::Clo(e, cc) => DynVal::Clo(e, cc),
+                });
+            }
+            let new_frame: Vec<DynVal> = new_frame.into_iter().collect::<Option<Vec<_>>>()?;
+            return eval_dyn_tail_recursive(store, self_body, self_arity, combinators, budget, new_frame);
+        }
         return match store.resolve(root) {
             Term::Var(i) => {
                 let DynVal::Clo(_, cc) = frame.get(*i as usize)?.clone() else { return None };
                 let cc_root = cc.root;
                 let cc_frame = cc.frame.clone();
-                eval_dyn_direct_call(store, combinators, cc_root, &cc_frame, &args, frame)
+                eval_dyn_direct_call(store, combinators, cc_root, &cc_frame, &args, self_ctx, budget, frame)
             }
-            Term::Abs(_) | Term::Rec(_) => eval_dyn_direct_call(store, combinators, root, frame, &args, frame),
+            Term::Abs(_) | Term::Rec(_) => eval_dyn_direct_call(store, combinators, root, frame, &args, self_ctx, budget, frame),
             _ => None,
         };
     }
@@ -5827,15 +5912,27 @@ fn eval_dyn(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, fr
         // unchanged rather than resolving now, so it stays safe to hold
         // across whatever this read's own caller does before actually
         // consuming it.
-        Term::Var(i) => match frame.get(*i as usize)?.clone() {
-            DynVal::Int(e, _) => Some(DynDenoted::Int(e)),
-            DynVal::Clo(e, cc) => Some(DynDenoted::Clo(e, cc)),
-        },
+        Term::Var(i) => {
+            if let Some((_, self_arity)) = self_ctx
+                && *i as usize == self_arity
+            {
+                // A bare reference to the enclosing self-recursive value
+                // itself, not applied -- out of scope structurally, the
+                // same restriction `compile.rs`'s own `free_vars` places
+                // on capturing a self-reference as a plain value from a
+                // nested closure.
+                return None;
+            }
+            match frame.get(*i as usize)?.clone() {
+                DynVal::Int(e, _) => Some(DynDenoted::Int(e)),
+                DynVal::Clo(e, cc) => Some(DynDenoted::Clo(e, cc)),
+            }
+        }
         Term::Lit(n) => Some(DynDenoted::Int(Anchored::new(&combinators.cp.arith, combinators.cp.arith.lit_ref(*n)))),
         Term::Prim(op, a, b) => {
             let (op, a, b) = (*op, *a, *b);
-            let DynDenoted::Int(da) = eval_dyn(store, a, combinators, frame)? else { return None };
-            let DynDenoted::Int(db) = eval_dyn(store, b, combinators, frame)? else { return None };
+            let DynDenoted::Int(da) = eval_dyn(store, a, combinators, self_ctx, budget, frame)? else { return None };
+            let DynDenoted::Int(db) = eval_dyn(store, b, combinators, self_ctx, budget, frame)? else { return None };
             let op_ref = combinators.cp.arith.op_ref(op); // pre-postulated once -- never pushes
             let da = da.at(&combinators.cp.arith);
             let db = db.at(&combinators.cp.arith);
@@ -5931,10 +6028,11 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
         frame.push(DynVal::Int(Anchored::new(&combinators.cp.arith, e), n));
     }
 
+    let mut budget = DynBudget::new();
     let denoted = if is_rec {
-        eval_dyn_tail_recursive(store, body, arity, &mut combinators, frame)?
+        eval_dyn_tail_recursive(store, body, arity, &mut combinators, &mut budget, frame)?
     } else {
-        eval_dyn(store, body, &mut combinators, &frame)?
+        eval_dyn(store, body, &mut combinators, None, &mut budget, &frame)?
     };
     // `result_ty` first (its own `clo_ty(k)` may push, for an arity not
     // otherwise seen while building `denoted`), `denotation` resolved
@@ -8400,6 +8498,168 @@ mod tests {
             check_instance_proof(&proof);
             let expected = if s_val > 0 { 1 + 2 } else { 1 - 2 };
             assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), expected, "s={s_val}: sanity check against the interpreter");
+        }
+    }
+
+    #[test]
+    fn a_non_tail_self_call_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof() {
+        // Same dead-call-site trick as the tail-recursive precedent
+        // (`a_tail_recursive_loop_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof`
+        // above), but the self-call now sits *inside* `1 + ..`, not in
+        // tail position: `rec f n g x = if 1<0 then g(x,999) else (if
+        // n<=0 then x else 1 + f(n-1,g,g(x)))`. `classify_step`'s own
+        // `match_self_call` only recognizes a self-call that's the
+        // *entire* remaining leaf, so this leaf -- `1 + f(...)` -- is a
+        // `Base` case as far as `eval_dyn_tail_recursive`'s own loop is
+        // concerned; the embedded self-call inside it is only reachable
+        // via `eval_dyn`'s own new recognition, calling back into
+        // `eval_dyn_tail_recursive` one Rust stack frame at a time.
+        let mut s = TermStore::new();
+        let x_dead = s.var(0);
+        let nine_ninety_nine = s.lit(999);
+        let g_dead = s.var(1);
+        let dead_call = s.app2(g_dead, x_dead, nine_ninety_nine);
+
+        let x = s.var(0);
+        let g = s.var(1);
+        let n = s.var(2);
+        let f = s.var(3);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let gx = s.app(g, x);
+        let f_n1_g = s.app2(f, n_minus_1, g);
+        let rec_call = s.app(f_n1_g, gx); // f(n-1, g, g(x))
+        let one_addend = s.lit(1);
+        let non_tail_call = s.prim(PrimOp::Add, one_addend, rec_call); // 1 + f(n-1,g,g(x))
+        let live_body = s.if_(cond, x, non_tail_call);
+
+        let one_c = s.lit(1);
+        let zero_c = s.lit(0);
+        let dead_cond = s.prim(PrimOp::Lt, one_c, zero_c); // always false
+        let body = s.if_(dead_cond, dead_call, live_body);
+
+        let g_binder = s.abs(body);
+        let n_binder = s.abs(g_binder);
+        let abs = s.abs(n_binder);
+        let it = s.rec(abs);
+
+        let y = s.var(0);
+        let one2 = s.lit(1);
+        let inc_body = s.prim(PrimOp::Add, y, one2);
+        let inc = s.abs(inc_body);
+
+        assert!(param_types_for(&s, it).unwrap().contains(&None));
+
+        for n_val in [0i64, 1, 3, 10] {
+            let n_lit = s.lit(n_val);
+            let x0 = s.lit(0);
+            let partial = s.app2(it, n_lit, inc);
+            let top = s.app(partial, x0);
+
+            assert!(prove_closure_expr(&s, top).is_none(), "n={n_val}: top's own call to it still can't be classified statically");
+            let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("n={n_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+            // x reaches n_val (one increment per level) by the time the
+            // base case returns it, and "1 +" is added back once per
+            // level on the way out -- n_val of each.
+            assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), 2 * n_val, "n={n_val}: sanity check against the interpreter");
+        }
+
+        // Past `DynBudget::recursion_depth`'s own bound, this must
+        // decline *cleanly* (a graceful `None`, the same "sound, not
+        // complete" tolerance every other bounded search in this module
+        // already has) rather than actually overflowing the native Rust
+        // stack that many real embedded self-calls would otherwise
+        // recurse through -- confirms the bound is a genuine safety net,
+        // not just delaying a crash to a slightly deeper input.
+        let deep_n = s.lit(1_000_000);
+        let x0 = s.lit(0);
+        let partial = s.app2(it, deep_n, inc);
+        let top = s.app(partial, x0);
+        assert!(
+            prove_closure_expr_instance(&s, top, &[]).is_none(),
+            "n=1_000_000 exceeds DynBudget::recursion_depth and should decline cleanly, not overflow the stack"
+        );
+    }
+
+    #[test]
+    fn branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_parameter_get_a_per_instance_proof() {
+        // A genuinely *branching* non-tail shape (two self-calls in the
+        // same leaf, Fibonacci-style), not just one embedded call:
+        // `rec f n g = if 1<0 then g(0,999) else (if n<=1 then g(n) else
+        // f(n-1,g) + f(n-2,g))`, `g` baked in as `inc = \y. y+1`. Each
+        // occurrence of `f(..)` is just another embedded self-call as far
+        // as `eval_dyn`'s own recognition is concerned -- this test
+        // exists specifically to confirm that claim (from `eval_dyn`'s
+        // own doc comment) holds for a real branching trace, not just a
+        // single non-tail one.
+        // Convention (matching every other per-instance test in this
+        // module): the innermost binder is `Var(0)`, bound by whatever's
+        // applied *last* -- `it.app2(n_lit, inc)` applies `n_lit` first,
+        // `inc` last, so `g = Var(0)` (last-applied, innermost) and
+        // `n = Var(1)` (first-applied, outermost); `f` (the self-
+        // reference) sits at `Var(arity) = Var(2)`.
+        let mut s = TermStore::new();
+        let g_dead = s.var(0);
+        let zero_dead = s.lit(0);
+        let nine_ninety_nine = s.lit(999);
+        let dead_call = s.app2(g_dead, zero_dead, nine_ninety_nine);
+
+        let g_base = s.var(0);
+        let n_base = s.var(1);
+        let base_call = s.app(g_base, n_base); // g(n)
+
+        let g1 = s.var(0);
+        let n1 = s.var(1);
+        let f1 = s.var(2);
+        let one1 = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n1, one1);
+        let call_n1 = s.app2(f1, n_minus_1, g1); // f(n-1, g)
+
+        let g2 = s.var(0);
+        let n2 = s.var(1);
+        let f2 = s.var(2);
+        let two2 = s.lit(2);
+        let n_minus_2 = s.prim(PrimOp::Sub, n2, two2);
+        let call_n2 = s.app2(f2, n_minus_2, g2); // f(n-2, g)
+
+        let branch_sum = s.prim(PrimOp::Add, call_n1, call_n2);
+
+        let n_cond = s.var(1);
+        let one_c2 = s.lit(1);
+        let cond = s.prim(PrimOp::Le, n_cond, one_c2); // n <= 1
+        let live_body = s.if_(cond, base_call, branch_sum);
+
+        let one_c = s.lit(1);
+        let zero_c = s.lit(0);
+        let dead_cond = s.prim(PrimOp::Lt, one_c, zero_c); // always false
+        let body = s.if_(dead_cond, dead_call, live_body);
+
+        let g_binder = s.abs(body); // innermost -- binds g (Var(0))
+        let n_binder = s.abs(g_binder); // outermost -- binds n (Var(1))
+        let it = s.rec(n_binder);
+
+        let y = s.var(0);
+        let one2 = s.lit(1);
+        let inc_body = s.prim(PrimOp::Add, y, one2);
+        let inc = s.abs(inc_body);
+
+        assert!(param_types_for(&s, it).unwrap().contains(&None));
+
+        for n_val in [0i64, 1, 2, 3, 4] {
+            let n_lit = s.lit(n_val);
+            let top = s.app2(it, n_lit, inc);
+
+            assert!(prove_closure_expr(&s, top).is_none(), "n={n_val}: top's own call to it still can't be classified statically");
+            let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("n={n_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+            // f(n) = inc(n) for n<=1, else f(n-1)+f(n-2) -- 1,2,3,5,8 for
+            // n=0..4, hand-computed independently rather than derived
+            // from the term itself, so this is a real cross-check.
+            let expected = [1i64, 2, 3, 5, 8][n_val as usize];
+            assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), expected, "n={n_val}: sanity check against the interpreter");
         }
     }
 }

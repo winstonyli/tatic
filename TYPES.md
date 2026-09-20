@@ -403,9 +403,19 @@ quietly unifying; that's the entire soundness gain, no more, no less.
   bare literal value, but the result of a *separate* saturated call whose
   own return type is `Clo` -- is covered too: `eval_dyn_direct_call`
   inlines that call as well now, needing no new mechanism beyond widening
-  when its existing inlining already fires. Still out of scope: a
-  *non*-tail recursive use of this capability (see `eval_dyn_direct_call`'s
-  and `eval_dyn_tail_recursive`'s own docs in `proof.rs`).
+  when its existing inlining already fires. A *non*-tail recursive use
+  of this capability -- including a branching one, e.g. naive Fibonacci's
+  `f(n-1) + f(n-2)` -- is covered too now: `eval_dyn` recognizes a
+  self-call embedded inside a larger leaf (via a new `self_ctx`
+  parameter naming the enclosing `Rec`'s own body/arity) and recurses
+  back into `eval_dyn_tail_recursive` for it, mutually; each embedded
+  self-call is handled independently, so branching falls out for free.
+  This is the first place in `proof.rs` where following one concrete
+  trace genuinely recurses through the native Rust stack rather than a
+  flat loop, so it is bounded by its own, separately-tuned
+  `DynBudget::recursion_depth` (see `eval_dyn_direct_call`'s and
+  `eval_dyn_tail_recursive`'s own docs in `proof.rs`, and `RELATED_WORK.md`
+  §9 for how that bound was found empirically).
 - **A capture of a capture**: not a missing rule at all (section 3.1,
   section 5) — the shape can't arise given how `Γ` is scoped and how
   `peel` folds consecutive `Abs`.

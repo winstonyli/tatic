@@ -387,9 +387,47 @@ can't evaluate a fresh argument that's itself a call (e.g. a loop-carried
 evaluable) — rather than duplicate a second concrete evaluator that
 understands closures, `eval_concrete_dyn` rebuilds an `eval::Env` from
 the current frame and defers to the reference interpreter (`eval::eval`)
-directly. Still not attempted: a *non*-tail recursive use of this
-capability (see `eval_dyn_direct_call`'s and `eval_dyn_tail_recursive`'s
-own docs in `proof.rs`).
+directly.
+
+**Since covered too: a *non*-tail recursive use, including branching.**
+A self-call embedded inside a larger expression (`1 + f(n-1)`, or two
+self-calls in one leaf as in naive Fibonacci, `f(n-1) + f(n-2)`) is now
+also provable per instance. `classify_step`'s own tail-position check
+only recognizes a self-call that *is* the entire remaining leaf, so a
+non-tail self-call reaches `eval_dyn_tail_recursive`'s loop as an
+ordinary `Base` leaf and gets handed to `eval_dyn` as before — the new
+piece is that `eval_dyn` itself now recognizes an embedded self-call
+inside that leaf (via a new parameter, `self_ctx`, carrying the
+enclosing `Rec`'s own `(body, arity)` whenever one is in scope) and
+recurses back into `eval_dyn_tail_recursive` for that self-call's own
+body, mutually. Branching non-tail recursion falls out of this for
+free — each self-call occurrence in a leaf is recognized and evaluated
+independently — and is exponential in trace length like any naive
+Fibonacci, which is fine since this whole per-instance methodology only
+ever runs against `jit.rs`'s own small, fixed sample battery. `self_ctx`
+is `None` once inlining crosses into a *different* combinator's own
+body (which computes its own fresh self-context, never inherits the
+caller's), matching `compile.rs`'s own structural restriction that a
+bare, unapplied self-reference can't be captured as a plain value
+either.
+
+This needed a real stack-safety bound, not just a step-count one:
+`eval_dyn`'s recursion for an embedded self-call genuinely recurses
+through the *native* Rust call stack (unlike `eval_dyn_tail_recursive`'s
+own loop, which never does), so `DynBudget` now carries two separate
+counters — `tail_steps` (10,000, matching `prove_tail_recursive_call`'s
+own bound, safe to keep large since the tail loop never grows the native
+stack) and `recursion_depth` (bounding embedded non-tail self-calls,
+kept much smaller since each one is a real stack frame). The safe value
+here was found empirically, not assumed: 500 levels of this specific
+recursion (each frame carrying `ClosureCombinators`, `Anchored` values,
+and `DynVal` frame vectors — heavier than `eval.rs`'s own ~8,000-10,000
+native-stack budget for plain interpreter recursion) already overflows
+the smaller per-test-thread stack `cargo test` gives a debug build; 20
+was confirmed safe up to `n = 1_000_000` in both debug and release
+builds, and the shipped value, 50, was verified the same way with
+margin to spare. A dedicated boundary test asserts the decline is a
+clean `None`, not a crash, once the bound is exceeded.
 
 **Since covered too: a closure argument arriving via a further call.**
 The other named gap — a callee whose own saturated call itself returns a
