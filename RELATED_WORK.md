@@ -757,16 +757,34 @@ applications). This makes `apply_ref` itself — and the whole
 *prove* a postulated `apply_ref` agrees with `call_ref` — unnecessary:
 there's nothing left to reconcile once application is native.
 
-`ite_clo_k`'s per-arity duplication (2 more opaque axioms per distinct
-arity today) collapses even further, to *zero* new postulates: `bool_rec
-: Pi C:(Bool->Sort0). C(true) -> C(false) -> Pi b:Bool. C(b)` is already
-postulated, generically, by `kernel::NatPostulates`. Instantiating it at
-a *constant* motive `C := \_:Bool. A` gives exactly `ite(A) : Bool -> A ->
-A -> A` for whichever `A` is needed (any `Clo(k)`, for any `k`) — and its
-existing computation-rule axioms (`bool_rec_true_eq`/
-`bool_rec_false_eq`), instantiated the same way, already *prove*
-`ite`'s own reduction behavior. No per-type, per-arity `ite_A` postulate
-family is needed at all; one already-existing postulate covers every `A`.
+**Correction, caught before any real migration work started on the
+strength of this claim**: the paragraph below, as originally written,
+overstated what the `bool_rec`-derived `ite` actually buys against *this
+codebase's real* `ite_clo_k`. The standalone fact is still correct — a
+`bool_rec` instantiated at a constant motive is a genuine, zero-postulate
+`ite : Bool -> A -> A -> A` for any `A` — but `proof.rs`'s real
+`ite_clo_ref(arity)` postulates `Int -> Clo_arity -> Clo_arity ->
+Clo_arity`, condition on `Int` (matching the source `If`'s own condition
+type), not `Bool`. `Int` has no recursor in this kernel (deliberately —
+it's an open-ended arithmetic domain, grounded only per concrete value via
+`assume_prim_fact`/`assume_ite_fact`, never given a case-elimination
+principle the way `Bool` was), so there is no bridge from a symbolic `Int`
+condition to `bool_rec`'s own `Bool` motive — the derivation below simply
+doesn't apply to the postulate this codebase actually has. Worse, even
+where it *would* apply, `ite_clo_ref`'s own value is used as an opaque
+building block *inside* `clo_eq_ref_if_tree`'s single already-postulated
+axiom (`build_closure_if_tree_rhs`'s `ite_clo_k(...)` calls become part of
+one assumed `Id(..., lhs, rhs)` fact, never separately reduced or
+related to anything) — so unlike `apply_ref` (whose entire *reason to
+exist* was reconciling two independently-postulated things, and
+disappears once application is native), `ite_clo_ref` was never trying to
+be *proven* from anything in the first place. It stays exactly as it is:
+one opaque, per-arity postulate, unchanged by this section's own
+migration. The real, confirmed win is narrower than first claimed: only
+`clo_ty`'s own `Sort(0)` push (one of the two postulates `clo_ty`
+currently pushes per distinct arity) is eliminated, plus `apply_ref` and
+the `apply_clo_eq_ref`/`apply_pap_eq_ref` machinery built to reconcile it
+— `ite_clo_ref` itself is untouched.
 
 **Soundness is preserved, not weakened.** The original arity-blind-`Clo`
 unsoundness (§6.2 in `TYPES.md`) came from a single universal `Clo`
@@ -783,8 +801,11 @@ compute anything through the value itself.
 **Confirmed with a standalone prototype**
 (`proof::tests::a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates`,
 not wired into `ClosurePostulates`), which builds two opaque `Clo(2)`-typed
-constants, an `ite` derived from `bool_rec` exactly as above, checks that
-selecting one via `ite` and calling it with two `Int`s through ordinary
+constants, a `Bool`-conditioned `ite` derived from `bool_rec` (the
+standalone fact from the corrected paragraph above — kept as a genuine,
+independently-useful result, just not one that touches `ite_clo_ref`
+itself, which stays `Int`-conditioned and opaque), checks that selecting
+one via that `ite` and calling it with two `Int`s through ordinary
 `kernel::App` (no `apply_ref` anywhere) typechecks as `Int`, checks that
 `bool_rec_true_eq`'s own instantiation already proves the selection's
 computation rule, and confirms a `Clo(3)`-shaped value is still rejected
