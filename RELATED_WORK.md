@@ -1277,6 +1277,80 @@ isn't a gap `Sigma` closes by existing — it's the same "separate, larger
 research question" this document already named before `Sigma` was added,
 now with a concretely-ruled-out approach rather than an unexamined one.
 
+**Reopened, a later session: the above overclaimed the wall's extent —
+a symbolic-tag pairing genuinely typechecks, kernel-checked, once the
+value is built the right way.** The failure above traced to how `f` (the
+pair's payload) was built: independently, as an ordinary `Clo_1`-typed
+closure, then relying on *reduction* (`fam(a)` normalizing all the way
+down to `Clo_1`) to bridge its natural type to `Pair`'s own required
+`subst_top(fam, a)`. That reduction only ever completes for a *concrete*
+`a` (postulates and stuck `WRec`/`bool_rec` applications don't reduce for
+a bound variable) — correctly diagnosed, but taken to mean no symbolic
+construction could exist at all. It doesn't follow: `WRec`'s own typing
+rule (`Expr::WRec`'s `infer` arm) hands back `app(motive, target)` as its
+type *by construction*, not by reducing anything — so if the payload
+itself is built as a second `WRec` application sharing `fam`'s own
+`motive` (wrapped in a matching `Lam`), its inferred type and `fam`'s own
+substituted form are literally the same expression up to one
+*unconditional* beta step (`App(Lam, target) → target's body`, which
+fires whether `target` itself reduces further or not) — `def_eq` (built
+on full `nf`) closes the rest for free, regardless of whether the shared
+tag is concrete or a bound variable.
+
+Built and kernel-checked directly, not just reasoned about
+(`kernel::tests::a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag`):
+a `Nat`-tagged (`NatPostulates`) selector `fam := wrec(motive, ChildTy,
+step, Var(0))` with `motive := \_:Nat. Sort(0)` (constant — the family's
+*own* type doesn't need to vary per branch; what varies is `step`'s
+*value*) and `step` built via a new `sort_rec` postulate — `bool_rec`'s
+own shape, but targeting `Bool -> Sort(1)` instead of the hardcoded
+`Bool -> Sort(0)` `NatPostulates::bool_rec` carries (needed because
+`step`'s own per-branch result is itself a *type*, e.g. `Unit` vs. `Nat`
+standing in for `Clo_1`/`Clo_2` — a `Sort(0)`-valued term is itself
+`Sort(1)`-typed; the payload-selecting `step` one level down, by
+contrast, produces ordinary `Sort(0)`-typed *values* and reuses
+`NatPostulates::bool_rec` unchanged, no new postulate needed there).
+The payload `b := wrec(value_motive, ChildTy, value_step, a)` where
+`value_motive := \x:Nat. fam` (literally reusing `fam` as the new
+`Lam`'s own body) typechecks at `subst_top(fam, a)` for `a` a **freshly
+pushed, unreduced postulate** — confirmed genuinely symbolic (`whnf(a)
+== a`) and `fam(a)` confirmed to stay stuck, not secretly collapse to a
+closed type — and `Pair(fam, a, b) : Sigma(Nat, fam)` typechecks as a
+result. Verify-teeth: pairing `b` (built for tag `a`) against a
+*different* concrete tag is correctly rejected by the kernel ("expected
+a W type"), confirming the check isn't vacuous.
+
+`value_step`'s own two branches (needed so `b` actually computes to the
+*right* concrete payload once the tag becomes concrete, not merely
+typechecks abstractly) needed one more piece: `value_motive(sup(tag,f))`
+reduces to a *stuck* expression (`bool_rec`/`sort_rec` never
+auto-reduce, concrete tag or not), so producing an inhabitant of it
+needs `NatPostulates::bool_rec_true_eq`/`false_eq` (propositional) plus
+`transport`, bridging a real, concrete witness (`nat.star`/`nat.zero`)
+across — the same `cong1`/`f_cong` trick this document's own `is_zero`
+proof (§3) already established, one level up.
+
+**What this changes, and what it doesn't.** The earlier verdict —
+"a Sigma-based `TaggedClo` can only ever be instantiated per concrete
+instance, never quantified over universally" — is wrong as a general
+claim about `Sigma`; a symbolic-tag pairing is achievable, kernel-checked,
+today. What's still unresolved, and is the actually load-bearing gap
+now: this construction needs the *tag itself* to already be a genuinely
+`W`-typed value (here, `Nat`, riding on `NatPostulates`'s existing
+`Bool`-indexed encoding) — `clo_eq_ref_if_tree`'s own `cond` is an
+arbitrary `Int`-valued runtime condition (e.g. the result of `x < 5`),
+not already a `Bool`/`Nat`-shaped tag, and `Int` deliberately has no
+recursor in this kernel (`ite_clo_ref`'s own doc). Whether an arbitrary
+`Int` condition can be bridged to a `W`-typed discriminant *universally*
+(for every possible `Int` value, not case-by-case) is exactly the
+"separate, larger research question" this document names above — now
+narrowed from "can a computing type-level selector for a symbolic tag
+exist at all" (settled: yes) to "can `clo_eq_ref_if_tree`'s specific
+`Int`-typed `cond` be turned into one" (still open). Not attempted this
+session — this correction is scoped to the kernel-primitive feasibility
+question alone, matching this section's own standing discipline of
+landing one confirmed layer before wiring it further.
+
 ## 15. Why over-application proofs cost ~1000x a plain arithmetic call — investigated to root cause
 
 `benches/proofs.rs`'s own `over_application_instance_proof` doc comment
