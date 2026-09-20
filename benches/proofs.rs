@@ -7,7 +7,9 @@
 
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
-use tatic::proof::{prove_closure_expr, prove_pure_expr, prove_tail_recursive_call, prove_tail_recursive_universal};
+use tatic::proof::{
+    prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_call, prove_tail_recursive_universal,
+};
 use tatic::term::TermStore;
 
 #[path = "common.rs"]
@@ -135,6 +137,36 @@ fn closure_typed_recursion_universal_proof(c: &mut Criterion) {
     });
 }
 
+/// Cost of `prove_closure_expr_instance`'s non-tail self-recursion path
+/// (`eval_dyn`/`eval_dyn_tail_recursive`'s mutual recursion via `self_ctx`,
+/// landed alongside `DynBudget`) -- isolated from the tail-only shapes
+/// above, and from the closures-fragment group (which never recurses at
+/// all). The single-embedded-call and branching cases are kept as
+/// separate functions rather than one group, since their costs come from
+/// genuinely different sources: `non_tail_embedded_call`'s scales with
+/// trace *depth* (bounded by `DynBudget::recursion_depth`'s per-frame
+/// cost), `branching`'s with trace *size* (exponential in `n`, bounded by
+/// the same budget counting every self-call, not just the live stack
+/// depth -- see `common::branching_non_tail_closure_carrying_recursion`'s
+/// own doc for why its `n` is kept much smaller).
+fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
+    let mut group = c.benchmark_group("non_tail_closure_recursion_instance_proof");
+
+    let mut store = TermStore::new();
+    let h = common::non_tail_closure_carrying_recursion(&mut store);
+    group.bench_function("non_tail_embedded_call", |b| {
+        b.iter(|| prove_closure_expr_instance(&store, black_box(h), &[]).unwrap())
+    });
+
+    let mut store2 = TermStore::new();
+    let h2 = common::branching_non_tail_closure_carrying_recursion(&mut store2);
+    group.bench_function("branching", |b| {
+        b.iter(|| prove_closure_expr_instance(&store2, black_box(h2), &[]).unwrap())
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     straight_line_proof,
@@ -142,6 +174,7 @@ criterion_group!(
     universal_proof,
     relational_scaling_vs_universal,
     closures_fragment_proof,
-    closure_typed_recursion_universal_proof
+    closure_typed_recursion_universal_proof,
+    non_tail_closure_recursion_instance_proof
 );
 criterion_main!(benches);

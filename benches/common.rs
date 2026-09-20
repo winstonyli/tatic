@@ -366,3 +366,91 @@ pub fn iterate(s: &mut TermStore) -> Hash {
     let abs = s.abs(n_binder);
     s.rec(abs)
 }
+
+/// `rec f n g x = if n<=0 then x else 1 + f(n-1,g,g(x))`, `n` baked to `20`
+/// -- the same shape as `proof.rs`'s own
+/// `a_non_tail_self_call_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof`
+/// test, fully saturated (arity 0 remaining) so `prove_closure_expr_instance`
+/// can be called with `&[]` directly. `n=20` sits well under
+/// `DynBudget::recursion_depth`'s own bound (`50`, see `proof.rs`), giving
+/// this its own real, if modest, non-tail recursion depth without risking
+/// a decline.
+pub fn non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash {
+    let x = s.var(0);
+    let g = s.var(1);
+    let n = s.var(2);
+    let f = s.var(3);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let gx = s.app(g, x);
+    let f_n1_g = s.app2(f, n_minus_1, g);
+    let rec_call = s.app(f_n1_g, gx); // f(n-1, g, g(x))
+    let one_addend = s.lit(1);
+    let non_tail_call = s.prim(PrimOp::Add, one_addend, rec_call); // 1 + f(n-1,g,g(x))
+    let body = s.if_(cond, x, non_tail_call);
+    let g_binder = s.abs(body);
+    let n_binder = s.abs(g_binder);
+    let abs = s.abs(n_binder);
+    let it = s.rec(abs);
+
+    let y = s.var(0);
+    let one2 = s.lit(1);
+    let inc_body = s.prim(PrimOp::Add, y, one2);
+    let inc = s.abs(inc_body);
+
+    let n_lit = s.lit(20);
+    let x0 = s.lit(0);
+    let partial = s.app2(it, n_lit, inc);
+    s.app(partial, x0)
+}
+
+/// `rec f n g = if n<=1 then g(n) else f(n-1,g) + f(n-2,g)`, `n` baked to
+/// `6` -- the same shape as `proof.rs`'s own
+/// `branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_parameter_get_a_per_instance_proof`
+/// test: a genuinely *branching* non-tail trace (naive-Fibonacci-style,
+/// two self-calls per interior leaf). Unlike the single-embedded-call
+/// shape above, `DynBudget::recursion_depth` here bounds the *total*
+/// number of self-calls across the whole trace (the budget never refunds
+/// on return), which grows with the size of the recursion tree, not its
+/// depth -- `n=6` keeps that total (`2 * fib(n+1) - 1 = 25`) safely under
+/// the shared bound of `50`.
+pub fn branching_non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash {
+    let g_base = s.var(0);
+    let n_base = s.var(1);
+    let base_call = s.app(g_base, n_base); // g(n)
+
+    let g1 = s.var(0);
+    let n1 = s.var(1);
+    let f1 = s.var(2);
+    let one1 = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n1, one1);
+    let call_n1 = s.app2(f1, n_minus_1, g1); // f(n-1, g)
+
+    let g2 = s.var(0);
+    let n2 = s.var(1);
+    let f2 = s.var(2);
+    let two2 = s.lit(2);
+    let n_minus_2 = s.prim(PrimOp::Sub, n2, two2);
+    let call_n2 = s.app2(f2, n_minus_2, g2); // f(n-2, g)
+
+    let branch_sum = s.prim(PrimOp::Add, call_n1, call_n2);
+
+    let n_cond = s.var(1);
+    let one_c2 = s.lit(1);
+    let cond = s.prim(PrimOp::Le, n_cond, one_c2); // n <= 1
+    let body = s.if_(cond, base_call, branch_sum);
+
+    let g_binder = s.abs(body); // innermost -- binds g (Var(0))
+    let n_binder = s.abs(g_binder); // outermost -- binds n (Var(1))
+    let it = s.rec(n_binder);
+
+    let y = s.var(0);
+    let one2 = s.lit(1);
+    let inc_body = s.prim(PrimOp::Add, y, one2);
+    let inc = s.abs(inc_body);
+
+    let n_lit = s.lit(6);
+    s.app2(it, n_lit, inc)
+}
