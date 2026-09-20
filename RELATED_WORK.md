@@ -1122,6 +1122,96 @@ through its own dispatch rather than hardcoding what a `Call` target's
 own shape must be. No further work item follows from this — it's a
 confirmation, not a capability gap.
 
+## 14. Adding `Sigma` (dependent sums) as a fifth kernel primitive
+
+A web survey of prior art on the open dependent-sum research question
+(closing this document's own long-standing "an honest single kernel type
+for 'either `Clo_1` or `Clo_2`'" gap) turned up two useful, opposed
+precedents: typed closure conversion via existential/Sigma packaging
+(Minamide/Morrisett/Harper; Bowman & Ahmed's PLDI'18 extension to the
+Calculus of Constructions, which found the classical existential-package
+trick breaks down for real dependent types — an unordered package can't
+honestly hide an environment whose later entries' types depend on earlier
+ones) versus defunctionalization (Huang & Yallop, PLDI'23), which
+sidesteps that problem entirely by representing every closure in a
+*closed, finite* program as one shared, tag-indexed type. This project's
+own closed-world assumption (`combinator_return_type`'s own docs: the
+"calls" relation over hash-consed literal lambdas is a strict partial
+order over an already-fixed set) matches defunctionalization's own
+precondition, not the open/first-class-module setting existential
+packaging is built for — and this kernel already has a production
+instance of the relevant recipe: `NatPostulates` builds `Nat := W(Bool,
+ChildTy)`, tag = which constructor, payload shape varying by tag.
+
+**Correction to that survey's own framing.** The survey's write-up
+described a dependent sum as "a special case" of `W`, following how
+general container/polynomial-functor treatments *define* `W` as the
+fixed point of `X ↦ Σ(a:A). (B(a) → X)` — i.e. built *from* Sigma, not
+the reverse. Attempting the encoding directly (rather than trusting that
+framing) surfaces exactly why it doesn't run backwards here: `W(A,B)`'s
+own `Sup` constructor requires its second argument to be a function
+`B(a) -> W(A,B)`, mapping back into *the same* `W` type — it can only
+stand in for a payload that's another instance of the same inductive
+type, never an arbitrary, independently-chosen one. A general dependent
+pair's second component is just a value of type `B(a)`, no such
+self-reference required. There is no encoding of general `Sigma` from
+this kernel's `Pi`/`Id`/`W` alone (short of a Church/impredicative
+encoding from `Pi` alone, rejected for the same reason `W` was chosen
+over Church-encoding inductive types in the first place: it wouldn't
+reduce by `refl`, only propositionally) — `Sigma` needed to be added as
+a genuine fifth primitive, not derived.
+
+**The addition**, mirroring `W`/`Sup`/`WRec`'s own three-constructor
+shape exactly: `Sigma(A,B)` (formation, `B` one binder deeper than `A`,
+the same convention `Pi`/`W`'s own second field already use), `Pair(fam,
+a, b)` (introduction — `fam` is `B` itself, carried explicitly because,
+unlike `Sup`'s own second argument, whose `Pi`-type already reveals the
+whole `W(A,B)` it targets, a pair's two components alone don't determine
+which family was intended: many different families agree at one
+concrete `a`, the same reason `Lam` carries its own domain annotation),
+and `SigRec { motive, step, target }` (the recursor — genuinely simpler
+than `WRec`'s: no induction-hypothesis closure to type, since a pair
+isn't recursive, so no `children_ty`-style redundant field is needed).
+Confirmed computing by `refl` alone, the same bar `w_recursor_computes_
+definitionally` already set for `W` (`sigma_pairing_typechecks_and_
+projects_by_refl`), and confirmed to genuinely need dependency, not just
+tolerate it (`sigma_family_genuinely_varies_with_the_tag`, a family
+`fam(x) := Id(A,x,a0)` that only typechecks because `subst_top`
+correctly substitutes the tag into the payload type).
+
+**A real regression, caught by the existing suite, not shipped
+unnoticed.** Adding `Sigma`/`Pair`/`SigRec`'s own match arms directly
+inline into `infer`/`shift`/`subst`/`whnf_impl`/`nf_impl` overflowed the
+native stack on an existing, unrelated test
+(`a_non_tail_self_call_carrying_an_inconsistently_classified_closure_
+parameter_gets_a_per_instance_proof`) — confirmed via `RUST_MIN_STACK`
+that it was a margin problem, not a genuine infinite recursion. This is
+exactly the failure mode `wrec_children_ty_mismatch`'s own pre-existing
+`#[cold] #[inline(never)]` extraction already documents: `eval_dyn`'s own
+per-instance proof search runs close to its empirically-tuned
+`DynBudget::recursion_depth` native-stack budget, and in a debug build,
+every local variable appearing *anywhere* in a function's body — even in
+a match arm no call in that recursive chain ever takes — inflates that
+function's own per-call stack frame. Fixed the same way: every new arm
+across all five functions extracted into its own `#[inline(never)]`
+helper, so none of `Sigma`'s own locals cost the hot, pre-existing paths
+anything. Worth remembering for any *future* kernel primitive: this
+class of regression is invisible to `cargo build`/`clippy` and only
+surfaces as a stack overflow in a deep-recursion test — extract new
+`Expr`-match arms out of line from the start, don't wait to be bitten.
+
+**Scope: the kernel primitive only, not yet wired to the motivating use
+case.** This closes the *kernel-level* half of the dependent-sum
+question — `Sigma` now exists, computes, and is tested in isolation.
+`proof.rs`'s own arity-polymorphic closure question (the actual "either
+`Clo_1` or `Clo_2`" problem this was motivated by) is *not* touched here
+and would need its own separate design pass: a tag-indexed `W`-style
+closure representation built on top of this primitive, threaded through
+`ClosureCombinators`'s own postulate family. Not attempted in this pass
+— deliberately scoped to "does the kernel primitive itself work," matching
+this project's own standing discipline of landing one confirmed,
+independently-tested layer at a time rather than a partially-wired one.
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)

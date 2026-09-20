@@ -113,6 +113,9 @@ fn count_nodes(e: &Expr) -> u32 {
         Expr::Refl(a) => count_nodes(a),
         Expr::J { motive, base, a, b, p } => count_nodes(motive) + count_nodes(base) + count_nodes(a) + count_nodes(b) + count_nodes(p),
         Expr::WRec { motive, children_ty, step, target } => count_nodes(motive) + count_nodes(children_ty) + count_nodes(step) + count_nodes(target),
+        Expr::Sigma(a, b) => count_nodes(a) + count_nodes(b),
+        Expr::Pair(fam, a, b) => count_nodes(fam) + count_nodes(a) + count_nodes(b),
+        Expr::SigRec { motive, step, target } => count_nodes(motive) + count_nodes(step) + count_nodes(target),
     }
 }
 
@@ -158,6 +161,36 @@ fn nth_subterm(e: &Expr, target: u32, counter: &mut u32) -> Expr {
         }
         Expr::WRec { motive, children_ty, step, target: tgt } => {
             for child in [motive.as_ref(), children_ty.as_ref(), step.as_ref(), tgt.as_ref()] {
+                let nc = count_nodes(child);
+                if target < *counter + nc {
+                    return nth_subterm(child, target, counter);
+                }
+                *counter += nc;
+            }
+            unreachable!("target out of range")
+        }
+        Expr::Sigma(a, b) => {
+            for child in [a.as_ref(), b.as_ref()] {
+                let nc = count_nodes(child);
+                if target < *counter + nc {
+                    return nth_subterm(child, target, counter);
+                }
+                *counter += nc;
+            }
+            unreachable!("target out of range")
+        }
+        Expr::Pair(fam, a, b) => {
+            for child in [fam.as_ref(), a.as_ref(), b.as_ref()] {
+                let nc = count_nodes(child);
+                if target < *counter + nc {
+                    return nth_subterm(child, target, counter);
+                }
+                *counter += nc;
+            }
+            unreachable!("target out of range")
+        }
+        Expr::SigRec { motive, step, target: tgt } => {
+            for child in [motive.as_ref(), step.as_ref(), tgt.as_ref()] {
                 let nc = count_nodes(child);
                 if target < *counter + nc {
                     return nth_subterm(child, target, counter);
@@ -230,6 +263,23 @@ fn replace_nth(e: &Expr, target: u32, counter: &mut u32, replacement: &Expr) -> 
             let s2 = replace_nth(step, target, counter, replacement);
             let t2 = replace_nth(tgt, target, counter, replacement);
             kernel::wrec(m2, c2, s2, t2)
+        }
+        Expr::Sigma(a, b) => {
+            let a2 = replace_nth(a, target, counter, replacement);
+            let b2 = replace_nth(b, target, counter, replacement);
+            kernel::sigma(a2, b2)
+        }
+        Expr::Pair(fam, a, b) => {
+            let fam2 = replace_nth(fam, target, counter, replacement);
+            let a2 = replace_nth(a, target, counter, replacement);
+            let b2 = replace_nth(b, target, counter, replacement);
+            kernel::pair(fam2, a2, b2)
+        }
+        Expr::SigRec { motive, step, target: tgt } => {
+            let m2 = replace_nth(motive, target, counter, replacement);
+            let s2 = replace_nth(step, target, counter, replacement);
+            let t2 = replace_nth(tgt, target, counter, replacement);
+            kernel::sigrec(m2, s2, t2)
         }
     }
 }

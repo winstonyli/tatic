@@ -1,8 +1,8 @@
 //! A minimal predicative dependent type theory kernel: Pure-Type-System-style
-//! Pi + a stratified universe hierarchy, plus Id-types and W-types as the
-//! only two additions beyond a bare PTS.
+//! Pi + a stratified universe hierarchy, plus Id-types, W-types, and
+//! Sigma-types as the additions beyond a bare PTS.
 //!
-//! Four primitive term/type formers, total:
+//! Five primitive term/type formers, total:
 //!   - `Sort(i)`: the universe hierarchy `Type_0 : Type_1 : Type_2 ...`
 //!   - `Pi`/`Lam`/`App`: dependent function types
 //!   - `Id`/`Refl`/`J`: propositional equality, with its eliminator
@@ -10,13 +10,23 @@
 //!     positive inductive type former (Bool, Nat, lists, and eventually
 //!     this crate's own `Term` AST are all instances of one `W`, not
 //!     separate primitives)
+//!   - `Sigma`/`Pair`/`SigRec`: dependent pairs. *Not* derivable from the
+//!     other four here: `W`'s own children function maps back into `W`
+//!     itself (`B(a) -> W(A,B)`), so it can only stand in for a payload
+//!     that's *another instance of the same inductive type* -- it can't
+//!     express an arbitrary, independently-chosen payload type `B(a)`
+//!     the way a general dependent sum needs. The usual alternative,
+//!     Church/impredicative-encoding `Sigma` from `Pi` alone, was rejected
+//!     for the same reason Church-encoding inductive types was rejected in
+//!     favor of `W`: it doesn't reduce by `refl`, only propositionally.
 //!
-//! Everything else (Bool, Nat, pairs, ...) is a *definition* built from
-//! these four, not a fifth primitive. See the tests at the bottom for
-//! worked examples, including a proof that uses `J` (symmetry of `Id`) and
-//! a `WRec`-defined function whose defining equation holds by `refl` alone
-//! (i.e. genuinely *computes*, which is the whole point of choosing `W`
-//! over an impredicative/Church encoding).
+//! Everything else (Bool, Nat, non-dependent pairs, ...) is a *definition*
+//! built from these five, not a further primitive. See the tests at the
+//! bottom for worked examples, including a proof that uses `J` (symmetry
+//! of `Id`), a `WRec`-defined function whose defining equation holds by
+//! `refl` alone (i.e. genuinely *computes*, which is the whole point of
+//! choosing `W` over an impredicative/Church encoding), and a `SigRec`
+//! projection that computes the same way.
 //!
 //! This module is intentionally free-standing: it does not (yet) replace
 //! `term`/`eval`/`compile`/`jit`. Wiring the JIT's "found to be equivalent"
@@ -164,6 +174,33 @@ pub enum Expr {
         step: Rc<Expr>,
         target: Rc<Expr>,
     },
+    /// `Sigma(A, B)`: `B` one binder deeper than `A`, i.e. `B` is the
+    /// family `B(x)` for `x : A` -- the type of dependent pairs `(a, b)`
+    /// with `a : A` and `b : B(a)`. See this module's own top-level docs
+    /// for why this is a genuinely separate primitive, not derivable from
+    /// `W` here.
+    Sigma(Rc<Expr>, Rc<Expr>),
+    /// `Pair(fam, a, b) : Sigma(A, B)` where `a : A`, `b : B(a)`. `fam` is
+    /// `B` itself, in the *same* representation `Sigma`'s own second field
+    /// already uses (one binder deeper than the ambient context) --
+    /// carried explicitly because, unlike `Sup`'s own second argument
+    /// (whose `Pi`-type already reveals the whole `W(A,B)` it targets), a
+    /// pair's own two components alone don't determine which family `B`
+    /// was intended (many different families agree at one concrete `a`)
+    /// -- the same reason `Lam` carries its own domain annotation.
+    Pair(Rc<Expr>, Rc<Expr>, Rc<Expr>),
+    /// Eliminator (recursor) for `Sigma`. `motive : Sigma(A,B) -> Sort(k)`,
+    /// `step : Pi a:A. Pi b:B(a). motive (pair(fam,a,b))`. Reduces on a
+    /// `Pair` target to `step a b`. Unlike `WRec`, needs no extra
+    /// `children_ty`-style redundant field: a pair isn't recursive, so
+    /// there's no induction-hypothesis closure to give an honest domain to
+    /// -- `target`'s own real type alone is enough context for both
+    /// `infer` and `whnf_impl`.
+    SigRec {
+        motive: Rc<Expr>,
+        step: Rc<Expr>,
+        target: Rc<Expr>,
+    },
 }
 
 impl fmt::Debug for Expr {
@@ -180,6 +217,9 @@ impl fmt::Debug for Expr {
             Expr::W(a, b) => write!(f, "(W {a:?}. {b:?})"),
             Expr::Sup(a, g) => write!(f, "(sup {a:?} {g:?})"),
             Expr::WRec { target, .. } => write!(f, "(wrec .. {target:?})"),
+            Expr::Sigma(a, b) => write!(f, "(Sigma {a:?}. {b:?})"),
+            Expr::Pair(fam, a, b) => write!(f, "(pair {fam:?} {a:?} {b:?})"),
+            Expr::SigRec { target, .. } => write!(f, "(sigrec .. {target:?})"),
         }
     }
 }
@@ -232,6 +272,19 @@ pub fn wrec(motive: Expr, children_ty: Expr, step: Expr, target: Expr) -> Expr {
     Expr::WRec {
         motive: Rc::new(motive),
         children_ty: Rc::new(children_ty),
+        step: Rc::new(step),
+        target: Rc::new(target),
+    }
+}
+pub fn sigma(a: Expr, b: Expr) -> Expr {
+    Expr::Sigma(Rc::new(a), Rc::new(b))
+}
+pub fn pair(fam: Expr, a: Expr, b: Expr) -> Expr {
+    Expr::Pair(Rc::new(fam), Rc::new(a), Rc::new(b))
+}
+pub fn sigrec(motive: Expr, step: Expr, target: Expr) -> Expr {
+    Expr::SigRec {
+        motive: Rc::new(motive),
         step: Rc::new(step),
         target: Rc::new(target),
     }
@@ -301,6 +354,29 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
             shift_rc(step, cutoff, amount),
             shift_rc(target, cutoff, amount),
         ),
+        Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => shift_sigma_family(e, cutoff, amount),
+    }
+}
+
+/// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
+/// `infer_pair`'s own docs for why (this whole recursion family sits on
+/// `eval_dyn`'s tight native-stack budget, and `shift`/`shift_rc` are
+/// among its hottest, most frequently called members).
+#[inline(never)]
+fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+    match e {
+        Expr::Sigma(a, b) => sigma(shift_rc(a, cutoff, amount), shift_rc(b, cutoff + 1, amount)),
+        Expr::Pair(fam, a, b) => pair(
+            shift_rc(fam, cutoff + 1, amount),
+            shift_rc(a, cutoff, amount),
+            shift_rc(b, cutoff, amount),
+        ),
+        Expr::SigRec { motive, step, target } => sigrec(
+            shift_rc(motive, cutoff, amount),
+            shift_rc(step, cutoff, amount),
+            shift_rc(target, cutoff, amount),
+        ),
+        _ => unreachable!("shift_sigma_family called on a non-Sigma-family Expr"),
     }
 }
 
@@ -372,6 +448,19 @@ fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
             step,
             target,
         } => wrec(subst(motive, j, s), subst(children_ty, j + 1, &shift(s, 0, 1)), subst(step, j, s), subst(target, j, s)),
+        Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => subst_sigma_family(e, j, s),
+    }
+}
+
+/// `subst`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
+/// `shift_sigma_family`'s own docs for why.
+#[inline(never)]
+fn subst_sigma_family(e: &Expr, j: u32, s: &Expr) -> Expr {
+    match e {
+        Expr::Sigma(a, b) => sigma(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
+        Expr::Pair(fam, a, b) => pair(subst(fam, j + 1, &shift(s, 0, 1)), subst(a, j, s), subst(b, j, s)),
+        Expr::SigRec { motive, step, target } => sigrec(subst(motive, j, s), subst(step, j, s), subst(target, j, s)),
+        _ => unreachable!("subst_sigma_family called on a non-Sigma-family Expr"),
     }
 }
 
@@ -499,7 +588,25 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
                 target: Rc::new(other),
             },
         },
+        Expr::SigRec { motive, step, target } => whnf_sigrec(motive, step, target, cache),
         other => other.clone(),
+    }
+}
+
+/// `whnf_impl`'s own `SigRec` case, out of line -- see `infer_pair`'s own
+/// docs for why (nothing constructs a `SigRec` term yet, so this arm's
+/// own locals have no business inflating every call to `whnf_impl`,
+/// which -- like `infer` -- sits on `eval_dyn`'s own tight native-stack
+/// recursion budget).
+#[inline(never)]
+fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
+    match whnf_rc(target, cache) {
+        Expr::Pair(_, a, b) => whnf_impl(&app2((**step).clone(), (*a).clone(), (*b).clone()), cache),
+        other => Expr::SigRec {
+            motive: motive.clone(),
+            step: step.clone(),
+            target: Rc::new(other),
+        },
     }
 }
 
@@ -545,6 +652,19 @@ fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
             step,
             target,
         } => wrec(nf_rc(&motive, cache), nf_rc(&children_ty, cache), nf_rc(&step, cache), nf_rc(&target, cache)),
+        other @ (Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. }) => nf_sigma_family(other, cache),
+    }
+}
+
+/// `nf_impl`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
+/// `shift_sigma_family`'s own docs for why.
+#[inline(never)]
+fn nf_sigma_family(e: Expr, cache: &mut ReductionCache) -> Expr {
+    match e {
+        Expr::Sigma(a, b) => sigma(nf_rc(&a, cache), nf_rc(&b, cache)),
+        Expr::Pair(fam, a, b) => pair(nf_rc(&fam, cache), nf_rc(&a, cache), nf_rc(&b, cache)),
+        Expr::SigRec { motive, step, target } => sigrec(nf_rc(&motive, cache), nf_rc(&step, cache), nf_rc(&target, cache)),
+        _ => unreachable!("nf_sigma_family called on a non-Sigma-family Expr"),
     }
 }
 
@@ -639,6 +759,70 @@ fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
         Expr::W(a, b) => Ok((Rc::unwrap_or_clone(a), Rc::unwrap_or_clone(b))),
         other => Err(format!("expected a W type, got {other:?}")),
     }
+}
+
+fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
+    match whnf(e) {
+        Expr::Sigma(a, b) => Ok((Rc::unwrap_or_clone(a), Rc::unwrap_or_clone(b))),
+        other => Err(format!("expected a Sigma type, got {other:?}")),
+    }
+}
+
+/// `infer`'s own `Sigma`/`Pair`/`SigRec` cases, out of line: nothing in
+/// this crate constructs a `Sigma`/`Pair`/`SigRec` term yet (this
+/// primitive was just added), so these arms' own local variables have no
+/// business inflating every call to `infer` -- the deeply recursive hot
+/// path `eval_dyn`'s own per-instance proof search already runs close to
+/// its own empirically-tuned native-stack budget
+/// (`DynBudget::recursion_depth`) -- the same reasoning
+/// `wrec_children_ty_mismatch`'s own `#[cold]` extraction above already
+/// established for this exact function. Confirmed empirically: inlining
+/// this directly into `infer`'s own `Expr::Pair`/`Expr::SigRec` arms
+/// measurably shrunk that budget's own margin and overflowed an existing,
+/// otherwise-unrelated deep-recursion test.
+#[inline(never)]
+fn infer_sigma(ctx: &Ctx, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+    let i = expect_sort(&infer(ctx, a)?)?;
+    let mut ctx2 = ctx.clone();
+    ctx2.push((**a).clone());
+    let j = expect_sort(&infer(&ctx2, b)?)?;
+    Ok(Expr::Sort(i.max(j)))
+}
+
+#[inline(never)]
+fn infer_pair(ctx: &Ctx, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+    let ta = infer(ctx, a)?;
+    let mut ctx2 = ctx.clone();
+    ctx2.push(ta.clone());
+    expect_sort(&infer(&ctx2, fam)?)?;
+    let expected_b_ty = subst_top(fam, a);
+    check(ctx, b, &expected_b_ty)?;
+    Ok(sigma(ta, (**fam).clone()))
+}
+
+#[inline(never)]
+fn infer_sigrec(ctx: &Ctx, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
+    let (sa, sb) = expect_sigma(&infer(ctx, target)?)?;
+    infer(ctx, motive)?; // sanity: motive must itself be well-typed
+
+    // step : Pi a:A. Pi b:B(a). motive (pair(B,a,b))
+    // `sb` already assumes exactly one binder (`Sigma`'s own convention)
+    // -- b's own domain under binder `a` (depth1) is `sb` unchanged, the
+    // same way `WRec`'s own `f_dom_d1` reuses `wb` unchanged.
+    let b_dom_d1 = sb.clone();
+    // under binders a(Var1), b(Var0) -- depth2:
+    let motive_d2 = shift(motive, 0, 2);
+    // `sb`'s own bound tag (Var0) must stay untouched (`Pair`'s own `fam`
+    // field needs a *fresh* tag binder of its own, one level below
+    // wherever the `Pair` itself sits) -- only whatever `sb` references
+    // *above* that (the 2 extra binders `a`/`b` now sitting between it
+    // and the ambient context) shifts, cutoff 1.
+    let fam_d2 = shift(&sb, 1, 2);
+    let concl_d2 = app(motive_d2, pair(fam_d2, var(1), var(0)));
+    let expected_step_ty = pi(sa.clone(), pi(b_dom_d1, concl_d2));
+    check(ctx, step, &expected_step_ty)?;
+
+    Ok(app((**motive).clone(), (**target).clone()))
 }
 
 /// `infer`'s own `WRec` mismatch error, out of line and `#[cold]` so its
@@ -787,6 +971,9 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 
             Ok(app((**motive).clone(), (**target).clone()))
         }
+        Expr::Sigma(a, b) => infer_sigma(ctx, a, b),
+        Expr::Pair(fam, a, b) => infer_pair(ctx, fam, a, b),
+        Expr::SigRec { motive, step, target } => infer_sigrec(ctx, motive, step, target),
     }
 }
 
@@ -1557,6 +1744,80 @@ mod tests {
         // it doesn't just make the equation provable with extra work.
         check(&p.ctx, &refl(target.clone()), &id(w_ty, reduced, target))
             .expect("wrec(motive, step, sup(a,f)) should reduce definitionally to sup(a,f)");
+    }
+
+    #[test]
+    fn sigma_pairing_typechecks_and_projects_by_refl() {
+        // A postulated type A, an element a0:A, a second type B, an
+        // element b0:B -- a non-dependent pair Sigma(A, \_.B), the
+        // simplest instance, isolating pairing/projection from
+        // dependency itself (see
+        // `sigma_family_genuinely_varies_with_the_tag` below for a case
+        // that needs real dependency).
+        let mut p = Postulates::new();
+        let a_pos = p.push(sort(0));
+        let a0_pos = p.push(p.get(a_pos));
+        let b_pos = p.push(sort(0));
+        let b0_pos = p.push(p.get(b_pos));
+
+        let a_ref = p.get(a_pos);
+        let a0_ref = p.get(a0_pos);
+        let b_ref = p.get(b_pos);
+        let b0_ref = p.get(b0_pos);
+
+        let fam = shift(&b_ref, 0, 1); // \_:A. B, written one binder deeper
+        let sig_ty = sigma(a_ref.clone(), fam.clone());
+        let target = pair(fam.clone(), a0_ref.clone(), b0_ref.clone());
+        check(&p.ctx, &target, &sig_ty).expect("pair(fam, a0, b0) : Sigma(A, fam)");
+
+        // motive := \_:Sigma(A,fam). A  (constant motive)
+        let motive = lam(sig_ty.clone(), shift(&a_ref, 0, 1));
+        // step := \a:A. \b:B. a  -- i.e. "fst"
+        let step = lam(a_ref.clone(), lam(fam, var(1)));
+        let reduced = sigrec(motive, step, target.clone());
+        check(&p.ctx, &reduced, &a_ref).expect("sigrec application should typecheck");
+        // The same payoff `w_recursor_computes_definitionally` already
+        // established for `W`: this holds by `refl` alone -- the
+        // recursor genuinely *computes*, not just propositionally.
+        check(&p.ctx, &refl(a0_ref.clone()), &id(a_ref, reduced, a0_ref))
+            .expect("sigrec(motive, step, pair(fam,a0,b0)) should reduce definitionally to a0");
+    }
+
+    #[test]
+    fn sigma_family_genuinely_varies_with_the_tag() {
+        // A postulated type A and element a0:A; fam(x) := Id(A, x, a0),
+        // a family that genuinely varies with the tag (not just carried
+        // along unused, unlike the constant-family test above) --
+        // Sigma(A,fam) is "an x together with a proof that x=a0".
+        // pair(fam, a0, refl(a0)) should typecheck, needing
+        // `subst_top(fam,a)`'s own substitution to correctly produce
+        // `Id(A,a0,a0)` for `refl(a0)` to check against.
+        let mut p = Postulates::new();
+        let a_pos = p.push(sort(0));
+        let a0_pos = p.push(p.get(a_pos));
+        let a_ref = p.get(a_pos);
+        let a0_ref = p.get(a0_pos);
+
+        // fam := Id(A, Var(0), a0), one binder deeper than A (the tag x)
+        let fam = id(shift(&a_ref, 0, 1), var(0), shift(&a0_ref, 0, 1));
+        let sig_ty = sigma(a_ref, fam.clone());
+        let target = pair(fam, a0_ref.clone(), refl(a0_ref));
+        check(&p.ctx, &target, &sig_ty).expect("pair(fam, a0, refl(a0)) : Sigma(A, fam)");
+    }
+
+    #[test]
+    fn pair_with_a_mismatched_second_component_is_rejected() {
+        let mut p = Postulates::new();
+        let a_pos = p.push(sort(0));
+        let a0_pos = p.push(p.get(a_pos));
+        let b_pos = p.push(sort(0));
+
+        let a0_ref = p.get(a0_pos);
+        let b_ref = p.get(b_pos);
+        let fam = shift(&b_ref, 0, 1); // \_:A. B
+        // second component should be B-typed, not A-typed
+        let bad = pair(fam, a0_ref.clone(), a0_ref);
+        assert!(infer(&p.ctx, &bad).is_err(), "pair's own second component must check against fam(a), not anything else");
     }
 
     /// The soundness gate `infer`'s own `WRec` case now needs (see
