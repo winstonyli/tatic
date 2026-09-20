@@ -714,6 +714,118 @@ sample-verification-style backstop the way the JIT has. Rejected in
 favor of the dry-run heuristic above, which can only ever be *slow* when
 wrong, never *wrong*.
 
+## 11. Deriving `Clo_k` instead of postulating it — a real primitive-count win, confirmed by a standalone prototype
+
+A natural question once §9's arity-indexed `Clo_k` family existed at all
+(one fresh opaque `Sort(0)` axiom per distinct arity a term uses, plus its
+own `ite_clo_k` co-postulate — `proof.rs`'s `ClosurePostulates::clo_ty`/
+`apply_ref`/`ite_clo_ref`): does this "minimize primitives," or could the
+whole family be built from something already postulated, the way
+`NatPostulates` replaced a raw `Nat : Sort(0)` postulate with `W(Bool,
+ChildTy)`?
+
+**The naive answer — curry `Clo_k` down to nested `Clo_1`s — doesn't
+work.** `apply_ref(k)`'s own postulated type is *unconditionally* `Clo_k
+-> Int -> .. -> Int` (every argument and the result flattened to `Int`,
+deliberately, matching `compile.rs`'s own untyped `call_indirect` — see
+`TYPES.md` §4.4). Currying that to `Clo_1`-of-`Clo_1` would need
+`apply_1`'s own result to be "either `Int` or `Clo_{k-1}`, depending on
+which real value is behind it" — exactly the "no honest single type for
+`Clo_1`-or-`Clo_2`, needs a real dependent sum" gap §9 already names as a
+separate, unsolved research question. Naive currying just walks back into
+that same wall.
+
+**What actually works: stop postulating `Clo_k` as opaque at all — build
+it as the literal curried `Int -> .. -> Int` arrow type.** Every consumer
+of the `Clo_k` family (`apply_ref`, `call_ref`, `pap_ref`,
+`clo_eq_ref_*`) only ever uses `k`/`arity` two ways: as a `HashMap` key
+selecting which memoized postulate to reuse, and as a fold/loop bound
+("build `k` nested arrows," "apply `k` arguments one at a time" —
+confirmed by a direct audit of every such call site, none of which
+inspects `k` distinct argument *types*, since `apply_ref`'s own arguments
+are uniformly `Int`). So `Clo(k) := Int -> Int -> .. -> Int` (`k`
+copies), built with the exact same `for`-loop `apply_ref(k)`'s own type
+construction already uses, is already exactly as expressive as today's
+opaque `clo_ty(k)` — and, once `Clo(k)` genuinely *is* that Pi type
+rather than an unrelated opaque tag, applying a `Clo(k)`-typed value to
+`k` arguments is just ordinary `kernel::App` chaining (already what
+`apply_n`/`app2`/`app3` reduce every "packed" application to underneath —
+`kernel::Expr` has no n-ary `App` node at all, see §9's own confirmation
+that `App(App(f,x),y)` is already, at the term level, two single
+applications). This makes `apply_ref` itself — and the whole
+`apply_clo_eq_ref`/`apply_pap_eq_ref` machinery that exists purely to
+*prove* a postulated `apply_ref` agrees with `call_ref` — unnecessary:
+there's nothing left to reconcile once application is native.
+
+`ite_clo_k`'s per-arity duplication (2 more opaque axioms per distinct
+arity today) collapses even further, to *zero* new postulates: `bool_rec
+: Pi C:(Bool->Sort0). C(true) -> C(false) -> Pi b:Bool. C(b)` is already
+postulated, generically, by `kernel::NatPostulates`. Instantiating it at
+a *constant* motive `C := \_:Bool. A` gives exactly `ite(A) : Bool -> A ->
+A -> A` for whichever `A` is needed (any `Clo(k)`, for any `k`) — and its
+existing computation-rule axioms (`bool_rec_true_eq`/
+`bool_rec_false_eq`), instantiated the same way, already *prove*
+`ite`'s own reduction behavior. No per-type, per-arity `ite_A` postulate
+family is needed at all; one already-existing postulate covers every `A`.
+
+**Soundness is preserved, not weakened.** The original arity-blind-`Clo`
+unsoundness (§6.2 in `TYPES.md`) came from a single universal `Clo`
+giving the kernel *no* way to distinguish arities. Literal Pi types don't
+reopen that: `Int -> Int` and `Int -> Int -> Int` are already
+structurally distinct under `kernel::check`'s own Pi-formation and
+`def_eq` rules, for free, with no reliance on remembering "which `k` was
+already postulated." An opaque postulated *constant* of a literal Pi type
+(e.g. `combinator_value(h)`) still has no `Lam` body to beta-reduce, so
+`whnf` leaves any application of it neutral/stuck exactly as it does
+today — nothing about making the type transparent lets the kernel
+compute anything through the value itself.
+
+**Confirmed with a standalone prototype**
+(`proof::tests::a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates`,
+not wired into `ClosurePostulates`), which builds two opaque `Clo(2)`-typed
+constants, an `ite` derived from `bool_rec` exactly as above, checks that
+selecting one via `ite` and calling it with two `Int`s through ordinary
+`kernel::App` (no `apply_ref` anywhere) typechecks as `Int`, checks that
+`bool_rec_true_eq`'s own instantiation already proves the selection's
+computation rule, and confirms a `Clo(3)`-shaped value is still rejected
+where a `Clo(2)` is expected. All four hold. One real bug was hit and
+fixed while building this prototype: an early version cached
+`Clo(2)`'s `Expr` before pushing further postulates (the two closure
+values, the two `Int`s, the `Clo(3)` value) — exactly the `Anchored`-class
+staleness bug §4 documents at length, which this project has hit
+repeatedly (a postulate's `Var`
+index depends on how many postulates exist *right now*; caching an
+`Expr` built from one and reusing it across a later `p.push` silently
+points it at the wrong thing once the context has grown). Fixed by
+pushing every postulate the test needs first, then resolving every
+reference fresh in one final pass — the same discipline `proof.rs`'s own
+`Anchored` type enforces mechanically everywhere else. A verify-teeth
+check (swapping the `ite` condition from `true` to `false`) confirmed the
+`bool_rec_true_eq` instantiation genuinely discriminates, not just
+vacuously typechecks.
+
+**Scope of what this does and doesn't unify.** This applies cleanly to
+`Clo_k`'s own "value type" and its `ite`/`apply` machinery — not to
+`Env_sig` (the per-capture-signature environment type
+`ClosurePostulates::env_ty`/`mk_env_ref`), which is a genuinely
+heterogeneous product (each captured slot may independently be `Int` or
+some `Clo_j`), not a uniform `k`-fold repetition — unifying *that* would
+need real dependent-sum/record types, the same open research question §9
+already names, not the mechanism above. `call_ref`/`pap_ref` keep their
+current per-combinator-`h`/per-`(h,supplied)` postulate count unchanged
+(they're keyed by `h`, not by arity alone); what changes is only that
+wherever they reference `clo_ty(k)` as a domain or codomain, that
+reference becomes the literal Pi type instead of a fresh opaque tag.
+
+**Migrating the real `ClosurePostulates` to this representation is a
+separate, larger, not-yet-attempted follow-on** — it touches
+`apply_clo_eq_ref`/`apply_pap_eq_ref` (likely deletable) and every
+`clo_eq_ref_*`/`*_eq_ref` builder's own construction of `clo_ty`/
+`apply_ref`/`ite_clo_ref` references, a real migration on the scale of
+§9's own staged rollout, not a drop-in patch — this section records only
+that the standalone representation is confirmed sound and strictly more
+primitive-minimal, as the grounding for deciding whether to undertake it.
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)

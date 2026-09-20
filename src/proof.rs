@@ -7339,6 +7339,113 @@ mod tests {
         assert!(compile::try_compile(&s, f).is_some());
     }
 
+    /// **Architecture prototype, not wired into `ClosurePostulates`.**
+    /// Investigates whether the whole `Clo_k`-as-a-family-of-opaque-
+    /// `Sort(0)`-postulates scheme (`ClosurePostulates::clo_ty`/
+    /// `apply_ref`/`ite_clo_ref`, one fresh axiom pair per distinct arity a
+    /// term uses) could instead be built from the *literal* curried
+    /// `Int -> .. -> Int` arrow type -- no new postulate at all -- reusing
+    /// `Int` (already postulated by `ArithPostulates`) and `bool_rec`
+    /// (already postulated, generically, by `kernel::NatPostulates`) rather
+    /// than adding anything new. Confirms three things a real migration
+    /// would need:
+    ///
+    /// 1. A `Clo_k`-shaped value (an opaque postulated constant of the
+    ///    literal arrow type) can be called directly via ordinary
+    ///    `kernel::app`, typechecking as `Int` with no `apply_ref` axiom at
+    ///    all -- `apply_ref`'s entire reason to exist (relating an opaque
+    ///    `Clo_k` to a callable shape) turns out to be unnecessary once
+    ///    `Clo_k` genuinely *is* that shape.
+    /// 2. `bool_rec` instantiated at a *constant* motive (`\_:Bool. A`) is a
+    ///    real `ite : Bool -> A -> A -> A` for any `A`, with its
+    ///    computation-rule axioms (`bool_rec_true_eq`/`bool_rec_false_eq`)
+    ///    already proving `ite`'s own -- no per-arity `ite_clo_k` family
+    ///    needed either.
+    /// 3. Two different arities are still genuinely distinct types --
+    ///    `kernel::check` rejects a `Clo_3`-shaped value where a `Clo_2` is
+    ///    expected, for free, from ordinary Pi-type structural inequality --
+    ///    so this doesn't reopen the arity-blind-`Clo` unsoundness
+    ///    `TYPES.md` section 6.2 documents.
+    ///
+    /// See the design investigation this answers in `RELATED_WORK.md`.
+    #[test]
+    fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
+        fn curried_arrow(int_ty: &Expr, k: usize) -> Expr {
+            let mut ty = int_ty.clone();
+            for _ in 0..k {
+                ty = kernel::arrow(int_ty.clone(), ty);
+            }
+            ty
+        }
+
+        let mut arith = ArithPostulates::new();
+        let nat = kernel::NatPostulates::new(&mut arith.p);
+
+        // Push every postulate this prototype needs *first* -- two opaque
+        // arity-2 closure values (f, g, exactly like
+        // `ClosureCombinators::combinator_value`'s own postulated
+        // constant), two opaque Ints to call the chosen one with, and one
+        // opaque arity-3 closure value (h, for the arity-mismatch check) --
+        // then resolve every reference fresh in one final pass with no
+        // further pushes in between. Interleaving a `p.get` with a later
+        // `p.push` would go stale (exactly the `Anchored`-staleness bug
+        // class `RELATED_WORK.md` documents: a `Var`'s correct de Bruijn
+        // index depends on how many postulates exist *right now*, and this
+        // prototype hit that bug on its first run, confirming the class is
+        // just as live here as anywhere else in this project).
+        let f_pos = arith.p.push(curried_arrow(&arith.int_ty(), 2));
+        let g_pos = arith.p.push(curried_arrow(&arith.int_ty(), 2));
+        let a_pos = arith.p.push(arith.int_ty());
+        let b_pos = arith.p.push(arith.int_ty());
+        let h_pos = arith.p.push(curried_arrow(&arith.int_ty(), 3));
+
+        // Now resolve everything fresh, with no more pushes to follow.
+        let int_ty = arith.int_ty();
+        let clo2_ty = curried_arrow(&int_ty, 2);
+        let clo3_ty = curried_arrow(&int_ty, 3);
+        assert_ne!(clo2_ty, clo3_ty, "different arities must stay genuinely distinct types");
+
+        let f = arith.p.get(f_pos);
+        let g = arith.p.get(g_pos);
+        let a = arith.p.get(a_pos);
+        let b = arith.p.get(b_pos);
+        let h = arith.p.get(h_pos);
+
+        // A generic `ite`, derived (not postulated) from `bool_rec`
+        // instantiated at the constant motive `\_:Bool. Clo2`.
+        let bool_ty = nat.bool_ty(&arith.p);
+        let const_motive = kernel::lam(bool_ty, kernel::shift(&clo2_ty, 0, 1));
+        let cond = nat.true_(&arith.p);
+        let chosen = kernel::app(
+            kernel::app3(nat.bool_rec(&arith.p), const_motive.clone(), f.clone(), g.clone()),
+            cond,
+        );
+        kernel::check(&arith.p.ctx, &chosen, &clo2_ty).expect("ite(Clo2, true, f, g) should typecheck at Clo2");
+
+        // Calling it directly through ordinary `App` -- no `apply_ref`
+        // postulate anywhere in this construction at all.
+        let called = kernel::app2(chosen.clone(), a, b);
+        kernel::check(&arith.p.ctx, &called, &int_ty)
+            .expect("calling a Clo2-shaped value with 2 Ints should typecheck as Int, with no apply_ref axiom");
+
+        // The computation rule (`ite(true) = f`) is already derivable from
+        // `bool_rec_true_eq` at this instantiation -- no new `ite_true_eq`
+        // postulate needed either.
+        let true_eq_generic = nat.bool_rec_true_eq(&arith.p);
+        let instantiated = kernel::app3(true_eq_generic, const_motive, f.clone(), g.clone());
+        let expected_ty = kernel::id(clo2_ty.clone(), chosen, f);
+        kernel::check(&arith.p.ctx, &instantiated, &expected_ty)
+            .expect("bool_rec_true_eq, instantiated at Clo2, should already prove ite(Clo2,true,f,g) = f");
+
+        // Arity mismatch is still rejected: a Clo3-shaped value can't stand
+        // in where a Clo2 is expected -- the soundness gain `TYPES.md`
+        // section 6.2/7 documents survives this representation change.
+        assert!(
+            kernel::check(&arith.p.ctx, &h, &clo2_ty).is_err(),
+            "a Clo3-shaped value must still be rejected where a Clo2 is expected"
+        );
+    }
+
     #[test]
     fn recursive_term_is_out_of_scope() {
         // rec f n = if n <= 1 then 1 else n * f(n - 1)
