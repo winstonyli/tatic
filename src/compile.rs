@@ -2637,12 +2637,16 @@ mod tests {
         ((v >> 32) as i32, (v & 0xFFFF_FFFF) as i32)
     }
 
-    /// `emit_curried_stages` is not yet reachable from `try_compile` (see
-    /// its own docs) -- these tests drive it directly, exporting each
-    /// generated stage function by name and calling it straight from
-    /// Rust, with no `call_indirect`/table involved at all, to isolate
-    /// this mechanism's own correctness from the (separate, not-yet-built)
-    /// question of whether any real call site ever triggers it correctly.
+    /// `emit_curried_stages` is reachable from `try_compile` now (gated on
+    /// `Combinators::needs_generic_dispatch`, see its own docs), with a
+    /// full end-to-end test exercising that real path
+    /// (`inconsistent_call_arity_for_a_parameter_now_compiles_via_curried_dispatch`).
+    /// These tests still earn their keep independently: driving
+    /// `emit_curried_stages` directly, exporting each generated stage
+    /// function by name and calling it straight from Rust with no
+    /// `call_indirect`/table involved at all, isolates this mechanism's
+    /// own correctness from `call_indirect`/table-wiring concerns
+    /// entirely, rather than re-testing both at once.
     #[test]
     fn curried_stage_chain_reproduces_a_two_ary_non_capturing_call() {
         let mut w = String::new();
