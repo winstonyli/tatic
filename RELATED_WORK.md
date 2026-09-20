@@ -752,10 +752,12 @@ rather than an unrelated opaque tag, applying a `Clo(k)`-typed value to
 `apply_n`/`app2`/`app3` reduce every "packed" application to underneath —
 `kernel::Expr` has no n-ary `App` node at all, see §9's own confirmation
 that `App(App(f,x),y)` is already, at the term level, two single
-applications). This makes `apply_ref` itself — and the whole
-`apply_clo_eq_ref`/`apply_pap_eq_ref` machinery that exists purely to
-*prove* a postulated `apply_ref` agrees with `call_ref` — unnecessary:
-there's nothing left to reconcile once application is native.
+applications). This makes `apply_ref` itself unnecessary: nothing needs
+an axiom stating "here is how to call a `Clo_k`-typed thing" once calling
+one is just ordinary application (see the second correction below for
+why this narrower claim — `apply_ref` alone, not the whole
+`apply_clo_eq_ref`/`apply_pap_eq_ref` machinery built on top of it — is
+the one that actually survives scrutiny).
 
 **Correction, caught before any real migration work started on the
 strength of this claim**: the paragraph below, as originally written,
@@ -780,11 +782,31 @@ exist* was reconciling two independently-postulated things, and
 disappears once application is native), `ite_clo_ref` was never trying to
 be *proven* from anything in the first place. It stays exactly as it is:
 one opaque, per-arity postulate, unchanged by this section's own
-migration. The real, confirmed win is narrower than first claimed: only
-`clo_ty`'s own `Sort(0)` push (one of the two postulates `clo_ty`
-currently pushes per distinct arity) is eliminated, plus `apply_ref` and
-the `apply_clo_eq_ref`/`apply_pap_eq_ref` machinery built to reconcile it
-— `ite_clo_ref` itself is untouched.
+migration.
+
+**A second correction, caught mid-Phase-2 implementation (see the
+migration log below) rather than before starting this time**:
+`apply_clo_eq_ref`/`apply_pap_eq_ref` are *not* deletable either, for a
+reason structurally similar to `ite_clo_ref`'s: `register(h)`/
+`mk_clo_ref(h, sig)` (a combinator's own `Clo_k`-typed *value*) and
+`call_ref(h)` (the same combinator's own *callable*, useful,
+further-reducible axiom) are two *independently postulated* opaque
+constants — nothing about making `Clo_k` transparent relates them to each
+other on its own; a `Clo_k`-typed constant still has no `Lam` body, so
+`kernel::whnf` never discovers on its own that `register(h)` and
+`call_ref(h)` denote "the same real closure." `apply_clo_eq_ref`'s entire
+job was exactly this: postulating that equality once per combinator so
+every later use gets it for free. Removing `apply_ref` removes one layer
+of indirection from *that same postulated statement* (its LHS becomes
+`register(h)(args)` directly instead of `apply_ref(k)(register(h),
+args)`), but the statement itself — and the `p.push` that assumes it —
+still has to exist. The real, confirmed win is narrower than first
+claimed twice over now: only `clo_ty`'s own `Sort(0)` push (one of the
+two postulates `clo_ty` currently pushes per distinct arity) and
+`apply_ref` itself are eliminated. `ite_clo_ref` and
+`apply_clo_eq_ref`/`apply_pap_eq_ref` both stay, the latter two
+simplified (one fewer `apply_ref` hop in their own construction) but not
+removed.
 
 **Soundness is preserved, not weakened.** The original arity-blind-`Clo`
 unsoundness (§6.2 in `TYPES.md`) came from a single universal `Clo`
@@ -838,14 +860,26 @@ current per-combinator-`h`/per-`(h,supplied)` postulate count unchanged
 wherever they reference `clo_ty(k)` as a domain or codomain, that
 reference becomes the literal Pi type instead of a fresh opaque tag.
 
-**Migrating the real `ClosurePostulates` to this representation is a
-separate, larger, not-yet-attempted follow-on** — it touches
-`apply_clo_eq_ref`/`apply_pap_eq_ref` (likely deletable) and every
-`clo_eq_ref_*`/`*_eq_ref` builder's own construction of `clo_ty`/
-`apply_ref`/`ite_clo_ref` references, a real migration on the scale of
-§9's own staged rollout, not a drop-in patch — this section records only
-that the standalone representation is confirmed sound and strictly more
-primitive-minimal, as the grounding for deciding whether to undertake it.
+**Migrating the real `ClosurePostulates` to this representation, staged
+like §9's own rollout.** Phase 1 (landed): `clo_ty` itself no longer
+pushes anything — `Clo_arity` is `curried_int_ty(arity)`, a pure function
+of `arith.int_ty()`, with `ite_clo_ref` (still genuinely postulated, per
+the correction above) factored out to build its own domain from the same
+pure helper rather than calling back through `clo_ty`, which would
+otherwise recurse forever on `ite_clo_ref`'s first call for a given
+arity. Verify-teeth checked: temporarily dropping `clo_ty`'s own
+`ite_clo_ref`-priming side effect broke 8 existing tests immediately (the
+exact push-inside-a-temporary-rolled-back-scope staleness class this same
+region's own comments already document), confirming the priming
+contract every existing call site depends on is still load-bearing, not
+vestigial. Phase 2 (in progress as of this writing): eliminate `apply_ref`
+itself and its roughly a dozen call sites, each of which currently builds
+`apply_n(apply_fn, [callee_or_sat_applied] ++ args)` and can instead build
+`apply_n(callee_or_sat_applied, args)` directly, since a `Clo_k`-typed
+value is now itself the real curried arrow type and needs no separate
+"how to call this" axiom. `apply_clo_eq_ref`/`apply_pap_eq_ref` are kept
+(per the second correction above), simplified to drop their own
+`apply_ref` hop.
 
 ## Sources
 
