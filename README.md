@@ -821,18 +821,26 @@ guards against by hand): caught immediately, at seed 22.
   `return_type_of`'s own self-call classification) was already `is_rec`-safe;
   the blanket decline in `clo_eq_ref` was the only thing blocking it, and
   lifting it needed fixing the three sites that would otherwise have
-  mis-counted a self-binder as an ordinary capture. Still open: a `root` with
-  a `Clo`-typed *parameter* (as opposed to `Int`-typed) remains declined,
-  and investigated (not attempted) this session, found genuinely larger
-  than a `quant_types` widening once looked at closely — `denote`/
-  `collect_literals`, which this module's own axiom construction uses
-  throughout, translate only `Var`/`Lit`/`Prim`/`If` into a kernel `Int`
-  expression, with no `Clo`-typed case at all, so any actual *use* of such
-  a parameter (captured, called, passed along) needs their already-existing
-  closures-aware counterparts (`denote_with_placeholders`/
-  `denote_closure_typed`/`collect_literals_closure`) swapped in throughout
-  all three branch functions, not just a wider quantification — see
-  `RELATED_WORK.md` section 12 for the full investigation. Still open: a
+  mis-counted a self-binder as an ordinary capture. No longer open, closed
+  out after investigation: a `root` with a `Clo`-typed *parameter* (as
+  opposed to `Int`-typed) looked like a missing universal-axiom case, but
+  turned out to be two separate findings instead — `clo_eq_ref`'s own
+  decline on it is a permanent, correct property of its own construction
+  (its one call site, `build_clo_call_bridge`, is only ever reached through
+  `eval_and_prove_call_over`, whose own `(i64, Expr, Expr)` return type has
+  no way to carry a concrete `Clo` value in the first place, so no path
+  that reaches `clo_eq_ref` could ever instantiate a widened axiom there,
+  even after actually building one); and the real capability — proving a
+  call made *through* such a parameter — was already covered elsewhere, by
+  `eval_dyn_direct_call`'s existing per-instance path (its `(Some(_),
+  DynDenoted::Clo(e, _)) => e` arm, denoting through `call_ref` exactly as
+  `clo_eq_ref`'s own callee-side construction would), confirmed end to end
+  by `proof.rs`'s
+  `branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_parameter_get_a_per_instance_proof`
+  and `jit.rs`'s
+  `a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent`
+  — see `RELATED_WORK.md` section 12 for the full investigation and its
+  correction. Still open: a
   callee reached only through a captured/parameter variable rather than a
   further statically-known combinator (genuinely unknown at
   proof-construction time which literal lambda underlies it — the same
