@@ -663,10 +663,13 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // `Clo` type and `apply_k`, reused directly (`ClosurePostulates:
 // Deref<Target = ArithPostulates>` lets this whole pipeline keep calling
 // every plain-arithmetic postulate method unchanged). A closure-typed
-// self-call argument, or one fed to a closure call, must resolve to a bare
-// parameter reference (or, for a plain `Int` one, ordinary arithmetic
-// possibly including a closure call) -- an `If` between two closures is
-// out of scope here too, same restriction as `denote_closure`'s own.
+// self-call argument, or one fed to a closure call, may also be a freshly
+// *created* closure (`denote_closure_typed` mirrors `denote_closure`'s own
+// `Term::Abs`/`Term::Rec` handling via the same `ClosureCombinators`), not
+// just a bare parameter reference, and an `If` choosing between two
+// `Clo`-typed values is in scope too (`ite_clo_ref`, same as
+// `denote_closure`'s own) -- see `build_universal`'s own doc comment below
+// for the one thing still out of scope here (a captured free variable).
 // Caught a real bug while building this: `ClosurePostulates::apply_ref`'s
 // lazy-postulate memoization was designed for `denote_closure`'s own
 // usage, where the postulate context only ever grows -- here,
@@ -1808,13 +1811,16 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 
     // `Var(i)` for `i < arity` that's always called, elsewhere in `body`,
     // with a fixed number of arguments (through a parameter, never a
-    // literal lambda or a captured free variable -- `self_idx` sits just
-    // outside `0..arity`, so a self-call's own callee position never gets
-    // misclassified as one of these) is treated as `Clo`-typed throughout
-    // this function; everything else stays `Int` -- see the module docs
-    // for the fragment this covers and what's still out of scope (closure
-    // *creation* anywhere in the body, a captured free variable, an `If`
-    // between two closures).
+    // captured free variable -- `self_idx` sits just outside `0..arity`,
+    // so a self-call's own callee position never gets misclassified as one
+    // of these) is treated as `Clo`-typed throughout this function.
+    // `denote_closure_typed` (used by `new_params_for` below) also covers
+    // closure *creation* inside a self-call argument -- registering a
+    // combinator, calling one directly, or partially applying one -- and a
+    // nested `If` choosing between two `Clo`-typed values, both via the
+    // same `ClosureCombinators` machinery `prove_closure_expr` itself uses.
+    // Still out of scope: a captured free variable used as a closure here
+    // (this function has no enclosing frame to resolve one against).
     let found = compile::infer_closure_arities(store, body, arity, Some(self_idx))?;
     // See `param_types_for`'s own docs: an inconsistently-called `Var` is
     // declined the same way an absent one already is.

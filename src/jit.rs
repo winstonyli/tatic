@@ -216,9 +216,11 @@ impl JitEngine {
     ///    own per-call relational proof -- the fallback for tail-recursive
     ///    shapes the universal proof doesn't (yet) cover.
     ///
-    /// Anything else (non-tail recursion combined with closures, genuinely
-    /// *capturing* closures, ...) reports `false` -- see `proof.rs` for
-    /// what's in scope and why.
+    /// Anything else (a captured free variable used as a closure inside
+    /// self-recursion, or -- see `RELATED_WORK.md` -- a recursive use of
+    /// `compile.rs`'s inconsistent-arity curried-dispatch fallback, which
+    /// none of the strategies above model) reports `false` -- see
+    /// `proof.rs` for what's in scope and why.
     fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> bool {
         if proof::prove_pure_expr(terms, h).is_some() {
             return true;

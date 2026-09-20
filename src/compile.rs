@@ -12,10 +12,13 @@
 //! lambda (real partial application -- see "Partial application" below),
 //! and an *over*-applied literal lambda (calling whatever its saturated
 //! call returns with more arguments -- see "Over-application" below).
-//! Anything else (a variable applied with inconsistent arities across
-//! call sites, a genuinely free/unbound variable, ...) is rejected by
-//! returning `None`, and the caller falls back to the interpreter — the
-//! JIT never has to be complete, only sound about what it accepts.
+//! A variable applied with inconsistent arities across call sites is also
+//! in the fragment now, via a curried single-argument dispatch fallback
+//! (`ArityUse::Inconsistent`, `emit_curried_stages`/`emit_dynamic_apply` --
+//! see "Generic closure dispatch" below). Anything else (a genuinely
+//! free/unbound variable, ...) is rejected by returning `None`, and the
+//! caller falls back to the interpreter — the JIT never has to be
+//! complete, only sound about what it accepts.
 //!
 //! Tail self-calls are compiled into a `loop`/`br`, turning tail recursion
 //! into iteration (constant Wasm call-stack depth); non-tail self-calls
@@ -72,10 +75,12 @@
 //! result, ...) packs its (possibly-empty) environment and table index
 //! into a single `i64` the same way either path would.
 //!
-//! What's still out of scope: a variable (parameter or captured free
-//! variable) applied with inconsistent arities across call sites (see
-//! "Over-application" below for why an over-applied *literal lambda* is a
-//! different, narrower problem that *is* in scope), and capturing an
+//! A variable (parameter or captured free variable) applied with
+//! inconsistent arities across call sites used to be out of scope; it's
+//! now handled by the curried dispatch fallback described under "Generic
+//! closure dispatch" below (see "Over-application" below for why an
+//! over-applied *literal lambda* was always a different, narrower problem
+//! that never needed it). What's still out of scope: capturing an
 //! enclosing self-recursive binding's own self-reference as a plain value
 //! from a *nested* closure
 //! (an honest, structural rejection -- see `free_vars`'s self-exclusion
@@ -113,12 +118,14 @@
 //! with inconsistent arities -- compile.rs has no fixed arity for a
 //! variable to compare against in the first place, only whatever it's
 //! consistently called with, so there's no missing-argument count to
-//! desugar around. Over-application of a literal lambda -- calling the
-//! *result* of a saturated call with more arguments -- is a different,
-//! *narrower* problem than that: `root`'s own identity and arity are
-//! still statically known here (it's *what its body computes* that
-//! isn't), so it doesn't need any of the runtime arity-dispatch mechanism
-//! above -- see "Over-application" below.
+//! desugar around this way. That case is handled instead by a separate,
+//! fragment-wide fallback -- see "Generic closure dispatch" below.
+//! Over-application of a literal lambda -- calling the *result* of a
+//! saturated call with more arguments -- is a different, *narrower*
+//! problem than that: `root`'s own identity and arity are still
+//! statically known here (it's *what its body computes* that isn't), so
+//! it doesn't need any of the runtime arity-dispatch mechanism above --
+//! see "Over-application" below.
 //!
 //! ## Over-application: dispatching a saturated call's own result
 //!
@@ -168,6 +175,48 @@
 //! storage per call site (not just the one or two locals a fixed-shape
 //! wrapper needs) to reassemble the extra arguments in order after
 //! popping them off to reach the callee underneath.
+//!
+//! ## Generic closure dispatch: a curried fallback for inconsistent arities
+//!
+//! A closure-typed variable called with a genuinely different number of
+//! arguments at different call sites has no single fixed arity to desugar
+//! around (`ArityUse::Consistent(k)`/`ArityUse::Inconsistent`,
+//! `infer_closure_arities`'s widened classification). Rather than reject
+//! such a term outright, every registered combinator (literal or PAP
+//! wrapper) additionally gets a curried "stage chain" -- `n` further
+//! functions `stage_0..stage_{n-1}`, all of one shared type `(func (param
+//! $env i32) (param $arg i64) (result i64))`, each taking exactly one more
+//! argument and either forwarding to the combinator's own ordinary,
+//! fixed-arity entry (once all `n` are collected) or returning a fresh
+//! closure pointing at the next stage (`emit_curried_stages`). A call
+//! through a variable classified `Inconsistent`, or an over-application
+//! site, then dispatches one argument at a time through this chain via
+//! `call_indirect (type $apply)` (`emit_dynamic_apply`) instead of the
+//! ordinary per-arity `call_indirect (type $tyK)` fast path.
+//!
+//! This is a *fragment-wide*, not per-call-site, decision: this pass has
+//! no real type system, so once any variable anywhere in a compiled
+//! fragment is called inconsistently, no other closure value in that same
+//! fragment can be locally proven safe from also reaching it. `try_compile`
+//! therefore runs a discovery pass first (the same traversal as always,
+//! output discarded, side effect is `Combinators::needs_generic_dispatch`
+//! and a fully populated registry) before the real emit pass, so every
+//! codegen site can consult the final, whole-fragment answer from the
+//! start (`Combinators::emitting`/`stage0_index`, see their own docs).
+//! When `needs_generic_dispatch` is `false` (every term that doesn't use
+//! this capability), codegen is unchanged from the ordinary fast path --
+//! this is an additive fallback, not a replacement, and its real per-call
+//! cost (roughly 1.5x on an otherwise fast-path-eligible hot loop, plus a
+//! fixed per-compile cost from the extra pass) is paid only by a fragment
+//! that actually needs it -- see `RELATED_WORK.md` for the measured
+//! numbers.
+//!
+//! Not (yet) covered: a *recursive* (`Rec`-wrapped) use of this mechanism
+//! compiles and runs correctly, and is verified the same way any other
+//! compiled term is (`jit.rs`'s sample battery), but has no kernel-checked
+//! proof backing it -- none of `proof.rs`'s strategies model the curried
+//! stage chain's own semantics. See `RELATED_WORK.md` for this as a named
+//! open follow-on.
 
 use hashbrown::HashMap;
 
