@@ -4896,16 +4896,37 @@ impl<'a> ClosureCombinators<'a> {
             return Some((self.cp.arith.p.get(pos), shape));
         }
         let (arity, body, is_rec) = compile::peel(self.store, root)?;
-        // `root` itself is never self-recursive here, mirroring
-        // `call_eq_ref`'s own identical check -- `classify_app_node`'s own
-        // `LitLambdaOver` does allow a self-recursive `root`, but neither
-        // branch below supports it, so this declines cleanly rather than
-        // `param_types_for`/`compile::peel` failing partway through.
-        if is_rec {
-            return None;
-        }
+        // `root` *is* allowed to be self-recursive here now -- `compile::
+        // free_vars`, `param_types_for`, and `combinator_return_type` are
+        // all already `is_rec`-aware (the self-binder is excluded from
+        // capture/param classification, and a genuine self-call inside
+        // `body` structurally classifies as `Int`, per `return_type_of`'s
+        // own `match_self_call` case, never `Term::Abs`/`Term::Rec`) -- so
+        // a self-call appearing anywhere this construction would need a
+        // concrete `Clo` value from (an `IfTree` leaf, or `Pap`/`Call`'s
+        // own `g`) declines cleanly downstream by construction, without
+        // this needing a special case: `combinator_return_type` returns
+        // `None` if a self-call sits in a branch alongside a genuine
+        // `Clo`-typed one (arity mismatch), and a bare self-call `Var`
+        // never matches `Term::Abs`/`Term::Rec` when a leaf/`g` is
+        // classified. `is_rec` is threaded into each branch below so its
+        // own capture computation stays correct (excluding the self-binder
+        // from the ordinary-capture list) instead of silently miscounting
+        // it as one -- `clo_eq_ref_if_tree`/`clo_eq_ref_call`/
+        // `clo_eq_ref_pap` previously hardcoded `false` here, which is why
+        // this was declined outright before, not because any of the three
+        // branches structurally can't handle a self-recursive `root`.
         let param_types = param_types_for(self.store, root)?;
         if param_types.iter().any(Option::is_some) {
+            // Still declined: `root`'s own params_and_close_typed call
+            // below quantifies every capture/param `Int`-typed
+            // unconditionally (`quant_types`/`dummy_caller_param_types`
+            // are both hardcoded all-`None` throughout `clo_eq_ref_if_tree`/
+            // `clo_eq_ref_call`/`clo_eq_ref_pap`) -- a genuinely `Clo`-typed
+            // parameter of `root` itself would need those widened to
+            // root's own real `param_types`, a real but separate, larger
+            // follow-on (touching the axiom's own quantification, not just
+            // a capture-computation flag) not attempted here.
             return None;
         }
         let k = match combinator_return_type(self.store, root) {
@@ -4913,7 +4934,7 @@ impl<'a> ClosureCombinators<'a> {
             _ => return None,
         };
         match self.store.resolve(body) {
-            Term::If(..) => self.clo_eq_ref_if_tree(root, arity, body, k),
+            Term::If(..) => self.clo_eq_ref_if_tree(root, arity, body, is_rec, k),
             // Tried in this order because they're mutually exclusive by
             // construction (each checks `args.len()` against `g`'s own
             // arity explicitly and declines otherwise), not because one is
@@ -4921,7 +4942,9 @@ impl<'a> ClosureCombinators<'a> {
             // own unwound spine is a *saturated* call to a further
             // `Clo_k`-returning combinator, `clo_eq_ref_pap` only when it's
             // a genuine partial application.
-            Term::App(..) => self.clo_eq_ref_call(root, arity, body, k).or_else(|| self.clo_eq_ref_pap(root, arity, body, &param_types, k)),
+            Term::App(..) => self
+                .clo_eq_ref_call(root, arity, body, is_rec, k)
+                .or_else(|| self.clo_eq_ref_pap(root, arity, body, is_rec, &param_types, k)),
             _ => None,
         }
     }
@@ -4958,7 +4981,7 @@ impl<'a> ClosureCombinators<'a> {
     /// denoted here... registering one never discovers more work" -- so
     /// nothing upstream of this axiom ever primes any leaf's own
     /// postulates ahead of time the way it does for `root`'s own).
-    fn clo_eq_ref_if_tree(&mut self, root: Hash, arity: usize, body: Hash, k: usize) -> Option<(Expr, ClosureRhsShape)> {
+    fn clo_eq_ref_if_tree(&mut self, root: Hash, arity: usize, body: Hash, is_rec: bool, k: usize) -> Option<(Expr, ClosureRhsShape)> {
         // Deliberately *not* `classify_tree` -- that function additionally
         // restricts every `cond` to a direct comparison
         // (`Lt`/`Le`/`Eq`), a `build_universal`-specific requirement
@@ -4974,7 +4997,7 @@ impl<'a> ClosureCombinators<'a> {
         let leaf_shapes = classify_closure_if_tree_leaves(self.store, &tree, k)?;
         let shape = ClosureRhsShape::IfTree(tree.clone());
 
-        let captures = compile::free_vars(self.store, body, arity, false);
+        let captures = compile::free_vars(self.store, body, arity, is_rec);
         let n_captures = captures.len();
         let dummy_caller_param_types: Vec<Option<usize>> =
             vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -5105,7 +5128,7 @@ impl<'a> ClosureCombinators<'a> {
     /// *not* `g`'s own `clo_eq_ref` axiom -- see above), all primed before
     /// `params_and_close_typed` pushes `root`'s own quantified
     /// captures/params, not lazily from inside that closure.
-    fn clo_eq_ref_call(&mut self, root: Hash, arity: usize, body: Hash, k: usize) -> Option<(Expr, ClosureRhsShape)> {
+    fn clo_eq_ref_call(&mut self, root: Hash, arity: usize, body: Hash, is_rec: bool, k: usize) -> Option<(Expr, ClosureRhsShape)> {
         let (g, args) = compile::unwind_app_spine(self.store, body);
         if !matches!(self.store.resolve(g), Term::Abs(_) | Term::Rec(_)) {
             return None;
@@ -5123,7 +5146,7 @@ impl<'a> ClosureCombinators<'a> {
         }
         let shape = ClosureRhsShape::Call { g, args: args.clone() };
 
-        let captures = compile::free_vars(self.store, body, arity, false);
+        let captures = compile::free_vars(self.store, body, arity, is_rec);
         let n_captures = captures.len();
         let dummy_caller_param_types: Vec<Option<usize>> = vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let sig = capture_sig(&captures, &dummy_caller_param_types)?;
@@ -5237,7 +5260,7 @@ impl<'a> ClosureCombinators<'a> {
     /// `pap_ref`/`mk_env_ref` for `g`'s, all primed before
     /// `params_and_close_typed` pushes `root`'s own quantified
     /// captures/params, not lazily from inside that closure.
-    fn clo_eq_ref_pap(&mut self, root: Hash, arity: usize, body: Hash, _param_types: &[Option<usize>], k: usize) -> Option<(Expr, ClosureRhsShape)> {
+    fn clo_eq_ref_pap(&mut self, root: Hash, arity: usize, body: Hash, is_rec: bool, _param_types: &[Option<usize>], k: usize) -> Option<(Expr, ClosureRhsShape)> {
         let (g, args) = compile::unwind_app_spine(self.store, body);
         if !matches!(self.store.resolve(g), Term::Abs(_) | Term::Rec(_)) {
             return None;
@@ -5252,7 +5275,7 @@ impl<'a> ClosureCombinators<'a> {
         }
         let shape = ClosureRhsShape::Pap { g, args: args.clone() };
 
-        let captures = compile::free_vars(self.store, body, arity, false);
+        let captures = compile::free_vars(self.store, body, arity, is_rec);
         let n_captures = captures.len();
         let dummy_caller_param_types: Vec<Option<usize>> =
             vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -8077,6 +8100,63 @@ mod tests {
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
             .unwrap_or_else(|e| panic!("a={a_val} b1={b1_val} b2={b2_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
+        }
+    }
+
+    #[test]
+    fn a_self_recursive_root_whose_body_never_actually_self_calls_gets_a_concrete_instance() {
+        // rec helper a = if 0<a then (\c. c+a) else (\c. c-a) -- arity 1,
+        // wrapped in `Term::Rec` (syntactically self-recursive), but its
+        // own body never actually references the self-binder anywhere.
+        // Previously declined outright by `clo_eq_ref`'s own blanket
+        // `if is_rec { return None; }` check regardless of whether `body`
+        // genuinely used the self-reference; now `compile::free_vars`'s
+        // own `is_rec`-aware capture computation is threaded through
+        // instead, and a term like this one -- which never actually needs
+        // it -- gets a concrete instance same as a non-recursive root
+        // would. `helper(a)(c)` is over-application (k=1): the whole term
+        // should agree with `a+c` (0<a) or `c-a` (a<=0) directly.
+        let mut s = TermStore::new();
+        let a_ref1 = s.var(0);
+        let c1 = s.var(0);
+        let a_shifted1 = s.var(1);
+        let c_plus_a = s.prim(PrimOp::Add, c1, a_shifted1);
+        let then_branch = s.abs(c_plus_a); // \c. c+a
+
+        let c2 = s.var(0);
+        let a_shifted2 = s.var(1);
+        let c_minus_a = s.prim(PrimOp::Sub, c2, a_shifted2);
+        let else_branch = s.abs(c_minus_a); // \c. c-a
+
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero, a_ref1);
+        let helper_body = s.if_(cond, then_branch, else_branch);
+        let helper_abs = s.abs(helper_body); // \a. if 0<a then (\c.c+a) else (\c.c-a)
+        let helper = s.rec(helper_abs); // rec-wrapped, never actually self-calling
+
+        // Hand-verified against the reference interpreter before trusting
+        // the term shape: a=5 (0<a) with c=3 -> c+a=8; a=-5 (a<=0) with
+        // c=10 -> c-a=15 -- distinct numbers, so picking the wrong branch
+        // would be caught, not masked by a coincidental match.
+        for (a_val, c_val, expected) in [(5, 3, 8), (-5, 10, 15)] {
+            let a_lit = s.lit(a_val);
+            let c_lit = s.lit(c_val);
+            let helper_a = s.app(helper, a_lit);
+            let h_term = s.app(helper_a, c_lit);
+            assert_eq!(eval::apply_term(&s, h_term, &[]).unwrap(), expected, "a={a_val} c={c_val}: interpreter sanity check");
+
+            let mut combinators = ClosureCombinators::new(&s);
+            combinators.cp.arith.lit(a_val);
+            combinators.cp.arith.lit(c_val);
+            let (result, denotation, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[])
+                .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a self-recursive root that never self-calls should get a concrete instance"));
+            assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
+            kernel::check(
+                &combinators.cp.arith.p.ctx,
+                &proof,
+                &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
+            )
+            .unwrap_or_else(|e| panic!("a={a_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
         }
     }
 

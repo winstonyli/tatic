@@ -794,7 +794,20 @@ guards against by hand): caught immediately, at seed 22.
   own `g` gets called with its own supplied args *and* the outer
   over-application's extra ones, not just the extra ones. A `Call`-shaped
   leaf (a branch reached only through a further *saturated* indirect call)
-  is a further, natural generalization, not attempted here. Still open: a
+  is a further, natural generalization, not attempted here. A self-recursive
+  `root` (compiled via `Term::Rec`) is covered too now — `clo_eq_ref_if_tree`/
+  `clo_eq_ref_call`/`clo_eq_ref_pap` each thread `root`'s own `is_rec` flag
+  into `compile::free_vars` instead of hardcoding `false`, since the
+  downstream machinery (`param_types_for`, `combinator_return_type`,
+  `return_type_of`'s own self-call classification) was already `is_rec`-safe;
+  the blanket decline in `clo_eq_ref` was the only thing blocking it, and
+  lifting it needed fixing the three sites that would otherwise have
+  mis-counted a self-binder as an ordinary capture. Still open: a `root` with
+  a `Clo`-typed *parameter* (as opposed to `Int`-typed) remains declined —
+  `quant_types`/`dummy_caller_param_types` are hardcoded all-`None` throughout
+  all three branch functions, so lifting this needs widening that
+  construction to `root`'s own real `param_types`, a separate, larger
+  follow-on. Still open: a
   callee reached only through a captured/parameter variable rather than a
   further statically-known combinator (genuinely unknown at
   proof-construction time which literal lambda underlies it — the same
