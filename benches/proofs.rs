@@ -196,27 +196,43 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
 /// **Investigated, not just left as a discovered fact** (see
 /// `RELATED_WORK.md`'s own write-up): a callgrind profile found ~40% of
 /// all instructions in `<DefaultHasher as Hasher>::write`/`hash_one`,
-/// traced to every `HashMap<Hash, _>` (`Hash` = a 32-byte BLAKE3 digest,
-/// already uniformly random) re-hashing that digest through SipHash on
-/// every lookup -- fixed project-wide with a `FxHash`-style passthrough
-/// hasher (`term::FxBuildHasher`), a real but modest win (0-8.5%
-/// wall-clock here; most of that instruction count turned out to trace
-/// through `std::thread::local`'s own access machinery under valgrind's
-/// TLS emulation specifically, not representative of native cost).
+/// traced to `proof.rs`'s own `ClosurePostulates` memoization tables
+/// (`HashMap<Hash, _>`, `Hash` = a 32-byte BLAKE3 digest, already
+/// uniformly random) and `kernel.rs`'s own `ReductionCache`/
+/// `ShiftCacheMap`, all built on `std::collections::HashMap`'s default,
+/// cryptographically-oriented SipHash -- re-hashing an already-random
+/// digest, or hashing on every one of `shift`'s own extremely frequent
+/// calls, for no benefit. `compile.rs`/`jit.rs`/`term.rs` were already
+/// fine: they import `hashbrown::HashMap` directly, whose own default
+/// (`hashbrown`'s `default-hasher` feature, already enabled via this
+/// project's existing `hashbrown` dependency) is `foldhash`, not
+/// SipHash. First attempt (a hand-rolled `FxHash`-style passthrough
+/// hasher) was a false fix -- correct in principle, but applied blind:
+/// it was a lateral move on the already-`foldhash` files and only
+/// partially addressed `proof.rs`, so it barely moved the wall-clock
+/// number (0-8.5%). The real fix, once traced to the actual `std`-vs-
+/// `hashbrown` split: just import `hashbrown::HashMap` in `proof.rs`/
+/// `kernel.rs` too, getting the same well-vetted `foldhash` the rest of
+/// the crate already had, no custom hasher code needed at all. Confirmed
+/// by re-profiling: `DefaultHasher`/SipHash disappeared from the hot
+/// path entirely, total instruction count dropped ~44% (1.04B → 584M),
+/// and wall-clock improved ~24-26% here, both statistically significant.
 /// `with_shift_cache` was tried too and made this measurably *worse* --
 /// this workload's own redundancy shape (a genuinely growing
 /// `trans_proof` chain, not the same subterm reshifted repeatedly across
 /// callers) doesn't match what that cache targets.
 ///
 /// The real remaining answer: this cost is super-linear in iteration
-/// count by construction, not a hidden bug. A direct scaling check (1,
-/// 2, 4, 8, 16, 32 iterations) measured 69.6ms/102ms/204ms/441ms/985ms/
-/// 2672ms -- doubling the iteration count costs progressively more each
-/// time (1.5x, 2.0x, 2.2x, 2.2x, 2.7x), consistent with `trans_proof`'s
-/// own cumulative composition: each new step's proof necessarily
-/// references the *entire* accumulated chain so far, the same reason
-/// repeatedly appending to a growing structure by copy is inherently
-/// superlinear. `gcd_relational_proof_single_call`'s own ~24us is not
+/// count by construction, not a hidden bug. A direct scaling check
+/// (1, 2, 4, 8, 16, 32 iterations, measured before the hasher fix above
+/// -- the fix changes the constant factor, not this shape) found
+/// 69.6ms/102ms/204ms/441ms/985ms/2672ms -- doubling the iteration count
+/// costs progressively more each time (1.5x, 2.0x, 2.2x, 2.2x, 2.7x),
+/// consistent with `trans_proof`'s own cumulative composition: each new
+/// step's proof necessarily references the *entire* accumulated chain so
+/// far, the same reason repeatedly appending to a growing structure by
+/// copy is inherently superlinear. `gcd_relational_proof_single_call`'s
+/// own ~24us is not
 /// a fair comparison against this -- it proves one *relational* step,
 /// never unrolling a growing chain, while this benchmark measures a
 /// fully-unrolled *instance* proof's own amortized per-iteration cost,

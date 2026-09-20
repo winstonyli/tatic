@@ -34,8 +34,8 @@
 //! of empirical sampling) is the natural next step once this kernel is
 //! trusted, not something folded into this pass.
 
+use hashbrown::HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 

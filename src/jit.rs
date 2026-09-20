@@ -92,7 +92,7 @@ pub struct Stats {
 pub struct JitEngine {
     engine: Engine,
     rt: Store<()>,
-    cache: HashMap<Hash, CacheEntry, crate::term::FxBuildHasher>,
+    cache: HashMap<Hash, CacheEntry>,
     pub stats: Stats,
 }
 
@@ -103,7 +103,7 @@ impl JitEngine {
         JitEngine {
             engine,
             rt,
-            cache: HashMap::default(),
+            cache: HashMap::new(),
             stats: Stats::default(),
         }
     }

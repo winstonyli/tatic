@@ -1289,41 +1289,57 @@ call — "left as a discovered fact this benchmark documents, not
 something fixed here." Investigated properly this session, with two
 genuinely separate findings, one real and fixed, one real and inherent.
 
-**Fixed: `term::Hash`-keyed `HashMap`s were re-hashing an
-already-random 32-byte digest through SipHash on every lookup.**
-`term::Hash` is a BLAKE3 digest — 32 bytes, already uniformly random —
-and every `HashMap<Hash, _>` in the codebase (`TermStore::by_hash`'s own
-interning table foremost, plus most of `ClosurePostulates`'s
-memoization tables, `compile.rs`'s combinator index, `jit.rs`'s cache —
-17 sites total) used Rust's default, cryptographically-oriented SipHash
-hasher, re-hashing that already-good digest for no benefit: profiling
-`over_application_instance_proof` under `callgrind` found `<DefaultHasher
-as Hasher>::write`/`BuildHasher::hash_one` accounting for over 40% of
-all instructions retired. Fixed with the standard remedy for exactly
-this situation (the same reasoning `rustc-hash`/`FxHash` is built on): a
-small, self-contained rotate-xor-multiply hasher (`term::FxHasher`/
-`FxBuildHasher`, no new dependency) applied at all 17 sites. Confirmed
-correct (full test suite, all four fuzzers, clippy, release demo all
-green) and confirmed to actually help, modestly (0% to -8.5% wall-clock,
-statistically significant on the PAP shape, `p < 0.05`).
+**Fixed, on the first attempt: real, but aimed at the wrong three of
+five files.** `term::Hash` is a BLAKE3 digest — 32 bytes, already
+uniformly random — and profiling `over_application_instance_proof`
+under `callgrind` found `<DefaultHasher as Hasher>::write`/
+`BuildHasher::hash_one` accounting for over 40% of all instructions
+retired, re-hashing that already-good digest through Rust's default,
+cryptographically-oriented SipHash for no benefit. The first fix applied
+a small, self-contained rotate-xor-multiply hasher (`term::FxHasher`/
+`FxBuildHasher`, the same reasoning `rustc-hash`/`FxHash` is built on)
+across all 17 `HashMap<Hash, _>` sites in `term.rs`, `compile.rs`,
+`jit.rs`, and `proof.rs`. It was correct (full test suite, fuzzers,
+clippy, release demo all green) but helped only modestly (0% to -8.5%
+wall-clock) — a sign something was off, since eliminating a 40%
+instruction-count contributor should have moved the needle much more.
 
-**Correction to the profile's own first impression: most of that 40%
-wasn't the real bottleneck, and re-profiling after the fix proved it.**
-The wall-clock win (a few percent) was far smaller than the raw
-instruction-count share (40%) implied it should be. Re-profiling under
-callgrind after the fix confirmed why: instruction count barely moved
-(1.040B → 1.028B, ~1%), and a `--tree=caller` breakdown of the still-
-dominant `DefaultHasher::write` traced 94% of its calls to
-`std::thread::local::LocalKey<T>::with` (kernel.rs's own
-`SHIFT_SCOPE_ACTIVE` check inside `shift_rc`, called ~938,812 times for
-just 4 proof iterations) rather than to any `Hash`-keyed map at all.
-Thread-local access showing up as hashmap-heavy work is a known
-`valgrind`/`callgrind` TLS-emulation artifact, not native reality — a
-smaller, unrelated benchmark's own profile was dominated by criterion's
-regex/dynamic-linker startup noise instead, confirming callgrind's raw
-instruction counts need real wall-clock corroboration here, not
-face-value trust. Recorded so a future profiling pass over this
-codebase doesn't re-chase the same artifact.
+**Root cause, found via re-profiling and a direct question about
+`hashbrown`'s own defaults: three of the five touched files were
+already on a fast hasher, and the fix needed to go somewhere else
+entirely.** Re-profiling after the first fix showed instruction count
+barely moved (1.040B → 1.028B, ~1%) — the real win wasn't where the
+first fix looked. `hashbrown` (already a direct dependency, and already
+imported directly as `HashMap` in `term.rs`, `compile.rs`, and
+`jit.rs`) ships its own `default-hasher = ["dep:foldhash"]` feature,
+enabled by default: a bare `hashbrown::HashMap<K, V>` (no explicit
+third type parameter) already uses `foldhash`, a modern, fast,
+well-vetted non-cryptographic hasher — meaning those three files were
+never the problem, and the custom `FxHasher` applied to them was a
+lateral move, not a fix. The two files that *did* import
+`std::collections::HashMap` (always SipHash, `hashbrown` or not) —
+`proof.rs`'s `ClosurePostulates` memoization tables and `kernel.rs`'s
+`ReductionCache`/`ShiftCacheMap` — were the real bottleneck, and hadn't
+been switched to `hashbrown` at all (the first fix had only bolted a
+custom `BuildHasher` onto their existing `std::collections::HashMap`,
+which works but is strictly worse than the library's own vetted
+default). Corrected by fully reverting the custom `FxHasher` everywhere
+(deleted from `term.rs`; all 17 sites back to plain, unparameterized
+`HashMap`) and instead changing exactly two import lines —
+`proof.rs`'s and `kernel.rs`'s own `use std::collections::HashMap;` to
+`use hashbrown::HashMap;` — no struct or constructor changes needed
+anywhere, since every call site already used the simple `HashMap::new()`
+API both types share.
+
+**Confirmed properly this time: re-profiled, not just re-measured.**
+Re-profiling `over_application_instance_proof` under `callgrind` after
+the real fix found `DefaultHasher`/SipHash gone from the profile
+entirely — not reduced, gone — with total instructions retired down
+~44% (1.04B → 584M). Wall-clock (criterion) confirmed it independently:
+-24% to -26% on both benchmark shapes, `p < 0.05`. This is also,
+incidentally, the fix for this project's own previously-open lead on
+`kernel.rs`'s `ReductionCache`/`ShiftCacheMap` sitting on the same
+default SipHash — the same one-line-per-file import change covers both.
 
 **Ruled out: `with_shift_cache` doesn't help here, confirmed by
 measurement, not assumed.** Given ~938,812 `shift_rc` calls for 4
@@ -1341,8 +1357,10 @@ reshifted by the *same* amount across several callers, and loses
 **The real, inherent answer: the cost is super-linear in iteration
 count by construction, not a hidden bug.** A direct scaling check (the
 same term, `prove_tail_recursive_instance` at 1, 2, 4, 8, 16, 32
-iterations) measured 69.6ms / 102ms / 204ms / 441ms / 985ms / 2672ms.
-Each doubling of the iteration count costs progressively *more*, not a
+iterations) measured 69.6ms / 102ms / 204ms / 441ms / 985ms / 2672ms
+(measured before the hashbrown/foldhash fix above — the fix changes the
+constant factor throughout, not this shape). Each doubling of the
+iteration count costs progressively *more*, not a
 constant multiple (1.47x, 2.00x, 2.16x, 2.24x, 2.71x) — consistent with,
 and explained by, `trans_proof`'s own cumulative composition: each new
 iteration's own step proof is built by transitivity against the *entire*

@@ -293,13 +293,13 @@ enum PendingCombinator {
 /// `needs_generic_dispatch` turned out true.
 struct Combinators<'a> {
     store: &'a TermStore,
-    index: HashMap<Hash, usize, crate::term::FxBuildHasher>,
+    index: HashMap<Hash, usize>,
     pending: Vec<PendingCombinator>,
     kind: Vec<PendingCombinator>,
     arities: Vec<usize>,
     captures: Vec<Vec<u32>>,
     call_indirect_arities: Vec<usize>,
-    pap_index: HashMap<(Hash, usize), usize, crate::term::FxBuildHasher>,
+    pap_index: HashMap<(Hash, usize), usize>,
     has_pap_wrappers: bool,
     needs_generic_dispatch: bool,
     emitting: bool,
@@ -310,13 +310,13 @@ impl<'a> Combinators<'a> {
     fn new(store: &'a TermStore) -> Self {
         Combinators {
             store,
-            index: HashMap::default(),
+            index: HashMap::new(),
             pending: Vec::new(),
             kind: Vec::new(),
             arities: Vec::new(),
             captures: Vec::new(),
             call_indirect_arities: Vec::new(),
-            pap_index: HashMap::default(),
+            pap_index: HashMap::new(),
             has_pap_wrappers: false,
             needs_generic_dispatch: false,
             emitting: false,
