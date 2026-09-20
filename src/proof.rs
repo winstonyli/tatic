@@ -1929,12 +1929,15 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let ev_of = |arith: &ArithPostulates, params: &[Expr], v: Expr| -> Expr { ev_of(arith, ev_pos, params, v) };
 
     // Pre-push every `apply_k` arity a closure-typed parameter's own call
-    // sites will need, and every `clo_ty(k)`/`ite_clo_ref(k)` (see its own
-    // docs -- `clo_ty` eagerly primes both at once) that same parameter's
-    // own arity `k` will need, *before* any of the temporary, later-rolled-
-    // back `params_and_close_typed` scopes below gets a chance to trigger
-    // either's lazy push itself. This memoization
-    // (`ClosurePostulates::apply_pos`/`clo_pos`/`ite_clo_pos`) was designed
+    // sites will need, and every `ite_clo_ref(k)` (see its own docs --
+    // `clo_ty` eagerly primes it as a side effect, but `clo_ty` itself no
+    // longer pushes anything of its own -- see `RELATED_WORK.md` section
+    // 11 -- so `ite_clo_ref` is the only postulate left to worry about
+    // staleness for here) that same parameter's own arity `k` will need,
+    // *before* any of the temporary, later-rolled-back
+    // `params_and_close_typed` scopes below gets a chance to trigger its
+    // lazy push itself. This memoization
+    // (`ClosurePostulates::apply_pos`/`ite_clo_pos`) was designed
     // for `prove_closure_expr`'s own usage, where `arith.p.ctx` only ever
     // grows -- there, a postulate's absolute position, once recorded, stays
     // valid forever. Here, `params_and_close_typed` repeatedly
@@ -4238,7 +4241,6 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
 #[derive(Clone)]
 struct ClosurePostulates {
     arith: ArithPostulates,
-    clo_pos: HashMap<usize, usize>,
     apply_pos: HashMap<usize, usize>,
     combinator_value_pos: HashMap<Hash, usize>,
     combinator_call_pos: HashMap<Hash, usize>,
@@ -4287,7 +4289,6 @@ impl ClosurePostulates {
         let arith = ArithPostulates::new();
         ClosurePostulates {
             arith,
-            clo_pos: HashMap::new(),
             apply_pos: HashMap::new(),
             combinator_value_pos: HashMap::new(),
             combinator_call_pos: HashMap::new(),
@@ -4304,42 +4305,48 @@ impl ClosurePostulates {
         }
     }
 
-    /// `Clo_arity : Sort(0)`, one postulate per distinct arity, mirroring
-    /// how `Env_sig` is already postulated per capture signature -- the
-    /// kernel-level fix for the "arity-blind `Clo`" gap `TYPES.md` (section
-    /// 7) describes: two closures of different real arity now get
-    /// genuinely distinct, definitionally-unequal kernel types instead of
-    /// sharing one opaque `Clo`, so `kernel::check`'s own definitional-
-    /// equality checking rejects an arity mismatch (a call, a capture, an
-    /// `If` between two differently-sized closures) on its own, without any
-    /// new Rust-level bookkeeping to detect it -- every call site below
-    /// just has to ask for the *correct* arity, already available locally
-    /// (a parameter's own declared arity, a literal lambda's own peeled
-    /// arity, or `combinator_return_type`'s own classification), the same
-    /// discipline `Env_sig` already required for capture signatures.
-    /// Also eagerly primes `ite_clo_ref(arity)`'s own postulate at the same
-    /// time (see its own docs for why bundling here, rather than a
-    /// separate inference pass, is enough to prime it safely).
+    /// `Clo_arity := Int -> .. -> Int` (`arity` copies) -- the literal
+    /// curried arrow type, *not* postulated (see `RELATED_WORK.md` section
+    /// 11 for the investigation this answers): every consumer below only
+    /// ever needs "the callable shape with `arity` `Int` parameters and an
+    /// `Int` result" (`apply_ref`'s own arguments/result are uniformly
+    /// `Int` regardless of what the callee's own body does with them,
+    /// matching `compile.rs`'s own untyped `call_indirect` dispatch), and a
+    /// real Pi type already gives that for free -- no opaque `Sort(0)`
+    /// axiom needed at all. Two different arities still stay genuinely
+    /// distinct, definitionally-unequal kernel types (the fix for the
+    /// "arity-blind `Clo`" gap `TYPES.md` section 7 describes): `Int ->
+    /// Int` and `Int -> Int -> Int` are already structurally distinct
+    /// under `kernel::check`'s own Pi-formation rules, with no reliance on
+    /// remembering "which arity was already postulated" the way the old
+    /// opaque-tag scheme needed. Pure with respect to its own return
+    /// value -- safe to call any number of times, no staleness risk at
+    /// all (contrast the old memoized version's own careful
+    /// re-resolve-after-push dance) -- but keeps `&mut self` and keeps
+    /// eagerly priming `ite_clo_ref(arity)`'s own postulate as a side
+    /// effect, exactly as before: every existing call site below was
+    /// written assuming `clo_ty(k)` leaves `ite_clo_ref(k)` primed
+    /// afterward, and `ite_clo_ref` itself is still a genuine postulate
+    /// (see its own docs for why it isn't derivable the way `Clo_arity`
+    /// itself now is).
     fn clo_ty(&mut self, arity: usize) -> Expr {
-        if let Some(&pos) = self.clo_pos.get(&arity) {
-            return self.arith.p.get(pos);
+        self.ite_clo_ref(arity); // side effect only -- see this function's own doc
+        self.curried_int_ty(arity)
+    }
+
+    /// The literal `Int -> .. -> Int` (`arity` copies) type on its own,
+    /// with no side effect -- `clo_ty`'s own pure core, factored out so
+    /// `ite_clo_ref` can use this same shape for its own domain/codomain
+    /// without calling back into `clo_ty` itself (which would re-trigger
+    /// `clo_ty`'s own `ite_clo_ref`-priming side effect and recurse
+    /// forever on `ite_clo_ref`'s first call for a given arity).
+    fn curried_int_ty(&self, arity: usize) -> Expr {
+        let int_ty = self.arith.int_ty();
+        let mut ty = int_ty.clone();
+        for _ in 0..arity {
+            ty = kernel::arrow(int_ty.clone(), ty);
         }
-        let pos = self.arith.p.push(kernel::sort(0));
-        self.clo_pos.insert(arity, pos);
-        let clo_ty = self.arith.p.get(pos);
-        let ite_ty = kernel::arrow(self.arith.int_ty(), kernel::arrow(clo_ty.clone(), kernel::arrow(clo_ty.clone(), clo_ty)));
-        let ite_pos = self.arith.p.push(ite_ty);
-        self.ite_clo_pos.insert(arity, ite_pos);
-        // Re-resolve fresh, rather than returning the `clo_ty` value
-        // captured above: the `ite_clo` push just above grew `p.ctx` by
-        // one more since that value was itself resolved, which would
-        // otherwise leave it stale by exactly one at the depth this
-        // function actually returns to its caller -- the same staleness
-        // class `Anchored`'s own docs describe, here escaping this
-        // function's own boundary (a caller holding the returned `Expr`
-        // unanchored across any further push of its own) rather than a
-        // caller's own already-anchored value.
-        self.arith.p.get(pos)
+        ty
     }
 
     /// `apply_k : Clo -> Int -> .. -> Int` (`k` `Int` params), postulated
@@ -4378,12 +4385,24 @@ impl ClosurePostulates {
     /// needed for an `If` that chooses between two same-arity closures
     /// rather than two `Int`s (e.g. `if c then (\y. x+y) else (\y. x-y)`).
     /// The condition itself stays `Int` either way -- only the two
-    /// branches (and the result) differ. Always primed as a side effect of
-    /// `clo_ty(arity)`'s own first call (see its docs) -- this just looks
-    /// up the now-guaranteed-present position.
+    /// branches (and the result) differ. Genuinely opaque and not
+    /// derivable, unlike `Clo_arity` itself: its condition is `Int`, and
+    /// `Int` has no recursor in this kernel (deliberately -- it's an
+    /// open-ended arithmetic domain, grounded only per concrete value, see
+    /// `ArithPostulates::assume_prim_fact`/`assume_ite_fact`, never given a
+    /// case-elimination principle), so there's no way to build this from
+    /// anything already postulated (see `RELATED_WORK.md` section 11's own
+    /// correction). Called as a side effect from every `clo_ty(arity)`
+    /// call (see its own docs) as well as directly wherever only the
+    /// priming, not the `Clo_arity` value itself, is needed.
     fn ite_clo_ref(&mut self, arity: usize) -> Expr {
-        self.clo_ty(arity);
-        let pos = self.ite_clo_pos[&arity];
+        if let Some(&pos) = self.ite_clo_pos.get(&arity) {
+            return self.arith.p.get(pos);
+        }
+        let clo_ty = self.curried_int_ty(arity);
+        let ite_ty = kernel::arrow(self.arith.int_ty(), kernel::arrow(clo_ty.clone(), kernel::arrow(clo_ty.clone(), clo_ty)));
+        let pos = self.arith.p.push(ite_ty);
+        self.ite_clo_pos.insert(arity, pos);
         self.arith.p.get(pos)
     }
 
