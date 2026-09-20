@@ -144,13 +144,23 @@ step genuinely uses `ih` is unblocked as a result -- a hand-built proof
 can now legitimately reference the induction-hypothesis closure as a
 well-typed subterm of its own (e.g. as a `cong`-held-fixed argument when
 bridging to a postulated recursor like `bool_rec`, which never
-auto-reduces on its own regardless of this fix). Genuinely *finishing* a
-concrete proof like `is_zero(Zero) = true` still needs `bool_rec`'s own
-`bool_rec_false_eq` computation-rule axiom (a `WRec`-external postulate,
-unaffected by this fix, since `bool_rec` itself was never derived via
-`WRec`) chained in via one more `cong`/`trans_proof` step -- not
-attempted here, since it's now an ordinary, unblocked proof-construction
-exercise rather than a structural impossibility.
+auto-reduces on its own regardless of this fix).
+
+**Since finished: `is_zero(Zero) = true`, propositionally.** The same
+test now carries the concrete proof through to the end, confirming the
+fix's practical value rather than just its own isolated typechecking.
+`bool_rec_false_eq` instantiated at `(is_zero_motive_c, case_true,
+case_false)` relates `is_zero_step(false)` to `case_false`
+propositionally (`bool_rec` itself is postulated and never reduces on
+its own, unaffected by this fix); one `cong1` step lifts that through
+`\h. h(f_zero)(rec_step)` -- the same `f_zero`/`rec_step` `whnf_impl`
+itself builds one reduction step into `is_zero(Zero)`, confirmed
+syntactically identical by direct `assert_eq!`, not just independently
+well-typed -- to a `Bool`-typed equality; `case_false`'s own body
+ignores both arguments and reduces to `true` outright, so `trans_proof`
+closes the gap from `is_zero(Zero)` to `true` in one more step. Exactly
+the "ordinary, unblocked proof-construction exercise" this section
+predicted, once the closure itself was fixed.
 
 The practical consequence for `proof.rs`'s own `Ev`/`ev_rec` methodology
 -- postulate the recursor's existence *and* separately postulate each

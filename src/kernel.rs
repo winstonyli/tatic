@@ -1403,13 +1403,54 @@ mod tests {
         // well-typed too, stuck-on-a-postulate tail and all.
         let stuck_one_step = whnf(&is_zero_on_zero);
         check(&p.ctx, &stuck_one_step, &p.get(nat.bool_pos)).expect("whnf(is_zero(Zero)) should still typecheck at Bool after the fix");
+        assert_eq!(
+            stuck_one_step,
+            app(app(app(is_zero_step.clone(), p.get(nat.false_pos)), f_zero_here.clone()), rec_step.clone()),
+            "whnf_impl's own stuck reduction should be exactly is_zero_step(false)(f_zero)(rec_step) -- \
+             confirming the hand-rebuilt closure above is the *same* one whnf_impl actually produces, \
+             not just an independently-typed lookalike"
+        );
 
-        // Genuinely finishing `is_zero(Zero) = true` propositionally still
-        // needs `bool_rec_false_eq` (`bool_rec` is postulated, so it never
-        // reduces on its own, independent of this fix) -- one explicit
-        // `cong`/`trans_proof` step, not attempted here; what this test
-        // confirms is that such a step is no longer blocked by an
-        // unconditionally ill-typed intermediate closure.
+        // Genuinely finishing `is_zero(Zero) = true` propositionally, now
+        // that the closure above is no longer unconditionally ill-typed:
+        // `bool_rec_false_eq` (unaffected by the `children_ty` fix, since
+        // `bool_rec` is postulated and never reduces on its own) relates
+        // `is_zero_step(false)` to `case_false` at `C(false)`; one `cong1`
+        // step lifts that (function-application congruence, holding
+        // `f_zero_here`/`rec_step` fixed) to a `Bool`-typed equality
+        // between the two ways of finishing the call, and `case_false`'s
+        // own body ignores both its arguments and returns `true`
+        // outright, so its own side reduces the rest of the way for free.
+        let bool_ty = p.get(nat.bool_pos);
+        let true_val = p.get(nat.true_pos);
+        let false_val = p.get(nat.false_pos);
+        let is_zero_step_at_false = app(is_zero_step.clone(), false_val.clone());
+        let c_false_ty = app(is_zero_motive_c.clone(), false_val.clone());
+
+        let bfe_inst = app(app(app(nat.bool_rec_false_eq(&p), is_zero_motive_c.clone()), case_true.clone()), case_false.clone());
+        check(
+            &p.ctx,
+            &bfe_inst,
+            &id(c_false_ty.clone(), is_zero_step_at_false.clone(), case_false.clone()),
+        )
+        .expect("bool_rec_false_eq instantiated at (is_zero_motive_c, case_true, case_false) should typecheck");
+
+        // f_cong : C(false) -> Bool := \h. h(f_zero_here)(rec_step)
+        let f_cong = lam(c_false_ty.clone(), app(app(var(0), shift(&f_zero_here, 0, 1)), shift(&rec_step, 0, 1)));
+        let cong_step = cong1(&c_false_ty, &bool_ty, &f_cong, is_zero_step_at_false, case_false.clone(), bfe_inst);
+
+        // `refl` bridges `is_zero_on_zero` to its own one-step reduction
+        // (definitionally equal, `whnf` being one particular strategy for
+        // reaching a shared normal form) -- `trans_proof` then chains that
+        // with `cong_step` (whose own type, `Id(Bool, f_cong(is_zero_step
+        // (false)), f_cong(case_false))`, is itself definitionally equal
+        // to `Id(Bool, stuck_one_step, true)` once both sides beta-reduce,
+        // `case_false`'s own body reducing all the way to `true`) to land
+        // on the final result.
+        let bridge = refl(is_zero_on_zero.clone());
+        let final_proof = trans_proof(&bool_ty, &is_zero_on_zero, &stuck_one_step, &true_val, bridge, cong_step);
+        check(&p.ctx, &final_proof, &id(bool_ty, is_zero_on_zero, true_val))
+            .expect("is_zero(Zero) = true should now be provable propositionally");
     }
 
     #[test]
