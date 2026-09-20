@@ -1028,6 +1028,54 @@ this section's own verdict already priced in, not a smaller follow-on --
 so the verdict stands: still real, still large, still its own separately
 scoped session, now with a materially more precise reason why.
 
+**Final correction: the second path above is not a follow-on at all --
+it's already built, already shipped, and already tested.** Set out to
+build it and found, before writing a line of code, that
+`eval_dyn_direct_call` already has the exact case needed: when a
+callee's own declared parameter is *honestly* `Clo`-typed
+(`root_param_types[pos] == Some(_)`) and the concrete argument really is
+a `DynDenoted::Clo`, its "ordinary opaque call" path already matches
+`(Some(_), DynDenoted::Clo(e, _)) => e` and denotes the call through
+`call_ref`, the same opaque postulate `clo_eq_ref`'s own callee-side
+construction would use -- no inlining, no new machinery, just the
+already-existing per-instance methodology doing exactly what it was
+built to do. An existing, already-passing test exercises precisely this
+shape end to end:
+`branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_parameter_get_a_per_instance_proof`
+(`proof.rs`) builds `it = rec f n g x = if dead then .. else (if n<=0
+then x else 1 + f(n-1, g, g(x)))`, a self-recursive combinator whose own
+loop-carried parameter `g` is called honestly (`g(x)`, one call site,
+one arity) every iteration, and gets a per-instance proof via
+`prove_closure_expr_instance` for every `n` tried, despite
+`prove_closure_expr`'s own purely-structural universal attempt declining
+on the very same term. The identical shape is confirmed a second time,
+through the *real* compiled pipeline, by
+`jit::tests::a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent`.
+
+This resolves the whole question, not just the path to it. A `Clo`
+value can only ever originate from a literal `Abs` written somewhere
+inside the term being evaluated -- there is no surface syntax or
+runtime mechanism for anything *outside* a term to hand it a closure --
+so the only place a "`root`'s own declared parameter is genuinely
+`Clo`-typed" scenario can ever concretely arise is exactly the shape
+above: a nested (here, self-recursive) combinator's own parameter,
+supplied a real closure literal from elsewhere in the *same* term. That
+shape is what the existing tests confirm already works, today, via
+`eval_dyn`. The one configuration that's still declined --
+`clo_eq_ref`'s or `prove_closure_expr_instance`'s own *outermost* `h`,
+the term whose own top-level arguments are supplied externally via
+`args: &[i64]`/`jit.rs`'s own sample battery -- was shown structurally
+unreachable in the correction above (there is no `i64` encoding of a
+closure `jit.rs` could ever construct for such a sample), and that
+unreachability is not a gap to close: it correctly reflects that nothing
+external can ever supply a closure in the first place. There is nothing
+left to build here. §12's original decline, in `clo_eq_ref` itself, is a
+real and permanent property of that one methodology (a universal axiom
+has no way to ask "which concrete value is this, at runtime" the way a
+per-instance proof can) -- but it is not, and was never, an overall
+capability gap once `eval_dyn` is counted as part of this file's answer
+to "can a `Clo`-typed parameter be proven," which it always has been.
+
 ## 13. A `Call`-shaped `IfTree` leaf targeting a further `IfTree` — already worked, confirmed rather than built
 
 Section 10 above added `Call`-shaped leaf support to
