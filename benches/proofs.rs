@@ -8,9 +8,11 @@
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
 use tatic::proof::{
-    prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_call, prove_tail_recursive_universal,
+    prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_call, prove_tail_recursive_instance,
+    prove_tail_recursive_universal,
 };
 use tatic::term::TermStore;
+use tatic::eval;
 
 #[path = "common.rs"]
 mod common;
@@ -167,6 +169,55 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
     group.finish();
 }
 
+/// Cost of `eval_and_prove_call_over`'s own two over-application shapes
+/// (`clo_eq_ref_if_between`/`ite_clo_eq_ref`/`apply_clo_eq_ref`, and
+/// `clo_eq_ref_pap`/`apply_pap_eq_ref`), which has no standalone public
+/// entry point of its own -- it's only ever reached through a recursive
+/// instance proof's own self-call-argument handling
+/// (`build_ev_witness`'s per-argument `eval_and_prove` call), so this
+/// exercises it the same way any real usage would: a small tail-recursive
+/// loop whose self-call argument is, each of 4 iterations, an
+/// over-application expression rebuilding the very same `n - 1` a plain
+/// `Prim::Sub` would -- deliberately trivial arithmetically (both shapes'
+/// own `common::` doc comments explain why), so this measures
+/// proof-construction cost, not the cost of the arithmetic it happens to
+/// compute.
+///
+/// `prove_tail_recursive_instance` (the only public entry point) always
+/// pays `build_universal`'s own one-time scaffold cost too, not just the
+/// per-iteration instance work -- this is *not* a clean isolation of
+/// `eval_and_prove_call_over` alone. Comparing against
+/// `universal_proof_one_time_by_leaf_count` (a comparably-shaped
+/// tail-recursive loop's `build_universal` cost alone, ~10-20ms) puts a
+/// number on it: this benchmark's own measured cost (~90-130ms for 4
+/// iterations, both shapes) is 5-10x that baseline, so most of it -- not
+/// all -- is genuinely attributable to the 4 over-application instances,
+/// roughly ~20-30ms each. That per-instance cost is itself a real,
+/// somewhat surprising finding (three orders of magnitude past
+/// `gcd_relational_proof_single_call`'s own ~24us per-call cost for
+/// comparable arithmetic recursion) worth a closer look in its own right
+/// -- left as a discovered fact this benchmark documents, not something
+/// fixed here.
+fn over_application_instance_proof(c: &mut Criterion) {
+    let mut group = c.benchmark_group("over_application_instance_proof");
+
+    let mut store = TermStore::new();
+    let h = common::tail_recursive_loop_with_if_between_closures_self_call_arg(&mut store);
+    assert_eq!(eval::apply_term(&store, h, &[4]).unwrap(), 0, "sanity check against the interpreter");
+    group.bench_function("if_between_closures_self_call_arg", |b| {
+        b.iter(|| prove_tail_recursive_instance(&store, black_box(h), &[4]).unwrap())
+    });
+
+    let mut store2 = TermStore::new();
+    let h2 = common::tail_recursive_loop_with_pap_producing_root_self_call_arg(&mut store2);
+    assert_eq!(eval::apply_term(&store2, h2, &[4]).unwrap(), 0, "sanity check against the interpreter");
+    group.bench_function("pap_producing_root_self_call_arg", |b| {
+        b.iter(|| prove_tail_recursive_instance(&store2, black_box(h2), &[4]).unwrap())
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     straight_line_proof,
@@ -175,6 +226,7 @@ criterion_group!(
     relational_scaling_vs_universal,
     closures_fragment_proof,
     closure_typed_recursion_universal_proof,
+    over_application_instance_proof,
     non_tail_closure_recursion_instance_proof
 );
 criterion_main!(benches);

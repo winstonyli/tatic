@@ -454,3 +454,135 @@ pub fn branching_non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash 
     let n_lit = s.lit(6);
     s.app2(it, n_lit, inc)
 }
+
+/// `f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(10, 3, 100)` --
+/// the canonical over-application shape `eval_and_prove_call_over`'s own
+/// `clo_eq_ref_if_between`/`ite_clo_eq_ref`/`apply_clo_eq_ref` cover:
+/// `f`'s own saturated call denotes a further `Clo_1`, chosen by an `If`
+/// between two literal lambdas, then the extra argument dispatches
+/// against it.
+pub fn over_application_if_between_closures(s: &mut TermStore) -> Hash {
+    let c1 = s.var(0);
+    let b1 = s.var(1);
+    let a1 = s.var(2);
+    let ab1 = s.prim(PrimOp::Add, a1, b1);
+    let abc1 = s.prim(PrimOp::Add, ab1, c1);
+    let closure1 = s.abs(abc1);
+
+    let c2 = s.var(0);
+    let b2 = s.var(1);
+    let a2 = s.var(2);
+    let amb2 = s.prim(PrimOp::Sub, a2, b2);
+    let ambc2 = s.prim(PrimOp::Add, amb2, c2);
+    let closure2 = s.abs(ambc2);
+
+    let a_body = s.var(1);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, a_body);
+    let f_body = s.if_(cond, closure1, closure2);
+    let f_inner = s.abs(f_body);
+    let f = s.abs(f_inner);
+
+    let a_lit = s.lit(10);
+    let b_lit = s.lit(3);
+    let c_lit = s.lit(100);
+    let fa = s.app(f, a_lit);
+    let fab = s.app(fa, b_lit);
+    s.app(fab, c_lit)
+}
+
+/// `g = \x y. x*10 + y; f = \a. g(a); f(5)(3)` -- the PAP-producing-root
+/// over-application shape `eval_and_prove_call_over`'s own
+/// `clo_eq_ref_pap`/`apply_pap_eq_ref` cover: `f`'s own saturated call
+/// denotes a partial application of `g`, no branching at all, then the
+/// extra argument completes `g`'s own call directly.
+pub fn over_application_pap_producing_root(s: &mut TermStore) -> Hash {
+    let x = s.var(1);
+    let y = s.var(0);
+    let ten = s.lit(10);
+    let x10 = s.prim(PrimOp::Mul, x, ten);
+    let xy = s.prim(PrimOp::Add, x10, y);
+    let g_inner = s.abs(xy);
+    let g = s.abs(g_inner);
+
+    let a_ref = s.var(0);
+    let f_body = s.app(g, a_ref);
+    let f = s.abs(f_body); // \a. g(a) -- a PAP of g, arity 1
+
+    let a_lit = s.lit(5);
+    let c_lit = s.lit(3);
+    let fa = s.app(f, a_lit);
+    s.app(fa, c_lit)
+}
+
+/// `rec f n = if n <= 0 then n else f(over_app_id(n, n-1))`, where
+/// `over_app_id(a, x) = (\a b. if 0<a then (\c.c) else (\c.c))(a, a, x)`
+/// -- deliberately trivial arithmetically (both `If`-branches are the
+/// identity, so this always reduces to `x`, and the whole loop always
+/// counts down to `0` from `n=8`), but exercises
+/// `eval_and_prove_call_over`'s own `clo_eq_ref_if_between`/
+/// `ite_clo_eq_ref`/`apply_clo_eq_ref` once per iteration, the same way a
+/// real self-call argument built from an over-application would --
+/// `build_ev_witness`'s own per-argument `eval_and_prove` call is what
+/// this benchmark isolates the cost of, in the actual calling context
+/// that machinery is built for (there's no standalone public entry point
+/// for `eval_and_prove_call_over` on its own -- it's only ever reached
+/// through a recursive instance proof's own leaf/self-call-argument
+/// handling).
+pub fn tail_recursive_loop_with_if_between_closures_self_call_arg(s: &mut TermStore) -> Hash {
+    let c1 = s.var(0);
+    let id1 = s.abs(c1);
+    let c2 = s.var(0);
+    let id2 = s.abs(c2);
+
+    let a_cond = s.var(1); // over_app_id's own `a` param
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, a_cond);
+    let over_app_body = s.if_(cond, id1, id2);
+    let over_app_inner = s.abs(over_app_body);
+    let over_app = s.abs(over_app_inner); // \a b. if 0<a then (\c.c) else (\c.c)
+
+    let n = s.var(0);
+    let f = s.var(1);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let over_app_a = s.app(over_app, n);
+    let over_app_ab = s.app(over_app_a, n);
+    let over_app_call = s.app(over_app_ab, n_minus_1); // over_app_id(n, n, n-1) = n-1
+    let rec_call = s.app(f, over_app_call);
+    let zero_c = s.lit(0);
+    let base_cond = s.prim(PrimOp::Le, n, zero_c);
+    let body = s.if_(base_cond, n, rec_call);
+    let abs = s.abs(body);
+    s.rec(abs)
+}
+
+/// `rec f n = if n <= 0 then n else f(over_app_pap_id(n-1))`, where
+/// `over_app_pap_id(x) = (\a. (\p q. q)(a))(0)(x)` -- `g = \p q. q`
+/// (arity 2), partially applied to a constant, so this always reduces to
+/// `x` too, exercising `eval_and_prove_call_over`'s own
+/// `clo_eq_ref_pap`/`apply_pap_eq_ref` once per iteration instead of the
+/// `If`-between-closures pair above -- see that function's own docs.
+pub fn tail_recursive_loop_with_pap_producing_root_self_call_arg(s: &mut TermStore) -> Hash {
+    let q = s.var(0);
+    let g_inner = s.abs(q);
+    let g = s.abs(g_inner); // \p q. q -- p itself is never referenced
+
+    let a_ref = s.var(0);
+    let over_app_pap_body = s.app(g, a_ref);
+    let over_app_pap = s.abs(over_app_pap_body); // \a. g(a) -- a PAP of g, arity 1
+
+    let n = s.var(0);
+    let f = s.var(1);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let zero_lit = s.lit(0);
+    let over_app_a = s.app(over_app_pap, zero_lit);
+    let over_app_call = s.app(over_app_a, n_minus_1); // over_app_pap_id(0, n-1) = n-1
+    let rec_call = s.app(f, over_app_call);
+    let zero_c = s.lit(0);
+    let base_cond = s.prim(PrimOp::Le, n, zero_c);
+    let body = s.if_(base_cond, n, rec_call);
+    let abs = s.abs(body);
+    s.rec(abs)
+}
