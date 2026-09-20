@@ -239,8 +239,60 @@ impossible rather than something a discipline has to be followed
 perfectly for, at the cost of a much heavier meta-theory than this
 project's small, auditable, hand-rolled de Bruijn kernel currently needs.
 Whether that trade is worth making here is exactly the kind of thing to
-scope properly (see the "harden against the staleness-bug class" option
-surveyed but not yet started) rather than assumed.
+scope properly, not assumed.
+
+**Investigated: an automatic staleness detector, short of the full HOAS
+rewrite.** The concrete proposal was a monotonic generation counter on
+`Postulates`, with `Postulates::get`-derived `Expr`s debug-tagged so any
+use across an intervening push trips a `debug_assert` instead of
+silently mis-shifting. It doesn't hold up on closer inspection, for two
+independent reasons:
+
+- **Nothing to tag the common case with.** The overwhelmingly common
+  leak vector is a bare `Expr::Var(k)` (`Postulates::get`'s own return
+  for the typical case) — a plain `u32`, no `Rc` at all, so there's no
+  pointer identity a side table could key on the way
+  `SHIFT_SCOPE`/`ReductionCache` already key their own caches on `Rc`
+  pointers (see this module's own docs on why an address-only key would
+  be wrong even there). Tagging would need to change `Expr`'s own
+  representation, which means touching `kernel.rs` — deliberately kept
+  free-standing and minimal (see its own module docs) — not `proof.rs`
+  alone.
+- **A generation counter adds nothing `Anchored`'s own `depth` field
+  doesn't already give.** The dangerous case is `Postulates::ctx`
+  growing and *staying* grown between a value's construction and its
+  reuse; `params_and_close`/`params_and_close_typed`'s own push-then-
+  `truncate` pattern (temporary pushes rolled back to `base_len`) looked
+  like a case a length-based check might miss, but it isn't: truncation
+  only ever removes entries *above* `base_len`, so anything an
+  already-built value references (always `< base_len` for a value built
+  before the round-trip) is untouched regardless, and `Anchored::at`'s
+  existing `cur - self.depth` shift already handles net growth
+  correctly. A counter that never decrements distinguishes nothing a
+  `ctx.len()`-based depth doesn't already distinguish for this bug class.
+
+The real gap is narrower and harder: not "can staleness be detected once
+it happens" but "a caller forgot to wrap a value in `Anchored` at all" —
+and a forgotten wrap leaves no trace to check against later. Closing
+*that* automatically needs either the `Expr`-level change above, or
+redesigning `ArithPostulates`/`ClosureCombinators`'s own common
+accessors to return `Anchored` by default (an explicit escape hatch for
+the rare case where immediate use is safe) — a real, large refactor
+across `proof.rs`'s entire accessor surface, not a bounded follow-on.
+
+What already works, and keeps working: `debug_assert_has_type` at a
+composition's own final step, exactly the discipline this section's own
+bug list came from. Every staleness bug found in this project so far —
+the four listed above, plus two more found while landing `ClosureRhsShape
+::Call`'s own recursion and the `WRec` `children_ty` fix (both fixes,
+both committed) — was caught this same way: a real, immediate,
+un-ignorable panic, never a silent wrong answer that shipped. The
+recursive functions most exposed to this class (`eval_and_prove_call_over`
+and its siblings, `resolve_closure_shape_to_leaf`, `build_ev_witness`,
+`eval_dyn`/`eval_dyn_tail_recursive`/`eval_dyn_direct_call`) already carry
+`debug_assert_has_type` at their own return points; extending that same
+manual discipline to new proof.rs code as it's written remains the
+practical mitigation, not a mechanism that can be built once and forgotten.
 
 **A second, distinct bug class from the same root cause, found extending
 `clo_eq_ref` to a PAP-producing `root`** (`clo_eq_ref_pap`/
