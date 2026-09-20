@@ -826,6 +826,7 @@ fn resolve_all(arith: &ArithPostulates, positions: &[usize]) -> Vec<Expr> {
 /// one embedded as a sub-expression of a leaf just stays part of that
 /// leaf's own expression, handled by `find_self_calls`/
 /// `denote_with_placeholders` the same way a `Prim` is.
+#[derive(Clone)]
 enum DecisionTree {
     If { cond: Hash, then_branch: Box<DecisionTree>, else_branch: Box<DecisionTree> },
     Leaf(Hash),
@@ -3081,7 +3082,7 @@ fn eval_and_prove_call_over(
     let bridge = Anchored::new(&combinators.cp.arith, bridge);
     let axiom_at_literals = Anchored::new(&combinators.cp.arith, axiom_at_literals);
 
-    // Resolve which concrete closure applies (`IfBetween`: evaluating
+    // Resolve which concrete closure applies (`IfTree`: evaluating
     // `cond` within `root`'s own inner frame; `Pap`: there's only ever
     // one), and bridge `root`'s own saturated call (denoted) all the way
     // to that closure's own value expression (`root_to_chosen`) -- plus
@@ -3089,25 +3090,18 @@ fn eval_and_prove_call_over(
     // `Hash` to recurse into (`chosen`), its own captures resolved to
     // literal triples (`chosen_cap_triples`), the full argument list for
     // that recursive call (`chosen_arg_triples` -- just `extra_arg_triples`
-    // for `IfBetween`, since `chosen` there is already exactly `k`-ary;
+    // for `IfTree`, since `chosen` there is already exactly `k`-ary;
     // `root`'s own supplied args *then* `extra_arg_triples` for `Pap`,
     // since `chosen` there is `g`, whose own arity is `s + k`), and the
     // instantiated `apply_*_eq_ref` fact bridging `apply_ref(k)` applied
     // to `chosen_value` down to a direct call on `chosen`.
     let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, root_to_chosen, apply_eq_chosen) = match shape {
-        ClosureRhsShape::IfBetween { cond, inner_t, inner_e } => {
-            let (result_c, denote_c, proof_c) = eval_and_prove(store, cond, combinators, &inner_params, &inner_concrete, &inner_facts)?;
-            let denote_c = Anchored::new(&combinators.cp.arith, denote_c);
-            let proof_c = Anchored::new(&combinators.cp.arith, proof_c);
-
-            let (t_value_lit, t_cap_triples) = inner_closure_literal_value(combinators, inner_t, &inner_params, &inner_concrete, &inner_facts)?;
-            let t_value_lit = Anchored::new(&combinators.cp.arith, t_value_lit);
-            let (e_value_lit, e_cap_triples) = inner_closure_literal_value(combinators, inner_e, &inner_params, &inner_concrete, &inner_facts)?;
-            let e_value_lit = Anchored::new(&combinators.cp.arith, e_value_lit);
-
-            combinators.cp.arith.lit(result_c);
-            let ite_eq_axiom = combinators.ite_clo_eq_ref(result_c, k);
-            let ite_eq_axiom = Anchored::new(&combinators.cp.arith, ite_eq_axiom);
+        ClosureRhsShape::IfTree(tree) => {
+            let (chosen, chosen_cap_triples, tree_value_at_literals, chosen_value_lit, tree_to_chosen) =
+                resolve_closure_if_tree(store, combinators, &tree, &inner_params, &inner_concrete, &inner_facts, k)?;
+            let tree_value_at_literals = Anchored::new(&combinators.cp.arith, tree_value_at_literals);
+            let chosen_value_lit = Anchored::new(&combinators.cp.arith, chosen_value_lit);
+            let tree_to_chosen = Anchored::new(&combinators.cp.arith, tree_to_chosen);
 
             // Nothing pushes past here -- resolve everything fresh, in one
             // batch, only once nothing more is left to push.
@@ -3115,41 +3109,21 @@ fn eval_and_prove_call_over(
             let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.at(&combinators.cp.arith);
             let bridge_here = bridge.at(&combinators.cp.arith);
             let axiom_at_literals_here = axiom_at_literals.at(&combinators.cp.arith);
-            let denote_c = denote_c.at(&combinators.cp.arith);
-            let proof_c = proof_c.at(&combinators.cp.arith);
-            let t_value_lit = t_value_lit.at(&combinators.cp.arith);
-            let e_value_lit = e_value_lit.at(&combinators.cp.arith);
-            let ite_eq_axiom = ite_eq_axiom.at(&combinators.cp.arith);
-            let lit_xc = combinators.cp.arith.lit_ref(result_c);
-            let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed by clo_eq_ref via clo_ty(k)
-            let int_ty = combinators.cp.arith.int_ty();
-            let clo_ty = combinators.cp.clo_ty(k);
+            let tree_value_at_literals = tree_value_at_literals.at(&combinators.cp.arith);
+            let chosen_value_lit = chosen_value_lit.at(&combinators.cp.arith);
+            let tree_to_chosen = tree_to_chosen.at(&combinators.cp.arith);
+            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed by clo_eq_ref via clo_ty(k)
 
-            // `ite_clo_eq_ref`'s own bridge: first, `cong1` over
-            // `ite_clo_k`'s own first (`Int`) argument (`t`/`e` held fixed
-            // at their literal values), turning `denote(cond,lits)` into
-            // `lit_ref(xc)`; then the axiom itself, instantiated at the
-            // two branches' own literal values -- see `ite_clo_eq_ref`'s
-            // own docs for why both steps are needed.
-            let f_cond_body = kernel::app3(
-                kernel::shift(&ite_clo, 0, 1),
-                kernel::var(0),
-                kernel::shift(&t_value_lit, 0, 1),
-                kernel::shift(&e_value_lit, 0, 1),
-            );
-            let f_cond = kernel::lam(int_ty.clone(), f_cond_body);
-            let cong_cond = kernel::cong1(&int_ty, &clo_ty, &f_cond, denote_c.clone(), lit_xc.clone(), proof_c);
-            let ite_at_denote_c = kernel::app3(ite_clo.clone(), denote_c, t_value_lit.clone(), e_value_lit.clone());
-            let ite_at_lit_xc = kernel::app3(ite_clo, lit_xc, t_value_lit.clone(), e_value_lit.clone());
-
-            let chosen_value_lit = if result_c != 0 { t_value_lit.clone() } else { e_value_lit.clone() };
-            let ite_axiom_at = apply_n(ite_eq_axiom, vec![t_value_lit, e_value_lit]);
-
-            let branch_bridge = kernel::trans_proof(&clo_ty, &ite_at_denote_c, &ite_at_lit_xc, &chosen_value_lit, cong_cond, ite_axiom_at);
-            let root_to_ite = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &ite_at_denote_c, bridge_here, axiom_at_literals_here);
-            let root_to_chosen = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &ite_at_denote_c, &chosen_value_lit, root_to_ite, branch_bridge);
-
-            let (chosen, chosen_cap_triples) = if result_c != 0 { (inner_t, t_cap_triples) } else { (inner_e, e_cap_triples) };
+            // `axiom_at_literals`'s own RHS is exactly the tree's own
+            // formula at literals (`tree_value_at_literals`, independently
+            // reconstructed here the same way `resolve_closure_if_tree`'s
+            // own recursive descent builds it) -- bridge `root`'s call to
+            // that formula, then to the concretely-reached leaf's own
+            // value, via `tree_to_chosen` (one `ite_clo_eq_ref` step per
+            // internal node on the path actually taken).
+            let root_to_tree_value =
+                kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &tree_value_at_literals, bridge_here, axiom_at_literals_here);
+            let root_to_chosen = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &tree_value_at_literals, &chosen_value_lit, root_to_tree_value, tree_to_chosen);
 
             // `apply_clo_eq_ref(chosen)` -- its own first use for this
             // `Hash` may lazily push, so everything built above is
@@ -3212,7 +3186,7 @@ fn eval_and_prove_call_over(
             // syntactically the same term `axiom_at_literals`'s own
             // (opaque, uninstantiated) RHS denotes once substituted --
             // mirrors `ite_at_denote_c`'s identical role in the
-            // `IfBetween` branch above.
+            // `IfTree` branch above.
             let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
             let pap_fn = combinators.pap_ref(g, s, &g_dummy)?;
             let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
@@ -3243,7 +3217,7 @@ fn eval_and_prove_call_over(
 
             // `apply_pap_eq_ref(g, s)` -- its own first use for this
             // `(g, s)` may lazily push, so everything built above is
-            // anchored *first*, same discipline `IfBetween`'s own
+            // anchored *first*, same discipline `IfTree`.s own
             // `apply_clo_eq_ref` call above uses.
             let root_to_chosen = Anchored::new(&combinators.cp.arith, root_to_chosen);
             let pap_at_denoted = Anchored::new(&combinators.cp.arith, pap_at_denoted);
@@ -4682,7 +4656,7 @@ impl<'a> ClosureCombinators<'a> {
     /// empirically, not just by inspection, before settling on this
     /// restriction) -- a `Clo_k` result can only arise "one level down",
     /// via one of two shapes dispatched below: an `If` picking between two
-    /// closures (`clo_eq_ref_if_between`), or a partial application of a
+    /// closures (`clo_eq_ref_if_tree`), or a partial application of a
     /// further literal lambda (`clo_eq_ref_pap`). Checked at the Rust
     /// level (not merely inferred from `return_type_of`'s own structural
     /// classification, which would also accept a `Term::Rec` branch or a
@@ -4715,60 +4689,58 @@ impl<'a> ClosureCombinators<'a> {
             _ => return None,
         };
         match self.store.resolve(body) {
-            Term::If(..) => self.clo_eq_ref_if_between(root, arity, body, &param_types, k),
+            Term::If(..) => self.clo_eq_ref_if_tree(root, arity, body, k),
             Term::App(..) => self.clo_eq_ref_pap(root, arity, body, &param_types, k),
             _ => None,
         }
     }
 
-    /// `clo_eq_ref`'s `If`-between-two-closures branch: `root`'s own body
-    /// is `Term::If(cond, t, e)`, where `cond` stays in the
-    /// `Var`/`Lit`/`Prim`/`If` fragment and `t`/`e` are each a bare
-    /// `Term::Abs` (never `Term::Rec`) of the same arity `k`.
+    /// `clo_eq_ref`'s `If`-tree branch: `root`'s own body is an arbitrary
+    /// tree of nested `If`s (`cond` at each node staying in the
+    /// `Var`/`Lit`/`Prim`/`If` fragment), every leaf a bare `Term::Abs`
+    /// (never `Term::Rec`) of the same arity `k` -- a flat `If(cond, t,
+    /// e)` between two closures is just the depth-1 case of this, no
+    /// longer special-cased on its own.
     ///
     /// Every postulate this axiom's own RHS references (`register`'s own
-    /// value expression for each inner closure, `mk_env_ref` for any
-    /// inner closure that captures, `clo_ty(k)`/`ite_clo_ref(k)` for the
-    /// `If` shape) is primed *before* `params_and_close_typed` pushes
-    /// `root`'s own quantified captures/params below, not lazily from
-    /// inside that closure: `params_and_close_typed`'s own `close_pi` call
-    /// wraps *every* position pushed onto `arith.p.ctx` between its own
-    /// base depth and wherever the closure leaves it as a Pi binder, not
-    /// just the ones the closure itself asked for -- a lazy push from
-    /// *inside* the closure would silently become a spurious, unused
-    /// extra `Pi` argument in this axiom's own type (unlike `call_eq_ref`,
-    /// whose own `mk_env_ref` call inside its closure is, in every actual
-    /// caller, already primed by the time it runs -- `eval_and_prove` is
-    /// only ever reached from `instance_from_scaffold`, which always
-    /// builds the closure-aware universal proof first, over the same
+    /// value expression for each leaf, `mk_env_ref` for any leaf that
+    /// captures, `clo_ty(k)`/`ite_clo_ref(k)` for the `If` shape) is
+    /// primed *before* `params_and_close_typed` pushes `root`'s own
+    /// quantified captures/params below, not lazily from inside that
+    /// closure: `params_and_close_typed`'s own `close_pi` call wraps
+    /// *every* position pushed onto `arith.p.ctx` between its own base
+    /// depth and wherever the closure leaves it as a Pi binder, not just
+    /// the ones the closure itself asked for -- a lazy push from *inside*
+    /// the closure would silently become a spurious, unused extra `Pi`
+    /// argument in this axiom's own type (unlike `call_eq_ref`, whose own
+    /// `mk_env_ref` call inside its closure is, in every actual caller,
+    /// already primed by the time it runs -- `eval_and_prove` is only
+    /// ever reached from `instance_from_scaffold`, which always builds
+    /// the closure-aware universal proof first, over the same
     /// `combinators`, and that pass's own `denote_with_placeholders`
     /// already primes `mk_env_ref` for `root`'s own capture signature;
     /// `root`'s own body, though, is never *entered* by that pass at all
     /// -- `ClosureCombinators`'s own docs: "a combinator's body is never
     /// denoted here... registering one never discovers more work" -- so
-    /// nothing upstream of this axiom ever primes `inner`/`t`/`e`'s own
+    /// nothing upstream of this axiom ever primes any leaf's own
     /// postulates ahead of time the way it does for `root`'s own).
-    fn clo_eq_ref_if_between(
-        &mut self,
-        root: Hash,
-        arity: usize,
-        body: Hash,
-        param_types: &[Option<usize>],
-        k: usize,
-    ) -> Option<(Expr, ClosureRhsShape)> {
-        let Term::If(c, t, e) = self.store.resolve(body) else {
-            unreachable!("caller already matched Term::If")
-        };
-        let (c, t, e) = (*c, *t, *e);
-        if !matches!(self.store.resolve(t), Term::Abs(_)) || !matches!(self.store.resolve(e), Term::Abs(_)) {
+    fn clo_eq_ref_if_tree(&mut self, root: Hash, arity: usize, body: Hash, k: usize) -> Option<(Expr, ClosureRhsShape)> {
+        // Deliberately *not* `classify_tree` -- that function additionally
+        // restricts every `cond` to a direct comparison
+        // (`Lt`/`Le`/`Eq`), a `build_universal`-specific requirement
+        // (`cond_premise`'s own use of plain `Id` equality) this
+        // construction never needed even in its original flat form
+        // (`cond` only ever needed to stay in the `Var`/`Lit`/`Prim`/`If`
+        // fragment `denote`/`collect_literals` already cover) -- reusing
+        // it here would silently narrow what already worked.
+        let tree = classify_closure_if_tree(self.store, body);
+        if matches!(tree, DecisionTree::Leaf(_)) {
+            return None; // caller already matched Term::If on body directly
+        }
+        if !closure_if_tree_leaves_are_abs(self.store, &tree) {
             return None;
         }
-        let t_arity = return_type_of(self.store, t, arity, None, param_types).flatten()?;
-        let e_arity = return_type_of(self.store, e, arity, None, param_types).flatten()?;
-        if t_arity != k || e_arity != k {
-            return None;
-        }
-        let shape = ClosureRhsShape::IfBetween { cond: c, inner_t: t, inner_e: e };
+        let shape = ClosureRhsShape::IfTree(tree.clone());
 
         let captures = compile::free_vars(self.store, body, arity, false);
         let n_captures = captures.len();
@@ -4776,16 +4748,17 @@ impl<'a> ClosureCombinators<'a> {
             vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let sig = capture_sig(&captures, &dummy_caller_param_types)?;
 
-        // Literal pre-pass -- `cond` alone, not `root`'s whole body:
-        // `collect_literals` with `param_types: None` unconditionally
-        // rejects any `Abs`/`App` it sees, and this feature's entire
-        // premise is that `body` *contains* one (`t`/`e`) -- reusing
-        // `call_eq_ref`'s own whole-body pre-pass here would reject every
-        // input outright. `t`/`e`'s own bodies stay opaque to this
-        // construction (their own literals are collected later, when
-        // `call_eq_ref` runs on whichever one is concretely chosen).
+        // Literal pre-pass -- every `cond` in the tree, not `root`'s whole
+        // body: `collect_literals` with `param_types: None`
+        // unconditionally rejects any `Abs`/`App` it sees, and this
+        // feature's entire premise is that `body` *contains* some (every
+        // leaf) -- reusing `call_eq_ref`'s own whole-body pre-pass here
+        // would reject every input outright. Every leaf's own body stays
+        // opaque to this construction (its own literals are collected
+        // later, when `call_eq_ref` runs on whichever one is concretely
+        // chosen).
         let mut lits = Vec::new();
-        if !collect_literals(self.store, c, arity, None, None, &mut lits) {
+        if !collect_closure_if_tree_literals(self.store, &tree, arity, &mut lits) {
             return None;
         }
         for lit_n in lits {
@@ -4794,32 +4767,16 @@ impl<'a> ClosureCombinators<'a> {
 
         // Prime `call_ref`/`mk_env_ref` for `root`'s own shape (mirrors
         // `call_eq_ref`'s identical priming), `register`/`mk_env_ref` for
-        // each of `t`/`e`'s own shape, and `clo_ty(k)` (which also
-        // eagerly primes `ite_clo_ref(k)`) -- see this method's own docs
-        // for why this must all happen *before* `params_and_close_typed`
-        // below, not lazily inside its closure.
+        // every leaf's own shape, and `clo_ty(k)` (which also eagerly
+        // primes `ite_clo_ref(k)`) -- see this method's own docs for why
+        // this must all happen *before* `params_and_close_typed` below,
+        // not lazily inside its closure.
         let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
         if n_captures > 0 {
             self.cp.mk_env_ref(&sig);
         }
-        let prime_inner = |combinators: &mut ClosureCombinators<'_>, inner: Hash| -> Option<Vec<u32>> {
-            let (inner_arity, inner_body, inner_is_rec) = compile::peel(combinators.store, inner)?;
-            if inner_is_rec {
-                return None;
-            }
-            let inner_captures = compile::free_vars(combinators.store, inner_body, inner_arity, inner_is_rec);
-            let inner_dummy: Vec<Option<usize>> =
-                vec![None; inner_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-            combinators.register(inner, &inner_captures, &inner_dummy)?;
-            if !inner_captures.is_empty() {
-                let inner_sig = capture_sig(&inner_captures, &inner_dummy)?;
-                combinators.cp.mk_env_ref(&inner_sig);
-            }
-            Some(inner_captures)
-        };
-        let t_caps = prime_inner(self, t)?;
-        let e_caps = prime_inner(self, e)?;
+        let leaf_caps = prime_closure_if_tree_leaves(self, &tree)?;
         self.cp.clo_ty(k); // also primes ite_clo_ref(k), see its own docs
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
@@ -4843,15 +4800,15 @@ impl<'a> ClosureCombinators<'a> {
             let lhs = apply_n(call_fn_here, call_args);
 
             // `params_full`: same sparse capture-index construction
-            // `call_eq_ref` uses for `root`'s own captures. `t`/`e` sit at
-            // exactly `body`'s own scope depth (an `If`'s branches
-            // introduce no binders), so *their* own relative capture
-            // indices (from `free_vars`, computed against *their own*
-            // peeled arity) already land at the correct *absolute* index
-            // into this same `params_full` directly -- no additional
-            // `arity +` shift, unlike `root`'s own captures just above
-            // (which genuinely need it, since `root`'s own params occupy
-            // `0..arity` first).
+            // `call_eq_ref` uses for `root`'s own captures. Every leaf
+            // sits at exactly `body`'s own scope depth (an `If`'s
+            // branches introduce no binders, at any depth), so *their*
+            // own relative capture indices (from `free_vars`, computed
+            // against *their own* peeled arity) already land at the
+            // correct *absolute* index into this same `params_full`
+            // directly -- no additional `arity +` shift, unlike `root`'s
+            // own captures just above (which genuinely need it, since
+            // `root`'s own params occupy `0..arity` first).
             let mut params_full = ps.to_vec();
             if let Some(&max_rel) = captures.iter().max() {
                 params_full.resize(arity + max_rel as usize + 1, cs[0].clone());
@@ -4860,29 +4817,14 @@ impl<'a> ClosureCombinators<'a> {
                 }
             }
 
-            let value_expr = |combinators: &mut ClosureCombinators<'_>, inner: Hash, inner_captures: &[u32]| -> Option<Expr> {
-                let inner_dummy: Vec<Option<usize>> =
-                    vec![None; inner_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-                let sym = combinators.register(inner, inner_captures, &inner_dummy)?; // cache hit -- primed above
-                if inner_captures.is_empty() {
-                    Some(sym)
-                } else {
-                    let inner_sig: Vec<Option<usize>> = vec![None; inner_captures.len()];
-                    let mk_env_expr = combinators.cp.mk_env_ref(&inner_sig); // cache hit -- primed above
-                    let cs2: Vec<Expr> = inner_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
-                    Some(kernel::app(sym, apply_n(mk_env_expr, cs2)))
-                }
-            };
-
-            // RHS: `ite_clo_k(denote(cond, params_full), <t's value>,
-            // <e's value>)` -- mirrors `denote_with_placeholders`'s own
-            // `Term::If` (`Clo` branches) case structurally, over these
-            // abstract quantified vars instead of a caller's real `params`.
-            let dc = denote(store, c, &combinators.cp.arith, &params_full)?;
-            let dt = value_expr(combinators, t, &t_caps)?;
-            let de = value_expr(combinators, e, &e_caps)?;
-            let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed above
-            let rhs = kernel::app3(ite_clo, dc, dt, de);
+            // RHS: recursively `ite_clo_k(denote(cond, params_full),
+            // <then's value>, <else's value>)` at every internal node,
+            // bottoming out at each leaf's own `register`/`mk_env_ref`
+            // value -- mirrors `denote_with_placeholders`'s own
+            // `Term::If` (`Clo` branches) case structurally, generalized
+            // from one step to the whole tree, over these abstract
+            // quantified vars instead of a caller's real `params`.
+            let rhs = build_closure_if_tree_rhs(store, combinators, &tree, &leaf_caps, &params_full, k)?;
 
             let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed above
             Some(kernel::id(clo_ty, lhs, rhs))
@@ -4905,7 +4847,7 @@ impl<'a> ClosureCombinators<'a> {
     /// of their own -- widening that is a separate, not-yet-attempted
     /// follow-on (see `RELATED_WORK.md`).
     ///
-    /// Same priming discipline as `clo_eq_ref_if_between`'s own docs
+    /// Same priming discipline as `clo_eq_ref_if_tree`'s own docs
     /// describe: `call_ref`/`mk_env_ref` for `root`'s own shape,
     /// `pap_ref`/`mk_env_ref` for `g`'s, all primed before
     /// `params_and_close_typed` pushes `root`'s own quantified
@@ -4932,7 +4874,7 @@ impl<'a> ClosureCombinators<'a> {
         let sig = capture_sig(&captures, &dummy_caller_param_types)?;
 
         // Literal pre-pass -- every supplied arg, not `root`'s whole body
-        // (mirrors `clo_eq_ref_if_between`'s own `cond`-only pre-pass, for
+        // (mirrors `clo_eq_ref_if_tree`'s own `cond`-only pre-pass, for
         // the same reason: `collect_literals` unconditionally rejects the
         // `App` this whole shape's premise requires). `g`'s own body stays
         // opaque to this construction, exactly like `t`/`e`'s own bodies
@@ -4967,7 +4909,7 @@ impl<'a> ClosureCombinators<'a> {
         }
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
-        // order `clo_eq_ref_if_between`/`call_eq_ref` both use.
+        // order `clo_eq_ref_if_tree`/`call_eq_ref` both use.
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
@@ -4975,7 +4917,7 @@ impl<'a> ClosureCombinators<'a> {
             let (cs, ps) = all.split_at(n_captures);
             let call_fn_here = call_fn.at(&combinators.cp.arith);
 
-            // LHS: identical construction to `clo_eq_ref_if_between`'s own.
+            // LHS: identical construction to `clo_eq_ref_if_tree`'s own.
             let mut call_args = Vec::with_capacity(1 + arity);
             if n_captures > 0 {
                 let mk_env_expr = combinators.cp.mk_env_ref(&sig);
@@ -4985,7 +4927,7 @@ impl<'a> ClosureCombinators<'a> {
             let lhs = apply_n(call_fn_here, call_args);
 
             // `params_full`: identical sparse capture-index construction
-            // to `clo_eq_ref_if_between`'s own -- `body`'s own args sit at
+            // to `clo_eq_ref_if_tree`'s own -- `body`'s own args sit at
             // exactly `body`'s own scope depth (a plain `App` introduces
             // no binders), so their relative indices land at the correct
             // absolute index directly.
@@ -5287,14 +5229,278 @@ impl<'a> ClosureCombinators<'a> {
 /// every variant here describes some further, `Abs`-nested computation.
 #[derive(Clone)]
 enum ClosureRhsShape {
-    /// `If(cond, inner_t, inner_e)`, choosing between two same-arity
-    /// literal lambdas.
-    IfBetween { cond: Hash, inner_t: Hash, inner_e: Hash },
+    /// An arbitrary tree of nested `If`s, each leaf a same-arity literal
+    /// lambda -- a flat `If(cond, inner_t, inner_e)` between two closures
+    /// is just the depth-1 case.
+    IfTree(DecisionTree),
     /// `g(args...)`, a partial application of a literal lambda `g` (own
     /// arity strictly greater than `args.len()`) -- no branching at all,
     /// the *only* possible resulting `Clo_k` value is `pap_ref(g,
     /// args.len())` applied to `args`'s own denoted values.
     Pap { g: Hash, args: Vec<Hash> },
+}
+
+/// Classifies `h` into a [`DecisionTree`] for `clo_eq_ref_if_tree`'s own
+/// purposes -- structurally identical to `classify_tree`, but *without*
+/// that function's own restriction of every `cond` to a direct
+/// comparison (`build_universal`'s own `cond_premise` needs that for its
+/// plain-`Id`-equality gating; this construction never did, even in its
+/// original flat form -- `cond` only ever needed to stay in the
+/// `Var`/`Lit`/`Prim`/`If` fragment `denote`/`collect_literals` already
+/// cover). Always succeeds -- whether every leaf is actually a bare
+/// `Term::Abs` of the right arity is `closure_if_tree_leaves_are_abs`'s
+/// own, separate question.
+fn classify_closure_if_tree(store: &TermStore, h: Hash) -> DecisionTree {
+    if let Term::If(c, t, e) = store.resolve(h) {
+        let (c, t, e) = (*c, *t, *e);
+        return DecisionTree::If {
+            cond: c,
+            then_branch: Box::new(classify_closure_if_tree(store, t)),
+            else_branch: Box::new(classify_closure_if_tree(store, e)),
+        };
+    }
+    DecisionTree::Leaf(h)
+}
+
+/// `true` iff every leaf of `tree` is a bare `Term::Abs` (never
+/// `Term::Rec`) -- `clo_eq_ref`'s own `combinator_return_type` check
+/// already confirmed every leaf shares the same return arity `k` before
+/// `clo_eq_ref_if_tree` is even reached (`return_type_of`'s own
+/// `Term::If` case recurses the same way, checking `dt == de`), so this
+/// only needs to rule out a leaf `return_type_of` would tolerate
+/// structurally but `clo_eq_ref_if_tree`'s own construction can't
+/// register a concrete value for (a `Term::Rec`, or a further nested
+/// `App`/`Var` whose own arity happens to match).
+fn closure_if_tree_leaves_are_abs(store: &TermStore, tree: &DecisionTree) -> bool {
+    match tree {
+        DecisionTree::Leaf(h) => matches!(store.resolve(*h), Term::Abs(_)),
+        DecisionTree::If { then_branch, else_branch, .. } => {
+            closure_if_tree_leaves_are_abs(store, then_branch) && closure_if_tree_leaves_are_abs(store, else_branch)
+        }
+    }
+}
+
+/// Every leaf `Hash` of `tree`, left-to-right/depth-first (matching
+/// `flatten_tree`'s own leaf-visiting order, though nothing here
+/// currently depends on the exact order -- kept for consistency).
+fn closure_if_tree_leaves(tree: &DecisionTree, out: &mut Vec<Hash>) {
+    match tree {
+        DecisionTree::Leaf(h) => out.push(*h),
+        DecisionTree::If { then_branch, else_branch, .. } => {
+            closure_if_tree_leaves(then_branch, out);
+            closure_if_tree_leaves(else_branch, out);
+        }
+    }
+}
+
+/// `collect_literals` over every `cond` in `tree`, generalizing
+/// `clo_eq_ref_if_tree`'s own single-condition pre-pass to however many
+/// internal nodes the tree actually has.
+fn collect_closure_if_tree_literals(store: &TermStore, tree: &DecisionTree, arity: usize, lits: &mut Vec<i64>) -> bool {
+    match tree {
+        DecisionTree::Leaf(_) => true,
+        DecisionTree::If { cond, then_branch, else_branch } => {
+            collect_literals(store, *cond, arity, None, None, lits)
+                && collect_closure_if_tree_literals(store, then_branch, arity, lits)
+                && collect_closure_if_tree_literals(store, else_branch, arity, lits)
+        }
+    }
+}
+
+/// Primes `register`/`mk_env_ref` for every leaf of `tree` (mirroring
+/// `clo_eq_ref_if_tree`'s own single-pair `prime_inner`, generalized),
+/// returning each leaf's own captures keyed by its `Hash` (a leaf
+/// appearing more than once in the tree -- structurally identical
+/// sub-terms, hash-consed together -- is only primed once).
+fn prime_closure_if_tree_leaves(combinators: &mut ClosureCombinators<'_>, tree: &DecisionTree) -> Option<HashMap<Hash, Vec<u32>>> {
+    let mut leaves = Vec::new();
+    closure_if_tree_leaves(tree, &mut leaves);
+    let mut leaf_caps = HashMap::new();
+    for h in leaves {
+        if leaf_caps.contains_key(&h) {
+            continue;
+        }
+        let (inner_arity, inner_body, inner_is_rec) = compile::peel(combinators.store, h)?;
+        if inner_is_rec {
+            return None;
+        }
+        let inner_captures = compile::free_vars(combinators.store, inner_body, inner_arity, inner_is_rec);
+        let inner_dummy: Vec<Option<usize>> = vec![None; inner_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
+        combinators.register(h, &inner_captures, &inner_dummy)?;
+        if !inner_captures.is_empty() {
+            let inner_sig = capture_sig(&inner_captures, &inner_dummy)?;
+            combinators.cp.mk_env_ref(&inner_sig);
+        }
+        leaf_caps.insert(h, inner_captures);
+    }
+    Some(leaf_caps)
+}
+
+/// A leaf's own `register`/`mk_env_ref` value expression, over abstract
+/// `params_full` -- `clo_eq_ref_if_tree`'s own single-pair `value_expr`,
+/// generalized to read a leaf's own captures from `leaf_caps` (built by
+/// `prime_closure_if_tree_leaves`) instead of a locally-closed-over pair.
+fn closure_leaf_value_expr(combinators: &mut ClosureCombinators<'_>, leaf: Hash, leaf_caps: &HashMap<Hash, Vec<u32>>, params_full: &[Expr]) -> Option<Expr> {
+    let inner_captures = leaf_caps.get(&leaf)?;
+    let inner_dummy: Vec<Option<usize>> = vec![None; inner_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
+    let sym = combinators.register(leaf, inner_captures, &inner_dummy)?; // cache hit -- primed above
+    if inner_captures.is_empty() {
+        Some(sym)
+    } else {
+        let inner_sig: Vec<Option<usize>> = vec![None; inner_captures.len()];
+        let mk_env_expr = combinators.cp.mk_env_ref(&inner_sig); // cache hit -- primed above
+        let cs2: Vec<Expr> = inner_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
+        Some(kernel::app(sym, apply_n(mk_env_expr, cs2)))
+    }
+}
+
+/// `clo_eq_ref_if_tree`'s own axiom RHS, built recursively over `tree`:
+/// `ite_clo_k(denote(cond, params_full), <then's value>, <else's value>)`
+/// at every internal node, bottoming out at each leaf's own
+/// `closure_leaf_value_expr`. Mirrors `denote_with_placeholders`'s own
+/// `Term::If` (`Clo` branches) case structurally, generalized from one
+/// step to the whole tree.
+fn build_closure_if_tree_rhs(
+    store: &TermStore,
+    combinators: &mut ClosureCombinators<'_>,
+    tree: &DecisionTree,
+    leaf_caps: &HashMap<Hash, Vec<u32>>,
+    params_full: &[Expr],
+    k: usize,
+) -> Option<Expr> {
+    match tree {
+        DecisionTree::Leaf(h) => closure_leaf_value_expr(combinators, *h, leaf_caps, params_full),
+        DecisionTree::If { cond, then_branch, else_branch } => {
+            let dc = denote(store, *cond, &combinators.cp.arith, params_full)?;
+            let dt = build_closure_if_tree_rhs(store, combinators, then_branch, leaf_caps, params_full, k)?;
+            let de = build_closure_if_tree_rhs(store, combinators, else_branch, leaf_caps, params_full, k)?;
+            let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed by clo_ty(k) above
+            Some(kernel::app3(ite_clo, dc, dt, de))
+        }
+    }
+}
+
+/// The literal value of `tree`'s own subtree, at `root`'s own literal
+/// inner frame (`inner_params`/`inner_concrete`/`inner_facts`) -- no
+/// proof, just the `Expr` matching whatever `clo_eq_ref_if_tree`'s own
+/// axiom RHS-formula would produce for this subtree once substituted at
+/// these same literals. Used for whichever branch a concrete trace does
+/// *not* take (still needed, since `ite_clo(dc, dt, de)` needs both
+/// `dt`/`de` present syntactically) -- `resolve_closure_if_tree` builds
+/// the *taken* branch's own value (and a proof chaining it to a concrete
+/// leaf) itself, more expensively, since only that one ever needs it.
+fn closure_if_tree_value_at_literals(
+    store: &TermStore,
+    combinators: &mut ClosureCombinators<'_>,
+    tree: &DecisionTree,
+    inner_params: &[Anchored],
+    inner_concrete: &[i64],
+    inner_facts: &[Anchored],
+    k: usize,
+) -> Option<Expr> {
+    match tree {
+        DecisionTree::Leaf(h) => {
+            let (v, _caps) = inner_closure_literal_value(combinators, *h, inner_params, inner_concrete, inner_facts)?;
+            Some(v)
+        }
+        DecisionTree::If { cond, then_branch, else_branch } => {
+            let params_full: Vec<Expr> = inner_params.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+            let dc = denote(store, *cond, &combinators.cp.arith, &params_full)?;
+            let dt = closure_if_tree_value_at_literals(store, combinators, then_branch, inner_params, inner_concrete, inner_facts, k)?;
+            let de = closure_if_tree_value_at_literals(store, combinators, else_branch, inner_params, inner_concrete, inner_facts, k)?;
+            let ite_clo = combinators.cp.ite_clo_ref(k);
+            Some(kernel::app3(ite_clo, dc, dt, de))
+        }
+    }
+}
+
+/// Recursively walks `tree`, concretely resolving `cond` at each internal
+/// node (via `eval_and_prove`, following whichever branch it takes) until
+/// reaching a leaf. Returns the reached leaf's own `Hash`, its captures
+/// resolved to literal triples (ready for `eval_and_prove_direct_call`),
+/// this *subtree's* own literal value (the same formula
+/// `closure_if_tree_value_at_literals` would give for it, needed so the
+/// caller one level up can build `ite_clo(dc, dt, de)` around it), the
+/// reached leaf's own literal value, and a proof that the subtree's value
+/// equals the leaf's -- chained one `ite_clo_eq_ref` step per internal
+/// node on the path actually taken, generalizing
+/// `eval_and_prove_call_over`'s own original single-step version (still
+/// exactly what this produces for a depth-1 tree).
+fn resolve_closure_if_tree(
+    store: &TermStore,
+    combinators: &mut ClosureCombinators<'_>,
+    tree: &DecisionTree,
+    inner_params: &[Anchored],
+    inner_concrete: &[i64],
+    inner_facts: &[Anchored],
+    k: usize,
+) -> Option<(Hash, ValueTriples, Expr, Expr, Expr)> {
+    match tree {
+        DecisionTree::Leaf(h) => {
+            let (value_lit, cap_triples) = inner_closure_literal_value(combinators, *h, inner_params, inner_concrete, inner_facts)?;
+            let value_lit = Anchored::new(&combinators.cp.arith, value_lit);
+            let value_lit = value_lit.at(&combinators.cp.arith);
+            let proof = kernel::refl(value_lit.clone());
+            Some((*h, cap_triples, value_lit.clone(), value_lit, proof))
+        }
+        DecisionTree::If { cond, then_branch, else_branch } => {
+            let (result_c, denote_c, proof_c) = eval_and_prove(store, *cond, combinators, inner_params, inner_concrete, inner_facts)?;
+            let denote_c = Anchored::new(&combinators.cp.arith, denote_c);
+            let proof_c = Anchored::new(&combinators.cp.arith, proof_c);
+
+            let (taken, other) = if result_c != 0 { (then_branch, else_branch) } else { (else_branch, then_branch) };
+            let (chosen, chosen_cap_triples, taken_subtree_value, leaf_value, taken_proof) =
+                resolve_closure_if_tree(store, combinators, taken, inner_params, inner_concrete, inner_facts, k)?;
+            let taken_subtree_value = Anchored::new(&combinators.cp.arith, taken_subtree_value);
+            let leaf_value = Anchored::new(&combinators.cp.arith, leaf_value);
+            let taken_proof = Anchored::new(&combinators.cp.arith, taken_proof);
+            let other_value = closure_if_tree_value_at_literals(store, combinators, other, inner_params, inner_concrete, inner_facts, k)?;
+            let other_value = Anchored::new(&combinators.cp.arith, other_value);
+
+            combinators.cp.arith.lit(result_c);
+            let ite_eq_axiom = combinators.ite_clo_eq_ref(result_c, k);
+            let ite_eq_axiom = Anchored::new(&combinators.cp.arith, ite_eq_axiom);
+
+            // Nothing pushes past here -- resolve everything fresh, in
+            // one batch, only once nothing more is left to push.
+            let denote_c = denote_c.at(&combinators.cp.arith);
+            let proof_c = proof_c.at(&combinators.cp.arith);
+            let taken_subtree_value = taken_subtree_value.at(&combinators.cp.arith);
+            let leaf_value = leaf_value.at(&combinators.cp.arith);
+            let taken_proof = taken_proof.at(&combinators.cp.arith);
+            let other_value = other_value.at(&combinators.cp.arith);
+            let ite_eq_axiom = ite_eq_axiom.at(&combinators.cp.arith);
+            let lit_xc = combinators.cp.arith.lit_ref(result_c);
+            let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed by clo_eq_ref via clo_ty(k)
+            let int_ty = combinators.cp.arith.int_ty();
+            let clo_ty = combinators.cp.clo_ty(k);
+
+            let (dt, de) = if result_c != 0 {
+                (taken_subtree_value.clone(), other_value.clone())
+            } else {
+                (other_value.clone(), taken_subtree_value.clone())
+            };
+
+            // `ite_clo_eq_ref`'s own bridge: first, `cong1` over
+            // `ite_clo_k`'s own first (`Int`) argument (`dt`/`de` held
+            // fixed at their literal values), turning `denote(cond,lits)`
+            // into `lit_ref(xc)`; then the axiom itself, instantiated at
+            // the two branches' own literal values -- see
+            // `ite_clo_eq_ref`'s own docs for why both steps are needed.
+            let f_cond_body = kernel::app3(kernel::shift(&ite_clo, 0, 1), kernel::var(0), kernel::shift(&dt, 0, 1), kernel::shift(&de, 0, 1));
+            let f_cond = kernel::lam(int_ty.clone(), f_cond_body);
+            let cong_cond = kernel::cong1(&int_ty, &clo_ty, &f_cond, denote_c.clone(), lit_xc.clone(), proof_c);
+            let ite_at_denote_c = kernel::app3(ite_clo.clone(), denote_c, dt.clone(), de.clone());
+            let ite_at_lit_xc = kernel::app3(ite_clo, lit_xc, dt.clone(), de.clone());
+
+            let ite_axiom_at = apply_n(ite_eq_axiom, vec![dt, de]);
+            let branch_bridge = kernel::trans_proof(&clo_ty, &ite_at_denote_c, &ite_at_lit_xc, &taken_subtree_value, cong_cond, ite_axiom_at);
+            let this_subtree_value = ite_at_denote_c;
+            let full_proof = kernel::trans_proof(&clo_ty, &this_subtree_value, &taken_subtree_value, &leaf_value, branch_bridge, taken_proof);
+
+            Some((chosen, chosen_cap_triples, this_subtree_value, leaf_value, full_proof))
+        }
+    }
 }
 
 /// The `Clo_k`/`Int` signature of a capture list, relative to the *calling*
@@ -7047,11 +7253,13 @@ mod tests {
     }
 
     #[test]
-    fn a_further_nested_if_inside_a_branch_is_out_of_scope_for_eval_and_prove_call_over() {
+    fn a_further_nested_if_inside_a_branch_gets_a_concrete_instance_for_eval_and_prove_call_over() {
         // f = \a. if 0<a then (if a>10 then (\c. c) else (\c. c+1)) else (\c. c-1)
-        // -- `t` is itself a further `If`, not a bare `Term::Abs` --
-        // `clo_eq_ref`'s own classification requires `t`/`e` to be a bare
-        // literal lambda, rejecting this outright.
+        // -- `t` is itself a further `If`, not a bare `Term::Abs` -- a
+        // depth-2 decision tree, not the depth-1 `clo_eq_ref_if_between`
+        // (now `clo_eq_ref_if_tree`) originally supported. Three leaves,
+        // exercising all of them: the identity closure (`a>10`), `c+1`
+        // (`0<a<=10`), and `c-1` (`a<=0`).
         let mut s = TermStore::new();
         let c1 = s.var(0);
         let one = s.lit(1);
@@ -7062,7 +7270,7 @@ mod tests {
         let a_body1 = s.var(0);
         let ten = s.lit(10);
         let inner_cond = s.prim(PrimOp::Lt, ten, a_body1);
-        let t = s.if_(inner_cond, inner_else, inner_then);
+        let t = s.if_(inner_cond, inner_else, inner_then); // if a>10 then (\c.c) else (\c.c+1)
 
         let c3 = s.var(0);
         let one2 = s.lit(1);
@@ -7075,18 +7283,29 @@ mod tests {
         let f_body = s.if_(outer_cond, t, e);
         let f = s.abs(f_body);
 
-        let a_lit = s.lit(5);
-        let c_lit = s.lit(3);
-        let fa = s.app(f, a_lit);
-        let h = s.app(fa, c_lit);
+        // Hand-verified against the reference interpreter before trusting
+        // the term shape: a=5 (0<a, a<=10) -> c+1 = 4; a=20 (0<a, a>10) ->
+        // c = 3; a=-5 (a<=0) -> c-1 = 2.
+        for (a_val, c_val, expected) in [(5, 3, 4), (20, 3, 3), (-5, 3, 2)] {
+            let a_lit = s.lit(a_val);
+            let c_lit = s.lit(c_val);
+            let fa = s.app(f, a_lit);
+            let h = s.app(fa, c_lit);
+            assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), expected, "a={a_val} c={c_val}: interpreter sanity check");
 
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(5);
-        combinators.cp.arith.lit(3);
-        assert!(
-            eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).is_none(),
-            "a further-nested If inside a branch should stay out of scope, not panic"
-        );
+            let mut combinators = ClosureCombinators::new(&s);
+            combinators.cp.arith.lit(a_val);
+            combinators.cp.arith.lit(c_val);
+            let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
+                .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a further-nested If inside a branch should get a concrete instance"));
+            assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
+            kernel::check(
+                &combinators.cp.arith.p.ctx,
+                &proof,
+                &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
+            )
+            .unwrap_or_else(|e| panic!("a={a_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
+        }
     }
 
     #[test]

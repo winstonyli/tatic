@@ -759,13 +759,21 @@ guards against by hand): caught immediately, at seed 22.
   `g` with all `s + k` arguments together (mirroring `apply_clo_eq_ref`'s
   role, but for a partial-application value instead of a directly-
   registered combinator's) — restricted, for now, to `g`'s own params all
-  being `Int`-typed. Still open: a *partially*-applied closure creation in
-  this position (no concrete `Clo` representation to hand back), a
-  further nested-call-producing `root` (one indirect call away from a
-  literal lambda, rather than a PAP or an `If` directly), and a
-  further-nested `If` inside either branch — all "sound, not complete",
-  the same standing tradeoff this fragment makes everywhere else; none
-  affect `kernel_verified`, only weaker, call-specific evidence.
+  being `Int`-typed. A further-nested `If` inside either branch is
+  covered too now — `clo_eq_ref_if_tree` generalizes the original flat,
+  depth-1 `If`-between-two-closures construction (`clo_eq_ref_if_between`)
+  to an arbitrary-depth decision tree (reusing `DecisionTree`, the type
+  `build_universal`'s own arithmetic-fragment tail recursion already used,
+  via a new unrestricted classifier rather than that module's own
+  comparison-restricted one), with the axiom RHS and the concrete-instance
+  resolution both built recursively over the tree instead of in one flat
+  step. Still open: a *partially*-applied closure creation in this
+  position (no concrete `Clo` representation to hand back), and a further
+  nested-call-producing `root` (one indirect call away from a literal
+  lambda, rather than a PAP or an `If` directly) — both "sound, not
+  complete", the same standing tradeoff this fragment makes everywhere
+  else; neither affects `kernel_verified`, only weaker, call-specific
+  evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
   too (`ite_clo`, lazily postulated — see the table row above), when the
   `If`'s own result is used as a *value* — and, separately, `call_ref`'s
