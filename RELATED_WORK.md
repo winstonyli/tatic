@@ -966,6 +966,68 @@ matches this project's own standing discipline (see the two corrections
 in section 11 above, both caught by reading the real construction rather
 than trusting the first plausible-sounding claim).
 
+**Correction, a session later: even the narrower, provably-safe slice
+turns out to be dead code today, for a deeper reason than the above.**
+A follow-up attempt scoped this down further, to just `root`'s own
+*declared* parameters (leaving captures forced `Int`, which
+`classify_app_node` was confirmed to decline cleanly rather than
+mis-type if ever violated -- a real, safe increment, not the risky
+partial fix warned against above). A new function,
+`denote_param_calls`, mirroring `denote`'s exact `Var`/`Lit`/`Prim`/`If`
+fragment plus one addition -- a saturated call to a `Clo`-typed
+parameter denotes as a direct kernel application, needing no
+`ClosureCombinators` access and so none of `denote_closure`'s own
+lazy-postulate staleness risk -- was built and wired through
+`clo_eq_ref`/`clo_eq_ref_if_tree`/`clo_eq_ref_call`/`clo_eq_ref_pap` and
+their leaf helpers. It compiled clean and the full existing test suite
+stayed green (widening `quant_types`'s arity slice from all-`Int` to
+`root`'s own real `param_types`, and `Some(&param_types_full)` in place
+of `None` for the `collect_literals` pre-pass, are both no-ops on every
+term with no `Clo`-typed declared parameter, confirmed by the
+unchanged 175-test result).
+
+Then, writing the regression test the fix was supposedly for, surfaced
+the real problem: **`clo_eq_ref` has exactly one call site in the whole
+file** (`build_clo_call_bridge`), reached only through
+`eval_and_prove_call_over` (directly, or via
+`resolve_closure_shape_to_leaf`'s own recursion) -- and
+`eval_and_prove_call_over` already declines independently, one level
+up, on the *identical* condition (`callee_param_types.iter()
+.any(Option::is_some)`), for a reason that has nothing to do with
+`clo_eq_ref`'s own quantifier types: `eval_and_prove`'s own docs already
+state it plainly -- "every caller of this function... only ever runs
+where the *outer* frame is entirely `Int`-typed" -- and its return type
+makes that structural, not incidental: `eval_and_prove` returns
+`(i64, Expr, Expr)`, an `i64` *concrete value* alongside the denotation
+and proof. A `Clo`-typed argument has no `i64` to put there in this
+convention at all -- there is no way to instantiate `clo_eq_ref`'s own
+newly-widened axiom at a concrete `Clo` value through this call graph,
+no matter how correctly the axiom itself is built, because nothing on
+the only path that reaches it can ever produce one. This makes the
+`clo_eq_ref`-level fix, however correct and safe in isolation, genuinely
+unreachable dead code as things stand -- confirmed, not merely
+suspected, by trying to write the end-to-end test and finding no way to
+drive a concrete `Clo` value into the one call site that would exercise
+it. The change was reverted rather than merged half-exercised, matching
+this project's own standing rule against unreachable code.
+
+**What real reachability would need, and why it's the already-flagged
+larger question.** The one methodology in this codebase that *does*
+carry genuine concrete `Clo` values through a per-instance proof is
+`eval_dyn`/`DynVal` (RELATED_WORK.md §9's "Since covered, per instance"),
+built for a completely different call graph (inlining a callee's own
+body at a concretely-resolved value, never touching `clo_eq_ref`'s
+universal-axiom family at all). Making a `Clo`-typed *declared parameter
+of `root` itself* reachable would mean either teaching `eval_and_prove`'s
+own family a `Denoted`-typed return convention in place of its current
+`i64`-only one (a signature change rippling through every caller in the
+same neighborhood the "larger refactor" framing above already flagged),
+or routing this specific shape through `eval_dyn`'s own machinery
+instead of `clo_eq_ref`'s. Either is real additional scope beyond what
+this section's own verdict already priced in, not a smaller follow-on --
+so the verdict stands: still real, still large, still its own separately
+scoped session, now with a materially more precise reason why.
+
 ## 13. A `Call`-shaped `IfTree` leaf targeting a further `IfTree` — already worked, confirmed rather than built
 
 Section 10 above added `Call`-shaped leaf support to
