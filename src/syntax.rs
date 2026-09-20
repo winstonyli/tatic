@@ -17,14 +17,25 @@
 //!          | "\" IDENT+ "." expr
 //!          | "rec" IDENT IDENT* "=" expr
 //!          | "if" expr "then" expr "else" expr
-//!          | cmp
-//! cmp     := add (("<" | "<=" | "==") add)?
+//!          | or
+//! or      := and ("||" and)*
+//! and     := cmp ("&&" cmp)*
+//! cmp     := add (("<" | "<=" | "==" | ">" | ">=" | "!=") add)?
 //! add     := mul (("+" | "-") mul)*
 //! mul     := unary (("*" | "/" | "%") unary)*
-//! unary   := "-" unary | app
+//! unary   := ("-" | "!") unary | app
 //! app     := atom+                      -- left-associative juxtaposition
 //! atom    := INT | IDENT | "(" expr ")"
 //! ```
+//!
+//! `>`/`>=`/`!=`/`&&`/`||`/`!` are all pure sugar, desugaring at parse time
+//! into the existing `Lt`/`Le`/`Eq` primitives and `If` -- no new `PrimOp`
+//! is needed for any of them (see each production's own implementation for
+//! the exact desugaring and why it stays correct for *any* truthy operand,
+//! not just a clean `0`/`1` one). `&&`/`||` genuinely short-circuit (the
+//! right operand sits inside an `If` branch, so it's never evaluated when
+//! the left operand alone already determines the result), matching every
+//! other language's own convention for these operators.
 //!
 //! `let`/`\`/`rec`/`if` all extend as far right as possible, so (as in most
 //! ML-family languages) they need explicit parentheses when used as a
@@ -62,7 +73,13 @@ enum Token {
     Percent,
     Lt,
     Le,
+    Gt,
+    Ge,
     EqEq,
+    Ne,
+    Bang,
+    AmpAmp,
+    PipePipe,
     Eq,
     If,
     Then,
@@ -149,6 +166,40 @@ fn lex(src: &str) -> Result<Vec<(Token, usize)>, ParseError> {
                 } else {
                     tokens.push((Token::Eq, i));
                     i += 1;
+                }
+            }
+            '>' => {
+                if bytes.get(i + 1) == Some(&b'=') {
+                    tokens.push((Token::Ge, i));
+                    i += 2;
+                } else {
+                    tokens.push((Token::Gt, i));
+                    i += 1;
+                }
+            }
+            '!' => {
+                if bytes.get(i + 1) == Some(&b'=') {
+                    tokens.push((Token::Ne, i));
+                    i += 2;
+                } else {
+                    tokens.push((Token::Bang, i));
+                    i += 1;
+                }
+            }
+            '&' => {
+                if bytes.get(i + 1) == Some(&b'&') {
+                    tokens.push((Token::AmpAmp, i));
+                    i += 2;
+                } else {
+                    return Err(ParseError { message: "expected `&&`, found a single `&` (no bitwise operators)".to_string(), pos: i });
+                }
+            }
+            '|' => {
+                if bytes.get(i + 1) == Some(&b'|') {
+                    tokens.push((Token::PipePipe, i));
+                    i += 2;
+                } else {
+                    return Err(ParseError { message: "expected `||`, found a single `|` (no bitwise operators)".to_string(), pos: i });
                 }
             }
             '0'..='9' => {
@@ -272,8 +323,47 @@ impl<'a> Parser<'a> {
             Token::Lambda => self.parse_lambda(),
             Token::Rec => self.parse_rec(),
             Token::If => self.parse_if(),
-            _ => self.parse_cmp(),
+            _ => self.parse_or(),
         }
+    }
+
+    /// `a || b`: sugar, no new `PrimOp` -- `if a == 0 then (if b == 0 then
+    /// 0 else 1) else 1`. Genuinely short-circuits (`b` sits inside an
+    /// `If` branch, never evaluated when `a` alone already determines the
+    /// result), and correct for *any* truthy operand under this language's
+    /// own "nonzero is true" convention, not just a clean `0`/`1` one,
+    /// since both operands are only ever compared against `0` via `Eq`.
+    fn parse_or(&mut self) -> Result<Hash, ParseError> {
+        let mut lhs = self.parse_and()?;
+        while matches!(self.peek(), Token::PipePipe) {
+            self.advance();
+            let rhs = self.parse_and()?;
+            let zero = self.store.lit(0);
+            let one = self.store.lit(1);
+            let lhs_is_zero = self.store.prim(PrimOp::Eq, lhs, zero);
+            let rhs_is_zero = self.store.prim(PrimOp::Eq, rhs, zero);
+            let inner = self.store.if_(rhs_is_zero, zero, one);
+            lhs = self.store.if_(lhs_is_zero, inner, one);
+        }
+        Ok(lhs)
+    }
+
+    /// `a && b`: sugar, no new `PrimOp` -- `if a == 0 then 0 else (if b ==
+    /// 0 then 0 else 1)`. Same short-circuiting and any-truthy-operand
+    /// correctness as `parse_or`'s own `||`.
+    fn parse_and(&mut self) -> Result<Hash, ParseError> {
+        let mut lhs = self.parse_cmp()?;
+        while matches!(self.peek(), Token::AmpAmp) {
+            self.advance();
+            let rhs = self.parse_cmp()?;
+            let zero = self.store.lit(0);
+            let one = self.store.lit(1);
+            let lhs_is_zero = self.store.prim(PrimOp::Eq, lhs, zero);
+            let rhs_is_zero = self.store.prim(PrimOp::Eq, rhs, zero);
+            let inner = self.store.if_(rhs_is_zero, zero, one);
+            lhs = self.store.if_(lhs_is_zero, zero, inner);
+        }
+        Ok(lhs)
     }
 
     fn parse_let(&mut self) -> Result<Hash, ParseError> {
@@ -335,19 +425,45 @@ impl<'a> Parser<'a> {
 
     fn parse_cmp(&mut self) -> Result<Hash, ParseError> {
         let lhs = self.parse_add()?;
-        let op = match self.peek() {
-            Token::Lt => Some(PrimOp::Lt),
-            Token::Le => Some(PrimOp::Le),
-            Token::EqEq => Some(PrimOp::Eq),
-            _ => None,
-        };
-        match op {
-            Some(op) => {
+        match self.peek() {
+            Token::Lt => {
                 self.advance();
                 let rhs = self.parse_add()?;
-                Ok(self.store.prim(op, lhs, rhs))
+                Ok(self.store.prim(PrimOp::Lt, lhs, rhs))
             }
-            None => Ok(lhs),
+            Token::Le => {
+                self.advance();
+                let rhs = self.parse_add()?;
+                Ok(self.store.prim(PrimOp::Le, lhs, rhs))
+            }
+            Token::EqEq => {
+                self.advance();
+                let rhs = self.parse_add()?;
+                Ok(self.store.prim(PrimOp::Eq, lhs, rhs))
+            }
+            // `a > b`: sugar, no new `PrimOp` -- desugars to `b < a`.
+            Token::Gt => {
+                self.advance();
+                let rhs = self.parse_add()?;
+                Ok(self.store.prim(PrimOp::Lt, rhs, lhs))
+            }
+            // `a >= b`: sugar, no new `PrimOp` -- desugars to `b <= a`.
+            Token::Ge => {
+                self.advance();
+                let rhs = self.parse_add()?;
+                Ok(self.store.prim(PrimOp::Le, rhs, lhs))
+            }
+            // `a != b`: sugar, no new `PrimOp` -- `1 - (a == b)`. `Eq`
+            // already yields a clean `0`/`1`, so this is exact, not just
+            // truthy.
+            Token::Ne => {
+                self.advance();
+                let rhs = self.parse_add()?;
+                let eq = self.store.prim(PrimOp::Eq, lhs, rhs);
+                let one = self.store.lit(1);
+                Ok(self.store.prim(PrimOp::Sub, one, eq))
+            }
+            _ => Ok(lhs),
         }
     }
 
@@ -383,13 +499,22 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Hash, ParseError> {
-        if matches!(self.peek(), Token::Minus) {
-            self.advance();
-            let operand = self.parse_unary()?;
-            let zero = self.store.lit(0);
-            Ok(self.store.prim(PrimOp::Sub, zero, operand))
-        } else {
-            self.parse_app()
+        match self.peek() {
+            Token::Minus => {
+                self.advance();
+                let operand = self.parse_unary()?;
+                let zero = self.store.lit(0);
+                Ok(self.store.prim(PrimOp::Sub, zero, operand))
+            }
+            // `!a`: sugar, no new `PrimOp` -- `a == 0`. Correct for any
+            // truthy operand, not just a clean `0`/`1` one.
+            Token::Bang => {
+                self.advance();
+                let operand = self.parse_unary()?;
+                let zero = self.store.lit(0);
+                Ok(self.store.prim(PrimOp::Eq, operand, zero))
+            }
+            _ => self.parse_app(),
         }
     }
 
@@ -598,6 +723,85 @@ mod tests {
         let mut s = TermStore::new();
         let parsed = parse(&mut s, "if 1 < 2 then 10 else 20").unwrap();
         assert_eq!(eval::apply_term(&s, parsed, &[]).unwrap(), 10);
+    }
+
+    /// Parses `src` in a fresh `TermStore` and evaluates it with no
+    /// arguments -- avoids the `&s`/`&mut s` two-borrow conflict of
+    /// interleaving `parse`/`eval::apply_term` calls inline.
+    fn run(src: &str) -> i64 {
+        let mut s = TermStore::new();
+        let h = parse(&mut s, src).unwrap();
+        eval::apply_term(&s, h, &[]).unwrap()
+    }
+
+    #[test]
+    fn greater_than_desugars_correctly() {
+        // `a > b` desugars to `b < a` -- if the operand order were
+        // swapped by mistake, `5 > 3` would come out false instead of true.
+        assert_eq!(run("5 > 3"), 1);
+        assert_eq!(run("3 > 5"), 0);
+        assert_eq!(run("3 > 3"), 0);
+    }
+
+    #[test]
+    fn greater_or_equal_desugars_correctly() {
+        assert_eq!(run("5 >= 3"), 1);
+        assert_eq!(run("3 >= 5"), 0);
+        assert_eq!(run("3 >= 3"), 1);
+    }
+
+    #[test]
+    fn not_equal_desugars_correctly() {
+        assert_eq!(run("5 != 3"), 1);
+        assert_eq!(run("3 != 3"), 0);
+    }
+
+    #[test]
+    fn logical_not_is_correct_for_any_truthy_operand_not_just_a_clean_bit() {
+        assert_eq!(run("!0"), 1);
+        assert_eq!(run("!1"), 0);
+        // `5` is truthy (nonzero) even though it isn't a clean 0/1 --
+        // `!a` desugaring to `1 - a` would wrongly give `-4` (still
+        // truthy) here instead of `0`.
+        assert_eq!(run("!5"), 0);
+        assert_eq!(run("!(1 < 0)"), 1);
+    }
+
+    #[test]
+    fn logical_and_full_truth_table_and_short_circuits() {
+        assert_eq!(run("0 && 0"), 0);
+        assert_eq!(run("0 && 1"), 0);
+        assert_eq!(run("1 && 0"), 0);
+        assert_eq!(run("1 && 1"), 1);
+        // Genuinely short-circuits: a falsy left operand means the right
+        // side, which would otherwise error (division by zero), is never
+        // evaluated.
+        assert_eq!(run("0 && (1 / 0)"), 0);
+    }
+
+    #[test]
+    fn logical_or_full_truth_table_and_short_circuits() {
+        assert_eq!(run("0 || 0"), 0);
+        assert_eq!(run("0 || 1"), 1);
+        assert_eq!(run("1 || 0"), 1);
+        assert_eq!(run("1 || 1"), 1);
+        assert_eq!(run("1 || (1 / 0)"), 1);
+    }
+
+    #[test]
+    fn logical_operator_precedence() {
+        // `!` binds tighter than comparisons; `&&` binds tighter than
+        // `||` -- `1 < 2 && 0 || !0` should parse as `((1<2) && 0) || (!0)`
+        // = `0 || 1` = `1`; a wrong relative precedence would instead
+        // group this to produce `0`.
+        assert_eq!(run("1 < 2 && 0 || !0"), 1);
+    }
+
+    #[test]
+    fn bare_ampersand_or_pipe_is_a_lex_error() {
+        let mut s = TermStore::new();
+        assert!(parse(&mut s, "1 & 2").is_err());
+        assert!(parse(&mut s, "1 | 2").is_err());
     }
 
     #[test]
