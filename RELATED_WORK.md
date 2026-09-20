@@ -88,24 +88,44 @@ A genuinely per-case recursor (`bool_rec`, Bool's own postulated
 eliminator, dispatching differently per tag rather than ignoring it) is
 also built and shown to produce a well-typed step function — but proving
 a *concrete* result of such a recursor (e.g. `is_zero(Zero) = true`)
-surfaced a real, separate obstacle: `WRec`'s own automatic reduction
-(`whnf_impl`) builds its induction-hypothesis closure with an inert
-placeholder `Lam` domain annotation (`sort(0)`, deliberately irrelevant
-to reduction, since beta substitution never consults a `Lam`'s domain
-field) — but `Expr`'s own structural equality (what `def_eq` uses) *does*
-compare it. A hand-built alternative using the domain a real step
-signature actually requires (`ChildTy(b)`, needed for it to type-check as
-a standalone value) is therefore never `def_eq` to what `WRec` produces
-automatically, even though both compute identically for every input.
-Bridging the two needs something equivalent to function extensionality —
-two functions provably equal pointwise are equal outright — which this
-kernel doesn't have. A real, bounded follow-on (postulating extensionality
-is a standard, safe, well-precedented move — see the "add impredicative
-`Prop`" option surveyed alongside this one), not a flaw in the `Nat`
-construction itself: confirmed by deliberately attempting it and finding
-this exact wall, not a fixable index bug. Also not yet done: extracting a
+surfaced a real, deeper obstacle, corrected here after an initial
+misdiagnosis: `WRec`'s own automatic reduction (`whnf_impl`) builds its
+induction-hypothesis closure with an inert placeholder `Lam` domain
+annotation (`sort(0)`, deliberately irrelevant to reduction, since beta
+substitution never consults a `Lam`'s domain field at all) — this closure
+turns out to be *unconditionally ill-typed on its own*, at any Pi-type
+whatsoever, whenever the step function's `ih` parameter is genuinely used
+rather than discarded: its own body applies a variable declared type
+`Sort(0)` where the real children type is what the application inside
+actually needs. This was first read as a function-extensionality gap
+(two pointwise-equal functions needing a postulate to be equal outright)
+— that diagnosis doesn't hold up: funext requires *both* sides to already
+be well-typed inhabitants of the same Pi-type before it can relate them,
+and one side here never is one at all, so no postulate fixes this. A real
+fix would need `WRec`'s own reduction rule to thread enough type
+information through its own induction-hypothesis construction to give it
+an honest domain, which conflicts with this kernel's own deliberate
+"reduction never needs a typing context" design (`kernel.rs`'s own
+reduction-section docs: "always sound regardless of typing context,
+since reduction never consults one"). A genuine, deeper architectural
+question, not a bounded follow-on — confirmed by a permanent assertion in
+the same test (`kernel::tests::nat_via_w_is_a_genuinely_computing_inductive_type`),
+not a fixable index bug.
+
+The practical consequence: reasoning propositionally about a concrete
+result of *any* recursor whose step genuinely uses its own `ih` can't go
+through `WRec`'s own automatic reduction at all. `proof.rs`'s own
+`Ev`/`ev_rec` methodology — postulate the recursor's existence *and*
+separately postulate each leaf's own computation rule as an explicit
+axiom, never relying on any underlying automatic reduction — turns out to
+be the necessary shape for exactly this reason, not just a historical
+accident of not having a `Nat` yet. Reusing this `Nat` construction
+inside `proof.rs` would still need that same per-instance axiom
+discipline; what it would save is a reusable, one-time-built type instead
+of inventing a new postulated one per strategy, not the per-leaf
+computation-rule postulation itself. Also not yet done: extracting a
 clean, reusable public API, or wiring any of this into `proof.rs`'s own
-`Ev`-based strategies as a replacement.
+strategies.
 
 ## 4. Higher-order abstract syntax / logical frameworks — the fix for this session's own recurring bug class
 

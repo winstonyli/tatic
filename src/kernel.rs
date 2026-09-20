@@ -980,26 +980,49 @@ mod tests {
     /// entirely) -- demonstrating real per-case dispatch is at least
     /// *constructible* this way, not just the degenerate identity case.
     ///
-    /// **A genuine, newly-discovered scope boundary, not a bug**: proving
-    /// a `bool_rec`-based step's own result concretely (e.g. `is_zero
-    /// (Zero) = true`) turned out to need more than one more `cong1`/
-    /// `trans_proof` step. `WRec`'s own automatic reduction (`whnf_impl`)
-    /// builds its induction-hypothesis closure with an inert placeholder
-    /// domain annotation (`sort(0)`, "inert for reduction" per its own
-    /// comment) -- fine for reduction, since beta substitution never
-    /// consults a `Lam`'s domain field at all, but `Expr`'s own structural
-    /// equality (`nf`+`==`, what `def_eq` uses) *does* compare it. A
-    /// hand-built alternative that instead uses the domain a `bool_rec`
-    /// case's own step signature actually requires (`ChildTy(b)`, needed
-    /// for that step to type-check as a standalone value at all) is
-    /// therefore never `def_eq` to what `WRec` produces automatically,
-    /// even though both compute identically for every input -- bridging
-    /// the two needs something equivalent to function extensionality
-    /// (two functions provably equal pointwise are equal outright), which
-    /// this kernel doesn't have. This is a real, separate follow-on (see
-    /// `RELATED_WORK.md`), not a mistake in this construction -- confirmed
-    /// by deliberately trying it and finding exactly this wall, not a
-    /// fixable index bug.
+    /// **A genuine, newly-discovered scope boundary, not a bug** --
+    /// deeper than it first looked. Proving a `bool_rec`-based step's own
+    /// result concretely (e.g. `is_zero(Zero) = true`) turned out to need
+    /// more than one more `cong1`/`trans_proof` step. `WRec`'s own
+    /// automatic reduction (`whnf_impl`) builds its induction-hypothesis
+    /// closure with an inert placeholder domain annotation (`sort(0)`,
+    /// "inert for reduction" per its own comment) -- harmless for
+    /// reduction, since beta substitution never consults a `Lam`'s domain
+    /// field at all, but it means that closure is *unconditionally
+    /// ill-typed on its own* whenever the step function's `ih` parameter
+    /// is genuinely used (not just discarded, the way the identity
+    /// recursor's own step does): its body applies a variable declared
+    /// type `Sort(0)` where the real children type (`ChildTy(b)`) is what
+    /// the application inside actually needs -- ill-typed at *every*
+    /// Pi-type, not just the "wrong" one (`the_would_be_rec_step`
+    /// assertion above confirms this directly, permanently). This is
+    /// *not* a function-extensionality gap, correcting an earlier read of
+    /// this same obstacle in an earlier commit: funext requires both
+    /// sides to already be well-typed inhabitants of the same Pi-type
+    /// before it can relate them, and one side here never is one at all.
+    /// A real fix would need `WRec`'s own reduction rule to thread enough
+    /// type information through its own induction-hypothesis
+    /// construction to give it an honest domain -- which conflicts with
+    /// this kernel's own deliberate "reduction never needs a typing
+    /// context" design (see this module's own "reduction" section docs:
+    /// "always sound regardless of typing context, since reduction never
+    /// consults one"). A genuine, deeper architectural question, not a
+    /// bounded follow-on -- see `RELATED_WORK.md`.
+    ///
+    /// The practical consequence: reasoning propositionally about a
+    /// concrete result of *any* recursor whose step function genuinely
+    /// uses its own `ih` (i.e. any real per-case recursion, not just the
+    /// identity case) can't go through `WRec`'s own automatic reduction
+    /// at all. `proof.rs`'s own `Ev`/`ev_rec` methodology -- postulate the
+    /// recursor's existence *and* separately postulate each leaf's own
+    /// computation rule as an explicit axiom, never relying on any
+    /// underlying automatic reduction -- turns out to be the necessary
+    /// shape for exactly this reason, not just a historical accident of
+    /// not having a `Nat` yet. Reusing this `Nat` construction inside
+    /// `proof.rs` would still need that same per-instance axiom
+    /// discipline; what it would save is inventing a *new* postulated
+    /// type per strategy, not the per-leaf computation-rule postulation
+    /// itself.
     ///
     /// Deliberately not attempted here: extracting a clean, reusable
     /// public API (this is validated as a self-contained proof of
@@ -1193,8 +1216,25 @@ mod tests {
             .expect("is_zero_step : Pi b:Bool. C(b)");
 
         let is_zero_motive_const = lam(nat_ty_here.clone(), shift(&p.get(bool_pos), 0, 1)); // \_:Nat. Bool
-        let is_zero_on_zero = wrec(is_zero_motive_const, is_zero_step, zero_here);
+        let is_zero_on_zero = wrec(is_zero_motive_const.clone(), is_zero_step.clone(), zero_here.clone());
         check(&p.ctx, &is_zero_on_zero, &p.get(bool_pos)).expect("is_zero(Zero) : Bool");
+
+        // The precise shape of the obstacle described below: `whnf_impl`'s
+        // own "inert" induction-hypothesis closure, built exactly as it
+        // builds one internally, is not just *differently typed* from a
+        // hand-built alternative -- it's unconditionally ill-typed on its
+        // own, at *any* Pi-type, because its own body applies a variable
+        // declared type `Sort(0)` (its own domain annotation) where
+        // `ChildTy(false)` is what the application it contains actually
+        // needs. This is why function extensionality (which requires
+        // *both* sides to already be well-typed inhabitants of the same
+        // Pi-type) can't bridge it.
+        let would_be_rec_step = lam(sort(0), wrec(shift(&is_zero_motive_const, 0, 1), shift(&is_zero_step, 0, 1), app(shift(&f_zero, 0, 2), var(0))));
+        let ill_typed_domain = arrow(app(p.get(child_ty_pos), p.get(false_pos)), p.get(bool_pos));
+        assert!(
+            check(&p.ctx, &would_be_rec_step, &ill_typed_domain).is_err(),
+            "whnf_impl's own induction-hypothesis closure should be unconditionally ill-typed standalone -- this assertion failing would mean the obstacle documented above no longer applies"
+        );
 
         // Deliberately not attempted here: proving `is_zero(Zero) = true`
         // propositionally. This ran into a genuine kernel-level obstacle,
