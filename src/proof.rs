@@ -5997,8 +5997,8 @@ fn eval_dyn(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, se
 /// or anything `eval_dyn`/`eval_dyn_tail_recursive` itself declines (see
 /// their own and `eval_dyn_direct_call`'s docs for exactly what that is
 /// -- in particular, `h` itself `Rec`-wrapped is followed via
-/// `eval_dyn_tail_recursive`, but only if its body is *tail*-recursive;
-/// non-tail self-recursion combined with this capability still declines).
+/// `eval_dyn_tail_recursive` whether its body is tail- or non-tail-
+/// recursive, including a branching non-tail shape, via `self_ctx`).
 pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if arity != args.len() {
