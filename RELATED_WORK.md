@@ -227,6 +227,39 @@ a test built to catch it needs inputs asymmetric enough that a swap is
 observable — a symmetric or single-element test proves nothing about
 ordering at all.
 
+**A third instance of the same staleness class, found extending
+`eval_and_prove_call_over` to a further-nested-call-producing `root`**
+(`clo_eq_ref_call`/`resolve_closure_shape_to_leaf`, `src/proof.rs`): this
+generalization needed the resolver to *recurse* — `root`'s own body
+calls a further literal lambda `g` whose own saturated call is itself
+`Clo_k`-typed (not a bare `Pap`/`IfTree` leaf), so finding the ultimate
+literal-lambda leaf means building `g`'s own analogous bridge and
+resolving *its* own shape, which could itself be a further `Call`. The
+new code held a `Postulates::get`-derived `clo_ty` reference across
+exactly this recursive call — the same reference used both before and
+after it, unchanged — even though the recursive call could (and, for
+any `g`, generally does) push further postulates onto the shared
+context, silently invalidating the earlier reference's implicit shift
+level the same way an unanchored `Expr` would. The bug produced no
+compiler warning and no `None` decline (the classic silent-wrongness
+risk `Anchored`'s own docs warn about) — only a `debug_assert_has_type`
+panic deep in `kernel::check`'s own type inference ("expected a Sort,
+got a Pi type"), on the very first test exercising this shape at all.
+Bisected by adding temporary `debug_assert_has_type` checks at each
+composition step (confirming everything *before* the recursive call
+type-checked, and only the *final* composition after it failed) rather
+than by re-deriving the whole shift arithmetic by hand — the fix was
+simply re-deriving `clo_ty` fresh after the recursive call, exactly the
+discipline `build_clo_call_bridge`'s own doc comment already states as
+the reason for its own analogous fresh re-derivations. The general
+lesson: a genuinely *recursive* proof-construction function is a
+stronger staleness trap than a linear sequence of pushes, precisely
+because it's easy to reason "nothing local pushes between these two
+uses" while missing that the recursive call itself is exactly the kind
+of intervening push this whole `Anchored` discipline exists to guard
+against — recursion is where "did anything push in between" stops being
+answerable by reading the immediately-surrounding lines.
+
 ## 5. Self-types / Cedille — the same "postulate your way to power" tradeoff, one level down
 
 Cedille (Stump et al.) gets inductive-datatype- and dependent-type-*like*

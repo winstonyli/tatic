@@ -752,7 +752,7 @@ guards against by hand): caught immediately, at seed 22.
   *PAP-producing* `root` (`root`'s own body a partial application of a
   further literal lambda `g`, e.g. `f = \a. g(a)` for a 2-ary `g`, then
   over-applied as `f(a)(c)`) is covered too now — `clo_eq_ref_pap`, a
-  sibling of `clo_eq_ref_if_between` sharing `clo_eq_ref`'s own dispatch,
+  sibling of `clo_eq_ref_if_tree` sharing `clo_eq_ref`'s own dispatch,
   states `root`'s call equals `pap_ref(g, s)` applied to the supplied
   args' own denoted values, and a new `apply_pap_eq_ref` ties
   `apply_ref(k)` applied to that `Clo_k` value down to a direct call on
@@ -767,11 +767,32 @@ guards against by hand): caught immediately, at seed 22.
   via a new unrestricted classifier rather than that module's own
   comparison-restricted one), with the axiom RHS and the concrete-instance
   resolution both built recursively over the tree instead of in one flat
-  step. Still open: a *partially*-applied closure creation in this
-  position (no concrete `Clo` representation to hand back), and a further
-  nested-call-producing `root` (one indirect call away from a literal
-  lambda, rather than a PAP or an `If` directly) — both "sound, not
-  complete", the same standing tradeoff this fragment makes everywhere
+  step. A *further nested-call-producing* `root` is covered too, for a
+  statically-known indirection chain of any depth — `root`'s own body a
+  *saturated* call to a further literal lambda `g` whose own saturated
+  call is itself `Clo_k`-typed (e.g. `middle = \b. h(b)` a PAP of a 2-ary
+  `h`, `root = \a. middle(a)`, over-applied as `root(a)(c)`) —
+  `clo_eq_ref_call`, a third sibling of `clo_eq_ref_pap`/
+  `clo_eq_ref_if_tree`, states `root`'s call equals `call_ref(g)` applied
+  to `args`'s own denoted values, deliberately opaque about `g`'s own
+  definition (exactly like `Pap`'s own `g`); concrete resolution
+  (`resolve_closure_shape_to_leaf`, generalized from the `IfTree`/`Pap`
+  arms `eval_and_prove_call_over` used to inline directly) recurses
+  through however many further `Call` links this reaches, each one
+  building `g`'s own bridge (`build_clo_call_bridge`, itself a shared
+  extraction of what was `eval_and_prove_call_over`'s own `root`-specific
+  preamble) and continuing into `g`'s own shape — terminating because
+  hash-consing makes the "calls" relation between distinct combinators a
+  strict partial order, the same well-foundedness argument
+  `combinator_return_type`'s own recursion already relies on. Still open:
+  a *partially*-applied closure creation in this position (no concrete
+  `Clo` representation to hand back), and a callee reached only through a
+  captured/parameter variable rather than a further statically-known
+  combinator (genuinely unknown at proof-construction time which literal
+  lambda underlies it — the same obstacle `RELATED_WORK.md` §9 already
+  treats, needing either `eval_dyn`-style per-instance tracing or a real
+  dependent sum) — both "sound, not complete", the same standing tradeoff
+  this fragment makes everywhere
   else; neither affects `kernel_verified`, only weaker, call-specific
   evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
