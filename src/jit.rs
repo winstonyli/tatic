@@ -82,9 +82,10 @@ pub struct Stats {
     /// universal theorem (`proof::prove_tail_recursive_instance`), on top
     /// of `kernel_proofs_checked`'s single per-term theorem. Additional
     /// evidence only -- `kernel_verified` doesn't depend on this, so it
-    /// stays `0` for terms the universal proof doesn't apply to at all, and
-    /// can also stay low for one it does (branching recursion, e.g. naive
-    /// Fibonacci, declines instances outright -- see `proof.rs`).
+    /// stays `0` for terms the universal proof doesn't apply to at all.
+    /// Branching recursion (e.g. naive Fibonacci) gets real per-instance
+    /// evidence too now, not a blanket decline -- see
+    /// `build_ev_witness`'s own `memo`-based fix in `proof.rs`.
     pub universal_instances_checked: u64,
 }
 
@@ -197,9 +198,12 @@ impl JitEngine {
     ///    (`Stats::universal_instances_checked`) -- cheap since it clones
     ///    the already-built scaffold per sample rather than re-deriving the
     ///    theorem from scratch each time, but not required:
-    ///    `kernel_verified` is already `true` from the theorem alone, so a
-    ///    shape it declines instances for (branching recursion -- see
-    ///    `proof.rs`) is unaffected.
+    ///    `kernel_verified` is already `true` from the theorem alone, so
+    ///    any shape whose instances this step doesn't get (an arity
+    ///    mismatch, a `Clo`-typed top-level parameter -- see
+    ///    `instance_from_scaffold`) is unaffected. Branching recursion
+    ///    (e.g. naive Fibonacci) gets real instances through this step
+    ///    too, not a blanket decline.
     /// 4. `prove_tail_recursive_call`, once per sample in the same battery
     ///    `verify()` uses, reporting success only if *every* sample got its
     ///    own per-call relational proof -- the fallback for tail-recursive
