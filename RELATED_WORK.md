@@ -123,9 +123,41 @@ accident of not having a `Nat` yet. Reusing this `Nat` construction
 inside `proof.rs` would still need that same per-instance axiom
 discipline; what it would save is a reusable, one-time-built type instead
 of inventing a new postulated one per strategy, not the per-leaf
-computation-rule postulation itself. Also not yet done: extracting a
-clean, reusable public API, or wiring any of this into `proof.rs`'s own
-strategies.
+computation-rule postulation itself.
+
+**Since done: extracted into a clean, reusable public API --
+`kernel::NatPostulates` (`src/kernel.rs`).** `NatPostulates::new` pushes
+every postulate the construction needs onto a `Postulates` in one call;
+`nat_ty`/`zero`/`succ`/`zero_child_fn`/`bool_rec`/etc. resolve fresh
+against the stored postulate *positions* every time they're called,
+mirroring `Postulates::get`'s own "recompute, never cache" discipline
+rather than returning a fixed `Expr` once. That discipline isn't just
+style: the original, self-contained test needed one manual `shift` to
+avoid a value (built before a later `p.push`) silently referencing the
+wrong postulate once the context grew deeper; the extracted API doesn't
+-- calling `nat.nat_ty(&p)`/`nat.zero(&p)` again *after* the later push
+already reflects the deeper context, with nothing for a caller to get
+wrong. The test this was extracted from now consumes the public API
+(confirming the extraction changed nothing observable, verified with a
+deliberately-broken `zero` caught immediately by the existing `Zero :
+Nat` check) rather than duplicating the construction.
+
+**Still not attempted: wiring `NatPostulates` into `proof.rs`'s own
+`Ev`/`ev_rec` strategies.** This turns out to be more than "swap in the
+shared type once it's trusted" -- `Ev(params, v)` is an *indexed* family
+(its very type depends on `params`/`v`, which change per recursive
+call), while this `Nat`'s own structural recursor (`WRec`, inherited from
+`W`) eliminates over a plain, non-indexed carrier. A plain `Nat`
+recursor doesn't directly hand you an indexed family's induction
+principle either way -- `Ev` would still need to be built essentially as
+it is now (one postulated family, gated per leaf, plus `ev_rec`), whether
+or not a shared `Nat` exists elsewhere in the same kernel. So reusing
+`NatPostulates` here would only save inventing a fresh `Bool`/`Unit`/
+`Empty`/`ChildTy` postulate quartet each time `Ev` needed one as a
+building block -- which it currently doesn't -- not any part of `Ev`'s
+own indexed-family construction or its per-leaf axiom discipline. Left
+as a real but narrower opportunity than it first sounds, not pursued
+further without a concrete use for it.
 
 ## 4. Higher-order abstract syntax / logical frameworks — the fix for this session's own recurring bug class
 
