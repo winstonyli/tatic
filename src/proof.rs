@@ -1010,10 +1010,9 @@ fn denote_with_placeholders(
                     let e = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
-                let apply_fn = combinators.cp.apply_ref(k);
                 let callee = callee.at(&combinators.cp.arith);
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                let applied = apply_n(apply_fn, std::iter::once(callee).chain(arg_exprs));
+                let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: call_indirect application");
                 return Some(Denoted::Int(applied));
@@ -1128,10 +1127,9 @@ fn denote_with_placeholders(
                     let e = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
                     extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
-                let apply_fn = combinators.cp.apply_ref(extra_args.len());
                 let sat_applied = sat_applied.at(&combinators.cp.arith);
                 let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                let applied = apply_n(apply_fn, std::iter::once(sat_applied).chain(extra_arg_exprs));
+                let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: over-application dispatch");
                 return Some(Denoted::Int(applied));
@@ -1299,10 +1297,9 @@ fn denote_closure_typed(
                     let e = denote_closure_typed(store, a, self_call, param_types, combinators, params)?.int()?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
-                let apply_fn = combinators.cp.apply_ref(k);
                 let callee = callee.at(&combinators.cp.arith);
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                let applied = apply_n(apply_fn, std::iter::once(callee).chain(arg_exprs));
+                let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: call_indirect application");
                 return Some(Denoted::Int(applied));
@@ -1411,10 +1408,9 @@ fn denote_closure_typed(
                     let e = denote_closure_typed(store, a, self_call, param_types, combinators, params)?.int()?;
                     extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
-                let apply_fn = combinators.cp.apply_ref(extra_args.len());
                 let sat_applied = sat_applied.at(&combinators.cp.arith);
                 let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                let applied = apply_n(apply_fn, std::iter::once(sat_applied).chain(extra_arg_exprs));
+                let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: over-application dispatch");
                 return Some(Denoted::Int(applied));
@@ -1584,15 +1580,17 @@ fn prime_closure_postulates(
             }
             // Primes `call_ref` for root's own saturated call, shared
             // between an exact match and an over-application's own
-            // leading portion (`prime_direct_call`); an over-application
-            // also needs `apply_ref` primed for its own extra-argument
-            // count -- whether the saturated call's result is actually
-            // `Clo`-typed (required for the real denotation to accept
-            // this at all -- see `combinator_return_type`) isn't checked
-            // here, deliberately: priming just needs to cover every
-            // postulate the real pass *might* touch, and an unneeded
-            // prime for a term the real pass later rejects anyway is
-            // harmless, not unsound.
+            // leading portion (`prime_direct_call`) -- an over-application
+            // needs no further priming of its own now: calling the
+            // saturated result (a `Clo`-typed value) with the extra
+            // arguments is ordinary application, no `apply_ref` axiom to
+            // prime (see `RELATED_WORK.md` section 11). Whether the
+            // saturated call's result is actually `Clo`-typed (required
+            // for the real denotation to accept this at all -- see
+            // `combinator_return_type`) isn't checked here, deliberately:
+            // priming just needs to cover every postulate the real pass
+            // *might* touch, and an unneeded prime for a term the real
+            // pass later rejects anyway is harmless, not unsound.
             AppShape::LitLambdaExact { root, args, .. } => {
                 prime_direct_call(store, root, param_types, combinators)?;
                 for &a in &args {
@@ -1600,9 +1598,8 @@ fn prime_closure_postulates(
                 }
                 Some(())
             }
-            AppShape::LitLambdaOver { root, args, callee_param_types } => {
+            AppShape::LitLambdaOver { root, args, .. } => {
                 prime_direct_call(store, root, param_types, combinators)?;
-                combinators.cp.apply_ref(args.len() - callee_param_types.len());
                 for &a in &args {
                     prime_closure_postulates(store, a, self_call, param_types, combinators)?;
                 }
@@ -1928,16 +1925,17 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let ev_pos = arith.p.push(ev_ty);
     let ev_of = |arith: &ArithPostulates, params: &[Expr], v: Expr| -> Expr { ev_of(arith, ev_pos, params, v) };
 
-    // Pre-push every `apply_k` arity a closure-typed parameter's own call
-    // sites will need, and every `ite_clo_ref(k)` (see its own docs --
-    // `clo_ty` eagerly primes it as a side effect, but `clo_ty` itself no
-    // longer pushes anything of its own -- see `RELATED_WORK.md` section
-    // 11 -- so `ite_clo_ref` is the only postulate left to worry about
-    // staleness for here) that same parameter's own arity `k` will need,
-    // *before* any of the temporary, later-rolled-back
-    // `params_and_close_typed` scopes below gets a chance to trigger its
-    // lazy push itself. This memoization
-    // (`ClosurePostulates::apply_pos`/`ite_clo_pos`) was designed
+    // Pre-push every `ite_clo_ref(k)` (see its own docs -- `clo_ty`
+    // eagerly primes it as a side effect; `clo_ty` itself no longer
+    // pushes anything of its own, and a closure-typed parameter's own
+    // call sites need no `apply_k` priming either, since calling a
+    // `Clo_k`-typed value is now ordinary application -- see
+    // `RELATED_WORK.md` section 11 -- so `ite_clo_ref` is the only
+    // postulate left to worry about staleness for here) that a
+    // closure-typed parameter's own arity `k` will need, *before* any of
+    // the temporary, later-rolled-back `params_and_close_typed` scopes
+    // below gets a chance to trigger its lazy push itself. This
+    // memoization (`ClosurePostulates::ite_clo_pos`) was designed
     // for `prove_closure_expr`'s own usage, where `arith.p.ctx` only ever
     // grows -- there, a postulate's absolute position, once recorded, stays
     // valid forever. Here, `params_and_close_typed` repeatedly
@@ -1961,7 +1959,6 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // the *correct* arity for its own postulate's domain/codomain as part
     // of building it, priming or real construction alike).
     for k in param_types.iter().flatten() {
-        arith.apply_ref(*k);
         arith.clo_ty(*k);
     }
 
@@ -1990,7 +1987,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 
     // Audited (prompted by the `ite_clo_ref` staleness bug above): every
     // lazily-memoized `ClosurePostulates` field --
-    // `apply_pos`/`combinator_value_pos`/`combinator_call_pos`/
+    // `combinator_value_pos`/`combinator_call_pos`/
     // `env_ty_pos`/`mk_env_pos`/`mk_clo_pos`/`pap_pos`/`ite_clo_pos` -- is
     // now primed above, before any `params_and_close_typed` scope below
     // gets a chance to trigger a first-ever lazy push itself. `literal_pos`
@@ -3459,8 +3456,8 @@ fn eval_and_prove_call_over(
     // `Hash` to recurse into (`chosen`), its own captures resolved to
     // literal triples (`chosen_cap_triples`), the full argument list for
     // that recursive call (`chosen_arg_triples`), and the instantiated
-    // `apply_*_eq_ref` fact bridging `apply_ref(k)` applied to
-    // `chosen_value` down to a direct call on `chosen`.
+    // `apply_*_eq_ref` fact bridging `chosen_value` called directly down
+    // to a direct call on `chosen`.
     let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, root_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(
         store,
         combinators,
@@ -3476,7 +3473,6 @@ fn eval_and_prove_call_over(
         extra_arg_triples,
     )?;
 
-    let apply_fn = combinators.cp.apply_ref(k); // cache hit -- primed by apply_clo_eq_ref/apply_pap_eq_ref above
     let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
     let int_ty2 = combinators.cp.arith.int_ty();
     let clo_ty = combinators.cp.clo_ty(k);
@@ -3490,21 +3486,22 @@ fn eval_and_prove_call_over(
     // `apply_clo_eq_ref`'s/`apply_pap_eq_ref`'s own axiom is universally
     // quantified over `Int`-typed values, so it can be instantiated
     // directly at these denoted expressions -- no separate "route through
-    // literals first" step for `apply_ref`'s own `k` `Int` arguments is
-    // needed at all.
+    // literals first" step is needed at all.
     let d_extra_args: Vec<Expr> = extra_arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
 
-    // `cong1` over `apply_ref(k)`'s own first (`Clo_k`) argument, the `k`
+    // `cong1` over a `Clo_k`-typed value's own use as the callee, the `k`
     // extra args held fixed at their denoted values, using
-    // `root_to_chosen` to turn `call_at_denoted` into `chosen_value`.
-    let mut f_clo_body = kernel::app(kernel::shift(&apply_fn, 0, 1), kernel::var(0));
+    // `root_to_chosen` to turn `call_at_denoted` into `chosen_value` --
+    // called directly (`c(args)`, no `apply_ref` axiom to route through,
+    // see `RELATED_WORK.md` section 11).
+    let mut f_clo_body = kernel::var(0);
     for d in &d_extra_args {
         f_clo_body = kernel::app(f_clo_body, kernel::shift(d, 0, 1));
     }
     let f_clo = kernel::lam(clo_ty.clone(), f_clo_body);
     let clo_step = kernel::cong1(&clo_ty, &int_ty2, &f_clo, call_at_denoted.clone(), chosen_value.clone(), root_to_chosen);
-    let apply_at_denoted = apply_n(apply_fn.clone(), std::iter::once(call_at_denoted).chain(d_extra_args.iter().cloned()));
-    let apply_at_chosen_denoted_args = apply_n(apply_fn, std::iter::once(chosen_value).chain(d_extra_args.iter().cloned()));
+    let apply_at_denoted = apply_n(call_at_denoted, d_extra_args.iter().cloned());
+    let apply_at_chosen_denoted_args = apply_n(chosen_value, d_extra_args.iter().cloned());
 
     // `eval_and_prove_direct_call`'s own recursion below (into `chosen`'s
     // own body) may lazily push further postulates -- anchor everything
@@ -4241,7 +4238,6 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
 #[derive(Clone)]
 struct ClosurePostulates {
     arith: ArithPostulates,
-    apply_pos: HashMap<usize, usize>,
     combinator_value_pos: HashMap<Hash, usize>,
     combinator_call_pos: HashMap<Hash, usize>,
     env_ty_pos: HashMap<Vec<Option<usize>>, usize>,
@@ -4289,7 +4285,6 @@ impl ClosurePostulates {
         let arith = ArithPostulates::new();
         ClosurePostulates {
             arith,
-            apply_pos: HashMap::new(),
             combinator_value_pos: HashMap::new(),
             combinator_call_pos: HashMap::new(),
             env_ty_pos: HashMap::new(),
@@ -4347,34 +4342,6 @@ impl ClosurePostulates {
             ty = kernel::arrow(int_ty.clone(), ty);
         }
         ty
-    }
-
-    /// `apply_k : Clo -> Int -> .. -> Int` (`k` `Int` params), postulated
-    /// once per distinct `k` -- for calling a *parameter*-typed closure
-    /// (`call_indirect`), which per `compile.rs`'s own typed dispatch
-    /// always takes `Int` arguments regardless of what the callee's own
-    /// body does with them.
-    fn apply_ref(&mut self, k: usize) -> Expr {
-        if let Some(&pos) = self.apply_pos.get(&k) {
-            return self.arith.p.get(pos);
-        }
-        // `clo_ty(k)` first, before either `int_ty()` read below: it may
-        // lazily push a fresh `Clo_k`/`ite_clo_k` pair (the first time
-        // this particular arity is seen), which would silently invalidate
-        // an `int_ty()` reference already folded into `ty` if it ran
-        // after instead -- the same staleness class `Anchored`'s own docs
-        // describe, just inside a single function's own type
-        // construction. `int_ty()` itself never pushes, so once `clo_ty`
-        // is out of the way, nothing below can invalidate anything else.
-        let dom = self.clo_ty(k);
-        let mut ty = self.arith.int_ty();
-        for _ in 0..k {
-            ty = kernel::arrow(self.arith.int_ty(), ty);
-        }
-        let ty = kernel::arrow(dom, ty);
-        let pos = self.arith.p.push(ty);
-        self.apply_pos.insert(k, pos);
-        self.arith.p.get(pos)
     }
 
     /// `ite_clo_arity : Int -> Clo_arity -> Clo_arity -> Clo_arity`,
@@ -5457,16 +5424,23 @@ impl<'a> ClosureCombinators<'a> {
         self.cp.arith.p.get(pos)
     }
 
-    /// Ties `apply_ref(k)` (`inner_root`'s own arity, `k`) to
-    /// `inner_root`'s own closure *value* (whatever `register(inner_root)`
-    /// produces): `apply_ref(k)(<inner_root's own value>(env?),
-    /// p_{k-1}..p_0) = call_ref(inner_root)(env?, p_{k-1}..p_0)`,
-    /// quantified over `inner_root`'s own captures then its own `k`
-    /// params (same shape, same descending param order, as
-    /// `call_eq_ref`'s own quantification), memoized by `inner_root`
-    /// alone (`apply_ref(k)` itself stays memoized by `k`, shared across
-    /// every closure of that arity). Honest for the same reason
-    /// `call_eq_ref` is: `apply_ref`'s and `mk_clo_ref`'s combined meaning
+    /// Ties `inner_root`'s own closure *value* (whatever
+    /// `register(inner_root)` produces, called directly with `arity`
+    /// `Int` arguments -- a `Clo_k`-typed value *is* the real curried
+    /// `Int -> .. -> Int` arrow type now, see `RELATED_WORK.md` section
+    /// 11, so no separate "how to call this" axiom is needed the way
+    /// `apply_ref` used to be) to `call_ref(inner_root)`:
+    /// `<inner_root's own value>(env?)(p_{k-1}..p_0) =
+    /// call_ref(inner_root)(env?, p_{k-1}..p_0)`, quantified over
+    /// `inner_root`'s own captures then its own `k` params (same shape,
+    /// same descending param order, as `call_eq_ref`'s own
+    /// quantification), memoized by `inner_root` alone. Still genuinely
+    /// postulated, not derivable: `register(inner_root)`/`call_ref
+    /// (inner_root)` remain two independently postulated opaque
+    /// constants (see `RELATED_WORK.md` section 11's own second
+    /// correction for why `Clo_k` becoming transparent doesn't relate
+    /// them to each other on its own) -- but honest for the same reason
+    /// `call_eq_ref` is: `register`'s and `mk_clo_ref`'s combined meaning
     /// *is* "calling the closure that value represents", so relating it to
     /// `call_ref(inner_root)` (already pinned by `call_eq_ref`) states
     /// nothing new, just makes the connection kernel-checkable. See
@@ -5491,8 +5465,6 @@ impl<'a> ClosureCombinators<'a> {
             vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let sig = capture_sig(&captures, &dummy_caller_param_types)?;
 
-        let apply_fn = self.cp.apply_ref(arity);
-        let apply_fn = Anchored::new(&self.cp.arith, apply_fn);
         let call_fn = self.call_ref(inner_root, &captures, &dummy_caller_param_types)?;
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let value_fn = self.register(inner_root, &captures, &dummy_caller_param_types)?;
@@ -5507,7 +5479,6 @@ impl<'a> ClosureCombinators<'a> {
             let (cs, ps) = all.split_at(n_captures);
             let value_fn_here = value_fn.at(&combinators.cp.arith);
             let call_fn_here = call_fn.at(&combinators.cp.arith);
-            let apply_fn_here = apply_fn.at(&combinators.cp.arith);
 
             let (closure_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
                 let mk_env_expr = combinators.cp.mk_env_ref(&sig); // cache hit -- primed above
@@ -5517,14 +5488,10 @@ impl<'a> ClosureCombinators<'a> {
                 (value_fn_here, None)
             };
 
-            // LHS: `apply_ref(k)` has no separate `Env_sig` slot of its
-            // own -- the environment, if any, is already folded into
-            // `closure_value` itself (mirroring `apply_ref`'s own
-            // postulated type, `Clo_k -> Int^k -> Int`).
-            let mut apply_args = Vec::with_capacity(1 + arity);
-            apply_args.push(closure_value);
-            apply_args.extend(ps.iter().rev().cloned());
-            let lhs = apply_n(apply_fn_here, apply_args);
+            // LHS: `closure_value` is itself the real curried arrow type
+            // now, so calling it with `arity` arguments is ordinary
+            // application -- no `apply_ref` axiom to route through.
+            let lhs = apply_n(closure_value, ps.iter().rev().cloned());
 
             // RHS: `call_ref(inner_root)(env?, p_{k-1}..p_0)` -- same
             // combinator, same descending params, `env` (if any) leading,
@@ -5544,21 +5511,24 @@ impl<'a> ClosureCombinators<'a> {
 
     /// `apply_clo_eq_ref`'s own counterpart for a `Clo_k` value that's a
     /// *partial application* (`pap_ref(g, s)`'s own value) rather than a
-    /// directly-registered combinator's: `apply_ref(k)(pap_ref(g,
-    /// s)(g_env?, a_{s-1}..a_0), b_{k-1}..b_0) = call_ref(g)(g_env?,
-    /// a_{s-1}..a_0, b_{k-1}..b_0)`, `k = g`'s own arity minus `s`.
-    /// Needed because `pap_ref` is exactly as opaque as a directly-
-    /// registered combinator's own value was before `apply_clo_eq_ref` --
-    /// this is the semantic fact a compile-time-desugared PAP wrapper's
-    /// own codegen encodes (`register_partial_app`'s wrapper forwards its
-    /// own supplied arguments plus whatever further ones it's eventually
+    /// directly-registered combinator's: `pap_ref(g,
+    /// s)(g_env?, a_{s-1}..a_0)(b_{k-1}..b_0) = call_ref(g)(g_env?,
+    /// a_{s-1}..a_0, b_{k-1}..b_0)`, `k = g`'s own arity minus `s`, the
+    /// left side called directly (a `Clo_k` value is the real curried
+    /// `Int -> .. -> Int` arrow type, see `RELATED_WORK.md` section 11 --
+    /// no separate "how to call this" axiom needed). Needed because
+    /// `pap_ref` is exactly as opaque as a directly-registered
+    /// combinator's own value was before `apply_clo_eq_ref` -- this is the
+    /// semantic fact a compile-time-desugared PAP wrapper's own codegen
+    /// encodes (`register_partial_app`'s wrapper forwards its own
+    /// supplied arguments plus whatever further ones it's eventually
     /// given straight into `g`'s own entry), stated here as the only thing
     /// that gives `pap_ref`'s otherwise-opaque value defined behavior once
     /// something is actually applied to it. Restricted to `g`'s own
     /// params all being `Int`-typed, mirroring `clo_eq_ref_pap`'s own
     /// identical restriction (this axiom is only ever reached from there).
-    /// Memoized by `(g, s)` alone -- `apply_ref(k)`/`pap_ref(g, s)` each
-    /// stay memoized by their own key already.
+    /// Memoized by `(g, s)` alone -- `pap_ref(g, s)` stays memoized by its
+    /// own key already.
     fn apply_pap_eq_ref(&mut self, g: Hash, s: usize) -> Option<Expr> {
         let key = (g, s);
         if let Some(&pos) = self.cp.apply_pap_eq_pos.get(&key) {
@@ -5568,7 +5538,6 @@ impl<'a> ClosureCombinators<'a> {
         if s == 0 || s >= g_arity {
             return None;
         }
-        let k = g_arity - s;
         let g_param_types = param_types_for(self.store, g)?;
         if g_param_types.iter().any(Option::is_some) {
             return None;
@@ -5579,8 +5548,6 @@ impl<'a> ClosureCombinators<'a> {
             vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let sig = capture_sig(&g_captures, &dummy_caller_param_types)?;
 
-        let apply_fn = self.cp.apply_ref(k);
-        let apply_fn = Anchored::new(&self.cp.arith, apply_fn);
         let call_fn = self.call_ref(g, &g_captures, &dummy_caller_param_types)?;
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let pap_fn = self.pap_ref(g, s, &dummy_caller_param_types)?;
@@ -5600,7 +5567,6 @@ impl<'a> ClosureCombinators<'a> {
             let (supplied, more) = ps.split_at(s);
             let pap_fn_here = pap_fn.at(&combinators.cp.arith);
             let call_fn_here = call_fn.at(&combinators.cp.arith);
-            let apply_fn_here = apply_fn.at(&combinators.cp.arith);
 
             let (pap_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
                 let mk_env_expr = combinators.cp.mk_env_ref(&sig); // cache hit -- primed above
@@ -5611,27 +5577,26 @@ impl<'a> ClosureCombinators<'a> {
                 (apply_n(pap_fn_here, supplied.iter().cloned()), None)
             };
 
-            // LHS: `apply_ref(k)(pap_value, more_{k-1}..more_0)` -- same
-            // descending order `apply_clo_eq_ref`'s own LHS uses for its
-            // own `k` params.
-            let mut apply_args = Vec::with_capacity(1 + k);
-            apply_args.push(pap_value);
-            apply_args.extend(more.iter().rev().cloned());
-            let lhs = apply_n(apply_fn_here, apply_args);
+            // LHS: `pap_value(more_{k-1}..more_0)`, called directly -- the
+            // same descending order this axiom's own construction (and
+            // `apply_clo_eq_ref`'s) has always applied its own trailing
+            // `Int` params in, now with no `apply_ref` hop to cross (the
+            // order itself is unchanged: `pap_ref(g,s)`'s own codomain
+            // *is* `curried_int_ty(k)`, the exact same Pi-chain shape
+            // `apply_ref(k)`'s own trailing arguments used to match).
+            let lhs = apply_n(pap_value, more.iter().rev().cloned());
 
             // RHS: `call_ref(g)(g_env?, a_0..a_{s-1}, b_{k-1}..b_0)` --
             // same combinator, `g`'s own full argument list in one call,
             // `env` (if any) leading. The `s` supplied args are *not*
-            // reversed here, unlike `more`: they never pass through
-            // `apply_ref`'s own convention at all (only `pap_fn`'s, on the
-            // LHS, in the same unreversed order) -- so their own ordering
-            // only has to agree between this axiom's LHS and RHS (and
-            // whatever independently reconstructs the same value at a
-            // call site, e.g. `eval_and_prove_call_over`'s own
-            // `pap_at_denoted`), not with `call_ref`'s "descending"
-            // convention the way `more` (which *does* cross `apply_ref`)
-            // must.
-            let mut call_args = Vec::with_capacity(1 + s + k);
+            // reversed here, unlike `more`: they only ever pass through
+            // `pap_fn`'s own convention (unreversed, on the LHS) -- so
+            // their own ordering only has to agree between this axiom's
+            // LHS and RHS (and whatever independently reconstructs the
+            // same value at a call site, e.g. `eval_and_prove_call_over`'s
+            // own `pap_at_denoted`), not with `call_ref`'s "descending"
+            // convention the way `more` must.
+            let mut call_args = Vec::with_capacity(1 + s + more.len());
             call_args.extend(env_arg);
             call_args.extend(supplied.iter().cloned());
             call_args.extend(more.iter().rev().cloned());
@@ -6229,7 +6194,7 @@ fn denote_closure(
             // A parameter-typed closure, called through `call_indirect`:
             // per compile.rs's own typed dispatch, arguments are always
             // `Int` regardless of the callee's own signature.
-            AppShape::ParamCall { root, k, args } => {
+            AppShape::ParamCall { root, args, .. } => {
                 let callee = denote_closure(store, root, combinators, params, param_types)?.clo()?;
                 let callee = Anchored::new(&combinators.cp.arith, callee);
                 let mut arg_exprs = Vec::with_capacity(args.len());
@@ -6237,10 +6202,9 @@ fn denote_closure(
                     let e = denote_closure(store, a, combinators, params, param_types)?.int()?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
-                let apply_fn = combinators.cp.apply_ref(k);
                 let callee = callee.at(&combinators.cp.arith);
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                let applied = apply_n(apply_fn, std::iter::once(callee).chain(arg_exprs));
+                let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: call_indirect application");
                 return Some(Denoted::Int(applied));
@@ -6390,10 +6354,9 @@ fn denote_closure(
                     let e = denote_closure(store, a, combinators, params, param_types)?.int()?;
                     extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
-                let apply_fn = combinators.cp.apply_ref(extra_args.len());
                 let sat_applied = sat_applied.at(&combinators.cp.arith);
                 let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-                let applied = apply_n(apply_fn, std::iter::once(sat_applied).chain(extra_arg_exprs));
+                let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: over-application dispatch");
                 return Some(Denoted::Int(applied));

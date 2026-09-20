@@ -872,14 +872,29 @@ arity. Verify-teeth checked: temporarily dropping `clo_ty`'s own
 exact push-inside-a-temporary-rolled-back-scope staleness class this same
 region's own comments already document), confirming the priming
 contract every existing call site depends on is still load-bearing, not
-vestigial. Phase 2 (in progress as of this writing): eliminate `apply_ref`
-itself and its roughly a dozen call sites, each of which currently builds
-`apply_n(apply_fn, [callee_or_sat_applied] ++ args)` and can instead build
-`apply_n(callee_or_sat_applied, args)` directly, since a `Clo_k`-typed
-value is now itself the real curried arrow type and needs no separate
-"how to call this" axiom. `apply_clo_eq_ref`/`apply_pap_eq_ref` are kept
-(per the second correction above), simplified to drop their own
-`apply_ref` hop.
+vestigial. Phase 2 (landed): eliminated `apply_ref` itself and its dozen
+call sites, each of which built `apply_n(apply_fn, [callee_or_sat_applied]
+++ args)` and now builds `apply_n(callee_or_sat_applied, args)` directly,
+since a `Clo_k`-typed value is itself the real curried arrow type and
+needs no separate "how to call this" axiom. `apply_clo_eq_ref`/
+`apply_pap_eq_ref` are kept (per the second correction above), simplified
+to drop their own `apply_ref` hop from both their axiom construction and
+the `cong1`-based congruence step `eval_and_prove_call_over`'s own
+over-application dispatch builds around them. The trickiest part wasn't
+the mechanical call sites (a uniform, low-risk rewrite once the pattern
+was recognized) but `eval_and_prove_call_over`'s own `f_clo`/
+`apply_at_denoted`/`apply_at_chosen_denoted_args` congruence-and-`trans_proof`
+chain, which still referenced the removed `apply_fn` as the function
+being congruence-lifted and as the head of the chain's own endpoints --
+missing this broke 10 tests immediately with a `kernel::check` type
+mismatch (an `Id` proposition's own type parameter coming out as a `Clo`
+Pi type instead of `Int`, from composing a proof built against the new,
+`apply_ref`-free axiom shape with congruence machinery still built
+against the old one) until updated to congruence-lift the callee's own
+direct application instead. `Clo_k`'s own `Sort(0)` push, `apply_ref`,
+and its dozen call sites are now fully migrated;
+`ite_clo_ref`/`apply_clo_eq_ref`/`apply_pap_eq_ref` remain, as
+established above, genuinely necessary postulates.
 
 ## Sources
 
