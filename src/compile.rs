@@ -1203,6 +1203,97 @@ fn push_pap_env(ctx: &FnCtx, combinators: &mut Combinators, root_captures: &[u32
     Some(())
 }
 
+/// Emits a curried "stage chain" for the combinator registered at `idx`
+/// (own arity `arity`, its own environment already `env_len` `i64` slots
+/// long -- for an ordinary literal combinator that's `captures.len()`,
+/// for a partial-application wrapper it's `1 + supplied`; this function
+/// only ever copies those slots byte-for-byte, so it doesn't need to
+/// know or care what's actually in them, the same way `emit_pap_wrapper`
+/// doesn't need `compile_node`/`FnCtx` for its own fixed-offset body).
+/// Not yet reachable from `try_compile`'s own codegen -- see the module
+/// docs above `Combinators` for why a fragment-wide decision has to be
+/// made before any call site can choose between the ordinary
+/// `call_indirect`/`$tyK` fast path and this mechanism.
+///
+/// Produces `arity` new one-argument-at-a-time functions, `$s{idx}_0 ..
+/// $s{idx}_{arity-1}`, each of the shape `(param $env i32) (param $arg
+/// i64) (result i64)` -- exactly `$ty1`'s own shape, so a call site
+/// dispatching through this mechanism can share that already-declared
+/// type rather than needing a new one. Returns their table indices,
+/// `base_table_index .. base_table_index + arity` (the caller is
+/// responsible for actually placing these functions' names in the
+/// module's `elem` segment at exactly those indices, in order).
+///
+/// `stage_0`'s own table index is what a "generically dispatchable" bare
+/// value of this combinator should be packed with -- *alongside this
+/// combinator's own, ordinarily-built environment* (`push_closure_env`
+/// for a literal, `push_pap_env`'s own root-env-pointer-first layout for
+/// a wrapper), unchanged -- instead of `idx` itself: `stage_0`'s own
+/// environment layout, before any argument has been supplied, coincides
+/// exactly with this combinator's own ordinary one (zero accumulated
+/// arguments appended yet), so no new environment-construction code is
+/// needed at a value's *creation* site at all, only at each dispatch
+/// step past the first.
+///
+/// `stage_i` (`i >= 1`)'s own environment is this combinator's own
+/// `env_len`-slot prefix *followed by* the `i` arguments already
+/// supplied, in application order -- not a level of indirection through
+/// a separately stored environment pointer (contrast `emit_pap_wrapper`'s
+/// own `(root's env pointer, supplied args)` layout): since this
+/// combinator's own fast entry (`$c{idx}`) only ever reads its own
+/// leading `env_len` slots and never looks past them, any longer buffer
+/// sharing that same prefix satisfies it directly. So the last stage
+/// (`i + 1 == arity`) simply forwards its own `$env` pointer *unchanged*
+/// to `call $c{idx}`, alongside the `i` accumulated arguments (read back
+/// out of the very same buffer, right after that prefix) and its own new
+/// argument; every earlier stage allocates one slot more than it itself
+/// received, copies its own prefix across verbatim, appends the new
+/// argument, and returns a packed value pointing at the next stage.
+// Not yet called from `try_compile` (see this function's own docs) --
+// only from its own tests below, until the fragment-wide dispatch
+// decision it depends on exists to call it from.
+#[allow(dead_code)]
+fn emit_curried_stages(idx: usize, arity: usize, env_len: usize, base_table_index: usize, w: &mut String) -> Vec<usize> {
+    let table_indices: Vec<usize> = (0..arity).map(|i| base_table_index + i).collect();
+    for i in 0..arity {
+        w.push_str(&format!("  (func $s{idx}_{i} (param $env i32) (param $arg i64) (result i64)\n"));
+        // Declared unconditionally (harmless if unused, matching
+        // `compile_function`'s own convention for `$envtmp`) -- only the
+        // not-yet-saturated branch below actually needs it.
+        w.push_str("    (local $envtmp i32)\n");
+        if i + 1 == arity {
+            push_line(w, 4, "local.get $env");
+            for slot in 0..i {
+                push_line(w, 4, "local.get $env");
+                push_line(w, 4, &format!("i64.load offset={}", (env_len + slot) * 8));
+            }
+            push_line(w, 4, "local.get $arg");
+            push_line(w, 4, &format!("call $c{idx}"));
+        } else {
+            push_line(w, 4, &format!("i32.const {}", (env_len + i + 1) * 8));
+            push_line(w, 4, "call $alloc");
+            push_line(w, 4, "local.set $envtmp");
+            for slot in 0..(env_len + i) {
+                push_line(w, 4, "local.get $envtmp");
+                push_line(w, 4, "local.get $env");
+                push_line(w, 4, &format!("i64.load offset={}", slot * 8));
+                push_line(w, 4, &format!("i64.store offset={}", slot * 8));
+            }
+            push_line(w, 4, "local.get $envtmp");
+            push_line(w, 4, "local.get $arg");
+            push_line(w, 4, &format!("i64.store offset={}", (env_len + i) * 8));
+            push_line(w, 4, "local.get $envtmp");
+            push_line(w, 4, "i64.extend_i32_u");
+            push_line(w, 4, "i64.const 32");
+            push_line(w, 4, "i64.shl");
+            push_line(w, 4, &format!("i64.const {}", table_indices[i + 1]));
+            push_line(w, 4, "i64.or");
+        }
+        w.push_str("  )\n");
+    }
+    table_indices
+}
+
 fn compile_cond(ctx: &FnCtx, combinators: &mut Combinators, h: Hash, w: &mut String, indent: usize) -> Option<()> {
     match ctx.store.resolve(h) {
         Term::Prim(op, a, b) => {
@@ -2053,5 +2144,94 @@ mod tests {
         let compiled = func.call(&mut store, ()).unwrap();
         assert_eq!(compiled, 3628800);
         assert_eq!(compiled, apply_term(&s, applied, &[]).unwrap());
+    }
+
+    /// Unpacks a closure value's `(env_ptr, table_idx)` halves the same
+    /// way the compiler's own generated code does (see module docs).
+    fn unpack(v: i64) -> (i32, i32) {
+        ((v >> 32) as i32, (v & 0xFFFF_FFFF) as i32)
+    }
+
+    /// `emit_curried_stages` is not yet reachable from `try_compile` (see
+    /// its own docs) -- these tests drive it directly, exporting each
+    /// generated stage function by name and calling it straight from
+    /// Rust, with no `call_indirect`/table involved at all, to isolate
+    /// this mechanism's own correctness from the (separate, not-yet-built)
+    /// question of whether any real call site ever triggers it correctly.
+    #[test]
+    fn curried_stage_chain_reproduces_a_two_ary_non_capturing_call() {
+        let mut w = String::new();
+        w.push_str("(module\n");
+        emit_allocator(&mut w);
+        w.push_str("  (export \"memory\" (memory 0))\n");
+        // c0(env, p0, p1) = p0 + p1 -- arity 2, no captures (env_len 0).
+        w.push_str("  (func $c0 (param $env i32) (param $p0 i64) (param $p1 i64) (result i64)\n");
+        w.push_str("    local.get $p0\n    local.get $p1\n    i64.add)\n");
+        let table_indices = emit_curried_stages(0, 2, 0, 1, &mut w);
+        assert_eq!(table_indices, vec![1, 2]);
+        w.push_str("  (export \"s0_0\" (func $s0_0))\n");
+        w.push_str("  (export \"s0_1\" (func $s0_1))\n");
+        w.push_str(")\n");
+
+        let (mut store, instance) = instantiate(&w);
+        let stage0 = instance.get_typed_func::<(i32, i64), i64>(&mut store, "s0_0").unwrap();
+        let stage1 = instance.get_typed_func::<(i32, i64), i64>(&mut store, "s0_1").unwrap();
+
+        // "The bare value of c0, generically dispatchable" is (env = 0,
+        // no captures; table_idx = stage_0's own index) -- stage_0 is
+        // called directly with env=0 here for exactly that reason.
+        let packed = stage0.call(&mut store, (0, 3)).unwrap();
+        let (env1, tidx1) = unpack(packed);
+        assert_eq!(tidx1, 2, "should point at stage_1");
+        let result = stage1.call(&mut store, (env1, 4)).unwrap();
+        assert_eq!(result, 7);
+    }
+
+    /// A capturing, 3-ary combinator, with a distinct weight on the
+    /// capture and each argument so a swapped argument order or a
+    /// captured value mixed up with an accumulated argument produces a
+    /// visibly wrong number rather than an accidental pass -- the same
+    /// discipline `eval_and_prove_call_over`'s own regression tests use
+    /// for the analogous hazard in `proof.rs`.
+    #[test]
+    fn curried_stage_chain_handles_a_capturing_three_ary_combinator_without_mixing_up_slots() {
+        let mut w = String::new();
+        w.push_str("(module\n");
+        emit_allocator(&mut w);
+        w.push_str("  (export \"memory\" (memory 0))\n");
+        w.push_str("  (export \"alloc\" (func $alloc))\n");
+        // c0(env, p0, p1, p2) = cap + p0*100 - p1*10 + p2 -- arity 3, one
+        // capture (cap, at slot 0) -- env_len 1.
+        w.push_str("  (func $c0 (param $env i32) (param $p0 i64) (param $p1 i64) (param $p2 i64) (result i64)\n");
+        w.push_str("    local.get $env\n    i64.load offset=0\n");
+        w.push_str("    local.get $p0\n    i64.const 100\n    i64.mul\n    i64.add\n");
+        w.push_str("    local.get $p1\n    i64.const 10\n    i64.mul\n    i64.sub\n");
+        w.push_str("    local.get $p2\n    i64.add)\n");
+        let table_indices = emit_curried_stages(0, 3, 1, 1, &mut w);
+        assert_eq!(table_indices, vec![1, 2, 3]);
+        w.push_str("  (export \"s0_0\" (func $s0_0))\n");
+        w.push_str("  (export \"s0_1\" (func $s0_1))\n");
+        w.push_str("  (export \"s0_2\" (func $s0_2))\n");
+        w.push_str(")\n");
+
+        let (mut store, instance) = instantiate(&w);
+        let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let stage0 = instance.get_typed_func::<(i32, i64), i64>(&mut store, "s0_0").unwrap();
+        let stage1 = instance.get_typed_func::<(i32, i64), i64>(&mut store, "s0_1").unwrap();
+        let stage2 = instance.get_typed_func::<(i32, i64), i64>(&mut store, "s0_2").unwrap();
+
+        // c0's own capturing environment, built by hand: one slot, cap = 5.
+        let cap_env = alloc.call(&mut store, 8).unwrap();
+        memory.data_mut(&mut store)[cap_env as usize..cap_env as usize + 8].copy_from_slice(&5i64.to_le_bytes());
+
+        let packed1 = stage0.call(&mut store, (cap_env, 2)).unwrap();
+        let (env1, tidx1) = unpack(packed1);
+        assert_eq!(tidx1, 2, "should point at stage_1");
+        let packed2 = stage1.call(&mut store, (env1, 3)).unwrap();
+        let (env2, tidx2) = unpack(packed2);
+        assert_eq!(tidx2, 3, "should point at stage_2");
+        let result = stage2.call(&mut store, (env2, 7)).unwrap();
+        assert_eq!(result, 5 + 2 * 100 - 3 * 10 + 7);
     }
 }
