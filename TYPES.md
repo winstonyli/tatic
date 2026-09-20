@@ -73,13 +73,24 @@ This is a **use-site scan**, not unification: walk a combinator's body
 once, and for every `Var(i)`, `i < arity`, that's ever the callee of an
 application, record the argument count `k` at that call site. Two rules:
 
-- **Consistency.** Every call site for the same `i` must agree on `k`. A
-  second call site with a *different* argument count fails the whole
-  scan (`None`) — this is the entire reason "a variable applied with
-  inconsistent arities across call sites" is out of the fragment (see
-  section 6.3): there is no way to assign `i` a single `Γ(i)` that's
-  correct at both sites, and this system has no notion of arity
-  polymorphism to reconcile them.
+- **Consistency.** Every call site for the same `i` must agree on `k`, or
+  `i`'s own classification becomes `ArityUse::Inconsistent` rather than
+  `ArityUse::Consistent(k)` (the scan itself no longer aborts on finding
+  one — every other `Var`'s own classification in the same body is still
+  reported; see `compile::ArityUse`'s own docs). For `Γ`'s own purposes
+  (this section, and everything built on it in sections 4-7) the two
+  outcomes are equivalent: `param_types_for` maps *both* "absent" and
+  `Inconsistent` to `Γ(i) = None`, exactly the "default" rule below —
+  there is still no way to assign `i` a single `Γ(i)` correct at two
+  different arities, and this type system still has no notion of arity
+  polymorphism to reconcile them (see section 6.3). What changed is only
+  on `compile.rs`'s own side, entirely outside this type system: once any
+  `Inconsistent` entry is found anywhere in a compiled fragment, that
+  fragment gets a separate, additive, compile-time-only widening (a
+  curried dispatch mechanism, `emit_curried_stages`/`emit_dynamic_apply`)
+  that lets it compile anyway — a purely operational fallback with no
+  kernel-checked proof counterpart, not a change to `Γ` or to what this
+  document's own typing judgment can derive.
 - **Default.** `Γ(i) = None` (`Int`) for any `i` never used as a callee —
   including `i` never mentioned at all, and `i` read only as a plain
   value. There is no dedicated "closure value, never called" type; an
@@ -362,9 +373,16 @@ quietly unifying; that's the entire soundness gain, no more, no less.
 
 ### 6.3 Every "still out of scope" case traces to a specific missing rule
 
-- **A variable applied with inconsistent arities** (`compile.rs`'s last
-  open restriction): no rule in section 3.1 can assign one `Γ(i)` correct
-  at two different arities; the fragment has no arity polymorphism.
+- **A variable applied with inconsistent arities**: no rule in section
+  3.1 can assign one `Γ(i)` correct at two different arities; this type
+  system has no arity polymorphism, and that's still true. This *used*
+  to also be `compile.rs`'s own last open restriction, but no longer is
+  — see section 3.1's own note: `compile.rs` now compiles this shape
+  anyway, via a curried dispatch mechanism that sits entirely outside
+  this type system (no `Γ`, no kernel-checked proof, just an operational
+  fallback `jit.rs`'s sample verification alone has to vouch for). The
+  gap this bullet describes is specifically a gap in what can be
+  *kernel-proved*, not (any longer) in what can be *compiled*.
 - **A capture of a capture**: not a missing rule at all (section 3.1,
   section 5) — the shape can't arise given how `Γ` is scoped and how
   `peel` folds consecutive `Abs`.

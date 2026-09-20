@@ -20,13 +20,20 @@
 //! the seed and argument trial that triggered it, enough to reproduce.
 //!
 //! A second test, `compile_rejects_out_of_scope_terms_cleanly`, checks
-//! the complementary property: terms deliberately built *outside* the
-//! fragment (over-applying a literal lambda, calling a parameter with
-//! inconsistent arities, a genuinely unbound variable) must always come
-//! back `None` from `try_compile`, not get silently accepted and
-//! miscompiled. The first test alone couldn't catch a regression here --
-//! a generator that only ever produces in-fragment terms has nothing to
-//! say about what should be rejected.
+//! the complementary property: a term deliberately built *outside* the
+//! fragment (a genuinely unbound variable) must always come back `None`
+//! from `try_compile`, not get silently accepted and miscompiled. The
+//! first test alone couldn't catch a regression here -- a generator that
+//! only ever produces in-fragment terms has nothing to say about what
+//! should be rejected. Over-application of a plain `Int`-returning
+//! literal lambda, and a parameter called with inconsistent arities
+//! across call sites, both used to belong here too, but neither is
+//! unconditionally rejected by `try_compile` anymore -- see
+//! `over_applied_ill_typed_terms_still_agree_with_the_interpreter` and
+//! `inconsistently_called_parameters_still_agree_with_the_interpreter`,
+//! which check the soundness property that actually matters for each
+//! (jit.rs's own verification/fallback still agrees with the
+//! interpreter) rather than blanket rejection.
 
 use tatic::compile;
 use tatic::eval;
@@ -464,9 +471,16 @@ fn gen_over_applied(rng: &mut Rng, s: &mut TermStore) -> Hash {
 
 /// `\f. f(a_1..a_k1) OP f(b_1..b_k2)`, `k1 != k2` -- a parameter called
 /// with inconsistent arities at two different call sites in the same
-/// function. Unlike an under-applied *literal* lambda, there's no fixed
-/// arity for a parameter to desugar around, so this stays unconditionally
-/// outside the fragment.
+/// function. `f` is left as a genuinely free parameter here (not baked
+/// in via an enclosing application to a concrete literal lambda), so
+/// whatever value it's called with at runtime is essentially always
+/// "garbage" as a closure -- this generator is for
+/// `inconsistently_called_parameters_still_agree_with_the_interpreter`'s
+/// own soundness check (jit.rs's verification/fallback still agrees with
+/// the interpreter), not for anything claiming to be well-typed. See
+/// `compile::tests` for hand-built, well-typed, runnable versions of this
+/// same shape (bound to a real literal lambda, with only one of the two
+/// call sites ever actually reached at runtime).
 fn gen_inconsistent_arity(rng: &mut Rng, s: &mut TermStore) -> Hash {
     let k1 = 1 + rng.below(2);
     let k2 = k1 + 1 + rng.below(2); // always different from k1
@@ -520,12 +534,12 @@ fn compile_rejects_out_of_scope_terms_cleanly() {
         let mut s1 = TermStore::new();
         let _ = gen_over_applied(&mut rng, &mut s1);
 
+        // Likewise no longer unconditionally rejected -- see
+        // `gen_inconsistent_arity`'s own docs and
+        // `inconsistently_called_parameters_still_agree_with_the_interpreter`
+        // below.
         let mut s2 = TermStore::new();
-        let inconsistent = gen_inconsistent_arity(&mut rng, &mut s2);
-        assert!(
-            compile::try_compile(&s2, inconsistent).is_none(),
-            "seed={seed}: a parameter called with inconsistent arities should be rejected"
-        );
+        let _ = gen_inconsistent_arity(&mut rng, &mut s2);
 
         let mut s3 = TermStore::new();
         let unbound = gen_unbound_variable(&mut rng, &mut s3);
@@ -568,6 +582,46 @@ fn over_applied_ill_typed_terms_still_agree_with_the_interpreter() {
             "seed={seed}: an ill-typed over-application should still agree via jit.rs's own verification\n\
              interpreted={interpreted:?} jit={jitted:?}"
         );
+    }
+}
+
+#[test]
+fn inconsistently_called_parameters_still_agree_with_the_interpreter() {
+    // gen_inconsistent_arity leaves `f` as a genuinely free parameter,
+    // so whatever value it's called with is essentially always garbage
+    // as a closure (the interpreter type-errors calling a plain `Int`;
+    // the compiled form, now that this shape goes through the curried
+    // dispatch mechanism instead of being rejected outright, either
+    // traps or -- vanishingly unlikely -- coincidentally produces some
+    // value through a garbage `call_indirect` target). Same soundness
+    // property, and same reasoning, as
+    // `over_applied_ill_typed_terms_still_agree_with_the_interpreter`
+    // just above: jit.rs's own verification/fallback must still make
+    // `JitEngine::apply` agree with `eval::apply_term` regardless of
+    // what `f` happens to be.
+    const SEEDS: u64 = 300;
+    const SAMPLE_ARGS: [i64; 5] = [0, 1, -1, 12345, -98765];
+
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0x00BA_D222_0000_u64 ^ seed);
+        let mut s = TermStore::new();
+        let inconsistent = gen_inconsistent_arity(&mut rng, &mut s);
+
+        for &f_val in &SAMPLE_ARGS {
+            let interpreted = eval::apply_term(&s, inconsistent, &[f_val]);
+            let mut jit = JitEngine::new();
+            let jitted = jit.apply(&s, inconsistent, &[f_val]);
+            let agree = match (&interpreted, &jitted) {
+                (Ok(a), Ok(b)) => a == b,
+                (Err(_), Err(_)) => true,
+                _ => false,
+            };
+            assert!(
+                agree,
+                "seed={seed} f={f_val}: an inconsistently-called parameter should still agree via jit.rs's own verification\n\
+                 interpreted={interpreted:?} jit={jitted:?}"
+            );
+        }
     }
 }
 

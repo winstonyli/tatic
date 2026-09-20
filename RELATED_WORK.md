@@ -195,6 +195,51 @@ runtime origin (an arbitrary parameter, or an `If` between differently-
 shaped closures), so it would not actually deliver arity polymorphism as
 a real capability.
 
+**Since implemented.** This turned out to be exactly the "thin
+fixed-signature trampoline adapters" alternative above, not the rejected
+narrower one, and not full currying as the sole calling convention
+either (a real perf regression on every existing saturated call, and not
+what either cited precedent actually does). Concretely: `Combinators`'
+own fully-discovered registered-combinator set (the same one the
+existing fixpoint already builds for every literal lambda reachable
+anywhere in a term) gets a curried "stage chain" per combinator
+(`emit_curried_stages` — `stage_0..stage_{arity-1}`, one argument at a
+time, sharing one `$ty1`-shaped `call_indirect` type) whenever *any*
+variable anywhere in the compiled fragment is found called at
+inconsistent arities; every closure-typed-variable call site in that
+fragment then dispatches through it (`emit_dynamic_apply`) instead of
+the ordinary fast path — not just the call sites that are themselves
+inconsistent, since this compiler has no type system to locally rule out
+a value flowing from one to the other. This is why it isn't the
+rejected, narrower alternative: it acts on the whole registry, not on
+traced call sites, so it covers a closure of genuinely unknown runtime
+origin (an arbitrary parameter, an `If` between two different literal
+lambdas) exactly as well as a directly-named one — confirmed by a test
+built specifically to be the sharpest regression guard against silently
+narrowing back to a traced mechanism
+(`a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_once_dispatched_generically`,
+`src/compile.rs`).
+A genuinely fiddly correctness point surfaced while building the
+call-site dispatch itself: chaining several single-argument
+`call_indirect` steps needs each step's own env/table-index halves to
+survive across the *next* argument's own (possibly reentrant, possibly
+closure-creating) compilation — structurally the same hazard
+`push_pap_env`'s own docs describe, but naively "just recompute the
+previous step like over-application already does" is *exponential* here
+(each step would need to recompute its own entire prefix twice), not the
+bounded, one-off cost over-application accepts. The actual fix keeps
+everything live across that one recursive call *on the operand stack*
+(immune to reentrant reuse of the shared scratch locals by construction,
+per Wasm's own stack-nesting guarantee) and only touches
+`$envtmp`/`$papenv` in tight windows strictly before or after it, giving
+linear-time dispatch with no new locals at all (`emit_dynamic_apply`,
+`src/compile.rs`).
+This new capability is **compile-time-only, with no kernel-checked proof
+counterpart** — see `TYPES.md` §3.1/§6.3 for exactly why: `Γ`'s own
+"one arity per variable" limitation is unchanged, and `denote_closure`'s
+purely structural classification has no way to reason about a value
+whose identity is only known by executing, not by term shape.
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)

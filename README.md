@@ -55,7 +55,7 @@ each.)
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
 | `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses; `print` is the reverse direction, a precedence-aware pretty-printer back to source text. |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. Trampolined for its own tail positions (an `If`'s chosen branch, and applying a value that resolves the current call), mirroring `compile.rs`'s own `loop`/`br` conversion at the interpreter level: a tail-recursive term runs at any depth without growing the native stack, while a genuinely non-tail-recursive one (naive `fib`, say) still grows it, exactly as it would grow a Wasm `call` chain in the compiled reading. |
-| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. Every closure value is a single packed `i64` (table index, plus a pointer into linear memory to its captured-values environment); a *non-capturing* ("known", in the compilers-literature sense) closure just has a `0` pointer half and reads nothing from it — one uniform representation either way, not two, so a `call_indirect` site never needs to know in advance whether its callee captures anything. A capturing closure's environment is allocated by a small bump allocator (`emit_allocator`, one page of linear memory grown via `memory.grow` on demand) at the point the closure is created, with the bump pointer (`"hp"`, exported whenever a fragment has any capturing closure) reset to `0` by `jit.rs` before every top-level call, not just the first — see `jit.rs`'s row below for why that reset has to happen from the host rather than inside the compiled function itself; `free_vars` finds what it captures by walking its body. A literal lambda in function position becomes a direct `call` (with a freshly created environment passed as its first argument), one reached through a *variable* — a parameter or a captured free variable, either resolves the same way — becomes `call_indirect` (unpacking the environment pointer and table index back out first). A *named self-recursive* value (e.g. one bound by `let fact = rec f n = .. in ..`) goes through this same table-index machinery — it's just another combinator, self-recursive or not, capturing or not. An *under*-applied literal lambda is real partial application, resolved at compile time rather than through a general runtime dispatch mechanism (every call site's argument count is already statically known, so there's no missing-argument count to resolve at runtime): `register_partial_app` synthesizes a wrapper combinator keyed by `(root, how-many-args-supplied)` alone, shared across every call site with the same shape, and `push_pap_env` creates a value of it (root's own environment plus the supplied arguments) exactly the way any other closure value gets created. An *over*-applied literal lambda dispatches the saturated call's own result through `call_indirect` too — the same mechanism a closure-typed variable already uses, just with the callee freshly computed rather than read from a local — since nothing here checks statically that the result genuinely is a closure, an over-application of a plain `Int`-returning function still compiles, into a `call_indirect` that traps or (astronomically unlikely) lands on some unrelated entry, caught either way by `jit.rs`'s sample verification disagreeing with the interpreter, which genuinely type-errors on such a term. A variable called with inconsistent arities across call sites is still outside the fragment (no fixed arity to desugar around at all). Anything outside the fragment is rejected — the compiler only needs to be sound, not complete. |
+| `compile.rs` | Compiles a restricted "first-order arithmetic with self-recursion and closures" fragment to WebAssembly text. Tail self-calls become a `loop`/`br` (recursion → iteration, unbounded call-stack avoided); non-tail self-calls become an ordinary `call`. Every closure value is a single packed `i64` (table index, plus a pointer into linear memory to its captured-values environment); a *non-capturing* ("known", in the compilers-literature sense) closure just has a `0` pointer half and reads nothing from it — one uniform representation either way, not two, so a `call_indirect` site never needs to know in advance whether its callee captures anything. A capturing closure's environment is allocated by a small bump allocator (`emit_allocator`, one page of linear memory grown via `memory.grow` on demand) at the point the closure is created, with the bump pointer (`"hp"`, exported whenever a fragment has any capturing closure) reset to `0` by `jit.rs` before every top-level call, not just the first — see `jit.rs`'s row below for why that reset has to happen from the host rather than inside the compiled function itself; `free_vars` finds what it captures by walking its body. A literal lambda in function position becomes a direct `call` (with a freshly created environment passed as its first argument), one reached through a *variable* — a parameter or a captured free variable, either resolves the same way — becomes `call_indirect` (unpacking the environment pointer and table index back out first). A *named self-recursive* value (e.g. one bound by `let fact = rec f n = .. in ..`) goes through this same table-index machinery — it's just another combinator, self-recursive or not, capturing or not. An *under*-applied literal lambda is real partial application, resolved at compile time rather than through a general runtime dispatch mechanism (every call site's argument count is already statically known, so there's no missing-argument count to resolve at runtime): `register_partial_app` synthesizes a wrapper combinator keyed by `(root, how-many-args-supplied)` alone, shared across every call site with the same shape, and `push_pap_env` creates a value of it (root's own environment plus the supplied arguments) exactly the way any other closure value gets created. An *over*-applied literal lambda dispatches the saturated call's own result through `call_indirect` too — the same mechanism a closure-typed variable already uses, just with the callee freshly computed rather than read from a local — since nothing here checks statically that the result genuinely is a closure, an over-application of a plain `Int`-returning function still compiles, into a `call_indirect` that traps or (astronomically unlikely) lands on some unrelated entry, caught either way by `jit.rs`'s sample verification disagreeing with the interpreter, which genuinely type-errors on such a term. A variable called with genuinely inconsistent arities across call sites no longer falls outside the fragment: once *any* such inconsistency is found anywhere in a compiled term (a fragment-wide fact, decided by a `try_compile`-internal discovery pass before any real codegen commits to a representation — this compiler has no type system to locally rule out a value flowing between an inconsistent call site and any other), every registered combinator additionally gets a curried "stage chain" (`emit_curried_stages`) — one function per remaining argument, each taking exactly one more at a time, sharing the ordinary `$ty1` `call_indirect` type — and every closure-typed-variable call site in that fragment (not just the inconsistent one) dispatches through it (`emit_dynamic_apply`) instead of the ordinary single-`call_indirect` fast path, which stays byte-for-byte unchanged for every fragment that doesn't need this. Anything else outside the fragment is rejected — the compiler only needs to be sound, not complete. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. For a fragment with capturing closures, `invoke` also resets the bump allocator's pointer before *every* call (not just the first) — caught by benchmarking the closure-conversion path, not by any unit test: since this cache reuses *one* compiled instance across many separate calls, every capturing closure any call created was leaking its environment forever, growing that instance's linear memory unboundedly over its whole cached lifetime. The reset can't happen inside the compiled function itself (at `$f`'s own entry, say) — a non-tail self-recursive call is an ordinary `call $f`, re-entering the whole function from the top, which would reset mid-computation and corrupt a closure created earlier in the same call that's still needed after the recursive call returns. From the host, once per top-level call, there's no such hazard: nothing outside one call ever reads a closure value `$f` itself returned. |
 | `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) — four primitives, chosen because that's provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work). Has a real bidirectional typechecker and normalizer. |
 | `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. |
@@ -535,15 +535,25 @@ coverage to a recursion shape that generator can't produce at all.
 
 The same file's second test, `compile_rejects_out_of_scope_terms_cleanly`,
 checks the complementary property: terms deliberately built *outside* the
-fragment (a parameter called with inconsistent arities, a genuinely
-unbound variable) must always come back `None` from `try_compile`, never
-get silently accepted and miscompiled — a property the first test's
-generator, which only ever produces in-fragment terms, has nothing to say
-about. Verified these checks actually have teeth (not just vacuously
-passing) by deliberately weakening the inconsistent-arity checks
-(`scan_for_closure_calls`'s and `compile_node`'s own per-call-site check)
-together, which immediately failed the test on the first seed, as
-expected. A third generator in the same file, `gen_over_applied`, covers
+fragment must always come back `None` from `try_compile`, never get
+silently accepted and miscompiled — a property the first test's
+generator, which only ever produces in-fragment terms, has nothing to
+say about. Originally covered both a parameter called with inconsistent
+arities and a genuinely unbound variable, verified to actually have teeth
+(not just vacuously passing) by deliberately weakening the
+inconsistent-arity checks (`scan_for_closure_calls`'s and
+`compile_node`'s own per-call-site check) together, which immediately
+failed the test on the first seed, as expected. The inconsistent-arity
+case moved out once `try_compile` stopped rejecting that shape
+altogether (see the curried-dispatch mechanism described in
+`compile.rs`'s own row above) — its own soundness property (jit.rs's
+verification/fallback still agrees with the interpreter for whatever
+garbage value such a call site is actually fed) is checked instead by
+`inconsistently_called_parameters_still_agree_with_the_interpreter`,
+right next to `over_applied_ill_typed_terms_still_agree_with_the_interpreter`,
+which already covered the analogous property for over-application; only
+the unbound-variable check is left here now. A third generator in the
+same file, `gen_over_applied`, covers
 a *different* property now that `try_compile` compiles an over-applied
 literal lambda's *shape* unconditionally (see `compile.rs`'s own "Over-
 application" docs): its own bodies are always plain arithmetic, never a
@@ -729,17 +739,20 @@ guards against by hand): caught immediately, at seed 22.
   `call_ref`, dispatched on the extra arguments through `apply_ref`
   exactly like calling a closure-typed variable — see `compile.rs`'s own
   "Over-application" docs for the compiled-code-level counterpart).
-- Widening the compilable fragment further: a variable called with
-  inconsistent arities across sites (a genuinely different, harder problem
-  than over-application — there's no fixed arity to desugar around at
-  all, only whatever the variable's consistently called with), more
-  primitives. (Capturing closures and partial application of a literal
-  lambda — real closure conversion, an environment representation,
-  calling a closure reached through a captured free variable, a
-  compile-time-desugared synthesized wrapper for an under-applied literal
-  — landed, as has over-application of a literal lambda — dispatching a
-  saturated call's own result through `call_indirect`, the same as
-  calling a closure-typed variable; see `compile.rs`'s own module docs.)
+- Widening the compilable fragment further: more primitives. (Capturing
+  closures and partial application of a literal lambda — real closure
+  conversion, an environment representation, calling a closure reached
+  through a captured free variable, a compile-time-desugared synthesized
+  wrapper for an under-applied literal — landed, as has over-application
+  of a literal lambda — dispatching a saturated call's own result through
+  `call_indirect`, the same as calling a closure-typed variable; see
+  `compile.rs`'s own module docs. A variable called with inconsistent
+  arities across sites — a genuinely different, harder problem than
+  over-application, since there's no fixed arity to desugar around at all
+  — has landed too, via a curried, one-argument-at-a-time dispatch
+  mechanism generated once any such inconsistency is found anywhere in
+  the compiled fragment; see `compile.rs`'s own module docs and
+  `TYPES.md`.)
 - `prove_closure_expr` now covers *capturing* closures too (`mk_clo_h`/
   `Env`/`build_env_expr` — see the table row above and `proof.rs`'s own
   section docs), including a captured `Clo` value (e.g. capturing a

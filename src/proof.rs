@@ -6752,16 +6752,29 @@ mod tests {
     #[test]
     fn inconsistent_call_arity_for_a_parameter_is_still_out_of_scope_for_the_closure_proof() {
         // \f. f(1) + f(1, 2) -- `f`, a *parameter*, called with
-        // inconsistent arities (1 then 2) at different call sites -- same
-        // adversarial shape as
-        // compile::tests::inconsistent_call_arity_for_a_parameter_is_still_rejected.
+        // inconsistent arities (1 then 2) at different call sites.
         // Unrelated to partial application of a *literal lambda* (see
         // a_partially_applied_literal_lambda_used_as_a_value_gets_a_closure_proof
-        // below for that, now-covered, case): param_types_for/
-        // infer_closure_arities already reject an inconsistent-arity
-        // parameter outright, before denote_closure's own PAP handling
-        // (which only ever applies to a literal Abs root) ever comes into
-        // play.
+        // below for that, now-covered, case): param_types_for declines to
+        // classify an inconsistently-called parameter as `Clo`-typed at
+        // all (mapping `ArityUse::Inconsistent` to `None`, exactly like
+        // an absent entry), so `denote_closure`'s own purely-structural
+        // classification -- which has no way to reason about a call
+        // whose outcome depends on which concrete value `f` turns out to
+        // be at runtime, not on term shape alone -- still can't make
+        // sense of either call site here.
+        //
+        // `compile::try_compile` no longer agrees this is out of scope,
+        // though: it now compiles this exact shape via a curried,
+        // one-argument-at-a-time dispatch mechanism (see
+        // `compile::tests::inconsistent_call_arity_for_a_parameter_now_compiles_via_curried_dispatch`
+        // and the runnable capability tests alongside it). That's an
+        // intentional, expected gap, not a regression -- extending
+        // kernel-checked proof coverage to this new capability is
+        // separately scoped future work (see `RELATED_WORK.md`'s own
+        // notes on why it doesn't fit this file's existing, purely
+        // structural methodology), not a byproduct of compile.rs alone
+        // accepting more terms.
         let mut s = TermStore::new();
         let f1 = s.var(0);
         let one = s.lit(1);
@@ -6773,7 +6786,6 @@ mod tests {
         let g = s.abs(body);
 
         assert!(prove_closure_expr(&s, g).is_none());
-        assert!(compile::try_compile(&s, g).is_none(), "the compiler should agree this is out of scope too");
     }
 
     #[test]
