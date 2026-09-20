@@ -5658,15 +5658,16 @@ fn eval_dyn_tail_recursive(
 /// two-frame discipline `ConcreteClo`'s own docs describe.
 ///
 /// Scoped deliberately narrowly: only an exactly-saturated call (no
-/// partial or over-application of `root` itself); when inlining is
-/// needed (see below), only a non-capturing `root` (`Rec`-wrapped or not
+/// partial or over-application of `root` itself), and inlining -- always
+/// needed when `root`'s own body concretely returns a further `Clo`
+/// (`combinator_return_type`; there's no other way to learn *which*
+/// concrete literal that is than to recurse into `root`'s own body), and
+/// also needed whenever some argument's own concrete value is a `Clo`
+/// but `root`'s static classification declined to type that parameter as
+/// one -- only ever inlines a non-capturing `root` (`Rec`-wrapped or not
 /// -- a `Rec`-wrapped `root` is traced through its own self-calls via
 /// `eval_dyn_tail_recursive`, tail-recursive shapes only, see its own
-/// docs), and only an `Int`-returning ordinary (non-inlined) call -- a
-/// callee whose own saturated call returns a further `Clo` without
-/// needing inlining would need to be recursed into to identify *which*
-/// concrete closure that is, which this first slice doesn't attempt (see
-/// this section's own module docs).
+/// docs).
 ///
 /// One more constraint worth being explicit about, found while verifying
 /// this by deliberately feeding `call_ref` the wrong frame here and
@@ -5699,15 +5700,17 @@ fn eval_dyn_direct_call(
         return None;
     }
     let root_param_types = param_types_for(store, root)?;
+    let return_ty = combinator_return_type(store, root).unwrap_or(None);
 
     let mut arg_vals = Vec::with_capacity(args.len());
     for &a in args {
         arg_vals.push(eval_dyn(store, a, combinators, calling_frame)?);
     }
-    let needs_inline = arg_vals
-        .iter()
-        .enumerate()
-        .any(|(j, v)| root_param_types[root_arity - 1 - j].is_none() && matches!(v, DynDenoted::Clo(..)));
+    let needs_inline = return_ty.is_some()
+        || arg_vals
+            .iter()
+            .enumerate()
+            .any(|(j, v)| root_param_types[root_arity - 1 - j].is_none() && matches!(v, DynDenoted::Clo(..)));
 
     if needs_inline {
         if !compile::free_vars(store, root_body, root_arity, root_is_rec).is_empty() {
@@ -5773,22 +5776,13 @@ fn eval_dyn_direct_call(
     all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
     let applied = apply_n(call_fn, all_args);
     let applied = Anchored::new(&combinators.cp.arith, applied);
-    let return_ty = combinator_return_type(store, root).unwrap_or(None);
-    let sat_ty = match return_ty {
-        Some(k) => combinators.cp.clo_ty(k),
-        None => combinators.cp.arith.int_ty(),
-    };
+    // `return_ty` was already checked above: `needs_inline` is true
+    // whenever it's `Some`, so this opaque path -- reached only when
+    // `needs_inline` was false -- always has a plain `Int` result here.
+    debug_assert!(return_ty.is_none(), "a Clo-returning root should always have been inlined above");
+    let int_ty = combinators.cp.arith.int_ty();
     let applied_resolved = applied.at(&combinators.cp.arith);
-    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied_resolved, &sat_ty, "eval_dyn: direct combinator call");
-    if return_ty.is_some() {
-        // `root`'s own saturated call denotes a further `Clo`, but
-        // *which* concrete literal that is can only be known by
-        // recursing into `root`'s own body -- exactly what "opaque"
-        // means here. Deliberately out of scope for this first slice
-        // (see this function's own docs) rather than fabricating a
-        // `ConcreteClo` this function doesn't actually know.
-        return None;
-    }
+    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied_resolved, &int_ty, "eval_dyn: direct combinator call");
     Some(DynDenoted::Int(applied))
 }
 
@@ -8335,6 +8329,68 @@ mod tests {
             let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("x={x_val} should be provable per-instance"));
             check_instance_proof(&proof);
             assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), 0, "x={x_val}: sanity check against the interpreter");
+        }
+    }
+
+    #[test]
+    fn a_closure_argument_arriving_via_a_separate_saturated_call_that_itself_returns_a_clo_gets_a_per_instance_proof() {
+        // `pick = \s. if s > 0 then add5 else sub5` (arity 1, its own
+        // saturated call returns a further Clo_2 -- `combinator_return_type`
+        // recognizes an `If` between two same-arity literal lambdas, same
+        // as `denote_closure`'s own `ite_clo` case does structurally);
+        // `f = \k. if 0<1 then k(1,2) else k(1)` (arity 1, `k` called at
+        // two different arities -- `Inconsistent`, same trick as every
+        // other per-instance test); `top = f(pick(3))`. `pick(3)`'s own
+        // result never arrives as a bare literal lambda value the way
+        // every other per-instance test's closure argument does -- it's
+        // the result of a *separate* saturated call, so `eval_dyn_direct_call`
+        // must inline *that* call too (previously declined outright via
+        // its own `return_ty.is_some()` check) before `f`'s own
+        // needs-inline logic even gets a `Clo` to work with at all.
+        let mut s = TermStore::new();
+        let a1 = s.var(1);
+        let b1 = s.var(0);
+        let add_body = s.prim(PrimOp::Add, a1, b1);
+        let add_inner = s.abs(add_body);
+        let add5 = s.abs(add_inner);
+
+        let a2 = s.var(1);
+        let b2 = s.var(0);
+        let sub_body = s.prim(PrimOp::Sub, a2, b2);
+        let sub_inner = s.abs(sub_body);
+        let sub5 = s.abs(sub_inner);
+
+        let s_var = s.var(0);
+        let zero_p = s.lit(0);
+        let pick_cond = s.prim(PrimOp::Lt, zero_p, s_var); // 0 < s, i.e. s > 0
+        let pick_body = s.if_(pick_cond, add5, sub5);
+        let pick = s.abs(pick_body);
+
+        let k1 = s.var(0);
+        let one_a = s.lit(1);
+        let two_a = s.lit(2);
+        let call2 = s.app2(k1, one_a, two_a);
+        let k2 = s.var(0);
+        let one_b = s.lit(1);
+        let call1 = s.app(k2, one_b);
+        let zero_c = s.lit(0);
+        let one_c = s.lit(1);
+        let f_cond = s.prim(PrimOp::Lt, zero_c, one_c); // 0 < 1, always true
+        let f_body = s.if_(f_cond, call2, call1);
+        let f = s.abs(f_body);
+
+        assert!(param_types_for(&s, f).unwrap().contains(&None) && combinator_return_type(&s, pick).unwrap() == Some(2));
+
+        for s_val in [3i64, -3] {
+            let s_lit = s.lit(s_val);
+            let pick_s = s.app(pick, s_lit);
+            let top = s.app(f, pick_s);
+
+            assert!(prove_closure_expr(&s, top).is_none(), "s={s_val}: f's own inconsistent k still can't be classified statically");
+            let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("s={s_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+            let expected = if s_val > 0 { 1 + 2 } else { 1 - 2 };
+            assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), expected, "s={s_val}: sanity check against the interpreter");
         }
     }
 }

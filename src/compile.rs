@@ -211,11 +211,11 @@
 //! that actually needs it -- see `RELATED_WORK.md` for the measured
 //! numbers.
 //!
-//! Not (yet) covered: a *recursive* (`Rec`-wrapped) use of this mechanism
-//! compiles and runs correctly, and is verified the same way any other
-//! compiled term is (`jit.rs`'s sample battery), but has no kernel-checked
-//! proof backing it -- none of `proof.rs`'s strategies model the curried
-//! stage chain's own semantics. See `RELATED_WORK.md` for this as a named
+//! A *recursive* (`Rec`-wrapped) use of this mechanism gets kernel-proof
+//! backing too, for *tail*-recursive shapes (`proof::eval_dyn_tail_recursive`)
+//! -- per instance, not universally, since the loop-carried parameter
+//! still has no honest static type across iterations. Not (yet) covered:
+//! a *non*-tail-recursive use. See `RELATED_WORK.md` for this as a named
 //! open follow-on.
 
 use hashbrown::HashMap;

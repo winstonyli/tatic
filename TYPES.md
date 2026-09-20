@@ -399,11 +399,13 @@ quietly unifying; that's the entire soundness gain, no more, no less.
   reusing `classify_step` to follow the loop's own concrete self-calls) —
   still per instance, never universal, for the same reason as above (the
   loop-carried parameter still has no honest static type across
-  iterations). Still out of scope: a *non*-tail recursive use of this
-  capability, and a callee whose own saturated call itself returns a
-  further, not-statically-known `Clo` (see `eval_dyn_direct_call`'s and
-  `eval_dyn_tail_recursive`'s own docs in `proof.rs` for exactly why each
-  is deferred).
+  iterations). A closure argument arriving via a further call -- not a
+  bare literal value, but the result of a *separate* saturated call whose
+  own return type is `Clo` -- is covered too: `eval_dyn_direct_call`
+  inlines that call as well now, needing no new mechanism beyond widening
+  when its existing inlining already fires. Still out of scope: a
+  *non*-tail recursive use of this capability (see `eval_dyn_direct_call`'s
+  and `eval_dyn_tail_recursive`'s own docs in `proof.rs`).
 - **A capture of a capture**: not a missing rule at all (section 3.1,
   section 5) — the shape can't arise given how `Γ` is scoped and how
   `peel` folds consecutive `Abs`.

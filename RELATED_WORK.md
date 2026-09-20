@@ -322,10 +322,26 @@ evaluable) — rather than duplicate a second concrete evaluator that
 understands closures, `eval_concrete_dyn` rebuilds an `eval::Env` from
 the current frame and defers to the reference interpreter (`eval::eval`)
 directly. Still not attempted: a *non*-tail recursive use of this
-capability, and a callee whose own saturated call itself returns a
-further, not-statically-known `Clo` — both remain a real, larger
-follow-on (see `eval_dyn_direct_call`'s and `eval_dyn_tail_recursive`'s
+capability (see `eval_dyn_direct_call`'s and `eval_dyn_tail_recursive`'s
 own docs in `proof.rs`).
+
+**Since covered too: a closure argument arriving via a further call.**
+The other named gap — a callee whose own saturated call itself returns a
+further, not-statically-known `Clo` — is closed too, and turned out to
+need no new mechanism at all: `eval_dyn_direct_call` already inlines a
+callee whenever some argument's own concrete value is a `Clo` that the
+callee's static classification didn't expect; widening the same
+`needs_inline` condition to also fire whenever the callee's own return
+type (`combinator_return_type`) is a `Clo` reuses that exact machinery
+to identify *which* concrete literal a further call's own result is,
+rather than trying (and failing) to treat it opaquely. This removed a
+`return None` that used to fire whenever a proof attempt reached such a
+call, replaced with a `debug_assert!` recording that the opaque path
+below is now only ever reached once `return_ty` is already known to be
+`None` — the assertion itself doubles as the regression guard for
+silently narrowing this back (a test built to trigger it, with the
+widening reverted, panics through that assertion rather than returning a
+silently wrong proof).
 
 Reordering note: `jit.rs`'s `kernel_verify` tries the universal and
 relational tail-recursion strategies *before* `prove_closure_expr_instance`
