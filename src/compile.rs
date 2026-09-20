@@ -212,11 +212,15 @@
 //! numbers.
 //!
 //! A *recursive* (`Rec`-wrapped) use of this mechanism gets kernel-proof
-//! backing too, for *tail*-recursive shapes (`proof::eval_dyn_tail_recursive`)
-//! -- per instance, not universally, since the loop-carried parameter
-//! still has no honest static type across iterations. Not (yet) covered:
-//! a *non*-tail-recursive use. See `RELATED_WORK.md` for this as a named
-//! open follow-on.
+//! backing too, per instance rather than universally (the loop-carried
+//! parameter still has no honest static type across iterations) --
+//! `proof::eval_dyn_tail_recursive` for a *tail*-recursive shape, and
+//! `proof::eval_dyn`'s own `self_ctx`-threaded recursion (mutually with
+//! `eval_dyn_tail_recursive`) for a *non*-tail-recursive one, including
+//! branching (e.g. an embedded self-call inside `1 + f(n-1)`, or two in
+//! one leaf as in naive Fibonacci). See `RELATED_WORK.md` for what's
+//! still open: a universal (not just per-instance) proof for either
+//! shape needs a real dependent sum in the kernel's own type theory.
 
 use hashbrown::HashMap;
 

@@ -225,10 +225,13 @@ impl JitEngine {
     ///    (e.g. gcd) that steps 3-4 already prove more strongly -- trying
     ///    it first would silently downgrade those to weaker evidence.
     ///
-    /// Anything else (a captured free variable used as a closure inside
-    /// self-recursion, or non-tail recursion combined with the
-    /// inconsistent-arity curried-dispatch fallback) reports `false` --
-    /// see `proof.rs` for what's in scope and why.
+    /// Anything else (e.g. a callee reached only through a captured/
+    /// parameter variable whose concrete identity isn't statically known
+    /// at proof-construction time -- see `RELATED_WORK.md` §9) reports
+    /// `false` -- see `proof.rs` for what's in scope and why. Non-tail
+    /// recursion combined with the inconsistent-arity curried-dispatch
+    /// fallback is *not* in that bucket: step 5's own widened,
+    /// `self_ctx`-threaded evaluator covers it too, including branching.
     fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> bool {
         if proof::prove_pure_expr(terms, h).is_some() {
             return true;
