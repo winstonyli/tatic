@@ -896,6 +896,76 @@ and its dozen call sites are now fully migrated;
 `ite_clo_ref`/`apply_clo_eq_ref`/`apply_pap_eq_ref` remain, as
 established above, genuinely necessary postulates.
 
+## 12. `clo_eq_ref`'s `Clo`-typed-parameter decline: larger than it looked, investigated not attempted
+
+`clo_eq_ref` declines outright whenever `root`'s own declared parameters
+include a `Clo`-typed one (`param_types.iter().any(Option::is_some)`),
+with its own comment already flagging why: `clo_eq_ref_if_tree`/
+`clo_eq_ref_call`/`clo_eq_ref_pap` each quantify `root`'s own params
+`Int`-typed unconditionally (`quant_types = vec![None; n_captures +
+arity]`). A prior survey estimated lifting this as "a larger refactor,
+touching all three branch functions uniformly" — investigated properly
+this time, the real scope turns out to be substantially bigger than that
+framing suggests, for a reason the survey didn't surface: it isn't just
+`quant_types`.
+
+**`dummy_caller_param_types` isn't just for `root`'s own declared
+params — it also forces every one of `root`'s own *captures*, and every
+leaf's own captures inside an `IfTree`, to be treated as `Int`-typed,
+structurally, regardless of what they actually are.** `capture_sig`
+(`src/proof.rs`) looks up each capture's type by reading whatever
+`caller_param_types[rel]` says — it never independently inspects the
+captured value's real type. Every one of the thirteen-or-so
+`dummy_caller_param_types`/leaf-level `dummy` constructions across
+`clo_eq_ref_if_tree`/`clo_eq_ref_call`/`clo_eq_ref_pap`/
+`prime_closure_if_tree_leaves`/`closure_leaf_value_expr`/
+`closure_leaf_pap_value_expr` builds this array as `vec![None; ...]`
+unconditionally. This isn't an oversight specific to any one of them: at
+axiom-construction time (memoized once per `Hash`), there is no single
+fixed "caller" to consult in the first place — a captured variable's real
+type lives in whichever *enclosing* combinator's own signature declared
+it, information the callee's own `Hash` alone can't recover, and nothing
+currently threads it in from whoever calls `clo_eq_ref`.
+
+**Widening `quant_types` alone would not actually lift the decline for
+any term that uses the `Clo`-typed parameter for anything.** Every
+`cond`/leaf-argument in `clo_eq_ref_if_tree`/`clo_eq_ref_call`/
+`clo_eq_ref_pap`'s own axiom construction goes through plain `denote`/
+`collect_literals` — by their own docs, these translate only `Var`/
+`Lit`/`Prim`/`If` into a kernel `Int` expression and return `None` on
+anything else, including a reference to a `Clo`-typed variable used as a
+value (a bare `Var(i)` read still works structurally, but any *use* of
+it — captured by a nested closure, called, passed as an argument — does
+not, since `denote` has no `Clo`-typed case at all). This codebase
+already has the fix for exactly this gap, built for a different context:
+`denote_with_placeholders`/`denote_closure_typed`/
+`collect_literals_closure` (used by `prove_closure_expr`'s own
+self-recursive-body pipeline) are the closures-aware counterparts,
+already handling a `Clo`-typed parameter call (`AppShape::ParamCall`) and
+a captured `Clo`-typed value correctly. Lifting `clo_eq_ref`'s own
+decline for real means swapping the closures-blind `denote`/
+`collect_literals` for these closures-aware siblings throughout all three
+branch functions' own axiom construction, *and* threading a real
+`caller_param_types` into every `dummy_caller_param_types`/leaf-level
+`dummy` site so `capture_sig` stops assuming `Int` — not a `quant_types`
+widening plus a flag.
+
+**Verdict: real, but large enough that it should be its own separately
+scoped session, not folded into a batch alongside smaller items.** This
+is comparable in size to the generic-dispatch rewrite (`RELATED_WORK.md`
+§9) or larger, touching the historically most staleness-bug-prone part of
+this file (§4's own five-plus-bug count already came from this same
+neighborhood) under exactly the conditions (deep proof-composition
+changes, `Anchored` discipline threaded through new call sites) that have
+produced real bugs here before. Attempting it under the same time budget
+as this section's other, much smaller items risked exactly that outcome.
+Investigating and scoping it honestly, rather than shipping a partial
+`quant_types`-only change that would silently still decline (or worse,
+silently mis-type a capture) on the first real term that exercises it,
+matches this project's own standing discipline (see the two corrections
+in section 11 above, both caught by reading the real construction rather
+than trusting the first plausible-sounding claim).
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)

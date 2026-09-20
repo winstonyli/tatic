@@ -815,11 +815,17 @@ guards against by hand): caught immediately, at seed 22.
   the blanket decline in `clo_eq_ref` was the only thing blocking it, and
   lifting it needed fixing the three sites that would otherwise have
   mis-counted a self-binder as an ordinary capture. Still open: a `root` with
-  a `Clo`-typed *parameter* (as opposed to `Int`-typed) remains declined —
-  `quant_types`/`dummy_caller_param_types` are hardcoded all-`None` throughout
-  all three branch functions, so lifting this needs widening that
-  construction to `root`'s own real `param_types`, a separate, larger
-  follow-on. Still open: a
+  a `Clo`-typed *parameter* (as opposed to `Int`-typed) remains declined,
+  and investigated (not attempted) this session, found genuinely larger
+  than a `quant_types` widening once looked at closely — `denote`/
+  `collect_literals`, which this module's own axiom construction uses
+  throughout, translate only `Var`/`Lit`/`Prim`/`If` into a kernel `Int`
+  expression, with no `Clo`-typed case at all, so any actual *use* of such
+  a parameter (captured, called, passed along) needs their already-existing
+  closures-aware counterparts (`denote_with_placeholders`/
+  `denote_closure_typed`/`collect_literals_closure`) swapped in throughout
+  all three branch functions, not just a wider quantification — see
+  `RELATED_WORK.md` section 12 for the full investigation. Still open: a
   callee reached only through a captured/parameter variable rather than a
   further statically-known combinator (genuinely unknown at
   proof-construction time which literal lambda underlies it — the same
