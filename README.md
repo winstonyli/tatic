@@ -213,14 +213,22 @@ This is stated precisely because it would be easy to overclaim here.
   `arrow`). `kernel::with_shift_cache` scopes a cache across a whole call's
   construction via a thread-local slot (rather than threading a cache
   parameter through every function that might call `shift`), giving a
-  measured ~2x on `fib(8)`'s instance proof. Deliberately opt-in, not
-  automatic on every call `instance_from_scaffold` makes: wrapping it
-  unconditionally regressed the common case (routine, small samples,
-  confirmed via the `fib(30)` demo's cold-compile time going from ~120ms to
-  ~220ms) — a real `HashMap`, grown across a construction and then dropped,
-  costs more than it saves at that scale. A caller that specifically
-  expects a large or branching construction wraps its own call in it (see
-  Design notes below for the scoped-vs-standing-cache tradeoff).
+  measured ~2x on `fib(8)`'s instance proof. `instance_from_scaffold`
+  engages it automatically now, but only when it's actually worth it:
+  `instance_visit_count` is a cheap, exact, `Expr`-free dry run of
+  `build_ev_witness`'s own memoized recursion (plain `i64` arithmetic, no
+  term construction) that counts how many distinct nodes *this concrete
+  instance* will visit, and the cache is engaged only once that crosses a
+  small threshold. Shape alone (does the function have a branching leaf
+  at all) isn't enough to decide this — an earlier version gated on shape
+  and regressed `jit.rs`'s own routine sample verification for any
+  branching-shaped function, since `sample_arg_vectors`'s small samples
+  (`0, 1, 2, ...`) still visit only a handful of nodes even for a
+  branching shape (confirmed via the `fib(30)` demo's cold-compile time
+  regressing from ~120ms to ~350ms when shape alone triggered it). The
+  dry run fixes that: a real `HashMap`, grown across a construction and
+  then dropped, only gets built when the instance's own visit count says
+  it will actually pay for itself.
 - **Closures combined with self-recursion, in `prove_tail_recursive_universal`**:
   covers a self-recursive function whose own parameters may be
   `Clo`-typed — threaded through the recursion unchanged, or called via
@@ -659,23 +667,31 @@ guards against by hand): caught immediately, at seed 22.
   Benchmarks). On its own it didn't fix branching-leaf instance proofs
   being slow — that cost turned out to live in `shift` (see the next
   entry), not cloning.
-- **A scoped, opt-in `shift` cache, not a standing one**: `kernel::shift`
-  is called constantly while composing a large proof term, and the same
-  subterm gets reshifted by the same amount repeatedly — not within any
-  one caller, but *across* several (`proof.rs`'s `Anchored::at`, plus
+- **A scoped `shift` cache, engaged automatically from a cheap dry run,
+  not a standing one**: `kernel::shift` is called constantly while
+  composing a large proof term, and the same subterm gets reshifted by
+  the same amount repeatedly — not within any one caller, but *across*
+  several (`proof.rs`'s `Anchored::at`, plus
   `cong1`/`cong_n`/`trans_proof`/`sym`/`transport`/`arrow` internally).
   `kernel::with_shift_cache` runs a closure with a cache active in a
   thread-local slot for that closure's whole (dynamic) extent, rather than
   threading a cache parameter through every function that might call
   `shift` — a scope, not a bare `thread_local`, so it can't leak across
-  unrelated calls the way one never cleared would. It's opt-in, not
-  automatic: wrapping every call `instance_from_scaffold` makes regressed
-  the common case (confirmed via the `fib(30)` demo's cold-compile time,
-  ~120ms → ~220ms) — a real `HashMap`, grown across a construction and then
-  dropped, costs more than it saves for routine small samples. The win
-  (~2x, confirmed on `fib(8)`'s instance proof) is real but concentrated in
-  large/branching constructions, so a caller opts in only when it expects
-  one.
+  unrelated calls the way one never cleared would. `instance_from_scaffold`
+  decides whether to engage it from `instance_visit_count`, a cheap, exact
+  dry run (plain `i64` arithmetic, no `Expr` construction) of how many
+  distinct nodes *this concrete instance* will actually visit in
+  `build_ev_witness`'s own memoized recursion. Shape alone (does the
+  function have a branching leaf) isn't a good enough signal on its own:
+  an earlier version gated on shape and regressed the common case anyway
+  (confirmed via the `fib(30)` demo's cold-compile time, ~120ms → ~350ms),
+  because `jit.rs`'s own routine small samples still visit only a handful
+  of nodes even for a branching-shaped function. The dry run fixes that
+  precisely — a real `HashMap`, grown across a construction and then
+  dropped, only gets built once the instance's own visit count crosses a
+  small threshold, calibrated against `fib(8)`'s own proven ~2x win
+  (`fibonacci_branching_leaves_get_kernel_checked_instances`) on one side
+  and `jit.rs`'s routine samples on the other.
 - **Why a predicative kernel with exactly these four primitives**: see
   `kernel.rs`'s module docs for the full argument, but briefly — `W`-types
   are load-bearing (not derivable from `Pi`/`Sort`/`Id` alone with
@@ -706,17 +722,6 @@ guards against by hand): caught immediately, at seed 22.
 
 ## Future work
 
-- `kernel::with_shift_cache` is opt-in rather than automatic (see "Proof
-  strategies" above) because wrapping every call regressed the common,
-  small-sample case. A caller has to know in advance that its own
-  construction will be large/branching to get the benefit; `jit.rs`'s
-  automatic verification doesn't attempt that judgment call today (it just
-  never opts in), so a branching-leaf function only gets a fast per-call
-  instance proof when something explicitly asks for one at a large input,
-  not from routine compilation. Making that automatic would need either a
-  cheap way to predict "this one's going to be large" in advance, or a
-  cache design whose overhead doesn't scale with size the way a `HashMap`
-  grown-then-dropped does.
 - Combining closures with self-recursion more fully in one proof.
   `prove_tail_recursive_universal` now covers a closure-typed *parameter*
   threaded through recursion, *and* a closure genuinely created and

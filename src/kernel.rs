@@ -72,14 +72,23 @@ thread_local! {
 /// every `shift` call made while `f` runs, directly or via any of the
 /// composition helpers built on it, shares one cache keyed by `(Rc`
 /// identity of the subterm, `cutoff, amount)`. Restores whatever scope (if
-/// any) was active before on exit, so nesting is safe, though nothing in
-/// this codebase currently does. Opt-in, not automatic -- `proof.rs`'s
-/// `instance_from_scaffold` deliberately does *not* wrap every call in
-/// this (see its own docs: confirmed to regress the common case, routine
-/// small samples, since a real `HashMap` grown to size and then dropped
-/// costs more than it saves at that scale). A caller that specifically
-/// expects a large or branching construction -- proving one instance at a
-/// large concrete input on demand, e.g. -- wraps its own call in this.
+/// any) was active before on exit, so nesting is safe -- an inner scope's
+/// own cache is discarded when it exits rather than merged into an outer
+/// one, which only costs a redundant (but harmless) fresh `HashMap` if a
+/// caller happens to nest, never correctness.
+///
+/// Opt-in at this level, not automatic here -- a plain call to `shift`
+/// never engages it on its own. But `proof.rs`'s `instance_from_scaffold`
+/// *does* now decide automatically whether to wrap its own work in this,
+/// from a structural fact it already has in hand (whether the instance's
+/// own trace can revisit a leaf with more than one self-call) rather than
+/// leaving every caller to remember: confirmed to regress the common
+/// case (routine, small samples -- a real `HashMap` grown to size and
+/// then dropped costs more than it saves at that scale) when engaged
+/// unconditionally, and to win about 2x on a large branching-leaf
+/// instance when engaged there specifically -- see its own docs. A
+/// caller that wants this for some other, unrelated construction still
+/// wraps its own call directly.
 pub fn with_shift_cache<T>(f: impl FnOnce() -> T) -> T {
     let prev = SHIFT_SCOPE.with(|s| s.replace(Some(HashMap::new())));
     let prev_was_active = prev.is_some();
