@@ -187,18 +187,7 @@ impl JitEngine {
     ///    arithmetic -- see its own docs for what's in and out of scope
     ///    (an `If` between two closures, self-recursion combined with
     ///    closures, ...).
-    /// 3. `prove_closure_expr_instance`, once per sample, reporting
-    ///    success only if *every* sample gets its own per-instance
-    ///    proof -- the fallback for exactly the shape `prove_closure_expr`
-    ///    can never cover at all: a closure-typed parameter called with
-    ///    genuinely inconsistent arities across call sites (`compile.rs`'s
-    ///    curried-dispatch capability). Unlike step 2, this is *not* one
-    ///    theorem covering every input -- see `proof.rs`'s own module
-    ///    docs for why a universal proof is a dead end here without a
-    ///    real dependent sum in the kernel's own type theory, and why a
-    ///    per-instance certificate (the same honesty tail recursion's own
-    ///    step 5 already has) is the right and only thing being claimed.
-    /// 4. `prove_tail_recursive_universal` -- a tail-recursive term whose
+    /// 3. `prove_tail_recursive_universal` -- a tail-recursive term whose
     ///    shape it covers gets one universal theorem, also covering every
     ///    input, via real induction rather than per-sample checking. Once
     ///    this succeeds, also tries instantiating that theorem at a few
@@ -211,29 +200,36 @@ impl JitEngine {
     ///    `kernel_verified` is already `true` from the theorem alone, so a
     ///    shape it declines instances for (branching recursion -- see
     ///    `proof.rs`) is unaffected.
-    /// 5. `prove_tail_recursive_call`, once per sample in the same battery
+    /// 4. `prove_tail_recursive_call`, once per sample in the same battery
     ///    `verify()` uses, reporting success only if *every* sample got its
     ///    own per-call relational proof -- the fallback for tail-recursive
     ///    shapes the universal proof doesn't (yet) cover.
+    /// 5. `prove_closure_expr_instance`, once per sample, reporting
+    ///    success only if *every* sample gets its own per-instance
+    ///    proof -- the fallback for exactly the shapes none of the above
+    ///    can cover at all: a closure-typed parameter called with
+    ///    genuinely inconsistent arities across call sites (`compile.rs`'s
+    ///    curried-dispatch capability), including one threaded through a
+    ///    *tail*-recursive loop (`proof::eval_dyn_tail_recursive`) -- the
+    ///    recursive use of that capability `RELATED_WORK.md` names as a
+    ///    standing gap. Tried last, not third, precisely because it's
+    ///    weakest (a per-instance certificate, never one theorem covering
+    ///    every input -- see `proof.rs`'s own module docs for why a
+    ///    universal proof is a dead end here without a real dependent sum
+    ///    in the kernel's own type theory) and its widened, closure-aware
+    ///    evaluator happens to also accept plain arithmetic recursion
+    ///    (e.g. gcd) that steps 3-4 already prove more strongly -- trying
+    ///    it first would silently downgrade those to weaker evidence.
     ///
     /// Anything else (a captured free variable used as a closure inside
-    /// self-recursion, or -- see `RELATED_WORK.md` -- a recursive use of
-    /// `compile.rs`'s inconsistent-arity curried-dispatch fallback, which
-    /// none of the strategies above model) reports `false` -- see
-    /// `proof.rs` for what's in scope and why.
+    /// self-recursion, or non-tail recursion combined with the
+    /// inconsistent-arity curried-dispatch fallback) reports `false` --
+    /// see `proof.rs` for what's in scope and why.
     fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> bool {
         if proof::prove_pure_expr(terms, h).is_some() {
             return true;
         }
         if proof::prove_closure_expr(terms, h).is_some() {
-            return true;
-        }
-        let closure_instance_samples = sample_arg_vectors(arity);
-        if !closure_instance_samples.is_empty()
-            && closure_instance_samples
-                .iter()
-                .all(|sample| proof::prove_closure_expr_instance(terms, h, sample).is_some())
-        {
             return true;
         }
         let instance_samples: Vec<Vec<i64>> = sample_arg_vectors(arity).into_iter().take(3).collect();
@@ -243,10 +239,14 @@ impl JitEngine {
             return true;
         }
         let samples = sample_arg_vectors(arity);
-        !samples.is_empty()
-            && samples
+        if !samples.is_empty() && samples.iter().all(|sample| proof::prove_tail_recursive_call(terms, h, sample).is_some()) {
+            return true;
+        }
+        let closure_instance_samples = sample_arg_vectors(arity);
+        !closure_instance_samples.is_empty()
+            && closure_instance_samples
                 .iter()
-                .all(|sample| proof::prove_tail_recursive_call(terms, h, sample).is_some())
+                .all(|sample| proof::prove_closure_expr_instance(terms, h, sample).is_some())
     }
 
     /// Run the compiled candidate against the interpreter (reference
@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tail_recursive_loop_still_compiles_once_its_own_closure_parameter_turns_inconsistent() {
+    fn a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent() {
         // Same shape as
         // a_closure_typed_loop_carried_parameter_compiles_and_is_kernel_verified
         // just above, with one addition: `rec f n g x = if 1<0 then
@@ -758,11 +758,11 @@ mod tests {
         // compile.rs's own docs -- makes the *whole* fragment (not just
         // this one dead call site) switch to curried dispatch, including
         // the hot, tail-recursive `g(x)` call every iteration actually
-        // takes. Neither Phase 2 nor Phase 4's own test suites combined
-        // this capability with recursion at all; this closes that gap at
-        // the compile.rs level (Phase 4's own kernel-proof coverage
-        // stays correctly declined for a `Rec`-wrapped use, by design --
-        // see `eval_dyn_direct_call`'s own docs).
+        // takes. `proof::eval_dyn_tail_recursive` now covers this too
+        // (see its own docs): every call `g` actually takes, along this
+        // one concrete trace, happens to be exactly saturated, so the
+        // per-instance methodology proves it despite `g`'s own static
+        // classification staying `Inconsistent`.
         let mut s = TermStore::new();
         let x_dead = s.var(0);
         let nine_ninety_nine = s.lit(999);
@@ -809,12 +809,14 @@ mod tests {
         assert_eq!(jit.apply(&s, top, &[]).unwrap(), 10); // 0 incremented 10 times, same as the baseline shape
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
-        // Declined, by design: proof.rs's per-instance strategy
-        // (Phase 4) explicitly excludes a `Rec`-wrapped use of this
-        // capability -- see `eval_dyn_direct_call`'s own docs for why.
-        // jit.rs's own sample-based `verify()` is still the actual trust
-        // gate installing the compiled form regardless.
-        assert!(!jit.is_kernel_verified(top));
+        // `prove_closure_expr_instance`'s own inlining (via
+        // `eval_dyn_tail_recursive`) now covers a recursive use of the
+        // curried-dispatch capability too -- previously the standing gap
+        // this whole test existed to document (see `RELATED_WORK.md`).
+        // `jit.rs`'s own sample-based `verify()` is still the actual
+        // trust gate installing the compiled form regardless.
+        assert!(jit.is_kernel_verified(top));
+        assert_eq!(jit.stats.kernel_proofs_checked, 1);
     }
 
     #[test]

@@ -296,12 +296,54 @@ one), it also picked up a second, previously out-of-scope shape for
 free: a parameter passed along but never actually called as a closure
 at all (`src/syntax.rs`'s own `higher_order_let_chain_evaluates_like_the_hand_built_demo_term`
 test, a let-desugaring artifact, is the regression guard for this).
-Deliberately not attempted: a recursive (`Rec`-wrapped) use of this
-shape, and a callee whose own saturated call itself returns a further,
-not-statically-known `Clo` — both would need the curried stage-chain's
-own further semantics modeled with fresh postulates of their own, a
-real, larger follow-on (see `eval_dyn_direct_call`'s own docs in
-`proof.rs`).
+
+**Since covered too: a recursive use, for tail recursion.** The
+recursive (`Rec`-wrapped) case named above as deliberately not attempted
+is now also closed, for *tail*-recursive shapes: `eval_dyn_direct_call`
+no longer declines outright when the callee it would otherwise inline is
+itself `Rec`-wrapped, instead handing off to `eval_dyn_tail_recursive`
+(`src/proof.rs`), which follows the loop's own concrete tail self-calls
+one iteration at a time — reusing `classify_step` (from tail recursion's
+own relational proof) for branch/self-call dispatch, and `eval_dyn`
+itself, once per iteration, to denote each fresh argument. No new
+postulate or dependent sum was needed here either: unlike a *universal*
+theorem for this shape (still the open research question above — the
+loop-carried parameter still has no honest static type across
+iterations), a per-instance certificate only ever needs the one concrete
+closure identity each traced call actually has, which `eval_dyn` already
+computes. This closes exactly the gap
+`benches/common.rs`'s own `inconsistent_arity_loop_carried_parameter_loop`
+and `jit::tests::a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent`
+were written to document as open. One new piece of plumbing this needed:
+`eval_concrete`'s own pure-arithmetic fragment (`Var`/`Lit`/`Prim`/`If`)
+can't evaluate a fresh argument that's itself a call (e.g. a loop-carried
+`g(x)`, needed so a later branch condition depending on it stays
+evaluable) — rather than duplicate a second concrete evaluator that
+understands closures, `eval_concrete_dyn` rebuilds an `eval::Env` from
+the current frame and defers to the reference interpreter (`eval::eval`)
+directly. Still not attempted: a *non*-tail recursive use of this
+capability, and a callee whose own saturated call itself returns a
+further, not-statically-known `Clo` — both remain a real, larger
+follow-on (see `eval_dyn_direct_call`'s and `eval_dyn_tail_recursive`'s
+own docs in `proof.rs`).
+
+Reordering note: `jit.rs`'s `kernel_verify` tries the universal and
+relational tail-recursion strategies *before* `prove_closure_expr_instance`
+now, not after — once `prove_closure_expr_instance` could also succeed on
+plain arithmetic recursion (gcd, say) as a side effect of this widening,
+trying it first would have silently downgraded those to weaker,
+per-instance-only evidence instead of the stronger theorem they already
+had.
+
+On the same 20,000-iteration benchmark measured above, the added
+per-instance proof attempt (which runs once, at compile time) raises
+`jit_cold_compile_and_verify` further (roughly 70ms → 80ms → ~105ms on
+this machine): `eval_dyn_tail_recursive`'s own bound (`MAX_STEPS =
+10_000`, matching `prove_tail_recursive_call`'s existing bound) is
+smaller than this benchmark's own 20,000 iterations, so the proof
+attempt runs the full 10,000-iteration search, declines, and that work
+is thrown away — a real but one-time, compile-only cost, and `jit_warm_cache_hit`
+(the number that actually matters for a hot loop) is unaffected.
 
 ## Sources
 

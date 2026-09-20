@@ -125,6 +125,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::compile;
+use crate::eval;
 use crate::kernel::{self, Ctx, Expr, Postulates};
 use crate::term::{Hash, PrimOp, Term, TermStore};
 
@@ -5443,6 +5444,56 @@ fn dyn_frame_concrete_ints(frame: &[DynVal]) -> Vec<i64> {
     frame.iter().map(|v| match v { DynVal::Int(_, n) => *n, DynVal::Clo(..) => 0 }).collect()
 }
 
+/// Rebuilds an `eval::Env` matching `frame`'s own `Var`-index convention
+/// (`frame[i]` <-> `Var(i)`), recursively reconstructing a `Clo` slot's
+/// own `eval::Value::Closure`/`Value::Rec` from its `ConcreteClo` (whose
+/// `root` is always the exact `Abs`/`Rec` node `eval_dyn` last resolved
+/// it from, and whose own `frame` is that closure's *creation* scope --
+/// exactly the `(Env, Hash)` pair `eval::eval` itself builds when it first
+/// evaluates that same `Term::Abs`/`Term::Rec` node). `eval::Env::push`
+/// is private, so this constructs `Env::Cons` directly -- both variants
+/// are `pub`, this is not reaching past an intended boundary.
+fn dyn_frame_to_env(store: &TermStore, frame: &[DynVal]) -> Option<eval::Env> {
+    let mut env = eval::Env::default();
+    for v in frame.iter().rev() {
+        let value = match v {
+            DynVal::Int(_, n) => eval::Value::Int(*n),
+            DynVal::Clo(_, cc) => {
+                let cc_env = dyn_frame_to_env(store, &cc.frame)?;
+                match store.resolve(cc.root) {
+                    Term::Abs(body) => eval::Value::Closure(cc_env, *body),
+                    Term::Rec(inner) => eval::Value::Rec(cc_env, *inner),
+                    _ => return None, // unreachable: ConcreteClo::root is always Abs/Rec
+                }
+            }
+        };
+        env = eval::Env::Cons(Rc::new((value, env)));
+    }
+    Some(env)
+}
+
+/// The concrete numeral `eval_dyn_tail_recursive`/`eval_dyn_direct_call`
+/// need for a *newly computed* `Int`-typed argument (so a later branch
+/// condition that depends on it stays evaluable) -- unlike `eval_concrete`
+/// (used only for the pure-arithmetic conditions `classify_step` itself
+/// resolves, which `compile_cond`'s own restriction guarantees never
+/// embed a call), this argument may itself be an application of a
+/// concretely-known closure (e.g. a loop-carried `g(x)`), which
+/// `eval_concrete`'s own fragment (`Var`/`Lit`/`Prim`/`If` only) can't
+/// evaluate at all. Rather than re-derive a second concrete evaluator for
+/// applications, this defers to the reference interpreter itself
+/// (`eval::eval`) over an `Env` rebuilt from `frame` (`dyn_frame_to_env`)
+/// -- the same ground truth this whole project already judges every
+/// other representation against, so reusing it here needs no separate
+/// argument for why it's correct.
+fn eval_concrete_dyn(store: &TermStore, h: Hash, frame: &[DynVal]) -> Option<i64> {
+    let env = dyn_frame_to_env(store, frame)?;
+    match eval::eval(store, &env, h).ok()? {
+        eval::Value::Int(n) => Some(n),
+        eval::Value::Closure(..) | eval::Value::Rec(..) => None,
+    }
+}
+
 /// Projects `frame` down to a `denote_closure`-style `param_types`
 /// slice, for `capture_sig`/`register`/`call_ref`'s own use -- a `Clo`
 /// slot's own type is its concrete literal's own real arity (`compile
@@ -5524,6 +5575,75 @@ fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, c
     Some(apply_n(mk_env, values))
 }
 
+/// Follows one concrete trace through a `Rec`-wrapped, *tail*-recursive
+/// `body` (`arity` params plus the self-reference at `Var(arity)`,
+/// matching `peel`'s own convention), starting from `frame` -- the
+/// per-instance, closure-capable sibling of `prove_tail_recursive_call`'s
+/// own `classify_step` loop, reusing `classify_step` itself unchanged
+/// (it only ever needs concrete `i64`s to pick a branch or recognize a
+/// self-call, which `dyn_frame_concrete_ints` already projects `frame`
+/// down to). This is what lets `eval_dyn_direct_call` inline a `root`
+/// that's itself self-recursive: the *inconsistent*-arity closure
+/// parameter this whole per-instance methodology exists for is exactly
+/// as likely to be threaded, unchanged, through a tail-recursive loop as
+/// to sit in a straight-line callee -- and `RELATED_WORK.md`'s own
+/// "recursive use of curried dispatch has no kernel-proof coverage"
+/// gap is precisely this case.
+///
+/// Scoped the same way `prove_tail_recursive_call` is: only a *tail*
+/// self-call is followed (a self-call embedded inside a larger
+/// expression is never recognized by `classify_step`'s own
+/// `match_self_call`, so the base case `eval_dyn` is finally called on
+/// still has an unresolvable `Var(arity)` in it -- `eval_dyn`'s own
+/// `frame.get` on an out-of-range index declines cleanly rather than
+/// mis-evaluating, the same "sound, not complete" tolerance every other
+/// decline in this section already has); bounded to `MAX_STEPS`
+/// iterations, matching `prove_tail_recursive_call`'s own bound.
+///
+/// `combinators`' `register`/`call_ref` memoization is keyed by `Hash`
+/// alone (see `eval_dyn_direct_call`'s own docs on this) -- safe here as
+/// long as any one literal reached from more than one iteration is
+/// always denoted from the same frame each time, true whenever a
+/// closure-typed parameter is simply threaded through the loop unchanged
+/// (this function's own reason for existing) rather than replaced by a
+/// freshly created one with different captures partway through.
+fn eval_dyn_tail_recursive(
+    store: &TermStore,
+    body: Hash,
+    arity: usize,
+    combinators: &mut ClosureCombinators,
+    mut frame: Vec<DynVal>,
+) -> Option<DynDenoted> {
+    const MAX_STEPS: usize = 10_000;
+    let self_idx = arity as u32;
+
+    for _ in 0..MAX_STEPS {
+        let concrete = dyn_frame_concrete_ints(&frame);
+        match classify_step(store, body, arity, self_idx, &concrete)? {
+            StepOutcome::Base(leaf) => return eval_dyn(store, leaf, combinators, &frame),
+            StepOutcome::TailCall(arg_exprs) => {
+                if arg_exprs.len() != arity {
+                    return None;
+                }
+                let mut new_frame = Vec::with_capacity(arity);
+                for i in 0..arity {
+                    let expr = arg_exprs[arity - 1 - i];
+                    let val = match eval_dyn(store, expr, combinators, &frame)? {
+                        DynDenoted::Int(e) => {
+                            let n = eval_concrete_dyn(store, expr, &frame)?;
+                            DynVal::Int(e, n)
+                        }
+                        DynDenoted::Clo(e, cc) => DynVal::Clo(e, cc),
+                    };
+                    new_frame.push(val);
+                }
+                frame = new_frame;
+            }
+        }
+    }
+    None
+}
+
 /// Resolves a call to `root` (a literal lambda, or a named self-recursive
 /// combinator) applied to `args` -- shared by both ways `eval_dyn`'s own
 /// `App` handling reaches a literal callee: directly (`root_frame` is
@@ -5539,12 +5659,14 @@ fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, c
 ///
 /// Scoped deliberately narrowly: only an exactly-saturated call (no
 /// partial or over-application of `root` itself); when inlining is
-/// needed (see below), only a non-recursive, non-capturing `root`, and
-/// only an `Int`-returning ordinary (non-inlined) call -- a callee whose
-/// own saturated call returns a further `Clo` without needing inlining
-/// would need to be recursed into to identify *which* concrete closure
-/// that is, which this first slice doesn't attempt (see this section's
-/// own module docs).
+/// needed (see below), only a non-capturing `root` (`Rec`-wrapped or not
+/// -- a `Rec`-wrapped `root` is traced through its own self-calls via
+/// `eval_dyn_tail_recursive`, tail-recursive shapes only, see its own
+/// docs), and only an `Int`-returning ordinary (non-inlined) call -- a
+/// callee whose own saturated call returns a further `Clo` without
+/// needing inlining would need to be recursed into to identify *which*
+/// concrete closure that is, which this first slice doesn't attempt (see
+/// this section's own module docs).
 ///
 /// One more constraint worth being explicit about, found while verifying
 /// this by deliberately feeding `call_ref` the wrong frame here and
@@ -5588,7 +5710,7 @@ fn eval_dyn_direct_call(
         .any(|(j, v)| root_param_types[root_arity - 1 - j].is_none() && matches!(v, DynDenoted::Clo(..)));
 
     if needs_inline {
-        if root_is_rec || !compile::free_vars(store, root_body, root_arity, root_is_rec).is_empty() {
+        if !compile::free_vars(store, root_body, root_arity, root_is_rec).is_empty() {
             return None; // scoped out -- see this function's own docs
         }
         let mut child: Vec<Option<DynVal>> = vec![None; root_arity];
@@ -5601,14 +5723,16 @@ fn eval_dyn_direct_call(
                 // will reshift it correctly whenever it's eventually
                 // resolved, however much more gets pushed in between.
                 DynDenoted::Int(e) => {
-                    let concrete = dyn_frame_concrete_ints(calling_frame);
-                    let n = eval_concrete(store, a, &concrete)?;
+                    let n = eval_concrete_dyn(store, a, calling_frame)?;
                     DynVal::Int(e, n)
                 }
                 DynDenoted::Clo(e, cc) => DynVal::Clo(e, cc),
             });
         }
         let child: Vec<DynVal> = child.into_iter().collect::<Option<Vec<_>>>()?;
+        if root_is_rec {
+            return eval_dyn_tail_recursive(store, root_body, root_arity, combinators, child);
+        }
         return eval_dyn(store, root_body, combinators, &child);
     }
 
@@ -5765,19 +5889,19 @@ fn eval_dyn(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, fr
 /// approach is a dead end here without a real dependent sum in the
 /// kernel).
 ///
-/// Returns `None` for: `h` itself `Rec`-wrapped (recursion combined with
-/// this capability needs the curried stage-chain's own further semantics
-/// modeled, deliberately out of scope here); an arity mismatch; any
-/// top-level parameter that isn't plain `Int` (this project's own
-/// sampling battery, `jit.rs`'s `sample_arg_vectors`/`eval::apply_term`,
-/// is `i64`-only, so a genuinely `Clo`-typed top-level parameter was
-/// never something this regime could exercise anyway -- a real but
-/// harmless scope line, not a workaround); or anything `eval_dyn` itself
-/// declines (see its own and `eval_dyn_direct_call`'s docs for exactly
-/// what that is).
+/// Returns `None` for: an arity mismatch; any top-level parameter that
+/// isn't plain `Int` (this project's own sampling battery, `jit.rs`'s
+/// `sample_arg_vectors`/`eval::apply_term`, is `i64`-only, so a genuinely
+/// `Clo`-typed top-level parameter was never something this regime could
+/// exercise anyway -- a real but harmless scope line, not a workaround);
+/// or anything `eval_dyn`/`eval_dyn_tail_recursive` itself declines (see
+/// their own and `eval_dyn_direct_call`'s docs for exactly what that is
+/// -- in particular, `h` itself `Rec`-wrapped is followed via
+/// `eval_dyn_tail_recursive`, but only if its body is *tail*-recursive;
+/// non-tail self-recursion combined with this capability still declines).
 pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
-    if is_rec || arity != args.len() {
+    if arity != args.len() {
         return None;
     }
     let top_param_types = param_types_for(store, h)?;
@@ -5804,7 +5928,11 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
         frame.push(DynVal::Int(Anchored::new(&combinators.cp.arith, e), n));
     }
 
-    let denoted = eval_dyn(store, body, &mut combinators, &frame)?;
+    let denoted = if is_rec {
+        eval_dyn_tail_recursive(store, body, arity, &mut combinators, frame)?
+    } else {
+        eval_dyn(store, body, &mut combinators, &frame)?
+    };
     // `result_ty` first (its own `clo_ty(k)` may push, for an arity not
     // otherwise seen while building `denoted`), `denotation` resolved
     // fresh only afterward -- the same ordering `prove_closure_expr`'s
@@ -8085,6 +8213,128 @@ mod tests {
         for pick_val in [1i64, -1] {
             let proof = prove_closure_expr_instance(&s, top, &[pick_val]).unwrap_or_else(|| panic!("pick={pick_val} should be provable per-instance"));
             check_instance_proof(&proof);
+        }
+    }
+
+    #[test]
+    fn a_tail_recursive_loop_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof() {
+        // Same shape as jit::tests::
+        // a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent
+        // (and benches/common.rs's own
+        // inconsistent_arity_loop_carried_parameter_loop): `rec f n g x =
+        // if 1<0 then g(x,999) else (if n<=0 then x else f(n-1,g,g(x)))`,
+        // `g` baked in as `inc = \y. y+1`. The dead `g(x,999)` call site
+        // makes `param_types_for(it)` classify `g` as `Inconsistent` (->
+        // `None`, same as an absent one) even though every call actually
+        // taken passes it exactly one argument -- exactly the gap
+        // `eval_dyn_direct_call` used to decline outright for a
+        // `Rec`-wrapped root (`root_is_rec` check), and that
+        // `eval_dyn_tail_recursive` now closes by following the loop's
+        // own tail self-calls concretely instead of trying (and failing)
+        // to classify `g` statically.
+        let mut s = TermStore::new();
+        let x_dead = s.var(0);
+        let nine_ninety_nine = s.lit(999);
+        let g_dead = s.var(1);
+        let dead_call = s.app2(g_dead, x_dead, nine_ninety_nine);
+
+        let x = s.var(0);
+        let g = s.var(1);
+        let n = s.var(2);
+        let f = s.var(3);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let gx = s.app(g, x);
+        let f_n1_g = s.app2(f, n_minus_1, g);
+        let rec_call = s.app(f_n1_g, gx);
+        let live_body = s.if_(cond, x, rec_call);
+
+        let one_c = s.lit(1);
+        let zero_c = s.lit(0);
+        let dead_cond = s.prim(PrimOp::Lt, one_c, zero_c); // always false
+        let body = s.if_(dead_cond, dead_call, live_body);
+
+        let g_binder = s.abs(body);
+        let n_binder = s.abs(g_binder);
+        let abs = s.abs(n_binder);
+        let it = s.rec(abs);
+
+        let y = s.var(0);
+        let one2 = s.lit(1);
+        let inc_body = s.prim(PrimOp::Add, y, one2);
+        let inc = s.abs(inc_body);
+
+        assert!(param_types_for(&s, it).unwrap().contains(&None));
+        assert!(prove_closure_expr(&s, it).is_none(), "it itself has no fixed arity to prove universally over g's own slot");
+
+        for n_val in [0i64, 1, 10] {
+            let n_lit = s.lit(n_val);
+            let x0 = s.lit(0);
+            let partial = s.app2(it, n_lit, inc);
+            let top = s.app(partial, x0);
+
+            assert!(prove_closure_expr(&s, top).is_none(), "n={n_val}: top's own call to it still can't be classified statically");
+            let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("n={n_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+            assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), n_val, "n={n_val}: sanity check against the interpreter");
+        }
+    }
+
+    #[test]
+    fn a_loop_carried_call_result_that_itself_gates_termination_gets_a_per_instance_proof() {
+        // rec f g x = if 1<0 then g(x,999) else (if x<=0 then x else
+        // f(g, g(x))), `g` baked in as `dec = \y. y-1` -- unlike the test
+        // just above (where the loop-carried call's own result, `g(x)`,
+        // never itself influences which branch a later iteration takes,
+        // only `n` does), here `g(x)`'s own concrete value is exactly
+        // what the next iteration's own `x<=0` branches on. This is the
+        // sharper regression guard `eval_dyn_tail_recursive`'s own
+        // `eval_concrete_dyn` call needs: deliberately corrupting
+        // `dyn_frame_to_env`'s own reversal (dropping its `.rev()`) is
+        // *not* caught by the test above at all (nothing there ever reads
+        // `x`'s own concrete numeral back), but *is* caught here, via the
+        // sanity check against the interpreter below -- confirmed by
+        // hand before trusting this test to mean anything.
+        let mut s = TermStore::new();
+        let x_dead = s.var(0);
+        let nine_ninety_nine = s.lit(999);
+        let g_dead = s.var(1);
+        let dead_call = s.app2(g_dead, x_dead, nine_ninety_nine);
+
+        let x = s.var(0);
+        let g = s.var(1);
+        let f = s.var(2);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, x, zero);
+        let gx = s.app(g, x);
+        let rec_call = s.app2(f, g, gx);
+        let live_body = s.if_(cond, x, rec_call);
+
+        let one_c = s.lit(1);
+        let zero_c = s.lit(0);
+        let dead_cond = s.prim(PrimOp::Lt, one_c, zero_c); // always false
+        let body = s.if_(dead_cond, dead_call, live_body);
+
+        let x_binder = s.abs(body);
+        let g_binder = s.abs(x_binder);
+        let it = s.rec(g_binder);
+
+        let y = s.var(0);
+        let one2 = s.lit(1);
+        let dec_body = s.prim(PrimOp::Sub, y, one2);
+        let dec = s.abs(dec_body);
+
+        assert!(param_types_for(&s, it).unwrap().contains(&None));
+
+        for x_val in [0i64, 1, 5] {
+            let x0 = s.lit(x_val);
+            let top = s.app2(it, dec, x0);
+
+            let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("x={x_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+            assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), 0, "x={x_val}: sanity check against the interpreter");
         }
     }
 }

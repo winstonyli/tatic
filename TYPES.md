@@ -391,12 +391,19 @@ quietly unifying; that's the entire soundness gain, no more, no less.
   concrete execution trace, mirroring `classify_step`'s own discipline
   for tail recursion, extended to closures), specifically because there
   is no honest way to widen `Γ` itself to cover it. `jit.rs`'s own
-  `kernel_verify` tries it as a fallback once the universal
-  `prove_closure_expr` above declines. Still out of *that* per-instance
-  mechanism's own scope: a recursive (`Rec`-wrapped) use of this
+  `kernel_verify` tries it as a fallback once the universal strategies
+  (`prove_closure_expr`, `prove_tail_recursive_universal`) and tail
+  recursion's own relational fallback (`prove_tail_recursive_call`) all
+  decline. A recursive (`Rec`-wrapped) use of this capability is covered
+  too now, for *tail*-recursive shapes (`eval_dyn_tail_recursive`,
+  reusing `classify_step` to follow the loop's own concrete self-calls) —
+  still per instance, never universal, for the same reason as above (the
+  loop-carried parameter still has no honest static type across
+  iterations). Still out of scope: a *non*-tail recursive use of this
   capability, and a callee whose own saturated call itself returns a
-  further, not-statically-known `Clo` (see `eval_dyn_direct_call`'s own
-  docs in `proof.rs` for exactly why each is deferred).
+  further, not-statically-known `Clo` (see `eval_dyn_direct_call`'s and
+  `eval_dyn_tail_recursive`'s own docs in `proof.rs` for exactly why each
+  is deferred).
 - **A capture of a capture**: not a missing rule at all (section 3.1,
   section 5) — the shape can't arise given how `Γ` is scoped and how
   `peel` folds consecutive `Abs`.
