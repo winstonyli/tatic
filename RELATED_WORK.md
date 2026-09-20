@@ -234,6 +234,28 @@ per Wasm's own stack-nesting guarantee) and only touches
 `$envtmp`/`$papenv` in tight windows strictly before or after it, giving
 linear-time dispatch with no new locals at all (`emit_dynamic_apply`,
 `src/compile.rs`).
+
+**Measured, not just reasoned about.** `benches/execution.rs`'s
+`inconsistent_arity_loop_carried_parameter_loop` isolates exactly the
+cost this section's own mechanism description flags: the same
+20,000-iteration loop, calling a closure-typed parameter once per
+iteration, as `closure_typed_loop_carried_parameter_loop`, except one
+syntactically-present-but-never-reached extra call site elsewhere in
+the same function makes that parameter `ArityUse::Inconsistent` — which
+switches the *whole* fragment to curried dispatch, including the hot,
+otherwise-fast-path-eligible call the dead branch has nothing to do
+with. On this machine: **~43µs → ~67µs per warm call (~1.56×)**, and
+~70ms → ~81ms one-time cold compile (the two-pass discovery/emit
+restructuring's own fixed cost, paid once per fragment regardless of
+how many calls it makes). A single dead, never-executed call site
+elsewhere in a hot function is enough to pay this — a real, measured
+argument for keeping this mechanism opt-in (triggered only by an
+actual `Inconsistent` classification, never speculatively) rather than
+a reason to reconsider the design: the alternative, full currying as
+the *universal* convention (§ above), would have imposed a comparable
+or larger cost on *every* closure call in the compiler, not just the
+fragments that actually need it.
+
 This new capability shipped compile-time-only at first, with no
 kernel-checked proof counterpart — `Γ`'s own "one arity per variable"
 limitation is unchanged, and `denote_closure`'s purely structural

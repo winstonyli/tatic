@@ -197,6 +197,58 @@ pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
     s.app(partial, x0)
 }
 
+/// Identical to `closure_typed_loop_carried_parameter_loop` above --
+/// same loop, same 20,000 iterations, same hot `g(x)` call each one --
+/// with exactly one addition: a dead (never-reached, `1<0` is always
+/// false) extra call site for `g` at arity 2, `rec f n g x = if 1<0
+/// then g(x,999) else (if n<=0 then x else f(n-1,g,g(x)))`. That's
+/// enough to make `g` `ArityUse::Inconsistent`, which -- per compile.rs's
+/// own docs on `Combinators::needs_generic_dispatch` -- switches the
+/// *whole* fragment to curried dispatch, including the hot, live
+/// `g(x)` call the dead branch has nothing to do with. This isolates
+/// exactly the cost `RELATED_WORK.md`'s own design discussion flagged
+/// but never measured: what a single, syntactically-present-but-never-
+/// taken inconsistent call site costs an otherwise fast-path loop.
+pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
+    let x_dead = s.var(0);
+    let nine_ninety_nine = s.lit(999);
+    let g_dead = s.var(1);
+    let dead_call = s.app2(g_dead, x_dead, nine_ninety_nine);
+
+    let x = s.var(0);
+    let g = s.var(1);
+    let n = s.var(2);
+    let f = s.var(3);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let gx = s.app(g, x);
+    let f_n1_g = s.app2(f, n_minus_1, g);
+    let rec_call = s.app(f_n1_g, gx);
+    let live_body = s.if_(cond, x, rec_call);
+
+    let one_c = s.lit(1);
+    let zero_c = s.lit(0);
+    let dead_cond = s.prim(PrimOp::Lt, one_c, zero_c); // always false
+    let body = s.if_(dead_cond, dead_call, live_body);
+
+    let g_binder = s.abs(body);
+    let n_binder = s.abs(g_binder);
+    let abs = s.abs(n_binder);
+    let it = s.rec(abs);
+
+    let y = s.var(0);
+    let one2 = s.lit(1);
+    let inc_body = s.prim(PrimOp::Add, y, one2);
+    let inc = s.abs(inc_body);
+
+    let n_lit = s.lit(20_000);
+    let x0 = s.lit(0);
+    let partial = s.app2(it, n_lit, inc);
+    s.app(partial, x0)
+}
+
 /// `\a b. if a < b then a * 2 else b + 1` -- straight-line, no recursion.
 pub fn straight_line(s: &mut TermStore) -> Hash {
     let a = s.var(1);

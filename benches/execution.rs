@@ -181,6 +181,56 @@ fn closure_typed_loop_carried_parameter_loop(c: &mut Criterion) {
     group.finish();
 }
 
+/// Isolates the cost of `compile.rs`'s curried-dispatch fallback
+/// (`emit_curried_stages`/`emit_dynamic_apply`, see `RELATED_WORK.md`
+/// §9's own "since implemented" note): the same loop, the same 20,000
+/// iterations, the same hot `g(x)` call each one, as
+/// `closure_typed_loop_carried_parameter_loop` just above, except one
+/// syntactically-present-but-dead call site elsewhere in the same
+/// function makes `g` `ArityUse::Inconsistent`, which switches the
+/// *whole* fragment (not just the dead call) to the curried,
+/// one-argument-at-a-time convention -- see
+/// `common::inconsistent_arity_loop_carried_parameter_loop`'s own docs.
+/// Both groups' `jit_warm_cache_hit` bar is the number that actually
+/// matters here: everything else about the two terms is identical, so
+/// the difference between them *is* the curried-dispatch overhead on an
+/// otherwise-fast-path-eligible hot loop, isolated from compile time
+/// (which the `jit_cold_compile_and_verify` bars below capture
+/// separately, and which the two-pass discovery/emit restructuring
+/// itself makes a fixed, per-compile cost, not a per-call one).
+fn inconsistent_arity_loop_carried_parameter_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("inconsistent_arity_loop_carried_parameter_loop");
+
+    let mut store = TermStore::new();
+    let h = common::inconsistent_arity_loop_carried_parameter_loop(&mut store);
+    let args: [i64; 0] = [];
+
+    group.sample_size(20);
+    group.bench_function("interpreter", |b| {
+        b.iter(|| eval::apply_term(&store, h, black_box(&args)).unwrap())
+    });
+
+    group.bench_function("jit_cold_compile_and_verify", |b| {
+        b.iter_batched(
+            || {
+                let mut store = TermStore::new();
+                let h = common::inconsistent_arity_loop_carried_parameter_loop(&mut store);
+                (store, h, JitEngine::new())
+            },
+            |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),
+            BatchSize::PerIteration,
+        )
+    });
+
+    let mut jit = JitEngine::new();
+    jit.apply(&store, h, &args).unwrap();
+    group.bench_function("jit_warm_cache_hit", |b| {
+        b.iter(|| jit.apply(&store, h, black_box(&args)).unwrap())
+    });
+
+    group.finish();
+}
+
 fn partial_application_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("partial_application_loop");
 
@@ -227,6 +277,7 @@ criterion_group!(
     factorial_10,
     capturing_closure_loop,
     partial_application_loop,
-    closure_typed_loop_carried_parameter_loop
+    closure_typed_loop_carried_parameter_loop,
+    inconsistent_arity_loop_carried_parameter_loop
 );
 criterion_main!(benches);
