@@ -1272,7 +1272,7 @@ fn denote_with_placeholders(
 /// `params` is `Params`'s own raw positions (`&[usize]`, resolved fresh
 /// via `combinators.p.get` at each individual use), not pre-resolved
 /// `Expr`s: `register`/`call_ref`/`pap_ref` each may push a fresh
-/// postulate on first use (memoized afterward, like `apply_ref`), which
+/// postulate on first use (memoized afterward, like `ite_clo_ref`), which
 /// would silently invalidate an already-resolved `Expr` held across that
 /// push -- the same staleness class `Anchored`'s own docs describe. A
 /// bare `Term::Rec` (a self-recursive combinator *nested* inside another
@@ -1639,8 +1639,9 @@ fn prime_closure_postulates(
 /// Primes `root`'s own `call_ref` postulate and, if it captures, the
 /// transitive `mk_env_ref` its own environment construction will need --
 /// shared by `prime_closure_postulates`' `AppShape::LitLambdaExact`/
-/// `LitLambdaOver` arms (an over-application's own extra-argument
-/// `apply_ref` priming is distinct per arm, so stays there).
+/// `LitLambdaOver` arms (an over-application needs no further priming of
+/// its own: calling the saturated result's extra arguments is ordinary
+/// application, no axiom to prime -- see `RELATED_WORK.md` section 11).
 fn prime_direct_call(store: &TermStore, root: Hash, param_types: &[Option<usize>], combinators: &mut ClosureCombinators<'_>) -> Option<()> {
     let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
     let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
@@ -1968,7 +1969,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // `Term::Abs | Term::Rec` cases) -- `ClosureCombinators::register`/
     // `call_ref`/`pap_ref`, and transitively `ClosurePostulates::env_ty`/
     // `mk_env_ref` for a capturing one, are *all* lazily memoized the same
-    // way `apply_ref` is, so each needs the same upfront priming before
+    // way `ite_clo_ref` is, so each needs the same upfront priming before
     // `new_params_for`'s/`combines`' first real call (from inside a
     // temporary scope) gets the chance to trigger one itself. Every leaf,
     // both its own expression and every self-call occurrence's own
@@ -1998,7 +1999,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // from `build_ev_witness`/`instance_from_scaffold` *after*
     // `build_universal` has already returned a stable, no-longer-truncated
     // `ctx`, the same non-truncating regime `prove_closure_expr`'s own
-    // usage of `apply_ref`/`ite_clo_ref` relies on. A *new* lazily-memoized
+    // usage of `ite_clo_ref` relies on. A *new* lazily-memoized
     // postulate added to `ClosurePostulates` in the future, reachable from
     // inside `denote_closure_typed`/`denote_with_placeholders`, needs the
     // same treatment (either priming here, if it's `Hash`/signature-keyed
@@ -2449,8 +2450,8 @@ fn eval_and_prove(
                 eval_and_prove_call(store, root, &args, &callee_param_types, combinators, params, concrete, param_facts)
             }
             // `root`'s own saturated call returns a `Clo_k`, then the
-            // extra arguments are dispatched against it via `apply_ref` --
-            // see `eval_and_prove_call_over`'s own docs.
+            // extra arguments are dispatched against it directly -- see
+            // `eval_and_prove_call_over`'s own docs.
             AppShape::LitLambdaOver { root, args, callee_param_types } => {
                 eval_and_prove_call_over(store, root, &args, &callee_param_types, combinators, params, concrete, param_facts)
             }
@@ -2884,20 +2885,20 @@ fn inner_closure_literal_value(
 /// argument (or leaf expression) that over-applies a literal lambda
 /// `root` -- `root`'s own saturated call (its first `root_arity`
 /// arguments) returns a `Clo_k`, and the *extra* `k` arguments are then
-/// dispatched against that closure via `apply_ref`. See `clo_eq_ref`'s
+/// dispatched against that closure directly. See `clo_eq_ref`'s
 /// own docs for why this needs a second computation-rule axiom (root's
 /// saturated call is just as opaque, `Clo`-typed, as a `call_eq_ref`-
 /// covered `Int`-typed one), `ite_clo_eq_ref`'s own docs for the branch-
 /// selection bridge an `If`-shaped body needs, and `apply_clo_eq_ref`'s
-/// own docs for tying `apply_ref` to whichever closure value is
-/// concretely produced.
+/// own docs for tying whichever closure value is concretely produced to
+/// `call_ref(root)`'s own value.
 ///
 /// Guarded by `combinator_return_type(root) == Some(Some(k))` and
 /// `args.len() == root_arity + k` (the whole thing fully resolves to
 /// `Int` -- matches `denote_with_placeholders`'s own identical
-/// requirement, enforced there via `apply_ref`'s own `Clo_k`-typed
-/// domain) -- `None` otherwise, not an error: a partial or chained
-/// over-application, or one whose own saturated call stays `Int`
+/// requirement, enforced there by calling the `Clo_k` value directly with
+/// exactly `k` `Int` arguments) -- `None` otherwise, not an error: a
+/// partial or chained over-application, or one whose own saturated call stays `Int`
 /// (`call_eq_ref`'s own shape, handled by this function's sibling), is
 /// genuinely out of scope here.
 /// Shared core of `eval_and_prove_call_over`'s own preamble -- given a
@@ -3106,9 +3107,9 @@ fn build_clo_call_bridge(
 ///
 /// `extra_arg_triples`/`k` are the *outermost* over-application's own
 /// values -- invariant across however many `Call` hops this recurses
-/// through (there is only ever one `apply_ref(k)` step in the whole
-/// chain, applied once `chosen` is finally reached), so every recursive
-/// call threads the same ones through unchanged.
+/// through (there is only ever one final `apply_*_eq_ref` step in the
+/// whole chain, applied once `chosen` is finally reached), so every
+/// recursive call threads the same ones through unchanged.
 ///
 /// Returns `(chosen, chosen_cap_triples, chosen_arg_triples, chosen_value,
 /// subject_to_chosen, apply_eq_chosen)`: which `Hash` to recurse into,
@@ -3119,8 +3120,8 @@ fn build_clo_call_bridge(
 /// is a `Pap`'s own `g`, whose own arity is `s + k`), a proof that
 /// `call_at_denoted` (the parameter, `subject`'s own saturated call)
 /// equals `chosen_value`, and the instantiated `apply_*_eq_ref` fact
-/// bridging `apply_ref(k)` applied to `chosen_value` down to a direct
-/// call on `chosen`.
+/// bridging `chosen_value`, called directly, down to a direct call on
+/// `chosen`.
 #[allow(clippy::too_many_arguments)]
 fn resolve_closure_shape_to_leaf(
     store: &TermStore,
@@ -4338,9 +4339,9 @@ impl ClosurePostulates {
     /// curried arrow type, *not* postulated (see `RELATED_WORK.md` section
     /// 11 for the investigation this answers): every consumer below only
     /// ever needs "the callable shape with `arity` `Int` parameters and an
-    /// `Int` result" (`apply_ref`'s own arguments/result are uniformly
-    /// `Int` regardless of what the callee's own body does with them,
-    /// matching `compile.rs`'s own untyped `call_indirect` dispatch), and a
+    /// `Int` result" (every argument/result stays uniformly `Int`
+    /// regardless of what the callee's own body does with them, matching
+    /// `compile.rs`'s own untyped `call_indirect` dispatch), and a
     /// real Pi type already gives that for free -- no opaque `Sort(0)`
     /// axiom needed at all. Two different arities still stay genuinely
     /// distinct, definitionally-unequal kernel types (the fix for the
@@ -4457,8 +4458,9 @@ impl ClosurePostulates {
         // postulate, `env_ty`/`clo_ty` here can *each* lazily push their
         // own postulate on first use -- possibly several times over, once
         // per distinct arity `sig` mentions -- so no single "resolve the
-        // one lazy thing first" ordering trick (like `apply_ref`'s own
-        // fix) suffices. Each is anchored immediately after resolving it
+        // one lazy thing first" ordering trick suffices here the way it
+        // does for a function with only one such push to order around.
+        // Each is anchored immediately after resolving it
         // instead, and only re-resolved (`.at`), fresh, once nothing more
         // is left to push -- the same discipline `denote_closure`'s own
         // composite cases use for a whole built term, one level up.
@@ -4581,8 +4583,8 @@ impl<'a> ClosureCombinators<'a> {
 
     /// A postulated function for *directly calling* combinator `h` (a
     /// static Wasm `call`, not dispatched through any `Clo` value at all
-    /// -- unlike `apply_ref`, there's no leading `Clo` argument here),
-    /// memoized by hash: `T_0 -> T_1 -> .. -> T_{k-1} -> R` if `h`
+    /// -- no leading `Clo` argument here), memoized by hash:
+    /// `T_0 -> T_1 -> .. -> T_{k-1} -> R` if `h`
     /// doesn't capture anything, or `Env -> T_0 -> .. -> T_{k-1} -> R`
     /// (`n` = `captures.len()`) if it does -- the environment, when
     /// present, is always the *first* parameter, ahead of `h`'s own
@@ -4881,7 +4883,7 @@ impl<'a> ClosureCombinators<'a> {
     /// `call_eq_ref` itself owns the `Int` case and rejects this one).
     /// Needed for `AppShape::LitLambdaOver` (an over-applied literal
     /// lambda: `root`'s own saturated call produces a closure, then the
-    /// *extra* arguments are dispatched against it via `apply_ref`) to get
+    /// *extra* arguments are dispatched against it directly) to get
     /// a concrete instance -- `mk_clo_ref`/`combinator_value`/
     /// `ite_clo_ref`/`pap_ref` are exactly as opaque as `call_ref` was
     /// before `call_eq_ref`, so the same "postulate a computation rule,
@@ -6454,7 +6456,7 @@ fn denote_closure(
             // or more (`AppShape::LitLambdaOver`: `root`'s own saturated
             // call is built first, exactly as the direct-call case does,
             // then whatever it denotes is dispatched on the extra
-            // arguments via `apply_ref`, exactly like the `ParamCall` case
+            // arguments directly, exactly like the `ParamCall` case
             // above -- see `combinator_return_type`'s own docs for why
             // this is sound without denoting `root`'s body in the usual
             // sense). Each argument's expected type matches the *callee's
@@ -6563,8 +6565,8 @@ fn denote_closure(
                 }
 
                 // Over-application: dispatch the extra arguments on
-                // `root`'s own saturated result through `apply_ref`,
-                // exactly like calling a closure-typed variable (the
+                // `root`'s own saturated result directly, exactly like
+                // calling a closure-typed variable (the
                 // `ParamCall` case above), just with the callee freshly
                 // computed rather than read from `params`. Only sound
                 // when that result genuinely denotes a further `Clo` --
@@ -6723,7 +6725,7 @@ fn denote_closure(
 /// inconsistent arity for a closure-typed parameter, an over-application
 /// of a literal lambda or recursive combinator whose own saturated result
 /// doesn't itself denote `Clo` (see `combinator_return_type`; a `Clo`-
-/// returning one is covered, dispatched via `apply_ref` on the extra
+/// returning one is covered, dispatched directly on the extra
 /// arguments), an `If` whose branches aren't both `Int` or both `Clo` (or
 /// one of each), a captured value (for a capturing combinator) that
 /// doesn't resolve directly to one of the calling function's own
@@ -7551,28 +7553,34 @@ mod tests {
         assert!(compile::try_compile(&s, f).is_some());
     }
 
-    /// **Architecture prototype, not wired into `ClosurePostulates`.**
-    /// Investigates whether the whole `Clo_k`-as-a-family-of-opaque-
-    /// `Sort(0)`-postulates scheme (`ClosurePostulates::clo_ty`/
-    /// `apply_ref`/`ite_clo_ref`, one fresh axiom pair per distinct arity a
-    /// term uses) could instead be built from the *literal* curried
-    /// `Int -> .. -> Int` arrow type -- no new postulate at all -- reusing
-    /// `Int` (already postulated by `ArithPostulates`) and `bool_rec`
-    /// (already postulated, generically, by `kernel::NatPostulates`) rather
-    /// than adding anything new. Confirms three things a real migration
-    /// would need:
+    /// **Architecture prototype, predating the real migration this
+    /// motivated.** Investigated whether the whole `Clo_k`-as-a-family-of-
+    /// opaque-`Sort(0)`-postulates scheme (`ClosurePostulates::clo_ty`,
+    /// plus what was then a separate `apply_ref` axiom, one fresh
+    /// postulate pair per distinct arity a term uses) could instead be
+    /// built from the *literal* curried `Int -> .. -> Int` arrow type --
+    /// no new postulate at all -- reusing `Int` (already postulated by
+    /// `ArithPostulates`) rather than adding anything new. `clo_ty` itself
+    /// (Phase 1) and `apply_ref` (Phase 2) were since migrated for real
+    /// along exactly these lines -- see `RELATED_WORK.md` section 11.
+    /// This standalone test is kept as the isolated confirmation it always
+    /// was, not superseded by the real migration landing. Confirms:
     ///
     /// 1. A `Clo_k`-shaped value (an opaque postulated constant of the
     ///    literal arrow type) can be called directly via ordinary
-    ///    `kernel::app`, typechecking as `Int` with no `apply_ref` axiom at
-    ///    all -- `apply_ref`'s entire reason to exist (relating an opaque
-    ///    `Clo_k` to a callable shape) turns out to be unnecessary once
-    ///    `Clo_k` genuinely *is* that shape.
+    ///    `kernel::app`, typechecking as `Int` with no separate "how to
+    ///    call this" axiom needed at all -- confirmed for real once
+    ///    `apply_ref` was actually removed and its dozen call sites
+    ///    migrated (Phase 2).
     /// 2. `bool_rec` instantiated at a *constant* motive (`\_:Bool. A`) is a
     ///    real `ite : Bool -> A -> A -> A` for any `A`, with its
     ///    computation-rule axioms (`bool_rec_true_eq`/`bool_rec_false_eq`)
-    ///    already proving `ite`'s own -- no per-arity `ite_clo_k` family
-    ///    needed either.
+    ///    already proving `ite`'s own -- a standalone fact, still true, but
+    ///    (per `RELATED_WORK.md` section 11's own correction) it does
+    ///    *not* extend to eliminating the real `ite_clo_ref`, whose
+    ///    condition is `Int`-typed rather than `Bool`-typed and so has no
+    ///    bridge to `bool_rec`'s own motive; `ite_clo_ref` was correctly
+    ///    left untouched by the real migration.
     /// 3. Two different arities are still genuinely distinct types --
     ///    `kernel::check` rejects a `Clo_3`-shaped value where a `Clo_2` is
     ///    expected, for free, from ordinary Pi-type structural inequality --
@@ -7931,7 +7939,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_and_prove_call_over_respects_apply_refs_own_argument_order_for_a_non_symmetric_root() {
+    fn eval_and_prove_call_over_respects_the_over_applied_calls_own_argument_order_for_a_non_symmetric_root() {
         // f = \a. if 0<a then (\c d. c-d) else (\c d. d-c); f(a,c,d) -- k=2
         // extra arguments, non-commutative in each branch. `k=1` (the
         // canonical shape above) has no argument order to get wrong at
@@ -7974,13 +7982,102 @@ mod tests {
             combinators.cp.arith.lit(d_val);
             let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
                 .expect("a non-symmetric over-applied closure call should get a concrete witness");
-            assert_eq!(result, expected, "eval_and_prove_call_over must not swap apply_ref's own argument order");
+            assert_eq!(result, expected, "eval_and_prove_call_over must not swap the over-applied call's own argument order");
             kernel::check(
                 &combinators.cp.arith.p.ctx,
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
             .expect("the recorded witness should independently re-typecheck");
+        }
+    }
+
+    #[test]
+    fn a_call_shaped_if_tree_leaf_whose_own_target_is_itself_a_further_if_tree_gets_a_concrete_instance() {
+        // g = \x. if 0<x then (\c. x+c) else (\c. x-c) -- arity 1, an
+        // ordinary IfTree-shaped closure (ClosureRhsShape::IfTree, two
+        // bare Abs leaves).
+        //
+        // root = \a b. if 0<a then g(b) else (\c. b*2+c) -- arity 2. The
+        // `then` branch, `g(b)`, is a saturated call to `g`
+        // (ClosureIfTreeLeafShape::Call), whose own resolution recurses
+        // into `g`'s own shape via `resolve_closure_shape_to_leaf` -- here
+        // testing whether that recursion already handles `g_shape` itself
+        // being `IfTree` (not just `Abs`/`Pap`/a further `Call`), since
+        // `resolve_closure_shape_to_leaf` dispatches generically on
+        // whatever shape it's handed, without a hardcoded assumption about
+        // what produced it.
+        let mut s = TermStore::new();
+        let c1 = s.var(0);
+        let x1 = s.var(1);
+        let x_plus_c = s.prim(PrimOp::Add, x1, c1);
+        let g_then = s.abs(x_plus_c);
+
+        let c2 = s.var(0);
+        let x2 = s.var(1);
+        let x_minus_c = s.prim(PrimOp::Sub, x2, c2);
+        let g_else = s.abs(x_minus_c);
+
+        let x_cond = s.var(0);
+        let zero1 = s.lit(0);
+        let g_cond = s.prim(PrimOp::Lt, zero1, x_cond);
+        let g_body = s.if_(g_cond, g_then, g_else);
+        let g = s.abs(g_body); // \x. if 0<x then (\c.x+c) else (\c.x-c)
+
+        let b_ref = s.var(0);
+        let then_branch = s.app(g, b_ref); // g(b) -- Call-shaped leaf
+
+        let c_r = s.var(0);
+        let b_shifted = s.var(1);
+        let two = s.lit(2);
+        let b2 = s.prim(PrimOp::Mul, b_shifted, two);
+        let b2_plus_c = s.prim(PrimOp::Add, b2, c_r);
+        let else_branch = s.abs(b2_plus_c); // \c. b*2+c -- bare Abs leaf, captures b
+
+        let a_ref = s.var(1);
+        let zero2 = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, zero2, a_ref);
+        let root_body = s.if_(cond, then_branch, else_branch);
+        let root_b_binder = s.abs(root_body);
+        let root = s.abs(root_b_binder); // \a b. if 0<a then g(b) else (\c. b*2+c)
+
+        // Hand-verified against the reference interpreter before trusting
+        // the term shape: a=5,b=3,c=7 (0<a, then 0<b: g's own `then`
+        // taken) -> g(3) = \c.3+c, called at 7 -> 10; a=5,b=-3,c=7 (0<a,
+        // then b<=0: g's own `else` taken) -> g(-3) = \c.-3-c, called at
+        // 7 -> -10 (asymmetric from the first case, catching a
+        // g-internal-branch mixup); a=-5,b=3,c=7 (a<=0: root's own
+        // `else`, g never even resolved) -> 3*2+7 = 13.
+        for (a_val, b_val, c_val, expected) in [(5, 3, 7, 10), (5, -3, 7, -10), (-5, 3, 7, 13)] {
+            let a_lit = s.lit(a_val);
+            let b_lit = s.lit(b_val);
+            let c_lit = s.lit(c_val);
+            let root_a = s.app(root, a_lit);
+            let root_ab = s.app(root_a, b_lit);
+            let h_term = s.app(root_ab, c_lit);
+            assert_eq!(
+                eval::apply_term(&s, h_term, &[]).unwrap(),
+                expected,
+                "a={a_val} b={b_val} c={c_val}: interpreter sanity check"
+            );
+
+            let mut combinators = ClosureCombinators::new(&s);
+            combinators.cp.arith.lit(a_val);
+            combinators.cp.arith.lit(b_val);
+            combinators.cp.arith.lit(c_val);
+            let (result, denotation, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[]).unwrap_or_else(|| {
+                panic!("a={a_val} b={b_val} c={c_val}: a Call-shaped leaf targeting a further IfTree should get a concrete instance")
+            });
+            assert_eq!(
+                result, expected,
+                "a={a_val} b={b_val} c={c_val}: should agree with the reference interpreter, not just typecheck"
+            );
+            kernel::check(
+                &combinators.cp.arith.p.ctx,
+                &proof,
+                &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
+            )
+            .unwrap_or_else(|e| panic!("a={a_val} b={b_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
         }
     }
 
@@ -9829,8 +9926,8 @@ mod tests {
         // Clo-typed result used as a *value*), this is genuine
         // over-application: `f`'s own saturated call (`f(a,b)`) is
         // denoted first via `call_ref` (now correctly `Clo`-typed, same
-        // classifier), then dispatched on the extra argument `c` through
-        // `apply_ref`, exactly the way calling a closure-typed variable
+        // classifier), then dispatched on the extra argument `c`
+        // directly, exactly the way calling a closure-typed variable
         // already denotes.
         let mut s = TermStore::new();
         let c1 = s.var(0);
@@ -9878,9 +9975,9 @@ mod tests {
         // g = \x. (\h. h 5) (\y. x + y) -- `\y. x + y` captures `x`, g's
         // own parameter, and is used as a plain *value* (an argument to
         // `\h. h 5`), not directly called -- exercises
-        // ClosureCombinators::register's new mk_clo_ref path and
-        // build_env_expr together with the pre-existing apply_ref
-        // (call-through-a-parameter) path, unmodified.
+        // ClosureCombinators::register's mk_clo_ref path and
+        // build_env_expr together with the pre-existing
+        // call-through-a-parameter path, unmodified.
         let mut s = TermStore::new();
         let y = s.var(0);
         let x = s.var(1);
