@@ -5336,6 +5336,494 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
     })
 }
 
+// ---------------------------------------------------------------------
+// Per-instance closure proof: covers a genuinely inconsistent closure-
+// typed parameter (compile.rs's curried-dispatch capability), which
+// `denote_closure` above can never cover -- it assigns one *static* type
+// to each parameter, valid at *every* occurrence, which is precisely
+// what an inconsistently-called parameter has none of.
+//
+// The fix isn't a bigger `Γ` -- there isn't a bigger one to have without
+// a real dependent sum in the kernel's own type theory (a single honest
+// type for "either `Clo_1` or `Clo_2`"), a separate, larger research
+// question. Instead this follows *one concrete execution trace*: an
+// `If`'s own condition is resolved concretely and only the taken branch
+// is ever denoted (the same discipline `classify_step`/
+// `prove_tail_recursive_call` already use for tail recursion, extended
+// to closures), and a closure-typed variable's own call is resolved
+// against whatever concrete literal lambda is *actually* bound there
+// right now, dispatched at that call site's own concrete argument
+// count -- never a statically-assigned one, since nothing here needs two
+// different call sites for the same variable to agree on anything (a
+// single concrete trace only ever reaches one of them). This makes the
+// resulting proof a certificate for *one instance*, not a theorem
+// covering every input -- the same honesty `prove_tail_recursive_call`
+// already has, stated plainly rather than hidden.
+//
+// The one place this needs more than reading a postulate off a frame is
+// *inlining*: when a literal-lambda-headed call's own declared parameter
+// type disagrees with what a concretely-evaluated argument actually is
+// (the `ArityUse::Inconsistent` case, from that callee's own
+// perspective), `call_ref` cannot even be given a type for that
+// parameter -- there is no opaque axiom to fall back on, so the only
+// honest option is to substitute the concrete argument in and recurse
+// into that callee's own body directly, faithfully modeling what both
+// `compile_node`'s own call convention and the interpreter's own
+// substitution semantics actually do for that one call. No new
+// postulate is introduced anywhere to do this -- every construction
+// below reuses `call_ref`/`op_ref`/`register`/`mk_clo_ref`/`mk_env_ref`
+// unchanged.
+
+/// A closure value's own concrete identity, known at proof-construction
+/// time for one specific instance: which literal lambda it is, and the
+/// frame its own free variables (captures) resolve against. The second
+/// part is the same two-frame discipline `eval_and_prove_call_over`/
+/// `eval_and_prove_direct_call` already established for the `Int`-only
+/// family (a closure's own captures always resolve against wherever it
+/// was *created*, never wherever it's later called) -- without it, a
+/// captured value read once a closure crosses a call boundary (a
+/// parameter substituted in from an enclosing application) would resolve
+/// against the wrong scope entirely.
+struct ConcreteClo {
+    root: Hash,
+    frame: Vec<DynVal>,
+}
+
+/// One frame slot's own concretely-known value, threaded through
+/// `eval_dyn`'s walk -- the per-instance analogue of `denote_closure`'s
+/// `params`/`param_types` pair. Every slot here is `Anchored` rather than
+/// a raw postulate position (contrast `denote_closure`'s `params:
+/// &[usize]`): a substituted value (an inlined callee's own parameter,
+/// or a closure's own captured value read back later) is an arbitrary
+/// compound expression, not a fresh, unsubstituted postulate -- exactly
+/// the case `Anchored` exists for (see its own docs). Every `Int` slot
+/// also carries its own concrete numeral, for concretely following an
+/// `If`'s own condition the same way `classify_step` already does.
+#[derive(Clone)]
+enum DynVal {
+    Int(Anchored, i64),
+    Clo(Anchored, Rc<ConcreteClo>),
+}
+
+/// `denote_closure`'s per-instance counterpart to `Denoted`: a `Clo` here
+/// additionally carries its own `ConcreteClo` -- *which* literal lambda
+/// this concretely is, and the frame to resolve its own captures against
+/// -- since a per-instance proof, unlike the universal one, can actually
+/// answer that question. Holds `Anchored`, not a raw `Expr` (contrast
+/// `Denoted`): `eval_dyn` frequently builds several of these (e.g. one
+/// per argument at a call site) *before* they're all actually consumed,
+/// and a call site's own further construction (`call_ref`, `clo_ty`, ...)
+/// may lazily push more postulates in between -- exactly the staleness
+/// class `Anchored`'s own docs describe, just one level up from a single
+/// built term to this enum's own payload. Anchoring at construction, not
+/// at first use, is what `denote_closure` already does for its own
+/// `Denoted` values at each composite case's own boundary; this does the
+/// same, just carried in the type itself since `eval_dyn`'s own values
+/// routinely outlive more than one such case.
+enum DynDenoted {
+    Int(Anchored),
+    Clo(Anchored, Rc<ConcreteClo>),
+}
+
+/// Projects `frame` down to plain `i64`s, for `eval_concrete`'s own
+/// `params: &[i64]` convention -- used only to resolve an `If`'s own
+/// condition concretely. A `Clo` slot has no meaningful projection (a
+/// well-typed condition never references one); `0` is an arbitrary
+/// placeholder, never legitimately read -- if it somehow were, the
+/// resulting proof attempt would fail `kernel::check` later rather than
+/// silently proving something false, the same "sound, not complete"
+/// tolerance this whole fragment already has for a malformed input.
+fn dyn_frame_concrete_ints(frame: &[DynVal]) -> Vec<i64> {
+    frame.iter().map(|v| match v { DynVal::Int(_, n) => *n, DynVal::Clo(..) => 0 }).collect()
+}
+
+/// Projects `frame` down to a `denote_closure`-style `param_types`
+/// slice, for `capture_sig`/`register`/`call_ref`'s own use -- a `Clo`
+/// slot's own type is its concrete literal's own real arity (`compile
+/// ::peel`), not a statically-assigned one, since a per-instance frame
+/// has no other notion of a closure slot's type to offer.
+fn dyn_frame_param_types(store: &TermStore, frame: &[DynVal]) -> Option<Vec<Option<usize>>> {
+    frame
+        .iter()
+        .map(|v| match v {
+            DynVal::Int(..) => Some(None),
+            DynVal::Clo(_, cc) => compile::peel(store, cc.root).map(|(a, _, _)| Some(a)),
+        })
+        .collect()
+}
+
+/// Collects every literal anywhere in `h`'s own reachable structure,
+/// including inside a nested `Abs`/`Rec`'s own body -- unlike
+/// `collect_literals`/`collect_literals_closure`, which both deliberately
+/// treat a called or bare literal lambda as opaque (the universal proof
+/// never denotes a callee's own body, so it never needs to). `eval_dyn`
+/// might inline *any* literal lambda's own body (see this section's own
+/// docs), so every literal reachable anywhere -- not just at the top
+/// level -- needs to be pre-postulated (`ArithPostulates::lit`'s own
+/// documented precondition: every literal a term uses must be postulated
+/// before any `Var`-referencing postulate is pushed). Over-collecting
+/// (from a body that turns out never to need inlining) is harmless --
+/// `lit` is memoized -- so this doesn't try to predict which bodies
+/// `eval_dyn` will actually descend into, just walks everything once.
+fn collect_literals_dyn(store: &TermStore, h: Hash, out: &mut Vec<i64>) {
+    match store.resolve(h) {
+        Term::Var(_) => {}
+        Term::Lit(n) => {
+            if !out.contains(n) {
+                out.push(*n);
+            }
+        }
+        Term::Prim(_, a, b) => {
+            let (a, b) = (*a, *b);
+            collect_literals_dyn(store, a, out);
+            collect_literals_dyn(store, b, out);
+        }
+        Term::If(c, t, e) => {
+            let (c, t, e) = (*c, *t, *e);
+            collect_literals_dyn(store, c, out);
+            collect_literals_dyn(store, t, out);
+            collect_literals_dyn(store, e, out);
+        }
+        Term::App(f, a) => {
+            let (f, a) = (*f, *a);
+            collect_literals_dyn(store, f, out);
+            collect_literals_dyn(store, a, out);
+        }
+        Term::Abs(body) => collect_literals_dyn(store, *body, out),
+        Term::Rec(inner) => collect_literals_dyn(store, *inner, out),
+    }
+}
+
+/// Builds `mk_env(v_1,...,v_n)` for a combinator whose relative capture
+/// indices are `captures`, reading each captured value's current value
+/// directly out of `frame` -- the per-instance analogue of
+/// `build_env_expr`, differing only in resolving each slot via `frame`'s
+/// own `Anchored` value rather than a raw postulate position (see
+/// `DynVal`'s own docs for why a substituted slot needs this).
+fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, captures: &[u32], frame: &[DynVal]) -> Option<Expr> {
+    let frame_types = dyn_frame_param_types(store, frame)?;
+    let sig = capture_sig(captures, &frame_types)?;
+    let mut values = Vec::with_capacity(captures.len());
+    for &rel in captures {
+        let e = match frame.get(rel as usize)? {
+            DynVal::Int(a, _) => a.at(&combinators.cp.arith),
+            DynVal::Clo(a, _) => a.at(&combinators.cp.arith),
+        };
+        values.push(Anchored::new(&combinators.cp.arith, e));
+    }
+    let mk_env_expr = combinators.cp.mk_env_ref(&sig);
+    let mk_env = Anchored::new(&combinators.cp.arith, mk_env_expr);
+    let mk_env = mk_env.at(&combinators.cp.arith);
+    let values: Vec<Expr> = values.iter().map(|v| v.at(&combinators.cp.arith)).collect();
+    Some(apply_n(mk_env, values))
+}
+
+/// Resolves a call to `root` (a literal lambda, or a named self-recursive
+/// combinator) applied to `args` -- shared by both ways `eval_dyn`'s own
+/// `App` handling reaches a literal callee: directly (`root_frame` is
+/// whatever frame `root` was itself just found in, generally the same as
+/// `calling_frame`) or through a closure-typed variable's own
+/// `ConcreteClo` (`root_frame` is that closure's *own* creation frame,
+/// genuinely different from `calling_frame` -- this function never
+/// assumes they're the same). `args` are always evaluated against
+/// `calling_frame` (wherever this call itself is being walked);
+/// `root`'s own free variables (captures), if any, always resolve
+/// against `root_frame` (wherever `root` itself was written) -- the same
+/// two-frame discipline `ConcreteClo`'s own docs describe.
+///
+/// Scoped deliberately narrowly: only an exactly-saturated call (no
+/// partial or over-application of `root` itself); when inlining is
+/// needed (see below), only a non-recursive, non-capturing `root`, and
+/// only an `Int`-returning ordinary (non-inlined) call -- a callee whose
+/// own saturated call returns a further `Clo` without needing inlining
+/// would need to be recursed into to identify *which* concrete closure
+/// that is, which this first slice doesn't attempt (see this section's
+/// own module docs).
+///
+/// One more constraint worth being explicit about, found while verifying
+/// this by deliberately feeding `call_ref` the wrong frame here and
+/// confirming a test caught it (only one of two attempts actually did):
+/// `call_ref`/`register`'s own memoization is keyed by `root`'s `Hash`
+/// *alone*, never by which frame its captures resolve against -- sound
+/// in `denote_closure`'s own world, where a single `param_types` is
+/// fixed for one whole proof attempt, so every call site for the same
+/// `root` necessarily agrees on it anyway. `eval_dyn`'s own frame
+/// genuinely changes across a recursion (inlining swaps in a child
+/// frame), so this function relies on every one of its own callers never
+/// calling the *same* `root` from two genuinely different creation
+/// frames within one proof attempt -- true of every shape the four
+/// target tests exercise (each literal is denoted and called from
+/// exactly one frame each), but not something this function -- or
+/// `kernel::check` itself, which can't see past a self-consistently
+/// wrong frame to know it disagrees with a different call site's own
+/// correct one -- can catch on its own if a future generalization ever
+/// violated it.
+fn eval_dyn_direct_call(
+    store: &TermStore,
+    combinators: &mut ClosureCombinators,
+    root: Hash,
+    root_frame: &[DynVal],
+    args: &[Hash],
+    calling_frame: &[DynVal],
+) -> Option<DynDenoted> {
+    let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
+    if args.len() != root_arity {
+        return None;
+    }
+    let root_param_types = param_types_for(store, root)?;
+
+    let mut arg_vals = Vec::with_capacity(args.len());
+    for &a in args {
+        arg_vals.push(eval_dyn(store, a, combinators, calling_frame)?);
+    }
+    let needs_inline = arg_vals
+        .iter()
+        .enumerate()
+        .any(|(j, v)| root_param_types[root_arity - 1 - j].is_none() && matches!(v, DynDenoted::Clo(..)));
+
+    if needs_inline {
+        if root_is_rec || !compile::free_vars(store, root_body, root_arity, root_is_rec).is_empty() {
+            return None; // scoped out -- see this function's own docs
+        }
+        let mut child: Vec<Option<DynVal>> = vec![None; root_arity];
+        for (j, (v, &a)) in arg_vals.into_iter().zip(args.iter()).enumerate() {
+            let pos = root_arity - 1 - j;
+            child[pos] = Some(match v {
+                // `e` is already `Anchored` (built no later than this
+                // call's own `arg_vals` loop above) -- safe to carry
+                // into the child frame unchanged; `DynVal`'s own `.at()`
+                // will reshift it correctly whenever it's eventually
+                // resolved, however much more gets pushed in between.
+                DynDenoted::Int(e) => {
+                    let concrete = dyn_frame_concrete_ints(calling_frame);
+                    let n = eval_concrete(store, a, &concrete)?;
+                    DynVal::Int(e, n)
+                }
+                DynDenoted::Clo(e, cc) => DynVal::Clo(e, cc),
+            });
+        }
+        let child: Vec<DynVal> = child.into_iter().collect::<Option<Vec<_>>>()?;
+        return eval_dyn(store, root_body, combinators, &child);
+    }
+
+    // Ordinary opaque call: mirrors `denote_closure`'s own
+    // `LitLambdaExact` construction exactly, just resolving `root`'s own
+    // captures against `root_frame` instead of a raw `params: &[usize]`.
+    // Every sub-piece (`call_fn`, `env_expr`, each `arg_exprs` entry) is
+    // already `Anchored` (either just-built here, or carried in from
+    // `arg_vals` above) -- nothing is resolved via `.at()` until every
+    // last lazy push (`call_ref`, `build_env_expr_dyn`, `clo_ty` below)
+    // is done, the same discipline `denote_closure`'s own composite
+    // cases already follow.
+    let captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
+    let root_frame_types = dyn_frame_param_types(store, root_frame)?;
+    let call_fn = combinators.call_ref(root, &captures, &root_frame_types)?;
+    let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
+    let env_expr = if captures.is_empty() {
+        None
+    } else {
+        let e = build_env_expr_dyn(store, combinators, &captures, root_frame)?;
+        Some(Anchored::new(&combinators.cp.arith, e))
+    };
+    let mut arg_exprs = Vec::with_capacity(root_arity);
+    for (j, v) in arg_vals.into_iter().enumerate() {
+        let pos = root_arity - 1 - j;
+        let e = match (root_param_types[pos], v) {
+            (Some(_), DynDenoted::Clo(e, _)) => e,
+            (None, DynDenoted::Int(e)) => e,
+            _ => return None, // unreachable: needs_inline was false above
+        };
+        arg_exprs.push(e);
+    }
+    let call_fn = call_fn.at(&combinators.cp.arith);
+    let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
+    if let Some(env_expr) = &env_expr {
+        all_args.push(env_expr.at(&combinators.cp.arith));
+    }
+    all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+    let applied = apply_n(call_fn, all_args);
+    let applied = Anchored::new(&combinators.cp.arith, applied);
+    let return_ty = combinator_return_type(store, root).unwrap_or(None);
+    let sat_ty = match return_ty {
+        Some(k) => combinators.cp.clo_ty(k),
+        None => combinators.cp.arith.int_ty(),
+    };
+    let applied_resolved = applied.at(&combinators.cp.arith);
+    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied_resolved, &sat_ty, "eval_dyn: direct combinator call");
+    if return_ty.is_some() {
+        // `root`'s own saturated call denotes a further `Clo`, but
+        // *which* concrete literal that is can only be known by
+        // recursing into `root`'s own body -- exactly what "opaque"
+        // means here. Deliberately out of scope for this first slice
+        // (see this function's own docs) rather than fabricating a
+        // `ConcreteClo` this function doesn't actually know.
+        return None;
+    }
+    Some(DynDenoted::Int(applied))
+}
+
+/// Per-instance, closure-capable sibling of `denote_closure` -- see this
+/// section's own module docs for the methodology and why it's needed.
+/// `frame`'s own length must match whatever scope `h` is being evaluated
+/// in (`Var(i)` resolves to `frame[i]`, the same convention
+/// `denote_closure`'s `params`/`param_types` share).
+fn eval_dyn(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, frame: &[DynVal]) -> Option<DynDenoted> {
+    if let Term::If(c, t, e) = store.resolve(h) {
+        let (c, t, e) = (*c, *t, *e);
+        let concrete = dyn_frame_concrete_ints(frame);
+        let cv = eval_concrete(store, c, &concrete)?;
+        return eval_dyn(store, if cv != 0 { t } else { e }, combinators, frame);
+    }
+
+    if matches!(store.resolve(h), Term::App(..)) {
+        let (root, args) = compile::unwind_app_spine(store, h);
+        return match store.resolve(root) {
+            Term::Var(i) => {
+                let DynVal::Clo(_, cc) = frame.get(*i as usize)?.clone() else { return None };
+                let cc_root = cc.root;
+                let cc_frame = cc.frame.clone();
+                eval_dyn_direct_call(store, combinators, cc_root, &cc_frame, &args, frame)
+            }
+            Term::Abs(_) | Term::Rec(_) => eval_dyn_direct_call(store, combinators, root, frame, &args, frame),
+            _ => None,
+        };
+    }
+
+    match store.resolve(h) {
+        // `e` is already `Anchored` (from `DynVal`) -- pass it through
+        // unchanged rather than resolving now, so it stays safe to hold
+        // across whatever this read's own caller does before actually
+        // consuming it.
+        Term::Var(i) => match frame.get(*i as usize)?.clone() {
+            DynVal::Int(e, _) => Some(DynDenoted::Int(e)),
+            DynVal::Clo(e, cc) => Some(DynDenoted::Clo(e, cc)),
+        },
+        Term::Lit(n) => Some(DynDenoted::Int(Anchored::new(&combinators.cp.arith, combinators.cp.arith.lit_ref(*n)))),
+        Term::Prim(op, a, b) => {
+            let (op, a, b) = (*op, *a, *b);
+            let DynDenoted::Int(da) = eval_dyn(store, a, combinators, frame)? else { return None };
+            let DynDenoted::Int(db) = eval_dyn(store, b, combinators, frame)? else { return None };
+            let op_ref = combinators.cp.arith.op_ref(op); // pre-postulated once -- never pushes
+            let da = da.at(&combinators.cp.arith);
+            let db = db.at(&combinators.cp.arith);
+            let applied = kernel::app2(op_ref, da, db);
+            let int_ty = combinators.cp.arith.int_ty();
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "eval_dyn: Prim");
+            Some(DynDenoted::Int(Anchored::new(&combinators.cp.arith, applied)))
+        }
+        Term::Abs(_) | Term::Rec(_) => {
+            let (arity, body, is_rec) = compile::peel(store, h)?;
+            if arity == 0 || is_rec {
+                // A bare self-recursive value isn't needed by this
+                // first slice's own target shapes -- decline cleanly
+                // rather than build a `ConcreteClo` nothing here ever
+                // dispatches through (a self-recursive callee is never
+                // reached via `eval_dyn_direct_call`'s own opaque path,
+                // which is the only consumer of a `ConcreteClo` at all).
+                return None;
+            }
+            let captures = compile::free_vars(store, body, arity, is_rec);
+            let frame_types = dyn_frame_param_types(store, frame)?;
+            let sym = combinators.register(h, &captures, &frame_types)?;
+            let cc = Rc::new(ConcreteClo { root: h, frame: frame.to_vec() });
+            if captures.is_empty() {
+                return Some(DynDenoted::Clo(Anchored::new(&combinators.cp.arith, sym), cc));
+            }
+            // `register` (just above) already primes `clo_ty(arity)` as
+            // part of building `mk_clo_ref`'s own type, so the explicit
+            // `clo_ty(arity)` call below is a cache hit, never a fresh
+            // push -- safe to resolve `sym`/`env_expr` fresh immediately
+            // before it, the same ordering `denote_closure`'s identical
+            // case already relies on.
+            let sym = Anchored::new(&combinators.cp.arith, sym);
+            let env = build_env_expr_dyn(store, combinators, &captures, frame)?;
+            let env_expr = Anchored::new(&combinators.cp.arith, env);
+            let sym = sym.at(&combinators.cp.arith);
+            let env_expr = env_expr.at(&combinators.cp.arith);
+            let applied = kernel::app(sym, env_expr);
+            let clo_ty = combinators.cp.clo_ty(arity);
+            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "eval_dyn: capturing closure value");
+            let applied = Anchored::new(&combinators.cp.arith, applied);
+            Some(DynDenoted::Clo(applied, cc))
+        }
+        Term::If(..) | Term::App(..) => unreachable!("handled above"),
+    }
+}
+
+/// Attempts a kernel-checked equivalence proof for *one specific call*
+/// `h(args)` -- the per-instance sibling of `prove_closure_expr`, for
+/// exactly the case that one can never cover: a closure-typed parameter
+/// called with genuinely inconsistent arities across call sites (see
+/// this section's own module docs for the methodology, and
+/// `TYPES.md`/`RELATED_WORK.md` for why `denote_closure`'s own universal
+/// approach is a dead end here without a real dependent sum in the
+/// kernel).
+///
+/// Returns `None` for: `h` itself `Rec`-wrapped (recursion combined with
+/// this capability needs the curried stage-chain's own further semantics
+/// modeled, deliberately out of scope here); an arity mismatch; any
+/// top-level parameter that isn't plain `Int` (this project's own
+/// sampling battery, `jit.rs`'s `sample_arg_vectors`/`eval::apply_term`,
+/// is `i64`-only, so a genuinely `Clo`-typed top-level parameter was
+/// never something this regime could exercise anyway -- a real but
+/// harmless scope line, not a workaround); or anything `eval_dyn` itself
+/// declines (see its own and `eval_dyn_direct_call`'s docs for exactly
+/// what that is).
+pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
+    let (arity, body, is_rec) = compile::peel(store, h)?;
+    if is_rec || arity != args.len() {
+        return None;
+    }
+    let top_param_types = param_types_for(store, h)?;
+    if top_param_types.iter().any(Option::is_some) {
+        return None;
+    }
+
+    let mut lits = Vec::new();
+    collect_literals_dyn(store, body, &mut lits);
+
+    let mut combinators = ClosureCombinators::new(store);
+    for n in lits {
+        combinators.cp.arith.lit(n);
+    }
+
+    // By-`Var`-index concrete params (`Var(0)` = last-applied), matching
+    // `denote_closure`'s/`prove_tail_recursive_call`'s own convention.
+    let mut frame = Vec::with_capacity(arity);
+    for i in 0..arity {
+        let n = args[arity - 1 - i];
+        let int_ty = combinators.cp.arith.int_ty();
+        let pos = combinators.cp.arith.p.push(int_ty);
+        let e = combinators.cp.arith.p.get(pos);
+        frame.push(DynVal::Int(Anchored::new(&combinators.cp.arith, e), n));
+    }
+
+    let denoted = eval_dyn(store, body, &mut combinators, &frame)?;
+    // `result_ty` first (its own `clo_ty(k)` may push, for an arity not
+    // otherwise seen while building `denoted`), `denotation` resolved
+    // fresh only afterward -- the same ordering `prove_closure_expr`'s
+    // own identical step already relies on.
+    let (result_ty, denotation) = match denoted {
+        DynDenoted::Int(e) => (combinators.cp.arith.int_ty(), e.at(&combinators.cp.arith)),
+        DynDenoted::Clo(e, cc) => {
+            let (k, _, _) = compile::peel(store, cc.root)?;
+            let ty = combinators.cp.clo_ty(k);
+            (ty, e.at(&combinators.cp.arith))
+        }
+    };
+    let proof = kernel::refl(denotation.clone());
+    let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
+    kernel::check(&combinators.cp.arith.p.ctx, &proof, &proof_ty).ok()?;
+
+    Some(EquivalenceProof {
+        ctx: combinators.cp.arith.p.ctx,
+        arity,
+        result_ty,
+        denotation,
+        proof,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7432,5 +7920,165 @@ mod tests {
             .is_err(),
             "(twice inc) 5's proof should be rejected against twice-alone's type"
         );
+    }
+
+    /// Independently re-typechecks `proof` from scratch (not just
+    /// trusting the `.ok()?` inside `prove_closure_expr_instance`) --
+    /// the same discipline `tail_recursive_call_gets_a_relational_proof`
+    /// already applies to `prove_tail_recursive_call`'s own per-instance
+    /// proofs, which this function's own methodology mirrors.
+    fn check_instance_proof(proof: &EquivalenceProof) {
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+            .expect("the recorded per-instance proof should independently re-typecheck");
+    }
+
+    #[test]
+    fn prove_closure_expr_declines_where_the_instance_proof_picks_up() {
+        // Same shape as compile.rs's
+        // `an_inconsistently_called_parameter_matching_its_own_saturating_arity_agrees_with_the_interpreter`
+        // -- documents exactly why the new strategy is needed: the
+        // universal, structural proof still declines this shape (`f`'s
+        // own inconsistent arity has no honest static type), even though
+        // it's now perfectly provable per-instance.
+        let mut s = TermStore::new();
+        let a = s.var(1);
+        let b = s.var(0);
+        let add = s.prim(PrimOp::Add, a, b);
+        let inner = s.abs(add);
+        let f_lit = s.abs(inner);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let zero = s.lit(0);
+        let one_c = s.lit(1);
+        let cond = s.prim(PrimOp::Lt, zero, one_c);
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let top = s.app(f_abs, f_lit);
+
+        assert!(prove_closure_expr(&s, top).is_none());
+        let proof = prove_closure_expr_instance(&s, top, &[]).expect("should be provable per-instance");
+        assert_eq!(proof.arity, 0);
+        check_instance_proof(&proof);
+    }
+
+    #[test]
+    fn an_under_applying_instance_gets_a_per_instance_proof_too() {
+        // compile.rs's
+        // `an_inconsistently_called_parameter_matching_its_own_under_applying_arity_agrees_with_the_interpreter`.
+        let mut s = TermStore::new();
+        let a = s.var(0);
+        let hundred = s.lit(100);
+        let a_plus_100 = s.prim(PrimOp::Add, a, hundred);
+        let f_lit = s.abs(a_plus_100);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let one_c = s.lit(1);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, one_c, zero); // always false
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let top = s.app(f_abs, f_lit);
+
+        assert!(prove_closure_expr(&s, top).is_none());
+        let proof = prove_closure_expr_instance(&s, top, &[]).expect("should be provable per-instance");
+        check_instance_proof(&proof);
+    }
+
+    #[test]
+    fn a_captured_value_reached_through_an_inlined_call_gets_a_per_instance_proof() {
+        // compile.rs's
+        // `a_capturing_closure_reached_through_an_inconsistently_called_parameter_agrees_with_the_interpreter`
+        // -- exercises the two-frame fix directly: `f_lit`'s own capture
+        // of `k` must resolve against `top`'s own (outer) frame, not
+        // whatever frame is active once `f_abs`'s body is inlined.
+        let mut s = TermStore::new();
+        let k = s.var(2);
+        let a = s.var(1);
+        let b = s.var(0);
+        let k_plus_a = s.prim(PrimOp::Add, k, a);
+        let sum = s.prim(PrimOp::Add, k_plus_a, b);
+        let inner = s.abs(sum);
+        let f_lit = s.abs(inner);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let zero = s.lit(0);
+        let one_c = s.lit(1);
+        let cond = s.prim(PrimOp::Lt, zero, one_c);
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let app = s.app(f_abs, f_lit);
+        let top = s.abs(app);
+
+        assert!(prove_closure_expr(&s, top).is_none());
+        for k_val in [100i64, -7] {
+            let proof = prove_closure_expr_instance(&s, top, &[k_val]).unwrap_or_else(|| panic!("k={k_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+        }
+    }
+
+    #[test]
+    fn a_runtime_chosen_literal_gets_a_per_instance_proof() {
+        // compile.rs's
+        // `a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_once_dispatched_generically`
+        // -- the sharpest case: `f`'s own concrete identity isn't known
+        // until `eval_dyn` concretely resolves the `If` choosing between
+        // `add_lit`/`sub_lit`, *before* `f_abs`'s own body is even
+        // reached.
+        let mut s = TermStore::new();
+        let a1 = s.var(1);
+        let b1 = s.var(0);
+        let add_body = s.prim(PrimOp::Add, a1, b1);
+        let add_inner = s.abs(add_body);
+        let add_lit = s.abs(add_inner);
+
+        let a2 = s.var(1);
+        let b2 = s.var(0);
+        let sub_body = s.prim(PrimOp::Sub, a2, b2);
+        let sub_inner = s.abs(sub_body);
+        let sub_lit = s.abs(sub_inner);
+
+        let pick = s.var(0);
+        let zero_p = s.lit(0);
+        let pick_cond = s.prim(PrimOp::Lt, zero_p, pick);
+        let f_value = s.if_(pick_cond, add_lit, sub_lit);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let zero_c = s.lit(0);
+        let one_c = s.lit(1);
+        let cond = s.prim(PrimOp::Lt, zero_c, one_c);
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let app = s.app(f_abs, f_value);
+        let top = s.abs(app);
+
+        assert!(prove_closure_expr(&s, top).is_none());
+        for pick_val in [1i64, -1] {
+            let proof = prove_closure_expr_instance(&s, top, &[pick_val]).unwrap_or_else(|| panic!("pick={pick_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+        }
     }
 }

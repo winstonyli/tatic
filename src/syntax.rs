@@ -694,13 +694,25 @@ mod tests {
         // capturing closure; the capture is an artifact of two lets
         // nesting this way once desugared. compile.rs's closure
         // conversion (see its module docs) handles this correctly -- it
-        // compiles and runs, not just falls back to the interpreter --
-        // but it still doesn't get a *kernel-checked* proof: `proof.rs`
-        // only covers straight-line (`Var`/`Lit`/`Prim`/`If`) terms and
-        // tail recursion, no `Abs`/`App` at all, so any higher-order term
-        // (this one included -- see `higher_order_demo` in main.rs, which
-        // has the same gap for the same reason) is out of its fragment
-        // regardless of whether compile.rs itself can compile it.
+        // compiles and runs, not just falls back to the interpreter.
+        //
+        // A second, later finding, once `proof::prove_closure_expr_instance`
+        // existed: this term's outer `inc` parameter is never actually
+        // *called* anywhere in its own body (`inc` is only ever passed
+        // along, as a plain value, to `twice`) -- so `param_types_for`
+        // classifies it `None` (Int) for exactly the same reason it
+        // classifies a genuinely inconsistent parameter that way (see
+        // `compile::ArityUse`'s own docs): "never assigned a single
+        // static arity", whether that's because it's never called at all
+        // or because it's called at two disagreeing ones. `denote_closure`'s
+        // own *universal* proof still declines this (the same `Int`
+        // classification makes its own per-argument type check fail once
+        // it sees `inc` is actually a `Clo`), but the per-instance
+        // strategy's inlining doesn't care *why* a parameter was
+        // classified `None` -- only that the concretely-supplied argument
+        // disagrees with it -- so it picks this shape up too, entirely as
+        // a side effect of the same mechanism built for the inconsistent-
+        // arity case, not a separate one.
         let mut s = TermStore::new();
         let parsed = parse(&mut s, "let inc = \\y. y + 1 in let twice = \\f. \\x. f (f x) in twice inc 5").unwrap();
         assert_eq!(eval::apply_term(&s, parsed, &[]).unwrap(), 7);
@@ -708,7 +720,10 @@ mod tests {
         use crate::jit::JitEngine;
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, parsed, &[]).unwrap(), 7);
-        assert!(!jit.is_kernel_verified(parsed), "higher-order terms are outside proof.rs's own fragment, independent of compile.rs");
+        assert!(
+            jit.is_kernel_verified(parsed),
+            "prove_closure_expr_instance's own inlining covers this now, as a side effect of the inconsistent-arity mechanism -- see this test's own updated comment"
+        );
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
     }

@@ -88,9 +88,14 @@ application, record the argument count `k` at that call site. Two rules:
   `Inconsistent` entry is found anywhere in a compiled fragment, that
   fragment gets a separate, additive, compile-time-only widening (a
   curried dispatch mechanism, `emit_curried_stages`/`emit_dynamic_apply`)
-  that lets it compile anyway — a purely operational fallback with no
-  kernel-checked proof counterpart, not a change to `Γ` or to what this
-  document's own typing judgment can derive.
+  that lets it compile anyway. This started as a purely operational
+  fallback with no kernel-checked proof counterpart; `proof::
+  prove_closure_expr_instance`/`eval_dyn` (§6.3) now cover a real slice
+  of it too, but *not* by extending `Γ` or this section's own typing
+  judgment — they're a genuinely different, per-*instance* judgment
+  (substituting a concretely-known argument in, rather than assigning
+  `Γ(i)` a type valid at every occurrence), built specifically because
+  there is no way to widen `Γ` itself to cover this case honestly.
 - **Default.** `Γ(i) = None` (`Int`) for any `i` never used as a callee —
   including `i` never mentioned at all, and `i` read only as a plain
   value. There is no dedicated "closure value, never called" type; an
@@ -375,14 +380,23 @@ quietly unifying; that's the entire soundness gain, no more, no less.
 
 - **A variable applied with inconsistent arities**: no rule in section
   3.1 can assign one `Γ(i)` correct at two different arities; this type
-  system has no arity polymorphism, and that's still true. This *used*
-  to also be `compile.rs`'s own last open restriction, but no longer is
-  — see section 3.1's own note: `compile.rs` now compiles this shape
-  anyway, via a curried dispatch mechanism that sits entirely outside
-  this type system (no `Γ`, no kernel-checked proof, just an operational
-  fallback `jit.rs`'s sample verification alone has to vouch for). The
-  gap this bullet describes is specifically a gap in what can be
-  *kernel-proved*, not (any longer) in what can be *compiled*.
+  system has no arity polymorphism, and that's still true — the gap this
+  bullet describes is specifically a gap in what can be proved
+  *universally*, i.e. by one theorem covering every input, not (any
+  longer) in what can be *compiled* (see section 3.1's own note) or even
+  *kernel-proved at all*: `proof::prove_closure_expr_instance`/`eval_dyn`
+  cover a real slice of this shape now, per instance rather than
+  universally -- an entirely separate judgment from `Γ ⊢ e : τ`
+  (substituting a concretely-known argument's value in and following one
+  concrete execution trace, mirroring `classify_step`'s own discipline
+  for tail recursion, extended to closures), specifically because there
+  is no honest way to widen `Γ` itself to cover it. `jit.rs`'s own
+  `kernel_verify` tries it as a fallback once the universal
+  `prove_closure_expr` above declines. Still out of *that* per-instance
+  mechanism's own scope: a recursive (`Rec`-wrapped) use of this
+  capability, and a callee whose own saturated call itself returns a
+  further, not-statically-known `Clo` (see `eval_dyn_direct_call`'s own
+  docs in `proof.rs` for exactly why each is deferred).
 - **A capture of a capture**: not a missing rule at all (section 3.1,
   section 5) — the shape can't arise given how `Γ` is scoped and how
   `peel` folds consecutive `Abs`.

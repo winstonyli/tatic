@@ -187,7 +187,18 @@ impl JitEngine {
     ///    arithmetic -- see its own docs for what's in and out of scope
     ///    (an `If` between two closures, self-recursion combined with
     ///    closures, ...).
-    /// 3. `prove_tail_recursive_universal` -- a tail-recursive term whose
+    /// 3. `prove_closure_expr_instance`, once per sample, reporting
+    ///    success only if *every* sample gets its own per-instance
+    ///    proof -- the fallback for exactly the shape `prove_closure_expr`
+    ///    can never cover at all: a closure-typed parameter called with
+    ///    genuinely inconsistent arities across call sites (`compile.rs`'s
+    ///    curried-dispatch capability). Unlike step 2, this is *not* one
+    ///    theorem covering every input -- see `proof.rs`'s own module
+    ///    docs for why a universal proof is a dead end here without a
+    ///    real dependent sum in the kernel's own type theory, and why a
+    ///    per-instance certificate (the same honesty tail recursion's own
+    ///    step 5 already has) is the right and only thing being claimed.
+    /// 4. `prove_tail_recursive_universal` -- a tail-recursive term whose
     ///    shape it covers gets one universal theorem, also covering every
     ///    input, via real induction rather than per-sample checking. Once
     ///    this succeeds, also tries instantiating that theorem at a few
@@ -200,7 +211,7 @@ impl JitEngine {
     ///    `kernel_verified` is already `true` from the theorem alone, so a
     ///    shape it declines instances for (branching recursion -- see
     ///    `proof.rs`) is unaffected.
-    /// 4. `prove_tail_recursive_call`, once per sample in the same battery
+    /// 5. `prove_tail_recursive_call`, once per sample in the same battery
     ///    `verify()` uses, reporting success only if *every* sample got its
     ///    own per-call relational proof -- the fallback for tail-recursive
     ///    shapes the universal proof doesn't (yet) cover.
@@ -213,6 +224,14 @@ impl JitEngine {
             return true;
         }
         if proof::prove_closure_expr(terms, h).is_some() {
+            return true;
+        }
+        let closure_instance_samples = sample_arg_vectors(arity);
+        if !closure_instance_samples.is_empty()
+            && closure_instance_samples
+                .iter()
+                .all(|sample| proof::prove_closure_expr_instance(terms, h, sample).is_some())
+        {
             return true;
         }
         let instance_samples: Vec<Vec<i64>> = sample_arg_vectors(arity).into_iter().take(3).collect();
@@ -998,6 +1017,150 @@ mod tests {
         assert_eq!(jit.apply(&s, top, &[10, 3, 100]).unwrap(), 113);
         assert_eq!(jit.apply(&s, top, &[-5, 3, 100]).unwrap(), 92);
         assert_eq!(jit.stats.compiled, 1);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(top));
+    }
+
+    // The four shapes below mirror compile.rs's own canonical capability
+    // tests exactly (same term construction) -- this is where the actual
+    // stated goal of `proof::prove_closure_expr_instance` gets checked
+    // end to end: before it existed, `kernel_verify` had no strategy at
+    // all for a closure-typed parameter called with genuinely
+    // inconsistent arities, so `is_kernel_verified` was unconditionally
+    // `false` for every one of these; it's `true` now.
+
+    #[test]
+    fn an_inconsistently_called_parameters_saturating_instance_is_kernel_verified() {
+        // (\f. if 0<1 then f(1,2) else f(1)) (\a b. a+b)
+        let mut s = TermStore::new();
+        let a = s.var(1);
+        let b = s.var(0);
+        let add = s.prim(PrimOp::Add, a, b);
+        let inner = s.abs(add);
+        let f_lit = s.abs(inner);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let zero = s.lit(0);
+        let one_c = s.lit(1);
+        let cond = s.prim(PrimOp::Lt, zero, one_c);
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let top = s.app(f_abs, f_lit);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[]).unwrap(), 3);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(top));
+    }
+
+    #[test]
+    fn an_inconsistently_called_parameters_under_applying_instance_is_kernel_verified() {
+        // (\f. if 1<0 then f(1,2) else f(1)) (\a. a+100)
+        let mut s = TermStore::new();
+        let a = s.var(0);
+        let hundred = s.lit(100);
+        let a_plus_100 = s.prim(PrimOp::Add, a, hundred);
+        let f_lit = s.abs(a_plus_100);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let one_c = s.lit(1);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Lt, one_c, zero);
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let top = s.app(f_abs, f_lit);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[]).unwrap(), 101);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(top));
+    }
+
+    #[test]
+    fn a_captured_value_through_an_inconsistently_called_parameter_is_kernel_verified() {
+        // \k. (\f. if 0<1 then f(1,2) else f(1)) (\a b. k+a+b)
+        let mut s = TermStore::new();
+        let k = s.var(2);
+        let a = s.var(1);
+        let b = s.var(0);
+        let k_plus_a = s.prim(PrimOp::Add, k, a);
+        let sum = s.prim(PrimOp::Add, k_plus_a, b);
+        let inner = s.abs(sum);
+        let f_lit = s.abs(inner);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let zero = s.lit(0);
+        let one_c = s.lit(1);
+        let cond = s.prim(PrimOp::Lt, zero, one_c);
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let app = s.app(f_abs, f_lit);
+        let top = s.abs(app);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[100]).unwrap(), 103);
+        assert_eq!(jit.apply(&s, top, &[-7]).unwrap(), -4);
+        assert_eq!(jit.stats.interpreted, 0);
+        assert!(jit.is_kernel_verified(top));
+    }
+
+    #[test]
+    fn a_runtime_chosen_literals_own_instance_is_kernel_verified() {
+        // \pick. (\f. if 0<1 then f(1,2) else f(1)) (if 0<pick then add else sub)
+        let mut s = TermStore::new();
+        let a1 = s.var(1);
+        let b1 = s.var(0);
+        let add_body = s.prim(PrimOp::Add, a1, b1);
+        let add_inner = s.abs(add_body);
+        let add_lit = s.abs(add_inner);
+
+        let a2 = s.var(1);
+        let b2 = s.var(0);
+        let sub_body = s.prim(PrimOp::Sub, a2, b2);
+        let sub_inner = s.abs(sub_body);
+        let sub_lit = s.abs(sub_inner);
+
+        let pick = s.var(0);
+        let zero_p = s.lit(0);
+        let pick_cond = s.prim(PrimOp::Lt, zero_p, pick);
+        let f_value = s.if_(pick_cond, add_lit, sub_lit);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let zero_c = s.lit(0);
+        let one_c = s.lit(1);
+        let cond = s.prim(PrimOp::Lt, zero_c, one_c);
+        let inner_body = s.if_(cond, call_2, call_1);
+        let f_abs = s.abs(inner_body);
+        let app = s.app(f_abs, f_value);
+        let top = s.abs(app);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &[1]).unwrap(), 3);
+        assert_eq!(jit.apply(&s, top, &[-1]).unwrap(), -1);
         assert_eq!(jit.stats.interpreted, 0);
         assert!(jit.is_kernel_verified(top));
     }

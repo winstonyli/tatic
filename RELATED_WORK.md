@@ -234,11 +234,52 @@ per Wasm's own stack-nesting guarantee) and only touches
 `$envtmp`/`$papenv` in tight windows strictly before or after it, giving
 linear-time dispatch with no new locals at all (`emit_dynamic_apply`,
 `src/compile.rs`).
-This new capability is **compile-time-only, with no kernel-checked proof
-counterpart** — see `TYPES.md` §3.1/§6.3 for exactly why: `Γ`'s own
-"one arity per variable" limitation is unchanged, and `denote_closure`'s
-purely structural classification has no way to reason about a value
-whose identity is only known by executing, not by term shape.
+This new capability shipped compile-time-only at first, with no
+kernel-checked proof counterpart — `Γ`'s own "one arity per variable"
+limitation is unchanged, and `denote_closure`'s purely structural
+classification has no way to reason about a value whose identity is
+only known by executing, not by term shape (see `TYPES.md` §3.1/§6.3).
+
+**Since covered, per instance.** `proof::prove_closure_expr_instance`
+(`src/proof.rs`) closes a real slice of that gap without touching `Γ` at
+all: a new evaluator, `eval_dyn`, follows one concrete execution trace
+through a term (resolving an `If`'s own condition concretely and
+recursing into only the taken branch, the same discipline
+`prove_tail_recursive_call`'s own `classify_step` already established
+for tail recursion, transplanted to closures) and, when a literal-headed
+call's own declared parameter type is dishonest for a concretely-`Clo`
+argument (exactly the `Inconsistent` case), *inlines* that callee's own
+body with the concrete argument substituted in, rather than trying to
+type it opaquely. This needed one new piece of machinery beyond the
+transplant: a closure value's own `ConcreteClo` carries not just which
+literal lambda it concretely is but a *snapshot of the frame active when
+it was created*, so its own captures resolve against the right scope
+once it's read back after crossing a call boundary — the same two-frame
+discipline `eval_and_prove_call_over`/`eval_and_prove_direct_call`
+already established for the `Int`-only family (root's own captures
+resolve against root's *own* frame, distinct from the calling frame),
+applied to the closure-aware family for the first time. No new
+postulate is introduced anywhere; every construction reuses
+`call_ref`/`register`/`mk_clo_ref`/`mk_env_ref` unchanged, and the
+resulting proof is a per-instance certificate (`jit.rs`'s
+`kernel_verify` requires every sample in the battery to get one,
+mirroring how tail recursion's own per-call fallback already works),
+not a universal theorem — an honest reflection of the fact that a real
+universal proof for this shape would need an honest single kernel type
+for "either `Clo_1` or `Clo_2`", i.e. a real dependent sum, which
+remains the separate, larger research question §9's own investigation
+already concluded it is. As a side effect of inlining firing on
+*any* dishonest `None`-vs-`Clo` mismatch (not only the arity-Inconsistent
+one), it also picked up a second, previously out-of-scope shape for
+free: a parameter passed along but never actually called as a closure
+at all (`src/syntax.rs`'s own `higher_order_let_chain_evaluates_like_the_hand_built_demo_term`
+test, a let-desugaring artifact, is the regression guard for this).
+Deliberately not attempted: a recursive (`Rec`-wrapped) use of this
+shape, and a callee whose own saturated call itself returns a further,
+not-statically-known `Clo` — both would need the curried stage-chain's
+own further semantics modeled with fresh postulates of their own, a
+real, larger follow-on (see `eval_dyn_direct_call`'s own docs in
+`proof.rs`).
 
 ## Sources
 
