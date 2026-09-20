@@ -586,6 +586,36 @@ at 100,000 seeds (release) and 30,000 (debug, where the now-fixed overflow
 check would have fired) with zero further failures before settling back
 on the file's own 5,000-seed default.
 
+**Soundness**: `tests/kernel_soundness_fuzz.rs` fuzzes a different property
+than `kernel_fuzz.rs`'s own crash-safety — the one every "kernel-checked
+equivalence proof" this project produces actually rests on: given two
+postulated constants of the same type with *nothing* in the context
+relating them, `kernel::check` must never accept *any* term as a proof
+that they're propositionally equal (`Id(A, a, b)`). This is deliberately
+not "is `a` `def_eq` `b`" — a *postulated* equality is legitimately
+`Id`-provable without being computationally equal at all (that's the
+whole point of postulating axioms rather than deriving everything from
+nothing) — the property under test is narrower and sharper: can the
+kernel be talked into deriving a false proposition from an unrelated
+pair? Two strategies, both checked against the same unrelated pair's
+claim: pure random generation (as `kernel_fuzz.rs`'s own generator does),
+and — the sharper one — random single-point mutation (a structural
+subtree swap, or a wildly different `Var`/`Sort` substituted in) of a
+proof that's genuinely valid for a *different*, actually-related pair,
+since starting from a well-typed skeleton is far more likely to land
+near a real checker bug than blind generation is. Verified test teeth by
+deliberately injecting two different bugs and confirming each is caught:
+an off-by-one in `ctx_lookup`'s own de Bruijn shift (too blunt — it broke
+typechecking universally, caught only by this file's own "the seed pool
+itself is valid" sanity check, not the soundness property specifically)
+and, more precisely, weakening `check`'s final comparison to only compare
+an `Id`-type's own domain when both sides are `Id`-typed, ignoring the
+two endpoints entirely — caught immediately by both dedicated soundness
+tests (seed 7 and seed 97 respectively, out of 20,000), while the sanity
+check kept passing, confirming these tests actually discriminate a real,
+narrow false-equality bug rather than merely reacting to wholesale
+breakage.
+
 **Round-trip**: `tests/syntax_fuzz.rs` fuzzes a third property, on a third
 layer: `syntax.rs`'s own `parse(print(h)) == h` (exact content-hash
 equality) for a random, well-scoped term across every constructor
