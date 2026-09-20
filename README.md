@@ -796,8 +796,17 @@ guards against by hand): caught immediately, at seed 22.
   return grew a leaf-specific supplied-args prefix so a chosen `Pap` leaf's
   own `g` gets called with its own supplied args *and* the outer
   over-application's extra ones, not just the extra ones. A `Call`-shaped
-  leaf (a branch reached only through a further *saturated* indirect call)
-  is a further, natural generalization, not attempted here. A self-recursive
+  leaf (a branch reached only through a further *saturated* indirect call
+  to a further literal lambda `g` whose own saturated call is itself
+  `Clo_k`-typed) is covered too now — `classify_closure_if_tree_leaf`
+  classifies it the same way `clo_eq_ref_call` classifies a root-level
+  `Call`, and `resolve_closure_if_tree`'s own return grew an
+  `IfTreeLeafResolution::Direct`/`Indirect` split: a `Call`-shaped leaf's
+  own further indirection is resolved recursively, via the same
+  `resolve_closure_shape_to_leaf` the root-level `Call` arm already uses
+  (mirroring it exactly, one level deeper inside an `If`), reusing its
+  own already-complete "call with all args" fact rather than building a
+  second one. A self-recursive
   `root` (compiled via `Term::Rec`) is covered too now — `clo_eq_ref_if_tree`/
   `clo_eq_ref_call`/`clo_eq_ref_pap` each thread `root`'s own `is_rec` flag
   into `compile::free_vars` instead of hardcoding `false`, since the
