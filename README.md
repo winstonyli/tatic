@@ -840,15 +840,23 @@ guards against by hand): caught immediately, at seed 22.
   and `jit.rs`'s
   `a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent`
   — see `RELATED_WORK.md` section 12 for the full investigation and its
-  correction. Still open: a
-  callee reached only through a captured/parameter variable rather than a
-  further statically-known combinator (genuinely unknown at
-  proof-construction time which literal lambda underlies it — the same
-  obstacle `RELATED_WORK.md` §9 already treats, needing either
-  `eval_dyn`-style per-instance tracing or a real dependent sum) — "sound,
-  not complete", the same standing tradeoff this fragment makes everywhere
-  else; doesn't affect `kernel_verified`, only weaker, call-specific
-  evidence.
+  correction. No longer fully open: a callee reached only through a
+  captured/parameter variable rather than a further statically-known
+  combinator (genuinely unknown at proof-construction time which literal
+  lambda underlies it) is now covered per instance — `eval_dyn`'s own
+  `Var`-root case (`src/proof.rs`) resolves the concrete `ConcreteClo`
+  such a value actually carries regardless of whether it reached the
+  frame as a parameter or a capture, the same `eval_dyn`-style tracing
+  this paragraph used to name as a hypothetical fix; see
+  `RELATED_WORK.md` §9's own "Since covered, per instance" finding and
+  `proof.rs`'s
+  `a_captured_value_reached_through_an_inlined_call_gets_a_per_instance_proof`.
+  `clo_eq_ref`'s own *universal* axiom still can't cover it — that would
+  need a real dependent sum (an honest single kernel type for "either
+  `Clo_1` or `Clo_2`"), the separate, larger research question §9 already
+  scoped out — but that's "sound, not complete", the same standing
+  tradeoff this fragment makes everywhere else; doesn't affect
+  `kernel_verified`, only weaker, call-specific evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
   too (`ite_clo`, lazily postulated — see the table row above), when the
   `If`'s own result is used as a *value* — and, separately, `call_ref`'s
