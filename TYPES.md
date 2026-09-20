@@ -36,21 +36,26 @@ other:
 ```
 
 `Int` is the kernel's postulated `Int : Sort(0)` (`ArithPostulates::new`).
-`Clo` is really a **family of kernel types, `Clo_k : Sort(0)`, one per
-distinct arity `k`** actually used (`ClosurePostulates::clo_ty`), lazily
-postulated the same way `Env_γ` already was per capture signature — see
-section 6.2/7 (kept as history: this family is what section 7 originally
-*proposed*, and what's now actually implemented). `Clo_k` and `Clo_j` are
-separate postulates, hence definitionally *unequal* whenever `k ≠ j`, so
-`kernel::check` itself rejects a `Clo_j` value supplied where `Clo_k` is
-expected — arity agreement is a genuine kernel-checked property, not
-Rust-asserted. Rust-level code (`Option<usize>`, `None` meaning `Int` and
-`Some(k)` meaning "a closure always called with exactly `k` arguments")
-still decides *which* `k` to ask `clo_ty`/`apply_ref`/etc. for at each
+`Clo` is really a **family of kernel types, `Clo_k := Int -> .. -> Int`
+(`k` copies)** — the literal curried arrow type, *not* a postulate, one
+per distinct arity `k` actually used (`ClosurePostulates::clo_ty`; see
+section 6.2/7 for the history: a single universal `Clo` was replaced by
+one opaque `Sort(0)` postulate per arity, which was itself later replaced
+by this section's own current, derived representation — see `RELATED_WORK.md`
+section 11). `Clo_k` and `Clo_j` are already structurally distinct Pi
+types whenever `k ≠ j`, so `kernel::check` itself rejects a `Clo_j` value
+supplied where `Clo_k` is expected, for free, from ordinary Pi-formation —
+arity agreement is a genuine kernel-checked property, not Rust-asserted,
+with no reliance on remembering "which arity was already postulated" the
+way the opaque-tag scheme needed. Rust-level code (`Option<usize>`, `None`
+meaning `Int` and `Some(k)` meaning "a closure always called with exactly
+`k` arguments") still decides *which* `k` to ask `clo_ty`/etc. for at each
 call site — the type system's rules (section 4) are unchanged in shape,
 each one keyed by whatever `k` its own `Γ`/`param_types`/
 `combinator_return_type` already carries — but the kernel-level type that
-choice produces is no longer a single blind `Clo`.
+choice produces is no longer a single blind `Clo`, and calling a `Clo_k`
+value is now ordinary function application (there is no `apply_ref`
+axiom anymore — see section 4.4's own update).
 
 ## 3. Contexts
 
@@ -211,17 +216,22 @@ by the rules below.
 Γ ⊢ x(a_1,...,a_k) : Int
 ```
 
-Every argument, and the result, is `Int` — `apply_ref(k)`'s own postulated
-type is `Clo -> Int -> .. -> Int` unconditionally (`k` copies of `Int`),
-regardless of what `x`'s own real parameter types are. This is a genuine
-loss of precision compile.rs's own `call_indirect` dispatch already has
-(its docs: "per compile.rs's own typed dispatch, arguments are always
-`Int` regardless of the callee's own signature") — a closure that
-actually expects a `Clo`-typed argument, called through a variable, is
-outside this fragment's own expressiveness entirely, not merely
-unverified. A self-call (`x = Var(self_idx)`, `k = arity`, tail or not)
-follows the identical shape but is never routed through `apply_ref` at
-all — its result is `Int` by this whole fragment's own founding
+Every argument, and the result, is `Int` — `Clo_k` itself *is*
+`Int -> .. -> Int` (`k` copies), so this rule is nothing more than the
+kernel's own ordinary Pi-application rule, unconditionally, regardless of
+what `x`'s own real parameter types are (no bespoke "`apply_ref`" axiom
+mediates the call anymore — see section 2 and `RELATED_WORK.md` section
+11 for why one used to be needed and no longer is). This is still a
+genuine loss of precision compile.rs's own `call_indirect` dispatch
+already has (its docs: "per compile.rs's own typed dispatch, arguments
+are always `Int` regardless of the callee's own signature") — a closure
+that actually expects a `Clo`-typed argument, called through a variable,
+is outside this fragment's own expressiveness entirely, not merely
+unverified; that loss of precision is a property of `Clo_k`'s own chosen
+shape (uniformly `Int`-typed parameters), not of how it's postulated. A
+self-call (`x = Var(self_idx)`, `k = arity`, tail or not) follows the
+identical shape but is a direct recursive reference, never a `Clo_k`-typed
+value at all — its result is `Int` by this whole fragment's own founding
 convention (every provable recursive function computes an `Int`), not
 because anything computes it as such.
 
@@ -259,9 +269,9 @@ h peels to (n, body, _)   m > 0
 ```
 
 Over-application: `h`'s own saturated call is typed first (exactly the
-rule above), and only when it derives `Clo` is the result dispatched
-through `apply_ref(m)` on the extra `m` arguments — the *same* rule as
-`Var-App`, just with the callee freshly computed rather than read from
+rule above), and only when it derives `Clo` is the result called directly
+on the extra `m` arguments — the *same* rule as `Var-App`, just with the
+callee freshly computed rather than read from
 `Γ`. A saturated call that derives `Int` makes `LitLambda-Over` simply
 not apply — `h(a_1,...,a_{n+m})` has no derivation, the term is outside
 the fragment (`compile.rs` itself has no such check at all, see 6.1).
@@ -357,15 +367,18 @@ arity kernel-*typechecked* under this scheme (both sides were just
 `Clo`), which was unsound in exactly the way `Clo_1 = Clo_2` would be.
 
 Section 7 (below, also kept as history) proposed the fix; it's now
-implemented. `Clo` is the arity-indexed family described in section 2 —
-`Clo_k`, postulated lazily per distinct `k`, definitionally distinct from
-`Clo_j` for any `j ≠ k`. Every one of the call sites named above already
+implemented, and — per `RELATED_WORK.md` section 11 — since further
+simplified past what section 7 itself proposed: `Clo` is the arity-indexed
+family described in section 2, `Clo_k`, definitionally distinct from
+`Clo_j` for any `j ≠ k`, but no longer itself postulated at all (it's the
+literal curried `Int -> .. -> Int` arrow type, derived from `Int`, which
+was already postulated). Every one of the call sites named above already
 had the correct `k` available locally (from `Γ`, a literal lambda's own
 peeled arity, or `combinator_return_type`'s own classification); the
 Rust-level bookkeeping didn't need to grow, only to ask `clo_ty`/
-`apply_ref`/`env_ty`/etc. for the *specific* `k` rather than one universal
+`env_ty`/etc. for the *specific* `k` rather than one universal
 `Clo`. `kernel::check` now rejects an arity mismatch on its own (a `Clo_2`
-value where `Clo_1` was postulated is a domain mismatch, exactly like any
+value where `Clo_1` is expected is a domain mismatch, exactly like any
 other `Int`/`Clo` confusion always was) — see
 `a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope`
 in `proof.rs`, which confirms the previously-unsound If-between-different-
@@ -483,3 +496,19 @@ soundness-depth improvement to the *existing* guarantee, not a coverage
 one. It did, separately, make one coverage widening easy: a genuinely
 higher-order top-level result, previously section 6.3's second
 restriction, is no longer out of scope — see section 6.3's own update.
+
+**A second correction, this one removing rather than widening scope**:
+`Clo_k : Sort(0)` — described throughout this section as a postulate,
+which is what it was when this section was written — no longer *is* one.
+`RELATED_WORK.md` section 11 replaces it with the literal curried
+`Int -> .. -> Int` arrow type, derived from `Int` (already postulated),
+and `apply_ref(k)` (cited above as "now mak[ing] the kernel itself reject
+a `Clo_j` value... supplied where `Clo_k` is expected") is gone entirely —
+calling a `Clo_k`-typed value is ordinary Pi-application, needing no
+axiom to mediate it, and the arity-rejection property this section
+credits to `apply_ref(k)`'s own postulated domain now follows instead
+from ordinary Pi-type structural inequality. `ite_clo_ref` (this
+section's own `mk_clo_ref`/`call_ref`/`pap_ref`, and the whole
+`Env_γ`/capture-signature apparatus this section already describes as
+needing the same treatment) stay genuinely postulated — see
+`RELATED_WORK.md` section 11 for exactly which pieces survive and why.

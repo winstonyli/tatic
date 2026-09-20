@@ -741,22 +741,25 @@ guards against by hand): caught immediately, at seed 22.
   fixpoint-queue redesign this module was deliberately built without).
   `eval_and_prove` now also covers the *over-applied* case
   (`AppShape::LitLambdaOver`: `root`'s own saturated call returns a
-  further `Clo_k`, then the extra arguments dispatch against it via
-  `apply_ref`) for the canonical shape — `root`'s own body an `If`
-  choosing between two same-arity literal lambdas (e.g. `f = \a b. if
-  0<a then (\c. a+b+c) else (\c. a-b+c)`, called as `f(a,b,c)`) — via two
-  more computation-rule axioms in the same idiom: `clo_eq_ref` (a
-  `Clo_k`-typed sibling of `call_eq_ref`) and `apply_clo_eq_ref` (ties
-  `apply_ref` to whichever closure value is concretely produced), plus a
-  small `ite_clo_eq_ref` bridge for the concrete branch selection. A
-  *PAP-producing* `root` (`root`'s own body a partial application of a
-  further literal lambda `g`, e.g. `f = \a. g(a)` for a 2-ary `g`, then
-  over-applied as `f(a)(c)`) is covered too now — `clo_eq_ref_pap`, a
-  sibling of `clo_eq_ref_if_tree` sharing `clo_eq_ref`'s own dispatch,
-  states `root`'s call equals `pap_ref(g, s)` applied to the supplied
-  args' own denoted values, and a new `apply_pap_eq_ref` ties
-  `apply_ref(k)` applied to that `Clo_k` value down to a direct call on
-  `g` with all `s + k` arguments together (mirroring `apply_clo_eq_ref`'s
+  further `Clo_k`, then the extra arguments dispatch against it directly
+  — a `Clo_k`-typed value is itself the real curried `Int -> .. -> Int`
+  arrow type, so no `apply_ref` axiom mediates the call, see
+  `RELATED_WORK.md` section 11) for the canonical shape — `root`'s own
+  body an `If` choosing between two same-arity literal lambdas (e.g. `f =
+  \a b. if 0<a then (\c. a+b+c) else (\c. a-b+c)`, called as `f(a,b,c)`)
+  — via two more computation-rule axioms in the same idiom: `clo_eq_ref`
+  (a `Clo_k`-typed sibling of `call_eq_ref`) and `apply_clo_eq_ref` (ties
+  whichever closure value is concretely produced, called directly, to
+  `call_ref`'s own value), plus a small `ite_clo_eq_ref` bridge for the
+  concrete branch selection. A *PAP-producing* `root` (`root`'s own body
+  a partial application of a further literal lambda `g`, e.g. `f = \a.
+  g(a)` for a 2-ary `g`, then over-applied as `f(a)(c)`) is covered too
+  now — `clo_eq_ref_pap`, a sibling of `clo_eq_ref_if_tree` sharing
+  `clo_eq_ref`'s own dispatch, states `root`'s call equals `pap_ref(g,
+  s)` applied to the supplied args' own denoted values, and a new
+  `apply_pap_eq_ref` ties that `Clo_k` value, called directly on the
+  remaining `k` arguments, down to a direct call on `g` with all `s + k`
+  arguments together (mirroring `apply_clo_eq_ref`'s
   role, but for a partial-application value instead of a directly-
   registered combinator's) — restricted, for now, to `g`'s own params all
   being `Int`-typed. A further-nested `If` inside either branch is
@@ -832,8 +835,8 @@ guards against by hand): caught immediately, at seed 22.
   *directly-called* combinator whose own body is an `If` between two
   closures (see the table row above), and over-application of a literal
   lambda (`root`'s own saturated call, now denoted via the same
-  `call_ref`, dispatched on the extra arguments through `apply_ref`
-  exactly like calling a closure-typed variable — see `compile.rs`'s own
+  `call_ref`, dispatched on the extra arguments directly, exactly like
+  calling a closure-typed variable — see `compile.rs`'s own
   "Over-application" docs for the compiled-code-level counterpart).
 - Widening the compilable fragment further: more primitives. (Capturing
   closures and partial application of a literal lambda — real closure
