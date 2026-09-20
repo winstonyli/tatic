@@ -197,6 +197,36 @@ Whether that trade is worth making here is exactly the kind of thing to
 scope properly (see the "harden against the staleness-bug class" option
 surveyed but not yet started) rather than assumed.
 
+**A second, distinct bug class from the same root cause, found extending
+`clo_eq_ref` to a PAP-producing `root`** (`clo_eq_ref_pap`/
+`apply_pap_eq_ref`, `src/proof.rs`): not staleness, but an *argument-order
+convention mismatch* between two independently-built term constructions
+meant to be syntactically identical. `pap_ref`'s own calling convention
+(established by `denote_closure`'s existing, tested `LitLambdaPartial`
+handling) applies its `s` supplied arguments in plain, unreversed
+application order; `call_ref`'s own convention (established by
+`call_eq_ref`/`apply_clo_eq_ref` elsewhere) is "descending", applied via
+`.iter().rev()` on both the axiom's own construction *and* its
+instantiation at a call site, the two reversals deliberately canceling
+out. The new axiom's `s`-supplied-argument group crosses *neither*
+boundary uniformly — it feeds `pap_ref` (unreversed) on one side and
+`call_ref` (needs the cancel-out `.rev()`, matching every existing
+argument group) on the other — so copying the `.rev()` pattern
+wholesale, by analogy, silently duplicated an assumption that only held
+for the case it was copied from. A single-supplied-argument test passed
+by construction (reversing one element is a no-op) and revealed nothing;
+a second test with two supplied, asymmetric-coefficient arguments (5 and
+7 at different weights, so a swap changes the answer, not just its
+symmetry) failed loudly at `debug_assert_has_type`, and the fix was
+using the unreversed convention for that one group specifically, with
+the *why* recorded in `apply_pap_eq_ref`'s own doc comment. The general
+lesson generalizes beyond staleness: any de Bruijn/argument-order
+convention copied "by analogy" from a structurally similar but not
+*identical* existing construction needs its own from-scratch check, and
+a test built to catch it needs inputs asymmetric enough that a swap is
+observable — a symmetric or single-element test proves nothing about
+ordering at all.
+
 ## 5. Self-types / Cedille — the same "postulate your way to power" tradeoff, one level down
 
 Cedille (Stump et al.) gets inductive-datatype- and dependent-type-*like*

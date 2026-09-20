@@ -3081,83 +3081,207 @@ fn eval_and_prove_call_over(
     let bridge = Anchored::new(&combinators.cp.arith, bridge);
     let axiom_at_literals = Anchored::new(&combinators.cp.arith, axiom_at_literals);
 
-    // Resolve which concrete closure applies (evaluating `cond` within
-    // `root`'s own inner frame), and bridge `root`'s own saturated call
-    // (denoted) all the way to that closure's own literal value
-    // expression (`root_to_chosen`).
-    let ClosureRhsShape { cond, inner_t, inner_e } = shape;
-    let (result_c, denote_c, proof_c) = eval_and_prove(store, cond, combinators, &inner_params, &inner_concrete, &inner_facts)?;
-    let denote_c = Anchored::new(&combinators.cp.arith, denote_c);
-    let proof_c = Anchored::new(&combinators.cp.arith, proof_c);
+    // Resolve which concrete closure applies (`IfBetween`: evaluating
+    // `cond` within `root`'s own inner frame; `Pap`: there's only ever
+    // one), and bridge `root`'s own saturated call (denoted) all the way
+    // to that closure's own value expression (`root_to_chosen`) -- plus
+    // everything the shared tail below needs to finish the call: which
+    // `Hash` to recurse into (`chosen`), its own captures resolved to
+    // literal triples (`chosen_cap_triples`), the full argument list for
+    // that recursive call (`chosen_arg_triples` -- just `extra_arg_triples`
+    // for `IfBetween`, since `chosen` there is already exactly `k`-ary;
+    // `root`'s own supplied args *then* `extra_arg_triples` for `Pap`,
+    // since `chosen` there is `g`, whose own arity is `s + k`), and the
+    // instantiated `apply_*_eq_ref` fact bridging `apply_ref(k)` applied
+    // to `chosen_value` down to a direct call on `chosen`.
+    let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, root_to_chosen, apply_eq_chosen) = match shape {
+        ClosureRhsShape::IfBetween { cond, inner_t, inner_e } => {
+            let (result_c, denote_c, proof_c) = eval_and_prove(store, cond, combinators, &inner_params, &inner_concrete, &inner_facts)?;
+            let denote_c = Anchored::new(&combinators.cp.arith, denote_c);
+            let proof_c = Anchored::new(&combinators.cp.arith, proof_c);
 
-    let (t_value_lit, t_cap_triples) = inner_closure_literal_value(combinators, inner_t, &inner_params, &inner_concrete, &inner_facts)?;
-    let t_value_lit = Anchored::new(&combinators.cp.arith, t_value_lit);
-    let (e_value_lit, e_cap_triples) = inner_closure_literal_value(combinators, inner_e, &inner_params, &inner_concrete, &inner_facts)?;
-    let e_value_lit = Anchored::new(&combinators.cp.arith, e_value_lit);
+            let (t_value_lit, t_cap_triples) = inner_closure_literal_value(combinators, inner_t, &inner_params, &inner_concrete, &inner_facts)?;
+            let t_value_lit = Anchored::new(&combinators.cp.arith, t_value_lit);
+            let (e_value_lit, e_cap_triples) = inner_closure_literal_value(combinators, inner_e, &inner_params, &inner_concrete, &inner_facts)?;
+            let e_value_lit = Anchored::new(&combinators.cp.arith, e_value_lit);
 
-    combinators.cp.arith.lit(result_c);
-    let ite_eq_axiom = combinators.ite_clo_eq_ref(result_c, k);
-    let ite_eq_axiom = Anchored::new(&combinators.cp.arith, ite_eq_axiom);
+            combinators.cp.arith.lit(result_c);
+            let ite_eq_axiom = combinators.ite_clo_eq_ref(result_c, k);
+            let ite_eq_axiom = Anchored::new(&combinators.cp.arith, ite_eq_axiom);
 
-    // Nothing pushes past here -- resolve everything fresh, in one batch,
-    // only once nothing more is left to push.
-    let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
-    let call_at_lit_env_lit_args = call_at_lit_env_lit_args.at(&combinators.cp.arith);
-    let bridge = bridge.at(&combinators.cp.arith);
-    let axiom_at_literals = axiom_at_literals.at(&combinators.cp.arith);
-    let denote_c = denote_c.at(&combinators.cp.arith);
-    let proof_c = proof_c.at(&combinators.cp.arith);
-    let t_value_lit = t_value_lit.at(&combinators.cp.arith);
-    let e_value_lit = e_value_lit.at(&combinators.cp.arith);
-    let ite_eq_axiom = ite_eq_axiom.at(&combinators.cp.arith);
-    let lit_xc = combinators.cp.arith.lit_ref(result_c);
-    let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed by clo_eq_ref via clo_ty(k)
-    // `int_ty`/`clo_ty` (computed far above, before `eval_and_prove(cond,
-    // ..)`'s own `assume_prim_fact`/`assume_ite_fact` pushes and
-    // `ite_clo_eq_ref`'s own first-use push) are stale by now -- shadowed
-    // fresh here, in the same batch as everything else above.
-    let int_ty = combinators.cp.arith.int_ty();
-    let clo_ty = combinators.cp.clo_ty(k);
+            // Nothing pushes past here -- resolve everything fresh, in one
+            // batch, only once nothing more is left to push.
+            let call_at_denoted_here = call_at_denoted.at(&combinators.cp.arith);
+            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.at(&combinators.cp.arith);
+            let bridge_here = bridge.at(&combinators.cp.arith);
+            let axiom_at_literals_here = axiom_at_literals.at(&combinators.cp.arith);
+            let denote_c = denote_c.at(&combinators.cp.arith);
+            let proof_c = proof_c.at(&combinators.cp.arith);
+            let t_value_lit = t_value_lit.at(&combinators.cp.arith);
+            let e_value_lit = e_value_lit.at(&combinators.cp.arith);
+            let ite_eq_axiom = ite_eq_axiom.at(&combinators.cp.arith);
+            let lit_xc = combinators.cp.arith.lit_ref(result_c);
+            let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed by clo_eq_ref via clo_ty(k)
+            let int_ty = combinators.cp.arith.int_ty();
+            let clo_ty = combinators.cp.clo_ty(k);
 
-    // `ite_clo_eq_ref`'s own bridge: first, `cong1` over `ite_clo_k`'s own
-    // first (`Int`) argument (`t`/`e` held fixed at their literal
-    // values), turning `denote(cond,lits)` into `lit_ref(xc)`; then the
-    // axiom itself, instantiated at the two branches' own literal values
-    // -- see `ite_clo_eq_ref`'s own docs for why both steps are needed.
-    let f_cond_body =
-        kernel::app3(kernel::shift(&ite_clo, 0, 1), kernel::var(0), kernel::shift(&t_value_lit, 0, 1), kernel::shift(&e_value_lit, 0, 1));
-    let f_cond = kernel::lam(int_ty.clone(), f_cond_body);
-    let cong_cond = kernel::cong1(&int_ty, &clo_ty, &f_cond, denote_c.clone(), lit_xc.clone(), proof_c);
-    let ite_at_denote_c = kernel::app3(ite_clo.clone(), denote_c, t_value_lit.clone(), e_value_lit.clone());
-    let ite_at_lit_xc = kernel::app3(ite_clo, lit_xc, t_value_lit.clone(), e_value_lit.clone());
+            // `ite_clo_eq_ref`'s own bridge: first, `cong1` over
+            // `ite_clo_k`'s own first (`Int`) argument (`t`/`e` held fixed
+            // at their literal values), turning `denote(cond,lits)` into
+            // `lit_ref(xc)`; then the axiom itself, instantiated at the
+            // two branches' own literal values -- see `ite_clo_eq_ref`'s
+            // own docs for why both steps are needed.
+            let f_cond_body = kernel::app3(
+                kernel::shift(&ite_clo, 0, 1),
+                kernel::var(0),
+                kernel::shift(&t_value_lit, 0, 1),
+                kernel::shift(&e_value_lit, 0, 1),
+            );
+            let f_cond = kernel::lam(int_ty.clone(), f_cond_body);
+            let cong_cond = kernel::cong1(&int_ty, &clo_ty, &f_cond, denote_c.clone(), lit_xc.clone(), proof_c);
+            let ite_at_denote_c = kernel::app3(ite_clo.clone(), denote_c, t_value_lit.clone(), e_value_lit.clone());
+            let ite_at_lit_xc = kernel::app3(ite_clo, lit_xc, t_value_lit.clone(), e_value_lit.clone());
 
-    let chosen_value_lit = if result_c != 0 { t_value_lit.clone() } else { e_value_lit.clone() };
-    let ite_axiom_at = apply_n(ite_eq_axiom, vec![t_value_lit, e_value_lit]);
+            let chosen_value_lit = if result_c != 0 { t_value_lit.clone() } else { e_value_lit.clone() };
+            let ite_axiom_at = apply_n(ite_eq_axiom, vec![t_value_lit, e_value_lit]);
 
-    let branch_bridge = kernel::trans_proof(&clo_ty, &ite_at_denote_c, &ite_at_lit_xc, &chosen_value_lit, cong_cond, ite_axiom_at);
-    let root_to_ite = kernel::trans_proof(&clo_ty, &call_at_denoted, &call_at_lit_env_lit_args, &ite_at_denote_c, bridge, axiom_at_literals);
-    let root_to_chosen = kernel::trans_proof(&clo_ty, &call_at_denoted, &ite_at_denote_c, &chosen_value_lit, root_to_ite, branch_bridge);
+            let branch_bridge = kernel::trans_proof(&clo_ty, &ite_at_denote_c, &ite_at_lit_xc, &chosen_value_lit, cong_cond, ite_axiom_at);
+            let root_to_ite = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &ite_at_denote_c, bridge_here, axiom_at_literals_here);
+            let root_to_chosen = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &ite_at_denote_c, &chosen_value_lit, root_to_ite, branch_bridge);
 
-    let (chosen, chosen_cap_triples) = if result_c != 0 { (inner_t, t_cap_triples) } else { (inner_e, e_cap_triples) };
+            let (chosen, chosen_cap_triples) = if result_c != 0 { (inner_t, t_cap_triples) } else { (inner_e, e_cap_triples) };
 
-    // `apply_clo_eq_ref(chosen)` -- its own first use for this `Hash` may
-    // lazily push, so everything built above is anchored *first* (a push
-    // that happens *before* wrapping a value in `Anchored` is captured at
-    // the already-grown depth, silently computing a zero shift later --
-    // this ordering bug was caught here, not by inspection).
-    let root_to_chosen = Anchored::new(&combinators.cp.arith, root_to_chosen);
-    let chosen_value_lit = Anchored::new(&combinators.cp.arith, chosen_value_lit);
-    let call_at_denoted = Anchored::new(&combinators.cp.arith, call_at_denoted);
-    let apply_axiom = combinators.apply_clo_eq_ref(chosen)?;
-    let apply_axiom = Anchored::new(&combinators.cp.arith, apply_axiom);
+            // `apply_clo_eq_ref(chosen)` -- its own first use for this
+            // `Hash` may lazily push, so everything built above is
+            // anchored *first* (a push that happens *before* wrapping a
+            // value in `Anchored` is captured at the already-grown depth,
+            // silently computing a zero shift later -- this ordering bug
+            // was caught here, not by inspection).
+            let root_to_chosen = Anchored::new(&combinators.cp.arith, root_to_chosen);
+            let chosen_value_lit = Anchored::new(&combinators.cp.arith, chosen_value_lit);
+            let apply_axiom = combinators.apply_clo_eq_ref(chosen)?;
+            let apply_axiom = Anchored::new(&combinators.cp.arith, apply_axiom);
 
-    let apply_fn = combinators.cp.apply_ref(k); // cache hit -- primed by apply_clo_eq_ref above
-    let root_to_chosen = root_to_chosen.at(&combinators.cp.arith);
-    let chosen_value_lit = chosen_value_lit.at(&combinators.cp.arith);
+            let root_to_chosen = root_to_chosen.at(&combinators.cp.arith);
+            let chosen_value_lit = chosen_value_lit.at(&combinators.cp.arith);
+
+            // Instantiate `apply_clo_eq_ref(chosen)` at `chosen`'s own raw
+            // literal captures (ascending, matching `chosen_cap_triples`'s
+            // own order) then the extra args' own *denoted* values
+            // (ascending -- `extra_arg_triples` is in application order,
+            // so reversed here, the same convention
+            // `eval_and_prove_direct_call`'s own `axiom_args` already
+            // uses). `apply_clo_eq_ref`'s own axiom is universally
+            // quantified over `Int`-typed values, so it can be
+            // instantiated directly at these denoted expressions -- no
+            // separate "route through literals first" step is needed.
+            let apply_axiom_args: Vec<Expr> = chosen_cap_triples
+                .iter()
+                .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
+                .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.at(&combinators.cp.arith)))
+                .collect();
+            let apply_eq_chosen = apply_n(apply_axiom.at(&combinators.cp.arith), apply_axiom_args);
+
+            (chosen, chosen_cap_triples, extra_arg_triples.to_vec(), chosen_value_lit, root_to_chosen, apply_eq_chosen)
+        }
+        ClosureRhsShape::Pap { g, args } => {
+            let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
+            let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
+            let s = args.len();
+
+            let mut g_cap_triples = Vec::with_capacity(g_captures.len());
+            for &rel in &g_captures {
+                let rel = rel as usize;
+                let x = *inner_concrete.get(rel)?;
+                let d = Anchored::new(&combinators.cp.arith, inner_params.get(rel)?.at(&combinators.cp.arith));
+                let p = Anchored::new(&combinators.cp.arith, inner_facts.get(rel)?.at(&combinators.cp.arith));
+                g_cap_triples.push((x, d, p));
+            }
+
+            let mut supplied_triples = Vec::with_capacity(s);
+            for &a in &args {
+                let (x, d, p) = eval_and_prove(store, a, combinators, &inner_params, &inner_concrete, &inner_facts)?;
+                supplied_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+            }
+
+            // `pap_at_denoted`: `pap_ref(g, s)(g_env?, denote(args[0],
+            // root's own literal inner frame), ...)` -- built independently
+            // here, matching `clo_eq_ref_pap`'s own RHS-formula exactly
+            // (same construction, `params_full` now root's own *concrete*
+            // literal values instead of abstract quantified vars), so it's
+            // syntactically the same term `axiom_at_literals`'s own
+            // (opaque, uninstantiated) RHS denotes once substituted --
+            // mirrors `ite_at_denote_c`'s identical role in the
+            // `IfBetween` branch above.
+            let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
+            let pap_fn = combinators.pap_ref(g, s, &g_dummy)?;
+            let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
+
+            let call_at_denoted_here = call_at_denoted.at(&combinators.cp.arith);
+            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.at(&combinators.cp.arith);
+            let bridge_here = bridge.at(&combinators.cp.arith);
+            let axiom_at_literals_here = axiom_at_literals.at(&combinators.cp.arith);
+            let pap_fn = pap_fn.at(&combinators.cp.arith);
+            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed by clo_eq_ref_pap via pap_ref
+
+            let g_env_denoted = if g_cap_triples.is_empty() {
+                None
+            } else {
+                let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
+                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed by clo_eq_ref_pap
+                let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+                Some(apply_n(mk_env_expr, cd))
+            };
+            let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+            let mut pap_args = Vec::with_capacity(1 + s);
+            pap_args.extend(g_env_denoted);
+            pap_args.extend(d_supplied);
+            let pap_at_denoted = apply_n(pap_fn, pap_args);
+
+            let root_to_chosen =
+                kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &pap_at_denoted, bridge_here, axiom_at_literals_here);
+
+            // `apply_pap_eq_ref(g, s)` -- its own first use for this
+            // `(g, s)` may lazily push, so everything built above is
+            // anchored *first*, same discipline `IfBetween`'s own
+            // `apply_clo_eq_ref` call above uses.
+            let root_to_chosen = Anchored::new(&combinators.cp.arith, root_to_chosen);
+            let pap_at_denoted = Anchored::new(&combinators.cp.arith, pap_at_denoted);
+            let apply_axiom = combinators.apply_pap_eq_ref(g, s)?;
+            let apply_axiom = Anchored::new(&combinators.cp.arith, apply_axiom);
+
+            let root_to_chosen = root_to_chosen.at(&combinators.cp.arith);
+            let pap_at_denoted = pap_at_denoted.at(&combinators.cp.arith);
+
+            // Instantiate `apply_pap_eq_ref(g, s)` at `g`'s own raw
+            // literal captures, then the `s` supplied args' own *denoted*
+            // values in the *same* (unreversed) order `pap_at_denoted`
+            // above already used (matching the axiom's own LHS/RHS
+            // convention for this group -- see its own docs for why it
+            // isn't reversed the way `more` is), then the `k` extra args'
+            // own *denoted* values (reversed, matching
+            // `eval_and_prove_direct_call`'s own `axiom_args` convention).
+            // Universally quantified over `Int`-typed values, same as
+            // `apply_clo_eq_ref`'s own axiom, so no "route through
+            // literals first" step is needed for either group.
+            let apply_axiom_args: Vec<Expr> = g_cap_triples
+                .iter()
+                .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
+                .chain(supplied_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)))
+                .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.at(&combinators.cp.arith)))
+                .collect();
+            let apply_eq_chosen = apply_n(apply_axiom.at(&combinators.cp.arith), apply_axiom_args);
+
+            let mut chosen_arg_triples = supplied_triples;
+            chosen_arg_triples.extend(extra_arg_triples.iter().cloned());
+
+            (g, g_cap_triples, chosen_arg_triples, pap_at_denoted, root_to_chosen, apply_eq_chosen)
+        }
+    };
+
+    let apply_fn = combinators.cp.apply_ref(k); // cache hit -- primed by apply_clo_eq_ref/apply_pap_eq_ref above
     let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
     let int_ty2 = combinators.cp.arith.int_ty();
-    // `clo_ty` (from the previous batch, before `apply_clo_eq_ref`'s own
-    // possible first-use push) is stale by now -- shadowed fresh here.
     let clo_ty = combinators.cp.clo_ty(k);
 
     // The outer frame's own *denoted* value for each extra argument,
@@ -3166,35 +3290,24 @@ fn eval_and_prove_call_over(
     // which came from `root`'s own *literal* inner frame). Unlike
     // `call_ref(root)`'s own bridge above (needed so `axiom_at_literals`,
     // itself only ever stated in terms of literals, could apply at all),
-    // `apply_clo_eq_ref`'s own axiom is universally quantified over
-    // `Int`-typed values, so it can be instantiated directly at these
-    // denoted expressions -- no separate "route through literals first"
-    // step for `apply_ref`'s own `k` `Int` arguments is needed at all.
+    // `apply_clo_eq_ref`'s/`apply_pap_eq_ref`'s own axiom is universally
+    // quantified over `Int`-typed values, so it can be instantiated
+    // directly at these denoted expressions -- no separate "route through
+    // literals first" step for `apply_ref`'s own `k` `Int` arguments is
+    // needed at all.
     let d_extra_args: Vec<Expr> = extra_arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
 
     // `cong1` over `apply_ref(k)`'s own first (`Clo_k`) argument, the `k`
     // extra args held fixed at their denoted values, using
-    // `root_to_chosen` to turn `call_at_denoted` into `chosen_value_lit`.
+    // `root_to_chosen` to turn `call_at_denoted` into `chosen_value`.
     let mut f_clo_body = kernel::app(kernel::shift(&apply_fn, 0, 1), kernel::var(0));
     for d in &d_extra_args {
         f_clo_body = kernel::app(f_clo_body, kernel::shift(d, 0, 1));
     }
     let f_clo = kernel::lam(clo_ty.clone(), f_clo_body);
-    let clo_step = kernel::cong1(&clo_ty, &int_ty2, &f_clo, call_at_denoted.clone(), chosen_value_lit.clone(), root_to_chosen);
+    let clo_step = kernel::cong1(&clo_ty, &int_ty2, &f_clo, call_at_denoted.clone(), chosen_value.clone(), root_to_chosen);
     let apply_at_denoted = apply_n(apply_fn.clone(), std::iter::once(call_at_denoted).chain(d_extra_args.iter().cloned()));
-    let apply_at_chosen_denoted_args = apply_n(apply_fn, std::iter::once(chosen_value_lit).chain(d_extra_args.iter().cloned()));
-
-    // Instantiate `apply_clo_eq_ref(chosen)` at `chosen`'s own raw literal
-    // captures (ascending, matching `chosen_cap_triples`'s own order) then
-    // the extra args' own *denoted* values (ascending -- `extra_arg_triples`
-    // is in application order, so reversed here, the same convention
-    // `eval_and_prove_direct_call`'s own `axiom_args` already uses).
-    let apply_axiom_args: Vec<Expr> = chosen_cap_triples
-        .iter()
-        .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
-        .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.at(&combinators.cp.arith)))
-        .collect();
-    let apply_eq_chosen = apply_n(apply_axiom.at(&combinators.cp.arith), apply_axiom_args);
+    let apply_at_chosen_denoted_args = apply_n(apply_fn, std::iter::once(chosen_value).chain(d_extra_args.iter().cloned()));
 
     // `eval_and_prove_direct_call`'s own recursion below (into `chosen`'s
     // own body) may lazily push further postulates -- anchor everything
@@ -3206,7 +3319,7 @@ fn eval_and_prove_call_over(
     let apply_eq_chosen = Anchored::new(&combinators.cp.arith, apply_eq_chosen);
 
     let (result, call_at_denoted_for_chosen, proof_for_chosen) =
-        eval_and_prove_direct_call(store, chosen, combinators, &chosen_cap_triples, extra_arg_triples)?;
+        eval_and_prove_direct_call(store, chosen, combinators, &chosen_cap_triples, &chosen_arg_triples)?;
 
     // Chain: apply_at_denoted = apply_at_chosen_denoted_args (clo_step)
     //      = call_at_denoted_for_chosen (apply_eq_chosen -- its own RHS,
@@ -3951,6 +4064,8 @@ struct ClosurePostulates {
     ite_clo_eq_pos: HashMap<(i64, usize), usize>,
     /// `apply_clo_eq_ref`'s own memoization -- see its docs.
     apply_clo_eq_pos: HashMap<Hash, usize>,
+    /// `apply_pap_eq_ref`'s own memoization -- see its docs.
+    apply_pap_eq_pos: HashMap<(Hash, usize), usize>,
 }
 
 /// Lets code holding a `&(mut) ClosurePostulates` -- `build_universal`'s own
@@ -3991,6 +4106,7 @@ impl ClosurePostulates {
             clo_eq_pos: HashMap::new(),
             ite_clo_eq_pos: HashMap::new(),
             apply_clo_eq_pos: HashMap::new(),
+            apply_pap_eq_pos: HashMap::new(),
         }
     }
 
@@ -4553,36 +4669,62 @@ impl<'a> ClosureCombinators<'a> {
     /// lambda: `root`'s own saturated call produces a closure, then the
     /// *extra* arguments are dispatched against it via `apply_ref`) to get
     /// a concrete instance -- `mk_clo_ref`/`combinator_value`/
-    /// `ite_clo_ref` are exactly as opaque as `call_ref` was before
-    /// `call_eq_ref`, so the same "postulate a computation rule, sourced
-    /// from `root`'s own real body, use via congruence" idiom applies one
-    /// level up. See this module's own docs for why a per-call "trust the
-    /// interpreter" shortcut would be circular instead.
+    /// `ite_clo_ref`/`pap_ref` are exactly as opaque as `call_ref` was
+    /// before `call_eq_ref`, so the same "postulate a computation rule,
+    /// sourced from `root`'s own real body, use via congruence" idiom
+    /// applies one level up. See this module's own docs for why a
+    /// per-call "trust the interpreter" shortcut would be circular
+    /// instead.
     ///
-    /// Restricted (a genuine restriction, not an error) to `root`'s own
-    /// body being `Term::If(cond, t, e)`, where `cond` stays in the
+    /// `root`'s own peeled body can never itself be a bare `Term::Abs`
+    /// directly (`compile::peel`'s own `peel_abs` unconditionally folds
+    /// every consecutive `Abs` layer into `root`'s own arity, confirmed
+    /// empirically, not just by inspection, before settling on this
+    /// restriction) -- a `Clo_k` result can only arise "one level down",
+    /// via one of two shapes dispatched below: an `If` picking between two
+    /// closures (`clo_eq_ref_if_between`), or a partial application of a
+    /// further literal lambda (`clo_eq_ref_pap`). Checked at the Rust
+    /// level (not merely inferred from `return_type_of`'s own structural
+    /// classification, which would also accept a `Term::Rec` branch or a
+    /// further nested `App`/`If` whose own arities happen to match): those
+    /// wider shapes have no way to produce a *concrete* closure descriptor
+    /// below (a further nested `App`/`If` would need this module's own
+    /// fixpoint-queue-free restriction, `Term::Rec` inside a branch has no
+    /// proof-side counterpart here), so they're rejected outright rather
+    /// than mis-handled.
+    fn clo_eq_ref(&mut self, root: Hash) -> Option<(Expr, ClosureRhsShape)> {
+        if let Some((pos, shape)) = self.cp.clo_eq_pos.get(&root) {
+            let (pos, shape) = (*pos, shape.clone());
+            return Some((self.cp.arith.p.get(pos), shape));
+        }
+        let (arity, body, is_rec) = compile::peel(self.store, root)?;
+        // `root` itself is never self-recursive here, mirroring
+        // `call_eq_ref`'s own identical check -- `classify_app_node`'s own
+        // `LitLambdaOver` does allow a self-recursive `root`, but neither
+        // branch below supports it, so this declines cleanly rather than
+        // `param_types_for`/`compile::peel` failing partway through.
+        if is_rec {
+            return None;
+        }
+        let param_types = param_types_for(self.store, root)?;
+        if param_types.iter().any(Option::is_some) {
+            return None;
+        }
+        let k = match combinator_return_type(self.store, root) {
+            Some(Some(k)) => k,
+            _ => return None,
+        };
+        match self.store.resolve(body) {
+            Term::If(..) => self.clo_eq_ref_if_between(root, arity, body, &param_types, k),
+            Term::App(..) => self.clo_eq_ref_pap(root, arity, body, &param_types, k),
+            _ => None,
+        }
+    }
+
+    /// `clo_eq_ref`'s `If`-between-two-closures branch: `root`'s own body
+    /// is `Term::If(cond, t, e)`, where `cond` stays in the
     /// `Var`/`Lit`/`Prim`/`If` fragment and `t`/`e` are each a bare
-    /// `Term::Abs` (never `Term::Rec`) of the same arity `k` -- the *only*
-    /// shape that can actually arise here: `compile::peel`'s own
-    /// `peel_abs` unconditionally folds every consecutive `Abs` layer into
-    /// `root`'s own arity, so `root`'s own peeled body can never itself be
-    /// a bare `Term::Abs` directly (confirmed empirically, not just by
-    /// inspection, before settling on this restriction) -- a `Clo_k`
-    /// result can only arise "one level down", inside an `If`. Checked
-    /// here at the Rust level (not merely inferred from `return_type_of`'s
-    /// own structural classification, which would also accept a
-    /// `Term::Rec` branch or a further nested `App`/`If` whose own arities
-    /// happen to match): those wider shapes have no way to produce a
-    /// *concrete* closure descriptor below (a further nested `App`/`If`
-    /// would need this module's own fixpoint-queue-free restriction,
-    /// `Term::Rec` inside a branch has no proof-side counterpart here), so
-    /// they're rejected outright rather than mis-handled. `root` itself is
-    /// never self-recursive here either (`is_rec` below), mirroring
-    /// `call_eq_ref`'s own identical check -- `classify_app_node`'s own
-    /// `LitLambdaOver` does allow a self-recursive `root`, but this
-    /// axiom's own construction doesn't support it, so it declines cleanly
-    /// via this check rather than `param_types_for`/`compile::peel`
-    /// failing partway through.
+    /// `Term::Abs` (never `Term::Rec`) of the same arity `k`.
     ///
     /// Every postulate this axiom's own RHS references (`register`'s own
     /// value expression for each inner closure, `mk_env_ref` for any
@@ -4606,46 +4748,29 @@ impl<'a> ClosureCombinators<'a> {
     /// denoted here... registering one never discovers more work" -- so
     /// nothing upstream of this axiom ever primes `inner`/`t`/`e`'s own
     /// postulates ahead of time the way it does for `root`'s own).
-    fn clo_eq_ref(&mut self, root: Hash) -> Option<(Expr, ClosureRhsShape)> {
-        if let Some(&(pos, shape)) = self.cp.clo_eq_pos.get(&root) {
-            return Some((self.cp.arith.p.get(pos), shape));
-        }
-        let (arity, body, is_rec) = compile::peel(self.store, root)?;
-        if is_rec {
-            return None;
-        }
-        let param_types = param_types_for(self.store, root)?;
-        if param_types.iter().any(Option::is_some) {
-            return None;
-        }
-        let k = match combinator_return_type(self.store, root) {
-            Some(Some(k)) => k,
-            _ => return None,
+    fn clo_eq_ref_if_between(
+        &mut self,
+        root: Hash,
+        arity: usize,
+        body: Hash,
+        param_types: &[Option<usize>],
+        k: usize,
+    ) -> Option<(Expr, ClosureRhsShape)> {
+        let Term::If(c, t, e) = self.store.resolve(body) else {
+            unreachable!("caller already matched Term::If")
         };
-
-        // `body` (from `compile::peel`) can never itself be `Term::Abs` --
-        // `peel_abs` unconditionally folds every consecutive `Abs` layer
-        // into `root`'s own arity, so the only way `root`'s saturated call
-        // can denote a *further* `Clo_k` (rather than that folding having
-        // already absorbed it into a larger `Int`-returning arity) is via
-        // an `If` picking between two closures created "one level down"
-        // (`t`/`e`, each *their own* separate `Abs` chain, each peeled on
-        // its own account below) -- confirmed empirically before writing
-        // this: a bare `\a b c. body` peels straight to arity 3, `Int`,
-        // never arity 2 returning `Clo_1`.
-        let Term::If(c, t, e) = self.store.resolve(body) else { return None };
         let (c, t, e) = (*c, *t, *e);
         if !matches!(self.store.resolve(t), Term::Abs(_)) || !matches!(self.store.resolve(e), Term::Abs(_)) {
             return None;
         }
-        let t_arity = return_type_of(self.store, t, arity, None, &param_types).flatten()?;
-        let e_arity = return_type_of(self.store, e, arity, None, &param_types).flatten()?;
+        let t_arity = return_type_of(self.store, t, arity, None, param_types).flatten()?;
+        let e_arity = return_type_of(self.store, e, arity, None, param_types).flatten()?;
         if t_arity != k || e_arity != k {
             return None;
         }
-        let shape = ClosureRhsShape { cond: c, inner_t: t, inner_e: e };
+        let shape = ClosureRhsShape::IfBetween { cond: c, inner_t: t, inner_e: e };
 
-        let captures = compile::free_vars(self.store, body, arity, is_rec);
+        let captures = compile::free_vars(self.store, body, arity, false);
         let n_captures = captures.len();
         let dummy_caller_param_types: Vec<Option<usize>> =
             vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -4763,7 +4888,143 @@ impl<'a> ClosureCombinators<'a> {
             Some(kernel::id(clo_ty, lhs, rhs))
         })?;
         let pos = self.cp.arith.p.push(ty);
-        self.cp.clo_eq_pos.insert(root, (pos, shape));
+        self.cp.clo_eq_pos.insert(root, (pos, shape.clone()));
+        Some((self.cp.arith.p.get(pos), shape))
+    }
+
+    /// `clo_eq_ref`'s partial-application branch: `root`'s own body is
+    /// `g(args...)`, a partial application of a further literal lambda `g`
+    /// (own arity strictly greater than `args.len()`, `k = g`'s own arity
+    /// minus `args.len()`) -- no branching at all, so the *only* possible
+    /// resulting `Clo_k` value is `pap_ref(g, args.len())` applied to
+    /// `args`'s own denoted values. Restricted to `g`'s own params all
+    /// being `Int`-typed (mirroring `call_eq_ref`'s identical restriction
+    /// on `root`'s own): `args` themselves may be arbitrary
+    /// `Var`/`Lit`/`Prim`/`If` expressions over `root`'s own scope
+    /// (denoted via `denote`), just never another closure-producing call
+    /// of their own -- widening that is a separate, not-yet-attempted
+    /// follow-on (see `RELATED_WORK.md`).
+    ///
+    /// Same priming discipline as `clo_eq_ref_if_between`'s own docs
+    /// describe: `call_ref`/`mk_env_ref` for `root`'s own shape,
+    /// `pap_ref`/`mk_env_ref` for `g`'s, all primed before
+    /// `params_and_close_typed` pushes `root`'s own quantified
+    /// captures/params, not lazily from inside that closure.
+    fn clo_eq_ref_pap(&mut self, root: Hash, arity: usize, body: Hash, _param_types: &[Option<usize>], k: usize) -> Option<(Expr, ClosureRhsShape)> {
+        let (g, args) = compile::unwind_app_spine(self.store, body);
+        if !matches!(self.store.resolve(g), Term::Abs(_) | Term::Rec(_)) {
+            return None;
+        }
+        let g_param_types = param_types_for(self.store, g)?;
+        if g_param_types.iter().any(Option::is_some) {
+            return None;
+        }
+        let g_arity = g_param_types.len();
+        if args.len() >= g_arity || g_arity - args.len() != k {
+            return None;
+        }
+        let shape = ClosureRhsShape::Pap { g, args: args.clone() };
+
+        let captures = compile::free_vars(self.store, body, arity, false);
+        let n_captures = captures.len();
+        let dummy_caller_param_types: Vec<Option<usize>> =
+            vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
+        let sig = capture_sig(&captures, &dummy_caller_param_types)?;
+
+        // Literal pre-pass -- every supplied arg, not `root`'s whole body
+        // (mirrors `clo_eq_ref_if_between`'s own `cond`-only pre-pass, for
+        // the same reason: `collect_literals` unconditionally rejects the
+        // `App` this whole shape's premise requires). `g`'s own body stays
+        // opaque to this construction, exactly like `t`/`e`'s own bodies
+        // in the `If` case -- its own literals are collected later, when
+        // `call_eq_ref` runs on `g` concretely (`eval_and_prove_direct_call`).
+        let mut lits = Vec::new();
+        for &a in &args {
+            if !collect_literals(self.store, a, arity, None, None, &mut lits) {
+                return None;
+            }
+        }
+        for lit_n in lits {
+            self.cp.arith.lit(lit_n);
+        }
+
+        // Prime `call_ref`/`mk_env_ref` for `root`'s own shape, `pap_ref`/
+        // `mk_env_ref` for `g`'s -- see this method's own docs for why
+        // this must happen before `params_and_close_typed` below.
+        let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
+        let call_fn = Anchored::new(&self.cp.arith, call_fn);
+        if n_captures > 0 {
+            self.cp.mk_env_ref(&sig);
+        }
+        let (_, g_body, g_is_rec) = compile::peel(self.store, g)?;
+        let g_captures = compile::free_vars(self.store, g_body, g_arity, g_is_rec);
+        let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
+        let pap_fn = self.pap_ref(g, args.len(), &g_dummy)?;
+        let pap_fn = Anchored::new(&self.cp.arith, pap_fn);
+        if !g_captures.is_empty() {
+            let g_sig = capture_sig(&g_captures, &g_dummy)?;
+            self.cp.mk_env_ref(&g_sig);
+        }
+
+        // Quantify `n_captures + arity` fresh `Int` postulates -- same
+        // order `clo_eq_ref_if_between`/`call_eq_ref` both use.
+        let quant_types = vec![None; n_captures + arity];
+        let store = self.store;
+        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+            let all = pp.at(&combinators.cp.arith);
+            let (cs, ps) = all.split_at(n_captures);
+            let call_fn_here = call_fn.at(&combinators.cp.arith);
+
+            // LHS: identical construction to `clo_eq_ref_if_between`'s own.
+            let mut call_args = Vec::with_capacity(1 + arity);
+            if n_captures > 0 {
+                let mk_env_expr = combinators.cp.mk_env_ref(&sig);
+                call_args.push(apply_n(mk_env_expr, cs.iter().cloned()));
+            }
+            call_args.extend(ps.iter().rev().cloned());
+            let lhs = apply_n(call_fn_here, call_args);
+
+            // `params_full`: identical sparse capture-index construction
+            // to `clo_eq_ref_if_between`'s own -- `body`'s own args sit at
+            // exactly `body`'s own scope depth (a plain `App` introduces
+            // no binders), so their relative indices land at the correct
+            // absolute index directly.
+            let mut params_full = ps.to_vec();
+            if let Some(&max_rel) = captures.iter().max() {
+                params_full.resize(arity + max_rel as usize + 1, cs[0].clone());
+                for (j, &rel) in captures.iter().enumerate() {
+                    params_full[arity + rel as usize] = cs[j].clone();
+                }
+            }
+
+            // RHS: `pap_ref(g, s)(g_env?, args...)` -- same argument
+            // construction (application order, `g`'s own `param_types` at
+            // each position) `denote_closure`'s own `LitLambdaPartial` arm
+            // uses, over `params_full` (abstract quantified vars) instead
+            // of a caller's real frame.
+            let pap_fn_here = pap_fn.at(&combinators.cp.arith);
+            let g_env = if g_captures.is_empty() {
+                None
+            } else {
+                let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
+                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed above
+                let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
+                Some(apply_n(mk_env_expr, cs2))
+            };
+            let mut arg_exprs = Vec::with_capacity(args.len());
+            for &a in &args {
+                arg_exprs.push(denote(store, a, &combinators.cp.arith, &params_full)?);
+            }
+            let mut pap_args = Vec::with_capacity(1 + args.len());
+            pap_args.extend(g_env);
+            pap_args.extend(arg_exprs);
+            let rhs = apply_n(pap_fn_here, pap_args);
+
+            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed by pap_ref above
+            Some(kernel::id(clo_ty, lhs, rhs))
+        })?;
+        let pos = self.cp.arith.p.push(ty);
+        self.cp.clo_eq_pos.insert(root, (pos, shape.clone()));
         Some((self.cp.arith.p.get(pos), shape))
     }
 
@@ -4911,23 +5172,129 @@ impl<'a> ClosureCombinators<'a> {
         self.cp.apply_clo_eq_pos.insert(inner_root, pos);
         Some(self.cp.arith.p.get(pos))
     }
+
+    /// `apply_clo_eq_ref`'s own counterpart for a `Clo_k` value that's a
+    /// *partial application* (`pap_ref(g, s)`'s own value) rather than a
+    /// directly-registered combinator's: `apply_ref(k)(pap_ref(g,
+    /// s)(g_env?, a_{s-1}..a_0), b_{k-1}..b_0) = call_ref(g)(g_env?,
+    /// a_{s-1}..a_0, b_{k-1}..b_0)`, `k = g`'s own arity minus `s`.
+    /// Needed because `pap_ref` is exactly as opaque as a directly-
+    /// registered combinator's own value was before `apply_clo_eq_ref` --
+    /// this is the semantic fact a compile-time-desugared PAP wrapper's
+    /// own codegen encodes (`register_partial_app`'s wrapper forwards its
+    /// own supplied arguments plus whatever further ones it's eventually
+    /// given straight into `g`'s own entry), stated here as the only thing
+    /// that gives `pap_ref`'s otherwise-opaque value defined behavior once
+    /// something is actually applied to it. Restricted to `g`'s own
+    /// params all being `Int`-typed, mirroring `clo_eq_ref_pap`'s own
+    /// identical restriction (this axiom is only ever reached from there).
+    /// Memoized by `(g, s)` alone -- `apply_ref(k)`/`pap_ref(g, s)` each
+    /// stay memoized by their own key already.
+    fn apply_pap_eq_ref(&mut self, g: Hash, s: usize) -> Option<Expr> {
+        let key = (g, s);
+        if let Some(&pos) = self.cp.apply_pap_eq_pos.get(&key) {
+            return Some(self.cp.arith.p.get(pos));
+        }
+        let (g_arity, g_body, g_is_rec) = compile::peel(self.store, g)?;
+        if s == 0 || s >= g_arity {
+            return None;
+        }
+        let k = g_arity - s;
+        let g_param_types = param_types_for(self.store, g)?;
+        if g_param_types.iter().any(Option::is_some) {
+            return None;
+        }
+        let g_captures = compile::free_vars(self.store, g_body, g_arity, g_is_rec);
+        let n_captures = g_captures.len();
+        let dummy_caller_param_types: Vec<Option<usize>> =
+            vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
+        let sig = capture_sig(&g_captures, &dummy_caller_param_types)?;
+
+        let apply_fn = self.cp.apply_ref(k);
+        let apply_fn = Anchored::new(&self.cp.arith, apply_fn);
+        let call_fn = self.call_ref(g, &g_captures, &dummy_caller_param_types)?;
+        let call_fn = Anchored::new(&self.cp.arith, call_fn);
+        let pap_fn = self.pap_ref(g, s, &dummy_caller_param_types)?;
+        let pap_fn = Anchored::new(&self.cp.arith, pap_fn);
+        if n_captures > 0 {
+            self.cp.mk_env_ref(&sig);
+        }
+
+        // Quantify `n_captures + g_arity` fresh `Int` postulates -- same
+        // order (captures first, then `g`'s own `s` supplied params, then
+        // its remaining `k`) `apply_clo_eq_ref`'s own quantification uses
+        // for captures-then-params.
+        let quant_types = vec![None; n_captures + g_arity];
+        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+            let all = pp.at(&combinators.cp.arith);
+            let (cs, ps) = all.split_at(n_captures);
+            let (supplied, more) = ps.split_at(s);
+            let pap_fn_here = pap_fn.at(&combinators.cp.arith);
+            let call_fn_here = call_fn.at(&combinators.cp.arith);
+            let apply_fn_here = apply_fn.at(&combinators.cp.arith);
+
+            let (pap_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
+                let mk_env_expr = combinators.cp.mk_env_ref(&sig); // cache hit -- primed above
+                let env = apply_n(mk_env_expr, cs.iter().cloned());
+                let v = apply_n(pap_fn_here, std::iter::once(env.clone()).chain(supplied.iter().cloned()));
+                (v, Some(env))
+            } else {
+                (apply_n(pap_fn_here, supplied.iter().cloned()), None)
+            };
+
+            // LHS: `apply_ref(k)(pap_value, more_{k-1}..more_0)` -- same
+            // descending order `apply_clo_eq_ref`'s own LHS uses for its
+            // own `k` params.
+            let mut apply_args = Vec::with_capacity(1 + k);
+            apply_args.push(pap_value);
+            apply_args.extend(more.iter().rev().cloned());
+            let lhs = apply_n(apply_fn_here, apply_args);
+
+            // RHS: `call_ref(g)(g_env?, a_0..a_{s-1}, b_{k-1}..b_0)` --
+            // same combinator, `g`'s own full argument list in one call,
+            // `env` (if any) leading. The `s` supplied args are *not*
+            // reversed here, unlike `more`: they never pass through
+            // `apply_ref`'s own convention at all (only `pap_fn`'s, on the
+            // LHS, in the same unreversed order) -- so their own ordering
+            // only has to agree between this axiom's LHS and RHS (and
+            // whatever independently reconstructs the same value at a
+            // call site, e.g. `eval_and_prove_call_over`'s own
+            // `pap_at_denoted`), not with `call_ref`'s "descending"
+            // convention the way `more` (which *does* cross `apply_ref`)
+            // must.
+            let mut call_args = Vec::with_capacity(1 + s + k);
+            call_args.extend(env_arg);
+            call_args.extend(supplied.iter().cloned());
+            call_args.extend(more.iter().rev().cloned());
+            let rhs = apply_n(call_fn_here, call_args);
+
+            let int_ty = combinators.cp.arith.int_ty();
+            Some(kernel::id(int_ty, lhs, rhs))
+        })?;
+        let pos = self.cp.arith.p.push(ty);
+        self.cp.apply_pap_eq_pos.insert(key, pos);
+        Some(self.cp.arith.p.get(pos))
+    }
 }
 
-/// `root`'s own body, as `clo_eq_ref` requires it: `If(cond, inner_t,
-/// inner_e)`, choosing between two same-arity literal lambdas -- carried
-/// alongside its memoized axiom so a memo hit doesn't need to re-classify
-/// `root`'s body, and so `eval_and_prove_call_over` knows which `Hash`es
-/// to concretely evaluate. `root`'s own peeled body can never itself be a
+/// `root`'s own body, as `clo_eq_ref` requires it -- carried alongside its
+/// memoized axiom so a memo hit doesn't need to re-classify `root`'s
+/// body, and so `eval_and_prove_call_over` knows which `Hash`es to
+/// concretely evaluate. `root`'s own peeled body can never itself be a
 /// bare literal lambda directly (`compile::peel`'s own `peel_abs` always
 /// folds every consecutive `Abs` layer into `root`'s own arity, so a
-/// `Clo_k`-returning saturated call can only arise "one level down", via
-/// an `If` -- confirmed empirically, not just by inspection, before this
-/// type was simplified down to just this one shape).
-#[derive(Clone, Copy)]
-struct ClosureRhsShape {
-    cond: Hash,
-    inner_t: Hash,
-    inner_e: Hash,
+/// `Clo_k`-returning saturated call can only arise "one level down"), so
+/// every variant here describes some further, `Abs`-nested computation.
+#[derive(Clone)]
+enum ClosureRhsShape {
+    /// `If(cond, inner_t, inner_e)`, choosing between two same-arity
+    /// literal lambdas.
+    IfBetween { cond: Hash, inner_t: Hash, inner_e: Hash },
+    /// `g(args...)`, a partial application of a literal lambda `g` (own
+    /// arity strictly greater than `args.len()`) -- no branching at all,
+    /// the *only* possible resulting `Clo_k` value is `pap_ref(g,
+    /// args.len())` applied to `args`'s own denoted values.
+    Pap { g: Hash, args: Vec<Hash> },
 }
 
 /// The `Clo_k`/`Int` signature of a capture list, relative to the *calling*
@@ -6567,18 +6934,23 @@ mod tests {
     }
 
     #[test]
-    fn a_pap_producing_root_is_out_of_scope_for_eval_and_prove_call_over() {
-        // g = \x y. x + y (arity 2); f = \a. g(a) -- f's own saturated
-        // call is a *partial application* of g (root_arity=1, k=1, per
+    fn a_pap_producing_root_gets_a_concrete_instance_for_eval_and_prove_call_over() {
+        // g = \x y. x*10 + y (arity 2, deliberately asymmetric so an
+        // index-order bug between x/y would change the result, not just
+        // its symmetry); f = \a. g(a) -- f's own saturated call is a
+        // *partial application* of g (root_arity=1, k=1, per
         // `return_type_of`'s own `Ordering::Less` branch), not an `If`
-        // between two closures -- `clo_eq_ref`'s own classification
-        // requires `root`'s peeled body to be `Term::If`, rejecting a
-        // bare `Term::App` body outright. `f(a)(c)` (over-application)
-        // should stay `None`, not panic.
+        // between two closures -- `clo_eq_ref_pap` (not
+        // `clo_eq_ref_if_between`) covers this shape now. `f(a)(c)` is
+        // over-application: `f`'s own saturated call denotes `g` partially
+        // applied to `a`, then the extra argument `c` completes it, so the
+        // whole term should agree with calling `g(a, c)` directly.
         let mut s = TermStore::new();
         let x = s.var(1);
         let y = s.var(0);
-        let xy = s.prim(PrimOp::Add, x, y);
+        let ten = s.lit(10);
+        let x10 = s.prim(PrimOp::Mul, x, ten);
+        let xy = s.prim(PrimOp::Add, x10, y);
         let g_inner = s.abs(xy);
         let g = s.abs(g_inner);
 
@@ -6591,13 +6963,87 @@ mod tests {
         let fa = s.app(f, a_lit);
         let h = s.app(fa, c_lit);
 
+        // Hand-verified against the reference interpreter before trusting
+        // the term shape, per this project's own established discipline:
+        // g(5, 3) = 5*10 + 3 = 53 (an index swap would instead give
+        // g(3, 5) = 3*10 + 5 = 35, a different number, so this is a real
+        // regression guard, not just a symmetry check).
+        assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), 53);
+
         let mut combinators = ClosureCombinators::new(&s);
         combinators.cp.arith.lit(5);
         combinators.cp.arith.lit(3);
-        assert!(
-            eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).is_none(),
-            "a PAP-producing root's own saturated call should stay out of scope, not panic"
-        );
+        let (result, denoted, proof) =
+            eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).expect("a PAP-producing root's over-application should get a concrete instance");
+        assert_eq!(result, 53, "should agree with the reference interpreter, not just typecheck");
+        let int_ty = combinators.cp.arith.int_ty();
+        kernel::check(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
+            .expect("the recorded proof should independently re-typecheck");
+    }
+
+    #[test]
+    fn a_pap_producing_root_with_two_supplied_args_and_a_capturing_g_gets_a_concrete_instance() {
+        // g = \p q r. p*100 + q*10 + r + captured_y (arity 3), where
+        // `captured_y` is a *capture*, not one of g's own params --
+        // relative to g's own 3-ary scope that's `Var(3)` (one beyond p/q/r,
+        // `p`=Var(2)/`q`=Var(1)/`r`=Var(0) innermost-last), which resolves
+        // (per `free_vars`' own "no additional shift" convention for a
+        // lambda referenced directly, with no binders of its own in
+        // between) to `f`'s own `y` -- `g_x` sits immediately inside `f`'s
+        // body, introducing no binders of its own before that point.
+        // Fully asymmetric coefficients so any swap among the *two* args
+        // `f` itself supplies (p, q), the one extra arg (r), or the
+        // captured value (`y`, doubly used: both a supplied arg *and* a
+        // capture) changes the result.
+        //
+        // f = \x y. g(x, y) -- a PAP of g supplying 2 of its 3 remaining
+        // params (s=2, k=1), specifically exercising the *ordering among
+        // the supplied args themselves* (the single-supplied-arg test
+        // above can't distinguish this, since reversing one element is a
+        // no-op) together with `g`'s own capture.
+        let mut s = TermStore::new();
+        let p = s.var(2);
+        let q = s.var(1);
+        let r = s.var(0);
+        let captured_y = s.var(3);
+        let hundred = s.lit(100);
+        let ten = s.lit(10);
+        let p100 = s.prim(PrimOp::Mul, p, hundred);
+        let q10 = s.prim(PrimOp::Mul, q, ten);
+        let sum1 = s.prim(PrimOp::Add, p100, q10);
+        let sum2 = s.prim(PrimOp::Add, sum1, r);
+        let sum3 = s.prim(PrimOp::Add, sum2, captured_y);
+        let g_r = s.abs(sum3);
+        let g_q = s.abs(g_r);
+        let g_p = s.abs(g_q); // g = \p q r. p*100+q*10+r+captured_y, capturing Var(3) relative to its own arity-3 scope
+
+        let f_x = s.var(1);
+        let f_y = s.var(0);
+        let f_body = s.app2(g_p, f_x, f_y); // g(x, y) -- a 2-of-3 partial application of g
+        let f_y_binder = s.abs(f_body);
+        let f = s.abs(f_y_binder); // f = \x y. g(x, y), arity 2
+
+        let x_lit = s.lit(5);
+        let y_lit = s.lit(7);
+        let r_lit = s.lit(3);
+        let f_at_x = s.app(f, x_lit);
+        let f_at_x_y = s.app(f_at_x, y_lit);
+        let h = s.app(f_at_x_y, r_lit); // ((f(x))(y))(r) -- f(x,y)'s own saturated call is the PAP, r is the over-application
+
+        // Hand-verified: g(p=5,q=7,r=3,captured_y=7) = 5*100+7*10+3+7 = 580.
+        // Swapping p/q would instead give 7*100+5*10+3+7 = 760.
+        assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), 580);
+
+        let mut combinators = ClosureCombinators::new(&s);
+        for lit in [5, 7, 3] {
+            combinators.cp.arith.lit(lit);
+        }
+        let (result, denoted, proof) =
+            eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).expect("a capturing PAP-producing root's over-application should get a concrete instance");
+        assert_eq!(result, 580, "should agree with the reference interpreter, not just typecheck");
+        let int_ty = combinators.cp.arith.int_ty();
+        kernel::check(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
+            .expect("the recorded proof should independently re-typecheck");
     }
 
     #[test]

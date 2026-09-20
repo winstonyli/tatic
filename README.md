@@ -748,13 +748,24 @@ guards against by hand): caught immediately, at seed 22.
   more computation-rule axioms in the same idiom: `clo_eq_ref` (a
   `Clo_k`-typed sibling of `call_eq_ref`) and `apply_clo_eq_ref` (ties
   `apply_ref` to whichever closure value is concretely produced), plus a
-  small `ite_clo_eq_ref` bridge for the concrete branch selection. Still
-  open: a *partially*-applied closure creation in this position (no
-  concrete `Clo` representation to hand back), a PAP-producing or further
-  nested-call-producing `root`, and a further-nested `If` inside either
-  branch — all "sound, not complete", the same standing tradeoff this
-  fragment makes everywhere else; none affect `kernel_verified`, only
-  weaker, call-specific evidence.
+  small `ite_clo_eq_ref` bridge for the concrete branch selection. A
+  *PAP-producing* `root` (`root`'s own body a partial application of a
+  further literal lambda `g`, e.g. `f = \a. g(a)` for a 2-ary `g`, then
+  over-applied as `f(a)(c)`) is covered too now — `clo_eq_ref_pap`, a
+  sibling of `clo_eq_ref_if_between` sharing `clo_eq_ref`'s own dispatch,
+  states `root`'s call equals `pap_ref(g, s)` applied to the supplied
+  args' own denoted values, and a new `apply_pap_eq_ref` ties
+  `apply_ref(k)` applied to that `Clo_k` value down to a direct call on
+  `g` with all `s + k` arguments together (mirroring `apply_clo_eq_ref`'s
+  role, but for a partial-application value instead of a directly-
+  registered combinator's) — restricted, for now, to `g`'s own params all
+  being `Int`-typed. Still open: a *partially*-applied closure creation in
+  this position (no concrete `Clo` representation to hand back), a
+  further nested-call-producing `root` (one indirect call away from a
+  literal lambda, rather than a PAP or an `If` directly), and a
+  further-nested `If` inside either branch — all "sound, not complete",
+  the same standing tradeoff this fragment makes everywhere else; none
+  affect `kernel_verified`, only weaker, call-specific evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
   too (`ite_clo`, lazily postulated — see the table row above), when the
   `If`'s own result is used as a *value* — and, separately, `call_ref`'s
