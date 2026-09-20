@@ -1277,6 +1277,99 @@ isn't a gap `Sigma` closes by existing — it's the same "separate, larger
 research question" this document already named before `Sigma` was added,
 now with a concretely-ruled-out approach rather than an unexamined one.
 
+## 15. Why over-application proofs cost ~1000x a plain arithmetic call — investigated to root cause
+
+`benches/proofs.rs`'s own `over_application_instance_proof` doc comment
+had flagged, since the benchmark was first written, that each
+over-application instance (`eval_and_prove_call_over`'s own
+`clo_eq_ref_if_between`/`clo_eq_ref_pap` shapes) costs roughly
+20-30ms — three orders of magnitude past
+`gcd_relational_proof_single_call`'s own ~24us per plain-arithmetic
+call — "left as a discovered fact this benchmark documents, not
+something fixed here." Investigated properly this session, with two
+genuinely separate findings, one real and fixed, one real and inherent.
+
+**Fixed: `term::Hash`-keyed `HashMap`s were re-hashing an
+already-random 32-byte digest through SipHash on every lookup.**
+`term::Hash` is a BLAKE3 digest — 32 bytes, already uniformly random —
+and every `HashMap<Hash, _>` in the codebase (`TermStore::by_hash`'s own
+interning table foremost, plus most of `ClosurePostulates`'s
+memoization tables, `compile.rs`'s combinator index, `jit.rs`'s cache —
+17 sites total) used Rust's default, cryptographically-oriented SipHash
+hasher, re-hashing that already-good digest for no benefit: profiling
+`over_application_instance_proof` under `callgrind` found `<DefaultHasher
+as Hasher>::write`/`BuildHasher::hash_one` accounting for over 40% of
+all instructions retired. Fixed with the standard remedy for exactly
+this situation (the same reasoning `rustc-hash`/`FxHash` is built on): a
+small, self-contained rotate-xor-multiply hasher (`term::FxHasher`/
+`FxBuildHasher`, no new dependency) applied at all 17 sites. Confirmed
+correct (full test suite, all four fuzzers, clippy, release demo all
+green) and confirmed to actually help, modestly (0% to -8.5% wall-clock,
+statistically significant on the PAP shape, `p < 0.05`).
+
+**Correction to the profile's own first impression: most of that 40%
+wasn't the real bottleneck, and re-profiling after the fix proved it.**
+The wall-clock win (a few percent) was far smaller than the raw
+instruction-count share (40%) implied it should be. Re-profiling under
+callgrind after the fix confirmed why: instruction count barely moved
+(1.040B → 1.028B, ~1%), and a `--tree=caller` breakdown of the still-
+dominant `DefaultHasher::write` traced 94% of its calls to
+`std::thread::local::LocalKey<T>::with` (kernel.rs's own
+`SHIFT_SCOPE_ACTIVE` check inside `shift_rc`, called ~938,812 times for
+just 4 proof iterations) rather than to any `Hash`-keyed map at all.
+Thread-local access showing up as hashmap-heavy work is a known
+`valgrind`/`callgrind` TLS-emulation artifact, not native reality — a
+smaller, unrelated benchmark's own profile was dominated by criterion's
+regex/dynamic-linker startup noise instead, confirming callgrind's raw
+instruction counts need real wall-clock corroboration here, not
+face-value trust. Recorded so a future profiling pass over this
+codebase doesn't re-chase the same artifact.
+
+**Ruled out: `with_shift_cache` doesn't help here, confirmed by
+measurement, not assumed.** Given ~938,812 `shift_rc` calls for 4
+iterations, the natural next guess was that the existing
+`with_shift_cache` mechanism (a proven ~2x win on large branching-leaf
+instances, per its own docs) was simply not engaged for this shape.
+Tried directly (wrapping the benchmark's own `prove_tail_recursive_instance`
+call in `kernel::with_shift_cache`): it made both shapes measurably
+*slower* (223ms vs 202ms; 139ms vs 127ms), not faster. This matches the
+cache's own documented limitation: it wins when the *same* subterm gets
+reshifted by the *same* amount across several callers, and loses
+(HashMap overhead paid for nothing) when it doesn't. This workload's own
+938K shift calls aren't that pattern — see below for what they are.
+
+**The real, inherent answer: the cost is super-linear in iteration
+count by construction, not a hidden bug.** A direct scaling check (the
+same term, `prove_tail_recursive_instance` at 1, 2, 4, 8, 16, 32
+iterations) measured 69.6ms / 102ms / 204ms / 441ms / 985ms / 2672ms.
+Each doubling of the iteration count costs progressively *more*, not a
+constant multiple (1.47x, 2.00x, 2.16x, 2.24x, 2.71x) — consistent with,
+and explained by, `trans_proof`'s own cumulative composition: each new
+iteration's own step proof is built by transitivity against the *entire*
+proof chain accumulated so far (`kernel::trans_proof`, chained once per
+iteration), so total work across `n` iterations is a sum of growing
+terms — the same reason repeatedly appending to a growing structure by
+copy is inherently superlinear, not specific to closures or
+`eval_and_prove_call_over` at all. `with_shift_cache`'s own inability to
+help is the same fact from a different angle: there's no *repeated*
+work to cache here, just a genuinely *growing* one.
+
+**This also means the original comparison was apples to oranges.**
+`gcd_relational_proof_single_call`'s ~24us proves one *relational* step
+of a tail-recursive call (`prove_tail_recursive_call`) — it never
+unrolls or accumulates a chain across iterations at all, by design (see
+this project's own module docs on the relational-vs-universal-vs-instance
+proof strategies). `over_application_instance_proof` measures a fully
+*unrolled instance* proof's own amortized per-iteration cost instead — a
+structurally different, inherently more expensive strategy, run here at
+just 4 iterations specifically because that's what real usage
+(`build_ev_witness`'s own per-self-call-argument handling) needs, not
+because the underlying operation is 1000x more expensive at matched
+strategies. The three-orders-of-magnitude framing measured a real
+number correctly, but implied a comparison ("over-application closures
+are inherently ~1000x slower than arithmetic") that doesn't hold once
+the two benchmarks' own proof strategies are accounted for.
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)

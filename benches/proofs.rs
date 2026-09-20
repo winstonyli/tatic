@@ -191,13 +191,37 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
 /// tail-recursive loop's `build_universal` cost alone, ~10-20ms) puts a
 /// number on it: this benchmark's own measured cost (~90-130ms for 4
 /// iterations, both shapes) is 5-10x that baseline, so most of it -- not
-/// all -- is genuinely attributable to the 4 over-application instances,
-/// roughly ~20-30ms each. That per-instance cost is itself a real,
-/// somewhat surprising finding (three orders of magnitude past
-/// `gcd_relational_proof_single_call`'s own ~24us per-call cost for
-/// comparable arithmetic recursion) worth a closer look in its own right
-/// -- left as a discovered fact this benchmark documents, not something
-/// fixed here.
+/// all -- is genuinely attributable to the 4 over-application instances.
+///
+/// **Investigated, not just left as a discovered fact** (see
+/// `RELATED_WORK.md`'s own write-up): a callgrind profile found ~40% of
+/// all instructions in `<DefaultHasher as Hasher>::write`/`hash_one`,
+/// traced to every `HashMap<Hash, _>` (`Hash` = a 32-byte BLAKE3 digest,
+/// already uniformly random) re-hashing that digest through SipHash on
+/// every lookup -- fixed project-wide with a `FxHash`-style passthrough
+/// hasher (`term::FxBuildHasher`), a real but modest win (0-8.5%
+/// wall-clock here; most of that instruction count turned out to trace
+/// through `std::thread::local`'s own access machinery under valgrind's
+/// TLS emulation specifically, not representative of native cost).
+/// `with_shift_cache` was tried too and made this measurably *worse* --
+/// this workload's own redundancy shape (a genuinely growing
+/// `trans_proof` chain, not the same subterm reshifted repeatedly across
+/// callers) doesn't match what that cache targets.
+///
+/// The real remaining answer: this cost is super-linear in iteration
+/// count by construction, not a hidden bug. A direct scaling check (1,
+/// 2, 4, 8, 16, 32 iterations) measured 69.6ms/102ms/204ms/441ms/985ms/
+/// 2672ms -- doubling the iteration count costs progressively more each
+/// time (1.5x, 2.0x, 2.2x, 2.2x, 2.7x), consistent with `trans_proof`'s
+/// own cumulative composition: each new step's proof necessarily
+/// references the *entire* accumulated chain so far, the same reason
+/// repeatedly appending to a growing structure by copy is inherently
+/// superlinear. `gcd_relational_proof_single_call`'s own ~24us is not
+/// a fair comparison against this -- it proves one *relational* step,
+/// never unrolling a growing chain, while this benchmark measures a
+/// fully-unrolled *instance* proof's own amortized per-iteration cost,
+/// a structurally different (and inherently more expensive) proof
+/// strategy, not evidence that closures specifically are slow.
 fn over_application_instance_proof(c: &mut Criterion) {
     let mut group = c.benchmark_group("over_application_instance_proof");
 

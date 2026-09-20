@@ -4273,26 +4273,26 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
 #[derive(Clone)]
 struct ClosurePostulates {
     arith: ArithPostulates,
-    combinator_value_pos: HashMap<Hash, usize>,
-    combinator_call_pos: HashMap<Hash, usize>,
+    combinator_value_pos: HashMap<Hash, usize, crate::term::FxBuildHasher>,
+    combinator_call_pos: HashMap<Hash, usize, crate::term::FxBuildHasher>,
     env_ty_pos: HashMap<Vec<Option<usize>>, usize>,
     mk_env_pos: HashMap<Vec<Option<usize>>, usize>,
-    mk_clo_pos: HashMap<Hash, usize>,
-    pap_pos: HashMap<(Hash, usize), usize>,
+    mk_clo_pos: HashMap<Hash, usize, crate::term::FxBuildHasher>,
+    pap_pos: HashMap<(Hash, usize), usize, crate::term::FxBuildHasher>,
     ite_clo_pos: HashMap<usize, usize>,
     /// `call_eq_ref`'s own memoization -- see its docs.
-    call_eq_pos: HashMap<Hash, usize>,
+    call_eq_pos: HashMap<Hash, usize, crate::term::FxBuildHasher>,
     /// `clo_eq_ref`'s own memoization -- see its docs. Keeps the matched
     /// `ClosureRhsShape` alongside the axiom's own position so a memo hit
     /// doesn't need to re-classify `h`'s own body.
-    clo_eq_pos: HashMap<Hash, (usize, ClosureRhsShape)>,
+    clo_eq_pos: HashMap<Hash, (usize, ClosureRhsShape), crate::term::FxBuildHasher>,
     /// `ite_clo_eq_ref`'s own memoization -- see its docs. Keyed by the
     /// concrete condition value, not a collapsed boolean (see its docs).
     ite_clo_eq_pos: HashMap<(i64, usize), usize>,
     /// `apply_clo_eq_ref`'s own memoization -- see its docs.
-    apply_clo_eq_pos: HashMap<Hash, usize>,
+    apply_clo_eq_pos: HashMap<Hash, usize, crate::term::FxBuildHasher>,
     /// `apply_pap_eq_ref`'s own memoization -- see its docs.
-    apply_pap_eq_pos: HashMap<(Hash, usize), usize>,
+    apply_pap_eq_pos: HashMap<(Hash, usize), usize, crate::term::FxBuildHasher>,
 }
 
 /// Lets code holding a `&(mut) ClosurePostulates` -- `build_universal`'s own
@@ -4320,18 +4320,18 @@ impl ClosurePostulates {
         let arith = ArithPostulates::new();
         ClosurePostulates {
             arith,
-            combinator_value_pos: HashMap::new(),
-            combinator_call_pos: HashMap::new(),
+            combinator_value_pos: HashMap::default(),
+            combinator_call_pos: HashMap::default(),
             env_ty_pos: HashMap::new(),
             mk_env_pos: HashMap::new(),
-            mk_clo_pos: HashMap::new(),
-            pap_pos: HashMap::new(),
+            mk_clo_pos: HashMap::default(),
+            pap_pos: HashMap::default(),
             ite_clo_pos: HashMap::new(),
-            call_eq_pos: HashMap::new(),
-            clo_eq_pos: HashMap::new(),
+            call_eq_pos: HashMap::default(),
+            clo_eq_pos: HashMap::default(),
             ite_clo_eq_pos: HashMap::new(),
-            apply_clo_eq_pos: HashMap::new(),
-            apply_pap_eq_pos: HashMap::new(),
+            apply_clo_eq_pos: HashMap::default(),
+            apply_pap_eq_pos: HashMap::default(),
         }
     }
 
@@ -5766,10 +5766,10 @@ fn classify_closure_if_tree_leaf(store: &TermStore, h: Hash, k: usize) -> Option
 /// (a leaf appearing more than once in the tree -- structurally
 /// identical sub-terms, hash-consed together -- classified only once);
 /// `None` if any leaf fails to classify.
-fn classify_closure_if_tree_leaves(store: &TermStore, tree: &DecisionTree, k: usize) -> Option<HashMap<Hash, ClosureIfTreeLeafShape>> {
+fn classify_closure_if_tree_leaves(store: &TermStore, tree: &DecisionTree, k: usize) -> Option<HashMap<Hash, ClosureIfTreeLeafShape, crate::term::FxBuildHasher>> {
     let mut leaves = Vec::new();
     closure_if_tree_leaves(tree, &mut leaves);
-    let mut shapes = HashMap::new();
+    let mut shapes = HashMap::default();
     for h in leaves {
         if shapes.contains_key(&h) {
             continue;
@@ -5816,7 +5816,7 @@ fn collect_closure_if_tree_literals(store: &TermStore, tree: &DecisionTree, arit
 /// `clo_eq_ref_pap`'s own priming (`Pap` case), and `clo_eq_ref_call`'s own
 /// priming (`Call` case), generalized to every leaf `leaf_shapes` (from
 /// `classify_closure_if_tree_leaves`) names.
-fn prime_closure_if_tree_leaves(combinators: &mut ClosureCombinators<'_>, leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>) -> Option<()> {
+fn prime_closure_if_tree_leaves(combinators: &mut ClosureCombinators<'_>, leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape, crate::term::FxBuildHasher>) -> Option<()> {
     for (&h, shape) in leaf_shapes {
         match shape {
             ClosureIfTreeLeafShape::Abs { captures } => {
@@ -5938,7 +5938,7 @@ fn build_closure_if_tree_rhs(
     store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
-    leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
+    leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape, crate::term::FxBuildHasher>,
     params_full: &[Expr],
     k: usize,
 ) -> Option<Expr> {
@@ -6079,7 +6079,7 @@ fn closure_if_tree_value_at_literals(
     store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
-    leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
+    leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape, crate::term::FxBuildHasher>,
     inner_params: &[Anchored],
     inner_concrete: &[i64],
     inner_facts: &[Anchored],
@@ -6162,7 +6162,7 @@ fn resolve_closure_if_tree(
     store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
-    leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
+    leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape, crate::term::FxBuildHasher>,
     inner_params: &[Anchored],
     inner_concrete: &[i64],
     inner_facts: &[Anchored],
