@@ -1816,7 +1816,14 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // *creation* anywhere in the body, a captured free variable, an `If`
     // between two closures).
     let found = compile::infer_closure_arities(store, body, arity, Some(self_idx))?;
-    let param_types: Vec<Option<usize>> = (0..arity as u32).map(|i| found.get(&i).copied()).collect();
+    // See `param_types_for`'s own docs: an inconsistently-called `Var` is
+    // declined the same way an absent one already is.
+    let param_types: Vec<Option<usize>> = (0..arity as u32)
+        .map(|i| match found.get(&i) {
+            Some(compile::ArityUse::Consistent(k)) => Some(*k),
+            Some(compile::ArityUse::Inconsistent) | None => None,
+        })
+        .collect();
 
     let tree = classify_tree(store, body)?;
     let leaves = flatten_tree(store, &tree, self_call, &param_types)?;
@@ -3656,7 +3663,18 @@ fn param_types_for(store: &TermStore, h: Hash) -> Option<Vec<Option<usize>>> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     let self_idx = is_rec.then_some(arity as u32);
     let found = compile::infer_closure_arities(store, body, arity, self_idx)?;
-    Some((0..arity as u32).map(|i| found.get(&i).copied()).collect())
+    // An inconsistently-called `Var` is declined here exactly as an
+    // absent one already is -- this proof methodology has no way to
+    // classify a value whose arity isn't fixed statically (see
+    // `compile::ArityUse`'s own docs).
+    Some(
+        (0..arity as u32)
+            .map(|i| match found.get(&i) {
+                Some(compile::ArityUse::Consistent(k)) => Some(*k),
+                Some(compile::ArityUse::Inconsistent) | None => None,
+            })
+            .collect(),
+    )
 }
 
 /// Which shape an application node (`Term::App` chain) takes -- shared by
@@ -5252,7 +5270,14 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
     }
 
     let found = compile::infer_closure_arities(store, body, arity, None)?;
-    let param_types: Vec<Option<usize>> = (0..arity as u32).map(|i| found.get(&i).copied()).collect();
+    // See `param_types_for`'s own docs: an inconsistently-called `Var` is
+    // declined the same way an absent one already is.
+    let param_types: Vec<Option<usize>> = (0..arity as u32)
+        .map(|i| match found.get(&i) {
+            Some(compile::ArityUse::Consistent(k)) => Some(*k),
+            Some(compile::ArityUse::Inconsistent) | None => None,
+        })
+        .collect();
 
     let mut lits = Vec::new();
     if !collect_literals_closure(store, body, &param_types, &mut lits) {

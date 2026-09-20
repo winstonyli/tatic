@@ -413,6 +413,13 @@ struct FnSpec<'b> {
 fn compile_function(store: &TermStore, body: Hash, spec: &FnSpec, combinators: &mut Combinators, w: &mut String) -> Option<()> {
     let FnSpec { name, arity, self_idx, has_env, captures } = *spec;
     let closure_arities = infer_closure_arities(store, body, arity, self_idx)?;
+    // No generic-dispatch mechanism exists yet (see `ArityUse`'s docs) --
+    // any inconsistency anywhere in this function's body still rejects
+    // the whole function, exactly as when `scan_for_closure_calls` used
+    // to abort the scan outright the moment it found one.
+    if closure_arities.values().any(|u| matches!(u, ArityUse::Inconsistent)) {
+        return None;
+    }
     let ctx = FnCtx { store, name, arity, self_idx, closure_arities: &closure_arities, has_env, captures };
 
     w.push_str(&format!("  (func ${name}"));
@@ -602,16 +609,34 @@ fn collect_free_vars(
     }
 }
 
+/// The result of scanning every use of one absolute `Var` index as an
+/// application's callee, anywhere within one function body:
+/// `Consistent(k)` if every such use applied it to exactly `k` arguments;
+/// `Inconsistent` if at least two uses disagreed (e.g. `f(x)` *and*
+/// `f(x,y)`). A `Var` never used as a callee at all (just read as a
+/// value) simply has no entry in the map `scan_for_closure_calls`
+/// produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArityUse {
+    Consistent(usize),
+    Inconsistent,
+}
+
 /// For every absolute `Var` index in `h` (a parameter of the function
 /// being compiled, *or* a captured free variable -- this doesn't
 /// distinguish the two, since a closure-typed value read resolves the
-/// same way either way, see `compile_var_read`), finds whether it's ever
-/// used as an application's callee and, if so, at what arity -- e.g. `f`
-/// in `f(f(x))` is `Some(1)`. Used with an inconsistent arity across call
-/// sites (`f(x)` *and* `f(x,y)`) fails the whole function (partial
-/// application isn't supported); never applied at all (just read as a
-/// value) simply has no entry.
-pub(crate) fn infer_closure_arities(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Option<HashMap<u32, usize>> {
+/// same way either way, see `compile_var_read`), classifies whether it's
+/// ever used as an application's callee and, if so, whether every such
+/// use agrees on the argument count (see `ArityUse`). This function
+/// itself never rejects a whole scan just because one `Var` is used
+/// inconsistently -- scanning continues, and every other `Var`'s own
+/// classification is still reported -- so callers that don't yet handle
+/// `ArityUse::Inconsistent` (everything as of this writing) must check
+/// for it themselves and decline accordingly, exactly as they declined
+/// on this function returning `None` before this classification existed.
+/// `None` is still returned for a genuinely out-of-fragment callee shape
+/// (neither a variable nor a literal lambda/combinator).
+pub(crate) fn infer_closure_arities(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Option<HashMap<u32, ArityUse>> {
     let mut found = HashMap::new();
     scan_for_closure_calls(store, h, arity, self_idx, &mut found)?;
     Some(found)
@@ -622,7 +647,7 @@ fn scan_for_closure_calls(
     h: Hash,
     arity: usize,
     self_idx: Option<u32>,
-    found: &mut HashMap<u32, usize>,
+    found: &mut HashMap<u32, ArityUse>,
 ) -> Option<()> {
     if let Term::If(c, t, e) = store.resolve(h) {
         let (c, t, e) = (*c, *t, *e);
@@ -648,10 +673,13 @@ fn scan_for_closure_calls(
             Term::Var(i) => {
                 match found.get(i) {
                     None => {
-                        found.insert(*i, args.len());
+                        found.insert(*i, ArityUse::Consistent(args.len()));
                     }
-                    Some(&k) if k == args.len() => {}
-                    Some(_) => return None, // inconsistent arity: partial application
+                    Some(ArityUse::Consistent(k)) if *k == args.len() => {}
+                    Some(ArityUse::Consistent(_)) => {
+                        found.insert(*i, ArityUse::Inconsistent);
+                    }
+                    Some(ArityUse::Inconsistent) => {} // already marked; nothing new to record
                 }
             }
             Term::Abs(_) | Term::Rec(_) => {} // a literal redex callee (possibly self-recursive) -- fine, checked again at codegen
@@ -769,10 +797,13 @@ struct FnCtx<'a, 'b> {
     name: &'b str,
     arity: usize,
     self_idx: Option<u32>,
-    /// From `infer_closure_arities`: absolute `Var` index -> the arity
-    /// it's always called with, whether that index resolves to one of
-    /// this function's own parameters or to one of its captures.
-    closure_arities: &'b HashMap<u32, usize>,
+    /// From `infer_closure_arities`: absolute `Var` index -> how it's
+    /// used as a callee, whether that index resolves to one of this
+    /// function's own parameters or to one of its captures.
+    /// `compile_function` already rejects the whole function if any
+    /// entry is `ArityUse::Inconsistent`, so every entry actually reached
+    /// here is `ArityUse::Consistent`.
+    closure_arities: &'b HashMap<u32, ArityUse>,
     /// Whether this function itself takes an `$env` parameter (true for
     /// every combinator, false for `$f` -- see `compile_function`'s call
     /// sites). A non-tail self-call needs to know this to decide whether
@@ -852,7 +883,14 @@ fn compile_node(
             // through a captured variable works exactly like calling one
             // reached through a parameter, just resolved differently.
             Term::Var(i) => {
-                let expected = *ctx.closure_arities.get(i)?;
+                let expected = match ctx.closure_arities.get(i)? {
+                    ArityUse::Consistent(k) => *k,
+                    // `compile_function` already rejects the whole
+                    // function before this is ever reached -- kept as an
+                    // honest decline rather than an assert, matching this
+                    // module's own "None, never a panic" convention.
+                    ArityUse::Inconsistent => return None,
+                };
                 if args.len() != expected {
                     return None;
                 }
