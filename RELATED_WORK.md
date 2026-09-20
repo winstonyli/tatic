@@ -1212,6 +1212,71 @@ closure representation built on top of this primitive, threaded through
 this project's own standing discipline of landing one confirmed,
 independently-tested layer at a time rather than a partially-wired one.
 
+**Correction, a session later: that sketch doesn't actually reach the
+motivating case, and the reason is load-bearing enough to write down
+before attempting it for real.** Set out to build the tag-indexed `Clo`
+representation the sketch above proposed, and prototyped it directly
+(not just reasoned about it) before touching `ClosureCombinators`. The
+design: `TaggedClo := Sigma(Int, fam)` where `fam(tag) := ite_sort_ref(tag,
+Clo_1, Clo_2)` for a new postulate `ite_sort_ref : Int -> Sort(0) ->
+Sort(0) -> Sort(0)`, mirroring `ite_clo_ref`'s own already-trusted shape
+(`Int -> Clo_k -> Clo_k -> Clo_k`) one universe level up — selecting a
+*type*, not a value. (A first attempt tried reusing `NatPostulates`'s own
+`bool_rec` for this instead; it doesn't fit — confirmed by a direct
+probe, not assumed — `bool_rec`'s own motive is hardcoded to `C : Bool ->
+Sort(0)`, targeting ordinary *values* at level 0, but selecting between
+two *types* needs a motive whose own codomain is `Sort(0)`-valued, i.e.
+one level higher than what `NatPostulates` was ever built for. The
+`ite_sort_ref` design above sidesteps this by not needing a dependent
+motive or `Bool` at all, exactly the way `ite_clo_ref` itself doesn't.)
+
+That part works — `fam` correctly infers as `Sort(0)` once `ite_sort_ref`
+exists. But building the actual pair, `pair(fam, cond, f)` for a concrete
+`f : Clo_1`, fails: `Pair`'s own kernel typing rule (`check(ctx, b,
+subst_top(fam, a))`, see `Expr::Pair`'s own doc) requires the payload's
+inferred type to be *definitionally* equal to `fam(a)` — and `fam(a) =
+ite_sort_ref(a, Clo_1, Clo_2)` never reduces, because `ite_sort_ref`, like
+every other case-discriminating mechanism available here (`bool_rec`,
+`ite_clo_ref`, `ite_bool_ref`), is necessarily a *postulate* (`Int` has no
+recursor in this kernel, deliberately — see `ite_clo_ref`'s own doc — and
+a genuinely computing type-level `Bool` recursor hits the exact
+"vacuous-eliminator, one universe up" wall this document's README
+citation already names for bootstrapping `Bool`/`Nat` themselves).
+Postulates never reduce by construction, so `def_eq` fails, confirmed
+directly by `kernel::infer` rejecting the pair with a "type mismatch"
+between `f`'s own `Clo_1` type and the stuck, unreduced `ite_sort_ref(a,
+Clo_1, Clo_2)` application.
+
+**This is not a narrower version of the same gap — it changes what the
+achievable result even is.** The one available workaround, `transport`
+across a *propositional* equality (`J`'s own infer rule doesn't require
+the equality proof to reduce, only to be well-typed — confirmed this much
+holds), only produces a well-typed pair once a *concrete* `Id`-proof
+connecting `fam(a)` to `Clo_1` exists for that specific `a` — exactly
+`ite_clo_eq_ref`'s own "memoized per exact literal" shape, needing `a`'s
+concrete value known ahead of time. In `clo_eq_ref_if_tree`'s own
+axiom-construction context, `a` (the condition) is an abstract quantified
+variable, not a concrete literal, so no such proof can be built there —
+meaning a Sigma-based `TaggedClo` can only ever be *instantiated* per
+concrete instance, never quantified over universally. That's not actually
+new capability: `eval_dyn`/`prove_closure_expr_instance` already handles
+a per-instance closure of concretely-resolved identity, more directly and
+without needing `Sigma` at all (§12, closed above). A tag-indexed `Sigma`
+built this way would be strictly redundant with what already ships.
+
+**Where this leaves the actual research question.** A genuinely
+*universal* kernel proof for "the result is either a `Clo_1` or a
+`Clo_2`, depending on an arbitrary runtime condition" needs the
+type-level selector itself to compute — not just exist as a postulate —
+for *any* symbolic condition, not only concrete ones. Nothing in this
+kernel's current primitive set provides that (`Int` has deliberately no
+recursor; the one type that does compute generically, `W`, has no way to
+fold an *arbitrary arithmetic condition* into a `Sup`-shaped dispatch
+without first deciding it, which is exactly the open question). This
+isn't a gap `Sigma` closes by existing — it's the same "separate, larger
+research question" this document already named before `Sigma` was added,
+now with a concretely-ruled-out approach rather than an unexamined one.
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)
