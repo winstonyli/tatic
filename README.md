@@ -784,16 +784,24 @@ guards against by hand): caught immediately, at seed 22.
   preamble) and continuing into `g`'s own shape — terminating because
   hash-consing makes the "calls" relation between distinct combinators a
   strict partial order, the same well-foundedness argument
-  `combinator_return_type`'s own recursion already relies on. Still open:
-  a *partially*-applied closure creation in this position (no concrete
-  `Clo` representation to hand back), and a callee reached only through a
-  captured/parameter variable rather than a further statically-known
-  combinator (genuinely unknown at proof-construction time which literal
-  lambda underlies it — the same obstacle `RELATED_WORK.md` §9 already
-  treats, needing either `eval_dyn`-style per-instance tracing or a real
-  dependent sum) — both "sound, not complete", the same standing tradeoff
-  this fragment makes everywhere
-  else; neither affects `kernel_verified`, only weaker, call-specific
+  `combinator_return_type`'s own recursion already relies on. A `Pap`-shaped
+  `IfTree` leaf (a branch that's itself a *partially*-applied closure
+  creation, e.g. `if c then g(a) else h`) is covered too now —
+  `classify_closure_if_tree_leaf` classifies each leaf independently
+  (`Abs` or `Pap`, mirroring `clo_eq_ref_pap`'s own classification, keyed
+  per leaf instead of per `root`), and `resolve_closure_if_tree`'s own
+  return grew a leaf-specific supplied-args prefix so a chosen `Pap` leaf's
+  own `g` gets called with its own supplied args *and* the outer
+  over-application's extra ones, not just the extra ones. A `Call`-shaped
+  leaf (a branch reached only through a further *saturated* indirect call)
+  is a further, natural generalization, not attempted here. Still open: a
+  callee reached only through a captured/parameter variable rather than a
+  further statically-known combinator (genuinely unknown at
+  proof-construction time which literal lambda underlies it — the same
+  obstacle `RELATED_WORK.md` §9 already treats, needing either
+  `eval_dyn`-style per-instance tracing or a real dependent sum) — "sound,
+  not complete", the same standing tradeoff this fragment makes everywhere
+  else; doesn't affect `kernel_verified`, only weaker, call-specific
   evidence.
 - `prove_closure_expr` now covers an `If` choosing between two closures
   too (`ite_clo`, lazily postulated — see the table row above), when the
