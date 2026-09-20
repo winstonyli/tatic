@@ -89,7 +89,7 @@ fn gen_expr(rng: &mut Rng, scope: u32, depth: u32) -> Expr {
             gen_expr(rng, scope, d),
             gen_expr(rng, scope, d),
         ),
-        _ => kernel::wrec(gen_expr(rng, scope, d), gen_expr(rng, scope, d), gen_expr(rng, scope, d)),
+        _ => kernel::wrec(gen_expr(rng, scope, d), gen_expr(rng, scope + 1, d), gen_expr(rng, scope, d), gen_expr(rng, scope, d)),
     }
 }
 

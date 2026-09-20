@@ -145,8 +145,22 @@ pub enum Expr {
     /// Eliminator (recursor) for `W`. `motive : W(A,B) -> Sort(k)`,
     /// `step : Pi a:A. Pi f:(B a -> W). (Pi y:B a. motive (f y)) -> motive (sup a f)`.
     /// Reduces on a `Sup` target by recursing into every child.
+    ///
+    /// `children_ty` is `B` itself, in the *same* representation `W(A,B)`'s
+    /// own second field already uses (written one binder deeper than `A`,
+    /// i.e. `B(x)` with the ambient `x:A` as `Var(0)`) -- carried here,
+    /// redundantly with `target`'s own real type `W(A,B)`, purely so
+    /// `whnf_impl`'s own automatic reduction (which has no typing context
+    /// at all, by design) can give its induction-hypothesis closure an
+    /// honest domain (`subst_top(children_ty, a)`, i.e. `B(a)`) instead of
+    /// an inert placeholder. `infer` independently re-derives `B` from
+    /// `target`'s own real inferred type and checks it against this field
+    /// via `def_eq` -- a term built with a *wrong* `children_ty` (whether
+    /// by mistake or by a hostile caller) is rejected outright, never
+    /// silently trusted, so this redundancy can't become a soundness hole.
     WRec {
         motive: Rc<Expr>,
+        children_ty: Rc<Expr>,
         step: Rc<Expr>,
         target: Rc<Expr>,
     },
@@ -214,9 +228,10 @@ pub fn wty(a: Expr, b: Expr) -> Expr {
 pub fn sup(a: Expr, f: Expr) -> Expr {
     Expr::Sup(Rc::new(a), Rc::new(f))
 }
-pub fn wrec(motive: Expr, step: Expr, target: Expr) -> Expr {
+pub fn wrec(motive: Expr, children_ty: Expr, step: Expr, target: Expr) -> Expr {
     Expr::WRec {
         motive: Rc::new(motive),
+        children_ty: Rc::new(children_ty),
         step: Rc::new(step),
         target: Rc::new(target),
     }
@@ -277,10 +292,12 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
         Expr::Sup(a, f) => sup(shift_rc(a, cutoff, amount), shift_rc(f, cutoff, amount)),
         Expr::WRec {
             motive,
+            children_ty,
             step,
             target,
         } => wrec(
             shift_rc(motive, cutoff, amount),
+            shift_rc(children_ty, cutoff + 1, amount),
             shift_rc(step, cutoff, amount),
             shift_rc(target, cutoff, amount),
         ),
@@ -351,9 +368,10 @@ fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
         Expr::Sup(a, f) => sup(subst(a, j, s), subst(f, j, s)),
         Expr::WRec {
             motive,
+            children_ty,
             step,
             target,
-        } => wrec(subst(motive, j, s), subst(step, j, s), subst(target, j, s)),
+        } => wrec(subst(motive, j, s), subst(children_ty, j + 1, &shift(s, 0, 1)), subst(step, j, s), subst(target, j, s)),
     }
 }
 
@@ -443,15 +461,28 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
         },
         Expr::WRec {
             motive,
+            children_ty,
             step,
             target,
         } => match whnf_rc(target, cache) {
             Expr::Sup(a, f) => {
-                // step a f (\y. wrec(motive, step, f y))
+                // step a f (\y:B(a). wrec(motive, children_ty, step, f y))
+                // -- `subst_top(children_ty, a)` gives the induction-
+                // hypothesis closure its *honest* domain (`B(a)`, the same
+                // `Sup`'s own typing rule requires of `f`'s domain), not
+                // an inert placeholder -- see `Expr::WRec`'s own doc for
+                // why this field exists at all.
                 let rec_step = lam(
-                    sort(0), // domain annotation is inert for reduction
+                    subst_top(children_ty, &a),
                     wrec(
                         shift(motive, 0, 1),
+                        // `children_ty` is already "one binder deeper" than
+                        // `motive`/`step`/`target` (`W`'s own convention for
+                        // its second field) -- inserting the new `y` binder
+                        // below that existing one needs `cutoff + 1`, the
+                        // same bump `Expr::W`'s own `shift`/`subst` arms use
+                        // for their own second field.
+                        shift(children_ty, 1, 1),
                         shift(step, 0, 1),
                         app(shift(&f, 0, 1), var(0)),
                     ),
@@ -463,6 +494,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
             }
             other => Expr::WRec {
                 motive: motive.clone(),
+                children_ty: children_ty.clone(),
                 step: step.clone(),
                 target: Rc::new(other),
             },
@@ -509,9 +541,10 @@ fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
         Expr::Sup(a, f) => sup(nf_rc(&a, cache), nf_rc(&f, cache)),
         Expr::WRec {
             motive,
+            children_ty,
             step,
             target,
-        } => wrec(nf_rc(&motive, cache), nf_rc(&step, cache), nf_rc(&target, cache)),
+        } => wrec(nf_rc(&motive, cache), nf_rc(&children_ty, cache), nf_rc(&step, cache), nf_rc(&target, cache)),
     }
 }
 
@@ -608,6 +641,20 @@ fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
     }
 }
 
+/// `infer`'s own `WRec` mismatch error, out of line and `#[cold]` so its
+/// own locals (two `nf` calls, a `format!`) don't inflate every call to
+/// `infer`'s own stack frame on the hot, non-error path -- `infer` is
+/// deeply recursive (`eval_dyn`'s own per-instance proof search, in
+/// particular, runs close to its own empirically-tuned stack budget, see
+/// `proof.rs`'s `DynBudget`), so a few extra bytes of unconditional
+/// per-frame locals here would cost real, working recursion depth
+/// everywhere, not just on this rare error path.
+#[cold]
+#[inline(never)]
+fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
+    format!("wrec: children_ty doesn't match target's own real children-type: {:?} vs {:?}", nf(children_ty), nf(wb))
+}
+
 pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
     match e {
         Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
@@ -696,10 +743,23 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
         }
         Expr::WRec {
             motive,
+            children_ty,
             step,
             target,
         } => {
             let (wa, wb) = expect_w(&infer(ctx, target)?)?;
+            // Soundness gate for `whnf_impl`'s own use of `children_ty`
+            // (see `Expr::WRec`'s own doc): `target`'s *real* children-type
+            // family, independently re-derived here from its own inferred
+            // type, must match the field a `WRec` term carries exactly --
+            // otherwise a term built with a wrong `children_ty` would
+            // reduce its own induction-hypothesis closure to a domain that
+            // lies about what's actually being recursed into, letting an
+            // otherwise-untyped step function's body get away with
+            // anything at that domain.
+            if !def_eq(children_ty, &wb) {
+                return Err(wrec_children_ty_mismatch(children_ty, &wb));
+            }
             infer(ctx, motive)?;
             let w_ty0 = wty(wa.clone(), wb.clone());
 
@@ -950,16 +1010,17 @@ fn wrap_c_ct_cf(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Exp
 /// types a predicative kernel can't derive from nothing) -- the reusable
 /// form of `tests::nat_via_w_is_a_genuinely_computing_inductive_type`'s
 /// own construction. See that test's doc comment for the full
-/// derivation and its one genuine, discovered scope boundary: a
-/// per-case recursor's step can't be related propositionally to its own
-/// concrete result via `WRec`'s automatic reduction alone (its
-/// induction-hypothesis closure is unconditionally ill-typed standalone
-/// whenever a step genuinely uses it) -- only via an explicit
-/// computation-rule axiom per case, the same discipline `proof.rs`'s
-/// `Ev`/`ev_rec` methodology already independently arrived at. Reusing
-/// this construction elsewhere therefore saves inventing a *new*
-/// postulated base type per use site, not that per-case axiom
-/// discipline itself.
+/// derivation, including the induction-hypothesis-closure typing gap
+/// `WRec`'s own `children_ty` field (see `Expr::WRec`'s own doc) closes.
+/// `proof.rs`'s own `Ev`/`ev_rec` methodology -- postulate the
+/// recursor's existence *and* separately postulate each leaf's own
+/// computation rule as an explicit axiom, never relying on any
+/// underlying automatic reduction -- remains the right shape for an
+/// *indexed* family like `Ev(params, v)` regardless of that fix, since
+/// this `Nat`'s own plain structural recursor doesn't eliminate for an
+/// indexed family either way. Reusing this construction elsewhere
+/// therefore saves inventing a *new* postulated base type per use site,
+/// not that per-leaf axiom discipline itself.
 ///
 /// Exposes postulate *positions*, not resolved `Expr`s: every accessor
 /// below recomputes its result fresh from `p: &Postulates` at call time,
@@ -1088,10 +1149,8 @@ impl NatPostulates {
     /// `f_zero : ChildTy(false) -> Nat`, `Zero`'s own child function --
     /// exposed separately from `zero` because it's exactly the shape
     /// `WRec`'s own automatic reduction needs an induction-hypothesis
-    /// closure to have, and is unconditionally unable to produce (see
-    /// `nat_ty`'s own module-level doc and
-    /// `tests::nat_via_w_is_a_genuinely_computing_inductive_type`'s
-    /// permanent regression check for that finding).
+    /// closure to have (see `tests::nat_via_w_is_a_genuinely_computing_inductive_type`,
+    /// which uses this to rebuild and typecheck that closure by hand).
     pub fn zero_child_fn(&self, p: &Postulates) -> Expr {
         let nat_ty = self.nat_ty(p);
         let f_empty_nat = app(p.get(self.empty_elim_pos), nat_ty.clone());
@@ -1175,48 +1234,42 @@ mod tests {
     /// dispatch -- demonstrating the identity recursor's own step (which
     /// ignores the tag entirely) isn't the only shape available.
     ///
-    /// **A genuine, newly-discovered scope boundary, not a bug** --
-    /// deeper than it first looked. Proving a `bool_rec`-based step's own
-    /// result concretely (e.g. `is_zero(Zero) = true`) turned out to need
-    /// more than one more `cong1`/`trans_proof` step. `WRec`'s own
-    /// automatic reduction (`whnf_impl`) builds its induction-hypothesis
-    /// closure with an inert placeholder domain annotation (`sort(0)`,
-    /// "inert for reduction" per its own comment) -- harmless for
-    /// reduction, since beta substitution never consults a `Lam`'s domain
-    /// field at all, but it means that closure is *unconditionally
-    /// ill-typed on its own* whenever the step function's `ih` parameter
-    /// is genuinely used (not just discarded, the way the identity
-    /// recursor's own step does): its body applies a variable declared
-    /// type `Sort(0)` where the real children type (`ChildTy(b)`) is what
-    /// the application inside actually needs -- ill-typed at *every*
-    /// Pi-type, not just the "wrong" one (the assertion below confirms
-    /// this directly, permanently). This is *not* a function-
-    /// extensionality gap, correcting an earlier read of this same
-    /// obstacle in an earlier commit: funext requires both sides to
-    /// already be well-typed inhabitants of the same Pi-type before it
-    /// can relate them, and one side here never is one at all. A real fix
-    /// would need `WRec`'s own reduction rule to thread enough type
-    /// information through its own induction-hypothesis construction to
-    /// give it an honest domain -- which conflicts with this kernel's own
-    /// deliberate "reduction never needs a typing context" design (see
-    /// this module's own "reduction" section docs: "always sound
-    /// regardless of typing context, since reduction never consults
-    /// one"). A genuine, deeper architectural question, not a bounded
-    /// follow-on -- see `RELATED_WORK.md`.
+    /// **A genuine scope boundary that was found here, then fixed at the
+    /// `Expr::WRec` level** -- deeper than it first looked, and not a
+    /// function-extensionality gap (an earlier misdiagnosis, corrected in
+    /// an earlier commit: funext requires both sides to already be
+    /// well-typed inhabitants of the same Pi-type before it can relate
+    /// them, and one side here never was one at all). Proving a
+    /// `bool_rec`-based step's own result concretely (e.g.
+    /// `is_zero(Zero) = true`) needs more than one `cong1`/`trans_proof`
+    /// step, since `bool_rec` is postulated and never auto-reduces on its
+    /// own -- but building that step used to run into a second, deeper
+    /// problem underneath: `WRec`'s own automatic reduction (`whnf_impl`)
+    /// built its induction-hypothesis closure with an inert placeholder
+    /// domain annotation (`sort(0)`) -- harmless for reduction itself
+    /// (beta substitution never consults a `Lam`'s domain field), but
+    /// that closure was *unconditionally ill-typed on its own* whenever
+    /// the step function's `ih` parameter was genuinely used (not just
+    /// discarded, the way the identity recursor's own step does),
+    /// blocking it from appearing as a well-typed subterm in any
+    /// hand-built propositional proof. Fixed now: `Expr::WRec` carries an
+    /// explicit `children_ty` field (`B`, see its own doc) so
+    /// `whnf_impl` can give that closure its *honest* domain
+    /// (`subst_top(children_ty, a)`, i.e. `ChildTy(b)`) instead. The
+    /// assertions below rebuild that exact closure by hand and confirm it
+    /// now typechecks at its real domain -- flipped from this test's own
+    /// original assertion that it was unconditionally rejected, which is
+    /// why a deliberate revert of the fix (back to the `sort(0)`
+    /// placeholder) is expected to make this test fail again immediately,
+    /// not a sign the obstacle has returned.
     ///
-    /// The practical consequence: reasoning propositionally about a
-    /// concrete result of *any* recursor whose step function genuinely
-    /// uses its own `ih` (i.e. any real per-case recursion, not just the
-    /// identity case) can't go through `WRec`'s own automatic reduction
-    /// at all. `proof.rs`'s own `Ev`/`ev_rec` methodology -- postulate the
+    /// `proof.rs`'s own `Ev`/`ev_rec` methodology -- postulate the
     /// recursor's existence *and* separately postulate each leaf's own
     /// computation rule as an explicit axiom, never relying on any
-    /// underlying automatic reduction -- turns out to be the necessary
-    /// shape for exactly this reason, not just a historical accident of
-    /// not having a `Nat` yet. Wiring `NatPostulates` into `Ev` itself
-    /// (as opposed to just extracting it, done here) remains a separate,
-    /// not-yet-attempted follow-on: `Ev(params, v)` is an *indexed*
-    /// family (depends on `params`/`v`, unlike plain `Nat`), so a plain
+    /// underlying automatic reduction -- remains the necessary shape for
+    /// `Ev` regardless of this fix, not a historical accident of not
+    /// having a `Nat` yet: `Ev(params, v)` is an *indexed* family
+    /// (depends on `params`/`v`, unlike plain `Nat`), so a plain
     /// structural recursor over this `Nat` doesn't directly hand you
     /// `Ev`'s own induction principle either way, and reusing this `Nat`
     /// would still need the exact same per-leaf axiom discipline `Ev`
@@ -1267,11 +1320,11 @@ mod tests {
         let ih_ty_d2 = pi(ih_dom_d2, ih_body_d3);
         let step_id = lam(wa_here, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
 
-        let id_on_zero = wrec(motive_const.clone(), step_id.clone(), zero_here.clone());
+        let id_on_zero = wrec(motive_const.clone(), wb_here.clone(), step_id.clone(), zero_here.clone());
         check(&p.ctx, &id_on_zero, &nat_ty_here).expect("id-recursor applied to Zero should typecheck at Nat");
         assert_eq!(nf(&id_on_zero), nf(&zero_here), "the identity recursor should reduce Zero back to Zero");
 
-        let id_on_succ = wrec(motive_const, step_id, succ_pred.clone());
+        let id_on_succ = wrec(motive_const, wb_here.clone(), step_id, succ_pred.clone());
         check(&p.ctx, &id_on_succ, &nat_ty_here).expect("id-recursor applied to Succ(pred) should typecheck at Nat");
         assert_eq!(nf(&id_on_succ), nf(&succ_pred), "the identity recursor should reduce Succ(pred) back to Succ(pred)");
 
@@ -1303,36 +1356,60 @@ mod tests {
             .expect("is_zero_step : Pi b:Bool. C(b)");
 
         let is_zero_motive_const = lam(nat_ty_here.clone(), shift(&p.get(nat.bool_pos), 0, 1)); // \_:Nat. Bool
-        let is_zero_on_zero = wrec(is_zero_motive_const.clone(), is_zero_step.clone(), zero_here.clone());
+        let is_zero_on_zero = wrec(is_zero_motive_const.clone(), wb_here2.clone(), is_zero_step.clone(), zero_here.clone());
         check(&p.ctx, &is_zero_on_zero, &p.get(nat.bool_pos)).expect("is_zero(Zero) : Bool");
 
-        // The precise shape of the obstacle described above: `whnf_impl`'s
-        // own "inert" induction-hypothesis closure, built exactly as it
-        // builds one internally, is not just *differently typed* from a
-        // hand-built alternative -- it's unconditionally ill-typed on its
-        // own, at *any* Pi-type. `zero_child_fn` (`f_zero : ChildTy(false)
-        // -> Nat`, `Zero`'s own child function) recomputed fresh at this
-        // depth needs only the one extra shift for `would_be_rec_step`'s
-        // own local binder, not a second one for the depth gap since
-        // `pred_pos` was pushed -- the same "recompute, don't reshift a
-        // snapshot" benefit as `zero_here` above.
+        // The obstacle this test used to demonstrate (see git history: an
+        // "inert" placeholder domain, `sort(0)`, made `whnf_impl`'s own
+        // induction-hypothesis closure unconditionally ill-typed standalone
+        // whenever a step genuinely used it) is fixed now: `WRec` carries
+        // its own `children_ty` field (`B` from the underlying `W(A,B)`,
+        // `infer` cross-checks it against `target`'s own real type -- see
+        // `Expr::WRec`'s own doc), and `whnf_impl` uses `subst_top
+        // (children_ty, a)` -- `B(a)`, the true children type at tag `a` --
+        // as the closure's own domain instead. This rebuilds *exactly* the
+        // closure `whnf_impl` now builds internally when reducing
+        // `is_zero_on_zero` one step (`is_zero_step` doesn't reduce further
+        // on its own -- `bool_rec` is postulated, not a `Lam` -- so this is
+        // where `whnf_impl`'s own reduction gets stuck, with this exact
+        // closure embedded, unreduced, as `is_zero_step`'s own third
+        // argument), confirming it's independently well-typed at its own
+        // *honest* domain now, not just "harmless because reduction never
+        // consults a `Lam`'s domain field" as before. `zero_child_fn`
+        // (`f_zero : ChildTy(false) -> Nat`, `Zero`'s own child function)
+        // recomputed fresh at this depth needs only the one extra shift for
+        // `rec_step`'s own local binder, not a second one for the depth gap
+        // since `pred_pos` was pushed -- the same "recompute, don't reshift
+        // a snapshot" benefit as `zero_here` above.
         let f_zero_here = nat.zero_child_fn(&p);
-        let would_be_rec_step = lam(
-            sort(0),
-            wrec(shift(&is_zero_motive_const, 0, 1), shift(&is_zero_step, 0, 1), app(shift(&f_zero_here, 0, 1), var(0))),
+        let honest_domain = subst_top(&wb_here2, &p.get(nat.false_pos));
+        let rec_step = lam(
+            honest_domain.clone(),
+            wrec(shift(&is_zero_motive_const, 0, 1), shift(&wb_here2, 1, 1), shift(&is_zero_step, 0, 1), app(shift(&f_zero_here, 0, 1), var(0))),
         );
-        let ill_typed_domain = arrow(app(p.get(nat.child_ty_pos), p.get(nat.false_pos)), p.get(nat.bool_pos));
+        let child_ty_false = app(p.get(nat.child_ty_pos), p.get(nat.false_pos));
         assert!(
-            check(&p.ctx, &would_be_rec_step, &ill_typed_domain).is_err(),
-            "whnf_impl's own induction-hypothesis closure should be unconditionally ill-typed standalone -- this assertion failing would mean the obstacle documented above no longer applies"
+            def_eq(&honest_domain, &child_ty_false),
+            "subst_top(children_ty, false) should give exactly ChildTy(false), the real children type at the false tag"
         );
+        let expected_domain = arrow(child_ty_false, p.get(nat.bool_pos));
+        check(&p.ctx, &rec_step, &expected_domain)
+            .expect("with children_ty threaded honestly through whnf_impl's own reduction rule, the induction-hypothesis closure now typechecks at its real domain, not just an inert placeholder");
 
-        // Deliberately not attempted here: proving `is_zero(Zero) = true`
-        // propositionally. This ran into a genuine kernel-level obstacle,
-        // not a bug in this construction -- see this test's own doc
-        // comment above, and `bool_rec`'s own doc comment, for what it is
-        // and why it's a real scope boundary rather than something to
-        // work around locally.
+        // Full end-to-end confirmation: `whnf(is_zero_on_zero)` (which
+        // internally builds exactly `rec_step` above) itself still
+        // typechecks at `Bool` -- the fix doesn't just make the isolated
+        // closure well-typed, it keeps the *whole* one-step reduction
+        // well-typed too, stuck-on-a-postulate tail and all.
+        let stuck_one_step = whnf(&is_zero_on_zero);
+        check(&p.ctx, &stuck_one_step, &p.get(nat.bool_pos)).expect("whnf(is_zero(Zero)) should still typecheck at Bool after the fix");
+
+        // Genuinely finishing `is_zero(Zero) = true` propositionally still
+        // needs `bool_rec_false_eq` (`bool_rec` is postulated, so it never
+        // reduces on its own, independent of this fix) -- one explicit
+        // `cong`/`trans_proof` step, not attempted here; what this test
+        // confirms is that such a step is no longer blocked by an
+        // unconditionally ill-typed intermediate closure.
     }
 
     #[test]
@@ -1350,7 +1427,7 @@ mod tests {
                 refl(var(0)),
                 var(1),
                 var(2),
-                wrec(var(0), var(1), var(2)),
+                wrec(var(0), var(1), var(2), var(3)),
             ),
         );
         assert_eq!(shift(&e, 0, 0), e);
@@ -1432,13 +1509,52 @@ mod tests {
         );
         let step = lam(a_ref, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
 
-        let reduced = wrec(motive, step, target.clone());
+        let reduced = wrec(motive, shift(&bc_ref, 0, 1), step, target.clone());
         check(&p.ctx, &reduced, &w_ty).expect("wrec application should typecheck");
         // The payoff of choosing W over an impredicative/Church encoding:
         // this holds by `refl` alone — the recursor genuinely *computes*,
         // it doesn't just make the equation provable with extra work.
         check(&p.ctx, &refl(target.clone()), &id(w_ty, reduced, target))
             .expect("wrec(motive, step, sup(a,f)) should reduce definitionally to sup(a,f)");
+    }
+
+    /// The soundness gate `infer`'s own `WRec` case now needs (see
+    /// `Expr::WRec`'s own doc): a term whose `children_ty` field doesn't
+    /// match `target`'s own real children-type family must be rejected
+    /// outright, not silently trusted. Without this check, `whnf_impl`
+    /// would honestly (per its own, now-correct reduction rule) type an
+    /// induction-hypothesis closure at whatever *wrong* domain a
+    /// maliciously- or accidentally-constructed `children_ty` names --
+    /// letting a step function's own body get away with treating that
+    /// closure's argument as something it isn't.
+    #[test]
+    fn wrec_with_a_mismatched_children_ty_is_rejected() {
+        let mut p = Postulates::new();
+        let a_pos = p.push(sort(0)); // A : Type0
+        let a0_pos = p.push(p.get(a_pos)); // a0 : A
+        let bc_pos = p.push(sort(0)); // Bc : Type0
+        let w_ty_pre = wty(p.get(a_pos), shift(&p.get(bc_pos), 0, 1));
+        let f0_pos = p.push(arrow(p.get(bc_pos), w_ty_pre));
+
+        let a_ref = p.get(a_pos);
+        let bc_ref = p.get(bc_pos);
+        let w_ty = wty(a_ref.clone(), shift(&bc_ref, 0, 1));
+        let target = sup(p.get(a0_pos), p.get(f0_pos));
+        let motive = lam(w_ty.clone(), shift(&w_ty, 0, 1));
+        let f_ty_d1 = pi(shift(&bc_ref, 0, 1), shift(&w_ty, 0, 2));
+        let ih_ty_d2 = pi(shift(&bc_ref, 0, 2), app(shift(&motive, 0, 3), app(var(1), var(0))));
+        let step = lam(a_ref, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
+
+        // The real, matching children_ty (`shift(&bc_ref, 0, 1)`) is
+        // exactly what `w_recursor_computes_definitionally` above uses,
+        // and typechecks fine -- substituted here for a wrong one
+        // (`Sort(0)`, `Bc`'s own type, one universe too high to even be
+        // `def_eq` to `Bc` itself) that names the wrong children family.
+        let wrong = wrec(motive, sort(0), step, target);
+        assert!(
+            infer(&p.ctx, &wrong).is_err(),
+            "a WRec term whose children_ty doesn't match target's own real children-type should be rejected, not silently trusted"
+        );
     }
 
     #[test]

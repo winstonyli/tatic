@@ -98,7 +98,7 @@ fn gen_expr(rng: &mut Rng, scope: u32, depth: u32) -> Expr {
             gen_expr(rng, scope, d),
             gen_expr(rng, scope, d),
         ),
-        _ => kernel::wrec(gen_expr(rng, scope, d), gen_expr(rng, scope, d), gen_expr(rng, scope, d)),
+        _ => kernel::wrec(gen_expr(rng, scope, d), gen_expr(rng, scope + 1, d), gen_expr(rng, scope, d), gen_expr(rng, scope, d)),
     }
 }
 
@@ -112,7 +112,7 @@ fn count_nodes(e: &Expr) -> u32 {
         Expr::Id(a, x, y) => count_nodes(a) + count_nodes(x) + count_nodes(y),
         Expr::Refl(a) => count_nodes(a),
         Expr::J { motive, base, a, b, p } => count_nodes(motive) + count_nodes(base) + count_nodes(a) + count_nodes(b) + count_nodes(p),
-        Expr::WRec { motive, step, target } => count_nodes(motive) + count_nodes(step) + count_nodes(target),
+        Expr::WRec { motive, children_ty, step, target } => count_nodes(motive) + count_nodes(children_ty) + count_nodes(step) + count_nodes(target),
     }
 }
 
@@ -156,8 +156,8 @@ fn nth_subterm(e: &Expr, target: u32, counter: &mut u32) -> Expr {
             }
             unreachable!("target out of range")
         }
-        Expr::WRec { motive, step, target: tgt } => {
-            for child in [motive.as_ref(), step.as_ref(), tgt.as_ref()] {
+        Expr::WRec { motive, children_ty, step, target: tgt } => {
+            for child in [motive.as_ref(), children_ty.as_ref(), step.as_ref(), tgt.as_ref()] {
                 let nc = count_nodes(child);
                 if target < *counter + nc {
                     return nth_subterm(child, target, counter);
@@ -224,11 +224,12 @@ fn replace_nth(e: &Expr, target: u32, counter: &mut u32, replacement: &Expr) -> 
             let f2 = replace_nth(f, target, counter, replacement);
             kernel::sup(a2, f2)
         }
-        Expr::WRec { motive, step, target: tgt } => {
+        Expr::WRec { motive, children_ty, step, target: tgt } => {
             let m2 = replace_nth(motive, target, counter, replacement);
+            let c2 = replace_nth(children_ty, target, counter, replacement);
             let s2 = replace_nth(step, target, counter, replacement);
             let t2 = replace_nth(tgt, target, counter, replacement);
-            kernel::wrec(m2, s2, t2)
+            kernel::wrec(m2, c2, s2, t2)
         }
     }
 }

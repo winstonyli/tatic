@@ -107,23 +107,58 @@ information through its own induction-hypothesis construction to give it
 an honest domain, which conflicts with this kernel's own deliberate
 "reduction never needs a typing context" design (`kernel.rs`'s own
 reduction-section docs: "always sound regardless of typing context,
-since reduction never consults one"). A genuine, deeper architectural
-question, not a bounded follow-on — confirmed by a permanent assertion in
-the same test (`kernel::tests::nat_via_w_is_a_genuinely_computing_inductive_type`),
-not a fixable index bug.
+since reduction never consults one").
 
-The practical consequence: reasoning propositionally about a concrete
-result of *any* recursor whose step genuinely uses its own `ih` can't go
-through `WRec`'s own automatic reduction at all. `proof.rs`'s own
-`Ev`/`ev_rec` methodology — postulate the recursor's existence *and*
-separately postulate each leaf's own computation rule as an explicit
-axiom, never relying on any underlying automatic reduction — turns out to
-be the necessary shape for exactly this reason, not just a historical
-accident of not having a `Nat` yet. Reusing this `Nat` construction
-inside `proof.rs` would still need that same per-instance axiom
-discipline; what it would save is a reusable, one-time-built type instead
-of inventing a new postulated one per strategy, not the per-leaf
-computation-rule postulation itself.
+**Since fixed.** The "conflicts with reduction never needing a typing
+context" framing above turned out to be the wrong read of what a fix
+would actually require: reduction still never consults a *typing
+context* (`Ctx`, the ambient list of postulated types), it just needed
+one more piece of the *term itself*. `Expr::WRec` now carries a fourth
+field, `children_ty` -- `B` from the underlying `W(A,B)`, in the exact
+representation `W`'s own second field already uses (written one binder
+deeper) -- purely so `whnf_impl`, still fully untyped, can build its
+induction-hypothesis closure's domain as `subst_top(children_ty, a)`
+(`B(a)`, the real children type at the concrete tag `a` a `Sup` target
+was just matched against) instead of the old inert `sort(0)`
+placeholder. This is genuinely just redundant, purely syntactic
+information riding along with the term -- not a typing judgment smuggled
+into reduction -- but redundant data a caller could get *wrong* is a
+soundness risk on its own: `infer`'s own `WRec` case independently
+re-derives `B` from `target`'s own real inferred type (exactly as it
+already did before this fix) and now rejects the term outright via
+`def_eq` if the two disagree, so a term built with a mismatched
+`children_ty` is caught at typechecking, never silently trusted by
+`whnf_impl` later (`kernel::tests::wrec_with_a_mismatched_children_ty_is_rejected`
+is the permanent regression guard for that gate specifically). The old
+"unconditionally ill-typed standalone" assertion in
+`kernel::tests::nat_via_w_is_a_genuinely_computing_inductive_type` is now
+its own mirror image: the same induction-hypothesis closure shape,
+hand-rebuilt with `children_ty` threaded through honestly, now
+*typechecks* at its real domain -- and a deliberate revert of the fix
+(back to the `sort(0)` placeholder) makes that same test fail again
+immediately, confirming it actually exercises the mechanism, not just
+its own hand-rebuilt mirror.
+
+Reasoning propositionally about a concrete result of a recursor whose
+step genuinely uses `ih` is unblocked as a result -- a hand-built proof
+can now legitimately reference the induction-hypothesis closure as a
+well-typed subterm of its own (e.g. as a `cong`-held-fixed argument when
+bridging to a postulated recursor like `bool_rec`, which never
+auto-reduces on its own regardless of this fix). Genuinely *finishing* a
+concrete proof like `is_zero(Zero) = true` still needs `bool_rec`'s own
+`bool_rec_false_eq` computation-rule axiom (a `WRec`-external postulate,
+unaffected by this fix, since `bool_rec` itself was never derived via
+`WRec`) chained in via one more `cong`/`trans_proof` step -- not
+attempted here, since it's now an ordinary, unblocked proof-construction
+exercise rather than a structural impossibility.
+
+The practical consequence for `proof.rs`'s own `Ev`/`ev_rec` methodology
+-- postulate the recursor's existence *and* separately postulate each
+leaf's own computation rule as an explicit axiom, never relying on any
+underlying automatic reduction -- is unchanged: that shape remains
+necessary for `Ev` regardless of this fix, since `Ev(params, v)` is an
+*indexed* family (see below) that a plain structural recursor doesn't
+eliminate for in the first place, `WRec`-fixed or not.
 
 **Since done: extracted into a clean, reusable public API --
 `kernel::NatPostulates` (`src/kernel.rs`).** `NatPostulates::new` pushes
