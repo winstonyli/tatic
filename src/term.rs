@@ -91,7 +91,12 @@ impl Term {
     }
 
     fn content_hash(&self) -> Hash {
-        let mut buf = Vec::with_capacity(64);
+        // 128 comfortably covers every variant's own worst case (`If`'s 3
+        // `Hash`es is the largest, at 1 + 3*32 = 97 bytes) -- undersizing
+        // this just means `write_bytes` forces one extra reallocation (to
+        // the same 128, since `Vec` doubles) on every `If`/`Prim`/`App`
+        // node interned, for no benefit.
+        let mut buf = Vec::with_capacity(128);
         self.write_bytes(&mut buf);
         blake3::hash(&buf)
     }
