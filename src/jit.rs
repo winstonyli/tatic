@@ -8,10 +8,14 @@
 //!    fragment (`compile::try_compile`). If that fails, the term simply
 //!    isn't in the compilable fragment — fall back to the interpreter and
 //!    remember not to try again.
-//! 2. If it compiles, don't trust it blindly: run it against the
-//!    interpreter (the reference semantics) on a battery of sample inputs.
-//!    Only once compiled and interpreted agree on all of them do we call
-//!    the compiled code "equivalent" and install it in the cache.
+//! 2. If it compiles, don't trust it blindly. Two things must hold before
+//!    it is installed: it agrees with the interpreter (the reference
+//!    semantics) on a battery of sample inputs, *and* `proof.rs` produced
+//!    a kernel-checked theorem covering every input
+//!    (`ProofStrength::Universal`). A term that passes only the samples is
+//!    cached as `NoUniversalProof` and served by the interpreter forever
+//!    after -- see `compile_verify_and_apply` for why per-sample
+//!    certificates don't substitute.
 //! 3. Every later call for that same hash — content-addressed, so any
 //!    structurally identical term anywhere hits the same entry — skips
 //!    straight to the compiled, native-speed path.
@@ -20,10 +24,13 @@
 //! blacklisted and permanently served by the interpreter instead, rather
 //! than risking a silently wrong "optimization".
 //!
-//! Sample verification is the actual trust gate for every compiled term.
-//! Where possible (see `proof.rs`), a kernel-checked `Id`-typed proof is
-//! additionally attempted and recorded (`Stats::kernel_proofs_checked`,
-//! `is_kernel_verified`) as stronger evidence alongside it.
+//! Installation takes both halves of that gate, and neither is redundant.
+//! The sample battery is the only check that touches the WAT wasmtime
+//! actually runs; the kernel theorem is the only one that says anything
+//! about inputs outside the battery -- but it is stated over `proof.rs`'s
+//! `denote`, which *models* `compile_node` rather than reading its
+//! output. So the pair is strictly stronger than either alone and still
+//! short of end-to-end soundness (`RELATED_WORK.md` 28).
 //! `kernel_verify` below tries `proof.rs`'s strategies in order of
 //! strength, first success wins: a straight-line term gets one `refl`
 //! proof covering every input; a tail-recursive term gets the universal
@@ -99,6 +106,13 @@ enum CacheEntry {
     },
     NotCompilable,
     FailedVerification,
+    /// Compiled cleanly and agreed with the interpreter on every sample,
+    /// but carries no universal theorem -- so it is deliberately *not*
+    /// installed, and this term is served by the interpreter from here
+    /// on. The `ProofStrength` is kept only so `proof_strength` can still
+    /// report what evidence did exist (`Samples` or `None`); nothing
+    /// reads it to make a decision.
+    NoUniversalProof(ProofStrength),
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -107,6 +121,11 @@ pub struct Stats {
     pub cache_hits: u64,
     pub interpreted: u64,
     pub verification_failures: u64,
+    /// Terms that compiled and passed `verify()` but were declined
+    /// installation for lack of a universal theorem (see
+    /// `compile_verify_and_apply`). These are served by the interpreter,
+    /// so they also count toward `interpreted` on every call.
+    pub declined_no_universal_proof: u64,
     /// Of `compiled`, how many additionally got a kernel-checked proof
     /// (see `kernel_verify`'s strategy order) rather than only sample
     /// verification.
@@ -163,7 +182,9 @@ impl JitEngine {
                 self.stats.interpreted += 1;
                 eval::apply_term(terms, h, args)
             }
-            Some(CacheEntry::NotCompilable) | Some(CacheEntry::FailedVerification) => {
+            Some(CacheEntry::NotCompilable)
+            | Some(CacheEntry::FailedVerification)
+            | Some(CacheEntry::NoUniversalProof(_)) => {
                 self.stats.interpreted += 1;
                 eval::apply_term(terms, h, args)
             }
@@ -205,6 +226,27 @@ impl JitEngine {
             let proof = self.kernel_verify(terms, h, frag.arity);
             if proof != ProofStrength::None {
                 self.stats.kernel_proofs_checked += 1;
+            }
+            // The installation gate. `verify()` agreeing on the sample
+            // battery is necessary but not sufficient: it is a finite
+            // probe of an `i64` domain, and a compiled form installed on
+            // that alone goes on to serve arbitrary arguments no evidence
+            // ever covered. `ProofStrength::Samples` doesn't close that --
+            // its certificates sit at exactly the same sampled points --
+            // so only a universal theorem earns installation.
+            //
+            // Note this does *not* make the JIT sound end to end: the
+            // theorem is about `proof.rs`'s `denote`, which models
+            // `compile_node` rather than reading the WAT that actually
+            // runs. `verify()` remains the only check touching emitted
+            // code, which is why it stays as the first half of this gate
+            // rather than being replaced by the proof. See
+            // `RELATED_WORK.md` 28.
+            if proof != ProofStrength::Universal {
+                self.cache.insert(h, CacheEntry::NoUniversalProof(proof));
+                self.stats.declined_no_universal_proof += 1;
+                self.stats.interpreted += 1;
+                return eval::apply_term(terms, h, args);
             }
             self.cache.insert(
                 h,
@@ -355,6 +397,7 @@ impl JitEngine {
     pub fn proof_strength(&self, h: Hash) -> ProofStrength {
         match self.cache.get(&h) {
             Some(CacheEntry::Compiled { proof, .. }) => *proof,
+            Some(CacheEntry::NoUniversalProof(proof)) => *proof,
             _ => ProofStrength::None,
         }
     }
@@ -1398,7 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn a_captured_value_through_an_inconsistently_called_parameter_is_kernel_verified() {
+    fn a_captured_value_through_an_inconsistently_called_parameter_is_declined_for_want_of_a_universal_proof() {
         // \k. (\f. if 0<1 then f(1,2) else f(1)) (\a b. k+a+b)
         let mut s = TermStore::new();
         let k = s.var(2);
@@ -1427,17 +1470,21 @@ mod tests {
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, top, &[100]).unwrap(), 103);
         assert_eq!(jit.apply(&s, top, &[-7]).unwrap(), -4);
-        assert_eq!(jit.stats.interpreted, 0);
-        // `Samples`, not `Universal`: `prove_closure_expr_instance` is a
-        // per-call certificate, and at arity 1 the battery it runs on is a
-        // finite probe of `i64`. Note the two calls above -- `100` isn't
-        // even in `SAMPLE_ARGS`, so the compiled form served it on the
-        // strength of `verify()`'s agreement at nine *other* points.
+        // Those answers came from the interpreter. `prove_closure_expr_
+        // instance` is a per-call certificate, and at arity 1 the battery
+        // it runs on is a finite probe of `i64`, so the installation gate
+        // declines this term outright and every call falls back. `100`
+        // isn't even in `SAMPLE_ARGS`: before the gate it was served by
+        // compiled code on the strength of `verify()`'s agreement at nine
+        // *other* points, which is exactly what the gate exists to stop.
         assert_eq!(jit.proof_strength(top), ProofStrength::Samples);
+        assert_eq!(jit.stats.declined_no_universal_proof, 1);
+        assert_eq!(jit.stats.compiled, 0);
+        assert_eq!(jit.stats.interpreted, 2);
     }
 
     #[test]
-    fn a_runtime_chosen_literals_own_instance_is_kernel_verified() {
+    fn a_runtime_chosen_literals_own_instance_is_declined_for_want_of_a_universal_proof() {
         // \pick. (\f. if 0<1 then f(1,2) else f(1)) (if 0<pick then add else sub)
         let mut s = TermStore::new();
         let a1 = s.var(1);
@@ -1475,9 +1522,14 @@ mod tests {
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, top, &[1]).unwrap(), 3);
         assert_eq!(jit.apply(&s, top, &[-1]).unwrap(), -1);
-        assert_eq!(jit.stats.interpreted, 0);
-        // Per-call certificates at arity 1 -- see the sibling test above
-        // for why that's `Samples` rather than `Universal`.
+        // Per-call certificates at arity 1, so the gate declines it and
+        // the interpreter answers both calls -- see the sibling test
+        // above for why that's `Samples` rather than `Universal`. Note
+        // both arguments here *are* in `SAMPLE_ARGS`; the gate is a
+        // property of the term, not of which arguments happen to show up.
         assert_eq!(jit.proof_strength(top), ProofStrength::Samples);
+        assert_eq!(jit.stats.declined_no_universal_proof, 1);
+        assert_eq!(jit.stats.compiled, 0);
+        assert_eq!(jit.stats.interpreted, 2);
     }
 }

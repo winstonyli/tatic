@@ -405,15 +405,23 @@ This is stated precisely because it would be easy to overclaim here.
   a `debug_assert_has_type` panic in `denote_closure_typed`'s own partial
   application case.
 
-In every case, `jit.rs`'s sample-based verification against the
-interpreter is the actual trust gate for installing a compiled form. A
-kernel proof, where one exists, is recorded as stronger evidence alongside
-it (`Stats::kernel_proofs_checked`, `JitEngine::is_kernel_verified`), not a
-replacement for it.
+Installing a compiled form takes two independent checks, and neither is
+redundant. `jit.rs` runs the candidate against the interpreter on a
+battery of sample inputs, *and* requires `proof.rs` to have produced a
+kernel-checked theorem covering every input. A term that passes only the
+first is cached as `NoUniversalProof` and served by the interpreter from
+then on (`Stats::declined_no_universal_proof`).
 
-How much stronger depends on which strategy produced it, and
-`JitEngine::proof_strength` reports that as a `ProofStrength` rather than
-a single bool:
+The two checks cover different things, which is why both are required.
+The sample battery is the only check that touches the WAT wasmtime
+actually runs. The kernel theorem is the only one that says anything
+about inputs outside the battery — but it is stated over `proof.rs`'s
+`denote`, which *models* `compile_node` rather than reading its output.
+The pair is strictly stronger than either alone, and still short of
+end-to-end soundness.
+
+What counts as "a theorem covering every input" is reported by
+`JitEngine::proof_strength` as a `ProofStrength`:
 
 - `Universal` — `prove_pure_expr`, `prove_closure_expr` or
   `prove_tail_recursive_universal`: one theorem covering every input. This
@@ -427,15 +435,19 @@ a single bool:
   battery *is* the entire input space, so a per-call certificate there is
   classified `Universal`, which it genuinely is.)
 
-`is_kernel_verified` means `Universal` specifically. Reporting a
-`Samples`-only term as carrying "a kernel-checked equivalence proof" for
-whatever call just happened would overstate it: the compiled form serves
-arbitrary `i64` arguments, while the certificates cover nine sampled
-points. Closing *that* gap — rather than merely reporting it honestly —
-means either restricting what gets served compiled to the universal
-fragment, or widening the universal fragment to cover the
-inconsistent-arity curried-dispatch shapes the `Samples` fallbacks exist
-for. Neither is done; see §28 of `RELATED_WORK.md`.
+`is_kernel_verified` means `Universal` specifically, and so does the
+installation gate. A `Samples`-only term would otherwise serve arbitrary
+`i64` arguments on the strength of certificates covering nine sampled
+points, which is the whole reason the gate exists.
+
+The price is real and worth stating plainly: the JIT is now withdrawn
+from the inconsistent-arity curried-dispatch shapes the `Samples`
+fallbacks exist for — the capability `compile.rs` went to genuine
+trouble to support. Measured against this repo's own corpus that costs
+nothing today (zero demo terms, zero benchmarks, two tests), but it is a
+capability regression, and the way to undo it is to widen the universal
+fragment rather than to relax the gate. See §28 of `RELATED_WORK.md` for
+what that would take.
 
 ## Benchmarks
 
@@ -494,10 +506,9 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   wrapper, and `is_kernel_verified` on *that* wrapped term actually
   reflects `prove_closure_expr`'s own, separate "self-recursive combinator
   called directly" postulate (opaque either way) rather than the
-  universal theorem — an honest distinction, not a weaker guarantee: the
-  sample-based `verify()` against the interpreter is what actually gates
-  trusting the compiled form regardless of which kernel proof accompanies
-  it.
+  universal theorem — an honest distinction, not a weaker guarantee:
+  either way it is a theorem over every input, which is what the
+  installation gate requires.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
   (per-execution) proof per call, and the one-time universal
@@ -737,16 +748,23 @@ guards against by hand): caught immediately, at seed 22.
   Church/impredicative encoding of one from `Pi` alone was rejected for
   the same computation-preserving reason `W` itself was chosen over that
   route.
-- **Why sample verification never goes away**: a kernel proof only exists
-  for the fragment `proof.rs` currently covers, and the two fallbacks
-  (`prove_tail_recursive_call`, `prove_closure_expr_instance`) certify one
-  concrete execution each rather than quantifying over inputs. Sample
+- **Why sample verification never goes away**: it is the only check in
+  the system that touches the WAT wasmtime actually executes. Every
+  kernel proof is stated over `proof.rs`'s `denote`, which models
+  `compile_node` rather than reading its output, so a theorem covering
+  every input still says nothing about a mistake in WAT emission. Sample
   verification is simple, total, and always applicable, so it stays the
-  baseline safety net regardless of how far the proof coverage grows.
-  That per-execution limit is a property of *these* checks, not of
-  translation validation as the literature means it — a genuine
-  per-compilation validator's success would cover every input, and
-  building one is a route tatic hasn't taken (see §28).
+  first half of the installation gate regardless of how far proof
+  coverage grows — the proof is what extends coverage beyond the
+  battery, not what replaces it.
+- **Why the per-execution fallbacks stay anyway**: `prove_tail_recursive_
+  call` and `prove_closure_expr_instance` certify one concrete execution
+  each, which the gate treats as no better than the battery itself. They
+  are kept for reporting (`proof_strength`), not for installation. That
+  per-execution limit is a property of *these* checks, not of translation
+  validation as the literature means it — a genuine per-compilation
+  validator's success would cover every input, and building one is a
+  route tatic hasn't taken (see §28).
 - **`Anchored`, and a staleness bug it doesn't automatically prevent**: a
   postulate's `Expr` reference is only valid relative to the postulate
   context's length *at the moment it's resolved* (`kernel::Postulates::get`
