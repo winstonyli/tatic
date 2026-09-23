@@ -487,9 +487,12 @@ points, which is the whole reason the gate exists.
 The price is real and worth stating plainly: the JIT is now withdrawn
 from the inconsistent-arity curried-dispatch shapes the `Samples`
 fallbacks exist for — the capability `compile.rs` went to genuine
-trouble to support. Measured against this repo's own corpus that costs
-nothing today (zero demo terms, zero benchmarks, two tests), but it is a
-capability regression, and the way to undo it is to widen the universal
+trouble to support — whenever they take arguments. A closed (arity-0)
+one still installs, since its one certificate covers its one input, but
+only while its trace fits the 200-step budget. Measured against this
+repo's own corpus: zero demo terms, two tests, and one benchmark, which
+now runs its loop at 150 iterations instead of 20,000 to stay installed
+(§30 of `RELATED_WORK.md`). It is a capability regression, and the way to undo it is to widen the universal
 fragment rather than to relax the gate. See §28 of `RELATED_WORK.md` for
 what that would take.
 

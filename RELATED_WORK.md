@@ -562,6 +562,11 @@ the *universal* convention (§ above), would have imposed a comparable
 or larger cost on *every* closure call in the compiler, not just the
 fragments that actually need it.
 
+*Since §30:* the installation gate declined this benchmark at 20,000
+iterations, so the pair now runs at 150, side by side in one group
+(~1.37× on the whole warm call, ~1.55× on the loop once fixed per-call
+overhead is removed). See §30.
+
 This new capability shipped compile-time-only at first, with no
 kernel-checked proof counterpart — `Γ`'s own "one arity per variable"
 limitation is unchanged, and `denote_closure`'s purely structural
@@ -2472,6 +2477,34 @@ This also corrects §29 a second time. The gate *did* change this
 benchmark: before, the term compiled and was served fast; now it is
 interpreted. That was invisible earlier only because the benchmark
 crashed before reaching the point where you could see it.
+
+**Since resolved.** Two changes to `benches/execution.rs`:
+
+- *The pair now runs at 150 iterations, side by side in one group.* The
+  inconsistent term's only proof is `prove_closure_expr_instance`'s
+  trace, one step per iteration against the 200-step budget. Measured
+  ceiling: 199 iterations install, 200 are declined -- the budget binds,
+  not `MAX_CHECK_DEPTH`. Shortening only the inconsistent term would
+  have broken the comparison, and the companion group's 20,000 feeds its
+  own README comparison with `capturing_closure_loop`. So both builders
+  now take an iteration count, and the inconsistent group benches a
+  `consistent_baseline_jit_warm_cache_hit` bar at the same 150. I
+  initially wrote that no provable length would work, because fixed
+  per-call overhead would dominate. Measurement says otherwise. A
+  1-iteration loop costs ~220 ns warm, so at 150 the loop is most of the
+  call. Result: **~1.01 µs curried vs ~0.73 µs baseline (~1.37×)**.
+  Subtract the fixed overhead and the loop itself is ~1.55× slower,
+  consistent with the ~1.56× §9 recorded at 20,000 before the gate.
+  Criterion's spread on the baseline was wide this run (523-898 ns), so
+  the ratio is approximate.
+- *Every warm bar now asserts the path it measures.* A shared `warm`
+  helper replaces each group's warm-up call and fails the run unless
+  `stats.compiled` matches the group's stated expectation (all seven
+  expect compiled). The class of bug here was a bar that silently
+  changed meaning; now a change to the gate or a budget that uninstalls
+  any benchmarked term stops `cargo bench` instead. Verify-teeth:
+  expecting compiled at 20,000 iterations, and running the pair at
+  200, both panic in `warm` naming the declined stats.
 
 ### Tests and verification
 

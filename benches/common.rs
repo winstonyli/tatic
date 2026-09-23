@@ -162,13 +162,15 @@ pub fn partial_application_loop(s: &mut TermStore) -> Hash {
 
 /// `rec f n g x = if n <= 0 then x else f(n-1, g, g x)`, with `inc = \y. y+1`
 /// baked in as the initial `g` and `n`/`x` baked in too, so the whole term
-/// is closed (arity 0) -- a closure-typed *parameter* threaded through
+/// is closed (arity 0), running `iters` iterations -- a closure-typed *parameter* threaded through
 /// every iteration and called (`call_indirect`) each time, unlike
 /// `capturing_closure_loop`'s own shape above, which creates a fresh
-/// closure every iteration instead of reusing one passed in. Same depth as
-/// the other two loop benchmarks (see `execution.rs`'s own comment on
-/// `capturing_closure_loop` for why 20,000 rather than some other number).
-pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
+/// closure every iteration instead of reusing one passed in. Its own
+/// group runs it at the other two loop benchmarks' depth (see
+/// `execution.rs`'s own comment on `capturing_closure_loop` for why
+/// 20,000); `inconsistent_arity_loop_carried_parameter_loop`'s group runs
+/// it shorter, as that group's baseline (see there for why).
+pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) -> Hash {
     let x = s.var(0);
     let g = s.var(1);
     let n = s.var(2);
@@ -191,14 +193,14 @@ pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
     let inc_body = s.prim(PrimOp::Add, y, one2);
     let inc = s.abs(inc_body);
 
-    let n_lit = s.lit(20_000);
+    let n_lit = s.lit(iters);
     let x0 = s.lit(0);
     let partial = s.app2(it, n_lit, inc);
     s.app(partial, x0)
 }
 
 /// Identical to `closure_typed_loop_carried_parameter_loop` above --
-/// same loop, same 20,000 iterations, same hot `g(x)` call each one --
+/// same loop, same `iters` iterations, same hot `g(x)` call each one --
 /// with exactly one addition: a dead (never-reached, `1<0` is always
 /// false) extra call site for `g` at arity 2, `rec f n g x = if 1<0
 /// then g(x,999) else (if n<=0 then x else f(n-1,g,g(x)))`. That's
@@ -209,7 +211,7 @@ pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
 /// exactly the cost `RELATED_WORK.md`'s own design discussion flagged
 /// but never measured: what a single, syntactically-present-but-never-
 /// taken inconsistent call site costs an otherwise fast-path loop.
-pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore) -> Hash {
+pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) -> Hash {
     let x_dead = s.var(0);
     let nine_ninety_nine = s.lit(999);
     let g_dead = s.var(1);
@@ -243,7 +245,7 @@ pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore) -> Hash
     let inc_body = s.prim(PrimOp::Add, y, one2);
     let inc = s.abs(inc_body);
 
-    let n_lit = s.lit(20_000);
+    let n_lit = s.lit(iters);
     let x0 = s.lit(0);
     let partial = s.app2(it, n_lit, inc);
     s.app(partial, x0)
