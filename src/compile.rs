@@ -304,6 +304,23 @@ struct Combinators<'a> {
     needs_generic_dispatch: bool,
     emitting: bool,
     stage0_index: HashMap<usize, usize>,
+    /// Every combinator (or PAP wrapper) index that's actually reached as
+    /// a *bare value* somewhere in this fragment (the `Term::Abs`/
+    /// `Term::Rec`-as-value arm of `compile_node`, or an under-applied
+    /// root's own wrapper-creation arm) -- as opposed to one only ever
+    /// reached through a direct, saturated call site, which never packs
+    /// its index into an `i64` at all and so never needs a `stage_0` to
+    /// pack instead. Populated unconditionally (not gated on `emitting`
+    /// or `needs_generic_dispatch`) at exactly the two sites that read
+    /// `stage0_index`, so by construction it's already complete by the
+    /// time `try_compile`'s discovery pass finishes -- the emit pass
+    /// walks the identical term the same way, so it can only ever
+    /// re-confirm membership, never discover a new one. `try_compile`
+    /// uses this to skip generating a stage chain for (and reserving
+    /// table slots for) any combinator this set doesn't contain: one
+    /// `stage0_index` would never be read for is pure dead weight, not a
+    /// case this mechanism needs to stay sound for.
+    used_as_bare_value: std::collections::HashSet<usize>,
 }
 
 impl<'a> Combinators<'a> {
@@ -321,6 +338,7 @@ impl<'a> Combinators<'a> {
             needs_generic_dispatch: false,
             emitting: false,
             stage0_index: HashMap::new(),
+            used_as_bare_value: std::collections::HashSet::new(),
         }
     }
 
@@ -444,18 +462,28 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     }
 
     // Every registered combinator is now known (`arities.len()`/`kind`
-    // are final) and `needs_generic_dispatch` is decided -- reset the
-    // one piece of bookkeeping the discovery pass's own (discarded)
-    // codegen populated under possibly-wrong assumptions, then generate
-    // every combinator's own curried stage chain if the fragment needs
-    // them, with table indices allocated densely right after every
-    // ordinary combinator's own slot.
+    // are final), `needs_generic_dispatch` is decided, and
+    // `used_as_bare_value` is complete (the discovery pass above already
+    // walked every reachable combinator body, unconditionally recording
+    // each one at the exact two sites that ever read `stage0_index`) --
+    // reset the one piece of bookkeeping the discovery pass's own
+    // (discarded) codegen populated under possibly-wrong assumptions,
+    // then generate a curried stage chain only for a combinator this
+    // fragment actually reaches as a bare value -- one only ever called
+    // directly, saturated, never gets its index packed into an `i64` at
+    // all, so a stage chain for it would be pure dead weight (extra Wasm
+    // functions and table slots nothing ever calls through), with table
+    // indices allocated densely right after every ordinary combinator's
+    // own slot.
     combinators.call_indirect_arities.clear();
     let n = combinators.arities.len();
     let mut stage_wat = String::new();
     if combinators.needs_generic_dispatch {
         let mut next_table_index = n;
         for idx in 0..n {
+            if !combinators.used_as_bare_value.contains(&idx) {
+                continue;
+            }
             let env_len = combinators.env_len(idx);
             let indices = emit_curried_stages(idx, combinators.arities[idx], env_len, next_table_index, &mut stage_wat);
             next_table_index += indices.len();
@@ -513,7 +541,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         }
         w.push_str(" (result i64)))\n");
     }
-    let stage_needs_alloc = combinators.needs_generic_dispatch && combinators.arities.iter().any(|&a| a > 1);
+    let stage_needs_alloc = combinators.needs_generic_dispatch && combinators.used_as_bare_value.iter().any(|&idx| combinators.arities[idx] > 1);
     let needs_alloc = combinators.captures.iter().any(|c| !c.is_empty()) || combinators.has_pap_wrappers || stage_needs_alloc;
     if needs_alloc {
         emit_allocator(&mut w);
@@ -536,7 +564,18 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         // never reads this export).
         w.push_str("  (export \"memory\" (memory 0))\n");
     }
-    let total_table_len = n + if combinators.needs_generic_dispatch { combinators.arities.iter().sum() } else { 0 };
+    // Only a combinator `used_as_bare_value` actually got a stage chain
+    // above (same `0..n`-filtered-by-membership order, so the table
+    // indices `emit_curried_stages` handed out line up with the `$s{idx}_*`
+    // funcrefs listed here) -- summing/listing every combinator's own
+    // arity here regardless would reserve table slots for, and export
+    // funcrefs to, stage functions that were never even generated.
+    let total_table_len = n
+        + if combinators.needs_generic_dispatch {
+            combinators.used_as_bare_value.iter().map(|&idx| combinators.arities[idx]).sum()
+        } else {
+            0
+        };
     if total_table_len > 0 {
         w.push_str(&format!("  (table {total_table_len} funcref)\n"));
         w.push_str("  (elem (i32.const 0)");
@@ -545,6 +584,9 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         }
         if combinators.needs_generic_dispatch {
             for idx in 0..n {
+                if !combinators.used_as_bare_value.contains(&idx) {
+                    continue;
+                }
                 for i in 0..combinators.arities[idx] {
                     w.push_str(&format!(" $s{idx}_{i}"));
                 }
@@ -1318,6 +1360,7 @@ fn compile_node(
                 // actually being called here (only readied to be).
                 let root_captures = combinators.captures[idx].clone();
                 let wrapper_idx = combinators.register_partial_app(root, idx, args.len())?;
+                combinators.used_as_bare_value.insert(wrapper_idx);
                 push_pap_env(ctx, combinators, &root_captures, &args, w, indent)?;
                 push_line(w, indent, "i64.extend_i32_u");
                 push_line(w, indent, "i64.const 32");
@@ -1363,6 +1406,7 @@ fn compile_node(
             // with its own `self_idx`, so nothing else here needs to
             // change to support this.
             let idx = combinators.register(h)?;
+            combinators.used_as_bare_value.insert(idx);
             let captures = combinators.captures[idx].clone();
             push_closure_env(ctx, &captures, w, indent)?;
             push_line(w, indent, "i64.extend_i32_u");
@@ -2066,6 +2110,92 @@ mod tests {
 
         let frag = try_compile(&s, g).expect("an inconsistently-called parameter should now compile");
         assert!(frag.wat.contains("call_indirect (type $ty1)"), "should dispatch through the curried fallback:\n{}", frag.wat);
+    }
+
+    #[test]
+    fn a_combinator_never_reached_as_a_bare_value_gets_no_stage_chain_even_when_the_fragment_needs_generic_dispatch() {
+        // `top = (\f. (if 0<1 then f(1,2) else f(1)) + helper(3,4)) f_lit`,
+        // `f_lit = \a b. a+b`, `helper = \x y. x*y` (a *distinct* literal,
+        // so it gets its own combinator index, not `f_lit`'s -- confirmed
+        // via `Mul` vs `Add` rather than two structurally identical, and
+        // therefore hash-consing-deduplicated, bodies). `f`'s own
+        // inconsistent call sites make this whole fragment need generic
+        // dispatch (same shape as the acceptance test just above), and
+        // `f_lit` genuinely needs a stage chain -- it's passed as `top`'s
+        // own argument, a bare value. `helper`, though, is *only* ever
+        // called directly and saturated (`helper(3,4)`, never passed
+        // around, never under-applied) -- it never gets its own index
+        // packed into an `i64` anywhere in this fragment, so it should
+        // never get a `stage_0` to pack instead. Regression guard for
+        // `Combinators::used_as_bare_value`: reverting the `0..n` filter
+        // back to unconditional makes this assertion fail (`helper`'s own
+        // `$s{idx}_0`/`$s{idx}_1` show up in the generated WAT even though
+        // nothing ever calls through them).
+        let mut s = TermStore::new();
+        let x = s.var(1);
+        let y = s.var(0);
+        let xy = s.prim(PrimOp::Mul, x, y);
+        let helper_inner = s.abs(xy);
+        let helper = s.abs(helper_inner); // \x y. x*y
+
+        let three = s.lit(3);
+        let four = s.lit(4);
+        let helper_call = s.app2(helper, three, four);
+
+        let f1 = s.var(0);
+        let one1 = s.lit(1);
+        let two1 = s.lit(2);
+        let call_2 = s.app2(f1, one1, two1);
+        let f2 = s.var(0);
+        let one2 = s.lit(1);
+        let call_1 = s.app(f2, one2);
+        let zero = s.lit(0);
+        let one_c = s.lit(1);
+        let cond = s.prim(PrimOp::Lt, zero, one_c);
+        let if_expr = s.if_(cond, call_2, call_1);
+
+        let main_body = s.prim(PrimOp::Add, if_expr, helper_call);
+        let main = s.abs(main_body);
+
+        let a = s.var(1);
+        let b = s.var(0);
+        let add = s.prim(PrimOp::Add, a, b);
+        let inner = s.abs(add);
+        let f_lit = s.abs(inner); // \a b. a+b
+
+        let top = s.app(main, f_lit);
+
+        let frag = try_compile(&s, top).expect("should compile via the curried fallback");
+        assert!(frag.wat.contains("call_indirect (type $ty1)"), "f should still dispatch through the curried fallback:\n{}", frag.wat);
+        // f_lit's own stage chain must exist (it's genuinely used as a
+        // bare value) -- sanity check that the pruning isn't just
+        // dropping every stage chain wholesale.
+        assert!(frag.wat.contains("(func $s"), "f_lit should still get a stage chain:\n{}", frag.wat);
+        // helper is only ever called directly and saturated -- its own
+        // combinator index must not have a matching `$s{idx}_` stage
+        // chain anywhere in the output. Find helper's own `$c{idx}` block
+        // (the one whose body contains `i64.mul`, unlike f_lit's `i64.add`)
+        // to learn its index directly, rather than inferring it indirectly.
+        let mut helper_idx = None;
+        for block in frag.wat.split("  (func $c").skip(1) {
+            let idx_str: String = block.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let end = block.find("\n  )").unwrap_or(block.len());
+            if block[..end].contains("i64.mul") {
+                helper_idx = Some(idx_str);
+                break;
+            }
+        }
+        let helper_idx = helper_idx.expect("helper's own $c{idx} function should exist in the output");
+        assert!(
+            !frag.wat.contains(&format!("$s{helper_idx}_")),
+            "helper is never used as a bare value and should get no stage chain:\n{}",
+            frag.wat
+        );
+
+        let (mut store, instance) = instantiate(&frag.wat);
+        let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
+        let compiled = func.call(&mut store, ()).unwrap();
+        assert_eq!(compiled, apply_term(&s, top, &[]).unwrap());
     }
 
     /// A single, fixed real closure value has exactly one true arity, so
