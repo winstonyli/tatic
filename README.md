@@ -408,6 +408,32 @@ kernel proof, where one exists, is recorded as stronger evidence alongside
 it (`Stats::kernel_proofs_checked`, `JitEngine::is_kernel_verified`), not a
 replacement for it.
 
+How much stronger depends on which strategy produced it, and
+`JitEngine::proof_strength` reports that as a `ProofStrength` rather than
+a single bool:
+
+- `Universal` — `prove_pure_expr`, `prove_closure_expr` or
+  `prove_tail_recursive_universal`: one theorem covering every input. This
+  is genuinely stronger than the sample battery.
+- `Samples` — the `prove_tail_recursive_call` /
+  `prove_closure_expr_instance` fallbacks: a real kernel-checked `Id`
+  proof, but built *per concrete call*, once for each vector in
+  `sample_arg_vectors`. That is precisely the finite set `verify()`
+  already checked, so it is not additional input coverage at all — it
+  says nothing about an argument outside the battery. (At arity 0 the
+  battery *is* the entire input space, so a per-call certificate there is
+  classified `Universal`, which it genuinely is.)
+
+`is_kernel_verified` means `Universal` specifically. Reporting a
+`Samples`-only term as carrying "a kernel-checked equivalence proof" for
+whatever call just happened would overstate it: the compiled form serves
+arbitrary `i64` arguments, while the certificates cover nine sampled
+points. Closing *that* gap — rather than merely reporting it honestly —
+means either restricting what gets served compiled to the universal
+fragment, or widening the universal fragment to cover the
+inconsistent-arity curried-dispatch shapes the `Samples` fallbacks exist
+for. Neither is done; see §28 of `RELATED_WORK.md`.
+
 ## Benchmarks
 
 `benches/` has two [criterion](https://docs.rs/criterion) suites (`cargo

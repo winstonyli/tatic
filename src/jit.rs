@@ -32,6 +32,14 @@
 //! checking; only if that doesn't apply does it fall back to a per-sample
 //! relational proof (translation validation) for the same battery of
 //! samples `verify()` uses.
+//!
+//! Those two classes are not interchangeable, so `is_kernel_verified`
+//! doesn't conflate them: `proof_strength` reports `ProofStrength` below,
+//! and only `Universal` means a theorem covering every input.
+//! `ProofStrength::Samples` -- a per-call certificate at each vector in
+//! `sample_arg_vectors` and nothing else -- reaches exactly as far as
+//! `verify()` already does, so treating it as a guarantee about the
+//! argument a later `apply()` actually arrives with would overstate it.
 
 use hashbrown::HashMap;
 use wasmtime::{Engine, Instance, Module, Store, Val};
@@ -43,18 +51,40 @@ use crate::term::{Hash, TermStore};
 
 const SAMPLE_ARGS: &[i64] = &[0, 1, 2, 3, 5, -1, -3, 7, 20];
 
+/// What the kernel proof accompanying a compiled term actually covers.
+///
+/// The distinction matters because `kernel_verify`'s last two strategies
+/// (`prove_tail_recursive_call`, `prove_closure_expr_instance`) build a
+/// certificate *per concrete call*, once for each vector in
+/// `sample_arg_vectors` -- precisely the inputs `verify()` already
+/// checked against the interpreter. Reporting that as the same thing as
+/// a theorem quantified over every input overstates it: it says nothing
+/// about the argument an actual `apply()` call arrives with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProofStrength {
+    /// No kernel proof at all -- sample `verify()` is the only evidence.
+    None,
+    /// A per-call certificate at each sampled input and nothing beyond
+    /// them. Strictly stronger than nothing (each is a real kernel-checked
+    /// `Id` proof), but it covers the same finite set `verify()` does.
+    Samples,
+    /// One theorem covering every input, from `prove_pure_expr`,
+    /// `prove_closure_expr` or `prove_tail_recursive_universal`.
+    Universal,
+}
+
 enum CacheEntry {
     Compiled {
         func: wasmtime::Func,
         arity: usize,
         // Kept alive only so the module backing `func` isn't dropped.
         _module: Module,
-        /// Whether `proof.rs` additionally produced a kernel-checked `Id`
-        /// proof for this term (only possible for the non-recursive
-        /// fragment -- see `proof.rs`). Sample-based `verify()` below is
-        /// still what actually gates trusting the compiled form either
-        /// way; this just records the stronger evidence when it exists.
-        kernel_verified: bool,
+        /// What kernel-checked evidence `proof.rs` additionally produced
+        /// for this term, if any. Sample-based `verify()` below is still
+        /// what actually gates trusting the compiled form regardless;
+        /// this just records the stronger evidence when it exists, and
+        /// how far that evidence actually reaches (`ProofStrength`).
+        proof: ProofStrength,
         /// The exported `"hp"` global (`compile::CompiledFragment`'s
         /// `needs_hp_reset` docs), for a fragment with at least one
         /// capturing closure -- `invoke` resets it to `0` before every
@@ -169,8 +199,8 @@ impl JitEngine {
         debug_assert_eq!(hp_global.is_some(), frag.needs_hp_reset, "compile.rs's export and needs_hp_reset flag should always agree");
 
         if self.verify(terms, h, func, hp_global, frag.arity) {
-            let kernel_verified = self.kernel_verify(terms, h, frag.arity);
-            if kernel_verified {
+            let proof = self.kernel_verify(terms, h, frag.arity);
+            if proof != ProofStrength::None {
                 self.stats.kernel_proofs_checked += 1;
             }
             self.cache.insert(
@@ -179,7 +209,7 @@ impl JitEngine {
                     func,
                     arity: frag.arity,
                     _module: module,
-                    kernel_verified,
+                    proof,
                     hp_global,
                 },
             );
@@ -250,27 +280,38 @@ impl JitEngine {
     /// recursion combined with the inconsistent-arity curried-dispatch
     /// fallback is *not* in that bucket: step 5's own widened,
     /// `self_ctx`-threaded evaluator covers it too, including branching.
-    fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> bool {
+    fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> ProofStrength {
         if proof::prove_pure_expr(terms, h).is_some() {
-            return true;
+            return ProofStrength::Universal;
         }
         if proof::prove_closure_expr(terms, h).is_some() {
-            return true;
+            return ProofStrength::Universal;
         }
         let samples = sample_arg_vectors(arity);
+        // What a per-sample certificate is actually worth here. At arity 0
+        // the battery *is* the whole input space -- there is exactly one
+        // possible call -- so proving that one call proves every input,
+        // and calling it `Samples` would understate it. At any higher
+        // arity the battery is a finite probe of an `i64` domain and says
+        // nothing about an argument outside it.
+        let per_sample = if arity == 0 { ProofStrength::Universal } else { ProofStrength::Samples };
         let instance_samples: Vec<Vec<i64>> = samples.iter().take(3).cloned().collect();
         if let Some((_, instances)) = proof::prove_tail_recursive_universal_with_instances(terms, h, &instance_samples)
         {
             self.stats.universal_instances_checked += instances.iter().filter(|i| i.is_some()).count() as u64;
-            return true;
+            return ProofStrength::Universal;
         }
         if !samples.is_empty() && samples.iter().all(|sample| proof::prove_tail_recursive_call(terms, h, sample).is_some()) {
-            return true;
+            return per_sample;
         }
-        !samples.is_empty()
+        if !samples.is_empty()
             && samples
                 .iter()
                 .all(|sample| proof::prove_closure_expr_instance(terms, h, sample).is_some())
+        {
+            return per_sample;
+        }
+        ProofStrength::None
     }
 
     /// Run the compiled candidate against the interpreter (reference
@@ -292,15 +333,27 @@ impl JitEngine {
         true
     }
 
-    /// Whether the compiled form cached for `h` additionally carries a
-    /// kernel-checked equivalence proof. `false` for anything not yet
-    /// compiled, not compilable, or in the recursive fragment `proof.rs`
-    /// doesn't cover yet.
+    /// Whether the compiled form cached for `h` carries a kernel-checked
+    /// equivalence theorem covering *every* input. `false` for anything
+    /// not yet compiled, not compilable, in the recursive fragment
+    /// `proof.rs` doesn't cover yet, *and* for a term whose only kernel
+    /// evidence is `ProofStrength::Samples` -- a per-call certificate at
+    /// each sampled input says nothing about the argument a later
+    /// `apply()` actually arrives with, so reporting it here as a
+    /// "kernel-checked equivalence proof" for that call would overstate
+    /// it. Use `proof_strength` to see the weaker evidence too.
     pub fn is_kernel_verified(&self, h: Hash) -> bool {
-        matches!(
-            self.cache.get(&h),
-            Some(CacheEntry::Compiled { kernel_verified: true, .. })
-        )
+        self.proof_strength(h) == ProofStrength::Universal
+    }
+
+    /// What kernel-checked evidence the compiled form cached for `h`
+    /// carries, and how far it reaches. `ProofStrength::None` for
+    /// anything not compiled or with no kernel proof at all.
+    pub fn proof_strength(&self, h: Hash) -> ProofStrength {
+        match self.cache.get(&h) {
+            Some(CacheEntry::Compiled { proof, .. }) => *proof,
+            _ => ProofStrength::None,
+        }
     }
 
     fn call_compiled(&mut self, h: Hash, args: &[i64]) -> Result<i64, EvalError> {
@@ -1372,7 +1425,12 @@ mod tests {
         assert_eq!(jit.apply(&s, top, &[100]).unwrap(), 103);
         assert_eq!(jit.apply(&s, top, &[-7]).unwrap(), -4);
         assert_eq!(jit.stats.interpreted, 0);
-        assert!(jit.is_kernel_verified(top));
+        // `Samples`, not `Universal`: `prove_closure_expr_instance` is a
+        // per-call certificate, and at arity 1 the battery it runs on is a
+        // finite probe of `i64`. Note the two calls above -- `100` isn't
+        // even in `SAMPLE_ARGS`, so the compiled form served it on the
+        // strength of `verify()`'s agreement at nine *other* points.
+        assert_eq!(jit.proof_strength(top), ProofStrength::Samples);
     }
 
     #[test]
@@ -1415,6 +1473,8 @@ mod tests {
         assert_eq!(jit.apply(&s, top, &[1]).unwrap(), 3);
         assert_eq!(jit.apply(&s, top, &[-1]).unwrap(), -1);
         assert_eq!(jit.stats.interpreted, 0);
-        assert!(jit.is_kernel_verified(top));
+        // Per-call certificates at arity 1 -- see the sibling test above
+        // for why that's `Samples` rather than `Universal`.
+        assert_eq!(jit.proof_strength(top), ProofStrength::Samples);
     }
 }

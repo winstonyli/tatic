@@ -2076,6 +2076,81 @@ bug above (it's about `verify()`'s completeness, not about any specific
 postulate's type) and needs its own scope discussion before further work
 proceeds into it.
 
+## 28. `is_kernel_verified` reported per-sample certificates as if they covered every input -- found and fixed
+
+Following §27's own parting note, the first concrete piece of that
+deeper issue turned out to be separable and small. `jit.rs`'s
+`kernel_verify` returned a plain `bool`, but its five strategies fall
+into two epistemically different classes:
+
+- `prove_pure_expr`, `prove_closure_expr`, `prove_tail_recursive_universal`
+  produce **one theorem covering every input**.
+- `prove_tail_recursive_call` and `prove_closure_expr_instance` produce a
+  certificate **per concrete call**, run once for each vector in
+  `sample_arg_vectors` -- precisely the finite battery `verify()` already
+  checked against the interpreter.
+
+Collapsing both into `true` meant `is_kernel_verified` -- and the REPL
+line printed after every evaluation -- claimed "kernel-checked
+equivalence proof" for a call whose arguments no proof had ever seen.
+The test suite contained a live instance of exactly that: a term in the
+inconsistent-arity curried-dispatch family served compiled at `100` and
+`-7`, neither of which is in `SAMPLE_ARGS` (`[0, 1, 2, 3, 5, -1, -3, 7,
+20]`), with `assert!(jit.is_kernel_verified(top))` passing on the
+strength of certificates at nine *other* points.
+
+Fixed by replacing the bool with a three-way `ProofStrength`
+(`Universal` / `Samples` / `None`), returned by `kernel_verify`, stored
+on `CacheEntry::Compiled`, and exposed as `JitEngine::proof_strength`.
+`is_kernel_verified` now means `Universal` specifically; the REPL prints
+"only at the sampled inputs" for the weaker class rather than a flat
+"true".
+
+One subtlety worth recording: at arity 0 the sample battery *is* the
+entire input space -- `sample_arg_vectors(0)` is a single empty vector
+because there is exactly one possible call -- so a per-call certificate
+there really does cover every input, and `kernel_verify` classifies it
+`Universal`. Without that, the arity-0 members of the same
+curried-dispatch family would have been under-reported, which is the
+mirror-image error of the one being fixed. Three of the five tests that
+initially failed the stricter classification were arity-0 and passed
+again unchanged once this was added; the two that remained are the
+genuine arity-1 cases described above, now asserting
+`ProofStrength::Samples` explicitly with a comment naming why.
+
+Nothing in `Stats` changed: `kernel_proofs_checked` still counts any
+kernel proof regardless of strength, which is what it always meant.
+
+Verify-teeth: temporarily made the per-sample classification return
+`Universal` at every arity (collapsing the distinction back) and
+confirmed the two arity-1 tests fail, then restored it and confirmed they
+pass. Full validation green afterward: `cargo build --all-targets`,
+`cargo clippy --all-targets`, `cargo test --lib --bins` (190/190), all
+four fuzzers at release, and the release demo (all nine demo terms are in
+the universal fragment, so every one still reports `true`).
+
+**Still open.** This is an honesty fix, not a soundness fix. Execution is
+unchanged: `compile_verify_and_apply` still installs and serves a
+compiled form on `verify()`'s finite battery alone, whatever
+`proof_strength` says. Closing that needs one of two decisions, neither
+taken here:
+
+1. **Gate on `Universal`.** Serve compiled code only for terms carrying a
+   theorem covering every input; interpret everything else. Small diff,
+   sound, but it withdraws the JIT from the entire `Samples` family --
+   the inconsistent-arity curried-dispatch shapes `compile.rs` went to
+   real trouble to support.
+2. **Widen the universal fragment** to cover those shapes, so the
+   `Samples` fallbacks stop being load-bearing. This is the `Sigma`
+   / dependent-sum discussion in §14 and the arity-polymorphism findings
+   in §9, and is a substantial kernel project rather than a `jit.rs`
+   change.
+
+The `ProofStrength` split is a prerequisite for either: option 1 is now a
+one-line predicate change at the `CacheEntry::Compiled` insertion site,
+and option 2 has a precise success criterion (the `Samples` variant stops
+being reachable for the shapes in question).
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)
