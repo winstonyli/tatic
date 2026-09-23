@@ -739,7 +739,20 @@ pub fn normalize(e: &Expr) -> Expr {
 
 // --- typechecking -----------------------------------------------------
 
-pub type Ctx = Vec<Expr>;
+/// The typing context `infer`/`check` thread through every recursive call,
+/// growing by one entry per binder entered (`Pi`/`Lam`/`Sigma`/`Pair`) and
+/// shrinking back via `truncate` on the way out. A plain `Vec<Expr>` would
+/// make each of those binder-entry sites pay an O(current length) clone --
+/// negligible for a shallow context, but this kernel's own deeply-recursive
+/// callers (`eval_dyn`'s per-instance proof search in particular) can
+/// legitimately build up nontrivial context depth, turning that into
+/// O(depth^2) total work across one recursive descent. `im::Vector` gives
+/// the same by-value, append/truncate-at-the-end API `Ctx`'s callers
+/// already use, but backed by structural sharing: `.clone()` and
+/// `.push_back()` are both O(log n) (amortized ~O(1) in practice) instead
+/// of O(n), so this cost disappears without changing any call site's own
+/// control flow.
+pub type Ctx = im::Vector<Expr>;
 
 /// Wraps `ctx[base_len..]` (everything appended to `ctx` since it had
 /// length `base_len`) as nested `Pi` binders around `body`, which must
@@ -754,9 +767,9 @@ pub type Ctx = Vec<Expr>;
 /// the general tool for building a postulate's type when its type itself
 /// needs to quantify over freshly-introduced variables (see `proof.rs`'s
 /// `params_and_close`, built on top of this).
-pub fn close_pi(base_len: usize, ctx: &[Expr], body: Expr) -> Expr {
-    ctx[base_len..]
-        .iter()
+pub fn close_pi(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
+    ctx.iter()
+        .skip(base_len)
         .rev()
         .fold(body, |acc, dom| pi(dom.clone(), acc))
 }
@@ -765,9 +778,9 @@ pub fn close_pi(base_len: usize, ctx: &[Expr], body: Expr) -> Expr {
 /// one per domain in `ctx[base_len..]`) instead of the type those binders
 /// have -- for when the goal is a term of that `Pi`-type (e.g. a motive or
 /// a proof to pass as an argument), not the type itself.
-pub fn close_lam(base_len: usize, ctx: &[Expr], body: Expr) -> Expr {
-    ctx[base_len..]
-        .iter()
+pub fn close_lam(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
+    ctx.iter()
+        .skip(base_len)
         .rev()
         .fold(body, |acc, dom| lam(dom.clone(), acc))
 }
@@ -830,7 +843,7 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
 fn infer_sigma(ctx: &Ctx, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
     let i = expect_sort(&infer(ctx, a)?)?;
     let mut ctx2 = ctx.clone();
-    ctx2.push((**a).clone());
+    ctx2.push_back((**a).clone());
     let j = expect_sort(&infer(&ctx2, b)?)?;
     Ok(Expr::Sort(i.max(j)))
 }
@@ -839,7 +852,7 @@ fn infer_sigma(ctx: &Ctx, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
 fn infer_pair(ctx: &Ctx, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
     let ta = infer(ctx, a)?;
     let mut ctx2 = ctx.clone();
-    ctx2.push(ta.clone());
+    ctx2.push_back(ta.clone());
     expect_sort(&infer(&ctx2, fam)?)?;
     let expected_b_ty = subst_top(fam, a);
     check(ctx, b, &expected_b_ty)?;
@@ -927,14 +940,14 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
         Expr::Pi(a, b) => {
             let i = expect_sort(&infer(ctx, a)?)?;
             let mut ctx2 = ctx.clone();
-            ctx2.push((**a).clone());
+            ctx2.push_back((**a).clone());
             let j = expect_sort(&infer(&ctx2, b)?)?;
             Ok(Expr::Sort(i.max(j)))
         }
         Expr::Lam(a, body) => {
             expect_sort(&infer(ctx, a)?)?;
             let mut ctx2 = ctx.clone();
-            ctx2.push((**a).clone());
+            ctx2.push_back((**a).clone());
             let tbody = infer(&ctx2, body)?;
             Ok(pi((**a).clone(), tbody))
         }
@@ -984,7 +997,7 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
         Expr::W(a, b) => {
             let i = expect_sort(&infer(ctx, a)?)?;
             let mut ctx2 = ctx.clone();
-            ctx2.push((**a).clone());
+            ctx2.push_back((**a).clone());
             let j = expect_sort(&infer(&ctx2, b)?)?;
             Ok(Expr::Sort(i.max(j)))
         }
@@ -1049,7 +1062,7 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
             return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
         }
         let mut ctx2 = ctx.clone();
-        ctx2.push((**a).clone());
+        ctx2.push_back((**a).clone());
         return check(&ctx2, body, &cod);
     }
     let inferred = infer(ctx, e)?;
@@ -1066,7 +1079,7 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
 
 /// Typecheck a closed term and return its normalized type.
 pub fn typecheck(e: &Expr) -> Result<Expr, String> {
-    infer(&Vec::new(), e).map(|t| nf(&t))
+    infer(&Ctx::new(), e).map(|t| nf(&t))
 }
 
 /// Builds a context of *postulated* (assumed) constants: pushes a type and
@@ -1088,11 +1101,11 @@ pub struct Postulates {
 }
 impl Postulates {
     pub fn new() -> Self {
-        Postulates { ctx: Vec::new() }
+        Postulates { ctx: Ctx::new() }
     }
     pub fn push(&mut self, ty: Expr) -> usize {
         let pos = self.ctx.len();
-        self.ctx.push(ty);
+        self.ctx.push_back(ty);
         pos
     }
     pub fn get(&self, pos: usize) -> Expr {

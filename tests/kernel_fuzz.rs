@@ -124,7 +124,7 @@ fn kernel_check_never_panics_on_random_lambda_against_random_pi() {
         let expected_dom = gen_expr(&mut rng, 0, MAX_DEPTH);
         let expected_cod = gen_expr(&mut rng, 1, MAX_DEPTH);
         let expected = kernel::pi(expected_dom, expected_cod);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::check(&Vec::new(), &e, &expected)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::check(&kernel::Ctx::new(), &e, &expected)));
         assert!(result.is_ok(), "kernel::check panicked on seed={seed}: e={e:?} expected={expected:?}");
     }
 }

@@ -1711,7 +1711,7 @@ impl Params {
 fn params_and_close(
     arith: &mut ArithPostulates,
     n: usize,
-    close: fn(usize, &[Expr], Expr) -> Expr,
+    close: fn(usize, &Ctx, Expr) -> Expr,
     build: impl FnOnce(&mut ArithPostulates, &Params) -> Option<Expr>,
 ) -> Option<Expr> {
     let base_len = arith.p.ctx.len();
@@ -1740,7 +1740,7 @@ fn params_and_close(
 fn params_and_close_typed(
     arith: &mut ClosureCombinators<'_>,
     param_types: &[Option<usize>],
-    close: fn(usize, &[Expr], Expr) -> Expr,
+    close: fn(usize, &Ctx, Expr) -> Expr,
     build: impl FnOnce(&mut ClosureCombinators<'_>, &Params) -> Option<Expr>,
 ) -> Option<Expr> {
     let base_len = arith.p.ctx.len();
