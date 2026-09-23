@@ -164,7 +164,7 @@ fn stack_ok() -> bool {
 /// [`stack_ok`] directly -- so their depth is bounded by heap, not native
 /// stack.
 #[inline(always)]
-fn grow<R>(f: impl FnOnce() -> R) -> R {
+pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
     if stack_ok() { f() } else { grow_slow(f) }
 }
 
@@ -555,9 +555,8 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 }
 
 /// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
-/// `infer_pair`'s own docs for why (this whole recursion family sits on
-/// `eval_dyn`'s tight native-stack budget, and `shift`/`shift_rc` are
-/// among its hottest, most frequently called members).
+/// `infer_sigma`'s docs for why these extractions exist and why they
+/// are kept.
 #[inline(never)]
 fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     match e {
@@ -700,12 +699,9 @@ fn is_var_free(e: &Expr, idx: u32) -> bool {
     })
 }
 
-/// `infer`'s own `Sup` arm's error-message formatting, out of line --
-/// matches `wrec_children_ty_mismatch`'s own precedent immediately above
-/// (this whole recursion family sits on `eval_dyn`'s tight native-stack
-/// budget, and `infer` is among its hottest, most deeply-recursive
-/// members, so a few extra bytes of unconditional per-frame locals here
-/// costs real, working recursion depth everywhere, not just this arm).
+/// `infer`'s own `Sup` arm's error-message formatting, out of line and
+/// `#[cold]` -- an error path, kept off `infer`'s hot frame (see
+/// `infer_sigma`).
 #[cold]
 #[inline(never)]
 fn sup_codomain_depends_on_own_argument(cod_nf: &Expr) -> String {
@@ -835,11 +831,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
     })
 }
 
-/// `whnf_impl`'s own `SigRec` case, out of line -- see `infer_pair`'s own
-/// docs for why (nothing constructs a `SigRec` term yet, so this arm's
-/// own locals have no business inflating every call to `whnf_impl`,
-/// which -- like `infer` -- sits on `eval_dyn`'s own tight native-stack
-/// recursion budget).
+/// `whnf_impl`'s own `SigRec` case, out of line -- see `infer_sigma`.
 #[inline(never)]
 fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
     match whnf_rc(target, cache) {
@@ -1023,17 +1015,18 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
     }
 }
 
-/// `infer`'s own `Sigma`/`Pair`/`SigRec` cases, out of line: these arms'
-/// own local variables have no business inflating every call to `infer`
-/// on every *other* expression shape just because this one exists -- the
-/// deeply recursive hot path `eval_dyn`'s own per-instance proof search
-/// already runs close to its own empirically-tuned native-stack budget
-/// (`DynBudget::recursion_depth`) -- the same reasoning
-/// `wrec_children_ty_mismatch`'s own `#[cold]` extraction above already
-/// established for this exact function. Confirmed empirically: inlining
-/// this directly into `infer`'s own `Expr::Pair`/`Expr::SigRec` arms
-/// measurably shrunk that budget's own margin and overflowed an existing,
-/// otherwise-unrelated deep-recursion test.
+/// `infer`'s own `Sigma`/`Pair`/`SigRec` cases, out of line, so these
+/// arms' locals don't sit in `infer`'s frame on every *other* shape.
+///
+/// This, and every other `#[inline(never)]` extraction in this module,
+/// was once load-bearing: `eval_dyn`'s per-instance proof search ran
+/// close to a native-stack budget tuned in a debug test thread, and
+/// inlining these arms back into `infer` measurably shrank its margin
+/// and overflowed a deep-recursion test. Every traversal here, and
+/// `eval_dyn`, now runs through [`grow`] (`RELATED_WORK.md` 31, 32), so
+/// frame size only decides how soon a deep walk moves to a new stack
+/// segment. They are kept because smaller hot frames cost nothing, not
+/// because anything depends on them.
 #[inline(never)]
 fn infer_sigma(ctx: &Ctx, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
     let i = expect_sort(&infer(ctx, a)?)?;
@@ -1080,26 +1073,17 @@ fn infer_sigrec(ctx: &Ctx, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>
 }
 
 /// `infer`'s own `WRec` mismatch error, out of line and `#[cold]` so its
-/// own locals (two `nf` calls, a `format!`) don't inflate every call to
-/// `infer`'s own stack frame on the hot, non-error path -- `infer` is
-/// deeply recursive (`eval_dyn`'s own per-instance proof search, in
-/// particular, runs close to its own empirically-tuned stack budget, see
-/// `proof.rs`'s `DynBudget`), so a few extra bytes of unconditional
-/// per-frame locals here would cost real, working recursion depth
-/// everywhere, not just on this rare error path.
+/// own locals (two `nf` calls, a `format!`) stay off `infer`'s hot frame
+/// (see `infer_sigma`).
 #[cold]
 #[inline(never)]
 fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
     format!("wrec: children_ty doesn't match target's own real children-type: {:?} vs {:?}", nf(children_ty), nf(wb))
 }
 
-/// `infer`'s own `Sup` arm, out of line -- matches `infer_pair`'s own
-/// precedent immediately above, for the same reason: `ta`/`dom`/`cod`/
-/// `w_candidate`/`wa`/`wb` are all real locals that would otherwise sit
-/// directly in `infer`'s own frame on every recursive call, not just
-/// `Sup`'s, and `infer` is among the hottest, most deeply-recursive
-/// functions sitting on `eval_dyn`'s tight native-stack budget (see
-/// `proof.rs`'s `DynBudget`).
+/// `infer`'s own `Sup` arm, out of line: `ta`/`dom`/`cod`/`w_candidate`/
+/// `wa`/`wb` would otherwise sit in `infer`'s frame on every call (see
+/// `infer_sigma`).
 #[inline(never)]
 fn infer_sup(ctx: &Ctx, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
     let ta = infer(ctx, a)?;
