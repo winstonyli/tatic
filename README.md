@@ -142,11 +142,14 @@ This is stated precisely because it would be easy to overclaim here.
   value by construction, not a shortcut.
 - **Recursive terms, tail or not** (`gcd`'s `loop`, factorial's or naive
   Fibonacci's plain `call`): proven two ways. `prove_tail_recursive_call`
-  is *translation validation* — for one specific call, the proof follows
+  validates one *execution* — for one specific call, the proof follows
   the interpreter's actual execution trace, symbolically composing each
   step's new parameters (recursing into non-tail self-calls too, wherever
   they sit), until it reaches a base case; a genuine per-call certificate,
-  checked by the kernel, but not a universal theorem.
+  checked by the kernel, but not a universal theorem. Deliberately *not*
+  called translation validation: that term means validating one
+  *compilation*, whose success covers every input — see `proof.rs`'s
+  module docs for why the distinction is the whole point here.
   `prove_tail_recursive_universal` goes further: it postulates an
   inductive "evaluates-to" trace family `Ev(params, v)` (the same
   "postulated inductive family" pattern `Int` itself uses) with one
@@ -497,7 +500,7 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   it.
 - `proofs.rs` — the cost of building each kind of kernel proof from
   `proof.rs`: one `refl` for a straight-line term, one relational
-  (translation-validation) proof per call, and the one-time universal
+  (per-execution) proof per call, and the one-time universal
   proof. Includes a direct N-relational-calls-vs.-one-universal-proof
   comparison, since that crossover is the actual argument for building the
   universal proof at all — on this machine it lands around 150-200 sample
@@ -735,10 +738,15 @@ guards against by hand): caught immediately, at seed 22.
   the same computation-preserving reason `W` itself was chosen over that
   route.
 - **Why sample verification never goes away**: a kernel proof only exists
-  for the fragment `proof.rs` currently covers, and translation validation
-  is inherently per-call. Sample verification is simple, total, and always
-  applicable, so it stays the baseline safety net regardless of how far
-  the proof coverage grows.
+  for the fragment `proof.rs` currently covers, and the two fallbacks
+  (`prove_tail_recursive_call`, `prove_closure_expr_instance`) certify one
+  concrete execution each rather than quantifying over inputs. Sample
+  verification is simple, total, and always applicable, so it stays the
+  baseline safety net regardless of how far the proof coverage grows.
+  That per-execution limit is a property of *these* checks, not of
+  translation validation as the literature means it — a genuine
+  per-compilation validator's success would cover every input, and
+  building one is a route tatic hasn't taken (see §28).
 - **`Anchored`, and a staleness bug it doesn't automatically prevent**: a
   postulate's `Expr` reference is only valid relative to the postulate
   context's length *at the moment it's resolved* (`kernel::Postulates::get`

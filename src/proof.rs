@@ -23,14 +23,31 @@
 //! the same value by construction, and a kernel-checked `refl` is an
 //! accurate, honest witness of exactly that fact -- no more, no less.
 //!
-//! ## Tail recursion: relational, per-call proofs (`prove_tail_recursive_call`)
+//! ## Tail recursion: relational, per-execution proofs (`prove_tail_recursive_call`)
 //!
 //! `compile.rs` also turns *tail* self-recursion into a `loop`/`br`
 //! (recursion -> iteration) -- the actually interesting transformation.
-//! One way to check a given transformed term is the same idea real
-//! verified compilers fall back to when full verification isn't available:
-//! **translation validation** -- instead of a universal theorem, validate
-//! *one specific execution trace*. For a concrete `(term, args)`,
+//! Checking a given transformed term borrows the *shape* of what real
+//! verified compilers fall back to when full verification isn't
+//! available -- validate the output of a compilation instead of proving
+//! the compiler itself correct -- but lands one rung weaker than that,
+//! and the distinction is worth stating plainly because the standard
+//! term does **not** apply here:
+//!
+//! *Translation validation* (Pnueli et al.; Necula; Tristan & Leroy's
+//! verified validators in CompCert) validates one **compilation**. The
+//! checker runs once per compiled program, and when it succeeds the
+//! compiled program is correct *for every input*. What
+//! `prove_tail_recursive_call` validates is one **execution**: a single
+//! concrete `(term, args)` trace, saying nothing whatever about any
+//! other argument. That's a result-checking / certifying-computation
+//! regime, not translation validation, and using the latter name for it
+//! would claim precisely the all-inputs guarantee it lacks -- see
+//! `jit::ProofStrength::Samples` and `RELATED_WORK.md` 28. tatic has no
+//! per-compilation validator; the only all-inputs evidence it builds is
+//! the universal theorem below.
+//!
+//! Mechanically, for a concrete `(term, args)`,
 //! `prove_tail_recursive_call` follows the interpreter's own concrete trace
 //! (which branch is taken at each unrolling, using the same shape
 //! `compile_node` classifies bodies with), and at each tail-call step,

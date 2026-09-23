@@ -2129,10 +2129,75 @@ pass. Full validation green afterward: `cargo build --all-targets`,
 four fuzzers at release, and the release demo (all nine demo terms are in
 the universal fragment, so every one still reports `true`).
 
+### Terminology: these are not "translation validation"
+
+Fixed alongside the above, since it was the same overstatement in prose
+rather than in code. `proof.rs`'s module docs, `jit.rs`'s, `benches/
+proofs.rs`'s and three places in `README.md` all described
+`prove_tail_recursive_call` as *translation validation*. In the
+literature that term means validating one **compilation**: the checker
+runs once per compiled program, and when it succeeds the compiled
+program is correct *for every input* (Pnueli et al.; Necula; Tristan &
+Leroy's verified validators, POPL'08, whose register-allocation
+descendant ships in mainline CompCert). What `prove_tail_recursive_call`
+validates is one **execution** -- a single concrete `(term, args)` trace
+-- which is a result-checking / certifying-computation regime instead.
+
+The worst instance was README's "translation validation is inherently
+per-call", which is false about the technique and made tatic's own
+limitation look intrinsic rather than self-imposed. All six sites now
+say "per-execution" and name the distinction; no function was renamed
+(the blast radius isn't worth it, and the docs now carry the correction
+at every entry point).
+
+The practical consequence, and the reason this is worth more than a
+wording nit: *per-compilation validation is a rung tatic does not
+currently occupy at all*, and it sits exactly between "sample and hope"
+and option 2's kernel work.
+
+### Prior art worth knowing before either option is started
+
+- **DDEC** (Sharma, Schkufza, Churchill, Aiken, OOPSLA'13) infers a
+  simulation relation *from test-run data*, then discharges it with a
+  solver -- sound because insufficient data makes the proof fail, never
+  pass. That is tatic's two ingredients wired the other way round:
+  sampling as heuristic, proof as gate. Adopting the structure does not
+  require adopting the solver (which would trade a small kernel for an
+  SMT TCB), but the discharge step still needs the kernel to be able to
+  *state* the relation -- which is where §14's `Sigma` returns for the
+  closure family specifically, and only for it.
+- **TurboTV** (Heo et al., ICSE'24) is per-compilation translation
+  validation for V8's TurboFan, via an SMT encoding of its IR with a
+  staged decomposition. Evidence that per-compilation TV is tractable for
+  a real JIT -- and it validates IR-to-IR, with the gap between its model
+  and the real engine stated as a limitation, exactly as here.
+- **CompCert's actual bug history** is the strongest argument about where
+  to spend next. ~90% of its algorithms are proved; the unverified
+  remainder is elaboration, pre-simplification, assembling and linking.
+  Csmith (Yang et al., PLDI'11) found no middle-end wrong-code bugs in
+  CompCert at all -- the wrong-code bugs it did find were in the code
+  that expands and prints assembly instructions, attributed to operand-
+  ordering tedium and absent printer unit tests. The analogue here is
+  exact: `denote` vs `compile_node` is the modeling gap and WAT emission
+  is the printer, and no kernel proof tatic can build reaches either.
+  Extending `compile_fuzz` to differentially test `denote` against
+  `compile_node` structurally (not just outputs) is the cheap work that
+  targets the empirically dangerous class.
+- **Verified-JIT calibration**: Myreen (POPL'10) verified a JIT to x86 in
+  HOL4 including an instruction-cache model and self-modifying code;
+  Barriere, Blazy, Fluckiger, Pichardie & Vitek (POPL'21) verified
+  speculation and deoptimization in CoreJIT over a CompCert-RTL-like IR.
+  Both verify a compiler *model*, with extraction closing model ->
+  implementation. tatic has no extraction story -- `compile.rs` emits WAT
+  by hand -- so that last step would be new work, not a port.
+- **If the target semantics is ever wanted for real**: WasmCert-Coq and
+  WasmCert-Isabelle (Watt et al., FM'21) mechanise Wasm 1.0/2.0 with
+  verified executable interpreters, and found genuine spec bugs doing it.
+
 **Still open.** This is an honesty fix, not a soundness fix. Execution is
 unchanged: `compile_verify_and_apply` still installs and serves a
 compiled form on `verify()`'s finite battery alone, whatever
-`proof_strength` says. Closing that needs one of two decisions, neither
+`proof_strength` says. Closing that needs one of these decisions, none
 taken here:
 
 1. **Gate on `Universal`.** Serve compiled code only for terms carrying a
@@ -2141,15 +2206,31 @@ taken here:
    the inconsistent-arity curried-dispatch shapes `compile.rs` went to
    real trouble to support.
 2. **Widen the universal fragment** to cover those shapes, so the
-   `Samples` fallbacks stop being load-bearing. This is the `Sigma`
-   / dependent-sum discussion in §14 and the arity-polymorphism findings
-   in §9, and is a substantial kernel project rather than a `jit.rs`
-   change.
+   `Samples` fallbacks stop being load-bearing. Note this splits in two,
+   and the split is the useful part: the *tail-recursive* `Samples` cases
+   only need `prove_tail_recursive_universal`'s shape coverage widened,
+   which is ordinary work with no kernel change. Only the
+   *closure / inconsistent-arity* cases need the `Sigma` / dependent-sum
+   discussion in §14 and the arity-polymorphism findings in §9. Treating
+   §14 as a prerequisite for all of option 2 overstates its cost.
+3. **Build a per-compilation validator** -- the rung the prior-art
+   section above shows tatic doesn't occupy. Sampling infers the
+   candidate relation, the kernel proof decides installation (DDEC's
+   structure). This converts `verify()` from load-bearing to advisory
+   without needing the universal fragment widened first, and is the
+   option the literature supports best.
 
-The `ProofStrength` split is a prerequisite for either: option 1 is now a
-one-line predicate change at the `CacheEntry::Compiled` insertion site,
-and option 2 has a precise success criterion (the `Samples` variant stops
-being reachable for the shapes in question).
+The `ProofStrength` split is a prerequisite for all three: option 1 is
+now a one-line predicate change at the `CacheEntry::Compiled` insertion
+site, and options 2 and 3 have a precise success criterion (the
+`Samples` variant stops being reachable for the shapes in question).
+
+None of the three touches the `denote`-vs-`compile_node` modeling gap or
+WAT emission, which -- per CompCert's own bug history above -- is where
+the empirically dangerous class lives. The cheapest genuinely
+risk-reducing work available is orthogonal to all of them: extend
+`compile_fuzz` to differentially check the two derivations structurally,
+not just their outputs.
 
 ## Sources
 

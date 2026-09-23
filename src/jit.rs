@@ -30,8 +30,11 @@
 //! theorem (`prove_tail_recursive_universal`) if its shape allows one --
 //! also covering every input, from real induction rather than per-sample
 //! checking; only if that doesn't apply does it fall back to a per-sample
-//! relational proof (translation validation) for the same battery of
-//! samples `verify()` uses.
+//! relational proof -- one certificate per concrete execution, for the
+//! same battery of samples `verify()` uses. (Per *execution*, not per
+//! compilation: that's why it isn't translation validation in the sense
+//! the literature means, which would cover every input. See `proof.rs`'s
+//! own module docs.)
 //!
 //! Those two classes are not interchangeable, so `is_kernel_verified`
 //! doesn't conflate them: `proof_strength` reports `ProofStrength` below,

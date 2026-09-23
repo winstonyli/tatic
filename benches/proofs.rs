@@ -1,5 +1,5 @@
 //! Cost of building kernel-checked proofs in `proof.rs`: the straight-line
-//! case (one `refl`), a single per-call relational (translation-validation)
+//! case (one `refl`), a single per-execution relational
 //! proof, and the one-time universal proof -- plus a direct comparison
 //! between N relational proofs and one universal proof, since that
 //! crossover is the whole argument for building the universal proof at
