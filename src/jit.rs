@@ -360,10 +360,21 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
             }
         }
         _ => {
-            // Higher-arity: just probe the all-equal and all-small-distinct
-            // diagonals rather than a full cartesian product.
+            // Higher-arity: probe two diagonals rather than a full
+            // cartesian product -- all-equal (every position gets the
+            // same sampled value) and several rotations of an
+            // all-small-distinct assignment (every position gets a
+            // different one). The all-equal diagonal alone is
+            // structurally blind to a compiled-code bug that swaps or
+            // misindexes two argument positions, since swapping equal
+            // values changes nothing observable -- this was a real,
+            // previously-unfuzzed verification-coverage gap for every
+            // arity->=3 term (see RELATED_WORK.md).
             for &a in &SAMPLE_ARGS[..6] {
                 out.push(vec![a; arity]);
+            }
+            for offset in 0..SAMPLE_ARGS.len().min(6) {
+                out.push((0..arity).map(|i| SAMPLE_ARGS[(i + offset) % SAMPLE_ARGS.len()]).collect());
             }
         }
     }
@@ -383,6 +394,27 @@ mod tests {
         // own comment and `RELATED_WORK.md` §9 for the redundant-proof-
         // search cost this was causing).
         assert_eq!(sample_arg_vectors(0), vec![Vec::<i64>::new()]);
+    }
+
+    #[test]
+    fn sample_arg_vectors_for_higher_arity_includes_a_genuinely_distinct_sample() {
+        // Before this fix, the `_` (arity >= 3) arm only ever generated
+        // `vec![a; arity]` -- every position the *same* value -- despite
+        // its own comment claiming an "all-small-distinct" diagonal too.
+        // A compiled-code bug that swaps or misindexes two argument
+        // positions is structurally invisible to an all-equal sample
+        // (swapping equal values changes nothing), so `verify()` and
+        // every per-sample `kernel_verify` fallback would have missed
+        // exactly that bug class for every arity->=3 term. Confirm at
+        // least one generated sample now has genuinely different values
+        // at different positions, for a couple of arities.
+        for arity in [3, 4, 5] {
+            let samples = sample_arg_vectors(arity);
+            assert!(
+                samples.iter().any(|s| s.iter().collect::<std::collections::HashSet<_>>().len() > 1),
+                "arity {arity}: no sample has distinct argument values: {samples:?}"
+            );
+        }
     }
 
     fn factorial(s: &mut TermStore) -> Hash {
