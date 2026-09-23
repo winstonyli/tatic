@@ -7043,7 +7043,7 @@ fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, c
 
 /// Bounds how much work following one concrete `eval_dyn` trace may do,
 /// shared (via `&mut`) across the whole walk, including through mutual
-/// recursion with `eval_dyn` itself (see its own docs). Two separate
+/// recursion with `eval_dyn` itself (see its own docs). Three separate
 /// counters, not one, because they bound genuinely different things:
 /// `tail_steps` bounds `eval_dyn_tail_recursive`'s own flat loop --
 /// unaffected by whether any *non*-tail self-call is also present, since
@@ -7058,14 +7058,37 @@ fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, c
 /// overflow -- see `eval.rs`'s own docs on the same native-stack limit
 /// for non-tail recursion (~8,000-10,000 levels there, for far lighter
 /// per-frame work than building up a kernel proof term does).
+///
+/// `inline_call_depth` bounds a *third*, distinct kind of native-stack
+/// recursion: `eval_dyn_direct_call` inlining into a *different*
+/// combinator's own body, reached only through an ordinary captured
+/// `Clo` value (not `eval_dyn`'s own `self_ctx`-based recognition at
+/// all -- inlining always hands the callee a *fresh* `None` self_ctx).
+/// This is deliberately its own, smaller counter rather than reusing
+/// `recursion_depth`: measured directly (a term built specifically to
+/// drive this path, deep enough to force many levels), the real
+/// per-level native-stack cost here is noticeably higher than the
+/// embedded-self-call case `recursion_depth` was tuned for --
+/// `eval_dyn_direct_call` itself carries substantially more live state
+/// per frame (`param_types_for`, `combinator_return_type`, and each
+/// argument's own `eval_dyn` call, all before dispatch is even decided)
+/// -- so reusing the same bound of 50 reliably overflowed the native
+/// stack in an unoptimized debug-build test thread by roughly the
+/// 43rd-45th level, well *inside* that bound. 25 leaves comfortable
+/// margin below the measured (40 safe / 45 overflowing) boundary while
+/// still covering any realistic mutual recursion depth this path is
+/// meant to prove per-instance over (see the module's own "sound, not
+/// complete" tolerance: declining past this is a clean `None`, not a
+/// correctness gap).
 struct DynBudget {
     tail_steps: usize,
     recursion_depth: usize,
+    inline_call_depth: usize,
 }
 
 impl DynBudget {
     fn new() -> Self {
-        DynBudget { tail_steps: 10_000, recursion_depth: 50 }
+        DynBudget { tail_steps: 10_000, recursion_depth: 50, inline_call_depth: 25 }
     }
 }
 
@@ -7213,30 +7236,7 @@ fn eval_dyn_direct_call(
             .any(|(j, v)| root_param_types[root_arity - 1 - j].is_none() && matches!(v, DynDenoted::Clo(..)));
 
     if needs_inline {
-        if !compile::free_vars(store, root_body, root_arity, root_is_rec).is_empty() {
-            return None; // scoped out -- see this function's own docs
-        }
-        let mut child: Vec<Option<DynVal>> = vec![None; root_arity];
-        for (j, (v, &a)) in arg_vals.into_iter().zip(args.iter()).enumerate() {
-            let pos = root_arity - 1 - j;
-            child[pos] = Some(match v {
-                // `e` is already `Anchored` (built no later than this
-                // call's own `arg_vals` loop above) -- safe to carry
-                // into the child frame unchanged; `DynVal`'s own `.at()`
-                // will reshift it correctly whenever it's eventually
-                // resolved, however much more gets pushed in between.
-                DynDenoted::Int(e) => {
-                    let n = eval_concrete_dyn(store, a, calling_frame)?;
-                    DynVal::Int(e, n)
-                }
-                DynDenoted::Clo(e, cc) => DynVal::Clo(e, cc),
-            });
-        }
-        let child: Vec<DynVal> = child.into_iter().collect::<Option<Vec<_>>>()?;
-        if root_is_rec {
-            return eval_dyn_tail_recursive(store, root_body, root_arity, combinators, budget, child);
-        }
-        return eval_dyn(store, root_body, combinators, None, budget, &child);
+        return eval_dyn_inline_call(store, combinators, root_body, root_arity, root_is_rec, arg_vals, args, calling_frame, budget);
     }
 
     // Ordinary opaque call: mirrors `denote_closure`'s own
@@ -7284,6 +7284,80 @@ fn eval_dyn_direct_call(
     let applied_resolved = applied.at(&combinators.cp.arith);
     debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied_resolved, &int_ty, "eval_dyn: direct combinator call");
     Some(DynDenoted::Int(applied))
+}
+
+/// The recursive-continuation half of `eval_dyn_direct_call`'s own
+/// `needs_inline` branch, out-of-lined (`#[inline(never)]`) so that
+/// `eval_dyn_direct_call`'s own, already-sizeable locals (`arg_vals`,
+/// `root_param_types`, etc. -- dead by this point, but still part of its
+/// stack frame in an unoptimized build) don't inflate the per-level cost
+/// of the mutual recursion this function feeds into
+/// (`eval_dyn_inline_call` -> `eval_dyn`/`eval_dyn_tail_recursive` ->
+/// `eval_dyn_direct_call` -> back into `eval_dyn_inline_call`, one real
+/// native-stack round trip per inlined level). This extraction alone
+/// turned out not to be sufficient, unlike `infer_sup`'s own precedent
+/// (`kernel.rs`) it was modeled on: `eval_dyn_direct_call`'s own prologue
+/// (`param_types_for`, `combinator_return_type`, and each argument's own
+/// `eval_dyn` call, all before dispatch is even decided) stays live on
+/// the stack for the whole nested call regardless of what's extracted out
+/// of its tail, so a term built specifically to drive this path
+/// (self-application reached only through a captured closure, not
+/// `eval_dyn`'s own embedded-self-call recognition) still reliably
+/// overflowed the native stack in an unoptimized debug-build test thread
+/// at roughly the 43rd-45th level -- comfortably inside
+/// `DynBudget::recursion_depth`'s own bound of 50. See `DynBudget`'s own
+/// docs for why the real fix is this path's own separate, smaller
+/// `budget.inline_call_depth` counter rather than reusing that one.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn eval_dyn_inline_call(
+    store: &TermStore,
+    combinators: &mut ClosureCombinators,
+    root_body: Hash,
+    root_arity: usize,
+    root_is_rec: bool,
+    arg_vals: Vec<DynDenoted>,
+    args: &[Hash],
+    calling_frame: &[DynVal],
+    budget: &mut DynBudget,
+) -> Option<DynDenoted> {
+    if !compile::free_vars(store, root_body, root_arity, root_is_rec).is_empty() {
+        return None; // scoped out -- see eval_dyn_direct_call's own docs
+    }
+    let mut child: Vec<Option<DynVal>> = vec![None; root_arity];
+    for (j, (v, &a)) in arg_vals.into_iter().zip(args.iter()).enumerate() {
+        let pos = root_arity - 1 - j;
+        child[pos] = Some(match v {
+            // `e` is already `Anchored` (built no later than this call's
+            // own `arg_vals` loop, in `eval_dyn_direct_call`) -- safe to
+            // carry into the child frame unchanged; `DynVal`'s own
+            // `.at()` will reshift it correctly whenever it's eventually
+            // resolved, however much more gets pushed in between.
+            DynDenoted::Int(e) => {
+                let n = eval_concrete_dyn(store, a, calling_frame)?;
+                DynVal::Int(e, n)
+            }
+            DynDenoted::Clo(e, cc) => DynVal::Clo(e, cc),
+        });
+    }
+    let child: Vec<DynVal> = child.into_iter().collect::<Option<Vec<_>>>()?;
+    // Inlining here recurses into a *different* combinator's own body
+    // (reached via a captured closure, possibly Rec-wrapped) through the
+    // native Rust stack -- its own dedicated `budget.inline_call_depth`
+    // bound, not `eval_dyn`'s `recursion_depth` (see `DynBudget`'s own
+    // docs on why this path needs a separately-tuned, smaller bound) and
+    // not just `eval_dyn_tail_recursive`'s flat `tail_steps` loop.
+    // Without this, mutual recursion across combinators reached only
+    // through captured closures could grow the native stack without
+    // bound.
+    if budget.inline_call_depth == 0 {
+        return None;
+    }
+    budget.inline_call_depth -= 1;
+    if root_is_rec {
+        return eval_dyn_tail_recursive(store, root_body, root_arity, combinators, budget, child);
+    }
+    eval_dyn(store, root_body, combinators, None, budget, &child)
 }
 
 /// Per-instance, closure-capable sibling of `denote_closure` -- see this
@@ -10738,6 +10812,82 @@ mod tests {
         assert!(
             prove_closure_expr_instance(&s, top, &[]).is_none(),
             "n=1_000_000 exceeds DynBudget::recursion_depth and should decline cleanly, not overflow the stack"
+        );
+    }
+
+    #[test]
+    fn a_self_application_reached_only_through_a_captured_closure_is_bounded_by_recursion_depth() {
+        // step = \g n. if 1<0 then g(999) else (if n<=0 then n else g(g, n-1)),
+        // called as top = step(step, n0) -- a plain (non-`Rec`) Y-combinator-
+        // style self-application. Every recursive step reaches "step" again
+        // only by reading `g` back out of the frame as an ordinary captured
+        // `Clo` value, never via `eval_dyn`'s own `self_ctx`-based
+        // embedded-self-call recognition (there is no `self_ctx` here at
+        // all -- `eval_dyn_direct_call` always inlines with a *fresh* `None`
+        // self_ctx for whatever combinator it steps into, per its own
+        // docs) and never via `eval_dyn_tail_recursive`'s flat loop (`step`
+        // isn't `Rec`-wrapped). The dead `g(999)` call site (arity 1)
+        // against the live `g(g, n-1)` call site (arity 2) makes
+        // `param_types_for(step)` classify `g` as `Inconsistent`, so every
+        // level goes through `eval_dyn_direct_call`'s own `needs_inline`
+        // branch -- one genuine native Rust stack frame per level, via
+        // `eval_dyn_direct_call` -> `eval_dyn` -> (App spine) ->
+        // `eval_dyn_direct_call` again. This is the regression guard for
+        // `budget.inline_call_depth` actually being checked and
+        // decremented on *that* path, not just `eval_dyn`'s
+        // embedded-self-call one (bounded separately by its own
+        // `budget.recursion_depth`).
+        let mut s = TermStore::new();
+        let g_dead = s.var(1);
+        let nine_ninety_nine = s.lit(999);
+        let dead_call = s.app(g_dead, nine_ninety_nine);
+
+        let n_live = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n_live, zero);
+        let n_ret = s.var(0);
+        let n_for_sub = s.var(0);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n_for_sub, one);
+        let g_fn = s.var(1);
+        let g_arg = s.var(1);
+        let rec_call = s.app2(g_fn, g_arg, n_minus_1); // g(g, n-1)
+        let live_body = s.if_(cond, n_ret, rec_call);
+
+        let one_c = s.lit(1);
+        let zero_c = s.lit(0);
+        let dead_cond = s.prim(PrimOp::Lt, one_c, zero_c); // always false
+        let body = s.if_(dead_cond, dead_call, live_body);
+
+        let inner = s.abs(body); // binds n (var 0)
+        let step = s.abs(inner); // binds g (var 1) -- step = \g n. body
+
+        assert!(
+            param_types_for(&s, step).unwrap().contains(&None),
+            "g's own dead call site at a different arity should make it Inconsistent"
+        );
+
+        for n_val in [0i64, 1, 3, 10] {
+            let n_lit = s.lit(n_val);
+            let top = s.app2(step, step, n_lit);
+
+            assert!(prove_closure_expr(&s, top).is_none(), "n={n_val}: top's own call to step still can't be classified statically");
+            let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("n={n_val} should be provable per-instance"));
+            check_instance_proof(&proof);
+            assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), 0, "n={n_val}: sanity check -- counts down to 0 either way");
+        }
+
+        // Past `DynBudget::inline_call_depth`'s own bound, this must
+        // decline *cleanly* rather than actually overflowing the native
+        // Rust stack that many real inlined levels would otherwise
+        // recurse through -- unlike the embedded-self-call boundary test
+        // above, this path goes entirely through `eval_dyn_direct_call`'s
+        // own inline branch, never `eval_dyn`'s `self_ctx` recognition.
+        let deep_n = s.lit(1_000_000);
+        let top = s.app2(step, step, deep_n);
+        assert!(
+            prove_closure_expr_instance(&s, top, &[]).is_none(),
+            "n=1_000_000 exceeds DynBudget::inline_call_depth via eval_dyn_direct_call's own inline path and should decline cleanly, not overflow the stack"
         );
     }
 
