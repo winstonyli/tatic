@@ -2327,12 +2327,18 @@ the printer is where wrong-code bugs actually live.
 curried-dispatch family -- the capability `compile.rs` went to real
 trouble to support. Against this repo's corpus that costs nothing today:
 the release demo still compiles all nine terms with
-`declined_no_universal_proof: 0`, every benchmark is unaffected, and
-exactly two tests changed behavior (the arity-1 members of the
-`Samples` family measured in §28; the arity-0 members classify
-`Universal` and still install). It is nonetheless a capability
-regression, and the way to undo it is option 2 -- widen the universal
-fragment -- not relaxing the gate.
+`declined_no_universal_proof: 0`, and exactly two tests changed behavior
+(the arity-1 members of the `Samples` family measured in §28; the
+arity-0 members classify `Universal` and still install). It is
+nonetheless a capability regression, and the way to undo it is option 2
+-- widen the universal fragment -- not relaxing the gate.
+
+*(An earlier draft of this paragraph also claimed "every benchmark is
+unaffected". That was asserted rather than measured. Running them
+afterwards confirmed the gate changes no benchmark's behavior -- every
+`jit_warm_cache_hit` bar still beats its `interpreter` bar by the same
+orders of magnitude -- but also turned up a pre-existing crash in
+`benches/execution.rs` that has nothing to do with the gate. See §30.)*
 
 **A consequence worth flagging rather than fixing.** With the gate in
 place, `kernel_verify`'s steps 4 and 5 can no longer change any
@@ -2360,6 +2366,72 @@ expanding the deprecated `std::u32::MAX` path at `term.rs:18`. Not
 tatic's code, and deliberately not suppressed with an `#[allow]` that
 would mask a future real deprecation in that file -- but "clippy clean"
 is no longer a valid pass criterion on that toolchain.
+
+## 30. `cargo bench --bench execution` dies of a stack overflow on the inconsistent-arity term -- found, not fixed
+
+Found while checking (belatedly) whether §29's installation gate changed
+any benchmark. It didn't. But the benchmark suite does not complete:
+
+```
+Benchmarking inconsistent_arity_loop_carried_parameter_loop/jit_cold_compile_and_verify
+thread 'main' has overflowed its stack
+error: bench failed  (exit code 0xc00000fd, STATUS_STACK_OVERFLOW)
+```
+
+**Pre-existing, not caused by the gate.** Confirmed directly by checking
+out `src/jit.rs` from the commit before §29's change and re-running: it
+overflows identically. Every `src`-side commit in this series is
+therefore exonerated; the crash is older than this whole line of work.
+
+**Why nothing caught it.** The standing validation routine is `cargo
+build --all-targets`, `cargo test --lib --bins`, `cargo clippy
+--all-targets`, all four fuzzers at release, and `cargo run --release`.
+Benchmarks are not in it. `--all-targets` *builds* them, which is
+presumably why this looked covered; nothing ever ran them.
+
+**Mechanism, strongly indicated but not yet isolated.** The term is
+`common::inconsistent_arity_loop_carried_parameter_loop`: a 20,000-
+iteration loop whose closure-typed parameter is `ArityUse::Inconsistent`.
+That is exactly the family §28 measured as landing on
+`prove_closure_expr_instance` -- the per-*execution* certificate, whose
+size is proportional to the trace it follows. Supporting evidence:
+
+- Its sibling `closure_typed_loop_carried_parameter_loop` -- same 20,000
+  iterations, same hot call, differing only in that one dead call site
+  makes the parameter inconsistent -- does *not* overflow. It is covered
+  by `prove_tail_recursive_universal`, which never walks a trace.
+- `cargo bench --bench proofs` completes fine, including
+  `non_tail_closure_recursion_instance_proof`, which exercises
+  `prove_closure_expr_instance` directly at ~30us on deliberately small
+  traces (that bench's own docs note its `n` is "kept much smaller").
+- The interpreter bar for the same term runs the same 20,000 iterations
+  without trouble, so `eval` is not the recursive part.
+
+`DynBudget` bounds `tail_steps` at 10,000 and `recursion_depth` at 50,
+so the *trace walk* should terminate rather than recurse away. The
+likelier culprit is what happens afterwards: a 10,000-step trace yields
+a straight-line expression roughly that deep, and the kernel's own
+traversals (`whnf`/`nf`/typechecking) recurse over its structure. That
+would make `DynBudget` a bound on proof *size* but not on the *stack
+depth* needed to process one -- which is the actual thing that needs
+bounding.
+
+**Why this matters beyond the benchmark.** The path is reachable from
+`jit.apply`, so a legitimate term in this family with a long-running
+loop crashes the process rather than declining the proof. A proof
+strategy running out of budget must fail gracefully; this one takes the
+process with it. It is a robustness bug in the same family §29's gate
+just declined to install, which is a coincidence of subject matter, not
+a consequence.
+
+**Suggested first steps when this is picked up.** Isolate before fixing:
+binary-search the loop count at which it overflows, and confirm the
+overflow moves with trace length rather than with term size. If it is
+the kernel's traversal depth, the fix is either an explicit depth bound
+checked where the expression is built (so it declines, returning `None`,
+exactly as an exhausted `DynBudget` already does) or an iterative
+rewrite of the traversal. Adding benchmarks to the standing validation
+routine is worth doing regardless -- that is the gap that let this sit.
 
 ## Sources
 
