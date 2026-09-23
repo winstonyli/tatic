@@ -257,19 +257,18 @@ impl JitEngine {
         if proof::prove_closure_expr(terms, h).is_some() {
             return true;
         }
-        let instance_samples: Vec<Vec<i64>> = sample_arg_vectors(arity).into_iter().take(3).collect();
+        let samples = sample_arg_vectors(arity);
+        let instance_samples: Vec<Vec<i64>> = samples.iter().take(3).cloned().collect();
         if let Some((_, instances)) = proof::prove_tail_recursive_universal_with_instances(terms, h, &instance_samples)
         {
             self.stats.universal_instances_checked += instances.iter().filter(|i| i.is_some()).count() as u64;
             return true;
         }
-        let samples = sample_arg_vectors(arity);
         if !samples.is_empty() && samples.iter().all(|sample| proof::prove_tail_recursive_call(terms, h, sample).is_some()) {
             return true;
         }
-        let closure_instance_samples = sample_arg_vectors(arity);
-        !closure_instance_samples.is_empty()
-            && closure_instance_samples
+        !samples.is_empty()
+            && samples
                 .iter()
                 .all(|sample| proof::prove_closure_expr_instance(terms, h, sample).is_some())
     }
@@ -323,9 +322,24 @@ impl JitEngine {
         if let Some(hp) = hp_global {
             hp.set(&mut self.rt, Val::I32(0)).expect("hp is always a mutable i32 global when exported");
         }
-        let wargs: Vec<Val> = args.iter().map(|&a| Val::I64(a)).collect();
+        // `Val` is `Copy`, so the common case (every combinator arity this
+        // project's own demo/bench/test corpus ever reaches is well under
+        // this) needs no heap allocation at all -- only an arity this rare
+        // falls back to a per-call `Vec`.
+        const STACK_ARGS: usize = 8;
+        let mut stack_buf = [Val::I64(0); STACK_ARGS];
+        let heap_buf;
+        let wargs: &[Val] = if args.len() <= STACK_ARGS {
+            for (slot, &a) in stack_buf.iter_mut().zip(args) {
+                *slot = Val::I64(a);
+            }
+            &stack_buf[..args.len()]
+        } else {
+            heap_buf = args.iter().map(|&a| Val::I64(a)).collect::<Vec<_>>();
+            &heap_buf
+        };
         let mut results = [Val::I64(0)];
-        func.call(&mut self.rt, &wargs, &mut results)
+        func.call(&mut self.rt, wargs, &mut results)
             .map_err(|_| EvalError::Trap)?;
         match results[0] {
             Val::I64(n) => Ok(n),
@@ -433,6 +447,37 @@ mod tests {
                 "arity {arity}: no sample has distinct argument values: {samples:?}"
             );
         }
+    }
+
+    #[test]
+    fn invoke_agrees_with_the_interpreter_past_the_stack_buffer_threshold() {
+        // `invoke`'s own `STACK_ARGS` bound (8) is meant to be transparent:
+        // a call with more arguments than that must still agree with the
+        // interpreter via the heap-`Vec` fallback, not just avoid crashing.
+        // A 10-ary sum is the simplest term whose arity exceeds the bound.
+        let mut s = TermStore::new();
+        let mut body = s.var(0);
+        for i in 1..10 {
+            let v = s.var(i);
+            body = s.prim(PrimOp::Add, body, v);
+        }
+        let mut top = body;
+        for _ in 0..10 {
+            top = s.abs(top);
+        }
+        let args: Vec<i64> = (1..=10).collect();
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, top, &args).unwrap(), eval::apply_term(&s, top, &args).unwrap());
+        // Without this, a broken `invoke` wouldn't necessarily show up as a
+        // wrong *value* here: `verify()` itself calls `invoke` on its own
+        // sample battery, so a corrupted heap-fallback call would just make
+        // verification disagree and safely blacklist the term to the
+        // interpreter (confirmed directly: a deliberately truncated
+        // heap-fallback buffer made this assertion fail with compiled=0,
+        // not a wrong sum) -- this assertion is what actually forces the
+        // comparison above through the compiled path.
+        assert_eq!(jit.stats.compiled, 1, "must actually exercise the compiled path, not silently fall back to the interpreter");
     }
 
     fn factorial(s: &mut TermStore) -> Hash {
