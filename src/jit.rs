@@ -415,6 +415,32 @@ mod tests {
         assert!(jit.stats.cache_hits > 1);
     }
 
+    #[test]
+    fn division_agrees_with_the_interpreter_at_i64_min_over_negative_one() {
+        // `i64::MIN / -1` is the one input where `i64.div_s` traps per
+        // the WebAssembly spec (the mathematical quotient overflows
+        // `i64`), while `eval.rs`'s own `wrapping_div` silently wraps
+        // back to `i64::MIN` -- the same non-trapping convention
+        // `Add`/`Sub`/`Mul` already use uniformly. `compile.rs`'s
+        // `emit_wrapping_div` special-cases exactly this combination so
+        // the compiled fragment doesn't disagree with the interpreter on
+        // an input `SAMPLE_ARGS` doesn't happen to include.
+        let mut s = TermStore::new();
+        let a = s.var(1);
+        let b = s.var(0);
+        let body = s.prim(PrimOp::Div, a, b);
+        let inner = s.abs(body);
+        let div = s.abs(inner);
+
+        let mut jit = JitEngine::new();
+        let args = [i64::MIN, -1];
+        let interpreted = eval::apply_term(&s, div, &args).unwrap();
+        let compiled = jit.apply(&s, div, &args).unwrap();
+        assert_eq!(interpreted, i64::MIN);
+        assert_eq!(compiled, interpreted, "compiled and interpreted must agree on i64::MIN / -1");
+        assert_eq!(jit.stats.compiled, 1, "should have compiled, not fallen back to the interpreter");
+    }
+
     fn gcd(s: &mut TermStore) -> Hash {
         // rec f a b = if b == 0 then a else f(b, a mod b) -- tail
         // recursive: compile.rs turns this into a loop, and proof.rs's

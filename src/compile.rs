@@ -619,6 +619,11 @@ fn compile_function(store: &TermStore, body: Hash, spec: &FnSpec, combinators: &
     // recursive, evaluation -- this is reused purely as pop-scratch to
     // reorder each value for its own `i64.store`.
     w.push_str("    (local $papenv i64)\n");
+    // Scratch locals for `emit_wrapping_div`'s own trap-avoidance sequence
+    // -- declared unconditionally (harmless if unused), matching
+    // `$envtmp`/`$papenv`'s own convention above.
+    w.push_str("    (local $diva i64)\n");
+    w.push_str("    (local $divb i64)\n");
     w.push_str("    (loop $L (result i64)\n");
     compile_node(&ctx, combinators, body, true, w, 6)?;
     w.push_str("    )\n  )\n");
@@ -943,6 +948,43 @@ fn arith_instr(op: PrimOp) -> Option<&'static str> {
         Mod => "i64.rem_s",
         Lt | Le | Eq => return None,
     })
+}
+
+/// Emits `Div`'s own operator, in place of a bare `arith_instr`-driven
+/// `i64.div_s` -- that single instruction traps on exactly one input
+/// (`i64::MIN / -1`, the one case where the mathematical quotient
+/// overflows `i64`), per the WebAssembly spec, while `eval.rs`'s
+/// reference semantics use `wrapping_div` there, silently wrapping back
+/// to `i64::MIN`, the same non-trapping convention `Add`/`Sub`/`Mul`
+/// already use uniformly (`Mod`/`i64.rem_s` needs no such case: both
+/// sides already agree, wrapping to `0`). Left as a bare `i64.div_s`,
+/// this is a real, if narrow, disagreement between compiled and
+/// interpreted code that `jit.rs`'s own sample-verification battery
+/// only happens to catch when a term's structure embeds `i64::MIN`
+/// directly -- a runtime-computed `i64::MIN` divided by a sampled `-1`
+/// would otherwise slip through `verify()` unnoticed.
+///
+/// Needs the stack's top two values (`a`, `b`, already compiled) copied
+/// into scratch locals rather than duplicated in place, since Wasm's
+/// MVP instruction set has no stack-only "dup" -- `$diva`/`$divb`,
+/// declared unconditionally in `compile_function` (harmless if unused,
+/// matching `$envtmp`/`$papenv`'s own convention).
+fn emit_wrapping_div(w: &mut String, indent: usize) {
+    push_line(w, indent, "local.set $divb");
+    push_line(w, indent, "local.tee $diva");
+    push_line(w, indent, &format!("i64.const {}", i64::MIN));
+    push_line(w, indent, "i64.eq");
+    push_line(w, indent, "local.get $divb");
+    push_line(w, indent, "i64.const -1");
+    push_line(w, indent, "i64.eq");
+    push_line(w, indent, "i32.and");
+    push_line(w, indent, "if (result i64)");
+    push_line(w, indent + 2, &format!("i64.const {}", i64::MIN));
+    push_line(w, indent, "else");
+    push_line(w, indent + 2, "local.get $diva");
+    push_line(w, indent + 2, "local.get $divb");
+    push_line(w, indent + 2, "i64.div_s");
+    push_line(w, indent, "end");
 }
 
 fn cmp_instr(op: PrimOp) -> Option<&'static str> {
@@ -1301,11 +1343,14 @@ fn compile_node(
         Term::Var(i) => compile_var_read(ctx, *i, w, indent)?,
         Term::Lit(n) => push_line(w, indent, &format!("i64.const {n}")),
         Term::Prim(op, a, b) => {
-            let (a, b) = (*a, *b);
-            let instr = arith_instr(*op)?;
+            let (op, a, b) = (*op, *a, *b);
             compile_node(ctx, combinators, a, false, w, indent)?;
             compile_node(ctx, combinators, b, false, w, indent)?;
-            push_line(w, indent, instr);
+            if op == PrimOp::Div {
+                emit_wrapping_div(w, indent);
+            } else {
+                push_line(w, indent, arith_instr(op)?);
+            }
         }
         Term::Abs(_) | Term::Rec(_) => {
             // A lambda, or a named self-recursive value (e.g. one bound
