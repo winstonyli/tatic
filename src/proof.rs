@@ -1065,7 +1065,7 @@ fn denote_with_placeholders(
                 // step later than usual (escaping a *value*'s own
                 // construction, not a recursive call boundary).
                 let applied = Anchored::new(&combinators.cp.arith, applied);
-                let clo_ty = combinators.cp.clo_ty(arity - k);
+                let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
                 let applied = applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: partial application");
                 return Some(Denoted::Clo(applied));
@@ -1348,7 +1348,7 @@ fn denote_closure_typed(
                 // below -- see `denote_with_placeholders`'s identical
                 // case for the rationale.
                 let applied = Anchored::new(&combinators.cp.arith, applied);
-                let clo_ty = combinators.cp.clo_ty(arity - k);
+                let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
                 let applied = applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: partial application");
                 return Some(Denoted::Clo(applied));
@@ -4217,6 +4217,47 @@ fn combinator_return_type(store: &TermStore, h: Hash) -> Option<Option<usize>> {
     return_type_of(store, body, arity, self_idx, &param_types)
 }
 
+/// The extra arity a `k`-of-`arity` partial application of `root`
+/// contributes *beyond* its own `arity - k` still-undeclared parameters,
+/// once every remaining parameter is finally supplied: `0` when `root`'s
+/// own saturated call denotes `Int` (the common case, and also this
+/// fragment's historical default when `combinator_return_type` can't
+/// confidently classify `root` at all -- consistent with every other
+/// structural classifier here, "undetermined" conservatively means
+/// "assume no widening", not "assume the widening is definitely there"),
+/// `m` when it denotes a further `Clo_m`. Folding this into a flat
+/// "remaining arity" figure is sound, not approximate: `Clo_j`/`Clo_m`
+/// are both literal, associative Pi-type chains
+/// (`ClosurePostulates::clo_ty`/`curried_int_ty`), so `Int^(arity-k) ->
+/// Clo_m` is *definitionally the same term*, arrow for arrow, as
+/// `Clo_{(arity-k)+m}` -- not merely isomorphic to it -- whenever every
+/// one of those `arity - k` remaining parameters is itself plain `Int`
+/// (never itself `Clo`-typed; every call site below already restricts to
+/// that case independently, e.g. `clo_eq_ref_pap`'s own `g_param_types`
+/// check).
+///
+/// Missing before this was added: every one of this function's own call
+/// sites silently assumed a `k`-of-`arity` partial application's
+/// remaining shape is always `Clo_{arity-k}`, with no extra arity ever
+/// folded in -- correct only when `root`'s own saturated call happens to
+/// return `Int`. When it instead returns a further `Clo_m` (e.g. `root =
+/// \p a. if a==0 then id else add_something`, whose own saturated result
+/// is itself a one-argument closure), the old formula built a
+/// `pap_ref` postulate -- and every downstream structural classification
+/// derived from it -- claiming the partial application's remaining shape
+/// was `Clo_{arity-k}` when the honest type is `Clo_{(arity-k)+m}`. Since
+/// `Clo_k` is a literal kernel Pi type (not an opaque postulate), the
+/// kernel had no way to catch the mismatch on its own: `prove_closure_expr`
+/// built a `refl`-based proof the kernel happily checked, `jit.rs` marked
+/// the term `is_kernel_verified`, and the compiled code -- genuinely
+/// dispatching one argument short of what the runtime value needed --
+/// returned whatever raw bits its own extra `call_indirect` produced
+/// (garbage, not a trap) at an input outside `verify()`'s own finite
+/// sample battery.
+fn pap_extra_arity(store: &TermStore, root: Hash) -> usize {
+    combinator_return_type(store, root).flatten().unwrap_or(0)
+}
+
 /// `combinator_return_type`'s own recursive walk over one combinator's
 /// body (`arity`/`self_idx`/`param_types` all describe *that* combinator,
 /// unchanged across the whole walk -- only `h` itself moves, the same
@@ -4254,10 +4295,14 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
                 let callee_arity = callee_param_types.len();
                 match args.len().cmp(&callee_arity) {
                     std::cmp::Ordering::Equal => combinator_return_type(store, root),
-                    // a partial-application value is always Clo, of the
+                    // A partial-application value is always Clo, of the
                     // *remaining* arity (the wrapper still expects
-                    // `callee_arity - args.len()` more arguments).
-                    std::cmp::Ordering::Less => Some(Some(callee_arity - args.len())),
+                    // `callee_arity - args.len()` more arguments) plus
+                    // whatever extra arity `root`'s own saturated call
+                    // itself contributes -- see `pap_extra_arity`'s own
+                    // docs for why folding it in this way is exact, not
+                    // approximate.
+                    std::cmp::Ordering::Less => Some(Some(callee_arity - args.len() + pap_extra_arity(store, root))),
                     std::cmp::Ordering::Greater => Some(None), // over-application's own dispatch is always Int
                 }
             }
@@ -4741,7 +4786,17 @@ impl<'a> ClosureCombinators<'a> {
             let e = self.cp.env_ty(&sig);
             Anchored::new(&self.cp.arith, e)
         });
-        let ret = self.cp.clo_ty(arity - k);
+        // `ret` -- the type of the *value* this wrapper produces once its
+        // own `k` supplied arguments are given -- is `Clo_{arity-k}` only
+        // when `h`'s own saturated call denotes `Int`; when it instead
+        // denotes a further `Clo_m`, the produced value still needs
+        // `arity - k` more plain arguments *and then* whatever `Clo_m`
+        // itself still needs, which is the same value as `Clo_{(arity-k)+m}`
+        // (`pap_extra_arity`'s own docs explain why this fold is exact,
+        // not approximate). Previously always `clo_ty(arity - k)`,
+        // silently assuming `Int` regardless of what `h` itself returns --
+        // see `pap_extra_arity`'s own docs for the bug this fixes.
+        let ret = self.cp.clo_ty(arity - k + pap_extra_arity(self.store, h));
         let ret = Anchored::new(&self.cp.arith, ret);
         let doms: Vec<Anchored> = param_types[arity - k..]
             .iter()
@@ -5314,7 +5369,7 @@ impl<'a> ClosureCombinators<'a> {
             return None;
         }
         let g_arity = g_param_types.len();
-        if args.len() >= g_arity || g_arity - args.len() != k {
+        if args.len() >= g_arity || g_arity - args.len() + pap_extra_arity(self.store, g) != k {
             return None;
         }
         let shape = ClosureRhsShape::Pap { g, args: args.clone() };
@@ -5774,7 +5829,7 @@ fn classify_closure_if_tree_leaf(store: &TermStore, h: Hash, k: usize) -> Option
                     return None;
                 }
                 Some(ClosureIfTreeLeafShape::Call { g, args })
-            } else if args.len() < g_arity && g_arity - args.len() == k {
+            } else if args.len() < g_arity && g_arity - args.len() + pap_extra_arity(store, g) == k {
                 Some(ClosureIfTreeLeafShape::Pap { g, args })
             } else {
                 None
@@ -6531,7 +6586,7 @@ fn denote_closure(
                 // below -- see `denote_with_placeholders`'s identical
                 // case for the rationale.
                 let applied = Anchored::new(&combinators.cp.arith, applied);
-                let clo_ty = combinators.cp.clo_ty(arity - k);
+                let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
                 let applied = applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: partial application");
                 return Some(Denoted::Clo(applied));
@@ -9906,6 +9961,65 @@ mod tests {
         .expect("the recorded proof should independently re-typecheck");
 
         assert!(compile::try_compile(&s, g).is_some());
+    }
+
+    #[test]
+    fn if_branches_with_different_pap_extra_arity_are_not_conflated_into_a_false_proof() {
+        // root = \p a. if a == 0 then (\b. b) else (\b. a + b) -- root's
+        // own saturated call (both p and a supplied) denotes a further
+        // Clo_1, not Int, so `root`'s 1-of-2 partial application `root x`
+        // (p supplied, a still missing) genuinely has remaining shape
+        // Clo_2 (`a`, then `b`) -- not Clo_1, which is what every call
+        // site of `combinator_return_type` assumed before `pap_extra_arity`
+        // was folded in (see the doc comment on `pap_extra_arity` itself).
+        //
+        // top = \x. (\g. g 5) (if x == 0 then (root x) else (\y. y + 1))
+        // puts that genuinely-Clo_2 value in one arm of an `If` whose other
+        // arm, `\y. y + 1`, is a genuine, unrelated Clo_1 -- and then calls
+        // the result with a single argument, as if it were uniformly
+        // Clo_1. Before the fix this compiled to a claimed *universal*
+        // (`refl`-based) kernel proof despite the two branches genuinely
+        // disagreeing in arity; the kernel itself can't catch this,
+        // because `Clo_k` is a literal Pi type family, so a wrong-but-
+        // internally-consistent arity still typechecks on its own. The fix
+        // must make this decline instead.
+        let mut s = TermStore::new();
+        let a0 = s.var(0);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Eq, a0, zero);
+        let b0_id = s.var(0);
+        let identity_b = s.abs(b0_id);
+        let a1 = s.var(1);
+        let b0 = s.var(0);
+        let a_plus_b = s.prim(PrimOp::Add, a1, b0);
+        let add_a_b = s.abs(a_plus_b);
+        let a_body = s.if_(cond, identity_b, add_a_b);
+        let a_abs = s.abs(a_body);
+        let root = s.abs(a_abs);
+
+        let x = s.var(0);
+        let root_x = s.app(root, x);
+
+        let inc_term = inc(&mut s);
+
+        let x_for_cond = s.var(0);
+        let zero_for_cond = s.lit(0);
+        let outer_cond = s.prim(PrimOp::Eq, x_for_cond, zero_for_cond);
+        let branch = s.if_(outer_cond, root_x, inc_term);
+
+        let g = s.var(0);
+        let five = s.lit(5);
+        let call_g = s.app(g, five);
+        let caller = s.abs(call_g);
+
+        let call_arg = s.app(caller, branch);
+        let top = s.abs(call_arg);
+
+        assert!(
+            prove_closure_expr(&s, top).is_none(),
+            "the two If branches genuinely differ in arity (Clo_2 vs Clo_1); \
+             claiming a universal proof here would be unsound"
+        );
     }
 
     #[test]
