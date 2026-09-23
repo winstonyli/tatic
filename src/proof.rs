@@ -7224,6 +7224,22 @@ fn eval_dyn_direct_call(
     }
     let root_param_types = param_types_for(store, root)?;
     let return_ty = combinator_return_type(store, root).unwrap_or(None);
+    // Computed once, up front, and shared by both branches below (the
+    // opaque path needs it as `captures`; the inline path needs it for
+    // its own scoping check) -- a pure function of `root`'s own static
+    // structure alone, entirely independent of `args`' concrete values.
+    // When `return_ty.is_some()`, `needs_inline` is unconditionally true
+    // below regardless of what `args` evaluate to, so checking this
+    // *before* evaluating any argument (each its own, possibly
+    // expensive, recursive `eval_dyn` call building up a kernel proof
+    // term) lets a `root` that's already known to fall outside this
+    // function's own scoping restriction bail out for free, rather than
+    // doing all that work only to discard it once `eval_dyn_inline_call`
+    // makes the exact same check anyway.
+    let captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
+    if return_ty.is_some() && !captures.is_empty() {
+        return None; // scoped out -- see eval_dyn_inline_call's own docs
+    }
 
     let mut arg_vals = Vec::with_capacity(args.len());
     for &a in args {
@@ -7236,7 +7252,7 @@ fn eval_dyn_direct_call(
             .any(|(j, v)| root_param_types[root_arity - 1 - j].is_none() && matches!(v, DynDenoted::Clo(..)));
 
     if needs_inline {
-        return eval_dyn_inline_call(store, combinators, root_body, root_arity, root_is_rec, arg_vals, args, calling_frame, budget);
+        return eval_dyn_inline_call(store, combinators, root_body, root_arity, root_is_rec, captures, arg_vals, args, calling_frame, budget);
     }
 
     // Ordinary opaque call: mirrors `denote_closure`'s own
@@ -7248,7 +7264,6 @@ fn eval_dyn_direct_call(
     // last lazy push (`call_ref`, `build_env_expr_dyn`, `clo_ty` below)
     // is done, the same discipline `denote_closure`'s own composite
     // cases already follow.
-    let captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
     let root_frame_types = dyn_frame_param_types(store, root_frame)?;
     let call_fn = combinators.call_ref(root, &captures, &root_frame_types)?;
     let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
@@ -7308,6 +7323,14 @@ fn eval_dyn_direct_call(
 /// `DynBudget::recursion_depth`'s own bound of 50. See `DynBudget`'s own
 /// docs for why the real fix is this path's own separate, smaller
 /// `budget.inline_call_depth` counter rather than reusing that one.
+///
+/// `captures` is `root`'s own `free_vars` (`root_body`/`root_arity`/
+/// `root_is_rec`), computed once by the caller rather than here: a pure
+/// function of `root`'s static structure alone, so `eval_dyn_direct_call`
+/// already needs it (to decide the *opaque*-call path's own captures) and
+/// -- when `return_ty.is_some()` there, so this path is unconditionally
+/// about to be taken regardless of `arg_vals` -- can check it *before*
+/// spending the cost of evaluating every argument, rather than after.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn eval_dyn_inline_call(
@@ -7316,12 +7339,13 @@ fn eval_dyn_inline_call(
     root_body: Hash,
     root_arity: usize,
     root_is_rec: bool,
+    captures: Vec<u32>,
     arg_vals: Vec<DynDenoted>,
     args: &[Hash],
     calling_frame: &[DynVal],
     budget: &mut DynBudget,
 ) -> Option<DynDenoted> {
-    if !compile::free_vars(store, root_body, root_arity, root_is_rec).is_empty() {
+    if !captures.is_empty() {
         return None; // scoped out -- see eval_dyn_direct_call's own docs
     }
     let mut child: Vec<Option<DynVal>> = vec![None; root_arity];
@@ -10889,6 +10913,115 @@ mod tests {
             prove_closure_expr_instance(&s, top, &[]).is_none(),
             "n=1_000_000 exceeds DynBudget::inline_call_depth via eval_dyn_direct_call's own inline path and should decline cleanly, not overflow the stack"
         );
+    }
+
+    #[test]
+    fn a_capturing_clo_returning_root_declines_without_evaluating_its_own_argument() {
+        // `eval_dyn_direct_call` used to evaluate every argument (each its
+        // own, possibly expensive, recursive `eval_dyn` call) *before*
+        // checking whether `root` even qualifies for the `needs_inline`
+        // path it's about to take -- wasted work whenever `return_ty`
+        // alone (a fact about `root`'s own static structure, entirely
+        // independent of the arguments) already forces `needs_inline` and
+        // that path is about to decline anyway (`root`'s own captures are
+        // non-empty -- out of this function's own scope, see its docs).
+        //
+        // `pick_a = \s. if s>0 then add5cap else sub5cap`, where
+        // `add5cap`/`sub5cap` are 2-ary lambdas referencing `cap` from an
+        // *outer* scope -- so `pick_a` itself both returns a further `Clo`
+        // (`combinator_return_type` recognizes the `If`-between-lambdas
+        // shape, same as `add5cap`/`sub5cap` in the plain
+        // `a_closure_argument_arriving_via_a_separate_saturated_call...`
+        // test above) *and* captures `cap` (unlike that test's `add5`/
+        // `sub5`, which are fully closed) -- exactly the combination this
+        // function declines on. `mega = \cap. if 0<1 then pick_a else
+        // pick_a` supplies `cap` and hands back `pick_a` as a genuine
+        // `Clo` value; a `let`-bound call `g(HUGE_S)` (the usual dead-call
+        // trick forces `g`'s own classification `Inconsistent`, so this
+        // whole chain is actually traced via `eval_dyn` rather than
+        // deferred to the opaque, non-executing postulate path) then
+        // reaches `pick_a` as `root` with a needlessly expensive argument.
+        //
+        // Confirmed directly (not just by code reading) that this isn't
+        // merely a performance nicety: with the early check reverted back
+        // to living inside `eval_dyn_inline_call` (checked only *after*
+        // every argument is evaluated, its original position), this exact
+        // term reliably overflowed the native stack in an unoptimized
+        // debug-build test thread -- `HUGE_S`'s own 300-deep, genuinely
+        // non-tail `Prim` chain is bounded by no `DynBudget` counter at
+        // all (unlike the self-call/inline-call paths those bound), so
+        // evaluating it wastefully is a real crash risk, not just wasted
+        // cycles, whenever it's about to be thrown away regardless.
+        let mut s = TermStore::new();
+        // add5cap = \a b. a + b + cap  (cap = var(3) from inside here)
+        let a1 = s.var(1);
+        let b1 = s.var(0);
+        let ab = s.prim(PrimOp::Add, a1, b1);
+        let cap1 = s.var(3);
+        let add5cap_body = s.prim(PrimOp::Add, ab, cap1);
+        let add5cap_inner = s.abs(add5cap_body); // binds b
+        let add5cap = s.abs(add5cap_inner); // binds a
+
+        // sub5cap = \a b. a - b + cap
+        let a2 = s.var(1);
+        let b2 = s.var(0);
+        let asubb = s.prim(PrimOp::Sub, a2, b2);
+        let cap2 = s.var(3);
+        let sub5cap_body = s.prim(PrimOp::Add, asubb, cap2);
+        let sub5cap_inner = s.abs(sub5cap_body);
+        let sub5cap = s.abs(sub5cap_inner);
+
+        // pick_a = \s. if s>0 then add5cap else sub5cap
+        let s_var = s.var(0);
+        let zero_p = s.lit(0);
+        let pick_cond = s.prim(PrimOp::Lt, zero_p, s_var);
+        let pick_a_body = s.if_(pick_cond, add5cap, sub5cap);
+        let pick_a = s.abs(pick_a_body);
+
+        assert_eq!(combinator_return_type(&s, pick_a), Some(Some(2)), "pick_a should itself return a further arity-2 Clo");
+        let (pa_arity, pa_body, pa_is_rec) = compile::peel(&s, pick_a).unwrap();
+        assert!(
+            !compile::free_vars(&s, pa_body, pa_arity, pa_is_rec).is_empty(),
+            "pick_a should genuinely capture cap from outside its own scope"
+        );
+
+        // mega = \cap. if 0<1 then pick_a else pick_a
+        let zero_m = s.lit(0);
+        let one_m = s.lit(1);
+        let cond0 = s.prim(PrimOp::Lt, zero_m, one_m);
+        let mega_body = s.if_(cond0, pick_a, pick_a);
+        let mega = s.abs(mega_body);
+
+        // let g = mega(7) in if 1<0 then g(999,888) else g(HUGE_S)
+        let cap_lit = s.lit(7);
+        let mega_cap_call = s.app(mega, cap_lit);
+
+        let g_dead = s.var(0);
+        let nine_ninety_nine = s.lit(999);
+        let eight_eighty_eight = s.lit(888);
+        let dead_call = s.app2(g_dead, nine_ninety_nine, eight_eighty_eight);
+        let g_live = s.var(0);
+        let mut huge_s = s.lit(1);
+        for _ in 0..300 {
+            let one = s.lit(1);
+            huge_s = s.prim(PrimOp::Add, huge_s, one);
+        }
+        let live_call = s.app(g_live, huge_s);
+        let one_d = s.lit(1);
+        let zero_d = s.lit(0);
+        let dead_cond = s.prim(PrimOp::Lt, one_d, zero_d);
+        let let_body = s.if_(dead_cond, dead_call, live_call);
+        let let_wrapper = s.abs(let_body);
+
+        assert!(
+            param_types_for(&s, let_wrapper).unwrap().contains(&None),
+            "g's own dead call site at a different arity should make it Inconsistent, forcing this whole chain to be traced via eval_dyn rather than deferred"
+        );
+
+        let top = s.app(let_wrapper, mega_cap_call);
+        // Must decline (pick_a's own captures put it out of this
+        // function's scope) without overflowing the stack getting there.
+        assert!(prove_closure_expr_instance(&s, top, &[]).is_none());
     }
 
     #[test]
