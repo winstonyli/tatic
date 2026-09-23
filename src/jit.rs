@@ -336,6 +336,17 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
     // even for higher-arity functions.
     let mut out = Vec::new();
     match arity {
+        0 => {
+            // Exactly one possible 0-argument call -- `vec![a; 0]` is `[]`
+            // regardless of `a`, so falling through to the `_` arm below
+            // would push the same empty sample `SAMPLE_ARGS[..6].len()`
+            // times over. Harmless for `verify()` (repeats the same cheap
+            // interpreted-vs-compiled check), but `kernel_verify`'s
+            // `prove_closure_expr_instance` fallback is expensive per call
+            // (it walks a full concrete execution trace) and gained
+            // nothing from the repeats -- see `RELATED_WORK.md` §9.
+            out.push(vec![]);
+        }
         1 => {
             for &a in SAMPLE_ARGS {
                 out.push(vec![a]);
@@ -363,6 +374,16 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
 mod tests {
     use super::*;
     use crate::term::{PrimOp, TermStore};
+
+    #[test]
+    fn sample_arg_vectors_for_arity_zero_is_a_single_trivial_sample() {
+        // `vec![a; 0]` is `[]` regardless of `a` -- without the dedicated
+        // `0` arm, the `_` catch-all would push the same empty sample
+        // once per `SAMPLE_ARGS[..6]` entry (see `sample_arg_vectors`'s
+        // own comment and `RELATED_WORK.md` §9 for the redundant-proof-
+        // search cost this was causing).
+        assert_eq!(sample_arg_vectors(0), vec![Vec::<i64>::new()]);
+    }
 
     fn factorial(s: &mut TermStore) -> Hash {
         let n = s.var(0);

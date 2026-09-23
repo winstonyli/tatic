@@ -657,6 +657,30 @@ attempt runs the full 10,000-iteration search, declines, and that work
 is thrown away — a real but one-time, compile-only cost, and `jit_warm_cache_hit`
 (the number that actually matters for a hot loop) is unaffected.
 
+**Since found and fixed: most of that ~105ms was a redundant-call bug,
+not the search itself.** This benchmark's term has arity 0 (it's a fully
+saturated computation, not a function awaiting arguments), and
+`jit.rs`'s `sample_arg_vectors` had no dedicated `0` arm — it fell
+through to the higher-arity catch-all, which pushes `vec![a; arity]` once
+per entry in a small fixed set of sample integers. For `arity == 0`,
+`vec![a; 0]` is `[]` regardless of `a`, so this produced *six identical
+empty-argument samples*, and `kernel_verify`'s `prove_closure_expr_instance`
+fallback — the expensive one, ~25ms per call on this term, since it's the
+one genuinely walking a concrete execution trace up to the step budget —
+ran on all six, back to back, for zero new information each time.
+Instrumented directly (`proof::prove_closure_expr_instance` called in
+isolation): one call, 25.3ms; the actual six-call loop `kernel_verify`
+was running, 128.7ms. Adding a dedicated `0 => out.push(vec![])` arm
+(`src/jit.rs`) collapses this to the one meaningful sample, and
+`jit_cold_compile_and_verify` on this exact benchmark drops from ~103ms
+to ~38ms (a real run, not the estimate above) — the remaining cost is
+the one genuine 10,000-step search plus ordinary compile/instantiate/
+sample-verify overhead. The `1`- and `2`-arity arms don't have this bug
+(`SAMPLE_ARGS` are pairwise distinct, so their generated vectors are
+too); a cheaper, more general dedup was considered and rejected in favor
+of this targeted fix, since arity 0 is the only shape where the existing
+scheme can produce a genuine duplicate.
+
 ## 10. Making `kernel::with_shift_cache` automatic — and why locally-nameless wasn't the fix
 
 `with_shift_cache` (`src/kernel.rs`) was opt-in because wrapping every
