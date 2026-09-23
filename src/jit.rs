@@ -113,9 +113,22 @@ impl JitEngine {
     /// has been compiled and verified for this exact term.
     pub fn apply(&mut self, terms: &TermStore, h: Hash, args: &[i64]) -> Result<i64, EvalError> {
         match self.cache.get(&h) {
-            Some(CacheEntry::Compiled { .. }) => {
+            Some(CacheEntry::Compiled { arity, .. }) if *arity == args.len() => {
                 self.stats.cache_hits += 1;
                 self.call_compiled(h, args)
+            }
+            Some(CacheEntry::Compiled { .. }) => {
+                // This call's arg count doesn't match the arity `h` was
+                // actually compiled for. `eval::apply_term` is fully
+                // generic over arg count (applies one at a time), so a
+                // mismatched call here is a legitimate shape this cache
+                // entry just can't serve -- fall back rather than
+                // feeding the compiled function's fixed Wasm signature
+                // the wrong number of arguments (a debug-build panic via
+                // `call_compiled`'s own assertion, or a spurious `Trap`
+                // in release).
+                self.stats.interpreted += 1;
+                eval::apply_term(terms, h, args)
             }
             Some(CacheEntry::NotCompilable) | Some(CacheEntry::FailedVerification) => {
                 self.stats.interpreted += 1;
@@ -138,7 +151,12 @@ impl JitEngine {
         };
 
         if frag.arity != args.len() {
-            self.cache.insert(h, CacheEntry::NotCompilable);
+            // Don't cache this as `NotCompilable` -- that would conflate
+            // "is `h` compilable at all" (a property of `h` alone) with
+            // "did this one call's arg count match `h`'s own arity" (a
+            // property of this call), permanently defeating compilation
+            // for `h` even once a later, correctly-sized call comes in.
+            // Just interpret this one call and leave the cache untouched.
             self.stats.interpreted += 1;
             return eval::apply_term(terms, h, args);
         }
@@ -428,6 +446,35 @@ mod tests {
         let body = s.if_(cond, one, else_branch);
         let abs = s.abs(body);
         s.rec(abs)
+    }
+
+    #[test]
+    fn a_mismatched_arg_count_does_not_poison_the_cache_and_is_served_by_the_interpreter() {
+        // `eval::apply_term` is fully generic over arg count -- under-
+        // applying `factorial` (arity 1) with 0 args is a legitimate
+        // shape it handles (evaluates to an unapplied closure, then
+        // fails the final `Value::Int` match with a clean `TypeError`,
+        // not a panic). This call's arity not matching `h`'s own must
+        // not get cached as permanently `NotCompilable`, conflating "is
+        // `h` compilable at all" with "did this one call's arg count
+        // match".
+        let mut s = TermStore::new();
+        let fact = factorial(&mut s);
+        let mut jit = JitEngine::new();
+
+        assert!(jit.apply(&s, fact, &[]).is_err());
+        assert_eq!(jit.stats.compiled, 0, "a mismatched call must not poison the cache");
+
+        // A later, correctly-sized call must still compile normally.
+        assert_eq!(jit.apply(&s, fact, &[5]).unwrap(), 120);
+        assert_eq!(jit.stats.compiled, 1);
+
+        // A further mismatched call against the now-cached, *compiled*
+        // entry must fall back to the interpreter cleanly too, not
+        // panic via `call_compiled`'s own debug_assert or return a
+        // spurious `Trap` from feeding the compiled function's fixed
+        // Wasm signature the wrong number of arguments.
+        assert_eq!(jit.apply(&s, fact, &[]).unwrap_err(), eval::apply_term(&s, fact, &[]).unwrap_err());
     }
 
     #[test]
