@@ -1595,9 +1595,14 @@ fn push_pap_env(ctx: &FnCtx, combinators: &mut Combinators, root_captures: &[u32
 /// only ever copies those slots byte-for-byte, so it doesn't need to
 /// know or care what's actually in them, the same way `emit_pap_wrapper`
 /// doesn't need `compile_node`/`FnCtx` for its own fixed-offset body).
-/// Not yet reachable from `try_compile`'s own codegen -- see the module
-/// docs above `Combinators` for why a fragment-wide decision has to be
-/// made before any call site can choose between the ordinary
+/// Called from `try_compile`'s own stage-generation loop, once per
+/// combinator the fragment both needs generic dispatch for
+/// (`Combinators::needs_generic_dispatch`) and actually reaches as a bare
+/// value (`Combinators::used_as_bare_value` -- a combinator only ever
+/// called directly and saturated gets no stage chain, even in a fragment
+/// where generic dispatch is on for some *other* combinator) -- see the
+/// module docs above `Combinators` for why that decision has to be made
+/// fragment-wide, before any call site can choose between the ordinary
 /// `call_indirect`/`$tyK` fast path and this mechanism.
 ///
 /// Produces `arity` new one-argument-at-a-time functions, `$s{idx}_0 ..

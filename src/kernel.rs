@@ -827,12 +827,11 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
     }
 }
 
-/// `infer`'s own `Sigma`/`Pair`/`SigRec` cases, out of line: nothing in
-/// this crate constructs a `Sigma`/`Pair`/`SigRec` term yet (this
-/// primitive was just added), so these arms' own local variables have no
-/// business inflating every call to `infer` -- the deeply recursive hot
-/// path `eval_dyn`'s own per-instance proof search already runs close to
-/// its own empirically-tuned native-stack budget
+/// `infer`'s own `Sigma`/`Pair`/`SigRec` cases, out of line: these arms'
+/// own local variables have no business inflating every call to `infer`
+/// on every *other* expression shape just because this one exists -- the
+/// deeply recursive hot path `eval_dyn`'s own per-instance proof search
+/// already runs close to its own empirically-tuned native-stack budget
 /// (`DynBudget::recursion_depth`) -- the same reasoning
 /// `wrec_children_ty_mismatch`'s own `#[cold]` extraction above already
 /// established for this exact function. Confirmed empirically: inlining
