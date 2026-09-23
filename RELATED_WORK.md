@@ -2180,9 +2180,20 @@ and option 2's kernel work.
   ordering tedium and absent printer unit tests. The analogue here is
   exact: `denote` vs `compile_node` is the modeling gap and WAT emission
   is the printer, and no kernel proof tatic can build reaches either.
-  Extending `compile_fuzz` to differentially test `denote` against
-  `compile_node` structurally (not just outputs) is the cheap work that
-  targets the empirically dangerous class.
+
+  A first pass here proposed "extend `compile_fuzz` to differentially
+  test `denote` against `compile_node`" as the cheap answer. It isn't
+  available as stated, and the reason is worth recording so nobody
+  re-proposes it: `compile_node` writes WAT into a `&mut String` while
+  `denote` builds a kernel `Expr`, so there is no common form to diff;
+  and `denote`'s output cannot be *evaluated* into one either, because
+  `Int` and its operators are postulated rather than computing -- that
+  is precisely why the proofs are `refl` on structure. The two
+  derivations are hand-written twins that can only be compared by
+  reading them. The tractable version is therefore structural
+  unification, not testing: factor one traversal with two backends, so
+  drift between them is impossible by construction rather than
+  detectable after the fact.
 - **Verified-JIT calibration**: Myreen (POPL'10) verified a JIT to x86 in
   HOL4 including an instruction-cache model and self-modifying code;
   Barriere, Blazy, Fluckiger, Pichardie & Vitek (POPL'21) verified
@@ -2206,13 +2217,26 @@ taken here:
    the inconsistent-arity curried-dispatch shapes `compile.rs` went to
    real trouble to support.
 2. **Widen the universal fragment** to cover those shapes, so the
-   `Samples` fallbacks stop being load-bearing. Note this splits in two,
-   and the split is the useful part: the *tail-recursive* `Samples` cases
-   only need `prove_tail_recursive_universal`'s shape coverage widened,
-   which is ordinary work with no kernel change. Only the
-   *closure / inconsistent-arity* cases need the `Sigma` / dependent-sum
-   discussion in §14 and the arity-polymorphism findings in §9. Treating
-   §14 as a prerequisite for all of option 2 overstates its cost.
+   `Samples` fallbacks stop being load-bearing. This was first written up
+   as splitting into a cheap tail-recursive half and an expensive closure
+   half; a measurement says otherwise. Instrumenting both per-sample
+   returns in `kernel_verify` across the full lib suite: the
+   `prove_tail_recursive_call` branch (step 4) fires **zero** times, and
+   the `prove_closure_expr_instance` branch (step 5) fires **six** --
+   `prove_tail_recursive_universal` already covers every tail-recursive
+   shape the corpus contains. So there is no demonstrated cheap half:
+   every `Samples` result comes from the closure / inconsistent-arity
+   family, which is exactly the `Sigma` / dependent-sum discussion in §14
+   and the arity-polymorphism findings in §9.
+
+   That measurement leaves a separate question open: is step 4
+   *unreachable* (the universal proof subsumes it, making it dead weight
+   in the cascade) or merely *untested* (a corpus gap)? One experiment
+   settles it -- build a tail-recursive term whose body is not a
+   `DecisionTree` (an `If` on a non-comparison condition), and check
+   whether `prove_tail_recursive_universal` declines it while
+   `prove_tail_recursive_call` accepts it. If it does, that's a coverage
+   hole to fill with a test; if nothing can reach step 4, delete it.
 3. **Build a per-compilation validator** -- the rung the prior-art
    section above shows tatic doesn't occupy. Sampling infers the
    candidate relation, the kernel proof decides installation (DDEC's
