@@ -9395,6 +9395,54 @@ mod tests {
         assert!(prove_tail_recursive_call(&s, f, &[1, 2]).is_none());
     }
 
+    /// Pins *why* `jit::JitEngine::kernel_verify`'s `prove_tail_recursive_call`
+    /// step is never the winning strategy in practice (measured: zero
+    /// firings across the whole lib suite, against six for the
+    /// `prove_closure_expr_instance` step -- see `RELATED_WORK.md` 28).
+    ///
+    /// The one place it is genuinely more permissive than
+    /// `prove_tail_recursive_universal` is the `If` condition:
+    /// `classify_tree` requires a direct comparison, while `classify_step`
+    /// just evaluates whatever is there on the concrete arguments. But
+    /// `compile::compile_cond` imposes exactly `classify_tree`'s
+    /// restriction, so a term in that gap never compiles, and
+    /// `kernel_verify` never runs on it at all.
+    ///
+    /// That makes the two restrictions load-bearing *as a pair*. This test
+    /// fails the moment either is relaxed without the other -- which is
+    /// precisely when the relational step would start being reachable
+    /// again, and when the "it's unreached, consider deleting it" note in
+    /// `RELATED_WORK.md` 28 would stop being true.
+    #[test]
+    fn the_relational_steps_extra_reach_lies_entirely_outside_the_compilable_fragment() {
+        // rec f n = if (n - 1) then f(n - 1) else 42
+        //
+        // Tail-recursive and terminating (n=3: 2 -> 1 -> 0 -> 42), but the
+        // condition is a `Sub`, not a comparison.
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f = s.var(1);
+        let one = s.lit(1);
+        let base = s.lit(42);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let rec_call = s.app(f, n_minus_1);
+        let body = s.if_(n_minus_1, rec_call, base);
+        let abs = s.abs(body);
+        let h = s.rec(abs);
+
+        // It really does compute what the shape says.
+        assert_eq!(eval::apply_term(&s, h, &[3]).unwrap(), 42);
+
+        // The relational (per-execution) proof accepts it...
+        assert!(prove_tail_recursive_call(&s, h, &[3]).is_some());
+        // ...the universal one doesn't, because `classify_tree` rejects a
+        // non-comparison condition...
+        assert!(prove_tail_recursive_universal(&s, h).is_none());
+        // ...and none of that matters, because `compile_cond` rejects the
+        // same condition, so the term never reaches the JIT's cascade.
+        assert!(compile::try_compile(&s, h).is_none());
+    }
+
     #[test]
     fn tail_recursive_gcd_gets_a_kernel_checked_instance_proof() {
         let mut s = TermStore::new();

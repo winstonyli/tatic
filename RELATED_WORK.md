@@ -2229,14 +2229,47 @@ taken here:
    family, which is exactly the `Sigma` / dependent-sum discussion in §14
    and the arity-polymorphism findings in §9.
 
-   That measurement leaves a separate question open: is step 4
-   *unreachable* (the universal proof subsumes it, making it dead weight
-   in the cascade) or merely *untested* (a corpus gap)? One experiment
-   settles it -- build a tail-recursive term whose body is not a
-   `DecisionTree` (an `If` on a non-comparison condition), and check
-   whether `prove_tail_recursive_universal` declines it while
-   `prove_tail_recursive_call` accepts it. If it does, that's a coverage
-   hole to fill with a test; if nothing can reach step 4, delete it.
+   That measurement left a separate question open -- is step 4
+   *unreachable* or merely *untested*? -- and it has since been settled:
+   **unreachable through the JIT**, for a specific and slightly
+   surprising reason.
+
+   Step 4 is genuinely more permissive than step 3 in exactly one place,
+   the `If` condition. `classify_tree` requires a direct comparison
+   (`Lt`/`Le`/`Eq`); `classify_step` imposes nothing, since it just
+   evaluates whatever is there against the concrete arguments. But
+   `compile::compile_cond` imposes *precisely* `classify_tree`'s
+   restriction -- its `cmp_instr(op)?` fails for anything else -- so a
+   term living in that gap never compiles, and `kernel_verify` never runs
+   on it. Step 4's extra reach lies entirely outside the compilable
+   fragment. Every other way `build_universal` can decline where step 4
+   might not is closure-related (`infer_closure_arities`, `flatten_tree`'s
+   leaf coverage, the `denote_closure_typed` stages), and step 4's own
+   `denote` is arithmetic-only, so it declines those too.
+
+   Pinned by `proof::tests::
+   the_relational_steps_extra_reach_lies_entirely_outside_the_compilable_fragment`,
+   which builds `rec f n = if (n - 1) then f(n - 1) else 42` -- tail
+   recursive, terminating, non-comparison condition -- and asserts all
+   three halves at once: `prove_tail_recursive_call` accepts it,
+   `prove_tail_recursive_universal` declines it, and `try_compile`
+   declines it. The two restrictions are load-bearing *as a pair*, and
+   the test fails the moment either is relaxed without the other.
+
+   Verify-teeth for that test also surfaced something worth noting on its
+   own: relaxing `classify_tree` alone (adding `Sub` to the accepted
+   condition ops) makes `prove_tail_recursive_universal` happily build a
+   proof -- even though the `Ev` gating argument depends on a condition
+   denoting only to `0` or `1`, which a `Sub` does not. So
+   `classify_tree`'s comparison check is a soundness guard, not just a
+   scope line, and nothing else was pinning it.
+
+   Step 4 was **not** deleted. It costs nothing while unreached (tried
+   only after step 3 declines), removing it would silently downgrade any
+   future shape that does reach it from `Samples` to `None`, and the test
+   above now announces the moment the situation changes. Deleting it is
+   the right call only once the pair of restrictions is deliberately
+   decoupled.
 3. **Build a per-compilation validator** -- the rung the prior-art
    section above shows tatic doesn't occupy. Sampling infers the
    candidate relation, the kernel proof decides installation (DDEC's
