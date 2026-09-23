@@ -449,16 +449,6 @@ fn setup(store: &TermStore, body: Hash, arity: usize, self_idx: Option<u32>) -> 
 /// the same symbolic value under both readings, by construction) into a
 /// `refl` proof, and confirm the kernel actually accepts it.
 fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<EquivalenceProof> {
-    // The one place every strategy that can build an unboundedly deep
-    // expression hands it to the kernel. `kernel::check` is not itself
-    // depth-guarded (see its docs -- it is far too hot), and its
-    // traversals are recursive, so an over-deep denotation would take the
-    // process down with a stack overflow instead of returning a verdict.
-    // Declining here is the same graceful failure an exhausted step
-    // budget already produces. Once per proof, so it costs nothing.
-    if !kernel::depth_within(&denotation, kernel::MAX_CHECK_DEPTH) {
-        return None;
-    }
     let result_ty = arith.int_ty();
     let proof = kernel::refl(denotation.clone());
     let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
@@ -586,10 +576,9 @@ fn classify_step(
 /// doesn't reach a base case within a generous step bound (guards against
 /// a non-terminating or pathologically long call blowing up proof size).
 pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
-    // Sized against two hard ceilings, not against how long a proof we'd
-    // *like* to build -- see `DynBudget::new`, which carries the same
-    // reasoning for the closure-capable sibling of this loop, and
-    // `RELATED_WORK.md` §30 for the measurements.
+    // A cost bound, shared with the closure-capable sibling of this loop
+    // -- see `DynBudget::new` for why it is 200 and what that was sized
+    // against.
     const MAX_STEPS: usize = 200;
 
     let (arity, body, is_rec) = compile::peel(store, h)?;
@@ -3946,7 +3935,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
         let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
         let ty = kernel::infer(&scaffold.combinators.cp.arith.p.ctx, &applied).ok()?;
         let (lhs, rhs) = match kernel::whnf(&ty) {
-            Expr::Id(_, lhs, rhs) => (Rc::unwrap_or_clone(lhs), Rc::unwrap_or_clone(rhs)),
+            Expr::Id(_, ref lhs, ref rhs) => ((**lhs).clone(), (**rhs).clone()),
             _ => return None,
         };
 
@@ -7197,27 +7186,19 @@ struct DynBudget {
 }
 
 impl DynBudget {
-    /// `tail_steps` is sized against two hard ceilings rather than against
-    /// ambition, and both were found the hard way (`RELATED_WORK.md` §30):
-    ///
-    /// - *Above*: the expression these loops accumulate deepens by a
-    ///   couple of levels per step, and `kernel::check` refuses anything
-    ///   past `kernel::MAX_CHECK_DEPTH` (200) because its own recursive
-    ///   traversals can't survive deeper. So a trace beyond roughly a
-    ///   hundred steps cannot produce a provable result no matter how
-    ///   long it runs -- spending 10,000 steps building one was pure
-    ///   waste even when it didn't crash.
-    /// - *Below*: nothing guards the recursive `Drop` of a deeply nested
-    ///   `Rc<Expr>` chain. Measured, that survives a depth around 8,000
-    ///   and overflows the process around 12,000 -- so the accumulated
-    ///   expression must never get near there, including on the path
-    ///   where the budget runs out and the whole thing is discarded
-    ///   unproved. The old 10,000 could reach depth ~20,000 and took the
-    ///   process down with `STATUS_STACK_OVERFLOW`, which is exactly what
-    ///   `benches/execution.rs` was hitting.
-    ///
-    /// 200 sits comfortably above the first ceiling's useful range and
-    /// two orders of magnitude below the second.
+    /// `tail_steps` (and `prove_tail_recursive_call`'s `MAX_STEPS`, kept
+    /// equal) was cut from 10,000 to 200 against two native-stack ceilings
+    /// (`RELATED_WORK.md` §30): `kernel::check`'s recursion, and the
+    /// recursive `Drop` of a discarded deep `Rc<Expr>` chain, which is
+    /// what crashed `benches/execution.rs`. Both are gone now -- the
+    /// kernel's traversals and `Expr`'s `Drop` run through
+    /// `kernel::grow` (§31) -- so 200 is no longer a safety bound, only a
+    /// cost one: each step deepens the accumulated expression, and
+    /// checking it gets correspondingly slower. It has not been
+    /// re-measured as a cost bound; raising it is §31's open item.
+    /// `recursion_depth` and `inline_call_depth` are unaffected: they
+    /// bound `eval_dyn`'s own native recursion, which does not go
+    /// through `grow`.
     fn new() -> Self {
         DynBudget { tail_steps: 200, recursion_depth: 50, inline_call_depth: 25 }
     }

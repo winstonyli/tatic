@@ -109,6 +109,100 @@ pub fn with_shift_cache<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
+// --- stack growth ----------------------------------------------------------
+//
+// Every traversal in this module recurses over `Expr` structure, and
+// `whnf`/`nf` also recurse once per reduction step, so native stack use
+// grows with both a term's depth and its reduction length. Measured
+// before this existed: a debug build on a 1 MB thread (the Windows main
+// thread) overflowed at depth ~90, a release build at ~450-570
+// (`RELATED_WORK.md` 31). Rather than hand-convert `infer`/`check` into
+// an explicit continuation machine -- hundreds of new lines inside the
+// trusted kernel, no longer reading like the typing rules they implement
+// -- each recursive entry point runs through `grow`, which spills onto a
+// fresh heap-allocated stack segment when the current one runs low. The
+// approach and constants are rustc's own `ensure_sufficient_stack`; the
+// per-call check is this module's own, because stacker's measured too
+// slow to make at every node (see `FLOOR`).
+
+/// Headroom below which `grow` switches to a new segment: enough for the
+/// deepest chain of un-wrapped frames between two wrapped calls.
+const RED_ZONE: usize = 100 * 1024;
+/// Size of each new segment `grow` allocates.
+const STACK_PER_RECURSION: usize = 1024 * 1024;
+
+thread_local! {
+    /// The lowest stack address the current segment can reach with
+    /// [`RED_ZONE`] still to spare; `usize::MAX` -- "unknown", which
+    /// every check fails -- until [`grow_slow`] first learns it on this
+    /// thread. Tracked here rather than asking stacker each
+    /// time: `stacker::remaining_stack` measured 8.9 ns a call on Windows
+    /// (a lazily-initialized thread-local plus a non-inlined assembly
+    /// call), and at one check per `shift`/`==`/`Drop` node that nearly
+    /// doubled every proof benchmark. This check is a local's address
+    /// against a const thread-local, ~1 ns.
+    static FLOOR: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// An address inside the current frame -- close enough to the stack
+/// pointer, with [`RED_ZONE`] of slack.
+#[inline(always)]
+fn stack_addr() -> usize {
+    let here = 0u8;
+    std::hint::black_box(&here) as *const u8 as usize
+}
+
+/// Whether at least [`RED_ZONE`] bytes of the current segment remain.
+#[inline(always)]
+fn stack_ok() -> bool {
+    stack_addr() > FLOOR.with(|f| f.get())
+}
+
+/// Runs `f`, first moving onto a fresh stack segment if fewer than
+/// [`RED_ZONE`] bytes remain. Wraps the body of every recursive function
+/// in this module -- and `PartialEq` and `Debug` for `Expr`; `Drop` uses
+/// [`stack_ok`] directly -- so their depth is bounded by heap, not native
+/// stack.
+#[inline(always)]
+fn grow<R>(f: impl FnOnce() -> R) -> R {
+    if stack_ok() { f() } else { grow_slow(f) }
+}
+
+/// [`grow`]'s slow path: the first check on a thread (`FLOOR` unknown),
+/// or a segment genuinely running low. Keeps `FLOOR` describing whichever
+/// segment is current: set on entry to a new one, restored on the way
+/// out -- by a guard, so an unwinding panic restores it too.
+///
+/// Outside any segment of ours, `FLOOR` unknown means this is the thread's
+/// own stack, learned once and kept. Where stacker cannot measure that
+/// stack, `FLOOR` stays unknown and every call grows a fresh segment:
+/// slow, but never unprotected.
+#[cold]
+#[inline(never)]
+fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
+    fn floor_here() -> Option<usize> {
+        stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
+    }
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FLOOR.with(|f| f.set(self.0));
+        }
+    }
+    if FLOOR.with(|f| f.get()) == usize::MAX
+        && let Some(floor) = floor_here()
+    {
+        FLOOR.with(|f| f.set(floor));
+        if stack_ok() {
+            return f();
+        }
+    }
+    stacker::grow(STACK_PER_RECURSION, || {
+        let _restore = Restore(FLOOR.with(|f| f.replace(floor_here().unwrap_or(usize::MAX))));
+        f()
+    })
+}
+
 /// Recursive fields are `Rc`, not `Box`: `Expr` is built and re-threaded
 /// through deeply nested proof terms (`proof.rs`'s `Anchored`, the Ev-witness
 /// builder's per-call-site composition, ...) almost entirely by `.clone()`,
@@ -121,7 +215,7 @@ pub fn with_shift_cache<T>(f: impl FnOnce() -> T) -> T {
 /// still get distinct allocations -- there's no intern table), but it
 /// removes the actual cost this crate was paying: repeated deep copies of
 /// one proof term as it's threaded through several composition steps.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum Expr {
     /// De Bruijn index; `Var(0)` is the innermost binder.
     Var(u32),
@@ -203,9 +297,111 @@ pub enum Expr {
     },
 }
 
+/// Structural equality, written out rather than derived so it recurses
+/// through [`grow`] -- `def_eq` compares two full normal forms with it.
+/// Same semantics as the derive: fields compared in declaration order,
+/// and `Rc`'s own `==` still short-circuits on pointer identity (it does
+/// so for any `T: Eq`).
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        use Expr::*;
+        grow(|| match (self, other) {
+            (Var(x), Var(y)) | (Sort(x), Sort(y)) => x == y,
+            (Refl(a), Refl(b)) => a == b,
+            (Pi(a1, b1), Pi(a2, b2))
+            | (Lam(a1, b1), Lam(a2, b2))
+            | (App(a1, b1), App(a2, b2))
+            | (W(a1, b1), W(a2, b2))
+            | (Sup(a1, b1), Sup(a2, b2))
+            | (Sigma(a1, b1), Sigma(a2, b2)) => a1 == a2 && b1 == b2,
+            (Id(a1, b1, c1), Id(a2, b2, c2)) | (Pair(a1, b1, c1), Pair(a2, b2, c2)) => {
+                a1 == a2 && b1 == b2 && c1 == c2
+            }
+            (
+                J { motive: m1, base: s1, a: a1, b: b1, p: p1 },
+                J { motive: m2, base: s2, a: a2, b: b2, p: p2 },
+            ) => m1 == m2 && s1 == s2 && a1 == a2 && b1 == b2 && p1 == p2,
+            (
+                WRec { motive: m1, children_ty: c1, step: s1, target: t1 },
+                WRec { motive: m2, children_ty: c2, step: s2, target: t2 },
+            ) => m1 == m2 && c1 == c2 && s1 == s2 && t1 == t2,
+            (SigRec { motive: m1, step: s1, target: t1 }, SigRec { motive: m2, step: s2, target: t2 }) => {
+                m1 == m2 && s1 == s2 && t1 == t2
+            }
+            _ => false,
+        })
+    }
+}
+
+impl Eq for Expr {}
+
+thread_local! {
+    /// What `Drop for Expr` swaps into a child slot it is about to free,
+    /// so the child can be dropped inside `grow` rather than by the
+    /// compiler-generated glue afterwards. Shared, so a swap is a refcount
+    /// bump, not an allocation.
+    static LEAF: Rc<Expr> = Rc::new(Expr::Sort(0));
+}
+
+/// Keeps dropping an `Expr` stack-safe. The compiler-generated drop glue
+/// is recursive, and it runs wherever a term is discarded -- `whnf` throws
+/// away a full intermediate term at every beta step -- so on whatever
+/// stack segment is current, with only [`RED_ZONE`] guaranteed. Unguarded,
+/// a 1,000-deep term reliably overflowed there.
+///
+/// The glue calls this at every level before recursing into that level's
+/// fields, so a cheap [`stack_ok`] check is all most drops pay. Only when
+/// the stack runs low does it move the children it would free
+/// (`strong_count == 1`; a shared one just loses a reference, which
+/// cannot recurse) out of their slots and drop them on a fresh segment.
+/// During thread teardown, once `LEAF` is gone, this falls back to the
+/// plain recursive glue.
+impl Drop for Expr {
+    fn drop(&mut self) {
+        if stack_ok() {
+            return;
+        }
+        let free = |c: &mut Rc<Expr>| {
+            if Rc::strong_count(c) == 1
+                && let Ok(leaf) = LEAF.try_with(Rc::clone)
+            {
+                drop(std::mem::replace(c, leaf));
+            }
+        };
+        grow_slow(|| match self {
+            Expr::Var(_) | Expr::Sort(_) => {}
+            Expr::Refl(a) => free(a),
+            Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
+                free(a);
+                free(b);
+            }
+            Expr::Id(a, b, c) | Expr::Pair(a, b, c) => {
+                free(a);
+                free(b);
+                free(c);
+            }
+            Expr::J { motive, base, a, b, p } => {
+                for c in [motive, base, a, b, p] {
+                    free(c);
+                }
+            }
+            Expr::WRec { motive, children_ty, step, target } => {
+                for c in [motive, children_ty, step, target] {
+                    free(c);
+                }
+            }
+            Expr::SigRec { motive, step, target } => {
+                for c in [motive, step, target] {
+                    free(c);
+                }
+            }
+        })
+    }
+}
+
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        grow(|| match self {
             Expr::Var(k) => write!(f, "#{k}"),
             Expr::Sort(i) => write!(f, "Type{i}"),
             Expr::Pi(a, b) => write!(f, "(Pi {a:?}. {b:?})"),
@@ -220,7 +416,7 @@ impl fmt::Debug for Expr {
             Expr::Sigma(a, b) => write!(f, "(Sigma {a:?}. {b:?})"),
             Expr::Pair(fam, a, b) => write!(f, "(pair {fam:?} {a:?} {b:?})"),
             Expr::SigRec { target, .. } => write!(f, "(sigrec .. {target:?})"),
-        }
+        })
     }
 }
 
@@ -310,7 +506,7 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     if amount == 0 {
         return e.clone();
     }
-    match e {
+    grow(|| match e {
         Expr::Var(k) => {
             if *k >= cutoff {
                 Expr::Var((*k as i32 + amount) as u32)
@@ -355,7 +551,7 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
             shift_rc(target, cutoff, amount),
         ),
         Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => shift_sigma_family(e, cutoff, amount),
-    }
+    })
 }
 
 /// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
@@ -413,7 +609,7 @@ fn shift_rc(e: &Rc<Expr>, cutoff: u32, amount: i32) -> Expr {
 
 /// Replace `Var(j)` with `s` throughout `e`.
 fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
-    match e {
+    grow(|| match e {
         Expr::Var(k) => {
             if *k == j {
                 s.clone()
@@ -449,7 +645,7 @@ fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
             target,
         } => wrec(subst(motive, j, s), subst(children_ty, j + 1, &shift(s, 0, 1)), subst(step, j, s), subst(target, j, s)),
         Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => subst_sigma_family(e, j, s),
-    }
+    })
 }
 
 /// `subst`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
@@ -482,7 +678,7 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
 /// nothing to back it up -- that every other point of `f`'s domain
 /// agrees on the same `W(A,B)`.
 fn is_var_free(e: &Expr, idx: u32) -> bool {
-    match e {
+    grow(|| match e {
         Expr::Var(k) => *k == idx,
         Expr::Sort(_) => false,
         Expr::Pi(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
@@ -501,7 +697,7 @@ fn is_var_free(e: &Expr, idx: u32) -> bool {
         Expr::Sigma(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
         Expr::Pair(fam, a, b) => is_var_free(fam, idx + 1) || is_var_free(a, idx) || is_var_free(b, idx),
         Expr::SigRec { motive, step, target } => is_var_free(motive, idx) || is_var_free(step, idx) || is_var_free(target, idx),
-    }
+    })
 }
 
 /// `infer`'s own `Sup` arm's error-message formatting, out of line --
@@ -573,9 +769,9 @@ pub fn whnf(e: &Expr) -> Expr {
 }
 
 fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
-    match e {
+    grow(|| match e {
         Expr::App(f, a) => match whnf_rc(f, cache) {
-            Expr::Lam(_, body) => whnf_impl(&subst_top(&body, a), cache),
+            Expr::Lam(_, ref body) => whnf_impl(&subst_top(body, a), cache),
             other => app(other, (**a).clone()),
         },
         Expr::J {
@@ -600,7 +796,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
             step,
             target,
         } => match whnf_rc(target, cache) {
-            Expr::Sup(a, f) => {
+            Expr::Sup(ref a, ref f) => {
                 // step a f (\y:B(a). wrec(motive, children_ty, step, f y))
                 // -- `subst_top(children_ty, a)` gives the induction-
                 // hypothesis closure its *honest* domain (`B(a)`, the same
@@ -608,7 +804,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
                 // an inert placeholder -- see `Expr::WRec`'s own doc for
                 // why this field exists at all.
                 let rec_step = lam(
-                    subst_top(children_ty, &a),
+                    subst_top(children_ty, a),
                     wrec(
                         shift(motive, 0, 1),
                         // `children_ty` is already "one binder deeper" than
@@ -619,11 +815,11 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
                         // for their own second field.
                         shift(children_ty, 1, 1),
                         shift(step, 0, 1),
-                        app(shift(&f, 0, 1), var(0)),
+                        app(shift(f, 0, 1), var(0)),
                     ),
                 );
                 whnf_impl(
-                    &app3((**step).clone(), (*a).clone(), (*f).clone(), rec_step),
+                    &app3((**step).clone(), (**a).clone(), (**f).clone(), rec_step),
                     cache,
                 )
             }
@@ -636,7 +832,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
         },
         Expr::SigRec { motive, step, target } => whnf_sigrec(motive, step, target, cache),
         other => other.clone(),
-    }
+    })
 }
 
 /// `whnf_impl`'s own `SigRec` case, out of line -- see `infer_pair`'s own
@@ -647,7 +843,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
 #[inline(never)]
 fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
     match whnf_rc(target, cache) {
-        Expr::Pair(_, a, b) => whnf_impl(&app2((**step).clone(), (*a).clone(), (*b).clone()), cache),
+        Expr::Pair(_, ref a, ref b) => whnf_impl(&app2((**step).clone(), (**a).clone(), (**b).clone()), cache),
         other => Expr::SigRec {
             motive: motive.clone(),
             step: step.clone(),
@@ -675,41 +871,41 @@ fn nf(e: &Expr) -> Expr {
 }
 
 fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
-    match whnf_impl(e, cache) {
-        Expr::Var(k) => Expr::Var(k),
-        Expr::Sort(i) => Expr::Sort(i),
-        Expr::Pi(a, b) => pi(nf_rc(&a, cache), nf_rc(&b, cache)),
-        Expr::Lam(a, b) => lam(nf_rc(&a, cache), nf_rc(&b, cache)),
-        Expr::App(f, a) => app(nf_rc(&f, cache), nf_rc(&a, cache)),
-        Expr::Id(a, x, y) => id(nf_rc(&a, cache), nf_rc(&x, cache), nf_rc(&y, cache)),
-        Expr::Refl(a) => refl(nf_rc(&a, cache)),
+    grow(|| match &whnf_impl(e, cache) {
+        Expr::Var(k) => Expr::Var(*k),
+        Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Pi(a, b) => pi(nf_rc(a, cache), nf_rc(b, cache)),
+        Expr::Lam(a, b) => lam(nf_rc(a, cache), nf_rc(b, cache)),
+        Expr::App(f, a) => app(nf_rc(f, cache), nf_rc(a, cache)),
+        Expr::Id(a, x, y) => id(nf_rc(a, cache), nf_rc(x, cache), nf_rc(y, cache)),
+        Expr::Refl(a) => refl(nf_rc(a, cache)),
         Expr::J {
             motive,
             base,
             a,
             b,
             p,
-        } => jelim(nf_rc(&motive, cache), nf_rc(&base, cache), nf_rc(&a, cache), nf_rc(&b, cache), nf_rc(&p, cache)),
-        Expr::W(a, b) => wty(nf_rc(&a, cache), nf_rc(&b, cache)),
-        Expr::Sup(a, f) => sup(nf_rc(&a, cache), nf_rc(&f, cache)),
+        } => jelim(nf_rc(motive, cache), nf_rc(base, cache), nf_rc(a, cache), nf_rc(b, cache), nf_rc(p, cache)),
+        Expr::W(a, b) => wty(nf_rc(a, cache), nf_rc(b, cache)),
+        Expr::Sup(a, f) => sup(nf_rc(a, cache), nf_rc(f, cache)),
         Expr::WRec {
             motive,
             children_ty,
             step,
             target,
-        } => wrec(nf_rc(&motive, cache), nf_rc(&children_ty, cache), nf_rc(&step, cache), nf_rc(&target, cache)),
+        } => wrec(nf_rc(motive, cache), nf_rc(children_ty, cache), nf_rc(step, cache), nf_rc(target, cache)),
         other @ (Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. }) => nf_sigma_family(other, cache),
-    }
+    })
 }
 
 /// `nf_impl`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
 /// `shift_sigma_family`'s own docs for why.
 #[inline(never)]
-fn nf_sigma_family(e: Expr, cache: &mut ReductionCache) -> Expr {
+fn nf_sigma_family(e: &Expr, cache: &mut ReductionCache) -> Expr {
     match e {
-        Expr::Sigma(a, b) => sigma(nf_rc(&a, cache), nf_rc(&b, cache)),
-        Expr::Pair(fam, a, b) => pair(nf_rc(&fam, cache), nf_rc(&a, cache), nf_rc(&b, cache)),
-        Expr::SigRec { motive, step, target } => sigrec(nf_rc(&motive, cache), nf_rc(&step, cache), nf_rc(&target, cache)),
+        Expr::Sigma(a, b) => sigma(nf_rc(a, cache), nf_rc(b, cache)),
+        Expr::Pair(fam, a, b) => pair(nf_rc(fam, cache), nf_rc(a, cache), nf_rc(b, cache)),
+        Expr::SigRec { motive, step, target } => sigrec(nf_rc(motive, cache), nf_rc(step, cache), nf_rc(target, cache)),
         _ => unreachable!("nf_sigma_family called on a non-Sigma-family Expr"),
     }
 }
@@ -808,21 +1004,21 @@ fn expect_sort(e: &Expr) -> Result<u32, String> {
 
 fn expect_pi(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
-        Expr::Pi(a, b) => Ok((Rc::unwrap_or_clone(a), Rc::unwrap_or_clone(b))),
+        Expr::Pi(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
         other => Err(format!("expected a Pi type, got {other:?}")),
     }
 }
 
 fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
-        Expr::W(a, b) => Ok((Rc::unwrap_or_clone(a), Rc::unwrap_or_clone(b))),
+        Expr::W(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
         other => Err(format!("expected a W type, got {other:?}")),
     }
 }
 
 fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
-        Expr::Sigma(a, b) => Ok((Rc::unwrap_or_clone(a), Rc::unwrap_or_clone(b))),
+        Expr::Sigma(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
         other => Err(format!("expected a Sigma type, got {other:?}")),
     }
 }
@@ -933,7 +1129,7 @@ fn infer_sup(ctx: &Ctx, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
 }
 
 pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
-    match e {
+    grow(|| match e {
         Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
         Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
         Expr::Pi(a, b) => {
@@ -1050,127 +1246,44 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
         Expr::Sigma(a, b) => infer_sigma(ctx, a, b),
         Expr::Pair(fam, a, b) => infer_pair(ctx, fam, a, b),
         Expr::SigRec { motive, step, target } => infer_sigrec(ctx, motive, step, target),
-    }
-}
-
-/// The deepest expression `check`/`typecheck` will accept.
-///
-/// Not a logical restriction -- purely a bound on what this module's own
-/// recursive traversals (`infer`, `whnf`, `def_eq`, `nf`, all mutually
-/// recursive over `Expr` structure) can walk without overflowing the
-/// stack. All three numbers below are measured, not guessed
-/// (`RELATED_WORK.md` §30 records the method):
-///
-/// - **What real proofs need: 64.** Instrumenting every one of the
-///   184,785 `check` calls the lib test suite makes, the deepest
-///   expression any of them passes is 64 levels (57 on the `expected`
-///   side). 128 is double that.
-/// - **What a release build survives: ~400-500.** A relational
-///   per-execution proof deepens by roughly two levels per trace step;
-///   depth ~400 gets through, ~500 takes the process down.
-/// - **What a debug build survives: less, and this limit does not cover
-///   it.** A pathological `refl` tower overflows a debug main thread
-///   somewhere between depth 50 and 100. Frames are far fatter there, so
-///   an expression inside this limit can still overflow a debug binary.
-///   Closing that properly means making the traversals iterative rather
-///   than lowering this further -- lowering it to fit debug would start
-///   rejecting proofs the project actually builds.
-///
-/// In practice nothing gets near either ceiling: `MAX_STEPS` and
-/// `DynBudget::tail_steps` stop the only unbounded producers long before
-/// this does, and this is the backstop for anything that slips past them.
-/// Re-measure before raising it.
-pub const MAX_CHECK_DEPTH: usize = 128;
-
-/// Whether `e`'s structural depth stays within `limit`. Measured with an
-/// explicit stack rather than by recursion, so asking the question can
-/// never itself overflow -- which is the whole point: `check` below uses
-/// it to refuse an expression too deep for its own recursive traversals
-/// to survive.
-pub fn depth_within(e: &Expr, limit: usize) -> bool {
-    let mut stack: Vec<(&Expr, usize)> = vec![(e, 0)];
-    while let Some((cur, d)) = stack.pop() {
-        if d > limit {
-            return false;
-        }
-        match cur {
-            Expr::Var(_) | Expr::Sort(_) => {}
-            Expr::Refl(a) => stack.push((a, d + 1)),
-            Expr::Pi(a, b)
-            | Expr::Lam(a, b)
-            | Expr::App(a, b)
-            | Expr::W(a, b)
-            | Expr::Sup(a, b)
-            | Expr::Sigma(a, b) => {
-                stack.push((a, d + 1));
-                stack.push((b, d + 1));
-            }
-            Expr::Id(a, b, c) | Expr::Pair(a, b, c) => {
-                stack.push((a, d + 1));
-                stack.push((b, d + 1));
-                stack.push((c, d + 1));
-            }
-            Expr::J { motive, base, a, b, p } => {
-                for c in [motive, base, a, b, p] {
-                    stack.push((c, d + 1));
-                }
-            }
-            Expr::WRec { motive, children_ty, step, target } => {
-                for c in [motive, children_ty, step, target] {
-                    stack.push((c, d + 1));
-                }
-            }
-            Expr::SigRec { motive, step, target } => {
-                for c in [motive, step, target] {
-                    stack.push((c, d + 1));
-                }
-            }
-        }
-    }
-    true
+    })
 }
 
 /// Checks `e` against `expected`.
 ///
-/// Deliberately *not* depth-guarded, unlike [`typecheck`]. `check` is the
-/// hot path -- this project's own test suite makes 184,785 calls -- and
-/// [`depth_within`] has to visit every node to answer "no", which
-/// measured out at a 50-160% slowdown across every proof benchmark when
-/// it was tried here. A caller that builds expressions proportional to
-/// something unbounded must bound them itself; `proof.rs`'s `finish` and
-/// its two step budgets are where that is done, and
-/// [`MAX_CHECK_DEPTH`]/[`depth_within`] are exported for exactly that.
+/// Safe at any depth: every traversal it reaches runs through [`grow`],
+/// so an expression is bounded by heap, not native stack. That is also
+/// why there is no depth guard here or in [`typecheck`] any more -- the
+/// one that used to exist (`MAX_CHECK_DEPTH`, `RELATED_WORK.md` 30) was
+/// purely a stack-survival bound. How long a deep check takes is the
+/// caller's to bound; `proof.rs`'s step budgets do that.
 pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
-    if let Expr::Lam(a, body) = e
-        && let Expr::Pi(dom, cod) = whnf(expected)
-    {
-        if !def_eq(a, &dom) {
-            return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
+    grow(|| {
+        if let Expr::Lam(a, body) = e
+            && let Expr::Pi(ref dom, ref cod) = whnf(expected)
+        {
+            if !def_eq(a, dom) {
+                return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
+            }
+            let mut ctx2 = ctx.clone();
+            ctx2.push_back((**a).clone());
+            return check(&ctx2, body, cod);
         }
-        let mut ctx2 = ctx.clone();
-        ctx2.push_back((**a).clone());
-        return check(&ctx2, body, &cod);
-    }
-    let inferred = infer(ctx, e)?;
-    if def_eq(&inferred, expected) {
-        Ok(())
-    } else {
-        Err(format!(
-            "type mismatch: inferred {:?}, expected {:?}",
-            nf(&inferred),
-            nf(expected)
-        ))
-    }
+        let inferred = infer(ctx, e)?;
+        if def_eq(&inferred, expected) {
+            Ok(())
+        } else {
+            Err(format!(
+                "type mismatch: inferred {:?}, expected {:?}",
+                nf(&inferred),
+                nf(expected)
+            ))
+        }
+    })
 }
 
-/// Typecheck a closed term and return its normalized type. Refuses
-/// anything past [`MAX_CHECK_DEPTH`] for the same reason [`check`] does.
+/// Typecheck a closed term and return its normalized type.
 pub fn typecheck(e: &Expr) -> Result<Expr, String> {
-    if !depth_within(e, MAX_CHECK_DEPTH) {
-        return Err(format!(
-            "expression nests deeper than the {MAX_CHECK_DEPTH}-level limit this typechecker's own recursion can survive"
-        ));
-    }
     infer(&Ctx::new(), e).map(|t| nf(&t))
 }
 
@@ -1572,37 +1685,42 @@ impl NatPostulates {
 mod tests {
     use super::*;
 
-    /// `depth_within` is what callers who can build unboundedly deep
-    /// expressions use to avoid handing one to `infer`, whose mutual
-    /// recursion with `whnf`/`def_eq`/`nf` would overflow the stack and
-    /// take the process down rather than return a verdict -- see
-    /// `RELATED_WORK.md` §30 for the crash this actually caused, and
-    /// `proof::finish` for the call site that matters.
-    ///
-    /// Note this deliberately never calls `check` on the deep term:
-    /// `check` is not guarded (it is far too hot to afford a full
-    /// traversal per call), so doing so is precisely the crash.
+    /// Every recursive traversal `check` reaches -- `infer`, `whnf`
+    /// (beta-reducing the whole chain), `nf`, `==` inside `def_eq`, and
+    /// `Debug` in the error message -- must survive a term 1,000 levels
+    /// deep on a 1 MB thread: the Windows main thread's size, where a debug
+    /// build used to overflow at depth ~90 (`RELATED_WORK.md` 31). Goes
+    /// through `check`, which has no depth guard, on purpose.
     #[test]
-    fn an_over_deep_expression_is_measurable_and_refused_by_typecheck() {
-        let mut deep = sort(0);
-        for _ in 0..(MAX_CHECK_DEPTH + 5) {
-            deep = refl(deep);
-        }
-        assert!(!depth_within(&deep, MAX_CHECK_DEPTH));
+    fn check_survives_a_term_far_deeper_than_the_native_stack_allows() {
+        const N: usize = 1_000;
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                let ctx = Ctx::new();
 
-        let err = typecheck(&deep).unwrap_err();
-        assert!(err.contains("nests deeper"), "unexpected error: {err}");
+                // (\x:Type0. x) applied N-fold to Type0 -- infer + beta.
+                let id_fn = lam(sort(1), var(0));
+                let mut chain = sort(0);
+                for _ in 0..N {
+                    chain = app(id_fn.clone(), chain);
+                }
+                assert!(check(&ctx, &chain, &sort(1)).is_ok());
 
-        // The same shape, shallow, is measured as such and typechecks
-        // normally -- a tower of `refl`s is perfectly well-typed, each
-        // level an `Id` of the one below. So the guard refuses over-deep
-        // terms specifically, not this shape.
-        let mut shallow = sort(0);
-        for _ in 0..8 {
-            shallow = refl(shallow);
-        }
-        assert!(depth_within(&shallow, MAX_CHECK_DEPTH));
-        assert!(typecheck(&shallow).is_ok());
+                // refl^N(Type0) against its own type, built independently,
+                // so def_eq's `==` walks two distinct deep trees.
+                let (mut e, mut ty) = (sort(0), sort(1));
+                for _ in 0..N {
+                    ty = id(ty, e.clone(), e.clone());
+                    e = refl(e);
+                }
+                assert!(check(&ctx, &e, &ty).is_ok());
+                let err = check(&ctx, &e, &sort(0)).unwrap_err();
+                assert!(err.contains("type mismatch"), "unexpected error: {}", err.chars().take(80).collect::<String>());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     /// A real, working `Nat` -- Zero/Succ and a genuinely computing
