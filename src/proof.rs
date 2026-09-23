@@ -449,6 +449,16 @@ fn setup(store: &TermStore, body: Hash, arity: usize, self_idx: Option<u32>) -> 
 /// the same symbolic value under both readings, by construction) into a
 /// `refl` proof, and confirm the kernel actually accepts it.
 fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<EquivalenceProof> {
+    // The one place every strategy that can build an unboundedly deep
+    // expression hands it to the kernel. `kernel::check` is not itself
+    // depth-guarded (see its docs -- it is far too hot), and its
+    // traversals are recursive, so an over-deep denotation would take the
+    // process down with a stack overflow instead of returning a verdict.
+    // Declining here is the same graceful failure an exhausted step
+    // budget already produces. Once per proof, so it costs nothing.
+    if !kernel::depth_within(&denotation, kernel::MAX_CHECK_DEPTH) {
+        return None;
+    }
     let result_ty = arith.int_ty();
     let proof = kernel::refl(denotation.clone());
     let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
@@ -576,7 +586,11 @@ fn classify_step(
 /// doesn't reach a base case within a generous step bound (guards against
 /// a non-terminating or pathologically long call blowing up proof size).
 pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
-    const MAX_STEPS: usize = 10_000;
+    // Sized against two hard ceilings, not against how long a proof we'd
+    // *like* to build -- see `DynBudget::new`, which carries the same
+    // reasoning for the closure-capable sibling of this loop, and
+    // `RELATED_WORK.md` §30 for the measurements.
+    const MAX_STEPS: usize = 200;
 
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if !is_rec || arity == 0 || arity != args.len() {
@@ -7183,8 +7197,29 @@ struct DynBudget {
 }
 
 impl DynBudget {
+    /// `tail_steps` is sized against two hard ceilings rather than against
+    /// ambition, and both were found the hard way (`RELATED_WORK.md` §30):
+    ///
+    /// - *Above*: the expression these loops accumulate deepens by a
+    ///   couple of levels per step, and `kernel::check` refuses anything
+    ///   past `kernel::MAX_CHECK_DEPTH` (200) because its own recursive
+    ///   traversals can't survive deeper. So a trace beyond roughly a
+    ///   hundred steps cannot produce a provable result no matter how
+    ///   long it runs -- spending 10,000 steps building one was pure
+    ///   waste even when it didn't crash.
+    /// - *Below*: nothing guards the recursive `Drop` of a deeply nested
+    ///   `Rc<Expr>` chain. Measured, that survives a depth around 8,000
+    ///   and overflows the process around 12,000 -- so the accumulated
+    ///   expression must never get near there, including on the path
+    ///   where the budget runs out and the whole thing is discarded
+    ///   unproved. The old 10,000 could reach depth ~20,000 and took the
+    ///   process down with `STATUS_STACK_OVERFLOW`, which is exactly what
+    ///   `benches/execution.rs` was hitting.
+    ///
+    /// 200 sits comfortably above the first ceiling's useful range and
+    /// two orders of magnitude below the second.
     fn new() -> Self {
-        DynBudget { tail_steps: 10_000, recursion_depth: 50, inline_call_depth: 25 }
+        DynBudget { tail_steps: 200, recursion_depth: 50, inline_call_depth: 25 }
     }
 }
 
@@ -9382,6 +9417,48 @@ mod tests {
         let fact = s.rec(abs);
 
         assert!(prove_tail_recursive_call(&s, fact, &[5]).is_none());
+    }
+
+    /// A long-running tail recursion used to take the *process* down.
+    ///
+    /// `prove_tail_recursive_call` accumulates an expression that deepens
+    /// a couple of levels per trace step, and both the kernel's recursive
+    /// traversals and the recursive `Drop` of the resulting `Rc<Expr>`
+    /// chain have finite stack. With the old 10,000-step budget a loop
+    /// like this built a ~40,000-level expression and died with
+    /// `STATUS_STACK_OVERFLOW` -- not a failed proof, a crashed process,
+    /// reachable from `jit::JitEngine::apply` through the sibling
+    /// `prove_closure_expr_instance`. See `RELATED_WORK.md` §30.
+    ///
+    /// Declining is the correct outcome here; surviving to decline is the
+    /// point of the test.
+    #[test]
+    fn a_long_running_trace_declines_instead_of_overflowing_the_stack() {
+        // rec f n x = if n <= 0 then x else f(n - 1, x + 1), run 20,000
+        // times -- far past any budget, which is exactly the case that
+        // used to crash rather than return.
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let n = s.var(1);
+        let f = s.var(2);
+        let zero = s.lit(0);
+        let one = s.lit(1);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let x_plus_1 = s.prim(PrimOp::Add, x, one);
+        let rec_call = s.app2(f, n_minus_1, x_plus_1);
+        let body = s.if_(cond, x, rec_call);
+        let inner = s.abs(body);
+        let outer = s.abs(inner);
+        let h = s.rec(outer);
+
+        assert_eq!(eval::apply_term(&s, h, &[20_000, 0]).unwrap(), 20_000);
+        assert!(prove_tail_recursive_call(&s, h, &[20_000, 0]).is_none());
+
+        // And a trace short enough to stay under every ceiling still
+        // proves, so the bound above isn't simply switching the strategy
+        // off.
+        assert!(prove_tail_recursive_call(&s, h, &[10, 0]).is_some());
     }
 
     #[test]

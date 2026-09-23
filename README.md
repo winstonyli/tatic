@@ -36,6 +36,50 @@ lambda's saturated-call result, the other by calling a closure-typed
 *parameter* — see `compile.rs`'s module docs and `main.rs`'s comments on
 each.)
 
+## Validation
+
+The full routine, run after every change:
+
+```sh
+cargo build --all-targets
+cargo test --lib --bins
+cargo clippy --all-targets
+cargo test --release --test compile_fuzz --test kernel_fuzz \
+           --test kernel_soundness_fuzz --test syntax_fuzz
+cargo bench
+cargo run --release
+```
+
+`cargo bench` is in that list deliberately. It used to be left out on the
+reasoning that `--all-targets` already builds the benchmarks — which it
+does, and which is exactly why a stack overflow sat unnoticed in
+`benches/execution.rs` until someone ran them (`RELATED_WORK.md` §30).
+Building a target proves nothing about running it.
+
+A full `cargo bench` takes a while — `fib_30`'s interpreter bar alone is
+over a second per iteration. When the point is "does it still run", not
+"how fast", cut the sweep down per suite:
+
+```sh
+cargo bench --bench execution -- --warm-up-time 0.3 --measurement-time 0.5 --sample-size 10
+cargo bench --bench proofs    -- --warm-up-time 0.3 --measurement-time 0.5 --sample-size 10
+```
+
+Those flags need `--bench <name>`; passing them to a bare `cargo bench`
+fails, because that also runs the lib unittest target, which doesn't
+understand criterion's arguments.
+
+Two notes on what "clean" means here:
+
+- On a 1.100-era nightly, `cargo clippy` reports four warnings from
+  `cranelift-entity`'s `entity_impl!` macro expanding the deprecated
+  `std::u32::MAX` path. Not this project's code, and deliberately not
+  suppressed with an `#[allow]` that would mask a future real deprecation
+  in `term.rs`.
+- `cargo bench` prints criterion's `change:` percentages against whatever
+  it last stored, which on a fresh checkout is nothing. Treat a
+  regression line as a prompt to look, not as a failure.
+
 ## Architecture
 
 ```

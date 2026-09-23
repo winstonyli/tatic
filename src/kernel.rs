@@ -1053,6 +1053,93 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
     }
 }
 
+/// The deepest expression `check`/`typecheck` will accept.
+///
+/// Not a logical restriction -- purely a bound on what this module's own
+/// recursive traversals (`infer`, `whnf`, `def_eq`, `nf`, all mutually
+/// recursive over `Expr` structure) can walk without overflowing the
+/// stack. All three numbers below are measured, not guessed
+/// (`RELATED_WORK.md` §30 records the method):
+///
+/// - **What real proofs need: 64.** Instrumenting every one of the
+///   184,785 `check` calls the lib test suite makes, the deepest
+///   expression any of them passes is 64 levels (57 on the `expected`
+///   side). 128 is double that.
+/// - **What a release build survives: ~400-500.** A relational
+///   per-execution proof deepens by roughly two levels per trace step;
+///   depth ~400 gets through, ~500 takes the process down.
+/// - **What a debug build survives: less, and this limit does not cover
+///   it.** A pathological `refl` tower overflows a debug main thread
+///   somewhere between depth 50 and 100. Frames are far fatter there, so
+///   an expression inside this limit can still overflow a debug binary.
+///   Closing that properly means making the traversals iterative rather
+///   than lowering this further -- lowering it to fit debug would start
+///   rejecting proofs the project actually builds.
+///
+/// In practice nothing gets near either ceiling: `MAX_STEPS` and
+/// `DynBudget::tail_steps` stop the only unbounded producers long before
+/// this does, and this is the backstop for anything that slips past them.
+/// Re-measure before raising it.
+pub const MAX_CHECK_DEPTH: usize = 128;
+
+/// Whether `e`'s structural depth stays within `limit`. Measured with an
+/// explicit stack rather than by recursion, so asking the question can
+/// never itself overflow -- which is the whole point: `check` below uses
+/// it to refuse an expression too deep for its own recursive traversals
+/// to survive.
+pub fn depth_within(e: &Expr, limit: usize) -> bool {
+    let mut stack: Vec<(&Expr, usize)> = vec![(e, 0)];
+    while let Some((cur, d)) = stack.pop() {
+        if d > limit {
+            return false;
+        }
+        match cur {
+            Expr::Var(_) | Expr::Sort(_) => {}
+            Expr::Refl(a) => stack.push((a, d + 1)),
+            Expr::Pi(a, b)
+            | Expr::Lam(a, b)
+            | Expr::App(a, b)
+            | Expr::W(a, b)
+            | Expr::Sup(a, b)
+            | Expr::Sigma(a, b) => {
+                stack.push((a, d + 1));
+                stack.push((b, d + 1));
+            }
+            Expr::Id(a, b, c) | Expr::Pair(a, b, c) => {
+                stack.push((a, d + 1));
+                stack.push((b, d + 1));
+                stack.push((c, d + 1));
+            }
+            Expr::J { motive, base, a, b, p } => {
+                for c in [motive, base, a, b, p] {
+                    stack.push((c, d + 1));
+                }
+            }
+            Expr::WRec { motive, children_ty, step, target } => {
+                for c in [motive, children_ty, step, target] {
+                    stack.push((c, d + 1));
+                }
+            }
+            Expr::SigRec { motive, step, target } => {
+                for c in [motive, step, target] {
+                    stack.push((c, d + 1));
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Checks `e` against `expected`.
+///
+/// Deliberately *not* depth-guarded, unlike [`typecheck`]. `check` is the
+/// hot path -- this project's own test suite makes 184,785 calls -- and
+/// [`depth_within`] has to visit every node to answer "no", which
+/// measured out at a 50-160% slowdown across every proof benchmark when
+/// it was tried here. A caller that builds expressions proportional to
+/// something unbounded must bound them itself; `proof.rs`'s `finish` and
+/// its two step budgets are where that is done, and
+/// [`MAX_CHECK_DEPTH`]/[`depth_within`] are exported for exactly that.
 pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
     if let Expr::Lam(a, body) = e
         && let Expr::Pi(dom, cod) = whnf(expected)
@@ -1076,8 +1163,14 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
     }
 }
 
-/// Typecheck a closed term and return its normalized type.
+/// Typecheck a closed term and return its normalized type. Refuses
+/// anything past [`MAX_CHECK_DEPTH`] for the same reason [`check`] does.
 pub fn typecheck(e: &Expr) -> Result<Expr, String> {
+    if !depth_within(e, MAX_CHECK_DEPTH) {
+        return Err(format!(
+            "expression nests deeper than the {MAX_CHECK_DEPTH}-level limit this typechecker's own recursion can survive"
+        ));
+    }
     infer(&Ctx::new(), e).map(|t| nf(&t))
 }
 
@@ -1478,6 +1571,39 @@ impl NatPostulates {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `depth_within` is what callers who can build unboundedly deep
+    /// expressions use to avoid handing one to `infer`, whose mutual
+    /// recursion with `whnf`/`def_eq`/`nf` would overflow the stack and
+    /// take the process down rather than return a verdict -- see
+    /// `RELATED_WORK.md` §30 for the crash this actually caused, and
+    /// `proof::finish` for the call site that matters.
+    ///
+    /// Note this deliberately never calls `check` on the deep term:
+    /// `check` is not guarded (it is far too hot to afford a full
+    /// traversal per call), so doing so is precisely the crash.
+    #[test]
+    fn an_over_deep_expression_is_measurable_and_refused_by_typecheck() {
+        let mut deep = sort(0);
+        for _ in 0..(MAX_CHECK_DEPTH + 5) {
+            deep = refl(deep);
+        }
+        assert!(!depth_within(&deep, MAX_CHECK_DEPTH));
+
+        let err = typecheck(&deep).unwrap_err();
+        assert!(err.contains("nests deeper"), "unexpected error: {err}");
+
+        // The same shape, shallow, is measured as such and typechecks
+        // normally -- a tower of `refl`s is perfectly well-typed, each
+        // level an `Id` of the one below. So the guard refuses over-deep
+        // terms specifically, not this shape.
+        let mut shallow = sort(0);
+        for _ in 0..8 {
+            shallow = refl(shallow);
+        }
+        assert!(depth_within(&shallow, MAX_CHECK_DEPTH));
+        assert!(typecheck(&shallow).is_ok());
+    }
 
     /// A real, working `Nat` -- Zero/Succ and a genuinely computing
     /// structural recursor -- exercising `NatPostulates`, the reusable

@@ -2367,10 +2367,10 @@ tatic's code, and deliberately not suppressed with an `#[allow]` that
 would mask a future real deprecation in that file -- but "clippy clean"
 is no longer a valid pass criterion on that toolchain.
 
-## 30. `cargo bench --bench execution` dies of a stack overflow on the inconsistent-arity term -- found, not fixed
+## 30. `cargo bench --bench execution` died of a stack overflow -- found and fixed
 
 Found while checking (belatedly) whether §29's installation gate changed
-any benchmark. It didn't. But the benchmark suite does not complete:
+any benchmark. It didn't. But the benchmark suite did not complete:
 
 ```
 Benchmarking inconsistent_arity_loop_carried_parameter_loop/jit_cold_compile_and_verify
@@ -2378,60 +2378,118 @@ thread 'main' has overflowed its stack
 error: bench failed  (exit code 0xc00000fd, STATUS_STACK_OVERFLOW)
 ```
 
-**Pre-existing, not caused by the gate.** Confirmed directly by checking
-out `src/jit.rs` from the commit before §29's change and re-running: it
-overflows identically. Every `src`-side commit in this series is
-therefore exonerated; the crash is older than this whole line of work.
+**Pre-existing, not caused by the gate.** Confirmed by checking out
+`src/jit.rs` from the commit before §29's change and re-running: it
+overflows identically.
 
-**Why nothing caught it.** The standing validation routine is `cargo
-build --all-targets`, `cargo test --lib --bins`, `cargo clippy
---all-targets`, all four fuzzers at release, and `cargo run --release`.
-Benchmarks are not in it. `--all-targets` *builds* them, which is
-presumably why this looked covered; nothing ever ran them.
+**Why nothing caught it.** Benchmarks were not in the standing validation
+routine. `--all-targets` *builds* them, which is presumably why this
+looked covered. Building a target proves nothing about running it. The
+routine is now written down in `README.md`'s own "Validation" section,
+with `cargo bench` in it.
 
-**Mechanism, strongly indicated but not yet isolated.** The term is
-`common::inconsistent_arity_loop_carried_parameter_loop`: a 20,000-
-iteration loop whose closure-typed parameter is `ArityUse::Inconsistent`.
-That is exactly the family §28 measured as landing on
-`prove_closure_expr_instance` -- the per-*execution* certificate, whose
-size is proportional to the trace it follows. Supporting evidence:
+### Isolation
 
-- Its sibling `closure_typed_loop_carried_parameter_loop` -- same 20,000
-  iterations, same hot call, differing only in that one dead call site
-  makes the parameter inconsistent -- does *not* overflow. It is covered
-  by `prove_tail_recursive_universal`, which never walks a trace.
-- `cargo bench --bench proofs` completes fine, including
-  `non_tail_closure_recursion_instance_proof`, which exercises
-  `prove_closure_expr_instance` directly at ~30us on deliberately small
-  traces (that bench's own docs note its `n` is "kept much smaller").
-- The interpreter bar for the same term runs the same 20,000 iterations
-  without trouble, so `eval` is not the recursive part.
+A throwaway harness ran each stage of a cold compile separately on the
+same term, at varying loop counts and thread stack sizes:
 
-`DynBudget` bounds `tail_steps` at 10,000 and `recursion_depth` at 50,
-so the *trace walk* should terminate rather than recurse away. The
-likelier culprit is what happens afterwards: a 10,000-step trace yields
-a straight-line expression roughly that deep, and the kernel's own
-traversals (`whnf`/`nf`/typechecking) recurse over its structure. That
-would make `DynBudget` a bound on proof *size* but not on the *stack
-depth* needed to process one -- which is the actual thing that needs
-bounding.
+- `eval::apply_term` -- fine at 20,000 iterations. Not the interpreter.
+- `compile::try_compile` -- fine. Not the compiler.
+- `proof::prove_closure_expr_instance` -- overflows.
+- The same call on a 1 GB thread **returns `None`**, correctly, at
+  n=20,000 (its budget is exhausted). So the logic was right all along;
+  it simply needed more stack than it had to reach the decline.
+- Instrumenting the expression handed to `kernel::check`: depth 101 at
+  n=50, 201 at n=100, 401 at n=200. Depth grows at ~2 levels per trace
+  step, exactly as the per-*execution* proof design implies.
+- `prove_tail_recursive_call` -- the purely arithmetic sibling, no
+  closures anywhere -- overflows too, at an even lower loop count. So
+  this was never closure-specific; it is a property of both per-execution
+  strategies.
 
-**Why this matters beyond the benchmark.** The path is reachable from
-`jit.apply`, so a legitimate term in this family with a long-running
-loop crashes the process rather than declining the proof. A proof
-strategy running out of budget must fail gracefully; this one takes the
-process with it. It is a robustness bug in the same family §29's gate
-just declined to install, which is a coincidence of subject matter, not
-a consequence.
+### Two distinct overflow sites
 
-**Suggested first steps when this is picked up.** Isolate before fixing:
-binary-search the loop count at which it overflows, and confirm the
-overflow moves with trace length rather than with term size. If it is
-the kernel's traversal depth, the fix is either an explicit depth bound
-checked where the expression is built (so it declines, returning `None`,
-exactly as an exhausted `DynBudget` already does) or an iterative
-rewrite of the traversal. Adding benchmarks to the standing validation
-routine is worth doing regardless -- that is the gap that let this sit.
+1. **`kernel::check`.** `infer`, `whnf`, `def_eq` and `nf` are mutually
+   recursive over `Expr` structure. Release build: depth ~400 survives,
+   ~500 takes the process down. Debug is far worse -- a `refl` tower
+   overflows a debug main thread somewhere between depth 50 and 100.
+2. **Recursive `Drop`.** When the step budget runs out, the accumulated
+   `Rc<Expr>` chain is discarded unproved, and dropping it recurses one
+   frame per level. Measured: depth ~8,000 survives, ~12,000 does not.
+   This is the one that actually killed the benchmark -- with
+   `tail_steps: 10_000` a 20,000-iteration loop built a ~20,000-level
+   expression, never reached `check` at all, and died on the way out.
+   (`Clone` is unaffected: `#[derive(Clone)]` over `Rc` fields is
+   shallow.)
+
+### Fix
+
+Both step budgets drop from 10,000 to **200** --
+`prove_tail_recursive_call`'s `MAX_STEPS` and `DynBudget::tail_steps` --
+sized to sit between the two ceilings rather than at whatever number
+looked generous. Above them, nothing past ~100 steps could ever produce
+an acceptable proof anyway; below them, 200 steps cannot build anything
+within two orders of magnitude of the drop cliff.
+
+Second, `kernel::depth_within` (iterative, explicit stack, early-exit)
+plus `kernel::MAX_CHECK_DEPTH = 128`, checked once in `proof::finish` --
+the single point where every strategy that can build an unbounded
+expression hands it to the kernel. Over-deep means `None`, the same
+graceful failure an exhausted budget already produces.
+
+**Why the guard is not inside `kernel::check`, where it belongs.** That
+was tried first, and measured: a 50-160% slowdown across every single
+proof benchmark. The lib test suite makes **184,785** `check` calls, and
+`depth_within` must visit every node to answer "no". `check` is too hot
+to afford it. `typecheck` -- cold, and the other public entry that
+accepts or rejects a term -- is guarded.
+
+**The constant, measured rather than guessed.** Instrumenting all 184,785
+`check` calls, the deepest expression any real proof passes is **64**
+levels (57 on the `expected` side). 128 is double the observed maximum
+and far below the release cliff.
+
+**Known gap, recorded rather than papered over.** `kernel::check` stays
+unguarded, and a debug build overflows at depths inside
+`MAX_CHECK_DEPTH`. Lowering the constant to fit debug would start
+rejecting proofs the project actually builds; the real fix is making the
+kernel's traversals iterative, which is its own project. What stops the
+crash today is the step budgets -- the guard is a backstop for anything
+that gets past them.
+
+### A benchmark consequence worth stating
+
+`inconsistent_arity_loop_carried_parameter_loop` runs 20,000 iterations,
+so its trace now exhausts the 200-step budget, `prove_closure_expr_
+instance` declines, and §29's gate therefore refuses to install it. Its
+`jit_warm_cache_hit` bar now measures the interpreter (~18 ms against the
+interpreter's ~23 ms), not curried dispatch. That bar was the whole point
+of the group -- its own docs say so -- so the benchmark needs either a
+loop short enough to stay provable or an explicit note that it is
+measuring the declined path. Not done here.
+
+This also corrects §29 a second time. The gate *did* change this
+benchmark: before, the term compiled and was served fast; now it is
+interpreted. That was invisible earlier only because the benchmark
+crashed before reaching the point where you could see it.
+
+### Tests and verification
+
+- `proof::tests::a_long_running_trace_declines_instead_of_overflowing_the_stack`
+  -- a 20,000-step arithmetic loop must return `None`, and a 10-step one
+  must still prove. Verify-teeth: restoring `MAX_STEPS` to 10,000 makes
+  it overflow the test process exactly as described.
+- `kernel::tests::an_over_deep_expression_is_measurable_and_refused_by_typecheck`
+  -- `depth_within` measures, `typecheck` refuses, and a shallow term of
+  the same shape still typechecks. It deliberately never calls `check` on
+  the deep term, since `check` is unguarded and doing so *is* the crash.
+  Verify-teeth: raising `MAX_CHECK_DEPTH` to 10,000,000 makes the test
+  overflow.
+
+Full validation green afterwards: build, 193/193 lib tests, all four
+fuzzers at release, `cargo bench` (both suites, to completion), and the
+release demo. The proof benchmarks are back within noise of their
+pre-guard numbers.
 
 ## Sources
 
