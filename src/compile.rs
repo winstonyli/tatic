@@ -756,6 +756,76 @@ pub(crate) fn unwind_app_spine(store: &TermStore, mut h: Hash) -> (Hash, Vec<Has
     (h, args)
 }
 
+/// What shape one node of a function body is -- the case analysis
+/// `compile_node` and every walker in `proof.rs` that models it share, so
+/// that the compiler and the proofs cannot disagree about which case a
+/// term falls into (`RELATED_WORK.md` 33). Each consumer still decides
+/// for itself which shapes it supports and what they mean; only the
+/// classification is common.
+///
+/// The one precedence rule: a saturated self-call is recognized before
+/// any other application. Every other variant is a distinct `Term`
+/// constructor.
+pub(crate) enum Shape {
+    If(Hash, Hash, Hash),
+    /// `self a1 .. a_arity`, per [`match_self_call`]; arguments in
+    /// application order.
+    SelfCall(Vec<Hash>),
+    /// An application headed by a variable (`root`, the `Var` node
+    /// itself) -- a parameter or a captured free variable, whichever it
+    /// resolves to.
+    VarCall { root: Hash, var: u32, args: Vec<Hash> },
+    /// An application headed by a literal lambda or `Rec` combinator that
+    /// peels to `arity > 0`. `args.len()` against `arity` says whether it
+    /// is exact, over- or partial application.
+    CombinatorCall { root: Hash, arity: usize, args: Vec<Hash> },
+    /// An application headed by anything else (a literal, a primitive, an
+    /// `If`, a combinator that doesn't peel to a function): outside every
+    /// fragment.
+    OtherCall,
+    Var(u32),
+    Lit(i64),
+    Prim(PrimOp, Hash, Hash),
+    /// A literal lambda or `Rec` combinator used as a value. Consumers
+    /// peel it themselves: they differ on whether they accept a `Rec`.
+    Combinator { is_rec: bool },
+}
+
+/// Classifies `h` within a function of `arity` parameters whose own
+/// self-reference, if it is recursive, is `Var(self_idx)`. See [`Shape`].
+pub(crate) fn classify(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>) -> Shape {
+    if let Some(args) = match_self_call(store, h, arity, self_idx) {
+        return Shape::SelfCall(args);
+    }
+    match store.resolve(h) {
+        Term::If(c, t, e) => Shape::If(*c, *t, *e),
+        Term::App(..) => {
+            let (root, args) = unwind_app_spine(store, h);
+            match store.resolve(root) {
+                Term::Var(i) => Shape::VarCall { root, var: *i, args },
+                Term::Abs(_) | Term::Rec(_) => match peel(store, root) {
+                    Some((arity, _, _)) if arity > 0 => Shape::CombinatorCall { root, arity, args },
+                    _ => Shape::OtherCall,
+                },
+                _ => Shape::OtherCall,
+            }
+        }
+        Term::Var(i) => Shape::Var(*i),
+        Term::Lit(n) => Shape::Lit(*n),
+        Term::Prim(op, a, b) => Shape::Prim(*op, *a, *b),
+        Term::Abs(_) => Shape::Combinator { is_rec: false },
+        Term::Rec(_) => Shape::Combinator { is_rec: true },
+    }
+}
+
+/// Whether `op` is one `compile_cond` compiles as an `If` condition --
+/// and so one that only ever evaluates to `0` or `1`, which `proof.rs`'s
+/// `classify_tree` relies on for soundness. Defined by `cmp_instr` itself
+/// so the two cannot drift.
+pub(crate) fn is_comparison(op: PrimOp) -> bool {
+    cmp_instr(op).is_some()
+}
+
 /// Finds what a lambda literal (peeled to `own_arity`/`body`/`is_rec`,
 /// same shape `peel` returns) captures from its enclosing scope: every
 /// `Var` in `body` that isn't bound within `body` itself, expressed as
@@ -868,60 +938,42 @@ fn scan_for_closure_calls(
     self_idx: Option<u32>,
     found: &mut HashMap<u32, ArityUse>,
 ) -> Option<()> {
-    if let Term::If(c, t, e) = store.resolve(h) {
-        let (c, t, e) = (*c, *t, *e);
-        scan_for_closure_calls(store, c, arity, self_idx, found)?;
-        scan_for_closure_calls(store, t, arity, self_idx, found)?;
-        scan_for_closure_calls(store, e, arity, self_idx, found)?;
-        return Some(());
-    }
-    if let Some(args) = match_self_call(store, h, arity, self_idx) {
-        for a in args {
-            scan_for_closure_calls(store, a, arity, self_idx, found)?;
-        }
-        return Some(());
-    }
-    if matches!(store.resolve(h), Term::App(..)) {
-        let (root, args) = unwind_app_spine(store, h);
-        match store.resolve(root) {
-            // A parameter *or* a captured free variable used as a
-            // callee -- both resolve to a packed closure value the same
-            // way (`compile_var_read`), so both get tracked here
-            // uniformly; whether `i` actually resolves to anything at
-            // all is checked later, at codegen.
-            Term::Var(i) => {
-                match found.get(i) {
-                    None => {
-                        found.insert(*i, ArityUse::Consistent(args.len()));
-                    }
-                    Some(ArityUse::Consistent(k)) if *k == args.len() => {}
-                    Some(ArityUse::Consistent(_)) => {
-                        found.insert(*i, ArityUse::Inconsistent);
-                    }
-                    Some(ArityUse::Inconsistent) => {} // already marked; nothing new to record
+    let args = match classify(store, h, arity, self_idx) {
+        Shape::If(c, t, e) => vec![c, t, e],
+        Shape::SelfCall(args) => args,
+        // A parameter *or* a captured free variable used as a callee --
+        // both resolve to a packed closure value the same way
+        // (`compile_var_read`), so both get tracked here uniformly;
+        // whether `i` actually resolves to anything at all is checked
+        // later, at codegen.
+        Shape::VarCall { var: i, args, .. } => {
+            match found.get(&i) {
+                None => {
+                    found.insert(i, ArityUse::Consistent(args.len()));
                 }
+                Some(ArityUse::Consistent(k)) if *k == args.len() => {}
+                Some(ArityUse::Consistent(_)) => {
+                    found.insert(i, ArityUse::Inconsistent);
+                }
+                Some(ArityUse::Inconsistent) => {} // already marked; nothing new to record
             }
-            Term::Abs(_) | Term::Rec(_) => {} // a literal redex callee (possibly self-recursive) -- fine, checked again at codegen
-            _ => return None,  // callee is neither a variable nor a literal lambda/combinator
+            args
         }
-        for a in &args {
-            scan_for_closure_calls(store, *a, arity, self_idx, found)?;
-        }
-        return Some(());
-    }
-    match store.resolve(h) {
-        Term::Var(_) | Term::Lit(_) => Some(()),
-        Term::Prim(_, a, b) => {
-            scan_for_closure_calls(store, *a, arity, self_idx, found)?;
-            scan_for_closure_calls(store, *b, arity, self_idx, found)
-        }
+        // A literal redex callee (possibly self-recursive) -- fine,
+        // checked again at codegen.
+        Shape::CombinatorCall { args, .. } => args,
+        Shape::OtherCall => return None,
+        Shape::Prim(_, a, b) => vec![a, b],
         // A lambda -- or a named self-recursive value, e.g. one bound by
         // `let fact = rec f n = .. in ..` and later called through that
         // binding -- used as a plain value (an argument, a branch
         // result, ...).
-        Term::Abs(_) | Term::Rec(_) => Some(()),
-        Term::If(..) | Term::App(..) => unreachable!("handled above"),
+        Shape::Var(_) | Shape::Lit(_) | Shape::Combinator { .. } => vec![],
+    };
+    for a in args {
+        scan_for_closure_calls(store, a, arity, self_idx, found)?;
     }
+    Some(())
 }
 
 /// Emits a bump allocator: one page (64KiB) of linear memory, a mutable
@@ -1148,245 +1200,237 @@ fn compile_node(
 ) -> Option<()> {
     let (store, arity, self_idx) = (ctx.store, ctx.arity, ctx.self_idx);
 
-    if let Term::If(c, t, e) = store.resolve(h) {
-        let (c, t, e) = (*c, *t, *e);
-        compile_cond(ctx, combinators, c, w, indent)?;
-        push_line(w, indent, "if (result i64)");
-        compile_node(ctx, combinators, t, tail, w, indent + 2)?;
-        push_line(w, indent, "else");
-        compile_node(ctx, combinators, e, tail, w, indent + 2)?;
-        push_line(w, indent, "end");
-        return Some(());
-    }
-
-    if let Some(args) = match_self_call(store, h, arity, self_idx) {
-        if tail {
-            // Evaluate all new argument values into temporaries first, so a
-            // recursive call like `f(b, a mod b)` doesn't clobber `a`
-            // before `a mod b` is computed, then loop back.
-            for (i, a) in args.iter().enumerate() {
-                compile_node(ctx, combinators, *a, false, w, indent)?;
-                push_line(w, indent, &format!("local.set $t{i}"));
-            }
-            for i in 0..arity {
-                push_line(w, indent, &format!("local.get $t{i}"));
-                push_line(w, indent, &format!("local.set $p{i}"));
-            }
-            push_line(w, indent, "br $L");
-        } else {
-            // A non-tail self-call is a genuine, separate Wasm `call` back
-            // into this same function's own activation -- it needs its
-            // own `$env` forwarded unchanged (recursion stays within the
-            // one closure instance that's already running; it never gets
-            // a fresh environment of its own).
-            if ctx.has_env {
-                push_line(w, indent, "local.get $env");
-            }
-            for a in &args {
-                compile_node(ctx, combinators, *a, false, w, indent)?;
-            }
-            push_line(w, indent, &format!("call ${}", ctx.name));
+    match classify(store, h, arity, self_idx) {
+        Shape::If(c, t, e) => {
+            compile_cond(ctx, combinators, c, w, indent)?;
+            push_line(w, indent, "if (result i64)");
+            compile_node(ctx, combinators, t, tail, w, indent + 2)?;
+            push_line(w, indent, "else");
+            compile_node(ctx, combinators, e, tail, w, indent + 2)?;
+            push_line(w, indent, "end");
+            return Some(());
         }
-        return Some(());
-    }
 
-    if matches!(store.resolve(h), Term::App(..)) {
-        let (root, args) = unwind_app_spine(store, h);
-        match store.resolve(root) {
-            // A closure-typed variable used as a callee -- a parameter
-            // (`i < arity`) *or* a captured free variable (`i >= arity`):
-            // `compile_var_read` resolves either the same way, so this
-            // doesn't need to distinguish them; calling a closure reached
-            // through a captured variable works exactly like calling one
-            // reached through a parameter, just resolved differently.
-            Term::Var(i) => {
-                if combinators.emitting && combinators.needs_generic_dispatch {
-                    // This fragment has at least one genuinely
-                    // inconsistent variable somewhere -- with no real
-                    // type system to rule out a value flowing between
-                    // this call site and that one (see `Combinators`'s
-                    // own docs), *every* closure-typed-variable call
-                    // site in the fragment goes through the same
-                    // curried fallback, regardless of whether this
-                    // particular `i` is itself consistent.
-                    compile_var_read(ctx, *i, w, indent)?;
-                    emit_dynamic_apply(ctx, combinators, &args, w, indent)?;
-                    return Some(());
+        Shape::SelfCall(args) => {
+            if tail {
+                // Evaluate all new argument values into temporaries first, so a
+                // recursive call like `f(b, a mod b)` doesn't clobber `a`
+                // before `a mod b` is computed, then loop back.
+                for (i, a) in args.iter().enumerate() {
+                    compile_node(ctx, combinators, *a, false, w, indent)?;
+                    push_line(w, indent, &format!("local.set $t{i}"));
                 }
-                // Fast path: either this fragment never needs generic
-                // dispatch at all, or (during the discovery pass, whose
-                // own codegen is discarded -- see `try_compile`'s docs)
-                // it's simply not yet known whether it will. An
-                // `ArityUse::Inconsistent` entry here is only possible
-                // in the second case (the emitting pass never reaches
-                // this branch once the fragment needs generic dispatch,
-                // per the check above) -- treated as this specific call
-                // site's own, locally-known argument count, since
-                // discovery only needs to keep walking correctly, not
-                // produce output that's ever kept.
-                let expected = match ctx.closure_arities.get(i)? {
-                    ArityUse::Consistent(k) => *k,
-                    ArityUse::Inconsistent => args.len(),
-                };
-                if args.len() != expected {
-                    return None;
+                for i in 0..arity {
+                    push_line(w, indent, &format!("local.get $t{i}"));
+                    push_line(w, indent, &format!("local.set $p{i}"));
                 }
-                // Unpack the callee's environment pointer (high 32 bits)
-                // first -- it's `call_indirect`'s first operand, ahead of
-                // the actual arguments -- then its table index (low 32
-                // bits) last, as `call_indirect` itself requires. Reading
-                // the packed value twice (once per half) is fine -- it's
-                // a pure local/memory read either way, nothing mutates
-                // it in between.
-                compile_var_read(ctx, *i, w, indent)?;
-                push_line(w, indent, "i64.const 32");
-                push_line(w, indent, "i64.shr_u");
-                push_line(w, indent, "i32.wrap_i64");
+                push_line(w, indent, "br $L");
+            } else {
+                // A non-tail self-call is a genuine, separate Wasm `call` back
+                // into this same function's own activation -- it needs its
+                // own `$env` forwarded unchanged (recursion stays within the
+                // one closure instance that's already running; it never gets
+                // a fresh environment of its own).
+                if ctx.has_env {
+                    push_line(w, indent, "local.get $env");
+                }
                 for a in &args {
                     compile_node(ctx, combinators, *a, false, w, indent)?;
                 }
-                compile_var_read(ctx, *i, w, indent)?;
-                push_line(w, indent, "i32.wrap_i64");
-                combinators.call_indirect_arities.push(expected);
-                push_line(w, indent, &format!("call_indirect (type $ty{expected})"));
-                return Some(());
+                push_line(w, indent, &format!("call ${}", ctx.name));
             }
-            Term::Abs(_) | Term::Rec(_) => {
-                let idx = combinators.register(root)?;
-                let root_arity = combinators.arities[idx];
-                if args.len() == root_arity {
-                    let captures = combinators.captures[idx].clone();
-                    push_closure_env(ctx, &captures, w, indent)?;
-                    for a in &args {
-                        compile_node(ctx, combinators, *a, false, w, indent)?;
-                    }
-                    push_line(w, indent, &format!("call $c{idx}"));
-                    return Some(());
-                }
-                if args.len() > root_arity {
-                    // Over-application: `root`'s own saturated call
-                    // (`root`'s first `root_arity` args) is compiled, then
-                    // whatever it *returns* is called again, dynamically,
-                    // through `call_indirect` -- exactly the same dispatch
-                    // a closure-typed *variable* callee already uses (see
-                    // the `Term::Var(i)` arm above), just with the callee
-                    // itself freshly computed here instead of read from a
-                    // local/capture slot. This only makes sense if the
-                    // saturated call's own result genuinely is a packed
-                    // `Clo` value (i.e. `root`'s body, once its own
-                    // parameters are supplied, itself denotes a further
-                    // closure) -- nothing here checks that statically
-                    // (this pass has no real type system, just term
-                    // shape), so an over-application of a plain
-                    // `Int`-returning function still compiles, but
-                    // produces a garbage `call_indirect` target that
-                    // either traps or (extremely unlikely) coincidentally
-                    // lands on some unrelated table entry -- caught either
-                    // way by `jit.rs`'s sample verification disagreeing
-                    // with the interpreter (which genuinely type-errors on
-                    // such a term), the same safety net every other shape
-                    // this fragment accepts already relies on.
-                    //
-                    // `call_indirect`'s own operand order needs the
-                    // callee's env-ptr *before* the extra arguments and
-                    // its table index *after* them (see the `Term::Var(i)`
-                    // arm), so the extra arguments' own compilation -- and
-                    // any nested closure/PAP construction it might
-                    // trigger -- necessarily happens *between* the two
-                    // halves. Rather than stash the saturated call's
-                    // result in a local across that recursion (exactly
-                    // the hazard `push_pap_env`'s own docs describe, and
-                    // that bit `push_pap_env` for real once), the
-                    // saturated call is simply compiled twice -- once for
-                    // each half. It's a pure, deterministic Wasm function
-                    // call (no observable side effect beyond bump-
-                    // allocator growth, which doesn't affect the result),
-                    // so recomputing it is correct, if not free; see this
-                    // function's own module docs for the tradeoff.
-                    let sat_args = &args[..root_arity];
-                    let extra_args = &args[root_arity..];
-                    let captures = combinators.captures[idx].clone();
-
-                    if combinators.emitting && combinators.needs_generic_dispatch {
-                        // Same "call an unknown-origin closure with more
-                        // arguments" problem the `Term::Var(i)` arm above
-                        // already has -- `root`'s own saturated result is
-                        // just as opaque to this mechanism as a value
-                        // read from a variable, so it goes through the
-                        // same curried fallback. This needs `root`'s
-                        // saturated call computed only *once*, unlike the
-                        // fast path below: `emit_dynamic_apply` keeps its
-                        // own base value safely on the operand stack
-                        // across each extra argument's own compilation,
-                        // so there's no "compile twice to avoid stashing
-                        // in a local" hazard to work around here at all.
-                        push_closure_env(ctx, &captures, w, indent)?;
-                        for a in sat_args {
-                            compile_node(ctx, combinators, *a, false, w, indent)?;
-                        }
-                        push_line(w, indent, &format!("call $c{idx}"));
-                        emit_dynamic_apply(ctx, combinators, extra_args, w, indent)?;
-                        return Some(());
-                    }
-
-                    push_closure_env(ctx, &captures, w, indent)?;
-                    for a in sat_args {
-                        compile_node(ctx, combinators, *a, false, w, indent)?;
-                    }
-                    push_line(w, indent, &format!("call $c{idx}"));
-                    push_line(w, indent, "i64.const 32");
-                    push_line(w, indent, "i64.shr_u");
-                    push_line(w, indent, "i32.wrap_i64");
-
-                    for a in extra_args {
-                        compile_node(ctx, combinators, *a, false, w, indent)?;
-                    }
-
-                    push_closure_env(ctx, &captures, w, indent)?;
-                    for a in sat_args {
-                        compile_node(ctx, combinators, *a, false, w, indent)?;
-                    }
-                    push_line(w, indent, &format!("call $c{idx}"));
-                    push_line(w, indent, "i32.wrap_i64");
-
-                    combinators.call_indirect_arities.push(extra_args.len());
-                    push_line(w, indent, &format!("call_indirect (type $ty{})", extra_args.len()));
-                    return Some(());
-                }
-                // Under-applied: a genuine partial application. This
-                // expression's *value* is a fresh closure over a
-                // synthesized wrapper (see `register_partial_app`) --
-                // not a call's result at all, since `root` isn't
-                // actually being called here (only readied to be).
-                let root_captures = combinators.captures[idx].clone();
-                let wrapper_idx = combinators.register_partial_app(root, idx, args.len())?;
-                combinators.used_as_bare_value.insert(wrapper_idx);
-                push_pap_env(ctx, combinators, &root_captures, &args, w, indent)?;
-                push_line(w, indent, "i64.extend_i32_u");
-                push_line(w, indent, "i64.const 32");
-                push_line(w, indent, "i64.shl");
-                // Same rewire as an ordinary literal's own bare-value
-                // site above -- a PAP wrapper is just as un-special-cased
-                // by `emit_curried_stages` as any other registered
-                // combinator (see its own docs).
-                let table_value = if combinators.emitting && combinators.needs_generic_dispatch {
-                    combinators.stage0_index[&wrapper_idx]
-                } else {
-                    wrapper_idx
-                };
-                push_line(w, indent, &format!("i64.const {table_value}"));
-                push_line(w, indent, "i64.or");
-                return Some(());
-            }
-            _ => return None,
+            return Some(());
         }
-    }
 
-    match store.resolve(h) {
-        Term::Var(i) => compile_var_read(ctx, *i, w, indent)?,
-        Term::Lit(n) => push_line(w, indent, &format!("i64.const {n}")),
-        Term::Prim(op, a, b) => {
-            let (op, a, b) = (*op, *a, *b);
+        // A closure-typed variable used as a callee -- a parameter
+        // (`i < arity`) *or* a captured free variable (`i >= arity`):
+        // `compile_var_read` resolves either the same way, so this
+        // doesn't need to distinguish them; calling a closure reached
+        // through a captured variable works exactly like calling one
+        // reached through a parameter, just resolved differently.
+        Shape::VarCall { var: i, args, .. } => {
+            if combinators.emitting && combinators.needs_generic_dispatch {
+                // This fragment has at least one genuinely
+                // inconsistent variable somewhere -- with no real
+                // type system to rule out a value flowing between
+                // this call site and that one (see `Combinators`'s
+                // own docs), *every* closure-typed-variable call
+                // site in the fragment goes through the same
+                // curried fallback, regardless of whether this
+                // particular `i` is itself consistent.
+                compile_var_read(ctx, i, w, indent)?;
+                emit_dynamic_apply(ctx, combinators, &args, w, indent)?;
+                return Some(());
+            }
+            // Fast path: either this fragment never needs generic
+            // dispatch at all, or (during the discovery pass, whose
+            // own codegen is discarded -- see `try_compile`'s docs)
+            // it's simply not yet known whether it will. An
+            // `ArityUse::Inconsistent` entry here is only possible
+            // in the second case (the emitting pass never reaches
+            // this branch once the fragment needs generic dispatch,
+            // per the check above) -- treated as this specific call
+            // site's own, locally-known argument count, since
+            // discovery only needs to keep walking correctly, not
+            // produce output that's ever kept.
+            let expected = match ctx.closure_arities.get(&i)? {
+                ArityUse::Consistent(k) => *k,
+                ArityUse::Inconsistent => args.len(),
+            };
+            if args.len() != expected {
+                return None;
+            }
+            // Unpack the callee's environment pointer (high 32 bits)
+            // first -- it's `call_indirect`'s first operand, ahead of
+            // the actual arguments -- then its table index (low 32
+            // bits) last, as `call_indirect` itself requires. Reading
+            // the packed value twice (once per half) is fine -- it's
+            // a pure local/memory read either way, nothing mutates
+            // it in between.
+            compile_var_read(ctx, i, w, indent)?;
+            push_line(w, indent, "i64.const 32");
+            push_line(w, indent, "i64.shr_u");
+            push_line(w, indent, "i32.wrap_i64");
+            for a in &args {
+                compile_node(ctx, combinators, *a, false, w, indent)?;
+            }
+            compile_var_read(ctx, i, w, indent)?;
+            push_line(w, indent, "i32.wrap_i64");
+            combinators.call_indirect_arities.push(expected);
+            push_line(w, indent, &format!("call_indirect (type $ty{expected})"));
+            return Some(());
+        }
+        Shape::CombinatorCall { root, args, .. } => {
+            let idx = combinators.register(root)?;
+            let root_arity = combinators.arities[idx];
+            if args.len() == root_arity {
+                let captures = combinators.captures[idx].clone();
+                push_closure_env(ctx, &captures, w, indent)?;
+                for a in &args {
+                    compile_node(ctx, combinators, *a, false, w, indent)?;
+                }
+                push_line(w, indent, &format!("call $c{idx}"));
+                return Some(());
+            }
+            if args.len() > root_arity {
+                // Over-application: `root`'s own saturated call
+                // (`root`'s first `root_arity` args) is compiled, then
+                // whatever it *returns* is called again, dynamically,
+                // through `call_indirect` -- exactly the same dispatch
+                // a closure-typed *variable* callee already uses (see
+                // the `Term::Var(i)` arm above), just with the callee
+                // itself freshly computed here instead of read from a
+                // local/capture slot. This only makes sense if the
+                // saturated call's own result genuinely is a packed
+                // `Clo` value (i.e. `root`'s body, once its own
+                // parameters are supplied, itself denotes a further
+                // closure) -- nothing here checks that statically
+                // (this pass has no real type system, just term
+                // shape), so an over-application of a plain
+                // `Int`-returning function still compiles, but
+                // produces a garbage `call_indirect` target that
+                // either traps or (extremely unlikely) coincidentally
+                // lands on some unrelated table entry -- caught either
+                // way by `jit.rs`'s sample verification disagreeing
+                // with the interpreter (which genuinely type-errors on
+                // such a term), the same safety net every other shape
+                // this fragment accepts already relies on.
+                //
+                // `call_indirect`'s own operand order needs the
+                // callee's env-ptr *before* the extra arguments and
+                // its table index *after* them (see the `Term::Var(i)`
+                // arm), so the extra arguments' own compilation -- and
+                // any nested closure/PAP construction it might
+                // trigger -- necessarily happens *between* the two
+                // halves. Rather than stash the saturated call's
+                // result in a local across that recursion (exactly
+                // the hazard `push_pap_env`'s own docs describe, and
+                // that bit `push_pap_env` for real once), the
+                // saturated call is simply compiled twice -- once for
+                // each half. It's a pure, deterministic Wasm function
+                // call (no observable side effect beyond bump-
+                // allocator growth, which doesn't affect the result),
+                // so recomputing it is correct, if not free; see this
+                // function's own module docs for the tradeoff.
+                let sat_args = &args[..root_arity];
+                let extra_args = &args[root_arity..];
+                let captures = combinators.captures[idx].clone();
+
+                if combinators.emitting && combinators.needs_generic_dispatch {
+                    // Same "call an unknown-origin closure with more
+                    // arguments" problem the `Term::Var(i)` arm above
+                    // already has -- `root`'s own saturated result is
+                    // just as opaque to this mechanism as a value
+                    // read from a variable, so it goes through the
+                    // same curried fallback. This needs `root`'s
+                    // saturated call computed only *once*, unlike the
+                    // fast path below: `emit_dynamic_apply` keeps its
+                    // own base value safely on the operand stack
+                    // across each extra argument's own compilation,
+                    // so there's no "compile twice to avoid stashing
+                    // in a local" hazard to work around here at all.
+                    push_closure_env(ctx, &captures, w, indent)?;
+                    for a in sat_args {
+                        compile_node(ctx, combinators, *a, false, w, indent)?;
+                    }
+                    push_line(w, indent, &format!("call $c{idx}"));
+                    emit_dynamic_apply(ctx, combinators, extra_args, w, indent)?;
+                    return Some(());
+                }
+
+                push_closure_env(ctx, &captures, w, indent)?;
+                for a in sat_args {
+                    compile_node(ctx, combinators, *a, false, w, indent)?;
+                }
+                push_line(w, indent, &format!("call $c{idx}"));
+                push_line(w, indent, "i64.const 32");
+                push_line(w, indent, "i64.shr_u");
+                push_line(w, indent, "i32.wrap_i64");
+
+                for a in extra_args {
+                    compile_node(ctx, combinators, *a, false, w, indent)?;
+                }
+
+                push_closure_env(ctx, &captures, w, indent)?;
+                for a in sat_args {
+                    compile_node(ctx, combinators, *a, false, w, indent)?;
+                }
+                push_line(w, indent, &format!("call $c{idx}"));
+                push_line(w, indent, "i32.wrap_i64");
+
+                combinators.call_indirect_arities.push(extra_args.len());
+                push_line(w, indent, &format!("call_indirect (type $ty{})", extra_args.len()));
+                return Some(());
+            }
+            // Under-applied: a genuine partial application. This
+            // expression's *value* is a fresh closure over a
+            // synthesized wrapper (see `register_partial_app`) --
+            // not a call's result at all, since `root` isn't
+            // actually being called here (only readied to be).
+            let root_captures = combinators.captures[idx].clone();
+            let wrapper_idx = combinators.register_partial_app(root, idx, args.len())?;
+            combinators.used_as_bare_value.insert(wrapper_idx);
+            push_pap_env(ctx, combinators, &root_captures, &args, w, indent)?;
+            push_line(w, indent, "i64.extend_i32_u");
+            push_line(w, indent, "i64.const 32");
+            push_line(w, indent, "i64.shl");
+            // Same rewire as an ordinary literal's own bare-value
+            // site above -- a PAP wrapper is just as un-special-cased
+            // by `emit_curried_stages` as any other registered
+            // combinator (see its own docs).
+            let table_value = if combinators.emitting && combinators.needs_generic_dispatch {
+                combinators.stage0_index[&wrapper_idx]
+            } else {
+                wrapper_idx
+            };
+            push_line(w, indent, &format!("i64.const {table_value}"));
+            push_line(w, indent, "i64.or");
+            return Some(());
+        }
+        Shape::OtherCall => return None,
+        Shape::Var(i) => compile_var_read(ctx, i, w, indent)?,
+        Shape::Lit(n) => push_line(w, indent, &format!("i64.const {n}")),
+        Shape::Prim(op, a, b) => {
             compile_node(ctx, combinators, a, false, w, indent)?;
             compile_node(ctx, combinators, b, false, w, indent)?;
             if op == PrimOp::Div {
@@ -1395,7 +1439,7 @@ fn compile_node(
                 push_line(w, indent, arith_instr(op)?);
             }
         }
-        Term::Abs(_) | Term::Rec(_) => {
+        Shape::Combinator { .. } => {
             // A lambda, or a named self-recursive value (e.g. one bound
             // by `let fact = rec f n = .. in ..`), used as a plain value
             // (e.g. an argument): packs its (possibly-empty) environment
@@ -1427,9 +1471,6 @@ fn compile_node(
             push_line(w, indent, &format!("i64.const {table_value}"));
             push_line(w, indent, "i64.or");
         }
-        // Free App: outside the compilable fragment. (`If` and
-        // known/combinator `App`s were already handled above.)
-        Term::If(..) | Term::App(..) => return None,
     }
     Some(())
 }
@@ -2719,6 +2760,37 @@ mod tests {
             assert_eq!(compiled, expected, "a={a_val} b={b_val} c={c_val}");
             assert_eq!(compiled, interpreted, "a={a_val} b={b_val} c={c_val}");
         }
+    }
+
+    /// `classify` is the one place both `compile_node` and every
+    /// `proof.rs` walker learn which case a node is, so its two
+    /// non-obvious rules are pinned here: a saturated self-call wins over
+    /// a plain variable call (and only when saturated), and a `Rec` that
+    /// doesn't peel to a function is no callee at all.
+    #[test]
+    fn classify_recognizes_only_a_saturated_self_call_and_only_a_peelable_callee() {
+        let mut s = TermStore::new();
+        // Inside `rec f a b = ..`: `a` is Var(1), `b` Var(0), `f` Var(2).
+        let (a, b, f) = (s.var(1), s.var(0), s.var(2));
+        let saturated = s.app2(f, a, b);
+        let partial = s.app(f, a);
+        let over = s.app(saturated, b);
+        let (arity, self_idx) = (2, Some(2));
+
+        assert!(matches!(classify(&s, saturated, arity, self_idx), Shape::SelfCall(ref args) if *args == vec![a, b]));
+        assert!(matches!(classify(&s, partial, arity, self_idx), Shape::VarCall { var: 2, ref args, .. } if args.len() == 1));
+        assert!(matches!(classify(&s, over, arity, self_idx), Shape::VarCall { var: 2, ref args, .. } if args.len() == 3));
+        // Outside a recursive function the same term is just a variable call.
+        assert!(matches!(classify(&s, saturated, arity, None), Shape::VarCall { var: 2, .. }));
+
+        let five = s.lit(5);
+        let not_a_function = s.rec(five);
+        let bad_call = s.app(not_a_function, a);
+        assert!(matches!(classify(&s, bad_call, arity, None), Shape::OtherCall));
+        let id_body = s.var(0);
+        let id = s.abs(id_body);
+        let good_call = s.app(id, a);
+        assert!(matches!(classify(&s, good_call, arity, None), Shape::CombinatorCall { arity: 1, .. }));
     }
 
     #[test]
