@@ -665,13 +665,15 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // along the way), so neither of those needed widening.
 //
 // `build_universal` also covers a *closure-typed parameter*, threaded
-// through the recursion unchanged or called via `apply_k` within a leaf or
-// a self-call argument (`param_types`, the same `Var`-index-keyed
-// classification `denote_closure`'s own fragment uses, computed once via
-// `compile::infer_closure_arities` on the whole body including self-call
-// sites) -- e.g. "iterate a closure `n` times": `rec f n g x = if n<=0
-// then x else f(n-1, g, g(x))`. This part needs only `ClosurePostulates`'s
-// `Clo` type and `apply_k`, reused directly (`ClosurePostulates:
+// through the recursion unchanged or called via ordinary `App` (`Clo_k`,
+// see `ClosurePostulates::clo_ty`, is a literal `Int -> .. -> Int` kernel
+// Pi type, not an opaque postulate, so calling one needs no axiom at all)
+// within a leaf or a self-call argument (`param_types`, the same
+// `Var`-index-keyed classification `denote_closure`'s own fragment uses,
+// computed once via `compile::infer_closure_arities` on the whole body
+// including self-call sites) -- e.g. "iterate a closure `n` times": `rec f
+// n g x = if n<=0 then x else f(n-1, g, g(x))`. This part needs only
+// `ClosurePostulates::clo_ty`, reused directly (`ClosurePostulates:
 // Deref<Target = ArithPostulates>` lets this whole pipeline keep calling
 // every plain-arithmetic postulate method unchanged). A closure-typed
 // self-call argument, or one fed to a closure call, may also be a freshly
@@ -758,8 +760,8 @@ fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Ex
 // Twice now (the `Ev`-witness builder, then `denote_closure`), a function
 // that composes an `Expr` out of more than one recursive sub-call held an
 // already-resolved sub-`Expr` (or `params`/`param_facts` entry) across a
-// *later* postulate push -- registering a combinator, a fresh `apply_k`, an
-// `assume_prim_fact` axiom -- without reshifting it, the exact staleness
+// *later* postulate push -- registering a combinator, a fresh `call_ref`/
+// `mk_clo_ref`, an `assume_prim_fact` axiom -- without reshifting it, the exact staleness
 // `Anchored`'s own docs describe. Both times the only symptom was an opaque
 // kernel type-mismatch far from the actual mistake (or, in the worse case
 // that just hasn't happened yet, two *different* postulates that happen to
@@ -2336,7 +2338,9 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 /// body that doesn't classify as a [`DecisionTree`] (every `If` on the way
 /// to a leaf must be a direct comparison), or one with no self-call
 /// anywhere in it. A closure-typed *parameter*, threaded through the
-/// recursion or called via `apply_k`, is covered; so is a closure
+/// recursion or called via ordinary application (`Clo_k` is a literal
+/// Pi type, not an opaque postulate -- see `ClosurePostulates::clo_ty`),
+/// is covered; so is a closure
 /// genuinely created and (fully or partially) called anywhere in the body
 /// -- a self-call argument (`f(n-1, (\y. acc+y)(n))`) or a leaf's own
 /// top-level expression (`(\y. n+y)(5) + f(n-1)`) alike (see module
@@ -3943,47 +3947,59 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // classify, reused directly here rather than re-derived, so the two
 // readings can't silently diverge on "what counts as a closure call".
 //
-// A closure value is postulated opaque (`Clo : Sort(0)`, the same
-// "postulated type" pattern `Int` itself uses), and applying one *through
-// a parameter* (`call_indirect`) goes through `apply_k : Clo -> Int^k ->
-// Int`, postulated once per distinct arity `k` a closure is actually
-// called with that way (mirroring `compile.rs`'s own `(type $tyK ...)`
-// declarations, one per arity actually used at a `call_indirect` site) --
-// this part is unaffected by whether the underlying closure happens to
-// capture anything, the same way `compile.rs`'s own `call_indirect`
-// dispatch doesn't need to know either.
+// A closure value's type, for a given arity `k`, is `Clo_k`
+// (`ClosurePostulates::clo_ty`) -- literally the curried Pi type `Int ->
+// .. -> Int` (`k` copies), a real kernel type built from ordinary `Pi`
+// nodes, *not* an opaque `Sort(0)` postulate the way `Int` itself is.
+// Applying one *through a parameter* (`call_indirect`) is therefore just
+// ordinary kernel `App`, checked by `kernel::infer`'s own Pi-application
+// rule -- no per-arity axiom needed at all for that generic case (see
+// `RELATED_WORK.md` section 11 for the migration away from an earlier,
+// opaque-`Clo`-plus-`apply_k`-axiom design). Two different arities stay
+// genuinely distinct, definitionally-unequal kernel types on their own,
+// with no need to remember "which arity was already postulated" --
+// mirroring `compile.rs`'s own `(type $tyK ...)` declarations, one per
+// arity actually used at a `call_indirect` site, this part is unaffected
+// by whether the underlying closure happens to capture anything, the same
+// way `compile.rs`'s own `call_indirect` dispatch doesn't need to know
+// either. The one genuine axiom this generic case still needs is
+// `ite_clo_ref` (`Int -> Clo_k -> Clo_k -> Clo_k`, once per arity): an
+// `If` choosing between two same-arity closures can't be derived from
+// `Clo_k` being a real Pi type alone, since `Int` (the condition's own
+// type) has no case-eliminator in this kernel.
 //
 // A combinator's own *body* is never unfolded or denoted here -- it's
 // referenced only by postulated symbols. For a *non-capturing* combinator
-// this is one `Clo`-typed constant (`combinator_value`, for `h` used as a
-// bare value) and one `call_h : T_0 -> .. -> T_{k-1} -> Int` (for a direct
-// call), each memoized by hash: faithful on both readings, since a
+// this is one `Clo_k`-typed constant (`combinator_value`, for `h` used as
+// a bare value) and one `call_h : T_0 -> .. -> T_{k-1} -> Int` (for a
+// direct call), each memoized by hash: faithful on both readings, since a
 // non-capturing closure really is the same value everywhere it's
 // referenced, and calling it really doesn't need anything beyond its own
 // definition. For a *capturing* combinator, one fixed value per
 // combinator would be dishonest -- `compile.rs` builds a fresh
 // environment at every creation site, so the same combinator denotes
 // differently depending on *where* it's referenced -- so instead:
-// `mk_clo_h : Env -> Clo` (a function of the environment, not a bare
+// `mk_clo_h : Env -> Clo_k` (a function of the environment, not a bare
 // constant) and `call_h : Env -> T_0 -> .. -> T_{k-1} -> Int` (the
 // environment prepended, mirroring `compile.rs`'s own calling convention
 // of `$env` as every combinator's first Wasm parameter), where `Env :
 // Sort(0)` is postulated once *per capture signature* (which of its
-// slots are `Clo`-typed, which are `Int` -- `capture_sig`; shared across
-// every combinator whose captures happen to match that exact signature,
-// the same way `apply_k` is shared by arity, not memoized per combinator)
-// with constructor `mk_env : T_0 -> .. -> T_{n-1} -> Env`. `build_env_expr`
-// builds the actual `mk_env(v_1,...,v_n)` argument fresh at each
-// creation site, from whatever the captured values currently are in the
-// *calling* function's own frame -- exactly mirroring `compile.rs`'s own
-// `push_closure_env` at the proof level. Either way, `apply_k`/`call_h`
-// applied to its arguments faithfully represents "call this closure" on
-// *both* readings, identically, symbol for symbol, the same way
-// `denote`'s postulated `Int` operators represent an arithmetic primitive
-// without either reading being numerically verified. The proof is
-// `refl`, same as `prove_pure_expr`'s straight-line argument: nothing
-// here evaluates anything concrete, so no `assume_prim_fact`-style
-// grounding is needed.
+// slots are `Clo_k`-typed, which are `Int` -- `capture_sig`; shared
+// across every combinator whose captures happen to match that exact
+// signature, the same way `Clo_k` itself is shared by arity, not
+// postulated per combinator) with constructor `mk_env : T_0 -> .. ->
+// T_{n-1} -> Env`. `build_env_expr` builds the actual `mk_env(v_1,...,
+// v_n)` argument fresh at each creation site, from whatever the captured
+// values currently are in the *calling* function's own frame -- exactly
+// mirroring `compile.rs`'s own `push_closure_env` at the proof level.
+// Either way -- ordinary `App` against a `Clo_k`-typed parameter, or
+// `call_h` applied to its arguments for a directly-named combinator --
+// the result faithfully represents "call this closure" on *both*
+// readings, identically, symbol for symbol, the same way `denote`'s
+// postulated `Int` operators represent an arithmetic primitive without
+// either reading being numerically verified. The proof is `refl`, same
+// as `prove_pure_expr`'s straight-line argument: nothing here evaluates
+// anything concrete, so no `assume_prim_fact`-style grounding is needed.
 //
 // Scope, honestly: the *main*, top-level term must still be non-recursive
 // (`prove_closure_expr`'s own top-level check) -- proving what a
@@ -4188,10 +4204,12 @@ fn classify_app_node(store: &TermStore, h: Hash, param_types: &[Option<usize>]) 
 /// back to `h`). A captured free variable's own type never needs
 /// resolving either: calling *any* closure-typed value -- a parameter, a
 /// capture, or (now) another directly-called combinator's own saturated
-/// result -- always denotes `Int` (the same `apply_k : Clo -> Int -> ..
-/// -> Int` convention `denote_closure`'s own `Term::Var(i)` case already
-/// relies on), so this only ever needs `h`'s *own* declared parameters'
-/// types (`param_types_for`), never a capture's.
+/// result -- always denotes `Int` (a saturated call against a `Clo_k`-
+/// typed value is ordinary `App`, whose codomain is `Int` by `Clo_k`'s
+/// own construction -- the same convention `denote_closure`'s own
+/// `Term::Var(i)` case already relies on), so this only ever needs `h`'s
+/// *own* declared parameters' types (`param_types_for`), never a
+/// capture's.
 fn combinator_return_type(store: &TermStore, h: Hash) -> Option<Option<usize>> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     let self_idx = is_rec.then_some(arity as u32);
@@ -4226,8 +4244,10 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
         let (root, args) = compile::unwind_app_spine(store, h);
         return match store.resolve(root) {
             // Calling a parameter, a capture, or (recursively) another
-            // directly-called combinator's own result: always Int, the
-            // uniform `apply_k`/over-application-dispatch convention.
+            // directly-called combinator's own result: always Int, since a
+            // saturated call against a `Clo_k`-typed value is ordinary
+            // `App` whose codomain is `Int` -- the same
+            // over-application-dispatch convention.
             Term::Var(_) => Some(None),
             Term::Abs(_) | Term::Rec(_) => {
                 let callee_param_types = param_types_for(store, root)?;
@@ -4431,9 +4451,10 @@ impl ClosurePostulates {
     /// `compile.rs`'s own uniform, combinator-agnostic environment-slot
     /// layout at the proof level (every slot is just an `i64` there,
     /// whatever it holds). Shared across every combinator whose captures
-    /// happen to match this exact signature, the same way `apply_k` is
-    /// shared across every closure called with `k` arguments regardless of
-    /// which combinator it turns out to be -- two combinators that both
+    /// happen to match this exact signature, the same way `Clo_k` itself
+    /// (`ClosurePostulates::clo_ty`) is shared across every closure of
+    /// arity `k` regardless of which combinator it turns out to be -- two
+    /// combinators that both
     /// capture, say, three plain `Int`s still share one `Env` (the common
     /// case, keyed by an all-`None` signature exactly as it used to be
     /// keyed by the count `3` alone); only a genuinely mixed, or
@@ -4592,11 +4613,12 @@ impl<'a> ClosureCombinators<'a> {
     /// (every combinator takes `$env` as its first Wasm parameter,
     /// whether or not its own body reads from it). Each `T_j` (`j` in
     /// application order, i.e. `T_0` is the *first*-applied argument's
-    /// type) is `Clo` or `Int` matching `h`'s own `param_types` at that
-    /// position -- this is what lets a combinator like `twice`
-    /// (`Clo -> Int -> Int`, since its own `f` parameter is itself
-    /// closure-typed) be called with a mix of closure and plain-`Int`
-    /// arguments, which the uniform `apply_k` can't express. `R` itself
+    /// type) is `Clo_k` (some arity `k`) or `Int` matching `h`'s own
+    /// `param_types` at that position -- this is what lets a combinator
+    /// like `twice` (`Clo_1 -> Int -> Int`, since its own `f` parameter is
+    /// itself closure-typed) be called with a mix of closure and
+    /// plain-`Int` arguments, which a single uniform signature per arity
+    /// couldn't express. `R` itself
     /// is `Clo` when `combinator_return_type(h)` says so (over-application
     /// dispatches on it, or a caller elsewhere treats a directly-called
     /// combinator's own result as a value -- see either use site), `Int`
@@ -6401,10 +6423,11 @@ fn collect_literals_closure(store: &TermStore, h: Hash, param_types: &[Option<us
 /// by-`Var`-index one), `None` for a plain `Int` parameter. `params` holds
 /// *positions*, not resolved `Expr`s (the same `Params`-style convention
 /// `prove_tail_recursive_universal` uses) -- resolved fresh, via
-/// `arith.p.get`, at each actual use: registering a combinator or a fresh
-/// `apply_k` mid-denotation pushes further postulates onto `arith.p.ctx`,
-/// so a `Var`'s `Expr` resolved once, ahead of time, and reused afterward
-/// would go stale exactly the way `Anchored`'s docs describe.
+/// `arith.p.get`, at each actual use: registering a combinator, or a
+/// fresh `call_ref`/`mk_clo_ref`/`ite_clo_ref`, mid-denotation pushes
+/// further postulates onto `arith.p.ctx`, so a `Var`'s `Expr` resolved
+/// once, ahead of time, and reused afterward would go stale exactly the
+/// way `Anchored`'s docs describe.
 fn denote_closure(
     store: &TermStore,
     h: Hash,
@@ -6414,8 +6437,9 @@ fn denote_closure(
 ) -> Option<Denoted> {
     // Every composite case below follows the same discipline: compute each
     // sub-denotation and immediately wrap it in `Anchored` (registering a
-    // combinator or a fresh `apply_k` -- possibly triggered by a *later*
-    // sibling's own denotation -- pushes further postulates onto
+    // combinator, or a fresh `call_ref`/`mk_clo_ref`/`ite_clo_ref` --
+    // possibly triggered by a *later* sibling's own denotation -- pushes
+    // further postulates onto
     // `arith.p.ctx`, which would otherwise silently invalidate an
     // already-resolved `Var` reference held from an earlier sibling, the
     // same staleness class `Anchored`'s own docs describe), then resolve
@@ -7843,7 +7867,7 @@ mod tests {
 
     /// `rec f n g x = if n <= 0 then x else f(n-1, g, g(x))` -- "iterate a
     /// closure-typed parameter `n` times, starting at `x`", tail-recursive,
-    /// threading `g` (a `Clo`-typed parameter, called via `apply_k`
+    /// threading `g` (a `Clo_1`-typed parameter, called via ordinary `App`
     /// each iteration) through the recursion unchanged -- the fragment
     /// `build_universal`'s own `param_types` extension covers: a
     /// closure-typed *parameter*, never a closure *created* inside the
