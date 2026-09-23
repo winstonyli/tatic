@@ -204,6 +204,54 @@ own indexed-family construction or its per-leaf axiom discipline. Left
 as a real but narrower opportunity than it first sounds, not pursued
 further without a concrete use for it.
 
+**A sibling gap found and closed in `Sup`'s own typing rule, same bug
+class as `children_ty` above.** `infer`'s `Sup(a, f)` case derives the
+target `W(A,B)` by substituting the tag `a` into `f`'s inferred
+codomain (`subst_top(cod, a)`) -- sound only if `cod` doesn't actually
+depend on `f`'s own bound argument, exactly the invariant `Expr::Sup`'s
+own doc already stated as required. Unlike `children_ty`, nothing
+enforced it: a hostile or mistaken `f` whose codomain genuinely varied
+per argument (built via any real per-argument case split, e.g. through
+`WRec`/`SigRec` on that argument) could in principle have its `Sup`
+formation validated only at the one concrete `a` in use, with no check
+that every other point of `f`'s domain agrees on the same `W(A,B)` --
+letting `WRec`'s own later reduction call `f y` at other domain points
+under an assumption never actually verified. No end-to-end exploit was
+built (constructing a genuinely dependent, well-typed `f` of this shape
+takes real work), but the missing check was real and sat exactly at the
+kernel's trust boundary. Closed the same way `children_ty` was: a new
+`is_var_free` occurs-check, run on `cod`'s normal form (not raw syntax,
+so a codomain that only syntactically mentions its argument but
+beta-reduces free of it -- `kernel::tests::is_var_free_tracks_binder_depth_and_is_checked_against_normal_form_not_raw_syntax`
+covers this) rather than a redundant carried field, since -- unlike
+`WRec`'s `target`, whose real children-type `infer` can independently
+re-derive -- `Sup`'s `f` doesn't come with a second, independently-
+checkable source of truth to compare against; non-dependence is
+directly checkable instead.
+
+One nonobvious cost this surfaced: the fix's own two extra lines, added
+directly in `infer`'s `Sup` arm, were enough on their own to overflow a
+debug-build test thread's stack in
+`proof::tests::a_non_tail_self_call_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof`
+-- a test that deliberately drives `DynBudget::recursion_depth`'s bound
+to confirm it declines cleanly rather than actually overflowing the
+native stack (see `proof.rs`'s own docs on that budget). `infer` sits
+exactly on that budget's tight margin, so *any* extra unconditional
+per-frame locals in a hot arm can eat it, regardless of how small the
+change; `#[inline(never)]` on a narrowly-scoped helper alone wasn't
+enough to avoid this (the call's own argument/return-value footprint
+still counted against `infer`'s frame) -- what actually restored margin
+was extracting the *entire* `Sup` arm out of line into its own
+`infer_sup` function, mirroring `infer_pair`'s already-established
+precedent for exactly this problem (`kernel.rs`'s own `Sigma`-family
+docs). Net effect: `infer`'s own frame is now *smaller* than before this
+fix, not larger, since none of `Sup`'s locals (`ta`, `dom`, `cod`,
+`w_candidate`, `wa`, `wb`) sit in it anymore either. Worth remembering
+for any future `infer` arm that grows past a couple of lines: this
+budget has essentially zero slack in debug builds, and the fix belongs
+in the calling convention (out-of-line the whole arm), not in shrinking
+the new logic itself.
+
 ## 4. Higher-order abstract syntax / logical frameworks — the fix for this session's own recurring bug class
 
 Twelf and the Edinburgh Logical Framework (LF) represent an object

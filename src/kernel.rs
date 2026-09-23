@@ -470,6 +470,52 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
     shift(&subst(body, 0, &shift(s, 0, 1)), 0, -1)
 }
 
+/// Whether `Var(idx)` occurs free in `e`, tracking binder depth through
+/// every variant exactly as `shift`/`subst` do (one more binder crosses
+/// under `Pi`/`Lam`/`W`'s second field/`WRec`'s `children_ty`/`Sigma`'s
+/// second field/`Pair`'s `fam`, none elsewhere). Used by `Sup`'s typing
+/// rule (see its own doc and the `infer` arm below) to *enforce*, not
+/// merely assume, the documented requirement that a `Sup`'s codomain not
+/// actually depend on `f`'s own bound argument: without this check,
+/// `subst_top(cod, a)` is only ever validated at the one concrete `a`
+/// this particular `Sup` term happens to use, silently trusting -- with
+/// nothing to back it up -- that every other point of `f`'s domain
+/// agrees on the same `W(A,B)`.
+fn is_var_free(e: &Expr, idx: u32) -> bool {
+    match e {
+        Expr::Var(k) => *k == idx,
+        Expr::Sort(_) => false,
+        Expr::Pi(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
+        Expr::Lam(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
+        Expr::App(f, a) => is_var_free(f, idx) || is_var_free(a, idx),
+        Expr::Id(a, x, y) => is_var_free(a, idx) || is_var_free(x, idx) || is_var_free(y, idx),
+        Expr::Refl(a) => is_var_free(a, idx),
+        Expr::J { motive, base, a, b, p } => {
+            is_var_free(motive, idx) || is_var_free(base, idx) || is_var_free(a, idx) || is_var_free(b, idx) || is_var_free(p, idx)
+        }
+        Expr::W(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
+        Expr::Sup(a, f) => is_var_free(a, idx) || is_var_free(f, idx),
+        Expr::WRec { motive, children_ty, step, target } => {
+            is_var_free(motive, idx) || is_var_free(children_ty, idx + 1) || is_var_free(step, idx) || is_var_free(target, idx)
+        }
+        Expr::Sigma(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
+        Expr::Pair(fam, a, b) => is_var_free(fam, idx + 1) || is_var_free(a, idx) || is_var_free(b, idx),
+        Expr::SigRec { motive, step, target } => is_var_free(motive, idx) || is_var_free(step, idx) || is_var_free(target, idx),
+    }
+}
+
+/// `infer`'s own `Sup` arm's error-message formatting, out of line --
+/// matches `wrec_children_ty_mismatch`'s own precedent immediately above
+/// (this whole recursion family sits on `eval_dyn`'s tight native-stack
+/// budget, and `infer` is among its hottest, most deeply-recursive
+/// members, so a few extra bytes of unconditional per-frame locals here
+/// costs real, working recursion depth everywhere, not just this arm).
+#[cold]
+#[inline(never)]
+fn sup_codomain_depends_on_own_argument(cod_nf: &Expr) -> String {
+    format!("sup: children function's codomain must not depend on its own argument: {cod_nf:?}")
+}
+
 // --- reduction ------------------------------------------------------------
 //
 // `whnf`/`nf` are memoized within one top-level call (not across calls --
@@ -839,6 +885,41 @@ fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
     format!("wrec: children_ty doesn't match target's own real children-type: {:?} vs {:?}", nf(children_ty), nf(wb))
 }
 
+/// `infer`'s own `Sup` arm, out of line -- matches `infer_pair`'s own
+/// precedent immediately above, for the same reason: `ta`/`dom`/`cod`/
+/// `w_candidate`/`wa`/`wb` are all real locals that would otherwise sit
+/// directly in `infer`'s own frame on every recursive call, not just
+/// `Sup`'s, and `infer` is among the hottest, most deeply-recursive
+/// functions sitting on `eval_dyn`'s tight native-stack budget (see
+/// `proof.rs`'s `DynBudget`).
+#[inline(never)]
+fn infer_sup(ctx: &Ctx, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
+    let ta = infer(ctx, a)?;
+    let (dom, cod) = expect_pi(&infer(ctx, f)?)?;
+    // `cod` is written one binder deeper than `f`'s own domain binder; a
+    // `Sup`'s codomain must not actually depend on it -- enforced here
+    // (not just documented), by an occurs-check on `cod`'s own normal
+    // form, since `subst_top` just below would otherwise only ever be
+    // validated at this one concrete `a`, silently trusting every other
+    // point of `f`'s domain agrees.
+    let cod_nf = nf(&cod);
+    if is_var_free(&cod_nf, 0) {
+        return Err(sup_codomain_depends_on_own_argument(&cod_nf));
+    }
+    let w_candidate = subst_top(&cod, a);
+    let (wa, wb) = expect_w(&w_candidate)?;
+    if !def_eq(&wa, &ta) {
+        return Err(format!("sup: element type mismatch: {wa:?} vs {ta:?}"));
+    }
+    let expected_dom = subst_top(&wb, a);
+    if !def_eq(&dom, &expected_dom) {
+        return Err(format!(
+            "sup: children-function domain mismatch: {dom:?} vs {expected_dom:?}"
+        ));
+    }
+    Ok(wty(wa, wb))
+}
+
 pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
     match e {
         Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
@@ -907,24 +988,7 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
             let j = expect_sort(&infer(&ctx2, b)?)?;
             Ok(Expr::Sort(i.max(j)))
         }
-        Expr::Sup(a, f) => {
-            let ta = infer(ctx, a)?;
-            let (dom, cod) = expect_pi(&infer(ctx, f)?)?;
-            // `cod` is written one binder deeper than `f`'s own domain
-            // binder; a `Sup`'s codomain must not actually depend on it.
-            let w_candidate = subst_top(&cod, a);
-            let (wa, wb) = expect_w(&w_candidate)?;
-            if !def_eq(&wa, &ta) {
-                return Err(format!("sup: element type mismatch: {wa:?} vs {ta:?}"));
-            }
-            let expected_dom = subst_top(&wb, a);
-            if !def_eq(&dom, &expected_dom) {
-                return Err(format!(
-                    "sup: children-function domain mismatch: {dom:?} vs {expected_dom:?}"
-                ));
-            }
-            Ok(wty(wa, wb))
-        }
+        Expr::Sup(a, f) => infer_sup(ctx, a, f),
         Expr::WRec {
             motive,
             children_ty,
@@ -2014,6 +2078,60 @@ mod tests {
         // it doesn't just make the equation provable with extra work.
         check(&p.ctx, &refl(target.clone()), &id(w_ty, reduced, target))
             .expect("wrec(motive, step, sup(a,f)) should reduce definitionally to sup(a,f)");
+    }
+
+    #[test]
+    fn sup_rejects_a_children_function_whose_codomain_genuinely_depends_on_its_own_argument() {
+        // `Sup(a, f)`'s own typing rule (see its doc) requires `f`'s
+        // codomain to be a constant `W(A,B)`, independent of `f`'s own
+        // bound argument -- otherwise `subst_top(cod, a)` is only ever
+        // validated at this one concrete `a`, silently trusting every
+        // other point of `f`'s domain agrees. Build a minimal witness
+        // where that's structurally false: `g : D -> Type0` postulated
+        // opaque (so its result genuinely varies per input, as far as the
+        // kernel can tell -- no reduction could ever prove otherwise),
+        // and `mk : Pi x:D. g(x)`, so `mk` itself has exactly the
+        // offending shape `Pi x:D. cod` with `cod = g(x)` mentioning `x`.
+        let mut p = Postulates::new();
+        let a_pos = p.push(sort(0)); // A : Type0
+        let a0_pos = p.push(p.get(a_pos)); // a0 : A
+        let d_pos = p.push(sort(0)); // D : Type0
+        let g_pos = p.push(arrow(p.get(d_pos), sort(0))); // g : D -> Type0
+        let mk_ty = pi(p.get(d_pos), app(shift(&p.get(g_pos), 0, 1), var(0))); // Pi x:D. g(x)
+        let mk_pos = p.push(mk_ty);
+
+        let target = sup(p.get(a0_pos), p.get(mk_pos));
+        let err = infer(&p.ctx, &target).expect_err("a dependent codomain must be rejected, not silently trusted");
+        assert!(
+            err.contains("must not depend"),
+            "expected the dependent-codomain error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn is_var_free_tracks_binder_depth_and_is_checked_against_normal_form_not_raw_syntax() {
+        // `Sup`'s new occurs-check (above) runs `is_var_free` on `cod`'s
+        // *normal form*, not its raw syntax, precisely so a codomain that
+        // only syntactically mentions its own argument -- but beta-
+        // reduces free of it -- is still accepted rather than wrongly
+        // rejected. Exercise `is_var_free` itself directly, including
+        // that specific reduces-away shape, rather than through the
+        // fragile nested-W-type indexing a full `Sup` witness would need.
+        assert!(is_var_free(&var(0), 0));
+        assert!(!is_var_free(&var(1), 0));
+        // `\_:Sort0. (outer Var(0))`, written under one more binder as
+        // `Var(1)` -- does this Lam depend on the *outer* Var(0)? Yes.
+        assert!(is_var_free(&lam(sort(0), var(1)), 0));
+        // `\_:Sort0. Var(0)` (the lambda's *own* argument) -- does this
+        // depend on something *outside* the lambda at outer-index 0? No.
+        assert!(!is_var_free(&lam(sort(0), var(0)), 0));
+
+        // `(\_:Sort0. Sort(1)) (Var 0)` mentions `Var(0)` syntactically as
+        // the application's argument, but beta-reduces to plain
+        // `Sort(1)`, genuinely independent of it.
+        let redex = app(lam(sort(0), sort(1)), var(0));
+        assert!(is_var_free(&redex, 0), "the raw syntax does mention Var(0)");
+        assert!(!is_var_free(&nf(&redex), 0), "but it reduces away");
     }
 
     #[test]
