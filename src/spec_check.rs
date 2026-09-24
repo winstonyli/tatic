@@ -5,12 +5,14 @@
 //!
 //! Why βv and nothing more: `eval` is call-by-value, with errors
 //! (`DivByZero`, `TypeError`, ...) and unbounded `Rec`, so full β is
-//! unsound (`(\x. 0) (1/0)` fails; `0` doesn't). For a value `V` (`Var`,
-//! `Lit`, `Abs`, `Rec`), `(\. M) V = M[0 := V]` is an observational
+//! unsound (`(\x. 0) (1/0)` fails; `0` doesn't). For a value `V` (a bound
+//! `Var`, `Lit`, `Abs`, `Rec`), `(\. M) V = M[0 := V]` is an observational
 //! equivalence closed under every context (Plotkin 1975). So a step may
 //! rewrite anywhere, including under binders. Because an equal subterm
 //! may be replaced in any context, a step also rewrites every occurrence
 //! at once. `App(Rec, V)` is never a redex: `Rec` is never unfolded.
+//! The source must be closed, so that every `Var` is bound and so a value
+//! (see `check`).
 //!
 //! This file is independent of the specialiser by construction. It uses
 //! only `crate::term` and `std` (a test enforces this) and has its own
@@ -54,6 +56,14 @@ pub fn check(store: &TermStore, h: Hash, trace: &[Step], claimed: Hash) -> Resul
     if node_count(store, h) > MAX_NODES {
         return fail(0, "source term larger than MAX_NODES");
     }
+    // A `Var` is a value only when it is bound: `eval` starts from an empty
+    // environment, so an unbound one is `Err(UnboundVariable)`, and
+    // `(\x. 0) v5` would contract an error away. In a closed source every
+    // `Var` in every occurrence is bound by an enclosing binder, and βv
+    // keeps a term closed, so requiring it here makes every `Var` a value.
+    if has_free_var(store, h, 0, &mut HashMap::new()) {
+        return fail(0, "source term has free variables");
+    }
     let mut s = TermStore::new();
     let mut cur = copy(store, &mut s, h, &mut HashMap::new());
     for (i, step) in trace.iter().enumerate() {
@@ -67,6 +77,7 @@ pub fn check(store: &TermStore, h: Hash, trace: &[Step], claimed: Hash) -> Resul
         let &Term::Abs(body) = s.resolve(f) else {
             return fail(i, "redex head is not a lambda");
         };
+        // A `Var` here is bound, since the source is closed.
         if !matches!(s.resolve(a), Term::Var(_) | Term::Lit(_) | Term::Abs(_) | Term::Rec(_)) {
             return fail(i, "redex argument is not a value");
         }
@@ -105,6 +116,23 @@ fn node_count(s: &TermStore, h: Hash) -> usize {
         }
     }
     seen.len()
+}
+
+/// Whether `t`, under `depth` enclosing binders, has a variable those
+/// binders don't bind. The checker's own walk, sharing nothing with the
+/// specialiser's `has_free`.
+fn has_free_var(s: &TermStore, t: Hash, depth: u32, memo: &mut HashMap<(Hash, u32), bool>) -> bool {
+    if let Some(&r) = memo.get(&(t, depth)) {
+        return r;
+    }
+    let term = s.resolve(t);
+    let r = match *term {
+        Term::Var(i) => i >= depth,
+        Term::Abs(b) | Term::Rec(b) => has_free_var(s, b, depth + 1, memo),
+        _ => children(term).into_iter().any(|c| has_free_var(s, c, depth, memo)),
+    };
+    memo.insert((t, depth), r);
+    r
 }
 
 fn occurs(s: &TermStore, t: Hash, target: Hash) -> bool {
@@ -243,34 +271,61 @@ mod tests {
     }
 
     #[test]
-    fn accepts_beta_v_with_a_free_variable_argument() {
-        // At top level, Var(3) is free: (\x. x + 1) v3  ->  v3 + 1.
+    fn accepts_beta_v_with_a_bound_variable_argument() {
+        // \w. (\x. x + 1) w  ->  \w. w + 1. The redex's argument is free in
+        // the redex but bound by \w in the source.
+        let mut s = TermStore::new();
+        let (v0, one) = (s.var(0), s.lit(1));
+        let body = s.prim(PrimOp::Add, v0, one);
+        let lam = s.abs(body);
+        let r = s.app(lam, v0);
+        let h = s.abs(r);
+        let want = s.abs(body);
+        assert_eq!(one_step(&s, h, r, want), Ok(()));
+    }
+
+    #[test]
+    fn rejects_an_open_source() {
+        // (\x. x + 1) v3, with v3 unbound: `eval` gives UnboundVariable, so
+        // v3 is not a value, and (\x. 0) v3 -> 0 would remove an error.
         let mut s = TermStore::new();
         let (x, one, v3) = (s.var(0), s.lit(1), s.var(3));
         let body = s.prim(PrimOp::Add, x, one);
         let lam = s.abs(body);
         let r = s.app(lam, v3);
         let want = s.prim(PrimOp::Add, v3, one);
-        assert_eq!(one_step(&s, r, r, want), Ok(()));
+        let err = one_step(&s, r, r, want).unwrap_err();
+        assert_eq!((err.step, err.reason), (0, "source term has free variables"));
+        // Under a binder too: \n. (\x. 0) v5, where v5 is Var(4) at top level.
+        let (zero, v5) = (s.lit(0), s.var(5));
+        let k0 = s.abs(zero);
+        let r = s.app(k0, v5);
+        let h = s.abs(r);
+        let want = s.abs(zero);
+        assert_eq!(one_step(&s, h, r, want).unwrap_err().reason, "source term has free variables");
+        // Even an empty trace: the check is about the source.
+        assert_eq!(check(&s, v3, &[], v3).unwrap_err().reason, "source term has free variables");
     }
 
     #[test]
     fn accepts_a_capturing_lambda_substituted_under_a_binder() {
-        // (\g. \z. g z) (\y. y + v1)  ->  \z. (\y. y + v3) z
-        // v1 is free at top level. Under the new \z and the \y, it is Var(3).
+        // \w. (\g. \z. g z) (\y. y + w)  ->  \w. \z. (\y. y + w) z
+        // Inside the argument's \y, w is Var(1). Under the new \z it is Var(2).
         let mut s = TermStore::new();
-        let (v0, v1, v2, v3) = (s.var(0), s.var(1), s.var(2), s.var(3));
+        let (v0, v1, v2) = (s.var(0), s.var(1), s.var(2));
         let gz = s.app(v1, v0);
         let inner = s.abs(gz);
         let caller = s.abs(inner);
-        let arg_body = s.prim(PrimOp::Add, v0, v2);
+        let arg_body = s.prim(PrimOp::Add, v0, v1);
         let arg = s.abs(arg_body);
         let r = s.app(caller, arg);
-        let want_arg_body = s.prim(PrimOp::Add, v0, v3);
+        let h = s.abs(r);
+        let want_arg_body = s.prim(PrimOp::Add, v0, v2);
         let want_arg = s.abs(want_arg_body);
         let want_app = s.app(want_arg, v0);
-        let want = s.abs(want_app);
-        assert_eq!(one_step(&s, r, r, want), Ok(()));
+        let want_z = s.abs(want_app);
+        let want = s.abs(want_z);
+        assert_eq!(one_step(&s, h, r, want), Ok(()));
     }
 
     #[test]

@@ -9,11 +9,12 @@
 ///   `use crate :: compile :: peel;` or `use crate::{compile::peel};`
 ///   can't slip past a substring match.
 /// - uses `super::super`.
-/// - has a `crate::` or `super::` path whose first segment is not in
-///   `allowed`. Both prefixes are scanned because a module directly under
-///   the crate root reaches the same siblings through `super::` as through
-///   `crate::`. `crate::{..}` has an empty first segment and is rejected
-///   too.
+/// - has a `crate::`, `super::` or `tatic::` path whose first segment is
+///   not in `allowed`. All three are scanned because a module directly
+///   under the crate root reaches the same siblings through `super::` as
+///   through `crate::`, and through `tatic::` too in test builds, where
+///   `lib.rs` has `extern crate self as tatic`. `crate::{..}` has an empty
+///   first segment and is rejected too.
 pub(crate) fn assert_independent(file: &str, src: &str, forbidden: &[&str], allowed: &[&str]) {
     let lines: Vec<&str> = src.lines().collect();
     let tests_start = lines
@@ -32,7 +33,7 @@ pub(crate) fn assert_independent(file: &str, src: &str, forbidden: &[&str], allo
         // `crate::` search. `pub(crate)` has no `::` after `crate`, so it
         // never matches.
         let compact: String = l.chars().filter(|c| !c.is_whitespace()).collect();
-        for prefix in ["crate::", "super::"] {
+        for prefix in ["crate::", "super::", "tatic::"] {
             let mut rest = compact.as_str();
             while let Some(i) = rest.find(prefix) {
                 let after = &rest[i + prefix.len()..];

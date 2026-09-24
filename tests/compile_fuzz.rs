@@ -39,7 +39,7 @@ use tatic::compile;
 use tatic::eval;
 use tatic::jit::JitEngine;
 use tatic::proof;
-use tatic::term::{Hash, PrimOp, TermStore};
+use tatic::term::{Hash, PrimOp, Term, TermStore};
 use tatic::{spec_check, specialise};
 
 struct Rng(u64);
@@ -786,44 +786,125 @@ fn gen_redex_rich(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Ha
     }
 }
 
+/// Runs a compiled fragment directly, with no `verify()` or proof gate in
+/// between, the way `jit.rs` calls it: a fresh bump allocator per call
+/// (`hp` reset to 0) and a trap mapped to `Err`.
+fn load_fragment(engine: &wasmtime::Engine, frag: &compile::CompiledFragment) -> wasmtime::Module {
+    let bytes = wat::parse_str(&frag.wat).expect("compile.rs emits valid wat");
+    wasmtime::Module::new(engine, &bytes).expect("compile.rs emits a valid module")
+}
+
+fn run_fragment(engine: &wasmtime::Engine, module: &wasmtime::Module, args: &[i64]) -> Result<i64, ()> {
+    let mut store = wasmtime::Store::new(engine, ());
+    let instance = wasmtime::Instance::new(&mut store, module, &[]).expect("the module has no imports");
+    if let Some(hp) = instance.get_global(&mut store, "hp") {
+        hp.set(&mut store, wasmtime::Val::I32(0)).unwrap();
+    }
+    let f = instance.get_func(&mut store, "f").expect("the entry point is exported as f");
+    let wargs: Vec<wasmtime::Val> = args.iter().map(|&a| wasmtime::Val::I64(a)).collect();
+    let mut out = [wasmtime::Val::I64(0)];
+    f.call(&mut store, &wargs, &mut out).map_err(|_| ())?;
+    Ok(out[0].unwrap_i64())
+}
+
 #[test]
 fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
     const SEEDS: u64 = 1000;
     const SAMPLE_VALUES: [i64; 7] = [0, 1, -1, 2, -3, 10, -20];
-    let mut specialised = 0u32;
+    let engine = wasmtime::Engine::default();
+    let (mut specialised, mut compiled, mut compiled_specialised, mut ran) = (0u32, 0u32, 0u32, 0u32);
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0x5BEC_1A11_u64 ^ seed);
         let mut s = TermStore::new();
-        // Half redex-rich terms, half the existing programs (recursion, closures).
-        let (h, arity) = if seed % 2 == 0 {
-            let e = gen_redex_rich(&mut rng, &mut s, 2, 4);
-            let inner = s.abs(e);
-            (s.abs(inner), 2)
-        } else {
-            let (h, arity, _) = gen_program(&mut rng, &mut s);
-            (h, arity)
+        // Mostly redex-rich terms and the existing programs (recursion,
+        // closures), plus some open terms, which the checker rejects.
+        let (h, arity, open) = match seed % 5 {
+            0 | 2 => {
+                let e = gen_redex_rich(&mut rng, &mut s, 2, 4);
+                let inner = s.abs(e);
+                (s.abs(inner), 2, false)
+            }
+            4 => {
+                // `\x1..xn. v`, with `v` unbound. On odd rounds, `v` is put
+                // under a redex, `\x1..xn. (\y. 0) v`: contracting it would
+                // hide the UnboundVariable error, so the open-source guard
+                // has something to refuse.
+                let unbound = gen_unbound_variable(&mut rng, &mut s);
+                let (mut arity, mut body) = (0, unbound);
+                while let Term::Abs(b) = *s.resolve(body) {
+                    arity += 1;
+                    body = b;
+                }
+                let h = if (seed / 5) % 2 == 0 {
+                    unbound
+                } else {
+                    let zero = s.lit(0);
+                    let k0 = s.abs(zero);
+                    let mut h = s.app(k0, body);
+                    for _ in 0..arity {
+                        h = s.abs(h);
+                    }
+                    h
+                };
+                (h, arity, true)
+            }
+            _ => {
+                let (h, arity, _) = gen_program(&mut rng, &mut s);
+                (h, arity, false)
+            }
         };
         let sp = specialise::specialise(&s, h);
-        assert_eq!(spec_check::check(&s, h, &sp.trace, sp.term), Ok(()), "seed={seed}: the checker rejected the specialiser's trace");
+        if open {
+            assert!(sp.trace.is_empty(), "seed={seed}: an open source was specialised: {:?}", sp.trace);
+            assert_eq!(spec_check::check(&s, h, &sp.trace, sp.term).unwrap_err().reason, "source term has free variables", "seed={seed}");
+        } else {
+            assert_eq!(spec_check::check(&s, h, &sp.trace, sp.term), Ok(()), "seed={seed}: the checker rejected the specialiser's trace");
+        }
         if !sp.trace.is_empty() {
             specialised += 1;
         }
+        let c = compile::compile_specialised(&s, h);
+        if let Some(c) = &c {
+            compiled += 1;
+            if c.specialised.is_some() {
+                compiled_specialised += 1;
+            }
+            assert_eq!(c.frag.arity, arity, "seed={seed}");
+        }
+        let module = c.as_ref().map(|c| load_fragment(&engine, &c.frag));
         let mut args = vec![0i64; arity];
         for trial in 0..8 {
             for a in args.iter_mut() {
                 *a = SAMPLE_VALUES[rng.below(SAMPLE_VALUES.len() as u32) as usize];
             }
+            let interpreted = eval::apply_term(&s, h, &args);
             // Exact equality, including which error: βv moves only values,
             // which have no effects, so it can't reorder or remove an error.
-            assert_eq!(
-                eval::apply_term(&sp.store, sp.term, &args),
-                eval::apply_term(&s, h, &args),
-                "seed={seed} trial={trial} args={args:?}"
-            );
+            assert_eq!(eval::apply_term(&sp.store, sp.term, &args), interpreted, "seed={seed} trial={trial} args={args:?}");
+            // The compiled output, with nothing between it and the caller.
+            // Errors are compared as errors: a compiled one is a trap. Not
+            // on a `TypeError`: `gen_redex_rich` can use a closure as an
+            // `Int` (case 5 puts `g` in scope), and compiled code assumes
+            // well-typedness there, for `h` as much as for `h'` (seed 95:
+            // `try_compile(h)` returns 310 where `eval` is a TypeError).
+            // `jit.rs`'s `verify()` is what catches that, and this test
+            // bypasses it on purpose.
+            if let (Some(c), Some(module)) = (&c, &module)
+                && interpreted != Err(eval::EvalError::TypeError)
+            {
+                ran += 1;
+                assert_eq!(
+                    run_fragment(&engine, module, &args).ok(),
+                    interpreted.as_ref().ok().copied(),
+                    "seed={seed} trial={trial} args={args:?} specialised={} interpreted={interpreted:?} h={}",
+                    c.specialised.is_some(),
+                    tatic::syntax::print(&s, h)
+                );
+            }
         }
     }
-    eprintln!("specialisation fuzz: {specialised}/{SEEDS} terms specialised");
+    eprintln!("specialisation fuzz: {specialised}/{SEEDS} terms specialised, {compiled} compiled ({compiled_specialised} from h'), {ran} compiled runs compared");
     assert!(specialised > SEEDS as u32 / 4, "too few terms specialised ({specialised}/{SEEDS}); check gen_redex_rich");
-    assert_eq!(compile::spec_check_failures(), 0);
+    assert!(compiled_specialised > SEEDS as u32 / 10, "too few specialised terms compiled ({compiled_specialised}/{SEEDS})");
     assert_no_ir_failures();
 }

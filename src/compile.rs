@@ -1918,11 +1918,58 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "the specialiser produced a trace the checker rejects")]
-    fn a_trace_the_checker_rejects_panics_in_debug() {
+    fn a_checked_specialisation_that_does_not_compile_falls_back_to_h() {
+        // `h` is `f 10 3 100`, `f = \a b. if 0 < a then \c. .. else \c. ..`.
+        // Its two βv steps leave `(if 0 < 10 then \c. .. else \c. ..) 100`,
+        // an application headed by an `If`, which `build` doesn't cover.
+        let (s, h) = corpus("over_application_if_between_closures");
+        let sp = crate::specialise::specialise(&s, h);
+        assert!(!sp.trace.is_empty());
+        assert_eq!(crate::spec_check::check(&s, h, &sp.trace, sp.term), Ok(()));
+        assert!(try_compile(&sp.store, sp.term).is_none(), "h' now compiles; this test needs another term");
+        let c = compile_specialised(&s, h).expect("h compiles");
+        assert!(c.specialised.is_none());
+        assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
+    }
+
+    /// A specialisation whose trace is real but whose claim is not what the
+    /// trace reaches, so the checker rejects it.
+    fn a_rejected_candidate() -> (TermStore, Hash, crate::specialise::Specialised) {
         let (s, h) = corpus("partial_application_loop");
         let mut sp = crate::specialise::specialise(&s, h);
+        assert!(!sp.trace.is_empty());
         sp.term = sp.store.lit(0); // a real term in the store, but not what the trace reaches
+        (s, h, sp)
+    }
+
+    #[test]
+    #[cfg_attr(not(debug_assertions), ignore = "the panic is debug-only; see the release twin below")]
+    #[should_panic(expected = "the specialiser produced a trace the checker rejects")]
+    fn a_trace_the_checker_rejects_panics_in_debug() {
+        let (s, h, sp) = a_rejected_candidate();
         compile_candidate(&s, h, sp);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn a_trace_the_checker_rejects_falls_back_to_h_and_is_counted_in_release() {
+        let (s, h, sp) = a_rejected_candidate();
+        // The counter is process-wide, so compare before and after.
+        let before = spec_check_failures();
+        let c = compile_candidate(&s, h, sp).expect("h itself compiles");
+        assert_eq!(spec_check_failures(), before + 1);
+        assert!(c.specialised.is_none());
+        assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
+    }
+
+    #[test]
+    fn an_oversized_source_compiles_without_consulting_the_checker() {
+        // Before the specialiser's early size test, this got a one-step
+        // trace the checker rejects, a debug panic here.
+        let mut s = TermStore::new();
+        let h = crate::test_corpus::oversized_source_with_a_shrinking_step(&mut s);
+        if let Some(c) = compile_specialised(&s, h) {
+            assert!(c.specialised.is_none());
+        }
     }
 }

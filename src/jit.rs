@@ -534,6 +534,40 @@ mod tests {
     use crate::term::{PrimOp, TermStore};
 
     #[test]
+    fn an_open_redex_is_not_contracted_away_by_the_jit() {
+        // Final review's probe: before the checker required a closed
+        // source, `(\x. 0) v5` was contracted to `0`, `h'` compiled, no
+        // sample hit 777, the universal proof on `h'` installed it, and
+        // the JIT returned Ok(0) where `eval` fails. Whatever the JIT does
+        // with this term, it must agree with `eval`.
+        let mut s = TermStore::new();
+        let h = crate::test_corpus::open_redex_probe(&mut s);
+        let mut jit = JitEngine::new();
+        for n in [0, 1, 776, 777, 778, -777] {
+            assert_eq!(jit.apply(&s, h, &[n]), eval::apply_term(&s, h, &[n]), "n={n}");
+        }
+        assert_eq!(eval::apply_term(&s, h, &[777]), Err(EvalError::UnboundVariable));
+    }
+
+    #[test]
+    fn the_installation_proof_is_about_the_specialised_term() {
+        // No `kernel_verify` strategy proves `(\g. g) (\x. x + 1) n`
+        // universally (asserted below), but its specialisation `n + 1` is
+        // plain arithmetic. So installing it at all depends on proving
+        // `h'`, not `h`.
+        let mut s = TermStore::new();
+        let h = crate::syntax::parse(&mut s, r"\n. (\g. g) (\x. x + 1) n").unwrap();
+        let sp = crate::specialise::specialise(&s, h);
+        let mut jit = JitEngine::new();
+        assert_ne!(jit.kernel_verify(&s, h, 1), ProofStrength::Universal);
+        assert_eq!(jit.kernel_verify(&sp.store, sp.term, 1), ProofStrength::Universal);
+        for n in [0, 5, -7] {
+            assert_eq!(jit.apply(&s, h, &[n]), Ok(n + 1));
+        }
+        assert_eq!((jit.stats.compiled, jit.stats.specialised, jit.stats.declined_no_universal_proof), (1, 1, 0));
+    }
+
+    #[test]
     fn sample_arg_vectors_for_arity_zero_is_a_single_trivial_sample() {
         // `vec![a; 0]` is `[]` regardless of `a` -- without the dedicated
         // `0` arm, the `_` catch-all would push the same empty sample

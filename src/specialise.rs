@@ -20,11 +20,24 @@ pub struct Specialised {
 
 /// Reduces, innermost first, every application spine the policy allows,
 /// until none is left or a limit (`MAX_STEPS`, `MAX_NODES`) is reached.
-/// Any prefix of a valid trace is itself valid, so stopping early is safe.
+///
+/// `spec_check::check` rejects a source with more than `MAX_NODES` nodes or
+/// with a free variable, whatever the trace, so for such a source this
+/// returns the empty trace at once. For any other source, every prefix of
+/// a valid trace is itself valid, so stopping early at a limit is safe.
+/// The early size test also bounds the work below: every pass rescans the
+/// whole term.
 pub fn specialise(store: &TermStore, h: Hash) -> Specialised {
     let mut s = TermStore::new();
+    // `size` stops counting past MAX_NODES, so this test is cheap even for
+    // a huge source. The import is still needed, because `Specialised`
+    // owns a store holding `term`; it is linear, unlike the passes.
+    let reducible_source = size(store, h) <= MAX_NODES && !has_free(store, h, 0, &mut HashMap::new());
     let mut cur = import(store, &mut s, h, &mut HashMap::new());
     let mut trace = Vec::new();
+    if !reducible_source {
+        return Specialised { store: s, term: cur, trace };
+    }
     'spines: while let Some(spine) = find_spine(&s, cur) {
         let (mut head, mut args) = unwind(&s, spine);
         let k = count_abs(&s, head).min(args.len());
@@ -121,21 +134,36 @@ fn peel(s: &TermStore, mut t: Hash, k: usize) -> Hash {
 /// that takes them. So when a spine is judged, its arguments have already
 /// been reduced as far as they can be.
 fn find_spine(s: &TermStore, t: Hash) -> Option<Hash> {
-    fn go(s: &TermStore, t: Hash, in_fn_pos: bool, seen: &mut HashSet<(Hash, bool)>) -> Option<Hash> {
+    // `seen` skips a `(hash, in_fn_pos)` already visited. That is right only
+    // because hashes are content hashes: an equal hash is an equal
+    // subterm, whose first visit already returned `None` (a `Some` would
+    // have ended the search). `memos` is shared by every `reducible` call
+    // in this pass for the same reason: `s` doesn't change during it.
+    fn go(s: &TermStore, t: Hash, in_fn_pos: bool, seen: &mut HashSet<(Hash, bool)>, memos: &mut Memos) -> Option<Hash> {
         if !seen.insert((t, in_fn_pos)) {
             return None;
         }
         match *s.resolve(t) {
             Term::Var(_) | Term::Lit(_) => None,
-            Term::Prim(_, a, b) => go(s, a, false, seen).or_else(|| go(s, b, false, seen)),
-            Term::If(c, x, y) => go(s, c, false, seen).or_else(|| go(s, x, false, seen)).or_else(|| go(s, y, false, seen)),
-            Term::Abs(b) | Term::Rec(b) => go(s, b, false, seen),
-            Term::App(f, a) => go(s, a, false, seen)
-                .or_else(|| go(s, f, true, seen))
-                .or_else(|| (!in_fn_pos && reducible(s, t)).then_some(t)),
+            Term::Prim(_, a, b) => go(s, a, false, seen, memos).or_else(|| go(s, b, false, seen, memos)),
+            Term::If(c, x, y) => go(s, c, false, seen, memos)
+                .or_else(|| go(s, x, false, seen, memos))
+                .or_else(|| go(s, y, false, seen, memos)),
+            Term::Abs(b) | Term::Rec(b) => go(s, b, false, seen, memos),
+            Term::App(f, a) => go(s, a, false, seen, memos)
+                .or_else(|| go(s, f, true, seen, memos))
+                .or_else(|| (!in_fn_pos && reducible(s, t, memos)).then_some(t)),
         }
     }
-    go(s, t, false, &mut HashSet::new())
+    go(s, t, false, &mut HashSet::new(), &mut Memos::default())
+}
+
+/// `occurrences` and `has_free` memos. Both are pure functions of their
+/// memo keys, so one pair serves every argument of every spine in a pass.
+#[derive(Default)]
+struct Memos {
+    occurrences: HashMap<(Hash, u32, bool), (usize, bool)>,
+    has_free: HashMap<(Hash, u32), bool>,
 }
 
 /// The spine policy. Reduce `App(…App(Abs^m b, a₁)…, a_n)`'s first
@@ -147,7 +175,7 @@ fn find_spine(s: &TermStore, t: Hash) -> Option<Hash> {
 ///   left unapplied. Otherwise a capturing closure created once would be
 ///   created at every use, or on every iteration of a loop inside `b`
 ///   (GHC's "OnceInLam").
-fn reducible(s: &TermStore, spine: Hash) -> bool {
+fn reducible(s: &TermStore, spine: Hash, memos: &mut Memos) -> bool {
     let (head, args) = unwind(s, spine);
     let k = count_abs(s, head).min(args.len());
     if k == 0 {
@@ -159,8 +187,8 @@ fn reducible(s: &TermStore, spine: Hash) -> bool {
         Term::Abs(_) | Term::Rec(_) => {
             // a₁ binds the outermost of the k lambdas: Var(k-1) in `b`.
             let param = (k - 1 - i) as u32;
-            let (n, under) = occurrences(s, body, param, false, &mut HashMap::new());
-            !has_free(s, a, 0, &mut HashMap::new()) || n == 0 || (n == 1 && !under)
+            let (n, under) = occurrences(s, body, param, false, &mut memos.occurrences);
+            !has_free(s, a, 0, &mut memos.has_free) || n == 0 || (n == 1 && !under)
         }
         _ => false,
     })
@@ -508,6 +536,27 @@ mod tests {
         let sp = specialise_checked(&s, omega);
         assert_eq!(sp.trace.len(), MAX_STEPS);
         assert_eq!(sp.term, omega);
+    }
+
+    #[test]
+    fn an_oversized_source_gets_the_empty_trace() {
+        let mut s = TermStore::new();
+        let h = crate::test_corpus::oversized_source_with_a_shrinking_step(&mut s);
+        assert_eq!(check(&s, h, &[], h).unwrap_err().reason, "source term larger than MAX_NODES");
+        let sp = specialise(&s, h);
+        assert!(sp.trace.is_empty(), "{:?}", sp.trace);
+        assert_eq!(sp.term, h);
+    }
+
+    #[test]
+    fn an_open_source_gets_the_empty_trace() {
+        // \n. if n == 777 then (\x. 0) v5 else 1: v5 is unbound, so the
+        // redex is not βv and `eval` fails at n = 777.
+        let mut s = TermStore::new();
+        let h = crate::test_corpus::open_redex_probe(&mut s);
+        let sp = specialise(&s, h);
+        assert!(sp.trace.is_empty(), "{:?}", sp.trace);
+        assert_eq!(sp.term, h);
     }
 
     #[test]
