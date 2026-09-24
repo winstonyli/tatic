@@ -312,13 +312,17 @@ mod tests {
             // token-based denylist above. `pub(crate)` has no `::` after
             // `crate` even once collapsed, so it never matches.
             let compact: String = l.chars().filter(|c| !c.is_whitespace()).collect();
-            let mut rest = compact.as_str();
-            while let Some(i) = rest.find("crate::") {
-                let after = &rest[i + "crate::".len()..];
-                let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
-                let head = &after[..end];
-                assert!(head == "ir" || head == "term", "decompile.rs must not use crate::{head} (only crate::ir and crate::term are allowed)");
-                rest = &after[end..];
+            // `decompile` sits directly under the crate root, so `super::`
+            // reaches the same siblings `crate::` does.
+            for prefix in ["crate::", "super::"] {
+                let mut rest = compact.as_str();
+                while let Some(i) = rest.find(prefix) {
+                    let after = &rest[i + prefix.len()..];
+                    let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
+                    let head = &after[..end];
+                    assert!(head == "ir" || head == "term", "decompile.rs must not use {prefix}{head} (only ir and term are allowed)");
+                    rest = &after[end..];
+                }
             }
         }
     }
