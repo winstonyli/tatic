@@ -3021,15 +3021,33 @@ produces is deliberately shaped to be that builder's proof outline: one
 (`Rec` has no fuel), so full β is unsound here: `(\x. 0) (1/0)` fails under
 call-by-value evaluation, but its β-contraction `0` does not. The rewrite
 used is βv, `App(Abs(M), V) → M[0 := V]` restricted to a value argument
-`V` (`Var`, `Lit`, `Abs` or `Rec`) -- every binder under strict evaluation
-is bound to exactly such a value, so this covers every redex evaluation
-would itself contract. Plotkin (1975) shows βv is an observational
+`V` (a bound `Var`, `Lit`, `Abs` or `Rec`) -- every binder under strict
+evaluation is bound to exactly such a value, so this covers every redex
+evaluation would itself contract. Plotkin (1975) shows βv is an observational
 equivalence in the call-by-value λ-calculus and, unlike full β, is closed
 under every context: a value evaluates in no steps with no effect, so
 substituting it can neither introduce nor remove an error or divergence.
 That is what licenses rewriting under binders, inside `If` branches and
 inside a `Rec` body without re-checking anything about the surrounding
 term.
+
+**The source must be closed.** Found in final review, after the JIT had
+started installing specialised fragments. βv's value set includes only
+*bound* variables: `eval` starts in an empty environment, so an unbound
+`Var` evaluates to `Err(UnboundVariable)` and is not a value. The checker
+accepted any `Var` as a value, so for
+`\n. if n == 777 then (\x. 0) v5 else 1` it accepted contracting
+`(\x. 0) v5` to `0`. `try_compile` had rejected the original, for its
+unbound variable, but it compiled `h'`. No sample hit 777, and `h'` got a
+universal proof, so the JIT installed it and returned `Ok(0)` where `eval`
+fails. `check` now rejects a source with a free variable before replaying
+anything, using its own free-variable walk. In a closed source every `Var`
+in every occurrence is bound by an enclosing binder, and βv keeps a term
+closed, so every `Var` a step meets is a value. The specialiser returns
+the empty trace for an open source, and for one over `MAX_NODES`, since
+the checker rejects both whatever the trace. The probe is now a JIT
+regression test (`an_open_redex_is_not_contracted_away_by_the_jit`), and
+the fuzz includes open terms.
 
 **Hash-addressed steps and optimal reduction.** A `Step` names its redex
 by content hash and is applied to every occurrence in one pass, not by a
@@ -3069,21 +3087,29 @@ then the unchanged `try_compile`. `try_compile`'s own contract -- every
 accepted module decompiles to the term it was given (§35) -- still holds
 of whichever term it is handed, `h` or `h'`.
 
-**How it was checked.** `spec_check.rs` has 13 unit tests (one value kind
-per accepted step -- `Var`, `Lit`, closed `Abs`, capturing `Abs`, `Rec` --
-plus rejections for a non-value argument, `Rec` in head position, an
-absent redex, a wrong claimed hash, and over-limit traces/terms) and an
+**How it was checked.** `spec_check.rs` has 15 tests: 13 unit tests (one
+value kind per accepted step -- bound `Var`, `Lit`, closed `Abs`,
+capturing `Abs`, `Rec` -- plus rejections for an open source, a non-value
+argument, `Rec` in head position, an absent redex, a wrong claimed hash,
+and over-limit traces/terms), the mutation test below, and an
 independence test that scans its imports and admits only `crate::term`
 and `std`, reusing `decompile.rs`'s existing import-scanner as a shared
-`#[cfg(test)]` helper. `specialise.rs` has 8 tests, including the shapes
+`#[cfg(test)]` helper. The scanner covers `crate::`, `super::` and
+`tatic::` paths; the last because `lib.rs` has `extern crate self as
+tatic` in test builds, so a `use tatic::eval` slipped past it until final
+review. `specialise.rs` has 10 tests, including the shapes
 the design predicted: `partial_application_loop` specialises in 4 βv
 steps to a plain loop computing `acc + n` (no `call_indirect`, no
 `$alloc` in its WAT); `capturing_closure_loop` in 1 step;
 `capturing_closure_loop`'s own closed-closure variant takes 2 steps
 because the first substitution exposes a new redex, `(\y. y+1) n`; and a
 capturing closure whose parameter is used inside a loop body is correctly
-left alone (the OnceInLam policy rule). A planted mis-shift in the
-specialiser's `lift` is caught by the checker, as designed.
+left alone (the OnceInLam policy rule). The other two, from final
+review, give an open source and an oversized one the empty trace. The
+oversized probe, `\n. (\x. n) BIG`, used to get a one-step trace that
+shrinks it below `MAX_NODES`, which the checker then rejected for the
+source's size: a debug panic in `compile_specialised`. A planted mis-shift
+in the specialiser's `lift` is caught by the checker, as designed.
 
 A corpus-and-fuzzer mutation test attacked valid `(h, trace, h')` triples
 with five mutations -- drop a step, swap adjacent steps, retarget a step
@@ -3099,21 +3125,41 @@ assertion fail, so the check has teeth.
 
 The differential fuzzer (`specialisation_is_checked_and_preserves_meaning_on_random_terms`,
 extending `compile_fuzz.rs`'s existing generators with `Div`/`Mod`) ran
-1000 seeds, specialising 821 of them; the checker accepted every trace
-produced, and `eval` on `h` and `h'` agreed exactly on the sample
-arguments, including which error each raised. Two planted bugs confirm
-the fuzz has teeth: a specialiser bug is caught via the checker rejecting
-its trace, and making the checker and specialiser agree on an unsound
-step (accepting a `Prim` argument as a value, in both places at once) is
-still caught, via the `eval` comparison diverging on a `Div` term.
+1000 seeds; the checker accepted every trace produced, and `eval` on `h`
+and `h'` agreed exactly on the sample arguments, including which error
+each raised. Two planted bugs confirm the fuzz has teeth: a specialiser
+bug is caught via the checker rejecting its trace, and making the checker
+and specialiser agree on an unsound step (accepting a `Prim` argument as a
+value, in both places at once) is still caught, via the `eval` comparison
+diverging on a `Div` term. Since final review, one seed in five is an open
+term (`gen_unbound_variable`, bare or under a redex), which must get the
+empty trace and be rejected by the checker. Every term also goes through
+`compile_specialised`, and its fragment is run directly, with no
+`verify()` in between, against `eval` wherever `eval` is not a `TypeError`.
+Compiled code assumes well-typedness, for `h` as much as `h'`: at seed 95
+`try_compile(h)` itself returns 310 where `eval` raises a `TypeError`,
+because `gen_redex_rich` can use a closure as an `Int`. The latest run
+specialised 645 seeds, compiled 564 (213 from `h'`) and compared 4400
+compiled runs. Before, the fuzz asserted `spec_check_failures() == 0`
+without ever calling `compile_specialised`, so the assertion was vacuous.
+A planted rejection in `compile_candidate` now fails it (645 failures),
+and a planted `i64.add` -> `i64.sub` in `h'`'s WAT fails the compiled
+comparison.
 
-Two limits are worth stating plainly rather than papering over. No test
-distinguishes `kernel_verify` running on `h'` from running on `h` --
-`partial_application_loop`'s own unspecialised `h` also gets a universal
-proof, so nothing here forces the specialised path through `kernel_verify`
-differently. And `find_spine`'s `!in_fn_pos` guard is untested: removing
-it changed no observed result on the current corpus. Both are recorded as
-open rather than quietly left out.
+`compile.rs` covers the driver's two fallbacks. A trace the checker
+rejects panics in debug and, in release, falls back to `h` and increments
+`spec_check_failures`. A checked `h'` that doesn't compile also falls back
+to `h`: `over_application_if_between_closures` specialises to
+`(if 0 < 10 then \c. .. else \c. ..) 100`, an application headed by an
+`If`, which `build` doesn't cover.
+
+`kernel_verify` running on `h'` rather than on `h` now has a test that
+tells them apart. `\n. (\g. g) (\x. x + 1) n` gets no universal proof,
+but its specialisation `\n. n + 1` does, so the JIT installs it only
+because the proof is about `h'`. One limit is worth stating plainly
+rather than papering over: `find_spine`'s `!in_fn_pos` guard is untested,
+since removing it changed no observed result on the current corpus. It
+is recorded as open rather than quietly left out.
 
 **Cost.** Criterion `capturing_closure_loop/jit_warm_cache_hit` and
 `partial_application_loop/jit_warm_cache_hit`, `main` vs this branch,

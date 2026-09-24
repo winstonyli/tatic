@@ -10,7 +10,13 @@ Concretely: terms are content-addressed (hash-consed), so structurally
 identical transformations anywhere share one cache key. The first call for
 a given term tries to compile it to WebAssembly and JIT it via `wasmtime`
 (Cranelift); every later call for that same content hash skips straight to
-the compiled, native-speed path. "Found to be equivalent" is not just
+the compiled, native-speed path. The compile step is
+`compile::compile_specialised`: it first βv-reduces known closures
+(`specialise.rs`, untrusted) and has an independent checker replay every
+step (`spec_check.rs`), and when the checker accepts and the reduced `h'`
+compiles, the fragment is built from `h'`, so for it `h' ≡ h` is
+certificate-checked rather than kernel-checked (§37 of `RELATED_WORK.md`).
+"Found to be equivalent" is not just
 asserted — it's checked, with two complementary layers of assurance: sample
 verification against a reference interpreter (always), and, where the term
 falls in a covered fragment, an actual **kernel-checked proof** that the
@@ -100,8 +106,8 @@ Two notes on what "clean" means here:
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
 | `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses; `print` is the reverse direction, a precedence-aware pretty-printer back to source text. |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. Trampolined for its own tail positions (an `If`'s chosen branch, and applying a value that resolves the current call), mirroring `lower_wat.rs`'s own `loop`/`br` lowering at the interpreter level: a tail-recursive term runs at any depth without growing the native stack, while a genuinely non-tail-recursive one (naive `fib`, say) still grows it, exactly as it would grow a Wasm `call` chain in the compiled reading. |
-| `compile.rs` | Term analysis and the IR builder. Decides which terms fall in the compilable "first-order arithmetic with self-recursion and closures" fragment (`classify`, shared with `proof.rs`; `free_vars`; closure-arity inference; the combinator registry, including compile-time partial-application wrappers) and builds `ir.rs`'s IR for them (`build`). `try_compile` is build, then `ir::check`, then `lower_wat::lower`. Anything outside the fragment is rejected -- the compiler only needs to be sound, not complete. `compile_specialised` is the pipeline driver: it runs `specialise.rs`, checks the result with `spec_check.rs`, then calls `try_compile` on whichever term -- `h` or the specialised `h'` -- came out ahead. The claim it installs is: compiles `h'`, which decompiles to itself (§35) and is certificate-checked ≡ `h`, not kernel-checked -- see §37 of `RELATED_WORK.md`. |
-| `specialise.rs` (untrusted) | βv-reduces known closures before compilation (`caller (add acc) n` -> `acc+n`), emitting the result plus a trace of steps. Nothing here is trusted: a bug produces a rejected trace or a slower program, never a silently wrong one -- see §37 of `RELATED_WORK.md`. |
+| `compile.rs` | Term analysis and the IR builder. Decides which terms fall in the compilable "first-order arithmetic with self-recursion and closures" fragment (`classify`, shared with `proof.rs`; `free_vars`; closure-arity inference; the combinator registry, including compile-time partial-application wrappers) and builds `ir.rs`'s IR for them (`build`). `try_compile` is build, then `ir::check`, then `lower_wat::lower`. Anything outside the fragment is rejected -- the compiler only needs to be sound, not complete. `compile_specialised` is the pipeline driver: it runs `specialise.rs`, checks the result with `spec_check.rs`, then calls `try_compile` on the specialised `h'` whenever the checker accepted its trace and `h'` compiles, and on `h` otherwise (no trace, a rejected trace, or an `h'` outside the fragment). For a specialised fragment the claim is: compiles `h'`, which decompiles to itself (§35) and is certificate-checked ≡ `h`, not kernel-checked -- see §37 of `RELATED_WORK.md`. |
+| `specialise.rs` (untrusted) | βv-reduces known closures before compilation (`caller (add acc) n` -> `acc+n`), emitting the result plus a trace of steps. Nothing here is trusted: a bug here produces a trace `spec_check.rs` rejects, or a slower program. Soundness rests on `spec_check.rs` alone -- see §37 of `RELATED_WORK.md`. |
 | `spec_check.rs` (trusted, independent) | Replays `specialise.rs`'s trace from the original term with its own `shift`/`subst`, step by step, and accepts only if it lands on exactly the claimed result. Its own independence allowlist (checked by a test, reusing `decompile.rs`'s import-scanner) permits importing only `crate::term` and `std` -- see §37 of `RELATED_WORK.md`. |
 | `ir.rs` | The JIT's IR: closure-converted, representation-neutral; well-formedness checker. |
 | `lower_wat.rs` | Lowers the IR to WAT; one template per node, plus closure representation, allocator and curried stages. Its module docs describe the closure representation (a packed `i64` of table index and environment pointer), partial application, over-application and the curried fallback for inconsistent arities. |
@@ -673,8 +679,14 @@ and `spec_check.rs` (§37 of `RELATED_WORK.md`): every one of 1000 random
 terms is specialised and checked, `spec_check::check` must accept every
 trace produced, and `eval` on the original and specialised term must agree
 exactly on the sample arguments — including which error variant, not just
-whether one occurred. 821 of the 1000 seeds actually specialise (the rest
-have nothing to reduce). Verified test teeth by two planted bugs: a
+whether one occurred. One seed in five is an open term
+(`gen_unbound_variable`, bare or under a redex): it must get the empty
+trace, and the checker must reject it. Every term also goes through
+`compile_specialised`, and its fragment is run directly (no `verify()` in
+between) against `eval` on the same arguments, wherever `eval` is not a
+`TypeError` (compiled code assumes well-typedness, and `gen_redex_rich` can
+use a closure as an `Int`). 645 of the 1000 seeds specialise, 564 compile
+(213 from `h'`), and 4400 compiled runs are compared. Verified test teeth by two planted bugs: a
 specialiser bug that produces a wrong term is caught by `spec_check`
 rejecting its trace; making both the checker and the specialiser agree on
 an unsound step (treating a `Prim` expression as a value) passes the
