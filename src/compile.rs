@@ -393,8 +393,9 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     // `Dispatch::Fast` arity trap (a `call_indirect` type mismatch on a
     // closure applied at the wrong arity) -- a real runtime distinction the
     // term semantics doesn't model as separate from ordinary evaluation.
-    // `jit.rs`'s sample verification still catches a wrong answer there, by
-    // running the interpreter alongside the compiled code on real inputs.
+    // `jit.rs` doesn't install such a fragment: the kernel types closures by
+    // exact arity, so it gets no universal proof (`RELATED_WORK.md` §40).
+    // Sample verification alone would miss one reached only off-sample.
     // A mismatch here is handled like an ill-formed module: loud in debug,
     // soundly rejected (and counted) in release.
     if crate::decompile::decompile(&m, &mut TermStore::new()) != Some(h) {

@@ -561,6 +561,46 @@ mod tests {
     use crate::term::{PrimOp, TermStore};
 
     #[test]
+    fn a_closure_of_the_wrong_arity_off_the_samples_is_not_installed() {
+        // \n. (\g. if n == 777 then (\k. k n) (g 1) + (\k. k n) (g 2) else n) (\x. \y. x + y + n)
+        let mut s = TermStore::new();
+        let (v0, v1, v2, one, two, k777) = (s.var(0), s.var(1), s.var(2), s.lit(1), s.lit(2), s.lit(777));
+        let kn = s.app(v0, v2);
+        let apply_n = s.abs(kn);
+        let g1 = s.app(v0, one);
+        let g2 = s.app(v0, two);
+        let a = s.app(apply_n, g1);
+        let b = s.app(apply_n, g2);
+        let sum = s.prim(PrimOp::Add, a, b);
+        let cond = s.prim(PrimOp::Eq, v1, k777);
+        let body = s.if_(cond, sum, v1);
+        let lam = s.abs(body);
+        let xy = s.prim(PrimOp::Add, v1, v0);
+        let xyn = s.prim(PrimOp::Add, xy, v2);
+        let y = s.abs(xyn);
+        let x = s.abs(y);
+        let redex = s.app(lam, x);
+        let h = s.abs(redex);
+        // Well typed, but `g` is called with one argument everywhere and
+        // bound to a two-argument closure, so the fragment dispatches at the
+        // wrong arity: it traps at n = 777, which no sample reaches. Types
+        // don't see arity, so typing.rs accepts it. What keeps it out is the
+        // universal-proof gate: the kernel types a closure by its exact
+        // arity (`Clo_k`), so no proof can exist (RELATED_WORK.md §40).
+        assert!(crate::typing::well_typed(&s, h, 1));
+        let c = crate::compile::compile_specialised(&s, h).unwrap();
+        assert!(c.specialised.is_none());
+        let mut raw = JitEngine::new();
+        let (_module, f, hp) = raw.instantiate(&c.frag.wat).unwrap();
+        assert_eq!(raw.invoke(f, hp, &[777]), Err(EvalError::Trap));
+        let mut jit = JitEngine::new();
+        for n in [0, 1, 776, 777, 778] {
+            assert_eq!(jit.apply(&s, h, &[n]), eval::apply_term(&s, h, &[n]), "n={n}");
+        }
+        assert_eq!((jit.stats.compiled, jit.stats.declined_no_universal_proof), (0, 1));
+    }
+
+    #[test]
     fn an_ill_typed_branch_off_the_samples_is_not_miscompiled() {
         // \n. (\g. if n == 777 then g 1 + g else n) (\x. x + n)
         // `g 1 + g` adds a closure to an Int: `eval` fails with TypeError

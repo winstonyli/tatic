@@ -7283,9 +7283,12 @@ fn eval_dyn_direct_call(
     for (j, v) in arg_vals.into_iter().enumerate() {
         let pos = root_arity - 1 - j;
         let e = match (root_param_types[pos], v) {
-            (Some(_), DynDenoted::Clo(e, _)) => e,
+            // A closure of another arity can't be passed where a `Clo_k` is
+            // expected (see `arg_denotation`).
+            (Some(k), DynDenoted::Clo(e, cc)) if compile::peel(store, cc.root).map(|(a, _, _)| a) == Some(k) => e,
             (None, DynDenoted::Int(e)) => e,
-            _ => return None, // unreachable: needs_inline was false above
+            // An `Int` parameter given a `Clo` was inlined above.
+            _ => return None,
         };
         arg_exprs.push(e);
     }

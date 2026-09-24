@@ -29,9 +29,11 @@ pub(crate) struct Module {
 }
 
 /// How a `CallUnknown` is lowered. It is one choice for the whole module:
-/// with no type system, nothing proves that a closure value never reaches a
-/// variable called at another arity. `Curried` is required as soon as any
-/// variable anywhere is.
+/// `typing.rs`'s simple types don't record arity, so nothing here proves
+/// that a closure value never reaches a variable called at another arity.
+/// `Curried` is required as soon as any variable anywhere is. Under `Fast`
+/// a mismatch traps; `jit.rs` keeps such a fragment out through the
+/// universal-proof gate (`RELATED_WORK.md` §40).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dispatch {
     Fast,
