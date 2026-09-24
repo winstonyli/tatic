@@ -250,6 +250,33 @@ fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut H
 /// `compile::tests::build_produces_the_hand_built_ir_for_each_fixture`;
 /// the independent pin on the lowering is `tests/golden_wat.rs`.
 #[cfg(test)]
+impl Node {
+    /// `children`, mutably, in the same order.
+    pub(crate) fn children_mut(&mut self) -> Vec<&mut Node> {
+        match self {
+            Node::Lit(_) | Node::Read(_) | Node::MakeClosure { .. } => vec![],
+            Node::Arith(_, a, b) => vec![&mut **a, &mut **b],
+            Node::If { a, b, then, els, .. } => vec![&mut **a, &mut **b, &mut **then, &mut **els],
+            Node::SelfCall { args, .. } | Node::CallKnown { args, .. } | Node::MakePap { args, .. } => args.iter_mut().collect(),
+            Node::CallUnknown { callee, args } => std::iter::once(&mut **callee).chain(args.iter_mut()).collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Module {
+    /// `funcs`, mutably, in the same order.
+    pub(crate) fn funcs_mut(&mut self) -> Vec<&mut Func> {
+        std::iter::once(&mut self.entry)
+            .chain(self.combinators.iter_mut().filter_map(|c| match c {
+                Combinator::Lifted(f) => Some(f),
+                Combinator::Pap { .. } => None,
+            }))
+            .collect()
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
     use crate::term::{Hash, TermStore};
