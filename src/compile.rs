@@ -357,10 +357,21 @@ pub fn ir_check_failures() -> usize {
     IR_CHECK_FAILURES.load(Ordering::Relaxed)
 }
 
+static IR_VALIDATION_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many times, process-wide, `try_compile` has rejected a well-formed
+/// module because it did not decompile back to the source term
+/// (`decompile::decompile`): a builder bug, or a false alarm in the
+/// decompiler, and either way a bug. The release-mode fuzzers assert it
+/// is 0, as with `ir_check_failures`.
+pub fn ir_validation_failures() -> usize {
+    IR_VALIDATION_FAILURES.load(Ordering::Relaxed)
+}
+
 /// Try to compile `h` as an `arity`-ary numeric function (or, for `arity`
 /// `0`, a single closed expression to evaluate once). Returns `None` if
 /// `h` (or any combinator value it uses) falls outside the compilable
-/// fragment.
+/// fragment. Every accepted module has been decompiled back to `h`.
 pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     let m = build(store, h)?;
     if let Err(e) = ir::check(&m) {
@@ -371,6 +382,16 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         IR_CHECK_FAILURES.fetch_add(1, Ordering::Relaxed);
         if cfg!(debug_assertions) {
             panic!("the IR builder produced an ill-formed module for {h:?}: {e}");
+        }
+        return None;
+    }
+    // Translation validation: the IR must mean exactly `h`. A mismatch is
+    // handled like an ill-formed module: loud in debug, soundly rejected
+    // (and counted) in release.
+    if crate::decompile::decompile(&m, &mut TermStore::new()) != Some(h) {
+        IR_VALIDATION_FAILURES.fetch_add(1, Ordering::Relaxed);
+        if cfg!(debug_assertions) {
+            panic!("the IR for {h:?} failed translation validation: it does not decompile back to the source term");
         }
         return None;
     }

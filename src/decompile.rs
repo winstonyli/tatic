@@ -12,7 +12,6 @@
 //! compiler but the IR and term types: no `classify`, `peel`,
 //! `local_index` or `free_vars`. A bug in one of those therefore cannot be
 //! mirrored here and cancel itself out. A test enforces the separation.
-#![cfg_attr(not(test), allow(dead_code))] // wired into try_compile in Task 2
 
 use hashbrown::HashMap;
 
