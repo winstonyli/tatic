@@ -2836,10 +2836,11 @@ arguments, environment slots or branches, shifted reads, changed
 operators, retargeted combinators -- to every built corpus module; every
 well-formed mutant (213 of them) fails validation. Flipping a self-call's
 `tail` flag, which is meaning-preserving (field-parity class 2), passes.
-The two bugs injected directly into the decompiler during this work (a
+The two bugs injected directly into the decompiler while building it (a
 wrong Wasm-local-to-de-Bruijn mapping, and a dropped self-binder offset on
-recursive captures) were caught not by the mutation test itself but by the
-existing round-trip tests (the corpus and fixture decompile checks); the
+recursive captures) were caught not by the mutation test but by round-trip
+tests: the corpus and fixture checks, and for the offset a dedicated
+recursive-capture test, since no corpus term exercises that path; the
 mutation test's own evidence is its 213 rejections. Injected builder bugs
 (swapped `If` branches, a reversed environment-capture order, a mis-split
 over-application argument list) are caught across the suite.
@@ -2863,9 +2864,9 @@ capturing_closure_loop 86.6 → 102 ms, partial_application_loop 103 → 103
 ms, closure_typed_loop_carried_parameter_loop 28.4 → 26.1 ms,
 inconsistent_arity_loop_carried_parameter_loop 7.41 → 6.19 ms. This
 machine was shared with unrelated heavy processes throughout measurement
-(individual runs for the same build swung by up to 4x); the three
-smallest, least-noisy fixtures land within about 10% either way and the
-other three flip direction across reruns with no consistent regression, so
+(individual runs for the same build swung by up to 5x); three of the six
+fixtures land within about 10% and the other three move in both
+directions with no consistent regression, so
 the decompile-and-compare pass adds no cost distinguishable from this
 machine's run-to-run spread.
 
