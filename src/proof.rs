@@ -1027,10 +1027,7 @@ fn denote_with_placeholders(
                 let mut arg_exprs = Vec::with_capacity(k);
                 for (j, &a) in args.iter().enumerate() {
                     let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
-                    let e = match callee_param_types[arity - 1 - j] {
-                        Some(_) => d.clo()?,
-                        None => d.int()?,
-                    };
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let pap_fn = pap_fn.at(&combinators.cp.arith);
@@ -1071,10 +1068,7 @@ fn denote_with_placeholders(
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
                     let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
-                    let e = match callee_param_types[arity - 1 - j] {
-                        Some(_) => d.clo()?,
-                        None => d.int()?,
-                    };
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let call_fn = call_fn.at(&combinators.cp.arith);
@@ -1317,10 +1311,7 @@ fn denote_closure_typed(
                 let mut arg_exprs = Vec::with_capacity(k);
                 for (j, &a) in args.iter().enumerate() {
                     let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
-                    let e = match callee_param_types[arity - 1 - j] {
-                        Some(_) => d.clo()?,
-                        None => d.int()?,
-                    };
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let pap_fn = pap_fn.at(&combinators.cp.arith);
@@ -1355,10 +1346,7 @@ fn denote_closure_typed(
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
                     let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
-                    let e = match callee_param_types[arity - 1 - j] {
-                        Some(_) => d.clo()?,
-                        None => d.int()?,
-                    };
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let call_fn = call_fn.at(&combinators.cp.arith);
@@ -4302,6 +4290,19 @@ fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32
     }
 }
 
+/// An argument's denotation, for a callee parameter of type `want` (`None`
+/// for `Int`, `Some(k)` for `Clo_k`); `actual` computes the argument's own
+/// `return_type_of`, only when `want` is a `Clo`. A `Clo` argument must have exactly the parameter's
+/// arity: `\g. g 1` applied to `\x. \y. x + y` passes a `Clo_2` where
+/// `g : Clo_1`, and composing that would be ill-typed in the kernel.
+fn arg_denotation(d: Denoted, want: Option<usize>, actual: impl FnOnce() -> Option<Option<usize>>) -> Option<Expr> {
+    match want {
+        Some(k) if actual() == Some(Some(k)) => d.clo(),
+        Some(_) => None,
+        None => d.int(),
+    }
+}
+
 /// Extends `ArithPostulates` with postulated closure-value support -- see
 /// the section docs above.
 #[derive(Clone)]
@@ -6519,10 +6520,7 @@ fn denote_closure(
                     // see param_types_for's/denote's own convention;
                     // unchanged by only k of arity args being supplied.
                     let d = denote_closure(store, a, combinators, params, param_types)?;
-                    let e = match callee_param_types[arity - 1 - j] {
-                        Some(_) => d.clo()?,
-                        None => d.int()?,
-                    };
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, param_types.len(), None, param_types))?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let pap_fn = pap_fn.at(&combinators.cp.arith);
@@ -6562,10 +6560,7 @@ fn denote_closure(
                     // args[j] (application order) is Var(arity-1-j) --
                     // see param_types_for's/denote's own convention.
                     let d = denote_closure(store, a, combinators, params, param_types)?;
-                    let e = match callee_param_types[arity - 1 - j] {
-                        Some(_) => d.clo()?,
-                        None => d.int()?,
-                    };
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, param_types.len(), None, param_types))?;
                     arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
                 }
                 let call_fn = call_fn.at(&combinators.cp.arith);

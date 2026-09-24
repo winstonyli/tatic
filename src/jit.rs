@@ -584,6 +584,29 @@ mod tests {
     }
 
     #[test]
+    fn a_closure_argument_of_the_wrong_arity_gets_no_proof() {
+        // \n. (\g. g 1) (\x. \y. x + y) n
+        let mut s = TermStore::new();
+        let (v0, v1, one) = (s.var(0), s.var(1), s.lit(1));
+        let g1 = s.app(v0, one);
+        let lam = s.abs(g1);
+        let xy = s.prim(PrimOp::Add, v1, v0);
+        let y = s.abs(xy);
+        let x = s.abs(y);
+        let redex = s.app(lam, x);
+        let body = s.app(redex, v0);
+        let h = s.abs(body);
+        // `\g. g 1` gives `g : Clo_1`, but the argument is a `Clo_2`. The
+        // proof walkers used to compose them anyway, which the kernel
+        // rejects (and a debug build panicked on).
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.kernel_verify(&s, h, 1), ProofStrength::None);
+        // The JIT proves the specialisation `\n. 1 + n` instead.
+        assert_eq!(jit.apply(&s, h, &[4]), Ok(5));
+        assert_eq!(jit.stats.specialised, 1);
+    }
+
+    #[test]
     fn an_open_redex_is_not_contracted_away_by_the_jit() {
         // Final review's probe: before the checker required a closed
         // source, `(\x. 0) v5` was contracted to `0`, `h'` compiled, no
