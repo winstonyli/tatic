@@ -6,6 +6,7 @@ pub mod jit;
 pub mod kernel;
 pub(crate) mod lower_wat;
 pub mod proof;
+pub mod spec_check;
 pub mod syntax;
 pub mod term;
 
@@ -17,3 +18,5 @@ extern crate self as tatic;
 pub(crate) mod test_corpus;
 #[cfg(test)]
 mod ir_fuzz;
+#[cfg(test)]
+mod independence;

@@ -274,57 +274,12 @@ mod tests {
     #[test]
     fn the_decompiler_imports_nothing_from_the_compiler() {
         // The whole point of the check is that a bug in `compile.rs`'s or
-        // `lower_wat.rs`'s helpers cannot be mirrored here. Enforced
-        // mechanically: token by token (so `use crate :: compile :: peel;`
-        // or `use crate::{compile::peel};` can't slip past a substring
-        // match), and only over the code above `mod tests`, so
-        // `crate::compile::build` -- allowed here, in tests only, as the
-        // thing under test -- doesn't trip it. `decompile` itself contains
-        // "compile" as a substring but is a single token, so it's fine.
-        let src = include_str!("decompile.rs");
-        let lines: Vec<&str> = src.lines().collect();
-        let tests_start = lines
-            .iter()
-            .enumerate()
-            .find(|(i, l)| l.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|next| next.trim_start().starts_with("mod tests")))
-            .map_or(lines.len(), |(i, _)| i);
-        let code = &lines[..tests_start];
-        for forbidden in ["compile", "lower_wat"] {
-            let hit = code.iter().any(|l| {
-                let l = l.trim_start();
-                !l.starts_with("//") && l.split(|c: char| !c.is_alphanumeric() && c != '_').any(|tok| tok == forbidden)
-            });
-            assert!(!hit, "decompile.rs must not use {forbidden}");
-        }
-        assert!(!code.iter().any(|l| l.contains("use super::super")), "decompile.rs must not use super::super");
-        // Denylisting "compile"/"lower_wat" only catches those two names.
-        // An allowlist catches everything else too: every `crate::` path
-        // above the test module must lead into `crate::ir` or
-        // `crate::term`, whatever comes after -- `crate::proof`,
-        // `crate::jit`, a future module, all rejected the same way.
-        for l in code {
-            let l = l.trim_start();
-            if l.starts_with("//") {
-                continue;
-            }
-            // Collapse whitespace so `crate :: compile` can't dodge the
-            // `crate::` substring search below the way it dodges the
-            // token-based denylist above. `pub(crate)` has no `::` after
-            // `crate` even once collapsed, so it never matches.
-            let compact: String = l.chars().filter(|c| !c.is_whitespace()).collect();
-            // `decompile` sits directly under the crate root, so `super::`
-            // reaches the same siblings `crate::` does.
-            for prefix in ["crate::", "super::"] {
-                let mut rest = compact.as_str();
-                while let Some(i) = rest.find(prefix) {
-                    let after = &rest[i + prefix.len()..];
-                    let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
-                    let head = &after[..end];
-                    assert!(head == "ir" || head == "term", "decompile.rs must not use {prefix}{head} (only ir and term are allowed)");
-                    rest = &after[end..];
-                }
-            }
-        }
+        // `lower_wat.rs`'s helpers cannot be mirrored here. Only the code
+        // above `mod tests` is scanned, so `crate::compile::build` --
+        // allowed here, in tests only, as the thing under test -- doesn't
+        // trip it. `decompile` itself contains "compile" as a substring but
+        // is a single token, so it's fine.
+        crate::independence::assert_independent("decompile.rs", include_str!("decompile.rs"), &["compile", "lower_wat"], &["ir", "term"]);
     }
 
     use crate::ir::check;
