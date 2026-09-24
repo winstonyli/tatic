@@ -1100,3 +1100,11 @@ guards against by hand): caught immediately, at seed 22.
   term is a lambda/`rec`/`if` -- `\x. x + -5` yields `\v0. v0 + -5 1 2`
   instead of `(\v0. v0 + -5) 1 2`. Fix: bracket the printed term there
   (e.g. print it at application precedence).
+- The type system, taken as a whole (`RELATED_WORK.md` §44). Five notions
+  of type (`typing.rs`, compile's `ArityUse`, the provers' `Denoted`, the
+  kernel's `Clo_k`, and `calls_a_parameter`) must agree, and `typing.rs`
+  and `try_compile` are exponential on shared subterms: 3.4 s and 73 s
+  for `t + t` nested 25 deep. In ranked order: memoise ground typing
+  results, then do the same for `try_compile`; add a type-safety fuzz;
+  and, if the proof gate is ever relaxed, move to one untrusted
+  elaborator plus a small trusted checker of its annotations.
