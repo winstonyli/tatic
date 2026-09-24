@@ -390,4 +390,93 @@ mod tests {
     fn the_checker_imports_nothing_but_term() {
         crate::independence::assert_independent("spec_check.rs", include_str!("spec_check.rs"), &["specialise", "compile", "lower_wat"], &["term"]);
     }
+
+    /// Every distinct subterm of `t`.
+    fn subterms(s: &TermStore, t: Hash) -> Vec<Hash> {
+        let mut seen = HashSet::new();
+        let mut stack = vec![t];
+        let mut out = Vec::new();
+        while let Some(u) = stack.pop() {
+            if seen.insert(u) {
+                out.push(u);
+                stack.extend(children(s.resolve(u)));
+            }
+        }
+        out
+    }
+
+    /// `t` with its first `Var` or `Lit` leaf (in `subterms` order) bumped
+    /// by one, built in `s`. `None` if `t` has neither.
+    fn bump_one_leaf(s: &mut TermStore, t: Hash) -> Option<Hash> {
+        let leaf = subterms(s, t).into_iter().find(|&u| matches!(s.resolve(u), Term::Var(_) | Term::Lit(_)))?;
+        let bumped = match *s.resolve(leaf) {
+            Term::Var(i) => s.var(i + 1),
+            Term::Lit(n) => s.lit(n.wrapping_add(1)),
+            _ => unreachable!(),
+        };
+        Some(replace_all(s, t, leaf, bumped, &mut HashMap::new()))
+    }
+
+    #[test]
+    fn every_mutated_certificate_is_rejected_unless_it_really_replays_to_its_claim() {
+        let mut counts = [0usize; 5];
+        for (name, s, h) in crate::test_corpus::terms() {
+            let sp = crate::specialise::specialise(&s, h);
+            if sp.trace.is_empty() {
+                continue;
+            }
+            let t = &sp.trace;
+            // 1. Drop a step.
+            for i in 0..t.len() {
+                let mut m = t.clone();
+                m.remove(i);
+                assert!(check(&s, h, &m, sp.term).is_err(), "{name}: dropping step {i} was accepted");
+                counts[0] += 1;
+            }
+            // 2. Swap adjacent steps. Two steps on disjoint redexes commute,
+            // so acceptance is allowed, but only if the claim is also
+            // reached by an honest replay, which the unmutated order is.
+            for i in 0..t.len().saturating_sub(1) {
+                let mut m = t.clone();
+                m.swap(i, i + 1);
+                if m != *t && check(&s, h, &m, sp.term).is_ok() {
+                    assert_eq!(check(&s, h, t, sp.term), Ok(()), "{name}: swap {i} accepted, but the original trace is not");
+                }
+                counts[1] += 1;
+            }
+            // 3. Retarget a step to another subterm of the source. A
+            // retargeted step could in principle hit a different valid
+            // redex and still reach the same claim (observed on the
+            // corpus: over_application_pap_producing_root), so acceptance
+            // is allowed, but only if the claim is also reached by an
+            // honest replay, which the unmutated order is (same form as
+            // kind 2).
+            let subs = subterms(&s, h);
+            for i in 0..t.len() {
+                let Step::BetaV { redex } = t[i];
+                for &other in subs.iter().filter(|&&u| u != redex).take(8) {
+                    let mut m = t.clone();
+                    m[i] = Step::BetaV { redex: other };
+                    if check(&s, h, &m, sp.term).is_ok() {
+                        assert_eq!(check(&s, h, t, sp.term), Ok(()), "{name}: retargeting step {i} accepted, but the original trace is not");
+                    }
+                    counts[2] += 1;
+                }
+            }
+            // 4. Change one leaf of the claim.
+            let mut scratch = TermStore::new();
+            let claim = copy(&sp.store, &mut scratch, sp.term, &mut HashMap::new());
+            if let Some(bad) = bump_one_leaf(&mut scratch, claim) {
+                assert!(check(&s, h, t, bad).is_err(), "{name}: a changed claim was accepted");
+                counts[3] += 1;
+            }
+            // 5. Truncate the trace.
+            for len in 0..t.len() {
+                assert!(check(&s, h, &t[..len], sp.term).is_err(), "{name}: truncation to {len} was accepted");
+                counts[4] += 1;
+            }
+        }
+        eprintln!("mutation counts: {counts:?}");
+        assert!(counts.iter().all(|&c| c > 0), "every mutation kind must run at least once: {counts:?}");
+    }
 }

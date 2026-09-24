@@ -40,6 +40,7 @@ use tatic::eval;
 use tatic::jit::JitEngine;
 use tatic::proof;
 use tatic::term::{Hash, PrimOp, TermStore};
+use tatic::{spec_check, specialise};
 
 struct Rng(u64);
 
@@ -371,6 +372,7 @@ fn gen_program(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Option<Hash>) 
 fn assert_no_ir_failures() {
     assert_eq!(compile::ir_check_failures(), 0, "the IR builder produced an ill-formed module (ir::check) -- a builder bug");
     assert_eq!(compile::ir_validation_failures(), 0, "try_compile accepted a module that failed translation validation (decompile::decompile) -- a builder bug or a decompiler false alarm");
+    assert_eq!(compile::spec_check_failures(), 0, "compile_specialised discarded a specialisation because spec_check::check rejected its trace -- a specialiser bug");
 }
 
 #[test]
@@ -702,5 +704,126 @@ fn over_application_block_terms_compile_and_mostly_get_kernel_checked_proofs() {
         kernel_verified_count > 0,
         "at least some well-typed over-application terms should get a kernel-checked proof -- check combinator_return_type/call_ref"
     );
+    assert_no_ir_failures();
+}
+
+/// An Int-valued expression over `scope` variables that is full of βv
+/// redexes: literal lambdas applied to values (literals, variables,
+/// closed or capturing lambdas), two-argument spines, and redexes whose
+/// argument is not a value (which must stay put). `Div`/`Mod` are
+/// included so errors are exercised. There's no `Rec` and every applied
+/// lambda is fresh, so every term terminates.
+fn gen_redex_rich(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
+    let leaf = |rng: &mut Rng, s: &mut TermStore| {
+        if scope > 0 && rng.below(2) == 0 { s.var(rng.below(scope)) } else { s.lit(rng.i64_range(-3, MAX_LIT)) }
+    };
+    if fuel == 0 {
+        return leaf(rng, s);
+    }
+    match rng.below(8) {
+        0 => leaf(rng, s),
+        1 => {
+            let op = [PrimOp::Add, PrimOp::Sub, PrimOp::Mul, PrimOp::Div, PrimOp::Mod, PrimOp::Lt][rng.below(6) as usize];
+            let a = gen_redex_rich(rng, s, scope, fuel - 1);
+            let b = gen_redex_rich(rng, s, scope, fuel - 1);
+            s.prim(op, a, b)
+        }
+        2 => {
+            let c = gen_redex_rich(rng, s, scope, fuel - 1);
+            let t = gen_redex_rich(rng, s, scope, fuel - 1);
+            let e = gen_redex_rich(rng, s, scope, fuel - 1);
+            s.if_(c, t, e)
+        }
+        3 => {
+            // (\x. e) v, with v a leaf.
+            let body = gen_redex_rich(rng, s, scope + 1, fuel - 1);
+            let lam = s.abs(body);
+            let v = leaf(rng, s);
+            s.app(lam, v)
+        }
+        4 => {
+            // (\x. e) a, with a not necessarily a value.
+            let body = gen_redex_rich(rng, s, scope + 1, fuel - 1);
+            let lam = s.abs(body);
+            let a = gen_redex_rich(rng, s, scope, fuel - 1);
+            s.app(lam, a)
+        }
+        5 => {
+            // (\g. g e1 + e2) (\y. e3): a closure argument, called once,
+            // possibly capturing. Inside \g, Var(0) is g.
+            let g = s.var(0);
+            let e1 = gen_redex_rich(rng, s, scope + 1, fuel - 1);
+            let call = s.app(g, e1);
+            let e2 = gen_redex_rich(rng, s, scope + 1, fuel - 1);
+            let body = s.prim(PrimOp::Add, call, e2);
+            let lam = s.abs(body);
+            let fbody = gen_redex_rich(rng, s, scope + 1, fuel - 1);
+            let f = s.abs(fbody);
+            s.app(lam, f)
+        }
+        6 => {
+            // (\a b. e) v1 v2
+            let body = gen_redex_rich(rng, s, scope + 2, fuel - 1);
+            let inner = s.abs(body);
+            let lam = s.abs(inner);
+            let (v1, v2) = (leaf(rng, s), leaf(rng, s));
+            s.app2(lam, v1, v2)
+        }
+        _ => {
+            // (\a b. e) v1: a partial application, then applied to v2 via a caller.
+            let body = gen_redex_rich(rng, s, scope + 2, fuel - 1);
+            let inner = s.abs(body);
+            let add_like = s.abs(inner);
+            let v1 = leaf(rng, s);
+            let partial = s.app(add_like, v1);
+            let (g, z) = (s.var(1), s.var(0));
+            let gz = s.app(g, z);
+            let c_inner = s.abs(gz);
+            let caller = s.abs(c_inner);
+            let v2 = leaf(rng, s);
+            s.app2(caller, partial, v2)
+        }
+    }
+}
+
+#[test]
+fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
+    const SEEDS: u64 = 1000;
+    const SAMPLE_VALUES: [i64; 7] = [0, 1, -1, 2, -3, 10, -20];
+    let mut specialised = 0u32;
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0x5BEC_1A11_u64 ^ seed);
+        let mut s = TermStore::new();
+        // Half redex-rich terms, half the existing programs (recursion, closures).
+        let (h, arity) = if seed % 2 == 0 {
+            let e = gen_redex_rich(&mut rng, &mut s, 2, 4);
+            let inner = s.abs(e);
+            (s.abs(inner), 2)
+        } else {
+            let (h, arity, _) = gen_program(&mut rng, &mut s);
+            (h, arity)
+        };
+        let sp = specialise::specialise(&s, h);
+        assert_eq!(spec_check::check(&s, h, &sp.trace, sp.term), Ok(()), "seed={seed}: the checker rejected the specialiser's trace");
+        if !sp.trace.is_empty() {
+            specialised += 1;
+        }
+        let mut args = vec![0i64; arity];
+        for trial in 0..8 {
+            for a in args.iter_mut() {
+                *a = SAMPLE_VALUES[rng.below(SAMPLE_VALUES.len() as u32) as usize];
+            }
+            // Exact equality, including which error: βv moves only values,
+            // which have no effects, so it can't reorder or remove an error.
+            assert_eq!(
+                eval::apply_term(&sp.store, sp.term, &args),
+                eval::apply_term(&s, h, &args),
+                "seed={seed} trial={trial} args={args:?}"
+            );
+        }
+    }
+    eprintln!("specialisation fuzz: {specialised}/{SEEDS} terms specialised");
+    assert!(specialised > SEEDS as u32 / 4, "too few terms specialised ({specialised}/{SEEDS}); check gen_redex_rich");
+    assert_eq!(compile::spec_check_failures(), 0);
     assert_no_ir_failures();
 }
