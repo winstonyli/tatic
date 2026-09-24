@@ -1240,8 +1240,8 @@ mod tests {
         // f(3) (under-applied by one arg); caller = \g. g(1); top =
         // caller(partial) -- same shape as proof::tests::
         // a_partially_applied_self_recursive_combinator_used_as_a_value_gets_a_closure_proof.
-        // compile.rs's register_partial_app/emit_pap_wrapper never
-        // special-cased is_rec (a PAP wrapper only ever forwards a static
+        // compile.rs's register_partial_app/lower_wat.rs's emit_pap_wrapper
+        // never special-cased is_rec (a PAP wrapper only ever forwards a static
         // call to its root, indifferent to whether that root's own codegen
         // happens to loop), and now neither does proof.rs's pap_ref, so
         // this gets a kernel-checked proof too.

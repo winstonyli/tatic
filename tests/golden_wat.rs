@@ -1,4 +1,5 @@
-//! Golden WAT snapshots, one per benchmark term. A change to the lowering
+//! Golden WAT snapshots, one per benchmark term, plus a few `rejects_*`
+//! terms the fragment must reject. A change to the lowering
 //! (`src/lower_wat.rs`) or the builder that changes emitted WAT fails here.
 //! If the change is intended, regenerate with
 //! `UPDATE_GOLDEN=1 cargo test --test golden_wat` and review the diff. A
@@ -14,7 +15,7 @@ use std::fs;
 use std::path::Path;
 
 use tatic::compile::try_compile;
-use tatic::term::{Hash, TermStore};
+use tatic::term::{Hash, PrimOp, TermStore};
 
 type Builder = Box<dyn Fn(&mut TermStore) -> Hash>;
 
@@ -40,7 +41,61 @@ fn corpus() -> Vec<(&'static str, Builder)> {
         ("over_application_pap_producing_root", Box::new(common::over_application_pap_producing_root)),
         ("tail_recursive_loop_with_if_between_closures_self_call_arg", Box::new(common::tail_recursive_loop_with_if_between_closures_self_call_arg)),
         ("tail_recursive_loop_with_pap_producing_root_self_call_arg", Box::new(common::tail_recursive_loop_with_pap_producing_root_self_call_arg)),
+        ("rejects_a_comparison_used_as_a_value", Box::new(rejects_a_comparison_used_as_a_value)),
+        ("rejects_a_non_comparison_condition", Box::new(rejects_a_non_comparison_condition)),
+        ("rejects_a_literal_applied_as_a_function", Box::new(rejects_a_literal_applied_as_a_function)),
+        ("rejects_a_self_reference_read_as_a_value", Box::new(rejects_a_self_reference_read_as_a_value)),
+        ("rejects_a_nested_closure_capturing_self", Box::new(rejects_a_nested_closure_capturing_self)),
     ]
+}
+
+// Terms the fragment must reject. Nothing else pins "identical
+// rejections" now that the legacy emitter is gone.
+
+/// `\x. x < 1`: comparisons only appear as an `If` condition.
+fn rejects_a_comparison_used_as_a_value(s: &mut TermStore) -> Hash {
+    let x = s.var(0);
+    let one = s.lit(1);
+    let lt = s.prim(PrimOp::Lt, x, one);
+    s.abs(lt)
+}
+
+/// `\x. if x + 1 then 1 else 2`
+fn rejects_a_non_comparison_condition(s: &mut TermStore) -> Hash {
+    let x = s.var(0);
+    let one = s.lit(1);
+    let two = s.lit(2);
+    let cond = s.prim(PrimOp::Add, x, one);
+    let body = s.if_(cond, one, two);
+    s.abs(body)
+}
+
+/// `\x. 1 x`: an application headed by neither a variable nor a lambda.
+fn rejects_a_literal_applied_as_a_function(s: &mut TermStore) -> Hash {
+    let x = s.var(0);
+    let one = s.lit(1);
+    let body = s.app(one, x);
+    s.abs(body)
+}
+
+/// `rec f x. f`: the self-reference is only ever called.
+fn rejects_a_self_reference_read_as_a_value(s: &mut TermStore) -> Hash {
+    let f = s.var(1);
+    let abs = s.abs(f);
+    s.rec(abs)
+}
+
+/// `rec f n. (\y. f y) n`: a lifted lambda cannot capture the enclosing
+/// `Rec`'s self-reference.
+fn rejects_a_nested_closure_capturing_self(s: &mut TermStore) -> Hash {
+    let y = s.var(0);
+    let f = s.var(2);
+    let fy = s.app(f, y);
+    let inner = s.abs(fy);
+    let n = s.var(0);
+    let body = s.app(inner, n);
+    let abs = s.abs(body);
+    s.rec(abs)
 }
 
 #[test]
@@ -55,6 +110,8 @@ fn every_benchmark_term_lowers_to_its_golden_wat() {
             Some(frag) => frag.wat,
             None => "REJECTED\n".to_string(),
         };
+        // So that `UPDATE_GOLDEN=1` cannot quietly record one as accepted.
+        assert!(!name.starts_with("rejects_") || got == "REJECTED\n", "{name} should be rejected, but compiled to:\n{got}");
         let path = dir.join(format!("{name}.wat"));
         if update {
             fs::create_dir_all(&dir).unwrap();

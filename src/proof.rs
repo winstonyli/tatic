@@ -4049,8 +4049,8 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // (`build_universal`'s own fragment already relied on that). `pap_ref` now
 // covers a self-recursive root too, the same way: `compile::peel`/
 // `compile::free_vars`/`param_types_for` were already generic over
-// `is_rec`, and `compile.rs`'s own `register_partial_app`/`emit_pap_wrapper`
-// never special-cased it either (a PAP wrapper only ever forwards a static
+// `is_rec`, and `compile.rs`'s `register_partial_app`/`lower_wat.rs`'s
+// `emit_pap_wrapper` never special-cased it either (a PAP wrapper only ever forwards a static
 // call to its root, indifferent to whether that root's own codegen happens
 // to loop) -- `pap_ref`'s own extra `is_rec` check was the only thing left
 // standing in the way.
@@ -4730,8 +4730,8 @@ impl<'a> ClosureCombinators<'a> {
     /// itself be self-recursive (`Term::Rec`, not just `Term::Abs`):
     /// `compile::peel`/`compile::free_vars`/`param_types_for` are all
     /// already generic over that (a call is always postulated opaque
-    /// regardless), and `compile.rs`'s own `register_partial_app`/
-    /// `emit_pap_wrapper` never special-cased it either -- a static
+    /// regardless), and `compile.rs`'s `register_partial_app`/
+    /// `lower_wat.rs`'s `emit_pap_wrapper` never special-cased it either -- a static
     /// forwarding call to `root`'s own table entry, indifferent to
     /// whether that entry's *own* codegen happens to loop.
     fn pap_ref(&mut self, h: Hash, k: usize, caller_param_types: &[Option<usize>]) -> Option<Expr> {
@@ -6449,8 +6449,8 @@ fn denote_closure(
     match compile::classify(store, h, params.len(), None) {
         shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
             // A parameter-typed closure, called through `call_indirect`:
-            // per compile.rs's own typed dispatch, arguments are always
-            // `Int` regardless of the callee's own signature.
+            // per lower_wat.rs's `call_indirect` dispatch, arguments are
+            // always `Int` regardless of the callee's own signature.
             AppShape::ParamCall { root, args, .. } => {
                 let callee = denote_closure(store, root, combinators, params, param_types)?.clo()?;
                 let callee = Anchored::new(&combinators.cp.arith, callee);
@@ -9697,8 +9697,8 @@ mod tests {
         // pap_ref no longer rejects a recursive root -- compile::peel/
         // compile::free_vars/param_types_for were already generic over
         // is_rec (a call is always postulated opaque regardless), and
-        // compile.rs's own register_partial_app/emit_pap_wrapper never
-        // special-cased it either (a PAP wrapper only ever forwards a
+        // compile.rs's register_partial_app/lower_wat.rs's emit_pap_wrapper
+        // never special-cased it either (a PAP wrapper only ever forwards a
         // static call to its root, indifferent to whether that root's own
         // codegen happens to loop), so the only thing standing in the way
         // was pap_ref's own extra is_rec check.
@@ -10036,7 +10036,7 @@ mod tests {
         // add = \x y. x + y, called with three arguments -- rejected by
         // denote_closure's own args.len() > arity check (proof.rs has no
         // fragment for over-application at all, unlike compile.rs, which
-        // now compiles the shape -- see compile.rs's own module docs and
+        // now compiles the shape -- see lower_wat.rs's module docs and
         // compile::tests::an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter
         // -- though not *this* term specifically: `add`'s body is a plain
         // `Int`, never a further closure, so this one is genuinely

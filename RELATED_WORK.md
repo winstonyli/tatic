@@ -2772,6 +2772,24 @@ Verify-teeth: swapping `If` branches in the builder, or skipping
 `compile::tests`). After the deletion, a one-byte template change
 (`i64.const 32` → `33` in `MakeClosure`'s packing) failed the golden test
 for all 7 of the 20 terms that build a closure value, and 3 closure tests.
+Five `rejects_*` terms in the same corpus pin rejections, recorded as
+`REJECTED`.
+
+**Field parity.** So that the step-2 decompile check cannot be vacuous,
+every IR field is in one of three classes:
+1. read by both the lowering and the decompiler (`Lit`, `Read`, ops, every
+   `args`/`env`/`root_env`, `f`, `wrapper`, `Pap.root`, `callee`, `arity`);
+2. read only by the decompiler and unable to change runtime meaning
+   (`is_rec`; `SelfCall.tail`, whose two lowerings are both correct);
+3. read only by the lowering, a representation choice that `ir::check`
+   validates (`dispatch`, `env_len`, `Pap.supplied`).
+
+`ir::check` is a complete precondition for lowering: besides ranges, arities
+and environment lengths, it requires every lambda and every recursive
+function to have `arity >= 1` and every `CallUnknown` to have arguments, so
+nothing it admits makes `lower` panic, loop or disagree with the decompiler.
+A check failure is a builder bug; release builds reject the term and count
+it in `compile::ir_check_failures()`, which `compile_fuzz` asserts is 0.
 
 **What changed besides the split.** The discovery pass is gone. The dispatch
 mode is a field of the module, known before any WAT is written. Renames:

@@ -223,8 +223,9 @@ what `x`'s own real parameter types are (no bespoke "`apply_ref`" axiom
 mediates the call anymore — see section 2 and `RELATED_WORK.md` section
 11 for why one used to be needed and no longer is). This is still a
 genuine loss of precision lower_wat.rs's own `call_indirect` dispatch
-already has (its docs: "per compile.rs's own typed dispatch, arguments
-are always `Int` regardless of the callee's own signature") — a closure
+already has (`proof.rs`'s docs: "per lower_wat.rs's `call_indirect`
+dispatch, arguments are always `Int` regardless of the callee's own
+signature") — a closure
 that actually expects a `Clo`-typed argument, called through a variable,
 is outside this fragment's own expressiveness entirely, not merely
 unverified; that loss of precision is a property of `Clo_k`'s own chosen
@@ -258,7 +259,8 @@ h peels to (n, body, _)   0 < k < n
 
 Real partial application, resolved at compile time (`pap_ref`, `k == 0 ||
 k >= n` rejected outright — `pap_ref`'s own guard, section 3 above) —
-`compile.rs`'s own `register_partial_app`/`emit_pap_wrapper` counterpart.
+the counterpart of `compile.rs`'s `register_partial_app` and
+`lower_wat.rs`'s `emit_pap_wrapper`.
 
 ```
 h peels to (n, body, _)   m > 0

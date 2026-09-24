@@ -33,7 +33,7 @@ JIT, and prints timing plus which ones got a kernel-checked equivalence
 proof. (Two capturing-closure terms appear side by side, compiled via
 *different* dispatch paths: one reached by over-applying a literal
 lambda's saturated-call result, the other by calling a closure-typed
-*parameter* — see `compile.rs`'s module docs and `main.rs`'s comments on
+*parameter* — see `lower_wat.rs`'s module docs and `main.rs`'s comments on
 each.)
 
 ## Validation
@@ -436,8 +436,8 @@ This is stated precisely because it would be easy to overclaim here.
   machinery; `compile::peel`/`compile::free_vars`/`compile::infer_closure_arities`
   were already generic over `is_rec` (`prove_tail_recursive_universal`'s own
   fragment already relied on that). `pap_ref` now covers a self-recursive
-  root too, the same way: `compile.rs`'s own `register_partial_app`/
-  `emit_pap_wrapper` never special-cased `is_rec` either (a PAP wrapper only
+  root too, the same way: `compile.rs`'s `register_partial_app`/
+  `lower_wat.rs`'s `emit_pap_wrapper` never special-cased `is_rec` either (a PAP wrapper only
   ever forwards a static call to its root, indifferent to whether that
   root's own codegen happens to loop), so `pap_ref`'s own extra `is_rec`
   check was the only thing left rejecting it. Widening the capturing-PAP case
@@ -986,12 +986,12 @@ guards against by hand): caught immediately, at seed 22.
   wrapper for an under-applied literal — landed, as has over-application
   of a literal lambda — dispatching a saturated call's own result through
   `call_indirect`, the same as calling a closure-typed variable; see
-  `compile.rs`'s own module docs. A variable called with inconsistent
+  `lower_wat.rs`'s module docs. A variable called with inconsistent
   arities across sites — a genuinely different, harder problem than
   over-application, since there's no fixed arity to desugar around at all
   — has landed too, via a curried, one-argument-at-a-time dispatch
   mechanism generated once any such inconsistency is found anywhere in
-  the compiled fragment; see `compile.rs`'s own module docs and
+  the compiled fragment; see `lower_wat.rs`'s module docs and
   `TYPES.md`.)
 - `prove_closure_expr` now covers *capturing* closures too (`mk_clo_h`/
   `Env`/`build_env_expr` — see the table row above and `proof.rs`'s own
@@ -1020,8 +1020,8 @@ guards against by hand): caught immediately, at seed 22.
   a PAP wrapper's own environment with a copy of the root's. Also covers
   partial application of a *self-recursive* combinator, the same opaque-call
   reasoning `register`/`call_ref` already use for a direct call or bare
-  value (`compile.rs`'s own `register_partial_app`/`emit_pap_wrapper` never
-  special-cased `is_rec` either). Over-application (more arguments than
+  value (`compile.rs`'s `register_partial_app`/`lower_wat.rs`'s
+  `emit_pap_wrapper` never special-cased `is_rec` either). Over-application (more arguments than
   arity) stays out of scope on both readings.
 - The closures fragment's kernel-checked proof now verifies closure
   *arity*, not just structural agreement: `Clo` was a single, arity-blind
