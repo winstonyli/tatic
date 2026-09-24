@@ -699,8 +699,8 @@ disagreeing on a `Div` term.
 
 **Robustness**: `tests/kernel_fuzz.rs` fuzzes a different layer entirely: `kernel.rs`'s
 own type-checker, directly, with no well-typedness discipline on the
-generated terms at all (unlike `compile_fuzz.rs`, which only ever feeds
-terms already known to be well-typed on both readings). Random `Expr`
+generated terms at all (unlike `compile_fuzz.rs`, whose terms are built
+to be meaningful to both the interpreter and the compiler). Random `Expr`
 trees — `Var`s sometimes genuinely in scope, sometimes deliberately just
 past it, sometimes wildly unbound; `Sort`s occasionally at `u32::MAX` —
 are checked only for one property: `infer`/`check`/`typecheck` never

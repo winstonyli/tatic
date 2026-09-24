@@ -5,10 +5,9 @@
 //! ever return `Ok` or `Err`, never panic.
 //!
 //! This is a different property from `compile_fuzz.rs`'s own semantic
-//! fuzzing, which only ever feeds `jit::JitEngine`/`eval::apply_term`
-//! terms translated from `proof.rs`'s own postulate-based denotations --
-//! by construction, always well-typed on both readings. Here there is no
-//! well-typedness discipline at all: most generated trees are simply
+//! fuzzing, which feeds `jit::JitEngine`/`eval::apply_term` `Term`s and
+//! compares the two, and never builds a kernel `Expr` of its own. Here
+//! there is no well-typedness discipline at all: most generated trees are simply
 //! rejected with an ordinary `Err`, which is the expected, uninteresting
 //! outcome on almost every trial. The only property under test is that
 //! the type-checker itself never panics while getting there -- a
