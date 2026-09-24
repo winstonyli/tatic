@@ -460,8 +460,8 @@ fn compiled_and_interpreted_agree_on_random_terms() {
 /// (over-applying an `Int`), still outside what compile.rs can *correctly*
 /// compile even though `try_compile` itself no longer rejects the shape
 /// outright. Used by `over_applied_ill_typed_terms_still_agree_with_the_interpreter`
-/// to confirm `jit.rs`'s own sample verification catches exactly this case
-/// and falls back to the interpreter, rather than by
+/// to confirm `jit.rs`'s typing gate declines exactly this case and falls
+/// back to the interpreter, rather than by
 /// `compile_rejects_out_of_scope_terms_cleanly` (which is about `try_compile`
 /// alone).
 fn gen_over_applied(rng: &mut Rng, s: &mut TermStore) -> Hash {
@@ -537,7 +537,7 @@ fn compile_rejects_out_of_scope_terms_cleanly() {
         // see `gen_over_applied`'s own docs and
         // `over_applied_ill_typed_terms_still_agree_with_the_interpreter`
         // below, which covers the complementary property for this shape
-        // (jit.rs's verification catches the ill-typed case this
+        // (jit.rs's typing gate declines the ill-typed case this
         // generator always produces, rather than try_compile rejecting it
         // outright). Still draws from `rng` here, unused, so every other
         // sub-case below keeps drawing the exact same random values per
@@ -568,12 +568,13 @@ fn over_applied_ill_typed_terms_still_agree_with_the_interpreter() {
     // (over-applying a plain Int-returning literal lambda, never one that
     // returns a further closure -- see its own docs). compile.rs now
     // compiles the shape rather than rejecting it outright, so this is
-    // the test that actually matters for soundness: jit.rs's own sample
-    // verification must catch every one of these (the interpreter
-    // type-errors, the compiled form traps or -- vanishingly unlikely --
-    // coincidentally produces some value through a garbage
-    // `call_indirect` target) and fall back to the interpreter, so
-    // `JitEngine::apply` still agrees with `eval::apply_term` regardless.
+    // the test that actually matters for soundness: jit.rs must decline
+    // every one of these before installing it (the interpreter
+    // type-errors; the compiled form traps or coincidentally produces some
+    // value through a garbage `call_indirect` target). It does so
+    // statically, since none is simply typed (`typing::well_typed`), so
+    // `JitEngine::apply` agrees with `eval::apply_term` on every input,
+    // not just the sampled ones.
     const SEEDS: u64 = 300;
 
     for seed in 0..SEEDS {
@@ -584,6 +585,7 @@ fn over_applied_ill_typed_terms_still_agree_with_the_interpreter() {
         let interpreted = eval::apply_term(&s, over_applied, &[]);
         let mut jit = JitEngine::new();
         let jitted = jit.apply(&s, over_applied, &[]);
+        assert_eq!((jit.stats.compiled, jit.stats.declined_ill_typed), (0, 1), "seed={seed}: not declined as ill-typed");
         let agree = match (&interpreted, &jitted) {
             (Ok(a), Ok(b)) => a == b,
             (Err(_), Err(_)) => true,
@@ -591,7 +593,7 @@ fn over_applied_ill_typed_terms_still_agree_with_the_interpreter() {
         };
         assert!(
             agree,
-            "seed={seed}: an ill-typed over-application should still agree via jit.rs's own verification\n\
+            "seed={seed}: an ill-typed over-application should still agree via jit.rs's typing gate\n\
              interpreted={interpreted:?} jit={jitted:?}"
         );
     }
@@ -609,8 +611,8 @@ fn inconsistently_called_parameters_still_agree_with_the_interpreter() {
     // value through a garbage `call_indirect` target). Same soundness
     // property, and same reasoning, as
     // `over_applied_ill_typed_terms_still_agree_with_the_interpreter`
-    // just above: jit.rs's own verification/fallback must still make
-    // `JitEngine::apply` agree with `eval::apply_term` regardless of
+    // just above: jit.rs's typing gate must decline it, so
+    // `JitEngine::apply` agrees with `eval::apply_term` regardless of
     // what `f` happens to be.
     const SEEDS: u64 = 300;
     const SAMPLE_ARGS: [i64; 5] = [0, 1, -1, 12345, -98765];
@@ -624,6 +626,7 @@ fn inconsistently_called_parameters_still_agree_with_the_interpreter() {
             let interpreted = eval::apply_term(&s, inconsistent, &[f_val]);
             let mut jit = JitEngine::new();
             let jitted = jit.apply(&s, inconsistent, &[f_val]);
+            assert_eq!((jit.stats.compiled, jit.stats.declined_ill_typed), (0, 1), "seed={seed}: not declined as ill-typed");
             let agree = match (&interpreted, &jitted) {
                 (Ok(a), Ok(b)) => a == b,
                 (Err(_), Err(_)) => true,
@@ -631,7 +634,7 @@ fn inconsistently_called_parameters_still_agree_with_the_interpreter() {
             };
             assert!(
                 agree,
-                "seed={seed} f={f_val}: an inconsistently-called parameter should still agree via jit.rs's own verification\n\
+                "seed={seed} f={f_val}: an inconsistently-called parameter should still agree via jit.rs's typing gate\n\
                  interpreted={interpreted:?} jit={jitted:?}"
             );
         }
@@ -812,7 +815,7 @@ fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
     const SEEDS: u64 = 1000;
     const SAMPLE_VALUES: [i64; 7] = [0, 1, -1, 2, -3, 10, -20];
     let engine = wasmtime::Engine::default();
-    let (mut specialised, mut compiled, mut compiled_specialised, mut ran) = (0u32, 0u32, 0u32, 0u32);
+    let (mut specialised, mut compiled, mut compiled_specialised, mut ran, mut declined) = (0u32, 0u32, 0u32, 0u32, 0u32);
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0x5BEC_1A11_u64 ^ seed);
         let mut s = TermStore::new();
@@ -872,6 +875,11 @@ fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
             assert_eq!(c.frag.arity, arity, "seed={seed}");
         }
         let module = c.as_ref().map(|c| load_fragment(&engine, &c.frag));
+        let typed = tatic::typing::well_typed(&s, h, arity);
+        if c.is_some() && !typed {
+            declined += 1;
+        }
+        let mut jit = JitEngine::new();
         let mut args = vec![0i64; arity];
         for trial in 0..8 {
             for a in args.iter_mut() {
@@ -881,16 +889,29 @@ fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
             // Exact equality, including which error: βv moves only values,
             // which have no effects, so it can't reorder or remove an error.
             assert_eq!(eval::apply_term(&sp.store, sp.term, &args), interpreted, "seed={seed} trial={trial} args={args:?}");
+            // The JIT, gate and all, whether or not the term is typed.
+            let jitted = jit.apply(&s, h, &args);
+            assert_eq!(jitted.as_ref().ok(), interpreted.as_ref().ok(), "seed={seed} trial={trial} args={args:?}: JIT disagrees");
+            // Type safety: a simply typed term can't go wrong.
+            if typed {
+                assert!(
+                    !matches!(
+                        interpreted,
+                        Err(eval::EvalError::TypeError | eval::EvalError::NotAFunction | eval::EvalError::UnboundVariable)
+                    ),
+                    "seed={seed} trial={trial} args={args:?}: well_typed accepted a term that goes wrong: {interpreted:?} h={}",
+                    tatic::syntax::print(&s, h)
+                );
+            }
             // The compiled output, with nothing between it and the caller.
-            // Errors are compared as errors: a compiled one is a trap. Not
-            // on a `TypeError`: `gen_redex_rich` can use a closure as an
-            // `Int` (case 5 puts `g` in scope), and compiled code assumes
-            // well-typedness there, for `h` as much as for `h'` (seed 95:
-            // `try_compile(h)` returns 310 where `eval` is a TypeError).
-            // `jit.rs`'s `verify()` is what catches that, and this test
-            // bypasses it on purpose.
+            // Errors are compared as errors: a compiled one is a trap. Only
+            // for a simply typed term: `gen_redex_rich` can use a closure as
+            // an `Int` (case 5 puts `g` in scope), and compiled code can't
+            // tell them apart (seed 95: `try_compile(h)` returns 310 where
+            // `eval` is a TypeError). `jit.rs` declines such terms with the
+            // same `typing::well_typed` check.
             if let (Some(c), Some(module)) = (&c, &module)
-                && interpreted != Err(eval::EvalError::TypeError)
+                && typed
             {
                 ran += 1;
                 assert_eq!(
@@ -903,7 +924,8 @@ fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
             }
         }
     }
-    eprintln!("specialisation fuzz: {specialised}/{SEEDS} terms specialised, {compiled} compiled ({compiled_specialised} from h'), {ran} compiled runs compared");
+    eprintln!("specialisation fuzz: {specialised}/{SEEDS} terms specialised, {compiled} compiled ({compiled_specialised} from h'), {ran} compiled runs compared, {declined} compiled but ill-typed");
+    assert!(declined > 0, "no ill-typed term compiled, so the typing gate went untested");
     assert!(specialised > SEEDS as u32 / 4, "too few terms specialised ({specialised}/{SEEDS}); check gen_redex_rich");
     assert!(compiled_specialised > SEEDS as u32 / 10, "too few specialised terms compiled ({compiled_specialised}/{SEEDS})");
     assert_no_ir_failures();

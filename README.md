@@ -112,6 +112,7 @@ Two notes on what "clean" means here:
 | `ir.rs` | The JIT's IR: closure-converted, representation-neutral; well-formedness checker. |
 | `lower_wat.rs` | Lowers the IR to WAT; one template per node, plus closure representation, allocator and curried stages. Its module docs describe the closure representation (a packed `i64` of table index and environment pointer), partial application, over-application and the curried fallback for inconsistent arities. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. For a fragment with capturing closures, `invoke` also resets the bump allocator's pointer before *every* call (not just the first) — caught by benchmarking the closure-conversion path, not by any unit test: since this cache reuses *one* compiled instance across many separate calls, every capturing closure any call created was leaking its environment forever, growing that instance's linear memory unboundedly over its whole cached lifetime. The reset can't happen inside the compiled function itself (at `$f`'s own entry, say) — a non-tail self-recursive call is an ordinary `call $f`, re-entering the whole function from the top, which would reset mid-computation and corrupt a closure created earlier in the same call that's still needed after the recursive call returns. From the host, once per top-level call, there's no such hazard: nothing outside one call ever reads a closure value `$f` itself returned. |
+| `typing.rs` (trusted, independent) | Simple (monomorphic) type inference over `Term`, with a closed-constant-condition rule for dead branches. `jit.rs` installs a compiled term only if it has type `Int -> ... -> Int`: compiled code stores `Int`s and closures as the same untagged `i64`, so ill-typed code returns garbage where `eval` fails, and the sample battery only notices when a sample reaches that code -- see §38 of `RELATED_WORK.md`. |
 | `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) + `Sigma`/`Pair`/`SigRec` (dependent sums) — five primitives. The first four are provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work); `Sigma` is a separate addition for a different reason — `W`'s own children function maps back into `W` itself, so it can't stand in for an arbitrary, independently-chosen payload type the way a general dependent sum needs, and (as with `W` over Church-encoding) the usual `Pi`-alone encoding was rejected because it doesn't reduce by `refl`. Has a real bidirectional typechecker and normalizer. Every recursive traversal (and `Expr`'s `Drop`) runs through a `stacker`-backed `grow`, so term depth is bounded by heap, not native stack -- see §31 of `RELATED_WORK.md`. |
 | `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. Every walker here dispatches on `compile::classify`, the same case analysis `build_node` uses, so the proofs and the compiler cannot disagree about which case a term falls into -- see §33 of `RELATED_WORK.md`. |
 | `decompile.rs` | Translation validation: rebuilds the term an IR module implements, from the IR alone; `try_compile` requires the rebuilt term's content hash to match the source's before accepting the module -- see §35 of `RELATED_WORK.md`. |
@@ -610,14 +611,14 @@ rather than found by any test failure — and checks that `jit::JitEngine`
 (compiled, whenever `compile.rs` accepts the term) and `eval::apply_term`
 (the reference interpreter) agree, across a battery of argument values
 per term, not just the fixed small sample set `jit.rs`'s own internal
-`verify()` checks before trusting a compile. Every generated term is
+`verify()` checks before trusting a compile. Every `gen_program` term is
 built to be well-typed on both readings (a generated closure sub-
 expression always gets fully resolved back to an `Int` before it's used
 anywhere an `Int` is expected), so a mismatch here means a genuine
 divergence, not one side being fed a value it doesn't know how to
 interpret. A tiny deterministic PRNG (splitmix64, no new dependency),
 seed-scanned rather than relying on one lucky draw — a failure prints the
-seed and argument trial that triggered it. Currently: 250 seeds × 12
+seed and argument trial that triggered it. Currently: 1000 seeds × 12
 argument trials each, ~99% of generated terms actually compile (the rest
 fall outside the fragment by construction, e.g. curried-application
 ambiguity), zero mismatches found so far.
@@ -669,9 +670,9 @@ literal lambda's *shape* unconditionally (see `lower_wat.rs`'s "Over-
 application" module docs): its own bodies are always plain arithmetic, never a
 further closure, so every term it generates is genuinely ill-typed;
 `over_applied_ill_typed_terms_still_agree_with_the_interpreter` confirms
-`jit.rs`'s sample verification catches every one of these (a trap, or a
-coincidentally-successful-but-wrong `call_indirect`) and falls back to
-the interpreter, rather than `try_compile` rejecting the shape outright.
+`jit.rs` declines every one of these as ill-typed (`typing.rs`, §38 of
+`RELATED_WORK.md`) and falls back to the interpreter, rather than
+`try_compile` rejecting the shape outright.
 
 The same file's `specialisation_is_checked_and_preserves_meaning_on_random_terms`
 extends this fuzzer's generators (adding `Div`/`Mod`) to check `specialise.rs`
@@ -683,9 +684,12 @@ whether one occurred. One seed in five is an open term
 (`gen_unbound_variable`, bare or under a redex): it must get the empty
 trace, and the checker must reject it. Every term also goes through
 `compile_specialised`, and its fragment is run directly (no `verify()` in
-between) against `eval` on the same arguments, wherever `eval` is not a
-`TypeError` (compiled code assumes well-typedness, and `gen_redex_rich` can
-use a closure as an `Int`). 645 of the 1000 seeds specialise, 564 compile
+between) against `eval` on the same arguments, for every term
+`typing::well_typed` accepts (compiled code assumes well-typedness, and
+`gen_redex_rich` can use a closure as an `Int`). For those terms it also
+checks type safety: `eval` must never give `TypeError`, `NotAFunction` or
+`UnboundVariable`. And `JitEngine` must agree with `eval` on every term,
+typed or not (§38 of `RELATED_WORK.md`). 645 of the 1000 seeds specialise, 564 compile
 (213 from `h'`), and 4400 compiled runs are compared. Verified test teeth by two planted bugs: a
 specialiser bug that produces a wrong term is caught by `spec_check`
 rejecting its trace; making both the checker and the specialiser agree on

@@ -124,13 +124,10 @@
 //! applied -- an over-applied literal lambda whose body is a plain `Int`
 //! still compiles, into a `call_indirect` on a garbage table index that
 //! either traps or (astronomically unlikely) coincidentally lands on some
-//! unrelated table entry. Either way, `jit.rs`'s sample verification
-//! catches it: the interpreter genuinely type-errors on such a term, so
-//! any disagreement -- a trap, or a wrong answer -- fails verification
-//! and falls back to the interpreter, the same safety net every other
-//! shape this fragment accepts already relies on (the compiler only needs
-//! to be sound, not complete, and this doesn't even need to be *sound* on
-//! its own -- verification is).
+//! unrelated table entry. `jit.rs` never installs such a term: it isn't
+//! simply typed, so `typing::well_typed` declines it before the sample
+//! battery runs (`RELATED_WORK.md` §38). Sample verification alone was
+//! not enough: it only sees the ill-typed code when a sample reaches it.
 //!
 //! `call_indirect`'s own operand order needs the callee's packed value
 //! split across *both* ends of the call (environment pointer first, table

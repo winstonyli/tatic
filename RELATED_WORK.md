@@ -2332,7 +2332,9 @@ outside the battery -- but it is stated over `proof.rs`'s `denote`,
 which models `compile_node` rather than reading its output (`proof.rs`
 contains zero references to `wat`, `wasm` or `CompiledFragment`). So the
 pair is strictly stronger than either alone, and still short of
-end-to-end soundness. Anyone tempted to drop `verify()` now that a proof
+end-to-end soundness. *(Later: the pair also said nothing about types, so
+ill-typed code that goes wrong only off the samples got installed. §38
+adds a third check.)* Anyone tempted to drop `verify()` now that a proof
 is required should re-read that sentence: the proof does not cover
 emitted code, and CompCert's own bug history (§28's prior-art notes) says
 the printer is where wrong-code bugs actually live.
@@ -3135,10 +3137,13 @@ diverging on a `Div` term. Since final review, one seed in five is an open
 term (`gen_unbound_variable`, bare or under a redex), which must get the
 empty trace and be rejected by the checker. Every term also goes through
 `compile_specialised`, and its fragment is run directly, with no
-`verify()` in between, against `eval` wherever `eval` is not a `TypeError`.
-Compiled code assumes well-typedness, for `h` as much as `h'`: at seed 95
+`verify()` in between, against `eval`, on every term `typing::well_typed`
+accepts (§38; before, wherever `eval` was not a `TypeError`). Compiled
+code assumes well-typedness, for `h` as much as `h'`: at seed 95
 `try_compile(h)` itself returns 310 where `eval` raises a `TypeError`,
-because `gen_redex_rich` can use a closure as an `Int`. The latest run
+because `gen_redex_rich` can use a closure as an `Int`. `verify()` catches
+that only when a sample reaches the ill-typed code, which is the bug §38
+fixes. The latest run
 specialised 645 seeds, compiled 564 (213 from `h'`) and compared 4400
 compiled runs. Before, the fuzz asserted `spec_check_failures() == 0`
 without ever calling `compile_specialised`, so the assertion was vacuous.
@@ -3186,8 +3191,107 @@ not part of this change; see
 `docs/superpowers/specs/2026-09-23-jit-ir-design.md`'s "Future work" for
 its numbers.
 
+## 38. The JIT installed ill-typed code that goes wrong only off the samples -- found and fixed
+
+**The bug.** `\n. (\g. if n == 777 then g 1 + g else n) (\x. x + n)`
+adds a closure to an `Int` when `n == 777`. `eval` gives `TypeError` there;
+the JIT installed the compiled form and returned `Ok(779)`. The specialiser
+isn't involved (`g` is used twice and captures `n`).
+
+**Root cause.** Compiled code is untyped: an `Int` and a closure are both a
+raw `i64` (`lower_wat.rs`'s packed table-index/env-pointer), with no tag to
+test. So compiled code is correct only if nothing uses a closure as an
+`Int` or calls an `Int`, and nothing established that. Neither half of the
+installation gate (§28, §29) sees it: `verify()` compares only on
+`sample_arg_vectors`, which never reach `n == 777`, and the universal
+theorem is stated over postulated symbols (`call_ref` always returns an
+`Int`), so it has no notion of type. Several docs claimed `verify()`
+catches ill-typed code (`lower_wat.rs`'s over-application notes,
+`compile_fuzz.rs`, §37, the README). It does only when a sample reaches the
+ill-typed code.
+
+**Options considered.** More samples only hide the symptom. Runtime guards
+are impossible without tags, and tagging values (63-bit ints, as V8,
+LuaJIT and Chez do, or boxing) costs every operation and changes integer
+semantics. A flow analysis of which sites can receive a closure is more
+precise than typing and harder to trust, with no corpus term needing the
+precision. Making the kernel theorem model types is very large. Taken:
+the other standard answer, the one ML-family compilers rely on when they
+erase tags (typed closure conversion, Morrisett et al.). Only a term with
+a simple type `Int -> ... -> Int` is installed, so by the usual type-safety
+argument (Wright and Felleisen) it can't reach `TypeError`, `NotAFunction`
+or `UnboundVariable` on `Int` arguments.
+
+**The fix.** `src/typing.rs`, `well_typed(store, h, arity)`: monomorphic
+unification over `Int | a -> b | variable`, with an occurs check (Milner's
+algorithm without generalisation). Two rules go beyond the textbook:
+- `Rec` must wrap an `Abs`, which is also all `compile.rs` compiles. `eval`
+  treats a `Rec` value as a function, so `Rec(Lit 5) + 1` would otherwise
+  type as `Int` and fail at runtime.
+- An `If` whose condition is closed arithmetic over literals only types the
+  branch `eval` would take. Without this, the dead `if 1 < 0 then g(x, 999)`
+  in `inconsistent_arity_loop_carried_parameter_loop`, and five `jit.rs`
+  tests built the same way, would be declined.
+
+`jit.rs` runs it on `h` after compilation and before instantiation. A
+declined term is cached as `CacheEntry::IllTyped`, counted in
+`Stats::declined_ill_typed` and served by the interpreter. The check is on
+`h` rather than on a specialised `h'`: βv preserves types, and `h` is what
+the caller wrote. `typing.rs` is trusted, so the independence scan pins it
+to `eval` and `term`. `try_compile` is unchanged: the `compile.rs` tests
+that exercise curried dispatch through ill-typed dead branches still
+compile.
+
+**Cost, measured before choosing** with a throwaway probe of the same
+inference:
+- Corpus: 21 of 23 terms are typed. The other two, `iterate` and
+  `fixture_twice`, take closure parameters, which the JIT can't pass (its
+  arguments are `i64`), so the JIT never installed them anyway.
+- `gen_program`: 1000 of 1000.
+- `gen_redex_rich`: 366 of the 408 that compile.
+- `gen_over_applied`, `gen_inconsistent_arity`: 0 of 1000, as designed.
+  They are ill-typed by construction and passed before only because the
+  samples caught them.
+- `cargo run --release`: compiled 9, specialised 3, `declined_ill_typed` 0,
+  so the demo is unchanged.
+
+The monomorphism is a real limit: a closure used at two different types
+is declined, where let-polymorphism would accept it. No corpus term needs
+it.
+
+**Tests.**
+- `jit.rs`'s `an_ill_typed_branch_off_the_samples_is_not_miscompiled` is
+  the regression test for the bug, and pins `declined_ill_typed == 1`.
+- `typing.rs` has seven unit tests: acceptance and arity, closure as
+  `Int`, constant and non-constant conditions (and a constant one that
+  fails), `Rec`, the occurs check, open terms and closure parameters, and
+  the independence scan.
+- `specialisation_is_checked_and_preserves_meaning_on_random_terms` now
+  checks type safety directly: if `well_typed` accepts a term, `eval` must
+  never give `TypeError`, `NotAFunction` or `UnboundVariable` on it. It
+  also compares the JIT with `eval` on every term, and compares compiled
+  fragments exactly on every typed term, where before it skipped only
+  `TypeError` results. Latest run: 4376 compiled runs compared, 17 terms
+  compiled but ill-typed.
+- The over-applied and inconsistent-arity fuzz tests now pin
+  `declined_ill_typed == 1`.
+
+**Teeth**, each broken, seen to fail, then restored:
+- Not forcing a `Prim`'s left operand to `Int` fails the type-safety fuzz
+  (seed 25).
+- Disabling the JIT gate fails the regression test.
+- Dropping the `Rec` rule fails `rec_must_wrap_an_abs`.
+- Dropping the pruning fails the five inconsistent-arity `jit.rs` tests.
+
+Disabling the gate does *not* fail the random fuzz: its 17 ill-typed
+compiled terms happen to be caught by the samples. Off-sample ill-typed
+terms are pinned only by the regression test.
+
 ## Sources
 
+- [A theory of type polymorphism in programming (Milner, JCSS 1978)](https://doi.org/10.1016/0022-0000(78)90014-4)
+- [A syntactic approach to type soundness (Wright and Felleisen, Inf. Comput. 1994)](https://doi.org/10.1006/inco.1994.1093)
+- [From System F to typed assembly language (Morrisett et al., TOPLAS 1999)](https://doi.org/10.1145/319301.319345)
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)
 - [The Spineless Tagless G-Machine](https://www.arbertrary.dev/stgm-presentation/stgm-deck.html)
 - [C&C — The Guts of a Spineless Machine](https://jozefg.bitbucket.io/posts/2014-10-28-stg.html)

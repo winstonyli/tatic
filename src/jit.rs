@@ -11,9 +11,12 @@
 //!    `RELATED_WORK.md` §37). If that fails, the term simply isn't in the
 //!    compilable fragment — fall back to the interpreter and remember not
 //!    to try again.
-//! 2. If it compiles, don't trust it blindly. Two things must hold before
-//!    it is installed: it agrees with the interpreter (the reference
-//!    semantics) on a battery of sample inputs, *and* `proof.rs` produced
+//! 2. If it compiles, don't trust it blindly. Three things must hold before
+//!    it is installed: it is simply typed as `Int -> ... -> Int`
+//!    (`typing::well_typed`: compiled code can't tell an `Int` from a
+//!    closure, see `RELATED_WORK.md` §38), it agrees with the interpreter
+//!    (the reference semantics) on a battery of sample inputs, *and*
+//!    `proof.rs` produced
 //!    a kernel-checked theorem covering every input
 //!    (`ProofStrength::Universal`). A term that passes only the samples is
 //!    cached as `NoUniversalProof` and served by the interpreter forever
@@ -34,7 +37,8 @@
 //! `denote`, which *models* the compiler (`compile::build_node` and the
 //! `lower_wat` templates) rather than reading its
 //! output. So the pair is strictly stronger than either alone and still
-//! short of end-to-end soundness (`RELATED_WORK.md` 28).
+//! short of end-to-end soundness (`RELATED_WORK.md` 28). Neither half
+//! says anything about types, which is what the typing check is for.
 //! `kernel_verify` below tries `proof.rs`'s strategies in order of
 //! strength, first success wins: a straight-line term gets one `refl`
 //! proof covering every input; a tail-recursive term gets the universal
@@ -108,6 +112,10 @@ enum CacheEntry {
         hp_global: Option<wasmtime::Global>,
     },
     NotCompilable,
+    /// Compiled, but not simply typed as `Int -> ... -> Int`
+    /// (`typing::well_typed`). Compiled code can't tell an `Int` from a
+    /// closure, so it is never installed; see `compile_verify_and_apply`.
+    IllTyped,
     FailedVerification,
     /// Compiled cleanly and agreed with the interpreter on every sample,
     /// but carries no universal theorem -- so it is deliberately *not*
@@ -129,6 +137,10 @@ pub struct Stats {
     /// `compile_verify_and_apply`). These are served by the interpreter,
     /// so they also count toward `interpreted` on every call.
     pub declined_no_universal_proof: u64,
+    /// Terms that compiled but were declined because they aren't simply
+    /// typed (`typing::well_typed`). Served by the interpreter, so they
+    /// also count toward `interpreted` on every call.
+    pub declined_ill_typed: u64,
     /// Of `compiled`, how many additionally got a kernel-checked proof
     /// (see `kernel_verify`'s strategy order) rather than only sample
     /// verification.
@@ -190,6 +202,7 @@ impl JitEngine {
                 eval::apply_term(terms, h, args)
             }
             Some(CacheEntry::NotCompilable)
+            | Some(CacheEntry::IllTyped)
             | Some(CacheEntry::FailedVerification)
             | Some(CacheEntry::NoUniversalProof(_)) => {
                 self.stats.interpreted += 1;
@@ -218,6 +231,20 @@ impl JitEngine {
             // property of this call), permanently defeating compilation
             // for `h` even once a later, correctly-sized call comes in.
             // Just interpret this one call and leave the cache untouched.
+            self.stats.interpreted += 1;
+            return eval::apply_term(terms, h, args);
+        }
+
+        // Compiled code is untyped: an `Int` and a closure are the same
+        // `i64`. Code that confuses them returns garbage where `eval` fails,
+        // and neither half of the gate below sees it unless a sample reaches
+        // that code (the kernel theorem is over postulated symbols with no
+        // types). So only a simply typed term is installed; see `typing.rs`
+        // and `RELATED_WORK.md` §38. The check is on `h`: a specialisation
+        // `h'` is βv-equivalent to it, and βv preserves types.
+        if !crate::typing::well_typed(terms, h, frag.arity) {
+            self.cache.insert(h, CacheEntry::IllTyped);
+            self.stats.declined_ill_typed += 1;
             self.stats.interpreted += 1;
             return eval::apply_term(terms, h, args);
         }
@@ -532,6 +559,29 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
 mod tests {
     use super::*;
     use crate::term::{PrimOp, TermStore};
+
+    #[test]
+    fn an_ill_typed_branch_off_the_samples_is_not_miscompiled() {
+        // \n. (\g. if n == 777 then g 1 + g else n) (\x. x + n)
+        // `g 1 + g` adds a closure to an Int: `eval` fails with TypeError
+        // at n = 777, which no sample hits.
+        let mut s = TermStore::new();
+        let (v0, v1, one, k) = (s.var(0), s.var(1), s.lit(1), s.lit(777));
+        let g1 = s.app(v0, one);
+        let bad = s.prim(PrimOp::Add, g1, v0);
+        let cond = s.prim(PrimOp::Eq, v1, k);
+        let body = s.if_(cond, bad, v1);
+        let lam = s.abs(body);
+        let arg_body = s.prim(PrimOp::Add, v0, v1);
+        let arg = s.abs(arg_body);
+        let redex = s.app(lam, arg);
+        let h = s.abs(redex);
+        let mut jit = JitEngine::new();
+        for n in [0, 1, 776, 777, 778] {
+            assert_eq!(jit.apply(&s, h, &[n]), eval::apply_term(&s, h, &[n]), "n={n}");
+        }
+        assert_eq!((jit.stats.compiled, jit.stats.declined_ill_typed), (0, 1));
+    }
 
     #[test]
     fn an_open_redex_is_not_contracted_away_by_the_jit() {

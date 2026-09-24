@@ -10,6 +10,7 @@ pub mod spec_check;
 pub mod specialise;
 pub mod syntax;
 pub mod term;
+pub mod typing;
 
 // Lets `test_corpus` include `benches/common.rs`, which names the crate
 // `tatic` as the benches do.
