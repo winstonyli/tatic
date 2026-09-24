@@ -580,7 +580,9 @@ pub fn parse(store: &mut TermStore, src: &str) -> Result<Hash, ParseError> {
 // literal syntax at all -- only subtraction -- so reparsing that text
 // yields the desugared `Prim(Sub, Lit(0), Lit(-n))` form, not the original
 // bare `Lit(n)`. Semantically identical, not hash-identical; see this
-// module's own test for it.
+// module's own test for it. Printed at unary-minus precedence, so it's
+// parenthesised wherever a bare `-n` would parse differently (`f (-2)`,
+// not `f -2`, which reads back as the subtraction `f - 2`).
 
 fn fresh_name(depth: usize) -> String {
     format!("v{depth}")
@@ -603,7 +605,8 @@ fn op_symbol(op: PrimOp) -> &'static str {
 /// Precedence level, matching this module's own grammar (higher binds
 /// tighter): 0 = `let`/`\`/`rec`/`if` (`let` never appears here -- it's
 /// pure sugar with no `Term` of its own), 1 = comparison, 2 = `+`/`-`,
-/// 3 = `*`/`/`/`%`, 5 = application, 6 = an atom (`Var`/`Lit`/parenthesized).
+/// 3 = `*`/`/`/`%`, 4 = unary minus (a negative `Lit`), 5 = application,
+/// 6 = an atom (`Var`/non-negative `Lit`/parenthesized).
 fn op_prec(op: PrimOp) -> u8 {
     use PrimOp::*;
     match op {
@@ -618,7 +621,10 @@ fn op_prec(op: PrimOp) -> u8 {
 fn print_at(store: &TermStore, h: Hash, names: &mut Vec<String>, min_prec: u8) -> String {
     let (own_prec, text) = match store.resolve(h) {
         Term::Var(i) => (6, names[names.len() - 1 - *i as usize].clone()),
-        Term::Lit(n) => (6, n.to_string()),
+        // `-n` is unary minus, not an atom: bare as an application's
+        // argument (`f -2`) it would reparse as the subtraction `f - 2`,
+        // and as its function (`-2 x`) as `-(2 x)`.
+        Term::Lit(n) => (if *n < 0 { 4 } else { 6 }, n.to_string()),
         Term::Prim(op, a, b) => {
             let p = op_prec(*op);
             // Comparisons don't chain (parse_cmp allows only one), so
@@ -1075,5 +1081,32 @@ mod tests {
         let reparsed = parse(&mut fresh, &text).unwrap();
         assert_ne!(reparsed, neg_five, "a bare negative Lit has no exact round trip in this grammar");
         assert_eq!(eval::apply_term(&fresh, reparsed, &[]).unwrap(), -5); // still semantically equal
+    }
+
+    #[test]
+    fn a_negative_literal_argument_is_parenthesised() {
+        // `\v0. v0 -16` would reparse as the subtraction `v0 - 16`, not an
+        // application -- the negative Lit must print as `(-16)`, reparsing
+        // to the documented `App(v0, Prim(Sub, Lit(0), Lit(16)))`.
+        let mut s = TermStore::new();
+        let (v0, neg) = (s.var(0), s.lit(-16));
+        let app = s.app(v0, neg);
+        let h = s.abs(app);
+        let text = print(&s, h);
+        assert_eq!(text, "\\v0. v0 (-16)");
+
+        let mut fresh = TermStore::new();
+        let reparsed = parse(&mut fresh, &text).unwrap();
+        let (zero, sixteen) = (s.lit(0), s.lit(16));
+        let desugared = s.prim(PrimOp::Sub, zero, sixteen);
+        let app = s.app(v0, desugared);
+        assert_eq!(reparsed, s.abs(app));
+
+        // ... and as the function of an application, `-2 v0` would reparse
+        // as `-(2 v0)`.
+        let neg2 = s.lit(-2);
+        let app = s.app(neg2, v0);
+        let h = s.abs(app);
+        assert_eq!(print(&s, h), "\\v0. (-2) v0");
     }
 }

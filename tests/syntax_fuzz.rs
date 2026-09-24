@@ -14,18 +14,22 @@
 //! generated `Var` is genuinely bound by an enclosing binder (`print`
 //! isn't written to handle an out-of-scope one -- it isn't a `Result`-
 //! returning function at all, unlike every other place in this codebase
-//! that accepts a possibly-malformed term) and every literal is
-//! non-negative (the one documented, accepted round-trip gap --
-//! `syntax.rs`'s own `a_directly_built_negative_literal_does_not_round_trip_exactly`
-//! -- since this grammar has no negative-literal syntax, only
-//! subtraction). Within that contract, this fuzzes real precedence bugs,
-//! not a different, already-documented property.
+//! that accepts a possibly-malformed term). Negative literals *are*
+//! generated, in every position: this grammar has no negative-literal
+//! syntax, only subtraction, so the documented contract for a directly
+//! built `Lit(n)` with `n < 0` is that it reparses to the desugared
+//! `Prim(Sub, Lit(0), Lit(-n))` -- semantically equal, not hash-equal
+//! (`syntax.rs`'s own `a_directly_built_negative_literal_does_not_round_trip_exactly`).
+//! The check compares against `desugar_negative_lits(h)` rather than `h`,
+//! so it still demands exact hash equality everywhere else, and would catch
+//! `print` emitting a bare `-n` where unary minus binds differently (e.g.
+//! `f -2`, which reparses as the subtraction `f - 2`).
 //!
 //! Deterministic (the same tiny splitmix64 PRNG `compile_fuzz.rs`/
 //! `kernel_fuzz.rs` use), seed-scanned, bounded generation depth.
 
 use tatic::syntax::{parse, print};
-use tatic::term::{Hash, PrimOp, TermStore};
+use tatic::term::{Hash, PrimOp, Term, TermStore};
 
 struct Rng(u64);
 
@@ -63,7 +67,7 @@ fn gen_leaf(rng: &mut Rng, s: &mut TermStore, scope: u32) -> Hash {
     if scope > 0 && rng.below(2) == 0 {
         s.var(rng.below(scope))
     } else {
-        s.lit(rng.i64_range(0, MAX_LIT)) // non-negative only -- see module docs
+        s.lit(rng.i64_range(-MAX_LIT, MAX_LIT))
     }
 }
 
@@ -109,6 +113,40 @@ fn gen_term(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
     }
 }
 
+/// `h` with every negative `Lit(n)` replaced by `Prim(Sub, Lit(0), Lit(-n))`
+/// -- what `parse` itself produces for the text `-n` (see module docs).
+fn desugar_negative_lits(s: &mut TermStore, h: Hash) -> Hash {
+    match s.resolve(h).clone() {
+        Term::Var(_) => h,
+        Term::Lit(n) if n < 0 => {
+            let zero = s.lit(0);
+            let pos = s.lit(-n);
+            s.prim(PrimOp::Sub, zero, pos)
+        }
+        Term::Lit(_) => h,
+        Term::Prim(op, a, b) => {
+            let (a, b) = (desugar_negative_lits(s, a), desugar_negative_lits(s, b));
+            s.prim(op, a, b)
+        }
+        Term::If(c, t, e) => {
+            let (c, t, e) = (desugar_negative_lits(s, c), desugar_negative_lits(s, t), desugar_negative_lits(s, e));
+            s.if_(c, t, e)
+        }
+        Term::Abs(b) => {
+            let b = desugar_negative_lits(s, b);
+            s.abs(b)
+        }
+        Term::App(f, a) => {
+            let (f, a) = (desugar_negative_lits(s, f), desugar_negative_lits(s, a));
+            s.app(f, a)
+        }
+        Term::Rec(i) => {
+            let i = desugar_negative_lits(s, i);
+            s.rec(i)
+        }
+    }
+}
+
 #[test]
 fn syntax_round_trips_random_terms() {
     const SEEDS: u64 = 3000;
@@ -117,10 +155,12 @@ fn syntax_round_trips_random_terms() {
         let mut s = TermStore::new();
         let h = gen_term(&mut rng, &mut s, 0, MAX_DEPTH);
 
+        let expected = desugar_negative_lits(&mut s, h);
+
         let text = print(&s, h);
         let mut fresh = TermStore::new();
         let reparsed = parse(&mut fresh, &text)
             .unwrap_or_else(|e| panic!("seed={seed}: printed text failed to reparse: {text:?}\nerror: {e}"));
-        assert_eq!(reparsed, h, "seed={seed}: round-trip mismatch; printed: {text:?}");
+        assert_eq!(reparsed, expected, "seed={seed}: round-trip mismatch; printed: {text:?}");
     }
 }

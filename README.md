@@ -174,7 +174,10 @@ grammar can express, with one honest, documented exception: a literal
 built directly as `Term::Lit(n)` for a negative `n` (never produced by
 `parse` itself, which only reaches a negative value via unary-minus
 desugaring) has no exact syntactic round trip, since this grammar has no
-negative-literal syntax at all — only subtraction.
+negative-literal syntax at all — only subtraction. It prints as `-n`
+(parenthesised as `(-n)` where unary minus would otherwise bind
+differently, e.g. as an application argument) and reparses to the
+equivalent `0 - n`.
 
 `src/bin/repl.rs` is a small interactive REPL built on `syntax::parse`/
 `print`: each line is parsed, run through the JIT (falling back to the
