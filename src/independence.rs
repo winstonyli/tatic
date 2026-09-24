@@ -9,6 +9,10 @@
 ///   `use crate :: compile :: peel;` or `use crate::{compile::peel};`
 ///   can't slip past a substring match.
 /// - uses `super::super`.
+/// - aliases a path root (`use crate as x`, `extern crate self as x`, and
+///   the same for `super` and `tatic`): `x::eval` would then need no
+///   `crate::`. Any `crate`, `self`, `super` or `tatic` token followed by
+///   `as` counts, even across a line break.
 /// - has a `crate::`, `super::` or `tatic::` path whose first segment is
 ///   not in `allowed`. All three are scanned because a module directly
 ///   under the crate root reaches the same siblings through `super::` as
@@ -28,6 +32,10 @@ pub(crate) fn assert_independent(file: &str, src: &str, forbidden: &[&str], allo
         assert!(!hit, "{file} must not use {tok}");
     }
     assert!(!code.iter().any(|l| l.contains("use super::super")), "{file} must not use super::super");
+    let tokens: Vec<&str> = code.iter().flat_map(|l| l.split(|c: char| !c.is_alphanumeric() && c != '_')).filter(|t| !t.is_empty()).collect();
+    for w in tokens.windows(2) {
+        assert!(!(["crate", "self", "super", "tatic"].contains(&w[0]) && w[1] == "as"), "{file} must not alias {} (`{} as`)", w[0], w[0]);
+    }
     for l in &code {
         // Collapse whitespace so `crate :: compile` can't dodge the
         // `crate::` search. `pub(crate)` has no `::` after `crate`, so it
@@ -42,6 +50,32 @@ pub(crate) fn assert_independent(file: &str, src: &str, forbidden: &[&str], allo
                 assert!(allowed.contains(&head), "{file} must not use {prefix}{head} (only {allowed:?} are allowed)");
                 rest = &after[end..];
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_independent;
+
+    fn rejected(src: &str) -> bool {
+        std::panic::catch_unwind(|| assert_independent("x.rs", src, &["compile"], &["term"])).is_err()
+    }
+
+    #[test]
+    fn allowed_paths_pass_and_others_fail() {
+        assert!(!rejected("use crate::term::Hash;\n"));
+        assert!(rejected("use crate::eval;\n"));
+        assert!(rejected("use super::eval;\n"));
+        assert!(rejected("use tatic::eval;\n"));
+        assert!(rejected("use crate :: compile :: peel;\n"));
+    }
+
+    #[test]
+    fn an_alias_of_the_crate_root_fails() {
+        // Each would let `x::eval` through, since no `crate::` follows.
+        for src in ["use crate as x;\n", "use crate as\n    x;\n", "extern crate self as x;\n", "use tatic as x;\n", "use super as x;\n"] {
+            assert!(rejected(src), "{src:?}");
         }
     }
 }
