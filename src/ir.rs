@@ -13,7 +13,6 @@
 //! read by the lowering alone as a representation choice that `check`
 //! validates. This is the spec's "field parity". It is what keeps the
 //! step-2 decompile check from being vacuous.
-#![cfg_attr(not(test), allow(dead_code))] // wired into try_compile in JIT IR step 1, Task 3
 
 use hashbrown::HashMap;
 

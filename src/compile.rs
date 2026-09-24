@@ -224,6 +224,7 @@
 
 use hashbrown::HashMap;
 
+use crate::ir;
 use crate::lower_wat::{arith_instr, cmp_instr, emit_allocator, emit_curried_stages, emit_pap_wrapper, emit_wrapping_div, push_line};
 use crate::term::{Hash, PrimOp, Term, TermStore};
 
@@ -422,11 +423,212 @@ impl<'a> Combinators<'a> {
     }
 }
 
+/// Builds the IR for `h` (see `ir.rs`): the whole term-analysis half of
+/// compilation, with none of the representation choices. It is one walk:
+/// `$f`'s body first, then every registered combinator's body, dequeued in
+/// the LIFO order the registry fills, so each combinator's index (and
+/// therefore its table slot) is its registration order. `None` exactly
+/// where the fragment rejects a term.
+pub(crate) fn build(store: &TermStore, h: Hash) -> Option<ir::Module> {
+    let (arity, body, is_rec) = peel(store, h)?;
+    let mut reg = Combinators::new(store);
+    let entry = build_function(store, arity, body, is_rec, &[], &mut reg)?;
+    let mut lifted: HashMap<usize, ir::Func> = HashMap::new();
+    while let Some(pc) = reg.pending.pop() {
+        // A partial-application wrapper's body is a fixed lowering
+        // template; there is nothing in it to walk.
+        if let PendingCombinator::Literal(h_c) = pc {
+            let idx = reg.index[&h_c];
+            let (c_arity, c_body, c_is_rec) = peel(store, h_c)?;
+            let captures = reg.captures[idx].clone();
+            let func = build_function(store, c_arity, c_body, c_is_rec, &captures, &mut reg)?;
+            lifted.insert(idx, func);
+        }
+    }
+    let combinators = reg
+        .kind
+        .iter()
+        .enumerate()
+        .map(|(idx, kind)| match kind {
+            PendingCombinator::Literal(_) => ir::Combinator::Lifted(lifted.remove(&idx).expect("every registered literal was dequeued and built")),
+            PendingCombinator::PartialApp { root, supplied } => ir::Combinator::Pap { root: reg.index[root], supplied: *supplied },
+        })
+        .collect();
+    let dispatch = if reg.needs_generic_dispatch { ir::Dispatch::Curried } else { ir::Dispatch::Fast };
+    Some(ir::Module { entry, combinators, dispatch })
+}
+
+/// Everything about the function being built that stays fixed across its
+/// body.
+struct BuildCtx<'a, 'b> {
+    store: &'a TermStore,
+    arity: usize,
+    self_idx: Option<u32>,
+    closure_arities: &'b HashMap<u32, ArityUse>,
+    /// This function's environment layout (from `free_vars`): slot `j`
+    /// holds the enclosing scope's relative variable `captures[j]`.
+    captures: &'b [u32],
+}
+
+fn build_function(store: &TermStore, arity: usize, body: Hash, is_rec: bool, captures: &[u32], reg: &mut Combinators) -> Option<ir::Func> {
+    let self_idx = is_rec.then_some(arity as u32);
+    let closure_arities = infer_closure_arities(store, body, arity, self_idx)?;
+    // One variable called at two arities anywhere makes the whole module
+    // `Curried` (see `ir::Dispatch`).
+    if closure_arities.values().any(|u| matches!(u, ArityUse::Inconsistent)) {
+        reg.needs_generic_dispatch = true;
+    }
+    let ctx = BuildCtx { store, arity, self_idx, closure_arities: &closure_arities, captures };
+    let body = build_node(&ctx, reg, body, true)?;
+    Some(ir::Func { arity, is_rec, env_len: captures.len(), body })
+}
+
+fn build_args(ctx: &BuildCtx, reg: &mut Combinators, args: &[Hash]) -> Option<Vec<ir::Node>> {
+    args.iter().map(|&a| build_node(ctx, reg, a, false)).collect()
+}
+
+/// One node. The match mirrors legacy `compile_node` arm for arm, and so
+/// do its rejections. Sub-terms are built in the order legacy
+/// `compile_node` visited them, because that order is combinator
+/// registration order, which is table-index order.
+fn build_node(ctx: &BuildCtx, reg: &mut Combinators, h: Hash, tail: bool) -> Option<ir::Node> {
+    use ir::Node;
+    Some(match classify(ctx.store, h, ctx.arity, ctx.self_idx) {
+        Shape::If(c, t, e) => {
+            // The condition must be a direct comparison, as `cmp_instr`
+            // requires.
+            let Term::Prim(cmp, a, b) = ctx.store.resolve(c) else { return None };
+            let (cmp, a, b) = (*cmp, *a, *b);
+            if !is_comparison(cmp) {
+                return None;
+            }
+            let a = build_node(ctx, reg, a, false)?;
+            let b = build_node(ctx, reg, b, false)?;
+            let then = build_node(ctx, reg, t, tail)?;
+            let els = build_node(ctx, reg, e, tail)?;
+            Node::If { cmp, a: Box::new(a), b: Box::new(b), then: Box::new(then), els: Box::new(els) }
+        }
+        Shape::SelfCall(args) => Node::SelfCall { args: build_args(ctx, reg, &args)?, tail },
+        Shape::VarCall { var, args, .. } => {
+            // Under `Consistent(k)` every call site has `k` arguments, so
+            // the length check cannot fail. It is kept so the builder
+            // rejects exactly what the legacy path rejected.
+            let expected = match ctx.closure_arities.get(&var)? {
+                ArityUse::Consistent(k) => *k,
+                ArityUse::Inconsistent => args.len(),
+            };
+            if args.len() != expected {
+                return None;
+            }
+            let callee = Node::Read(build_read(ctx, var)?);
+            Node::CallUnknown { callee: Box::new(callee), args: build_args(ctx, reg, &args)? }
+        }
+        Shape::CombinatorCall { root, args, .. } => {
+            let idx = reg.register(root)?;
+            let root_arity = reg.arities[idx];
+            let captures = reg.captures[idx].clone();
+            match args.len().cmp(&root_arity) {
+                std::cmp::Ordering::Equal => {
+                    let env = build_env(ctx, &captures)?;
+                    Node::CallKnown { f: idx, env, args: build_args(ctx, reg, &args)? }
+                }
+                std::cmp::Ordering::Greater => {
+                    // Over-application: the saturated call's result is
+                    // itself called on the remaining arguments.
+                    let env = build_env(ctx, &captures)?;
+                    let sat = Node::CallKnown { f: idx, env, args: build_args(ctx, reg, &args[..root_arity])? };
+                    let extra = build_args(ctx, reg, &args[root_arity..])?;
+                    Node::CallUnknown { callee: Box::new(sat), args: extra }
+                }
+                std::cmp::Ordering::Less => {
+                    // The wrapper is registered *before* the supplied
+                    // arguments are walked, as in legacy `compile_node`, so
+                    // its index comes before any combinator those
+                    // arguments register.
+                    let wrapper = reg.register_partial_app(root, idx, args.len())?;
+                    let root_env = build_env(ctx, &captures)?;
+                    Node::MakePap { wrapper, root_env, args: build_args(ctx, reg, &args)? }
+                }
+            }
+        }
+        Shape::OtherCall => return None,
+        Shape::Var(i) => Node::Read(build_read(ctx, i)?),
+        Shape::Lit(n) => Node::Lit(n),
+        Shape::Prim(op, a, b) => {
+            if is_comparison(op) {
+                return None; // a comparison is only legal as an `If` condition
+            }
+            let a = build_node(ctx, reg, a, false)?;
+            let b = build_node(ctx, reg, b, false)?;
+            Node::Arith(op, Box::new(a), Box::new(b))
+        }
+        Shape::Combinator { .. } => {
+            let idx = reg.register(h)?;
+            let captures = reg.captures[idx].clone();
+            Node::MakeClosure { f: idx, env: build_env(ctx, &captures)? }
+        }
+    })
+}
+
+/// Resolves absolute variable `v` to one of this function's parameters or
+/// one of its environment slots. `None` if it is neither: out of range, or
+/// this function's own self-reference used as a plain value, which the
+/// fragment does not support.
+fn build_read(ctx: &BuildCtx, v: u32) -> Option<ir::Read> {
+    let arity = ctx.arity as u32;
+    if v < arity {
+        return Some(ir::Read::Param(local_index(v, ctx.arity)?));
+    }
+    // Must match `free_vars`'s `capture_base`: `Rec` binds the
+    // self-reference at `arity`, before any real capture.
+    let capture_base = if ctx.self_idx.is_some() { arity + 1 } else { arity };
+    if v < capture_base {
+        return None;
+    }
+    let rel = v - capture_base;
+    let slot = ctx.captures.iter().position(|&c| c == rel)?;
+    Some(ir::Read::Env(slot as u32))
+}
+
+/// The reads that fill an environment with layout `captures`. Each entry
+/// is a variable of *this* scope: a lambda literal is always found at the
+/// top level of the function building it, because every nested lambda is
+/// lifted into a combinator of its own.
+fn build_env(ctx: &BuildCtx, captures: &[u32]) -> Option<Vec<ir::Read>> {
+    captures.iter().map(|&rel| build_read(ctx, rel)).collect()
+}
+
+/// Try to compile `h` as an `arity`-ary numeric function (or, for `arity`
+/// `0`, a single closed expression to evaluate once). Returns `None` if
+/// `h` (or any combinator value it uses) falls outside the compilable
+/// fragment.
+///
+/// TRANSITIONAL (JIT IR step 1): runs both the legacy direct emitter and
+/// build -> `ir::check` -> `lower_wat::lower`, and panics if they differ in
+/// anything observable. That puts every test, fuzzer, the demo and both
+/// bench suites behind the byte-identical gate. Removed, with the legacy
+/// path, once golden snapshots are recorded.
+pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
+    let legacy = try_compile_legacy(store, h);
+    let via_ir = build(store, h).map(|m| {
+        if let Err(e) = ir::check(&m) {
+            panic!("the IR builder produced an ill-formed module for {h:?}: {e}");
+        }
+        crate::lower_wat::lower(&m)
+    });
+    assert_eq!(
+        legacy.as_ref().map(|f| (f.arity, f.needs_hp_reset, &f.wat)),
+        via_ir.as_ref().map(|f| (f.arity, f.needs_hp_reset, &f.wat)),
+        "the IR path diverged from the legacy path for {h:?}",
+    );
+    legacy
+}
+
 /// Try to compile `h` as an `arity`-ary numeric function (or, for `arity`
 /// `0`, a single closed expression to evaluate once). Returns `None` if
 /// `h` (or any subterm reachable in "tail position" tracking, or any
 /// combinator value it uses) falls outside the compilable fragment.
-pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
+fn try_compile_legacy(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     let (arity, body, is_rec) = peel(store, h)?;
     let self_idx = if is_rec { Some(arity as u32) } else { None };
 
@@ -2590,6 +2792,14 @@ mod tests {
         let compiled = func.call(&mut store, ()).unwrap();
         assert_eq!(compiled, 3628800);
         assert_eq!(compiled, apply_term(&s, applied, &[]).unwrap());
+    }
+
+    #[test]
+    fn build_produces_the_hand_built_ir_for_each_fixture() {
+        use crate::ir::fixtures::{factorial, twice, twice_inc};
+        for (s, h, want) in [factorial(), twice(), twice_inc()] {
+            assert_eq!(build(&s, h).expect("every fixture builds"), want);
+        }
     }
 
 }

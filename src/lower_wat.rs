@@ -3,7 +3,6 @@
 //! home to the fixed emitters (the bump allocator, wrapping div, comparison
 //! and arithmetic instruction tables, the partial-application wrapper, and
 //! the curried stage chain) shared with the legacy path in `compile.rs`.
-#![cfg_attr(not(test), allow(dead_code))] // wired into try_compile in JIT IR step 1, Task 3
 
 use std::collections::HashSet;
 
