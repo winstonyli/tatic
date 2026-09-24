@@ -138,6 +138,8 @@ impl Decompiler<'_, '_> {
         if let Some(&h) = self.memo.get(&(g, outer.clone())) {
             return Some(h);
         }
+        // Copied out from `&mut self` so the borrow below doesn't have to
+        // live across the `&mut self.s` borrows inside `self.func`.
         let m = self.m;
         let Some(Combinator::Lifted(gf)) = m.combinators.get(g) else {
             return None;
@@ -213,13 +215,80 @@ mod tests {
     }
 
     #[test]
+    fn an_environment_slot_in_a_recursive_combinator_is_offset_past_its_self_binder() {
+        // \x. (rec g n. if n <= 0 then x else g (n - 1)) 3, with x captured
+        // in slot 0 of a *recursive* $c0. Inside `rec g n`'s own scope:
+        // n = Var(0) (nearest), g = Var(1) (Rec's self binder), x = Var(2)
+        // (captured from the outer \x). This is the shape
+        // `an_environment_slot_resolves_through_the_building_sites_environment`
+        // doesn't cover: there, $c0 is not recursive, so the `+
+        // u32::from(f.is_rec)` term in `var`'s `Read::Env` arm is always 0.
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let g = s.var(1);
+        let x = s.var(2);
+        let zero = s.lit(0);
+        let cond = s.prim(PrimOp::Le, n, zero);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let g_call = s.app(g, n_minus_1);
+        let body = s.if_(cond, x, g_call);
+        let abs_n = s.abs(body);
+        let rec_g = s.rec(abs_n);
+        let three = s.lit(3);
+        let applied = s.app(rec_g, three);
+        let h = s.abs(applied);
+        let m = Module {
+            entry: Func { arity: 1, is_rec: false, env_len: 0, body: Node::CallKnown { f: 0, env: vec![Read::Param(0)], args: vec![Node::Lit(3)] } },
+            combinators: vec![Combinator::Lifted(Func {
+                arity: 1,
+                is_rec: true,
+                env_len: 1,
+                body: Node::If {
+                    cmp: PrimOp::Le,
+                    a: Box::new(Node::Read(Read::Param(0))),
+                    b: Box::new(Node::Lit(0)),
+                    then: Box::new(Node::Read(Read::Env(0))),
+                    els: Box::new(Node::SelfCall {
+                        args: vec![Node::Arith(PrimOp::Sub, Box::new(Node::Read(Read::Param(0))), Box::new(Node::Lit(1)))],
+                        tail: true,
+                    }),
+                },
+            })],
+            dispatch: crate::ir::Dispatch::Fast,
+        };
+        assert!(roundtrips(&m, h));
+        // The fixture is real: it is exactly what `compile::build` produces
+        // for this source term, not just a module the decompiler happens to
+        // accept.
+        assert_eq!(crate::compile::build(&s, h), Some(m));
+    }
+
+    #[test]
     fn the_decompiler_imports_nothing_from_the_compiler() {
-        // The whole point of the check is that a bug in `compile.rs`'s
-        // helpers cannot be mirrored here. Enforced mechanically.
+        // The whole point of the check is that a bug in `compile.rs`'s or
+        // `lower_wat.rs`'s helpers cannot be mirrored here. Enforced
+        // mechanically: token by token (so `use crate :: compile :: peel;`
+        // or `use crate::{compile::peel};` can't slip past a substring
+        // match), and only over the code above `mod tests`, so
+        // `crate::compile::build` -- allowed here, in tests only, as the
+        // thing under test -- doesn't trip it. `decompile` itself contains
+        // "compile" as a substring but is a single token, so it's fine.
         let src = include_str!("decompile.rs");
-        for forbidden in ["crate::compile", "crate::lower_wat", "use super::super"] {
-            let hits = src.lines().filter(|l| l.contains(forbidden) && !l.contains("forbidden") && !l.trim_start().starts_with("//")).filter(|l| !l.contains("crate::compile::build")).count();
-            assert_eq!(hits, 0, "decompile.rs must not use {forbidden}");
+        let lines: Vec<&str> = src.lines().collect();
+        let tests_start = lines
+            .iter()
+            .enumerate()
+            .find(|(i, l)| l.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|next| next.trim_start().starts_with("mod tests")))
+            .map_or(lines.len(), |(i, _)| i);
+        let code = &lines[..tests_start];
+        for forbidden in ["compile", "lower_wat"] {
+            let hit = code.iter().any(|l| {
+                let l = l.trim_start();
+                !l.starts_with("//") && l.split(|c: char| !c.is_alphanumeric() && c != '_').any(|tok| tok == forbidden)
+            });
+            assert!(!hit, "decompile.rs must not use {forbidden}");
         }
+        assert!(!code.iter().any(|l| l.contains("use super::super")), "decompile.rs must not use super::super");
     }
 }
