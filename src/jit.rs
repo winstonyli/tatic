@@ -5,9 +5,12 @@
 //! For a given term hash we only ever pay the compile cost once:
 //!
 //! 1. First call: try to compile the term into the target-machine
-//!    fragment (`compile::try_compile`). If that fails, the term simply
-//!    isn't in the compilable fragment — fall back to the interpreter and
-//!    remember not to try again.
+//!    fragment (`compile::compile_specialised`, which specialises `h`
+//!    first, then compiles with `try_compile` — the certificate-checked
+//!    specialisation `h' ≡ h` itself is not kernel-checked, see
+//!    `RELATED_WORK.md` §37). If that fails, the term simply isn't in the
+//!    compilable fragment — fall back to the interpreter and remember not
+//!    to try again.
 //! 2. If it compiles, don't trust it blindly. Two things must hold before
 //!    it is installed: it agrees with the interpreter (the reference
 //!    semantics) on a battery of sample inputs, *and* `proof.rs` produced
@@ -55,7 +58,6 @@
 use hashbrown::HashMap;
 use wasmtime::{Engine, Instance, Module, Store, Val};
 
-use crate::compile::try_compile;
 use crate::eval::{self, EvalError};
 use crate::proof;
 use crate::term::{Hash, TermStore};
@@ -140,6 +142,10 @@ pub struct Stats {
     /// evidence too now, not a blanket decline -- see
     /// `build_ev_witness`'s own `memo`-based fix in `proof.rs`.
     pub universal_instances_checked: u64,
+    /// Of `compiled`, how many were compiled from a certificate-checked
+    /// specialisation (`compile::compile_specialised`) rather than from the
+    /// term itself.
+    pub specialised: u64,
 }
 
 pub struct JitEngine {
@@ -199,7 +205,7 @@ impl JitEngine {
         h: Hash,
         args: &[i64],
     ) -> Result<i64, EvalError> {
-        let Some(frag) = try_compile(terms, h) else {
+        let Some(crate::compile::Compiled { frag, specialised }) = crate::compile::compile_specialised(terms, h) else {
             self.cache.insert(h, CacheEntry::NotCompilable);
             self.stats.interpreted += 1;
             return eval::apply_term(terms, h, args);
@@ -224,7 +230,12 @@ impl JitEngine {
         debug_assert_eq!(hp_global.is_some(), frag.needs_hp_reset, "compile.rs's export and needs_hp_reset flag should always agree");
 
         if self.verify(terms, h, func, hp_global, frag.arity) {
-            let proof = self.kernel_verify(terms, h, frag.arity);
+            // The kernel theorems model the structure of the term that was
+            // compiled, so for a specialised fragment they are proved about
+            // `h'`. `h' ≡ h` itself is certificate-checked, not
+            // kernel-checked (RELATED_WORK.md §37).
+            let (proof_store, proof_term) = specialised.as_ref().map_or((terms, h), |(s, t)| (s, *t));
+            let proof = self.kernel_verify(proof_store, proof_term, frag.arity);
             if proof != ProofStrength::None {
                 self.stats.kernel_proofs_checked += 1;
             }
@@ -261,6 +272,9 @@ impl JitEngine {
                 },
             );
             self.stats.compiled += 1;
+            if specialised.is_some() {
+                self.stats.specialised += 1;
+            }
             self.stats.cache_hits += 1;
             self.call_compiled(h, args)
         } else {
@@ -1081,7 +1095,7 @@ mod tests {
         let partial = s.app2(it, n_lit, inc);
         let top = s.app(partial, x0);
 
-        let frag = try_compile(&s, it).expect("should compile via curried dispatch, per compile.rs alone");
+        let frag = crate::compile::try_compile(&s, it).expect("should compile via curried dispatch, per compile.rs alone");
         assert!(frag.wat.contains("call_indirect (type $ty1)"), "the hot, consistent g(x) call should also go through the curried fallback:\n{}", frag.wat);
 
         let mut jit = JitEngine::new();
@@ -1533,5 +1547,16 @@ mod tests {
         assert_eq!(jit.stats.declined_no_universal_proof, 1);
         assert_eq!(jit.stats.compiled, 0);
         assert_eq!(jit.stats.interpreted, 2);
+    }
+
+    #[test]
+    fn a_known_partial_application_is_installed_specialised_with_a_universal_proof() {
+        let (_, s, h) = crate::test_corpus::terms().into_iter().find(|(n, ..)| *n == "partial_application_loop").unwrap();
+        let mut jit = JitEngine::new();
+        for args in [[0, 0], [1, 0], [5, 3], [100, -7]] {
+            assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");
+        }
+        assert_eq!((jit.stats.compiled, jit.stats.specialised), (1, 1));
+        assert_eq!(jit.proof_strength(h), ProofStrength::Universal);
     }
 }

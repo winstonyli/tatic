@@ -407,6 +407,62 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     Some(crate::lower_wat::lower(&m))
 }
 
+static SPEC_CHECK_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many times, process-wide, `compile_specialised` discarded a
+/// specialisation because `spec_check::check` rejected its trace. Every
+/// such case is a specialiser bug. The release-mode compile fuzzer asserts
+/// it is 0, as with `ir_validation_failures`.
+pub fn spec_check_failures() -> usize {
+    SPEC_CHECK_FAILURES.load(Ordering::Relaxed)
+}
+
+/// What `compile_specialised` compiled.
+pub struct Compiled {
+    pub frag: CompiledFragment,
+    /// `Some((store, h'))` when the fragment was compiled from `h'`, a
+    /// specialisation of `h` that `spec_check::check` accepted. `None` when
+    /// it was compiled from `h` itself.
+    pub specialised: Option<(TermStore, Hash)>,
+}
+
+/// The one pipeline driver: specialise `h` (`specialise.rs`, untrusted),
+/// check the certificate (`spec_check.rs`, trusted and independent), and
+/// compile the result with `try_compile`. The passes stay separate:
+/// `try_compile` is a pure translation whose module decompiles to exactly
+/// the term it was given. This function adds only the certificate-checked
+/// step from `h` to that term. If the specialised term does not compile,
+/// `h` is tried instead.
+///
+/// The claim for a specialised result: its module decompiles to `h'`, and
+/// `h' ≡ h` by a checked βv trace. That equivalence is not kernel-checked
+/// (RELATED_WORK.md §37).
+pub fn compile_specialised(store: &TermStore, h: Hash) -> Option<Compiled> {
+    compile_candidate(store, h, crate::specialise::specialise(store, h))
+}
+
+fn compile_candidate(store: &TermStore, h: Hash, sp: crate::specialise::Specialised) -> Option<Compiled> {
+    if !sp.trace.is_empty() {
+        match crate::spec_check::check(store, h, &sp.trace, sp.term) {
+            // `sp.store` is the specialiser's, but it can't lie about
+            // `sp.term`: a store's hashes are the content hashes of what it
+            // holds, and the checker accepted that hash.
+            Ok(()) => {
+                if let Some(frag) = try_compile(&sp.store, sp.term) {
+                    return Some(Compiled { frag, specialised: Some((sp.store, sp.term)) });
+                }
+            }
+            Err(e) => {
+                SPEC_CHECK_FAILURES.fetch_add(1, Ordering::Relaxed);
+                if cfg!(debug_assertions) {
+                    panic!("the specialiser produced a trace the checker rejects for {h:?}: step {}: {}", e.step, e.reason);
+                }
+            }
+        }
+    }
+    try_compile(store, h).map(|frag| Compiled { frag, specialised: None })
+}
+
 /// Peel a term into `(arity, body, is_recursive)`:
 /// - `Rec(Abs(Abs(...body)))` -> `(k, body, true)`, self bound at `Var(k)`,
 ///   `k > 0` (a 0-ary self-recursive definition would have no base case
@@ -1833,4 +1889,40 @@ mod tests {
         }
     }
 
+    fn corpus(name: &str) -> (TermStore, Hash) {
+        let (_, s, h) = crate::test_corpus::terms().into_iter().find(|(n, ..)| *n == name).unwrap();
+        (s, h)
+    }
+
+    #[test]
+    fn compile_specialised_compiles_the_checked_specialisation() {
+        let (s, h) = corpus("partial_application_loop");
+        let c = compile_specialised(&s, h).unwrap();
+        assert!(c.specialised.is_some());
+        // No closure is left: no table dispatch and no allocator.
+        assert!(!c.frag.wat.contains("call_indirect"), "{}", c.frag.wat);
+        assert!(!c.frag.wat.contains("$alloc"), "{}", c.frag.wat);
+        let (mut store, instance) = instantiate(&c.frag.wat);
+        let f = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
+        for (n, acc) in [(0, 0), (1, 0), (5, 3), (100, -7)] {
+            assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");
+        }
+    }
+
+    #[test]
+    fn a_term_with_nothing_to_specialise_compiles_exactly_as_try_compile_does() {
+        let (s, h) = corpus("factorial");
+        let c = compile_specialised(&s, h).unwrap();
+        assert!(c.specialised.is_none());
+        assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
+    }
+
+    #[test]
+    #[should_panic(expected = "the specialiser produced a trace the checker rejects")]
+    fn a_trace_the_checker_rejects_panics_in_debug() {
+        let (s, h) = corpus("partial_application_loop");
+        let mut sp = crate::specialise::specialise(&s, h);
+        sp.term = sp.store.lit(0); // a real term in the store, but not what the trace reaches
+        compile_candidate(&s, h, sp);
+    }
 }
