@@ -1094,3 +1094,9 @@ guards against by hand): caught immediately, at seed 22.
   x+y` used bare or `\f. if (f 0) then f else f`. See
   `a_whole_functions_result_being_a_closure_now_gets_a_closure_proof`/
   `a_bare_closure_typed_parameter_read_gets_a_closure_proof` (`proof.rs`).
+- REPL hint bug (`src/bin/repl.rs`, the `EvalError::TypeError` arm): a
+  line that evaluates to a function prints the hint
+  ``e.g. `{printed} 1 2` ``, which is invalid syntax whenever the printed
+  term is a lambda/`rec`/`if` -- `\x. x + -5` yields `\v0. v0 + -5 1 2`
+  instead of `(\v0. v0 + -5) 1 2`. Fix: bracket the printed term there
+  (e.g. print it at application precedence).
