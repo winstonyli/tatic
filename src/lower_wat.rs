@@ -1,8 +1,190 @@
-//! Lowers `ir::Module` to WebAssembly text (WAT), one template per IR node,
-//! each copied from the matching arm of legacy `compile::compile_node`. Also
-//! home to the fixed emitters (the bump allocator, wrapping div, comparison
-//! and arithmetic instruction tables, the partial-application wrapper, and
-//! the curried stage chain) shared with the legacy path in `compile.rs`.
+//! Lowers `ir::Module` to WebAssembly text (WAT), one template per IR node
+//! (`Lowering::node`). Also home to the fixed emitters: the bump allocator,
+//! wrapping div, the comparison and arithmetic instruction tables, the
+//! partial-application wrapper and the curried stage chain. Every
+//! representation choice lives here; `compile.rs` decides only term shape
+//! and builds the IR.
+//!
+//! A tail self-call (`SelfCall { tail: true }`) lowers to a `loop`/`br`,
+//! turning tail recursion into iteration (constant Wasm call-stack depth);
+//! a non-tail self-call lowers to an ordinary Wasm `call`.
+//!
+//! ## Closures: real closure conversion, uniform representation
+//!
+//! Every value in this fragment is a plain `i64`, including a closure
+//! value -- but a closure packs *two* things into that one `i64`: a
+//! table index (low 32 bits) identifying which compiled function to call,
+//! and a pointer into linear memory (high 32 bits) to that closure's
+//! *environment* -- the captured values it closed over, laid out as
+//! consecutive `i64` slots and allocated by the bump allocator (see
+//! `emit_allocator`) at the point the closure is created. A
+//! *non-capturing* lambda ("known function"/"known call" in the compiler
+//! literature) still needs no environment at all -- its pointer half is
+//! just `0`, a constant, and its `$env` parameter goes unread -- so this
+//! is one uniform representation, not two: every combinator takes an
+//! `$env: i32` parameter first, whether or not its own body ever reads
+//! from it, precisely so a `call_indirect` site never needs to know in
+//! advance whether the closure it's calling captures anything.
+//!
+//! `compile::free_vars` finds what a lambda literal captures, relative to
+//! its own parameter range, by walking its body (following *into* further
+//! nested lambdas too, since a closure nested inside another one still
+//! captures from the very same enclosing scope) -- this becomes the
+//! environment's slot layout (`ir::Func::env_len`, and the `env` of every
+//! `MakeClosure`/`CallKnown` that creates one). Wherever the IR creates a
+//! closure, `push_closure_env` allocates that layout's worth of memory
+//! and, slot by slot, stores each captured value's *current* value, one
+//! `ir::Read` per slot (`compile::build_read` resolved each to either one
+//! of the current function's own parameters or one of *its* own
+//! environment slots -- so a closure nested several levels deep captures
+//! through as many levels as it needs to, uniformly). A self-recursive
+//! value's own self-reference is never treated as a capture (it's bound
+//! by `Rec`, resolved separately by `match_self_call`, and never itself a
+//! plain readable value) -- `free_vars` excludes it explicitly rather than
+//! have it (wrongly) show up as an uncapturable free variable in every
+//! recursive function.
+//!
+//! A closure value can then be *applied* two ways. `CallUnknown` calls one
+//! through a `Read` (a parameter *or* a captured free variable, the same
+//! either way) that's always called with the same number of arguments
+//! everywhere in its own function (`compile::infer_closure_arities` finds
+//! these, keyed by absolute `Var` index so it doesn't need to distinguish
+//! the two); its template is Wasm's `call_indirect` through the shared
+//! table, unpacking the environment pointer and table index back out of
+//! the packed `i64` first. `CallKnown` calls a literal lambda appearing
+//! directly in function position (the builder's registry gives it a table
+//! slot); its template is an ordinary, statically-known `call`, with a
+//! freshly created environment passed as that call's first argument.
+//! `MakeClosure`, a lambda passed around as a value it's never applied to
+//! (an argument, a branch's result, ...), packs its (possibly-empty)
+//! environment and table index into a single `i64` the same way.
+//!
+//! What's out of scope: capturing an enclosing self-recursive binding's
+//! own self-reference as a plain value from a *nested* closure (an honest,
+//! structural rejection -- see `free_vars`'s self-exclusion -- rather than
+//! a special-cased check). Nothing statically checks that a value passed
+//! into a closure-typed parameter actually has the arity that parameter's
+//! own body expects of it -- `call_indirect`'s own dynamic type check
+//! catches a mismatch as a trap, caught safely by `jit.rs`'s sample
+//! verification the same way any other compiler bug would be.
+//!
+//! ## Partial application: compile-time desugaring, not a runtime object
+//!
+//! An *under*-applied literal lambda (`root`, own arity `n`, applied to
+//! only `k < n` arguments) is a genuine partial application: the
+//! expression's value is a fresh closure of arity `n - k`, waiting for
+//! the rest. Since every call site in this fragment has a statically
+//! known argument count, there's never a need for a fully general runtime
+//! mechanism that dispatches on arity dynamically (the way, say, GHC's
+//! PAP objects do) -- the missing argument count is always known at
+//! compile time, so it's resolved then: the builder registers a
+//! synthesized wrapper combinator (`ir::Combinator::Pap`), keyed by
+//! `(root, k)` alone (*not* the actual argument values supplied -- those
+//! only matter at each creation site, not to the wrapper's own compiled
+//! code, which every call site with the same `(root, k)` shares), and
+//! `MakePap`'s template creates a value of it (`Lowering::pap_env`)
+//! exactly the way any other closure value is created. `emit_pap_wrapper`
+//! needs no IR body at all for the wrapper's own code -- its environment
+//! layout is entirely fixed by `(root, k)` (slot `0` is `root`'s own
+//! environment pointer, slots `1..=k` are the already-supplied
+//! arguments), so it's just a handful of fixed loads forwarded into one
+//! statically-known `call`.
+//!
+//! A variable (not a literal lambda) applied with inconsistent arities has
+//! no fixed arity to compare against, so there's no missing-argument count
+//! to desugar around this way; that case is handled by a separate,
+//! fragment-wide fallback -- see "Generic closure dispatch" below.
+//! Over-application of a literal lambda is a different, *narrower*
+//! problem: `root`'s own identity and arity are still statically known
+//! (it's *what its body computes* that isn't) -- see "Over-application"
+//! below.
+//!
+//! ## Over-application: dispatching a saturated call's own result
+//!
+//! An *over*-applied literal lambda (`root`, own arity `n`, applied to
+//! `k > n` arguments) means the *first* `n` arguments saturate `root`
+//! itself, and the remaining `k - n` are applied to whatever `root`'s own
+//! body evaluates to once called -- which only makes sense if that's
+//! itself a closure (e.g. `root = \a b. if a > 0 then (\c. ..) else (\c.
+//! ..)`, returning one of two further, possibly-capturing closures
+//! depending on `a`). The builder expresses it as a `CallUnknown` whose
+//! callee is the saturated `CallKnown`, so it lowers exactly the way
+//! calling a closure-typed *variable* does (see above) -- the only
+//! difference is that the callee is a freshly computed value rather than
+//! one read from a local or capture slot.
+//!
+//! Nothing here checks that `root`'s body genuinely denotes a closure once
+//! applied -- an over-applied literal lambda whose body is a plain `Int`
+//! still compiles, into a `call_indirect` on a garbage table index that
+//! either traps or (astronomically unlikely) coincidentally lands on some
+//! unrelated table entry. Either way, `jit.rs`'s sample verification
+//! catches it: the interpreter genuinely type-errors on such a term, so
+//! any disagreement -- a trap, or a wrong answer -- fails verification
+//! and falls back to the interpreter, the same safety net every other
+//! shape this fragment accepts already relies on (the compiler only needs
+//! to be sound, not complete, and this doesn't even need to be *sound* on
+//! its own -- verification is).
+//!
+//! `call_indirect`'s own operand order needs the callee's packed value
+//! split across *both* ends of the call (environment pointer first, table
+//! index last, with the `k - n` extra arguments' own lowering -- and any
+//! nested closure/PAP construction it might trigger -- necessarily
+//! happening in between). Rather than stash that value in a local across
+//! the extra arguments' own lowering (exactly the hazard
+//! `Lowering::pap_env`'s docs describe, and that bit its predecessor for
+//! real once), the `Fast`-mode `CallUnknown` template lowers its callee
+//! twice, once for each half. For a saturated call that is a pure,
+//! deterministic Wasm function call with no observable side effect beyond
+//! bump-allocator growth (which doesn't affect the result), so recomputing
+//! it is correct, if not free: a deeply left-nested chain of
+//! over-applications recomputes its own innermost saturated call once per
+//! enclosing over-application. Left as a known, documented tradeoff
+//! rather than a `pap_env`-style stack-based reordering, which would need
+//! `O(k - n)` dedicated scratch storage per call site (not just the one or
+//! two locals a fixed-shape wrapper needs) to reassemble the extra
+//! arguments in order after popping them off to reach the callee
+//! underneath.
+//!
+//! ## Generic closure dispatch: a curried fallback for inconsistent arities
+//!
+//! A closure-typed variable called with a genuinely different number of
+//! arguments at different call sites has no single fixed arity to desugar
+//! around (`ArityUse::Consistent(k)`/`ArityUse::Inconsistent`,
+//! `infer_closure_arities`'s widened classification). Rather than reject
+//! such a term outright, every combinator (literal or PAP wrapper) reached
+//! as a bare value additionally gets a curried "stage chain" -- `n`
+//! further functions `stage_0..stage_{n-1}`, all of one shared type
+//! `(func (param $env i32) (param $arg i64) (result i64))`, each taking
+//! exactly one more argument and either forwarding to the combinator's own
+//! ordinary, fixed-arity entry (once all `n` are collected) or returning a
+//! fresh closure pointing at the next stage (`emit_curried_stages`). Every
+//! `CallUnknown` -- through a variable or at an over-application site --
+//! then dispatches one argument at a time through this chain via
+//! `call_indirect (type $ty1)` (`Lowering::dynamic_apply`) instead of the
+//! ordinary per-arity `call_indirect (type $tyK)` fast path.
+//!
+//! This is a *fragment-wide*, not per-call-site, decision (`ir::Dispatch`):
+//! there is no real type system, so once any variable anywhere in a
+//! compiled fragment is called inconsistently, no other closure value in
+//! that same fragment can be locally proven safe from also reaching it.
+//! The dispatch mode is known once the IR is built, before any WAT is
+//! written, so there is no discovery pass. Under `Dispatch::Fast` (every
+//! term that doesn't use this capability) lowering is the ordinary fast
+//! path -- this is an additive fallback, not a replacement, and its real
+//! per-call cost (roughly 1.5x on an otherwise fast-path-eligible hot
+//! loop) is paid only by a fragment that actually needs it -- see
+//! `RELATED_WORK.md` for the measured numbers.
+//!
+//! A *recursive* (`Rec`-wrapped) use of this mechanism gets kernel-proof
+//! backing too, per instance rather than universally (the loop-carried
+//! parameter still has no honest static type across iterations) --
+//! `proof::eval_dyn_tail_recursive` for a *tail*-recursive shape, and
+//! `proof::eval_dyn`'s own `self_ctx`-threaded recursion (mutually with
+//! `eval_dyn_tail_recursive`) for a *non*-tail-recursive one, including
+//! branching (e.g. an embedded self-call inside `1 + f(n-1)`, or two in
+//! one leaf as in naive Fibonacci). See `RELATED_WORK.md` for what's
+//! still open: a universal (not just per-instance) proof for either
+//! shape needs a real dependent sum in the kernel's own type theory.
 
 use std::collections::HashSet;
 
@@ -114,7 +296,7 @@ fn comb_arity(m: &Module, idx: usize) -> usize {
 }
 
 /// A combinator's environment length in `i64` slots. A wrapper's is
-/// `[root's env pointer, each supplied argument]` (see `push_pap_env`).
+/// `[root's env pointer, each supplied argument]` (see `Lowering::pap_env`).
 fn env_len(m: &Module, idx: usize) -> usize {
     match &m.combinators[idx] {
         Combinator::Lifted(f) => f.env_len,
@@ -388,11 +570,12 @@ fn push_closure_env(env: &[Read], w: &mut String, indent: usize) {
 /// whenever `$hp` would run past the end of what's currently allocated.
 /// Never reclaimed -- compiled instances are short-lived and per-call (see
 /// `jit.rs`), so there's no GC here, just like there's no GC in the
-/// combinator table above. `try_compile` emits this only when at least
-/// one registered combinator actually has a non-empty environment
-/// (`push_closure_env` is the only caller of `$alloc`) -- a compiled
-/// fragment with no capturing closures at all gets no memory section.
-pub(crate) fn emit_allocator(w: &mut String) {
+/// combinator table above. `lower` emits this only when something
+/// allocates: a combinator with a non-empty environment
+/// (`push_closure_env`), a partial-application wrapper (`Lowering::pap_env`)
+/// or a stage chain that accumulates arguments -- a compiled fragment with
+/// none of those gets no memory section.
+fn emit_allocator(w: &mut String) {
     w.push_str("  (memory 1)\n");
     w.push_str("  (global $hp (mut i32) (i32.const 0))\n");
     w.push_str("  (func $alloc (param $n i32) (result i32)\n");
@@ -430,7 +613,7 @@ pub(crate) fn emit_allocator(w: &mut String) {
     w.push_str("  )\n");
 }
 
-pub(crate) fn push_line(w: &mut String, indent: usize, s: &str) {
+fn push_line(w: &mut String, indent: usize, s: &str) {
     for _ in 0..indent {
         w.push(' ');
     }
@@ -438,7 +621,7 @@ pub(crate) fn push_line(w: &mut String, indent: usize, s: &str) {
     w.push('\n');
 }
 
-pub(crate) fn arith_instr(op: PrimOp) -> Option<&'static str> {
+fn arith_instr(op: PrimOp) -> Option<&'static str> {
     use PrimOp::*;
     Some(match op {
         Add => "i64.add",
@@ -467,9 +650,9 @@ pub(crate) fn arith_instr(op: PrimOp) -> Option<&'static str> {
 /// Needs the stack's top two values (`a`, `b`, already compiled) copied
 /// into scratch locals rather than duplicated in place, since Wasm's
 /// MVP instruction set has no stack-only "dup" -- `$diva`/`$divb`,
-/// declared unconditionally in `compile_function` (harmless if unused,
+/// declared unconditionally in `Lowering::function` (harmless if unused,
 /// matching `$envtmp`/`$papenv`'s own convention).
-pub(crate) fn emit_wrapping_div(w: &mut String, indent: usize) {
+fn emit_wrapping_div(w: &mut String, indent: usize) {
     push_line(w, indent, "local.set $divb");
     push_line(w, indent, "local.tee $diva");
     push_line(w, indent, &format!("i64.const {}", i64::MIN));
@@ -500,19 +683,19 @@ pub(crate) fn cmp_instr(op: PrimOp) -> Option<&'static str> {
 /// Emits a synthesized partial-application wrapper (`name` = `$c{idx}`,
 /// its assigned table index) -- `root` (a literal combinator, already
 /// registered at `root_idx` with its own arity `root_arity`) was applied
-/// to only `supplied` of its arguments (`compile_node`'s under-application
-/// handling); this wrapper takes the remaining `root_arity - supplied`
-/// arguments and completes the call. Its own environment layout is fixed
-/// by `(root_idx, supplied)` alone -- slot `0` is `root`'s own
-/// environment pointer (as an `i64`, zero-extended, for slot uniformity
-/// with every other slot), slots `1..=supplied` are the values of the
-/// arguments `root` was already applied to -- see `push_pap_env`, which
-/// builds exactly this layout at each creation site. Entirely
-/// self-contained (no `compile_node`/`FnCtx` needed, unlike an ordinary
-/// combinator's body): every value here is just a fixed offset into
+/// to only `supplied` of its arguments (an `ir::Combinator::Pap`, built
+/// from an under-application); this wrapper takes the remaining
+/// `root_arity - supplied` arguments and completes the call. Its own
+/// environment layout is fixed by `(root_idx, supplied)` alone -- slot `0`
+/// is `root`'s own environment pointer (as an `i64`, zero-extended, for
+/// slot uniformity with every other slot), slots `1..=supplied` are the
+/// values of the arguments `root` was already applied to -- see
+/// `Lowering::pap_env`, which builds exactly this layout at each creation
+/// site. Entirely self-contained (no IR body, unlike an ordinary
+/// combinator's): every value here is just a fixed offset into
 /// `$env`, or one of this function's own parameters, forwarded straight
 /// into a single, statically-known `call`.
-pub(crate) fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, supplied: usize, w: &mut String) {
+fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, supplied: usize, w: &mut String) {
     let remaining = root_arity - supplied;
     w.push_str(&format!("  (func ${name} (param $env i32)"));
     for i in 0..remaining {
@@ -539,16 +722,15 @@ pub(crate) fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, s
 /// for a partial-application wrapper it's `1 + supplied`; this function
 /// only ever copies those slots byte-for-byte, so it doesn't need to
 /// know or care what's actually in them, the same way `emit_pap_wrapper`
-/// doesn't need `compile_node`/`FnCtx` for its own fixed-offset body).
-/// Called from `try_compile`'s own stage-generation loop, once per
-/// combinator the fragment both needs generic dispatch for
-/// (`Combinators::needs_generic_dispatch`) and actually reaches as a bare
-/// value (`Combinators::used_as_bare_value` -- a combinator only ever
-/// called directly and saturated gets no stage chain, even in a fragment
-/// where generic dispatch is on for some *other* combinator) -- see the
-/// module docs above `Combinators` for why that decision has to be made
-/// fragment-wide, before any call site can choose between the ordinary
-/// `call_indirect`/`$tyK` fast path and this mechanism.
+/// doesn't need an IR body for its own fixed-offset one).
+/// Called from `lower`'s stage-generation loop, once per combinator of a
+/// `Dispatch::Curried` module that is actually reached as a bare value
+/// (`used_as_bare_value` -- a combinator only ever called directly and
+/// saturated gets no stage chain, even in a fragment where generic
+/// dispatch is on) -- see "Generic closure dispatch" in the module docs
+/// for why that decision has to be made fragment-wide, before any call
+/// site can choose between the ordinary `call_indirect`/`$tyK` fast path
+/// and this mechanism.
 ///
 /// Produces `arity` new one-argument-at-a-time functions, `$s{idx}_0 ..
 /// $s{idx}_{arity-1}`, each of the shape `(param $env i32) (param $arg
@@ -562,7 +744,7 @@ pub(crate) fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, s
 /// `stage_0`'s own table index is what a "generically dispatchable" bare
 /// value of this combinator should be packed with -- *alongside this
 /// combinator's own, ordinarily-built environment* (`push_closure_env`
-/// for a literal, `push_pap_env`'s own root-env-pointer-first layout for
+/// for a literal, `Lowering::pap_env`'s root-env-pointer-first layout for
 /// a wrapper), unchanged -- instead of `idx` itself: `stage_0`'s own
 /// environment layout, before any argument has been supplied, coincides
 /// exactly with this combinator's own ordinary one (zero accumulated
@@ -584,12 +766,12 @@ pub(crate) fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, s
 /// argument; every earlier stage allocates one slot more than it itself
 /// received, copies its own prefix across verbatim, appends the new
 /// argument, and returns a packed value pointing at the next stage.
-pub(crate) fn emit_curried_stages(idx: usize, arity: usize, env_len: usize, base_table_index: usize, w: &mut String) -> Vec<usize> {
+fn emit_curried_stages(idx: usize, arity: usize, env_len: usize, base_table_index: usize, w: &mut String) -> Vec<usize> {
     let table_indices: Vec<usize> = (0..arity).map(|i| base_table_index + i).collect();
     for i in 0..arity {
         w.push_str(&format!("  (func $s{idx}_{i} (param $env i32) (param $arg i64) (result i64)\n"));
         // Declared unconditionally (harmless if unused, matching
-        // `compile_function`'s own convention for `$envtmp`) -- only the
+        // `Lowering::function`'s convention for `$envtmp`) -- only the
         // not-yet-saturated branch below actually needs it.
         w.push_str("    (local $envtmp i32)\n");
         if i + 1 == arity {
@@ -694,7 +876,7 @@ mod tests {
     }
 
     /// `emit_curried_stages` is reachable from `try_compile` now (gated on
-    /// `Combinators::needs_generic_dispatch`, see its own docs), with a
+    /// `Dispatch::Curried`, see "Generic closure dispatch"), with a
     /// full end-to-end test exercising that real path
     /// (`inconsistent_call_arity_for_a_parameter_now_compiles_via_curried_dispatch`).
     /// These tests still earn their keep independently: driving
@@ -783,28 +965,30 @@ mod tests {
     use crate::compile::try_compile;
     use crate::ir::fixtures::{factorial, twice, twice_inc};
 
-    fn assert_lowers_like_legacy(fixture: (crate::term::TermStore, crate::term::Hash, crate::ir::Module)) {
+    /// The hand-built fixture IR lowers to exactly what `try_compile`
+    /// produces for the same term, i.e. to what the builder's IR lowers to.
+    fn assert_lowers_like_the_builder(fixture: (crate::term::TermStore, crate::term::Hash, crate::ir::Module)) {
         let (s, h, m) = fixture;
         crate::ir::check(&m).unwrap();
-        let legacy = try_compile(&s, h).expect("the legacy path compiles every fixture");
+        let built = try_compile(&s, h).expect("the builder accepts every fixture");
         let lowered = lower(&m);
-        assert_eq!(lowered.wat, legacy.wat);
-        assert_eq!(lowered.arity, legacy.arity);
-        assert_eq!(lowered.needs_hp_reset, legacy.needs_hp_reset);
+        assert_eq!(lowered.wat, built.wat);
+        assert_eq!(lowered.arity, built.arity);
+        assert_eq!(lowered.needs_hp_reset, built.needs_hp_reset);
     }
 
     #[test]
-    fn factorial_lowers_to_the_legacy_wat() {
-        assert_lowers_like_legacy(factorial());
+    fn factorial_lowers_like_the_builder() {
+        assert_lowers_like_the_builder(factorial());
     }
 
     #[test]
-    fn a_closure_parameter_call_lowers_to_the_legacy_wat() {
-        assert_lowers_like_legacy(twice());
+    fn a_closure_parameter_call_lowers_like_the_builder() {
+        assert_lowers_like_the_builder(twice());
     }
 
     #[test]
-    fn a_known_call_passing_a_closure_value_lowers_to_the_legacy_wat() {
-        assert_lowers_like_legacy(twice_inc());
+    fn a_known_call_passing_a_closure_value_lowers_like_the_builder() {
+        assert_lowers_like_the_builder(twice_inc());
     }
 }

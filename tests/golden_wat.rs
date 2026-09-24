@@ -5,7 +5,7 @@
 //! term the fragment rejects is recorded as `REJECTED`, so a new
 //! acceptance or rejection shows up here too. The snapshots were first
 //! recorded while the transitional `try_compile` asserted the IR path
-//! byte-identical to the legacy direct emitter.
+//! byte-identical to the legacy direct emitter (since retired).
 
 #[path = "../benches/common.rs"]
 mod common;

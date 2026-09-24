@@ -71,7 +71,7 @@ judgment in section 4, but its precondition.
 
 ### 3.1 Inferring `Γ`: `infer_closure_arities` / `scan_for_closure_calls`
 
-(`compile.rs`, used identically by `compile.rs`'s own `FnCtx` and by
+(`compile.rs`, used identically by `compile.rs`'s own `build_function` and by
 `proof.rs`'s `param_types_for`.)
 
 This is a **use-site scan**, not unification: walk a combinator's body
@@ -92,7 +92,7 @@ application, record the argument count `k` at that call site. Two rules:
   on `compile.rs`'s own side, entirely outside this type system: once any
   `Inconsistent` entry is found anywhere in a compiled fragment, that
   fragment gets a separate, additive, compile-time-only widening (a
-  curried dispatch mechanism, `emit_curried_stages`/`emit_dynamic_apply`)
+  curried dispatch mechanism, `emit_curried_stages`/`Lowering::dynamic_apply`)
   that lets it compile anyway. This started as a purely operational
   fallback with no kernel-checked proof counterpart; `proof::
   prove_closure_expr_instance`/`eval_dyn` (§6.3) now cover a real slice
@@ -182,7 +182,7 @@ same way (`Combinators`'s own docs: "either resolves the same way").
 Γ ⊢ (if c then t else e) : τ
 ```
 
-`If`'s condition is always `Int` (`compile_cond` additionally requires it
+`If`'s condition is always `Int` (`build_node`'s `If` arm additionally requires it
 be a *direct comparison* — `Lt`/`Le`/`Eq` — wherever the branch is used to
 gate recursion structure, a stricter requirement than typing alone, see
 `compile.rs`'s/`proof.rs`'s own docs). The two branches must derive the

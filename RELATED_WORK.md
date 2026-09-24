@@ -2739,6 +2739,59 @@ It does nothing about *meaning* drift: `compile_node`'s `i64.div_s` and
 every other per-case translation. §28's correction says why no refactor
 reaches that.
 
+## 34. An IR between term analysis and WAT
+
+§33 made the *classification* shared; this separates the *meaning* from the
+*representation*, the precondition for checking meaning per compilation.
+`compile.rs` now builds a closure-converted, representation-neutral IR
+(`ir.rs`): which function, which local, which environment slot, which kind of
+call. `lower_wat.rs` turns it into WAT, one template per node. Closure packing,
+the bump allocator, scratch locals, the wrapping-division sequence and the
+curried stage chains all live in the templates. Design, alternatives and
+research: `docs/superpowers/specs/2026-09-23-jit-ir-design.md`.
+
+**Why this level.** The mid-level IR of every system surveyed (GHC STG,
+CakeML BVL, CertiCoq-Wasm's λANF input, Lean IR, Flambda 2, Hoot's CPS after
+closure conversion, MLton SSA) sits at this level or above it, and each makes
+the layout concrete in exactly one pass downstream. The lowest levels (GHC
+Cmm, Gibbon L4) are the least checked. An IR with explicit memory operations
+would have made the step-2 decompiler a symbolic evaluator of memory traffic.
+An annotated term would have left closure conversion, where past bugs were,
+entirely trusted. Flat closures were kept rather than Lean-style lambda
+lifting. Hash-exact decompilation needs to know which leading arguments are
+captures either way, so lifting would not have made the decompiler simpler;
+and keeping the representation let step 1 require byte-identical WAT.
+
+**How it was checked.** For the whole transition, `try_compile` ran both
+the old direct emitter and build → check → lower, and asserted identical
+WAT, `needs_hp_reset` and `arity` on every call. That covered every unit
+test, all four fuzzers in release, the demo and both bench suites. Golden
+snapshots (`tests/golden/`) were then recorded, and the old path deleted.
+Verify-teeth: swapping `If` branches in the builder, or skipping
+`local_index`, made the gate panic across the suite (15 and 16 failing
+`compile::tests`). After the deletion, a one-byte template change
+(`i64.const 32` → `33` in `MakeClosure`'s packing) failed the golden test
+for all 7 of the 20 terms that build a closure value, and 3 closure tests.
+
+**What changed besides the split.** The discovery pass is gone. The dispatch
+mode is a field of the module, known before any WAT is written. Renames:
+`compile_node` → `build_node` (term shape) plus `lower_wat` templates (emitted
+code); `compile_var_read` → `build_read`; `emit_dynamic_apply` →
+`Lowering::dynamic_apply`; `push_pap_env` → `Lowering::pap_env`. Cold-compile
+timings (`jit_cold_compile_and_verify` medians, the step's base `deb8ec7` →
+after, median of three interleaved runs of each build) are fib_30 227 → 227
+ms, gcd 78.9 → 73.5 ms, capturing_closure_loop 67.8 → 65.6 ms,
+partial_application_loop 67.2 → 64.6 ms,
+closure_typed_loop_carried_parameter_loop 18.4 → 20.1 ms and
+inconsistent_arity_loop_carried_parameter_loop 4.9 → 5.6 ms, all within
+this machine's run-to-run spread of up to about 15% (three longer
+interleaved reruns of the last two gave 16.7 → 15.9 ms and 4.0 → 4.1 ms),
+so the change is not measurable either way.
+
+**Not yet.** Nothing checks the IR against the source yet. That is step 2
+(a decompiler that rebuilds the term and compares content hashes), then
+step 3 (a differential test for each template).
+
 ## Sources
 
 - [Partial application (Wikipedia)](https://en.wikipedia.org/wiki/Partial_application)
@@ -2755,3 +2808,20 @@ reaches that.
 - [Recent Work in Homotopy Type Theory: Modal, Algebraic, Synthetic, and Cubical](https://ncatlab.org/homotopytypetheory/files/awodeyMURI18.pdf)
 - [stacker (crates.io)](https://crates.io/crates/stacker)
 - [rustc `ensure_sufficient_stack`](https://doc.rust-lang.org/nightly/nightly-rustc/rustc_data_structures/stack/fn.ensure_sufficient_stack.html)
+- [Marlow & Peyton Jones, Making a fast curry: push/enter vs. eval/apply](https://simonmar.github.io/bib/papers/eval-apply.pdf)
+- [GHC STG syntax (`GHC/Stg/Syntax.hs`)](https://github.com/ghc/ghc/blob/master/compiler/GHC/Stg/Syntax.hs)
+- [Podlovics et al. 2020, GRIN](https://cyber.bibl.u-szeged.hu/index.php/actcybern/article/download/4101/4018)
+- [Gibbon compiler pipeline (`Gibbon/Compiler.hs`)](https://github.com/iu-parfunc/gibbon/blob/main/gibbon-compiler/src/Gibbon/Compiler.hs)
+- [Rideau & Leroy, Validating register allocation and spilling](https://xavierleroy.org/publi/validation-regalloc.pdf)
+- [Tristan & Leroy, Verified validation of lazy code motion](https://jtristan.github.io/papers/pldi09.pdf)
+- [The verified CakeML compiler backend](https://kar.kent.ac.uk/71304/1/paper.pdf)
+- [CertiCoq-Wasm (CPP'25)](https://womeier.de/files/certicoqwasm-cpp25-paper.pdf)
+- [Œuf: minimizing the Coq extraction TCB](https://homes.cs.washington.edu/~djg/papers/oeuf2018.pdf)
+- [Necula, Translation validation for an optimizing compiler](https://people.eecs.berkeley.edu/~necula/Papers/tv_pldi00.pdf)
+- [Myreen, decompilation into logic](https://www.cl.cam.ac.uk/~mom22/extensible-compilation.pdf)
+- [Ullrich & de Moura, Counting immutable beans (Lean 4 IR, `fap`/`pap`/`ap`)](https://arxiv.org/abs/1908.05647)
+- [Flambda 2 call kinds (`call_kind.mli`)](https://github.com/oxcaml/oxcaml/blob/main/middle_end/flambda2/terms/call_kind.mli)
+- [wasm_of_ocaml closures (`gc_target.ml`)](https://github.com/ocsigen/js_of_ocaml/blob/master/compiler/lib-wasm/gc_target.ml)
+- [CPS in Guile](https://www.gnu.org/software/guile/manual/html_node/CPS-in-Guile.html)
+- [CPS in Hoot](https://wingolog.org/archives/2024/05/27/cps-in-hoot)
+- [Crocus / VeriISLE: verified lowering rules](https://dl.acm.org/doi/10.1145/3617232.3624862)

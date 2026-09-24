@@ -225,8 +225,8 @@ fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut H
 }
 
 /// Hand-built terms together with the IR `compile::build` must produce for
-/// them. `lower_wat`'s tests use them to pin the lowering to the legacy
-/// WAT; `compile`'s tests use them to pin the builder.
+/// them. `lower_wat`'s tests use them to pin the lowering to what the
+/// builder's IR lowers to; `compile`'s tests use them to pin the builder.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;

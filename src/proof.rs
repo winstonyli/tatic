@@ -14,7 +14,7 @@
 //! for what's being checked, which is purely *compositional structure*.
 //!
 //! For `Var`/`Lit`/`Prim`/`If` terms (no `Abs`/`App`/`Rec`), `compile.rs`'s
-//! `compile_node` and `eval.rs`'s `eval` recurse over the term in exactly
+//! `build_node` and `eval.rs`'s `eval` recurse over the term in exactly
 //! the same shape -- evaluate/compile the operands, then combine with the
 //! same operator -- so `denote` (the single translation below) models both
 //! readings, and the proof that they agree is `refl`. That's not a
@@ -50,7 +50,7 @@
 //! Mechanically, for a concrete `(term, args)`,
 //! `prove_tail_recursive_call` follows the interpreter's own concrete trace
 //! (which branch is taken at each unrolling, using the same shape
-//! `compile_node` classifies bodies with), and at each tail-call step,
+//! `build_node` classifies bodies with), and at each tail-call step,
 //! symbolically composes the new parameters via `denote` -- i.e. it relates
 //! interpreter state to compiled-loop state at every step, not just at the
 //! end. Once the trace reaches its base case (guaranteed finite for
@@ -80,8 +80,8 @@
 //! now, `prove_tail_recursive_universal` postulates a
 //! family `Ev(params, v) : Sort(0)`, "unrolling from `params` reaches
 //! `v`", with one constructor per leaf of `body`'s decision tree (`body`
-//! may be an arbitrary tree of nested `If`s, matching what `compile_node`
-//! already compiles; each leaf may itself contain any number of self-call
+//! may be an arbitrary tree of nested `If`s, matching what `build_node`
+//! already accepts; each leaf may itself contain any number of self-call
 //! occurrences -- zero for a base case, one in tail position for the
 //! historically-first case this covered, or several combined arithmetically,
 //! e.g. `f(n-1) + f(n-2)`, for genuinely non-tail recursion) and a
@@ -129,7 +129,7 @@
 //!
 //! Scope: every `If` on the way to a leaf (i.e. one `classify_tree` pulls
 //! into the [`DecisionTree`] itself, gating which leaf is reached) must
-//! have a direct comparison as its condition (`compile_cond` in
+//! have a direct comparison as its condition (`build_node`'s `If` arm in
 //! `compile.rs` requires that too, and gating above relies on comparisons
 //! denoting to exactly `0` or `1`); `body` must have at least one leaf
 //! with a self-call somewhere in it (otherwise there's no recursion to
@@ -521,9 +521,9 @@ enum StepOutcome {
     TailCall(Vec<Hash>),
 }
 
-/// Walks `h` (a `compile_node`-shaped If-chain, in tail position) using
+/// Walks `h` (a `build_node`-shaped If-chain, in tail position) using
 /// concrete params to decide which branch is taken, mirroring
-/// `compile::compile_node`'s own structure exactly: an `If`'s condition is
+/// `compile::build_node`'s own structure exactly: an `If`'s condition is
 /// resolved concretely and we recurse into the taken branch; a
 /// fully-saturated self-call is reported as a `TailCall`; anything else is
 /// the reached base case.
@@ -606,7 +606,7 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // below.
 //
 // `classify_tree` turns `body` into a [`DecisionTree`] (an arbitrary
-// nested-`If` shape, `compile_node` already compiles it fine); a single
+// nested-`If` shape, `build_node` already accepts it fine); a single
 // top-level `If` (the historically-first, narrower shape this covered) is
 // just the case where the tree has depth one. `flatten_tree` reduces that
 // to a flat `Vec<Leaf>`, each carrying its root-to-leaf path of
@@ -651,7 +651,7 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // `kernel::trans_proof` to reach the goal.
 //
 // Scope: every `If` on the way to any leaf must have a direct comparison
-// as its condition (`compile_cond` in `compile.rs` requires that too; also
+// as its condition (`build_node`'s `If` arm in `compile.rs` requires that too; also
 // what lets the gating above use plain equality, since a comparison only
 // ever denotes to `0` or `1`); `body` must have at least one leaf with a
 // self-call in it somewhere. A leaf's own expression *may* contain a
@@ -817,8 +817,8 @@ fn resolve_all(arith: &ArithPostulates, positions: &[usize]) -> Vec<Expr> {
 }
 
 /// The shape `prove_tail_recursive_universal`'s `body` must be: an
-/// arbitrary tree of nested `If`s (matching what `compile_node` already
-/// compiles), each leaf an arithmetic expression (`Var`/`Lit`/`Prim`/`If`)
+/// arbitrary tree of nested `If`s (matching what `build_node` already
+/// accepts), each leaf an arithmetic expression (`Var`/`Lit`/`Prim`/`If`)
 /// that may itself contain any number of self-call occurrences (zero, for
 /// a base case; one in tail position, for the old tail-recursion special
 /// case; one or more anywhere else, e.g. `f(n-1) + f(n-2)`, including
@@ -835,7 +835,7 @@ enum DecisionTree {
 }
 
 /// Classifies `h` into a [`DecisionTree`]. Every `If`'s condition must be
-/// a direct comparison (same restriction `compile_cond` in `compile.rs`
+/// a direct comparison (same restriction `build_node`'s `If` arm in `compile.rs`
 /// already imposes, and what lets `cond_premise` below use plain `Id`
 /// equality -- a comparison only ever denotes to `0` or `1`).
 fn classify_tree(store: &TermStore, h: Hash) -> Option<DecisionTree> {
@@ -3968,7 +3968,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // T_{n-1} -> Env`. `build_env_expr` builds the actual `mk_env(v_1,...,
 // v_n)` argument fresh at each creation site, from whatever the captured
 // values currently are in the *calling* function's own frame -- exactly
-// mirroring `compile.rs`'s own `push_closure_env` at the proof level.
+// mirroring `lower_wat.rs`'s `push_closure_env` at the proof level.
 // Either way -- ordinary `App` against a `Clo_k`-typed parameter, or
 // `call_h` applied to its arguments for a directly-named combinator --
 // the result faithfully represents "call this closure" on *both*
@@ -4003,7 +4003,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // postulate rather than being forced through an all-`Int` one.
 //
 // A captured value that's itself a capture of the *calling* scope --
-// `compile_var_read`'s own recursive case, when compiling a function that
+// `build_read`'s own recursive case, when compiling a function that
 // is itself a capturing closure -- has no proof-side counterpart here,
 // not because it's deferred, but because it can't arise: `denote_closure`/
 // `denote_closure_typed` never enter a registered combinator's own body
@@ -4027,14 +4027,14 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // ordinary call-site subexpressions -- denoted the normal recursive way, not
 // resolved through any `Env`/`build_env_expr`-style machinery -- so this
 // piece is structurally simpler than the capturing-closures one above.
-// Now covers a *capturing* root too, mirroring `compile.rs`'s own
-// `push_pap_env`: when `h`'s own body captures anything, `pap_ref`'s
+// Now covers a *capturing* root too, mirroring `lower_wat.rs`'s
+// `Lowering::pap_env`: when `h`'s own body captures anything, `pap_ref`'s
 // postulated type takes an extra leading `Env` parameter (the same
 // environment-first convention `call_ref` already uses for a direct call),
 // and every call site builds that environment via `build_env_expr` and
 // prepends it to the wrapper's own supplied arguments -- composing the
 // wrapper's own environment with a copy of the root's, exactly the way
-// `push_pap_env` composes them at the compiled-code level. Over-application
+// `Lowering::pap_env` composes them at the compiled-code level. Over-application
 // (more arguments than arity) stays rejected exactly as before.
 //
 // A combinator (called or used as a bare value) may itself be
@@ -4135,7 +4135,7 @@ enum AppShape {
 }
 
 /// Refines an application-shaped [`Shape`] (from `compile::classify`, the
-/// same classification `compile_node` dispatches on) with what the
+/// same classification `build_node` dispatches on) with what the
 /// closures fragment needs to know: whether a variable callee is a
 /// `Clo`-typed parameter called at its own arity, and a literal callee's
 /// own parameter types. `None` for any other shape.
@@ -4713,7 +4713,7 @@ impl<'a> ClosureCombinators<'a> {
     /// matching `call_ref`'s own `Var(0)`-innermost/`Var(arity-1)`-outermost
     /// convention and this function's own ascending iteration order below).
     ///
-    /// If `h` itself captures (`compile.rs`'s own `push_pap_env` composes
+    /// If `h` itself captures (`lower_wat.rs`'s `Lowering::pap_env` composes
     /// the wrapper's own environment with a copy of `h`'s -- see its own
     /// docs), `mk_pap_h_k` takes `h`'s own `Env` first, ahead of the `k`
     /// supplied arguments, mirroring `call_h`'s own environment-first
@@ -6369,7 +6369,7 @@ fn capture_sig(captures: &[u32], caller_param_types: &[Option<usize>]) -> Option
 /// value's *current* value out of the *calling* function's own
 /// `(params, param_types)` frame -- mirroring `compile.rs`'s
 /// `push_closure_env`, but resolving each slot directly against `params`
-/// rather than through a `compile_var_read`-style recursive lookup (see
+/// rather than through a `build_read`-style recursive lookup (see
 /// `build_env_expr`'s own section docs above for why that recursive case
 /// never actually arises here). Each captured index must resolve
 /// directly to one of the caller's own parameters (`rel < params.len()`)
@@ -6862,7 +6862,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
 // parameter -- there is no opaque axiom to fall back on, so the only
 // honest option is to substitute the concrete argument in and recurse
 // into that callee's own body directly, faithfully modeling what both
-// `compile_node`'s own call convention and the interpreter's own
+// the `lower_wat` templates' own call convention and the interpreter's own
 // substitution semantics actually do for that one call. No new
 // postulate is introduced anywhere to do this -- every construction
 // below reuses `call_ref`/`op_ref`/`register`/`mk_clo_ref`/`mk_env_ref`
@@ -6963,7 +6963,7 @@ fn dyn_frame_to_env(store: &TermStore, frame: &[DynVal]) -> Option<eval::Env> {
 /// need for a *newly computed* `Int`-typed argument (so a later branch
 /// condition that depends on it stays evaluable) -- unlike `eval_concrete`
 /// (used only for the pure-arithmetic conditions `classify_step` itself
-/// resolves, which `compile_cond`'s own restriction guarantees never
+/// resolves, which `build_node`'s `If`-arm restriction guarantees never
 /// embed a call), this argument may itself be an application of a
 /// concretely-known closure (e.g. a loop-carried `g(x)`), which
 /// `eval_concrete`'s own fragment (`Var`/`Lit`/`Prim`/`If` only) can't
@@ -8896,7 +8896,7 @@ mod tests {
         // no way to pass a `Clo` value as a top-level runtime `i64`
         // argument -- see `jit.rs`'s own calling convention): this shape
         // already compiled before this proof extension existed
-        // (`infer_closure_arities`/`compile_node`'s Var-callee branch
+        // (`infer_closure_arities`/`build_node`'s Var-callee branch
         // already handled a Clo-typed loop-carried parameter generically),
         // it just had no proof strategy covering it -- now two do: this
         // *particular* term also happens to get `is_kernel_verified` via
@@ -9348,7 +9348,7 @@ mod tests {
     /// `prove_tail_recursive_universal` is the `If` condition:
     /// `classify_tree` requires a direct comparison, while `classify_step`
     /// just evaluates whatever is there on the concrete arguments. But
-    /// `compile::compile_cond` imposes exactly `classify_tree`'s
+    /// `compile::build_node`'s `If` arm imposes exactly `classify_tree`'s
     /// restriction, so a term in that gap never compiles, and
     /// `kernel_verify` never runs on it at all.
     ///
@@ -9382,7 +9382,7 @@ mod tests {
         // ...the universal one doesn't, because `classify_tree` rejects a
         // non-comparison condition...
         assert!(prove_tail_recursive_universal(&s, h).is_none());
-        // ...and none of that matters, because `compile_cond` rejects the
+        // ...and none of that matters, because `build_node`'s `If` arm rejects the
         // same condition, so the term never reaches the JIT's cascade.
         assert!(compile::try_compile(&s, h).is_none());
     }
@@ -9932,7 +9932,7 @@ mod tests {
     fn a_partially_applied_capturing_literal_lambda_used_as_a_value_gets_a_closure_proof() {
         // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- same shape as
         // compile::tests::partial_application_of_a_capturing_literal_lambda_compiles,
-        // which compiles via push_pap_env composing the wrapper's own
+        // which compiles via Lowering::pap_env composing the wrapper's own
         // environment with a copy of the (capturing) root's own
         // environment. pap_ref now mirrors that: when the root captures,
         // its postulated type takes the root's own Env as a leading

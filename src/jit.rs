@@ -28,7 +28,8 @@
 //! The sample battery is the only check that touches the WAT wasmtime
 //! actually runs; the kernel theorem is the only one that says anything
 //! about inputs outside the battery -- but it is stated over `proof.rs`'s
-//! `denote`, which *models* `compile_node` rather than reading its
+//! `denote`, which *models* the compiler (`compile::build_node` and the
+//! `lower_wat` templates) rather than reading its
 //! output. So the pair is strictly stronger than either alone and still
 //! short of end-to-end soundness (`RELATED_WORK.md` 28).
 //! `kernel_verify` below tries `proof.rs`'s strategies in order of
@@ -237,7 +238,8 @@ impl JitEngine {
             //
             // Note this does *not* make the JIT sound end to end: the
             // theorem is about `proof.rs`'s `denote`, which models
-            // `compile_node` rather than reading the WAT that actually
+            // the compiler (`build_node`, the `lower_wat` templates) rather
+            // than reading the WAT that actually
             // runs. `verify()` remains the only check touching emitted
             // code, which is why it stays as the first half of this gate
             // rather than being replaced by the proof. See
@@ -1197,7 +1199,7 @@ mod tests {
     fn partial_application_of_a_capturing_root_compiles_and_is_kernel_verified() {
         // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- same shape as
         // compile::tests::partial_application_of_a_capturing_literal_lambda_compiles.
-        // compile.rs's push_pap_env composes the wrapper's own environment
+        // lower_wat.rs's Lowering::pap_env composes the wrapper's own environment
         // with a copy of the (capturing) root's environment, and proof.rs's
         // pap_ref now mirrors that (a leading Env_n parameter when the root
         // captures, built at every call site via build_env_expr) -- see

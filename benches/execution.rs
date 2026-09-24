@@ -200,8 +200,8 @@ fn closure_typed_loop_carried_parameter_loop(c: &mut Criterion) {
     group.finish();
 }
 
-/// Isolates the cost of `compile.rs`'s curried-dispatch fallback
-/// (`emit_curried_stages`/`emit_dynamic_apply`, see `RELATED_WORK.md`
+/// Isolates the cost of the JIT's curried-dispatch fallback
+/// (`emit_curried_stages`/`Lowering::dynamic_apply`, see `RELATED_WORK.md`
 /// §9's own "since implemented" note): the same loop, the same hot
 /// `g(x)` call each iteration, as `closure_typed_loop_carried_parameter_loop`,
 /// except one syntactically-present-but-dead call site elsewhere in the

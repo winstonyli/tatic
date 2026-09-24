@@ -200,7 +200,7 @@ fn ite_between_closures_used_as_a_value_demo(s: &mut TermStore) -> Hash {
 /// `\z. (\g2. g2 4) ((\x y. x + y + z) 3)` -- partial application of a
 /// *capturing* literal lambda (`\x y. x + y + z`, captures `z`, under-
 /// applied by one argument), completed through a wrapper the same way any
-/// other closure value would be. `compile.rs`'s own `push_pap_env` already
+/// other closure value would be. `lower_wat.rs`'s `Lowering::pap_env` already
 /// composed the wrapper's own environment with a copy of the root's;
 /// `pap_ref` now mirrors that (a leading `Env_n` parameter when the root
 /// captures), so this gets a kernel-checked proof too, not just empirical

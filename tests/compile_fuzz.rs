@@ -262,7 +262,7 @@ fn gen_tail_recursive(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize) {
 /// `base`) can reference `n` and may contain closure blocks capturing
 /// it -- exercises a self-recursive combinator that also captures
 /// something from its own scope, the exact shape a real bug was found in
-/// (`compile_var_read`'s capture-slot formula didn't match `free_vars`'s
+/// (`compile_var_read`'s, now `build_read`'s, capture-slot formula didn't match `free_vars`'s
 /// for a self-recursive function with a genuine outward capture).
 fn gen_non_tail_recursive(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize) {
     let n = s.var(0);
@@ -368,7 +368,7 @@ fn gen_program(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Option<Hash>) 
 #[test]
 fn compiled_and_interpreted_agree_on_random_terms() {
     // Raised from 250: that default silently missed a real push_pap_env
-    // clobbering bug (src/compile.rs) for the entire time it was in the
+    // clobbering bug (then in src/compile.rs; now Lowering::pap_env) for the entire time it was in the
     // tree -- only a background stress run at 3,000 seeds caught it. The
     // bug itself is now permanently pinned by its own regression test in
     // compile.rs, but this bump is about future, still-unknown bugs: a

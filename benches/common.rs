@@ -120,7 +120,7 @@ pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
 /// wrapper combinator `register_partial_app` synthesizes for `(add, 1)`
 /// compiles once and is shared across every iteration -- only its
 /// environment (holding `add`'s own, empty, environment plus the current
-/// `acc`) gets allocated fresh each time, via `push_pap_env` -- so this
+/// `acc`) gets allocated fresh each time, via `Lowering::pap_env` -- so this
 /// isolates the partial-application path's own per-iteration allocation
 /// cost, the same way `capturing_closure_loop` isolates a plain
 /// capturing closure's.
