@@ -48,14 +48,15 @@ fn run_reference(m: &Module, args: &[i64]) -> Result<i64, EvalError> {
 }
 
 /// Asserts the two agree on `args`. Only a division by zero may fail, and
-/// it must fail on both sides.
-fn agree(m: &Module, args: &[i64], what: &str) {
+/// it must fail on both sides. Returns whether it did, so callers can watch
+/// for the fuzzer degenerating into mostly-trapping runs (see `fuzz`).
+fn agree(m: &Module, args: &[i64], what: &str) -> bool {
     check(m).unwrap_or_else(|e| panic!("{what}: test module is ill-formed: {e}"));
     let wasm = run_wasm(m, args);
     let reference = run_reference(m, args);
     match (&wasm, &reference) {
-        (Ok(a), Ok(b)) if a == b => {}
-        (Err(()), Err(EvalError::DivByZero)) => {}
+        (Ok(a), Ok(b)) if a == b => false,
+        (Err(()), Err(EvalError::DivByZero)) => true,
         _ => panic!("{what}: args {args:?}: compiled {wasm:?} vs interpreted {reference:?}"),
     }
 }
@@ -185,8 +186,35 @@ fn closure_templates_agree_under_both_dispatch_modes() {
             vec![lifted(3, 1, Node::Arith(PrimOp::Sub, b(Node::Arith(PrimOp::Sub, b(Node::Arith(PrimOp::Sub, b(e(0)), b(p(0)))), b(p(1)))), b(p(2))))],
             dispatch,
         );
+        // A four-argument closure, the top of the spec's 1-4 arity range,
+        // which under Curried goes through a four-stage chain.
+        let four = entry(
+            1,
+            false,
+            Node::CallUnknown {
+                callee: b(Node::MakeClosure { f: 0, env: vec![Read::Param(0)] }),
+                args: vec![Node::Lit(1), Node::Lit(20), Node::Lit(300), Node::Lit(4000)],
+            },
+            vec![lifted(
+                4,
+                1,
+                Node::Arith(
+                    PrimOp::Sub,
+                    b(Node::Arith(PrimOp::Sub, b(Node::Arith(PrimOp::Sub, b(Node::Arith(PrimOp::Sub, b(e(0)), b(p(0)))), b(p(1)))), b(p(2)))),
+                    b(p(3)),
+                ),
+            )],
+            dispatch,
+        );
         for x in EDGES {
-            for (m, what) in [(&known, "known call"), (&unknown, "unknown call"), (&pap, "partial application"), (&over, "over-application"), (&three, "three-stage chain")] {
+            for (m, what) in [
+                (&known, "known call"),
+                (&unknown, "unknown call"),
+                (&pap, "partial application"),
+                (&over, "over-application"),
+                (&three, "three-stage chain"),
+                (&four, "four-stage chain"),
+            ] {
                 agree(m, &[x], &format!("{what} ({dispatch:?})"));
             }
         }
@@ -264,7 +292,9 @@ impl Gen<'_> {
                 }
             }
             2 => {
-                let k = 1 + self.rng.below(3);
+                // Up to the spec's arity-4 ceiling, so `Dispatch::Curried`
+                // exercises every stage-chain length, not just 1-3.
+                let k = 1 + self.rng.below(4);
                 let callee = self.clo(sc, k, depth - 1);
                 let args = (0..k).map(|_| self.int(sc, depth - 1)).collect();
                 Node::CallUnknown { callee: Box::new(callee), args }
@@ -370,15 +400,29 @@ fn random_module(rng: &mut Rng) -> Module {
 }
 
 fn fuzz(seeds: u64) {
-    let mut rng = Rng(0x7A71C);
+    let mut runs: u64 = 0;
+    let mut both_err: u64 = 0;
     for seed in 0..seeds {
+        // A fresh `Rng` per seed, not one carried across the loop: a
+        // failure's message names only `seed`, so reproducing it must not
+        // require replaying every earlier iteration's draws first.
+        let mut rng = Rng(0x7A71C_u64.wrapping_add(seed.wrapping_mul(0x9E3779B97F4A7C15)));
         let m = random_module(&mut rng);
         check(&m).unwrap_or_else(|e| panic!("seed {seed}: the generator produced an ill-formed module: {e}"));
         for _ in 0..3 {
             let args: Vec<i64> = (0..m.entry.arity).map(|_| EDGES[rng.below(EDGES.len())]).collect();
-            agree(&m, &args, &format!("random module, seed {seed}"));
+            runs += 1;
+            if agree(&m, &args, &format!("random module, seed {seed}")) {
+                both_err += 1;
+            }
         }
     }
+    // Measured: 26/450 (5.8%) at 150 seeds, 1471/15000 (9.8%) at 5000 seeds.
+    // A ceiling well above that catches the fuzzer degenerating into mostly
+    // division-by-zero (e.g. a generator change that stops producing
+    // interesting non-trapping values) without being sensitive to the
+    // ordinary variation between runs.
+    assert!(both_err * 5 <= runs, "too many both-sides-error runs: {both_err}/{runs} (over 20%)");
 }
 
 #[test]

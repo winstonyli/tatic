@@ -21,9 +21,17 @@ use crate::term::{Hash, TermStore};
 /// The term `m` implements, built into `s`. `None` if `m` refers to
 /// something that does not exist: a combinator index out of range, a read
 /// out of range, a self-call in a non-recursive function, or a
-/// partial-application wrapper that isn't one. `ir::check` rejects all of
-/// these first, but the decompiler derives what it needs itself instead of
-/// trusting that.
+/// partial-application wrapper that isn't one.
+///
+/// `ir::check(m).is_ok()` is a precondition, not something this function
+/// re-derives: `compile::try_compile` only ever calls it on a checked
+/// module, and termination relies on the acyclicity `check_acyclic`
+/// establishes (an unchecked cyclic module can recurse forever instead of
+/// returning `None`). Fields `check` also verifies -- `saturation`,
+/// `env_len`, a `Read`'s `supplied` -- are taken as given here too. The
+/// `None` returns above exist only as defense in depth, in case this is
+/// ever called on an unchecked module; they are not a substitute for
+/// `check` and do not make this function independent of it.
 pub(crate) fn decompile(m: &Module, s: &mut TermStore) -> Option<Hash> {
     let mut d = Decompiler { m, s, memo: HashMap::new() };
     d.func(&m.entry, &[])
@@ -289,12 +297,36 @@ mod tests {
             assert!(!hit, "decompile.rs must not use {forbidden}");
         }
         assert!(!code.iter().any(|l| l.contains("use super::super")), "decompile.rs must not use super::super");
+        // Denylisting "compile"/"lower_wat" only catches those two names.
+        // An allowlist catches everything else too: every `crate::` path
+        // above the test module must lead into `crate::ir` or
+        // `crate::term`, whatever comes after -- `crate::proof`,
+        // `crate::jit`, a future module, all rejected the same way.
+        for l in code {
+            let l = l.trim_start();
+            if l.starts_with("//") {
+                continue;
+            }
+            // Collapse whitespace so `crate :: compile` can't dodge the
+            // `crate::` substring search below the way it dodges the
+            // token-based denylist above. `pub(crate)` has no `::` after
+            // `crate` even once collapsed, so it never matches.
+            let compact: String = l.chars().filter(|c| !c.is_whitespace()).collect();
+            let mut rest = compact.as_str();
+            while let Some(i) = rest.find("crate::") {
+                let after = &rest[i + "crate::".len()..];
+                let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
+                let head = &after[..end];
+                assert!(head == "ir" || head == "term", "decompile.rs must not use crate::{head} (only crate::ir and crate::term are allowed)");
+                rest = &after[end..];
+            }
+        }
     }
 
     use crate::ir::check;
     use std::collections::HashSet;
 
-    const KINDS: [&str; 11] = [
+    const KINDS: [&str; 12] = [
         "swap arguments 0,1",
         "swap arguments 1,2",
         "swap environment slots",
@@ -306,7 +338,13 @@ mod tests {
         "change an operator",
         "retarget a combinator up",
         "retarget a combinator down",
+        "retarget a Pap's root",
     ];
+    /// The index into `KINDS` of "retarget a Pap's root". Handled outside
+    /// `mutate` because it changes `Module::combinators`, not the node
+    /// `mutate` is given -- a `MakePap` node names its *wrapper*, and the
+    /// wrapper's `root` field lives one level away, in the combinator table.
+    const PAP_ROOT_VARIANT: usize = 11;
 
     fn next_arith(op: PrimOp) -> PrimOp {
         use PrimOp::*;
@@ -443,6 +481,52 @@ mod tests {
         None
     }
 
+    /// Like `nth_mut`, read-only: used to find the `MakePap` at node `k`
+    /// without borrowing `mutant.funcs_mut()`, which would collide with the
+    /// separate mutable borrow of `mutant.combinators` that
+    /// `retarget_pap_root` needs.
+    fn nth<'a>(n: &'a Node, k: &mut usize) -> Option<&'a Node> {
+        if *k == 0 {
+            return Some(n);
+        }
+        *k -= 1;
+        for c in n.children() {
+            if let Some(found) = nth(c, k) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Moves a `MakePap` wrapper's `Combinator::Pap.root` to a neighbouring
+    /// combinator, the same up-then-down, skip-if-identical shape as
+    /// `retarget`. `root` names a *lambda*, not the wrapper itself, so this
+    /// mutation is a different injectivity check from variants 9-10 (which
+    /// retarget the wrapper index a `MakeClosure`/`CallKnown`/`MakePap`
+    /// node holds): it catches a decompiler that reads `combinators[wrapper]`
+    /// correctly but rebuilds the wrong lambda for its `root`. An
+    /// out-of-range or non-`Lifted` candidate is left for `check` to reject,
+    /// same as every other mutation here.
+    fn retarget_pap_root(m: &mut Module, wrapper: usize) -> bool {
+        let Some(Combinator::Pap { root, .. }) = m.combinators.get(wrapper) else {
+            return false;
+        };
+        let root = *root;
+        // Try down first: a Pap wrapper is built right after its root (see
+        // `compile::build`), so `root + 1` is usually the wrapper itself --
+        // not `Lifted`, so `check` always rejects it -- while `root - 1` is
+        // usually a distinct lambda and often well-formed.
+        for cand in [root.checked_sub(1), root.checked_add(1)].into_iter().flatten() {
+            if cand >= m.combinators.len() || m.combinators[cand] == m.combinators[root] {
+                continue;
+            }
+            let Combinator::Pap { root: r, .. } = &mut m.combinators[wrapper] else { unreachable!() };
+            *r = cand;
+            return true;
+        }
+        false
+    }
+
     #[test]
     fn every_single_point_mutation_of_a_built_module_is_rejected() {
         // For every real module, every node, and every mutation kind that
@@ -458,7 +542,13 @@ mod tests {
                 for k in 0..nodes {
                     for (variant, kind) in KINDS.iter().enumerate() {
                         let mut mutant = m.clone();
-                        let changed = {
+                        let changed = if variant == PAP_ROOT_VARIANT {
+                            let mut kk = k;
+                            match nth(&m.funcs().nth(fi).unwrap().body, &mut kk) {
+                                Some(Node::MakePap { wrapper, .. }) => retarget_pap_root(&mut mutant, *wrapper),
+                                _ => false,
+                            }
+                        } else {
                             let mut fs = mutant.funcs_mut();
                             let mut kk = k;
                             let node = nth_mut(&mut fs[fi].body, &mut kk).unwrap();

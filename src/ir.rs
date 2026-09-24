@@ -5,7 +5,7 @@
 //! closure is packed, where its environment lives and which scratch locals
 //! a template uses are left to the lowering. See
 //! `docs/superpowers/specs/2026-09-23-jit-ir-design.md` for why this level
-//! was chosen, and for what the later decompiler (step 2) will check
+//! was chosen, and for what the decompiler (`decompile.rs`, step 2) checks
 //! against it.
 //!
 //! Every field is either read by both the lowering and the decompiler,
@@ -149,6 +149,11 @@ fn combinator_targets(m: &Module, n: &Node, out: &mut Vec<usize>) {
     match n {
         Node::CallKnown { f, .. } | Node::MakeClosure { f, .. } => out.push(*f),
         Node::MakePap { wrapper, .. } => {
+            // `check_node` (run by `check_func`, above `check_acyclic` in
+            // `check`) already rejects a `wrapper` that isn't a `Pap`, so
+            // this `if let` never actually skips on check-passing input --
+            // it stays an `if let` rather than an unwrap because this
+            // function has no way to fail, and isn't itself the check.
             if let Some(Combinator::Pap { root, .. }) = m.combinators.get(*wrapper) {
                 out.push(*root);
             }

@@ -352,7 +352,11 @@ static IR_CHECK_FAILURES: AtomicUsize = AtomicUsize::new(0);
 /// How many times, process-wide, `try_compile` has found the builder's IR
 /// ill-formed (`ir::check`). Always 0 unless the builder has a bug; the
 /// release-mode fuzzers assert it, since there the failure is otherwise a
-/// silent rejection. Step 2 may fold it into `jit`'s `Stats`.
+/// silent rejection. It stays a process-wide counter rather than a `jit`
+/// `Stats` field: `Stats` lives on one `jit::Cache` and only sees calls
+/// routed through it, while fuzzers and other direct callers of
+/// `try_compile` never touch a `Cache` at all -- a `Stats` field would miss
+/// them.
 pub fn ir_check_failures() -> usize {
     IR_CHECK_FAILURES.load(Ordering::Relaxed)
 }
@@ -385,9 +389,14 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         }
         return None;
     }
-    // Translation validation: the IR must mean exactly `h`. A mismatch is
-    // handled like an ill-formed module: loud in debug, soundly rejected
-    // (and counted) in release.
+    // Translation validation: the IR must mean exactly `h`, up to a
+    // `Dispatch::Fast` arity trap (a `call_indirect` type mismatch on a
+    // closure applied at the wrong arity) -- a real runtime distinction the
+    // term semantics doesn't model as separate from ordinary evaluation.
+    // `jit.rs`'s sample verification still catches a wrong answer there, by
+    // running the interpreter alongside the compiled code on real inputs.
+    // A mismatch here is handled like an ill-formed module: loud in debug,
+    // soundly rejected (and counted) in release.
     if crate::decompile::decompile(&m, &mut TermStore::new()) != Some(h) {
         IR_VALIDATION_FAILURES.fetch_add(1, Ordering::Relaxed);
         if cfg!(debug_assertions) {
