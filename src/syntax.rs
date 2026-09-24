@@ -37,6 +37,13 @@
 //! the left operand alone already determines the result), matching every
 //! other language's own convention for these operators.
 //!
+//! Unary minus on an integer literal is itself a (negative) literal --
+//! `-5` parses to `Lit(-5)`, not `0 - 5` -- the way OCaml's parser folds
+//! it, so every `Lit` has an exact spelling (`-9223372036854775808`
+//! included). On anything else, `-e` desugars to `0 - e`. Juxtaposition
+//! still binds tighter than unary minus, so a negative argument needs
+//! parentheses: `f (-2)`, since `f -2` is the subtraction `f - 2`.
+//!
 //! `let`/`\`/`rec`/`if` all extend as far right as possible, so (as in most
 //! ML-family languages) they need explicit parentheses when used as a
 //! function argument or an operand of an arithmetic/comparison operator --
@@ -60,7 +67,9 @@ use crate::term::{Hash, PrimOp, Term, TermStore};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
-    Int(i64),
+    /// Unsigned: `9223372036854775808` is only in range as the operand of
+    /// a unary minus (`i64::MIN`), which `parse_unary` checks.
+    Int(u64),
     Ident(String),
     Lambda,
     Dot,
@@ -208,7 +217,7 @@ fn lex(src: &str) -> Result<Vec<(Token, usize)>, ParseError> {
                     i += 1;
                 }
                 let text = &src[start..i];
-                let n: i64 = text
+                let n: u64 = text
                     .parse()
                     .map_err(|_| ParseError { message: format!("invalid integer literal `{text}`"), pos: start })?;
                 tokens.push((Token::Int(n), start));
@@ -500,9 +509,26 @@ impl<'a> Parser<'a> {
 
     fn parse_unary(&mut self) -> Result<Hash, ParseError> {
         match self.peek() {
+            // `-e`: `0 - e`, except that a literal operand folds into a
+            // negative `Lit` (as OCaml's parser does), so `print`'s `-5`
+            // reads back as exactly `Lit(-5)`. `wrapping_neg` matches
+            // `0 - n`'s own wrapping `Sub`, so folding never changes a value.
             Token::Minus => {
+                let pos = self.peek_pos();
                 self.advance();
+                // `i64::MIN`'s magnitude alone is out of range, so it's
+                // only a literal here, never an atom (see `parse_atom`).
+                if matches!(self.peek(), Token::Int(n) if *n == i64::MIN.unsigned_abs()) {
+                    self.advance();
+                    if self.starts_atom() {
+                        return Err(ParseError { message: format!("integer literal `{}` out of range", i64::MIN.unsigned_abs()), pos: pos + 1 });
+                    }
+                    return Ok(self.store.lit(i64::MIN));
+                }
                 let operand = self.parse_unary()?;
+                if let Term::Lit(n) = *self.store.resolve(operand) {
+                    return Ok(self.store.lit(n.wrapping_neg()));
+                }
                 let zero = self.store.lit(0);
                 Ok(self.store.prim(PrimOp::Sub, zero, operand))
             }
@@ -530,7 +556,10 @@ impl<'a> Parser<'a> {
     fn parse_atom(&mut self) -> Result<Hash, ParseError> {
         let pos = self.peek_pos();
         match self.advance() {
-            Token::Int(n) => Ok(self.store.lit(n)),
+            Token::Int(n) => match i64::try_from(n) {
+                Ok(n) => Ok(self.store.lit(n)),
+                Err(_) => Err(ParseError { message: format!("integer literal `{n}` out of range"), pos }),
+            },
             Token::Ident(name) => match self.resolve_var(&name) {
                 Some(idx) => Ok(self.store.var(idx)),
                 None => Err(ParseError { message: format!("unbound variable `{name}`"), pos }),
@@ -572,17 +601,13 @@ pub fn parse(store: &mut TermStore, src: &str) -> Result<Hash, ParseError> {
 // node as an `If`'s condition/branch never does (`then`/`else` delimit it
 // unambiguously, matching `parse_if` calling `parse_expr` for each part).
 //
-// Round-trips for everything this grammar can express, with one honest
-// exception: a literal built directly as `Term::Lit(n)` for `n < 0` (never
-// produced by `parse` itself, which only reaches a negative value via
-// unary-minus desugaring to `Prim(Sub, Lit(0), ..)`) prints using Rust's
-// ordinary negative-number formatting, but this grammar has no negative-
-// literal syntax at all -- only subtraction -- so reparsing that text
-// yields the desugared `Prim(Sub, Lit(0), Lit(-n))` form, not the original
-// bare `Lit(n)`. Semantically identical, not hash-identical; see this
-// module's own test for it. Printed at unary-minus precedence, so it's
-// parenthesised wherever a bare `-n` would parse differently (`f (-2)`,
-// not `f -2`, which reads back as the subtraction `f - 2`).
+// Round-trips exactly (hash-identical) for every well-scoped term. A
+// negative `Lit(n)` prints as `-n`, which `parse_unary` folds straight back
+// into `Lit(n)` (including `i64::MIN`, whose magnitude alone is out of
+// range). Since `-n` is unary minus rather than an atom, it's printed at
+// unary precedence, so it's parenthesised wherever a bare `-n` would parse
+// differently (`f (-2)`, not `f -2`, which reads back as the subtraction
+// `f - 2`).
 
 fn fresh_name(depth: usize) -> String {
     format!("v{depth}")
@@ -718,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn unary_minus_desugars_to_zero_minus_operand() {
+    fn unary_minus_on_a_literal_evaluates_as_negation() {
         let mut s = TermStore::new();
         let parsed = parse(&mut s, "-5 + 3").unwrap();
         assert_eq!(eval::apply_term(&s, parsed, &[]).unwrap(), -2);
@@ -1064,30 +1089,48 @@ mod tests {
     }
 
     #[test]
-    fn a_directly_built_negative_literal_does_not_round_trip_exactly() {
-        // Term::Lit(n) for n < 0 is never produced by parse itself (which
-        // only reaches a negative value via unary-minus desugaring to
-        // Prim(Sub, Lit(0), ..)) -- this grammar simply has no negative-
-        // literal syntax. print still emits something reasonable (Rust's
-        // ordinary negative-number formatting), but reparsing it yields
-        // the desugared Prim form, not the original bare Lit -- a real,
-        // documented gap, not silently worked around.
-        let mut s = TermStore::new();
-        let neg_five = s.lit(-5);
-        let text = print(&s, neg_five);
-        assert_eq!(text, "-5");
+    fn a_negative_literal_round_trips_exactly() {
+        // `-n` folds into `Lit(-n)`, so a directly built negative Lit
+        // reparses hash-identically -- including i64::MIN, whose magnitude
+        // alone doesn't fit an i64.
+        for n in [-5, i64::MIN] {
+            let mut s = TermStore::new();
+            let h = s.lit(n);
+            let text = print(&s, h);
+            assert_eq!(text, n.to_string());
+            let mut fresh = TermStore::new();
+            assert_eq!(parse(&mut fresh, &text).unwrap(), h);
+        }
+    }
 
-        let mut fresh = TermStore::new();
-        let reparsed = parse(&mut fresh, &text).unwrap();
-        assert_ne!(reparsed, neg_five, "a bare negative Lit has no exact round trip in this grammar");
-        assert_eq!(eval::apply_term(&fresh, reparsed, &[]).unwrap(), -5); // still semantically equal
+    #[test]
+    fn unary_minus_folds_only_a_literal_operand() {
+        let mut s = TermStore::new();
+        let h = parse(&mut s, r"\x. -(3) - -x").unwrap();
+        let (x, neg_three, zero) = (s.var(0), s.lit(-3), s.lit(0));
+        let neg_x = s.prim(PrimOp::Sub, zero, x);
+        let body = s.prim(PrimOp::Sub, neg_three, neg_x);
+        assert_eq!(h, s.abs(body));
+        // Folding matches `0 - n`'s wrapping Sub: `- -9223372036854775808`
+        // is i64::MIN again, just as `0 - i64::MIN` evaluates to.
+        assert_eq!(run("- -9223372036854775808"), i64::MIN);
+        assert_eq!(run("0 - -9223372036854775808"), i64::MIN);
+    }
+
+    #[test]
+    fn out_of_range_literals_are_rejected() {
+        let mut s = TermStore::new();
+        assert!(parse(&mut s, "9223372036854775808").is_err());
+        assert!(parse(&mut s, "-9223372036854775809").is_err());
+        // `i64::MIN`'s magnitude isn't a literal in its own right, so it
+        // can't head an application either.
+        assert!(parse(&mut s, r"\x. -9223372036854775808 x").is_err());
     }
 
     #[test]
     fn a_negative_literal_argument_is_parenthesised() {
         // `\v0. v0 -16` would reparse as the subtraction `v0 - 16`, not an
-        // application -- the negative Lit must print as `(-16)`, reparsing
-        // to the documented `App(v0, Prim(Sub, Lit(0), Lit(16)))`.
+        // application -- the negative Lit must print as `(-16)`.
         let mut s = TermStore::new();
         let (v0, neg) = (s.var(0), s.lit(-16));
         let app = s.app(v0, neg);
@@ -1096,11 +1139,7 @@ mod tests {
         assert_eq!(text, "\\v0. v0 (-16)");
 
         let mut fresh = TermStore::new();
-        let reparsed = parse(&mut fresh, &text).unwrap();
-        let (zero, sixteen) = (s.lit(0), s.lit(16));
-        let desugared = s.prim(PrimOp::Sub, zero, sixteen);
-        let app = s.app(v0, desugared);
-        assert_eq!(reparsed, s.abs(app));
+        assert_eq!(parse(&mut fresh, &text).unwrap(), h);
 
         // ... and as the function of an application, `-2 v0` would reparse
         // as `-(2 v0)`.

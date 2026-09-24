@@ -169,15 +169,11 @@ independent of what `compile.rs` itself can compile.
 pretty-printer back to source text `parse` accepts, assigning each binder
 a fresh name by nesting depth (`v0`, `v1`, ...) since `Var`/`Abs` don't
 carry names. It round-trips (`parse(print(t))` hashes identically to `t`,
-a strictly stronger check than "looks plausible") for everything the
-grammar can express, with one honest, documented exception: a literal
-built directly as `Term::Lit(n)` for a negative `n` (never produced by
-`parse` itself, which only reaches a negative value via unary-minus
-desugaring) has no exact syntactic round trip, since this grammar has no
-negative-literal syntax at all — only subtraction. It prints as `-n`
-(parenthesised as `(-n)` where unary minus would otherwise bind
-differently, e.g. as an application argument) and reparses to the
-equivalent `0 - n`.
+a strictly stronger check than "looks plausible") for every well-scoped term.
+Unary minus on an integer literal parses as a negative literal (`-5` is
+`Lit(-5)`, as in OCaml), so negative literals round-trip exactly too;
+`print` parenthesises one where unary minus would otherwise bind
+differently (`f (-2)`, since `f -2` is the subtraction `f - 2`).
 
 `src/bin/repl.rs` is a small interactive REPL built on `syntax::parse`/
 `print`: each line is parsed, run through the JIT (falling back to the
