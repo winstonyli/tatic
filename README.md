@@ -621,7 +621,11 @@ seed-scanned rather than relying on one lucky draw — a failure prints the
 seed and argument trial that triggered it. Currently: 1000 seeds × 12
 argument trials each, ~99% of generated terms actually compile (the rest
 fall outside the fragment by construction, e.g. curried-application
-ambiguity), zero mismatches found so far.
+ambiguity), zero mismatches found so far. A separate test wraps a term
+that goes wrong (ill-typed, or a closure of the wrong arity) in a branch
+taken only at an input no sample reaches, so only the JIT's static gates
+(the type check and the universal-proof requirement) can keep it out;
+disabling either one fails it (RELATED_WORK §41).
 
 One of the four program shapes it picks from, `gen_closure_typed_recursive`
 (`rec f g n x = if n <= 0 then x else f(g, n-1, (g x) OP payload)`), is

@@ -3285,8 +3285,8 @@ it.
 - Dropping the pruning fails the five inconsistent-arity `jit.rs` tests.
 
 Disabling the gate does *not* fail the random fuzz: its 17 ill-typed
-compiled terms happen to be caught by the samples. Off-sample ill-typed
-terms are pinned only by the regression test.
+compiled terms happen to be caught by the samples. §41 adds a fuzz of
+off-sample ill-typed terms, which does fail.
 
 ## 39. Four leftovers from §37's review -- found and fixed
 
@@ -3360,6 +3360,34 @@ many arguments it takes at once, as in "Kinds are calling conventions"
 (Downen et al., ICFP 2020). That isn't done here. It is the natural next
 step if the proof gate is ever relaxed (§29's "widen the universal
 fragment").
+
+## 41. Fuzzing branches that go wrong off the samples
+
+§38 and §40 each pinned their hole with one hand-built term. The random
+fuzz couldn't: its ill-typed compiled terms went wrong on the samples, so
+`verify()` caught them first, and the gates were never the last line.
+`compile_fuzz`'s `a_branch_that_goes_wrong_off_the_samples_is_never_installed`
+generates
+
+```
+\x1..xn. if x_p == 777 then <goes wrong> else <gen_expr>
+```
+
+where 777 is outside `jit.rs`'s sample battery. `<goes wrong>` is one of
+a closure used as an `Int`, an `Int` called, an over-applied lambda
+(all ill-typed), or §40's well-typed closure of the wrong arity. Each
+term is run at every combination of `[0, 1, -1, 7, 777]` and the JIT must
+agree with `eval`.
+
+Latest run, 400 seeds: 265 declined as ill-typed, 87 for want of a
+universal proof, none installed, no mismatch.
+
+**Teeth.** Disabling the typing gate fails it (seed 190: `eval` gives
+`NotAFunction`, the JIT `Ok(3)`, from a fragment with a universal proof,
+which is §38's point that the kernel's symbols carry no types). Disabling
+the proof gate fails it (seed 5: `eval` gives `Ok(0)`, the JIT `Trap`,
+§40's arity hole). So each gate is now pinned by the fuzz, not just by
+its regression test.
 
 ## Sources
 

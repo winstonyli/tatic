@@ -34,6 +34,11 @@
 //! which check the soundness property that actually matters for each
 //! (jit.rs's own verification/fallback still agrees with the
 //! interpreter) rather than blanket rejection.
+//!
+//! `a_branch_that_goes_wrong_off_the_samples_is_never_installed` puts a
+//! term that goes wrong behind `if x == OFF_SAMPLE`, where `verify()`'s
+//! samples never reach it, so it tests the two static gates themselves
+//! (RELATED_WORK.md §41).
 
 use tatic::compile;
 use tatic::eval;
@@ -639,6 +644,139 @@ fn inconsistently_called_parameters_still_agree_with_the_interpreter() {
             );
         }
     }
+    assert_no_ir_failures();
+}
+
+/// The one input the off-sample branch below is taken at. `jit.rs`'s
+/// `SAMPLE_ARGS` (and the pairs and rotations it builds from them) never
+/// reach it, so `verify()` can't see what that branch does.
+const OFF_SAMPLE: i64 = 777;
+
+/// A literal or one of the `scope` enclosing parameters, which sit at
+/// `Var(skip..skip + scope)` under `skip` further binders.
+fn gen_outer_leaf(rng: &mut Rng, s: &mut TermStore, skip: u32, scope: u32) -> Hash {
+    if rng.below(2) == 0 {
+        s.var(skip + rng.below(scope))
+    } else {
+        s.lit(rng.i64_range(-MAX_LIT, MAX_LIT))
+    }
+}
+
+/// An expression that goes wrong, one of four ways. The first three are
+/// ill-typed, so `eval` fails on them: a closure where an `Int` is
+/// expected, an `Int` called, and a lambda over-applied. The fourth is
+/// well typed but passes a two-argument closure where `g` is only ever
+/// called with one (RELATED_WORK.md §40):
+///
+/// ```text
+/// (\g. (\k. k e1) (g a) + (\k. k e2) (g b)) (\x. \y. body)
+/// ```
+///
+/// where `body` captures a parameter, so the specialiser keeps `g` (used
+/// twice) abstract. `eval` gives an `Int`; the compiled fragment, under
+/// `Dispatch::Fast`, traps.
+fn gen_goes_wrong(rng: &mut Rng, s: &mut TermStore, scope: u32) -> Hash {
+    match rng.below(4) {
+        0 => {
+            let body = gen_expr(rng, s, scope + 1, 1);
+            let clo = s.abs(body);
+            let e = gen_expr(rng, s, scope, 1);
+            let op = random_arith_op(rng);
+            if rng.below(2) == 0 { s.prim(op, clo, e) } else { s.prim(op, e, clo) }
+        }
+        1 => {
+            let f = gen_expr(rng, s, scope, 1);
+            let a = gen_expr(rng, s, scope, 1);
+            s.app(f, a)
+        }
+        2 => {
+            let body = gen_expr(rng, s, scope + 1, 1);
+            let lam = s.abs(body);
+            let a = gen_expr(rng, s, scope, 1);
+            let b = gen_expr(rng, s, scope, 1);
+            let once = s.app(lam, a);
+            s.app(once, b)
+        }
+        _ => {
+            // Under `\g` (Var(0)); inside each `\k`, `k` is Var(0) and `g` Var(1).
+            let half = |rng: &mut Rng, s: &mut TermStore| {
+                let k = s.var(0);
+                let e = gen_outer_leaf(rng, s, 2, scope);
+                let ke = s.app(k, e);
+                let apply_e = s.abs(ke);
+                let g = s.var(0);
+                let a = gen_outer_leaf(rng, s, 1, scope);
+                let ga = s.app(g, a);
+                s.app(apply_e, ga)
+            };
+            let l = half(rng, s);
+            let r = half(rng, s);
+            let op = random_arith_op(rng);
+            let sum = s.prim(op, l, r);
+            let wrap = s.abs(sum);
+            // Under `\x. \y.`: `y` is Var(0), `x` Var(1), parameters from Var(2).
+            let e = gen_expr(rng, s, scope + 2, 1);
+            let captured = s.var(2 + rng.below(scope));
+            let body = s.prim(PrimOp::Add, e, captured);
+            let y = s.abs(body);
+            let clo = s.abs(y);
+            s.app(wrap, clo)
+        }
+    }
+}
+
+/// `\x1..xn. if x_p == OFF_SAMPLE then <goes wrong> else <gen_expr>`.
+fn gen_wrong_off_sample(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize) {
+    let arity = 1 + rng.below(2);
+    let p = s.var(rng.below(arity));
+    let k = s.lit(OFF_SAMPLE);
+    let cond = s.prim(PrimOp::Eq, p, k);
+    let wrong = gen_goes_wrong(rng, s, arity);
+    let fine = gen_expr(rng, s, arity, 3);
+    let mut term = s.if_(cond, wrong, fine);
+    for _ in 0..arity {
+        term = s.abs(term);
+    }
+    (term, arity as usize)
+}
+
+#[test]
+fn a_branch_that_goes_wrong_off_the_samples_is_never_installed() {
+    // Every term here passes `verify()`'s samples wherever it compiles,
+    // since its bad branch is taken only at `OFF_SAMPLE`. What keeps each
+    // compiled form out is one of the two static gates: `typing::well_typed`
+    // for the ill-typed branches (§38), the universal-proof gate for the
+    // closure of the wrong arity (§40). With either gate disabled, this
+    // test fails.
+    const SEEDS: u64 = 400;
+    const ARGS: [i64; 5] = [0, 1, -1, 7, OFF_SAMPLE];
+
+    let (mut declined_ill_typed, mut declined_no_proof, mut compiled) = (0u64, 0u64, 0u64);
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0x00FF_5A3F_0000_u64 ^ seed);
+        let mut s = TermStore::new();
+        let (h, arity) = gen_wrong_off_sample(&mut rng, &mut s);
+
+        let mut jit = JitEngine::new();
+        for i in 0..ARGS.len().pow(arity as u32) {
+            let args: Vec<i64> = (0..arity).map(|j| ARGS[i / ARGS.len().pow(j as u32) % ARGS.len()]).collect();
+            let interpreted = eval::apply_term(&s, h, &args);
+            let jitted = jit.apply(&s, h, &args);
+            let agree = match (&interpreted, &jitted) {
+                (Ok(a), Ok(b)) => a == b,
+                (Err(_), Err(_)) => true,
+                _ => false,
+            };
+            assert!(agree, "seed={seed} args={args:?}: interpreted={interpreted:?} jit={jitted:?} stats={:?}", jit.stats);
+        }
+        declined_ill_typed += jit.stats.declined_ill_typed;
+        declined_no_proof += jit.stats.declined_no_universal_proof;
+        compiled += jit.stats.compiled;
+    }
+
+    eprintln!("compile_fuzz off-sample: {declined_ill_typed} declined as ill-typed, {declined_no_proof} for want of a proof, {compiled} compiled, of {SEEDS}");
+    assert!(declined_ill_typed > 0, "no ill-typed branch reached the typing gate -- check gen_goes_wrong");
+    assert!(declined_no_proof > 0, "no closure of the wrong arity reached the proof gate -- check gen_goes_wrong");
     assert_no_ir_failures();
 }
 
