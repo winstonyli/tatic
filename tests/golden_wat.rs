@@ -18,6 +18,10 @@ use tatic::compile::try_compile;
 use tatic::term::{Hash, PrimOp, TermStore};
 
 type Builder = Box<dyn Fn(&mut TermStore) -> Hash>;
+/// A plain (non-capturing) builder function pointer, as `test_corpus.rs`
+/// uses -- distinct from `Builder` above (`Box<dyn Fn>`), which the
+/// `rejects_*` closures need but the specialised-goldens list doesn't.
+type PlainBuilder = fn(&mut TermStore) -> Hash;
 
 fn corpus() -> Vec<(&'static str, Builder)> {
     vec![
@@ -139,7 +143,7 @@ fn specialised_benchmark_terms_lower_to_their_golden_wat() {
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("golden");
     let mut changed = Vec::new();
-    let terms: [(&str, fn(&mut TermStore) -> Hash); 2] =
+    let terms: [(&str, PlainBuilder); 2] =
         [("partial_application_loop", common::partial_application_loop), ("capturing_closure_loop", common::capturing_closure_loop)];
     for (name, build) in terms {
         let mut s = TermStore::new();
