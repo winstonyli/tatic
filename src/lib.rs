@@ -15,3 +15,5 @@ pub mod term;
 extern crate self as tatic;
 #[cfg(test)]
 pub(crate) mod test_corpus;
+#[cfg(test)]
+mod ir_fuzz;
