@@ -258,8 +258,9 @@ fn build_node(ctx: &BuildCtx, reg: &mut Combinators, h: Hash, tail: bool) -> Opt
         Shape::SelfCall(args) => Node::SelfCall { args: build_args(ctx, reg, &args)?, tail },
         Shape::VarCall { var, args, .. } => {
             // Under `Consistent(k)` every call site has `k` arguments, so
-            // the length check cannot fail. It is kept as a guard, so the
-            // builder rejects exactly what the retired direct emitter did.
+            // the length check cannot fail. It stays as defence in depth:
+            // a future change to arity inference cannot then silently
+            // produce a `CallUnknown` with the wrong argument count.
             let expected = match ctx.closure_arities.get(&var)? {
                 ArityUse::Consistent(k) => *k,
                 ArityUse::Inconsistent => args.len(),

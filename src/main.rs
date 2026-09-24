@@ -97,7 +97,7 @@ fn higher_order_demo(s: &mut TermStore) -> Hash {
 /// tell curried application from multi-arg application apart, see its
 /// docs), and `inner`'s own arity is 1, not 2 -- so this reads as
 /// `inner` *over-applied* by one argument. Used to be rejected outright
-/// for exactly that reason; `compile.rs`'s own "Over-application" docs
+/// for exactly that reason; `lower_wat.rs`'s "Over-application" docs
 /// now cover this shape: `inner`'s saturated call (`inner(3)`) compiles
 /// normally, and whatever closure it returns (capturing `x`, allocated
 /// fresh) is dispatched on the extra argument through `call_indirect`,

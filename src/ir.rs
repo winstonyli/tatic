@@ -225,8 +225,10 @@ fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut H
 }
 
 /// Hand-built terms together with the IR `compile::build` must produce for
-/// them. `lower_wat`'s tests use them to pin the lowering to what the
-/// builder's IR lowers to; `compile`'s tests use them to pin the builder.
+/// them. `lower_wat`'s tests check that each fixture's IR lowers to the
+/// same WAT as the builder's IR for the term (overlapping
+/// `compile::tests::build_produces_the_hand_built_ir_for_each_fixture`;
+/// the independent pin on the lowering is `tests/golden_wat.rs`); `compile`'s tests use them to pin the builder.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;

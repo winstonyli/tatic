@@ -3938,7 +3938,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // mirroring `compile.rs`'s own `(type $tyK ...)` declarations, one per
 // arity actually used at a `call_indirect` site, this part is unaffected
 // by whether the underlying closure happens to capture anything, the same
-// way `compile.rs`'s own `call_indirect` dispatch doesn't need to know
+// way `lower_wat.rs`'s own `call_indirect` dispatch doesn't need to know
 // either. The one genuine axiom this generic case still needs is
 // `ite_clo_ref` (`Int -> Clo_k -> Clo_k -> Clo_k`, once per arity): an
 // `If` choosing between two same-arity closures can't be derived from
@@ -3953,8 +3953,8 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // non-capturing closure really is the same value everywhere it's
 // referenced, and calling it really doesn't need anything beyond its own
 // definition. For a *capturing* combinator, one fixed value per
-// combinator would be dishonest -- `compile.rs` builds a fresh
-// environment at every creation site, so the same combinator denotes
+// combinator would be dishonest -- the compiled code (`lower_wat.rs`'s
+// templates) builds a fresh environment at every creation site, so the same combinator denotes
 // differently depending on *where* it's referenced -- so instead:
 // `mk_clo_h : Env -> Clo_k` (a function of the environment, not a bare
 // constant) and `call_h : Env -> T_0 -> .. -> T_{k-1} -> Int` (the
@@ -4373,7 +4373,7 @@ impl ClosurePostulates {
     /// ever needs "the callable shape with `arity` `Int` parameters and an
     /// `Int` result" (every argument/result stays uniformly `Int`
     /// regardless of what the callee's own body does with them, matching
-    /// `compile.rs`'s own untyped `call_indirect` dispatch), and a
+    /// `lower_wat.rs`'s own untyped `call_indirect` dispatch), and a
     /// real Pi type already gives that for free -- no opaque `Sort(0)`
     /// axiom needed at all. Two different arities still stay genuinely
     /// distinct, definitionally-unequal kernel types (the fix for the
@@ -6367,7 +6367,7 @@ fn capture_sig(captures: &[u32], caller_param_types: &[Option<usize>]) -> Option
 /// Builds `mk_env(v_1,...,v_n)` for a combinator whose relative capture
 /// indices are `captures` (`compile::free_vars`), reading each captured
 /// value's *current* value out of the *calling* function's own
-/// `(params, param_types)` frame -- mirroring `compile.rs`'s
+/// `(params, param_types)` frame -- mirroring `lower_wat.rs`'s
 /// `push_closure_env`, but resolving each slot directly against `params`
 /// rather than through a `build_read`-style recursive lookup (see
 /// `build_env_expr`'s own section docs above for why that recursive case

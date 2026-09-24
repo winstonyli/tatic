@@ -965,8 +965,10 @@ mod tests {
     use crate::compile::try_compile;
     use crate::ir::fixtures::{factorial, twice, twice_inc};
 
-    /// The hand-built fixture IR lowers to exactly what `try_compile`
-    /// produces for the same term, i.e. to what the builder's IR lowers to.
+    /// The hand-built fixture IR lowers to the same WAT as the builder's IR
+    /// for the term (`try_compile` is `lower(build(..))`). This overlaps
+    /// `compile::tests::build_produces_the_hand_built_ir_for_each_fixture`;
+    /// the independent pin on the lowering is `tests/golden_wat.rs`.
     fn assert_lowers_like_the_builder(fixture: (crate::term::TermStore, crate::term::Hash, crate::ir::Module)) {
         let (s, h, m) = fixture;
         crate::ir::check(&m).unwrap();

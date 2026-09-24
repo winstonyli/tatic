@@ -180,7 +180,7 @@ fn gen_closure_block(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) ->
 /// Builds a literal lambda (arity 1 or 2) whose own body, once saturated,
 /// resolves to a *further* closure -- an `If` between two literal lambdas
 /// of the same arity, the only shape `compile::peel` can't already fold
-/// into one flat combinator (see `compile.rs`'s own "Over-application"
+/// into one flat combinator (see `lower_wat.rs`'s "Over-application"
 /// docs) -- then over-applies it with exactly that closure's own arity of
 /// extra arguments, exercising compile.rs's/proof.rs's over-application
 /// dispatch (`combinator_return_type` correctly classifying the root as

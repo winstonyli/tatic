@@ -98,7 +98,7 @@ Two notes on what "clean" means here:
 |---|---|
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
 | `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses; `print` is the reverse direction, a precedence-aware pretty-printer back to source text. |
-| `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. Trampolined for its own tail positions (an `If`'s chosen branch, and applying a value that resolves the current call), mirroring `compile.rs`'s own `loop`/`br` conversion at the interpreter level: a tail-recursive term runs at any depth without growing the native stack, while a genuinely non-tail-recursive one (naive `fib`, say) still grows it, exactly as it would grow a Wasm `call` chain in the compiled reading. |
+| `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. Trampolined for its own tail positions (an `If`'s chosen branch, and applying a value that resolves the current call), mirroring `lower_wat.rs`'s own `loop`/`br` lowering at the interpreter level: a tail-recursive term runs at any depth without growing the native stack, while a genuinely non-tail-recursive one (naive `fib`, say) still grows it, exactly as it would grow a Wasm `call` chain in the compiled reading. |
 | `compile.rs` | Term analysis and the IR builder. Decides which terms fall in the compilable "first-order arithmetic with self-recursion and closures" fragment (`classify`, shared with `proof.rs`; `free_vars`; closure-arity inference; the combinator registry, including compile-time partial-application wrappers) and builds `ir.rs`'s IR for them (`build`). `try_compile` is build, then `ir::check`, then `lower_wat::lower`. Anything outside the fragment is rejected -- the compiler only needs to be sound, not complete. |
 | `ir.rs` | The JIT's IR: closure-converted, representation-neutral; well-formedness checker. |
 | `lower_wat.rs` | Lowers the IR to WAT; one template per node, plus closure representation, allocator and curried stages. Its module docs describe the closure representation (a packed `i64` of table index and environment pointer), partial application, over-application and the curried fallback for inconsistent arities. |
@@ -181,7 +181,7 @@ was actually compiled as) — see `compile.rs`'s own tests.
 This is stated precisely because it would be easy to overclaim here.
 
 - **Straight-line (non-recursive) terms**: `proof.rs` builds one kernel
-  proof covering *every* input. `compile.rs`'s instruction emission and
+  proof covering *every* input. `lower_wat.rs`'s instruction emission and
   `eval.rs`'s evaluation recurse over this fragment in exactly the same
   shape, so the proof is `refl` — an honest witness that a stack-based and
   a tree-walking evaluation of side-effect-free code compute the same
@@ -349,7 +349,7 @@ This is stated precisely because it would be easy to overclaim here.
   "postulated type" pattern). Calling one *through a parameter*
   (`call_indirect`) goes through `apply_k : Clo -> Int^k -> Int`, one per
   distinct arity actually used that way — unaffected by whether the
-  underlying closure captures anything, the same way `compile.rs`'s own
+  underlying closure captures anything, the same way `lower_wat.rs`'s own
   `call_indirect` dispatch doesn't need to know either. A combinator's own
   *body* is never unfolded or denoted (no walk over every registered
   combinator the way `compile::build` needs): a *non-capturing* one gets one fixed
@@ -362,7 +362,7 @@ This is stated precisely because it would be easy to overclaim here.
   combinator denotes differently depending on where it's referenced — so
   instead `mk_clo_h : Env -> Clo` (a function of the environment) and
   `call_h : Env -> T_0 -> .. -> T_{k-1} -> Int` (environment prepended,
-  mirroring `compile.rs`'s own `$env`-first calling convention), where
+  mirroring `lower_wat.rs`'s own `$env`-first calling convention), where
   `Env : Sort(0)` is postulated once *per capture signature* (`capture_sig`
   — which slots are `Clo`-typed, which are `Int`; shared across every
   combinator whose captures match that exact signature, the same way
@@ -385,7 +385,7 @@ This is stated precisely because it would be easy to overclaim here.
   — see the "Future work" section below for how), so a combinator whose
   own body resolves to `Clo` gets an honest proof whether it's used as a
   bare *value* or *called* directly (including over-applied — see
-  `compile.rs`'s own row above); and for a capturing
+  `lower_wat.rs`'s row above and its "Over-application" docs); and for a capturing
   combinator specifically, each captured value must resolve *directly* to
   one of the calling function's own parameters, freely `Int`- or
   `Clo`-typed (`Env`/`mk_env` keyed by the whole capture *signature*, not
@@ -643,8 +643,8 @@ inconsistent-arity checks (`scan_for_closure_calls`'s and
 `compile_node`'s, now `build_node`'s, own per-call-site check) together, which immediately
 failed the test on the first seed, as expected. The inconsistent-arity
 case moved out once `try_compile` stopped rejecting that shape
-altogether (see the curried-dispatch mechanism described in
-`compile.rs`'s own row above) — its own soundness property (jit.rs's
+altogether (see the curried-dispatch mechanism, "Generic closure
+dispatch" in `lower_wat.rs`'s module docs) — its own soundness property (jit.rs's
 verification/fallback still agrees with the interpreter for whatever
 garbage value such a call site is actually fed) is checked instead by
 `inconsistently_called_parameters_still_agree_with_the_interpreter`,
@@ -653,8 +653,8 @@ which already covered the analogous property for over-application; only
 the unbound-variable check is left here now. A third generator in the
 same file, `gen_over_applied`, covers
 a *different* property now that `try_compile` compiles an over-applied
-literal lambda's *shape* unconditionally (see `compile.rs`'s own "Over-
-application" docs): its own bodies are always plain arithmetic, never a
+literal lambda's *shape* unconditionally (see `lower_wat.rs`'s "Over-
+application" module docs): its own bodies are always plain arithmetic, never a
 further closure, so every term it generates is genuinely ill-typed;
 `over_applied_ill_typed_terms_still_agree_with_the_interpreter` confirms
 `jit.rs`'s sample verification catches every one of these (a trap, or a
@@ -977,8 +977,8 @@ guards against by hand): caught immediately, at seed 22.
   closures (see the table row above), and over-application of a literal
   lambda (`root`'s own saturated call, now denoted via the same
   `call_ref`, dispatched on the extra arguments directly, exactly like
-  calling a closure-typed variable — see `compile.rs`'s own
-  "Over-application" docs for the compiled-code-level counterpart).
+  calling a closure-typed variable — see `lower_wat.rs`'s
+  "Over-application" module docs for the compiled-code-level counterpart).
 - Widening the compilable fragment further: more primitives. (Capturing
   closures and partial application of a literal lambda — real closure
   conversion, an environment representation, calling a closure reached

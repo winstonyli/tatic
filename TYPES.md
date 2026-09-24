@@ -222,7 +222,7 @@ kernel's own ordinary Pi-application rule, unconditionally, regardless of
 what `x`'s own real parameter types are (no bespoke "`apply_ref`" axiom
 mediates the call anymore — see section 2 and `RELATED_WORK.md` section
 11 for why one used to be needed and no longer is). This is still a
-genuine loss of precision compile.rs's own `call_indirect` dispatch
+genuine loss of precision lower_wat.rs's own `call_indirect` dispatch
 already has (its docs: "per compile.rs's own typed dispatch, arguments
 are always `Int` regardless of the callee's own signature") — a closure
 that actually expects a `Clo`-typed argument, called through a variable,
@@ -342,7 +342,7 @@ against the interpreter. Nothing above is checked while compiling — an
 over-application of a plain `Int`-returning function, for instance, still
 compiles (into a `call_indirect` on a garbage table index that traps or,
 astronomically unlikely, lands on some unrelated entry), exactly as
-`compile.rs`'s own "Over-application" docs describe; `LitLambda-Over`'s
+`lower_wat.rs`'s "Over-application" docs describe; `LitLambda-Over`'s
 precondition is enforced *only* on `proof.rs`'s side, because only
 `proof.rs` needs a `τ` to build a well-typed kernel `Expr` with. This
 asymmetry — one side type-erased and externally verified, the other

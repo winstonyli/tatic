@@ -7,7 +7,7 @@
 //! pair in a `loop` and only ever `return`s once it hits something that
 //! isn't itself a further tail call (a `Var`, `Lit`, `Prim`, or a fresh
 //! `Closure`/`Rec` value). This matters because a *tail-recursive* term
-//! (see `compile.rs`'s own `loop`/`br` conversion for the same shape) is
+//! (see `lower_wat.rs`'s own `loop`/`br` lowering for the same shape) is
 //! exactly a term whose self-call sits in one of these tail positions --
 //! without trampolining, each iteration would consume a fresh native stack
 //! frame here, capping how deep any tail-recursive term could run before
