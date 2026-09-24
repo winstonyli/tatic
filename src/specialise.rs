@@ -209,14 +209,16 @@ fn has_free(s: &TermStore, t: Hash, depth: u32, memo: &mut HashMap<(Hash, u32), 
     r
 }
 
-/// Returns `(how many times Var(idx) occurs in t, whether any occurrence is
-/// under a lambda or Rec that is not applied right where it stands)`. `under`
+/// Returns `(how many times Var(idx) occurs in t, capped at 2, whether any
+/// occurrence is under a lambda or Rec that is not applied right where it
+/// stands)`. The cap is because only 0, 1 and "more" matter, and the tree
+/// count through a shared DAG can pass `usize` (`t + t`, 65 times). `under`
 /// says whether `t` itself already is.
 fn occurrences(s: &TermStore, t: Hash, idx: u32, under: bool, memo: &mut HashMap<(Hash, u32, bool), (usize, bool)>) -> (usize, bool) {
     if let Some(&r) = memo.get(&(t, idx, under)) {
         return r;
     }
-    let add = |(a, x): (usize, bool), (b, y): (usize, bool)| (a + b, x || y);
+    let add = |(a, x): (usize, bool), (b, y): (usize, bool)| ((a + b).min(2), x || y);
     let r = match *s.resolve(t) {
         Term::Var(i) => if i == idx { (1, under) } else { (0, false) },
         Term::Lit(_) => (0, false),
@@ -446,6 +448,26 @@ mod tests {
         let inner = w.abs(body);
         let outer = w.abs(inner);
         assert_eq!(sp.term, w.rec(outer));
+    }
+
+    #[test]
+    fn a_parameter_used_exponentially_often_through_sharing_is_counted_without_overflow() {
+        // \x. (\g. t70) (\y. y + x), where t0 = g 1 and t(i+1) = t(i) + t(i):
+        // 71 nodes, but g occurs 2^70 times as a tree, past usize.
+        let mut s = TermStore::new();
+        let (g, one) = (s.var(0), s.lit(1));
+        let mut t = s.app(g, one);
+        for _ in 0..70 {
+            t = s.prim(PrimOp::Add, t, t);
+        }
+        let lam = s.abs(t);
+        let (y, x) = (s.var(0), s.var(1));
+        let arg_body = s.prim(PrimOp::Add, y, x);
+        let arg = s.abs(arg_body);
+        let redex = s.app(lam, arg);
+        let h = s.abs(redex);
+        // A capturing closure used more than once is left alone.
+        assert!(specialise_checked(&s, h).trace.is_empty());
     }
 
     #[test]
