@@ -26,6 +26,8 @@
 //! generic dispatch -- is documented where it is implemented, in
 //! `lower_wat.rs`'s module docs.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use hashbrown::HashMap;
 
 use crate::ir;
@@ -345,6 +347,16 @@ fn build_env(ctx: &BuildCtx, captures: &[u32]) -> Option<Vec<ir::Read>> {
     captures.iter().map(|&rel| build_read(ctx, rel)).collect()
 }
 
+static IR_CHECK_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many times, process-wide, `try_compile` has found the builder's IR
+/// ill-formed (`ir::check`). Always 0 unless the builder has a bug; the
+/// release-mode fuzzers assert it, since there the failure is otherwise a
+/// silent rejection. Step 2 may fold it into `jit`'s `Stats`.
+pub fn ir_check_failures() -> usize {
+    IR_CHECK_FAILURES.load(Ordering::Relaxed)
+}
+
 /// Try to compile `h` as an `arity`-ary numeric function (or, for `arity`
 /// `0`, a single closed expression to evaluate once). Returns `None` if
 /// `h` (or any combinator value it uses) falls outside the compilable
@@ -354,7 +366,9 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     if let Err(e) = ir::check(&m) {
         // A builder bug, never a property of the term. In debug and test
         // builds it fails loudly; in release it is rejected soundly (the
-        // interpreter runs the term).
+        // interpreter runs the term) but counted, so a release-mode fuzzer
+        // can still see it.
+        IR_CHECK_FAILURES.fetch_add(1, Ordering::Relaxed);
         if cfg!(debug_assertions) {
             panic!("the IR builder produced an ill-formed module for {h:?}: {e}");
         }
@@ -651,7 +665,7 @@ fn scan_for_closure_calls(
             args
         }
         // A literal redex callee (possibly self-recursive) -- fine,
-        // checked again at codegen.
+        // checked again at build.
         Shape::CombinatorCall { args, .. } => args,
         Shape::OtherCall => return None,
         Shape::Prim(_, a, b) => vec![a, b],

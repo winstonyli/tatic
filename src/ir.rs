@@ -120,7 +120,15 @@ pub(crate) fn check(m: &Module) -> Result<(), String> {
     check_func(m, &m.entry).map_err(|e| format!("$f: {e}"))?;
     for (idx, c) in m.combinators.iter().enumerate() {
         match c {
-            Combinator::Lifted(f) => check_func(m, f).map_err(|e| format!("$c{idx}: {e}"))?,
+            Combinator::Lifted(f) => {
+                // A lambda literal binds at least one argument. The curried
+                // dispatch's stage chain (`emit_curried_stages`) has no
+                // stage 0 for a nullary combinator.
+                if f.arity == 0 {
+                    return Err(format!("$c{idx}: a lambda of arity 0"));
+                }
+                check_func(m, f).map_err(|e| format!("$c{idx}: {e}"))?
+            }
             Combinator::Pap { root, supplied } => {
                 let r = lifted(m, *root)?;
                 if *supplied == 0 || *supplied >= r.arity {
@@ -141,6 +149,12 @@ fn lifted(m: &Module, idx: usize) -> Result<&Func, String> {
 }
 
 fn check_func(m: &Module, f: &Func) -> Result<(), String> {
+    // A nullary recursive function's tail self-call lowers to a bare
+    // `br` back to the loop head: an infinite loop (`compile::peel` never
+    // builds one either).
+    if f.is_rec && f.arity == 0 {
+        return Err("a recursive function of arity 0".into());
+    }
     check_node(m, f, &f.body, true, &mut HashMap::new())
 }
 
@@ -195,6 +209,11 @@ fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut H
             check_env(f, gf.env_len, env)?;
         }
         Node::CallUnknown { callee, args } => {
+            // With no arguments the lowering still emits a call, while the
+            // decompiler would read the bare callee: the two would disagree.
+            if args.is_empty() {
+                return Err("an unknown call with no arguments".into());
+            }
             if m.dispatch == Dispatch::Fast
                 && let Node::Read(r) = **callee
             {
@@ -225,10 +244,11 @@ fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut H
 }
 
 /// Hand-built terms together with the IR `compile::build` must produce for
-/// them. `lower_wat`'s tests check that each fixture's IR lowers to the
-/// same WAT as the builder's IR for the term (overlapping
+/// them. `compile`'s tests use them to pin the builder. `lower_wat`'s
+/// tests check that each fixture's IR lowers to the same WAT as the
+/// builder's IR for the term, which overlaps
 /// `compile::tests::build_produces_the_hand_built_ir_for_each_fixture`;
-/// the independent pin on the lowering is `tests/golden_wat.rs`); `compile`'s tests use them to pin the builder.
+/// the independent pin on the lowering is `tests/golden_wat.rs`.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
@@ -428,6 +448,53 @@ mod tests {
         m.entry.body = Node::Lit(0);
         m.combinators[2] = Combinator::Pap { root: 0, supplied: 2 };
         rejects(&m, "supplying 2 of 2");
+    }
+
+    #[test]
+    fn a_lambda_binds_at_least_one_argument() {
+        let (_, _, mut m) = twice_inc();
+        m.combinators[1] = Combinator::Lifted(Func { arity: 0, is_rec: false, env_len: 0, body: Node::Lit(1) });
+        m.dispatch = Dispatch::Curried;
+        rejects(&m, "a lambda of arity 0");
+    }
+
+    #[test]
+    fn a_recursive_function_binds_at_least_one_argument() {
+        // Would lower to `loop $L br $L end`.
+        rejects(&with_entry(Node::SelfCall { args: vec![], tail: true }, 0, true), "recursive function of arity 0");
+        // A nullary entry is fine when it is not recursive.
+        check(&with_entry(Node::Lit(1), 0, false)).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_call_has_at_least_one_argument() {
+        let call = Node::CallUnknown { callee: Box::new(Node::Read(Read::Param(0))), args: vec![] };
+        rejects(&with_entry(call, 1, false), "unknown call with no arguments");
+    }
+
+    #[test]
+    fn a_partial_application_wrapper_needs_a_lambda_root() {
+        let (_, _, mut m) = twice_inc();
+        m.combinators.push(Combinator::Pap { root: 0, supplied: 1 });
+        m.combinators.push(Combinator::Pap { root: 2, supplied: 1 });
+        rejects(&m, "$c2 is a partial-application wrapper, not a lambda");
+    }
+
+    #[test]
+    fn a_partial_application_carries_its_roots_environment() {
+        let (_, _, mut m) = twice_inc();
+        m.combinators.push(Combinator::Pap { root: 0, supplied: 1 });
+        m.entry.arity = 1;
+        m.entry.body = Node::MakePap { wrapper: 2, root_env: vec![Read::Param(0)], args: vec![Node::Lit(1)] };
+        rejects(&m, "environment of 1 slots for a function expecting 0");
+    }
+
+    #[test]
+    fn a_closure_points_at_a_lambda() {
+        let (_, _, mut m) = twice_inc();
+        m.combinators.push(Combinator::Pap { root: 0, supplied: 1 });
+        m.entry.body = Node::MakeClosure { f: 2, env: vec![] };
+        rejects(&m, "$c2 is a partial-application wrapper, not a lambda");
     }
 
     #[test]

@@ -365,6 +365,13 @@ fn gen_program(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Option<Hash>) 
     }
 }
 
+/// These fuzzers run `--release`, where an ill-formed IR from the builder
+/// is only a silent rejection (the hit-rate thresholds are too loose to
+/// notice it). The counter is process-wide, so any test's failure shows.
+fn assert_no_ir_check_failures() {
+    assert_eq!(compile::ir_check_failures(), 0, "the IR builder produced an ill-formed module (ir::check) -- a builder bug");
+}
+
 #[test]
 fn compiled_and_interpreted_agree_on_random_terms() {
     // Raised from 250: that default silently missed a real push_pap_env
@@ -438,6 +445,7 @@ fn compiled_and_interpreted_agree_on_random_terms() {
         universal_proof_count > 0,
         "no closure-typed loop-carried parameter recursion was ever generated -- check gen_program's own odds"
     );
+    assert_no_ir_check_failures();
 }
 
 /// A literal lambda (arity 1 or 2, an arbitrary `gen_expr`-generated body)
@@ -548,6 +556,7 @@ fn compile_rejects_out_of_scope_terms_cleanly() {
             "seed={seed}: a genuinely unbound variable should be rejected"
         );
     }
+    assert_no_ir_check_failures();
 }
 
 #[test]
@@ -583,6 +592,7 @@ fn over_applied_ill_typed_terms_still_agree_with_the_interpreter() {
              interpreted={interpreted:?} jit={jitted:?}"
         );
     }
+    assert_no_ir_check_failures();
 }
 
 #[test]
@@ -623,6 +633,7 @@ fn inconsistently_called_parameters_still_agree_with_the_interpreter() {
             );
         }
     }
+    assert_no_ir_check_failures();
 }
 
 #[test]
@@ -690,4 +701,5 @@ fn over_application_block_terms_compile_and_mostly_get_kernel_checked_proofs() {
         kernel_verified_count > 0,
         "at least some well-typed over-application terms should get a kernel-checked proof -- check combinator_return_type/call_ref"
     );
+    assert_no_ir_check_failures();
 }
