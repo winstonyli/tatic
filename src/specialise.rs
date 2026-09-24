@@ -343,6 +343,44 @@ fn size(s: &TermStore, t: Hash) -> usize {
     seen.len()
 }
 
+/// A second, independent replay of `trace` from `h`, using the
+/// specialiser's own substitution (`import`, `instantiate`, `replace`) --
+/// never `spec_check`'s. Used only as `spec_check.rs`'s mutation test's
+/// oracle: `check` accepting a mutated trace is not, by itself, proof the
+/// mutant reaches the claim by anything other than an accident of the
+/// checker; this gives the test a way to confirm the claim independently.
+/// `None` if any step fails to replay (the redex is absent, isn't
+/// `App(Abs(_), _)`, or its argument isn't a value).
+#[cfg(test)]
+pub(crate) fn replay(store: &TermStore, h: Hash, trace: &[Step]) -> Option<(TermStore, Hash)> {
+    fn contains(s: &TermStore, t: Hash, target: Hash) -> bool {
+        if t == target {
+            return true;
+        }
+        match *s.resolve(t) {
+            Term::Var(_) | Term::Lit(_) => false,
+            Term::Prim(_, a, b) | Term::App(a, b) => contains(s, a, target) || contains(s, b, target),
+            Term::If(c, x, y) => contains(s, c, target) || contains(s, x, target) || contains(s, y, target),
+            Term::Abs(b) | Term::Rec(b) => contains(s, b, target),
+        }
+    }
+    let mut s = TermStore::new();
+    let mut cur = import(store, &mut s, h, &mut HashMap::new());
+    for &Step::BetaV { redex } in trace {
+        if !contains(&s, cur, redex) {
+            return None;
+        }
+        let &Term::App(f, a) = s.resolve(redex) else { return None };
+        let &Term::Abs(body) = s.resolve(f) else { return None };
+        if !matches!(s.resolve(a), Term::Var(_) | Term::Lit(_) | Term::Abs(_) | Term::Rec(_)) {
+            return None;
+        }
+        let contracted = instantiate(&mut s, body, a);
+        cur = replace(&mut s, cur, redex, contracted, &mut HashMap::new());
+    }
+    Some((s, cur))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

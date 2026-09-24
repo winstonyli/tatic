@@ -420,6 +420,15 @@ mod tests {
     #[test]
     fn every_mutated_certificate_is_rejected_unless_it_really_replays_to_its_claim() {
         let mut counts = [0usize; 5];
+        // How many mutants of each kind `check` accepted. For kinds 2 and
+        // 3 that is allowed, but only when a second, independent replay
+        // (`specialise::replay`, which never calls into this file)
+        // confirms the mutant genuinely reaches the claim -- `check`
+        // accepting is not itself proof of that, which is exactly the bug
+        // a prior version of this test had (it compared the *original*,
+        // unmutated trace against the claim, which is true by
+        // construction and so could never fail).
+        let mut tolerated = [0usize; 5];
         for (name, s, h) in crate::test_corpus::terms() {
             let sp = crate::specialise::specialise(&s, h);
             if sp.trace.is_empty() {
@@ -434,13 +443,18 @@ mod tests {
                 counts[0] += 1;
             }
             // 2. Swap adjacent steps. Two steps on disjoint redexes commute,
-            // so acceptance is allowed, but only if the claim is also
-            // reached by an honest replay, which the unmutated order is.
+            // so acceptance is allowed, but only if an independent replay
+            // of the swapped trace itself reaches the claim.
             for i in 0..t.len().saturating_sub(1) {
                 let mut m = t.clone();
                 m.swap(i, i + 1);
                 if m != *t && check(&s, h, &m, sp.term).is_ok() {
-                    assert_eq!(check(&s, h, t, sp.term), Ok(()), "{name}: swap {i} accepted, but the original trace is not");
+                    tolerated[1] += 1;
+                    assert_eq!(
+                        crate::specialise::replay(&s, h, &m).map(|(_, r)| r),
+                        Some(sp.term),
+                        "{name}: swap {i} was accepted by check, but an independent replay of the swapped trace does not confirm it reaches the claim"
+                    );
                 }
                 counts[1] += 1;
             }
@@ -448,9 +462,8 @@ mod tests {
             // retargeted step could in principle hit a different valid
             // redex and still reach the same claim (observed on the
             // corpus: over_application_pap_producing_root), so acceptance
-            // is allowed, but only if the claim is also reached by an
-            // honest replay, which the unmutated order is (same form as
-            // kind 2).
+            // is allowed, but only if an independent replay of the
+            // retargeted trace itself reaches the claim.
             let subs = subterms(&s, h);
             for i in 0..t.len() {
                 let Step::BetaV { redex } = t[i];
@@ -458,7 +471,12 @@ mod tests {
                     let mut m = t.clone();
                     m[i] = Step::BetaV { redex: other };
                     if check(&s, h, &m, sp.term).is_ok() {
-                        assert_eq!(check(&s, h, t, sp.term), Ok(()), "{name}: retargeting step {i} accepted, but the original trace is not");
+                        tolerated[2] += 1;
+                        assert_eq!(
+                            crate::specialise::replay(&s, h, &m).map(|(_, r)| r),
+                            Some(sp.term),
+                            "{name}: retargeting step {i} was accepted by check, but an independent replay of the retargeted trace does not confirm it reaches the claim"
+                        );
                     }
                     counts[2] += 1;
                 }
@@ -476,7 +494,7 @@ mod tests {
                 counts[4] += 1;
             }
         }
-        eprintln!("mutation counts: {counts:?}");
+        eprintln!("mutation counts: {counts:?}, tolerated: {tolerated:?}");
         assert!(counts.iter().all(|&c| c > 0), "every mutation kind must run at least once: {counts:?}");
     }
 }
