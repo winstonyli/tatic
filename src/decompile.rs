@@ -396,7 +396,15 @@ mod tests {
                 Node::Read(r) => shift(r, variant == 4),
                 _ => false,
             },
-            6 | 7 => env(n).and_then(|e| e.first_mut()).is_some_and(|r| shift(r, variant == 6)),
+            // Slot 0 is always the capturing scope's highest-indexed
+            // variable (see the corpus note in task-3-report.md), so
+            // shifting it *up* never has headroom. Slot 0 shifting *down*
+            // (variant 7) still exercises the "down" direction fine; the
+            // "up" direction (variant 6) instead shifts the *last* slot,
+            // which has headroom whenever the environment holds more than
+            // one distinct free variable.
+            6 => env(n).and_then(|e| e.last_mut()).is_some_and(|r| shift(r, true)),
+            7 => env(n).and_then(|e| e.first_mut()).is_some_and(|r| shift(r, false)),
             8 => match n {
                 Node::Arith(op, ..) => {
                     *op = next_arith(*op);
@@ -415,63 +423,6 @@ mod tests {
             },
             _ => false,
         }
-    }
-
-    /// Every combinator index a node's `MakeClosure`/`CallKnown` targets
-    /// directly, or (through a `Pap` wrapper) its `root`. `SelfCall` is not
-    /// an edge: it denotes the enclosing function via a bound variable, not
-    /// a fresh closure over it, so it cannot make `decompile` re-enter the
-    /// same body.
-    fn combinator_targets(m: &Module, n: &Node, out: &mut Vec<usize>) {
-        match n {
-            Node::CallKnown { f, .. } | Node::MakeClosure { f, .. } => out.push(*f),
-            Node::MakePap { wrapper, .. } => {
-                if let Some(Combinator::Pap { root, .. }) = m.combinators.get(*wrapper) {
-                    out.push(*root);
-                }
-            }
-            _ => {}
-        }
-        for c in n.children() {
-            combinator_targets(m, c, out);
-        }
-    }
-
-    /// Whether the module's combinators reference each other in a cycle
-    /// through `MakeClosure`/`CallKnown`/`MakePap`. `check` never rejects
-    /// this (arities and environment lengths can all still line up), but a
-    /// cyclic closure reference has no finite term: `decompile`'s `closure`
-    /// only memoises a combinator's hash *after* rebuilding its body, so
-    /// re-entering the same combinator before that recurses forever. A
-    /// well-formed built module is always acyclic here (lambda lifting
-    /// only ever closes over *earlier* combinators; true self-reference
-    /// goes through `SelfCall`, not a fresh closure), so this can only ever
-    /// fire on a mutant -- one `retarget` happened to point a closure site
-    /// back at its own enclosing combinator. Such a mutant is excluded here
-    /// rather than tried against `decompile`, which cannot terminate on it.
-    fn has_combinator_cycle(m: &Module) -> bool {
-        let n = m.combinators.len();
-        let mut edges: Vec<Vec<usize>> = vec![vec![]; n];
-        for (i, c) in m.combinators.iter().enumerate() {
-            if let Combinator::Lifted(f) = c {
-                combinator_targets(m, &f.body, &mut edges[i]);
-            }
-        }
-        fn visit(i: usize, edges: &[Vec<usize>], state: &mut [u8]) -> bool {
-            match state[i] {
-                1 => return true,
-                2 => return false,
-                _ => {}
-            }
-            state[i] = 1;
-            if edges[i].iter().any(|&j| j < edges.len() && visit(j, edges, state)) {
-                return true;
-            }
-            state[i] = 2;
-            false
-        }
-        let mut state = vec![0u8; n];
-        (0..n).any(|i| state[i] == 0 && visit(i, &edges, &mut state))
     }
 
     fn preorder_len(n: &Node) -> usize {
@@ -513,7 +464,7 @@ mod tests {
                             let node = nth_mut(&mut fs[fi].body, &mut kk).unwrap();
                             mutate(node, variant, &m.combinators)
                         };
-                        if !changed || mutant == m || check(&mutant).is_err() || has_combinator_cycle(&mutant) {
+                        if !changed || mutant == m || check(&mutant).is_err() {
                             continue;
                         }
                         applied += 1;
@@ -530,19 +481,6 @@ mod tests {
         // Not vacuous: many mutants were actually tried, of every kind.
         assert!(applied >= 200, "only {applied} well-formed mutants were tried");
         for kind in KINDS {
-            // "shift an environment entry up" has no well-formed instance
-            // anywhere in this corpus: `compile::build` always fills slot 0
-            // of an environment with the capturing scope's *most recently
-            // bound* free variable, which is already the highest-indexed
-            // param or env slot the capturing function has, so incrementing
-            // it always goes out of range (`ir::check` confirms this on
-            // every one of the corpus's 5 non-empty environments -- see
-            // task-3-report.md). Excluded rather than faked, per the task
-            // brief: fabricating a corpus term just to hit this would test
-            // nothing real about `compile::build`'s output.
-            if kind == "shift an environment entry up" {
-                continue;
-            }
             assert!(kinds_seen.contains(kind), "no well-formed mutant of kind `{kind}` was produced");
         }
     }

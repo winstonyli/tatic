@@ -137,7 +137,64 @@ pub(crate) fn check(m: &Module) -> Result<(), String> {
             }
         }
     }
+    check_acyclic(m)?;
     Ok(())
+}
+
+/// Every combinator index a node directly closes over: `CallKnown`/
+/// `MakeClosure`'s `f`, or (through a `Pap` wrapper) its `root`. `SelfCall`
+/// is not an edge here: it denotes the enclosing function through a bound
+/// variable, never a fresh closure over it.
+fn combinator_targets(m: &Module, n: &Node, out: &mut Vec<usize>) {
+    match n {
+        Node::CallKnown { f, .. } | Node::MakeClosure { f, .. } => out.push(*f),
+        Node::MakePap { wrapper, .. } => {
+            if let Some(Combinator::Pap { root, .. }) = m.combinators.get(*wrapper) {
+                out.push(*root);
+            }
+        }
+        _ => {}
+    }
+    for c in n.children() {
+        combinator_targets(m, c, out);
+    }
+}
+
+/// The combinator reference graph -- `Lifted` bodies, followed through
+/// `CallKnown`/`MakeClosure`/`MakePap` -- must be acyclic. `SelfCall` is the
+/// only way a function refers to itself, so a lambda literal's own term
+/// never contains itself, and the builder can never produce a cycle here.
+/// `decompile`'s `closure` only memoises a combinator's hash *after*
+/// rebuilding its body, so a cyclic reference would make it recurse
+/// forever; nothing about lowering a closure needs a cycle either.
+fn check_acyclic(m: &Module) -> Result<(), String> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Color {
+        White,
+        Grey,
+        Black,
+    }
+    fn visit(m: &Module, i: usize, color: &mut [Color]) -> Result<(), String> {
+        match color[i] {
+            Color::Grey => return Err(format!("$c{i} refers to itself")),
+            Color::Black => return Ok(()),
+            Color::White => {}
+        }
+        color[i] = Color::Grey;
+        if let Some(Combinator::Lifted(f)) = m.combinators.get(i) {
+            let mut targets = vec![];
+            combinator_targets(m, &f.body, &mut targets);
+            for j in targets {
+                if j < color.len() {
+                    visit(m, j, color)?;
+                }
+            }
+        }
+        color[i] = Color::Black;
+        Ok(())
+    }
+    let mut color = vec![Color::White; m.combinators.len()];
+    (0..m.combinators.len()).try_for_each(|i| visit(m, i, &mut color))
 }
 
 fn lifted(m: &Module, idx: usize) -> Result<&Func, String> {
@@ -533,5 +590,23 @@ mod tests {
         rejects(&m, "under Fast dispatch");
         m.dispatch = Dispatch::Curried;
         check(&m).unwrap();
+    }
+
+    #[test]
+    fn combinator_references_must_be_acyclic() {
+        // $c0 -> $c1 -> $c0: neither is recursive, so nothing but a bug in
+        // the builder could produce this, but `check` must still catch it,
+        // since `decompile`'s `closure` cannot terminate on it.
+        let mut two_cycle = with_entry(Node::Lit(0), 0, false);
+        two_cycle.combinators = vec![
+            Combinator::Lifted(Func { arity: 1, is_rec: false, env_len: 0, body: Node::MakeClosure { f: 1, env: vec![] } }),
+            Combinator::Lifted(Func { arity: 1, is_rec: false, env_len: 0, body: Node::MakeClosure { f: 0, env: vec![] } }),
+        ];
+        rejects(&two_cycle, "refers to itself");
+
+        // A combinator whose own body closes directly over itself.
+        let mut self_cycle = with_entry(Node::Lit(0), 0, false);
+        self_cycle.combinators = vec![Combinator::Lifted(Func { arity: 1, is_rec: false, env_len: 0, body: Node::MakeClosure { f: 0, env: vec![] } })];
+        rejects(&self_cycle, "refers to itself");
     }
 }
