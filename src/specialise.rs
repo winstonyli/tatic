@@ -471,6 +471,27 @@ mod tests {
     }
 
     #[test]
+    fn a_spine_is_reduced_whole_or_not_at_all() {
+        // \z. (\x. \g. g x + g x) 5 (\y. y + z): 5 alone may be reduced, but
+        // the capturing closure bound to g is used twice, so the spine is
+        // left alone. Judging the inner spine `(\x. ..) 5` on its own, as
+        // if it were maximal, would reduce it.
+        let mut s = TermStore::new();
+        let (g, x) = (s.var(0), s.var(1));
+        let gx = s.app(g, x);
+        let sum = s.prim(PrimOp::Add, gx, gx);
+        let inner = s.abs(sum);
+        let head = s.abs(inner);
+        let five = s.lit(5);
+        let (y, z) = (s.var(0), s.var(1));
+        let arg_body = s.prim(PrimOp::Add, y, z);
+        let arg = s.abs(arg_body);
+        let spine = s.app2(head, five, arg);
+        let h = s.abs(spine);
+        assert!(specialise_checked(&s, h).trace.is_empty());
+    }
+
+    #[test]
     fn a_closure_created_and_called_at_once_is_reduced() {
         let (s, h) = corpus("capturing_closure_loop");
         let sp = specialise_checked(&s, h);
