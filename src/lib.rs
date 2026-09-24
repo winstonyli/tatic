@@ -3,6 +3,7 @@ pub mod eval;
 pub(crate) mod ir;
 pub mod jit;
 pub mod kernel;
+pub(crate) mod lower_wat;
 pub mod proof;
 pub mod syntax;
 pub mod term;
