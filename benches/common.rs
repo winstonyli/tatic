@@ -81,10 +81,12 @@ pub fn gcd_with_two_base_cases(s: &mut TermStore) -> Hash {
 /// tail-recursive, but each iteration creates *and immediately calls* a
 /// fresh capturing closure (`\y. acc + y`, capturing `acc`, `f`'s own
 /// second parameter, which changes every iteration) as a literal callee
-/// -- a direct-call site (`push_closure_env` then `call`, no
-/// `call_indirect`), so this isolates the cost of `compile.rs`'s new
-/// closure-conversion path -- one bump-allocator call per iteration --
-/// from `call_indirect`'s own unpacking overhead.
+/// -- a direct-call site (a plain `call`, no `call_indirect`). The
+/// closure is only ever called directly, so it is lambda lifted
+/// (`lower_wat::direct_only`): `acc` is passed as a parameter and nothing
+/// allocates. Until that change it paid one bump-allocator call per
+/// iteration, and this bench is where the difference shows
+/// (`RELATED_WORK.md` §36).
 pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
     // `\y. acc + y`, referenced at body's own top level (f=Var(2),
     // n=Var(1), acc=Var(0)) -- inside the closure's own body, one more
@@ -122,8 +124,9 @@ pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
 /// environment (holding `add`'s own, empty, environment plus the current
 /// `acc`) gets allocated fresh each time, via `Lowering::pap_env` -- so this
 /// isolates the partial-application path's own per-iteration allocation
-/// cost, the same way `capturing_closure_loop` isolates a plain
-/// capturing closure's.
+/// cost. (A partial application escapes into `caller`, so unlike
+/// `capturing_closure_loop`'s directly called closure it is not lambda
+/// lifted.)
 pub fn partial_application_loop(s: &mut TermStore) -> Hash {
     // add = \x y. x + y
     let x = s.var(1);

@@ -365,7 +365,8 @@ This is stated precisely because it would be easy to overclaim here.
   combinator denotes differently depending on where it's referenced — so
   instead `mk_clo_h : Env -> Clo` (a function of the environment) and
   `call_h : Env -> T_0 -> .. -> T_{k-1} -> Int` (environment prepended,
-  mirroring `lower_wat.rs`'s own `$env`-first calling convention), where
+  mirroring `lower_wat.rs`'s own `$env`-first calling convention; a
+  lambda-lifted combinator gets the same values as separate parameters), where
   `Env : Sort(0)` is postulated once *per capture signature* (`capture_sig`
   — which slots are `Clo`-typed, which are `Int`; shared across every
   combinator whose captures match that exact signature, the same way

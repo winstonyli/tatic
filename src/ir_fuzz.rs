@@ -139,6 +139,65 @@ fn tail_and_non_tail_self_call_templates_agree() {
     }
 }
 
+/// A combinator only ever called directly takes its captures as Wasm
+/// parameters (`lower_wat::direct_only`) rather than through an
+/// environment pointer. These cover the slot order, recursion that
+/// forwards the captures, and closures built from them.
+#[test]
+fn direct_only_combinator_templates_agree_under_both_dispatch_modes() {
+    let rec_capturing = |tail: bool| {
+        // c0 = rec g n = if n <= 0 then e0 else (e0 + g (n - 1)) or g (n - 1).
+        let call = Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p(0)), b(Node::Lit(1)))], tail };
+        let els = if tail { call } else { Node::Arith(PrimOp::Add, b(e(0)), b(call)) };
+        Combinator::Lifted(Func { arity: 1, is_rec: true, env_len: 1, body: Node::If { cmp: PrimOp::Le, a: b(p(0)), b: b(Node::Lit(0)), then: b(e(0)), els: b(els) } })
+    };
+    for dispatch in [Dispatch::Fast, Dispatch::Curried] {
+        let cases = [
+            // Two captures, where swapping them changes the result.
+            (
+                "two captures",
+                entry(
+                    2,
+                    false,
+                    Node::CallKnown { f: 0, env: vec![Read::Param(0), Read::Param(1)], args: vec![Node::Lit(7)] },
+                    vec![lifted(1, 2, Node::Arith(PrimOp::Sub, b(Node::Arith(PrimOp::Sub, b(e(0)), b(e(1)))), b(p(0))))],
+                    dispatch,
+                ),
+            ),
+            ("non-tail recursion", entry(2, false, Node::CallKnown { f: 0, env: vec![Read::Param(0)], args: vec![Node::Lit(10)] }, vec![rec_capturing(false)], dispatch)),
+            ("tail recursion", entry(2, false, Node::CallKnown { f: 0, env: vec![Read::Param(0)], args: vec![Node::Lit(10)] }, vec![rec_capturing(true)], dispatch)),
+            // A direct call made from inside one, forwarding its capture.
+            (
+                "direct inside direct",
+                entry(
+                    2,
+                    false,
+                    Node::CallKnown { f: 0, env: vec![Read::Param(1)], args: vec![p(0)] },
+                    vec![lifted(1, 1, Node::CallKnown { f: 1, env: vec![Read::Env(0)], args: vec![p(0)] }), minus_closure()],
+                    dispatch,
+                ),
+            ),
+            // An escaping closure built from one's capture.
+            (
+                "closure inside direct",
+                entry(
+                    2,
+                    false,
+                    Node::CallKnown { f: 0, env: vec![Read::Param(1)], args: vec![p(0)] },
+                    vec![lifted(1, 1, Node::CallUnknown { callee: b(Node::MakeClosure { f: 1, env: vec![Read::Env(0)] }), args: vec![p(0)] }), minus_closure()],
+                    dispatch,
+                ),
+            ),
+        ];
+        for (what, m) in &cases {
+            for x in EDGES {
+                agree(m, &[x, 3], &format!("{what} ({dispatch:?})"));
+                agree(m, &[3, x], &format!("{what} ({dispatch:?})"));
+            }
+        }
+    }
+}
+
 /// `\x. (\y. x - y)` as `$c0`, capturing `x` in slot 0.
 fn minus_closure() -> Combinator {
     lifted(1, 1, Node::Arith(PrimOp::Sub, b(e(0)), b(p(0))))

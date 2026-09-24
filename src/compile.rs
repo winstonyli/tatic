@@ -909,10 +909,11 @@ mod tests {
         // rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)
         // -- a tail loop where *each iteration* creates and immediately
         // calls a fresh closure capturing the current `acc`: exercises
-        // `$env` staying correctly untouched across the tail loop's own
+        // the capture staying correctly untouched across the tail loop's own
         // `br $L` (the closure creation/call happens compiling one of the
-        // *new* argument values, not the self-call itself) while
-        // `push_closure_env`/`$alloc` still runs freshly every iteration.
+        // *new* argument values, not the self-call itself) while the
+        // closure is called directly, so it is lambda lifted and receives
+        // `acc` as a parameter (`lower_wat::direct_only`).
         let mut s = TermStore::new();
         let y = s.var(0);
         let acc_captured = s.var(1);
@@ -948,7 +949,11 @@ mod tests {
 
     #[test]
     fn resetting_hp_between_calls_keeps_memory_bounded_across_many_calls() {
-        // Same term as the test above, but this one exercises the actual
+        // Like the test above, but the closure escapes -- it is passed to
+        // `\g. g n` rather than called directly -- so its environment is
+        // allocated every iteration (a directly called one takes its
+        // capture as a parameter; see `lower_wat::direct_only`). This one
+        // exercises the actual
         // mechanism `jit.rs` relies on: `needs_hp_reset`/the exported
         // `"hp"` global. Without resetting `hp` to 0 before every call,
         // repeatedly calling the *same* compiled instance -- exactly
@@ -964,8 +969,12 @@ mod tests {
         let acc_captured = s.var(1);
         let sum = s.prim(PrimOp::Add, acc_captured, y);
         let closure = s.abs(sum);
-        let n_ref = s.var(1);
-        let new_acc = s.app(closure, n_ref);
+        // `\g. g n`: inside it g = Var(0) and n = Var(2).
+        let g = s.var(0);
+        let n_in = s.var(2);
+        let g_n = s.app(g, n_in);
+        let apply_to_n = s.abs(g_n);
+        let new_acc = s.app(apply_to_n, closure);
         let n = s.var(1);
         let acc = s.var(0);
         let zero = s.lit(0);
@@ -980,7 +989,12 @@ mod tests {
         let term = s.rec(abs);
 
         let frag = try_compile(&s, term).expect("should compile");
-        assert!(frag.needs_hp_reset, "this term creates capturing closures, so it should need a reset");
+        assert!(frag.needs_hp_reset, "this term creates escaping capturing closures, so it should need a reset");
+        for (n, acc) in [(0, 0), (5, 3)] {
+            let (mut store, instance) = instantiate(&frag.wat);
+            let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
+            assert_eq!(func.call(&mut store, (n, acc)).unwrap(), apply_term(&s, term, &[n, acc]).unwrap());
+        }
 
         let (mut store, instance) = instantiate(&frag.wat);
         let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();

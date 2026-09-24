@@ -21,10 +21,15 @@
 //! *non-capturing* lambda ("known function"/"known call" in the compiler
 //! literature) still needs no environment at all -- its pointer half is
 //! just `0`, a constant, and its `$env` parameter goes unread -- so this
-//! is one uniform representation, not two: every combinator takes an
-//! `$env: i32` parameter first, whether or not its own body ever reads
-//! from it, precisely so a `call_indirect` site never needs to know in
-//! advance whether the closure it's calling captures anything.
+//! is one uniform representation, not two: every combinator that can be
+//! reached through the table takes an `$env: i32` parameter first,
+//! whether or not its own body ever reads from it, precisely so a
+//! `call_indirect` site never needs to know in advance whether the
+//! closure it's calling captures anything. The exception is a capturing
+//! combinator nothing reaches through the table -- never packed into a
+//! value, never a partial-application root (`direct_only`). It is lambda
+//! lifted: it takes its captures as leading `i64` parameters `$e0 ..`
+//! instead, so calling it allocates nothing.
 //!
 //! `compile::free_vars` finds what a lambda literal captures, relative to
 //! its own parameter range, by walking its body (following *into* further
@@ -54,7 +59,9 @@
 //! the packed `i64` first. `CallKnown` calls a literal lambda appearing
 //! directly in function position (the builder's registry gives it a table
 //! slot); its template is an ordinary, statically-known `call`, with a
-//! freshly created environment passed as that call's first argument.
+//! freshly created environment passed as that call's first argument --
+//! or, for a lambda-lifted (`direct_only`) callee, the captured values
+//! themselves.
 //! `MakeClosure`, a lambda passed around as a value it's never applied to
 //! (an argument, a branch's result, ...), packs its (possibly-empty)
 //! environment and table index into a single `i64` the same way.
@@ -219,13 +226,17 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
         }
     }
 
-    let mut lw = Lowering { m, stage0, call_indirect_arities: Vec::new() };
+    let direct = direct_only(m, &bare);
+    let mut lw = Lowering { m, stage0, direct, call_indirect_arities: Vec::new() };
     let mut fn_wat = String::new();
-    lw.function("f", &m.entry, false, &mut fn_wat);
+    lw.function("f", &m.entry, EnvAccess::None, &mut fn_wat);
     let mut combinator_wat = String::new();
     for (idx, c) in m.combinators.iter().enumerate() {
         match c {
-            Combinator::Lifted(f) => lw.function(&format!("c{idx}"), f, true, &mut combinator_wat),
+            Combinator::Lifted(f) => {
+                let env = if lw.direct.contains(&idx) { EnvAccess::Params } else { EnvAccess::Pointer };
+                lw.function(&format!("c{idx}"), f, env, &mut combinator_wat)
+            }
             Combinator::Pap { root, supplied } => emit_pap_wrapper(&format!("c{idx}"), *root, comb_arity(m, *root), *supplied, &mut combinator_wat),
         }
     }
@@ -247,8 +258,8 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
         w.push_str(" (result i64)))\n");
     }
     let stage_needs_alloc = curried && bare.iter().any(|&idx| comb_arity(m, idx) > 1);
-    let needs_alloc = m.combinators.iter().any(|c| match c {
-        Combinator::Lifted(f) => f.env_len > 0,
+    let needs_alloc = m.combinators.iter().enumerate().any(|(idx, c)| match c {
+        Combinator::Lifted(f) => f.env_len > 0 && !lw.direct.contains(&idx),
         Combinator::Pap { .. } => true,
     }) || stage_needs_alloc;
     if needs_alloc {
@@ -328,29 +339,72 @@ fn used_as_bare_value(m: &Module) -> HashSet<usize> {
     out
 }
 
+/// Every capturing combinator that is only ever called directly: never
+/// packed into a value and never the root a partial-application wrapper
+/// calls. Nothing reaches one through the table, so it takes its captures
+/// as `i64` parameters (`$e0`, `$e1`, ...) ahead of its arguments instead
+/// of an environment pointer, and a call to it allocates nothing.
+fn direct_only(m: &Module, bare: &HashSet<usize>) -> HashSet<usize> {
+    let pap_roots: HashSet<usize> = m
+        .combinators
+        .iter()
+        .filter_map(|c| match c {
+            Combinator::Pap { root, .. } => Some(*root),
+            Combinator::Lifted(_) => None,
+        })
+        .collect();
+    m.combinators
+        .iter()
+        .enumerate()
+        .filter(|(idx, c)| matches!(c, Combinator::Lifted(f) if f.env_len > 0) && !bare.contains(idx) && !pap_roots.contains(idx))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
 struct Lowering<'m> {
     m: &'m Module,
     /// A combinator's `stage_0` table index. It is filled only under
     /// `Dispatch::Curried`, where every bare value is packed with it
     /// instead of the combinator's own index.
     stage0: HashMap<usize, usize>,
+    /// The combinators that take their captures as parameters
+    /// (`direct_only`).
+    direct: HashSet<usize>,
     /// Every arity used at a `call_indirect` site, for the module's `(type
     /// ...)` declarations.
     call_indirect_arities: Vec<usize>,
+}
+
+/// How the function being lowered reaches its captures.
+#[derive(Clone, Copy)]
+enum EnvAccess {
+    /// The entry function `$f`, which has none.
+    None,
+    /// Through `$env`, a pointer to its environment slots in linear memory.
+    Pointer,
+    /// As its leading parameters `$e0 .. $e{env_len-1}` (`direct_only`).
+    Params,
 }
 
 /// The function currently being lowered.
 struct FnCx<'a> {
     name: &'a str,
     arity: usize,
-    has_env: bool,
+    env_len: usize,
+    env: EnvAccess,
 }
 
 impl Lowering<'_> {
-    fn function(&mut self, name: &str, f: &Func, has_env: bool, w: &mut String) {
+    fn function(&mut self, name: &str, f: &Func, env: EnvAccess, w: &mut String) {
         w.push_str(&format!("  (func ${name}"));
-        if has_env {
-            w.push_str(" (param $env i32)");
+        match env {
+            EnvAccess::None => {}
+            EnvAccess::Pointer => w.push_str(" (param $env i32)"),
+            EnvAccess::Params => {
+                for k in 0..f.env_len {
+                    w.push_str(&format!(" (param $e{k} i64)"));
+                }
+            }
         }
         for i in 0..f.arity {
             w.push_str(&format!(" (param $p{i} i64)"));
@@ -367,7 +421,7 @@ impl Lowering<'_> {
         w.push_str("    (local $diva i64)\n");
         w.push_str("    (local $divb i64)\n");
         w.push_str("    (loop $L (result i64)\n");
-        let cx = FnCx { name, arity: f.arity, has_env };
+        let cx = FnCx { name, arity: f.arity, env_len: f.env_len, env };
         self.node(&cx, &f.body, w, 6);
         w.push_str("    )\n  )\n");
     }
@@ -383,7 +437,7 @@ impl Lowering<'_> {
     fn node(&mut self, cx: &FnCx, n: &Node, w: &mut String, indent: usize) {
         match n {
             Node::Lit(v) => push_line(w, indent, &format!("i64.const {v}")),
-            Node::Read(r) => read(*r, w, indent),
+            Node::Read(r) => read(cx, *r, w, indent),
             Node::Arith(op, a, b) => {
                 self.node(cx, a, w, indent);
                 self.node(cx, b, w, indent);
@@ -419,10 +473,16 @@ impl Lowering<'_> {
             }
             Node::SelfCall { args, tail: false } => {
                 // A real call back into this function. Recursion stays
-                // inside the running closure instance, so `$env` is
+                // inside the running closure instance, so its captures are
                 // forwarded unchanged.
-                if cx.has_env {
-                    push_line(w, indent, "local.get $env");
+                match cx.env {
+                    EnvAccess::None => {}
+                    EnvAccess::Pointer => push_line(w, indent, "local.get $env"),
+                    EnvAccess::Params => {
+                        for k in 0..cx.env_len {
+                            push_line(w, indent, &format!("local.get $e{k}"));
+                        }
+                    }
                 }
                 for a in args {
                     self.node(cx, a, w, indent);
@@ -430,7 +490,13 @@ impl Lowering<'_> {
                 push_line(w, indent, &format!("call ${}", cx.name));
             }
             Node::CallKnown { f, env, args } => {
-                push_closure_env(env, w, indent);
+                if self.direct.contains(f) {
+                    for r in env {
+                        read(cx, *r, w, indent);
+                    }
+                } else {
+                    push_closure_env(cx, env, w, indent);
+                }
                 for a in args {
                     self.node(cx, a, w, indent);
                 }
@@ -465,7 +531,7 @@ impl Lowering<'_> {
                 }
             },
             Node::MakeClosure { f, env } => {
-                push_closure_env(env, w, indent);
+                push_closure_env(cx, env, w, indent);
                 push_line(w, indent, "i64.extend_i32_u");
                 push_line(w, indent, "i64.const 32");
                 push_line(w, indent, "i64.shl");
@@ -491,7 +557,7 @@ impl Lowering<'_> {
     /// survives that; a value held in either local does not. A fuzz-found
     /// regression once came from exactly this.
     fn pap_env(&mut self, cx: &FnCx, root_env: &[Read], args: &[Node], w: &mut String, indent: usize) {
-        push_closure_env(root_env, w, indent);
+        push_closure_env(cx, root_env, w, indent);
         push_line(w, indent, "i64.extend_i32_u");
         for a in args {
             self.node(cx, a, w, indent);
@@ -536,10 +602,11 @@ impl Lowering<'_> {
     }
 }
 
-fn read(r: Read, w: &mut String, indent: usize) {
-    match r {
-        Read::Param(li) => push_line(w, indent, &format!("local.get $p{li}")),
-        Read::Env(k) => {
+fn read(cx: &FnCx, r: Read, w: &mut String, indent: usize) {
+    match (r, cx.env) {
+        (Read::Param(li), _) => push_line(w, indent, &format!("local.get $p{li}")),
+        (Read::Env(k), EnvAccess::Params) => push_line(w, indent, &format!("local.get $e{k}")),
+        (Read::Env(k), _) => {
             push_line(w, indent, "local.get $env");
             push_line(w, indent, &format!("i64.load offset={}", k * 8));
         }
@@ -548,7 +615,7 @@ fn read(r: Read, w: &mut String, indent: usize) {
 
 /// Pushes an `i32` environment pointer holding `env`'s values in slot
 /// order, or `i32.const 0` (no allocation at all) for an empty environment.
-fn push_closure_env(env: &[Read], w: &mut String, indent: usize) {
+fn push_closure_env(cx: &FnCx, env: &[Read], w: &mut String, indent: usize) {
     if env.is_empty() {
         push_line(w, indent, "i32.const 0");
         return;
@@ -558,7 +625,7 @@ fn push_closure_env(env: &[Read], w: &mut String, indent: usize) {
     push_line(w, indent, "local.set $envtmp");
     for (slot, r) in env.iter().enumerate() {
         push_line(w, indent, "local.get $envtmp");
-        read(*r, w, indent);
+        read(cx, *r, w, indent);
         push_line(w, indent, &format!("i64.store offset={}", slot * 8));
     }
     push_line(w, indent, "local.get $envtmp");
@@ -977,6 +1044,23 @@ mod tests {
         assert_eq!(lowered.wat, built.wat);
         assert_eq!(lowered.arity, built.arity);
         assert_eq!(lowered.needs_hp_reset, built.needs_hp_reset);
+    }
+
+    #[test]
+    fn a_directly_called_capturing_combinator_takes_its_captures_as_parameters() {
+        // `capturing_closure_loop`'s `\y. acc + y` is only ever called
+        // directly, so `acc` travels as a Wasm parameter and nothing in the
+        // module allocates.
+        let (_, s, h) = crate::test_corpus::terms().into_iter().find(|(name, ..)| *name == "capturing_closure_loop").unwrap();
+        let frag = crate::compile::try_compile(&s, h).unwrap();
+        assert!(!frag.needs_hp_reset, "{}", frag.wat);
+        assert!(!frag.wat.contains("$alloc"), "{}", frag.wat);
+        assert!(frag.wat.contains("(func $c0 (param $e0 i64) (param $p0 i64)"), "{}", frag.wat);
+        let (mut store, instance) = instantiate(&frag.wat);
+        let f = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
+        for (n, acc) in [(0, 0), (1, 0), (5, 3), (100, -7)] {
+            assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");
+        }
     }
 
     #[test]

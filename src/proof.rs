@@ -3958,8 +3958,10 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 // differently depending on *where* it's referenced -- so instead:
 // `mk_clo_h : Env -> Clo_k` (a function of the environment, not a bare
 // constant) and `call_h : Env -> T_0 -> .. -> T_{k-1} -> Int` (the
-// environment prepended, mirroring `compile.rs`'s own calling convention
-// of `$env` as every combinator's first Wasm parameter), where `Env :
+// environment prepended, mirroring `lower_wat.rs`'s calling convention
+// of `$env` as a combinator's first Wasm parameter -- a lambda-lifted
+// (`direct_only`) one receives the same values as separate leading
+// parameters instead, which this one `Env` argument models equally), where `Env :
 // Sort(0)` is postulated once *per capture signature* (which of its
 // slots are `Clo_k`-typed, which are `Int` -- `capture_sig`; shared
 // across every combinator whose captures happen to match that exact
@@ -4621,9 +4623,11 @@ impl<'a> ClosureCombinators<'a> {
     /// doesn't capture anything, or `Env -> T_0 -> .. -> T_{k-1} -> R`
     /// (`n` = `captures.len()`) if it does -- the environment, when
     /// present, is always the *first* parameter, ahead of `h`'s own
-    /// call arguments, mirroring `compile.rs`'s own calling convention
-    /// (every combinator takes `$env` as its first Wasm parameter,
-    /// whether or not its own body reads from it). Each `T_j` (`j` in
+    /// call arguments, mirroring `lower_wat.rs`'s calling convention
+    /// (a combinator reachable through the table takes `$env` as its
+    /// first Wasm parameter, whether or not its own body reads from it;
+    /// a lambda-lifted one takes the same values as separate leading
+    /// parameters). Each `T_j` (`j` in
     /// application order, i.e. `T_0` is the *first*-applied argument's
     /// type) is `Clo_k` (some arity `k`) or `Int` matching `h`'s own
     /// `param_types` at that position -- this is what lets a combinator
