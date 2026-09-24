@@ -86,7 +86,11 @@ pub fn gcd_with_two_base_cases(s: &mut TermStore) -> Hash {
 /// (`lower_wat::direct_only`): `acc` is passed as a parameter and nothing
 /// allocates. Until that change it paid one bump-allocator call per
 /// iteration, and this bench is where the difference shows
-/// (`RELATED_WORK.md` §36).
+/// (`RELATED_WORK.md` §36). The literal application `(\y. acc+y) n` is
+/// also a redex whose argument (`n`, a `Var`) is a value, so
+/// `compile_specialised` now βv-reduces it to `acc+n` in one step before
+/// the term ever reaches the IR builder (`RELATED_WORK.md` §37); this
+/// bench measures both changes together, through the JIT.
 pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
     // `\y. acc + y`, referenced at body's own top level (f=Var(2),
     // n=Var(1), acc=Var(0)) -- inside the closure's own body, one more
@@ -126,7 +130,12 @@ pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
 /// isolates the partial-application path's own per-iteration allocation
 /// cost. (A partial application escapes into `caller`, so unlike
 /// `capturing_closure_loop`'s directly called closure it is not lambda
-/// lifted.)
+/// lifted.) `compile_specialised` now βv-reduces the whole spine --
+/// `caller (add acc) n` down to `add acc n` down to `acc+n` -- in 4
+/// certificate-checked steps before the term reaches `try_compile`, so the
+/// warm path this bench measures no longer allocates a partial
+/// application's environment or dispatches through `caller` at all
+/// (`RELATED_WORK.md` §37).
 pub fn partial_application_loop(s: &mut TermStore) -> Hash {
     // add = \x y. x + y
     let x = s.var(1);

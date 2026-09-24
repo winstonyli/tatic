@@ -2938,7 +2938,207 @@ this change, three interleaved rounds on a shared machine: best-of-three
 medians 301.6 µs -> 94.6 µs (3.2x). The unchanged controls moved 7-14% in
 the same runs (`partial_application_loop` 628.7 -> 541.7 µs,
 `closure_typed_loop_carried_parameter_loop` 161.3 -> 149.4 µs), so the
-3.2x is well above noise and matches the spike.
+3.2x is well above noise and matches the spike. `capturing_closure_loop`'s
+bench now also goes through the JIT and measures §37's specialisation on
+top of this step's lambda lifting; lambda lifting itself stays covered
+separately by its own `try_compile`-level golden-WAT test, not by the
+bench number alone.
+
+## 37. Closure specialisation by certificate-checked βv
+
+Design: `docs/superpowers/specs/2026-09-24-closure-specialisation-design.md`.
+
+**What was slow.** §36's spike measured `partial_application_loop`'s
+hand-specialised form (`caller (add acc) n` rewritten to `add acc n`) at
+7.0-7.6x today's code. Nothing in the pipeline did that rewrite: the term
+that reaches `try_compile` is exactly the term `syntax.rs` or a benchmark
+built, closure literals and all, so every iteration paid a partial
+application's wrapper call and a fresh environment allocation for a
+closure whose shape never changes.
+
+**The trust-model survey.** Four ways to let a rewriter change the term
+before compilation, and trust the result:
+
+- **A, a single trusted normaliser.** One piece of code decides the
+  rewrite is correct and nothing checks it afterwards. CompCert and CakeML
+  both go this way for their optimisation passes -- but as *proven*
+  transformations, checked once and for all at the meta level (Rideau &
+  Leroy's validated register allocator is itself an exception inside
+  CompCert, discussed under D below). Trusting an unproven rewriter the
+  same way is too much weight on one piece of code with no independent
+  check per run.
+- **B, an NbE-based normal-form checker.** Normalise both sides by
+  evaluation and compare. This project's own strict semantics make this
+  the wrong tool: NbE has to track which subterms are values under the
+  evaluation order in force, and a checker built that way rejects correct
+  rewrites it can't itself see are stuck-free, the same shape of false
+  rejection Tristan, Govereau & Morrisett's normalising validation (PLDI'11)
+  built machinery to avoid for a *different* language.
+- **C, a kernel-proved `h ≡ h'`.** CertiCoq ("Shrink fast correctly!") and
+  Œuf (denote the source and target ASTs into Coq and finish with
+  `reflexivity`) both certify a transformation this way, inside a proof
+  assistant's own kernel. `kernel.rs` already plays that role here for
+  compiled-vs-interpreted equivalence (`proof.rs`, §33), so it is the
+  natural upgrade -- see the probe finding below for why it isn't the first
+  cut.
+- **D, certificate-carrying rewriting.** The rewriter (untrusted) emits the
+  result plus a trace of steps; an independent checker (trusted) replays
+  the trace from the original and must land on exactly that result.
+  Crellvm (PLDI'18) is the closest precedent: an LLVM optimisation pass
+  emits hints alongside its output, and a separate validator checks each
+  hint locally rather than re-deriving the whole optimisation or trusting
+  the pass. Alive2 checks individual peephole rewrites against a
+  precise semantics but is intraprocedural -- it doesn't fit a rewrite that
+  must chase every occurrence of a redex through a whole term. GHC takes a
+  looser version of D in production: a trusted simplifier plus Core Lint,
+  a well-formedness sanity check on the output, not a proof it denotes the
+  same thing.
+
+  D is what shipped: `specialise.rs` (untrusted) emits `h'` and a
+  `Vec<Step>`; `spec_check.rs` (trusted, independent, allowed to import
+  only `crate::term` and `std`) replays every step from `h` and accepts
+  only if it reaches exactly `h'`. It beats A because nothing about the
+  rewriter itself needs to be trusted, and it beats B because replaying a
+  named step is exact where NbE-style comparison is approximate. It is a
+  deliberately smaller commitment than C.
+
+**The probe finding behind "D now, C later".** A throwaway test (recorded
+in the design spec) ran `proof.rs`'s entry points on both loops and on
+their specialised or hoisted forms: all six terms got universal-strength
+proofs, so `denote` already covers `h` and `h'` individually. But each
+theorem is stated per term -- `∀p v (e : Ev_h(p,v)). loop_val_h(p,e) = v`,
+with `Ev_h` and its closure-call constants postulated fresh for that one
+term -- so a kernel proof of `h ≡ h'` needs a new builder that doesn't
+exist yet: `Ev_h(p,v) → Ev_h'(p,v)`, by induction on `ev_rec_h` with each
+step's next parameters equal by congruence plus `call_eq` rewriting. That
+builder is sized like the core of `build_universal` and is real work, so C
+is future work (open questions, below) and D ships now. The trace D
+produces is deliberately shaped to be that builder's proof outline: one
+`BetaV { redex }` per congruence step it will need.
+
+**Why βv, not full β.** `eval.rs` is strict and can fail
+(`DivByZero`/`TypeError`/`NotAFunction`/`UnboundVariable`) or diverge
+(`Rec` has no fuel), so full β is unsound here: `(\x. 0) (1/0)` fails under
+call-by-value evaluation, but its β-contraction `0` does not. The rewrite
+used is βv, `App(Abs(M), V) → M[0 := V]` restricted to a value argument
+`V` (`Var`, `Lit`, `Abs` or `Rec`) -- every binder under strict evaluation
+is bound to exactly such a value, so this covers every redex evaluation
+would itself contract. Plotkin (1975) shows βv is an observational
+equivalence in the call-by-value λ-calculus and, unlike full β, is closed
+under every context: a value evaluates in no steps with no effect, so
+substituting it can neither introduce nor remove an error or divergence.
+That is what licenses rewriting under binders, inside `If` branches and
+inside a `Rec` body without re-checking anything about the surrounding
+term.
+
+**Hash-addressed steps and optimal reduction.** A `Step` names its redex
+by content hash and is applied to every occurrence in one pass, not by a
+path into one specific occurrence. Because `term.rs` hash-conses (§1),
+two occurrences of the same redex are already one node, so this is sound
+by construction -- rewriting a subterm is rewriting it in every context
+that shares it, and there is nothing further to justify. It also happens
+to resemble a *weak* form of Lévy's family reduction (Lévy 1978): same
+syntax, sharing by content identity, not the same dynamic origin -- a
+genuine optimal-reduction implementation tracks *families* of redexes
+descended from one another through reduction (Lamping 1990's sharing
+graphs; Asperti's overview of what "efficient" reduction actually costs;
+the weak/full-laziness distinctions in Balabonski's ICFP'13 and POPL'12
+papers; Barenbaum & Bonelli's FSCD'17 linear substitution calculus). This
+project's hash-addressed steps never need that machinery, because they
+only ever claim to share syntactically identical terms, never terms that
+happen to originate from the same redex. **Optimal reduction does not apply
+here**, for three independent reasons: it minimises the *number of
+normalisation steps* under full β, not the run-time cost of the residual
+program, which is what this project actually wants; full β is unsound in
+this strict semantics, as above; and its sharing-graph bookkeeping cost is
+provably not bounded by any elementary function (Asperti & Mairson 1998),
+which would dwarf anything it saved on a loop this small. The policy's
+own "OnceInLam" restriction -- don't duplicate work that would turn into
+extra closure allocations under a binder -- is GHC's occurrence-analysis
+heuristic (Peyton Jones & Marlow 2002), not a step toward optimality; it
+exists only to avoid code that gets slower.
+
+**Placement: a separate driver.** Specialisation is not folded into
+`try_compile`. `try_compile`'s existing tests deliberately build literal-
+lambda redexes to exercise closure machinery directly (`MakeClosure`,
+partial applications, allocation); specialising inside `try_compile` would
+silently reduce those redexes away and weaken what those tests cover.
+Instead `compile::compile_specialised` composes two untouched passes:
+`specialise::specialise` (untrusted), `spec_check::check` (trusted), and
+then the unchanged `try_compile`. `try_compile`'s own contract -- every
+accepted module decompiles to the term it was given (§35) -- still holds
+of whichever term it is handed, `h` or `h'`.
+
+**How it was checked.** `spec_check.rs` has 13 unit tests (one value kind
+per accepted step -- `Var`, `Lit`, closed `Abs`, capturing `Abs`, `Rec` --
+plus rejections for a non-value argument, `Rec` in head position, an
+absent redex, a wrong claimed hash, and over-limit traces/terms) and an
+independence test that scans its imports and admits only `crate::term`
+and `std`, reusing `decompile.rs`'s existing import-scanner as a shared
+`#[cfg(test)]` helper. `specialise.rs` has 8 tests, including the shapes
+the design predicted: `partial_application_loop` specialises in 4 βv
+steps to a plain loop computing `acc + n` (no `call_indirect`, no
+`$alloc` in its WAT); `capturing_closure_loop` in 1 step;
+`capturing_closure_loop`'s own closed-closure variant takes 2 steps
+because the first substitution exposes a new redex, `(\y. y+1) n`; and a
+capturing closure whose parameter is used inside a loop body is correctly
+left alone (the OnceInLam policy rule). A planted mis-shift in the
+specialiser's `lift` is caught by the checker, as designed.
+
+A corpus-and-fuzzer mutation test attacked valid `(h, trace, h')` triples
+with five mutations -- drop a step, swap adjacent steps, retarget a step
+to another subterm's hash, change a `Var`/`Lit` in the claimed `h'`,
+truncate the trace -- at [26, 15, 206, 11, 26] attempts respectively. Every
+mutant was rejected except one retarget, in
+`over_application_pap_producing_root`, which turned out to still replay to
+the same claimed term; the test confirms this against an independent
+oracle (`specialise::replay`, `cfg(test)`, the specialiser's own
+substitution, not the checker's) rather than trusting the checker's own
+"accepted" verdict, and a planted change to that oracle makes the
+assertion fail, so the check has teeth.
+
+The differential fuzzer (`specialisation_is_checked_and_preserves_meaning_on_random_terms`,
+extending `compile_fuzz.rs`'s existing generators with `Div`/`Mod`) ran
+1000 seeds, specialising 821 of them; the checker accepted every trace
+produced, and `eval` on `h` and `h'` agreed exactly on the sample
+arguments, including which error each raised. Two planted bugs confirm
+the fuzz has teeth: a specialiser bug is caught via the checker rejecting
+its trace, and making the checker and specialiser agree on an unsound
+step (accepting a `Prim` argument as a value, in both places at once) is
+still caught, via the `eval` comparison diverging on a `Div` term.
+
+Two limits are worth stating plainly rather than papering over. No test
+distinguishes `kernel_verify` running on `h'` from running on `h` --
+`partial_application_loop`'s own unspecialised `h` also gets a universal
+proof, so nothing here forces the specialised path through `kernel_verify`
+differently. And `find_spine`'s `!in_fn_pos` guard is untested: removing
+it changed no observed result on the current corpus. Both are recorded as
+open rather than quietly left out.
+
+**Cost.** Criterion `capturing_closure_loop/jit_warm_cache_hit` and
+`partial_application_loop/jit_warm_cache_hit`, `main` vs this branch,
+three interleaved rounds, `BelowNormal` priority, on a machine shared with
+a training run (a `selfplay-burn` process was active throughout, and a
+second one started partway through the third round, which is visible in
+that round's much wider variance): best-of-three medians,
+`capturing_closure_loop/jit_warm_cache_hit` 47.908 µs -> 11.773 µs (4.1x),
+`partial_application_loop/jit_warm_cache_hit` 163.87 µs -> 6.8832 µs
+(23.8x, well past the spike's 7.0-7.6x estimate for the same rewrite --
+the full pipeline also removes the wrapper call and the per-iteration
+environment allocation the hand-specialised spike term still needed
+compiled around it). The untouched control,
+`closure_typed_loop_carried_parameter_loop/jit_warm_cache_hit` (unchanged
+because it calls through `Rec` in head position, never a candidate spine),
+moved from 37.980 µs to 40.488 µs across the same runs -- a ~7% difference
+in the noisy direction, consistent with no real change on a shared
+machine, not a regression. `cargo run --release`'s own JIT stats:
+compiled 9, specialised 3, `declined_no_universal_proof` 0, unchanged from
+before this work except for the new `specialised` count.
+
+The inlined-bump-allocation idea probed alongside the original spike is
+not part of this change; see
+`docs/superpowers/specs/2026-09-23-jit-ir-design.md`'s "Future work" for
+its numbers.
 
 ## Sources
 
@@ -2973,3 +3173,9 @@ the same runs (`partial_application_loop` 628.7 -> 541.7 µs,
 - [CPS in Guile](https://www.gnu.org/software/guile/manual/html_node/CPS-in-Guile.html)
 - [CPS in Hoot](https://wingolog.org/archives/2024/05/27/cps-in-hoot)
 - [Crocus / VeriISLE: verified lowering rules](https://dl.acm.org/doi/10.1145/3617232.3624862)
+- [Reduction strategy (Wikipedia)](https://en.wikipedia.org/wiki/Reduction_strategy)
+- [Asperti, About the efficient reduction of lambda terms](https://arxiv.org/pdf/1701.04240)
+- [Balabonski, Weak Optimality, and the Meaning of Sharing (ICFP 2013)](https://usr.lmf.cnrs.fr/~blsk/Publications/Balabonski-WeakOptimality-ICFP13.pdf)
+- [Balabonski, A Unified Approach to Fully Lazy Sharing (POPL 2012)](https://public.lmf.cnrs.fr/~blsk/Publications/Balabonski-FullLaziness-POPL12.pdf)
+- [Barenbaum & Bonelli, Optimality and the Linear Substitution Calculus (FSCD 2017)](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.FSCD.2017.9)
+- [Asperti & Mairson, Parallel Beta Reduction Is Not Elementary Recursive](https://www.researchgate.net/publication/222245890_Parallel_Beta_Reduction_Is_Not_Elementary_Recursive)
