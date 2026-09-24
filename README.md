@@ -464,14 +464,16 @@ This is stated precisely because it would be easy to overclaim here.
   a `debug_assert_has_type` panic in `denote_closure_typed`'s own partial
   application case.
 
-Installing a compiled form takes two independent checks, and neither is
-redundant. `jit.rs` runs the candidate against the interpreter on a
-battery of sample inputs, *and* requires `proof.rs` to have produced a
-kernel-checked theorem covering every input. A term that passes only the
-first is cached as `NoUniversalProof` and served by the interpreter from
-then on (`Stats::declined_no_universal_proof`).
+Installing a compiled form takes three checks. The term must be simply
+typed (`typing::well_typed`; compiled code can't tell an `Int` from a
+closure, RELATED_WORK §38). `jit.rs` runs the candidate against the
+interpreter on a battery of sample inputs, *and* requires `proof.rs` to
+have produced a kernel-checked theorem covering every input. A term that
+passes the samples but has no such theorem is cached as
+`NoUniversalProof` and served by the interpreter from then on
+(`Stats::declined_no_universal_proof`).
 
-The two checks cover different things, which is why both are required.
+The last two cover different things, which is why both are required.
 The sample battery is the only check that touches the WAT wasmtime
 actually runs. The kernel theorem is the only one that says anything
 about inputs outside the battery — but it is stated over `proof.rs`'s
@@ -485,7 +487,9 @@ What counts as "a theorem covering every input" is reported by
 
 - `Universal` — `prove_pure_expr`, `prove_closure_expr` or
   `prove_tail_recursive_universal`: one theorem covering every input. This
-  is genuinely stronger than the sample battery.
+  is genuinely stronger than the sample battery. Every input means every
+  `Int`, which is all the JIT passes: a theorem that types a called
+  parameter as a closure doesn't count (RELATED_WORK §42).
 - `Samples` — the `prove_tail_recursive_call` /
   `prove_closure_expr_instance` fallbacks: a real kernel-checked `Id`
   proof, but built *per concrete call*, once for each vector in

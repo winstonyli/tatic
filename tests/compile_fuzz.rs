@@ -806,10 +806,13 @@ fn gen_wrong_off_sample(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, usize
 fn a_branch_that_goes_wrong_off_the_samples_is_never_installed() {
     // Every term here passes `verify()`'s samples wherever it compiles,
     // since its bad branch is taken only at `OFF_SAMPLE`. What keeps each
-    // compiled form out is one of the two static gates: `typing::well_typed`
-    // for the ill-typed branches (§38), the universal-proof gate for the
-    // closure of the wrong arity (§40). With either gate disabled, this
-    // test fails.
+    // compiled form out is a static gate: `typing::well_typed` for the
+    // ill-typed branches (§38), the universal-proof gate for the closure of
+    // the wrong arity (§40). The proof gate also keeps out every ill-typed
+    // branch here on its own, once it refuses theorems about a called
+    // parameter (§42). So disabling the proof gate fails this test on a
+    // mismatch, and disabling the typing gate does so only together with
+    // that refusal.
     const SEEDS: u64 = 600;
     const ARGS: [i64; 5] = [0, 1, -1, 7, OFF_SAMPLE];
     // What happened to each term: declined as ill-typed, declined for want

@@ -18,7 +18,8 @@
 //!    (the reference semantics) on a battery of sample inputs, *and*
 //!    `proof.rs` produced
 //!    a kernel-checked theorem covering every input
-//!    (`ProofStrength::Universal`). A term that passes only the samples is
+//!    (`ProofStrength::Universal`). Every input means every `Int`: a
+//!    theorem that types a parameter as a closure doesn't count (§42). A term that passes only the samples is
 //!    cached as `NoUniversalProof` and served by the interpreter forever
 //!    after -- see `compile_verify_and_apply` for why per-sample
 //!    certificates don't substitute.
@@ -369,6 +370,12 @@ impl JitEngine {
     /// fallback is *not* in that bucket: step 5's own widened,
     /// `self_ctx`-threaded evaluator covers it too, including branching.
     fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> ProofStrength {
+        // The compiled entry point is only ever passed `Int`s. The provers
+        // type a called parameter as a closure (`Clo_k`), so their theorem
+        // for such a term covers no call the JIT makes (RELATED_WORK.md §42).
+        if calls_a_parameter(terms, h) {
+            return ProofStrength::None;
+        }
         if proof::prove_pure_expr(terms, h).is_some() {
             return ProofStrength::Universal;
         }
@@ -505,6 +512,19 @@ impl Default for JitEngine {
     }
 }
 
+/// Whether `h` calls one of its own parameters, which the JIT only ever
+/// binds to `Int`s. A callee shape the scan can't classify counts as a
+/// call; no prover covers it anyway.
+fn calls_a_parameter(terms: &TermStore, h: Hash) -> bool {
+    let Some((arity, body, is_rec)) = crate::compile::peel(terms, h) else {
+        return false;
+    };
+    match crate::compile::infer_closure_arities(terms, body, arity, is_rec.then_some(arity as u32)) {
+        Some(found) => found.keys().any(|&i| (i as usize) < arity),
+        None => true,
+    }
+}
+
 fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
     // Small cartesian-ish sample set, capped so verification stays cheap
     // even for higher-arity functions.
@@ -598,6 +618,24 @@ mod tests {
             assert_eq!(jit.apply(&s, h, &[n]), eval::apply_term(&s, h, &[n]), "n={n}");
         }
         assert_eq!((jit.stats.compiled, jit.stats.declined_no_universal_proof), (0, 1));
+    }
+
+    #[test]
+    fn a_parameter_that_is_only_called_gets_no_universal_proof() {
+        // The JIT passes only `Int`s, so a theorem that types a called
+        // parameter as a closure covers none of its calls
+        // (RELATED_WORK.md §42). Both provers produced one: the closure
+        // prover for the first term, the tail-recursive one for the second.
+        for src in [
+            r"\a. \f. if a == 777 then f 5 else a",
+            r"rec go g n x = if n <= 0 then x else go g (n - 1) (g x)",
+        ] {
+            let mut s = TermStore::new();
+            let h = crate::syntax::parse(&mut s, src).unwrap();
+            let arity = crate::compile::peel(&s, h).unwrap().0;
+            let mut jit = JitEngine::new();
+            assert_ne!(jit.kernel_verify(&s, h, arity), ProofStrength::Universal, "{src}");
+        }
     }
 
     #[test]
