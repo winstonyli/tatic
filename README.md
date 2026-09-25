@@ -1099,9 +1099,10 @@ guards against by hand): caught immediately, at seed 22.
   kernel's `Clo_k`, and `calls_a_parameter`) must agree. `try_compile`'s
   IR has no `let`, so it emits one copy of a shared subterm per use. It
   now declines terms over 16384 nodes as a tree (§47). Most of the cost
-  is the kernel, not the IR (§48): a one-line fix to `whnf` makes its
-  pointer cache work (221 to 60 ms on one proof), and memoising `denote`
-  and `infer` would make proofs linear in the DAG. If the proof gate is ever
+  is the kernel, not the IR (§48). `whnf` now keeps its pointer cache
+  working and `denote` shares subterms (§49), so one proof went from
+  217 to 56 ms. Memoising the kernel's `infer` is the remaining step to
+  proofs linear in the DAG. If the proof gate is ever
   relaxed, the next step is a typed IR that `ir::check` checks (§46's
   B5): it closes the arity and Int-vs-closure agreements for compiled
   code in one place.

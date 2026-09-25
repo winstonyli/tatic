@@ -768,7 +768,9 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
     grow(|| match e {
         Expr::App(f, a) => match whnf_rc(f, cache) {
             Expr::Lam(_, ref body) => whnf_impl(&subst_top(body, a), cache),
-            other => app(other, (**a).clone()),
+            // Keep `a`'s allocation: `ReductionCache` is keyed by pointer
+            // (`RELATED_WORK.md` §48).
+            other => Expr::App(Rc::new(other), a.clone()),
         },
         Expr::J {
             motive,
@@ -777,7 +779,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
             b,
             p,
         } => match whnf_rc(p, cache) {
-            Expr::Refl(_) => whnf_impl(&app((**base).clone(), (**a).clone()), cache),
+            Expr::Refl(_) => whnf_impl(&Expr::App(base.clone(), a.clone()), cache),
             other => Expr::J {
                 motive: motive.clone(),
                 base: base.clone(),
@@ -815,7 +817,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
                     ),
                 );
                 whnf_impl(
-                    &app3((**step).clone(), (**a).clone(), (**f).clone(), rec_step),
+                    &Expr::App(Rc::new(Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), f.clone())), Rc::new(rec_step)),
                     cache,
                 )
             }
@@ -835,7 +837,7 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
 #[inline(never)]
 fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
     match whnf_rc(target, cache) {
-        Expr::Pair(_, ref a, ref b) => whnf_impl(&app2((**step).clone(), (**a).clone(), (**b).clone()), cache),
+        Expr::Pair(_, ref a, ref b) => whnf_impl(&Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), b.clone()), cache),
         other => Expr::SigRec {
             motive: motive.clone(),
             step: step.clone(),
@@ -1668,6 +1670,62 @@ impl NatPostulates {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The argument `Rc` of each application in `e`'s spine, outermost
+    /// first.
+    fn spine_args(e: &Expr) -> Vec<Rc<Expr>> {
+        let mut out = Vec::new();
+        let mut e = e;
+        while let Expr::App(f, a) = e {
+            out.push(a.clone());
+            e = f;
+        }
+        out
+    }
+
+    /// `whnf` keeps each argument's allocation rather than copying it into
+    /// a new `Rc`: `ReductionCache` is keyed by pointer, so a copy misses it,
+    /// and `nf` then normalises the whole argument again at every
+    /// application (`RELATED_WORK.md` §48).
+    #[test]
+    fn whnf_keeps_the_arguments_it_was_given() {
+        let x = Rc::new(var(7));
+        let y = Rc::new(var(8));
+        let same = |got: &[Rc<Expr>], want: &[&Rc<Expr>]| {
+            got.len() == want.len() && got.iter().zip(want).all(|(g, w)| Rc::ptr_eq(g, w))
+        };
+
+        // A stuck application.
+        let stuck = Expr::App(Rc::new(app(var(0), var(1))), x.clone());
+        assert!(same(&spine_args(&whnf(&stuck))[..1], &[&x]));
+
+        // `J` on `refl` reduces to `base a`.
+        let j = Expr::J {
+            motive: Rc::new(var(0)),
+            base: Rc::new(var(1)),
+            a: x.clone(),
+            b: x.clone(),
+            p: Rc::new(refl(var(9))),
+        };
+        assert!(same(&spine_args(&whnf(&j)), &[&x]));
+
+        // `SigRec` on a pair reduces to `step a b`.
+        let s = Expr::SigRec {
+            motive: Rc::new(var(0)),
+            step: Rc::new(var(1)),
+            target: Rc::new(Expr::Pair(Rc::new(var(2)), x.clone(), y.clone())),
+        };
+        assert!(same(&spine_args(&whnf(&s)), &[&y, &x]));
+
+        // `WRec` on `sup a f` reduces to `step a f rec`.
+        let w = Expr::WRec {
+            motive: Rc::new(var(0)),
+            children_ty: Rc::new(var(1)),
+            step: Rc::new(var(2)),
+            target: Rc::new(Expr::Sup(x.clone(), y.clone())),
+        };
+        assert!(same(&spine_args(&whnf(&w))[1..], &[&y, &x]));
+    }
 
     /// Every recursive traversal `check` reaches -- `infer`, `whnf`
     /// (beta-reducing the whole chain), `nf`, `==` inside `def_eq`, and

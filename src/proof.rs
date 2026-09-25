@@ -365,23 +365,42 @@ fn collect_literals(
 /// Translates a `Var`/`Lit`/`Prim`/`If` term into a kernel `Int`
 /// expression: `params[i]` stands for `Var(i)`, and every operator/literal
 /// is read off `arith` (which must already have every literal postulated).
+/// A shared subterm is denoted once and its denotation shared, so the
+/// result is linear in the DAG (`RELATED_WORK.md` §48). That is exact:
+/// the fragment has no binders, so a subterm's denotation depends only on
+/// its hash.
 fn denote(store: &TermStore, h: Hash, arith: &ArithPostulates, params: &[Expr]) -> Option<Expr> {
-    match compile::classify(store, h, params.len(), None) {
-        Shape::Var(i) => params.get(i as usize).cloned(),
-        Shape::Lit(n) => Some(arith.lit_ref(n)),
+    denote_in(store, h, arith, params, &mut HashMap::new())
+}
+
+fn denote_in(
+    store: &TermStore,
+    h: Hash,
+    arith: &ArithPostulates,
+    params: &[Expr],
+    memo: &mut HashMap<Hash, Expr>,
+) -> Option<Expr> {
+    if let Some(d) = memo.get(&h) {
+        return Some(d.clone());
+    }
+    let d = match compile::classify(store, h, params.len(), None) {
+        Shape::Var(i) => params.get(i as usize).cloned()?,
+        Shape::Lit(n) => arith.lit_ref(n),
         Shape::Prim(op, a, b) => {
-            let da = denote(store, a, arith, params)?;
-            let db = denote(store, b, arith, params)?;
-            Some(kernel::app2(arith.op_ref(op), da, db))
+            let da = denote_in(store, a, arith, params, memo)?;
+            let db = denote_in(store, b, arith, params, memo)?;
+            kernel::app2(arith.op_ref(op), da, db)
         }
         Shape::If(c, t, e) => {
-            let dc = denote(store, c, arith, params)?;
-            let dt = denote(store, t, arith, params)?;
-            let de = denote(store, e, arith, params)?;
-            Some(kernel::app3(arith.ite_ref(), dc, dt, de))
+            let dc = denote_in(store, c, arith, params, memo)?;
+            let dt = denote_in(store, t, arith, params, memo)?;
+            let de = denote_in(store, e, arith, params, memo)?;
+            kernel::app3(arith.ite_ref(), dc, dt, de)
         }
-        Shape::SelfCall(_) | Shape::VarCall { .. } | Shape::CombinatorCall { .. } | Shape::OtherCall | Shape::Combinator { .. } => None,
-    }
+        Shape::SelfCall(_) | Shape::VarCall { .. } | Shape::CombinatorCall { .. } | Shape::OtherCall | Shape::Combinator { .. } => return None,
+    };
+    memo.insert(h, d.clone());
+    Some(d)
 }
 
 /// A kernel-checked witness that a term's compiled and interpreted
@@ -7619,6 +7638,24 @@ mod tests {
     use super::*;
     use crate::eval;
     use crate::term::TermStore;
+
+    /// `a + a`, for a shared `a`, denotes `a` once: both operands of the
+    /// denotation share their children, so the kernel's pointer-keyed
+    /// caches see one subterm, not two copies (`RELATED_WORK.md` §48).
+    #[test]
+    fn a_shared_subterm_is_denoted_once() {
+        let mut s = TermStore::new();
+        let x = s.var(0);
+        let a = s.prim(PrimOp::Mul, x, x);
+        let body = s.prim(PrimOp::Add, a, a);
+        let (arith, params) = setup(&s, body, 1, None).unwrap();
+        let d = denote(&s, body, &arith, &params).unwrap();
+        // `d` is `App(App(+, da), da')`; `da`, `da'` are `App(App(*, x), x)`.
+        let Expr::App(plus_da, da2) = &d else { panic!() };
+        let Expr::App(_, da1) = &**plus_da else { panic!() };
+        let (Expr::App(f1, _), Expr::App(f2, _)) = (&**da1, &**da2) else { panic!() };
+        assert!(Rc::ptr_eq(f1, f2), "the two operands were denoted separately");
+    }
 
     #[test]
     fn straight_line_term_gets_a_kernel_checked_proof() {
