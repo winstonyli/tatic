@@ -9491,6 +9491,37 @@ mod tests {
         assert!(large < 4 * small, "fib(8): {small} nodes, fib(12): {large}");
     }
 
+    /// `fib(16)`'s instance proof: its DAG size, and the time to build it
+    /// and to check it again. The headline number for the §64 stages.
+    /// Ignored, since it takes seconds. Run with
+    /// `cargo test --release --lib fib16_instance_proof_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn fib16_instance_proof_cost() {
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f = s.var(1);
+        let two = s.lit(2);
+        let cond = s.prim(PrimOp::Lt, n, two);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
+        let call1 = s.app(f, n_minus_1);
+        let call2 = s.app(f, n_minus_2);
+        let else_branch = s.prim(PrimOp::Add, call1, call2);
+        let body = s.if_(cond, n, else_branch);
+        let abs = s.abs(body);
+        let fib = s.rec(abs);
+
+        let t = std::time::Instant::now();
+        let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
+        let build = t.elapsed();
+        let t = std::time::Instant::now();
+        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            .expect("fib(16)'s instance proof re-checks");
+        println!("fib16 dag={} build={build:?} check={:?}", dag_size(&proof.proof), t.elapsed());
+    }
+
     #[test]
     fn one_functions_instance_proof_is_rejected_against_anothers_type() {
         // Same adversarial shape as
