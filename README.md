@@ -1083,7 +1083,9 @@ guards against by hand): caught immediately, at seed 22.
   skips syntactically equal sides (§56) and compares weak head normal
   forms instead of full ones (§57), which halved `kernel::check` on the
   `fib` instance proofs. `whnf` keeps a stuck term's own pointers, so
-  deep stuck spines normalise in linear time (§59). What's left is a
+  deep stuck spines normalise in linear time (§59), and it remembers
+  the pairs `==` found unequal, so a chain that differs only at the
+  bottom is compared in linear time too (§61). What's left is a
   per-node constant times the proof's size (§60). The instance proofs
   have almost no sharing, because the witness memo returns shifted
   copies, so memoising the kernel's `infer` by (node, context id)

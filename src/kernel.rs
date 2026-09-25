@@ -34,7 +34,7 @@
 //! of empirical sampling) is the natural next step once this kernel is
 //! trusted, not something folded into this pass.
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -233,32 +233,38 @@ pub enum Expr {
 /// so for any `T: Eq`).
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
-        use Expr::*;
-        grow(|| match (self, other) {
-            (Var(x), Var(y)) | (Sort(x), Sort(y)) => x == y,
-            (Refl(a), Refl(b)) => a == b,
-            (Pi(a1, b1), Pi(a2, b2))
-            | (Lam(a1, b1), Lam(a2, b2))
-            | (App(a1, b1), App(a2, b2))
-            | (W(a1, b1), W(a2, b2))
-            | (Sup(a1, b1), Sup(a2, b2))
-            | (Sigma(a1, b1), Sigma(a2, b2)) => a1 == a2 && b1 == b2,
-            (Id(a1, b1, c1), Id(a2, b2, c2)) | (Pair(a1, b1, c1), Pair(a2, b2, c2)) => {
-                a1 == a2 && b1 == b2 && c1 == c2
-            }
-            (
-                J { motive: m1, base: s1, a: a1, b: b1, p: p1 },
-                J { motive: m2, base: s2, a: a2, b: b2, p: p2 },
-            ) => m1 == m2 && s1 == s2 && a1 == a2 && b1 == b2 && p1 == p2,
-            (
-                WRec { motive: m1, children_ty: c1, step: s1, target: t1 },
-                WRec { motive: m2, children_ty: c2, step: s2, target: t2 },
-            ) => m1 == m2 && c1 == c2 && s1 == s2 && t1 == t2,
-            (SigRec { motive: m1, step: s1, target: t1 }, SigRec { motive: m2, step: s2, target: t2 }) => {
-                m1 == m2 && s1 == s2 && t1 == t2
-            }
-            _ => false,
-        })
+        grow(|| same_shape(self, other, |p, q| p == q))
+    }
+}
+
+/// Whether `x` and `y` have the same outermost constructor (and index, for
+/// `Var`/`Sort`) and `c` holds of each pair of children, in field order,
+/// stopping at the first that fails. Syntactic equality and `conv_whnf`
+/// are both this with a different `c`.
+fn same_shape(x: &Expr, y: &Expr, mut c: impl FnMut(&Rc<Expr>, &Rc<Expr>) -> bool) -> bool {
+    use Expr::*;
+    match (x, y) {
+        (Var(i), Var(j)) | (Sort(i), Sort(j)) => i == j,
+        (Refl(a), Refl(b)) => c(a, b),
+        (Pi(a1, b1), Pi(a2, b2))
+        | (Lam(a1, b1), Lam(a2, b2))
+        | (App(a1, b1), App(a2, b2))
+        | (W(a1, b1), W(a2, b2))
+        | (Sup(a1, b1), Sup(a2, b2))
+        | (Sigma(a1, b1), Sigma(a2, b2)) => c(a1, a2) && c(b1, b2),
+        (Id(a1, b1, c1), Id(a2, b2, c2)) | (Pair(a1, b1, c1), Pair(a2, b2, c2)) => c(a1, a2) && c(b1, b2) && c(c1, c2),
+        (
+            J { motive: m1, base: s1, a: a1, b: b1, p: p1 },
+            J { motive: m2, base: s2, a: a2, b: b2, p: p2 },
+        ) => c(m1, m2) && c(s1, s2) && c(a1, a2) && c(b1, b2) && c(p1, p2),
+        (
+            WRec { motive: m1, children_ty: c1, step: s1, target: t1 },
+            WRec { motive: m2, children_ty: c2, step: s2, target: t2 },
+        ) => c(m1, m2) && c(c1, c2) && c(s1, s2) && c(t1, t2),
+        (SigRec { motive: m1, step: s1, target: t1 }, SigRec { motive: m2, step: s2, target: t2 }) => {
+            c(m1, m2) && c(s1, s2) && c(t1, t2)
+        }
+        _ => false,
     }
 }
 
@@ -613,6 +619,8 @@ fn sup_codomain_depends_on_own_argument(cod_nf: &Expr) -> String {
 struct ReductionCache {
     whnf: HashMap<PtrKey, Rc<Expr>>,
     nf: HashMap<PtrKey, Expr>,
+    /// Pairs `def_eq` found syntactically unequal; see [`eq_noting`].
+    unequal: HashSet<(PtrKey, PtrKey)>,
 }
 
 /// Wraps an `Rc<Expr>` for use as a `HashMap` key by *pointer* identity
@@ -837,16 +845,20 @@ pub fn def_eq(a: &Expr, b: &Expr) -> bool {
 /// children's normal forms. Recursing on that reduces only where the
 /// sides differ (`RELATED_WORK.md` §57).
 fn conv(a: &Expr, b: &Expr, cache: &mut ReductionCache) -> bool {
-    if std::ptr::eq(a, b) || a == b {
+    if std::ptr::eq(a, b) || eq_noting(a, b, &mut cache.unequal) {
         return true;
     }
     conv_whnf(&whnf_impl(a, cache), &whnf_impl(b, cache), cache)
 }
 
-/// `conv` for children held as `Rc<Expr>`, so `whnf` is cached. `Rc`'s
-/// `==` checks pointer identity first.
+/// `conv` for children held as `Rc<Expr>`, so `whnf` is cached. A pair
+/// an earlier `==` found unequal skips `==`.
 fn conv_rc(a: &Rc<Expr>, b: &Rc<Expr>, cache: &mut ReductionCache) -> bool {
-    if a == b {
+    if Rc::ptr_eq(a, b) {
+        return true;
+    }
+    let noted = cache.unequal.contains(&(PtrKey(a.clone()), PtrKey(b.clone())));
+    if !noted && eq_noting(a, b, &mut cache.unequal) {
         return true;
     }
     conv_whnf(&whnf_rc(a, cache), &whnf_rc(b, cache), cache)
@@ -855,30 +867,21 @@ fn conv_rc(a: &Rc<Expr>, b: &Rc<Expr>, cache: &mut ReductionCache) -> bool {
 /// Compares two weak head normal forms: same constructor, then `conv` on
 /// each pair of children, in the order `nf_impl` visits them.
 fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
-    use Expr::*;
-    let mut c = |p: &Rc<Expr>, q: &Rc<Expr>| conv_rc(p, q, cache);
-    grow(|| match (x, y) {
-        (Var(i), Var(j)) | (Sort(i), Sort(j)) => i == j,
-        (Refl(a), Refl(b)) => c(a, b),
-        (Pi(a1, b1), Pi(a2, b2))
-        | (Lam(a1, b1), Lam(a2, b2))
-        | (App(a1, b1), App(a2, b2))
-        | (W(a1, b1), W(a2, b2))
-        | (Sup(a1, b1), Sup(a2, b2))
-        | (Sigma(a1, b1), Sigma(a2, b2)) => c(a1, a2) && c(b1, b2),
-        (Id(a1, b1, c1), Id(a2, b2, c2)) | (Pair(a1, b1, c1), Pair(a2, b2, c2)) => c(a1, a2) && c(b1, b2) && c(c1, c2),
-        (
-            J { motive: m1, base: s1, a: a1, b: b1, p: p1 },
-            J { motive: m2, base: s2, a: a2, b: b2, p: p2 },
-        ) => c(m1, m2) && c(s1, s2) && c(a1, a2) && c(b1, b2) && c(p1, p2),
-        (
-            WRec { motive: m1, children_ty: c1, step: s1, target: t1 },
-            WRec { motive: m2, children_ty: c2, step: s2, target: t2 },
-        ) => c(m1, m2) && c(c1, c2) && c(s1, s2) && c(t1, t2),
-        (SigRec { motive: m1, step: s1, target: t1 }, SigRec { motive: m2, step: s2, target: t2 }) => {
-            c(m1, m2) && c(s1, s2) && c(t1, t2)
-        }
-        _ => false,
+    grow(|| same_shape(x, y, |p, q| conv_rc(p, q, cache)))
+}
+
+/// `a == b`, noting in `unequal` each pair of children found unequal on
+/// the way. `conv` recurses into exactly those pairs next, and without the
+/// note each would repeat the walk below it: quadratic on a chain that
+/// differs only at the bottom (`RELATED_WORK.md` §61).
+fn eq_noting(a: &Expr, b: &Expr, unequal: &mut HashSet<(PtrKey, PtrKey)>) -> bool {
+    grow(|| {
+        same_shape(a, b, |p, q| {
+            Rc::ptr_eq(p, q) || eq_noting(p, q, unequal) || {
+                unequal.insert((PtrKey(p.clone()), PtrKey(q.clone())));
+                false
+            }
+        })
     })
 }
 
@@ -1918,6 +1921,26 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(nf(&a), a);
         assert_eq!(nf(&b), spine(var(1)));
+        assert!(!def_eq(&a, &b));
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+    }
+
+    /// `def_eq` on two right-nested chains `f (f (... x))`, 8,000 deep,
+    /// that differ only at the bottom. `conv` tries `==` at every level,
+    /// and each failing `==` walked down to the bottom again: 23 s in a
+    /// debug build (`RELATED_WORK.md` §61).
+    #[test]
+    fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
+        let chain = |bottom: Expr| {
+            let mut t = bottom;
+            for _ in 0..8000 {
+                t = app(var(0), t);
+            }
+            t
+        };
+        let (a, b) = (chain(var(1)), chain(var(2)));
+        let t = std::time::Instant::now();
         assert!(!def_eq(&a, &b));
         let took = t.elapsed();
         assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
