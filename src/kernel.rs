@@ -611,7 +611,7 @@ fn sup_codomain_depends_on_own_argument(cod_nf: &Expr) -> String {
 /// lives -- from scratch at every occurrence.
 #[derive(Default)]
 struct ReductionCache {
-    whnf: HashMap<PtrKey, Expr>,
+    whnf: HashMap<PtrKey, Rc<Expr>>,
     nf: HashMap<PtrKey, Expr>,
 }
 
@@ -644,96 +644,116 @@ pub fn whnf(e: &Expr) -> Expr {
 }
 
 fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
+    whnf_step(e, cache).unwrap_or_else(|| e.clone())
+}
+
+/// `whnf`, or `None` when `e` is already in weak head normal form. A stuck
+/// term keeps its allocations: its arguments' and also its stuck head's or
+/// target's. `ReductionCache` is keyed by pointer, so a copy misses it,
+/// and each level of a stuck spine then reduced the whole spine below it
+/// again (`RELATED_WORK.md` §48, §59).
+fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     grow(|| match e {
-        Expr::App(f, a) => match whnf_rc(f, cache) {
-            Expr::Lam(_, ref body) => whnf_impl(&subst_top(body, a), cache),
-            // Keep `a`'s allocation: `ReductionCache` is keyed by pointer
-            // (`RELATED_WORK.md` §48).
-            other => Expr::App(Rc::new(other), a.clone()),
-        },
+        Expr::App(f, a) => {
+            let wf = whnf_rc(f, cache);
+            match &*wf {
+                Expr::Lam(_, body) => Some(whnf_impl(&subst_top(body, a), cache)),
+                _ => (!Rc::ptr_eq(&wf, f)).then(|| Expr::App(wf, a.clone())),
+            }
+        }
         Expr::J {
             motive,
             base,
             a,
             b,
             p,
-        } => match whnf_rc(p, cache) {
-            Expr::Refl(_) => whnf_impl(&Expr::App(base.clone(), a.clone()), cache),
-            other => Expr::J {
-                motive: motive.clone(),
-                base: base.clone(),
-                a: a.clone(),
-                b: b.clone(),
-                p: Rc::new(other),
-            },
-        },
+        } => {
+            let wp = whnf_rc(p, cache);
+            match &*wp {
+                Expr::Refl(_) => Some(whnf_impl(&Expr::App(base.clone(), a.clone()), cache)),
+                _ => (!Rc::ptr_eq(&wp, p)).then(|| Expr::J {
+                    motive: motive.clone(),
+                    base: base.clone(),
+                    a: a.clone(),
+                    b: b.clone(),
+                    p: wp,
+                }),
+            }
+        }
         Expr::WRec {
             motive,
             children_ty,
             step,
             target,
-        } => match whnf_rc(target, cache) {
-            Expr::Sup(ref a, ref f) => {
-                // step a f (\y:B(a). wrec(motive, children_ty, step, f y))
-                // -- `subst_top(children_ty, a)` gives the induction-
-                // hypothesis closure its *honest* domain (`B(a)`, the same
-                // `Sup`'s own typing rule requires of `f`'s domain), not
-                // an inert placeholder -- see `Expr::WRec`'s own doc for
-                // why this field exists at all.
-                let rec_step = lam(
-                    subst_top(children_ty, a),
-                    wrec(
-                        shift(motive, 0, 1),
-                        // `children_ty` is already "one binder deeper" than
-                        // `motive`/`step`/`target` (`W`'s own convention for
-                        // its second field) -- inserting the new `y` binder
-                        // below that existing one needs `cutoff + 1`, the
-                        // same bump `Expr::W`'s own `shift`/`subst` arms use
-                        // for their own second field.
-                        shift(children_ty, 1, 1),
-                        shift(step, 0, 1),
-                        app(shift(f, 0, 1), var(0)),
-                    ),
-                );
-                whnf_impl(
-                    &Expr::App(Rc::new(Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), f.clone())), Rc::new(rec_step)),
-                    cache,
-                )
+        } => {
+            let wt = whnf_rc(target, cache);
+            match &*wt {
+                Expr::Sup(a, f) => {
+                    // step a f (\y:B(a). wrec(motive, children_ty, step, f y))
+                    // -- `subst_top(children_ty, a)` gives the induction-
+                    // hypothesis closure its *honest* domain (`B(a)`, the same
+                    // `Sup`'s own typing rule requires of `f`'s domain), not
+                    // an inert placeholder -- see `Expr::WRec`'s own doc for
+                    // why this field exists at all.
+                    let rec_step = lam(
+                        subst_top(children_ty, a),
+                        wrec(
+                            shift(motive, 0, 1),
+                            // `children_ty` is already "one binder deeper" than
+                            // `motive`/`step`/`target` (`W`'s own convention for
+                            // its second field) -- inserting the new `y` binder
+                            // below that existing one needs `cutoff + 1`, the
+                            // same bump `Expr::W`'s own `shift`/`subst` arms use
+                            // for their own second field.
+                            shift(children_ty, 1, 1),
+                            shift(step, 0, 1),
+                            app(shift(f, 0, 1), var(0)),
+                        ),
+                    );
+                    Some(whnf_impl(
+                        &Expr::App(Rc::new(Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), f.clone())), Rc::new(rec_step)),
+                        cache,
+                    ))
+                }
+                _ => (!Rc::ptr_eq(&wt, target)).then(|| Expr::WRec {
+                    motive: motive.clone(),
+                    children_ty: children_ty.clone(),
+                    step: step.clone(),
+                    target: wt,
+                }),
             }
-            other => Expr::WRec {
-                motive: motive.clone(),
-                children_ty: children_ty.clone(),
-                step: step.clone(),
-                target: Rc::new(other),
-            },
-        },
+        }
         Expr::SigRec { motive, step, target } => whnf_sigrec(motive, step, target, cache),
-        other => other.clone(),
+        _ => None,
     })
 }
 
-/// `whnf_impl`'s own `SigRec` case, out of line -- see `infer_sigma`.
+/// `whnf_step`'s own `SigRec` case, out of line -- see `infer_sigma`.
 #[inline(never)]
-fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
-    match whnf_rc(target, cache) {
-        Expr::Pair(_, ref a, ref b) => whnf_impl(&Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), b.clone()), cache),
-        other => Expr::SigRec {
+fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mut ReductionCache) -> Option<Expr> {
+    let wt = whnf_rc(target, cache);
+    match &*wt {
+        Expr::Pair(_, a, b) => Some(whnf_impl(&Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), b.clone()), cache)),
+        _ => (!Rc::ptr_eq(&wt, target)).then(|| Expr::SigRec {
             motive: motive.clone(),
             step: step.clone(),
-            target: Rc::new(other),
-        },
+            target: wt,
+        }),
     }
 }
 
 /// `whnf`, cached, for a child already held as `Rc<Expr>` (a struct field)
 /// -- exactly the position where the same subterm recurs many times within
-/// one top-level call once a proof term shares structure.
-fn whnf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
+/// one top-level call once a proof term shares structure. Returns `e`
+/// itself when it is already in weak head normal form, so reducing a
+/// result again, as `nf` and `def_eq` do with a stuck head, keeps its
+/// pointer and hits the cache from then on.
+fn whnf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Rc<Expr> {
     let key = PtrKey(e.clone());
     if let Some(hit) = cache.whnf.get(&key) {
         return hit.clone();
     }
-    let result = whnf_impl(e, cache);
+    let result = whnf_step(e, cache).map_or_else(|| e.clone(), Rc::new);
     cache.whnf.insert(key, result.clone());
     result
 }
@@ -744,7 +764,13 @@ fn nf(e: &Expr) -> Expr {
 }
 
 fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
-    grow(|| match &whnf_impl(e, cache) {
+    nf_whnf(&whnf_impl(e, cache), cache)
+}
+
+/// `nf` of a term already in weak head normal form: its constructor over
+/// the `nf` of each child.
+fn nf_whnf(w: &Expr, cache: &mut ReductionCache) -> Expr {
+    grow(|| match w {
         Expr::Var(k) => Expr::Var(*k),
         Expr::Sort(i) => Expr::Sort(*i),
         Expr::Pi(a, b) => pi(nf_rc(a, cache), nf_rc(b, cache)),
@@ -788,7 +814,8 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
     if let Some(hit) = cache.nf.get(&key) {
         return hit.clone();
     }
-    let result = nf_impl(e, cache);
+    let w = whnf_rc(e, cache);
+    let result = nf_whnf(&w, cache);
     cache.nf.insert(key, result.clone());
     result
 }
@@ -1834,6 +1861,66 @@ mod tests {
             e = f;
         }
         out
+    }
+
+    /// `whnf` keeps the allocation of a stuck head or target, not only of
+    /// the arguments: `ReductionCache` is keyed by pointer, so a copy
+    /// misses it, and each level of a stuck spine then reduced the whole
+    /// spine below it again (`RELATED_WORK.md` §59).
+    #[test]
+    fn whnf_keeps_the_stuck_part_it_was_given() {
+        let stuck = Rc::new(app(app(var(0), var(1)), var(2)));
+        let r = whnf(&Expr::App(stuck.clone(), Rc::new(var(3))));
+        let Expr::App(got, _) = &r else { panic!("not an application") };
+        assert!(Rc::ptr_eq(got, &stuck));
+
+        let j = Expr::J {
+            motive: Rc::new(var(0)),
+            base: Rc::new(var(1)),
+            a: Rc::new(var(2)),
+            b: Rc::new(var(2)),
+            p: stuck.clone(),
+        };
+        let r = whnf(&j);
+        let Expr::J { p: got, .. } = &r else { panic!("not a J") };
+        assert!(Rc::ptr_eq(got, &stuck));
+
+        let w = Expr::WRec {
+            motive: Rc::new(var(0)),
+            children_ty: Rc::new(var(1)),
+            step: Rc::new(var(2)),
+            target: stuck.clone(),
+        };
+        let r = whnf(&w);
+        let Expr::WRec { target: got, .. } = &r else { panic!("not a WRec") };
+        assert!(Rc::ptr_eq(got, &stuck));
+
+        let s = Expr::SigRec { motive: Rc::new(var(0)), step: Rc::new(var(1)), target: stuck.clone() };
+        let r = whnf(&s);
+        let Expr::SigRec { target: got, .. } = &r else { panic!("not a SigRec") };
+        assert!(Rc::ptr_eq(got, &stuck));
+    }
+
+    /// `nf` and `def_eq` on stuck spines 2,000 applications deep, one of
+    /// them with a redex for its head. Each took over 10 s in a debug build
+    /// when every level re-reduced the spine below it (`RELATED_WORK.md`
+    /// §59).
+    #[test]
+    fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
+        let spine = |head: Expr| {
+            let mut t = head;
+            for i in 0..2000 {
+                t = app(t, var(i % 3));
+            }
+            t
+        };
+        let (a, b) = (spine(var(0)), spine(app(lam(sort(0), var(0)), var(1))));
+        let t = std::time::Instant::now();
+        assert_eq!(nf(&a), a);
+        assert_eq!(nf(&b), spine(var(1)));
+        assert!(!def_eq(&a, &b));
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
     }
 
     /// `whnf` keeps each argument's allocation rather than copying it into
