@@ -501,15 +501,12 @@ fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 }
 
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
-/// deeper) with `s`, then discharge that binder. When `body` doesn't
-/// mention `Var(0)` the substitution is the identity, so `s` isn't walked
-/// at all: `infer`'s `App` rule substitutes every argument into its
-/// function's codomain, usually `Int`, and shifting the argument there cost
-/// a walk of it per application (`RELATED_WORK.md` §50).
+/// deeper) with `s`, then discharge that binder. `s` is walked only where
+/// `body` uses it, so not at all when `body` doesn't mention `Var(0)`:
+/// `infer`'s `App` rule substitutes every argument into its function's
+/// codomain, usually `Int`, and shifting the argument there cost a walk of
+/// it per application (`RELATED_WORK.md` §50, §58).
 fn subst_top(body: &Expr, s: &Expr) -> Expr {
-    if !is_var_free(body, 0) {
-        return shift(body, 0, -1);
-    }
     instantiate(body, s, 0)
 }
 
@@ -1693,10 +1690,9 @@ mod tests {
         }
     }
 
-    /// `subst_top` skips its argument when the body doesn't mention the
-    /// variable (`RELATED_WORK.md` §50). The shortcut must give exactly
-    /// what substituting and then shifting gives, which also checks that
-    /// `is_var_free` crosses binders where `subst` does.
+    /// `subst_top`'s one pass (`RELATED_WORK.md` §53) must give exactly
+    /// what substituting and then shifting gives, both when the body uses
+    /// the variable and when it doesn't.
     #[test]
     fn subst_top_is_substituting_then_shifting() {
         let (mut seed, mut used, mut unused) = (1u64, 0, 0);
