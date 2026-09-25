@@ -660,8 +660,15 @@ fn subst_sigma_family(e: &Expr, j: u32, s: &Expr) -> Expr {
 }
 
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
-/// deeper) with `s`, then discharge that binder.
+/// deeper) with `s`, then discharge that binder. When `body` doesn't
+/// mention `Var(0)` the substitution is the identity, so `s` isn't walked
+/// at all: `infer`'s `App` rule substitutes every argument into its
+/// function's codomain, usually `Int`, and shifting the argument there cost
+/// a walk of it per application (`RELATED_WORK.md` §50).
 fn subst_top(body: &Expr, s: &Expr) -> Expr {
+    if !is_var_free(body, 0) {
+        return shift(body, 0, -1);
+    }
     shift(&subst(body, 0, &shift(s, 0, 1)), 0, -1)
 }
 
@@ -1670,6 +1677,70 @@ impl NatPostulates {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A random `Expr` of every variant, ill-typed as often as not, with
+    /// indices small enough that `Var(0)` is often free and often not.
+    fn random_expr(seed: &mut u64, fuel: u32) -> Expr {
+        let mut next = || {
+            *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = *seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        };
+        let pick = next();
+        let k = (next() % 4) as u32;
+        if fuel == 0 || pick % 4 == 0 {
+            return if pick % 8 == 0 { sort(k % 2) } else { var(k) };
+        }
+        let mut sub = || random_expr(seed, fuel - 1);
+        match (pick >> 3) % 13 {
+            0 => pi(sub(), sub()),
+            1 => lam(sub(), sub()),
+            2 => app(sub(), sub()),
+            3 => id(sub(), sub(), sub()),
+            4 => refl(sub()),
+            5 => jelim(sub(), sub(), sub(), sub(), sub()),
+            6 => wty(sub(), sub()),
+            7 => sup(sub(), sub()),
+            8 => wrec(sub(), sub(), sub(), sub()),
+            9 => sigma(sub(), sub()),
+            10 => pair(sub(), sub(), sub()),
+            11 => sigrec(sub(), sub(), sub()),
+            _ => app(sub(), sub()),
+        }
+    }
+
+    /// `subst_top` skips its argument when the body doesn't mention the
+    /// variable (`RELATED_WORK.md` §50). The shortcut must give exactly
+    /// what substituting and then shifting gives, which also checks that
+    /// `is_var_free` crosses binders where `subst` does.
+    #[test]
+    fn subst_top_is_substituting_then_shifting() {
+        let (mut seed, mut used, mut unused) = (1u64, 0, 0);
+        for _ in 0..20_000 {
+            let body = random_expr(&mut seed, 5);
+            let s = random_expr(&mut seed, 3);
+            let reference = shift(&subst(&body, 0, &shift(&s, 0, 1)), 0, -1);
+            assert_eq!(subst_top(&body, &s), reference, "body {body:?}, s {s:?}");
+            if is_var_free(&body, 0) { used += 1 } else { unused += 1 }
+        }
+        assert!(used > 2_000 && unused > 2_000, "used {used}, unused {unused}");
+    }
+
+    #[test]
+    fn subst_top_leaves_an_unused_argument_alone() {
+        // 21 distinct nodes, a million as a tree: copying it takes about a
+        // second in a debug build, and the shortcut doesn't look at it.
+        let mut s = var(0);
+        for _ in 0..20 {
+            s = app(s.clone(), s);
+        }
+        let body = pi(var(3), var(4));
+        let t = std::time::Instant::now();
+        assert_eq!(subst_top(&body, &s), pi(var(2), var(3)));
+        assert!(t.elapsed() < std::time::Duration::from_millis(50), "took {:?}", t.elapsed());
+    }
 
     /// The argument `Rc` of each application in `e`'s spine, outermost
     /// first.
