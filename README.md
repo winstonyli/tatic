@@ -1090,8 +1090,10 @@ guards against by hand): caught immediately, at seed 22.
   had almost no sharing, because the witness memo returned shifted
   copies. A prepass now pushes every postulate the witness needs before
   it's built, so memo hits share, which halved `fib(12)`'s instance
-  proof (§62). Memoising the kernel's `infer` by (node, context id)
-  (§50) would next need a `shift` that preserves sharing. If the proof gate is ever
+  proof (§62). The kernel's `infer` now memoises shared nodes by (node,
+  context id), which made that proof 73% faster again and leaves
+  unshared proofs unchanged (§63). A `shift` that preserves sharing is
+  what's left. If the proof gate is ever
   relaxed, the next step is a typed IR that `ir::check` checks (§46's
   B5): it closes the arity and Int-vs-closure agreements for compiled
   code in one place.

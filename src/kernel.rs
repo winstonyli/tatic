@@ -623,6 +623,37 @@ struct ReductionCache {
     unequal: HashSet<(PtrKey, PtrKey)>,
 }
 
+/// `infer`'s memo for one public `infer` or `check` call (`RELATED_WORK.md`
+/// §63). A context is named by an id: 0 is the caller's, and entering a
+/// binder whose type is the `Rc` `a` from context `cid` gives the id
+/// interned for `(cid, a)`. Equal ids then mean the same sequence of binder
+/// types, which, with the node, is all `infer`'s answer depends on. Keys
+/// hold their `Rc`s (`PtrKey`), so no address is reused within the call.
+#[derive(Default)]
+struct InferCache {
+    types: HashMap<(PtrKey, u32), Expr>,
+    contexts: HashMap<(u32, PtrKey), u32>,
+    next: u32,
+}
+
+impl InferCache {
+    /// The id of context `cid` extended by a binder of type `a`.
+    fn enter(&mut self, cid: u32, a: &Rc<Expr>) -> u32 {
+        let next = &mut self.next;
+        *self.contexts.entry((cid, PtrKey(a.clone()))).or_insert_with(|| {
+            *next += 1;
+            *next
+        })
+    }
+
+    /// An id no other context has: for a binder type that isn't an `Rc`
+    /// of the term, like a `Pair`'s inferred first component.
+    fn fresh(&mut self) -> u32 {
+        self.next += 1;
+        self.next
+    }
+}
+
 /// Wraps an `Rc<Expr>` for use as a `HashMap` key by *pointer* identity
 /// (`Rc::ptr_eq`/`Rc::as_ptr`), not `Expr`'s own structural `PartialEq`/
 /// `Hash` (which aren't even derived for `Rc` fields the way you'd get "two
@@ -992,29 +1023,31 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
 /// segment. They are kept because smaller hot frames cost nothing, not
 /// because anything depends on them.
 #[inline(never)]
-fn infer_sigma(ctx: &Ctx, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
-    let i = expect_sort(&infer(ctx, a)?)?;
+fn infer_sigma(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+    let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
     let mut ctx2 = ctx.clone();
     ctx2.push_back((**a).clone());
-    let j = expect_sort(&infer(&ctx2, b)?)?;
+    let cid2 = ic.enter(cid, a);
+    let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
     Ok(Expr::Sort(i.max(j)))
 }
 
 #[inline(never)]
-fn infer_pair(ctx: &Ctx, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
-    let ta = infer(ctx, a)?;
+fn infer_pair(ic: &mut InferCache, ctx: &Ctx, cid: u32, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+    let ta = infer_rc(ic, ctx, cid, a)?;
     let mut ctx2 = ctx.clone();
     ctx2.push_back(ta.clone());
-    expect_sort(&infer(&ctx2, fam)?)?;
+    let cid2 = ic.fresh();
+    expect_sort(&infer_rc(ic, &ctx2, cid2, fam)?)?;
     let expected_b_ty = subst_top(fam, a);
-    check(ctx, b, &expected_b_ty)?;
+    check_rc(ic, ctx, cid, b, &expected_b_ty)?;
     Ok(sigma(ta, (**fam).clone()))
 }
 
 #[inline(never)]
-fn infer_sigrec(ctx: &Ctx, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
-    let (sa, sb) = expect_sigma(&infer(ctx, target)?)?;
-    infer(ctx, motive)?; // sanity: motive must itself be well-typed
+fn infer_sigrec(ic: &mut InferCache, ctx: &Ctx, cid: u32, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
+    let (sa, sb) = expect_sigma(&infer_rc(ic, ctx, cid, target)?)?;
+    infer_rc(ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
 
     // step : Pi a:A. Pi b:B(a). motive (pair(B,a,b))
     // `sb` already assumes exactly one binder (`Sigma`'s own convention)
@@ -1031,7 +1064,7 @@ fn infer_sigrec(ctx: &Ctx, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>
     let fam_d2 = shift(&sb, 1, 2);
     let concl_d2 = app(motive_d2, pair(fam_d2, var(1), var(0)));
     let expected_step_ty = pi(sa.clone(), pi(b_dom_d1, concl_d2));
-    check(ctx, step, &expected_step_ty)?;
+    check_rc(ic, ctx, cid, step, &expected_step_ty)?;
 
     Ok(app((**motive).clone(), (**target).clone()))
 }
@@ -1049,9 +1082,9 @@ fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
 /// `wa`/`wb` would otherwise sit in `infer`'s frame on every call (see
 /// `infer_sigma`).
 #[inline(never)]
-fn infer_sup(ctx: &Ctx, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
-    let ta = infer(ctx, a)?;
-    let (dom, cod) = expect_pi(&infer(ctx, f)?)?;
+fn infer_sup(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
+    let ta = infer_rc(ic, ctx, cid, a)?;
+    let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?)?;
     // `cod` is written one binder deeper than `f`'s own domain binder; a
     // `Sup`'s codomain must not actually depend on it -- enforced here
     // (not just documented), by an occurs-check on `cod`'s own normal
@@ -1077,36 +1110,62 @@ fn infer_sup(ctx: &Ctx, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
 }
 
 pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
-    grow(|| match e {
+    infer_node(&mut InferCache::default(), ctx, 0, &Rc::new(e.clone()))
+}
+
+/// `infer` on a child. A node referenced from more than one place is
+/// memoised by pointer and context id, so a shared subterm is inferred
+/// once per context rather than once per occurrence (`RELATED_WORK.md`
+/// §63). A node referenced once can only be reached twice through a shared
+/// ancestor, which is memoised instead, so skipping it keeps the walk
+/// linear in the DAG and costs unshared terms no hashing. Only successes
+/// are stored: an error ends the whole check.
+fn infer_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+    if Rc::strong_count(e) == 1 {
+        return infer_node(ic, ctx, cid, e);
+    }
+    let key = (PtrKey(e.clone()), cid);
+    if let Some(ty) = ic.types.get(&key) {
+        return Ok(ty.clone());
+    }
+    let ty = infer_node(ic, ctx, cid, e)?;
+    ic.types.insert(key, ty.clone());
+    Ok(ty)
+}
+
+fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+    grow(|| match &**e {
         Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
         Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
         Expr::Pi(a, b) => {
-            let i = expect_sort(&infer(ctx, a)?)?;
+            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
-            let j = expect_sort(&infer(&ctx2, b)?)?;
+            let cid2 = ic.enter(cid, a);
+            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
             Ok(Expr::Sort(i.max(j)))
         }
         Expr::Lam(a, body) => {
-            expect_sort(&infer(ctx, a)?)?;
+            expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
-            let tbody = infer(&ctx2, body)?;
+            let cid2 = ic.enter(cid, a);
+            let tbody = infer_rc(ic, &ctx2, cid2, body)?;
             Ok(pi((**a).clone(), tbody))
         }
         Expr::App(f, a) => {
-            let (dom, cod) = expect_pi(&infer(ctx, f)?)?;
-            check(ctx, a, &dom)?;
+            let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?)?;
+            check_rc(ic, ctx, cid, a, &dom)?;
             Ok(subst_top(&cod, a))
         }
         Expr::Id(a, x, y) => {
-            let i = expect_sort(&infer(ctx, a)?)?;
-            check(ctx, x, a)?;
-            check(ctx, y, a)?;
+            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
+            check_rc(ic, ctx, cid, x, a)?;
+            check_rc(ic, ctx, cid, y, a)?;
             Ok(Expr::Sort(i))
         }
         Expr::Refl(a) => {
-            let ta = infer(ctx, a)?;
+            let ta = infer_rc(ic, ctx, cid, a)?;
             Ok(id(ta, (**a).clone(), (**a).clone()))
         }
         Expr::J {
@@ -1116,10 +1175,10 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
             b,
             p,
         } => {
-            let ta = infer(ctx, a)?;
-            check(ctx, b, &ta)?;
-            check(ctx, p, &id(ta.clone(), (**a).clone(), (**b).clone()))?;
-            infer(ctx, motive)?; // sanity: motive must itself be well-typed
+            let ta = infer_rc(ic, ctx, cid, a)?;
+            check_rc(ic, ctx, cid, b, &ta)?;
+            check_rc(ic, ctx, cid, p, &id(ta.clone(), (**a).clone(), (**b).clone()))?;
+            infer_rc(ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
             let expected_base_ty = pi(
                 ta.clone(),
                 app3(
@@ -1129,7 +1188,7 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
                     refl(var(0)),
                 ),
             );
-            check(ctx, base, &expected_base_ty)?;
+            check_rc(ic, ctx, cid, base, &expected_base_ty)?;
             Ok(app3(
                 (**motive).clone(),
                 (**a).clone(),
@@ -1138,20 +1197,21 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
             ))
         }
         Expr::W(a, b) => {
-            let i = expect_sort(&infer(ctx, a)?)?;
+            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
-            let j = expect_sort(&infer(&ctx2, b)?)?;
+            let cid2 = ic.enter(cid, a);
+            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
             Ok(Expr::Sort(i.max(j)))
         }
-        Expr::Sup(a, f) => infer_sup(ctx, a, f),
+        Expr::Sup(a, f) => infer_sup(ic, ctx, cid, a, f),
         Expr::WRec {
             motive,
             children_ty,
             step,
             target,
         } => {
-            let (wa, wb) = expect_w(&infer(ctx, target)?)?;
+            let (wa, wb) = expect_w(&infer_rc(ic, ctx, cid, target)?)?;
             // Soundness gate for `whnf_impl`'s own use of `children_ty`
             // (see `Expr::WRec`'s own doc): `target`'s *real* children-type
             // family, independently re-derived here from its own inferred
@@ -1164,7 +1224,7 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
             if !def_eq(children_ty, &wb) {
                 return Err(wrec_children_ty_mismatch(children_ty, &wb));
             }
-            infer(ctx, motive)?;
+            infer_rc(ic, ctx, cid, motive)?;
             let w_ty0 = wty(wa.clone(), wb.clone());
 
             // f : B(a) -> W(A,B), formed under binder `a` (depth 1).
@@ -1187,13 +1247,13 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
             let arrow_ty_d2 = pi(ih_ty_d2, shift(&concl_ty_d2, 0, 1));
 
             let expected_step_ty = pi(wa.clone(), pi(f_ty_d1, arrow_ty_d2));
-            check(ctx, step, &expected_step_ty)?;
+            check_rc(ic, ctx, cid, step, &expected_step_ty)?;
 
             Ok(app((**motive).clone(), (**target).clone()))
         }
-        Expr::Sigma(a, b) => infer_sigma(ctx, a, b),
-        Expr::Pair(fam, a, b) => infer_pair(ctx, fam, a, b),
-        Expr::SigRec { motive, step, target } => infer_sigrec(ctx, motive, step, target),
+        Expr::Sigma(a, b) => infer_sigma(ic, ctx, cid, a, b),
+        Expr::Pair(fam, a, b) => infer_pair(ic, ctx, cid, fam, a, b),
+        Expr::SigRec { motive, step, target } => infer_sigrec(ic, ctx, cid, motive, step, target),
     })
 }
 
@@ -1206,8 +1266,12 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 /// purely a stack-survival bound. How long a deep check takes is the
 /// caller's to bound; `proof.rs`'s step budgets do that.
 pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
+    check_rc(&mut InferCache::default(), ctx, 0, &Rc::new(e.clone()), expected)
+}
+
+fn check_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
     grow(|| {
-        if let Expr::Lam(a, body) = e
+        if let Expr::Lam(a, body) = &**e
             && let Expr::Pi(ref dom, ref cod) = whnf(expected)
         {
             if !def_eq(a, dom) {
@@ -1215,9 +1279,10 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
             }
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
-            return check(&ctx2, body, cod);
+            let cid2 = ic.enter(cid, a);
+            return check_rc(ic, &ctx2, cid2, body, cod);
         }
-        let inferred = infer(ctx, e)?;
+        let inferred = infer_rc(ic, ctx, cid, e)?;
         if def_eq(&inferred, expected) {
             Ok(())
         } else {
@@ -1924,6 +1989,86 @@ mod tests {
         assert!(!def_eq(&a, &b));
         let took = t.elapsed();
         assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+    }
+
+    /// `A : Type0, a : A, f : A -> A -> A, g : A -> A`, the context the
+    /// `infer` memo tests below build terms in.
+    fn memo_test_ctx() -> Ctx {
+        let mut p = Postulates::new();
+        let a_ty = p.push(sort(0));
+        p.push(p.get(a_ty));
+        p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
+        p.push(arrow(p.get(a_ty), p.get(a_ty)));
+        p.ctx
+    }
+
+    /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a
+    /// tree, 20 shared nodes as a DAG. Without the memo `infer` walked the
+    /// tree (`RELATED_WORK.md` §63).
+    #[test]
+    fn infer_is_linear_in_the_dag_of_a_shared_term() {
+        let ctx = memo_test_ctx();
+        let mut d = Rc::new(var(2));
+        for _ in 0..20 {
+            d = Rc::new(Expr::App(Rc::new(Expr::App(Rc::new(var(1)), d.clone())), d));
+        }
+        let t = std::time::Instant::now();
+        assert_eq!(infer(&ctx, &d), Ok(var(3)));
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+    }
+
+    /// One node shared under two different binder types has two types.
+    /// `Pi(Type0, Pi(x, Type0))` is well-typed, `Pi(Type0 -> Type0,
+    /// Pi(x, Type0))` isn't (`x` is then a function, not a type), and
+    /// both share the inner `Pi`. A memo keyed on context length would
+    /// reuse the first's answer for the second and accept.
+    #[test]
+    fn infer_memo_keeps_same_length_contexts_apart() {
+        let inner = Rc::new(Expr::Pi(Rc::new(var(0)), Rc::new(sort(0))));
+        let good = Expr::Pi(Rc::new(sort(0)), inner.clone());
+        let bad = Expr::Pi(Rc::new(pi(sort(0), sort(0))), inner);
+        assert_eq!(infer(&Ctx::new(), &good), Ok(sort(1)));
+        assert!(infer(&Ctx::new(), &id(sort(1), good, bad)).is_err());
+    }
+
+    /// Random terms built from a pool of nodes, so children are shared,
+    /// give the same `infer` result as a copy with no sharing, which the
+    /// memo never engages on (`RELATED_WORK.md` §63).
+    #[test]
+    fn infer_memo_changes_no_answer() {
+        let ctx = memo_test_ctx();
+        let mut seed = 7u64;
+        let mut next = move || {
+            seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) as usize
+        };
+        let mut typed = 0;
+        for _ in 0..20_000 {
+            let mut pool: Vec<Rc<Expr>> = (0..4).map(|k| Rc::new(var(k))).chain([Rc::new(sort(0))]).collect();
+            for _ in 0..10 {
+                let kind = next() % 8;
+                let mut c = || pool[next() % pool.len()].clone();
+                let node = match kind {
+                    0..=2 => Expr::App(c(), c()),
+                    3 => Expr::Lam(c(), c()),
+                    4 => Expr::Pi(c(), c()),
+                    5 => Expr::Refl(c()),
+                    6 => Expr::Id(c(), c(), c()),
+                    _ => Expr::Sigma(c(), c()),
+                };
+                pool.push(Rc::new(node));
+            }
+            let e = (**pool.last().unwrap()).clone();
+            let unshared = shift(&shift(&e, 0, 1), 0, -1);
+            let got = infer(&ctx, &e);
+            typed += got.is_ok() as usize;
+            assert_eq!(got, infer(&ctx, &unshared), "{e:?}");
+        }
+        assert!(typed > 1000, "only {typed} well-typed terms");
     }
 
     /// `def_eq` on two right-nested chains `f (f (... x))`, 8,000 deep,
