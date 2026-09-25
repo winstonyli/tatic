@@ -800,7 +800,14 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
 /// worthwhile whenever `a`/`b` reference overlapping subterms, which two
 /// sides of a proof obligation very often do (the same postulates, the
 /// same sub-witnesses).
+///
+/// Syntactically equal sides are equal without normalising: `nf` is a
+/// function. Most calls from `infer` are (`RELATED_WORK.md` §56), and
+/// `==` stops at the first difference otherwise.
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
+    if std::ptr::eq(a, b) || a == b {
+        return true;
+    }
     let mut cache = ReductionCache::default();
     nf_impl(a, &mut cache) == nf_impl(b, &mut cache)
 }
@@ -1696,6 +1703,26 @@ mod tests {
         let took = t.elapsed();
         assert_eq!(got, expected);
         assert!(took < one_shift_time * 4 + std::time::Duration::from_millis(5), "took {took:?}, one shift {one_shift_time:?}");
+    }
+
+    /// `def_eq` answers syntactically equal sides without normalising
+    /// them (`RELATED_WORK.md` §56). `d (d (... (d x)))` with
+    /// `d = \x. x x` has a normal form of 2^n nodes, so normalising both
+    /// sides and comparing takes about 0.3 s at n = 14.
+    #[test]
+    fn def_eq_answers_equal_sides_without_normalising() {
+        let doubling = || {
+            let mut t = var(0);
+            for _ in 0..14 {
+                t = app(lam(sort(0), app(var(0), var(0))), t);
+            }
+            t
+        };
+        let (a, b) = (doubling(), doubling());
+        let t = std::time::Instant::now();
+        assert!(def_eq(&a, &b));
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(5), "took {took:?}");
     }
 
     /// The argument `Rc` of each application in `e`'s spine, outermost

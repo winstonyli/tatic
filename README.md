@@ -1081,7 +1081,7 @@ guards against by hand): caught immediately, at seed 22.
   the over-application instance proofs about 7 times faster. `def_eq`
   is now about half of an instance proof's `infer`, mostly from a few
   hundred real conversions that each normalise both sides in full
-  (§55). Memoising the kernel's `infer` by (node, context id) would make
+  (§55); `def_eq` now skips syntactically equal sides (§56). Memoising the kernel's `infer` by (node, context id) would make
   proofs linear in the DAG (§50). If the proof gate is ever
   relaxed, the next step is a typed IR that `ir::check` checks (§46's
   B5): it closes the arity and Int-vs-closure agreements for compiled
