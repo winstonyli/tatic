@@ -7606,7 +7606,7 @@ mod tests {
         let Expr::App(plus_da, da2) = &d else { panic!() };
         let Expr::App(_, da1) = &**plus_da else { panic!() };
         let (Expr::App(f1, _), Expr::App(f2, _)) = (&**da1, &**da2) else { panic!() };
-        assert!(Rc::ptr_eq(f1, f2), "the two operands were denoted separately");
+        assert!(kernel::Rc::ptr_eq(f1, f2), "the two operands were denoted separately");
     }
 
     #[test]
@@ -9453,7 +9453,7 @@ mod tests {
         fn go(e: &Expr, seen: &mut std::collections::HashSet<*const Expr>) -> usize {
             let mut n = 1;
             kernel::same_shape(e, e, |p, _| {
-                if seen.insert(Rc::as_ptr(p)) {
+                if seen.insert(kernel::Rc::as_ptr(p)) {
                     n += go(p, seen);
                 }
                 true

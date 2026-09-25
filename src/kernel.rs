@@ -36,7 +36,97 @@
 
 use hashbrown::{HashMap, HashSet};
 use std::fmt;
-use std::rc::Rc;
+
+// --- shared nodes ----------------------------------------------------------
+//
+// Every child of an `Expr` is a kernel `Rc`: `std::rc::Rc` with the
+// child's loose-variable range cached beside it, computed once when the
+// node is built. `shift`, `instantiate` and `is_var_free` read it to skip
+// the subterms they would leave unchanged, and keep those by pointer
+// (`RELATED_WORK.md` §64).
+
+/// A shared node, and its [`loose_of`] computed when it was built.
+pub struct Rc<T>(std::rc::Rc<Node<T>>);
+
+struct Node<T> {
+    loose: u32,
+    val: T,
+}
+
+impl Rc<Expr> {
+    pub fn new(e: Expr) -> Self {
+        Rc(std::rc::Rc::new(Node { loose: loose_of(&e), val: e }))
+    }
+
+    /// One more than the largest loose `Var` index in this node, 0 when
+    /// it's closed.
+    pub fn loose(&self) -> u32 {
+        self.0.loose
+    }
+}
+
+impl<T> Rc<T> {
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&a.0, &b.0)
+    }
+    pub fn strong_count(a: &Self) -> usize {
+        std::rc::Rc::strong_count(&a.0)
+    }
+    pub fn as_ptr(a: &Self) -> *const T {
+        &a.0.val
+    }
+}
+
+impl<T> Clone for Rc<T> {
+    fn clone(&self) -> Self {
+        Rc(self.0.clone())
+    }
+}
+impl<T> std::ops::Deref for Rc<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0.val
+    }
+}
+impl<T> AsRef<T> for Rc<T> {
+    fn as_ref(&self) -> &T {
+        &self.0.val
+    }
+}
+/// As `std::rc::Rc`'s for an `Eq` type: the same node is equal without a
+/// walk.
+impl<T: Eq> PartialEq for Rc<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(self, other) || self.0.val == other.0.val
+    }
+}
+impl<T: Eq> Eq for Rc<T> {}
+impl<T: fmt::Debug> fmt::Debug for Rc<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.val.fmt(f)
+    }
+}
+
+/// One more than the largest loose `Var` index in `e`, 0 when it's
+/// closed, from its children's cached ranges. A child one binder deeper
+/// (the second field of `Pi`/`Lam`/`W`/`Sigma`, `WRec`'s `children_ty`,
+/// `Pair`'s `fam`) has one loose variable fewer out here. Saturating, so a
+/// `Var(u32::MAX)` doesn't wrap to "closed".
+pub fn loose_of(e: &Expr) -> u32 {
+    let l = |c: &Rc<Expr>| c.loose();
+    let u = |c: &Rc<Expr>| c.loose().saturating_sub(1);
+    match e {
+        Expr::Var(k) => k.saturating_add(1),
+        Expr::Sort(_) => 0,
+        Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::W(a, b) | Expr::Sigma(a, b) => l(a).max(u(b)),
+        Expr::App(a, b) | Expr::Sup(a, b) => l(a).max(l(b)),
+        Expr::Id(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => l(a).max(l(b)).max(l(c)),
+        Expr::Pair(fam, a, b) => u(fam).max(l(a)).max(l(b)),
+        Expr::Refl(a) => l(a),
+        Expr::J { motive, base, a, b, p } => l(motive).max(l(base)).max(l(a)).max(l(b)).max(l(p)),
+        Expr::WRec { motive, children_ty, step, target } => l(motive).max(u(children_ty)).max(l(step)).max(l(target)),
+    }
+}
 
 // --- stack growth ----------------------------------------------------------
 //
@@ -1749,6 +1839,79 @@ mod tests {
             Expr::Pair(fam, a, b) => pair(subst(fam, j + 1, &shift(s, 0, 1)), subst(a, j, s), subst(b, j, s)),
             Expr::SigRec { motive, step, target } => sigrec(subst(motive, j, s), subst(step, j, s), subst(target, j, s)),
             _ => unreachable!("subst_sigma_family called on a non-Sigma-family Expr"),
+        }
+    }
+
+    /// A splitmix64 stream, for the randomised tests below.
+    fn splitmix(mut seed: u64) -> impl FnMut() -> usize {
+        move || {
+            seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) as usize
+        }
+    }
+
+    /// A random term with every `Expr` shape, built from a pool of nodes so
+    /// children are shared. Its leaves are `Var(0..4)` and `Sort(0)`, so it
+    /// has both open and closed subterms at every binder depth.
+    fn random_term(next: &mut impl FnMut() -> usize) -> Expr {
+        let mut pool: Vec<Rc<Expr>> = (0..4).map(|k| Rc::new(var(k))).chain([Rc::new(sort(0))]).collect();
+        for _ in 0..12 {
+            let kind = next() % 14;
+            let mut c = || pool[next() % pool.len()].clone();
+            let node = match kind {
+                0 => Expr::Pi(c(), c()),
+                1 => Expr::Lam(c(), c()),
+                2 | 3 => Expr::App(c(), c()),
+                4 => Expr::Id(c(), c(), c()),
+                5 => Expr::Refl(c()),
+                6 => Expr::J { motive: c(), base: c(), a: c(), b: c(), p: c() },
+                7 => Expr::W(c(), c()),
+                8 => Expr::Sup(c(), c()),
+                9 => Expr::WRec { motive: c(), children_ty: c(), step: c(), target: c() },
+                10 => Expr::Sigma(c(), c()),
+                11 => Expr::Pair(c(), c(), c()),
+                12 => Expr::SigRec { motive: c(), step: c(), target: c() },
+                _ => Expr::Sort(1),
+            };
+            pool.push(Rc::new(node));
+        }
+        (**pool.last().unwrap()).clone()
+    }
+
+    /// Today's `is_var_free`, kept as the reference for the new one and for
+    /// `loose_of`. It walks the whole term and reads no cached range.
+    fn is_var_free_ref(e: &Expr, idx: u32) -> bool {
+        let f = is_var_free_ref;
+        grow(|| match e {
+            Expr::Var(k) => *k == idx,
+            Expr::Sort(_) => false,
+            Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::W(a, b) | Expr::Sigma(a, b) => f(a, idx) || f(b, idx + 1),
+            Expr::App(a, b) | Expr::Sup(a, b) => f(a, idx) || f(b, idx),
+            Expr::Id(a, x, y) => f(a, idx) || f(x, idx) || f(y, idx),
+            Expr::Refl(a) => f(a, idx),
+            Expr::J { motive, base, a, b, p } => f(motive, idx) || f(base, idx) || f(a, idx) || f(b, idx) || f(p, idx),
+            Expr::WRec { motive, children_ty, step, target } => {
+                f(motive, idx) || f(children_ty, idx + 1) || f(step, idx) || f(target, idx)
+            }
+            Expr::Pair(fam, a, b) => f(fam, idx + 1) || f(a, idx) || f(b, idx),
+            Expr::SigRec { motive, step, target } => f(motive, idx) || f(step, idx) || f(target, idx),
+        })
+    }
+
+    /// A term's cached range is one more than its largest free variable,
+    /// as a walk of the whole term finds it (0 when closed). The
+    /// pool's variables are below 4 and binders only lower them, so
+    /// checking indices below 8 covers every one that can occur.
+    #[test]
+    fn loose_matches_a_walk() {
+        let mut next = splitmix(11);
+        for _ in 0..20_000 {
+            let e = random_term(&mut next);
+            let walk = (0..8u32).rev().find(|&i| is_var_free_ref(&e, i)).map_or(0, |i| i + 1);
+            assert_eq!(Rc::new(e.clone()).loose(), walk, "{e:?}");
         }
     }
 
