@@ -1101,8 +1101,10 @@ guards against by hand): caught immediately, at seed 22.
   now declines terms over 16384 nodes as a tree (§47). Most of the cost
   is the kernel, not the IR (§48). `whnf` now keeps its pointer cache
   working and `denote` shares subterms (§49), so one proof went from
-  217 to 56 ms. Memoising the kernel's `infer` is the remaining step to
-  proofs linear in the DAG. If the proof gate is ever
+  217 to 56 ms. What's left is in the kernel's `infer` (§50):
+  `subst_top` shifts its argument even when unused, which a three-line
+  guard fixes, and a memo keyed by (node, context id) would make proofs
+  linear in the DAG. If the proof gate is ever
   relaxed, the next step is a typed IR that `ir::check` checks (§46's
   B5): it closes the arity and Int-vs-closure agreements for compiled
   code in one place.
