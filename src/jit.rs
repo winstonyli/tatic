@@ -823,6 +823,21 @@ mod tests {
     }
 
     #[test]
+    fn a_term_too_big_as_a_tree_is_interpreted() {
+        // `\x. t_16`, `t_{i+1} = t_i + t_i`: 18 distinct nodes, 2^17 as a
+        // tree, past `compile.rs`'s `MAX_TREE_NODES`.
+        let mut s = TermStore::new();
+        let mut t = s.var(0);
+        for _ in 0..16 {
+            t = s.prim(PrimOp::Add, t, t);
+        }
+        let h = s.abs(t);
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, h, &[3]).unwrap(), 3 << 16);
+        assert_eq!((jit.stats.compiled, jit.stats.interpreted), (0, 1));
+    }
+
+    #[test]
     fn first_call_compiles_later_calls_hit_cache() {
         let mut s = TermStore::new();
         let fact = factorial(&mut s);

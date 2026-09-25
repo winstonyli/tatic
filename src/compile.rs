@@ -372,11 +372,51 @@ pub fn ir_validation_failures() -> usize {
     IR_VALIDATION_FAILURES.load(Ordering::Relaxed)
 }
 
+/// The largest term, counted as a tree, that `try_compile` compiles. The IR
+/// has no `let`, so a subterm is emitted once per use, and the checker,
+/// decompiler, lowering, wasmtime, sample verification and the provers
+/// all walk the result: the whole JIT path costs about 0.4 s at this size,
+/// doubling with it. The corpus's largest compiled term is 838 nodes
+/// (`RELATED_WORK.md` §47).
+const MAX_TREE_NODES: u64 = 16_384;
+
+/// `h`'s size as a tree (every shared subterm counted once per use), or
+/// `MAX_TREE_NODES + 1` if that is larger. Linear in the DAG.
+fn tree_size(store: &TermStore, h: Hash) -> u64 {
+    let cap = MAX_TREE_NODES + 1;
+    let mut size: HashMap<Hash, u64> = HashMap::new();
+    // Post-order without recursion: a node is sized once its children are.
+    let mut stack = vec![(h, false)];
+    while let Some((u, children_done)) = stack.pop() {
+        if size.contains_key(&u) {
+            continue;
+        }
+        let kids: &[Hash] = match store.resolve(u) {
+            Term::Var(_) | Term::Lit(_) => &[],
+            Term::Prim(_, a, b) | Term::App(a, b) => &[*a, *b][..],
+            Term::If(c, x, y) => &[*c, *x, *y][..],
+            Term::Abs(b) | Term::Rec(b) => std::slice::from_ref(b),
+        };
+        if children_done {
+            let n = kids.iter().fold(1, |n: u64, k| n.saturating_add(size[k]));
+            size.insert(u, n.min(cap));
+        } else {
+            stack.push((u, true));
+            stack.extend(kids.iter().map(|&k| (k, false)));
+        }
+    }
+    size[&h]
+}
+
 /// Try to compile `h` as an `arity`-ary numeric function (or, for `arity`
 /// `0`, a single closed expression to evaluate once). Returns `None` if
 /// `h` (or any combinator value it uses) falls outside the compilable
-/// fragment. Every accepted module has been decompiled back to `h`.
+/// fragment, or is larger as a tree than `MAX_TREE_NODES`: the interpreter
+/// runs those. Every accepted module has been decompiled back to `h`.
 pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
+    if tree_size(store, h) > MAX_TREE_NODES {
+        return None;
+    }
     let m = build(store, h)?;
     if let Err(e) = ir::check(&m) {
         // A builder bug, never a property of the term. In debug and test
@@ -1961,6 +2001,31 @@ mod tests {
         assert_eq!(spec_check_failures(), before + 1);
         assert!(c.specialised.is_none());
         assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
+    }
+
+    /// `\x. t_d`, where `t_0 = x` and `t_{i+1} = t_i + t_i`: `d + 2`
+    /// distinct nodes, `2^(d+1)` as a tree.
+    fn doubling(s: &mut TermStore, d: u32) -> Hash {
+        let mut t = s.var(0);
+        for _ in 0..d {
+            t = s.prim(PrimOp::Add, t, t);
+        }
+        s.abs(t)
+    }
+
+    #[test]
+    fn a_term_is_compiled_only_up_to_a_tree_size() {
+        // Everything downstream walks the tree, and the emitted code is as
+        // big as it, so sharing can't shrink the cost (RELATED_WORK.md §47).
+        let mut s = TermStore::new();
+        let at_the_cap = doubling(&mut s, 13);
+        assert_eq!(tree_size(&s, at_the_cap), MAX_TREE_NODES);
+        assert!(try_compile(&s, at_the_cap).is_some());
+        let over = doubling(&mut s, 14);
+        assert!(try_compile(&s, over).is_none());
+        // Counted without overflow, far past the cap.
+        let huge = doubling(&mut s, 200);
+        assert_eq!(tree_size(&s, huge), MAX_TREE_NODES + 1);
     }
 
     #[test]
