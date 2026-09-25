@@ -1079,9 +1079,10 @@ guards against by hand): caught immediately, at seed 22.
   which took it to 9.4 ms and the universal-proof benches 2 to 4 times
   faster, and substitutes a used argument in one pass (§53), which made
   the over-application instance proofs about 7 times faster. `def_eq`
-  is now about half of an instance proof's `infer`, mostly from a few
-  hundred real conversions that each normalise both sides in full
-  (§55); `def_eq` now skips syntactically equal sides (§56). Memoising the kernel's `infer` by (node, context id) would make
+  was then about half of an instance proof's `infer` (§55). It now
+  skips syntactically equal sides (§56) and compares weak head normal
+  forms instead of full ones (§57), which halved `kernel::check` on the
+  `fib` instance proofs. Memoising the kernel's `infer` by (node, context id) would make
   proofs linear in the DAG (§50). If the proof gate is ever
   relaxed, the next step is a typed IR that `ir::check` checks (§46's
   B5): it closes the arity and Int-vs-closure agreements for compiled

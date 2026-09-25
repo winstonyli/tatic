@@ -227,7 +227,7 @@ pub enum Expr {
 }
 
 /// Structural equality, written out rather than derived so it recurses
-/// through [`grow`] -- `def_eq` compares two full normal forms with it.
+/// through [`grow`] -- `def_eq` compares two large terms with it.
 /// Same semantics as the derive: fields compared in declaration order,
 /// and `Rc`'s own `==` still short-circuits on pointer identity (it does
 /// so for any `T: Eq`).
@@ -796,20 +796,66 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
     result
 }
 
-/// `nf(a) == nf(b)`, sharing one [`ReductionCache`] across both sides --
-/// worthwhile whenever `a`/`b` reference overlapping subterms, which two
-/// sides of a proof obligation very often do (the same postulates, the
-/// same sub-witnesses).
-///
-/// Syntactically equal sides are equal without normalising: `nf` is a
-/// function. Most calls from `infer` are (`RELATED_WORK.md` §56), and
-/// `==` stops at the first difference otherwise.
+/// `nf(a) == nf(b)`, decided without computing either normal form, and
+/// sharing one [`ReductionCache`] across both sides -- worthwhile whenever
+/// `a`/`b` reference overlapping subterms, which two sides of a proof
+/// obligation very often do (the same postulates, the same sub-witnesses).
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
+    conv(a, b, &mut ReductionCache::default())
+}
+
+/// `def_eq`'s comparison. Syntactically equal sides are equal without
+/// reducing, since `nf` is a function; most calls from `infer` are
+/// (`RELATED_WORK.md` §56), and `==` stops at the first difference
+/// otherwise. Else `nf(e)` is `whnf(e)`'s outermost constructor over the
+/// `nf` of each child, so the normal forms are equal exactly when the two
+/// weak head normal forms have the same constructor and pairwise equal
+/// children's normal forms. Recursing on that reduces only where the
+/// sides differ (`RELATED_WORK.md` §57).
+fn conv(a: &Expr, b: &Expr, cache: &mut ReductionCache) -> bool {
     if std::ptr::eq(a, b) || a == b {
         return true;
     }
-    let mut cache = ReductionCache::default();
-    nf_impl(a, &mut cache) == nf_impl(b, &mut cache)
+    conv_whnf(&whnf_impl(a, cache), &whnf_impl(b, cache), cache)
+}
+
+/// `conv` for children held as `Rc<Expr>`, so `whnf` is cached. `Rc`'s
+/// `==` checks pointer identity first.
+fn conv_rc(a: &Rc<Expr>, b: &Rc<Expr>, cache: &mut ReductionCache) -> bool {
+    if a == b {
+        return true;
+    }
+    conv_whnf(&whnf_rc(a, cache), &whnf_rc(b, cache), cache)
+}
+
+/// Compares two weak head normal forms: same constructor, then `conv` on
+/// each pair of children, in the order `nf_impl` visits them.
+fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
+    use Expr::*;
+    let mut c = |p: &Rc<Expr>, q: &Rc<Expr>| conv_rc(p, q, cache);
+    grow(|| match (x, y) {
+        (Var(i), Var(j)) | (Sort(i), Sort(j)) => i == j,
+        (Refl(a), Refl(b)) => c(a, b),
+        (Pi(a1, b1), Pi(a2, b2))
+        | (Lam(a1, b1), Lam(a2, b2))
+        | (App(a1, b1), App(a2, b2))
+        | (W(a1, b1), W(a2, b2))
+        | (Sup(a1, b1), Sup(a2, b2))
+        | (Sigma(a1, b1), Sigma(a2, b2)) => c(a1, a2) && c(b1, b2),
+        (Id(a1, b1, c1), Id(a2, b2, c2)) | (Pair(a1, b1, c1), Pair(a2, b2, c2)) => c(a1, a2) && c(b1, b2) && c(c1, c2),
+        (
+            J { motive: m1, base: s1, a: a1, b: b1, p: p1 },
+            J { motive: m2, base: s2, a: a2, b: b2, p: p2 },
+        ) => c(m1, m2) && c(s1, s2) && c(a1, a2) && c(b1, b2) && c(p1, p2),
+        (
+            WRec { motive: m1, children_ty: c1, step: s1, target: t1 },
+            WRec { motive: m2, children_ty: c2, step: s2, target: t2 },
+        ) => c(m1, m2) && c(c1, c2) && c(s1, s2) && c(t1, t2),
+        (SigRec { motive: m1, step: s1, target: t1 }, SigRec { motive: m2, step: s2, target: t2 }) => {
+            c(m1, m2) && c(s1, s2) && c(t1, t2)
+        }
+        _ => false,
+    })
 }
 
 pub fn normalize(e: &Expr) -> Expr {
@@ -1725,6 +1771,63 @@ mod tests {
         assert!(took < std::time::Duration::from_millis(5), "took {took:?}");
     }
 
+    /// `def_eq` compares weak head normal forms and recurses into the
+    /// children, so a part both sides share is never normalised
+    /// (`RELATED_WORK.md` §57). Here the domains are equal copies of §56's
+    /// doubling term and only the codomains need reducing.
+    #[test]
+    fn def_eq_normalises_only_where_the_sides_differ() {
+        let doubling = || {
+            let mut t = var(0);
+            for _ in 0..14 {
+                t = app(lam(sort(0), app(var(0), var(0))), t);
+            }
+            t
+        };
+        let a = pi(doubling(), app(lam(sort(1), var(0)), sort(0)));
+        let b = pi(doubling(), sort(0));
+        let t = std::time::Instant::now();
+        assert!(def_eq(&a, &b));
+        assert!(!def_eq(&a, &pi(doubling(), sort(1))));
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(5), "took {took:?}");
+    }
+
+    /// Wraps some of `e`'s subterms in a redex that reduces back to them,
+    /// `(\_. x) Sort(0)` with `x` shifted under the new binder.
+    fn with_redexes(e: &Expr, seed: &mut u64) -> Expr {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let wrap = (*seed >> 33).is_multiple_of(4);
+        let mut go = |x: &Rc<Expr>| with_redexes(x, seed);
+        let rebuilt = match e {
+            Expr::Pi(a, b) => pi(go(a), go(b)),
+            Expr::Lam(a, b) => lam(go(a), go(b)),
+            Expr::App(f, a) => app(go(f), go(a)),
+            Expr::Id(a, x, y) => id(go(a), go(x), go(y)),
+            Expr::Sigma(a, b) => sigma(go(a), go(b)),
+            Expr::Pair(fam, a, b) => pair(go(fam), go(a), go(b)),
+            other => other.clone(),
+        };
+        if wrap { app(lam(sort(0), shift(&rebuilt, 0, 1)), sort(0)) } else { rebuilt }
+    }
+
+    /// `def_eq` decides exactly `nf(a) == nf(b)`: on random terms, some
+    /// pairs unrelated and some the same term with different redexes
+    /// inserted.
+    #[test]
+    fn def_eq_agrees_with_comparing_normal_forms() {
+        let (mut seed, mut equal, mut unequal) = (7u64, 0, 0);
+        for i in 0..20_000 {
+            let a = random_expr(&mut seed, 4);
+            let b = if i % 2 == 0 { a.clone() } else { random_expr(&mut seed, 4) };
+            let (a, b) = (with_redexes(&a, &mut seed), with_redexes(&b, &mut seed));
+            let reference = nf(&a) == nf(&b);
+            assert_eq!(def_eq(&a, &b), reference, "a {a:?}, b {b:?}");
+            if reference && a != b { equal += 1 } else if !reference { unequal += 1 }
+        }
+        assert!(equal > 2_000 && unequal > 2_000, "equal {equal}, unequal {unequal}");
+    }
+
     /// The argument `Rc` of each application in `e`'s spine, outermost
     /// first.
     fn spine_args(e: &Expr) -> Vec<Rc<Expr>> {
@@ -1782,7 +1885,7 @@ mod tests {
     }
 
     /// Every recursive traversal `check` reaches -- `infer`, `whnf`
-    /// (beta-reducing the whole chain), `nf`, `==` inside `def_eq`, and
+    /// (beta-reducing the whole chain), `def_eq`'s `conv` and `==`, and
     /// `Debug` in the error message -- must survive a term 1,000 levels
     /// deep on a 1 MB thread: the Windows main thread's size, where a debug
     /// build used to overflow at depth ~90 (`RELATED_WORK.md` 31). Goes
