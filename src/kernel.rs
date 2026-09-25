@@ -1886,7 +1886,7 @@ mod tests {
         (**pool.last().unwrap()).clone()
     }
 
-    /// Today's `is_var_free`, kept as the reference for the new one and for
+    /// The pre-§64 `is_var_free`, kept as the reference for the new one and for
     /// `loose_of`. It walks the whole term and reads no cached range.
     fn is_var_free_ref(e: &Expr, idx: u32) -> bool {
         let f = is_var_free_ref;
@@ -1906,7 +1906,7 @@ mod tests {
         })
     }
 
-    /// Today's `shift`, kept as the reference for the new one. It rebuilds
+    /// The pre-§64 `shift`, kept as the reference for the new one. It rebuilds
     /// every node, so it's also a deep copy that shares nothing.
     fn shift_ref(e: &Expr, cutoff: u32, amount: i32) -> Expr {
         let go = |x: &Rc<Expr>, c: u32| shift_ref(x, c, amount);
@@ -1938,7 +1938,7 @@ mod tests {
         })
     }
 
-    /// Today's `instantiate`, kept as the reference for the new one.
+    /// The pre-§64 `instantiate`, kept as the reference for the new one.
     fn instantiate_ref(e: &Expr, s: &Expr, d: u32) -> Expr {
         let go = |x: &Rc<Expr>, d: u32| instantiate_ref(x, s, d);
         grow(|| match e {
@@ -2034,7 +2034,8 @@ mod tests {
         assert!(Rc::ptr_eq(f, &low), "instantiate copied a child below the depth");
         assert_eq!(**a, var(1));
 
-        // A whole term with nothing to change keeps every child.
+        // A whole term with nothing to change comes back with its children
+        // by pointer; check the domain.
         let e = Expr::Pi(closed.clone(), Rc::new(var(0)));
         let shifted = shift(&e, 0, 5);
         let Expr::Pi(dom, _) = &shifted else { panic!() };
@@ -2321,20 +2322,26 @@ mod tests {
         assert!(infer(&Ctx::new(), &id(sort(1), good, bad)).is_err());
     }
 
+    /// No node in `e` is reachable twice or held elsewhere: every child's
+    /// count is 1, so `infer`'s memo, which only engages on shared nodes,
+    /// never does.
+    fn shares_nothing(e: &Expr) -> bool {
+        let mut ok = true;
+        same_shape(e, e, |c, _| {
+            ok = ok && Rc::strong_count(c) == 1 && shares_nothing(c);
+            true
+        });
+        ok
+    }
+
     /// Random terms built from a pool of nodes, so children are shared,
-    /// give the same `infer` result as a copy with no sharing, which the
-    /// memo never engages on (`RELATED_WORK.md` §63).
+    /// give the same `infer` result as a copy with no sharing (a full
+    /// rebuild by `shift_ref`, since `shift` now keeps closed subterms),
+    /// which the memo never engages on (`RELATED_WORK.md` §63).
     #[test]
     fn infer_memo_changes_no_answer() {
         let ctx = memo_test_ctx();
-        let mut seed = 7u64;
-        let mut next = move || {
-            seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = seed;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            (z ^ (z >> 31)) as usize
-        };
+        let mut next = splitmix(7);
         let mut typed = 0;
         for _ in 0..20_000 {
             let mut pool: Vec<Rc<Expr>> = (0..4).map(|k| Rc::new(var(k))).chain([Rc::new(sort(0))]).collect();
@@ -2352,7 +2359,8 @@ mod tests {
                 pool.push(Rc::new(node));
             }
             let e = (**pool.last().unwrap()).clone();
-            let unshared = shift(&shift(&e, 0, 1), 0, -1);
+            let unshared = shift_ref(&shift_ref(&e, 0, 1), 0, -1);
+            assert!(shares_nothing(&unshared), "the copy shares a node: {e:?}");
             let got = infer(&ctx, &e);
             typed += got.is_ok() as usize;
             assert_eq!(got, infer(&ctx, &unshared), "{e:?}");
