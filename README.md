@@ -1087,9 +1087,11 @@ guards against by hand): caught immediately, at seed 22.
   the pairs `==` found unequal, so a chain that differs only at the
   bottom is compared in linear time too (§61). What's left is a
   per-node constant times the proof's size (§60). The instance proofs
-  have almost no sharing, because the witness memo returns shifted
-  copies, so memoising the kernel's `infer` by (node, context id)
-  (§50) would first need the witness built at one context depth. If the proof gate is ever
+  had almost no sharing, because the witness memo returned shifted
+  copies. A prepass now pushes every postulate the witness needs before
+  it's built, so memo hits share, which halved `fib(12)`'s instance
+  proof (§62). Memoising the kernel's `infer` by (node, context id)
+  (§50) would next need a `shift` that preserves sharing. If the proof gate is ever
   relaxed, the next step is a typed IR that `ir::check` checks (§46's
   B5): it closes the arity and Int-vs-closure agreements for compiled
   code in one place.

@@ -147,7 +147,7 @@
 //! just follows one concrete path per call, denoting whatever it finds
 //! along the way), so neither of those needed widening.
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::compile::{self, Shape};
@@ -3571,6 +3571,61 @@ fn eval_and_prove_call_over(
 /// See the section docs above for what this guards against.
 const WITNESS_NODE_BUDGET: usize = 256;
 
+/// The leaf `concrete`'s trace reaches: the one whose every condition
+/// evaluates to its recorded outcome.
+fn trace_leaf(store: &TermStore, leaves: &[Leaf], concrete: &[i64]) -> Option<usize> {
+    leaves.iter().position(|leaf| leaf.path.iter().all(|&(cond, lit)| eval_concrete(store, cond, concrete) == Some(lit)))
+}
+
+/// Canonical params for one call: literals, trivially equal to themselves
+/// -- see the section docs above for why this (not a caller-supplied
+/// denoted expression) is what makes `build_ev_witness`'s `memo` sound.
+fn canonical_params(combinators: &ClosureCombinators<'_>, concrete: &[i64]) -> (Vec<Anchored>, Vec<Anchored>) {
+    let arith = &combinators.cp.arith;
+    let params: Vec<Anchored> = concrete.iter().map(|&c| Anchored::new(arith, arith.lit_ref(c))).collect();
+    let param_facts = params.iter().map(|p| Anchored::new(arith, kernel::refl(p.at(arith)))).collect();
+    (params, param_facts)
+}
+
+/// Runs `eval_and_prove` on every condition and self-call argument that
+/// `build_ev_witness` will meet on `concrete`'s trace, and throws the
+/// results away. Every postulate those calls push (`assume_prim_fact` and
+/// the like, each memoised) then exists before the witness is built, so
+/// nothing grows the context while it is built: `Anchored::at` never
+/// shifts, and a `memo` hit shares the stored witness instead of copying
+/// it (`RELATED_WORK.md` §62). It only saves work: a push it misses costs
+/// that sharing, not correctness. `seen` bounds it the way `budget` bounds
+/// `build_ev_witness`: one entry per distinct call.
+fn push_ev_facts(
+    store: &TermStore,
+    combinators: &mut ClosureCombinators<'_>,
+    self_call: SelfCall,
+    leaves: &[Leaf],
+    concrete: &[i64],
+    seen: &mut HashSet<Vec<i64>>,
+) -> Option<()> {
+    if !seen.insert(concrete.to_vec()) {
+        return Some(());
+    }
+    if seen.len() > WITNESS_NODE_BUDGET {
+        return None;
+    }
+    let leaf = &leaves[trace_leaf(store, leaves, concrete)?];
+    let (params, param_facts) = canonical_params(combinators, concrete);
+    for &(cond, _lit) in &leaf.path {
+        eval_and_prove(store, cond, combinators, &params, concrete, &param_facts)?;
+    }
+    for call in &leaf.calls {
+        let mut new_concrete = Vec::with_capacity(self_call.arity);
+        for i in 0..self_call.arity {
+            let (x, _, _) = eval_and_prove(store, call[self_call.arity - 1 - i], combinators, &params, concrete, &param_facts)?;
+            new_concrete.push(x);
+        }
+        push_ev_facts(store, combinators, self_call, leaves, &new_concrete, seen)?;
+    }
+    Some(())
+}
+
 /// Builds an actual `e : Ev(params, v)` witness for one specific call,
 /// following the real trace `concrete` determines (mirroring
 /// `classify_step`, but for any leaf `flatten_tree` found, not just a tail
@@ -3600,20 +3655,9 @@ fn build_ev_witness(
     }
     *budget = budget.checked_sub(1)?;
 
-    let leaf_idx = leaves
-        .iter()
-        .position(|leaf| leaf.path.iter().all(|&(cond, lit)| eval_concrete(store, cond, concrete) == Some(lit)))?;
+    let leaf_idx = trace_leaf(store, leaves, concrete)?;
     let leaf = &leaves[leaf_idx];
-
-    // Canonical params for this level: literals, trivially equal to
-    // themselves -- see the section docs above for why this (not a
-    // caller-supplied denoted expression) is what makes `memo` sound.
-    let params: Vec<Anchored> =
-        concrete.iter().map(|&c| Anchored::new(&combinators.cp.arith, combinators.cp.arith.lit_ref(c))).collect();
-    let param_facts: Vec<Anchored> = params
-        .iter()
-        .map(|p| Anchored::new(&combinators.cp.arith, kernel::refl(p.at(&combinators.cp.arith))))
-        .collect();
+    let (params, param_facts) = canonical_params(combinators, concrete);
 
     // Collected across the loops below, which push further postulates
     // (assume_prim_fact, and every self-call's own recursion) -- anchor
@@ -3791,6 +3835,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
         scaffold.combinators.lit(c);
     }
 
+    push_ev_facts(store, &mut scaffold.combinators, scaffold.self_call, &scaffold.leaves, &concrete, &mut HashSet::new())?;
     let mut budget = WITNESS_NODE_BUDGET;
     let mut memo = HashMap::new();
     let (v, e) = build_ev_witness(
@@ -9400,6 +9445,50 @@ mod tests {
             kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
                 .expect("the recorded instance proof should independently re-typecheck");
         }
+    }
+
+    /// Nodes in `e` counted once per allocation, the size `infer` would
+    /// walk if it memoised by node.
+    fn dag_size(e: &Expr) -> usize {
+        fn go(e: &Expr, seen: &mut std::collections::HashSet<*const Expr>) -> usize {
+            let mut n = 1;
+            kernel::same_shape(e, e, |p, _| {
+                if seen.insert(Rc::as_ptr(p)) {
+                    n += go(p, seen);
+                }
+                true
+            });
+            n
+        }
+        go(e, &mut Default::default())
+    }
+
+    /// `fib(n)`'s witness reuses each smaller call's witness from
+    /// `build_ev_witness`'s memo. When the context grew between storing
+    /// and reusing one, `Anchored::at` returned a shifted copy, so the
+    /// proof's DAG grew like the call count, 8.1 times from `fib(8)` to
+    /// `fib(12)`. It now grows 3.4 times: `v` is still copied where
+    /// `params_and_close` shifts it under a binder (`RELATED_WORK.md` §62).
+    #[test]
+    fn a_fibonacci_instance_proof_shares_its_repeated_witnesses() {
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f = s.var(1);
+        let two = s.lit(2);
+        let cond = s.prim(PrimOp::Lt, n, two);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
+        let call1 = s.app(f, n_minus_1);
+        let call2 = s.app(f, n_minus_2);
+        let else_branch = s.prim(PrimOp::Add, call1, call2);
+        let body = s.if_(cond, n, else_branch);
+        let abs = s.abs(body);
+        let fib = s.rec(abs);
+
+        let size = |n: i64| dag_size(&prove_tail_recursive_instance(&s, fib, &[n]).unwrap().proof);
+        let (small, large) = (size(8), size(12));
+        assert!(large < 4 * small, "fib(8): {small} nodes, fib(12): {large}");
     }
 
     #[test]

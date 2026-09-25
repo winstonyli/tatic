@@ -241,7 +241,7 @@ impl PartialEq for Expr {
 /// `Var`/`Sort`) and `c` holds of each pair of children, in field order,
 /// stopping at the first that fails. Syntactic equality and `conv_whnf`
 /// are both this with a different `c`.
-fn same_shape(x: &Expr, y: &Expr, mut c: impl FnMut(&Rc<Expr>, &Rc<Expr>) -> bool) -> bool {
+pub(crate) fn same_shape(x: &Expr, y: &Expr, mut c: impl FnMut(&Rc<Expr>, &Rc<Expr>) -> bool) -> bool {
     use Expr::*;
     match (x, y) {
         (Var(i), Var(j)) | (Sort(i), Sort(j)) => i == j,
