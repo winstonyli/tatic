@@ -522,11 +522,12 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
 /// term built at one ambient context depth for reuse at a deeper one --
 /// see `proof.rs`'s `Anchored`.
 pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
-    // Adding 0 changes no index, so this is provably the identity on `e`
-    // regardless of its content -- skip the full recursive rebuild.
-    if amount == 0 {
+    // Adding 0 changes no index, and a term whose loose variables all sit
+    // below `cutoff` has none to change: either way `e` comes back as is.
+    if amount == 0 || loose_of(e) <= cutoff {
         return e.clone();
     }
+    let go = |x: &Rc<Expr>, c: u32| shift_child(x, c, amount);
     grow(|| match e {
         Expr::Var(k) => {
             if *k >= cutoff {
@@ -536,43 +537,33 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
             }
         }
         Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Pi(a, b) => pi(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
-        Expr::Lam(a, b) => lam(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
-        Expr::App(f, a) => app(shift(f, cutoff, amount), shift(a, cutoff, amount)),
-        Expr::Id(a, x, y) => id(
-            shift(a, cutoff, amount),
-            shift(x, cutoff, amount),
-            shift(y, cutoff, amount),
-        ),
-        Expr::Refl(a) => refl(shift(a, cutoff, amount)),
-        Expr::J {
-            motive,
-            base,
-            a,
-            b,
-            p,
-        } => jelim(
-            shift(motive, cutoff, amount),
-            shift(base, cutoff, amount),
-            shift(a, cutoff, amount),
-            shift(b, cutoff, amount),
-            shift(p, cutoff, amount),
-        ),
-        Expr::W(a, b) => wty(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
-        Expr::Sup(a, f) => sup(shift(a, cutoff, amount), shift(f, cutoff, amount)),
-        Expr::WRec {
-            motive,
-            children_ty,
-            step,
-            target,
-        } => wrec(
-            shift(motive, cutoff, amount),
-            shift(children_ty, cutoff + 1, amount),
-            shift(step, cutoff, amount),
-            shift(target, cutoff, amount),
-        ),
+        Expr::Pi(a, b) => Expr::Pi(go(a, cutoff), go(b, cutoff + 1)),
+        Expr::Lam(a, b) => Expr::Lam(go(a, cutoff), go(b, cutoff + 1)),
+        Expr::App(f, a) => Expr::App(go(f, cutoff), go(a, cutoff)),
+        Expr::Id(a, x, y) => Expr::Id(go(a, cutoff), go(x, cutoff), go(y, cutoff)),
+        Expr::Refl(a) => Expr::Refl(go(a, cutoff)),
+        Expr::J { motive, base, a, b, p } => Expr::J {
+            motive: go(motive, cutoff),
+            base: go(base, cutoff),
+            a: go(a, cutoff),
+            b: go(b, cutoff),
+            p: go(p, cutoff),
+        },
+        Expr::W(a, b) => Expr::W(go(a, cutoff), go(b, cutoff + 1)),
+        Expr::Sup(a, f) => Expr::Sup(go(a, cutoff), go(f, cutoff)),
+        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
+            motive: go(motive, cutoff),
+            children_ty: go(children_ty, cutoff + 1),
+            step: go(step, cutoff),
+            target: go(target, cutoff),
+        },
         Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => shift_sigma_family(e, cutoff, amount),
     })
+}
+
+/// `shift` of one child: the same `Rc` when it has nothing to shift.
+fn shift_child(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Rc<Expr> {
+    if x.loose() <= cutoff { x.clone() } else { Rc::new(shift(x, cutoff, amount)) }
 }
 
 /// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
@@ -580,18 +571,15 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// are kept.
 #[inline(never)]
 fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+    let go = |x: &Rc<Expr>, c: u32| shift_child(x, c, amount);
     match e {
-        Expr::Sigma(a, b) => sigma(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
-        Expr::Pair(fam, a, b) => pair(
-            shift(fam, cutoff + 1, amount),
-            shift(a, cutoff, amount),
-            shift(b, cutoff, amount),
-        ),
-        Expr::SigRec { motive, step, target } => sigrec(
-            shift(motive, cutoff, amount),
-            shift(step, cutoff, amount),
-            shift(target, cutoff, amount),
-        ),
+        Expr::Sigma(a, b) => Expr::Sigma(go(a, cutoff), go(b, cutoff + 1)),
+        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, cutoff + 1), go(a, cutoff), go(b, cutoff)),
+        Expr::SigRec { motive, step, target } => Expr::SigRec {
+            motive: go(motive, cutoff),
+            step: go(step, cutoff),
+            target: go(target, cutoff),
+        },
         _ => unreachable!("shift_sigma_family called on a non-Sigma-family Expr"),
     }
 }
@@ -612,8 +600,14 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
 /// `shift(s, 0, 1)` and then shifting the result by -1, but `s` is shifted
 /// only where it's used, not at every binder crossed and again in the
 /// result (`RELATED_WORK.md` §52).
+///
+/// A subterm with no loose variable at or above its depth is kept by
+/// pointer.
 fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
-    let go = |x: &Rc<Expr>, d: u32| instantiate(x, s, d);
+    if loose_of(e) <= d {
+        return e.clone();
+    }
+    let go = |x: &Rc<Expr>, d: u32| if x.loose() <= d { x.clone() } else { Rc::new(instantiate(x, s, d)) };
     grow(|| match e {
         Expr::Var(k) => {
             if *k == d {
@@ -625,18 +619,23 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
             }
         }
         Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Pi(a, b) => pi(go(a, d), go(b, d + 1)),
-        Expr::Lam(a, b) => lam(go(a, d), go(b, d + 1)),
-        Expr::App(f, a) => app(go(f, d), go(a, d)),
-        Expr::Id(a, x, y) => id(go(a, d), go(x, d), go(y, d)),
-        Expr::Refl(a) => refl(go(a, d)),
-        Expr::J { motive, base, a, b, p } => jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
-        Expr::W(a, b) => wty(go(a, d), go(b, d + 1)),
-        Expr::Sup(a, f) => sup(go(a, d), go(f, d)),
-        Expr::WRec { motive, children_ty, step, target } => wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
-        Expr::Sigma(a, b) => sigma(go(a, d), go(b, d + 1)),
-        Expr::Pair(fam, a, b) => pair(go(fam, d + 1), go(a, d), go(b, d)),
-        Expr::SigRec { motive, step, target } => sigrec(go(motive, d), go(step, d), go(target, d)),
+        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
+        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
+        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
+        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
+        Expr::Refl(a) => Expr::Refl(go(a, d)),
+        Expr::J { motive, base, a, b, p } => Expr::J { motive: go(motive, d), base: go(base, d), a: go(a, d), b: go(b, d), p: go(p, d) },
+        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
+        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
+        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
+            motive: go(motive, d),
+            children_ty: go(children_ty, d + 1),
+            step: go(step, d),
+            target: go(target, d),
+        },
+        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
+        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
+        Expr::SigRec { motive, step, target } => Expr::SigRec { motive: go(motive, d), step: go(step, d), target: go(target, d) },
     })
 }
 
@@ -651,7 +650,13 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
 /// this particular `Sup` term happens to use, silently trusting -- with
 /// nothing to back it up -- that every other point of `f`'s domain
 /// agrees on the same `W(A,B)`.
+///
+/// A subterm whose cached range shows no variable at or above idx isn't
+/// walked.
 fn is_var_free(e: &Expr, idx: u32) -> bool {
+    if loose_of(e) <= idx {
+        return false;
+    }
     grow(|| match e {
         Expr::Var(k) => *k == idx,
         Expr::Sort(_) => false,
@@ -1901,6 +1906,67 @@ mod tests {
         })
     }
 
+    /// Today's `shift`, kept as the reference for the new one. It rebuilds
+    /// every node, so it's also a deep copy that shares nothing.
+    fn shift_ref(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+        let go = |x: &Rc<Expr>, c: u32| shift_ref(x, c, amount);
+        grow(|| match e {
+            Expr::Var(k) => {
+                if *k >= cutoff {
+                    Expr::Var((*k as i32 + amount) as u32)
+                } else {
+                    Expr::Var(*k)
+                }
+            }
+            Expr::Sort(i) => Expr::Sort(*i),
+            Expr::Pi(a, b) => pi(go(a, cutoff), go(b, cutoff + 1)),
+            Expr::Lam(a, b) => lam(go(a, cutoff), go(b, cutoff + 1)),
+            Expr::App(f, a) => app(go(f, cutoff), go(a, cutoff)),
+            Expr::Id(a, x, y) => id(go(a, cutoff), go(x, cutoff), go(y, cutoff)),
+            Expr::Refl(a) => refl(go(a, cutoff)),
+            Expr::J { motive, base, a, b, p } => {
+                jelim(go(motive, cutoff), go(base, cutoff), go(a, cutoff), go(b, cutoff), go(p, cutoff))
+            }
+            Expr::W(a, b) => wty(go(a, cutoff), go(b, cutoff + 1)),
+            Expr::Sup(a, f) => sup(go(a, cutoff), go(f, cutoff)),
+            Expr::WRec { motive, children_ty, step, target } => {
+                wrec(go(motive, cutoff), go(children_ty, cutoff + 1), go(step, cutoff), go(target, cutoff))
+            }
+            Expr::Sigma(a, b) => sigma(go(a, cutoff), go(b, cutoff + 1)),
+            Expr::Pair(fam, a, b) => pair(go(fam, cutoff + 1), go(a, cutoff), go(b, cutoff)),
+            Expr::SigRec { motive, step, target } => sigrec(go(motive, cutoff), go(step, cutoff), go(target, cutoff)),
+        })
+    }
+
+    /// Today's `instantiate`, kept as the reference for the new one.
+    fn instantiate_ref(e: &Expr, s: &Expr, d: u32) -> Expr {
+        let go = |x: &Rc<Expr>, d: u32| instantiate_ref(x, s, d);
+        grow(|| match e {
+            Expr::Var(k) => {
+                if *k == d {
+                    shift_ref(s, 0, d as i32)
+                } else if *k > d {
+                    Expr::Var(*k - 1)
+                } else {
+                    Expr::Var(*k)
+                }
+            }
+            Expr::Sort(i) => Expr::Sort(*i),
+            Expr::Pi(a, b) => pi(go(a, d), go(b, d + 1)),
+            Expr::Lam(a, b) => lam(go(a, d), go(b, d + 1)),
+            Expr::App(f, a) => app(go(f, d), go(a, d)),
+            Expr::Id(a, x, y) => id(go(a, d), go(x, d), go(y, d)),
+            Expr::Refl(a) => refl(go(a, d)),
+            Expr::J { motive, base, a, b, p } => jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
+            Expr::W(a, b) => wty(go(a, d), go(b, d + 1)),
+            Expr::Sup(a, f) => sup(go(a, d), go(f, d)),
+            Expr::WRec { motive, children_ty, step, target } => wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
+            Expr::Sigma(a, b) => sigma(go(a, d), go(b, d + 1)),
+            Expr::Pair(fam, a, b) => pair(go(fam, d + 1), go(a, d), go(b, d)),
+            Expr::SigRec { motive, step, target } => sigrec(go(motive, d), go(step, d), go(target, d)),
+        })
+    }
+
     /// A term's cached range is one more than its largest free variable,
     /// as a walk of the whole term finds it (0 when closed). The
     /// pool's variables are below 4 and binders only lower them, so
@@ -1913,6 +1979,66 @@ mod tests {
             let walk = (0..8u32).rev().find(|&i| is_var_free_ref(&e, i)).map_or(0, |i| i + 1);
             assert_eq!(Rc::new(e.clone()).loose(), walk, "{e:?}");
         }
+    }
+
+    /// The new `shift`, `instantiate` and `is_var_free` agree with today's
+    /// on random terms, at several cutoffs and depths, and a shift up and
+    /// back down is the identity.
+    #[test]
+    fn shift_and_instantiate_match_a_reference() {
+        let mut next = splitmix(23);
+        for _ in 0..20_000 {
+            let e = random_term(&mut next);
+            let s = random_term(&mut next);
+            for c in 0..4 {
+                for n in [1, 2] {
+                    assert_eq!(shift(&e, c, n), shift_ref(&e, c, n), "shift({e:?}, {c}, {n})");
+                }
+                assert_eq!(shift(&shift(&e, c, 1), c, -1), e, "shift back ({e:?}, {c})");
+                assert_eq!(instantiate(&e, &s, c), instantiate_ref(&e, &s, c), "instantiate({e:?}, {s:?}, {c})");
+            }
+            for i in 0..6 {
+                assert_eq!(is_var_free(&e, i), is_var_free_ref(&e, i), "is_var_free({e:?}, {i})");
+            }
+        }
+    }
+
+    /// A child with nothing to change comes back as the same `Rc`, not a
+    /// copy: a closed one always, and an open one when its variables are
+    /// all below the cutoff or depth.
+    #[test]
+    fn shift_keeps_closed_children_by_pointer() {
+        // `Expr` has a custom `Drop` (the deep-drop guard), so it can't be
+        // destructured by move; each result is matched by reference instead.
+        let closed = Rc::new(pi(sort(0), var(0)));
+        let e = Expr::App(closed.clone(), Rc::new(var(0)));
+        let shifted = shift(&e, 0, 1);
+        let Expr::App(f, a) = &shifted else { panic!() };
+        assert!(Rc::ptr_eq(f, &closed), "shift copied a closed child");
+        assert_eq!(**a, var(1));
+        let instantiated = instantiate(&e, &sort(1), 0);
+        let Expr::App(f, a) = &instantiated else { panic!() };
+        assert!(Rc::ptr_eq(f, &closed), "instantiate copied a closed child");
+        assert_eq!(**a, sort(1));
+
+        // Under cutoff 1, `Var(0)` is bound, so its child keeps its pointer
+        // and only `Var(2)` moves.
+        let low = Rc::new(var(0));
+        let e = Expr::App(low.clone(), Rc::new(var(2)));
+        let shifted = shift(&e, 1, 1);
+        let Expr::App(f, a) = &shifted else { panic!() };
+        assert!(Rc::ptr_eq(f, &low), "shift copied a child below the cutoff");
+        assert_eq!(**a, var(3));
+        let instantiated = instantiate(&e, &sort(1), 1);
+        let Expr::App(f, a) = &instantiated else { panic!() };
+        assert!(Rc::ptr_eq(f, &low), "instantiate copied a child below the depth");
+        assert_eq!(**a, var(1));
+
+        // A whole term with nothing to change keeps every child.
+        let e = Expr::Pi(closed.clone(), Rc::new(var(0)));
+        let shifted = shift(&e, 0, 5);
+        let Expr::Pi(dom, _) = &shifted else { panic!() };
+        assert!(Rc::ptr_eq(dom, &closed));
     }
 
     /// A random `Expr` of every variant, ill-typed as often as not, with
