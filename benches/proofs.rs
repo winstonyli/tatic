@@ -199,7 +199,7 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
 /// traced to `proof.rs`'s own `ClosurePostulates` memoization tables
 /// (`HashMap<Hash, _>`, `Hash` = a 32-byte BLAKE3 digest, already
 /// uniformly random) and `kernel.rs`'s own `ReductionCache`/
-/// `ShiftCacheMap`, all built on `std::collections::HashMap`'s default,
+/// `ShiftCacheMap` (since removed, `RELATED_WORK.md` §54), all built on `std::collections::HashMap`'s default,
 /// cryptographically-oriented SipHash -- re-hashing an already-random
 /// digest, or hashing on every one of `shift`'s own extremely frequent
 /// calls, for no benefit. `compile.rs`/`jit.rs`/`term.rs` were already
@@ -217,7 +217,7 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
 /// by re-profiling: `DefaultHasher`/SipHash disappeared from the hot
 /// path entirely, total instruction count dropped ~44% (1.04B → 584M),
 /// and wall-clock improved ~24-26% here, both statistically significant.
-/// `with_shift_cache` was tried too and made this measurably *worse* --
+/// `with_shift_cache` (since removed) was tried too and made this measurably *worse* --
 /// this workload's own redundancy shape (a genuinely growing
 /// `trans_proof` chain, not the same subterm reshifted repeatedly across
 /// callers) doesn't match what that cache targets.

@@ -267,30 +267,15 @@ This is stated precisely because it would be easy to overclaim here.
   codomain equal to its domain type (every existing caller happened to
   satisfy that), which broke the moment this needed `Int^arity -> Sort(0)`
   (`cong1` now takes an explicit `b_ty`). Per-call instantiation for a
-  branching leaf is now also fast: profiling `fib(8)`'s instance proof
-  found `shift` (via `Anchored::at`) dominating by three orders of
-  magnitude over everything else, with the same subterm reshifted by the
-  same amount repeatedly — not within any one caller, but *across* many
-  (`Anchored::at`, `cong1`, `cong_n`, `trans_proof`, `sym`, `transport`,
-  `arrow`). `kernel::with_shift_cache` scopes a cache across a whole call's
-  construction via a thread-local slot (rather than threading a cache
-  parameter through every function that might call `shift`), giving a
-  measured ~2x on `fib(8)`'s instance proof. `instance_from_scaffold`
-  engages it automatically now, but only when it's actually worth it:
-  `instance_visit_count` is a cheap, exact, `Expr`-free dry run of
-  `build_ev_witness`'s own memoized recursion (plain `i64` arithmetic, no
-  term construction) that counts how many distinct nodes *this concrete
-  instance* will visit, and the cache is engaged only once that crosses a
-  small threshold. Shape alone (does the function have a branching leaf
-  at all) isn't enough to decide this — an earlier version gated on shape
-  and regressed `jit.rs`'s own routine sample verification for any
-  branching-shaped function, since `sample_arg_vectors`'s small samples
-  (`0, 1, 2, ...`) still visit only a handful of nodes even for a
-  branching shape (confirmed via the `fib(30)` demo's cold-compile time
-  regressing from ~120ms to ~350ms when shape alone triggered it). The
-  dry run fixes that: a real `HashMap`, grown across a construction and
-  then dropped, only gets built when the instance's own visit count says
-  it will actually pay for itself.
+  branching leaf is now also fast. Profiling `fib(8)`'s instance proof
+  found `shift` dominating by three orders of magnitude, with the same
+  subterm reshifted by the same amount repeatedly. A scoped shift cache
+  (`with_shift_cache`, engaged from a dry run of the instance) won ~2x for
+  a while. The reshifts turned out to come from `subst_top` substituting
+  eagerly, shifting its argument at every binder crossed. It now
+  substitutes in one pass (`RELATED_WORK.md` §53), which made `fib(8)`'s
+  instance about 18 times faster, and the cache, now a net loss, is gone
+  (§54).
 - **Closures combined with self-recursion, in `prove_tail_recursive_universal`**:
   covers a self-recursive function whose own parameters may be
   `Clo`-typed — threaded through the recursion unchanged, or called via
@@ -531,10 +516,9 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   concrete-instance attempts `jit.rs` tries alongside it (see "Proof
   strategies" above, now all 3 of them succeeding since branching-leaf
   instances stopped being declined), which together put that one case's
-  cold time on this machine around ~140ms (versus ~15ms with no kernel proof
-  involved at all; ~95ms immediately after `kernel::Expr` switched to
-  `Rc`-based structural sharing, before branching instances were attempted
-  at all — see Design notes below); the warm (cached) case is unaffected
+  cold time on this machine around 80 ms under load (about 140 ms before
+  `subst_top` substituted in one pass, `RELATED_WORK.md` §53; ~15ms with
+  no kernel proof involved at all); the warm (cached) case is unaffected
   either way, since none of this runs again for a hash already in the cache.
   Also `capturing_closure_loop` — a tail-recursive term that creates and
   immediately calls a fresh capturing closure every iteration, isolating
@@ -803,31 +787,13 @@ guards against by hand): caught immediately, at seed 22.
   Benchmarks). On its own it didn't fix branching-leaf instance proofs
   being slow — that cost turned out to live in `shift` (see the next
   entry), not cloning.
-- **A scoped `shift` cache, engaged automatically from a cheap dry run,
-  not a standing one**: `kernel::shift` is called constantly while
-  composing a large proof term, and the same subterm gets reshifted by
-  the same amount repeatedly — not within any one caller, but *across*
-  several (`proof.rs`'s `Anchored::at`, plus
-  `cong1`/`cong_n`/`trans_proof`/`sym`/`transport`/`arrow` internally).
-  `kernel::with_shift_cache` runs a closure with a cache active in a
-  thread-local slot for that closure's whole (dynamic) extent, rather than
-  threading a cache parameter through every function that might call
-  `shift` — a scope, not a bare `thread_local`, so it can't leak across
-  unrelated calls the way one never cleared would. `instance_from_scaffold`
-  decides whether to engage it from `instance_visit_count`, a cheap, exact
-  dry run (plain `i64` arithmetic, no `Expr` construction) of how many
-  distinct nodes *this concrete instance* will actually visit in
-  `build_ev_witness`'s own memoized recursion. Shape alone (does the
-  function have a branching leaf) isn't a good enough signal on its own:
-  an earlier version gated on shape and regressed the common case anyway
-  (confirmed via the `fib(30)` demo's cold-compile time, ~120ms → ~350ms),
-  because `jit.rs`'s own routine small samples still visit only a handful
-  of nodes even for a branching-shaped function. The dry run fixes that
-  precisely — a real `HashMap`, grown across a construction and then
-  dropped, only gets built once the instance's own visit count crosses a
-  small threshold, calibrated against `fib(8)`'s own proven ~2x win
-  (`fibonacci_branching_leaves_get_kernel_checked_instances`) on one side
-  and `jit.rs`'s routine samples on the other.
+- **No `shift` cache**: `kernel.rs` once had a thread-local cache scoped
+  around instance proofs (`with_shift_cache`), engaged from a dry run of
+  how many nodes an instance visits. It won ~2x on `fib(8)` by recovering
+  reshifts that eager substitution caused. Once `subst_top` shifted its
+  argument only where used (`RELATED_WORK.md` §53), the cache cost more
+  to fill and drop than it saved on every term measured, so it was
+  removed (§54), along with its hidden state in the kernel.
 - **Why a predicative kernel with exactly these five primitives**: see
   `kernel.rs`'s module docs for the full argument, but briefly — `W`-types
   are load-bearing (not derivable from `Pi`/`Sort`/`Id` alone with

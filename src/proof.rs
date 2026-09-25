@@ -148,7 +148,6 @@
 //! along the way), so neither of those needed widening.
 
 use hashbrown::HashMap;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::compile::{self, Shape};
@@ -3772,67 +3771,6 @@ pub fn prove_tail_recursive_universal_with_instances(
     Some((theorem, instances))
 }
 
-/// A cheap, `Expr`-free dry run of `build_ev_witness`'s own recursion
-/// structure: walks the same leaves, resolving each `If` on the way to
-/// one via plain `i64` arithmetic (`eval_concrete`, never touching a
-/// kernel term), and counts how many *distinct* concrete-argument nodes
-/// get visited -- deduplicating exactly the way `build_ev_witness`'s own
-/// `memo` does, so a value revisited from two different call sites (as
-/// naive Fibonacci's overlapping subproblems are) counts once. Returns
-/// early, without finishing the walk, once `cap` distinct visits are
-/// reached -- the caller only needs to know whether this crosses a small
-/// threshold, not the exact count for a large instance, so this stays
-/// cheap even when the real answer is large. Returns `cap` itself (not
-/// panicking or guessing) if a leaf can't be found or an argument can't
-/// be evaluated concretely -- `instance_from_scaffold`'s own
-/// `build_ev_witness` call will discover and report that properly; this
-/// only decides a performance question, never a correctness one, so it's
-/// fine to be conservative (assume "expensive") on any surprise here.
-fn instance_visit_count(store: &TermStore, self_call: SelfCall, leaves: &[Leaf], concrete: &[i64], cap: usize) -> usize {
-    // Returns `false` once nothing more needs walking: either `cap` is
-    // already reached, or a leaf/argument couldn't be resolved (treated
-    // as "assume expensive" by the caller, via the early `return cap`
-    // below, rather than guessing a count for a shape it doesn't
-    // recognize).
-    fn visit(store: &TermStore, self_call: SelfCall, leaves: &[Leaf], concrete: &[i64], seen: &mut HashSet<Vec<i64>>, cap: usize) -> bool {
-        if seen.len() >= cap {
-            return true;
-        }
-        if !seen.insert(concrete.to_vec()) {
-            return false;
-        }
-        let Some(leaf) = leaves.iter().find(|leaf| leaf.path.iter().all(|&(cond, lit)| eval_concrete(store, cond, concrete) == Some(lit))) else {
-            return true; // unrecognized shape -- conservatively "expensive"
-        };
-        for call in &leaf.calls {
-            let mut new_concrete = Vec::with_capacity(self_call.arity);
-            let mut ok = true;
-            for i in 0..self_call.arity {
-                let arg = call[self_call.arity - 1 - i];
-                match eval_concrete(store, arg, concrete) {
-                    Some(x) => new_concrete.push(x),
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if !ok {
-                return true; // couldn't evaluate an argument concretely -- conservatively "expensive"
-            }
-            if visit(store, self_call, leaves, &new_concrete, seen, cap) {
-                return true;
-            }
-        }
-        false
-    }
-    let mut seen = HashSet::new();
-    if visit(store, self_call, leaves, concrete, &mut seen, cap) {
-        return cap;
-    }
-    seen.len()
-}
-
 fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>, args: &[i64]) -> Option<UniversalInstanceProof> {
     if args.len() != scaffold.arity {
         return None;
@@ -3853,70 +3791,39 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
         scaffold.combinators.lit(c);
     }
 
-    // Automatically wrapped in `kernel::with_shift_cache` exactly when
-    // *this concrete instance* actually revisits enough distinct memoized
-    // nodes to matter -- not just when the function's own shape has a
-    // branching leaf. An earlier version of this gated on shape alone
-    // (any leaf with more than one self-call) and regressed `jit.rs`'s
-    // own routine sample verification for a branching-shaped function
-    // like `fib`: `sample_arg_vectors`'s own small samples (0, 1, 2, ...)
-    // still trigger only a handful of `build_ev_witness` nodes even for a
-    // branching shape, so shape alone can't distinguish that from the
-    // large instance the cache is actually for (confirmed by the
-    // `fib(30)` demo's cold-compile time regressing when shape alone was
-    // used to decide). `instance_visit_count` is a cheap, *exact* dry run
-    // of `build_ev_witness`'s own memoized recursion structure, using
-    // only plain `i64` arithmetic (no `Expr`/postulate construction at
-    // all) -- not a fuzzy prediction, since it walks the very same leaves
-    // and `memo`-style dedup `build_ev_witness` itself will use, just
-    // without building any proof term. `VISIT_THRESHOLD` is picked from
-    // the actual samples this matters for: `fib(8)` (this cache's own
-    // proven ~2x win, `fibonacci_branching_leaves_get_kernel_checked_instances`)
-    // visits 9 distinct nodes; `jit.rs`'s own routine samples up to `n=3`
-    // visit at most 4.
-    const VISIT_THRESHOLD: usize = 6;
-    let use_shift_cache = instance_visit_count(store, scaffold.self_call, &scaffold.leaves, &concrete, VISIT_THRESHOLD) >= VISIT_THRESHOLD;
+    let mut budget = WITNESS_NODE_BUDGET;
+    let mut memo = HashMap::new();
+    let (v, e) = build_ev_witness(
+        store,
+        &mut scaffold.combinators,
+        scaffold.self_call,
+        &scaffold.leaves,
+        &scaffold.ev_leaf_positions,
+        &scaffold.combines,
+        scaffold.ev_pos,
+        &concrete,
+        &mut budget,
+        &mut memo,
+    )?;
 
-    let build = move || -> Option<UniversalInstanceProof> {
-        let mut budget = WITNESS_NODE_BUDGET;
-        let mut memo = HashMap::new();
-        let (v, e) = build_ev_witness(
-            store,
-            &mut scaffold.combinators,
-            scaffold.self_call,
-            &scaffold.leaves,
-            &scaffold.ev_leaf_positions,
-            &scaffold.combines,
-            scaffold.ev_pos,
-            &concrete,
-            &mut budget,
-            &mut memo,
-        )?;
-
-        // Fresh past all the growth `build_ev_witness` just did.
-        let theorem_proof = scaffold.theorem_proof.at(&scaffold.combinators);
-        let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.combinators.lit_ref(c)).collect();
-        let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
-        let ty = kernel::infer(&scaffold.combinators.cp.arith.p.ctx, &applied).ok()?;
-        let (lhs, rhs) = match kernel::whnf(&ty) {
-            Expr::Id(_, ref lhs, ref rhs) => ((**lhs).clone(), (**rhs).clone()),
-            _ => return None,
-        };
-
-        Some(UniversalInstanceProof {
-            int_ty: scaffold.combinators.int_ty(),
-            ctx: scaffold.combinators.cp.arith.p.ctx,
-            arity: scaffold.arity,
-            lhs,
-            rhs,
-            proof: applied,
-        })
+    // Fresh past all the growth `build_ev_witness` just did.
+    let theorem_proof = scaffold.theorem_proof.at(&scaffold.combinators);
+    let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.combinators.lit_ref(c)).collect();
+    let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
+    let ty = kernel::infer(&scaffold.combinators.cp.arith.p.ctx, &applied).ok()?;
+    let (lhs, rhs) = match kernel::whnf(&ty) {
+        Expr::Id(_, ref lhs, ref rhs) => ((**lhs).clone(), (**rhs).clone()),
+        _ => return None,
     };
-    if use_shift_cache {
-        kernel::with_shift_cache(build)
-    } else {
-        build()
-    }
+
+    Some(UniversalInstanceProof {
+        int_ty: scaffold.combinators.int_ty(),
+        ctx: scaffold.combinators.cp.arith.p.ctx,
+        arity: scaffold.arity,
+        lhs,
+        rhs,
+        proof: applied,
+    })
 }
 
 // --- closures (non-capturing, capturing, and partially-applied) ------------
@@ -9487,77 +9394,12 @@ mod tests {
         let abs = s.abs(body);
         let fib = s.rec(abs);
 
-        // `prove_tail_recursive_instance` no longer needs an explicit
-        // `kernel::with_shift_cache` wrapper here -- `instance_from_scaffold`
-        // now decides automatically, from a cheap dry run of how many
-        // distinct nodes *this concrete instance* actually visits
-        // (`instance_visit_count`), not just the function's own shape (see
-        // its own docs for why shape alone wasn't enough). n=8 crosses
-        // that threshold; independently re-typechecking the already-built
-        // proof below is a separate call outside `instance_from_scaffold`,
-        // so it still opts in explicitly regardless of n.
         for n in [1, 2, 8] {
             let proof = prove_tail_recursive_instance(&s, fib, &[n]).unwrap_or_else(|| panic!("fib({n}) should get an instance"));
             assert_eq!(proof.arity, 1);
-            kernel::with_shift_cache(|| {
-                kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
-            })
-            .expect("the recorded instance proof should independently re-typecheck");
+            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+                .expect("the recorded instance proof should independently re-typecheck");
         }
-    }
-
-    #[test]
-    fn instance_visit_count_distinguishes_routine_samples_from_a_large_branching_one() {
-        // Same fib shape as the test above. Naive Fibonacci's overlapping
-        // subproblems mean the *memoized* visit count is linear in n
-        // (0..=n, each visited once), not exponential -- confirmed
-        // directly here, since that's the whole premise
-        // `instance_from_scaffold`'s own threshold relies on: `jit.rs`'s
-        // routine small samples (0, 1, 2, 3, -1, -3, ...) stay under it,
-        // while a real instance like n=8 (this cache's own proven ~2x win)
-        // clears it.
-        let mut s = TermStore::new();
-        let n = s.var(0);
-        let f = s.var(1);
-        let two = s.lit(2);
-        let cond = s.prim(PrimOp::Lt, n, two);
-        let one = s.lit(1);
-        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-        let call1 = s.app(f, n_minus_1);
-        let call2 = s.app(f, n_minus_2);
-        let else_branch = s.prim(PrimOp::Add, call1, call2);
-        let body = s.if_(cond, n, else_branch);
-        let abs = s.abs(body);
-        let fib = s.rec(abs);
-
-        let scaffold = build_universal(&s, fib).expect("fib should build a universal scaffold");
-        let cap = 100;
-        let count_at = |n_val: i64| instance_visit_count(&s, scaffold.self_call, &scaffold.leaves, &[n_val], cap);
-
-        // n=0,1 hit the base case immediately (1 visit each); n=2 visits
-        // {2,1,0}; n=8 visits {8,7,...,0} -- 9 distinct nodes, matching
-        // n+1 exactly since every intermediate value is reached from
-        // both f(n-1) and, one step later, f((n-1)-1).
-        assert_eq!(count_at(0), 1);
-        assert_eq!(count_at(1), 1);
-        assert_eq!(count_at(2), 3);
-        assert_eq!(count_at(8), 9);
-
-        // Every sample jit.rs's own SAMPLE_ARGS routinely tries except
-        // n=7/n=20 stays comfortably below the threshold that gates
-        // `with_shift_cache` (6) -- confirming the routine, small-sample
-        // path really does skip the cache, not just by coincidence.
-        for small in [0, 1, 2, 3, -1, -3] {
-            assert!(count_at(small) < 6, "n={small}: visit count {} should stay under the cache threshold", count_at(small));
-        }
-        for large in [7, 8, 20] {
-            assert!(count_at(large) >= 6, "n={large}: visit count {} should cross the cache threshold", count_at(large));
-        }
-
-        // The `cap` is a real early-exit, not just an unused parameter:
-        // a tiny cap must not let a large instance's count exceed it.
-        assert_eq!(instance_visit_count(&s, scaffold.self_call, &scaffold.leaves, &[20], 3), 3);
     }
 
     #[test]
