@@ -3593,7 +3593,9 @@ compiled:
   term that nests `t + t`, `d` deep, takes 22 ms to type at `d = 18`,
   395 ms at 22, and 3.4 s at 25. `try_compile` is worse: 417 ms, 8 s and
   73 s. This breaks the ideal (d), and it is also a denial-of-service
-  risk for anything that feeds terms in.
+  risk for anything that feeds terms in. (Typing is fixed in §45.
+  `try_compile`'s cost turns out to be the size of its output, not the
+  walk.)
 - **G4: soundness is argued, not proved.** "By the usual type-safety
   argument" (`typing.rs`'s doc) covers the textbook rules. The two
   non-standard rules are covered only by argument plus §41's fuzz.
@@ -3692,8 +3694,9 @@ accepted it. Three repairs, from most to least exact:
   - Pros: linear always.
   - Cons: incomplete relative to tree typing, as above.
 
-  Whichever is chosen, the same fix is owed to `try_compile`, which is
-  worse. ML typing is DEXPTIME-complete because of `let` sharing
+  Whichever is chosen, `try_compile` still costs as much as the tree:
+  its IR has no `let`, so what it emits is as big as the tree (§45). ML
+  typing is DEXPTIME-complete because of `let` sharing
   (Mairson), so full sharing-aware polymorphic inference can't be linear
   in general. A monomorphic system that gives up the lambda-at-two-types
   case (C3) can be.
@@ -3736,8 +3739,9 @@ accepted it. Three repairs, from most to least exact:
 **Recommendation.**
 
 1. **C1, then the same memo for `try_compile`.** G3 is the one gap with a
-   concrete cost today, and C1 changes nothing that is accepted.
-2. **D2.** Cheap. It turns G4's "by the usual argument" into something
+   concrete cost today, and C1 changes nothing that is accepted. (Done in
+   §45. The second half was a wrong premise: see there.)
+2. **D2.** Done in §45. Cheap. It turns G4's "by the usual argument" into something
    tested.
 3. **B2**, if the proof gate is ever relaxed (§29's "widen the universal
    fragment"). Only with a single annotated source do A1 and B4 become
@@ -3745,9 +3749,233 @@ accepted it. Three repairs, from most to least exact:
 
 A1 alone fails G2, and F1 alone gains nothing. E is housekeeping.
 
+## 45. Typing shared subterms once, and a type-safety fuzz -- which found a crash in the occurs check
+
+This does §44's first two recommendations.
+
+**C1: the memo.** `typing::infer` now memoises a result that is ground
+(it has no type variables), keyed by the subterm's hash and its
+environment. An environment is numbered by (enclosing environment, the
+binder's type node), so the key is O(1) to build. Reuse is exact.
+Re-inferring the same subterm in the same environment unifies a fresh
+copy of the same constraints. Those succeed again and fix the copy to the
+same ground type, so the memo changes no answer. A result that still has
+variables isn't memoised. A copy's variables are fresh, and that is what
+lets one shared `\x. x` node be used at two types.
+`a_shared_lambda_can_still_be_used_at_two_types` pins this: with every
+result memoised, it fails.
+
+`\n. t_25`, with `t_{i+1} = t_i + t_i`, now types in about 30 µs, down
+from 3.4 s. `a_shared_subterm_is_typed_once` bounds the calls to `infer`
+at depth 12 (under 100, where the tree has 8191 nodes) and fails without
+the memo. `the_memo_changes_no_answer` runs 4000 random terms with and
+without the memo, and requires the two answers to agree on every one.
+
+**D2: the fuzz.** `a_well_typed_term_never_goes_wrong` generates 4000
+random terms. They cover every constructor, with subterms reused, dead
+branches under constant conditions (including ones that divide by zero),
+`Rec` without an `Abs`, and loops. Each is read at arity 0, 1 or 2. For
+every term `well_typed` accepts, `eval` at every combination of
+`[0, 1, -2, 7, 25]` must give `Ok` or `DivByZero`, never `TypeError`,
+`NotAFunction` or `UnboundVariable`. Every generated term terminates, so
+`eval` can run on any of them. That is strong normalisation for the
+simply typed part, and each `Rec` either can't name itself or is a loop
+whose counter goes down by one per self-call from at most 20. Latest
+run: 1264 terms well typed, 13984 runs, 189 of them dividing by zero.
+
+Teeth: each of three one-line mutations of the checker fails the fuzz
+within the first 200 seeds:
+- not unifying `Prim`'s second operand with `Int` (seed 177);
+- dropping the rule that `Rec` wraps an `Abs` (seed 20);
+- pruning to the wrong branch (seed 86).
+
+**What the fuzz found.** Seed 931 overflowed the stack, with or without
+the memo. Reduced:
+
+```
+\n. \f. (if n then f else \x. x) (\y. f)
+```
+
+The `if` gives `f` the type `a -> a`. The call then needs
+`a -> a = (b -> F) -> r`, with `F` the type of `f` itself, so `a` would
+have to contain itself. `unify` ran the occurs check only when binding a
+variable. Linking one arrow node into another skipped it, which left the
+type graph cyclic, and the next `occurs` followed the cycle until the
+stack overflowed. So an ill-typed term crashed the process instead of
+being declined. The JIT calls `well_typed` on every term it compiles, so
+any caller could do that.
+
+The fix runs the occurs check before every link. `occurs` and `ground`
+now share one iterative walk with a visited set, so a shared type costs
+one visit and no walk recurses. `find` is iterative too. The graph now
+stays acyclic, which every later walk relies on.
+`an_infinite_type_through_two_arrows_is_declined` is the reduced term;
+it overflowed before the fix.
+
+**Why `try_compile` isn't memoised too.** §44 assumed its 73 s came from
+an unmemoised walk, as typing's did. Timing each stage at depths 14, 16
+and 18 (build, `ir::check`, decompile, lower) shows each one growing
+about 4× per two levels, in step with the output: 0.56, 2.2 and 8.9 MB
+of WAT. `ir::Node` is a tree with no `let`, so a shared subterm is
+emitted once per use. The compiled code is exponential, and no memo on a
+walk changes that. The options:
+
+- **Sharing in the IR.** A `Let` node, or a scratch local per shared pure
+  subterm, emitted once and read at each use.
+  - Pros: compiled code linear in the DAG.
+  - Cons: it changes `ir.rs`, `check`, `lower_wat.rs` and `decompile.rs`
+    (which would rebuild the shared term through the store's hash
+    consing), and the proof walkers are tree walks too. A subterm can be
+    bound once only where its first evaluation comes before every use. A
+    subterm shared across `If` branches, or under a lambda, can't just be
+    hoisted, since that could evaluate a division by zero or a loop the
+    term never reaches.
+- **A size gate.** Decline to compile a term whose tree size, computed
+  with a memo over the DAG, exceeds a bound, and interpret it instead.
+  - Pros: a few lines, and compile cost becomes linear in the bound.
+  - Cons: `eval` walks the tree too, so such a term stays slow; the gate
+    only stops the compiler costing more than the term.
+- **Leave it.** No term in the corpus comes near.
+
+None is done yet.
+
+## 46. G2 in depth: where the type notions have to agree, and how other systems get one source
+
+§44's G2 said the notions of type "must agree". This section says
+exactly where, who checks each agreement today, and what other compilers
+and checkers do instead.
+
+**The agreements, one by one.**
+
+| Pair | Must agree on | Checked by |
+|---|---|---|
+| `typing.rs` ↔ compiled code | `Int` vs closure at every value | `typing.rs`, which is independent (§38). Arity isn't covered. |
+| `ArityUse` ↔ the closures that reach a variable | arity, under `Dispatch::Fast` | Nothing statically. `ir::check` checks that each variable is called at one arity, and its doc (`ir.rs`) says nothing proves the *values* reaching it have that arity. The proof gate covers it (§40). |
+| `ArityUse` ↔ `proof.rs`'s parameter types | arity of each closure parameter | Shared code (`proof.rs` reads `ArityUse`), plus `return_type_of`, kept in step by hand. Not checked. |
+| `proof.rs`'s `Denoted` ↔ the kernel | the type of each denoted `Expr` | The kernel. But `Clo_k` is curried (§11), so it can't tell `\x. \y. e` from `\x. (\y. e)` (§40, corrected). |
+| The provers' parameter types ↔ the JIT's entry point | every parameter is an `Int` | `calls_a_parameter` (§42), a syntactic stand-in. |
+
+`TYPES.md` already wrote the third and fourth rows down as one judgment,
+and its §6.2 records a version of the fourth row's gap. It was closed by
+opaque per-arity `Clo_k` postulates, then partly reopened when §11
+replaced them with the curried arrow to save primitives.
+
+**How others do it.**
+
+- **A typed IR, re-checked between passes.** GHC's Core is typed, and
+  Core Lint re-checks it after each pass when asked. Arity is a second
+  notion there too: an `Id`'s arity lives in its `IdInfo`, apart from
+  its type, and a lint invariant (GHC #10181) requires the arity not to
+  exceed the type's. So GHC has tatic's "two notions that must agree",
+  and handles it by checking one against the other. Lint is a debugging
+  aid, not part of the trusted base.
+- **An IR checker that knows calling conventions.** Lean 4's IR separates
+  `fap`, `pap` and `ap` (§43), and `Lean.Compiler.IR.Checker` rejects a
+  `fap` with the wrong number of arguments and a `pap` that supplies too
+  many. That is `ir::check`'s `CallKnown` rule. Lean's `ap` then goes
+  through `lean_apply_n`, which checks at runtime (§43, 1a).
+- **A second checker on a lower IR.** rustc validates MIR at least once,
+  and after every pass under `-Zvalidate-mir`. Borrow checking re-types
+  MIR independently of the type checker that ran on HIR.
+- **Type-preserving compilation.** TIL (Tarditi et al., PLDI 1996) and
+  FLINT (Shao, ICFP 1998) keep types through every IR down to code
+  generation, and TIL introduced the certifying compiler that TAL and
+  proof-carrying code grew from. The types are the single source, and
+  each pass must produce well-typed output.
+- **One source by proof.** CakeML's type inferencer is proved sound and
+  complete against a declarative type system (Tan, Owens and Kumar,
+  IFL 2015), and type soundness is proved for that system. There is then
+  nothing to keep in agreement: every consumer relies on the one
+  declarative system.
+- **The de Bruijn criterion.** A proof assistant is trusted if its proof
+  objects can be checked by a small independent program (Barendregt's
+  name for de Bruijn's design). The elaborator can be as large as it
+  likes. Lean4Lean is such an external checker for Lean 4. §44's B2 is
+  this criterion applied to types.
+- **A typed target.** WebAssembly's typed function references add
+  `call_ref`, which is statically typed, so the validator rejects a call
+  at the wrong function type. `call_indirect`, which tatic uses, checks
+  the type at runtime and traps on a mismatch (§40). wasmtime implements
+  the proposal (`Config::wasm_function_references`; GC and exceptions are
+  on by default from wasmtime 47, and tatic is on 42).
+
+**Options for tatic.** §44 listed B1–B4. The survey adds two.
+
+- **B5: a typed IR and a stronger `ir::check`.** Give each `Func`'s
+  parameters and environment slots a type (`Int` or `Clo_k`, nested), and
+  have `ir::check` check every node against them: `Arith` operands are
+  `Int`, a `CallUnknown` under `Fast` calls a `Clo_k` with `k` arguments,
+  a `MakeClosure` has the arity its type claims, and the entry point's
+  parameters are `Int`. This is B2 at the IR, and it is Lean's checker
+  extended from known calls to closures.
+  - Pros: the IR is where every consumer meets. The builder emits it,
+    `lower_wat.rs` reads it, and `decompile.rs` proves it means the
+    term. Translation validation plus a type-checked IR means the
+    compiled code is the term and can't go wrong, whatever
+    `ArityUse` says, and §40's hole becomes a check failure independent
+    of the proof gate. The checker is local and linear, with no
+    unification. It would replace `calls_a_parameter` (the entry
+    point's parameters are `Int` by type) and the Int-vs-closure part of
+    the typing gate for compiled code.
+  - Cons: the builder has to produce the types, which needs arity-aware
+    inference (A1). `ArityUse` only knows about called variables, not
+    which environment slots hold `Int`s. So a second, untrusted inference
+    joins the code, the thing G2 counts against, though now it is checked
+    rather than trusted. `ir::check` is in the same crate as the builder,
+    so its independence would need the same `independence` test
+    `typing.rs` has. The provers don't read the IR, so rows 3 and 4 of
+    the table stay as they are.
+- **B6: a typed Wasm target.** Lower to `call_ref` on typed function
+  references, with `Int`s as `i64` and closures as typed references, so
+  wasmtime's validator checks what B5's checker does.
+  - Pros: the checker is external and already trusted, and was written
+    by others to a public spec. That is as independent as a checker gets.
+  - Cons: it replaces the uniform `i64` representation, the table and
+    `call_indirect`, the linear-memory environments and the bump
+    allocator (§9's design). It needs the same annotations as B5 to emit
+    the types. It needs the GC proposal or a typed table, and wasmtime's
+    GC is newer than the rest of the engine. It is the largest change
+    here.
+
+**How the options compare.**
+
+| Option | Rows it closes | Trusted code | Size |
+|---|---|---|---|
+| B1: agreement tests | none (tests them) | unchanged | small |
+| B2: annotated term + checker | 1, 2, 5, and 3 if the provers read the annotations | a small checker | large |
+| B3: share `typing.rs` | 1, 2 | loses independence | small |
+| B4: arity-exact kernel types | 4 | kernel postulates return | medium |
+| B5: typed IR check | 1, 2, 5 for compiled code | the IR checker | medium |
+| B6: typed Wasm | 1, 2, 5 for compiled code | wasmtime's validator | large |
+
+**Recommendation.** Nothing in the corpus needs any of these yet. The
+proof gate and `calls_a_parameter` keep out every term that would go
+wrong (§41's fuzz). If the proof gate is ever relaxed:
+
+1. **B5.** It closes the rows that matter for installed code, at the one
+   place all of the compiler's consumers share, with a checker in the
+   same style as `ir::check` and `spec_check`.
+2. **B4**, if the provers are to stand on their own. Opaque per-arity
+   `Clo_k` postulates come back, undoing §11's derivation, so the kernel
+   sees the currying distinction the compiled code has. The cost is
+   §11's saving in primitives.
+3. **B6** as the end state, if typed references become the default in
+   the wasmtime tatic uses.
+
 ## Sources
 
 - [Kinds are calling conventions (Downen et al., ICFP 2020)](https://doi.org/10.1145/3408986)
+- [Lean 4 IR checker (`Lean/Compiler/IR/Checker.lean`)](https://github.com/leanprover/lean4/blob/master/src/Lean/Compiler/IR/Checker.lean)
+- [GHC #10181: Lint check for the arity invariant](https://gitlab.haskell.org/ghc/ghc/-/issues/10181)
+- [rustc dev guide: MIR passes and validation](https://github.com/rust-lang/rustc-dev-guide/blob/main/src/mir/optimizations.md)
+- [TIL: a type-directed optimizing compiler for ML (Tarditi et al., PLDI 1996)](https://dl.acm.org/doi/10.1145/249069.231414)
+- [Implementing typed intermediate languages (Shao et al., ICFP 1998)](https://dl.acm.org/doi/10.1145/289423.289460)
+- [A verified type system for CakeML (Tan, Owens and Kumar, IFL 2015)](https://dl.acm.org/doi/10.1145/2897336.2897344)
+- [The de Bruijn criterion vs the LCF architecture (Paulson)](https://lawrencecpaulson.github.io/2022/01/05/LCF.html)
+- [Lean4Lean: an external type checker for Lean 4 (Carneiro)](https://arxiv.org/abs/2403.14064)
+- [Typed function references for WebAssembly](https://github.com/WebAssembly/function-references/blob/master/proposals/function-references/Overview.md)
+- [wasmtime `Config`](https://docs.wasmtime.dev/api/wasmtime/struct.Config.html)
+- [GC and exceptions in Wasmtime (Bytecode Alliance)](https://bytecodealliance.org/articles/wasmtime-gc)
 - [Types are calling conventions (Bolingbroke and Peyton Jones, Haskell 2009)](https://dl.acm.org/doi/10.1145/1596638.1596640)
 - [GHC Core Lint (compiler notes)](https://ghc-compiler-notes.readthedocs.io/en/latest/notes/compiler/coreSyn/CoreLint.hs.html)
 - [The Glasgow Haskell Compiler (AOSA vol. 2, on Core and Lint)](https://aosabook.org/en/v2/ghc.html)

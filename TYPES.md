@@ -514,3 +514,11 @@ section's own `mk_clo_ref`/`call_ref`/`pap_ref`, and the whole
 `Env_γ`/capture-signature apparatus this section already describes as
 needing the same treatment) stay genuinely postulated — see
 `RELATED_WORK.md` section 11 for exactly which pieces survive and why.
+
+**A third correction.** "Pi-type structural inequality" rejects a `Clo_j`
+where a `Clo_k` is expected only when the two arrow chains differ. It
+can't tell `\x. \y. e` (`Clo_2`) from `\x. (\y. e)` (a `Clo_1` returning
+a `Clo_1`), since both are `Int -> Int -> Int`, while compiled code calls
+them differently. The provers still decline such a mismatch, because
+they choose `Clo_k` from how many arguments each call site passes
+(`RELATED_WORK.md` §40, §46).
