@@ -59,7 +59,7 @@ impl Rc<Expr> {
     }
 
     /// One more than the largest loose `Var` index in this node, 0 when
-    /// it's closed.
+    /// it's closed (saturating at `u32::MAX`, as [`loose_of`]).
     pub fn loose(&self) -> u32 {
         self.0.loose
     }
@@ -111,7 +111,9 @@ impl<T: fmt::Debug> fmt::Debug for Rc<T> {
 /// closed, from its children's cached ranges. A child one binder deeper
 /// (the second field of `Pi`/`Lam`/`W`/`Sigma`, `WRec`'s `children_ty`,
 /// `Pair`'s `fam`) has one loose variable fewer out here. Saturating, so a
-/// `Var(u32::MAX)` doesn't wrap to "closed".
+/// `Var(u32::MAX)` doesn't wrap to "closed"; the range is exact only below
+/// `u32::MAX` (`Var(u32::MAX - 1)` and `Var(u32::MAX)` both give
+/// `u32::MAX`, which no real term reaches).
 pub fn loose_of(e: &Expr) -> u32 {
     let l = |c: &Rc<Expr>| c.loose();
     let u = |c: &Rc<Expr>| c.loose().saturating_sub(1);
@@ -1993,6 +1995,13 @@ mod tests {
             for c in 0..4 {
                 for n in [1, 2] {
                     assert_eq!(shift(&e, c, n), shift_ref(&e, c, n), "shift({e:?}, {c}, {n})");
+                }
+                // Shifting down by 1 at `c` is defined when `Var(c)` isn't
+                // free: always after a shift up, and on `e` when it lacks it.
+                let up = shift_ref(&e, c, 1);
+                assert_eq!(shift(&up, c, -1), shift_ref(&up, c, -1), "shift({up:?}, {c}, -1)");
+                if !is_var_free_ref(&e, c) {
+                    assert_eq!(shift(&e, c, -1), shift_ref(&e, c, -1), "shift({e:?}, {c}, -1)");
                 }
                 assert_eq!(shift(&shift(&e, c, 1), c, -1), e, "shift back ({e:?}, {c})");
                 assert_eq!(instantiate(&e, &s, c), instantiate_ref(&e, &s, c), "instantiate({e:?}, {s:?}, {c})");
