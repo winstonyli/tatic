@@ -2336,6 +2336,34 @@ mod tests {
             .unwrap();
     }
 
+    /// Guards `Drop for Expr`'s swap-onto-a-fresh-segment path specifically
+    /// (`RELATED_WORK.md` §64 / spec Risks): freeing an unshared child needs
+    /// the kernel `Rc`'s `strong_count` to reach the inner `std::rc::Rc`'s
+    /// count exactly, or that path never fires and every child is dropped
+    /// by plain recursive field-drop glue instead. `check_survives_*` above
+    /// can't catch a broken `strong_count` here -- 1,000 levels of `Drop`'s
+    /// own small per-level frame (a match plus a couple of closure calls)
+    /// fit in a 1 MB stack even with no protection at all, unlike
+    /// `infer`/`check`/`whnf`'s much heavier frames. This builds a much
+    /// deeper, wholly unshared chain and only drops it, so it fails however
+    /// the protection breaks.
+    #[test]
+    fn dropping_a_deep_term_does_not_overflow_the_stack() {
+        const N: usize = 100_000;
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                let mut e = sort(0);
+                for _ in 0..N {
+                    e = refl(e);
+                }
+                drop(e);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     /// A real, working `Nat` -- Zero/Succ and a genuinely computing
     /// structural recursor -- exercising `NatPostulates`, the reusable
     /// public API extracted from this same construction (see its own
