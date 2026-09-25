@@ -76,16 +76,10 @@ Those flags need `--bench <name>`; passing them to a bare `cargo bench`
 fails, because that also runs the lib unittest target, which doesn't
 understand criterion's arguments.
 
-Two notes on what "clean" means here:
-
-- On a 1.100-era nightly, `cargo clippy` reports four warnings from
-  `cranelift-entity`'s `entity_impl!` macro expanding the deprecated
-  `std::u32::MAX` path. Not this project's code, and deliberately not
-  suppressed with an `#[allow]` that would mask a future real deprecation
-  in `term.rs`.
-- `cargo bench` prints criterion's `change:` percentages against whatever
-  it last stored, which on a fresh checkout is nothing. Treat a
-  regression line as a prompt to look, not as a failure.
+A note on what "clean" means here: `cargo bench` prints criterion's
+`change:` percentages against whatever it last stored, which on a fresh
+checkout is nothing. Treat a regression line as a prompt to look, not as
+a failure.
 
 ## Architecture
 

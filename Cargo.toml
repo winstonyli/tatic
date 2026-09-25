@@ -12,7 +12,6 @@ default-run = "tatic"
 
 [dependencies]
 blake3 = "1.8.3"
-cranelift-entity = "0.129.1"
 hashbrown = "0.16.1"
 im = "15.1.0"
 stacker = "0.1.25"

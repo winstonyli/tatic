@@ -2381,7 +2381,11 @@ reports four warnings from `cranelift-entity`'s `entity_impl!` macro
 expanding the deprecated `std::u32::MAX` path at `term.rs:18`. Not
 tatic's code, and deliberately not suppressed with an `#[allow]` that
 would mask a future real deprecation in that file -- but "clippy clean"
-is no longer a valid pass criterion on that toolchain.
+is no longer a valid pass criterion on that toolchain. (Later fixed at
+the root: `TermStore` was the crate's only user, and it needed no more
+than a `Vec` and a hash-to-index map, so the dependency is gone and
+clippy is clean again. Newer `cranelift-entity` releases, up to 0.135,
+still expand the deprecated path.)
 
 ## 30. `cargo bench --bench execution` died of a stack overflow -- found and fixed
 

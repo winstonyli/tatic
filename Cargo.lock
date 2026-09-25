@@ -1430,7 +1430,6 @@ name = "tatic"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "cranelift-entity",
  "criterion",
  "hashbrown 0.16.1",
  "im",

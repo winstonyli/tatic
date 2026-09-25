@@ -6,16 +6,9 @@
 //! recognize "this exact transformation again" without re-inspecting the
 //! term graph.
 
-use cranelift_entity::{PrimaryMap, entity_impl};
 use hashbrown::HashMap;
 
 pub type Hash = blake3::Hash;
-
-/// Dense index into a [`TermStore`], used for internal storage/traversal.
-/// Content identity is still the [`Hash`]; this is just cheap plumbing.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TermId(u32);
-entity_impl!(TermId, "term");
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -106,9 +99,9 @@ impl Term {
 /// content [`Hash`] back to its [`Term`].
 #[derive(Default)]
 pub struct TermStore {
-    terms: PrimaryMap<TermId, Term>,
-    hashes: PrimaryMap<TermId, Hash>,
-    by_hash: HashMap<Hash, TermId>,
+    terms: Vec<Term>,
+    /// Each hash's index into `terms`.
+    by_hash: HashMap<Hash, usize>,
 }
 
 impl TermStore {
@@ -124,10 +117,8 @@ impl TermStore {
             debug_assert_eq!(self.terms[*id], term, "blake3 collision or bug");
             return hash;
         }
-        let id = self.terms.push(term);
-        let id2 = self.hashes.push(hash);
-        debug_assert_eq!(id, id2);
-        self.by_hash.insert(hash, id);
+        self.by_hash.insert(hash, self.terms.len());
+        self.terms.push(term);
         hash
     }
 
