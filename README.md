@@ -516,8 +516,8 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   concrete-instance attempts `jit.rs` tries alongside it (see "Proof
   strategies" above, now all 3 of them succeeding since branching-leaf
   instances stopped being declined), which together put that one case's
-  cold time on this machine around 80 ms under load (about 140 ms before
-  `subst_top` substituted in one pass, `RELATED_WORK.md` §53; ~15ms with
+  cold time on this machine at 29 ms, idle, on 2026-09-25 (about 140 ms
+  before `subst_top` substituted in one pass, `RELATED_WORK.md` §53; ~15ms with
   no kernel proof involved at all); the warm (cached) case is unaffected
   either way, since none of this runs again for a hash already in the cache.
   Also `capturing_closure_loop` — a tail-recursive term that creates and
@@ -529,7 +529,8 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   allocator's pointer was never being reset between the many separate
   calls this cache makes to one compiled instance (see `jit.rs`'s table
   row above) — fixed, and now warm calls (20,000 iterations each) run at
-  ~87µs total with memory staying bounded regardless of call count. Also
+  ~87µs total with memory staying bounded regardless of call count
+  (about 7µs since closure specialisation, `RELATED_WORK.md` §37). Also
   `partial_application_loop`
   — the same idea for the compile-time partial-application desugaring
   (`register_partial_app`/`Lowering::pap_env`): each iteration partially
@@ -539,7 +540,8 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   newly-supplied argument) gets allocated fresh every time. Ran clean —
   no repeat of the capturing-closure bug, memory stays bounded across
   250k+ warm iterations — but noticeably slower than a plain capturing
-  closure's warm call (~194µs vs. ~87µs, both 20,000 iterations), the expected cost of the
+  closure's warm call (~194µs vs. ~87µs, both 20,000 iterations, before
+  §37's specialisation removed most of both: 8µs vs. 7µs now), the expected cost of the
   extra indirection: creating the underlying function's own environment,
   then the wrapper's own, then a call through the wrapper on top of the
   real one. Also `closure_typed_loop_carried_parameter_loop` — the
