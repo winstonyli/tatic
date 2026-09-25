@@ -81,6 +81,14 @@ A note on what "clean" means here: `cargo bench` prints criterion's
 checkout is nothing. Treat a regression line as a prompt to look, not as
 a failure.
 
+To compare two versions, `scripts/bench_ab.sh [REV] [cargo bench args]
+[-- criterion args]` (default `HEAD`) benchmarks `REV` in a worktree
+under `target/bench-ab`, then the working tree, then `REV` again, and
+prints each bench's change next to the change the re-run of `REV` shows.
+Re-running unchanged code on this laptop moves benches by up to
+±100%, so only a change well beyond that noise column means anything.
+For example, `scripts/bench_ab.sh HEAD --bench proofs`.
+
 ## Architecture
 
 ```
