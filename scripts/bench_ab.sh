@@ -36,6 +36,12 @@ while [ $# -gt 0 ]; do
   if [ "$1" = -- ]; then shift; crit_args=("$@"); break; fi
   cargo_args+=("$1"); shift
 done
+# Without a target, cargo also runs the lib's test harness, which rejects
+# criterion's flags; select every bench target instead.
+case " ${cargo_args[*]} " in
+  *" --bench"*) ;;
+  *) cargo_args+=(--bench '*') ;;
+esac
 
 ab=$repo/target/bench-ab
 base=$ab/base

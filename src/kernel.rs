@@ -606,59 +606,6 @@ fn shift_rc(e: &Rc<Expr>, cutoff: u32, amount: i32) -> Expr {
     result
 }
 
-/// Replace `Var(j)` with `s` throughout `e`.
-fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
-    grow(|| match e {
-        Expr::Var(k) => {
-            if *k == j {
-                s.clone()
-            } else {
-                Expr::Var(*k)
-            }
-        }
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Pi(a, b) => pi(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
-        Expr::Lam(a, b) => lam(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
-        Expr::App(f, a) => app(subst(f, j, s), subst(a, j, s)),
-        Expr::Id(a, x, y) => id(subst(a, j, s), subst(x, j, s), subst(y, j, s)),
-        Expr::Refl(a) => refl(subst(a, j, s)),
-        Expr::J {
-            motive,
-            base,
-            a,
-            b,
-            p,
-        } => jelim(
-            subst(motive, j, s),
-            subst(base, j, s),
-            subst(a, j, s),
-            subst(b, j, s),
-            subst(p, j, s),
-        ),
-        Expr::W(a, b) => wty(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
-        Expr::Sup(a, f) => sup(subst(a, j, s), subst(f, j, s)),
-        Expr::WRec {
-            motive,
-            children_ty,
-            step,
-            target,
-        } => wrec(subst(motive, j, s), subst(children_ty, j + 1, &shift(s, 0, 1)), subst(step, j, s), subst(target, j, s)),
-        Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => subst_sigma_family(e, j, s),
-    })
-}
-
-/// `subst`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
-/// `shift_sigma_family`'s own docs for why.
-#[inline(never)]
-fn subst_sigma_family(e: &Expr, j: u32, s: &Expr) -> Expr {
-    match e {
-        Expr::Sigma(a, b) => sigma(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
-        Expr::Pair(fam, a, b) => pair(subst(fam, j + 1, &shift(s, 0, 1)), subst(a, j, s), subst(b, j, s)),
-        Expr::SigRec { motive, step, target } => sigrec(subst(motive, j, s), subst(step, j, s), subst(target, j, s)),
-        _ => unreachable!("subst_sigma_family called on a non-Sigma-family Expr"),
-    }
-}
-
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
 /// deeper) with `s`, then discharge that binder. When `body` doesn't
 /// mention `Var(0)` the substitution is the identity, so `s` isn't walked
@@ -669,7 +616,41 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
     if !is_var_free(body, 0) {
         return shift(body, 0, -1);
     }
-    shift(&subst(body, 0, &shift(s, 0, 1)), 0, -1)
+    instantiate(body, s, 0)
+}
+
+/// `subst_top`'s substitution in one pass: under `d` binders of `e`,
+/// `Var(d)` becomes `s` shifted past them, and `e`'s own free variables
+/// above it drop by one for the discharged binder. Equal to substituting
+/// `shift(s, 0, 1)` and then shifting the result by -1, but `s` is shifted
+/// only where it's used, not at every binder crossed and again in the
+/// result (`RELATED_WORK.md` §52).
+fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
+    let go = |x: &Rc<Expr>, d: u32| instantiate(x, s, d);
+    grow(|| match e {
+        Expr::Var(k) => {
+            if *k == d {
+                shift(s, 0, d as i32)
+            } else if *k > d {
+                Expr::Var(*k - 1)
+            } else {
+                Expr::Var(*k)
+            }
+        }
+        Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Pi(a, b) => pi(go(a, d), go(b, d + 1)),
+        Expr::Lam(a, b) => lam(go(a, d), go(b, d + 1)),
+        Expr::App(f, a) => app(go(f, d), go(a, d)),
+        Expr::Id(a, x, y) => id(go(a, d), go(x, d), go(y, d)),
+        Expr::Refl(a) => refl(go(a, d)),
+        Expr::J { motive, base, a, b, p } => jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
+        Expr::W(a, b) => wty(go(a, d), go(b, d + 1)),
+        Expr::Sup(a, f) => sup(go(a, d), go(f, d)),
+        Expr::WRec { motive, children_ty, step, target } => wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
+        Expr::Sigma(a, b) => sigma(go(a, d), go(b, d + 1)),
+        Expr::Pair(fam, a, b) => pair(go(fam, d + 1), go(a, d), go(b, d)),
+        Expr::SigRec { motive, step, target } => sigrec(go(motive, d), go(step, d), go(target, d)),
+    })
 }
 
 /// Whether `Var(idx)` occurs free in `e`, tracking binder depth through
@@ -1678,6 +1659,60 @@ impl NatPostulates {
 mod tests {
     use super::*;
 
+    /// Replace `Var(j)` with `s` throughout `e`: the reference `subst_top`
+    /// is checked against, as `shift(&subst(body, 0, &shift(s, 0, 1)), 0, -1)`.
+    fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
+        grow(|| match e {
+            Expr::Var(k) => {
+                if *k == j {
+                    s.clone()
+                } else {
+                    Expr::Var(*k)
+                }
+            }
+            Expr::Sort(i) => Expr::Sort(*i),
+            Expr::Pi(a, b) => pi(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
+            Expr::Lam(a, b) => lam(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
+            Expr::App(f, a) => app(subst(f, j, s), subst(a, j, s)),
+            Expr::Id(a, x, y) => id(subst(a, j, s), subst(x, j, s), subst(y, j, s)),
+            Expr::Refl(a) => refl(subst(a, j, s)),
+            Expr::J {
+                motive,
+                base,
+                a,
+                b,
+                p,
+            } => jelim(
+                subst(motive, j, s),
+                subst(base, j, s),
+                subst(a, j, s),
+                subst(b, j, s),
+                subst(p, j, s),
+            ),
+            Expr::W(a, b) => wty(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
+            Expr::Sup(a, f) => sup(subst(a, j, s), subst(f, j, s)),
+            Expr::WRec {
+                motive,
+                children_ty,
+                step,
+                target,
+            } => wrec(subst(motive, j, s), subst(children_ty, j + 1, &shift(s, 0, 1)), subst(step, j, s), subst(target, j, s)),
+            Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => subst_sigma_family(e, j, s),
+        })
+    }
+
+    /// `subst`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
+    /// `shift_sigma_family`'s own docs for why.
+    #[inline(never)]
+    fn subst_sigma_family(e: &Expr, j: u32, s: &Expr) -> Expr {
+        match e {
+            Expr::Sigma(a, b) => sigma(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
+            Expr::Pair(fam, a, b) => pair(subst(fam, j + 1, &shift(s, 0, 1)), subst(a, j, s), subst(b, j, s)),
+            Expr::SigRec { motive, step, target } => sigrec(subst(motive, j, s), subst(step, j, s), subst(target, j, s)),
+            _ => unreachable!("subst_sigma_family called on a non-Sigma-family Expr"),
+        }
+    }
+
     /// A random `Expr` of every variant, ill-typed as often as not, with
     /// indices small enough that `Var(0)` is often free and often not.
     fn random_expr(seed: &mut u64, fuel: u32) -> Expr {
@@ -1740,6 +1775,33 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(subst_top(&body, &s), pi(var(2), var(3)));
         assert!(t.elapsed() < std::time::Duration::from_millis(50), "took {:?}", t.elapsed());
+    }
+
+    /// Substituting under binders shifts the argument once, where it's used,
+    /// not again at every binder crossed on the way (`RELATED_WORK.md` §52).
+    /// Timed against one shift of the argument, so it holds on any machine.
+    #[test]
+    fn subst_top_shifts_a_used_argument_once() {
+        let mut s = var(0);
+        for _ in 0..14 {
+            s = app(s.clone(), s);
+        }
+        let depth = 30;
+        let mut body = var(depth);
+        let mut expected = shift(&s, 0, depth as i32);
+        let t = std::time::Instant::now();
+        let one_shift = shift(&s, 0, depth as i32);
+        let one_shift_time = t.elapsed();
+        drop(one_shift);
+        for _ in 0..depth {
+            body = lam(sort(0), body);
+            expected = lam(sort(0), expected);
+        }
+        let t = std::time::Instant::now();
+        let got = subst_top(&body, &s);
+        let took = t.elapsed();
+        assert_eq!(got, expected);
+        assert!(took < one_shift_time * 4 + std::time::Duration::from_millis(5), "took {took:?}, one shift {one_shift_time:?}");
     }
 
     /// The argument `Rc` of each application in `e`'s spine, outermost

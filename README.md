@@ -1111,7 +1111,8 @@ guards against by hand): caught immediately, at seed 22.
   working and `denote` shares subterms (§49), so one proof went from
   217 to 56 ms. `subst_top` no longer shifts an unused argument (§51),
   which took it to 9.4 ms and the universal-proof benches 2 to 4 times
-  faster. What's left is memoising the kernel's `infer` by (node,
+  faster, and substitutes a used argument in one pass (§53), which made
+  the over-application instance proofs about 7 times faster. What's left is memoising the kernel's `infer` by (node,
   context id), which would make proofs linear in the DAG (§50). If the proof gate is ever
   relaxed, the next step is a typed IR that `ir::check` checks (§46's
   B5): it closes the arity and Int-vs-closure agreements for compiled
