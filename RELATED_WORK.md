@@ -5285,6 +5285,20 @@ shifts through the kernel: `Anchored::at`, `kernel::arrow`, and direct
 subterms come back as the same allocation, and the probe's `dag_size`
 counts allocations, so the built proof shares more.
 
+**Where the spec's 20% went.** It never existed on an idle machine. The
+spec took it from §64's payoff table (1.90 s to 1.49 s), measured while
+another session held 7 to 8.5 cores. Rerun idle from the spike patch
+(`docs/superpowers/spikes/2026-09-25-constants-and-loose-ranges.patch`,
+applied to 9f250e5; `SPIKE=... cargo test --release --lib spike_fib -- --ignored`; best of 5, in-process), `fib(16)` goes from 785 ms to
+690 ms prove plus re-check, 12%. Stage 1's probe in the same idle window,
+best of 3, goes from 800 ms to 686 ms, 14% (build 417 to 365 ms, check
+383 to 321 ms). So stage 1 matches the spike, and the load inflated the
+spike's gain. The spike's node-visit counter shows why the gain is small:
+`shift` still visits 1.84 million nodes, against 2.22 million, 17% fewer.
+Nearly every term mentions a postulate as a `Var`, so almost nothing is
+closed. Constants (stage 2) are what make terms closed; with both, §64
+measured the DAG at 10,501 nodes.
+
 **Tests.** Each was checked against a mutation, then reverted.
 - `loose_matches_a_walk`: 20,000 random terms; the cached range equals a
   walk. It caught `loose_of` without the `-1` under `Pi`/`Lam`/`W`/`Sigma`,
