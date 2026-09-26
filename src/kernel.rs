@@ -1531,6 +1531,10 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 /// never eliminate into its own level. Predicativity is correctly refusing
 /// what would otherwise be a disguised `Type : Type`. Real kernels sidestep
 /// this by taking a small base type as primitive (or, as here, postulated).
+///
+/// A postulate is referred to by `Const(level)` and checked as one of the
+/// kernel's `Globals`; a scope's own entries stay `Var`s, as before
+/// (`RELATED_WORK.md` §69).
 #[derive(Clone)]
 pub struct Postulates {
     pub ctx: Ctx,
@@ -1565,7 +1569,17 @@ impl Postulates {
         pos
     }
     pub fn get(&self, pos: usize) -> Expr {
-        var((self.ctx.len() - 1 - pos) as u32)
+        if pos < self.scope_base {
+            Expr::Const(pos as u32)
+        } else {
+            var((self.ctx.len() - 1 - pos) as u32)
+        }
+    }
+    /// The postulates (`Globals`) and the open scopes' entries (`Ctx`).
+    fn split(&self) -> (Globals, Ctx) {
+        let mut globals = self.ctx.clone();
+        let locals = globals.split_off(self.scope_base.min(self.ctx.len()));
+        (globals, locals)
     }
     /// Opens a builder scope: entries pushed after this point belong to it
     /// until `close` or `abandon`.
@@ -1592,10 +1606,12 @@ impl Postulates {
         self.scope_base = s.outer_base;
     }
     pub fn check(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
-        check(&self.ctx, e, ty)
+        let (g, l) = self.split();
+        check_in(&g, &l, e, ty)
     }
     pub fn infer(&self, e: &Expr) -> Result<Expr, String> {
-        infer(&self.ctx, e)
+        let (g, l) = self.split();
+        infer_in(&g, &l, e)
     }
 }
 impl Default for Postulates {
@@ -2536,28 +2552,35 @@ mod tests {
     }
 
     /// `A : Type0, a : A, f : A -> A -> A, g : A -> A`, the context the
-    /// `infer` memo tests below build terms in.
+    /// `infer` memo tests below build terms in. Built by hand as `Var`s
+    /// (these are exactly the terms `Postulates::get` produced here before
+    /// postulates became `Const`s) since those tests key their pool of
+    /// nodes on `var(k)`, not on a `Postulates`.
     fn memo_test_ctx() -> Ctx {
+        let mut ctx = Ctx::new();
+        ctx.push_back(sort(0));
+        ctx.push_back(var(0));
+        ctx.push_back(arrow(var(1), arrow(var(1), var(1))));
+        ctx.push_back(arrow(var(2), var(2)));
+        ctx
+    }
+
+    /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a
+    /// tree, 20 shared nodes as a DAG. Without the memo `infer` walked the
+    /// tree (`RELATED_WORK.md` §63). Postulates as `Const`s, per stage 3.
+    #[test]
+    fn infer_is_linear_in_the_dag_of_a_shared_term() {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         p.push(p.get(a_ty));
         p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
         p.push(arrow(p.get(a_ty), p.get(a_ty)));
-        p.ctx
-    }
-
-    /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a
-    /// tree, 20 shared nodes as a DAG. Without the memo `infer` walked the
-    /// tree (`RELATED_WORK.md` §63).
-    #[test]
-    fn infer_is_linear_in_the_dag_of_a_shared_term() {
-        let ctx = memo_test_ctx();
-        let mut d = Rc::new(var(2));
+        let mut d = Rc::new(p.get(1));
         for _ in 0..20 {
-            d = Rc::new(Expr::App(Rc::new(Expr::App(Rc::new(var(1)), d.clone())), d));
+            d = Rc::new(Expr::App(Rc::new(Expr::App(Rc::new(p.get(2)), d.clone())), d));
         }
         let t = std::time::Instant::now();
-        assert_eq!(infer(&ctx, &d), Ok(var(3)));
+        assert_eq!(p.infer(&d), Ok(p.get(0)));
         let took = t.elapsed();
         assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
     }
@@ -3983,6 +4006,23 @@ mod tests {
         p.push(p.get(a));
         p.abandon(s);
         assert_eq!(p.ctx.len(), 1);
+    }
+
+    /// Outside a scope a postulate is `Const(pos)`; inside one, the
+    /// scope's own entries are `Var`s and the postulates stay `Const`s.
+    #[test]
+    fn postulates_are_consts_and_a_scopes_entries_are_vars() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        assert_eq!(p.get(a), Expr::Const(0));
+        let s = p.open();
+        let x = p.push(p.get(a));
+        assert_eq!(p.get(a), Expr::Const(0));
+        assert_eq!(p.get(x), var(0));
+        assert!(p.check(&p.get(x), &p.get(a)).is_ok());
+        let closed = p.close(s, Binder::Lam, p.get(x));
+        assert_eq!(closed, lam(Expr::Const(0), var(0)));
+        assert!(p.check(&closed, &pi(Expr::Const(0), Expr::Const(0))).is_ok());
     }
 
     #[test]

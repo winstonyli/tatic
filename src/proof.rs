@@ -7659,8 +7659,9 @@ mod tests {
         assert_eq!(proof.arity, 2);
         // Independently re-typecheck from scratch (not just trusting the
         // `.ok()?` inside `prove_pure_expr`).
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -7840,8 +7841,9 @@ mod tests {
             let proof = prove_tail_recursive_call(&s, g, &[a, b])
                 .unwrap_or_else(|| panic!("gcd({a},{b}) should get a relational proof"));
             assert_eq!(proof.arity, 2);
-            kernel::check(
+            kernel::check_in(
                 &proof.ctx,
+                &Ctx::new(),
                 &proof.proof,
                 &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
             )
@@ -7857,7 +7859,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, g).expect("gcd should get a universal proof");
         assert_eq!(proof.arity, 2);
         // Independently re-typecheck from scratch.
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -7896,7 +7898,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, it).expect("iterate should get a universal proof");
         assert_eq!(proof.arity, 3);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -7940,7 +7942,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, h)
             .expect("a self-recursive loop creating a fresh capturing closure each iteration should get a universal proof");
         assert_eq!(proof.arity, 2);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         // Instance specialization (the weaker, sample-oriented proof --
@@ -7954,7 +7956,7 @@ mod tests {
         assert_eq!(eval::apply_term(&s, h, &[5, 0]).unwrap(), 15, "interpreter sanity check: 5+4+3+2+1");
         let instance = prove_tail_recursive_instance(&s, h, &[5, 0])
             .expect("a self-call argument creating and calling a capturing closure should now get a concrete instance");
-        kernel::check(&instance.ctx, &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
+        kernel::check_in(&instance.ctx, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
             .expect("the recorded instance proof should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
@@ -8858,7 +8860,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, h)
             .expect("a self-recursive loop partially applying a fresh capturing literal each iteration should get a universal proof");
         assert_eq!(proof.arity, 2);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
@@ -8895,7 +8897,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, h)
             .expect("a closure created in a leaf's own top-level expression should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
@@ -8967,7 +8969,7 @@ mod tests {
         // meaningful relative to the ctx it was built in), against
         // factorial's theorem_ty.
         assert!(
-            kernel::check(&gcd_proof.ctx, &gcd_proof.theorem_proof, &fact_proof.theorem_ty).is_err(),
+            kernel::check_in(&gcd_proof.ctx, &Ctx::new(), &gcd_proof.theorem_proof, &fact_proof.theorem_ty).is_err(),
             "gcd's proof should be rejected against factorial's theorem type"
         );
     }
@@ -8994,7 +8996,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, countdown)
             .expect("countdown should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9025,7 +9027,7 @@ mod tests {
         let proof =
             prove_tail_recursive_universal(&s, g).expect("gcd with two base cases should get a universal proof");
         assert_eq!(proof.arity, 2);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9051,7 +9053,7 @@ mod tests {
         let proof =
             prove_tail_recursive_universal(&s, fact).expect("factorial should now get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9078,7 +9080,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, fib).expect("fibonacci should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9109,7 +9111,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, g).expect("a purely-arithmetic nested If should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9144,7 +9146,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, g).expect("a nested If with a self-call in each branch should still get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         // f(0)=0, f(1)=1+(f(0)+1)=2, f(2)=2+f(1)=4, f(3)=3+(f(2)+1)=8,
@@ -9152,7 +9154,7 @@ mod tests {
         assert_eq!(eval::apply_term(&s, g, &[5]).unwrap(), 18, "interpreter sanity check");
 
         let instance = prove_tail_recursive_instance(&s, g, &[5]).expect("f(5) should get an instance");
-        kernel::check(&instance.ctx, &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
+        kernel::check_in(&instance.ctx, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
             .expect("the recorded instance proof should independently re-typecheck");
     }
 
@@ -9203,7 +9205,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, top)
             .expect("a Clo-typed nested If as a direct self-call argument should get a universal proof");
         assert_eq!(proof.arity, 3);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9274,7 +9276,7 @@ mod tests {
             "a Clo-typed nested If used as an ad-hoc closure's own argument, alongside a separate self-call in the same leaf, should get a universal proof",
         );
         assert_eq!(proof.arity, 4);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9409,7 +9411,7 @@ mod tests {
             let proof = prove_tail_recursive_instance(&s, g, &[a, b])
                 .unwrap_or_else(|| panic!("gcd({a},{b}) should get a kernel-checked instance"));
             assert_eq!(proof.arity, 2);
-            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
                 .expect("the recorded instance proof should independently re-typecheck");
         }
     }
@@ -9433,7 +9435,7 @@ mod tests {
             let proof = prove_tail_recursive_instance(&s, fact, &[n])
                 .unwrap_or_else(|| panic!("factorial({n}) should get a kernel-checked instance"));
             assert_eq!(proof.arity, 1);
-            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
                 .expect("the recorded instance proof should independently re-typecheck");
         }
     }
@@ -9464,7 +9466,7 @@ mod tests {
         for n in [1, 2, 8] {
             let proof = prove_tail_recursive_instance(&s, fib, &[n]).unwrap_or_else(|| panic!("fib({n}) should get an instance"));
             assert_eq!(proof.arity, 1);
-            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
                 .expect("the recorded instance proof should independently re-typecheck");
         }
     }
@@ -9486,11 +9488,10 @@ mod tests {
     }
 
     /// `fib(n)`'s witness reuses each smaller call's witness from
-    /// `build_ev_witness`'s memo. When the context grew between storing
-    /// and reusing one, `Anchored::at` returned a shifted copy, so the
-    /// proof's DAG grew like the call count, 8.1 times from `fib(8)` to
-    /// `fib(12)`. It now grows 3.4 times: `v` is still copied where
-    /// `params_and_close` shifts it under a binder (`RELATED_WORK.md` §62).
+    /// `build_ev_witness`'s memo. With postulates as constants (rather than
+    /// `Var`s that shift under a growing context) the DAG grows linearly:
+    /// the spike measured 5,445 nodes at `fib(8)` and 10,501 at `fib(16)`
+    /// (`RELATED_WORK.md` §69).
     #[test]
     fn a_fibonacci_instance_proof_shares_its_repeated_witnesses() {
         let mut s = TermStore::new();
@@ -9509,8 +9510,37 @@ mod tests {
         let fib = s.rec(abs);
 
         let size = |n: i64| dag_size(&prove_tail_recursive_instance(&s, fib, &[n]).unwrap().proof);
-        let (small, large) = (size(8), size(12));
-        assert!(large < 4 * small, "fib(8): {small} nodes, fib(12): {large}");
+        let (small, large) = (size(8), size(16));
+        assert!(2 * large < 5 * small, "fib(8): {small} nodes, fib(16): {large}");
+    }
+
+    /// `fib(16)`'s instance proof, built and re-checked. With postulates
+    /// as constants it's a linear DAG (§69); before, it was 227k nodes and
+    /// seconds of work.
+    #[test]
+    fn fib16_instance_proof_builds_and_checks_quickly() {
+        // same fib TermStore setup as fib16_instance_proof_cost
+        let mut s = TermStore::new();
+        let n = s.var(0);
+        let f = s.var(1);
+        let two = s.lit(2);
+        let cond = s.prim(PrimOp::Lt, n, two);
+        let one = s.lit(1);
+        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
+        let call1 = s.app(f, n_minus_1);
+        let call2 = s.app(f, n_minus_2);
+        let else_branch = s.prim(PrimOp::Add, call1, call2);
+        let body = s.if_(cond, n, else_branch);
+        let abs = s.abs(body);
+        let fib = s.rec(abs);
+
+        let t = std::time::Instant::now();
+        let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            .expect("fib(16)'s instance proof re-checks");
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
     }
 
     /// `fib(16)`'s instance proof: its DAG size, and the time to build it
@@ -9539,7 +9569,7 @@ mod tests {
         let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
         let build = t.elapsed();
         let t = std::time::Instant::now();
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
             .expect("fib(16)'s instance proof re-checks");
         println!("fib16 dag={} build={build:?} check={:?}", dag_size(&proof.proof), t.elapsed());
     }
@@ -9569,8 +9599,9 @@ mod tests {
         let fact_proof = prove_tail_recursive_instance(&s2, fact, &[5]).expect("factorial instance proof");
 
         assert!(
-            kernel::check(
+            kernel::check_in(
                 &gcd_proof.ctx,
+                &Ctx::new(),
                 &gcd_proof.proof,
                 &kernel::id(fact_proof.int_ty.clone(), fact_proof.lhs.clone(), fact_proof.rhs.clone()),
             )
@@ -9611,8 +9642,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, applied).expect("(twice inc) 5 should get a closure proof");
         assert_eq!(proof.arity, 0);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9632,8 +9664,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, t).expect("twice alone should get a closure proof");
         assert_eq!(proof.arity, 2);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9670,8 +9703,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, applied).expect("fact(10) should get a closure proof");
         assert_eq!(proof.arity, 0);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9700,8 +9734,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, applied).expect("(\\g. g 10) fact should get a closure proof");
         assert_eq!(proof.arity, 0);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9753,8 +9788,9 @@ mod tests {
         let proof = prove_closure_expr(&s, top)
             .expect("a partially applied self-recursive combinator used as a value should get a closure proof");
         assert_eq!(proof.arity, 0);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9805,8 +9841,9 @@ mod tests {
             "a partially applied self-recursive combinator that also captures an outer variable should get a closure proof",
         );
         assert_eq!(proof.arity, 1);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9904,8 +9941,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, top).expect("a partially applied literal lambda used as a value should get a closure proof");
         assert_eq!(proof.arity, 0);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9941,8 +9979,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, top).expect("a partially applied combinator with mixed parameter types should get a closure proof");
         assert_eq!(proof.arity, 0);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -9985,8 +10024,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, g).expect("a partially applied capturing literal lambda used as a value should get a closure proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -10125,7 +10165,7 @@ mod tests {
         assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
         let proof = prove_closure_expr(&s, f).expect("picker's own Clo-typed body should now be reachable through call_ref");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10234,7 +10274,7 @@ mod tests {
 
         let proof = prove_closure_expr(&s, top).expect("an over-applied literal lambda returning a closure should get a proof");
         assert_eq!(proof.arity, 3);
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10262,8 +10302,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, g).expect("a capturing closure used as a value should get a proof now");
         assert_eq!(proof.arity, 1);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -10292,8 +10333,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, g).expect("a directly called capturing closure should get a proof now");
         assert_eq!(proof.arity, 1);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -10346,8 +10388,9 @@ mod tests {
         let proof =
             prove_closure_expr(&s, g).expect("a capture of a closure-typed value should get a closure proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -10410,7 +10453,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, it)
             .expect("a closure created in a self-call argument capturing a closure-typed loop parameter should get a universal proof");
         assert_eq!(proof.arity, 3);
-        kernel::check(&proof.ctx, &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         // inc = \y. y + 1, baked in as the initial g, run for real: each
@@ -10456,7 +10499,7 @@ mod tests {
 
         let proof = prove_closure_expr(&s, f).expect("a Clo-typed top-level result should now get a closure proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10479,7 +10522,7 @@ mod tests {
 
         let proof = prove_closure_expr(&s, h).expect("a bare Clo-typed parameter read should get a closure proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10520,8 +10563,9 @@ mod tests {
 
         let proof = prove_closure_expr(&s, f).expect("an If between two closures used as a value should get a closure proof");
         assert_eq!(proof.arity, 1);
-        kernel::check(
+        kernel::check_in(
             &proof.ctx,
+            &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
         )
@@ -10572,8 +10616,9 @@ mod tests {
         let alone_proof = prove_closure_expr(&s2, t2).expect("twice alone should get a closure proof");
 
         assert!(
-            kernel::check(
+            kernel::check_in(
                 &applied_proof.ctx,
+                &Ctx::new(),
                 &applied_proof.proof,
                 &kernel::id(alone_proof.result_ty.clone(), alone_proof.denotation.clone(), alone_proof.denotation.clone()),
             )
@@ -10588,7 +10633,7 @@ mod tests {
     /// already applies to `prove_tail_recursive_call`'s own per-instance
     /// proofs, which this function's own methodology mirrors.
     fn check_instance_proof(proof: &EquivalenceProof) {
-        kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded per-instance proof should independently re-typecheck");
     }
 

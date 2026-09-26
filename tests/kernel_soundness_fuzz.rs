@@ -352,6 +352,51 @@ fn to_globals(ctx: &kernel::Ctx) -> kernel::Globals {
     ctx.iter().enumerate().map(|(i, ty)| to_consts(ty, i as u32, 0)).collect()
 }
 
+/// The inverse of `to_consts`: `e` with references to the `n`-entry
+/// constant environment turned back into references to an `n`-entry local
+/// context, as if `d` binders were already pushed on top of it.
+fn to_vars(e: &Expr, n: u32, d: u32) -> Expr {
+    let go = |x: &Expr, d: u32| to_vars(x, n, d);
+    match e {
+        Expr::Var(k) => Expr::Var(*k),
+        Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) if *l < n => Expr::Var(d + (n - 1 - l)),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Free(l) => Expr::Free(*l),
+        Expr::Pi(a, b) => kernel::pi(go(a, d), go(b, d + 1)),
+        Expr::Lam(a, b) => kernel::lam(go(a, d), go(b, d + 1)),
+        Expr::App(f, a) => kernel::app(go(f, d), go(a, d)),
+        Expr::Id(a, x, y) => kernel::id(go(a, d), go(x, d), go(y, d)),
+        Expr::Refl(a) => kernel::refl(go(a, d)),
+        Expr::J { motive, base, a, b, p } => kernel::jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
+        Expr::W(a, b) => kernel::wty(go(a, d), go(b, d + 1)),
+        Expr::Sup(a, f) => kernel::sup(go(a, d), go(f, d)),
+        Expr::WRec { motive, children_ty, step, target } => kernel::wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
+        Expr::Sigma(a, b) => kernel::sigma(go(a, d), go(b, d + 1)),
+        Expr::Pair(fam, a, b) => kernel::pair(go(fam, d + 1), go(a, d), go(b, d)),
+        Expr::SigRec { motive, step, target } => kernel::sigrec(go(motive, d), go(step, d), go(target, d)),
+    }
+}
+
+/// `build_ctx`'s seven postulates as a plain `Var`-based local context --
+/// exactly what `Postulates::push`/`get` produced here before postulates
+/// became `Const`s (stage 3a). `to_consts`/`to_globals` already convert
+/// *from* this shape; `the_global_environment_agrees_with_the_context`
+/// needs the shape itself, since `build_ctx`'s own `ctx.p.ctx` no longer
+/// stores it -- `push`ing through the new `get` bakes `Const`s into it
+/// instead.
+fn build_var_ctx() -> kernel::Ctx {
+    let mut ctx = kernel::Ctx::new();
+    ctx.push_back(kernel::sort(0)); // 0: A : Type0
+    ctx.push_back(kernel::sort(0)); // 1: B : Type0
+    ctx.push_back(kernel::var(1)); // 2: a : A
+    ctx.push_back(kernel::var(2)); // 3: b : A
+    ctx.push_back(kernel::var(3)); // 4: c : A
+    ctx.push_back(kernel::id(kernel::var(4), kernel::var(2), kernel::var(0))); // 5: pac : Id(A, a, c)
+    ctx.push_back(kernel::arrow(kernel::var(5), kernel::var(4))); // 6: f : A -> B
+    ctx
+}
+
 /// A moderately rich postulated context: a base type `A`, three of its
 /// elements `a`/`b`/`c` (only `a`/`c` related, via `pac`; `a`/`b` and
 /// `b`/`c` are *not* related by anything in the context), and a function
@@ -486,14 +531,19 @@ fn mutating_a_genuinely_valid_proof_never_fools_the_kernel_into_an_unrelated_equ
 
 /// Moving the context's postulates into the global environment changes no
 /// answer: every candidate, random or a mutant of a valid proof, checks
-/// against the claim in constant form exactly when it checks in the
-/// original.
+/// against the claim in constant form exactly when it checks against the
+/// same claim in the original, plain-`Var` local context (`build_var_ctx`).
+/// `ctx.p` no longer holds that original shape itself -- with postulates
+/// as `Const`s (stage 3a) `ctx.p.check` already *is* the constant-form
+/// side, so both sides are built explicitly here instead of one borrowing
+/// `ctx.p`.
 #[test]
 fn the_global_environment_agrees_with_the_context() {
     const SEEDS: u64 = 20_000;
     let ctx = build_ctx();
     let n = ctx.p.ctx.len() as u32;
     let g = to_globals(&ctx.p.ctx);
+    let var_ctx = build_var_ctx();
     let pool = valid_seed_pool(&ctx);
     let (mut agreed_ok, mut agreed_err) = (0, 0);
     for seed in 0..SEEDS {
@@ -505,8 +555,8 @@ fn the_global_environment_agrees_with_the_context() {
             let base = &pool[rng.below(pool.len() as u32) as usize];
             mutate_once(&mut rng, base, n)
         };
-        let by_vars = ctx.p.check(&candidate, &claim).is_ok();
-        let by_consts = kernel::check_in(&g, &kernel::Ctx::new(), &to_consts(&candidate, n, 0), &to_consts(&claim, n, 0)).is_ok();
+        let by_vars = kernel::check(&var_ctx, &to_vars(&candidate, n, 0), &to_vars(&claim, n, 0)).is_ok();
+        let by_consts = kernel::check_in(&g, &kernel::Ctx::new(), &to_consts(&candidate, n, 0), &claim).is_ok();
         assert_eq!(by_vars, by_consts, "seed={seed}: {candidate:?} against {claim:?}");
         if by_vars { agreed_ok += 1 } else { agreed_err += 1 }
     }
