@@ -1163,14 +1163,6 @@ fn expect_sort(e: &Expr) -> Result<u32, String> {
     }
 }
 
-/// Whether every `Const` in `e` is below `bound`.
-fn consts_below(e: &Expr, bound: u32) -> bool {
-    match e {
-        Expr::Const(j) => *j < bound,
-        _ => same_shape(e, e, |c, _| consts_below(c, bound)),
-    }
-}
-
 fn expect_pi(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
         Expr::Pi(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
@@ -1581,10 +1573,12 @@ impl Postulates {
                 loose_of(&ty) == 0 && free_of(&ty) == 0,
                 "a postulate's type must be closed: {ty:?}"
             );
-            assert!(consts_below(&ty, pos as u32), "a postulate's type may mention only earlier postulates: {ty:?}");
         }
         // RELATED_WORK §68: an ill-formed entry sat in the context unchecked
-        // until a claim that used it failed.
+        // until a claim that used it failed. This also catches a postulate
+        // referencing itself or a later one: `infer` checks it against
+        // `Globals = ctx[..scope_base]`, so a forward `Const` fails in
+        // `const_type` with "unknown constant".
         if let Err(err) = self.infer(&ty).and_then(|t| expect_sort(&t).map(|_| ())) {
             panic!("a postulate's type isn't a type: {err}\n  type: {ty:?}");
         }
@@ -4073,7 +4067,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "earlier")]
+    #[should_panic(expected = "unknown constant")]
     fn push_rejects_a_forward_const() {
         let mut p = Postulates::new();
         p.push(sort(0));
