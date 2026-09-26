@@ -1469,7 +1469,14 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
             return Err(free_escaped(free_of(t) - 1));
         }
     }
-    check_rc(globals, &mut InferCache::default(), ctx, 0, &Rc::new(e.clone()), expected)
+    // The claim must be a type before anything is checked against it, as
+    // in Lean's `check_constant_val` and Coq's `infer_definition`
+    // (RELATED_WORK §67): the rules below compare `expected` by `def_eq`
+    // and never infer it, so a malformed claim would otherwise be proved.
+    // One cache for both, so a claim's subterms the proof shares hit it.
+    let mut ic = InferCache::default();
+    expect_sort(&infer_rc(globals, &mut ic, ctx, 0, &Rc::new(expected.clone()))?)?;
+    check_rc(globals, &mut ic, ctx, 0, &Rc::new(e.clone()), expected)
 }
 
 /// [`check_in`] with no globals.
@@ -1482,6 +1489,9 @@ fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>,
         if let Expr::Lam(a, body) = &**e
             && let Expr::Pi(ref dom, ref cod) = whnf(expected)
         {
+            // As `infer`'s `Lam` rule does: `def_eq` alone would accept an
+            // ill-typed annotation that reduces to `dom`.
+            expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
             if !def_eq(a, dom) {
                 return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
             }
@@ -3379,6 +3389,37 @@ mod tests {
         // above are the `Free`'s doing.
         assert_eq!(check_in(&g, &none, &Expr::Const(1), &unhide(Expr::Const(0))), Ok(()));
         assert_eq!(check_in(&g, &none, &lam(unhide(Expr::Const(0)), Expr::Const(1)), &pi(Expr::Const(0), Expr::Const(0))), Ok(()));
+    }
+
+    /// `check_in` checks its claim is a type before checking the proof, as
+    /// Lean's `check_constant_val` and Coq's `infer_definition` do
+    /// (RELATED_WORK §67). Without that, a malformed claim is "proved".
+    #[test]
+    fn a_claim_that_isnt_a_type_is_rejected() {
+        let g = two_globals();
+        let none = Ctx::new();
+        let a = Expr::Const(1); // a term of type A, not a type
+        assert!(check_in(&g, &none, &lam(a.clone(), var(0)), &pi(a.clone(), a.clone())).is_err(), "Π(x:a). a");
+        let ghost = app(lam(Expr::Const(99), Expr::Const(0)), a.clone()); // reduces to A
+        assert!(check_in(&g, &none, &a, &ghost).is_err(), "a claim naming a constant that doesn't exist");
+        // Well-formed claims still check.
+        assert_eq!(check_in(&g, &none, &lam(Expr::Const(0), var(0)), &pi(Expr::Const(0), Expr::Const(0))), Ok(()));
+        assert_eq!(check_in(&g, &none, &a, &app(lam(Expr::Const(0), Expr::Const(0)), a.clone())), Ok(()));
+    }
+
+    /// Checking a lambda against a Π infers its annotation to a `Sort`,
+    /// as `infer` does, rather than only comparing it with the domain:
+    /// here the claim is well-formed and the annotation reduces to the
+    /// domain, but names a constant that doesn't exist.
+    #[test]
+    fn a_checked_lambdas_annotation_must_be_a_type() {
+        let g = two_globals();
+        let none = Ctx::new();
+        let ghost = app(lam(Expr::Const(99), Expr::Const(0)), Expr::Const(1)); // reduces to A
+        let claim = pi(Expr::Const(0), Expr::Const(0));
+        assert!(check_in(&g, &none, &lam(ghost, var(0)), &claim).is_err());
+        let fine = app(lam(Expr::Const(0), Expr::Const(0)), Expr::Const(1));
+        assert_eq!(check_in(&g, &none, &lam(fine, var(0)), &claim), Ok(()));
     }
 
     #[test]

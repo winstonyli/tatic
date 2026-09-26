@@ -1721,7 +1721,7 @@ fn params_and_close(
 /// `Clo_k` or `Int` to match (resolved fresh immediately before each
 /// individual push and used right away, so even though `clo_ty(k)` may
 /// itself lazily push a postulate on a new arity's first use, unlike
-/// `Ev`'s own type below, no staleness ordering trick is needed here --
+/// `Ev`'s own type below, no anchoring is needed here --
 /// see `build_universal`'s own upfront `clo_ty` priming loop, which
 /// ensures every arity `param_types` mentions is already primed well
 /// before this ever runs, so in practice this never observes a first use
@@ -1893,22 +1893,29 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
             .collect()
     };
 
-    // Ev : T_0 -> .. -> T_{arity-1} -> Int -> Sort(0) (non-dependent chain:
-    // composes correctly via `arrow`'s own shifting regardless of build
-    // order -- see `ArithPostulates::new`'s `ite_ty` for the same
-    // pattern), each `T_i` `Clo` or `Int` per `param_types[i]`. `v`
-    // (innermost -- processed first, below) is pushed before `param_types`
-    // in *reverse*, matching `ev_of`/`apply_n`'s own left-to-right
-    // application order (`params[0]` applied first, ending up outermost;
-    // `v` applied last, ending up innermost).
+    // Ev : T_0 -> .. -> T_{arity-1} -> Int -> Sort(0), each `T_i` `Clo` or
+    // `Int` per `param_types[i]`. `v` (innermost) is wrapped first, then
+    // `param_types` in *reverse*, matching `ev_of`/`apply_n`'s own
+    // left-to-right application order (`params[0]` applied first, ending
+    // up outermost; `v` applied last, ending up innermost). `arrow`'s
+    // shift covers each new binder but not a push: `clo_ty(k)`'s first use
+    // pushes `ite_clo_ref(k)`, which left every piece already built one
+    // level stale (`kernel::check_in` rejected the resulting statement,
+    // `RELATED_WORK.md` section 68). So each domain is anchored as it's
+    // resolved and re-resolved (`.at`) once nothing more is left to push,
+    // as `env_ty`/`call_ref` do.
     let ev_ty = {
-        let mut ty = kernel::arrow(arith.int_ty(), kernel::sort(0)); // v : Int
-        for pt in param_types.iter().rev() {
+        let mut doms = Vec::with_capacity(param_types.len());
+        for pt in &param_types {
             let dom = match pt {
                 Some(k) => arith.clo_ty(*k),
                 None => arith.int_ty(),
             };
-            ty = kernel::arrow(dom, ty);
+            doms.push(Anchored::new(&arith, dom));
+        }
+        let mut ty = kernel::arrow(arith.int_ty(), kernel::sort(0)); // v : Int
+        for dom in doms.iter().rev() {
+            ty = kernel::arrow(dom.at(&arith), ty);
         }
         ty
     };
