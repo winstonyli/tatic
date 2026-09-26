@@ -16,6 +16,11 @@ pub mod typing;
 // `tatic` as the benches do.
 #[cfg(test)]
 extern crate self as tatic;
+// The allocator `main.rs` ships with, so timing probes such as
+// `fib16_instance_proof_cost` measure what runs (RELATED_WORK §66).
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(test)]
 pub(crate) mod test_corpus;
 #[cfg(test)]

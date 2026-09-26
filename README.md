@@ -1100,7 +1100,7 @@ guards against by hand): caught immediately, at seed 22.
   `shift` and `instantiate` keep closed subterms by pointer. That made
   `fib(16)`'s build and check each 11% faster and its DAG 14% smaller
   (§65). mimalloc is the allocator: it halves every proof bench and
-  speeds up the interpreter by 14% and the cold JIT by 21% (§66). The rest of §64 is designed but not built: postulates as
+  speeds up the interpreter by 13% and the cold JIT by 21% (§66). The rest of §64 is designed but not built: postulates as
   constants and builder parameters as free levels. If the proof gate is ever relaxed, the next step
   is a typed IR that `ir::check` checks (§46's B5): it closes the arity
   and Int-vs-closure agreements for compiled code in one place.

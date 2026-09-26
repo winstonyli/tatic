@@ -5394,7 +5394,17 @@ job; the first attempt at the runs below ran at a median 88% CPU. The
 runner used here samples total CPU every 2 s alongside the runs,
 alternates A and B in ABBA order, and keeps a pair only if both runs saw
 no selfplay process and averaged under 20% CPU from other processes.
-Defender's real-time protection was off throughout.
+Defender's real-time protection was off throughout. "Other processes" is
+the total minus the run's own CPU: for the benches, which run for
+minutes, from sampling the bench process; for the demo and probes, which
+run for about a second, from the process's exact CPU time at exit. The
+first cut of the runner looked only at samples wholly inside a run,
+found none for a 1 s run, and so kept no demo runs at all. Per-process
+counters can't stand in for the subtraction: a non-elevated
+`Get-Process` reads no CPU time for 129 of 348 processes (services), and
+the `\Process(*)` counters, which do read them, still accounted for only
+86% of the machine. The rest is processes that start and exit between
+samples, such as other sessions' shell commands and our own short runs.
 
 **`relational_x10`, settled.** 5 clean pairs of the proofs bench, 417e2fd
 against HEAD (stage 1), other processes at 5 to 17%:
@@ -5421,11 +5431,20 @@ best of, mimalloc against system:
   check), -19 to -35%;
 - `jit_warm_cache_hit`, within ±1%: compiled code barely allocates.
 
-The demo binary (`cargo run --release`), 32 and 34 runs, all quiet
-(total CPU 2 to 19%, no selfplay): interpreted `fib(30)` 737 to 634 ms
-(-14%), cold JIT 19.8 to 15.6 ms (-21%), warm JIT 4.37 to 4.38 ms, best
-of. Peak memory was 17 MB with the system allocator and 19 MB with
+The demo binary (`cargo run --release`), 12 clean pairs, other
+processes at 10 to 20%, best of: interpreted `fib(30)` 737 to 641 ms
+(-13%), cold JIT 19.7 to 15.7 ms (-21%), warm JIT 4.37 to 4.38 ms. The
+system allocator's own runs spread 10 to 19%. Peak memory was 17 MB with the system allocator and 19 MB with
 mimalloc. Nothing measured got slower, so it's adopted.
+
+**`fib(16)` baseline for stage 2.** Library tests now use mimalloc too
+(`#[cfg(test)]` in `src/lib.rs`), so `fib16_instance_proof_cost`
+measures the shipped allocator. At HEAD (stage 1), 10 clean pairs of the
+same binary against itself (22 clean runs, other processes at 11 to
+20%): build 128 ms best, 134 ms median; check 127 ms best, 139 ms median;
+DAG 227,157 nodes every run. The slowest clean run was 24% (build) and
+28% (check) above the best, so single `fib(16)` runs differing by less
+than that say nothing; compare bests over many runs.
 
 ## Sources
 
