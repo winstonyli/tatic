@@ -5199,7 +5199,7 @@ memos keyed by node identity:
   have no cycles.
 - *A faster global allocator* (mimalloc). It's one line and independent
   of all of the above, but it also changes the allocator under wasmtime.
-  Not measured.
+  Measured in §66: it halves every proof bench.
 
 The kernel `Rc` wrapper puts every allocation behind one type, so the
 first and last of these stay local changes later. The arena is the
@@ -5327,6 +5327,64 @@ measured the DAG at 10,501 nodes.
 **What's left.** Stages 2 to 4 of §64: `Const` and `Free` in the kernel,
 the builder using them, then removing what no longer pays.
 
+## 66. An idle re-baseline, and mimalloc
+
+Both measured 2026-09-25, 18:04 to 19:21, with Defender's real-time
+protection off (it had been on through §65's runs; the log shows it
+turned off at 17:20 and has no record of when it turned on) and, from
+re-baseline round 2 on, total CPU sampled every 10 s. Each is 3 rounds of `scripts/bench_ab.sh
+--bench proofs`, best of the rounds per bench, then 3 interleaved rounds
+of `fib16_instance_proof_cost`. The machine wasn't idle throughout: a
+game and other sessions' jobs held the CPU at 14 to 90% through
+re-baseline round 3 and mimalloc round 1 (round 1 of the re-baseline ran
+before sampling began), and those rounds' noise
+columns (base rerun against base) reach -63%. Mimalloc rounds 2 and 3
+were quiet, with noise within -19% to +11%, and only they are used
+below.
+
+**Stage 1 against 417e2fd, again.** Best of 3, candidate against base:
+`gcd_2_leaves` and `gcd_3_leaves` -28% and -29%,
+`closure_typed_loop_carried_parameter_universal_proof` -24%,
+`pap_producing_root` -21%, the closure fragment and non-tail proofs -11%
+to -18%, and the rest within ±5% except `relational_x10`, +21%. That
+one was +4% in §65 and its per-round changes swing from -37% to +31%, so
+it's unresolved, not a regression shown. The `fib(16)` probe ran
+contended (16 to 34% CPU): build +4%, check -6%, against -12% and -16%
+in §65's idle rerun. The same unchanged code's `fib(16)` build ranged
+from 297 to 414 ms across the evening, so these single-probe numbers
+move by 30% with the machine's state.
+
+**mimalloc.** The `mimalloc` crate (0.1.52) as `#[global_allocator]` in
+`benches/proofs.rs` and, under `cfg(test)`, in `src/lib.rs`, against
+HEAD (bdacb39) with the system allocator. The shipped binary was left
+alone. Best of rounds 2 and 3:
+
+| bench | system | mimalloc | change |
+|---|---|---|---|
+| `straight_line_refl_proof` | 7.8 µs | 4.3 µs | -45% |
+| `gcd_relational_proof_single_call` | 10.7 µs | 5.7 µs | -47% |
+| `gcd_2_leaves` | 1.24 ms | 0.63 ms | -49% |
+| `gcd_3_leaves` | 2.36 ms | 1.16 ms | -51% |
+| `relational_x10` | 101.7 µs | 55.0 µs | -46% |
+| `universal_x1` | 1.38 ms | 0.67 ms | -52% |
+| closure fragment proofs (4) | 8.2 to 13.9 µs | 4.1 to 7.9 µs | -43 to -50% |
+| `closure_typed_loop_carried_parameter_universal_proof` | 1.79 ms | 1.07 ms | -40% |
+| `if_between_closures_self_call_arg` | 5.82 ms | 3.59 ms | -38% |
+| `pap_producing_root_self_call_arg` | 4.47 ms | 2.62 ms | -41% |
+| non-tail proofs (2) | 14.9 to 15.2 µs | 8.4 to 8.5 µs | -44% |
+
+`fib(16)`, 3 quiet rounds (CPU 1 to 3% before each): build 297 to
+150 ms (-49%), check 256 to 144 ms (-44%), best of 3.
+
+Every proof bench roughly halves, far past the noise, and the effect is
+uniform across them, as an allocator's should be: the kernel's cost is
+dominated by allocating and freeing nodes. That's three to four times what
+stage 1 bought, from one dependency. It says nothing yet about the rest
+of the program: the JIT (Cranelift, which also allocates heavily) and
+wasmtime would run on it too once it's set in `main.rs`, and neither
+was measured. `libmimalloc-sys` compiles C through `cc`, which the
+build already uses.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -5339,6 +5397,7 @@ the builder using them, then removing what no longer pays.
 - [Lean 4 `replace_fn.cpp` (per-traversal cache on shared nodes)](https://github.com/leanprover/lean4/blob/master/src/kernel/replace_fn.cpp)
 - [Rocq `safe_typing.ml` (hash-consing constant bodies)](https://github.com/rocq-prover/rocq/blob/master/kernel/safe_typing.ml)
 - [nanoda_lib (a Lean 4 type checker in Rust; `src/util.rs`)](https://github.com/ammkrn/nanoda_lib)
+- [mimalloc (Leijen, Zorn and de Moura; free-list sharding)](https://github.com/microsoft/mimalloc)
 - [Kinds are calling conventions (Downen et al., ICFP 2020)](https://doi.org/10.1145/3408986)
 - [Lean 4 IR checker (`Lean/Compiler/IR/Checker.lean`)](https://github.com/leanprover/lean4/blob/master/src/Lean/Compiler/IR/Checker.lean)
 - [GHC #10181: Lint check for the arity invariant](https://gitlab.haskell.org/ghc/ghc/-/issues/10181)
