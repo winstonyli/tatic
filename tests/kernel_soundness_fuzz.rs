@@ -347,7 +347,10 @@ fn to_consts(e: &Expr, n: u32, d: u32) -> Expr {
 }
 
 /// The context's postulates as globals: entry `i` was written under `i`
-/// earlier entries.
+/// earlier entries. Since stage 3a, `ctx.p.ctx` is already in `Const` form
+/// (`push` bakes it in through the new `get`), so this conversion is now
+/// the identity on every caller here; kept as a guard in case that ever
+/// changes back.
 fn to_globals(ctx: &kernel::Ctx) -> kernel::Globals {
     ctx.iter().enumerate().map(|(i, ty)| to_consts(ty, i as u32, 0)).collect()
 }

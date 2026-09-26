@@ -1520,8 +1520,11 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 
 /// Builds a context of *postulated* (assumed) constants: pushes a type and
 /// returns a handle that can be resolved, at any later point while still
-/// building on the same context, to the `Var` that correctly refers to it
-/// (it self-adjusts for how many more postulates have been pushed since).
+/// building on the same context, to the reference that correctly refers to
+/// it. Below the open scope (or with none open) that's `Const(level)`,
+/// stable regardless of how many more postulates get pushed afterward;
+/// inside a scope it's a `Var` for that scope's own locals, which do shift
+/// as the scope grows.
 ///
 /// Used instead of trying to derive base types like Bool/Nat/Int from
 /// nothing. That turns out to be a real dead end, not just tedium: any
@@ -4032,7 +4035,7 @@ mod tests {
         // hand-built `Pi x:A. Pi y:A. Id(A, x, y)`.
         let mut p = Postulates::new();
         let a_ty_pos = p.push(sort(0));
-        let a_ty = p.get(a_ty_pos); // valid at the pre-push depth captured below
+        let a_ty = p.get(a_ty_pos); // a Const now, so this stays valid at any depth
 
         let s = p.open();
         let x_pos = p.push(p.get(a_ty_pos)); // fresh reference, not `a_ty.clone()` -- ctx has grown
