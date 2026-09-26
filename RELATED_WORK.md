@@ -5295,7 +5295,8 @@ counts allocations, so the built proof shares more.
   `shift_child` and in `shift`'s early return, `<= d + 1` in
   `instantiate`, `<= idx + 1` in `is_var_free`, and `shift_sigma_family`'s
   `Pair` arm shifting `fam` at `cutoff`. The -1 cases, added after review,
-  catch a `shift` that returns early for any negative amount.
+  also catch, on their own, a `shift` that returns early for any negative
+  amount (the shift-up-and-back round trip already caught it).
 - `shift_keeps_closed_children_by_pointer`: caught `shift_child` always
   rebuilding.
 - `dropping_a_deep_term_does_not_overflow_the_stack`: drops a 100,000-deep
