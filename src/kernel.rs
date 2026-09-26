@@ -1083,6 +1083,16 @@ pub fn normalize(e: &Expr) -> Expr {
 /// control flow.
 pub type Ctx = im::Vector<Expr>;
 
+/// The global environment: constant `l`'s type is `globals[l]`, closed, so
+/// no binder or later global changes what it means. Kept apart from
+/// [`Ctx`], the kernel's own binders, so a `Const` can never resolve to
+/// one: with a single vector, `(λx:A. Const(L)) a` would reduce to a
+/// `Const(L)` that no longer refers to anything.
+///
+/// Trusted like `Ctx`: nothing checks that an entry is a type, and a
+/// constant is an axiom.
+pub type Globals = im::Vector<Expr>;
+
 /// Wraps `ctx[base_len..]` (everything appended to `ctx` since it had
 /// length `base_len`) as nested `Pi` binders around `body`, which must
 /// have been built using `ctx` in full (i.e. that suffix as ambient
@@ -1114,18 +1124,33 @@ pub fn close_lam(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
         .fold(body, |acc, dom| lam(dom.clone(), acc))
 }
 
-fn ctx_lookup(ctx: &Ctx, k: u32) -> Option<Expr> {
+fn ctx_lookup(ctx: &Ctx, k: u32) -> Result<Expr, String> {
     let k_usize = k as usize;
     if k_usize >= ctx.len() {
-        return None;
+        return Err(format!("unbound variable #{k}"));
     }
     let idx = ctx.len() - 1 - k_usize;
+    let ty = &ctx[idx];
+    if free_of(ty) > 0 {
+        return Err(free_escaped(free_of(ty) - 1));
+    }
     // `ctx[idx]` was checked when the context had length `idx` (that many
     // entries existed before it was pushed); reinterpreting it at the
     // current length requires shifting by `k + 1`, not `k` — e.g. for
     // `Var(0)` itself (k=0), its stored type was written one binder
     // shallower than "now", so it still needs a shift of 1.
-    Some(shift(&ctx[idx], 0, k as i32 + 1))
+    Ok(shift(ty, 0, k as i32 + 1))
+}
+
+/// Constant `l`'s type: `globals[l]` as is, since a closed type has no
+/// variable to shift. An error when `l` is past the environment, or when
+/// the type isn't closed.
+fn const_type(g: &Globals, l: u32) -> Result<Expr, String> {
+    match g.get(l as usize) {
+        Some(ty) if loose_of(ty) == 0 && free_of(ty) == 0 => Ok(ty.clone()),
+        Some(ty) => Err(format!("constant @{l}'s type isn't closed: {ty:?}")),
+        None => Err(format!("unknown constant @{l}")),
+    }
 }
 
 fn expect_sort(e: &Expr) -> Result<u32, String> {
@@ -1169,31 +1194,31 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
 /// segment. They are kept because smaller hot frames cost nothing, not
 /// because anything depends on them.
 #[inline(never)]
-fn infer_sigma(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
-    let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
+fn infer_sigma(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+    let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
     let mut ctx2 = ctx.clone();
     ctx2.push_back((**a).clone());
     let cid2 = ic.enter(cid, a);
-    let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
+    let j = expect_sort(&infer_rc(g, ic, &ctx2, cid2, b)?)?;
     Ok(Expr::Sort(i.max(j)))
 }
 
 #[inline(never)]
-fn infer_pair(ic: &mut InferCache, ctx: &Ctx, cid: u32, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
-    let ta = infer_rc(ic, ctx, cid, a)?;
+fn infer_pair(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+    let ta = infer_rc(g, ic, ctx, cid, a)?;
     let mut ctx2 = ctx.clone();
     ctx2.push_back(ta.clone());
     let cid2 = ic.fresh();
-    expect_sort(&infer_rc(ic, &ctx2, cid2, fam)?)?;
+    expect_sort(&infer_rc(g, ic, &ctx2, cid2, fam)?)?;
     let expected_b_ty = subst_top(fam, a);
-    check_rc(ic, ctx, cid, b, &expected_b_ty)?;
+    check_rc(g, ic, ctx, cid, b, &expected_b_ty)?;
     Ok(sigma(ta, (**fam).clone()))
 }
 
 #[inline(never)]
-fn infer_sigrec(ic: &mut InferCache, ctx: &Ctx, cid: u32, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
-    let (sa, sb) = expect_sigma(&infer_rc(ic, ctx, cid, target)?)?;
-    infer_rc(ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
+fn infer_sigrec(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
+    let (sa, sb) = expect_sigma(&infer_rc(g, ic, ctx, cid, target)?)?;
+    infer_rc(g, ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
 
     // step : Pi a:A. Pi b:B(a). motive (pair(B,a,b))
     // `sb` already assumes exactly one binder (`Sigma`'s own convention)
@@ -1210,7 +1235,7 @@ fn infer_sigrec(ic: &mut InferCache, ctx: &Ctx, cid: u32, motive: &Rc<Expr>, ste
     let fam_d2 = shift(&sb, 1, 2);
     let concl_d2 = app(motive_d2, pair(fam_d2, var(1), var(0)));
     let expected_step_ty = pi(sa.clone(), pi(b_dom_d1, concl_d2));
-    check_rc(ic, ctx, cid, step, &expected_step_ty)?;
+    check_rc(g, ic, ctx, cid, step, &expected_step_ty)?;
 
     Ok(app((**motive).clone(), (**target).clone()))
 }
@@ -1228,9 +1253,9 @@ fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
 /// `wa`/`wb` would otherwise sit in `infer`'s frame on every call (see
 /// `infer_sigma`).
 #[inline(never)]
-fn infer_sup(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
-    let ta = infer_rc(ic, ctx, cid, a)?;
-    let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?)?;
+fn infer_sup(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
+    let ta = infer_rc(g, ic, ctx, cid, a)?;
+    let (dom, cod) = expect_pi(&infer_rc(g, ic, ctx, cid, f)?)?;
     // `cod` is written one binder deeper than `f`'s own domain binder; a
     // `Sup`'s codomain must not actually depend on it -- enforced here
     // (not just documented), by an occurs-check on `cod`'s own normal
@@ -1255,8 +1280,19 @@ fn infer_sup(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr
     Ok(wty(wa, wb))
 }
 
+/// `e`'s type, with constants typed by `globals` and variables by `ctx`.
+/// A `Free` anywhere in `e` is an error; so is one in a `ctx` entry, when
+/// `e` uses it.
+pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
+    if free_of(e) > 0 {
+        return Err(free_escaped(free_of(e) - 1));
+    }
+    infer_node(globals, &mut InferCache::default(), ctx, 0, &Rc::new(e.clone()))
+}
+
+/// [`infer_in`] with no globals.
 pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
-    infer_node(&mut InferCache::default(), ctx, 0, &Rc::new(e.clone()))
+    infer_in(&Globals::new(), ctx, e)
 }
 
 /// `infer` on a child. A node referenced from more than one place is
@@ -1266,54 +1302,54 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 /// ancestor, which is memoised instead, so skipping it keeps the walk
 /// linear in the DAG and costs unshared terms no hashing. Only successes
 /// are stored: an error ends the whole check.
-fn infer_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
     if Rc::strong_count(e) == 1 {
-        return infer_node(ic, ctx, cid, e);
+        return infer_node(g, ic, ctx, cid, e);
     }
     let key = (PtrKey(e.clone()), cid);
     if let Some(ty) = ic.types.get(&key) {
         return Ok(ty.clone());
     }
-    let ty = infer_node(ic, ctx, cid, e)?;
+    let ty = infer_node(g, ic, ctx, cid, e)?;
     ic.types.insert(key, ty.clone());
     Ok(ty)
 }
 
-fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
     grow(|| match &**e {
-        Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
+        Expr::Var(k) => ctx_lookup(ctx, *k),
         Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
-        Expr::Const(l) => Err(format!("unknown constant @{l}")),
+        Expr::Const(l) => const_type(g, *l),
         Expr::Free(l) => Err(free_escaped(*l)),
         Expr::Pi(a, b) => {
-            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
+            let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
             let cid2 = ic.enter(cid, a);
-            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
+            let j = expect_sort(&infer_rc(g, ic, &ctx2, cid2, b)?)?;
             Ok(Expr::Sort(i.max(j)))
         }
         Expr::Lam(a, body) => {
-            expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
+            expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
             let cid2 = ic.enter(cid, a);
-            let tbody = infer_rc(ic, &ctx2, cid2, body)?;
+            let tbody = infer_rc(g, ic, &ctx2, cid2, body)?;
             Ok(pi((**a).clone(), tbody))
         }
         Expr::App(f, a) => {
-            let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?)?;
-            check_rc(ic, ctx, cid, a, &dom)?;
+            let (dom, cod) = expect_pi(&infer_rc(g, ic, ctx, cid, f)?)?;
+            check_rc(g, ic, ctx, cid, a, &dom)?;
             Ok(subst_top(&cod, a))
         }
         Expr::Id(a, x, y) => {
-            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
-            check_rc(ic, ctx, cid, x, a)?;
-            check_rc(ic, ctx, cid, y, a)?;
+            let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
+            check_rc(g, ic, ctx, cid, x, a)?;
+            check_rc(g, ic, ctx, cid, y, a)?;
             Ok(Expr::Sort(i))
         }
         Expr::Refl(a) => {
-            let ta = infer_rc(ic, ctx, cid, a)?;
+            let ta = infer_rc(g, ic, ctx, cid, a)?;
             Ok(id(ta, (**a).clone(), (**a).clone()))
         }
         Expr::J {
@@ -1323,10 +1359,10 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
             b,
             p,
         } => {
-            let ta = infer_rc(ic, ctx, cid, a)?;
-            check_rc(ic, ctx, cid, b, &ta)?;
-            check_rc(ic, ctx, cid, p, &id(ta.clone(), (**a).clone(), (**b).clone()))?;
-            infer_rc(ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
+            let ta = infer_rc(g, ic, ctx, cid, a)?;
+            check_rc(g, ic, ctx, cid, b, &ta)?;
+            check_rc(g, ic, ctx, cid, p, &id(ta.clone(), (**a).clone(), (**b).clone()))?;
+            infer_rc(g, ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
             let expected_base_ty = pi(
                 ta.clone(),
                 app3(
@@ -1336,7 +1372,7 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
                     refl(var(0)),
                 ),
             );
-            check_rc(ic, ctx, cid, base, &expected_base_ty)?;
+            check_rc(g, ic, ctx, cid, base, &expected_base_ty)?;
             Ok(app3(
                 (**motive).clone(),
                 (**a).clone(),
@@ -1345,21 +1381,21 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
             ))
         }
         Expr::W(a, b) => {
-            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
+            let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
             let cid2 = ic.enter(cid, a);
-            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
+            let j = expect_sort(&infer_rc(g, ic, &ctx2, cid2, b)?)?;
             Ok(Expr::Sort(i.max(j)))
         }
-        Expr::Sup(a, f) => infer_sup(ic, ctx, cid, a, f),
+        Expr::Sup(a, f) => infer_sup(g, ic, ctx, cid, a, f),
         Expr::WRec {
             motive,
             children_ty,
             step,
             target,
         } => {
-            let (wa, wb) = expect_w(&infer_rc(ic, ctx, cid, target)?)?;
+            let (wa, wb) = expect_w(&infer_rc(g, ic, ctx, cid, target)?)?;
             // Soundness gate for `whnf_impl`'s own use of `children_ty`
             // (see `Expr::WRec`'s own doc): `target`'s *real* children-type
             // family, independently re-derived here from its own inferred
@@ -1372,7 +1408,7 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
             if !def_eq(children_ty, &wb) {
                 return Err(wrec_children_ty_mismatch(children_ty, &wb));
             }
-            infer_rc(ic, ctx, cid, motive)?;
+            infer_rc(g, ic, ctx, cid, motive)?;
             let w_ty0 = wty(wa.clone(), wb.clone());
 
             // f : B(a) -> W(A,B), formed under binder `a` (depth 1).
@@ -1395,13 +1431,13 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
             let arrow_ty_d2 = pi(ih_ty_d2, shift(&concl_ty_d2, 0, 1));
 
             let expected_step_ty = pi(wa.clone(), pi(f_ty_d1, arrow_ty_d2));
-            check_rc(ic, ctx, cid, step, &expected_step_ty)?;
+            check_rc(g, ic, ctx, cid, step, &expected_step_ty)?;
 
             Ok(app((**motive).clone(), (**target).clone()))
         }
-        Expr::Sigma(a, b) => infer_sigma(ic, ctx, cid, a, b),
-        Expr::Pair(fam, a, b) => infer_pair(ic, ctx, cid, fam, a, b),
-        Expr::SigRec { motive, step, target } => infer_sigrec(ic, ctx, cid, motive, step, target),
+        Expr::Sigma(a, b) => infer_sigma(g, ic, ctx, cid, a, b),
+        Expr::Pair(fam, a, b) => infer_pair(g, ic, ctx, cid, fam, a, b),
+        Expr::SigRec { motive, step, target } => infer_sigrec(g, ic, ctx, cid, motive, step, target),
     })
 }
 
@@ -1413,11 +1449,25 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
 /// one that used to exist (`MAX_CHECK_DEPTH`, `RELATED_WORK.md` 30) was
 /// purely a stack-survival bound. How long a deep check takes is the
 /// caller's to bound; `proof.rs`'s step budgets do that.
-pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
-    check_rc(&mut InferCache::default(), ctx, 0, &Rc::new(e.clone()), expected)
+pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
+    // Checked here, not only at the leaf: `check`'s `Lam` rule never
+    // infers the lambda's domain, `WRec`'s `children_ty` is only compared,
+    // and nothing infers `expected`, so a `Free` under a redex in any of
+    // them would reduce away unseen. `free_of` is O(1).
+    for t in [e, expected] {
+        if free_of(t) > 0 {
+            return Err(free_escaped(free_of(t) - 1));
+        }
+    }
+    check_rc(globals, &mut InferCache::default(), ctx, 0, &Rc::new(e.clone()), expected)
 }
 
-fn check_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
+/// [`check_in`] with no globals.
+pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
+    check_in(&Globals::new(), ctx, e, expected)
+}
+
+fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
     grow(|| {
         if let Expr::Lam(a, body) = &**e
             && let Expr::Pi(ref dom, ref cod) = whnf(expected)
@@ -1428,9 +1478,9 @@ fn check_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>, expected: &E
             let mut ctx2 = ctx.clone();
             ctx2.push_back((**a).clone());
             let cid2 = ic.enter(cid, a);
-            return check_rc(ic, &ctx2, cid2, body, cod);
+            return check_rc(g, ic, &ctx2, cid2, body, cod);
         }
-        let inferred = infer_rc(ic, ctx, cid, e)?;
+        let inferred = infer_rc(g, ic, ctx, cid, e)?;
         if def_eq(&inferred, expected) {
             Ok(())
         } else {
@@ -3197,6 +3247,81 @@ mod tests {
         let a0 = p.get(a0_pos);
         let ty = infer(&p.ctx, &refl(a0.clone())).unwrap();
         assert!(def_eq(&ty, &id(p.get(a_pos), a0.clone(), a0)));
+    }
+
+    /// `A : Type0` and `a : A` as globals: the environment the tests below
+    /// type constants in.
+    fn two_globals() -> Globals {
+        let mut g = Globals::new();
+        g.push_back(sort(0));
+        g.push_back(Expr::Const(0));
+        g
+    }
+
+    #[test]
+    fn a_const_has_its_globals_type() {
+        let g = two_globals();
+        let a = Expr::Const(1);
+        assert_eq!(infer_in(&g, &Ctx::new(), &a), Ok(Expr::Const(0)));
+        assert_eq!(check_in(&g, &Ctx::new(), &refl(a.clone()), &id(Expr::Const(0), a.clone(), a)), Ok(()));
+        // No shift: the same `Const` has the same type under a binder.
+        assert_eq!(infer_in(&g, &Ctx::new(), &lam(sort(0), Expr::Const(1))), Ok(pi(sort(0), Expr::Const(0))));
+    }
+
+    #[test]
+    fn a_const_past_the_environment_is_rejected() {
+        assert!(infer_in(&two_globals(), &Ctx::new(), &Expr::Const(2)).is_err());
+        assert!(infer(&Ctx::new(), &Expr::Const(0)).is_err(), "no globals at all");
+    }
+
+    /// `Const(l)` names a global, never a binder the kernel pushed. With one
+    /// global, `Const(1)` under a binder would be that binder if constants
+    /// and binders shared one vector, and `(λx:A. Const(1)) a` would then
+    /// reduce to a `Const(1)` that refers to nothing.
+    #[test]
+    fn a_const_at_a_binders_position_is_rejected() {
+        let mut g = Globals::new();
+        g.push_back(sort(0));
+        assert!(infer_in(&g, &Ctx::new(), &lam(Expr::Const(0), Expr::Const(1))).is_err());
+        let mut ctx = Ctx::new();
+        ctx.push_back(Expr::Const(0));
+        assert!(infer_in(&g, &ctx, &Expr::Const(1)).is_err(), "a caller's local isn't a global either");
+    }
+
+    /// A global's type must be closed: no loose `Var` (it would mean a
+    /// different thing at every depth) and no `Free`.
+    #[test]
+    fn a_global_whose_type_is_open_is_rejected() {
+        for bad in [var(0), Expr::Free(0), pi(sort(0), var(1))] {
+            let mut g = Globals::new();
+            g.push_back(bad.clone());
+            assert!(infer_in(&g, &Ctx::new(), &Expr::Const(0)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// A `Free` fails the check wherever it sits, including where `infer`
+    /// never looks: a lambda's domain under `check` (compared by `def_eq`
+    /// only) and the expected type, each under a redex that reduces the
+    /// `Free` away.
+    #[test]
+    fn a_free_is_rejected_everywhere() {
+        let g = two_globals();
+        let none = Ctx::new();
+        let hide = |x: Expr| app(lam(Expr::Free(0), x), Expr::Const(1)); // reduces to x
+        assert!(infer_in(&g, &none, &Expr::Free(0)).is_err());
+        assert!(infer_in(&g, &none, &lam(sort(0), Expr::Free(0))).is_err(), "under a binder");
+        assert!(infer_in(&g, &none, &pi(Expr::Free(0), sort(0))).is_err(), "in a type");
+        assert!(check_in(&g, &none, &Expr::Const(1), &hide(Expr::Const(0))).is_err(), "in the expected type");
+        let lam_hidden_dom = lam(hide(Expr::Const(0)), Expr::Const(1));
+        assert!(check_in(&g, &none, &lam_hidden_dom, &pi(Expr::Const(0), Expr::Const(0))).is_err(), "in a checked lambda's domain");
+        let mut ctx = Ctx::new();
+        ctx.push_back(Expr::Free(0));
+        assert!(infer_in(&g, &ctx, &var(0)).is_err(), "in a context entry");
+        // The same terms without the `Free` are fine, so the rejections
+        // above are the `Free`'s doing.
+        let unhide = |x: Expr| app(lam(Expr::Const(0), x), Expr::Const(1));
+        assert_eq!(check_in(&g, &none, &Expr::Const(1), &unhide(Expr::Const(0))), Ok(()));
+        assert_eq!(check_in(&g, &none, &lam(unhide(Expr::Const(0)), Expr::Const(1)), &pi(Expr::Const(0), Expr::Const(0))), Ok(()));
     }
 
     #[test]
