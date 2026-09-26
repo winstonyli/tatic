@@ -414,16 +414,14 @@ fn the_seed_pool_itself_is_genuinely_valid() {
     // here vacuous (a fuzzer whose "valid" seeds don't even typecheck
     // proves nothing about mutations of them).
     let ctx = build_ctx();
-    kernel::check(&ctx.p.ctx, &kernel::refl(ctx.a.clone()), &kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone())).expect("refl(a) : Id(A,a,a)");
-    kernel::check(&ctx.p.ctx, &ctx.pac, &kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone())).expect("the postulate itself should check against its own type");
-    kernel::check(
-        &ctx.p.ctx,
+    ctx.p.check(&kernel::refl(ctx.a.clone()), &kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone())).expect("refl(a) : Id(A,a,a)");
+    ctx.p.check(&ctx.pac, &kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone())).expect("the postulate itself should check against its own type");
+    ctx.p.check(
         &kernel::sym(&ctx.a_ty, &ctx.a, &ctx.c, ctx.pac.clone()),
         &kernel::id(ctx.a_ty.clone(), ctx.c.clone(), ctx.a.clone()),
     )
     .expect("sym(pac) : Id(A,c,a)");
-    kernel::check(
-        &ctx.p.ctx,
+    ctx.p.check(
         &kernel::cong1(&ctx.a_ty, &ctx.b_ty, &ctx.f, ctx.a.clone(), ctx.c.clone(), ctx.pac.clone()),
         &kernel::id(ctx.b_ty.clone(), kernel::app(ctx.f.clone(), ctx.a.clone()), kernel::app(ctx.f.clone(), ctx.c.clone())),
     )
@@ -442,7 +440,7 @@ fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality() {
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xC0FF_EE00_u64 ^ seed);
         let candidate = gen_expr(&mut rng, ctx.p.ctx.len() as u32, MAX_DEPTH);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::check(&ctx.p.ctx, &candidate, &claim)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.p.check(&candidate, &claim)));
         match result {
             Ok(Err(_)) => {} // expected: declined
             Ok(Ok(())) => panic!("SOUNDNESS BUG: seed={seed} kernel accepted a random term as proof of {claim:?} (nothing relates a and b): {candidate:?}"),
@@ -475,7 +473,7 @@ fn mutating_a_genuinely_valid_proof_never_fools_the_kernel_into_an_unrelated_equ
         for _ in 0..rounds {
             mutant = mutate_once(&mut rng, &mutant, ctx.p.ctx.len() as u32);
         }
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::check(&ctx.p.ctx, &mutant, &claim)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.p.check(&mutant, &claim)));
         match result {
             Ok(Err(_)) => {}
             Ok(Ok(())) => panic!(
@@ -507,7 +505,7 @@ fn the_global_environment_agrees_with_the_context() {
             let base = &pool[rng.below(pool.len() as u32) as usize];
             mutate_once(&mut rng, base, n)
         };
-        let by_vars = kernel::check(&ctx.p.ctx, &candidate, &claim).is_ok();
+        let by_vars = ctx.p.check(&candidate, &claim).is_ok();
         let by_consts = kernel::check_in(&g, &kernel::Ctx::new(), &to_consts(&candidate, n, 0), &to_consts(&claim, n, 0)).is_ok();
         assert_eq!(by_vars, by_consts, "seed={seed}: {candidate:?} against {claim:?}");
         if by_vars { agreed_ok += 1 } else { agreed_err += 1 }

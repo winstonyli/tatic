@@ -1534,10 +1534,30 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 #[derive(Clone)]
 pub struct Postulates {
     pub ctx: Ctx,
+    /// Where the outermost open builder scope starts (`usize::MAX` while
+    /// none is open). Entries below it are postulates, entries at or above
+    /// it the open scopes' locals (`open`, `close`).
+    scope_base: usize,
 }
+
+/// A builder scope from `Postulates::open` to `close` or `abandon`.
+#[must_use]
+pub struct Scope {
+    base: usize,
+    outer_base: usize,
+}
+
+/// Which binders `Postulates::close` wraps: `Pi` to build a type that
+/// quantifies over the scope's entries, `Lam` for a value of that type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binder {
+    Pi,
+    Lam,
+}
+
 impl Postulates {
     pub fn new() -> Self {
-        Postulates { ctx: Ctx::new() }
+        Postulates { ctx: Ctx::new(), scope_base: usize::MAX }
     }
     pub fn push(&mut self, ty: Expr) -> usize {
         let pos = self.ctx.len();
@@ -1546,6 +1566,36 @@ impl Postulates {
     }
     pub fn get(&self, pos: usize) -> Expr {
         var((self.ctx.len() - 1 - pos) as u32)
+    }
+    /// Opens a builder scope: entries pushed after this point belong to it
+    /// until `close` or `abandon`.
+    pub fn open(&mut self) -> Scope {
+        let base = self.ctx.len();
+        let s = Scope { base, outer_base: self.scope_base };
+        self.scope_base = self.scope_base.min(base);
+        s
+    }
+    /// Wraps a binder around `body` for each entry pushed since `s` was
+    /// opened, outermost first, then rolls those entries back.
+    pub fn close(&mut self, s: Scope, binder: Binder, body: Expr) -> Expr {
+        let closed = match binder {
+            Binder::Pi => close_pi(s.base, &self.ctx, body),
+            Binder::Lam => close_lam(s.base, &self.ctx, body),
+        };
+        self.abandon(s);
+        closed
+    }
+    /// Rolls back what was pushed since `s` was opened, closing nothing
+    /// (for a build that gave up).
+    pub fn abandon(&mut self, s: Scope) {
+        self.ctx.truncate(s.base);
+        self.scope_base = s.outer_base;
+    }
+    pub fn check(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
+        check(&self.ctx, e, ty)
+    }
+    pub fn infer(&self, e: &Expr) -> Result<Expr, String> {
+        infer(&self.ctx, e)
     }
 }
 impl Default for Postulates {
@@ -2768,10 +2818,10 @@ mod tests {
         let nat = NatPostulates::new(&mut p);
 
         let nat_ty = nat.nat_ty(&p);
-        check(&p.ctx, &nat_ty, &sort(0)).expect("Nat := W(Bool, ChildTy) : Type0");
+        p.check(&nat_ty, &sort(0)).expect("Nat := W(Bool, ChildTy) : Type0");
 
         let zero = nat.zero(&p);
-        check(&p.ctx, &zero, &nat_ty).expect("Zero : Nat");
+        p.check(&zero, &nat_ty).expect("Zero : Nat");
 
         // Succ(pred) needs an actual `pred : Nat` in scope -- push one as
         // a fresh postulate, then build Succ against it. Recomputing
@@ -2785,7 +2835,7 @@ mod tests {
         let pred = p.get(pred_pos);
         let nat_ty_here = nat.nat_ty(&p);
         let succ_pred = nat.succ(&p, pred);
-        check(&p.ctx, &succ_pred, &nat_ty_here).expect("Succ(pred) : Nat");
+        p.check(&succ_pred, &nat_ty_here).expect("Succ(pred) : Nat");
 
         // Sanity: the identity recursor (mirrors `w_recursor_computes_
         // definitionally`'s own "reconstruct the node unchanged, ignoring
@@ -2807,11 +2857,11 @@ mod tests {
         let step_id = lam(wa_here, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
 
         let id_on_zero = wrec(motive_const.clone(), wb_here.clone(), step_id.clone(), zero_here.clone());
-        check(&p.ctx, &id_on_zero, &nat_ty_here).expect("id-recursor applied to Zero should typecheck at Nat");
+        p.check(&id_on_zero, &nat_ty_here).expect("id-recursor applied to Zero should typecheck at Nat");
         assert_eq!(nf(&id_on_zero), nf(&zero_here), "the identity recursor should reduce Zero back to Zero");
 
         let id_on_succ = wrec(motive_const, wb_here.clone(), step_id, succ_pred.clone());
-        check(&p.ctx, &id_on_succ, &nat_ty_here).expect("id-recursor applied to Succ(pred) should typecheck at Nat");
+        p.check(&id_on_succ, &nat_ty_here).expect("id-recursor applied to Succ(pred) should typecheck at Nat");
         assert_eq!(nf(&id_on_succ), nf(&succ_pred), "the identity recursor should reduce Succ(pred) back to Succ(pred)");
 
         // A genuinely per-case recursor: is_zero : Nat -> Bool, dispatching
@@ -2838,12 +2888,12 @@ mod tests {
         let case_false = lam(f_ty_false, lam(ih_ty_false_d1, shift(&p.get(nat.true_pos), 0, 2)));
 
         let is_zero_step = app(app(app(nat.bool_rec(&p), is_zero_motive_c.clone()), case_true.clone()), case_false.clone());
-        check(&p.ctx, &is_zero_step, &pi(p.get(nat.bool_pos), app(shift(&is_zero_motive_c, 0, 1), var(0))))
+        p.check(&is_zero_step, &pi(p.get(nat.bool_pos), app(shift(&is_zero_motive_c, 0, 1), var(0))))
             .expect("is_zero_step : Pi b:Bool. C(b)");
 
         let is_zero_motive_const = lam(nat_ty_here.clone(), shift(&p.get(nat.bool_pos), 0, 1)); // \_:Nat. Bool
         let is_zero_on_zero = wrec(is_zero_motive_const.clone(), wb_here2.clone(), is_zero_step.clone(), zero_here.clone());
-        check(&p.ctx, &is_zero_on_zero, &p.get(nat.bool_pos)).expect("is_zero(Zero) : Bool");
+        p.check(&is_zero_on_zero, &p.get(nat.bool_pos)).expect("is_zero(Zero) : Bool");
 
         // The obstacle this test used to demonstrate (see git history: an
         // "inert" placeholder domain, `sort(0)`, made `whnf_impl`'s own
@@ -2879,7 +2929,7 @@ mod tests {
             "subst_top(children_ty, false) should give exactly ChildTy(false), the real children type at the false tag"
         );
         let expected_domain = arrow(child_ty_false, p.get(nat.bool_pos));
-        check(&p.ctx, &rec_step, &expected_domain)
+        p.check(&rec_step, &expected_domain)
             .expect("with children_ty threaded honestly through whnf_impl's own reduction rule, the induction-hypothesis closure now typechecks at its real domain, not just an inert placeholder");
 
         // Full end-to-end confirmation: `whnf(is_zero_on_zero)` (which
@@ -2888,7 +2938,7 @@ mod tests {
         // closure well-typed, it keeps the *whole* one-step reduction
         // well-typed too, stuck-on-a-postulate tail and all.
         let stuck_one_step = whnf(&is_zero_on_zero);
-        check(&p.ctx, &stuck_one_step, &p.get(nat.bool_pos)).expect("whnf(is_zero(Zero)) should still typecheck at Bool after the fix");
+        p.check(&stuck_one_step, &p.get(nat.bool_pos)).expect("whnf(is_zero(Zero)) should still typecheck at Bool after the fix");
         assert_eq!(
             stuck_one_step,
             app(app(app(is_zero_step.clone(), p.get(nat.false_pos)), f_zero_here.clone()), rec_step.clone()),
@@ -2914,8 +2964,7 @@ mod tests {
         let c_false_ty = app(is_zero_motive_c.clone(), false_val.clone());
 
         let bfe_inst = app(app(app(nat.bool_rec_false_eq(&p), is_zero_motive_c.clone()), case_true.clone()), case_false.clone());
-        check(
-            &p.ctx,
+        p.check(
             &bfe_inst,
             &id(c_false_ty.clone(), is_zero_step_at_false.clone(), case_false.clone()),
         )
@@ -2935,7 +2984,7 @@ mod tests {
         // on the final result.
         let bridge = refl(is_zero_on_zero.clone());
         let final_proof = trans_proof(&bool_ty, &is_zero_on_zero, &stuck_one_step, &true_val, bridge, cong_step);
-        check(&p.ctx, &final_proof, &id(bool_ty, is_zero_on_zero, true_val))
+        p.check(&final_proof, &id(bool_ty, is_zero_on_zero, true_val))
             .expect("is_zero(Zero) = true should now be provable propositionally");
     }
 
@@ -3020,7 +3069,7 @@ mod tests {
         // doesn't need to vary per branch; what varies per branch is
         // `step`'s own *value*, selected via sort_rec below.
         let type_motive = lam(nat_ty.clone(), sort(0));
-        check(&p.ctx, &type_motive, &arrow(nat_ty.clone(), sort(1))).expect("type_motive : Nat -> Sort1");
+        p.check(&type_motive, &arrow(nat_ty.clone(), sort(1))).expect("type_motive : Nat -> Sort1");
 
         let (type_per_tag_d1, type_expected_step_ty) = wrec_step_type(&bool_ty, &wb, &nat_ty, &type_motive);
         let type_motive_c = lam(bool_ty.clone(), type_per_tag_d1.clone());
@@ -3034,23 +3083,23 @@ mod tests {
         let Expr::Pi(f_dom_true, rest_true) = &case_true_ty_expected else { panic!("expected Pi") };
         let Expr::Pi(ih_dom_true, _) = &**rest_true else { panic!("expected Pi") };
         let case_true_ty = lam((**f_dom_true).clone(), lam((**ih_dom_true).clone(), shift(&clo1_ty, 0, 2)));
-        check(&p.ctx, &case_true_ty, &case_true_ty_expected).expect("case_true_ty : type_motive_c(true)");
+        p.check(&case_true_ty, &case_true_ty_expected).expect("case_true_ty : type_motive_c(true)");
 
         let case_false_ty_expected = subst_top(&type_per_tag_d1, &false_val);
         let Expr::Pi(f_dom_false, rest_false) = &case_false_ty_expected else { panic!("expected Pi") };
         let Expr::Pi(ih_dom_false, _) = &**rest_false else { panic!("expected Pi") };
         let case_false_ty = lam((**f_dom_false).clone(), lam((**ih_dom_false).clone(), shift(&clo2_ty, 0, 2)));
-        check(&p.ctx, &case_false_ty, &case_false_ty_expected).expect("case_false_ty : type_motive_c(false)");
+        p.check(&case_false_ty, &case_false_ty_expected).expect("case_false_ty : type_motive_c(false)");
 
         let type_step = app(app(app(sort_rec.clone(), type_motive_c.clone()), case_true_ty.clone()), case_false_ty.clone());
-        check(&p.ctx, &type_step, &type_expected_step_ty).expect("type_step : Pi b:Bool. type_motive_c(b)");
+        p.check(&type_step, &type_expected_step_ty).expect("type_step : Pi b:Bool. type_motive_c(b)");
 
         // fam := wrec(type_motive, ChildTy(Var0), type_step, Var(0)) --
         // Sigma's own open family body, one binder under the tag.
         let fam = wrec(shift(&type_motive, 0, 1), shift(&wb, 1, 1), shift(&type_step, 0, 1), var(0));
 
         let sigma_ty = sigma(nat_ty.clone(), fam.clone());
-        check(&p.ctx, &sigma_ty, &sort(0)).expect("Sigma(Nat, fam) : Sort0");
+        p.check(&sigma_ty, &sort(0)).expect("Sigma(Nat, fam) : Sort0");
 
         // --- THE KEY CLAIM: Pair(fam, a, b) typechecks for a's tag being a
         // genuinely SYMBOLIC (universally quantified) postulate, not a
@@ -3062,7 +3111,7 @@ mod tests {
         // Lam's own body, so `value_motive(a)` beta-reduces (unconditionally,
         // for ANY a, symbolic or not) to exactly `subst_top(fam, a)`.
         let value_motive = lam(nat_ty.clone(), fam.clone());
-        check(&p.ctx, &value_motive, &arrow(nat_ty.clone(), sort(0))).expect("value_motive : Nat -> Sort0");
+        p.check(&value_motive, &arrow(nat_ty.clone(), sort(0))).expect("value_motive : Nat -> Sort0");
 
         let (value_per_tag_d1, value_expected_step_ty) = wrec_step_type(&bool_ty, &wb, &nat_ty, &value_motive);
         let value_motive_c = lam(bool_ty.clone(), value_per_tag_d1.clone());
@@ -3151,7 +3200,7 @@ mod tests {
             &clo1_ty,
             &star,
         );
-        check(&p.ctx, &case_true_val, &value_case_true_expected).expect("case_true_val : value_motive_c(true)");
+        p.check(&case_true_val, &value_case_true_expected).expect("case_true_val : value_motive_c(true)");
 
         let f_ref_false = var(1);
         let rec_step_false = rebuild_rec_step_d2(&type_motive, &wb, &type_step, &false_val, &f_ref_false);
@@ -3171,7 +3220,7 @@ mod tests {
             &clo2_ty,
             &zero_witness,
         );
-        check(&p.ctx, &case_false_val, &value_case_false_expected).expect("case_false_val : value_motive_c(false)");
+        p.check(&case_false_val, &value_case_false_expected).expect("case_false_val : value_motive_c(false)");
 
         // `value_motive_c`'s own final codomain is `value_motive(sup(b,f))`
         // -- an *application*, itself Sort0-typed (unlike `type_motive_c`'s
@@ -3179,14 +3228,14 @@ mod tests {
         // so `value_motive_c : Bool -> Sort0` exactly matches the ordinary,
         // already-built `nat.bool_rec` (no new postulate needed here).
         let value_step = app(app(app(nat.bool_rec(&p), value_motive_c.clone()), case_true_val), case_false_val);
-        check(&p.ctx, &value_step, &value_expected_step_ty).expect("value_step : Pi b:Bool. value_motive_c(b)");
+        p.check(&value_step, &value_expected_step_ty).expect("value_step : Pi b:Bool. value_motive_c(b)");
 
         // b_val := wrec(value_motive, ChildTy(Var0), value_step, a) --
         // standalone, at the SAME (ambient) depth as `a` itself, no extra
         // binder (unlike `fam`, this isn't going *inside* anything).
         let b_val = wrec(value_motive.clone(), wb.clone(), value_step, a.clone());
         let expected_b_ty = subst_top(&fam, &a);
-        check(&p.ctx, &b_val, &expected_b_ty).expect("b_val : subst_top(fam, a) -- the core claim, isolated");
+        p.check(&b_val, &expected_b_ty).expect("b_val : subst_top(fam, a) -- the core claim, isolated");
 
         // Sanity: `a` is genuinely symbolic, not secretly concrete -- whnf
         // doesn't reduce a bare postulate reference to `Sup(..)`, and
@@ -3205,7 +3254,7 @@ mod tests {
         // which needed `a` concrete before `Pair`'s own definitional-
         // equality check could ever succeed.
         let pr = pair(fam.clone(), a.clone(), b_val);
-        let pr_ty = infer(&p.ctx, &pr).expect("Pair(fam, a, b_val) should typecheck for a SYMBOLIC tag");
+        let pr_ty = p.infer(&pr).expect("Pair(fam, a, b_val) should typecheck for a SYMBOLIC tag");
         assert!(def_eq(&pr_ty, &sigma_ty), "Pair's own inferred type should be Sigma(Nat, fam): got {pr_ty:?}");
     }
 
@@ -3265,7 +3314,7 @@ mod tests {
         let a0_pos = p.push(p.get(a_pos)); // a0 : A
 
         let a0 = p.get(a0_pos);
-        let ty = infer(&p.ctx, &refl(a0.clone())).unwrap();
+        let ty = p.infer(&refl(a0.clone())).unwrap();
         assert!(def_eq(&ty, &id(p.get(a_pos), a0.clone(), a0)));
     }
 
@@ -3440,7 +3489,7 @@ mod tests {
         let bc_ref = p.get(bc_pos);
         let w_ty = wty(a_ref.clone(), shift(&bc_ref, 0, 1));
         let target = sup(p.get(a0_pos), p.get(f0_pos));
-        assert!(def_eq(&infer(&p.ctx, &target).unwrap(), &w_ty));
+        assert!(def_eq(&p.infer(&target).unwrap(), &w_ty));
 
         // motive := \_ : W(A,Bc). W(A,Bc)   (constant motive)
         let motive = lam(w_ty.clone(), shift(&w_ty, 0, 1));
@@ -3460,11 +3509,11 @@ mod tests {
         let step = lam(a_ref, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
 
         let reduced = wrec(motive, shift(&bc_ref, 0, 1), step, target.clone());
-        check(&p.ctx, &reduced, &w_ty).expect("wrec application should typecheck");
+        p.check(&reduced, &w_ty).expect("wrec application should typecheck");
         // The payoff of choosing W over an impredicative/Church encoding:
         // this holds by `refl` alone — the recursor genuinely *computes*,
         // it doesn't just make the equation provable with extra work.
-        check(&p.ctx, &refl(target.clone()), &id(w_ty, reduced, target))
+        p.check(&refl(target.clone()), &id(w_ty, reduced, target))
             .expect("wrec(motive, step, sup(a,f)) should reduce definitionally to sup(a,f)");
     }
 
@@ -3489,7 +3538,7 @@ mod tests {
         let mk_pos = p.push(mk_ty);
 
         let target = sup(p.get(a0_pos), p.get(mk_pos));
-        let err = infer(&p.ctx, &target).expect_err("a dependent codomain must be rejected, not silently trusted");
+        let err = p.infer(&target).expect_err("a dependent codomain must be rejected, not silently trusted");
         assert!(
             err.contains("must not depend"),
             "expected the dependent-codomain error, got: {err}"
@@ -3544,18 +3593,18 @@ mod tests {
         let fam = shift(&b_ref, 0, 1); // \_:A. B, written one binder deeper
         let sig_ty = sigma(a_ref.clone(), fam.clone());
         let target = pair(fam.clone(), a0_ref.clone(), b0_ref.clone());
-        check(&p.ctx, &target, &sig_ty).expect("pair(fam, a0, b0) : Sigma(A, fam)");
+        p.check(&target, &sig_ty).expect("pair(fam, a0, b0) : Sigma(A, fam)");
 
         // motive := \_:Sigma(A,fam). A  (constant motive)
         let motive = lam(sig_ty.clone(), shift(&a_ref, 0, 1));
         // step := \a:A. \b:B. a  -- i.e. "fst"
         let step = lam(a_ref.clone(), lam(fam, var(1)));
         let reduced = sigrec(motive, step, target.clone());
-        check(&p.ctx, &reduced, &a_ref).expect("sigrec application should typecheck");
+        p.check(&reduced, &a_ref).expect("sigrec application should typecheck");
         // The same payoff `w_recursor_computes_definitionally` already
         // established for `W`: this holds by `refl` alone -- the
         // recursor genuinely *computes*, not just propositionally.
-        check(&p.ctx, &refl(a0_ref.clone()), &id(a_ref, reduced, a0_ref))
+        p.check(&refl(a0_ref.clone()), &id(a_ref, reduced, a0_ref))
             .expect("sigrec(motive, step, pair(fam,a0,b0)) should reduce definitionally to a0");
     }
 
@@ -3578,7 +3627,7 @@ mod tests {
         let fam = id(shift(&a_ref, 0, 1), var(0), shift(&a0_ref, 0, 1));
         let sig_ty = sigma(a_ref, fam.clone());
         let target = pair(fam, a0_ref.clone(), refl(a0_ref));
-        check(&p.ctx, &target, &sig_ty).expect("pair(fam, a0, refl(a0)) : Sigma(A, fam)");
+        p.check(&target, &sig_ty).expect("pair(fam, a0, refl(a0)) : Sigma(A, fam)");
     }
 
     #[test]
@@ -3593,7 +3642,7 @@ mod tests {
         let fam = shift(&b_ref, 0, 1); // \_:A. B
         // second component should be B-typed, not A-typed
         let bad = pair(fam, a0_ref.clone(), a0_ref);
-        assert!(infer(&p.ctx, &bad).is_err(), "pair's own second component must check against fam(a), not anything else");
+        assert!(p.infer(&bad).is_err(), "pair's own second component must check against fam(a), not anything else");
     }
 
     /// The soundness gate `infer`'s own `WRec` case now needs (see
@@ -3630,7 +3679,7 @@ mod tests {
         // `def_eq` to `Bc` itself) that names the wrong children family.
         let wrong = wrec(motive, sort(0), step, target);
         assert!(
-            infer(&p.ctx, &wrong).is_err(),
+            p.infer(&wrong).is_err(),
             "a WRec term whose children_ty doesn't match target's own real children-type should be rejected, not silently trusted"
         );
     }
@@ -3711,7 +3760,7 @@ mod tests {
         let p1 = p.get(p1_pos);
 
         let flipped = sym(&a_ty, &a, &b, p1);
-        check(&p.ctx, &flipped, &id(a_ty, b, a)).expect("sym(x,y,p) : Id(A, y, x)");
+        p.check(&flipped, &id(a_ty, b, a)).expect("sym(x,y,p) : Id(A, y, x)");
     }
 
     #[test]
@@ -3730,7 +3779,7 @@ mod tests {
         let a = p.get(a_pos);
 
         let moved = transport(0, a_ty, b_ty.clone(), proof, a);
-        check(&p.ctx, &moved, &b_ty).expect("transport(p,a) : B");
+        p.check(&moved, &b_ty).expect("transport(p,a) : B");
     }
 
     #[test]
@@ -3772,15 +3821,15 @@ mod tests {
         let f = p.get(f_pos);
 
         let c1 = cong1(&a_ty, &a_ty, &f, a.clone(), b.clone(), p1);
-        check(&p.ctx, &c1, &id(a_ty.clone(), app(f.clone(), a.clone()), app(f.clone(), b.clone())))
+        p.check(&c1, &id(a_ty.clone(), app(f.clone(), a.clone()), app(f.clone(), b.clone())))
             .expect("cong1(f,a,b,p1) : Id(A, f a, f b)");
 
         let c2 = cong1(&a_ty, &a_ty, &f, b.clone(), c.clone(), p2);
-        check(&p.ctx, &c2, &id(a_ty.clone(), app(f.clone(), b.clone()), app(f.clone(), c.clone())))
+        p.check(&c2, &id(a_ty.clone(), app(f.clone(), b.clone()), app(f.clone(), c.clone())))
             .expect("cong1(f,b,c,p2) : Id(A, f b, f c)");
 
         let chained = trans_proof(&a_ty, &app(f.clone(), a.clone()), &app(f.clone(), b.clone()), &app(f.clone(), c.clone()), c1, c2);
-        check(&p.ctx, &chained, &id(a_ty, app(f.clone(), a), app(f, c)))
+        p.check(&chained, &id(a_ty, app(f.clone(), a), app(f, c)))
             .expect("trans(cong1(..p1), cong1(..p2)) : Id(A, f a, f c)");
     }
 
@@ -3806,7 +3855,7 @@ mod tests {
         let p1 = p.get(p1_pos);
 
         let c1 = cong1(&a_ty, &b_ty, &f, a.clone(), b.clone(), p1);
-        check(&p.ctx, &c1, &id(b_ty, app(f.clone(), a), app(f, b))).expect("cong1(f,a,b,p1) : Id(B, f a, f b)");
+        p.check(&c1, &id(b_ty, app(f.clone(), a), app(f, b))).expect("cong1(f,a,b,p1) : Id(B, f a, f b)");
     }
 
     #[test]
@@ -3835,7 +3884,7 @@ mod tests {
 
         let proof = cong_n(&a_ty, &b_ty, &g, &[x0.clone(), x1.clone()], &[y0.clone(), y1.clone()], vec![p0, p1]);
         let expected = id(b_ty, app(app(g.clone(), x0), x1), app(app(g, y0), y1));
-        check(&p.ctx, &proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(B, g x0 x1, g y0 y1)");
+        p.check(&proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(B, g x0 x1, g y0 y1)");
     }
 
     #[test]
@@ -3865,7 +3914,7 @@ mod tests {
 
         let proof = cong_n(&a_ty, &a_ty, &g, &[x0.clone(), x1.clone()], &[y0.clone(), y1.clone()], vec![p0, p1]);
         let expected = id(a_ty, app(app(g.clone(), x0), x1), app(app(g, y0), y1));
-        check(&p.ctx, &proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(A, g x0 x1, g y0 y1)");
+        p.check(&proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(A, g x0 x1, g y0 y1)");
     }
 
     #[test]
@@ -3908,14 +3957,32 @@ mod tests {
             vec![p0.clone(), p1.clone()],
         );
         let expected = id(a_ty.clone(), app(app(g.clone(), x0.clone()), x1.clone()), app(app(g.clone(), y0.clone()), y1.clone()));
-        check(&p.ctx, &good, &expected).expect("correctly-ordered cong_n should typecheck");
+        p.check(&good, &expected).expect("correctly-ordered cong_n should typecheck");
 
         // Adversarial: swap the proof order.
         let bad = cong_n(&a_ty, &a_ty, &g, &[x0, x1], &[y0, y1], vec![p1, p0]);
         assert!(
-            check(&p.ctx, &bad, &expected).is_err(),
+            p.check(&bad, &expected).is_err(),
             "cong_n with mismatched (swapped) proofs should be rejected, not silently accepted"
         );
+    }
+
+    /// `open`/`close` wrap exactly the entries pushed inside the scope and
+    /// roll them back; `abandon` rolls back without closing.
+    #[test]
+    fn a_scope_closes_over_what_it_pushed_and_rolls_it_back() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.push(p.get(a));
+        let body = id(p.get(a), p.get(x), p.get(x));
+        let closed = p.close(s, Binder::Pi, body);
+        assert_eq!(p.ctx.len(), 1);
+        assert!(p.check(&closed, &sort(0)).is_ok());
+        let s = p.open();
+        p.push(p.get(a));
+        p.abandon(s);
+        assert_eq!(p.ctx.len(), 1);
     }
 
     #[test]
@@ -3927,19 +3994,18 @@ mod tests {
         let a_ty_pos = p.push(sort(0));
         let a_ty = p.get(a_ty_pos); // valid at the pre-push depth captured below
 
-        let base_len = p.ctx.len();
+        let s = p.open();
         let x_pos = p.push(p.get(a_ty_pos)); // fresh reference, not `a_ty.clone()` -- ctx has grown
         let y_pos = p.push(p.get(a_ty_pos)); // fresh again -- ctx has grown once more
         let body = id(p.get(a_ty_pos), p.get(x_pos), p.get(y_pos));
-        let closed = close_pi(base_len, &p.ctx, body);
+        let closed = p.close(s, Binder::Pi, body);
 
         let expected = pi(a_ty.clone(), pi(shift(&a_ty, 0, 1), id(shift(&a_ty, 0, 2), var(1), var(0))));
         assert_eq!(closed, expected);
 
         // And it typechecks as exactly that Pi-type.
-        p.ctx.truncate(base_len);
         assert!(typecheck(&closed).is_err()); // open term (references A) -- must check in ctx, not standalone
-        check(&p.ctx, &closed, &sort(0)).expect("Pi x:A. Pi y:A. Id(A,x,y) : Type0");
+        p.check(&closed, &sort(0)).expect("Pi x:A. Pi y:A. Id(A,x,y) : Type0");
     }
 
     #[test]
@@ -3950,14 +4016,16 @@ mod tests {
         let mut p = Postulates::new();
         let a_ty_pos = p.push(sort(0));
 
-        let base_len = p.ctx.len();
+        let s = p.open();
         let x_pos = p.push(p.get(a_ty_pos));
         let ty_body = id(p.get(a_ty_pos), p.get(x_pos), p.get(x_pos));
-        let value_body = refl(p.get(x_pos));
-        let ty = close_pi(base_len, &p.ctx, ty_body);
-        let value = close_lam(base_len, &p.ctx, value_body);
+        let ty = p.close(s, Binder::Pi, ty_body);
 
-        p.ctx.truncate(base_len);
-        check(&p.ctx, &value, &ty).expect("\\x:A. refl x : Pi x:A. Id(A,x,x)");
+        let s = p.open();
+        let x_pos = p.push(p.get(a_ty_pos));
+        let value_body = refl(p.get(x_pos));
+        let value = p.close(s, Binder::Lam, value_body);
+
+        p.check(&value, &ty).expect("\\x:A. refl x : Pi x:A. Id(A,x,x)");
     }
 }

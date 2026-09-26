@@ -451,7 +451,7 @@ fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<Equi
     let result_ty = arith.int_ty();
     let proof = kernel::refl(denotation.clone());
     let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
-    kernel::check(&arith.p.ctx, &proof, &proof_ty).ok()?;
+    arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
         ctx: arith.p.ctx,
@@ -808,8 +808,8 @@ fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Ex
 // top of (not instead of) the real trust gate, which is still `kernel::check`
 // at each function's own already-existing, unconditional call site.
 #[cfg(debug_assertions)]
-fn debug_assert_has_type(ctx: &Ctx, e: &Expr, expected: &Expr, label: &str) {
-    if let Err(err) = kernel::check(ctx, e, expected) {
+fn debug_assert_has_type(p: &Postulates, e: &Expr, expected: &Expr, label: &str) {
+    if let Err(err) = p.check(e, expected) {
         panic!(
             "staleness/composition bug in {label}: the value doesn't have its expected type.\n  \
              error: {err}\n  value: {e:?}\n  expected type: {expected:?}"
@@ -817,7 +817,7 @@ fn debug_assert_has_type(ctx: &Ctx, e: &Expr, expected: &Expr, label: &str) {
     }
 }
 #[cfg(not(debug_assertions))]
-fn debug_assert_has_type(_ctx: &Ctx, _e: &Expr, _expected: &Expr, _label: &str) {}
+fn debug_assert_has_type(_p: &Postulates, _e: &Expr, _expected: &Expr, _label: &str) {}
 
 /// `combine`'s value at `params`/`ihs` (both hoisted to a free function --
 /// not just a closure local to `prove_tail_recursive_universal` -- so
@@ -1019,7 +1019,7 @@ fn denote_with_placeholders(
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: call_indirect application");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: call_indirect application");
                 Some(Denoted::Int(applied))
             }
             // A closure created and (fully or partially) called right
@@ -1067,7 +1067,7 @@ fn denote_with_placeholders(
                 let applied = Anchored::new(&combinators.cp.arith, applied);
                 let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
                 let applied = applied.at(&combinators.cp.arith);
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: partial application");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_with_placeholders: partial application");
                 Some(Denoted::Clo(applied))
             }
             AppShape::LitLambdaExact { root, args, callee_param_types } | AppShape::LitLambdaOver { root, args, callee_param_types } => {
@@ -1110,7 +1110,7 @@ fn denote_with_placeholders(
                     None => combinators.cp.arith.int_ty(),
                 };
                 let sat_applied = sat_applied.at(&combinators.cp.arith);
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_with_placeholders: direct combinator call");
+                debug_assert_has_type(&combinators.cp.arith.p, &sat_applied, &sat_ty, "denote_with_placeholders: direct combinator call");
 
                 if args.len() == arity {
                     return Some(if returns_clo { Denoted::Clo(sat_applied) } else { Denoted::Int(sat_applied) });
@@ -1130,7 +1130,7 @@ fn denote_with_placeholders(
                 let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: over-application dispatch");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: over-application dispatch");
                 Some(Denoted::Int(applied))
             }
         },
@@ -1152,7 +1152,7 @@ fn denote_with_placeholders(
             let da = da.at(&combinators.cp.arith);
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: Prim");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: Prim");
             Some(Denoted::Int(applied))
         }
         // A freshly-created closure *value*, not (yet) called -- mirrors
@@ -1174,7 +1174,7 @@ fn denote_with_placeholders(
             let env_expr = env_expr.at(&combinators.cp.arith);
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: capturing closure value");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_with_placeholders: capturing closure value");
             Some(Denoted::Clo(applied))
         }
         // A nested `If`: mirrors `denote_closure`'s identical three-way
@@ -1211,7 +1211,7 @@ fn denote_with_placeholders(
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite, dc, dt, de);
                     let int_ty = combinators.cp.arith.int_ty();
-                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_with_placeholders: nested If (Int branches)");
+                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: nested If (Int branches)");
                     Some(Denoted::Int(applied))
                 }
                 (true, true) => {
@@ -1234,7 +1234,7 @@ fn denote_with_placeholders(
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite_clo, dc, dt, de);
                     let clo_ty = combinators.cp.clo_ty(t_arity);
-                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_with_placeholders: nested If (Clo branches)");
+                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_with_placeholders: nested If (Clo branches)");
                     Some(Denoted::Clo(applied))
                 }
                 _ => None,
@@ -1301,7 +1301,7 @@ fn denote_closure_typed(
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: call_indirect application");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: call_indirect application");
                 Some(Denoted::Int(applied))
             }
             // A literal lambda -- or a named self-recursive combinator --
@@ -1345,7 +1345,7 @@ fn denote_closure_typed(
                 let applied = Anchored::new(&combinators.cp.arith, applied);
                 let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
                 let applied = applied.at(&combinators.cp.arith);
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: partial application");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure_typed: partial application");
                 Some(Denoted::Clo(applied))
             }
             AppShape::LitLambdaExact { root, args, callee_param_types } | AppShape::LitLambdaOver { root, args, callee_param_types } => {
@@ -1386,7 +1386,7 @@ fn denote_closure_typed(
                     None => combinators.cp.arith.int_ty(),
                 };
                 let sat_applied = sat_applied.at(&combinators.cp.arith);
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_closure_typed: direct combinator call");
+                debug_assert_has_type(&combinators.cp.arith.p, &sat_applied, &sat_ty, "denote_closure_typed: direct combinator call");
 
                 if args.len() == arity {
                     return Some(if returns_clo { Denoted::Clo(sat_applied) } else { Denoted::Int(sat_applied) });
@@ -1406,7 +1406,7 @@ fn denote_closure_typed(
                 let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: over-application dispatch");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: over-application dispatch");
                 Some(Denoted::Int(applied))
             }
         },
@@ -1428,7 +1428,7 @@ fn denote_closure_typed(
             let da = da.at(&combinators.cp.arith);
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: Prim");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: Prim");
             Some(Denoted::Int(applied))
         }
         // Mirrors `denote_closure`'s identical three-way match: both
@@ -1459,7 +1459,7 @@ fn denote_closure_typed(
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite, dc, dt, de);
                     let int_ty = combinators.cp.arith.int_ty();
-                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure_typed: If (Int branches)");
+                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: If (Int branches)");
                     Some(Denoted::Int(applied))
                 }
                 (true, true) => {
@@ -1477,7 +1477,7 @@ fn denote_closure_typed(
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite_clo, dc, dt, de);
                     let clo_ty = combinators.cp.clo_ty(t_arity);
-                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: If (Clo branches)");
+                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure_typed: If (Clo branches)");
                     Some(Denoted::Clo(applied))
                 }
                 _ => None,
@@ -1504,7 +1504,7 @@ fn denote_closure_typed(
             let env_expr = env_expr.at(&combinators.cp.arith);
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure_typed: capturing closure value");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure_typed: capturing closure value");
             Some(Denoted::Clo(applied))
         }
         Shape::Combinator { is_rec: true } => None,
@@ -1692,28 +1692,31 @@ impl Params {
 /// `Params`), then closes *everything* pushed since entry (the `n` params
 /// plus anything `build` itself pushed, e.g. more binders of its own)
 /// into nested binders around that body, rolling the temporary pushes
-/// back afterward. Pass `kernel::close_pi` to build a *type* (quantifying
-/// over these params) or `kernel::close_lam` to build a *value* of that
+/// back afterward. Pass `kernel::Binder::Pi` to build a *type* (quantifying
+/// over these params) or `kernel::Binder::Lam` to build a *value* of that
 /// type (e.g. a motive or a proof to pass as an argument) -- getting this
 /// wrong is a real, easy-to-make mistake (a `Pi` where a `Lam` was
 /// needed), not a hypothetical one.
 fn params_and_close(
     arith: &mut ArithPostulates,
     n: usize,
-    close: fn(usize, &Ctx, Expr) -> Expr,
+    binder: kernel::Binder,
     build: impl FnOnce(&mut ArithPostulates, &Params) -> Option<Expr>,
 ) -> Option<Expr> {
-    let base_len = arith.p.ctx.len();
+    let s = arith.p.open();
     let mut positions = Vec::with_capacity(n);
     for _ in 0..n {
         let ty = arith.int_ty();
         positions.push(arith.p.push(ty));
     }
     let pp = Params(positions);
-    let body = build(arith, &pp);
-    let closed = body.map(|b| close(base_len, &arith.p.ctx, b));
-    arith.p.ctx.truncate(base_len);
-    closed
+    match build(arith, &pp) {
+        Some(b) => Some(arith.p.close(s, binder, b)),
+        None => {
+            arith.p.abandon(s);
+            None
+        }
+    }
 }
 
 /// Like [`params_and_close`], but for `build_universal`'s own closure-aware
@@ -1729,10 +1732,10 @@ fn params_and_close(
 fn params_and_close_typed(
     arith: &mut ClosureCombinators<'_>,
     param_types: &[Option<usize>],
-    close: fn(usize, &Ctx, Expr) -> Expr,
+    binder: kernel::Binder,
     build: impl FnOnce(&mut ClosureCombinators<'_>, &Params) -> Option<Expr>,
 ) -> Option<Expr> {
-    let base_len = arith.p.ctx.len();
+    let s = arith.p.open();
     let mut positions = Vec::with_capacity(param_types.len());
     for pt in param_types {
         let ty = match pt {
@@ -1742,10 +1745,13 @@ fn params_and_close_typed(
         positions.push(arith.p.push(ty));
     }
     let pp = Params(positions);
-    let body = build(arith, &pp);
-    let closed = body.map(|b| close(base_len, &arith.p.ctx, b));
-    arith.p.ctx.truncate(base_len);
-    closed
+    match build(arith, &pp) {
+        Some(b) => Some(arith.p.close(s, binder, b)),
+        None => {
+            arith.p.abandon(s);
+            None
+        }
+    }
 }
 
 /// A kernel-checked universal theorem: for every input, the witness that
@@ -2047,8 +2053,8 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let no_closures = |n: usize| vec![None; n];
     let mut combines = Vec::with_capacity(leaves.len());
     for leaf in &leaves {
-        let expr = params_and_close_typed(&mut arith, &param_types, kernel::close_lam, |arith, pp| {
-            params_and_close_typed(arith, &no_closures(leaf.calls.len()), kernel::close_lam, |arith, pp2| {
+        let expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
+            params_and_close_typed(arith, &no_closures(leaf.calls.len()), kernel::Binder::Lam, |arith, pp2| {
                 denote_with_placeholders(store, leaf.expr, self_call, &param_types, arith, &pp.0, &pp2.0, &mut 0)?.int()
             })
         })?;
@@ -2060,7 +2066,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // -- one constructor per leaf.
     let mut ev_leaf_positions = Vec::with_capacity(leaves.len());
     for (leaf, combine) in leaves.iter().zip(&combines) {
-        let ty = params_and_close_typed(&mut arith, &param_types, kernel::close_pi, |arith, pp| {
+        let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
             push_path(arith, pp, &leaf.path)?;
             let (v_positions, _e_positions) = push_calls(arith, pp, &leaf.calls)?;
             let params = pp.at(arith);
@@ -2080,14 +2086,14 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // argument's type, `Ev(params,v)`, depends on the first `arity+1`
     // arguments' values, so it can't be a flat non-dependent arrow chain
     // the way `Ev`'s own (params,v both just `Int`, independent) type is.
-    let motive_ty = params_and_close_typed(&mut arith, &param_types, kernel::close_pi, |arith, pp| {
+    let motive_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
         let v = arith.p.get(v_pos);
         let ev_pv = ev_of(arith, &pp.at(arith), v);
         arith.p.push(ev_pv);
         Some(kernel::sort(0))
     })?;
-    let p_base_len = arith.p.ctx.len();
+    let p_scope = arith.p.open();
     let p_pos = arith.p.push(motive_ty);
     let p_of = |arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
         apply_n(arith.p.get(p_pos), params.iter().cloned().chain([v, e]))
@@ -2100,7 +2106,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // `k_i == 1` gives the old step-case type.
     let mut leaf_case_tys = Vec::with_capacity(leaves.len());
     for (leaf, (&ev_leaf_pos, combine)) in leaves.iter().zip(ev_leaf_positions.iter().zip(&combines)) {
-        let ty = params_and_close_typed(&mut arith, &param_types, kernel::close_pi, |arith, pp| {
+        let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
             let path_positions = push_path(arith, pp, &leaf.path)?;
             let (v_positions, e_positions) = push_calls(arith, pp, &leaf.calls)?;
             // Use phase.
@@ -2120,10 +2126,21 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
             );
             let concl = p_of(arith, &params, combine_v, ev_leaf_applied);
             Some(ih_tys.into_iter().rev().fold(concl, |acc, ih_ty| kernel::arrow(ih_ty, acc)))
-        })?;
+        });
+        // `params_and_close_typed` already rolls back its own (inner) scope
+        // on `None`; a `?` here would still skip past this loop straight
+        // out of `build_universal`, leaving `p_scope`'s own postulates
+        // (`p_pos` and anything pushed by earlier iterations) unrolled.
+        let ty = match ty {
+            Some(ty) => ty,
+            None => {
+                arith.p.abandon(p_scope);
+                return None;
+            }
+        };
         leaf_case_tys.push(ty);
     }
-    let concl_ty = params_and_close_typed(&mut arith, &param_types, kernel::close_pi, |arith, pp| {
+    let concl_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
         let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
         let e_pos = arith.p.push(ev_pv);
@@ -2132,11 +2149,18 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         let v = arith.p.get(v_pos);
         let e = arith.p.get(e_pos);
         Some(p_of(arith, &params, v, e))
-    })?;
+    });
+    // Same reasoning as the loop above: abandon `p_scope` before giving up.
+    let concl_ty = match concl_ty {
+        Some(concl_ty) => concl_ty,
+        None => {
+            arith.p.abandon(p_scope);
+            return None;
+        }
+    };
 
     let ev_rec_ty_body = leaf_case_tys.iter().rev().fold(concl_ty, |acc, ty| kernel::arrow(ty.clone(), acc));
-    let ev_rec_ty = kernel::close_pi(p_base_len, &arith.p.ctx, ev_rec_ty_body);
-    arith.p.ctx.truncate(p_base_len);
+    let ev_rec_ty = arith.p.close(p_scope, kernel::Binder::Pi, ev_rec_ty_body);
     let ev_rec_pos = arith.p.push(ev_rec_ty);
     let ev_rec_ref = |arith: &ArithPostulates, motive: Expr, cases: &[Expr], params: &[Expr], v: Expr, e: Expr| -> Expr {
         apply_n(
@@ -2153,7 +2177,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // type -- `e`'s domain is genuinely `Ev(params,v)`, not a placeholder
     // `Int` (an earlier version of this used `Int` there and failed to
     // typecheck for exactly that reason).
-    let const_int_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::close_lam, |arith, pp| {
+    let const_int_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
         let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
         arith.p.push(ev_pv); // e : Ev(params, v)
@@ -2163,7 +2187,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 
     let mut loop_leaves = Vec::with_capacity(leaves.len());
     for (leaf, combine) in leaves.iter().zip(&combines) {
-        let expr = params_and_close_typed(&mut arith, &param_types, kernel::close_lam, |arith, pp| {
+        let expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
             push_path(arith, pp, &leaf.path)?; // matches leaf_case_ty's premise binders, unused in the body
             push_calls(arith, pp, &leaf.calls)?; // v/e binders, also unused in the body
             let mut ih_positions = Vec::with_capacity(leaf.calls.len());
@@ -2189,7 +2213,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // generic "for any motive" schema -- see module docs), one per leaf.
     let mut loop_val_leaf_eq_positions = Vec::with_capacity(leaves.len());
     for (leaf, (&ev_leaf_pos, combine)) in leaves.iter().zip(ev_leaf_positions.iter().zip(&combines)) {
-        let ty = params_and_close_typed(&mut arith, &param_types, kernel::close_pi, |arith, pp| {
+        let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
             let path_positions = push_path(arith, pp, &leaf.path)?;
             let (v_positions, e_positions) = push_calls(arith, pp, &leaf.calls)?;
             // Use phase.
@@ -2215,7 +2239,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 
     // Theorem: Pi params v e. Id(Int, loop_val(params,v,e), v), proved via
     // ev_rec with motive `\params v e. Id(Int, loop_val(params,v,e), v)`.
-    let id_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::close_lam, |arith, pp| {
+    let id_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
         let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
         let e_pos = arith.p.push(ev_pv);
@@ -2240,7 +2264,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     for (leaf, ((&ev_leaf_pos, &loop_val_leaf_eq_pos), combine)) in
         leaves.iter().zip(ev_leaf_positions.iter().zip(&loop_val_leaf_eq_positions).zip(&combines))
     {
-        let expr = params_and_close_typed(&mut arith, &param_types, kernel::close_lam, |arith, pp| {
+        let expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
             let path_positions = push_path(arith, pp, &leaf.path)?;
             let (v_positions, e_positions) = push_calls(arith, pp, &leaf.calls)?;
             let mut ih_positions = Vec::with_capacity(leaf.calls.len());
@@ -2286,7 +2310,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         theorem_leaves.push(Anchored::new(&arith, expr));
     }
 
-    let theorem_ty = params_and_close_typed(&mut arith, &param_types, kernel::close_pi, |arith, pp| {
+    let theorem_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
         let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
         let e_pos = arith.p.push(ev_pv);
@@ -2297,7 +2321,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         Some(kernel::id(arith.int_ty(), loop_val(arith, &params, v.clone(), e), v))
     })?;
 
-    let theorem_proof = params_and_close_typed(&mut arith, &param_types, kernel::close_lam, |arith, pp| {
+    let theorem_proof = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
         let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
         let e_pos = arith.p.push(ev_pv);
@@ -2309,7 +2333,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         Some(ev_rec_ref(arith, id_motive.at(arith), &cases, &params, v, e))
     })?;
 
-    kernel::check(&arith.p.ctx, &theorem_proof, &theorem_ty).ok()?;
+    arith.p.check(&theorem_proof, &theorem_ty).ok()?;
 
     let theorem_ty = Anchored::new(&arith, theorem_ty);
     let theorem_proof = Anchored::new(&arith, theorem_proof);
@@ -2494,7 +2518,7 @@ fn eval_and_prove(
             let mid = kernel::app2(f, combinators.cp.arith.lit_ref(xa), combinators.cp.arith.lit_ref(xb));
             let rhs = combinators.cp.arith.lit_ref(result);
             let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: Prim proof");
+            debug_assert_has_type(&combinators.cp.arith.p, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: Prim proof");
             Some((result, lhs, proof))
         }
         // Mirrors the `Prim` case just above, via `assume_ite_fact`
@@ -2539,7 +2563,7 @@ fn eval_and_prove(
             let mid = kernel::app3(f, combinators.cp.arith.lit_ref(xc), combinators.cp.arith.lit_ref(xt), combinators.cp.arith.lit_ref(xe));
             let rhs = combinators.cp.arith.lit_ref(result);
             let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: If proof");
+            debug_assert_has_type(&combinators.cp.arith.p, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: If proof");
             Some((result, lhs, proof))
         }
         Shape::SelfCall(_) | Shape::OtherCall | Shape::Combinator { .. } => None,
@@ -2796,7 +2820,7 @@ fn eval_and_prove_direct_call(
         kernel::trans_proof(&int_ty2, &call_at_denoted, &call_at_lit_env_lit_args, &denote_lit, bridge, axiom_at_literals);
     let final_proof = kernel::trans_proof(&int_ty2, &call_at_denoted, &denote_lit, &result_ref, bridge_to_denote, proof_d);
     debug_assert_has_type(
-        &combinators.cp.arith.p.ctx,
+        &combinators.cp.arith.p,
         &final_proof,
         &kernel::id(int_ty2, call_at_denoted.clone(), result_ref),
         "eval_and_prove_call: final proof",
@@ -3419,7 +3443,7 @@ fn resolve_closure_shape_to_leaf(
             let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
             let root_to_chosen = kernel::trans_proof(&clo_ty, &call_at_denoted, &g_call_at_denoted, &chosen_value, root_to_g, g_to_chosen);
             debug_assert_has_type(
-                &combinators.cp.arith.p.ctx,
+                &combinators.cp.arith.p,
                 &root_to_chosen,
                 &kernel::id(clo_ty, call_at_denoted, chosen_value.clone()),
                 "resolve_closure_shape_to_leaf: Call arm's own root_to_chosen",
@@ -3567,7 +3591,7 @@ fn eval_and_prove_call_over(
     );
     let final_proof = kernel::trans_proof(&int_ty3, &apply_at_denoted, &call_at_denoted_for_chosen, &result_ref, bridge_to_call, proof_for_chosen);
     debug_assert_has_type(
-        &combinators.cp.arith.p.ctx,
+        &combinators.cp.arith.p,
         &final_proof,
         &kernel::id(int_ty3, apply_at_denoted.clone(), result_ref),
         "eval_and_prove_call_over: final proof",
@@ -3725,7 +3749,7 @@ fn build_ev_witness(
             .collect();
         let v_resolved = v.at(&combinators.cp.arith);
         let v_anchored = Anchored::new(&combinators.cp.arith, v_resolved.clone());
-        let f = params_and_close(&mut combinators.cp.arith, self_call.arity, kernel::close_lam, |arith, pp| {
+        let f = params_and_close(&mut combinators.cp.arith, self_call.arity, kernel::Binder::Lam, |arith, pp| {
             Some(ev_of(arith, ev_pos, &pp.at(arith), v_anchored.at(arith)))
         })?;
         let ev_eq = kernel::cong_n(&int_ty, &kernel::sort(0), &f, &lit_params, &denoted_params, ps);
@@ -3751,9 +3775,9 @@ fn build_ev_witness(
     let e = apply_n(combinators.cp.arith.p.get(ev_leaf_positions[leaf_idx]), args);
     let v = combine_of(&combinators.cp.arith, &combines[leaf_idx], &params, &vs);
     let int_ty_check = combinators.cp.arith.int_ty();
-    debug_assert_has_type(&combinators.cp.arith.p.ctx, &v, &int_ty_check, "build_ev_witness: v");
+    debug_assert_has_type(&combinators.cp.arith.p, &v, &int_ty_check, "build_ev_witness: v");
     let ev_check = ev_of(&combinators.cp.arith, ev_pos, &params, v.clone());
-    debug_assert_has_type(&combinators.cp.arith.p.ctx, &e, &ev_check, "build_ev_witness: e");
+    debug_assert_has_type(&combinators.cp.arith.p, &e, &ev_check, "build_ev_witness: e");
     memo.insert(concrete.to_vec(), (Anchored::new(&combinators.cp.arith, v.clone()), Anchored::new(&combinators.cp.arith, e.clone())));
     Some((v, e))
 }
@@ -3862,7 +3886,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
     let theorem_proof = scaffold.theorem_proof.at(&scaffold.combinators);
     let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.combinators.lit_ref(c)).collect();
     let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
-    let ty = kernel::infer(&scaffold.combinators.cp.arith.p.ctx, &applied).ok()?;
+    let ty = scaffold.combinators.cp.arith.p.infer(&applied).ok()?;
     let (lhs, rhs) = match kernel::whnf(&ty) {
         Expr::Id(_, ref lhs, ref rhs) => ((**lhs).clone(), (**rhs).clone()),
         _ => return None,
@@ -4857,7 +4881,7 @@ impl<'a> ClosureCombinators<'a> {
         // the *values* pulled out of `pp` below need to match this).
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
-        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let all = pp.at(&combinators.cp.arith);
             let (cs, ps) = all.split_at(n_captures);
             let call_fn_here = call_fn.at(&combinators.cp.arith);
@@ -5088,7 +5112,7 @@ impl<'a> ClosureCombinators<'a> {
         // itself uses.
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
-        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let all = pp.at(&combinators.cp.arith);
             let (cs, ps) = all.split_at(n_captures);
             let call_fn_here = call_fn.at(&combinators.cp.arith);
@@ -5234,7 +5258,7 @@ impl<'a> ClosureCombinators<'a> {
         // order `clo_eq_ref_pap`/`call_eq_ref` both use.
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
-        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let all = pp.at(&combinators.cp.arith);
             let (cs, ps) = all.split_at(n_captures);
             let call_fn_here = call_fn.at(&combinators.cp.arith);
@@ -5367,7 +5391,7 @@ impl<'a> ClosureCombinators<'a> {
         // order `clo_eq_ref_if_tree`/`call_eq_ref` both use.
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
-        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let all = pp.at(&combinators.cp.arith);
             let (cs, ps) = all.split_at(n_captures);
             let call_fn_here = call_fn.at(&combinators.cp.arith);
@@ -5469,7 +5493,7 @@ impl<'a> ClosureCombinators<'a> {
         // `ClosureCombinators`), so this needs `params_and_close_typed`'s
         // own `Clo_k`-aware quantification instead.
         let quant_types = vec![Some(arity), Some(arity)];
-        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let all = pp.at(&combinators.cp.arith);
             let (dt, de) = (all[0].clone(), all[1].clone());
             let clo_ty_here = clo_ty.at(&combinators.cp.arith);
@@ -5535,7 +5559,7 @@ impl<'a> ClosureCombinators<'a> {
         }
 
         let quant_types = vec![None; n_captures + arity];
-        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let all = pp.at(&combinators.cp.arith);
             let (cs, ps) = all.split_at(n_captures);
             let value_fn_here = value_fn.at(&combinators.cp.arith);
@@ -5622,7 +5646,7 @@ impl<'a> ClosureCombinators<'a> {
         // its remaining `k`) `apply_clo_eq_ref`'s own quantification uses
         // for captures-then-params.
         let quant_types = vec![None; n_captures + g_arity];
-        let ty = params_and_close_typed(self, &quant_types, kernel::close_pi, |combinators, pp| {
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let all = pp.at(&combinators.cp.arith);
             let (cs, ps) = all.split_at(n_captures);
             let (supplied, more) = ps.split_at(s);
@@ -6446,7 +6470,7 @@ fn denote_closure(
                 let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: call_indirect application");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: call_indirect application");
                 Some(Denoted::Int(applied))
             }
             // A literal lambda -- or a named self-recursive combinator, the
@@ -6514,7 +6538,7 @@ fn denote_closure(
                 let applied = Anchored::new(&combinators.cp.arith, applied);
                 let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
                 let applied = applied.at(&combinators.cp.arith);
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: partial application");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: partial application");
                 Some(Denoted::Clo(applied))
             }
             // `args.len() >= arity`: build `root`'s own saturated call
@@ -6560,7 +6584,7 @@ fn denote_closure(
                     None => combinators.cp.arith.int_ty(),
                 };
                 let sat_applied = sat_applied.at(&combinators.cp.arith);
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &sat_applied, &sat_ty, "denote_closure: direct combinator call");
+                debug_assert_has_type(&combinators.cp.arith.p, &sat_applied, &sat_ty, "denote_closure: direct combinator call");
 
                 if args.len() == arity {
                     return Some(if returns_clo { Denoted::Clo(sat_applied) } else { Denoted::Int(sat_applied) });
@@ -6592,7 +6616,7 @@ fn denote_closure(
                 let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: over-application dispatch");
+                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: over-application dispatch");
                 Some(Denoted::Int(applied))
             }
         },
@@ -6630,7 +6654,7 @@ fn denote_closure(
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite, dc, dt, de);
                     let int_ty = combinators.cp.arith.int_ty();
-                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: If (Int branches)");
+                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: If (Int branches)");
                     Some(Denoted::Int(applied))
                 }
                 (true, true) => {
@@ -6654,7 +6678,7 @@ fn denote_closure(
                     let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite_clo, dc, dt, de);
                     let clo_ty = combinators.cp.clo_ty(t_arity);
-                    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: If (Clo branches)");
+                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: If (Clo branches)");
                     Some(Denoted::Clo(applied))
                 }
                 _ => None,
@@ -6677,7 +6701,7 @@ fn denote_closure(
             let da = da.at(&combinators.cp.arith);
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "denote_closure: Prim");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: Prim");
             Some(Denoted::Int(applied))
         }
         // A literal lambda used as a bare value -- or a named self-recursive
@@ -6704,7 +6728,7 @@ fn denote_closure(
             let env_expr = env_expr.at(&combinators.cp.arith);
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "denote_closure: capturing closure value");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: capturing closure value");
             Some(Denoted::Clo(applied))
         }
         Shape::SelfCall(_) => None,
@@ -6796,7 +6820,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
     };
     let proof = kernel::refl(denotation.clone());
     let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
-    kernel::check(&combinators.cp.arith.p.ctx, &proof, &proof_ty).ok()?;
+    combinators.cp.arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
         ctx: combinators.cp.arith.p.ctx,
@@ -7284,7 +7308,7 @@ fn eval_dyn_direct_call(
     debug_assert!(return_ty.is_none(), "a Clo-returning root should always have been inlined above");
     let int_ty = combinators.cp.arith.int_ty();
     let applied_resolved = applied.at(&combinators.cp.arith);
-    debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied_resolved, &int_ty, "eval_dyn: direct combinator call");
+    debug_assert_has_type(&combinators.cp.arith.p, &applied_resolved, &int_ty, "eval_dyn: direct combinator call");
     Some(DynDenoted::Int(applied))
 }
 
@@ -7472,7 +7496,7 @@ fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut ClosureCombinator
             let db = db.at(&combinators.cp.arith);
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &int_ty, "eval_dyn: Prim");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "eval_dyn: Prim");
             Some(DynDenoted::Int(Anchored::new(&combinators.cp.arith, applied)))
         }
         Shape::Combinator { .. } => {
@@ -7506,7 +7530,7 @@ fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut ClosureCombinator
             let env_expr = env_expr.at(&combinators.cp.arith);
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
-            debug_assert_has_type(&combinators.cp.arith.p.ctx, &applied, &clo_ty, "eval_dyn: capturing closure value");
+            debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "eval_dyn: capturing closure value");
             let applied = Anchored::new(&combinators.cp.arith, applied);
             Some(DynDenoted::Clo(applied, cc))
         }
@@ -7581,7 +7605,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
     };
     let proof = kernel::refl(denotation.clone());
     let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
-    kernel::check(&combinators.cp.arith.p.ctx, &proof, &proof_ty).ok()?;
+    combinators.cp.arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
         ctx: combinators.cp.arith.p.ctx,
@@ -7734,12 +7758,12 @@ mod tests {
             kernel::app3(nat.bool_rec(&arith.p), const_motive.clone(), f.clone(), g.clone()),
             cond,
         );
-        kernel::check(&arith.p.ctx, &chosen, &clo2_ty).expect("ite(Clo2, true, f, g) should typecheck at Clo2");
+        arith.p.check(&chosen, &clo2_ty).expect("ite(Clo2, true, f, g) should typecheck at Clo2");
 
         // Calling it directly through ordinary `App` -- no `apply_ref`
         // postulate anywhere in this construction at all.
         let called = kernel::app2(chosen.clone(), a, b);
-        kernel::check(&arith.p.ctx, &called, &int_ty)
+        arith.p.check(&called, &int_ty)
             .expect("calling a Clo2-shaped value with 2 Ints should typecheck as Int, with no apply_ref axiom");
 
         // The computation rule (`ite(true) = f`) is already derivable from
@@ -7748,14 +7772,14 @@ mod tests {
         let true_eq_generic = nat.bool_rec_true_eq(&arith.p);
         let instantiated = kernel::app3(true_eq_generic, const_motive, f.clone(), g.clone());
         let expected_ty = kernel::id(clo2_ty.clone(), chosen, f);
-        kernel::check(&arith.p.ctx, &instantiated, &expected_ty)
+        arith.p.check(&instantiated, &expected_ty)
             .expect("bool_rec_true_eq, instantiated at Clo2, should already prove ite(Clo2,true,f,g) = f");
 
         // Arity mismatch is still rejected: a Clo3-shaped value can't stand
         // in where a Clo2 is expected -- the soundness gain `TYPES.md`
         // section 6.2/7 documents survives this representation change.
         assert!(
-            kernel::check(&arith.p.ctx, &h, &clo2_ty).is_err(),
+            arith.p.check(&h, &clo2_ty).is_err(),
             "a Clo3-shaped value must still be rejected where a Clo2 is expected"
         );
     }
@@ -7969,8 +7993,7 @@ mod tests {
         let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
             .expect("a non-capturing literal-lambda self-call-argument should get a concrete witness");
         assert_eq!(result, 2, "eval_and_prove_call must not swap call_ref's own argument order");
-        kernel::check(
-            &combinators.cp.arith.p.ctx,
+        combinators.cp.arith.p.check(
             &proof,
             &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(2)),
         )
@@ -8023,8 +8046,7 @@ mod tests {
             let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
                 .expect("an over-applied literal lambda returning an If-chosen closure should get a concrete witness");
             assert_eq!(result, expected);
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
@@ -8077,8 +8099,7 @@ mod tests {
             let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
                 .expect("a non-symmetric over-applied closure call should get a concrete witness");
             assert_eq!(result, expected, "eval_and_prove_call_over must not swap the over-applied call's own argument order");
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
@@ -8166,8 +8187,7 @@ mod tests {
                 result, expected,
                 "a={a_val} b={b_val} c={c_val}: should agree with the reference interpreter, not just typecheck"
             );
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
@@ -8228,8 +8248,7 @@ mod tests {
             let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[w_param], &[w_val], &[w_fact])
                 .expect("an inner closure capturing both root's own param and root's own capture should get a concrete witness");
             assert_eq!(result, expected, "eval_and_prove_call_over must resolve an inner closure's own captures against root's frame directly, not double-shifted by root's own arity");
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
@@ -8281,7 +8300,7 @@ mod tests {
             eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).expect("a PAP-producing root's over-application should get a concrete instance");
         assert_eq!(result, 53, "should agree with the reference interpreter, not just typecheck");
         let int_ty = combinators.cp.arith.int_ty();
-        kernel::check(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
+        combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -8345,7 +8364,7 @@ mod tests {
             .expect("a further indirectly-called combinator's over-application should get a concrete instance");
         assert_eq!(result, 72, "should agree with the reference interpreter, not just typecheck");
         let int_ty = combinators.cp.arith.int_ty();
-        kernel::check(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
+        combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -8398,7 +8417,7 @@ mod tests {
             eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[]).expect("two levels of further indirection should still get a concrete instance");
         assert_eq!(result, 7, "should agree with the reference interpreter, not just typecheck");
         let int_ty = combinators.cp.arith.int_ty();
-        kernel::check(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
+        combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -8463,7 +8482,7 @@ mod tests {
             eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).expect("a capturing PAP-producing root's over-application should get a concrete instance");
         assert_eq!(result, 580, "should agree with the reference interpreter, not just typecheck");
         let int_ty = combinators.cp.arith.int_ty();
-        kernel::check(&combinators.cp.arith.p.ctx, &proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
+        combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -8514,8 +8533,7 @@ mod tests {
             let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
                 .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a further-nested If inside a branch should get a concrete instance"));
             assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
@@ -8604,8 +8622,7 @@ mod tests {
                 result, expected,
                 "a={a_val} b1={b1_val} b2={b2_val} c={c_val}: should agree with the reference interpreter, not just typecheck"
             );
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
@@ -8690,8 +8707,7 @@ mod tests {
                 result, expected,
                 "a={a_val} b={b_val} c={c_val}: should agree with the reference interpreter, not just typecheck"
             );
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
@@ -8747,8 +8763,7 @@ mod tests {
             let (result, denotation, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[])
                 .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a self-recursive root that never self-calls should get a concrete instance"));
             assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
-            kernel::check(
-                &combinators.cp.arith.p.ctx,
+            combinators.cp.arith.p.check(
                 &proof,
                 &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
             )
