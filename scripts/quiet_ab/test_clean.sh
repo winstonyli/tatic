@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runnable check for clean.py (scripts/quiet_ab/test_clean.sh): short runs get samples; a run's own CPU is
 # subtracted; selfplay, load, and failure make a run dirty; old 4-column
-# logs still parse.
+# logs still parse. Also pin.sh: a relative exe path with a directory runs,
+# and the child's exit code and cpu= line come back.
 cd "$(dirname "$0")"; t=$(mktemp -d); export AB_CORES=16
 # 102: 12% total. 104: 30%. 106: selfplay. 110: 30%.
 printf '100 10.0 0\n102 12.0 0\n104 30.0 0\n106 10.0 1\n110 30.0 0\n200 9.0 0\n' > $t/s
@@ -17,4 +18,7 @@ want='A1:clean B1:dirty A2:dirty B2:dirty A3:dirty B3:clean '
 printf '100 10.0 2.0 0\n102 40.0 2.0 0\n' > $t/s4; printf 'run A 1 101 101 rc=0\n' > $t/r4
 got=$(python clean.py $t/s4 $t/r4 | awk '{print $3}')
 [ "$got" = dirty ] || { echo "FAIL old: $got"; exit 1; }
+mkdir -p $t/bin && cp /c/Windows/System32/where.exe $t/bin/
+out=$(cd $t && "$OLDPWD/pin.sh" bin/where.exe where.exe); rc=$?
+[ $rc = 0 ] && [ "${out##*cpu=}" != "$out" ] || { echo "FAIL pin: rc=$rc $out"; exit 1; }
 echo PASS

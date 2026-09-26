@@ -4,7 +4,11 @@
 # last line, and exit with its exit code. Affinity and priority set just
 # after start apply to every thread the process has by then.
 param([Parameter(ValueFromRemainingArguments)] $cmd)
+$ErrorActionPreference = 'Stop'
 $exe, $rest = $cmd
+# Process.Start doesn't find a relative path such as target/ab/bin/x.exe,
+# so resolve one that exists here; a bare name still searches PATH.
+if (Test-Path -LiteralPath $exe -PathType Leaf) { $exe = (Resolve-Path -LiteralPath $exe).ProviderPath }
 $si = New-Object System.Diagnostics.ProcessStartInfo $exe
 $si.UseShellExecute = $false
 $si.Arguments = ($rest | % { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' '
