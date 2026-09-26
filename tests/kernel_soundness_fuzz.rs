@@ -107,7 +107,7 @@ fn gen_expr(rng: &mut Rng, scope: u32, depth: u32) -> Expr {
 /// Total node count of `e` (itself included), pre-order.
 fn count_nodes(e: &Expr) -> u32 {
     1 + match e {
-        Expr::Var(_) | Expr::Sort(_) => 0,
+        Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => 0,
         Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) => count_nodes(a) + count_nodes(b),
         Expr::Id(a, x, y) => count_nodes(a) + count_nodes(x) + count_nodes(y),
         Expr::Refl(a) => count_nodes(a),
@@ -128,7 +128,7 @@ fn nth_subterm(e: &Expr, target: u32, counter: &mut u32) -> Expr {
         return e.clone();
     }
     match e {
-        Expr::Var(_) | Expr::Sort(_) => unreachable!("target out of range"),
+        Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => unreachable!("target out of range"),
         Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) => {
             let na = count_nodes(a);
             if target < *counter + na {
@@ -214,6 +214,8 @@ fn replace_nth(e: &Expr, target: u32, counter: &mut u32, replacement: &Expr) -> 
     match e {
         Expr::Var(k) => Expr::Var(*k),
         Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Free(l) => Expr::Free(*l),
         Expr::Pi(a, b) => {
             let a2 = replace_nth(a, target, counter, replacement);
             let b2 = replace_nth(b, target, counter, replacement);

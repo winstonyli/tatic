@@ -40,28 +40,36 @@ use std::fmt;
 // --- shared nodes ----------------------------------------------------------
 //
 // Every child of an `Expr` is a kernel `Rc`: `std::rc::Rc` with the
-// child's loose-variable range cached beside it, computed once when the
-// node is built. `shift`, `instantiate` and `is_var_free` read it to skip
-// the subterms they would leave unchanged, and keep those by pointer
-// (`RELATED_WORK.md` §64).
+// child's loose-variable and free-level ranges cached beside it, computed
+// once when the node is built. `shift`, `instantiate` and `is_var_free`
+// read it to skip the subterms they would leave unchanged, and keep those
+// by pointer (`RELATED_WORK.md` §64).
 
-/// A shared node, and its [`loose_of`] computed when it was built.
+/// A shared node, and its [`loose_of`] and [`free_of`] computed when it
+/// was built.
 pub struct Rc<T>(std::rc::Rc<Node<T>>);
 
 struct Node<T> {
     loose: u32,
+    free: u32,
     val: T,
 }
 
 impl Rc<Expr> {
     pub fn new(e: Expr) -> Self {
-        Rc(std::rc::Rc::new(Node { loose: loose_of(&e), val: e }))
+        Rc(std::rc::Rc::new(Node { loose: loose_of(&e), free: free_of(&e), val: e }))
     }
 
     /// One more than the largest loose `Var` index in this node, 0 when
     /// it's closed (saturating at `u32::MAX`, as [`loose_of`]).
     pub fn loose(&self) -> u32 {
         self.0.loose
+    }
+
+    /// One more than the largest `Free` level in this node, 0 when it has
+    /// none (saturating, as [`free_of`]).
+    pub fn free(&self) -> u32 {
+        self.0.free
     }
 }
 
@@ -119,7 +127,7 @@ pub fn loose_of(e: &Expr) -> u32 {
     let u = |c: &Rc<Expr>| c.loose().saturating_sub(1);
     match e {
         Expr::Var(k) => k.saturating_add(1),
-        Expr::Sort(_) => 0,
+        Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => 0,
         Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::W(a, b) | Expr::Sigma(a, b) => l(a).max(u(b)),
         Expr::App(a, b) | Expr::Sup(a, b) => l(a).max(l(b)),
         Expr::Id(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => l(a).max(l(b)).max(l(c)),
@@ -127,6 +135,22 @@ pub fn loose_of(e: &Expr) -> u32 {
         Expr::Refl(a) => l(a),
         Expr::J { motive, base, a, b, p } => l(motive).max(l(base)).max(l(a)).max(l(b)).max(l(p)),
         Expr::WRec { motive, children_ty, step, target } => l(motive).max(u(children_ty)).max(l(step)).max(l(target)),
+    }
+}
+
+/// One more than the largest `Free` level in `e`, 0 when it has none, from
+/// its children's cached ranges. Binders don't change it: a `Free` is a
+/// level, not an index. Saturating, as [`loose_of`].
+pub fn free_of(e: &Expr) -> u32 {
+    let f = |c: &Rc<Expr>| c.free();
+    match e {
+        Expr::Free(l) => l.saturating_add(1),
+        Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) => 0,
+        Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => f(a).max(f(b)),
+        Expr::Id(a, b, c) | Expr::Pair(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => f(a).max(f(b)).max(f(c)),
+        Expr::Refl(a) => f(a),
+        Expr::J { motive, base, a, b, p } => f(motive).max(f(base)).max(f(a)).max(f(b)).max(f(p)),
+        Expr::WRec { motive, children_ty, step, target } => f(motive).max(f(children_ty)).max(f(step)).max(f(target)),
     }
 }
 
@@ -242,6 +266,15 @@ pub enum Expr {
     Var(u32),
     /// `Type_i`.
     Sort(u32),
+    /// A postulate: entry `l` of the global environment (`Globals`),
+    /// numbered from the first, so neither a binder nor a later global
+    /// renumbers it. Typed by `globals[l]`, which must be closed.
+    Const(u32),
+    /// A builder scope's parameter, by a level no other parameter reuses.
+    /// Never typed: `infer` and `check` reject any term, expected type or
+    /// context entry with one in it, so a parameter that escapes its
+    /// scope fails the check instead of acting as an axiom.
+    Free(u32),
     /// `Pi(A, B)`: `B` is checked one binder deeper than `A` (i.e. `B` may
     /// mention the newly-bound variable of type `A` as `Var(0)`).
     Pi(Rc<Expr>, Rc<Expr>),
@@ -336,7 +369,7 @@ impl PartialEq for Expr {
 pub(crate) fn same_shape(x: &Expr, y: &Expr, mut c: impl FnMut(&Rc<Expr>, &Rc<Expr>) -> bool) -> bool {
     use Expr::*;
     match (x, y) {
-        (Var(i), Var(j)) | (Sort(i), Sort(j)) => i == j,
+        (Var(i), Var(j)) | (Sort(i), Sort(j)) | (Const(i), Const(j)) | (Free(i), Free(j)) => i == j,
         (Refl(a), Refl(b)) => c(a, b),
         (Pi(a1, b1), Pi(a2, b2))
         | (Lam(a1, b1), Lam(a2, b2))
@@ -396,7 +429,7 @@ impl Drop for Expr {
             }
         };
         grow_slow(|| match self {
-            Expr::Var(_) | Expr::Sort(_) => {}
+            Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => {}
             Expr::Refl(a) => free(a),
             Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
                 free(a);
@@ -431,6 +464,8 @@ impl fmt::Debug for Expr {
         grow(|| match self {
             Expr::Var(k) => write!(f, "#{k}"),
             Expr::Sort(i) => write!(f, "Type{i}"),
+            Expr::Const(l) => write!(f, "@{l}"),
+            Expr::Free(l) => write!(f, "${l}"),
             Expr::Pi(a, b) => write!(f, "(Pi {a:?}. {b:?})"),
             Expr::Lam(a, b) => write!(f, "(\\{a:?}. {b:?})"),
             Expr::App(g, a) => write!(f, "({g:?} {a:?})"),
@@ -539,6 +574,8 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
             }
         }
         Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Free(l) => Expr::Free(*l),
         Expr::Pi(a, b) => Expr::Pi(go(a, cutoff), go(b, cutoff + 1)),
         Expr::Lam(a, b) => Expr::Lam(go(a, cutoff), go(b, cutoff + 1)),
         Expr::App(f, a) => Expr::App(go(f, cutoff), go(a, cutoff)),
@@ -621,6 +658,8 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
             }
         }
         Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Free(l) => Expr::Free(*l),
         Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
         Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
         Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
@@ -661,7 +700,7 @@ fn is_var_free(e: &Expr, idx: u32) -> bool {
     }
     grow(|| match e {
         Expr::Var(k) => *k == idx,
-        Expr::Sort(_) => false,
+        Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => false,
         Expr::Pi(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
         Expr::Lam(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
         Expr::App(f, a) => is_var_free(f, idx) || is_var_free(a, idx),
@@ -688,6 +727,14 @@ fn is_var_free(e: &Expr, idx: u32) -> bool {
 #[inline(never)]
 fn sup_codomain_depends_on_own_argument(cod_nf: &Expr) -> String {
     format!("sup: children function's codomain must not depend on its own argument: {cod_nf:?}")
+}
+
+/// The error for a `Free` reaching the type checker, out of line and
+/// `#[cold]` (see `infer_sigma`).
+#[cold]
+#[inline(never)]
+fn free_escaped(l: u32) -> String {
+    format!("free parameter ${l} escaped its scope")
 }
 
 // --- reduction ------------------------------------------------------------
@@ -909,6 +956,8 @@ fn nf_whnf(w: &Expr, cache: &mut ReductionCache) -> Expr {
     grow(|| match w {
         Expr::Var(k) => Expr::Var(*k),
         Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Free(l) => Expr::Free(*l),
         Expr::Pi(a, b) => pi(nf_rc(a, cache), nf_rc(b, cache)),
         Expr::Lam(a, b) => lam(nf_rc(a, cache), nf_rc(b, cache)),
         Expr::App(f, a) => app(nf_rc(f, cache), nf_rc(a, cache)),
@@ -1234,6 +1283,8 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
     grow(|| match &**e {
         Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
         Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
+        Expr::Const(l) => Err(format!("unknown constant @{l}")),
+        Expr::Free(l) => Err(free_escaped(*l)),
         Expr::Pi(a, b) => {
             let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
             let mut ctx2 = ctx.clone();
@@ -1807,6 +1858,8 @@ mod tests {
                 }
             }
             Expr::Sort(i) => Expr::Sort(*i),
+            Expr::Const(l) => Expr::Const(*l),
+            Expr::Free(l) => Expr::Free(*l),
             Expr::Pi(a, b) => pi(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
             Expr::Lam(a, b) => lam(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
             Expr::App(f, a) => app(subst(f, j, s), subst(a, j, s)),
@@ -1861,10 +1914,15 @@ mod tests {
     }
 
     /// A random term with every `Expr` shape, built from a pool of nodes so
-    /// children are shared. Its leaves are `Var(0..4)` and `Sort(0)`, so it
-    /// has both open and closed subterms at every binder depth.
+    /// children are shared. Its leaves are `Var(0..4)`, `Sort(0)`,
+    /// `Const(0)`, `Const(1)`, `Free(0)` and `Free(2)`, so it has both open
+    /// and closed subterms at every binder depth, and terms with and
+    /// without a `Free`.
     fn random_term(next: &mut impl FnMut() -> usize) -> Expr {
-        let mut pool: Vec<Rc<Expr>> = (0..4).map(|k| Rc::new(var(k))).chain([Rc::new(sort(0))]).collect();
+        let mut pool: Vec<Rc<Expr>> = (0..4)
+            .map(|k| Rc::new(var(k)))
+            .chain([Rc::new(sort(0)), Rc::new(Expr::Const(0)), Rc::new(Expr::Const(1)), Rc::new(Expr::Free(0)), Rc::new(Expr::Free(2))])
+            .collect();
         for _ in 0..12 {
             let kind = next() % 14;
             let mut c = || pool[next() % pool.len()].clone();
@@ -1894,7 +1952,7 @@ mod tests {
         let f = is_var_free_ref;
         grow(|| match e {
             Expr::Var(k) => *k == idx,
-            Expr::Sort(_) => false,
+            Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => false,
             Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::W(a, b) | Expr::Sigma(a, b) => f(a, idx) || f(b, idx + 1),
             Expr::App(a, b) | Expr::Sup(a, b) => f(a, idx) || f(b, idx),
             Expr::Id(a, x, y) => f(a, idx) || f(x, idx) || f(y, idx),
@@ -1921,6 +1979,8 @@ mod tests {
                 }
             }
             Expr::Sort(i) => Expr::Sort(*i),
+            Expr::Const(l) => Expr::Const(*l),
+            Expr::Free(l) => Expr::Free(*l),
             Expr::Pi(a, b) => pi(go(a, cutoff), go(b, cutoff + 1)),
             Expr::Lam(a, b) => lam(go(a, cutoff), go(b, cutoff + 1)),
             Expr::App(f, a) => app(go(f, cutoff), go(a, cutoff)),
@@ -1954,6 +2014,8 @@ mod tests {
                 }
             }
             Expr::Sort(i) => Expr::Sort(*i),
+            Expr::Const(l) => Expr::Const(*l),
+            Expr::Free(l) => Expr::Free(*l),
             Expr::Pi(a, b) => pi(go(a, d), go(b, d + 1)),
             Expr::Lam(a, b) => lam(go(a, d), go(b, d + 1)),
             Expr::App(f, a) => app(go(f, d), go(a, d)),
@@ -2049,6 +2111,69 @@ mod tests {
         let shifted = shift(&e, 0, 5);
         let Expr::Pi(dom, _) = &shifted else { panic!() };
         assert!(Rc::ptr_eq(dom, &closed));
+    }
+
+    /// The largest `Free` level a walk of the whole term finds, plus one
+    /// (0 with none): the reference for the cached `free` range.
+    fn free_ref(e: &Expr) -> u32 {
+        grow(|| match e {
+            Expr::Free(l) => l + 1,
+            _ => {
+                let mut m = 0;
+                same_shape(e, e, |c, _| {
+                    m = m.max(free_ref(c));
+                    true
+                });
+                m
+            }
+        })
+    }
+
+    /// Every node's cached `free` range is the one a walk finds, and a
+    /// binder doesn't lower it (a `Free` is a level, not an index).
+    #[test]
+    fn free_matches_a_walk() {
+        let mut next = splitmix(31);
+        let mut with_free = 0;
+        for _ in 0..20_000 {
+            let e = random_term(&mut next);
+            let walk = free_ref(&e);
+            with_free += (walk > 0) as usize;
+            assert_eq!(Rc::new(e.clone()).free(), walk, "{e:?}");
+            assert_eq!(free_of(&e), walk, "{e:?}");
+        }
+        assert!(with_free > 2_000, "only {with_free} terms had a Free");
+    }
+
+    /// The two new leaves are neutral atoms: each is equal only to itself,
+    /// and never to the other kind or to a `Var` with the same number.
+    #[test]
+    fn const_and_free_are_equal_only_to_themselves() {
+        let (c0, c1, f0, f1) = (Expr::Const(0), Expr::Const(1), Expr::Free(0), Expr::Free(1));
+        assert!(def_eq(&c0, &Expr::Const(0)));
+        assert!(def_eq(&f0, &Expr::Free(0)));
+        for (x, y) in [(&c0, &c1), (&f0, &f1), (&c0, &f0), (&c0, &var(0)), (&f0, &var(0))] {
+            assert!(!def_eq(x, y), "{x:?} vs {y:?}");
+            assert!(x != y, "{x:?} == {y:?}");
+        }
+    }
+
+    /// Beta reduction substitutes for the bound `Var` only: a `Const` or a
+    /// `Free` in the body, or in the argument, comes through unchanged.
+    #[test]
+    fn beta_leaves_const_and_free_alone() {
+        let body = app(Expr::Const(0), var(0));
+        assert_eq!(whnf(&app(lam(sort(0), Expr::Const(0)), sort(0))), Expr::Const(0));
+        assert_eq!(whnf(&app(lam(sort(0), body), Expr::Free(3))), app(Expr::Const(0), Expr::Free(3)));
+        assert_eq!(nf(&app(lam(sort(0), Expr::Free(1)), var(5))), Expr::Free(1));
+    }
+
+    /// Both ranges fit the padding stage 1 left (`RELATED_WORK.md` §64):
+    /// a node is a 48-byte `Expr` and two `u32`s.
+    #[test]
+    fn a_node_is_56_bytes() {
+        assert_eq!(std::mem::size_of::<Expr>(), 48);
+        assert_eq!(std::mem::size_of::<Node<Expr>>(), 56);
     }
 
     /// A random `Expr` of every variant, ill-typed as often as not, with
