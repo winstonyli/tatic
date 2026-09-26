@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Interleaved A/B that waits out other sessions' jobs and discards runs
-# they touched (RELATED_WORK.md §66). On this laptop other sessions run
+# they touched (RELATED_WORK.md ï¿½66). On this laptop other sessions run
 # back-to-back jobs with short gaps, so a quiet check before a run isn't
 # enough: sampler.ps1 logs total CPU through the runs, and clean.py keeps
 # only runs no one else loaded.
@@ -22,6 +22,9 @@
 set -u
 D=$(mkdir -p "$1" && cd "$1" && pwd) PAIRS=$2 MAXH=$3; shift 4
 A=(); while [ "$1" != -- ]; do A+=("$1"); shift; done; shift; B=("$@")
+# A reused DIR would mix its old rounds into clean.py's count, and its old
+# samples into the first quiet check.
+[ -e "$D/runs.log" ] && { echo "$D/runs.log exists; use a fresh DIR" >&2; exit 2; }
 # Commands run from the caller's directory, so relative paths work.
 W=$PWD S=$(cd "$(dirname "$0")" && pwd); cd "$D"
 powershell -NoProfile -Command "(Get-Process -Id $(cat /proc/$$/winpid)).PriorityClass = 'BelowNormal'"
