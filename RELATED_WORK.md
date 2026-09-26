@@ -5494,16 +5494,20 @@ Const(0)`. Stage 3's `Postulates::push` must enforce the ordering, as
 §64 says.
 
 **Mutations.** Each new test failed on the mutation its step named,
-except three, each for a reason:
+except two, each for a reason:
 - `beta_leaves_const_and_free_alone` has no reachable mutation: stage
   1's fast path (`loose == 0`) returns before `shift` or `instantiate`
   reach a leaf's arm. It pins the behaviour for a future refactor.
 - Storing `free` as a `u64` doesn't compile, rather than failing
   `a_node_is_56_bytes`; either way it can't land.
-- Removing `infer_in`'s door breaks nothing, because `infer` visits every
-  subterm of `e` and the `Free` arm rejects it. It stays for symmetry
-  with `check_in`, where the door is load-bearing (removing it for `e`
-  or for `expected` each fails `a_free_is_rejected_everywhere`).
+
+Removing `infer_in`'s door first broke no test only for want of one:
+`infer` hands an `App`'s argument (and `Id`'s sides, `J`'s fields) to
+`check`, whose `Lam` rule compares the domain by `def_eq` and never
+infers it, so a `Free` hidden under a redex there reduced away and
+`infer_in` returned `Ok`. The final review found it;
+`a_free_is_rejected_everywhere` now covers it, and the door is
+load-bearing in both entry points.
 
 **The fuzzers** (`tests/kernel_fuzz.rs`, `tests/kernel_soundness_fuzz.rs`).
 - `kernel_fuzz` generates `Const`s in and just past a four-entry

@@ -556,6 +556,7 @@ fn a_term_with_a_free_never_checks() {
         kernel::id(ctx.b_ty.clone(), kernel::app(ctx.f.clone(), ctx.a.clone()), kernel::app(ctx.f.clone(), ctx.c.clone())),
     ];
     let pool = valid_seed_pool(&ctx);
+    assert_eq!(claims.len(), pool.len(), "claims[i] must be the claim pool[i] proves");
     for (i, claim) in claims.iter().enumerate() {
         let proof = to_consts(&pool[i], n, 0);
         let claim_c = to_consts(claim, n, 0);

@@ -363,9 +363,9 @@ impl PartialEq for Expr {
 }
 
 /// Whether `x` and `y` have the same outermost constructor (and index, for
-/// `Var`/`Sort`) and `c` holds of each pair of children, in field order,
-/// stopping at the first that fails. Syntactic equality and `conv_whnf`
-/// are both this with a different `c`.
+/// `Var`/`Sort`/`Const`/`Free`) and `c` holds of each pair of children, in
+/// field order, stopping at the first that fails. Syntactic equality and
+/// `conv_whnf` are both this with a different `c`.
 pub(crate) fn same_shape(x: &Expr, y: &Expr, mut c: impl FnMut(&Rc<Expr>, &Rc<Expr>) -> bool) -> bool {
     use Expr::*;
     match (x, y) {
@@ -771,8 +771,11 @@ struct ReductionCache {
 /// §63). A context is named by an id: 0 is the caller's, and entering a
 /// binder whose type is the `Rc` `a` from context `cid` gives the id
 /// interned for `(cid, a)`. Equal ids then mean the same sequence of binder
-/// types, which, with the node, is all `infer`'s answer depends on. Keys
-/// hold their `Rc`s (`PtrKey`), so no address is reused within the call.
+/// types, which, with the node, is all `infer`'s answer depends on within
+/// one call -- it also depends on `g`, but that's sound because a cache
+/// lives only for the one `infer_in`/`check_in` call that made it, and `g`
+/// is fixed for that whole call. Keys hold their `Rc`s (`PtrKey`), so no
+/// address is reused within the call.
 #[derive(Default)]
 struct InferCache {
     types: HashMap<(PtrKey, u32), Expr>,
@@ -1283,6 +1286,13 @@ fn infer_sup(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>
 /// `e`'s type, with constants typed by `globals` and variables by `ctx`.
 /// A `Free` anywhere in `e` is an error; so is one in a `ctx` entry, when
 /// `e` uses it.
+///
+/// Checked here, not only at the leaf: `infer` hands some children to
+/// `check_rc` (an `App`'s argument, `Id`'s sides, `J`'s fields), whose
+/// `Lam` rule against a `Pi` compares the domain by `def_eq` and never
+/// infers it, and `WRec`'s `children_ty` is only compared, so a `Free`
+/// under a redex in any of them would reduce away unseen. `free_of` is
+/// O(1).
 pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
     if free_of(e) > 0 {
         return Err(free_escaped(free_of(e) - 1));
@@ -3302,12 +3312,18 @@ mod tests {
     /// A `Free` fails the check wherever it sits, including where `infer`
     /// never looks: a lambda's domain under `check` (compared by `def_eq`
     /// only) and the expected type, each under a redex that reduces the
-    /// `Free` away.
+    /// `Free` away. `infer_in` faces the same trap: `infer` hands an
+    /// `App`'s argument to `check_rc`, so a `Free` hidden in that
+    /// argument's own lambda domain (or, for `WRec`, in `children_ty`)
+    /// reduces away under `def_eq` and is never itself inferred -- this is
+    /// the case the final review's counterexample found with the door
+    /// removed (`RELATED_WORK.md` §67).
     #[test]
     fn a_free_is_rejected_everywhere() {
         let g = two_globals();
         let none = Ctx::new();
         let hide = |x: Expr| app(lam(Expr::Free(0), x), Expr::Const(1)); // reduces to x
+        let unhide = |x: Expr| app(lam(Expr::Const(0), x), Expr::Const(1));
         assert!(infer_in(&g, &none, &Expr::Free(0)).is_err());
         assert!(infer_in(&g, &none, &lam(sort(0), Expr::Free(0))).is_err(), "under a binder");
         assert!(infer_in(&g, &none, &pi(Expr::Free(0), sort(0))).is_err(), "in a type");
@@ -3317,9 +3333,50 @@ mod tests {
         let mut ctx = Ctx::new();
         ctx.push_back(Expr::Free(0));
         assert!(infer_in(&g, &ctx, &var(0)).is_err(), "in a context entry");
+
+        // `infer_in`, not just `check_in`: an `App`'s argument goes to
+        // `check_rc`, whose `Lam` rule against a `Pi` compares the domain
+        // by `def_eq` and never infers it. With the door removed, this
+        // exact term type-checked and returned `Ok(Const(0))` -- the
+        // hidden `Free` in the argument's lambda domain reduced away
+        // under `def_eq` without ever being inferred.
+        let arg_hidden_dom = app(
+            lam(arrow(Expr::Const(0), Expr::Const(0)), Expr::Const(1)),
+            lam(hide(Expr::Const(0)), Expr::Const(1)),
+        );
+        assert!(infer_in(&g, &none, &arg_hidden_dom).is_err(), "in an argument's lambda domain");
+        let arg_unhidden_dom = app(
+            lam(arrow(Expr::Const(0), Expr::Const(0)), Expr::Const(1)),
+            lam(unhide(Expr::Const(0)), Expr::Const(1)),
+        );
+        assert_eq!(infer_in(&g, &none, &arg_unhidden_dom), Ok(Expr::Const(0)));
+
+        // Same trap in `WRec`: `children_ty` is only compared by `def_eq`
+        // against the target's own inferred children type, never inferred
+        // itself. Build a well-typed `W(A,Bc)` recursor entirely from
+        // globals, so `children_ty` can hide a `Free` behind a redex.
+        let a_ty = Expr::Const(0); // A : Type0 (g[0])
+        let bc_ty = Expr::Const(1); // Bc : Type0 (g[1])
+        let mut gw = Globals::new();
+        gw.push_back(sort(0)); // 0: A : Type0
+        gw.push_back(sort(0)); // 1: Bc : Type0
+        gw.push_back(a_ty.clone()); // 2: a0 : A
+        gw.push_back(arrow(bc_ty.clone(), wty(a_ty.clone(), bc_ty.clone()))); // 3: f0 : Bc -> W(A,Bc)
+        let a0 = Expr::Const(2);
+        let f0 = Expr::Const(3);
+        let w_ty = wty(a_ty.clone(), bc_ty.clone());
+        let motive = lam(w_ty.clone(), w_ty.clone()); // constant motive
+        let f_ty = pi(bc_ty.clone(), w_ty.clone());
+        let ih_ty = pi(bc_ty.clone(), app(motive.clone(), app(var(1), var(0))));
+        let step = lam(a_ty.clone(), lam(f_ty, lam(ih_ty, sup(var(2), var(1)))));
+        let target = sup(a0, f0);
+        let wrec_good = wrec(motive.clone(), bc_ty.clone(), step.clone(), target.clone());
+        assert_eq!(infer_in(&gw, &none, &wrec_good), Ok(app(motive.clone(), target.clone())), "unhidden children_ty");
+        let wrec_hidden_children_ty = wrec(motive, hide(bc_ty), step, target);
+        assert!(infer_in(&gw, &none, &wrec_hidden_children_ty).is_err(), "a Free hidden under a redex in children_ty");
+
         // The same terms without the `Free` are fine, so the rejections
         // above are the `Free`'s doing.
-        let unhide = |x: Expr| app(lam(Expr::Const(0), x), Expr::Const(1));
         assert_eq!(check_in(&g, &none, &Expr::Const(1), &unhide(Expr::Const(0))), Ok(()));
         assert_eq!(check_in(&g, &none, &lam(unhide(Expr::Const(0)), Expr::Const(1)), &pi(Expr::Const(0), Expr::Const(0))), Ok(()));
     }

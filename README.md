@@ -1111,6 +1111,6 @@ guards against by hand): caught immediately, at seed 22.
   rejects `Free`s, at no measurable cost, and nothing produces either
   until stage 3 (§67). Stages 3 and 4 are designed but not built: the
   proof builder emitting postulates as constants and parameters as free
-  levels, then removing the workarounds that makes unnecessary. If the proof gate is ever relaxed, the next step
+  levels, then removing the workarounds this makes unnecessary. If the proof gate is ever relaxed, the next step
   is a typed IR that `ir::check` checks (§46's B5): it closes the arity
   and Int-vs-closure agreements for compiled code in one place.
