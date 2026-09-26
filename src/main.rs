@@ -226,6 +226,9 @@ fn capturing_partial_application_demo(s: &mut TermStore) -> Hash {
     s.abs(called)
 }
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let mut store = TermStore::new();
     let fact = factorial(&mut store);

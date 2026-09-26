@@ -17,6 +17,9 @@ use tatic::eval;
 #[path = "common.rs"]
 mod common;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn straight_line_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
     let h = common::straight_line(&mut store);

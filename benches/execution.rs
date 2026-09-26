@@ -12,6 +12,9 @@ use tatic::term::{Hash, TermStore};
 #[path = "common.rs"]
 mod common;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Warm `jit`'s cache on `h` once, outside the timed loop, and fail the
 /// run if what got cached is not the path the group's `jit_warm_cache_hit`
 /// bar claims to measure. The installation gate (`RELATED_WORK.md` 29) can

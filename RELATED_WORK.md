@@ -5387,6 +5387,46 @@ wasmtime would run on it too once it's set in `main.rs`, and neither
 was measured. `libmimalloc-sys` compiles C through `cc`, which the
 build already uses.
 
+**Measuring through contention (2026-09-26).** Another session's
+selfplay jobs run back to back, about 40 s each with 15 s gaps, so a
+quiet check before a run passes in a gap and the run lands in the next
+job; the first attempt at the runs below ran at a median 88% CPU. The
+runner used here samples total CPU every 2 s alongside the runs,
+alternates A and B in ABBA order, and keeps a pair only if both runs saw
+no selfplay process and averaged under 20% CPU from other processes.
+Defender's real-time protection was off throughout.
+
+**`relational_x10`, settled.** 5 clean pairs of the proofs bench, 417e2fd
+against HEAD (stage 1), other processes at 5 to 17%:
+
+| bench | best | median |
+|---|---|---|
+| `relational_x1` | +0.8% | +0.5% |
+| `relational_x5` | -2.1% | +1.4% |
+| `relational_x10` | -0.4% | +7.1% |
+| `universal_x1` | -9.9% | -10.4% |
+
+`relational_x10`'s median comes from one +17% pair; its best is
+unchanged, and the base alone spread 13 to 24% across its own rounds.
+Stage 1 costs nothing on the small proofs, and the +21% above was
+contention.
+
+**mimalloc for the whole program.** The allocator is now set in
+`src/main.rs`, `benches/execution.rs` and `benches/proofs.rs`; library
+tests keep the system allocator. The execution bench, 3 clean pairs,
+best of, mimalloc against system:
+- the interpreter, -13 to -28% (`fib(30)` -13%, gcd -18%, factorial
+  -15%, the closure benches -17 to -28%);
+- `jit_cold_compile_and_verify` (Cranelift, wasmtime and the kernel
+  check), -19 to -35%;
+- `jit_warm_cache_hit`, within ±1%: compiled code barely allocates.
+
+The demo binary (`cargo run --release`), 32 and 34 runs, all quiet
+(total CPU 2 to 19%, no selfplay): interpreted `fib(30)` 737 to 634 ms
+(-14%), cold JIT 19.8 to 15.6 ms (-21%), warm JIT 4.37 to 4.38 ms, best
+of. Peak memory was 17 MB with the system allocator and 19 MB with
+mimalloc. Nothing measured got slower, so it's adopted.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
