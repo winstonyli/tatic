@@ -5287,7 +5287,9 @@ counts allocations, so the built proof shares more.
 
 **Where the spec's 20% went.** It never existed on an idle machine. The
 spec took it from §64's payoff table (1.90 s to 1.49 s), measured while
-another session held 7 to 8.5 cores. Rerun idle from the spike patch
+another session held 7 to 8.5 cores (a lower bound: until the 25H2
+upgrade on 2026-09-25, Windows undercounted per-process CPU time, so
+every "held N cores" figure in this file is at least that). Rerun idle from the spike patch
 (`docs/superpowers/spikes/2026-09-25-constants-and-loose-ranges.patch`,
 applied to 9f250e5; `SPIKE=... cargo test --release --lib spike_fib -- --ignored`; best of 5, in-process), `fib(16)` goes from 785 ms to
 690 ms prove plus re-check, 12%. Stage 1's probe in the same idle window,
