@@ -1094,10 +1094,12 @@ guards against by hand): caught immediately, at seed 22.
   it's built, so memo hits share, which halved `fib(12)`'s instance
   proof (§62). The kernel's `infer` now memoises shared nodes by (node,
   context id), which made that proof 73% faster again and leaves
-  unshared proofs unchanged (§63). What's left is designed but not
-  built: postulates as constants, builder parameters as free levels, and
-  cached loose-variable ranges, so `shift` keeps sharing. A spike took
-  `fib(16)`'s instance proof from 1.9 s to 19 ms and its DAG from 265k
-  nodes to 10.5k (§64). If the proof gate is ever relaxed, the next step
+  unshared proofs unchanged (§63). A spike took `fib(16)`'s instance
+  proof from 1.9 s to 19 ms and its DAG from 265k nodes to 10.5k (§64).
+  Its stage 1 is built: kernel nodes cache their loose-variable range, so
+  `shift` and `instantiate` keep closed subterms by pointer. That made
+  `fib(16)`'s build and check each 11% faster and its DAG 14% smaller
+  (§65). The rest of §64 is designed but not built: postulates as
+  constants and builder parameters as free levels. If the proof gate is ever relaxed, the next step
   is a typed IR that `ir::check` checks (§46's B5): it closes the arity
   and Int-vs-closure agreements for compiled code in one place.
