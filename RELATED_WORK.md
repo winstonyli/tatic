@@ -5391,7 +5391,7 @@ build already uses.
 selfplay jobs run back to back, about 40 s each with 15 s gaps, so a
 quiet check before a run passes in a gap and the run lands in the next
 job; the first attempt at the runs below ran at a median 88% CPU. The
-runner used here samples total CPU every 2 s alongside the runs,
+runner used here (`scripts/quiet_ab/`) samples total CPU every 2 s alongside the runs,
 alternates A and B in ABBA order, and keeps a pair only if both runs saw
 no selfplay process and averaged under 20% CPU from other processes.
 Defender's real-time protection was off throughout. "Other processes" is

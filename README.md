@@ -89,6 +89,12 @@ Re-running unchanged code on this laptop moves benches by up to
 ±100%, so only a change well beyond that noise column means anything.
 For example, `scripts/bench_ab.sh HEAD --bench proofs`.
 
+When other sessions keep the machine busy, `scripts/quiet_ab/ab.sh`
+runs two commands in alternating rounds, samples total CPU throughout,
+and `scripts/quiet_ab/clean.py` keeps only the rounds no other process
+loaded. Its header has the usage; `scripts/quiet_ab/test_clean.sh`
+checks the cleaning rules (RELATED_WORK §66).
+
 ## Architecture
 
 ```
