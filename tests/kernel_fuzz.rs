@@ -2,7 +2,11 @@
 //! ill-typed (and sometimes genuinely malformed -- out-of-range `Var`
 //! indices, a universe level at `u32::MAX`, mismatched `Pi`/`Lam`
 //! domains) `Expr` trees, confirming `infer`/`check`/`typecheck` only
-//! ever return `Ok` or `Err`, never panic.
+//! ever return `Ok` or `Err`, never panic. The generator also emits
+//! `Const`s -- some naming an entry in a small environment `globals()`
+//! builds below, some past it (including its own deliberately open last
+//! entry) -- and `Free`s, checked with `infer_in`/`check_in` against that
+//! environment; any term containing a `Free` must always come back `Err`.
 //!
 //! This is a different property from `compile_fuzz.rs`'s own semantic
 //! fuzzing, which feeds `jit::JitEngine`/`eval::apply_term` `Term`s and
@@ -21,16 +25,19 @@
 
 use tatic::kernel::{self, Expr};
 
-struct Rng(u64);
+struct Rng {
+    state: u64,
+    made_free: bool,
+}
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Rng(seed)
+        Rng { state: seed, made_free: false }
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.0;
+        self.state = self.state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = self.state;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z ^ (z >> 31)
@@ -42,23 +49,43 @@ impl Rng {
 }
 
 const MAX_DEPTH: u32 = 6;
+const GLOBALS: u32 = 4;
+
+/// A small environment for the generated `Const`s: `A : Type0`, `a : A`,
+/// `f : A -> A`, and one deliberately open entry (`#3`), which the kernel
+/// must reject when a `Const` uses it.
+fn globals() -> kernel::Globals {
+    let mut g = kernel::Globals::new();
+    g.push_back(kernel::sort(0));
+    g.push_back(Expr::Const(0));
+    g.push_back(kernel::arrow(Expr::Const(0), Expr::Const(0)));
+    g.push_back(Expr::Var(0));
+    g
+}
 
 /// A leaf `Expr`: a `Var` (sometimes genuinely in `scope`, sometimes
-/// deliberately at or past its edge, sometimes wildly out of range) or a
+/// deliberately at or past its edge, sometimes wildly out of range), a
 /// `Sort` (occasionally `u32::MAX`, exercising the exact overflow this
 /// fuzzer's own first run caught -- see `kernel.rs`'s own
-/// `a_maximal_universe_level_is_a_clean_type_error_not_an_overflow_panic`).
+/// `a_maximal_universe_level_is_a_clean_type_error_not_an_overflow_panic`),
+/// a `Const` (in `globals()`'s range, or just past it, including its own
+/// open last entry), or a `Free` (never accepted; sets `rng.made_free`).
 fn gen_leaf(rng: &mut Rng, scope: u32) -> Expr {
-    match rng.below(4) {
+    match rng.below(6) {
         0 if scope > 0 => Expr::Var(rng.below(scope)),
         0 | 1 => Expr::Var(rng.below(scope.max(1) + 3)), // in range, or just past it
         2 => Expr::Var(rng.below(1000)), // almost always wildly unbound
-        _ => {
+        3 => {
             if rng.below(20) == 0 {
                 Expr::Sort(u32::MAX)
             } else {
                 Expr::Sort(rng.below(4))
             }
+        }
+        4 => Expr::Const(rng.below(GLOBALS + 2)), // in range, or just past it
+        _ => {
+            rng.made_free = true;
+            Expr::Free(rng.below(3))
         }
     }
 }
@@ -95,11 +122,17 @@ fn gen_expr(rng: &mut Rng, scope: u32, depth: u32) -> Expr {
 #[test]
 fn kernel_typecheck_never_panics_on_random_expr_trees() {
     const SEEDS: u64 = 5000;
+    let g = globals();
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xF00D_BABE_u64 ^ seed);
         let e = gen_expr(&mut rng, 0, MAX_DEPTH);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::typecheck(&e)));
         assert!(result.is_ok(), "kernel::typecheck panicked on seed={seed}: {e:?}");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::infer_in(&g, &kernel::Ctx::new(), &e)));
+        assert!(result.is_ok(), "kernel::infer_in panicked on seed={seed}: {e:?}");
+        if rng.made_free {
+            assert!(matches!(result, Ok(Err(_))), "a term with a Free was accepted on seed={seed}: {e:?}");
+        }
     }
 }
 
@@ -115,6 +148,7 @@ fn kernel_typecheck_never_panics_on_random_expr_trees() {
 #[test]
 fn kernel_check_never_panics_on_random_lambda_against_random_pi() {
     const SEEDS: u64 = 5000;
+    let g = globals();
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xFEED_FACE_u64 ^ seed);
         let dom = gen_expr(&mut rng, 0, MAX_DEPTH);
@@ -125,5 +159,10 @@ fn kernel_check_never_panics_on_random_lambda_against_random_pi() {
         let expected = kernel::pi(expected_dom, expected_cod);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::check(&kernel::Ctx::new(), &e, &expected)));
         assert!(result.is_ok(), "kernel::check panicked on seed={seed}: e={e:?} expected={expected:?}");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::check_in(&g, &kernel::Ctx::new(), &e, &expected)));
+        assert!(result.is_ok(), "kernel::check_in panicked on seed={seed}: e={e:?} expected={expected:?}");
+        if rng.made_free {
+            assert!(matches!(result, Ok(Err(_))), "a term with a Free was accepted on seed={seed}: {e:?}");
+        }
     }
 }

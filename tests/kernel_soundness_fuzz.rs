@@ -36,16 +36,19 @@
 
 use tatic::kernel::{self, Expr, Postulates};
 
-struct Rng(u64);
+struct Rng {
+    state: u64,
+    consts: bool,
+}
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Rng(seed)
+        Rng { state: seed, consts: false }
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.0;
+        self.state = self.state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = self.state;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z ^ (z >> 31)
@@ -57,8 +60,16 @@ impl Rng {
 }
 
 const MAX_DEPTH: u32 = 5;
+const GLOBALS: u32 = 7;
 
+/// With `rng.consts` set, one leaf in three names a constant instead --
+/// in the constant-form context's range, or just past it -- so generated
+/// terms can reach `Const`s at all; the branch draws no random number
+/// when `consts` is false, so the existing tests' streams are untouched.
 fn gen_leaf(rng: &mut Rng, scope: u32) -> Expr {
+    if rng.consts && rng.below(3) == 0 {
+        return Expr::Const(rng.below(GLOBALS + 2));
+    }
     match rng.below(4) {
         0 if scope > 0 => Expr::Var(rng.below(scope)),
         0 | 1 => Expr::Var(rng.below(scope.max(1) + 3)),
@@ -307,6 +318,40 @@ fn mutate_once(rng: &mut Rng, e: &Expr, scope: u32) -> Expr {
     replace_nth(e, target, &mut c, &replacement)
 }
 
+/// `e` with its references to an `n`-entry context turned into constants.
+/// Under `d` binders, `Var(d + i)` for `i < n` is entry `n - 1 - i`, so it
+/// becomes `Const(n - 1 - i)`. A `Var` past the context drops by `n`,
+/// still unbound. Bound variables stay.
+fn to_consts(e: &Expr, n: u32, d: u32) -> Expr {
+    let go = |x: &Expr, d: u32| to_consts(x, n, d);
+    match e {
+        Expr::Var(k) if *k < d => Expr::Var(*k),
+        Expr::Var(k) if *k - d < n => Expr::Const(n - 1 - (*k - d)),
+        Expr::Var(k) => Expr::Var(*k - n),
+        Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Free(l) => Expr::Free(*l),
+        Expr::Pi(a, b) => kernel::pi(go(a, d), go(b, d + 1)),
+        Expr::Lam(a, b) => kernel::lam(go(a, d), go(b, d + 1)),
+        Expr::App(f, a) => kernel::app(go(f, d), go(a, d)),
+        Expr::Id(a, x, y) => kernel::id(go(a, d), go(x, d), go(y, d)),
+        Expr::Refl(a) => kernel::refl(go(a, d)),
+        Expr::J { motive, base, a, b, p } => kernel::jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
+        Expr::W(a, b) => kernel::wty(go(a, d), go(b, d + 1)),
+        Expr::Sup(a, f) => kernel::sup(go(a, d), go(f, d)),
+        Expr::WRec { motive, children_ty, step, target } => kernel::wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
+        Expr::Sigma(a, b) => kernel::sigma(go(a, d), go(b, d + 1)),
+        Expr::Pair(fam, a, b) => kernel::pair(go(fam, d + 1), go(a, d), go(b, d)),
+        Expr::SigRec { motive, step, target } => kernel::sigrec(go(motive, d), go(step, d), go(target, d)),
+    }
+}
+
+/// The context's postulates as globals: entry `i` was written under `i`
+/// earlier entries.
+fn to_globals(ctx: &kernel::Ctx) -> kernel::Globals {
+    ctx.iter().enumerate().map(|(i, ty)| to_consts(ty, i as u32, 0)).collect()
+}
+
 /// A moderately rich postulated context: a base type `A`, three of its
 /// elements `a`/`b`/`c` (only `a`/`c` related, via `pac`; `a`/`b` and
 /// `b`/`c` are *not* related by anything in the context), and a function
@@ -438,5 +483,93 @@ fn mutating_a_genuinely_valid_proof_never_fools_the_kernel_into_an_unrelated_equ
             ),
             Err(_) => panic!("kernel::check panicked on seed={seed}: base={base:?} mutant={mutant:?}"),
         }
+    }
+}
+
+/// Moving the context's postulates into the global environment changes no
+/// answer: every candidate, random or a mutant of a valid proof, checks
+/// against the claim in constant form exactly when it checks in the
+/// original.
+#[test]
+fn the_global_environment_agrees_with_the_context() {
+    const SEEDS: u64 = 20_000;
+    let ctx = build_ctx();
+    let n = ctx.p.ctx.len() as u32;
+    let g = to_globals(&ctx.p.ctx);
+    let pool = valid_seed_pool(&ctx);
+    let (mut agreed_ok, mut agreed_err) = (0, 0);
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0xD1FF_u64 ^ seed);
+        let claim = if seed % 2 == 0 { kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone()) } else { kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone()) };
+        let candidate = if seed % 3 == 0 {
+            gen_expr(&mut rng, n, MAX_DEPTH)
+        } else {
+            let base = &pool[rng.below(pool.len() as u32) as usize];
+            mutate_once(&mut rng, base, n)
+        };
+        let by_vars = kernel::check(&ctx.p.ctx, &candidate, &claim).is_ok();
+        let by_consts = kernel::check_in(&g, &kernel::Ctx::new(), &to_consts(&candidate, n, 0), &to_consts(&claim, n, 0)).is_ok();
+        assert_eq!(by_vars, by_consts, "seed={seed}: {candidate:?} against {claim:?}");
+        if by_vars { agreed_ok += 1 } else { agreed_err += 1 }
+    }
+    assert!(agreed_ok > 200, "only {agreed_ok} candidates checked; the differential has too few positive cases");
+    assert!(agreed_err > 200, "only {agreed_err} candidates were rejected");
+}
+
+/// The core soundness property in constant form: with the postulates as
+/// globals and candidates free to name any constant (or one past the
+/// environment), nothing proves `Id(A, a, b)`.
+#[test]
+fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality_in_constant_form() {
+    const SEEDS: u64 = 20_000;
+    let ctx = build_ctx();
+    let n = ctx.p.ctx.len() as u32;
+    let g = to_globals(&ctx.p.ctx);
+    let claim = to_consts(&kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.b.clone()), n, 0);
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0xC0DE_C0DE_u64 ^ seed);
+        rng.consts = true;
+        let candidate = gen_expr(&mut rng, 0, MAX_DEPTH);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kernel::check_in(&g, &kernel::Ctx::new(), &candidate, &claim)));
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(())) => panic!("SOUNDNESS BUG: seed={seed} accepted {candidate:?} as proof of {claim:?}"),
+            Err(_) => panic!("kernel::check_in panicked on seed={seed}: {candidate:?}"),
+        }
+    }
+}
+
+/// A `Free` never checks: mutants of valid proofs (in constant form) with
+/// a `Free` spliced in are rejected against their own true claims, which
+/// they'd otherwise often still prove.
+#[test]
+fn a_term_with_a_free_never_checks() {
+    const SEEDS: u64 = 20_000;
+    let ctx = build_ctx();
+    let n = ctx.p.ctx.len() as u32;
+    let g = to_globals(&ctx.p.ctx);
+    let claims = [
+        kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone()),
+        kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone()),
+        kernel::id(ctx.a_ty.clone(), ctx.c.clone(), ctx.a.clone()),
+        kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone()),
+        kernel::id(ctx.b_ty.clone(), kernel::app(ctx.f.clone(), ctx.a.clone()), kernel::app(ctx.f.clone(), ctx.c.clone())),
+    ];
+    let pool = valid_seed_pool(&ctx);
+    for (i, claim) in claims.iter().enumerate() {
+        let proof = to_consts(&pool[i], n, 0);
+        let claim_c = to_consts(claim, n, 0);
+        kernel::check_in(&g, &kernel::Ctx::new(), &proof, &claim_c).unwrap_or_else(|e| panic!("pool[{i}] should check against claims[{i}] in constant form: {e}"));
+    }
+    for seed in 0..SEEDS {
+        let mut rng = Rng::new(0xF3EE_u64 ^ seed);
+        let i = rng.below(pool.len() as u32) as usize;
+        let proof = to_consts(&pool[i], n, 0);
+        let claim = to_consts(&claims[i], n, 0);
+        let total = count_nodes(&proof);
+        let mut c = 0;
+        let mutant = replace_nth(&proof, rng.below(total), &mut c, &Expr::Free(rng.below(3)));
+        let result = kernel::check_in(&g, &kernel::Ctx::new(), &mutant, &claim);
+        assert!(result.is_err(), "seed={seed}: {mutant:?} with a Free checked against {claim:?}");
     }
 }
