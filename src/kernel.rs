@@ -1163,6 +1163,14 @@ fn expect_sort(e: &Expr) -> Result<u32, String> {
     }
 }
 
+/// Whether every `Const` in `e` is below `bound`.
+fn consts_below(e: &Expr, bound: u32) -> bool {
+    match e {
+        Expr::Const(j) => *j < bound,
+        _ => same_shape(e, e, |c, _| consts_below(c, bound)),
+    }
+}
+
 fn expect_pi(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
         Expr::Pi(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
@@ -1568,6 +1576,18 @@ impl Postulates {
     }
     pub fn push(&mut self, ty: Expr) -> usize {
         let pos = self.ctx.len();
+        if pos < self.scope_base {
+            assert!(
+                loose_of(&ty) == 0 && free_of(&ty) == 0,
+                "a postulate's type must be closed: {ty:?}"
+            );
+            assert!(consts_below(&ty, pos as u32), "a postulate's type may mention only earlier postulates: {ty:?}");
+        }
+        // RELATED_WORK §68: an ill-formed entry sat in the context unchecked
+        // until a claim that used it failed.
+        if let Err(err) = self.infer(&ty).and_then(|t| expect_sort(&t).map(|_| ())) {
+            panic!("a postulate's type isn't a type: {err}\n  type: {ty:?}");
+        }
         self.ctx.push_back(ty);
         pos
     }
@@ -4026,6 +4046,50 @@ mod tests {
         let closed = p.close(s, Binder::Lam, p.get(x));
         assert_eq!(closed, lam(Expr::Const(0), var(0)));
         assert!(p.check(&closed, &pi(Expr::Const(0), Expr::Const(0))).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "isn't a type")]
+    fn push_rejects_an_entry_that_isnt_a_type() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let x = p.push(p.get(a));
+        p.push(p.get(x)); // x : A is an element, not a type
+    }
+
+    #[test]
+    #[should_panic(expected = "closed")]
+    fn push_rejects_a_postulate_with_a_loose_var() {
+        let mut p = Postulates::new();
+        p.push(sort(0));
+        p.push(var(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "closed")]
+    fn push_rejects_a_postulate_with_a_free() {
+        let mut p = Postulates::new();
+        p.push(Expr::Free(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "earlier")]
+    fn push_rejects_a_forward_const() {
+        let mut p = Postulates::new();
+        p.push(sort(0));
+        p.push(Expr::Const(1)); // its own level
+    }
+
+    /// Inside a scope an entry's type may mention the scope's earlier
+    /// entries, and it's still checked to be a type.
+    #[test]
+    fn push_accepts_a_scope_entry_typed_by_an_earlier_one() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.push(p.get(a));
+        p.push(id(p.get(a), p.get(x), p.get(x)));
+        p.abandon(s);
     }
 
     #[test]
