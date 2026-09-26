@@ -5556,6 +5556,43 @@ exe path, which `Process.Start` couldn't find, and `ab.sh` refuses a
 directory that already has a `runs.log`, whose old rounds would count
 toward the new run.
 
+**Open: `check_in` trusts its claim.** `check_in` never infers
+`expected`, and `check`'s `Lam` rule only compares the lambda's
+annotation with the Π's domain, never inferring it to a `Sort`. So
+`check_in(λx:a. x, Π(x:a). a)` returns `Ok` with `a` a term, and so does
+`check_in(a, (λz:@99. @0) a)`, whose claim names a constant that doesn't
+exist; `infer_in` rejects both claims. It isn't a way to prove a false
+well-formed claim, but a builder bug that produced a malformed claim
+would be "proved". Every kernel we checked establishes both facts
+(2026-09-26):
+- Lean 4 (`src/kernel/environment.cpp`): `check_constant_val` runs
+  `checker.check` on the declared type and then `ensure_sort`, before
+  `add_theorem` or `add_definition` look at the value. Lean has no
+  check-against-a-type rule: `check` is `infer_type_core(e, false)`, and
+  `infer_lambda` runs `ensure_sort_core` on every binder domain when not
+  infer-only.
+- Coq/Rocq (`kernel/constant_typing.ml`, `infer_definition`):
+  `Typeops.infer_type` on the declared type (it must be a sort), then
+  `check_cast` of the body against it.
+- Lean4Lean (`Lean4Lean/Environment.lean`, `checkConstantValBody`:
+  `checkType v.type`, then `ensureSort`; `TypeChecker.lean`, `inferLambda`:
+  `ensureSortCore` on each domain unless `inferOnly`) and nanoda_lib
+  (`src/tc.rs`, `check_declar_info`: `infer(info.ty, Check)`, then
+  `ensure_sort`; `infer_lambda`: `infer_sort_of(binder_type)` under
+  `Check`) do the same.
+- They keep it cheap with an infer-only mode: once a term is known
+  well-typed, re-inferring its type skips these checks (nanoda_lib's
+  `InferFlag::InferOnly`, used in `is_def_eq`'s helpers; Lean4Lean's
+  `inferType` defaults to `inferOnly := true` for internal uses).
+- The fix: `check_in` infers `expected` to a `Sort`, and the `Lam` rule
+  infers its annotation to one. Both are trusted-kernel changes that
+  could turn a proof that checks today into an error, so they need
+  measuring and a go-ahead. Lean's 2026 postmortem lists a bug of the
+  same kind, #14807 ("is_prop check not requiring a sort").
+  Also, nanoda_lib gives locals de Bruijn *levels*
+  (`mk_dbj_level`) while checking a binder's body, as stage 3's `Free`s
+  will.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
