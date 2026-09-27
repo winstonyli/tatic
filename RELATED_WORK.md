@@ -5556,7 +5556,7 @@ exe path, which `Process.Start` couldn't find, and `ab.sh` refuses a
 directory that already has a `runs.log`, whose old rounds would count
 toward the new run.
 
-**Open: `check_in` trusts its claim.** `check_in` never infers
+**Open (closed in §68): `check_in` trusts its claim.** `check_in` never infers
 `expected`, and `check`'s `Lam` rule only compares the lambda's
 annotation with the Π's domain, never inferring it to a `Sort`. So
 `check_in(λx:a. x, Π(x:a). a)` returns `Ok` with `a` a term, and so does
@@ -5592,6 +5592,130 @@ would be "proved". Every kernel we checked establishes both facts
   Also, nanoda_lib gives locals de Bruijn *levels*
   (`mk_dbj_level`) while checking a binder's body, as stage 3's `Free`s
   will.
+
+## 68. The kernel checks its claim, which caught an ill-typed `Ev`
+
+This closes §67's open item. `check_in` now infers `expected` to a `Sort`
+before checking `e` against it, and `check`'s `Lam` rule infers the
+annotation to one before comparing it with the Π's domain. That matches
+Lean's `check_constant_val`/`infer_lambda` and Coq's `infer_definition`
+(§67). Both are in the trusted kernel. `a_claim_that_isnt_a_type_is_rejected`
+and `a_checked_lambdas_annotation_must_be_a_type` failed before the change,
+and each fails again if its check is removed.
+
+**What it caught.** Six closure-typed universal proofs failed the new
+check (`a_closure_typed_loop_carried_parameter_gets_a_universal_proof`
+and five others). Their statements were ill-typed, because `Ev`'s type
+was:
+- `build_universal` built `Ev : T_0 -> .. -> Int -> Sort(0)` by folding
+  `arrow` over the domains, trusting `arrow`'s shift to keep the pieces
+  consistent.
+- The shift covers each new binder but not a push. `clo_ty(k)`'s first
+  use pushes `ite_clo_ref(k)`, so every piece built before that call
+  was one level stale.
+- For parameters `(Int, Clo_1, Int)`, the result was `Π Int. Π Clo_1.
+  Π #13. Π #14. Sort(0)` at depth 13. The last two domains named an
+  arithmetic postulate instead of `Int`.
+- Every proof still checked, since `check` compared each lambda's
+  annotation with an equally malformed Π and never asked whether either
+  was a type.
+- The fix anchors each domain as it's resolved and re-resolves it once
+  nothing more is left to push, as `env_ty` and `call_ref` already did.
+
+**Why nothing noticed sooner.** A context entry is a postulate, and the
+kernel never checks one. The ill-formed `Ev` sat in the context, and only
+a claim that used it could expose it. Stage 3 removes this class of bug,
+since a pushed `Const` shifts nothing. Its `push` is also the place to
+infer each global's type to a `Sort`, once, which would have caught this
+at the push.
+
+**Cost.** Pending the A/B (30aaf10 vs 21807cf, `target/ab/fib` and
+`target/ab/proofs`, queued 2026-09-26 behind another session's selfplay
+load).
+
+## 69. Stage 3a: postulates are constants
+
+The builder refers to postulates by `Expr::Const(level)`, as §64's spike
+did, so a proof term's sharing survives every later push. Plan:
+`docs/superpowers/plans/2026-09-26-stage-3-builder-constants-and-free-params.md`
+(Tasks 1-4).
+
+**What was built.**
+- Scopes and checks go through `Postulates`: `open`/`close`/`abandon`
+  with a `Binder`, and `check`/`infer`, which call `check_in`/`infer_in`.
+  No builder code truncates the context or calls the kernel on it
+  directly. Proof records are checked with `check_in(&globals, &Ctx::new())`.
+- `get(pos)` is `Const(pos)` for a postulate. In 3a a scope's own entries
+  were still `Var`s, and a check split the vector into globals and a
+  local `Ctx`.
+- `push` checks every entry: a postulate's type is closed (O(1) from the
+  cached ranges) and infers to a `Sort` against the globals before it.
+  That also rejects a reference to itself or a later postulate ("unknown
+  constant"), so the plan's separate ordering walk was dropped: it
+  repeated what `infer` checks, and walked the type as a tree, where
+  `infer` is memoised on the DAG. This check is what §68's bug lacked.
+
+**Decisions** (user-approved, 2026-09-26):
+- 3a then 3b, measured apart, rather than one change: 3a carries the
+  payoff in a small diff, and 3b's A/B then shows the safety change alone.
+- `push` checks its type always, not in debug builds only, and is
+  measured: a malformed global otherwise sits unchecked until a claim
+  uses it (§68), as Lean's `add_decl` and Coq's `infer_definition` refuse.
+
+**Result.** `fib(16)`'s instance proof: DAG 10,501 nodes, as the spike
+had it (265k before); build 4-9 ms and check 3-6 ms on the release probe
+under load, from about 0.8 s together before (§66). The fib DAG test now
+compares fib(8) with fib(16) (`2*large < 5*small`), and
+`fib16_instance_proof_builds_and_checks_quickly` guards it at 3 s (188 ms
+in a debug build). A/B pending: 576f5fe vs 5d4e065, `target/ab3a`.
+
+**What the flip broke.** Only a test: `kernel_soundness_fuzz`'s
+globals-vs-context differential built both sides from the builder's
+context, which is now `Const`s. It builds its `Var` side by hand
+(`build_var_ctx`, `to_vars`), so the two kernel paths are compared again.
+
+## 70. Stage 3b: a scope's parameters are free levels
+
+Plan Tasks 5-8. A scope's parameters are `Expr::Free(level)`s from
+`Postulates::bind`, and `close` abstracts them into binders. `Postulates`
+now holds `globals` (only ever growing), the live parameters, the next
+level and the open-scope count. Proof records carry `globals: Globals`.
+The `Var`-local path, `close_pi`/`close_lam`, and every truncation are
+gone.
+
+**What was built.**
+- `bind(ty)` checks `ty` against the globals and live parameters
+  (`infer_open`) and returns a fresh level. Levels never go back, so a
+  `Free` leaked from one scope can't be captured by a sibling's `close`;
+  the kernel rejects it ("escaped its scope").
+- `close` abstracts its scope's levels with `abstract_frees`, which skips
+  any subterm whose cached `free` is below the scope's first level and
+  memoises shared nodes by (pointer, depth). Without the memo, a
+  30-deep doubling DAG was walked as its billion-leaf tree; with it the
+  result keeps 93 nodes (`close_is_linear_in_the_dag_of_a_shared_body`).
+- `check_open` checks a term mentioning live parameters by abstracting
+  them into a kernel `Ctx`. Only `debug_assert_has_type` uses it; every
+  final check passes an empty context, so a leaked parameter fails.
+- Scopes must close innermost-first, and `push` panics while one is
+  open: a missed `push`→`bind` conversion can't become a silent axiom.
+
+**What the migration found.** 45 lib tests panicked at the new `push`
+assertion before the conversion, and none after. No parameter escaped
+its scope. `Anchored` never shifts anything any more (a probe showed
+it), so stage 4 can delete it. `fib(16)`'s DAG is 10,466 nodes, 0.3%
+fewer than 3a's, from `abstract_frees` keeping shared results shared.
+
+**Failure mode.** `push`'s checks are `assert!`s, in release too. A lazy
+postulate (`ite_clo_ref`, `clo_ty`, ...) first used inside a scope now
+panics instead of going stale, and that panic reaches the JIT's
+`kernel_verify`, which has no `catch_unwind`. The closure priming
+(`prime_closure_postulates`) prevents it on every corpus and fuzz path;
+stage 4 must relax the panic if it removes the priming.
+
+**Cost.** Pending the A/B: 5d4e065 vs e82f77e, `target/ab3b`. `bind`
+runs a kernel `infer` per parameter in release, linear in leaves × calls;
+if the A/B shows it, it can become debug-only, since the final check
+covers soundness.
 
 ## Sources
 

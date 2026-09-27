@@ -1109,8 +1109,12 @@ guards against by hand): caught immediately, at seed 22.
   speeds up the interpreter by 13% and the cold JIT by 21% (§66). Stage
   2 is built: the kernel types `Const`s from a global environment and
   rejects `Free`s, at no measurable cost, and nothing produces either
-  until stage 3 (§67). Stages 3 and 4 are designed but not built: the
-  proof builder emitting postulates as constants and parameters as free
-  levels, then removing the workarounds this makes unnecessary. If the proof gate is ever relaxed, the next step
+  until stage 3 (§67). The kernel now checks that a claim is a type,
+  which exposed an ill-typed `Ev` in closure-typed universal proofs
+  (§68). Stage 3 is built: the proof builder emits postulates as
+  constants, which took `fib(16)`'s DAG to 10.5k nodes and its build and
+  check to a few ms each (§69), and a scope's parameters as free levels,
+  so a leaked parameter fails the check (§70). Stage 4, removing the
+  workarounds this makes unnecessary, is designed but not built. If the proof gate is ever relaxed, the next step
   is a typed IR that `ir::check` checks (§46's B5): it closes the arity
   and Int-vs-closure agreements for compiled code in one place.
