@@ -5740,6 +5740,44 @@ globals and a local `Ctx` at every check (not profiled). Across stage 3
 (576f5fe → e82f77e), large proofs are 44-58% faster and the µs-scale ones
 still 51-83% slower, from §69's push checks.
 
+## 71. Where a cold JIT call's time goes
+
+The question was whether any of the cold path could run in parallel or
+on the GPU. A throwaway probe (b592ffd, release, pinned, Defender RTP
+off, 2026-09-27) timed each phase of `compile_verify_and_apply` on a
+fresh engine for every `test_corpus` term, best of 7. Summed over the 21
+terms (35.6 ms):
+
+| Phase | ms | Share |
+|---|---|---|
+| `kernel_verify` | 18.8 | 53% |
+| - the universal theorem (`build_universal`, built and checked) | 5.7 | 16% |
+| - its instances at 3 samples | 12.1 | 34% |
+| wasmtime `instantiate` (Cranelift) | 8.4 | 24% |
+| `verify` (interpreter vs compiled on the samples) | 7.2 | 20%, 6.5 of it `fib` |
+| `compile`, `typing`, the other provers | 1.5 | 4% |
+
+- **Per-sample provers barely run.** Only one term reached steps 4-5 of
+  the cascade, with one sample each (0.4 ms). Every recursive term is
+  proved universally at step 3, and the rest at steps 1-2 in under
+  0.05 ms. Proving samples in parallel would save nothing.
+- **Instances cost twice the theorem.** Step 3 instantiates the theorem
+  at 3 samples. That only raises `Stats::universal_instances_checked`;
+  installation needs the theorem alone. It is 0.9-1.9 ms per recursive
+  term.
+- **Cranelift is one function per module,** 0.25-0.9 ms each, so
+  wasmtime's parallel compilation (per function) has nothing to split.
+  It doesn't depend on the proof, so it could run beside it.
+- **GPU:** nothing fits. The work is small, sequential and pointer-heavy,
+  and no GPU type-theory kernel exists: Pareas does front-end passes,
+  HVM2 is slower single-threaded.
+
+What would pay, in order: drop or defer the instances (-34%, no
+thread); prove in the background while the first calls run interpreted,
+as V8, Lean's parallel kernel checking and Coq's proof workers do
+(hides the remaining ~0.5-1 ms of theorem per recursive term); run
+Cranelift beside the proof (saves the shorter of the two).
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -5814,3 +5852,9 @@ still 51-83% slower, from §69's push checks.
 - [Balabonski, A Unified Approach to Fully Lazy Sharing (POPL 2012)](https://public.lmf.cnrs.fr/~blsk/Publications/Balabonski-FullLaziness-POPL12.pdf)
 - [Barenbaum & Bonelli, Optimality and the Linear Substitution Calculus (FSCD 2017)](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.FSCD.2017.9)
 - [Asperti & Mairson, Parallel Beta Reduction Is Not Elementary Recursive](https://www.researchgate.net/publication/222245890_Parallel_Beta_Reduction_Is_Not_Elementary_Recursive)
+- [V8: background compilation](https://v8.dev/blog/background-compilation)
+- [Lean v4.17.0 release notes (parallel kernel checking)](https://lean-lang.org/doc/reference/latest/releases/v4.17.0/)
+- [Asynchronous processing of Coq documents (Barras, Tankink and Tassi, ITP 2015)](https://arxiv.org/pdf/1506.05605)
+- [Parallel Isabelle (Wenzel)](https://www21.in.tum.de/~wenzelm/papers/parallel-isabelle.pdf)
+- [Pareas: a GPU compiler (Voetter)](https://github.com/Snektron/pareas)
+- [HVM2: an interaction-combinator evaluator (Taelin, FProPer 2024)](https://raw.githubusercontent.com/HigherOrderCO/HVM/main/paper/HVM2.pdf)
