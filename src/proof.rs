@@ -172,7 +172,16 @@ pub struct ArithPostulates {
 }
 
 impl ArithPostulates {
+    /// The prelude every proof starts from. `push` type-checks each entry
+    /// (RELATED_WORK §69), which cost ~5 µs a proof when every proof
+    /// rebuilt it, so it is built and checked once per thread and cloned:
+    /// `globals` is an `im::Vector`, and the clone shares its nodes.
     pub fn new() -> Self {
+        thread_local! { static PRELUDE: ArithPostulates = ArithPostulates::prelude(); }
+        PRELUDE.with(Clone::clone)
+    }
+
+    fn prelude() -> Self {
         let mut p = Postulates::new();
         let int_pos = p.push(kernel::sort(0));
 
@@ -7552,6 +7561,22 @@ mod tests {
     use crate::eval;
     use crate::kernel::Ctx;
     use crate::term::TermStore;
+
+    #[test]
+    fn every_arith_postulates_starts_from_one_checked_prelude() {
+        // `push` type-checks each entry (RELATED_WORK §69), so building the
+        // 10-entry prelude per proof cost ~5 µs, half of a small proof.
+        // Each `new` must reuse one checked copy: same nodes, not rebuilt.
+        let a = ArithPostulates::new();
+        let mut b = ArithPostulates::new();
+        assert_eq!(a.p.globals.len(), 10);
+        let (Expr::Pi(x, _), Expr::Pi(y, _)) = (&a.p.globals[1], &b.p.globals[1]) else { panic!("a binop's type is an arrow") };
+        assert!(kernel::Rc::ptr_eq(x, y), "the prelude was rebuilt");
+        // A proof's own pushes stay its own.
+        b.lit(7);
+        assert_eq!((a.p.globals.len(), b.p.globals.len()), (10, 11));
+        assert_eq!(ArithPostulates::new().p.globals.len(), 10);
+    }
 
     /// `a + a`, for a shared `a`, denotes `a` once: both operands of the
     /// denotation share their children, so the kernel's pointer-keyed
