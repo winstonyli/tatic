@@ -809,7 +809,7 @@ fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Ex
 // at each function's own already-existing, unconditional call site.
 #[cfg(debug_assertions)]
 fn debug_assert_has_type(p: &Postulates, e: &Expr, expected: &Expr, label: &str) {
-    if let Err(err) = p.check(e, expected) {
+    if let Err(err) = p.check_open(e, expected) {
         panic!(
             "staleness/composition bug in {label}: the value doesn't have its expected type.\n  \
              error: {err}\n  value: {e:?}\n  expected type: {expected:?}"
@@ -824,14 +824,6 @@ fn debug_assert_has_type(_p: &Postulates, _e: &Expr, _expected: &Expr, _label: &
 /// `build_ev_witness` can reuse it too).
 fn combine_of(arith: &ArithPostulates, combine: &Anchored, params: &[Expr], ihs: &[Expr]) -> Expr {
     apply_n(combine.at(arith), params.iter().cloned().chain(ihs.iter().cloned()))
-}
-
-/// `arith.p.get(pos)` for each of `positions`, resolved fresh -- never
-/// cached, same convention as `Params::at` (staleness after a further
-/// push), just for a list of individually-tracked postulate positions
-/// rather than one `Params` group.
-fn resolve_all(arith: &ArithPostulates, positions: &[usize]) -> Vec<Expr> {
-    positions.iter().map(|&p| arith.p.get(p)).collect()
 }
 
 /// The shape `prove_tail_recursive_universal`'s `body` must be: an
@@ -986,9 +978,8 @@ fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types:
 /// instantiation, it's applied as a value via `combine_of`, not re-walked.
 /// A nested `If` is handled the same way `denote_closure_typed` handles
 /// one, purely arithmetic or choosing between two `Clo`-typed values
-/// alike. `params` is `Params`'s own raw
-/// positions, same rationale (and same staleness-avoidance) as
-/// `denote_closure_typed`'s own docs.
+/// alike. `params` are the scope's bound parameters, as for
+/// `denote_closure_typed`.
 #[allow(clippy::too_many_arguments)]
 fn denote_with_placeholders(
     store: &TermStore,
@@ -996,13 +987,13 @@ fn denote_with_placeholders(
     self_call: SelfCall,
     param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
-    params: &[usize],
-    placeholders: &[usize],
+    params: &[Expr],
+    placeholders: &[Expr],
     next: &mut usize,
 ) -> Option<Denoted> {
     match compile::classify(store, h, self_call.arity, Some(self_call.idx)) {
         Shape::SelfCall(_) => {
-            let v = placeholders.get(*next).map(|&pos| combinators.cp.arith.p.get(pos));
+            let v = placeholders.get(*next).cloned();
             *next += 1;
             v.map(Denoted::Int)
         }
@@ -1137,7 +1128,7 @@ fn denote_with_placeholders(
         Shape::OtherCall => None,
         Shape::Var(i) => {
             let i = i as usize;
-            let p = combinators.cp.arith.p.get(*params.get(i)?);
+            let p = params.get(i)?.clone();
             match *param_types.get(i)? {
                 Some(_) => Some(Denoted::Clo(p)),
                 None => Some(Denoted::Int(p)),
@@ -1267,15 +1258,12 @@ fn denote_with_placeholders(
 /// since a self-call argument was already allowed to be `if c then x
 /// else y` before closures existed here.
 ///
-/// `params` is `Params`'s own raw positions (`&[usize]`, resolved fresh
-/// via `combinators.p.get` at each individual use), not pre-resolved
-/// `Expr`s: `register`/`call_ref`/`pap_ref` each may push a fresh
-/// postulate on first use (memoized afterward, like `ite_clo_ref`), which
-/// would silently invalidate an already-resolved `Expr` held across that
-/// push -- the same staleness class `Anchored`'s own docs describe. A
-/// bare `Term::Rec` (a self-recursive combinator *nested* inside another
-/// one's body) stays out of scope, unlike `denote_closure`'s own fragment
-/// -- proving one induction correct while assuming another is a genuinely
+/// `params` are the enclosing scope's bound parameters (`Params`), which
+/// no push shifts. `register`/`call_ref`/`pap_ref` each push a postulate
+/// on first use, which panics inside a scope, so `build_universal` primes
+/// them first (`prime_closure_postulates`). A bare `Term::Rec` (a
+/// self-recursive combinator *nested* inside another one's body) stays
+/// out of scope, unlike `denote_closure`'s own fragment -- proving one induction correct while assuming another is a genuinely
 /// different, unexplored problem, not attempted here.
 fn denote_closure_typed(
     store: &TermStore,
@@ -1283,7 +1271,7 @@ fn denote_closure_typed(
     self_call: SelfCall,
     param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
-    params: &[usize],
+    params: &[Expr],
 ) -> Option<Denoted> {
     match compile::classify(store, h, self_call.arity, Some(self_call.idx)) {
         // Never substituted here -- see this function's own docs.
@@ -1413,7 +1401,7 @@ fn denote_closure_typed(
         Shape::OtherCall => None,
         Shape::Var(i) => {
             let i = i as usize;
-            let p = combinators.cp.arith.p.get(*params.get(i)?);
+            let p = params.get(i)?.clone();
             match *param_types.get(i)? {
                 Some(_) => Some(Denoted::Clo(p)),
                 None => Some(Denoted::Int(p)),
@@ -1670,30 +1658,23 @@ impl Anchored {
     }
 }
 
-/// A set of postulated `Int` params, kept as *positions* rather than
-/// resolved `Expr`s. Resolving once (`Vec<Expr>`) and reusing that
-/// snapshot is exactly the staleness bug `Anchored` guards against for a
-/// whole built term, one level earlier: the moment anything more gets
-/// pushed onto `arith.p.ctx` after the snapshot was taken (a further
-/// local binder, e.g. `v` or `e`), every entry in it is off by one (or
-/// more) and needs reshifting. `at` sidesteps that by never caching --
-/// call it fresh, immediately before each use, however many things have
-/// been pushed since these params themselves were introduced.
-struct Params(Vec<usize>);
+/// A scope's parameters, as the `Free`s `Postulates::bind` returned. A
+/// `Free` names its binder by level, so no later push or bind shifts it
+/// (`RELATED_WORK.md` §70). `at` returns a copy; its `arith` argument is
+/// unused.
+struct Params(Vec<Expr>);
 impl Params {
-    fn at(&self, arith: &ArithPostulates) -> Vec<Expr> {
-        self.0.iter().map(|&pos| arith.p.get(pos)).collect()
+    fn at(&self, _arith: &ArithPostulates) -> Vec<Expr> {
+        self.0.clone()
     }
 }
 
-/// Pushes `n` fresh `Int`-typed postulates, lets `build` extend
-/// `arith.p.ctx` further and construct a body term (resolving the params
-/// via `Params::at`, fresh, whenever it actually needs them -- see
-/// `Params`), then closes *everything* pushed since entry (the `n` params
-/// plus anything `build` itself pushed, e.g. more binders of its own)
-/// into nested binders around that body, rolling the temporary pushes
-/// back afterward. Pass `kernel::Binder::Pi` to build a *type* (quantifying
-/// over these params) or `kernel::Binder::Lam` to build a *value* of that
+/// Binds `n` fresh `Int`-typed parameters in a new scope, lets `build`
+/// bind more of its own and construct a body term, then closes
+/// *everything* bound since entry (the `n` params plus anything `build`
+/// itself bound, e.g. `v` or `e`) into nested binders around that body,
+/// rolling them back afterward. Pass `kernel::Binder::Pi` to build a
+/// *type* (quantifying over these params) or `kernel::Binder::Lam` to build a *value* of that
 /// type (e.g. a motive or a proof to pass as an argument) -- getting this
 /// wrong is a real, easy-to-make mistake (a `Pi` where a `Lam` was
 /// needed), not a hypothetical one.
@@ -1704,12 +1685,13 @@ fn params_and_close(
     build: impl FnOnce(&mut ArithPostulates, &Params) -> Option<Expr>,
 ) -> Option<Expr> {
     let s = arith.p.open();
-    let mut positions = Vec::with_capacity(n);
-    for _ in 0..n {
-        let ty = arith.int_ty();
-        positions.push(arith.p.push(ty));
-    }
-    let pp = Params(positions);
+    let params: Vec<Expr> = (0..n)
+        .map(|_| {
+            let ty = arith.int_ty();
+            arith.p.bind(ty)
+        })
+        .collect();
+    let pp = Params(params);
     match build(arith, &pp) {
         Some(b) => Some(arith.p.close(s, binder, b)),
         None => {
@@ -1720,15 +1702,11 @@ fn params_and_close(
 }
 
 /// Like [`params_and_close`], but for `build_universal`'s own closure-aware
-/// pipeline: pushes one fresh postulate per entry of `param_types`, typed
-/// `Clo_k` or `Int` to match (resolved fresh immediately before each
-/// individual push and used right away, so even though `clo_ty(k)` may
-/// itself lazily push a postulate on a new arity's first use, unlike
-/// `Ev`'s own type below, no anchoring is needed here --
-/// see `build_universal`'s own upfront `clo_ty` priming loop, which
-/// ensures every arity `param_types` mentions is already primed well
-/// before this ever runs, so in practice this never observes a first use
-/// anyway), so `build`'s own params may be mixed-typed.
+/// pipeline: binds one fresh parameter per entry of `param_types`, typed
+/// `Clo_k` or `Int` to match, so `build`'s own params may be mixed-typed.
+/// `clo_ty(k)`'s first use pushes a postulate, which panics inside a
+/// scope; `build_universal`'s upfront `clo_ty` priming loop makes every
+/// arity `param_types` mentions a cache hit here.
 fn params_and_close_typed(
     arith: &mut ClosureCombinators<'_>,
     param_types: &[Option<usize>],
@@ -1736,15 +1714,15 @@ fn params_and_close_typed(
     build: impl FnOnce(&mut ClosureCombinators<'_>, &Params) -> Option<Expr>,
 ) -> Option<Expr> {
     let s = arith.p.open();
-    let mut positions = Vec::with_capacity(param_types.len());
+    let mut params = Vec::with_capacity(param_types.len());
     for pt in param_types {
         let ty = match pt {
             Some(k) => arith.clo_ty(*k),
             None => arith.int_ty(),
         };
-        positions.push(arith.p.push(ty));
+        params.push(arith.p.bind(ty));
     }
-    let pp = Params(positions);
+    let pp = Params(params);
     match build(arith, &pp) {
         Some(b) => Some(arith.p.close(s, binder, b)),
         None => {
@@ -1866,18 +1844,16 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         Some(kernel::id(arith.int_ty(), d, arith.lit_ref(lit)))
     };
 
-    // Pushes one premise per `(cond, lit)` on `path` (a leaf's whole
-    // ancestry, root to leaf), returning their positions. Each premise's
-    // own type only depends on `params`, but every push grows the
-    // context by one, so `params` is re-resolved fresh immediately before
-    // each individual push rather than reused across them.
-    let push_path = |arith: &mut ArithPostulates, pp: &Params, path: &[(Hash, i64)]| -> Option<Vec<usize>> {
-        let mut positions = Vec::with_capacity(path.len());
+    // Binds one premise per `(cond, lit)` on `path` (a leaf's whole
+    // ancestry, root to leaf), returning them. Each premise's own type
+    // only depends on `params`.
+    let push_path = |arith: &mut ArithPostulates, pp: &Params, path: &[(Hash, i64)]| -> Option<Vec<Expr>> {
+        let mut premises = Vec::with_capacity(path.len());
         for &(cond, lit) in path {
             let pf_ty = cond_premise(arith, cond, &pp.at(arith), lit)?;
-            positions.push(arith.p.push(pf_ty));
+            premises.push(arith.p.bind(pf_ty));
         }
-        Some(positions)
+        Some(premises)
     };
 
     // new_params_for(call_args, params): one self-call occurrence's own
@@ -1887,7 +1863,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // via `denote_closure_typed` (a loop-carried `Clo`-typed argument, or a
     // plain `Int` one possibly computed by calling one), each checked
     // against `param_types[i]`, the *target* slot's own type.
-    let new_params_for = |arith: &mut ClosureCombinators<'_>, call_args: &[Hash], params: &[usize]| -> Option<Vec<Expr>> {
+    let new_params_for = |arith: &mut ClosureCombinators<'_>, call_args: &[Hash], params: &[Expr]| -> Option<Vec<Expr>> {
         (0..arity)
             .map(|i| {
                 let d = denote_closure_typed(store, call_args[arity - 1 - i], self_call, &param_types, arith, params)?;
@@ -2006,37 +1982,29 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // inside `denote_closure_typed`/`denote_with_placeholders`, needs the
     // same treatment (either priming here, if it's `Hash`/signature-keyed
     // like `register`/`call_ref`/`pap_ref`/`mk_env_ref`, or an unconditional
-    // prime call like `ite_clo_ref`'s above if it isn't) -- silently
-    // missing it doesn't fail loudly the way a compile error would; it
-    // waits for a term that happens to hit it from inside a truncating
-    // scope. The final `kernel::check` on the assembled theorem
-    // (`prove_tail_recursive_universal`'s own trust boundary, unaffected
-    // by `debug_assertions`) still catches the resulting ill-typed
-    // sub-expression either way, so this never produces an accepted-but-
-    // wrong proof -- in a debug build it's a `debug_assert_has_type` panic
-    // pinpointing the exact node; in release, `build_universal` just
-    // returns `None`, spuriously rejecting a term this fragment should
-    // have covered, with no clue *why* beyond re-running under `debug_assertions`.
+    // prime call like `ite_clo_ref`'s above if it isn't). Missing it is
+    // not a compile error: it waits for a term that happens to hit it
+    // from inside a scope, where the push panics with "push while a
+    // scope is open" (`RELATED_WORK.md` §70).
 
-    // Pushes `v_1:Int .. v_k:Int` then `e_1:Ev(new_params_1,v_1) ..
+    // Binds `v_1:Int .. v_k:Int` then `e_1:Ev(new_params_1,v_1) ..
     // e_k:Ev(new_params_k,v_k)` for a leaf's `calls` (one `(v,e)` pair per
     // self-call occurrence, grouped -- all `v`s then all `e`s -- rather
-    // than interleaved; each `e_j`'s type only needs its *own* `v_j`'s
-    // position, which stays resolvable via `arith.p.get` regardless of
-    // what else has been pushed since, so grouping is no less correct
-    // than interleaving and is simpler for every caller below to zip).
-    let push_calls = |arith: &mut ClosureCombinators<'_>, pp: &Params, calls: &[Vec<Hash>]| -> Option<(Vec<usize>, Vec<usize>)> {
-        let mut v_positions = Vec::with_capacity(calls.len());
+    // than interleaved; each `e_j`'s type only needs its *own* `v_j`, so
+    // grouping is no less correct than interleaving and is simpler for
+    // every caller below to zip).
+    let push_calls = |arith: &mut ClosureCombinators<'_>, pp: &Params, calls: &[Vec<Hash>]| -> Option<(Vec<Expr>, Vec<Expr>)> {
+        let mut vs = Vec::with_capacity(calls.len());
         for _ in calls {
-            v_positions.push({ let ty = arith.int_ty(); arith.p.push(ty) });
+            vs.push({ let ty = arith.int_ty(); arith.p.bind(ty) });
         }
-        let mut e_positions = Vec::with_capacity(calls.len());
-        for (call, &v_pos) in calls.iter().zip(&v_positions) {
+        let mut es = Vec::with_capacity(calls.len());
+        for (call, v) in calls.iter().zip(&vs) {
             let np = new_params_for(arith, call, &pp.0)?;
-            let ev_np = ev_of(arith, &np, arith.p.get(v_pos));
-            e_positions.push(arith.p.push(ev_np));
+            let ev_np = ev_of(arith, &np, v.clone());
+            es.push(arith.p.bind(ev_np));
         }
-        Some((v_positions, e_positions))
+        Some((vs, es))
     };
 
     // combine_i : Pi params. Pi ih_1:Int .. ih_{k_i}:Int. Int -- leaf i's
@@ -2068,9 +2036,8 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     for (leaf, combine) in leaves.iter().zip(&combines) {
         let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
             push_path(arith, pp, &leaf.path)?;
-            let (v_positions, _e_positions) = push_calls(arith, pp, &leaf.calls)?;
+            let (vs, _es) = push_calls(arith, pp, &leaf.calls)?;
             let params = pp.at(arith);
-            let vs = resolve_all(arith, &v_positions);
             let combine_v = combine_of(arith, combine, &params, &vs);
             Some(ev_of(arith, &params, combine_v))
         })?;
@@ -2087,16 +2054,15 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // arguments' values, so it can't be a flat non-dependent arrow chain
     // the way `Ev`'s own (params,v both just `Int`, independent) type is.
     let motive_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
-        let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
-        let v = arith.p.get(v_pos);
+        let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
         let ev_pv = ev_of(arith, &pp.at(arith), v);
-        arith.p.push(ev_pv);
+        arith.p.bind(ev_pv);
         Some(kernel::sort(0))
     })?;
     let p_scope = arith.p.open();
-    let p_pos = arith.p.push(motive_ty);
-    let p_of = |arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
-        apply_n(arith.p.get(p_pos), params.iter().cloned().chain([v, e]))
+    let p_ref = arith.p.bind(motive_ty);
+    let p_of = |_arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
+        apply_n(p_ref.clone(), params.iter().cloned().chain([v, e]))
     };
 
     // leaf_case_ty_i : Pi params. Pi (path premises) v_1..v_{k_i} (e_1..e_{k_i}).
@@ -2107,17 +2073,13 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let mut leaf_case_tys = Vec::with_capacity(leaves.len());
     for (leaf, (&ev_leaf_pos, combine)) in leaves.iter().zip(ev_leaf_positions.iter().zip(&combines)) {
         let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
-            let path_positions = push_path(arith, pp, &leaf.path)?;
-            let (v_positions, e_positions) = push_calls(arith, pp, &leaf.calls)?;
-            // Use phase.
+            let premises = push_path(arith, pp, &leaf.path)?;
+            let (vs, es) = push_calls(arith, pp, &leaf.calls)?;
             let params = pp.at(arith);
-            let premises = resolve_all(arith, &path_positions);
-            let vs = resolve_all(arith, &v_positions);
-            let es = resolve_all(arith, &e_positions);
             let mut ih_tys = Vec::with_capacity(leaf.calls.len());
-            for ((call, &v_pos), &e_pos) in leaf.calls.iter().zip(&v_positions).zip(&e_positions) {
+            for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, &pp.0)?;
-                ih_tys.push(p_of(arith, &np, arith.p.get(v_pos), arith.p.get(e_pos)));
+                ih_tys.push(p_of(arith, &np, v.clone(), e.clone()));
             }
             let combine_v = combine_of(arith, combine, &params, &vs);
             let ev_leaf_applied = apply_n(
@@ -2129,8 +2091,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         });
         // `params_and_close_typed` already rolls back its own (inner) scope
         // on `None`; a `?` here would still skip past this loop straight
-        // out of `build_universal`, leaving `p_scope`'s own postulates
-        // (`p_pos` and anything pushed by earlier iterations) unrolled.
+        // out of `build_universal`, leaving `p_scope` (and `P`) open.
         let ty = match ty {
             Some(ty) => ty,
             None => {
@@ -2141,13 +2102,10 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         leaf_case_tys.push(ty);
     }
     let concl_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
-        let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
-        let e_pos = arith.p.push(ev_pv);
-        // Use phase.
+        let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
+        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let e = arith.p.bind(ev_pv);
         let params = pp.at(arith);
-        let v = arith.p.get(v_pos);
-        let e = arith.p.get(e_pos);
         Some(p_of(arith, &params, v, e))
     });
     // Same reasoning as the loop above: abandon `p_scope` before giving up.
@@ -2178,9 +2136,9 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // `Int` (an earlier version of this used `Int` there and failed to
     // typecheck for exactly that reason).
     let const_int_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
-        let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
-        arith.p.push(ev_pv); // e : Ev(params, v)
+        let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
+        let ev_pv = ev_of(arith, &pp.at(arith), v);
+        arith.p.bind(ev_pv); // e : Ev(params, v)
         Some(arith.int_ty())
     })?;
     let const_int_motive = Anchored::new(&arith, const_int_motive_expr);
@@ -2190,12 +2148,11 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         let expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
             push_path(arith, pp, &leaf.path)?; // matches leaf_case_ty's premise binders, unused in the body
             push_calls(arith, pp, &leaf.calls)?; // v/e binders, also unused in the body
-            let mut ih_positions = Vec::with_capacity(leaf.calls.len());
+            let mut ihs = Vec::with_capacity(leaf.calls.len());
             for _ in &leaf.calls {
-                ih_positions.push({ let ty = arith.int_ty(); arith.p.push(ty) });
+                ihs.push({ let ty = arith.int_ty(); arith.p.bind(ty) });
             }
             let params = pp.at(arith);
-            let ihs = resolve_all(arith, &ih_positions);
             Some(combine_of(arith, combine, &params, &ihs))
         })?;
         loop_leaves.push(Anchored::new(&arith, expr));
@@ -2214,22 +2171,18 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let mut loop_val_leaf_eq_positions = Vec::with_capacity(leaves.len());
     for (leaf, (&ev_leaf_pos, combine)) in leaves.iter().zip(ev_leaf_positions.iter().zip(&combines)) {
         let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
-            let path_positions = push_path(arith, pp, &leaf.path)?;
-            let (v_positions, e_positions) = push_calls(arith, pp, &leaf.calls)?;
-            // Use phase.
+            let premises = push_path(arith, pp, &leaf.path)?;
+            let (vs, es) = push_calls(arith, pp, &leaf.calls)?;
             let params = pp.at(arith);
-            let premises = resolve_all(arith, &path_positions);
-            let vs = resolve_all(arith, &v_positions);
-            let es = resolve_all(arith, &e_positions);
             let eb = apply_n(
                 arith.p.get(ev_leaf_pos),
                 params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es.iter().cloned()),
             );
             let lhs = loop_val(arith, &params, combine_of(arith, combine, &params, &vs), eb);
             let mut recursive_vals = Vec::with_capacity(leaf.calls.len());
-            for ((call, &v_pos), &e_pos) in leaf.calls.iter().zip(&v_positions).zip(&e_positions) {
+            for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, &pp.0)?;
-                recursive_vals.push(loop_val(arith, &np, arith.p.get(v_pos), arith.p.get(e_pos)));
+                recursive_vals.push(loop_val(arith, &np, v.clone(), e.clone()));
             }
             let rhs = combine_of(arith, combine, &params, &recursive_vals);
             Some(kernel::id(arith.int_ty(), lhs, rhs))
@@ -2240,13 +2193,10 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // Theorem: Pi params v e. Id(Int, loop_val(params,v,e), v), proved via
     // ev_rec with motive `\params v e. Id(Int, loop_val(params,v,e), v)`.
     let id_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
-        let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
-        let e_pos = arith.p.push(ev_pv);
-        // Use phase.
+        let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
+        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let e = arith.p.bind(ev_pv);
         let params = pp.at(arith);
-        let v = arith.p.get(v_pos);
-        let e = arith.p.get(e_pos);
         Some(kernel::id(arith.int_ty(), loop_val(arith, &params, v.clone(), e), v))
     })?;
     let id_motive = Anchored::new(&arith, id_motive_expr);
@@ -2265,30 +2215,20 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         leaves.iter().zip(ev_leaf_positions.iter().zip(&loop_val_leaf_eq_positions).zip(&combines))
     {
         let expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
-            let path_positions = push_path(arith, pp, &leaf.path)?;
-            let (v_positions, e_positions) = push_calls(arith, pp, &leaf.calls)?;
-            let mut ih_positions = Vec::with_capacity(leaf.calls.len());
-            for ((call, &v_pos), &e_pos) in leaf.calls.iter().zip(&v_positions).zip(&e_positions) {
+            let premises = push_path(arith, pp, &leaf.path)?;
+            let (vs, es) = push_calls(arith, pp, &leaf.calls)?;
+            let mut ihs = Vec::with_capacity(leaf.calls.len());
+            for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, &pp.0)?;
-                let ih_ty = kernel::id(
-                    arith.int_ty(),
-                    loop_val(arith, &np, arith.p.get(v_pos), arith.p.get(e_pos)),
-                    arith.p.get(v_pos),
-                );
-                ih_positions.push(arith.p.push(ih_ty));
+                let ih_ty = kernel::id(arith.int_ty(), loop_val(arith, &np, v.clone(), e.clone()), v.clone());
+                ihs.push(arith.p.bind(ih_ty));
             }
 
-            // Use phase: every push for this closure is done.
             let params = pp.at(arith);
-            let premises = resolve_all(arith, &path_positions);
-            let vs = resolve_all(arith, &v_positions);
-            let es = resolve_all(arith, &e_positions);
-            let ihs = resolve_all(arith, &ih_positions);
             let mut recursive_vals = Vec::with_capacity(leaf.calls.len());
-            for (call, &v_pos) in leaf.calls.iter().zip(&v_positions) {
-                let idx = recursive_vals.len();
+            for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, &pp.0)?;
-                recursive_vals.push(loop_val(arith, &np, arith.p.get(v_pos), arith.p.get(e_positions[idx])));
+                recursive_vals.push(loop_val(arith, &np, v.clone(), e.clone()));
             }
 
             let eb = apply_n(
@@ -2311,24 +2251,18 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     }
 
     let theorem_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
-        let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
-        let e_pos = arith.p.push(ev_pv);
-        // Use phase.
+        let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
+        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let e = arith.p.bind(ev_pv);
         let params = pp.at(arith);
-        let v = arith.p.get(v_pos);
-        let e = arith.p.get(e_pos);
         Some(kernel::id(arith.int_ty(), loop_val(arith, &params, v.clone(), e), v))
     })?;
 
     let theorem_proof = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
-        let v_pos = { let ty = arith.int_ty(); arith.p.push(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), arith.p.get(v_pos));
-        let e_pos = arith.p.push(ev_pv);
-        // Use phase.
+        let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
+        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let e = arith.p.bind(ev_pv);
         let params = pp.at(arith);
-        let v = arith.p.get(v_pos);
-        let e = arith.p.get(e_pos);
         let cases: Vec<Expr> = theorem_leaves.iter().map(|a| a.at(arith)).collect();
         Some(ev_rec_ref(arith, id_motive.at(arith), &cases, &params, v, e))
     })?;
@@ -6383,11 +6317,11 @@ fn capture_sig(captures: &[u32], caller_param_types: &[Option<usize>]) -> Option
 /// -- but may be `Clo`-typed or `Int`-typed freely; `capture_sig` picks
 /// out which, and `Env`/`mk_env` are keyed by that signature rather than
 /// assuming every capture is `Int`.
-fn build_env_expr(combinators: &mut ClosureCombinators, captures: &[u32], params: &[usize], param_types: &[Option<usize>]) -> Option<Expr> {
+fn build_env_expr(combinators: &mut ClosureCombinators, captures: &[u32], params: &[Expr], param_types: &[Option<usize>]) -> Option<Expr> {
     let sig = capture_sig(captures, param_types)?;
     let mut values = Vec::with_capacity(captures.len());
     for &rel in captures {
-        let v = combinators.cp.arith.p.get(*params.get(rel as usize)?);
+        let v = params.get(rel as usize)?.clone();
         values.push(Anchored::new(&combinators.cp.arith, v));
     }
     let mk_env_expr = combinators.cp.mk_env_ref(&sig);
@@ -6428,19 +6362,13 @@ fn collect_literals_closure(store: &TermStore, h: Hash, param_types: &[Option<us
 /// `Var(i)`: `param_types[i] = Some(k)` for a closure-typed parameter
 /// always called with `k` arguments (`compile::infer_closure_arities`'s own
 /// classification, reindexed from its positional convention to `denote`'s
-/// by-`Var`-index one), `None` for a plain `Int` parameter. `params` holds
-/// *positions*, not resolved `Expr`s (the same `Params`-style convention
-/// `prove_tail_recursive_universal` uses) -- resolved fresh, via
-/// `arith.p.get`, at each actual use: registering a combinator, or a
-/// fresh `call_ref`/`mk_clo_ref`/`ite_clo_ref`, mid-denotation pushes
-/// further postulates onto `arith.p.ctx`, so a `Var`'s `Expr` resolved
-/// once, ahead of time, and reused afterward would go stale exactly the
-/// way `Anchored`'s docs describe.
+/// by-`Var`-index one), `None` for a plain `Int` parameter. `params` are
+/// the parameters' postulates as `Const`s, which no later push shifts.
 fn denote_closure(
     store: &TermStore,
     h: Hash,
     combinators: &mut ClosureCombinators,
-    params: &[usize],
+    params: &[Expr],
     param_types: &[Option<usize>],
 ) -> Option<Denoted> {
     // Every composite case below follows the same discipline: compute each
@@ -6686,7 +6614,7 @@ fn denote_closure(
         }
         Shape::Var(i) => {
             let i = i as usize;
-            let p = combinators.cp.arith.p.get(*params.get(i)?);
+            let p = params.get(i)?.clone();
             match *param_types.get(i)? {
                 Some(_) => Some(Denoted::Clo(p)),
                 None => Some(Denoted::Int(p)),
@@ -6796,7 +6724,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
                 combinators.cp.arith.p.push(int_ty)
             }
         };
-        params.push(pos);
+        params.push(combinators.cp.arith.p.get(pos));
     }
 
     let denoted = denote_closure(store, body, &mut combinators, &params, &param_types)?;
@@ -6887,8 +6815,7 @@ struct ConcreteClo {
 /// One frame slot's own concretely-known value, threaded through
 /// `eval_dyn`'s walk -- the per-instance analogue of `denote_closure`'s
 /// `params`/`param_types` pair. Every slot here is `Anchored` rather than
-/// a raw postulate position (contrast `denote_closure`'s `params:
-/// &[usize]`): a substituted value (an inlined callee's own parameter,
+/// a bare postulate (contrast `denote_closure`'s `params`): a substituted value (an inlined callee's own parameter,
 /// or a closure's own captured value read back later) is an arbitrary
 /// compound expression, not a fresh, unsubstituted postulate -- exactly
 /// the case `Anchored` exists for (see its own docs). Every `Int` slot
@@ -7265,7 +7192,7 @@ fn eval_dyn_direct_call(
 
     // Ordinary opaque call: mirrors `denote_closure`'s own
     // `LitLambdaExact` construction exactly, just resolving `root`'s own
-    // captures against `root_frame` instead of a raw `params: &[usize]`.
+    // captures against `root_frame` instead of `params`.
     // Every sub-piece (`call_fn`, `env_expr`, each `arg_exprs` entry) is
     // already `Anchored` (either just-built here, or carried in from
     // `arg_vals` above) -- nothing is resolved via `.at()` until every

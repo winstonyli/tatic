@@ -1662,6 +1662,7 @@ impl Postulates {
         Postulates { ctx: Ctx::new(), scope_base: usize::MAX, params: Vec::new(), next_free: 0, scopes: 0 }
     }
     pub fn push(&mut self, ty: Expr) -> usize {
+        assert!(self.scopes == 0, "push while a scope is open: bind a scope's entries (RELATED_WORK §70)");
         let pos = self.ctx.len();
         if pos < self.scope_base {
             assert!(
@@ -4168,37 +4169,37 @@ mod tests {
         );
     }
 
-    /// `open`/`close` wrap exactly the entries pushed inside the scope and
-    /// roll them back; `abandon` rolls back without closing.
+    /// `open`/`close` wrap exactly the parameters bound inside the scope
+    /// and roll them back; `abandon` rolls back without closing.
     #[test]
-    fn a_scope_closes_over_what_it_pushed_and_rolls_it_back() {
+    fn a_scope_closes_over_what_it_bound_and_rolls_it_back() {
         let mut p = Postulates::new();
         let a = p.push(sort(0));
         let s = p.open();
-        let x = p.push(p.get(a));
-        let body = id(p.get(a), p.get(x), p.get(x));
+        let x = p.bind(p.get(a));
+        let body = id(p.get(a), x.clone(), x);
         let closed = p.close(s, Binder::Pi, body);
-        assert_eq!(p.ctx.len(), 1);
+        assert_eq!((p.ctx.len(), p.params.len(), p.scopes), (1, 0, 0));
         assert!(p.check(&closed, &sort(0)).is_ok());
         let s = p.open();
-        p.push(p.get(a));
+        p.bind(p.get(a));
         p.abandon(s);
-        assert_eq!(p.ctx.len(), 1);
+        assert_eq!((p.ctx.len(), p.params.len(), p.scopes), (1, 0, 0));
     }
 
-    /// Outside a scope a postulate is `Const(pos)`; inside one, the
-    /// scope's own entries are `Var`s and the postulates stay `Const`s.
+    /// A postulate is `Const(pos)` inside a scope as well as outside one;
+    /// a scope's parameters are `Free`s.
     #[test]
-    fn postulates_are_consts_and_a_scopes_entries_are_vars() {
+    fn postulates_are_consts_and_a_scopes_parameters_are_frees() {
         let mut p = Postulates::new();
         let a = p.push(sort(0));
         assert_eq!(p.get(a), Expr::Const(0));
         let s = p.open();
-        let x = p.push(p.get(a));
+        let x = p.bind(p.get(a));
         assert_eq!(p.get(a), Expr::Const(0));
-        assert_eq!(p.get(x), var(0));
-        assert!(p.check(&p.get(x), &p.get(a)).is_ok());
-        let closed = p.close(s, Binder::Lam, p.get(x));
+        assert_eq!(x, Expr::Free(0));
+        assert!(p.check_open(&x, &p.get(a)).is_ok());
+        let closed = p.close(s, Binder::Lam, x);
         assert_eq!(closed, lam(Expr::Const(0), var(0)));
         assert!(p.check(&closed, &pi(Expr::Const(0), Expr::Const(0))).is_ok());
     }
@@ -4235,58 +4236,41 @@ mod tests {
         p.push(Expr::Const(1)); // its own level
     }
 
-    /// Inside a scope an entry's type may mention the scope's earlier
-    /// entries, and it's still checked to be a type.
+    /// A parameter's type may mention the scope's earlier parameters, and
+    /// it's still checked to be a type.
     #[test]
-    fn push_accepts_a_scope_entry_typed_by_an_earlier_one() {
+    fn bind_accepts_a_parameter_typed_by_an_earlier_one() {
         let mut p = Postulates::new();
         let a = p.push(sort(0));
         let s = p.open();
-        let x = p.push(p.get(a));
-        p.push(id(p.get(a), p.get(x), p.get(x)));
+        let x = p.bind(p.get(a));
+        p.bind(id(p.get(a), x.clone(), x));
         p.abandon(s);
     }
 
     #[test]
-    fn close_pi_matches_hand_built_dependent_pi_chain() {
-        // Postulate A : Type0, push x : A, y : A onto the context, build
-        // body = Id(A, x, y), and check close_pi reproduces exactly the
-        // hand-built `Pi x:A. Pi y:A. Id(A, x, y)`.
+    #[should_panic(expected = "push while a scope is open")]
+    fn push_panics_inside_a_scope() {
         let mut p = Postulates::new();
-        let a_ty_pos = p.push(sort(0));
-        let a_ty = p.get(a_ty_pos); // a Const now, so this stays valid at any depth
-
-        let s = p.open();
-        let x_pos = p.push(p.get(a_ty_pos)); // fresh reference, not `a_ty.clone()` -- ctx has grown
-        let y_pos = p.push(p.get(a_ty_pos)); // fresh again -- ctx has grown once more
-        let body = id(p.get(a_ty_pos), p.get(x_pos), p.get(y_pos));
-        let closed = p.close(s, Binder::Pi, body);
-
-        let expected = pi(a_ty.clone(), pi(shift(&a_ty, 0, 1), id(shift(&a_ty, 0, 2), var(1), var(0))));
-        assert_eq!(closed, expected);
-
-        // And it typechecks as exactly that Pi-type.
-        assert!(typecheck(&closed).is_err()); // open term (references A) -- must check in ctx, not standalone
-        p.check(&closed, &sort(0)).expect("Pi x:A. Pi y:A. Id(A,x,y) : Type0");
+        let a = p.push(sort(0));
+        let _s = p.open();
+        p.push(p.get(a));
     }
 
+    /// Closing over a bound parameter with `Pi` builds a type and with
+    /// `Lam` a value of it: `\x:A. refl x : Pi x:A. Id(A,x,x)`.
     #[test]
     fn close_lam_builds_a_value_of_the_close_pi_type() {
-        // Postulate A : Type0, push x : A, build the TYPE `Pi x:A. Id(A,x,x)`
-        // via close_pi and the VALUE `\x:A. refl x` (of that type) via
-        // close_lam, and check the value against the type.
         let mut p = Postulates::new();
-        let a_ty_pos = p.push(sort(0));
+        let a = p.push(sort(0));
 
         let s = p.open();
-        let x_pos = p.push(p.get(a_ty_pos));
-        let ty_body = id(p.get(a_ty_pos), p.get(x_pos), p.get(x_pos));
-        let ty = p.close(s, Binder::Pi, ty_body);
+        let x = p.bind(p.get(a));
+        let ty = p.close(s, Binder::Pi, id(p.get(a), x.clone(), x));
 
         let s = p.open();
-        let x_pos = p.push(p.get(a_ty_pos));
-        let value_body = refl(p.get(x_pos));
-        let value = p.close(s, Binder::Lam, value_body);
+        let x = p.bind(p.get(a));
+        let value = p.close(s, Binder::Lam, refl(x));
 
         p.check(&value, &ty).expect("\\x:A. refl x : Pi x:A. Id(A,x,x)");
     }
@@ -4379,27 +4363,6 @@ mod tests {
         let mut p = Postulates::new();
         let a = p.push(sort(0));
         p.bind(p.get(a));
-    }
-
-    #[test]
-    #[should_panic(expected = "a scope mixes pushed locals and bound parameters")]
-    fn close_rejects_a_scope_that_mixes_pushes_and_binds() {
-        let mut p = Postulates::new();
-        let a = p.push(sort(0));
-        let s = p.open();
-        let x = p.bind(p.get(a));
-        p.push(p.get(a));
-        let _ = p.close(s, Binder::Lam, x);
-    }
-
-    #[test]
-    #[should_panic(expected = "check_open in a scope with pushed locals")]
-    fn check_open_rejects_a_scope_with_pushed_locals() {
-        let mut p = Postulates::new();
-        let a = p.push(sort(0));
-        let _s = p.open();
-        p.push(p.get(a));
-        let _ = p.check_open(&p.get(a), &sort(0));
     }
 
     /// A parameter whose type mentions an earlier one is looked up at the
