@@ -1565,10 +1565,14 @@ pub struct Scope {
     base: usize,
     outer_base: usize,
     params_len: usize,
-    /// The first `Free` level this scope can hand out: every level of an
-    /// enclosing scope, or of a closed one, is below it.
+    /// The first `Free` level this scope can hand out: every level handed
+    /// out before this scope opened is below it.
     first: u32,
 }
+
+/// `abstract_frees`' memo for one set of `levels`: a shared node's result
+/// by pointer and depth.
+type FreesMemo = HashMap<(PtrKey, u32), Rc<Expr>>;
 
 /// Under `d` binders of `e`, `Free(levels[j])` becomes the `Var` for the
 /// `j`-th of `levels.len()` binders wrapped outside `e`, outermost
@@ -1579,10 +1583,34 @@ pub struct Scope {
 /// mirrors `shift`, with `free` in place of `loose` for the skip test,
 /// since every level in `levels` is at least `first`.
 fn abstract_frees(e: &Expr, first: u32, levels: &[u32], d: u32) -> Expr {
+    abstract_frees_in(e, first, levels, d, &mut FreesMemo::new())
+}
+
+/// `abstract_frees` with a memo shared across calls for the same
+/// `levels`. A node referenced from more than one place is memoised by
+/// pointer and depth, as `infer_rc` does, so a shared subterm is walked
+/// once and its result stays shared. Unmemoised, a doubling DAG is walked
+/// as the tree it unfolds to, and the copy loses the sharing `infer`'s
+/// memo relies on (`RELATED_WORK.md` §63).
+fn abstract_frees_in(e: &Expr, first: u32, levels: &[u32], d: u32, memo: &mut FreesMemo) -> Expr {
     if free_of(e) <= first {
         return e.clone();
     }
-    let go = |x: &Rc<Expr>, d: u32| if x.free() <= first { x.clone() } else { Rc::new(abstract_frees(x, first, levels, d)) };
+    let mut go = |x: &Rc<Expr>, d: u32| {
+        if x.free() <= first {
+            return x.clone();
+        }
+        if Rc::strong_count(x) == 1 {
+            return Rc::new(abstract_frees_in(x, first, levels, d, memo));
+        }
+        let key = (PtrKey(x.clone()), d);
+        if let Some(r) = memo.get(&key) {
+            return r.clone();
+        }
+        let r = Rc::new(abstract_frees_in(x, first, levels, d, memo));
+        memo.insert(key, r.clone());
+        r
+    };
     grow(|| match e {
         Expr::Free(l) => match levels.binary_search(l) {
             Ok(j) => Expr::Var(d + (levels.len() - 1 - j) as u32),
@@ -1696,6 +1724,9 @@ impl Postulates {
             "a scope mixes pushed locals and bound parameters"
         );
         let closed = if self.params.len() > s.params_len {
+            // A loose `Var` here is a legacy local reference that would be
+            // captured by the new binders.
+            assert!(loose_of(&body) == 0, "close's body has a loose Var in a scope of bound parameters: {body:?}");
             let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
             let mut acc = abstract_frees(&body, s.first, &levels, 0);
             for i in (0..levels.len()).rev() {
@@ -1744,13 +1775,19 @@ impl Postulates {
     }
     /// `check` for a term and type that may mention the live parameters.
     pub fn check_open(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
+        // A loose `Var` would be read as one of the parameters.
+        assert!(loose_of(e) == 0 && loose_of(ty) == 0, "check_open on a term or type with a loose Var: {e:?} : {ty:?}");
         let (g, l, levels) = self.open_ctx();
-        check_in(&g, &l, &abstract_frees(e, 0, &levels, 0), &abstract_frees(ty, 0, &levels, 0))
+        let mut memo = FreesMemo::new();
+        let e = abstract_frees_in(e, 0, &levels, 0, &mut memo);
+        let ty = abstract_frees_in(ty, 0, &levels, 0, &mut memo);
+        check_in(&g, &l, &e, &ty)
     }
     /// `infer` for a term that may mention the live parameters. The type
     /// it returns mentions them as `Var`s, not `Free`s, so it's only for
     /// uses like `expect_sort` that don't put it back into a term.
     pub fn infer_open(&self, e: &Expr) -> Result<Expr, String> {
+        assert!(loose_of(e) == 0, "infer_open on a term with a loose Var: {e:?}");
         let (g, l, levels) = self.open_ctx();
         infer_in(&g, &l, &abstract_frees(e, 0, &levels, 0))
     }
@@ -4334,5 +4371,86 @@ mod tests {
         let _s = p.open();
         let x = p.bind(p.get(a));
         p.bind(x);
+    }
+
+    #[test]
+    #[should_panic(expected = "bind outside a scope")]
+    fn bind_panics_outside_a_scope() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        p.bind(p.get(a));
+    }
+
+    #[test]
+    #[should_panic(expected = "a scope mixes pushed locals and bound parameters")]
+    fn close_rejects_a_scope_that_mixes_pushes_and_binds() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.bind(p.get(a));
+        p.push(p.get(a));
+        let _ = p.close(s, Binder::Lam, x);
+    }
+
+    #[test]
+    #[should_panic(expected = "check_open in a scope with pushed locals")]
+    fn check_open_rejects_a_scope_with_pushed_locals() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let _s = p.open();
+        p.push(p.get(a));
+        let _ = p.check_open(&p.get(a), &sort(0));
+    }
+
+    /// A parameter whose type mentions an earlier one is looked up at the
+    /// right depth.
+    #[test]
+    fn check_open_types_a_parameter_in_a_dependent_context() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.bind(p.get(a));
+        let e = p.bind(id(p.get(a), x.clone(), x.clone()));
+        assert_eq!(p.check_open(&e, &id(p.get(a), x.clone(), x)), Ok(()));
+        p.abandon(s);
+    }
+
+    /// Nodes in `e` counted once per allocation, as `proof.rs`'s tests
+    /// count them.
+    fn dag_size(e: &Expr) -> usize {
+        fn go(e: &Expr, seen: &mut HashSet<*const Expr>) -> usize {
+            let mut n = 1;
+            same_shape(e, e, |p, _| {
+                if seen.insert(Rc::as_ptr(p)) {
+                    n += go(p, seen);
+                }
+                true
+            });
+            n
+        }
+        go(e, &mut Default::default())
+    }
+
+    /// `d(k+1) = f d(k) d(k)` over a parameter, 30 levels deep: a
+    /// billion leaves as a tree, 91 nodes as a DAG. Without its memo
+    /// `close` walked and copied the tree.
+    #[test]
+    fn close_is_linear_in_the_dag_of_a_shared_body() {
+        const DEPTH: usize = 30;
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let f = p.push(arrow(p.get(a), arrow(p.get(a), p.get(a))));
+        let s = p.open();
+        let mut d = Rc::new(p.bind(p.get(a)));
+        for _ in 0..DEPTH {
+            d = Rc::new(Expr::App(Rc::new(Expr::App(Rc::new(p.get(f)), d.clone())), d));
+        }
+        let t = std::time::Instant::now();
+        let closed = p.close(s, Binder::Lam, (*d).clone());
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_millis(50), "took {took:?}");
+        // The Lam, its domain, the base `Var`, and 3 nodes per level.
+        assert_eq!(dag_size(&closed), 3 * DEPTH + 3);
+        assert!(p.check(&closed, &arrow(p.get(a), p.get(a))).is_ok());
     }
 }
