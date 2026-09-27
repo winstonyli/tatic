@@ -1538,6 +1538,11 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 /// A postulate is referred to by `Const(level)` and checked as one of the
 /// kernel's `Globals`; a scope's own entries stay `Var`s, as before
 /// (`RELATED_WORK.md` §69).
+///
+/// A scope parameter from `bind` is `Free(level)`, which no push shifts.
+/// Levels come from a counter that never reuses one, so a `Free` that
+/// escapes its scope can't be bound by a later scope's `close` and is
+/// rejected by the kernel instead (`RELATED_WORK.md` §70).
 #[derive(Clone)]
 pub struct Postulates {
     pub ctx: Ctx,
@@ -1545,6 +1550,13 @@ pub struct Postulates {
     /// none is open). Entries below it are postulates, entries at or above
     /// it the open scopes' locals (`open`, `close`).
     scope_base: usize,
+    /// The live parameters' `Free` levels and types, in increasing level
+    /// order. A type may mention earlier parameters as `Free`s.
+    params: Vec<(u32, Expr)>,
+    /// The next `Free` level `bind` hands out. Never lowered.
+    next_free: u32,
+    /// How many scopes are open.
+    scopes: u32,
 }
 
 /// A builder scope from `Postulates::open` to `close` or `abandon`.
@@ -1552,6 +1564,61 @@ pub struct Postulates {
 pub struct Scope {
     base: usize,
     outer_base: usize,
+    params_len: usize,
+    /// The first `Free` level this scope can hand out: every level of an
+    /// enclosing scope, or of a closed one, is below it.
+    first: u32,
+}
+
+/// Under `d` binders of `e`, `Free(levels[j])` becomes the `Var` for the
+/// `j`-th of `levels.len()` binders wrapped outside `e`, outermost
+/// first. A `Free` not in `levels` (an enclosing scope's, or one that
+/// escaped a closed scope) is left for the final check to reject.
+///
+/// Builder-side, not trusted: the kernel checks what `close` builds. It
+/// mirrors `shift`, with `free` in place of `loose` for the skip test,
+/// since every level in `levels` is at least `first`.
+fn abstract_frees(e: &Expr, first: u32, levels: &[u32], d: u32) -> Expr {
+    if free_of(e) <= first {
+        return e.clone();
+    }
+    let go = |x: &Rc<Expr>, d: u32| if x.free() <= first { x.clone() } else { Rc::new(abstract_frees(x, first, levels, d)) };
+    grow(|| match e {
+        Expr::Free(l) => match levels.binary_search(l) {
+            Ok(j) => Expr::Var(d + (levels.len() - 1 - j) as u32),
+            Err(_) => Expr::Free(*l),
+        },
+        Expr::Var(k) => Expr::Var(*k),
+        Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
+        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
+        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
+        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
+        Expr::Refl(a) => Expr::Refl(go(a, d)),
+        Expr::J { motive, base, a, b, p } => Expr::J {
+            motive: go(motive, d),
+            base: go(base, d),
+            a: go(a, d),
+            b: go(b, d),
+            p: go(p, d),
+        },
+        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
+        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
+        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
+            motive: go(motive, d),
+            children_ty: go(children_ty, d + 1),
+            step: go(step, d),
+            target: go(target, d),
+        },
+        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
+        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
+        Expr::SigRec { motive, step, target } => Expr::SigRec {
+            motive: go(motive, d),
+            step: go(step, d),
+            target: go(target, d),
+        },
+    })
 }
 
 /// Which binders `Postulates::close` wraps: `Pi` to build a type that
@@ -1564,7 +1631,7 @@ pub enum Binder {
 
 impl Postulates {
     pub fn new() -> Self {
-        Postulates { ctx: Ctx::new(), scope_base: usize::MAX }
+        Postulates { ctx: Ctx::new(), scope_base: usize::MAX, params: Vec::new(), next_free: 0, scopes: 0 }
     }
     pub fn push(&mut self, ty: Expr) -> usize {
         let pos = self.ctx.len();
@@ -1602,25 +1669,60 @@ impl Postulates {
     /// until `close` or `abandon`.
     pub fn open(&mut self) -> Scope {
         let base = self.ctx.len();
-        let s = Scope { base, outer_base: self.scope_base };
+        let s = Scope { base, outer_base: self.scope_base, params_len: self.params.len(), first: self.next_free };
         self.scope_base = self.scope_base.min(base);
+        self.scopes += 1;
         s
     }
-    /// Wraps a binder around `body` for each entry pushed since `s` was
-    /// opened, outermost first, then rolls those entries back.
+    /// Adds a parameter of type `ty` to the innermost open scope and
+    /// returns it as a fresh `Free` level. `ty` may mention the live
+    /// parameters, and is checked to be a type. Panics outside a scope.
+    pub fn bind(&mut self, ty: Expr) -> Expr {
+        assert!(self.scopes > 0, "bind outside a scope");
+        if let Err(err) = self.infer_open(&ty).and_then(|t| expect_sort(&t).map(|_| ())) {
+            panic!("a parameter's type isn't a type: {err}\n  type: {ty:?}");
+        }
+        let l = self.next_free;
+        self.next_free = l.checked_add(1).expect("Free levels ran out");
+        self.params.push((l, ty));
+        Expr::Free(l)
+    }
+    /// Wraps a binder around `body` for each parameter bound (or, in a
+    /// legacy scope, each entry pushed) since `s` was opened, outermost
+    /// first, then rolls them back.
     pub fn close(&mut self, s: Scope, binder: Binder, body: Expr) -> Expr {
-        let closed = match binder {
-            Binder::Pi => close_pi(s.base, &self.ctx, body),
-            Binder::Lam => close_lam(s.base, &self.ctx, body),
+        assert!(
+            self.ctx.len() == s.base || self.params.len() == s.params_len,
+            "a scope mixes pushed locals and bound parameters"
+        );
+        let closed = if self.params.len() > s.params_len {
+            let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
+            let mut acc = abstract_frees(&body, s.first, &levels, 0);
+            for i in (0..levels.len()).rev() {
+                let dom = abstract_frees(&self.params[s.params_len + i].1, s.first, &levels[..i], 0);
+                acc = match binder {
+                    Binder::Pi => pi(dom, acc),
+                    Binder::Lam => lam(dom, acc),
+                };
+            }
+            acc
+        } else {
+            match binder {
+                Binder::Pi => close_pi(s.base, &self.ctx, body),
+                Binder::Lam => close_lam(s.base, &self.ctx, body),
+            }
         };
         self.abandon(s);
         closed
     }
-    /// Rolls back what was pushed since `s` was opened, closing nothing
-    /// (for a build that gave up).
+    /// Rolls back what was pushed or bound since `s` was opened, closing
+    /// nothing (for a build that gave up). `next_free` stays where it is,
+    /// so no level is handed out twice (`RELATED_WORK.md` §67).
     pub fn abandon(&mut self, s: Scope) {
         self.ctx.truncate(s.base);
         self.scope_base = s.outer_base;
+        self.params.truncate(s.params_len);
+        self.scopes -= 1;
     }
     pub fn check(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
         let (g, l) = self.split();
@@ -1629,6 +1731,28 @@ impl Postulates {
     pub fn infer(&self, e: &Expr) -> Result<Expr, String> {
         let (g, l) = self.split();
         infer_in(&g, &l, e)
+    }
+    /// The postulates, a local context of the live parameters' types, and
+    /// their levels, for checking a term that mentions them: each
+    /// parameter becomes the `Var` for its entry.
+    fn open_ctx(&self) -> (Globals, Ctx, Vec<u32>) {
+        let (globals, legacy) = self.split();
+        assert!(legacy.is_empty(), "check_open in a scope with pushed locals");
+        let levels: Vec<u32> = self.params.iter().map(|(l, _)| *l).collect();
+        let locals = self.params.iter().enumerate().map(|(i, (_, ty))| abstract_frees(ty, 0, &levels[..i], 0)).collect();
+        (globals, locals, levels)
+    }
+    /// `check` for a term and type that may mention the live parameters.
+    pub fn check_open(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
+        let (g, l, levels) = self.open_ctx();
+        check_in(&g, &l, &abstract_frees(e, 0, &levels, 0), &abstract_frees(ty, 0, &levels, 0))
+    }
+    /// `infer` for a term that may mention the live parameters. The type
+    /// it returns mentions them as `Var`s, not `Free`s, so it's only for
+    /// uses like `expect_sort` that don't put it back into a term.
+    pub fn infer_open(&self, e: &Expr) -> Result<Expr, String> {
+        let (g, l, levels) = self.open_ctx();
+        infer_in(&g, &l, &abstract_frees(e, 0, &levels, 0))
     }
 }
 impl Default for Postulates {
@@ -4128,5 +4252,87 @@ mod tests {
         let value = p.close(s, Binder::Lam, value_body);
 
         p.check(&value, &ty).expect("\\x:A. refl x : Pi x:A. Id(A,x,x)");
+    }
+
+    /// The spec's stage 3 test: closing over `Free`s gives exactly the
+    /// hand-built dependent `Pi` chain.
+    #[test]
+    fn close_over_frees_matches_hand_built_dependent_pi_chain() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.bind(p.get(a));
+        let y = p.bind(p.get(a));
+        let closed = p.close(s, Binder::Pi, id(p.get(a), x, y));
+        assert_eq!(closed, pi(Expr::Const(0), pi(Expr::Const(0), id(Expr::Const(0), var(1), var(0)))));
+        assert!(p.check(&closed, &sort(0)).is_ok());
+    }
+
+    /// A later parameter's type mentioning an earlier one becomes a `Var`
+    /// in its binder's domain.
+    #[test]
+    fn close_abstracts_a_parameter_in_a_later_parameters_type() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.bind(p.get(a));
+        let e = p.bind(id(p.get(a), x.clone(), x));
+        let closed = p.close(s, Binder::Lam, e);
+        assert_eq!(closed, lam(Expr::Const(0), lam(id(Expr::Const(0), var(0), var(0)), var(0))));
+    }
+
+    /// The teeth of "levels are never reused": a `Free` that escapes its
+    /// scope is left alone by a later scope's `close` and fails the check.
+    /// With reuse, the later scope would bind it silently.
+    #[test]
+    fn a_free_that_escapes_its_scope_is_left_by_a_later_close_and_rejected() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let leaked = p.bind(p.get(a));
+        let _ = p.close(s, Binder::Lam, leaked.clone());
+        let s = p.open();
+        let _y = p.bind(p.get(a));
+        let closed = p.close(s, Binder::Lam, leaked);
+        assert!(p.check(&closed, &pi(Expr::Const(0), Expr::Const(0))).is_err());
+    }
+
+    /// An inner scope's `close` leaves the outer scope's parameters free.
+    #[test]
+    fn an_inner_close_leaves_outer_parameters_free() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let outer = p.open();
+        let x = p.bind(p.get(a));
+        let inner = p.open();
+        let y = p.bind(p.get(a));
+        let inner_closed = p.close(inner, Binder::Lam, id(p.get(a), x.clone(), y));
+        assert_eq!(inner_closed, lam(Expr::Const(0), id(Expr::Const(0), x, var(0))));
+        let closed = p.close(outer, Binder::Lam, inner_closed);
+        assert_eq!(closed, lam(Expr::Const(0), lam(Expr::Const(0), id(Expr::Const(0), var(1), var(0)))));
+        // The body is a type, so the closed `Lam` is a type family.
+        assert!(p.check(&closed, &pi(Expr::Const(0), pi(Expr::Const(0), sort(0)))).is_ok());
+    }
+
+    #[test]
+    fn check_open_types_the_live_parameters() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.bind(p.get(a));
+        assert!(p.check(&x, &p.get(a)).is_err()); // the kernel rejects Free
+        assert!(p.check_open(&x, &p.get(a)).is_ok());
+        assert!(p.check_open(&refl(x.clone()), &id(p.get(a), x.clone(), x)).is_ok());
+        p.abandon(s);
+    }
+
+    #[test]
+    #[should_panic(expected = "isn't a type")]
+    fn bind_rejects_a_type_that_isnt_one() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let _s = p.open();
+        let x = p.bind(p.get(a));
+        p.bind(x);
     }
 }
