@@ -1096,37 +1096,6 @@ pub type Ctx = im::Vector<Expr>;
 /// constant is an axiom.
 pub type Globals = im::Vector<Expr>;
 
-/// Wraps `ctx[base_len..]` (everything appended to `ctx` since it had
-/// length `base_len`) as nested `Pi` binders around `body`, which must
-/// have been built using `ctx` in full (i.e. that suffix as ambient
-/// context, the way ordinary `Postulates`-based code already builds
-/// terms). No reindexing is needed beyond what's already stored: `ctx[i]`
-/// was written assuming exactly `i` prior bindings, which is exactly what
-/// `Pi`'s own convention wants for the domain sitting at that same depth.
-///
-/// This turns "N more things were pushed onto the context, then this term
-/// was built" into a single closed `Pi`-type valid in `ctx[..base_len]` --
-/// the general tool for building a postulate's type when its type itself
-/// needs to quantify over freshly-introduced variables (see `proof.rs`'s
-/// `params_and_close`, built on top of this).
-pub fn close_pi(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
-    ctx.iter()
-        .skip(base_len)
-        .rev()
-        .fold(body, |acc, dom| pi(dom.clone(), acc))
-}
-
-/// Like `close_pi`, but builds the corresponding *value* (`Lam` binders,
-/// one per domain in `ctx[base_len..]`) instead of the type those binders
-/// have -- for when the goal is a term of that `Pi`-type (e.g. a motive or
-/// a proof to pass as an argument), not the type itself.
-pub fn close_lam(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
-    ctx.iter()
-        .skip(base_len)
-        .rev()
-        .fold(body, |acc, dom| lam(dom.clone(), acc))
-}
-
 fn ctx_lookup(ctx: &Ctx, k: u32) -> Result<Expr, String> {
     let k_usize = k as usize;
     if k_usize >= ctx.len() {
@@ -1521,10 +1490,9 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 /// Builds a context of *postulated* (assumed) constants: pushes a type and
 /// returns a handle that can be resolved, at any later point while still
 /// building on the same context, to the reference that correctly refers to
-/// it. Below the open scope (or with none open) that's `Const(level)`,
-/// stable regardless of how many more postulates get pushed afterward;
-/// inside a scope it's a `Var` for that scope's own locals, which do shift
-/// as the scope grows.
+/// it. `globals` only grows -- nothing ever truncates it -- so `Const(pos)`
+/// is stable regardless of how many more postulates get pushed afterward, or
+/// how many builder scopes open and close around it.
 ///
 /// Used instead of trying to derive base types like Bool/Nat/Int from
 /// nothing. That turns out to be a real dead end, not just tedium: any
@@ -1536,20 +1504,15 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 /// this by taking a small base type as primitive (or, as here, postulated).
 ///
 /// A postulate is referred to by `Const(level)` and checked as one of the
-/// kernel's `Globals`; a scope's own entries stay `Var`s, as before
-/// (`RELATED_WORK.md` §69).
+/// kernel's `Globals` (`RELATED_WORK.md` §69).
 ///
-/// A scope parameter from `bind` is `Free(level)`, which no push shifts.
+/// A scope's parameters (`bind`) are `Free(level)`s, which no push shifts.
 /// Levels come from a counter that never reuses one, so a `Free` that
 /// escapes its scope can't be bound by a later scope's `close` and is
 /// rejected by the kernel instead (`RELATED_WORK.md` §70).
 #[derive(Clone)]
 pub struct Postulates {
-    pub ctx: Ctx,
-    /// Where the outermost open builder scope starts (`usize::MAX` while
-    /// none is open). Entries below it are postulates, entries at or above
-    /// it the open scopes' locals (`open`, `close`).
-    scope_base: usize,
+    pub globals: Globals,
     /// The live parameters' `Free` levels and types, in increasing level
     /// order. A type may mention earlier parameters as `Free`s.
     params: Vec<(u32, Expr)>,
@@ -1562,8 +1525,8 @@ pub struct Postulates {
 /// A builder scope from `Postulates::open` to `close` or `abandon`.
 #[must_use]
 pub struct Scope {
-    base: usize,
-    outer_base: usize,
+    /// How many parameters were live (`params.len()`) when this scope
+    /// opened: `close`/`abandon` roll `params` back to here.
     params_len: usize,
     /// The first `Free` level this scope can hand out: every level handed
     /// out before this scope opened is below it.
@@ -1659,47 +1622,30 @@ pub enum Binder {
 
 impl Postulates {
     pub fn new() -> Self {
-        Postulates { ctx: Ctx::new(), scope_base: usize::MAX, params: Vec::new(), next_free: 0, scopes: 0 }
+        Postulates { globals: Globals::new(), params: Vec::new(), next_free: 0, scopes: 0 }
     }
     pub fn push(&mut self, ty: Expr) -> usize {
         assert!(self.scopes == 0, "push while a scope is open: bind a scope's entries (RELATED_WORK §70)");
-        let pos = self.ctx.len();
-        if pos < self.scope_base {
-            assert!(
-                loose_of(&ty) == 0 && free_of(&ty) == 0,
-                "a postulate's type must be closed: {ty:?}"
-            );
-        }
+        let pos = self.globals.len();
+        assert!(loose_of(&ty) == 0 && free_of(&ty) == 0, "a postulate's type must be closed: {ty:?}");
         // RELATED_WORK §68: an ill-formed entry sat in the context unchecked
         // until a claim that used it failed. This also catches a postulate
         // referencing itself or a later one: `infer` checks it against
-        // `Globals = ctx[..scope_base]`, so a forward `Const` fails in
-        // `const_type` with "unknown constant".
+        // `self.globals` as it stands before this push, so a forward
+        // `Const` fails in `const_type` with "unknown constant".
         if let Err(err) = self.infer(&ty).and_then(|t| expect_sort(&t).map(|_| ())) {
             panic!("a postulate's type isn't a type: {err}\n  type: {ty:?}");
         }
-        self.ctx.push_back(ty);
+        self.globals.push_back(ty);
         pos
     }
     pub fn get(&self, pos: usize) -> Expr {
-        if pos < self.scope_base {
-            Expr::Const(pos as u32)
-        } else {
-            var((self.ctx.len() - 1 - pos) as u32)
-        }
+        Expr::Const(pos as u32)
     }
-    /// The postulates (`Globals`) and the open scopes' entries (`Ctx`).
-    fn split(&self) -> (Globals, Ctx) {
-        let mut globals = self.ctx.clone();
-        let locals = globals.split_off(self.scope_base.min(self.ctx.len()));
-        (globals, locals)
-    }
-    /// Opens a builder scope: entries pushed after this point belong to it
-    /// until `close` or `abandon`.
+    /// Opens a builder scope: parameters bound after this point (`bind`)
+    /// belong to it until `close` or `abandon`.
     pub fn open(&mut self) -> Scope {
-        let base = self.ctx.len();
-        let s = Scope { base, outer_base: self.scope_base, params_len: self.params.len(), first: self.next_free };
-        self.scope_base = self.scope_base.min(base);
+        let s = Scope { params_len: self.params.len(), first: self.next_free };
         self.scopes += 1;
         s
     }
@@ -1716,63 +1662,46 @@ impl Postulates {
         self.params.push((l, ty));
         Expr::Free(l)
     }
-    /// Wraps a binder around `body` for each parameter bound (or, in a
-    /// legacy scope, each entry pushed) since `s` was opened, outermost
-    /// first, then rolls them back.
+    /// Wraps a binder around `body` for each parameter bound since `s` was
+    /// opened, outermost first, then rolls them back. A scope that bound
+    /// nothing returns `body` unchanged.
     pub fn close(&mut self, s: Scope, binder: Binder, body: Expr) -> Expr {
-        assert!(
-            self.ctx.len() == s.base || self.params.len() == s.params_len,
-            "a scope mixes pushed locals and bound parameters"
-        );
-        let closed = if self.params.len() > s.params_len {
-            // A loose `Var` here is a legacy local reference that would be
-            // captured by the new binders.
-            assert!(loose_of(&body) == 0, "close's body has a loose Var in a scope of bound parameters: {body:?}");
-            let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
-            let mut acc = abstract_frees(&body, s.first, &levels, 0);
-            for i in (0..levels.len()).rev() {
-                let dom = abstract_frees(&self.params[s.params_len + i].1, s.first, &levels[..i], 0);
-                acc = match binder {
-                    Binder::Pi => pi(dom, acc),
-                    Binder::Lam => lam(dom, acc),
-                };
-            }
-            acc
-        } else {
-            match binder {
-                Binder::Pi => close_pi(s.base, &self.ctx, body),
-                Binder::Lam => close_lam(s.base, &self.ctx, body),
-            }
-        };
+        // A loose `Var` here would be captured by the new binders: it's a
+        // sign a scope local (from the old push-then-truncate regime this
+        // superseded) escaped `bind`.
+        assert!(loose_of(&body) == 0, "close's body has a loose Var: a scope local escaped bind (RELATED_WORK §70)");
+        let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
+        let mut acc = abstract_frees(&body, s.first, &levels, 0);
+        for i in (0..levels.len()).rev() {
+            let dom = abstract_frees(&self.params[s.params_len + i].1, s.first, &levels[..i], 0);
+            acc = match binder {
+                Binder::Pi => pi(dom, acc),
+                Binder::Lam => lam(dom, acc),
+            };
+        }
         self.abandon(s);
-        closed
+        acc
     }
-    /// Rolls back what was pushed or bound since `s` was opened, closing
-    /// nothing (for a build that gave up). `next_free` stays where it is,
-    /// so no level is handed out twice (`RELATED_WORK.md` §67).
+    /// Rolls back what was bound since `s` was opened, closing nothing (for
+    /// a build that gave up). `next_free` stays where it is, so no level is
+    /// handed out twice (`RELATED_WORK.md` §67).
     pub fn abandon(&mut self, s: Scope) {
-        self.ctx.truncate(s.base);
-        self.scope_base = s.outer_base;
         self.params.truncate(s.params_len);
         self.scopes -= 1;
     }
     pub fn check(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
-        let (g, l) = self.split();
-        check_in(&g, &l, e, ty)
+        check_in(&self.globals, &Ctx::new(), e, ty)
     }
     pub fn infer(&self, e: &Expr) -> Result<Expr, String> {
-        let (g, l) = self.split();
-        infer_in(&g, &l, e)
+        infer_in(&self.globals, &Ctx::new(), e)
     }
-    /// The postulates, a local context of the live parameters' types, and
+    /// The globals, a local context of the live parameters' types, and
     /// their levels, for checking a term that mentions them: each
     /// parameter becomes the `Var` for its entry.
     fn open_ctx(&self) -> (Globals, Ctx, Vec<u32>) {
-        let (globals, legacy) = self.split();
-        assert!(legacy.is_empty(), "check_open in a scope with pushed locals");
         let levels: Vec<u32> = self.params.iter().map(|(l, _)| *l).collect();
         let locals = self.params.iter().enumerate().map(|(i, (_, ty))| abstract_frees(ty, 0, &levels[..i], 0)).collect();
-        (globals, locals, levels)
+        (self.globals.clone(), locals, levels)
     }
     /// `check` for a term and type that may mention the live parameters.
     pub fn check_open(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
@@ -3686,7 +3615,7 @@ mod tests {
         let w_ty_pre = wty(p.get(a_pos), shift(&p.get(bc_pos), 0, 1));
         let f0_pos = p.push(arrow(p.get(bc_pos), w_ty_pre)); // f0 : Bc -> W(A,Bc)
 
-        // p.ctx now has 4 entries; re-fetch references at this depth.
+        // p.globals now has 4 entries; re-fetch references at this depth.
         let a_ref = p.get(a_pos);
         let bc_ref = p.get(bc_pos);
         let w_ty = wty(a_ref.clone(), shift(&bc_ref, 0, 1));
@@ -4179,12 +4108,26 @@ mod tests {
         let x = p.bind(p.get(a));
         let body = id(p.get(a), x.clone(), x);
         let closed = p.close(s, Binder::Pi, body);
-        assert_eq!((p.ctx.len(), p.params.len(), p.scopes), (1, 0, 0));
+        assert_eq!((p.globals.len(), p.params.len(), p.scopes), (1, 0, 0));
         assert!(p.check(&closed, &sort(0)).is_ok());
         let s = p.open();
         p.bind(p.get(a));
         p.abandon(s);
-        assert_eq!((p.ctx.len(), p.params.len(), p.scopes), (1, 0, 0));
+        assert_eq!((p.globals.len(), p.params.len(), p.scopes), (1, 0, 0));
+    }
+
+    /// Globals are never truncated: a postulate pushed after a scope closed
+    /// takes the next level, and a scope's `close` never wraps one.
+    #[test]
+    fn closing_a_scope_keeps_every_postulate() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.bind(p.get(a));
+        let _ = p.close(s, Binder::Lam, x);
+        let b = p.push(sort(0));
+        assert_eq!((a, b), (0, 1));
+        assert_eq!(p.globals.len(), 2);
     }
 
     /// A postulate is `Const(pos)` inside a scope as well as outside one;
@@ -4287,6 +4230,25 @@ mod tests {
         let closed = p.close(s, Binder::Pi, id(p.get(a), x, y));
         assert_eq!(closed, pi(Expr::Const(0), pi(Expr::Const(0), id(Expr::Const(0), var(1), var(0)))));
         assert!(p.check(&closed, &sort(0)).is_ok());
+    }
+
+    /// A scope that binds nothing has no `Free`s to abstract: `close`
+    /// returns `body` unchanged, for either binder. Exercises
+    /// `params_and_close_typed`'s own inner scope for a base-case leaf with
+    /// no self-calls (`no_closures(0)`, proof.rs).
+    #[test]
+    fn close_of_an_empty_scope_returns_the_body_unchanged() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let body = p.get(a);
+
+        let s = p.open();
+        let closed = p.close(s, Binder::Pi, body.clone());
+        assert_eq!(closed, body);
+
+        let s = p.open();
+        let closed = p.close(s, Binder::Lam, body.clone());
+        assert_eq!(closed, body);
     }
 
     /// A later parameter's type mentioning an earlier one becomes a `Var`

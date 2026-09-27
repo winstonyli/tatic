@@ -347,7 +347,7 @@ fn to_consts(e: &Expr, n: u32, d: u32) -> Expr {
 }
 
 /// The context's postulates as globals: entry `i` was written under `i`
-/// earlier entries. Since stage 3a, `ctx.p.ctx` is already in `Const` form
+/// earlier entries. Since stage 3a, `ctx.p.globals` is already in `Const` form
 /// (`push` bakes it in through the new `get`), so this conversion is now
 /// the identity on every caller here; kept as a guard in case that ever
 /// changes back.
@@ -385,7 +385,7 @@ fn to_vars(e: &Expr, n: u32, d: u32) -> Expr {
 /// exactly what `Postulates::push`/`get` produced here before postulates
 /// became `Const`s (stage 3a). `to_consts`/`to_globals` already convert
 /// *from* this shape; `the_global_environment_agrees_with_the_context`
-/// needs the shape itself, since `build_ctx`'s own `ctx.p.ctx` no longer
+/// needs the shape itself, since `build_ctx`'s own `ctx.p.globals` no longer
 /// stores it -- `push`ing through the new `get` bakes `Const`s into it
 /// instead.
 fn build_var_ctx() -> kernel::Ctx {
@@ -487,7 +487,7 @@ fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality() {
     let claim = kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.b.clone());
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xC0FF_EE00_u64 ^ seed);
-        let candidate = gen_expr(&mut rng, ctx.p.ctx.len() as u32, MAX_DEPTH);
+        let candidate = gen_expr(&mut rng, ctx.p.globals.len() as u32, MAX_DEPTH);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.p.check(&candidate, &claim)));
         match result {
             Ok(Err(_)) => {} // expected: declined
@@ -519,7 +519,7 @@ fn mutating_a_genuinely_valid_proof_never_fools_the_kernel_into_an_unrelated_equ
         let rounds = 1 + rng.below(2);
         let mut mutant = base.clone();
         for _ in 0..rounds {
-            mutant = mutate_once(&mut rng, &mutant, ctx.p.ctx.len() as u32);
+            mutant = mutate_once(&mut rng, &mutant, ctx.p.globals.len() as u32);
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.p.check(&mutant, &claim)));
         match result {
@@ -544,8 +544,8 @@ fn mutating_a_genuinely_valid_proof_never_fools_the_kernel_into_an_unrelated_equ
 fn the_global_environment_agrees_with_the_context() {
     const SEEDS: u64 = 20_000;
     let ctx = build_ctx();
-    let n = ctx.p.ctx.len() as u32;
-    let g = to_globals(&ctx.p.ctx);
+    let n = ctx.p.globals.len() as u32;
+    let g = to_globals(&ctx.p.globals);
     let var_ctx = build_var_ctx();
     let pool = valid_seed_pool(&ctx);
     let (mut agreed_ok, mut agreed_err) = (0, 0);
@@ -574,8 +574,8 @@ fn the_global_environment_agrees_with_the_context() {
 fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality_in_constant_form() {
     const SEEDS: u64 = 20_000;
     let ctx = build_ctx();
-    let n = ctx.p.ctx.len() as u32;
-    let g = to_globals(&ctx.p.ctx);
+    let n = ctx.p.globals.len() as u32;
+    let g = to_globals(&ctx.p.globals);
     let claim = to_consts(&kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.b.clone()), n, 0);
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xC0DE_C0DE_u64 ^ seed);
@@ -597,8 +597,8 @@ fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality_in_consta
 fn a_term_with_a_free_never_checks() {
     const SEEDS: u64 = 20_000;
     let ctx = build_ctx();
-    let n = ctx.p.ctx.len() as u32;
-    let g = to_globals(&ctx.p.ctx);
+    let n = ctx.p.globals.len() as u32;
+    let g = to_globals(&ctx.p.globals);
     let claims = [
         kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone()),
         kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone()),

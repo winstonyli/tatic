@@ -152,7 +152,7 @@ use std::rc::Rc;
 
 use crate::compile::{self, Shape};
 use crate::eval;
-use crate::kernel::{self, Ctx, Expr, Postulates};
+use crate::kernel::{self, Expr, Globals, Postulates};
 use crate::term::{Hash, PrimOp, Term, TermStore};
 
 /// Postulated `Int` and its operators, plus on-demand postulated constants
@@ -410,7 +410,7 @@ fn denote_in(
 /// struct, where `result_ty` may be `Int` or a `Clo_k` (a closure-typed
 /// top-level result, e.g. `\x. \y. x+y` used bare).
 pub struct EquivalenceProof {
-    pub ctx: Ctx,
+    pub globals: Globals,
     pub arity: usize,
     pub result_ty: Expr,
     pub denotation: Expr,
@@ -454,7 +454,7 @@ fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<Equi
     arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
-        ctx: arith.p.ctx,
+        globals: arith.p.globals,
         arity,
         result_ty,
         denotation,
@@ -703,17 +703,22 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // for the one thing still out of scope here (a captured free variable).
 // Caught a real bug while building this: `ClosurePostulates::apply_ref`'s
 // lazy-postulate memoization was designed for `denote_closure`'s own
-// usage, where the postulate context only ever grows -- here,
-// `params_and_close_typed` repeatedly pushes-then-rolls-back the very same
-// scratch space, and `apply_ref`'s *first* call for a given arity, if
-// triggered from inside one of those temporary scopes, memoized a
-// position that then got rolled back while the memo entry stayed, silently
-// going stale. Fixed by pre-pushing every arity the body will ever need,
-// once, before any temporary scope gets the chance -- caught immediately by
-// `kernel::check`'s own final re-verification (a lambda-domain mismatch),
-// not silently accepted, and confirmed by deliberately reintroducing it: a
-// dedicated regression test (mixed `Clo`/`Int` parameters, so the bug is
-// actually observable) failed the same way before the fix.
+// usage, where the postulate context only ever grows. At the time,
+// `params_and_close_typed` pushed its own scope's locals onto that same
+// context and rolled them back on close, so `apply_ref`'s *first* call for
+// a given arity, if triggered from inside one of those temporary scopes,
+// memoized a position that then got rolled back while the memo entry
+// stayed, silently going stale. Fixed by pre-pushing every arity the body
+// will ever need, once, before any temporary scope gets the chance --
+// caught immediately by `kernel::check`'s own final re-verification (a
+// lambda-domain mismatch), not silently accepted, and confirmed by
+// deliberately reintroducing it: a dedicated regression test (mixed
+// `Clo`/`Int` parameters, so the bug is actually observable) failed the
+// same way before the fix. `params_and_close_typed`'s scope locals are
+// `Free`s now (`RELATED_WORK.md` §70), never pushed onto `globals`, so this
+// exact staleness can't recur -- but `Postulates::push` panics while a
+// scope is open, so the pre-pushing this bug motivated is still required,
+// just to avoid a panic instead of a silent one.
 //
 // A self-call *argument* may also genuinely *create* a closure and (fully
 // or partially) call it right there, e.g. `f(n-1, (\y. acc+y)(n))` --
@@ -1508,9 +1513,11 @@ fn denote_closure_typed(
 /// (`ClosureCombinators::register`/`call_ref`/`pap_ref`, and transitively
 /// `ClosurePostulates::mk_env_ref`/`env_ty` for a capturing one) to get
 /// pushed *now*, before any temporary `params_and_close_typed` scope gets
-/// the chance to trigger one itself and go stale -- see `build_universal`'s
-/// own call sites for the full rationale (the same class of bug
-/// `apply_ref`'s own upfront pre-push already fixed). Returns `None` for
+/// the chance to trigger one itself -- `Postulates::push` panics while a
+/// scope is open (`RELATED_WORK.md` §70), so a lazy postulate's first use
+/// has to happen out here, not inside one -- see `build_universal`'s own
+/// call sites for the full rationale (the same class of bug `apply_ref`'s
+/// own upfront pre-push already fixed). Returns `None` for
 /// exactly the shapes the real denotation would itself reject, so a
 /// priming failure here means the real call would have failed anyway --
 /// `build_universal` propagates it with `?`, failing fast before any of
@@ -1545,7 +1552,8 @@ fn prime_closure_postulates(
                 // to be primed here too, the same way
                 // `prime_direct_call` primes it below, or its first push
                 // can still happen from inside a temporary
-                // `params_and_close_typed` scope and go stale.
+                // `params_and_close_typed` scope and panic
+                // (`Postulates::push` panics while a scope is open).
                 let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
                 let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
                 if !root_captures.is_empty() {
@@ -1630,18 +1638,20 @@ fn prime_direct_call(store: &TermStore, root: Hash, param_types: &[Option<usize>
     Some(())
 }
 
-/// A term built once via `close_pi`/`close_lam` at a specific ambient
-/// context depth (`arith.p.ctx.len()` at the time), for reuse at a
-/// *deeper* point later on. `close_pi`/`close_lam` only close over the
-/// binders introduced for *that specific call*; anything the built term
-/// still references in the ambient context beyond those (e.g. `ev_pos`,
-/// an outer postulate) stays a `Var` fixed at that original depth. If the
-/// term is then embedded, unchanged, inside another term built under more
-/// binders (as `loop_val`'s pieces are, reused across several different,
-/// deeper `params_and_close` calls), those ambient references go stale by
-/// exactly as many binders as were introduced since -- `at` reshifts by
-/// that difference. This is the same class of bug `kernel::ctx_lookup`
-/// fixes for `Var` itself, one level up.
+/// A term built once at a specific point in `globals` (`arith.p.globals.len()`
+/// at the time), for reuse at a *later* point after more postulates have
+/// been pushed. Globals only grow and a postulate is a `Const`, which no
+/// push shifts, so today's term never actually goes stale: `at`'s
+/// `debug_assert_eq!` confirms it has no loose `Var` before the (now
+/// identity) reshift. This priming is kept until stage 4 -- a scope's own
+/// locals are `Free`s (`RELATED_WORK.md` §70), and `Postulates::push`
+/// panics while a scope is open, so a first use of one of these from inside
+/// a scope would panic rather than build the wrong term. Historically (the
+/// push-then-truncate regime `RELATED_WORK.md` §69 replaced), a postulate's
+/// own local entries were `Var`s that a later push *did* shift; `at`
+/// reshifted by exactly the depth difference, the same class of bug
+/// `kernel::ctx_lookup` fixes for `Var` itself, one level up. That's why
+/// this type, and the reshift, are still here.
 #[derive(Clone)]
 struct Anchored {
     depth: usize,
@@ -1649,11 +1659,12 @@ struct Anchored {
 }
 impl Anchored {
     fn new(arith: &ArithPostulates, expr: Expr) -> Self {
-        Anchored { depth: arith.p.ctx.len(), expr }
+        Anchored { depth: arith.p.globals.len(), expr }
     }
     fn at(&self, arith: &ArithPostulates) -> Expr {
-        let cur = arith.p.ctx.len();
+        let cur = arith.p.globals.len();
         debug_assert!(cur >= self.depth, "Anchored used at a shallower depth than it was built");
+        debug_assert_eq!(kernel::loose_of(&self.expr), 0, "Anchored term has a loose Var: a scope local escaped bind (RELATED_WORK §70)");
         kernel::shift(&self.expr, 0, (cur - self.depth) as i32)
     }
 }
@@ -1738,7 +1749,7 @@ fn params_and_close_typed(
 /// that witness -- covers tail recursion and general (non-tail) recursion
 /// alike (see module docs).
 pub struct UniversalTailProof {
-    pub ctx: Ctx,
+    pub globals: Globals,
     pub arity: usize,
     /// `: Pi p_0..p_{arity-1} v (e : Ev(p_0,..,v)). Id(Int, loop_val(..,e), v)`.
     pub theorem_ty: Expr,
@@ -1750,7 +1761,7 @@ pub struct UniversalTailProof {
 /// reuse it to build a concrete `Ev`-witness afterward, without redoing any
 /// of the theorem's own construction. `theorem_ty`/`theorem_proof` are
 /// `Anchored` because witness-building pushes further postulates onto
-/// `arith.p.ctx` (fresh literal constants, `assume_prim_fact` axioms) after
+/// `arith.p.globals` (fresh literal constants, `assume_prim_fact` axioms) after
 /// this scaffold is built -- see `Anchored`'s own docs for why that matters.
 ///
 /// Cloneable so a caller that wants several concrete instances (`jit.rs`'s
@@ -1910,22 +1921,19 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // call sites need no `apply_k` priming either, since calling a
     // `Clo_k`-typed value is now ordinary application -- see
     // `RELATED_WORK.md` section 11 -- so `ite_clo_ref` is the only
-    // postulate left to worry about staleness for here) that a
-    // closure-typed parameter's own arity `k` will need, *before* any of
-    // the temporary, later-rolled-back `params_and_close_typed` scopes
-    // below gets a chance to trigger its lazy push itself. This
-    // memoization (`ClosurePostulates::ite_clo_pos`) was designed
-    // for `prove_closure_expr`'s own usage, where `arith.p.ctx` only ever
-    // grows -- there, a postulate's absolute position, once recorded, stays
-    // valid forever. Here, `params_and_close_typed` repeatedly
-    // pushes-then-truncates the very same scratch space; if a given `k`'s
-    // *first* use happened from inside one of those temporary scopes, its
-    // pushed postulate would be rolled back while the memoized position
-    // stayed recorded, silently going stale (a real bug this caused:
-    // `kernel::check` rejected the resulting proof with a lambda-domain
-    // mismatch, caught immediately rather than silently accepted -- the
-    // memo pointed at whatever postulate happened to occupy that position
-    // after later, unrelated growth). Unlike the single, arity-blind `Clo`
+    // postulate left to worry about here) that a closure-typed parameter's
+    // own arity `k` will need, *before* any of the temporary
+    // `params_and_close_typed` scopes below gets a chance to trigger its
+    // lazy push itself. `arith.p.globals` only ever grows, so a postulate's
+    // absolute position, once recorded (`ClosurePostulates::ite_clo_pos`),
+    // stays valid forever -- but `Postulates::push` panics while a scope is
+    // open (`RELATED_WORK.md` §70), and `params_and_close_typed`'s own
+    // parameters are `Free`s bound inside such a scope, not pushed
+    // postulates. If a given `k`'s *first* use happened from inside one of
+    // those temporary scopes, priming it there would panic outright rather
+    // than build a stale proof; pre-pushing here, before any scope opens,
+    // is what keeps that panic from ever firing. This priming is kept until
+    // stage 4 for exactly that reason. Unlike the single, arity-blind `Clo`
     // this fragment used to postulate, there's no longer one universal
     // `clo_ty`/`ite_clo_ref` to prime unconditionally regardless of which
     // arities the term actually uses -- every arity `param_types` mentions
@@ -2303,7 +2311,7 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
     let theorem_ty = scaffold.theorem_ty.at(&scaffold.combinators);
     let theorem_proof = scaffold.theorem_proof.at(&scaffold.combinators);
     Some(UniversalTailProof {
-        ctx: scaffold.combinators.cp.arith.p.ctx,
+        globals: scaffold.combinators.cp.arith.p.globals,
         arity: scaffold.arity,
         theorem_ty,
         theorem_proof,
@@ -2379,7 +2387,7 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
 /// intermediate value this function builds is immediately wrapped in
 /// `Anchored` too, resolved fresh only at the point it's actually used --
 /// `assume_prim_fact` (and recursing into a sibling sub-expression) pushes
-/// further postulates onto `arith.p.ctx`, and anything already resolved to
+/// further postulates onto `arith.p.globals`, and anything already resolved to
 /// a plain `Expr` before that point would go stale exactly the way
 /// `Anchored`'s own docs describe, one level up (this is what an earlier,
 /// buggy version of this function got wrong: it returned `Var`-index-laden
@@ -2434,7 +2442,7 @@ fn eval_and_prove(
             let fact = combinators.cp.arith.assume_prim_fact(op, xa, xb);
             let result = apply_prim_concrete(op, xa, xb);
 
-            // Nothing pushes onto arith.p.ctx from here on, so resolving
+            // Nothing pushes onto arith.p.globals from here on, so resolving
             // everything fresh now (past `assume_prim_fact`'s own push)
             // keeps it all valid for the rest of this call.
             let (da, pa, db, pb) = (da.at(&combinators.cp.arith), pa.at(&combinators.cp.arith), db.at(&combinators.cp.arith), pb.at(&combinators.cp.arith));
@@ -3698,7 +3706,7 @@ fn build_ev_witness(
         es.push(Anchored::new(&combinators.cp.arith, e));
     }
 
-    // Nothing left to grow arith.p.ctx from here -- resolve everything
+    // Nothing left to grow arith.p.globals from here -- resolve everything
     // fresh, once, for the final assembly.
     let params: Vec<Expr> = params.iter().map(|a| a.at(&combinators.cp.arith)).collect();
     let premises: Vec<Expr> = premises.iter().map(|a| a.at(&combinators.cp.arith)).collect();
@@ -3720,7 +3728,7 @@ fn build_ev_witness(
 /// universal theorem's `loop_val` reconstruction and the value the
 /// recursion actually produces agree -- see `prove_tail_recursive_instance`.
 pub struct UniversalInstanceProof {
-    pub ctx: Ctx,
+    pub globals: Globals,
     pub arity: usize,
     pub int_ty: Expr,
     pub lhs: Expr,
@@ -3768,7 +3776,7 @@ pub fn prove_tail_recursive_universal_with_instances(
 ) -> Option<(UniversalTailProof, Vec<Option<UniversalInstanceProof>>)> {
     let scaffold = build_universal(store, h)?;
     let theorem = UniversalTailProof {
-        ctx: scaffold.combinators.cp.arith.p.ctx.clone(),
+        globals: scaffold.combinators.cp.arith.p.globals.clone(),
         arity: scaffold.arity,
         theorem_ty: scaffold.theorem_ty.at(&scaffold.combinators),
         theorem_proof: scaffold.theorem_proof.at(&scaffold.combinators),
@@ -3828,7 +3836,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
 
     Some(UniversalInstanceProof {
         int_ty: scaffold.combinators.int_ty(),
-        ctx: scaffold.combinators.cp.arith.p.ctx,
+        globals: scaffold.combinators.cp.arith.p.globals,
         arity: scaffold.arity,
         lhs,
         rhs,
@@ -4270,8 +4278,8 @@ struct ClosurePostulates {
 /// closure-aware pipeline, primarily -- call every `ArithPostulates` method
 /// (`int_ty`, `lit_ref`, `p.push`, ...) directly, without a manual `.arith`
 /// hop at each use. The one place this bites: *moving* a field out of the
-/// inner `ArithPostulates` (e.g. `UniversalTailProof`'s own `ctx:
-/// scaffold.combinators.cp.arith.p.ctx`) can't go through a `Deref` (it only
+/// inner `ArithPostulates` (e.g. `UniversalTailProof`'s own `globals:
+/// scaffold.combinators.cp.arith.p.globals`) can't go through a `Deref` (it only
 /// ever hands back a reference) and still needs the explicit `.arith` hop
 /// -- everywhere else (methods, borrows) this is transparent.
 impl std::ops::Deref for ClosurePostulates {
@@ -4969,14 +4977,14 @@ impl<'a> ClosureCombinators<'a> {
     /// value expression for each `Abs` leaf, `pap_ref`'s for each `Pap`
     /// one, `mk_env_ref` for any leaf that captures, `clo_ty(k)`/
     /// `ite_clo_ref(k)` for the `If` shape) is
-    /// primed *before* `params_and_close_typed` pushes `root`'s own
+    /// primed *before* `params_and_close_typed` binds `root`'s own
     /// quantified captures/params below, not lazily from inside that
-    /// closure: `params_and_close_typed`'s own `close_pi` call wraps
-    /// *every* position pushed onto `arith.p.ctx` between its own base
-    /// depth and wherever the closure leaves it as a Pi binder, not just
-    /// the ones the closure itself asked for -- a lazy push from *inside*
-    /// the closure would silently become a spurious, unused extra `Pi`
-    /// argument in this axiom's own type (unlike `call_eq_ref`, whose own
+    /// closure: `Postulates::push` panics while a scope is open
+    /// (`RELATED_WORK.md` §70), so a lazy push from *inside* the closure
+    /// would panic outright rather than silently becoming a spurious,
+    /// unused extra `Pi` argument in this axiom's own type, the way it
+    /// could when a scope's locals were pushed onto the context itself
+    /// (unlike `call_eq_ref`, whose own
     /// `mk_env_ref` call inside its closure is, in every actual caller,
     /// already primed by the time it runs -- `eval_and_prove` is only
     /// ever reached from `instance_from_scaffold`, which always builds
@@ -6376,7 +6384,7 @@ fn denote_closure(
     // combinator, or a fresh `call_ref`/`mk_clo_ref`/`ite_clo_ref` --
     // possibly triggered by a *later* sibling's own denotation -- pushes
     // further postulates onto
-    // `arith.p.ctx`, which would otherwise silently invalidate an
+    // `arith.p.globals`, which would otherwise silently invalidate an
     // already-resolved `Var` reference held from an earlier sibling, the
     // same staleness class `Anchored`'s own docs describe), then resolve
     // everything fresh, in one batch, only once nothing more is left to
@@ -6751,7 +6759,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
     combinators.cp.arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
-        ctx: combinators.cp.arith.p.ctx,
+        globals: combinators.cp.arith.p.globals,
         arity,
         result_ty,
         denotation,
@@ -7535,7 +7543,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
     combinators.cp.arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
-        ctx: combinators.cp.arith.p.ctx,
+        globals: combinators.cp.arith.p.globals,
         arity,
         result_ty,
         denotation,
@@ -7547,6 +7555,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
 mod tests {
     use super::*;
     use crate::eval;
+    use crate::kernel::Ctx;
     use crate::term::TermStore;
 
     /// `a + a`, for a shared `a`, denotes `a` once: both operands of the
@@ -7587,7 +7596,7 @@ mod tests {
         // Independently re-typecheck from scratch (not just trusting the
         // `.ok()?` inside `prove_pure_expr`).
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -7769,7 +7778,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("gcd({a},{b}) should get a relational proof"));
             assert_eq!(proof.arity, 2);
             kernel::check_in(
-                &proof.ctx,
+                &proof.globals,
                 &Ctx::new(),
                 &proof.proof,
                 &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -7786,7 +7795,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, g).expect("gcd should get a universal proof");
         assert_eq!(proof.arity, 2);
         // Independently re-typecheck from scratch.
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -7825,7 +7834,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, it).expect("iterate should get a universal proof");
         assert_eq!(proof.arity, 3);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -7869,7 +7878,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, h)
             .expect("a self-recursive loop creating a fresh capturing closure each iteration should get a universal proof");
         assert_eq!(proof.arity, 2);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         // Instance specialization (the weaker, sample-oriented proof --
@@ -7883,7 +7892,7 @@ mod tests {
         assert_eq!(eval::apply_term(&s, h, &[5, 0]).unwrap(), 15, "interpreter sanity check: 5+4+3+2+1");
         let instance = prove_tail_recursive_instance(&s, h, &[5, 0])
             .expect("a self-call argument creating and calling a capturing closure should now get a concrete instance");
-        kernel::check_in(&instance.ctx, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
+        kernel::check_in(&instance.globals, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
             .expect("the recorded instance proof should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
@@ -8787,7 +8796,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, h)
             .expect("a self-recursive loop partially applying a fresh capturing literal each iteration should get a universal proof");
         assert_eq!(proof.arity, 2);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
@@ -8824,7 +8833,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, h)
             .expect("a closure created in a leaf's own top-level expression should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         assert!(compile::try_compile(&s, h).is_some());
@@ -8896,7 +8905,7 @@ mod tests {
         // meaningful relative to the ctx it was built in), against
         // factorial's theorem_ty.
         assert!(
-            kernel::check_in(&gcd_proof.ctx, &Ctx::new(), &gcd_proof.theorem_proof, &fact_proof.theorem_ty).is_err(),
+            kernel::check_in(&gcd_proof.globals, &Ctx::new(), &gcd_proof.theorem_proof, &fact_proof.theorem_ty).is_err(),
             "gcd's proof should be rejected against factorial's theorem type"
         );
     }
@@ -8923,7 +8932,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, countdown)
             .expect("countdown should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -8954,7 +8963,7 @@ mod tests {
         let proof =
             prove_tail_recursive_universal(&s, g).expect("gcd with two base cases should get a universal proof");
         assert_eq!(proof.arity, 2);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -8980,7 +8989,7 @@ mod tests {
         let proof =
             prove_tail_recursive_universal(&s, fact).expect("factorial should now get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9007,7 +9016,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, fib).expect("fibonacci should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9038,7 +9047,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, g).expect("a purely-arithmetic nested If should get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9073,7 +9082,7 @@ mod tests {
 
         let proof = prove_tail_recursive_universal(&s, g).expect("a nested If with a self-call in each branch should still get a universal proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         // f(0)=0, f(1)=1+(f(0)+1)=2, f(2)=2+f(1)=4, f(3)=3+(f(2)+1)=8,
@@ -9081,7 +9090,7 @@ mod tests {
         assert_eq!(eval::apply_term(&s, g, &[5]).unwrap(), 18, "interpreter sanity check");
 
         let instance = prove_tail_recursive_instance(&s, g, &[5]).expect("f(5) should get an instance");
-        kernel::check_in(&instance.ctx, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
+        kernel::check_in(&instance.globals, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty.clone(), instance.lhs.clone(), instance.rhs.clone()))
             .expect("the recorded instance proof should independently re-typecheck");
     }
 
@@ -9132,7 +9141,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, top)
             .expect("a Clo-typed nested If as a direct self-call argument should get a universal proof");
         assert_eq!(proof.arity, 3);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9203,7 +9212,7 @@ mod tests {
             "a Clo-typed nested If used as an ad-hoc closure's own argument, alongside a separate self-call in the same leaf, should get a universal proof",
         );
         assert_eq!(proof.arity, 4);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
     }
 
@@ -9338,7 +9347,7 @@ mod tests {
             let proof = prove_tail_recursive_instance(&s, g, &[a, b])
                 .unwrap_or_else(|| panic!("gcd({a},{b}) should get a kernel-checked instance"));
             assert_eq!(proof.arity, 2);
-            kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
                 .expect("the recorded instance proof should independently re-typecheck");
         }
     }
@@ -9362,7 +9371,7 @@ mod tests {
             let proof = prove_tail_recursive_instance(&s, fact, &[n])
                 .unwrap_or_else(|| panic!("factorial({n}) should get a kernel-checked instance"));
             assert_eq!(proof.arity, 1);
-            kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
                 .expect("the recorded instance proof should independently re-typecheck");
         }
     }
@@ -9393,7 +9402,7 @@ mod tests {
         for n in [1, 2, 8] {
             let proof = prove_tail_recursive_instance(&s, fib, &[n]).unwrap_or_else(|| panic!("fib({n}) should get an instance"));
             assert_eq!(proof.arity, 1);
-            kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+            kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
                 .expect("the recorded instance proof should independently re-typecheck");
         }
     }
@@ -9464,7 +9473,7 @@ mod tests {
 
         let t = std::time::Instant::now();
         let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
             .expect("fib(16)'s instance proof re-checks");
         let took = t.elapsed();
         assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
@@ -9496,7 +9505,7 @@ mod tests {
         let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
         let build = t.elapsed();
         let t = std::time::Instant::now();
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
             .expect("fib(16)'s instance proof re-checks");
         println!("fib16 dag={} build={build:?} check={:?}", dag_size(&proof.proof), t.elapsed());
     }
@@ -9527,7 +9536,7 @@ mod tests {
 
         assert!(
             kernel::check_in(
-                &gcd_proof.ctx,
+                &gcd_proof.globals,
                 &Ctx::new(),
                 &gcd_proof.proof,
                 &kernel::id(fact_proof.int_ty.clone(), fact_proof.lhs.clone(), fact_proof.rhs.clone()),
@@ -9570,7 +9579,7 @@ mod tests {
         let proof = prove_closure_expr(&s, applied).expect("(twice inc) 5 should get a closure proof");
         assert_eq!(proof.arity, 0);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9592,7 +9601,7 @@ mod tests {
         let proof = prove_closure_expr(&s, t).expect("twice alone should get a closure proof");
         assert_eq!(proof.arity, 2);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9631,7 +9640,7 @@ mod tests {
         let proof = prove_closure_expr(&s, applied).expect("fact(10) should get a closure proof");
         assert_eq!(proof.arity, 0);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9662,7 +9671,7 @@ mod tests {
         let proof = prove_closure_expr(&s, applied).expect("(\\g. g 10) fact should get a closure proof");
         assert_eq!(proof.arity, 0);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9716,7 +9725,7 @@ mod tests {
             .expect("a partially applied self-recursive combinator used as a value should get a closure proof");
         assert_eq!(proof.arity, 0);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9769,7 +9778,7 @@ mod tests {
         );
         assert_eq!(proof.arity, 1);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9869,7 +9878,7 @@ mod tests {
         let proof = prove_closure_expr(&s, top).expect("a partially applied literal lambda used as a value should get a closure proof");
         assert_eq!(proof.arity, 0);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9907,7 +9916,7 @@ mod tests {
         let proof = prove_closure_expr(&s, top).expect("a partially applied combinator with mixed parameter types should get a closure proof");
         assert_eq!(proof.arity, 0);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -9952,7 +9961,7 @@ mod tests {
         let proof = prove_closure_expr(&s, g).expect("a partially applied capturing literal lambda used as a value should get a closure proof");
         assert_eq!(proof.arity, 1);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -10092,7 +10101,7 @@ mod tests {
         assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
         let proof = prove_closure_expr(&s, f).expect("picker's own Clo-typed body should now be reachable through call_ref");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10201,7 +10210,7 @@ mod tests {
 
         let proof = prove_closure_expr(&s, top).expect("an over-applied literal lambda returning a closure should get a proof");
         assert_eq!(proof.arity, 3);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10230,7 +10239,7 @@ mod tests {
         let proof = prove_closure_expr(&s, g).expect("a capturing closure used as a value should get a proof now");
         assert_eq!(proof.arity, 1);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -10261,7 +10270,7 @@ mod tests {
         let proof = prove_closure_expr(&s, g).expect("a directly called capturing closure should get a proof now");
         assert_eq!(proof.arity, 1);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -10316,7 +10325,7 @@ mod tests {
             prove_closure_expr(&s, g).expect("a capture of a closure-typed value should get a closure proof");
         assert_eq!(proof.arity, 1);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -10380,7 +10389,7 @@ mod tests {
         let proof = prove_tail_recursive_universal(&s, it)
             .expect("a closure created in a self-call argument capturing a closure-typed loop parameter should get a universal proof");
         assert_eq!(proof.arity, 3);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
             .expect("the recorded theorem should independently re-typecheck");
 
         // inc = \y. y + 1, baked in as the initial g, run for real: each
@@ -10426,7 +10435,7 @@ mod tests {
 
         let proof = prove_closure_expr(&s, f).expect("a Clo-typed top-level result should now get a closure proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10449,7 +10458,7 @@ mod tests {
 
         let proof = prove_closure_expr(&s, h).expect("a bare Clo-typed parameter read should get a closure proof");
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded proof should independently re-typecheck");
     }
 
@@ -10491,7 +10500,7 @@ mod tests {
         let proof = prove_closure_expr(&s, f).expect("an If between two closures used as a value should get a closure proof");
         assert_eq!(proof.arity, 1);
         kernel::check_in(
-            &proof.ctx,
+            &proof.globals,
             &Ctx::new(),
             &proof.proof,
             &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()),
@@ -10544,7 +10553,7 @@ mod tests {
 
         assert!(
             kernel::check_in(
-                &applied_proof.ctx,
+                &applied_proof.globals,
                 &Ctx::new(),
                 &applied_proof.proof,
                 &kernel::id(alone_proof.result_ty.clone(), alone_proof.denotation.clone(), alone_proof.denotation.clone()),
@@ -10560,7 +10569,7 @@ mod tests {
     /// already applies to `prove_tail_recursive_call`'s own per-instance
     /// proofs, which this function's own methodology mirrors.
     fn check_instance_proof(proof: &EquivalenceProof) {
-        kernel::check_in(&proof.ctx, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
+        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty.clone(), proof.denotation.clone(), proof.denotation.clone()))
             .expect("the recorded per-instance proof should independently re-typecheck");
     }
 
