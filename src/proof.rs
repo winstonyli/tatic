@@ -224,9 +224,11 @@ impl ArithPostulates {
     }
 
     /// Postulate a fresh `Int`-typed constant for `n` if one doesn't
-    /// already exist. Must be called for every literal a term uses
-    /// *before* any `Var`-referencing (`param`) postulates are pushed --
-    /// see `prove_pure_expr`.
+    /// already exist. Scope parameters are `Free`s, not `Var`s, and
+    /// `push`ing a global never shifts them, so `lit` may be called at any
+    /// point relative to a scope's parameters. The only real constraint is
+    /// `Postulates::push`'s own: `lit` can't be the first thing to push a
+    /// global while a scope is open, since `push` panics there.
     pub fn lit(&mut self, n: i64) -> Expr {
         if let Some(&pos) = self.literal_pos.get(&n) {
             return self.p.get(pos);
@@ -1643,15 +1645,13 @@ fn prime_direct_call(store: &TermStore, root: Hash, param_types: &[Option<usize>
 /// been pushed. Globals only grow and a postulate is a `Const`, which no
 /// push shifts, so today's term never actually goes stale: `at`'s
 /// `debug_assert_eq!` confirms it has no loose `Var` before the (now
-/// identity) reshift. This priming is kept until stage 4 -- a scope's own
-/// locals are `Free`s (`RELATED_WORK.md` §70), and `Postulates::push`
-/// panics while a scope is open, so a first use of one of these from inside
-/// a scope would panic rather than build the wrong term. Historically (the
-/// push-then-truncate regime `RELATED_WORK.md` §69 replaced), a postulate's
-/// own local entries were `Var`s that a later push *did* shift; `at`
-/// reshifted by exactly the depth difference, the same class of bug
-/// `kernel::ctx_lookup` fixes for `Var` itself, one level up. That's why
-/// this type, and the reshift, are still here.
+/// identity) reshift -- `at` is now the identity, and stage 4 removes
+/// `Anchored` entirely. Historically (the push-then-truncate regime
+/// `RELATED_WORK.md` §69 replaced), a postulate's own local entries were
+/// `Var`s that a later push *did* shift; `at` reshifted by exactly the
+/// depth difference, the same class of bug `kernel::ctx_lookup` fixes for
+/// `Var` itself, one level up. That's why this type, and the reshift, are
+/// still here.
 #[derive(Clone)]
 struct Anchored {
     depth: usize,
@@ -1983,9 +1983,10 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // (`assume_prim_fact`/`assume_ite_fact`) are exempt on a different
     // footing -- they're only ever touched by `eval_and_prove`, called
     // from `build_ev_witness`/`instance_from_scaffold` *after*
-    // `build_universal` has already returned a stable, no-longer-truncated
-    // `ctx`, the same non-truncating regime `prove_closure_expr`'s own
-    // usage of `ite_clo_ref` relies on. A *new* lazily-memoized
+    // `build_universal` has already returned, with `arith.p.globals` only
+    // ever having grown since, the same non-truncating regime
+    // `prove_closure_expr`'s own usage of `ite_clo_ref` relies on. A *new*
+    // lazily-memoized
     // postulate added to `ClosurePostulates` in the future, reachable from
     // inside `denote_closure_typed`/`denote_with_placeholders`, needs the
     // same treatment (either priming here, if it's `Hash`/signature-keyed

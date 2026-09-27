@@ -1531,6 +1531,11 @@ pub struct Scope {
     /// The first `Free` level this scope can hand out: every level handed
     /// out before this scope opened is below it.
     first: u32,
+    /// How many scopes were already open when this one opened
+    /// (`Postulates::scopes` before `open` incremented it). `close` and
+    /// `abandon` assert only the innermost scope (`self.scopes == depth +
+    /// 1`) is closing, so scopes must close innermost-first.
+    depth: u32,
 }
 
 /// `abstract_frees`' memo for one set of `levels`: a shared node's result
@@ -1645,7 +1650,7 @@ impl Postulates {
     /// Opens a builder scope: parameters bound after this point (`bind`)
     /// belong to it until `close` or `abandon`.
     pub fn open(&mut self) -> Scope {
-        let s = Scope { params_len: self.params.len(), first: self.next_free };
+        let s = Scope { params_len: self.params.len(), first: self.next_free, depth: self.scopes };
         self.scopes += 1;
         s
     }
@@ -1666,6 +1671,7 @@ impl Postulates {
     /// opened, outermost first, then rolls them back. A scope that bound
     /// nothing returns `body` unchanged.
     pub fn close(&mut self, s: Scope, binder: Binder, body: Expr) -> Expr {
+        assert!(self.scopes == s.depth + 1, "scopes must close innermost-first");
         // A loose `Var` here would be captured by the new binders: it's a
         // sign a scope local (from the old push-then-truncate regime this
         // superseded) escaped `bind`.
@@ -1686,8 +1692,9 @@ impl Postulates {
     /// a build that gave up). `next_free` stays where it is, so no level is
     /// handed out twice (`RELATED_WORK.md` §67).
     pub fn abandon(&mut self, s: Scope) {
+        assert!(self.scopes == s.depth + 1, "scopes must close innermost-first");
         self.params.truncate(s.params_len);
-        self.scopes -= 1;
+        self.scopes = self.scopes.checked_sub(1).expect("scopes underflow");
     }
     pub fn check(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
         check_in(&self.globals, &Ctx::new(), e, ty)
@@ -4277,7 +4284,19 @@ mod tests {
         let s = p.open();
         let _y = p.bind(p.get(a));
         let closed = p.close(s, Binder::Lam, leaked);
-        assert!(p.check(&closed, &pi(Expr::Const(0), Expr::Const(0))).is_err());
+        let r = p.check(&closed, &pi(Expr::Const(0), Expr::Const(0)));
+        assert!(matches!(r, Err(ref e) if e.contains("escaped its scope")), "{r:?}");
+    }
+
+    /// `close`/`abandon` require the innermost scope to close first: closing
+    /// an outer scope while an inner one is still open panics.
+    #[test]
+    #[should_panic(expected = "scopes must close innermost-first")]
+    fn closing_a_scope_out_of_order_panics() {
+        let mut p = Postulates::new();
+        let outer = p.open();
+        let _inner = p.open();
+        let _ = p.close(outer, Binder::Lam, sort(0));
     }
 
     /// An inner scope's `close` leaves the outer scope's parameters free.
