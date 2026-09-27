@@ -2927,15 +2927,9 @@ fn build_clo_call_bridge(
     // Congruence bridge over `call_ref(subject)`'s own arguments --
     // identical construction to `eval_and_prove_direct_call`'s own (see
     // its docs), generalized to the `Clo_k` codomain here instead of
-    // `Int`. `int_ty`/`clo_ty` are re-derived fresh (not held across the
-    // block) precisely because `.lit(x)` calls interleaved below (for any
-    // capture/arg not already interned) may lazily push, which would
-    // otherwise silently invalidate an earlier `Postulates::get`-derived
-    // reference the same way any other unanchored value would
-    // (`Anchored`'s own docs) -- this function's own recomputation is
-    // cheap (a cache hit after first use), so it's simpler and safer than
-    // juggling `Anchored` for these two alone; each call site below gets
-    // its own fresh copy.
+    // `Int`. `int_ty`/`clo_ty` are called at each use; they're cache hits
+    // after the first, and their results are `Const`s, which a lazy push
+    // from an interleaved `.lit(x)` can't invalidate (RELATED_WORK §69).
     let env_bridge = if n > 0 {
         let mk_env_expr = combinators.cp.mk_env_ref(&sig);
         let env_ty_expr = combinators.cp.env_ty(&sig);

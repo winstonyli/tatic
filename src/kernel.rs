@@ -4203,7 +4203,7 @@ mod tests {
     /// Closing over a bound parameter with `Pi` builds a type and with
     /// `Lam` a value of it: `\x:A. refl x : Pi x:A. Id(A,x,x)`.
     #[test]
-    fn close_lam_builds_a_value_of_the_close_pi_type() {
+    fn closing_with_lam_builds_a_value_of_the_pi_closed_type() {
         let mut p = Postulates::new();
         let a = p.push(sort(0));
 
