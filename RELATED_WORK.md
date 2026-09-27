@@ -5629,9 +5629,15 @@ since a pushed `Const` shifts nothing. Its `push` is also the place to
 infer each global's type to a `Sort`, once, which would have caught this
 at the push.
 
-**Cost.** Pending the A/B (30aaf10 vs 21807cf, `target/ab/fib` and
-`target/ab/proofs`, queued 2026-09-26 behind another session's selfplay
-load).
+**Cost.** A/B of 30aaf10 vs 21807cf (`scripts/quiet_ab`, clean pairs
+only, Defender RTP off, 2026-09-26/27). `fib(16)`'s instance proof, 5
+pairs: check best 133.6 → 147.3 ms (+10%), median 144.0 → 164.9 ms
+(+14%); build unchanged. Proof benches (`target/ab/proofs2`, 6 base and 5
+head clean runs; a first run with one clean base run agreed): universal
+and instance proofs +11-30% on best (`universal_x1` 630 → 791 µs, the
+loop-carried closure proof 954 → 1229 µs), the µs-scale ones +5-11% on
+best and within noise on median. The claim checks cost what they check;
+the universal proofs, with the most claims, pay the most.
 
 ## 69. Stage 3a: postulates are constants
 
@@ -5667,7 +5673,19 @@ had it (265k before); build 4-9 ms and check 3-6 ms on the release probe
 under load, from about 0.8 s together before (§66). The fib DAG test now
 compares fib(8) with fib(16) (`2*large < 5*small`), and
 `fib16_instance_proof_builds_and_checks_quickly` guards it at 3 s (188 ms
-in a debug build). A/B pending: 576f5fe vs 5d4e065, `target/ab3a`.
+in a debug build).
+
+**Cost.** A/B of 576f5fe vs 5d4e065 (`target/ab3a`, 10 fib pairs and 5
+proof-bench pairs, clean only, RTP off, 2026-09-27). `fib(16)`: DAG
+227,157 → 10,501 nodes, build 136.9 → 4.2 ms best (174.5 → 4.9 median),
+check 153.7 → 2.8 ms best (194.2 → 3.1 median). Universal and instance
+proofs 43-57% faster (`universal_x1` 783 → 444 µs, the if-between-closures
+instance proof 3685 → 1596 µs). The µs-scale proofs got 87-155% slower
+(`straight_line_refl` 4.7 → 10.1 µs), a fixed ~5-10 µs a proof. A probe
+at e82f77e found the cause: `push`'s `infer`, run on every postulate.
+`straight_line_refl` pushes 14 postulates, whose checks take 4.0 of its
+8.2 µs; `ArithPostulates::new` alone (10 pushes) takes 4.8 µs, and every
+proof builds one.
 
 **What the flip broke.** Only a test: `kernel_soundness_fuzz`'s
 globals-vs-context differential built both sides from the builder's
@@ -5712,10 +5730,15 @@ panics instead of going stale, and that panic reaches the JIT's
 (`prime_closure_postulates`) prevents it on every corpus and fuzz path;
 stage 4 must relax the panic if it removes the priming.
 
-**Cost.** Pending the A/B: 5d4e065 vs e82f77e, `target/ab3b`. `bind`
-runs a kernel `infer` per parameter in release, linear in leaves × calls;
-if the A/B shows it, it can become debug-only, since the final check
-covers soundness.
+**Cost.** None; 3b is faster. A/B of 5d4e065 vs e82f77e (`target/ab3b`,
+10 fib pairs and 5 proof-bench pairs, clean only, RTP off, 2026-09-27).
+`fib(16)`: build 4.18 → 4.26 ms and check 2.74 → 2.76 ms best, within
+noise. The µs-scale proofs got 20-29% faster (`straight_line_refl` 10.1 →
+7.5 µs), the large ones 0-4%. So `bind`'s release `infer` stays: whatever
+it costs is less than what 3b saved, likely 3a's split of the context into
+globals and a local `Ctx` at every check (not profiled). Across stage 3
+(576f5fe → e82f77e), large proofs are 44-58% faster and the µs-scale ones
+still 51-83% slower, from §69's push checks.
 
 ## Sources
 

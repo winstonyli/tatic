@@ -1111,10 +1111,13 @@ guards against by hand): caught immediately, at seed 22.
   rejects `Free`s, at no measurable cost, and nothing produces either
   until stage 3 (§67). The kernel now checks that a claim is a type,
   which exposed an ill-typed `Ev` in closure-typed universal proofs
-  (§68). Stage 3 is built: the proof builder emits postulates as
-  constants, which took `fib(16)`'s DAG to 10.5k nodes and its build and
-  check to a few ms each (§69), and a scope's parameters as free levels,
-  so a leaked parameter fails the check (§70). Stage 4, removing the
+  (§68; it costs universal proofs 11-30%). Stage 3 is built: the proof
+  builder emits postulates as constants, which took `fib(16)`'s DAG from
+  227k to 10.5k nodes and its build and check from ~150 ms to ~3-4 ms
+  each, and made large proofs 44-58% faster (§69), and a scope's
+  parameters as free levels, so a leaked parameter fails the check
+  (§70). The µs-scale proofs are 51-83% slower across stage 3: checking
+  every pushed postulate costs ~4 µs a proof (§69). Stage 4, removing the
   workarounds this makes unnecessary, is designed but not built. If the proof gate is ever relaxed, the next step
   is a typed IR that `ir::check` checks (§46's B5): it closes the arity
   and Int-vs-closure agreements for compiled code in one place.
