@@ -5834,6 +5834,44 @@ mistake inside a scope no longer panics — it becomes an extra global that
   holds the `Expr`: a `Const` doesn't shift (§69), so `Anchored` had
   nothing left to do.
 
+## 73. Should the JIT prove instances of a theorem it already checked?
+
+§71 found that `kernel_verify` spends ~34% of a cold call proving the
+universal theorem at inputs 0, 1 and 2 (`jit.rs`, step 3). The install
+decision ignores them: step 3 returns `Universal` from the theorem alone,
+and the instances only raise `Stats::universal_instances_checked`.
+
+**What an instance adds.** `instance_from_scaffold` builds an `Ev` witness
+for the call, applies the checked theorem to it and infers the result's
+`Id` type. The same kernel checks it, against the same statement, and
+nothing compares its value with the interpreter or the compiled code.
+Given a sound kernel it is implied by the theorem. The check that does
+cover code generation is `verify()`, which runs the compiled code against
+the interpreter on the samples, and it stays.
+
+**What related systems do.**
+- Certifying compilers check one certificate per compiled unit and never
+  re-prove concrete instances on the hot path: CompCert, Jitk, and the
+  verified speculative JIT of Barrière et al. (POPL 2021). Extra assurance
+  is a separate, non-blocking layer: CompCert's Valex checks the emitted
+  binary, and the POPL JIT leaves native code generation to testing. Both
+  check an artefact the proof doesn't model, which our instances don't.
+- Lean's `decide +kernel` exists to reduce a proposition once instead of
+  twice: re-deriving a proven fact is treated as waste.
+- Toolchains ship redundant self-checks off by default: LLVM's
+  `EXPENSIVE_CHECKS` is opt-in and runs on dedicated bots (dropping one
+  needless `-verify-machineinstrs` cut a test suite 22%), and GCC's
+  release checking keeps only the cheap checks.
+- Background work (V8, HotSpot, Coq's async `Qed`, Lean's parallel kernel
+  checking, §71) is for work that must happen. The instances needn't, and
+  our `Rc` proof terms can't cross threads.
+
+**Decision.** The instances move behind an opt-in engine flag, off by
+default. Tests turn it on, and `proof.rs` keeps the builder and its own
+tests, including the fib16 probe. Dropping them outright was the
+alternative; one sample instead of three keeps two-thirds of a cost that
+buys nothing. The saving is re-measured with `jit_cold_compile_and_verify`.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -5914,3 +5952,8 @@ mistake inside a scope no longer panics — it becomes an extra global that
 - [Parallel Isabelle (Wenzel)](https://www21.in.tum.de/~wenzelm/papers/parallel-isabelle.pdf)
 - [Pareas: a GPU compiler (Voetter)](https://github.com/Snektron/pareas)
 - [HVM2: an interaction-combinator evaluator (Taelin, FProPer 2024)](https://raw.githubusercontent.com/HigherOrderCO/HVM/main/paper/HVM2.pdf)
+- [CompCert structure and Valex (AbsInt)](https://www.absint.com/compcert/structure.htm)
+- [Barrière et al., Formally Verified Speculation and Deoptimization in a JIT Compiler (POPL 2021)](https://janvitek.org/pubs/popl21.pdf)
+- [Lean reference: validating proofs (`decide +kernel`)](https://lean-lang.org/doc/reference/latest/ValidatingProofs/)
+- [LLVM #102092: an unneeded -verify-machineinstrs](https://github.com/llvm/llvm-project/issues/102092)
+- [GCC configure: --enable-checking](https://gcc.gnu.org/install/configure.html)
