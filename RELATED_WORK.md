@@ -5841,13 +5841,16 @@ universal theorem at inputs 0, 1 and 2 (`jit.rs`, step 3). The install
 decision ignores them: step 3 returns `Universal` from the theorem alone,
 and the instances only raise `Stats::universal_instances_checked`.
 
-**What an instance adds.** `instance_from_scaffold` builds an `Ev` witness
-for the call, applies the checked theorem to it and infers the result's
-`Id` type. The same kernel checks it, against the same statement, and
-nothing compares its value with the interpreter or the compiled code.
-Given a sound kernel it is implied by the theorem. The check that does
-cover code generation is `verify()`, which runs the compiled code against
-the interpreter on the samples, and it stays.
+**What an instance adds.** The theorem is conditional: for every input
+and every evaluation trace `e : Ev(params, v)`, `loop_val(params, v, e) =
+v`. It says nothing about an input whose trace doesn't exist (a call that
+doesn't terminate). `instance_from_scaffold` builds the trace for one
+input by stepping through the recursion in the kernel, then applies the
+theorem to it. So an instance adds a kernel-checked fact that the call
+terminates, with value `v`, at that one input. Nothing compares `v` with
+the interpreter or the compiled code. `verify()` already runs the compiled
+code against the interpreter at the same inputs (and six more), so it
+covers the same points by execution, and it stays.
 
 **What related systems do.**
 - Certifying compilers check one certificate per compiled unit and never
