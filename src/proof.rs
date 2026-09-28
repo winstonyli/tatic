@@ -640,8 +640,8 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // `find_self_calls`, `Vec<Vec<Hash>>` -- one argument list per occurrence,
 // left-to-right/depth-first).
 //
-// Per leaf `i`, with `k_i` self-calls: `combine_i` (`Anchored`, built once,
-// reused at several deeper points) is leaf `i`'s own expression with each
+// Per leaf `i`, with `k_i` self-calls: `combine_i` (built once, reused at
+// several deeper points) is leaf `i`'s own expression with each
 // self-call occurrence replaced by one of `k_i` placeholders
 // (`denote_with_placeholders`); `ev_leaf_i` is `Ev`'s constructor for this
 // leaf (`push_path` for the path premises, then `v_1..v_{k_i}` and
@@ -762,23 +762,16 @@ fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Ex
     apply_n(arith.p.get(ev_pos), params.iter().cloned().chain([v]))
 }
 
-// --- hardening against the staleness bug class ---------------------------
+// --- hardening against composition bugs -----------------------------------
 //
-// Twice now (the `Ev`-witness builder, then `denote_closure`), a function
-// that composes an `Expr` out of more than one recursive sub-call held an
-// already-resolved sub-`Expr` (or `params`/`param_facts` entry) across a
-// *later* postulate push -- registering a combinator, a fresh `call_ref`/
-// `mk_clo_ref`, an `assume_prim_fact` axiom -- without reshifting it, the exact staleness
-// `Anchored`'s own docs describe. Both times the only symptom was an opaque
-// kernel type-mismatch far from the actual mistake (or, in the worse case
-// that just hasn't happened yet, two *different* postulates that happen to
-// share a type, producing a well-typed but semantically wrong term with no
-// error at all). The fix each time was the same discipline -- anchor every
-// intermediate value immediately, resolve fresh only once nothing more is
-// left to push -- applied by hand, function by function, after a slow
-// eprintln-driven bisection to find where it broke.
+// Before stage 3 (`RELATED_WORK.md` §68), a function composing an `Expr`
+// from more than one recursive sub-call could hold an already-resolved
+// sub-`Expr` across a *later* postulate push and silently produce an
+// ill-typed (or well-typed but semantically wrong) term; a pushed `Const`
+// postulate shifts nothing, so that specific bug class can't recur, but a
+// composition mistake of some other kind still can.
 //
-// This helper turns that bisection into an immediate, precisely located
+// This helper turns any such mistake into an immediate, precisely located
 // panic instead: called once at the *return point* of any function that
 // composes sub-`Expr`s from more than one recursive call (`denote_closure`,
 // `eval_and_prove`, `build_ev_witness`), it confirms the value this call is
@@ -811,8 +804,8 @@ fn debug_assert_has_type(_p: &Postulates, _e: &Expr, _expected: &Expr, _label: &
 /// `combine`'s value at `params`/`ihs` (both hoisted to a free function --
 /// not just a closure local to `prove_tail_recursive_universal` -- so
 /// `build_ev_witness` can reuse it too).
-fn combine_of(arith: &ArithPostulates, combine: &Anchored, params: &[Expr], ihs: &[Expr]) -> Expr {
-    apply_n(combine.at(arith), params.iter().cloned().chain(ihs.iter().cloned()))
+fn combine_of(combine: &Expr, params: &[Expr], ihs: &[Expr]) -> Expr {
+    apply_n(combine.clone(), params.iter().cloned().chain(ihs.iter().cloned()))
 }
 
 /// The shape `prove_tail_recursive_universal`'s `body` must be: an
@@ -989,14 +982,13 @@ fn denote_with_placeholders(
         shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
             AppShape::ParamCall { root, k, args } => {
                 let callee = denote_with_placeholders(store, root, self_call, param_types, combinators, params, placeholders, next)?.clo()?;
-                let callee = Anchored::new(&combinators.cp.arith, callee);
                 let mut arg_exprs = Vec::with_capacity(k);
                 for &a in &args {
                     let e = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let callee = callee.at(&combinators.cp.arith);
-                let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                let callee = callee.clone();
+                let arg_exprs: Vec<Expr> = arg_exprs.to_vec();
                 let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: call_indirect application");
@@ -1015,38 +1007,27 @@ fn denote_with_placeholders(
                 let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
                 let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
                 let pap_fn = combinators.pap_ref(root, k, param_types)?;
-                let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
                 let env_expr = if root_captures.is_empty() {
                     None
                 } else {
                     let e = build_env_expr(combinators, &root_captures, params, param_types)?;
-                    Some(Anchored::new(&combinators.cp.arith, e))
+                    Some(e)
                 };
                 let mut arg_exprs = Vec::with_capacity(k);
                 for (j, &a) in args.iter().enumerate() {
                     let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let pap_fn = pap_fn.at(&combinators.cp.arith);
+                let pap_fn = pap_fn.clone();
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.at(&combinators.cp.arith));
+                    all_args.push(env_expr.clone());
                 }
-                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                all_args.extend(arg_exprs.iter().cloned());
                 let applied = apply_n(pap_fn, all_args);
-                // Anchored *before* computing `clo_ty(arity - k)`
-                // below: that lookup may itself lazily push a fresh
-                // postulate on this particular arity's first use,
-                // which would otherwise leave `applied` (built just
-                // above from already-`.at()`-reshifted pieces) stale
-                // by the time it's finally compared -- the same
-                // staleness class `Anchored`'s own docs describe, one
-                // step later than usual (escaping a *value*'s own
-                // construction, not a recursive call boundary).
-                let applied = Anchored::new(&combinators.cp.arith, applied);
                 let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
-                let applied = applied.at(&combinators.cp.arith);
+                let applied = applied.clone();
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_with_placeholders: partial application");
                 Some(Denoted::Clo(applied))
             }
@@ -1056,40 +1037,31 @@ fn denote_with_placeholders(
                 let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                 let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
                 let call_fn = combinators.call_ref(root, &captures, param_types)?;
-                let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
                 let env_expr = if captures.is_empty() {
                     None
                 } else {
                     let e = build_env_expr(combinators, &captures, params, param_types)?;
-                    Some(Anchored::new(&combinators.cp.arith, e))
+                    Some(e)
                 };
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
                     let d = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let call_fn = call_fn.at(&combinators.cp.arith);
+                let call_fn = call_fn.clone();
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.at(&combinators.cp.arith));
+                    all_args.push(env_expr.clone());
                 }
-                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                all_args.extend(arg_exprs.iter().cloned());
                 let sat_applied = apply_n(call_fn, all_args);
-                // Anchored *before* `combinator_return_type`'s own
-                // `clo_ty(k)` lookup below, same rationale as the partial
-                // application case above: that lookup may itself lazily
-                // push a fresh postulate, which would otherwise leave
-                // `sat_applied` (already fully built) stale by the time
-                // it's finally compared.
-                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
                 let return_ty = combinator_return_type(store, root).unwrap_or(None);
                 let returns_clo = return_ty.is_some();
                 let sat_ty = match return_ty {
                     Some(k) => combinators.cp.clo_ty(k),
                     None => combinators.cp.arith.int_ty(),
                 };
-                let sat_applied = sat_applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p, &sat_applied, &sat_ty, "denote_with_placeholders: direct combinator call");
 
                 if args.len() == arity {
@@ -1100,14 +1072,11 @@ fn denote_with_placeholders(
                     return None; // over-application of a plain Int result: genuinely out of scope
                 }
                 let extra_args = &args[arity..];
-                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
                 let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
                 for &a in extra_args {
                     let e = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
-                    extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    extra_arg_exprs.push(e);
                 }
-                let sat_applied = sat_applied.at(&combinators.cp.arith);
-                let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: over-application dispatch");
@@ -1126,10 +1095,9 @@ fn denote_with_placeholders(
         Shape::Lit(n) => Some(Denoted::Int(combinators.cp.arith.lit_ref(n))),
         Shape::Prim(op, a, b) => {
             let da = denote_with_placeholders(store, a, self_call, param_types, combinators, params, placeholders, next)?.int()?;
-            let da = Anchored::new(&combinators.cp.arith, da);
             let db = denote_with_placeholders(store, b, self_call, param_types, combinators, params, placeholders, next)?.int()?;
             let op_ref = combinators.cp.arith.op_ref(op);
-            let da = da.at(&combinators.cp.arith);
+            let da = da.clone();
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: Prim");
@@ -1147,11 +1115,10 @@ fn denote_with_placeholders(
             if captures.is_empty() {
                 return Some(Denoted::Clo(sym));
             }
-            let sym = Anchored::new(&combinators.cp.arith, sym);
             let env = build_env_expr(combinators, &captures, params, param_types)?;
-            let env_expr = Anchored::new(&combinators.cp.arith, env);
-            let sym = sym.at(&combinators.cp.arith);
-            let env_expr = env_expr.at(&combinators.cp.arith);
+            let env_expr = env;
+            let sym = sym.clone();
+            let env_expr = env_expr.clone();
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_with_placeholders: capturing closure value");
@@ -1167,28 +1134,19 @@ fn denote_with_placeholders(
         // `Clo`-typed value to thread into the next iteration.
         Shape::If(c, t, e) => {
             let dc = denote_with_placeholders(store, c, self_call, param_types, combinators, params, placeholders, next)?.int()?;
-            let dc = Anchored::new(&combinators.cp.arith, dc);
             let dt = denote_with_placeholders(store, t, self_call, param_types, combinators, params, placeholders, next)?;
             let dt_is_clo = matches!(dt, Denoted::Clo(_));
-            let dt = Anchored::new(&combinators.cp.arith, match dt {
+            let dt = match dt {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
-            });
+            };
             let de = denote_with_placeholders(store, e, self_call, param_types, combinators, params, placeholders, next)?;
             let de_is_clo = matches!(de, Denoted::Clo(_));
-            // Anchored *before* branching on `dt_is_clo`/`de_is_clo` --
-            // `ite_clo_ref`'s lazy first-use postulate push would
-            // otherwise invalidate an unanchored `dt`/`de`, the same
-            // staleness class `denote_closure`'s identical match guards
-            // against (see its own comment).
-            let de = Anchored::new(&combinators.cp.arith, match de {
+            let de = match de {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
-            });
+            };
             match (dt_is_clo, de_is_clo) {
                 (false, false) => {
                     let ite = combinators.cp.arith.ite_ref();
-                    let dc = dc.at(&combinators.cp.arith);
-                    let dt = dt.at(&combinators.cp.arith);
-                    let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite, dc, dt, de);
                     let int_ty = combinators.cp.arith.int_ty();
                     debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_with_placeholders: nested If (Int branches)");
@@ -1209,9 +1167,9 @@ fn denote_with_placeholders(
                         return None;
                     }
                     let ite_clo = combinators.cp.ite_clo_ref(t_arity);
-                    let dc = dc.at(&combinators.cp.arith);
-                    let dt = dt.at(&combinators.cp.arith);
-                    let de = de.at(&combinators.cp.arith);
+                    let dc = dc.clone();
+                    let dt = dt.clone();
+                    let de = de.clone();
                     let applied = kernel::app3(ite_clo, dc, dt, de);
                     let clo_ty = combinators.cp.clo_ty(t_arity);
                     debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_with_placeholders: nested If (Clo branches)");
@@ -1247,8 +1205,8 @@ fn denote_with_placeholders(
 /// since a self-call argument was already allowed to be `if c then x
 /// else y` before closures existed here.
 ///
-/// `params` are the enclosing scope's bound parameters (`Params`), which
-/// no push shifts. `register`/`call_ref`/`pap_ref` each may push a
+/// `params` are the enclosing scope's bound parameters, which no push
+/// shifts. `register`/`call_ref`/`pap_ref` each may push a
 /// postulate on first use. A bare `Term::Rec` (a
 /// self-recursive combinator *nested* inside another one's body) stays
 /// out of scope, unlike `denote_closure`'s own fragment -- proving one induction correct while assuming another is a genuinely
@@ -1267,14 +1225,13 @@ fn denote_closure_typed(
         shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
             AppShape::ParamCall { root, k, args } => {
                 let callee = denote_closure_typed(store, root, self_call, param_types, combinators, params)?.clo()?;
-                let callee = Anchored::new(&combinators.cp.arith, callee);
                 let mut arg_exprs = Vec::with_capacity(k);
                 for &a in &args {
                     let e = denote_closure_typed(store, a, self_call, param_types, combinators, params)?.int()?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let callee = callee.at(&combinators.cp.arith);
-                let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                let callee = callee.clone();
+                let arg_exprs: Vec<Expr> = arg_exprs.to_vec();
                 let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: call_indirect application");
@@ -1295,32 +1252,26 @@ fn denote_closure_typed(
                 let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
                 let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
                 let pap_fn = combinators.pap_ref(root, k, param_types)?;
-                let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
                 let env_expr = if root_captures.is_empty() {
                     None
                 } else {
                     let e = build_env_expr(combinators, &root_captures, params, param_types)?;
-                    Some(Anchored::new(&combinators.cp.arith, e))
+                    Some(e)
                 };
                 let mut arg_exprs = Vec::with_capacity(k);
                 for (j, &a) in args.iter().enumerate() {
                     let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let pap_fn = pap_fn.at(&combinators.cp.arith);
+                let pap_fn = pap_fn.clone();
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.at(&combinators.cp.arith));
+                    all_args.push(env_expr.clone());
                 }
-                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                all_args.extend(arg_exprs.iter().cloned());
                 let applied = apply_n(pap_fn, all_args);
-                // Anchored *before* computing `clo_ty(arity - k)`
-                // below -- see `denote_with_placeholders`'s identical
-                // case for the rationale.
-                let applied = Anchored::new(&combinators.cp.arith, applied);
                 let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
-                let applied = applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure_typed: partial application");
                 Some(Denoted::Clo(applied))
             }
@@ -1330,38 +1281,31 @@ fn denote_closure_typed(
                 let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                 let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
                 let call_fn = combinators.call_ref(root, &captures, param_types)?;
-                let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
                 let env_expr = if captures.is_empty() {
                     None
                 } else {
                     let e = build_env_expr(combinators, &captures, params, param_types)?;
-                    Some(Anchored::new(&combinators.cp.arith, e))
+                    Some(e)
                 };
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
                     let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let call_fn = call_fn.at(&combinators.cp.arith);
+                let call_fn = call_fn.clone();
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.at(&combinators.cp.arith));
+                    all_args.push(env_expr.clone());
                 }
-                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                all_args.extend(arg_exprs.iter().cloned());
                 let sat_applied = apply_n(call_fn, all_args);
-                // Anchored *before* `combinator_return_type`'s own
-                // `clo_ty(k)` lookup below -- see
-                // `denote_with_placeholders`'s identical case for the
-                // rationale.
-                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
                 let return_ty = combinator_return_type(store, root).unwrap_or(None);
                 let returns_clo = return_ty.is_some();
                 let sat_ty = match return_ty {
                     Some(k) => combinators.cp.clo_ty(k),
                     None => combinators.cp.arith.int_ty(),
                 };
-                let sat_applied = sat_applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p, &sat_applied, &sat_ty, "denote_closure_typed: direct combinator call");
 
                 if args.len() == arity {
@@ -1372,14 +1316,11 @@ fn denote_closure_typed(
                     return None; // over-application of a plain Int result: genuinely out of scope
                 }
                 let extra_args = &args[arity..];
-                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
                 let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
                 for &a in extra_args {
                     let e = denote_closure_typed(store, a, self_call, param_types, combinators, params)?.int()?;
-                    extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    extra_arg_exprs.push(e);
                 }
-                let sat_applied = sat_applied.at(&combinators.cp.arith);
-                let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: over-application dispatch");
@@ -1398,10 +1339,9 @@ fn denote_closure_typed(
         Shape::Lit(n) => Some(Denoted::Int(combinators.cp.arith.lit_ref(n))),
         Shape::Prim(op, a, b) => {
             let da = denote_closure_typed(store, a, self_call, param_types, combinators, params)?.int()?;
-            let da = Anchored::new(&combinators.cp.arith, da);
             let db = denote_closure_typed(store, b, self_call, param_types, combinators, params)?.int()?;
             let op_ref = combinators.cp.arith.op_ref(op);
-            let da = da.at(&combinators.cp.arith);
+            let da = da.clone();
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: Prim");
@@ -1414,25 +1354,19 @@ fn denote_closure_typed(
         // rejected.
         Shape::If(c, t, e) => {
             let dc = denote_closure_typed(store, c, self_call, param_types, combinators, params)?.int()?;
-            let dc = Anchored::new(&combinators.cp.arith, dc);
             let dt = denote_closure_typed(store, t, self_call, param_types, combinators, params)?;
             let dt_is_clo = matches!(dt, Denoted::Clo(_));
-            let dt = Anchored::new(&combinators.cp.arith, match dt {
+            let dt = match dt {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
-            });
+            };
             let de = denote_closure_typed(store, e, self_call, param_types, combinators, params)?;
             let de_is_clo = matches!(de, Denoted::Clo(_));
-            // Anchored before branching -- same staleness reasoning as
-            // `denote_closure`'s own identical match.
-            let de = Anchored::new(&combinators.cp.arith, match de {
+            let de = match de {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
-            });
+            };
             match (dt_is_clo, de_is_clo) {
                 (false, false) => {
                     let ite = combinators.cp.arith.ite_ref();
-                    let dc = dc.at(&combinators.cp.arith);
-                    let dt = dt.at(&combinators.cp.arith);
-                    let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite, dc, dt, de);
                     let int_ty = combinators.cp.arith.int_ty();
                     debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure_typed: If (Int branches)");
@@ -1448,9 +1382,9 @@ fn denote_closure_typed(
                         return None;
                     }
                     let ite_clo = combinators.cp.ite_clo_ref(t_arity);
-                    let dc = dc.at(&combinators.cp.arith);
-                    let dt = dt.at(&combinators.cp.arith);
-                    let de = de.at(&combinators.cp.arith);
+                    let dc = dc.clone();
+                    let dt = dt.clone();
+                    let de = de.clone();
                     let applied = kernel::app3(ite_clo, dc, dt, de);
                     let clo_ty = combinators.cp.clo_ty(t_arity);
                     debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure_typed: If (Clo branches)");
@@ -1473,57 +1407,16 @@ fn denote_closure_typed(
             if captures.is_empty() {
                 return Some(Denoted::Clo(sym));
             }
-            let sym = Anchored::new(&combinators.cp.arith, sym);
             let env = build_env_expr(combinators, &captures, params, param_types)?;
-            let env_expr = Anchored::new(&combinators.cp.arith, env);
-            let sym = sym.at(&combinators.cp.arith);
-            let env_expr = env_expr.at(&combinators.cp.arith);
+            let env_expr = env;
+            let sym = sym.clone();
+            let env_expr = env_expr.clone();
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure_typed: capturing closure value");
             Some(Denoted::Clo(applied))
         }
         Shape::Combinator { is_rec: true } => None,
-    }
-}
-
-/// A term built once at a specific point in `globals` (`arith.p.globals.len()`
-/// at the time), for reuse at a *later* point after more postulates have
-/// been pushed. Globals only grow and a postulate is a `Const`, which no
-/// push shifts, so today's term never actually goes stale: `at`'s
-/// `debug_assert_eq!` confirms it has no loose `Var` before the (now
-/// identity) reshift -- `at` is now the identity, and stage 4 removes
-/// `Anchored` entirely. Historically (the push-then-truncate regime
-/// `RELATED_WORK.md` §69 replaced), a postulate's own local entries were
-/// `Var`s that a later push *did* shift; `at` reshifted by exactly the
-/// depth difference, the same class of bug `kernel::ctx_lookup` fixes for
-/// `Var` itself, one level up. That's why this type, and the reshift, are
-/// still here.
-#[derive(Clone)]
-struct Anchored {
-    depth: usize,
-    expr: Expr,
-}
-impl Anchored {
-    fn new(arith: &ArithPostulates, expr: Expr) -> Self {
-        Anchored { depth: arith.p.globals.len(), expr }
-    }
-    fn at(&self, arith: &ArithPostulates) -> Expr {
-        let cur = arith.p.globals.len();
-        debug_assert!(cur >= self.depth, "Anchored used at a shallower depth than it was built");
-        debug_assert_eq!(kernel::loose_of(&self.expr), 0, "Anchored term has a loose Var: a scope local escaped bind (RELATED_WORK §70)");
-        kernel::shift(&self.expr, 0, (cur - self.depth) as i32)
-    }
-}
-
-/// A scope's parameters, as the `Free`s `Postulates::bind` returned. A
-/// `Free` names its binder by level, so no later push or bind shifts it
-/// (`RELATED_WORK.md` §70). `at` returns a copy; its `arith` argument is
-/// unused.
-struct Params(Vec<Expr>);
-impl Params {
-    fn at(&self, _arith: &ArithPostulates) -> Vec<Expr> {
-        self.0.clone()
     }
 }
 
@@ -1540,7 +1433,7 @@ fn params_and_close(
     arith: &mut ArithPostulates,
     n: usize,
     binder: kernel::Binder,
-    build: impl FnOnce(&mut ArithPostulates, &Params) -> Option<Expr>,
+    build: impl FnOnce(&mut ArithPostulates, &[Expr]) -> Option<Expr>,
 ) -> Option<Expr> {
     let s = arith.p.open();
     let params: Vec<Expr> = (0..n)
@@ -1549,7 +1442,7 @@ fn params_and_close(
             arith.p.bind(ty)
         })
         .collect();
-    let pp = Params(params);
+    let pp = params;
     match build(arith, &pp) {
         Some(b) => Some(arith.p.close(s, binder, b)),
         None => {
@@ -1567,7 +1460,7 @@ fn params_and_close_typed(
     arith: &mut ClosureCombinators<'_>,
     param_types: &[Option<usize>],
     binder: kernel::Binder,
-    build: impl FnOnce(&mut ClosureCombinators<'_>, &Params) -> Option<Expr>,
+    build: impl FnOnce(&mut ClosureCombinators<'_>, &[Expr]) -> Option<Expr>,
 ) -> Option<Expr> {
     let s = arith.p.open();
     let mut params = Vec::with_capacity(param_types.len());
@@ -1578,7 +1471,7 @@ fn params_and_close_typed(
         };
         params.push(arith.p.bind(ty));
     }
-    let pp = Params(params);
+    let pp = params;
     match build(arith, &pp) {
         Some(b) => Some(arith.p.close(s, binder, b)),
         None => {
@@ -1604,10 +1497,9 @@ pub struct UniversalTailProof {
 /// Everything `prove_tail_recursive_universal`'s theorem was built from,
 /// kept around (instead of dropped) so `prove_tail_recursive_instance` can
 /// reuse it to build a concrete `Ev`-witness afterward, without redoing any
-/// of the theorem's own construction. `theorem_ty`/`theorem_proof` are
-/// `Anchored` because witness-building pushes further postulates onto
-/// `arith.p.globals` (fresh literal constants, `assume_prim_fact` axioms) after
-/// this scaffold is built -- see `Anchored`'s own docs for why that matters.
+/// of the theorem's own construction. Witness-building pushes further
+/// postulates onto `arith.p.globals` (fresh literal constants,
+/// `assume_prim_fact` axioms) after this scaffold is built.
 ///
 /// Cloneable so a caller that wants several concrete instances (`jit.rs`'s
 /// `kernel_verify`, trying a handful of sample calls) can build this once
@@ -1630,14 +1522,14 @@ struct UniversalScaffold<'a> {
     param_types: Vec<Option<usize>>,
     self_call: SelfCall,
     leaves: Vec<Leaf>,
-    combines: Vec<Anchored>,
+    combines: Vec<Expr>,
     ev_leaf_positions: Vec<usize>,
     /// `Ev`'s own postulate position (see `build_universal`) -- needed by
     /// `build_ev_witness`'s branching-leaf recasting, which builds `Ev(...)`
     /// applications directly rather than through a leaf-specific constructor.
     ev_pos: usize,
-    theorem_ty: Anchored,
-    theorem_proof: Anchored,
+    theorem_ty: Expr,
+    theorem_proof: Expr,
 }
 
 fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> {
@@ -1703,10 +1595,10 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // Binds one premise per `(cond, lit)` on `path` (a leaf's whole
     // ancestry, root to leaf), returning them. Each premise's own type
     // only depends on `params`.
-    let push_path = |arith: &mut ArithPostulates, pp: &Params, path: &[(Hash, i64)]| -> Option<Vec<Expr>> {
+    let push_path = |arith: &mut ArithPostulates, pp: &[Expr], path: &[(Hash, i64)]| -> Option<Vec<Expr>> {
         let mut premises = Vec::with_capacity(path.len());
         for &(cond, lit) in path {
-            let pf_ty = cond_premise(arith, cond, &pp.at(arith), lit)?;
+            let pf_ty = cond_premise(arith, cond, pp, lit)?;
             premises.push(arith.p.bind(pf_ty));
         }
         Some(premises)
@@ -1735,13 +1627,10 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // `Int` per `param_types[i]`. `v` (innermost) is wrapped first, then
     // `param_types` in *reverse*, matching `ev_of`/`apply_n`'s own
     // left-to-right application order (`params[0]` applied first, ending
-    // up outermost; `v` applied last, ending up innermost). `arrow`'s
-    // shift covers each new binder but not a push: `clo_ty(k)`'s first use
-    // pushes `ite_clo_ref(k)`, which left every piece already built one
-    // level stale (`kernel::check_in` rejected the resulting statement,
-    // `RELATED_WORK.md` section 68). So each domain is anchored as it's
-    // resolved and re-resolved (`.at`) once nothing more is left to push,
-    // as `env_ty`/`call_ref` do.
+    // up outermost; `v` applied last, ending up innermost). Before stage 3
+    // (`RELATED_WORK.md` §68), `clo_ty(k)`'s first-use push left every
+    // domain built before it one level stale; a pushed `Const` shifts
+    // nothing, so building each domain here needs no further care.
     let ev_ty = {
         let mut doms = Vec::with_capacity(param_types.len());
         for pt in &param_types {
@@ -1749,11 +1638,11 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
                 Some(k) => arith.clo_ty(*k),
                 None => arith.int_ty(),
             };
-            doms.push(Anchored::new(&arith, dom));
+            doms.push(dom);
         }
         let mut ty = kernel::arrow(arith.int_ty(), kernel::sort(0)); // v : Int
         for dom in doms.iter().rev() {
-            ty = kernel::arrow(dom.at(&arith), ty);
+            ty = kernel::arrow(dom.clone(), ty);
         }
         ty
     };
@@ -1766,14 +1655,14 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // than interleaved; each `e_j`'s type only needs its *own* `v_j`, so
     // grouping is no less correct than interleaving and is simpler for
     // every caller below to zip).
-    let push_calls = |arith: &mut ClosureCombinators<'_>, pp: &Params, calls: &[Vec<Hash>]| -> Option<(Vec<Expr>, Vec<Expr>)> {
+    let push_calls = |arith: &mut ClosureCombinators<'_>, pp: &[Expr], calls: &[Vec<Hash>]| -> Option<(Vec<Expr>, Vec<Expr>)> {
         let mut vs = Vec::with_capacity(calls.len());
         for _ in calls {
             vs.push({ let ty = arith.int_ty(); arith.p.bind(ty) });
         }
         let mut es = Vec::with_capacity(calls.len());
         for (call, v) in calls.iter().zip(&vs) {
-            let np = new_params_for(arith, call, &pp.0)?;
+            let np = new_params_for(arith, call, pp)?;
             let ev_np = ev_of(arith, &np, v.clone());
             es.push(arith.p.bind(ev_np));
         }
@@ -1784,9 +1673,9 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // own arithmetic expression with each self-call occurrence replaced
     // by the corresponding `ih_j` (`denote_with_placeholders`), closed
     // over `params` *and* the `k_i` placeholders as one value, reused
-    // (via `Anchored`, since it's referenced from several deeper points
-    // below) both to state what value leaf `i` produces and, later, to
-    // recombine the actually-recursively-computed values. `k_i == 0`
+    // (referenced from several deeper points below) both to state what
+    // value leaf `i` produces and, later, to recombine the actually-
+    // recursively-computed values. `k_i == 0`
     // (`combine_i() = denote(leaf, params)`) is the old base-case shape;
     // `k_i == 1` with the self-call as the *whole* leaf
     // (`combine_i(ih) = ih`) is the old tail-call shape; anything else
@@ -1796,10 +1685,10 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     for leaf in &leaves {
         let expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
             params_and_close_typed(arith, &no_closures(leaf.calls.len()), kernel::Binder::Lam, |arith, pp2| {
-                denote_with_placeholders(store, leaf.expr, self_call, &param_types, arith, &pp.0, &pp2.0, &mut 0)?.int()
+                denote_with_placeholders(store, leaf.expr, self_call, &param_types, arith, pp, pp2, &mut 0)?.int()
             })
         })?;
-        combines.push(Anchored::new(&arith, expr));
+        combines.push(expr);
     }
 
     // ev_leaf_i : Pi params. Pi (leaf i's path premises). Pi v_1..v_{k_i}
@@ -1810,8 +1699,8 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
             push_path(arith, pp, &leaf.path)?;
             let (vs, _es) = push_calls(arith, pp, &leaf.calls)?;
-            let params = pp.at(arith);
-            let combine_v = combine_of(arith, combine, &params, &vs);
+            let params = pp.to_vec();
+            let combine_v = combine_of(combine, &params, &vs);
             Some(ev_of(arith, &params, combine_v))
         })?;
         ev_leaf_positions.push(arith.p.push(ty));
@@ -1828,7 +1717,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // the way `Ev`'s own (params,v both just `Int`, independent) type is.
     let motive_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), v);
+        let ev_pv = ev_of(arith, pp, v);
         arith.p.bind(ev_pv);
         Some(kernel::sort(0))
     })?;
@@ -1848,13 +1737,13 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
             let premises = push_path(arith, pp, &leaf.path)?;
             let (vs, es) = push_calls(arith, pp, &leaf.calls)?;
-            let params = pp.at(arith);
+            let params = pp.to_vec();
             let mut ih_tys = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
-                let np = new_params_for(arith, call, &pp.0)?;
+                let np = new_params_for(arith, call, pp)?;
                 ih_tys.push(p_of(arith, &np, v.clone(), e.clone()));
             }
-            let combine_v = combine_of(arith, combine, &params, &vs);
+            let combine_v = combine_of(combine, &params, &vs);
             let ev_leaf_applied = apply_n(
                 arith.p.get(ev_leaf_pos),
                 params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es.iter().cloned()),
@@ -1876,9 +1765,9 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     }
     let concl_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let ev_pv = ev_of(arith, pp, v.clone());
         let e = arith.p.bind(ev_pv);
-        let params = pp.at(arith);
+        let params = pp.to_vec();
         Some(p_of(arith, &params, v, e))
     });
     // Same reasoning as the loop above: abandon `p_scope` before giving up.
@@ -1910,11 +1799,11 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // typecheck for exactly that reason).
     let const_int_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), v);
+        let ev_pv = ev_of(arith, pp, v);
         arith.p.bind(ev_pv); // e : Ev(params, v)
         Some(arith.int_ty())
     })?;
-    let const_int_motive = Anchored::new(&arith, const_int_motive_expr);
+    let const_int_motive = const_int_motive_expr;
 
     let mut loop_leaves = Vec::with_capacity(leaves.len());
     for (leaf, combine) in leaves.iter().zip(&combines) {
@@ -1925,15 +1814,15 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
             for _ in &leaf.calls {
                 ihs.push({ let ty = arith.int_ty(); arith.p.bind(ty) });
             }
-            let params = pp.at(arith);
-            Some(combine_of(arith, combine, &params, &ihs))
+            let params = pp.to_vec();
+            Some(combine_of(combine, &params, &ihs))
         })?;
-        loop_leaves.push(Anchored::new(&arith, expr));
+        loop_leaves.push(expr);
     }
 
     let loop_val = |arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
-        let cases: Vec<Expr> = loop_leaves.iter().map(|a| a.at(arith)).collect();
-        ev_rec_ref(arith, const_int_motive.at(arith), &cases, params, v, e)
+        let cases: Vec<Expr> = loop_leaves.to_vec();
+        ev_rec_ref(arith, const_int_motive.clone(), &cases, params, v, e)
     };
 
     // loop_val_leaf_eq_i : Pi params (path premises) v_1..v_{k_i} (e_1..e_{k_i}).
@@ -1946,18 +1835,18 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
         let ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
             let premises = push_path(arith, pp, &leaf.path)?;
             let (vs, es) = push_calls(arith, pp, &leaf.calls)?;
-            let params = pp.at(arith);
+            let params = pp.to_vec();
             let eb = apply_n(
                 arith.p.get(ev_leaf_pos),
                 params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es.iter().cloned()),
             );
-            let lhs = loop_val(arith, &params, combine_of(arith, combine, &params, &vs), eb);
+            let lhs = loop_val(arith, &params, combine_of(combine, &params, &vs), eb);
             let mut recursive_vals = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
-                let np = new_params_for(arith, call, &pp.0)?;
+                let np = new_params_for(arith, call, pp)?;
                 recursive_vals.push(loop_val(arith, &np, v.clone(), e.clone()));
             }
-            let rhs = combine_of(arith, combine, &params, &recursive_vals);
+            let rhs = combine_of(combine, &params, &recursive_vals);
             Some(kernel::id(arith.int_ty(), lhs, rhs))
         })?;
         loop_val_leaf_eq_positions.push(arith.p.push(ty));
@@ -1967,12 +1856,12 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // ev_rec with motive `\params v e. Id(Int, loop_val(params,v,e), v)`.
     let id_motive_expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let ev_pv = ev_of(arith, pp, v.clone());
         let e = arith.p.bind(ev_pv);
-        let params = pp.at(arith);
+        let params = pp.to_vec();
         Some(kernel::id(arith.int_ty(), loop_val(arith, &params, v.clone(), e), v))
     })?;
-    let id_motive = Anchored::new(&arith, id_motive_expr);
+    let id_motive = id_motive_expr;
 
     // Leaf `i`'s theorem case: given `ih_j : loop_val(new_params_j,v_j,e_j)
     // = v_j` for each of its self-calls, prove
@@ -1992,15 +1881,15 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
             let (vs, es) = push_calls(arith, pp, &leaf.calls)?;
             let mut ihs = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
-                let np = new_params_for(arith, call, &pp.0)?;
+                let np = new_params_for(arith, call, pp)?;
                 let ih_ty = kernel::id(arith.int_ty(), loop_val(arith, &np, v.clone(), e.clone()), v.clone());
                 ihs.push(arith.p.bind(ih_ty));
             }
 
-            let params = pp.at(arith);
+            let params = pp.to_vec();
             let mut recursive_vals = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
-                let np = new_params_for(arith, call, &pp.0)?;
+                let np = new_params_for(arith, call, pp)?;
                 recursive_vals.push(loop_val(arith, &np, v.clone(), e.clone()));
             }
 
@@ -2012,38 +1901,36 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
                 arith.p.get(loop_val_leaf_eq_pos),
                 params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es),
             );
-            let f_partial = apply_n(combine.at(arith), params.iter().cloned());
+            let f_partial = apply_n(combine.clone(), params.iter().cloned());
             let cong_step = kernel::cong_n(&arith.int_ty(), &arith.int_ty(), &f_partial, &recursive_vals, &vs, ihs);
 
-            let lhs = loop_val(arith, &params, combine_of(arith, combine, &params, &vs), eb);
-            let mid = combine_of(arith, combine, &params, &recursive_vals);
-            let rhs = combine_of(arith, combine, &params, &vs);
+            let lhs = loop_val(arith, &params, combine_of(combine, &params, &vs), eb);
+            let mid = combine_of(combine, &params, &recursive_vals);
+            let rhs = combine_of(combine, &params, &vs);
             Some(kernel::trans_proof(&arith.int_ty(), &lhs, &mid, &rhs, step_eq, cong_step))
         })?;
-        theorem_leaves.push(Anchored::new(&arith, expr));
+        theorem_leaves.push(expr);
     }
 
     let theorem_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let ev_pv = ev_of(arith, pp, v.clone());
         let e = arith.p.bind(ev_pv);
-        let params = pp.at(arith);
+        let params = pp.to_vec();
         Some(kernel::id(arith.int_ty(), loop_val(arith, &params, v.clone(), e), v))
     })?;
 
     let theorem_proof = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, &pp.at(arith), v.clone());
+        let ev_pv = ev_of(arith, pp, v.clone());
         let e = arith.p.bind(ev_pv);
-        let params = pp.at(arith);
-        let cases: Vec<Expr> = theorem_leaves.iter().map(|a| a.at(arith)).collect();
-        Some(ev_rec_ref(arith, id_motive.at(arith), &cases, &params, v, e))
+        let params = pp.to_vec();
+        let cases: Vec<Expr> = theorem_leaves.to_vec();
+        Some(ev_rec_ref(arith, id_motive.clone(), &cases, &params, v, e))
     })?;
 
     arith.p.check(&theorem_proof, &theorem_ty).ok()?;
 
-    let theorem_ty = Anchored::new(&arith, theorem_ty);
-    let theorem_proof = Anchored::new(&arith, theorem_proof);
     Some(UniversalScaffold {
         theorem_ty,
         theorem_proof,
@@ -2073,8 +1960,8 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
 /// arithmetic or choosing between two `Clo`-typed values.
 pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
     let scaffold = build_universal(store, h)?;
-    let theorem_ty = scaffold.theorem_ty.at(&scaffold.combinators);
-    let theorem_proof = scaffold.theorem_proof.at(&scaffold.combinators);
+    let theorem_ty = scaffold.theorem_ty.clone();
+    let theorem_proof = scaffold.theorem_proof.clone();
     Some(UniversalTailProof {
         globals: scaffold.combinators.cp.arith.p.globals,
         arity: scaffold.arity,
@@ -2148,23 +2035,18 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
 /// caller-supplied ground truth for each parameter (see the section docs
 /// above for where it comes from).
 ///
-/// `params`/`param_facts` are `Anchored` (not plain `Expr`), and every
-/// intermediate value this function builds is immediately wrapped in
-/// `Anchored` too, resolved fresh only at the point it's actually used --
-/// `assume_prim_fact` (and recursing into a sibling sub-expression) pushes
-/// further postulates onto `arith.p.globals`, and anything already resolved to
-/// a plain `Expr` before that point would go stale exactly the way
-/// `Anchored`'s own docs describe, one level up (this is what an earlier,
-/// buggy version of this function got wrong: it returned `Var`-index-laden
-/// `Expr`s straight from a callee, which the caller then held across
-/// further pushes without reshifting).
+/// `params`/`param_facts`, and every intermediate value this function
+/// builds, need no anchoring: a postulate is a `Const` and a scope
+/// parameter is a `Free` (`RELATED_WORK.md` §§69-70), so `assume_prim_fact`
+/// (and recursing into a sibling sub-expression) pushing further postulates
+/// onto `arith.p.globals` never shifts a value already resolved here.
 fn eval_and_prove(
     store: &TermStore,
     h: Hash,
     combinators: &mut ClosureCombinators<'_>,
-    params: &[Anchored],
+    params: &[Expr],
     concrete: &[i64],
-    param_facts: &[Anchored],
+    param_facts: &[Expr],
 ) -> Option<(i64, Expr, Expr)> {
     match compile::classify(store, h, params.len(), None) {
         // `param_types` is always empty here: every caller of this
@@ -2191,7 +2073,7 @@ fn eval_and_prove(
         },
         Shape::Var(i) => {
             let i = i as usize;
-            Some((*concrete.get(i)?, params.get(i)?.at(&combinators.cp.arith), param_facts.get(i)?.at(&combinators.cp.arith)))
+            Some((*concrete.get(i)?, params.get(i)?.clone(), param_facts.get(i)?.clone()))
         }
         Shape::Lit(n) => {
             let l = combinators.cp.arith.lit_ref(n);
@@ -2199,18 +2081,14 @@ fn eval_and_prove(
         }
         Shape::Prim(op, a, b) => {
             let (xa, da, pa) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
-            let da = Anchored::new(&combinators.cp.arith, da);
-            let pa = Anchored::new(&combinators.cp.arith, pa);
             let (xb, db, pb) = eval_and_prove(store, b, combinators, params, concrete, param_facts)?;
-            let db = Anchored::new(&combinators.cp.arith, db);
-            let pb = Anchored::new(&combinators.cp.arith, pb);
             let fact = combinators.cp.arith.assume_prim_fact(op, xa, xb);
             let result = apply_prim_concrete(op, xa, xb);
 
             // Nothing pushes onto arith.p.globals from here on, so resolving
             // everything fresh now (past `assume_prim_fact`'s own push)
             // keeps it all valid for the rest of this call.
-            let (da, pa, db, pb) = (da.at(&combinators.cp.arith), pa.at(&combinators.cp.arith), db.at(&combinators.cp.arith), pb.at(&combinators.cp.arith));
+            let (da, pa, db, pb) = (da.clone(), pa.clone(), db.clone(), pb.clone());
             let int_ty = combinators.cp.arith.int_ty();
             let f = combinators.cp.arith.op_ref(op);
             let cong = kernel::cong_n(
@@ -2237,24 +2115,18 @@ fn eval_and_prove(
         // to discharge `app3(ite_ref, dc, dt, de) = lit_ref(result)`.
         Shape::If(c, t, e) => {
             let (xc, dc, pc) = eval_and_prove(store, c, combinators, params, concrete, param_facts)?;
-            let dc = Anchored::new(&combinators.cp.arith, dc);
-            let pc = Anchored::new(&combinators.cp.arith, pc);
             let (xt, dt, pt) = eval_and_prove(store, t, combinators, params, concrete, param_facts)?;
-            let dt = Anchored::new(&combinators.cp.arith, dt);
-            let pt = Anchored::new(&combinators.cp.arith, pt);
             let (xe, de, pe) = eval_and_prove(store, e, combinators, params, concrete, param_facts)?;
-            let de = Anchored::new(&combinators.cp.arith, de);
-            let pe = Anchored::new(&combinators.cp.arith, pe);
             let fact = combinators.cp.arith.assume_ite_fact(xc, xt, xe);
             let result = if xc != 0 { xt } else { xe };
 
             let (dc, pc, dt, pt, de, pe) = (
-                dc.at(&combinators.cp.arith),
-                pc.at(&combinators.cp.arith),
-                dt.at(&combinators.cp.arith),
-                pt.at(&combinators.cp.arith),
-                de.at(&combinators.cp.arith),
-                pe.at(&combinators.cp.arith),
+                dc.clone(),
+                pc.clone(),
+                dt.clone(),
+                pt.clone(),
+                de.clone(),
+                pe.clone(),
             );
             let int_ty = combinators.cp.arith.int_ty();
             let f = combinators.cp.arith.ite_ref();
@@ -2300,9 +2172,9 @@ fn eval_and_prove_call(
     args: &[Hash],
     callee_param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
-    params: &[Anchored],
+    params: &[Expr],
     concrete: &[i64],
-    param_facts: &[Anchored],
+    param_facts: &[Expr],
 ) -> Option<(i64, Expr, Expr)> {
     if callee_param_types.iter().any(Option::is_some) {
         return None;
@@ -2312,7 +2184,7 @@ fn eval_and_prove_call(
     let mut arg_triples = Vec::with_capacity(args.len());
     for &a in args {
         let (x, d, p) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
-        arg_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+        arg_triples.push((x, d, p));
     }
 
     // Resolve `root`'s own captures against the *outer* frame too --
@@ -2327,8 +2199,8 @@ fn eval_and_prove_call(
     for &rel in &root_captures {
         let rel = rel as usize;
         let x = *concrete.get(rel)?;
-        let d = Anchored::new(&combinators.cp.arith, params.get(rel)?.at(&combinators.cp.arith));
-        let p = Anchored::new(&combinators.cp.arith, param_facts.get(rel)?.at(&combinators.cp.arith));
+        let d = params.get(rel)?.clone();
+        let p = param_facts.get(rel)?.clone();
         cap_triples.push((x, d, p));
     }
 
@@ -2356,8 +2228,8 @@ fn eval_and_prove_direct_call(
     store: &TermStore,
     root: Hash,
     combinators: &mut ClosureCombinators<'_>,
-    cap_triples: &[(i64, Anchored, Anchored)],
-    arg_triples: &[(i64, Anchored, Anchored)],
+    cap_triples: &[(i64, Expr, Expr)],
+    arg_triples: &[(i64, Expr, Expr)],
 ) -> Option<(i64, Expr, Expr)> {
     let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
     let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
@@ -2368,7 +2240,6 @@ fn eval_and_prove_direct_call(
     // for this exact shape too), so fetched before anything above is
     // combined into a larger term.
     let axiom = combinators.call_eq_ref(root)?;
-    let axiom = Anchored::new(&combinators.cp.arith, axiom);
 
     let sig: Vec<Option<usize>> = vec![None; n];
     let int_ty = combinators.cp.arith.int_ty();
@@ -2382,7 +2253,7 @@ fn eval_and_prove_direct_call(
     let env_bridge = if n > 0 {
         let mk_env_expr = combinators.cp.mk_env_ref(&sig);
         let env_ty_expr = combinators.cp.env_ty(&sig);
-        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
         let lit_c: Vec<Expr> = cap_triples
             .iter()
             .map(|&(x, _, _)| {
@@ -2390,7 +2261,7 @@ fn eval_and_prove_direct_call(
                 combinators.cp.arith.lit_ref(x)
             })
             .collect();
-        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| p.at(&combinators.cp.arith)).collect();
+        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| p.clone()).collect();
         let env_eq = kernel::cong_n(&int_ty, &env_ty_expr, &mk_env_expr, &cd, &lit_c, cp);
         let denoted_env = apply_n(mk_env_expr.clone(), cd);
         let lit_env = apply_n(mk_env_expr, lit_c);
@@ -2400,7 +2271,7 @@ fn eval_and_prove_direct_call(
     };
 
     let call_fn = combinators.call_ref(root, &root_captures, &[])?;
-    let d_args: Vec<Expr> = arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+    let d_args: Vec<Expr> = arg_triples.iter().map(|(_, d, _)| d.clone()).collect();
     let lit_args: Vec<Expr> = arg_triples
         .iter()
         .map(|&(x, _, _)| {
@@ -2408,7 +2279,7 @@ fn eval_and_prove_direct_call(
             combinators.cp.arith.lit_ref(x)
         })
         .collect();
-    let p_args: Vec<Expr> = arg_triples.iter().map(|(_, _, p)| p.at(&combinators.cp.arith)).collect();
+    let p_args: Vec<Expr> = arg_triples.iter().map(|(_, _, p)| p.clone()).collect();
 
     let (call_at_denoted, call_env_to_lit_step) = match &env_bridge {
         Some((denoted_env, lit_env, env_eq, env_ty_expr)) => {
@@ -2461,7 +2332,7 @@ fn eval_and_prove_direct_call(
         .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)) // already lit()'d building `lit_c` above
         .chain(arg_triples.iter().rev().map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)))
         .collect();
-    let axiom_at_literals = apply_n(axiom.at(&combinators.cp.arith), axiom_args);
+    let axiom_at_literals = apply_n(axiom.clone(), axiom_args);
 
     // Concrete value of `root`'s own body, at the literal args/captures --
     // recurses into the *same* `Var`/`Lit`/`Prim`/`If` fragment
@@ -2477,9 +2348,9 @@ fn eval_and_prove_direct_call(
     for &(x, _, _) in arg_triples.iter().rev() {
         combinators.cp.arith.lit(x);
         let l = combinators.cp.arith.lit_ref(x);
-        inner_params.push(Anchored::new(&combinators.cp.arith, l.clone()));
+        inner_params.push(l.clone());
         inner_concrete.push(x);
-        inner_facts.push(Anchored::new(&combinators.cp.arith, kernel::refl(l)));
+        inner_facts.push(kernel::refl(l));
     }
     if let Some(&max_rel) = root_captures.iter().max() {
         let pad_len = root_arity + max_rel as usize + 1;
@@ -2488,8 +2359,8 @@ fn eval_and_prove_direct_call(
         let filler = combinators.cp.arith.lit_ref(fx0);
         while inner_params.len() < pad_len {
             inner_concrete.push(fx0);
-            inner_params.push(Anchored::new(&combinators.cp.arith, filler.clone()));
-            inner_facts.push(Anchored::new(&combinators.cp.arith, kernel::refl(filler.clone())));
+            inner_params.push(filler.clone());
+            inner_facts.push(kernel::refl(filler.clone()));
         }
         for (j, &rel) in root_captures.iter().enumerate() {
             let (cx, _, _) = cap_triples[j];
@@ -2497,20 +2368,16 @@ fn eval_and_prove_direct_call(
             let l = combinators.cp.arith.lit_ref(cx);
             let idx = root_arity + rel as usize;
             inner_concrete[idx] = cx;
-            inner_params[idx] = Anchored::new(&combinators.cp.arith, l.clone());
-            inner_facts[idx] = Anchored::new(&combinators.cp.arith, kernel::refl(l));
+            inner_params[idx] = l.clone();
+            inner_facts[idx] = kernel::refl(l);
         }
     }
     // `eval_and_prove`'s own recursion below (over `root_body`) may lazily
     // push further postulates (`assume_prim_fact`/`assume_ite_fact`,
     // fresh literals), shifting the ambient depth -- so everything built
     // above (still at the pre-recursion depth) is anchored here and
-    // re-resolved fresh, via `.at()`, only once nothing more is left to
+    // re-resolved fresh, via `.clone()`, only once nothing more is left to
     // push, mirroring `build_ev_witness`'s own documented discipline.
-    let call_at_denoted = Anchored::new(&combinators.cp.arith, call_at_denoted);
-    let call_at_lit_env_lit_args = Anchored::new(&combinators.cp.arith, call_at_lit_env_lit_args);
-    let bridge = Anchored::new(&combinators.cp.arith, bridge);
-    let axiom_at_literals = Anchored::new(&combinators.cp.arith, axiom_at_literals);
 
     let (result, denote_lit, proof_d) = eval_and_prove(store, root_body, combinators, &inner_params, &inner_concrete, &inner_facts)?;
 
@@ -2519,10 +2386,10 @@ fn eval_and_prove_direct_call(
     //      = lit_ref(result) (proof_d)
     let int_ty2 = combinators.cp.arith.int_ty();
     let result_ref = combinators.cp.arith.lit_ref(result);
-    let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
-    let call_at_lit_env_lit_args = call_at_lit_env_lit_args.at(&combinators.cp.arith);
-    let bridge = bridge.at(&combinators.cp.arith);
-    let axiom_at_literals = axiom_at_literals.at(&combinators.cp.arith);
+    let call_at_denoted = call_at_denoted.clone();
+    let call_at_lit_env_lit_args = call_at_lit_env_lit_args.clone();
+    let bridge = bridge.clone();
+    let axiom_at_literals = axiom_at_literals.clone();
     let bridge_to_denote =
         kernel::trans_proof(&int_ty2, &call_at_denoted, &call_at_lit_env_lit_args, &denote_lit, bridge, axiom_at_literals);
     let final_proof = kernel::trans_proof(&int_ty2, &call_at_denoted, &denote_lit, &result_ref, bridge_to_denote, proof_d);
@@ -2548,7 +2415,7 @@ fn eval_and_prove_direct_call(
 /// combine them). This is what lets `axiom_at_literals`'s own RHS
 /// (`clo_eq_ref`'s axiom, instantiated) be matched, term-for-term,
 /// against a value built here independently. Also returns `inner`'s own
-/// captures resolved to `(i64, Anchored, Anchored)` triples, ready for
+/// captures resolved to `(i64, Expr, Expr)` triples, ready for
 /// `eval_and_prove_direct_call` once a value is actually *called* (not
 /// merely *created*) -- whichever branch the `If` concretely selects.
 /// `None` if `inner` is itself self-recursive (not expected to arise here
@@ -2558,21 +2425,21 @@ fn eval_and_prove_direct_call(
 /// capture -- shared alias for the `Vec` of these `eval_and_prove_call`'s
 /// own family of functions passes around, just to keep the type simple
 /// enough for `clippy::type_complexity` not to flag it.
-type ValueTriples = Vec<(i64, Anchored, Anchored)>;
+type ValueTriples = Vec<(i64, Expr, Expr)>;
 
 /// `build_clo_call_bridge`'s own return: `(call_at_denoted,
 /// call_at_lit_env_lit_args, bridge, axiom_at_literals, inner_params,
 /// inner_concrete, inner_facts, k, shape)` -- see its own docs. A type
 /// alias purely to keep this under `clippy::type_complexity`'s own
 /// threshold, same rationale as `ValueTriples`.
-type CloCallBridge = (Expr, Expr, Expr, Expr, Vec<Anchored>, Vec<i64>, Vec<Anchored>, usize, ClosureRhsShape);
+type CloCallBridge = (Expr, Expr, Expr, Expr, Vec<Expr>, Vec<i64>, Vec<Expr>, usize, ClosureRhsShape);
 
 fn inner_closure_literal_value(
     combinators: &mut ClosureCombinators<'_>,
     inner: Hash,
-    inner_params: &[Anchored],
+    inner_params: &[Expr],
     inner_concrete: &[i64],
-    inner_facts: &[Anchored],
+    inner_facts: &[Expr],
 ) -> Option<(Expr, ValueTriples)> {
     let (inner_arity, inner_body, inner_is_rec) = compile::peel(combinators.store, inner)?;
     if inner_is_rec {
@@ -2583,8 +2450,8 @@ fn inner_closure_literal_value(
     for &rel in &inner_captures {
         let rel = rel as usize;
         let x = *inner_concrete.get(rel)?;
-        let d = Anchored::new(&combinators.cp.arith, inner_params.get(rel)?.at(&combinators.cp.arith));
-        let p = Anchored::new(&combinators.cp.arith, inner_facts.get(rel)?.at(&combinators.cp.arith));
+        let d = inner_params.get(rel)?.clone();
+        let p = inner_facts.get(rel)?.clone();
         cap_triples.push((x, d, p));
     }
     let inner_dummy: Vec<Option<usize>> = vec![None; inner_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -2654,10 +2521,10 @@ fn build_clo_call_bridge(
     store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     subject: Hash,
-    sat_arg_triples: &[(i64, Anchored, Anchored)],
-    outer_params: &[Anchored],
+    sat_arg_triples: &[(i64, Expr, Expr)],
+    outer_params: &[Expr],
     outer_concrete: &[i64],
-    outer_facts: &[Anchored],
+    outer_facts: &[Expr],
 ) -> Option<CloCallBridge> {
     let (subject_arity, subject_body, subject_is_rec) = compile::peel(store, subject)?;
     let k = match combinator_return_type(store, subject) {
@@ -2673,8 +2540,8 @@ fn build_clo_call_bridge(
     for &rel in &subject_captures {
         let rel = rel as usize;
         let x = *outer_concrete.get(rel)?;
-        let d = Anchored::new(&combinators.cp.arith, outer_params.get(rel)?.at(&combinators.cp.arith));
-        let p = Anchored::new(&combinators.cp.arith, outer_facts.get(rel)?.at(&combinators.cp.arith));
+        let d = outer_params.get(rel)?.clone();
+        let p = outer_facts.get(rel)?.clone();
         cap_triples.push((x, d, p));
     }
     let n = subject_captures.len();
@@ -2685,7 +2552,6 @@ fn build_clo_call_bridge(
     // for this exact shape too, see its own docs), so fetched before
     // anything above is combined into a larger term.
     let (axiom, shape) = combinators.clo_eq_ref(subject)?;
-    let axiom = Anchored::new(&combinators.cp.arith, axiom);
 
     let sig: Vec<Option<usize>> = vec![None; n];
 
@@ -2698,7 +2564,7 @@ fn build_clo_call_bridge(
     let env_bridge = if n > 0 {
         let mk_env_expr = combinators.cp.mk_env_ref(&sig);
         let env_ty_expr = combinators.cp.env_ty(&sig);
-        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
         let lit_c: Vec<Expr> = cap_triples
             .iter()
             .map(|&(x, _, _)| {
@@ -2706,7 +2572,7 @@ fn build_clo_call_bridge(
                 combinators.cp.arith.lit_ref(x)
             })
             .collect();
-        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| p.at(&combinators.cp.arith)).collect();
+        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| p.clone()).collect();
         let int_ty = combinators.cp.arith.int_ty();
         let env_eq = kernel::cong_n(&int_ty, &env_ty_expr, &mk_env_expr, &cd, &lit_c, cp);
         let denoted_env = apply_n(mk_env_expr.clone(), cd);
@@ -2717,7 +2583,7 @@ fn build_clo_call_bridge(
     };
 
     let call_fn = combinators.call_ref(subject, &subject_captures, &[])?;
-    let d_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+    let d_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, d, _)| d.clone()).collect();
     let lit_sat_args: Vec<Expr> = sat_arg_triples
         .iter()
         .map(|&(x, _, _)| {
@@ -2725,7 +2591,7 @@ fn build_clo_call_bridge(
             combinators.cp.arith.lit_ref(x)
         })
         .collect();
-    let p_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, _, p)| p.at(&combinators.cp.arith)).collect();
+    let p_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, _, p)| p.clone()).collect();
 
     let (call_at_denoted, call_env_to_lit_step) = match &env_bridge {
         Some((denoted_env, lit_env, env_eq, env_ty_expr)) => {
@@ -2772,7 +2638,7 @@ fn build_clo_call_bridge(
         .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
         .chain(sat_arg_triples.iter().rev().map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)))
         .collect();
-    let axiom_at_literals = apply_n(axiom.at(&combinators.cp.arith), axiom_args);
+    let axiom_at_literals = apply_n(axiom.clone(), axiom_args);
 
     // `subject`'s own inner frame -- same sparse construction
     // `eval_and_prove_direct_call` builds for its own recursive body
@@ -2785,9 +2651,9 @@ fn build_clo_call_bridge(
     for &(x, _, _) in sat_arg_triples.iter().rev() {
         combinators.cp.arith.lit(x);
         let l = combinators.cp.arith.lit_ref(x);
-        inner_params.push(Anchored::new(&combinators.cp.arith, l.clone()));
+        inner_params.push(l.clone());
         inner_concrete.push(x);
-        inner_facts.push(Anchored::new(&combinators.cp.arith, kernel::refl(l)));
+        inner_facts.push(kernel::refl(l));
     }
     if let Some(&max_rel) = subject_captures.iter().max() {
         let pad_len = subject_arity + max_rel as usize + 1;
@@ -2796,8 +2662,8 @@ fn build_clo_call_bridge(
         let filler = combinators.cp.arith.lit_ref(fx0);
         while inner_params.len() < pad_len {
             inner_concrete.push(fx0);
-            inner_params.push(Anchored::new(&combinators.cp.arith, filler.clone()));
-            inner_facts.push(Anchored::new(&combinators.cp.arith, kernel::refl(filler.clone())));
+            inner_params.push(filler.clone());
+            inner_facts.push(kernel::refl(filler.clone()));
         }
         for (j, &rel) in subject_captures.iter().enumerate() {
             let (cx, _, _) = cap_triples[j];
@@ -2805,8 +2671,8 @@ fn build_clo_call_bridge(
             let l = combinators.cp.arith.lit_ref(cx);
             let idx = subject_arity + rel as usize;
             inner_concrete[idx] = cx;
-            inner_params[idx] = Anchored::new(&combinators.cp.arith, l.clone());
-            inner_facts[idx] = Anchored::new(&combinators.cp.arith, kernel::refl(l));
+            inner_params[idx] = l.clone();
+            inner_facts[idx] = kernel::refl(l);
         }
     }
 
@@ -2850,40 +2716,30 @@ fn resolve_closure_shape_to_leaf(
     bridge: &Expr,
     axiom_at_literals: &Expr,
     shape: &ClosureRhsShape,
-    inner_params: &[Anchored],
+    inner_params: &[Expr],
     inner_concrete: &[i64],
-    inner_facts: &[Anchored],
+    inner_facts: &[Expr],
     k: usize,
-    extra_arg_triples: &[(i64, Anchored, Anchored)],
+    extra_arg_triples: &[(i64, Expr, Expr)],
 ) -> Option<(Hash, ValueTriples, ValueTriples, Expr, Expr, Expr)> {
-    let call_at_denoted = Anchored::new(&combinators.cp.arith, call_at_denoted.clone());
-    let call_at_lit_env_lit_args = Anchored::new(&combinators.cp.arith, call_at_lit_env_lit_args.clone());
-    let bridge = Anchored::new(&combinators.cp.arith, bridge.clone());
-    let axiom_at_literals = Anchored::new(&combinators.cp.arith, axiom_at_literals.clone());
+    let call_at_denoted = call_at_denoted.clone();
+    let call_at_lit_env_lit_args = call_at_lit_env_lit_args.clone();
+    let bridge = bridge.clone();
+    let axiom_at_literals = axiom_at_literals.clone();
 
     match shape {
         ClosureRhsShape::IfTree(tree) => {
             let leaf_shapes = classify_closure_if_tree_leaves(store, tree, k)?;
             let (resolution, tree_value_at_literals, leaf_value, tree_to_leaf_value) =
                 resolve_closure_if_tree(store, combinators, tree, &leaf_shapes, inner_params, inner_concrete, inner_facts, k, extra_arg_triples)?;
-            let tree_value_at_literals = Anchored::new(&combinators.cp.arith, tree_value_at_literals);
-            let leaf_value = Anchored::new(&combinators.cp.arith, leaf_value);
-            let tree_to_leaf_value = Anchored::new(&combinators.cp.arith, tree_to_leaf_value);
 
-            // Nothing pushes past here -- resolve everything fresh, in one
-            // batch, only once nothing more is left to push. `resolution`
-            // itself needs no re-anchoring: its `Hash`/`ValueTriples`
-            // fields are copy/self-resolving, and its `Indirect` variant's
-            // three facts are already `Anchored` (built that way where
-            // `resolve_closure_if_tree` first constructed them), so they
-            // resolve fresh below exactly like everything else.
-            let call_at_denoted_here = call_at_denoted.at(&combinators.cp.arith);
-            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.at(&combinators.cp.arith);
-            let bridge_here = bridge.at(&combinators.cp.arith);
-            let axiom_at_literals_here = axiom_at_literals.at(&combinators.cp.arith);
-            let tree_value_at_literals = tree_value_at_literals.at(&combinators.cp.arith);
-            let leaf_value = leaf_value.at(&combinators.cp.arith);
-            let tree_to_leaf_value = tree_to_leaf_value.at(&combinators.cp.arith);
+            let call_at_denoted_here = call_at_denoted.clone();
+            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.clone();
+            let bridge_here = bridge.clone();
+            let axiom_at_literals_here = axiom_at_literals.clone();
+            let tree_value_at_literals = tree_value_at_literals.clone();
+            let leaf_value = leaf_value.clone();
+            let tree_to_leaf_value = tree_to_leaf_value.clone();
             let clo_ty = combinators.cp.clo_ty(k);
 
             // `axiom_at_literals`'s own RHS is exactly the tree's own
@@ -2901,8 +2757,6 @@ fn resolve_closure_shape_to_leaf(
             let root_to_tree_value =
                 kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &tree_value_at_literals, bridge_here, axiom_at_literals_here);
             let root_to_leaf_value = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &tree_value_at_literals, &leaf_value, root_to_tree_value, tree_to_leaf_value);
-            let root_to_leaf_value = Anchored::new(&combinators.cp.arith, root_to_leaf_value);
-            let leaf_value = Anchored::new(&combinators.cp.arith, leaf_value);
 
             match resolution {
                 IfTreeLeafResolution::Direct { chosen, cap_triples: chosen_cap_triples, arg_prefix: chosen_arg_prefix } => {
@@ -2915,18 +2769,12 @@ fn resolve_closure_shape_to_leaf(
                     // least one supplied arg, see
                     // `classify_closure_if_tree_leaf`), so it doubles as the
                     // dispatch signal here without threading a separate
-                    // flag. Either axiom's own first use for this key may
-                    // lazily push, so everything built above is anchored
-                    // *first* (a push that happens *before* wrapping a
-                    // value in `Anchored` is captured at the already-grown
-                    // depth, silently computing a zero shift later -- this
-                    // ordering bug was caught here, not by inspection).
+                    // flag.
                     let s = chosen_arg_prefix.len();
                     let apply_axiom = if s == 0 { combinators.apply_clo_eq_ref(chosen)? } else { combinators.apply_pap_eq_ref(chosen, s)? };
-                    let apply_axiom = Anchored::new(&combinators.cp.arith, apply_axiom);
 
-                    let root_to_chosen = root_to_leaf_value.at(&combinators.cp.arith);
-                    let chosen_value_lit = leaf_value.at(&combinators.cp.arith);
+                    let root_to_chosen = root_to_leaf_value.clone();
+                    let chosen_value_lit = leaf_value.clone();
 
                     // Instantiate at `chosen`'s own raw literal captures
                     // (ascending, matching `chosen_cap_triples`'s own order),
@@ -2946,10 +2794,10 @@ fn resolve_closure_shape_to_leaf(
                     let apply_axiom_args: Vec<Expr> = chosen_cap_triples
                         .iter()
                         .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
-                        .chain(chosen_arg_prefix.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)))
-                        .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.at(&combinators.cp.arith)))
+                        .chain(chosen_arg_prefix.iter().map(|(_, d, _)| d.clone()))
+                        .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.clone()))
                         .collect();
-                    let apply_eq_chosen = apply_n(apply_axiom.at(&combinators.cp.arith), apply_axiom_args);
+                    let apply_eq_chosen = apply_n(apply_axiom.clone(), apply_axiom_args);
 
                     let mut chosen_arg_triples = chosen_arg_prefix;
                     chosen_arg_triples.extend(extra_arg_triples.iter().cloned());
@@ -2967,12 +2815,12 @@ fn resolve_closure_shape_to_leaf(
                     // `chosen_value`, and reuse `apply_eq_chosen` as-is (it
                     // already covers the full "call with all args" fact --
                     // building a second one here would double-count).
-                    let leaf_value = leaf_value.at(&combinators.cp.arith);
-                    let chosen_value = chosen_value.at(&combinators.cp.arith);
-                    let leaf_to_chosen = leaf_to_chosen.at(&combinators.cp.arith);
-                    let root_to_leaf_value = root_to_leaf_value.at(&combinators.cp.arith);
+                    let leaf_value = leaf_value.clone();
+                    let chosen_value = chosen_value.clone();
+                    let leaf_to_chosen = leaf_to_chosen.clone();
+                    let root_to_leaf_value = root_to_leaf_value.clone();
                     let root_to_chosen = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &leaf_value, &chosen_value, root_to_leaf_value, leaf_to_chosen);
-                    let apply_eq_chosen = apply_eq_chosen.at(&combinators.cp.arith);
+                    let apply_eq_chosen = apply_eq_chosen.clone();
                     Some((chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, root_to_chosen, apply_eq_chosen))
                 }
             }
@@ -2987,15 +2835,15 @@ fn resolve_closure_shape_to_leaf(
             for &rel in &g_captures {
                 let rel = rel as usize;
                 let x = *inner_concrete.get(rel)?;
-                let d = Anchored::new(&combinators.cp.arith, inner_params.get(rel)?.at(&combinators.cp.arith));
-                let p = Anchored::new(&combinators.cp.arith, inner_facts.get(rel)?.at(&combinators.cp.arith));
+                let d = inner_params.get(rel)?.clone();
+                let p = inner_facts.get(rel)?.clone();
                 g_cap_triples.push((x, d, p));
             }
 
             let mut supplied_triples = Vec::with_capacity(s);
             for &a in args {
                 let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
-                supplied_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+                supplied_triples.push((x, d, p));
             }
 
             // `pap_at_denoted`: `pap_ref(g, s)(g_env?, denote(args[0],
@@ -3009,13 +2857,12 @@ fn resolve_closure_shape_to_leaf(
             // identical role in the `IfTree` branch above.
             let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
             let pap_fn = combinators.pap_ref(g, s, &g_dummy)?;
-            let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
 
-            let call_at_denoted_here = call_at_denoted.at(&combinators.cp.arith);
-            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.at(&combinators.cp.arith);
-            let bridge_here = bridge.at(&combinators.cp.arith);
-            let axiom_at_literals_here = axiom_at_literals.at(&combinators.cp.arith);
-            let pap_fn = pap_fn.at(&combinators.cp.arith);
+            let call_at_denoted_here = call_at_denoted.clone();
+            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.clone();
+            let bridge_here = bridge.clone();
+            let axiom_at_literals_here = axiom_at_literals.clone();
+            let pap_fn = pap_fn.clone();
             let clo_ty = combinators.cp.clo_ty(k);
 
             let g_env_denoted = if g_cap_triples.is_empty() {
@@ -3023,10 +2870,10 @@ fn resolve_closure_shape_to_leaf(
             } else {
                 let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
                 let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-                let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+                let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
                 Some(apply_n(mk_env_expr, cd))
             };
-            let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+            let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| d.clone()).collect();
             let mut pap_args = Vec::with_capacity(1 + s);
             pap_args.extend(g_env_denoted);
             pap_args.extend(d_supplied);
@@ -3039,13 +2886,10 @@ fn resolve_closure_shape_to_leaf(
             // `(g, s)` may lazily push, so everything built above is
             // anchored *first*, same discipline `IfTree`'s own
             // `apply_clo_eq_ref` call above uses.
-            let root_to_chosen = Anchored::new(&combinators.cp.arith, root_to_chosen);
-            let pap_at_denoted = Anchored::new(&combinators.cp.arith, pap_at_denoted);
             let apply_axiom = combinators.apply_pap_eq_ref(g, s)?;
-            let apply_axiom = Anchored::new(&combinators.cp.arith, apply_axiom);
 
-            let root_to_chosen = root_to_chosen.at(&combinators.cp.arith);
-            let pap_at_denoted = pap_at_denoted.at(&combinators.cp.arith);
+            let root_to_chosen = root_to_chosen.clone();
+            let pap_at_denoted = pap_at_denoted.clone();
 
             // Instantiate `apply_pap_eq_ref(g, s)` at `g`'s own raw
             // literal captures, then the `s` supplied args' own *denoted*
@@ -3061,10 +2905,10 @@ fn resolve_closure_shape_to_leaf(
             let apply_axiom_args: Vec<Expr> = g_cap_triples
                 .iter()
                 .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
-                .chain(supplied_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)))
-                .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.at(&combinators.cp.arith)))
+                .chain(supplied_triples.iter().map(|(_, d, _)| d.clone()))
+                .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.clone()))
                 .collect();
-            let apply_eq_chosen = apply_n(apply_axiom.at(&combinators.cp.arith), apply_axiom_args);
+            let apply_eq_chosen = apply_n(apply_axiom.clone(), apply_axiom_args);
 
             let mut chosen_arg_triples = supplied_triples;
             chosen_arg_triples.extend(extra_arg_triples.iter().cloned());
@@ -3083,7 +2927,7 @@ fn resolve_closure_shape_to_leaf(
             let mut g_arg_triples = Vec::with_capacity(args.len());
             for &a in args {
                 let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
-                g_arg_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+                g_arg_triples.push((x, d, p));
             }
             let (g_call_at_denoted, g_call_at_lit_env_lit_args, g_bridge, g_axiom_at_literals, g_inner_params, g_inner_concrete, g_inner_facts, g_k, g_shape) =
                 build_clo_call_bridge(store, combinators, *g, &g_arg_triples, inner_params, inner_concrete, inner_facts)?;
@@ -3101,32 +2945,17 @@ fn resolve_closure_shape_to_leaf(
             // expressions and the same concrete values, so they always
             // agree syntactically (the same reliance `clo_eq_ref_pap`'s
             // own `pap_at_denoted` construction above already makes).
-            let call_at_denoted_here = call_at_denoted.at(&combinators.cp.arith);
-            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.at(&combinators.cp.arith);
-            let bridge_here = bridge.at(&combinators.cp.arith);
-            let axiom_at_literals_here = axiom_at_literals.at(&combinators.cp.arith);
+            let call_at_denoted_here = call_at_denoted.clone();
+            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.clone();
+            let bridge_here = bridge.clone();
+            let axiom_at_literals_here = axiom_at_literals.clone();
             let clo_ty = combinators.cp.clo_ty(k);
             let root_to_g = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &g_call_at_denoted, bridge_here, axiom_at_literals_here);
-
-            // The recursive `resolve_closure_shape_to_leaf` call just
-            // below may lazily push a great many further postulates (its
-            // own recursion could itself be another `Call`, on top of
-            // whatever `g`'s own `IfTree`/`Pap` resolution needs) --
-            // anchor everything built above *now*; re-resolved fresh
-            // afterward (`clo_ty` too -- a `Postulates::get`-derived
-            // reference is exactly as stale-prone as any other unanchored
-            // value, see `build_clo_call_bridge`'s own identical
-            // rationale, and reusing it unchanged here was a genuine bug
-            // caught by `debug_assert_has_type` below, not by inspection)
-            // only once nothing more is left to push, same discipline
-            // this whole file uses throughout.
-            let root_to_g = Anchored::new(&combinators.cp.arith, root_to_g);
-            let g_call_at_denoted = Anchored::new(&combinators.cp.arith, g_call_at_denoted);
 
             let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, g_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(
                 store,
                 combinators,
-                &g_call_at_denoted.at(&combinators.cp.arith),
+                &g_call_at_denoted.clone(),
                 &g_call_at_lit_env_lit_args,
                 &g_bridge,
                 &g_axiom_at_literals,
@@ -3139,9 +2968,9 @@ fn resolve_closure_shape_to_leaf(
             )?;
 
             let clo_ty = combinators.cp.clo_ty(k);
-            let root_to_g = root_to_g.at(&combinators.cp.arith);
-            let g_call_at_denoted = g_call_at_denoted.at(&combinators.cp.arith);
-            let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
+            let root_to_g = root_to_g.clone();
+            let g_call_at_denoted = g_call_at_denoted.clone();
+            let call_at_denoted = call_at_denoted.clone();
             let root_to_chosen = kernel::trans_proof(&clo_ty, &call_at_denoted, &g_call_at_denoted, &chosen_value, root_to_g, g_to_chosen);
             debug_assert_has_type(
                 &combinators.cp.arith.p,
@@ -3162,9 +2991,9 @@ fn eval_and_prove_call_over(
     args: &[Hash],
     callee_param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
-    params: &[Anchored],
+    params: &[Expr],
     concrete: &[i64],
-    param_facts: &[Anchored],
+    param_facts: &[Expr],
 ) -> Option<(i64, Expr, Expr)> {
     if callee_param_types.iter().any(Option::is_some) {
         return None;
@@ -3184,7 +3013,7 @@ fn eval_and_prove_call_over(
     let mut arg_triples = Vec::with_capacity(args.len());
     for &a in args {
         let (x, d, p) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
-        arg_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+        arg_triples.push((x, d, p));
     }
     let (sat_arg_triples, extra_arg_triples) = arg_triples.split_at(root_arity);
 
@@ -3198,7 +3027,6 @@ fn eval_and_prove_call_over(
     // now so it can be re-resolved fresh afterward, in the shared tail;
     // the other three are consumed (cloned) immediately inside that call,
     // so they don't need to survive past it.
-    let call_at_denoted = Anchored::new(&combinators.cp.arith, call_at_denoted);
 
     // Resolve which concrete closure applies (`IfTree`: evaluating
     // `cond` within `root`'s own inner frame; `Pap`: there's only ever
@@ -3215,7 +3043,7 @@ fn eval_and_prove_call_over(
     let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, root_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(
         store,
         combinators,
-        &call_at_denoted.at(&combinators.cp.arith),
+        &call_at_denoted.clone(),
         &call_at_lit_env_lit_args,
         &bridge,
         &axiom_at_literals,
@@ -3227,7 +3055,7 @@ fn eval_and_prove_call_over(
         extra_arg_triples,
     )?;
 
-    let call_at_denoted = call_at_denoted.at(&combinators.cp.arith);
+    let call_at_denoted = call_at_denoted.clone();
     let int_ty2 = combinators.cp.arith.int_ty();
     let clo_ty = combinators.cp.clo_ty(k);
 
@@ -3241,7 +3069,7 @@ fn eval_and_prove_call_over(
     // quantified over `Int`-typed values, so it can be instantiated
     // directly at these denoted expressions -- no separate "route through
     // literals first" step is needed at all.
-    let d_extra_args: Vec<Expr> = extra_arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+    let d_extra_args: Vec<Expr> = extra_arg_triples.iter().map(|(_, d, _)| d.clone()).collect();
 
     // `cong1` over a `Clo_k`-typed value's own use as the callee, the `k`
     // extra args held fixed at their denoted values, using
@@ -3261,10 +3089,6 @@ fn eval_and_prove_call_over(
     // own body) may lazily push further postulates -- anchor everything
     // built above now, re-resolved fresh only once nothing more is left
     // to push, same discipline `eval_and_prove_direct_call` itself uses.
-    let apply_at_denoted = Anchored::new(&combinators.cp.arith, apply_at_denoted);
-    let apply_at_chosen_denoted_args = Anchored::new(&combinators.cp.arith, apply_at_chosen_denoted_args);
-    let clo_step = Anchored::new(&combinators.cp.arith, clo_step);
-    let apply_eq_chosen = Anchored::new(&combinators.cp.arith, apply_eq_chosen);
 
     let (result, call_at_denoted_for_chosen, proof_for_chosen) =
         eval_and_prove_direct_call(store, chosen, combinators, &chosen_cap_triples, &chosen_arg_triples)?;
@@ -3278,10 +3102,10 @@ fn eval_and_prove_call_over(
     //      = lit_ref(result) (proof_for_chosen)
     let int_ty3 = combinators.cp.arith.int_ty();
     let result_ref = combinators.cp.arith.lit_ref(result);
-    let apply_at_denoted = apply_at_denoted.at(&combinators.cp.arith);
-    let apply_at_chosen_denoted_args = apply_at_chosen_denoted_args.at(&combinators.cp.arith);
-    let clo_step = clo_step.at(&combinators.cp.arith);
-    let apply_eq_chosen = apply_eq_chosen.at(&combinators.cp.arith);
+    let apply_at_denoted = apply_at_denoted.clone();
+    let apply_at_chosen_denoted_args = apply_at_chosen_denoted_args.clone();
+    let clo_step = clo_step.clone();
+    let apply_eq_chosen = apply_eq_chosen.clone();
     let bridge_to_call = kernel::trans_proof(
         &int_ty3,
         &apply_at_denoted,
@@ -3312,10 +3136,10 @@ fn trace_leaf(store: &TermStore, leaves: &[Leaf], concrete: &[i64]) -> Option<us
 /// Canonical params for one call: literals, trivially equal to themselves
 /// -- see the section docs above for why this (not a caller-supplied
 /// denoted expression) is what makes `build_ev_witness`'s `memo` sound.
-fn canonical_params(combinators: &ClosureCombinators<'_>, concrete: &[i64]) -> (Vec<Anchored>, Vec<Anchored>) {
+fn canonical_params(combinators: &ClosureCombinators<'_>, concrete: &[i64]) -> (Vec<Expr>, Vec<Expr>) {
     let arith = &combinators.cp.arith;
-    let params: Vec<Anchored> = concrete.iter().map(|&c| Anchored::new(arith, arith.lit_ref(c))).collect();
-    let param_facts = params.iter().map(|p| Anchored::new(arith, kernel::refl(p.at(arith)))).collect();
+    let params: Vec<Expr> = concrete.iter().map(|&c| arith.lit_ref(c)).collect();
+    let param_facts = params.iter().map(|p| kernel::refl(p.clone())).collect();
     (params, param_facts)
 }
 
@@ -3323,9 +3147,9 @@ fn canonical_params(combinators: &ClosureCombinators<'_>, concrete: &[i64]) -> (
 /// `build_ev_witness` will meet on `concrete`'s trace, and throws the
 /// results away. Every postulate those calls push (`assume_prim_fact` and
 /// the like, each memoised) then exists before the witness is built, so
-/// nothing grows the context while it is built: `Anchored::at` never
-/// shifts, and a `memo` hit shares the stored witness instead of copying
-/// it (`RELATED_WORK.md` §62). It only saves work: a push it misses costs
+/// nothing grows the context while it is built, and a `memo` hit shares
+/// the stored witness instead of copying it (`RELATED_WORK.md` §62). It
+/// only saves work: a push it misses costs
 /// that sharing, not correctness. `seen` bounds it the way `budget` bounds
 /// `build_ev_witness`: one entry per distinct call.
 fn push_ev_facts(
@@ -3362,9 +3186,10 @@ fn push_ev_facts(
 /// following the real trace `concrete` determines (mirroring
 /// `classify_step`, but for any leaf `flatten_tree` found, not just a tail
 /// loop) and recursing into every self-call occurrence found along the way.
-/// Returns `(v, e)`, fresh as of the moment this call returns -- a caller
-/// that holds either across further postulate pushes (as every caller here
-/// does) must wrap them in `Anchored` itself. `params`/`param_facts` are
+/// Returns `(v, e)`; a caller may hold either across further postulate
+/// pushes (as every caller here does) with no extra care, since a pushed
+/// postulate is a `Const` and shifts nothing (`RELATED_WORK.md` §69).
+/// `params`/`param_facts` are
 /// never taken as input (see the section docs above): this function always
 /// works in terms of the canonical literal params for `concrete`, which is
 /// what makes `memo` (keyed on `concrete` alone) sound. `budget` bounds the
@@ -3376,14 +3201,14 @@ fn build_ev_witness(
     self_call: SelfCall,
     leaves: &[Leaf],
     ev_leaf_positions: &[usize],
-    combines: &[Anchored],
+    combines: &[Expr],
     ev_pos: usize,
     concrete: &[i64],
     budget: &mut usize,
-    memo: &mut HashMap<Vec<i64>, (Anchored, Anchored)>,
+    memo: &mut HashMap<Vec<i64>, (Expr, Expr)>,
 ) -> Option<(Expr, Expr)> {
     if let Some((v, e)) = memo.get(concrete) {
-        return Some((v.at(&combinators.cp.arith), e.at(&combinators.cp.arith)));
+        return Some((v.clone(), e.clone()));
     }
     *budget = budget.checked_sub(1)?;
 
@@ -3391,14 +3216,10 @@ fn build_ev_witness(
     let leaf = &leaves[leaf_idx];
     let (params, param_facts) = canonical_params(combinators, concrete);
 
-    // Collected across the loops below, which push further postulates
-    // (assume_prim_fact, and every self-call's own recursion) -- anchor
-    // each one immediately so it can be resolved fresh once everything is
-    // done growing, at the final assembly below.
     let mut premises = Vec::with_capacity(leaf.path.len());
     for &(cond, _lit) in &leaf.path {
         let (_, _, proof) = eval_and_prove(store, cond, combinators, &params, concrete, &param_facts)?;
-        premises.push(Anchored::new(&combinators.cp.arith, proof));
+        premises.push(proof);
     }
 
     let mut vs = Vec::with_capacity(leaf.calls.len());
@@ -3411,8 +3232,8 @@ fn build_ev_witness(
             let arg = call[self_call.arity - 1 - i];
             let (x, denoted, pf) = eval_and_prove(store, arg, combinators, &params, concrete, &param_facts)?;
             new_concrete.push(x);
-            denoted_args.push(Anchored::new(&combinators.cp.arith, denoted));
-            denoted_facts.push(Anchored::new(&combinators.cp.arith, pf));
+            denoted_args.push(denoted);
+            denoted_facts.push(pf);
         }
 
         // The recursive call's own witness, always in canonical
@@ -3430,8 +3251,6 @@ fn build_ev_witness(
             budget,
             memo,
         )?;
-        let v = Anchored::new(&combinators.cp.arith, v);
-        let e_canonical = Anchored::new(&combinators.cp.arith, e_canonical);
 
         // Recast `e_canonical : Ev(lit_params, v)` to `Ev(denoted_params,
         // v)` -- what *this* leaf's own `Ev` constructor actually expects
@@ -3441,17 +3260,17 @@ fn build_ev_witness(
         // resulting type equality.
         let int_ty = combinators.cp.arith.int_ty();
         let lit_params: Vec<Expr> = new_concrete.iter().map(|&x| combinators.cp.arith.lit_ref(x)).collect();
-        let denoted_params: Vec<Expr> = denoted_args.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+        let denoted_params: Vec<Expr> = denoted_args.to_vec();
         let ps: Vec<Expr> = denoted_facts
             .iter()
             .zip(&denoted_params)
             .zip(&lit_params)
-            .map(|((pf, dp), lp)| kernel::sym(&int_ty, dp, lp, pf.at(&combinators.cp.arith)))
+            .map(|((pf, dp), lp)| kernel::sym(&int_ty, dp, lp, pf.clone()))
             .collect();
-        let v_resolved = v.at(&combinators.cp.arith);
-        let v_anchored = Anchored::new(&combinators.cp.arith, v_resolved.clone());
+        let v_resolved = v.clone();
+        let v_anchored = v_resolved.clone();
         let f = params_and_close(&mut combinators.cp.arith, self_call.arity, kernel::Binder::Lam, |arith, pp| {
-            Some(ev_of(arith, ev_pos, &pp.at(arith), v_anchored.at(arith)))
+            Some(ev_of(arith, ev_pos, pp, v_anchored.clone()))
         })?;
         let ev_eq = kernel::cong_n(&int_ty, &kernel::sort(0), &f, &lit_params, &denoted_params, ps);
         let e = kernel::transport(
@@ -3459,27 +3278,27 @@ fn build_ev_witness(
             ev_of(&combinators.cp.arith, ev_pos, &lit_params, v_resolved.clone()),
             ev_of(&combinators.cp.arith, ev_pos, &denoted_params, v_resolved),
             ev_eq,
-            e_canonical.at(&combinators.cp.arith),
+            e_canonical.clone(),
         );
         vs.push(v);
-        es.push(Anchored::new(&combinators.cp.arith, e));
+        es.push(e);
     }
 
     // Nothing left to grow arith.p.globals from here -- resolve everything
     // fresh, once, for the final assembly.
-    let params: Vec<Expr> = params.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-    let premises: Vec<Expr> = premises.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-    let vs: Vec<Expr> = vs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
-    let es: Vec<Expr> = es.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+    let params: Vec<Expr> = params.to_vec();
+    let premises: Vec<Expr> = premises.to_vec();
+    let vs: Vec<Expr> = vs.to_vec();
+    let es: Vec<Expr> = es.to_vec();
 
     let args = params.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es);
     let e = apply_n(combinators.cp.arith.p.get(ev_leaf_positions[leaf_idx]), args);
-    let v = combine_of(&combinators.cp.arith, &combines[leaf_idx], &params, &vs);
+    let v = combine_of(&combines[leaf_idx], &params, &vs);
     let int_ty_check = combinators.cp.arith.int_ty();
     debug_assert_has_type(&combinators.cp.arith.p, &v, &int_ty_check, "build_ev_witness: v");
     let ev_check = ev_of(&combinators.cp.arith, ev_pos, &params, v.clone());
     debug_assert_has_type(&combinators.cp.arith.p, &e, &ev_check, "build_ev_witness: e");
-    memo.insert(concrete.to_vec(), (Anchored::new(&combinators.cp.arith, v.clone()), Anchored::new(&combinators.cp.arith, e.clone())));
+    memo.insert(concrete.to_vec(), (v.clone(), e.clone()));
     Some((v, e))
 }
 
@@ -3537,8 +3356,8 @@ pub fn prove_tail_recursive_universal_with_instances(
     let theorem = UniversalTailProof {
         globals: scaffold.combinators.cp.arith.p.globals.clone(),
         arity: scaffold.arity,
-        theorem_ty: scaffold.theorem_ty.at(&scaffold.combinators),
-        theorem_proof: scaffold.theorem_proof.at(&scaffold.combinators),
+        theorem_ty: scaffold.theorem_ty.clone(),
+        theorem_proof: scaffold.theorem_proof.clone(),
     };
     let instances = args_list
         .iter()
@@ -3584,7 +3403,7 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
     )?;
 
     // Fresh past all the growth `build_ev_witness` just did.
-    let theorem_proof = scaffold.theorem_proof.at(&scaffold.combinators);
+    let theorem_proof = scaffold.theorem_proof.clone();
     let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.combinators.lit_ref(c)).collect();
     let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
     let ty = scaffold.combinators.cp.arith.p.infer(&applied).ok()?;
@@ -3810,8 +3629,7 @@ fn param_types_for(store: &TermStore, h: Hash) -> Option<Vec<Option<usize>>> {
 /// then (for the latter) compare `args.len()` against the callee's own
 /// arity. Pure and side-effect-free (`param_types_for` is the only
 /// fallible step, itself already pure), so classifying *before* touching
-/// a caller's own `combinators` is always safe -- nothing here can go
-/// stale the way a lazy postulate push could (see `Anchored`'s own docs).
+/// a caller's own `combinators` is always safe.
 enum AppShape {
     /// `Var(i)` (`root`, its own `Hash`) with `param_types[i] = Some(k)`,
     /// called with exactly `k` arguments.
@@ -4192,24 +4010,20 @@ impl ClosurePostulates {
         // is left to push -- the same discipline `denote_closure`'s own
         // composite cases use for a whole built term, one level up.
         let env_ty = self.env_ty(sig);
-        let env_ty = Anchored::new(&self.arith, env_ty);
-        let doms: Vec<Anchored> = sig
+        let doms: Vec<Expr> = sig
             .iter()
-            .map(|slot| {
-                let dom = match slot {
-                    Some(k) => self.clo_ty(*k),
-                    None => self.arith.int_ty(),
-                };
-                Anchored::new(&self.arith, dom)
+            .map(|slot| match slot {
+                Some(k) => self.clo_ty(*k),
+                None => self.arith.int_ty(),
             })
             .collect();
-        let mut ty = env_ty.at(&self.arith);
+        let mut ty = env_ty.clone();
         // Fold from the *last* capture outward, so the final iteration
         // (sig[0]) ends up as the outermost/first-applied parameter,
         // matching `apply_n`'s left-to-right application order (the same
         // convention `call_ref`'s own loop documents).
         for dom in doms.iter().rev() {
-            ty = kernel::arrow(dom.at(&self.arith), ty);
+            ty = kernel::arrow(dom.clone(), ty);
         }
         let pos = self.arith.p.push(ty);
         self.mk_env_pos.insert(sig.to_vec(), pos);
@@ -4235,9 +4049,8 @@ impl ClosurePostulates {
         // own postulate on first use -- same discipline as `mk_env_ref`'s
         // identical fix, just for two pieces instead of `sig.len() + 1`.
         let env_ty = self.env_ty(sig);
-        let env_ty = Anchored::new(&self.arith, env_ty);
         let clo_ty = self.clo_ty(arity);
-        let ty = kernel::arrow(env_ty.at(&self.arith), clo_ty);
+        let ty = kernel::arrow(env_ty.clone(), clo_ty);
         let pos = self.arith.p.push(ty);
         self.mk_clo_pos.insert(h, pos);
         self.arith.p.get(pos)
@@ -4356,34 +4169,27 @@ impl<'a> ClosureCombinators<'a> {
         // (`.at`), fresh, once nothing more is left to push -- the same
         // discipline `denote_closure`'s own composite cases use for a
         // whole built term, one level up.
-        let env_ty = (!sig.is_empty()).then(|| {
-            let e = self.cp.env_ty(&sig);
-            Anchored::new(&self.cp.arith, e)
-        });
+        let env_ty = (!sig.is_empty()).then(|| self.cp.env_ty(&sig));
         let ret = match return_ty {
             Some(k) => self.cp.clo_ty(k),
             None => self.cp.arith.int_ty(),
         };
-        let ret = Anchored::new(&self.cp.arith, ret);
-        let doms: Vec<Anchored> = param_types
+        let doms: Vec<Expr> = param_types
             .iter()
-            .map(|pt| {
-                let dom = match pt {
-                    Some(k) => self.cp.clo_ty(*k),
-                    None => self.cp.arith.int_ty(),
-                };
-                Anchored::new(&self.cp.arith, dom)
+            .map(|pt| match pt {
+                Some(k) => self.cp.clo_ty(*k),
+                None => self.cp.arith.int_ty(),
             })
             .collect();
-        let mut ty = ret.at(&self.cp.arith);
+        let mut ty = ret.clone();
         // Var(0) is last-applied (innermost -- wrap it first, so the
         // final iteration, Var(arity-1) = first-applied, ends up
         // outermost, matching apply_n's left-to-right application order).
         for dom in &doms {
-            ty = kernel::arrow(dom.at(&self.cp.arith), ty);
+            ty = kernel::arrow(dom.clone(), ty);
         }
         if let Some(env_ty) = env_ty {
-            ty = kernel::arrow(env_ty.at(&self.cp.arith), ty);
+            ty = kernel::arrow(env_ty.clone(), ty);
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.combinator_call_pos.insert(h, pos);
@@ -4445,10 +4251,7 @@ impl<'a> ClosureCombinators<'a> {
         // every `clo_ty` below may each lazily push their own postulate,
         // so each is anchored immediately and only re-resolved (`.at`)
         // once nothing more is left to push.
-        let env_ty = (!sig.is_empty()).then(|| {
-            let e = self.cp.env_ty(&sig);
-            Anchored::new(&self.cp.arith, e)
-        });
+        let env_ty = (!sig.is_empty()).then(|| self.cp.env_ty(&sig));
         // `ret` -- the type of the *value* this wrapper produces once its
         // own `k` supplied arguments are given -- is `Clo_{arity-k}` only
         // when `h`'s own saturated call denotes `Int`; when it instead
@@ -4460,23 +4263,19 @@ impl<'a> ClosureCombinators<'a> {
         // silently assuming `Int` regardless of what `h` itself returns --
         // see `pap_extra_arity`'s own docs for the bug this fixes.
         let ret = self.cp.clo_ty(arity - k + pap_extra_arity(self.store, h));
-        let ret = Anchored::new(&self.cp.arith, ret);
-        let doms: Vec<Anchored> = param_types[arity - k..]
+        let doms: Vec<Expr> = param_types[arity - k..]
             .iter()
-            .map(|pt| {
-                let dom = match pt {
-                    Some(j) => self.cp.clo_ty(*j),
-                    None => self.cp.arith.int_ty(),
-                };
-                Anchored::new(&self.cp.arith, dom)
+            .map(|pt| match pt {
+                Some(j) => self.cp.clo_ty(*j),
+                None => self.cp.arith.int_ty(),
             })
             .collect();
-        let mut ty = ret.at(&self.cp.arith);
+        let mut ty = ret.clone();
         for dom in &doms {
-            ty = kernel::arrow(dom.at(&self.cp.arith), ty);
+            ty = kernel::arrow(dom.clone(), ty);
         }
         if let Some(env_ty) = env_ty {
-            ty = kernel::arrow(env_ty.at(&self.cp.arith), ty);
+            ty = kernel::arrow(env_ty.clone(), ty);
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.pap_pos.insert((h, k), pos);
@@ -4561,7 +4360,6 @@ impl<'a> ClosureCombinators<'a> {
         // Resolved (and, transitively, `mk_env_ref`/`clo_ty` etc. pushed as
         // needed) before the quantified construction below.
         let call_fn = self.call_ref(h, &captures, &dummy_caller_param_types)?;
-        let call_fn = Anchored::new(&self.cp.arith, call_fn);
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- captures
         // first, then `h`'s own params, an arbitrary but fixed order (only
@@ -4569,9 +4367,9 @@ impl<'a> ClosureCombinators<'a> {
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
-            let all = pp.at(&combinators.cp.arith);
+            let all = pp;
             let (cs, ps) = all.split_at(n_captures);
-            let call_fn_here = call_fn.at(&combinators.cp.arith);
+            let call_fn_here = call_fn.clone();
 
             // LHS: `call_ref(h)` applied to `(env?, p_{arity-1}, ..,
             // p_0)` -- *descending* `Var` order, matching `call_ref`'s own
@@ -4764,7 +4562,6 @@ impl<'a> ClosureCombinators<'a> {
         }
 
         let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
-        let call_fn = Anchored::new(&self.cp.arith, call_fn);
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
         // order (captures first, then `root`'s own params) `call_eq_ref`
@@ -4772,9 +4569,9 @@ impl<'a> ClosureCombinators<'a> {
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
-            let all = pp.at(&combinators.cp.arith);
+            let all = pp;
             let (cs, ps) = all.split_at(n_captures);
-            let call_fn_here = call_fn.at(&combinators.cp.arith);
+            let call_fn_here = call_fn.clone();
 
             // LHS: same construction as `call_eq_ref`'s own -- descending
             // `Var` order, matching `call_ref`'s own convention.
@@ -4897,21 +4694,19 @@ impl<'a> ClosureCombinators<'a> {
         // `root`'s own shape, resolved (and, transitively, `mk_env_ref`
         // pushed as needed) before the quantified construction below.
         let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
-        let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let (g_arity2, g_body, g_is_rec) = compile::peel(self.store, g)?;
         let g_captures = compile::free_vars(self.store, g_body, g_arity2, g_is_rec);
         let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let g_call_fn = self.call_ref(g, &g_captures, &g_dummy)?;
-        let g_call_fn = Anchored::new(&self.cp.arith, g_call_fn);
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
         // order `clo_eq_ref_pap`/`call_eq_ref` both use.
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
-            let all = pp.at(&combinators.cp.arith);
+            let all = pp;
             let (cs, ps) = all.split_at(n_captures);
-            let call_fn_here = call_fn.at(&combinators.cp.arith);
+            let call_fn_here = call_fn.clone();
 
             // LHS: identical construction to `clo_eq_ref_pap`'s own.
             let mut call_args = Vec::with_capacity(1 + arity);
@@ -4938,7 +4733,7 @@ impl<'a> ClosureCombinators<'a> {
             // RHS: `call_ref(g)(g_env?, args...)` -- same argument
             // construction `clo_eq_ref_pap`'s own `pap_ref`-based RHS
             // uses, `call_ref(g)` in place of `pap_ref(g, s)`.
-            let g_call_fn_here = g_call_fn.at(&combinators.cp.arith);
+            let g_call_fn_here = g_call_fn.clone();
             let g_env = if g_captures.is_empty() {
                 None
             } else {
@@ -5021,21 +4816,19 @@ impl<'a> ClosureCombinators<'a> {
         // `root`'s own shape, resolved (and, transitively, `mk_env_ref`
         // pushed as needed) before the quantified construction below.
         let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
-        let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let (_, g_body, g_is_rec) = compile::peel(self.store, g)?;
         let g_captures = compile::free_vars(self.store, g_body, g_arity, g_is_rec);
         let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let pap_fn = self.pap_ref(g, args.len(), &g_dummy)?;
-        let pap_fn = Anchored::new(&self.cp.arith, pap_fn);
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
         // order `clo_eq_ref_if_tree`/`call_eq_ref` both use.
         let quant_types = vec![None; n_captures + arity];
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
-            let all = pp.at(&combinators.cp.arith);
+            let all = pp;
             let (cs, ps) = all.split_at(n_captures);
-            let call_fn_here = call_fn.at(&combinators.cp.arith);
+            let call_fn_here = call_fn.clone();
 
             // LHS: identical construction to `clo_eq_ref_if_tree`'s own.
             let mut call_args = Vec::with_capacity(1 + arity);
@@ -5064,7 +4857,7 @@ impl<'a> ClosureCombinators<'a> {
             // each position) `denote_closure`'s own `LitLambdaPartial` arm
             // uses, over `params_full` (abstract quantified vars) instead
             // of a caller's real frame.
-            let pap_fn_here = pap_fn.at(&combinators.cp.arith);
+            let pap_fn_here = pap_fn.clone();
             let g_env = if g_captures.is_empty() {
                 None
             } else {
@@ -5124,22 +4917,18 @@ impl<'a> ClosureCombinators<'a> {
         }
         self.cp.arith.lit(xc);
         let clo_ty = self.cp.clo_ty(arity);
-        let clo_ty = Anchored::new(&self.cp.arith, clo_ty);
         let ite_clo = self.cp.ite_clo_ref(arity);
-        let ite_clo = Anchored::new(&self.cp.arith, ite_clo);
         let lit_xc = self.cp.arith.lit_ref(xc);
-        let lit_xc = Anchored::new(&self.cp.arith, lit_xc);
         // `dt`/`de` : `Clo_arity` -- `params_and_close` itself can only
         // ever push `Int`-typed postulates (it doesn't even take a
         // `ClosureCombinators`), so this needs `params_and_close_typed`'s
         // own `Clo_k`-aware quantification instead.
         let quant_types = vec![Some(arity), Some(arity)];
-        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
-            let all = pp.at(&combinators.cp.arith);
-            let (dt, de) = (all[0].clone(), all[1].clone());
-            let clo_ty_here = clo_ty.at(&combinators.cp.arith);
-            let ite_clo_here = ite_clo.at(&combinators.cp.arith);
-            let lit_xc_here = lit_xc.at(&combinators.cp.arith);
+        let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |_combinators, pp| {
+            let (dt, de) = (pp[0].clone(), pp[1].clone());
+            let clo_ty_here = clo_ty.clone();
+            let ite_clo_here = ite_clo.clone();
+            let lit_xc_here = lit_xc.clone();
             let lhs = kernel::app3(ite_clo_here, lit_xc_here, dt.clone(), de.clone());
             let rhs = if xc != 0 { dt } else { de };
             Some(kernel::id(clo_ty_here, lhs, rhs))
@@ -5191,16 +4980,14 @@ impl<'a> ClosureCombinators<'a> {
         let sig = capture_sig(&captures, &dummy_caller_param_types)?;
 
         let call_fn = self.call_ref(inner_root, &captures, &dummy_caller_param_types)?;
-        let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let value_fn = self.register(inner_root, &captures, &dummy_caller_param_types)?;
-        let value_fn = Anchored::new(&self.cp.arith, value_fn);
 
         let quant_types = vec![None; n_captures + arity];
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
-            let all = pp.at(&combinators.cp.arith);
+            let all = pp;
             let (cs, ps) = all.split_at(n_captures);
-            let value_fn_here = value_fn.at(&combinators.cp.arith);
-            let call_fn_here = call_fn.at(&combinators.cp.arith);
+            let value_fn_here = value_fn.clone();
+            let call_fn_here = call_fn.clone();
 
             let (closure_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
                 let mk_env_expr = combinators.cp.mk_env_ref(&sig);
@@ -5271,9 +5058,7 @@ impl<'a> ClosureCombinators<'a> {
         let sig = capture_sig(&g_captures, &dummy_caller_param_types)?;
 
         let call_fn = self.call_ref(g, &g_captures, &dummy_caller_param_types)?;
-        let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let pap_fn = self.pap_ref(g, s, &dummy_caller_param_types)?;
-        let pap_fn = Anchored::new(&self.cp.arith, pap_fn);
 
         // Quantify `n_captures + g_arity` fresh `Int` postulates -- same
         // order (captures first, then `g`'s own `s` supplied params, then
@@ -5281,11 +5066,11 @@ impl<'a> ClosureCombinators<'a> {
         // for captures-then-params.
         let quant_types = vec![None; n_captures + g_arity];
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
-            let all = pp.at(&combinators.cp.arith);
+            let all = pp;
             let (cs, ps) = all.split_at(n_captures);
             let (supplied, more) = ps.split_at(s);
-            let pap_fn_here = pap_fn.at(&combinators.cp.arith);
-            let call_fn_here = call_fn.at(&combinators.cp.arith);
+            let pap_fn_here = pap_fn.clone();
+            let call_fn_here = call_fn.clone();
 
             let (pap_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
                 let mk_env_expr = combinators.cp.mk_env_ref(&sig);
@@ -5610,9 +5395,9 @@ fn inner_closure_pap_value(
     combinators: &mut ClosureCombinators<'_>,
     g: Hash,
     args: &[Hash],
-    inner_params: &[Anchored],
+    inner_params: &[Expr],
     inner_concrete: &[i64],
-    inner_facts: &[Anchored],
+    inner_facts: &[Expr],
 ) -> Option<(Expr, ValueTriples, ValueTriples)> {
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
@@ -5622,15 +5407,15 @@ fn inner_closure_pap_value(
     for &rel in &g_captures {
         let rel = rel as usize;
         let x = *inner_concrete.get(rel)?;
-        let d = Anchored::new(&combinators.cp.arith, inner_params.get(rel)?.at(&combinators.cp.arith));
-        let p = Anchored::new(&combinators.cp.arith, inner_facts.get(rel)?.at(&combinators.cp.arith));
+        let d = inner_params.get(rel)?.clone();
+        let p = inner_facts.get(rel)?.clone();
         g_cap_triples.push((x, d, p));
     }
 
     let mut supplied_triples = Vec::with_capacity(s);
     for &a in args {
         let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
-        supplied_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+        supplied_triples.push((x, d, p));
     }
 
     let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -5640,10 +5425,10 @@ fn inner_closure_pap_value(
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
         let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-        let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+        let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
         Some(apply_n(mk_env_expr, cd))
     };
-    let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
+    let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| d.clone()).collect();
     let mut pap_args = Vec::with_capacity(1 + s);
     pap_args.extend(g_env_denoted);
     pap_args.extend(d_supplied);
@@ -5670,9 +5455,9 @@ fn inner_closure_call_value(
     combinators: &mut ClosureCombinators<'_>,
     g: Hash,
     args: &[Hash],
-    inner_params: &[Anchored],
+    inner_params: &[Expr],
     inner_concrete: &[i64],
-    inner_facts: &[Anchored],
+    inner_facts: &[Expr],
 ) -> Option<Expr> {
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
@@ -5685,11 +5470,11 @@ fn inner_closure_call_value(
         let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
         let cd: Vec<Expr> = g_captures
             .iter()
-            .map(|&rel| inner_params.get(rel as usize).map(|a| a.at(&combinators.cp.arith)))
+            .map(|&rel| inner_params.get(rel as usize).cloned())
             .collect::<Option<Vec<_>>>()?;
         Some(apply_n(mk_env_expr, cd))
     };
-    let inner_frame: Vec<Expr> = inner_params.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+    let inner_frame: Vec<Expr> = inner_params.to_vec();
     let mut arg_exprs = Vec::with_capacity(args.len());
     for &a in args {
         arg_exprs.push(denote(store, a, &combinators.cp.arith, &inner_frame)?);
@@ -5716,9 +5501,9 @@ fn closure_if_tree_value_at_literals(
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
     leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
-    inner_params: &[Anchored],
+    inner_params: &[Expr],
     inner_concrete: &[i64],
-    inner_facts: &[Anchored],
+    inner_facts: &[Expr],
     k: usize,
 ) -> Option<Expr> {
     match tree {
@@ -5734,7 +5519,7 @@ fn closure_if_tree_value_at_literals(
             ClosureIfTreeLeafShape::Call { g, args } => inner_closure_call_value(store, combinators, *g, args, inner_params, inner_concrete, inner_facts),
         },
         DecisionTree::If { cond, then_branch, else_branch } => {
-            let params_full: Vec<Expr> = inner_params.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+            let params_full: Vec<Expr> = inner_params.to_vec();
             let dc = denote(store, *cond, &combinators.cp.arith, &params_full)?;
             let dt = closure_if_tree_value_at_literals(store, combinators, then_branch, leaf_shapes, inner_params, inner_concrete, inner_facts, k)?;
             let de = closure_if_tree_value_at_literals(store, combinators, else_branch, leaf_shapes, inner_params, inner_concrete, inner_facts, k)?;
@@ -5770,12 +5555,9 @@ fn closure_if_tree_value_at_literals(
 /// arm exactly, down to a genuine literal-lambda leaf and a complete
 /// "call with all args" fact (`Indirect` -- the caller must reuse
 /// `apply_eq_chosen` as-is, never build its own). The `Indirect` variant's
-/// three facts are already `Anchored` at construction (see
-/// `resolve_closure_if_tree`'s own `Leaf`/`Call` case) precisely so they
-/// can be threaded up through however many further `If` levels sit above
-/// the leaf that produced them without any special re-anchoring at each
-/// one -- the same staleness-proofing `ValueTriples`' own embedded
-/// `Anchored` fields already rely on.
+/// three facts can be threaded up through however many further `If`
+/// levels sit above the leaf that produced them with no special care,
+/// same as `ValueTriples`' own embedded fields.
 enum IfTreeLeafResolution {
     Direct {
         chosen: Hash,
@@ -5787,9 +5569,9 @@ enum IfTreeLeafResolution {
         chosen_cap_triples: ValueTriples,
         chosen_arg_triples: ValueTriples,
         /// `: Id(clo_ty(k), <this leaf's own canonical value>, chosen_value)`.
-        leaf_to_chosen: Anchored,
-        chosen_value: Anchored,
-        apply_eq_chosen: Anchored,
+        leaf_to_chosen: Expr,
+        chosen_value: Expr,
+        apply_eq_chosen: Expr,
     },
 }
 
@@ -5799,26 +5581,24 @@ fn resolve_closure_if_tree(
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
     leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
-    inner_params: &[Anchored],
+    inner_params: &[Expr],
     inner_concrete: &[i64],
-    inner_facts: &[Anchored],
+    inner_facts: &[Expr],
     k: usize,
-    extra_arg_triples: &[(i64, Anchored, Anchored)],
+    extra_arg_triples: &[(i64, Expr, Expr)],
 ) -> Option<(IfTreeLeafResolution, Expr, Expr, Expr)> {
     match tree {
         DecisionTree::Leaf(h) => match leaf_shapes.get(h)? {
             ClosureIfTreeLeafShape::Abs { .. } => {
                 let (value_lit, cap_triples) = inner_closure_literal_value(combinators, *h, inner_params, inner_concrete, inner_facts)?;
-                let value_lit = Anchored::new(&combinators.cp.arith, value_lit);
-                let value_lit = value_lit.at(&combinators.cp.arith);
+                let value_lit = value_lit.clone();
                 let proof = kernel::refl(value_lit.clone());
                 Some((IfTreeLeafResolution::Direct { chosen: *h, cap_triples, arg_prefix: Vec::new() }, value_lit.clone(), value_lit, proof))
             }
             ClosureIfTreeLeafShape::Pap { g, args } => {
                 let (value_lit, g_cap_triples, supplied_triples) =
                     inner_closure_pap_value(store, combinators, *g, args, inner_params, inner_concrete, inner_facts)?;
-                let value_lit = Anchored::new(&combinators.cp.arith, value_lit);
-                let value_lit = value_lit.at(&combinators.cp.arith);
+                let value_lit = value_lit.clone();
                 let proof = kernel::refl(value_lit.clone());
                 Some((
                     IfTreeLeafResolution::Direct { chosen: *g, cap_triples: g_cap_triples, arg_prefix: supplied_triples },
@@ -5831,7 +5611,7 @@ fn resolve_closure_if_tree(
                 let mut g_arg_triples = Vec::with_capacity(args.len());
                 for &a in args {
                     let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
-                    g_arg_triples.push((x, Anchored::new(&combinators.cp.arith, d), Anchored::new(&combinators.cp.arith, p)));
+                    g_arg_triples.push((x, d, p));
                 }
                 let (g_call_at_denoted, g_call_at_lit_env_lit_args, g_bridge, g_axiom_at_literals, g_inner_params, g_inner_concrete, g_inner_facts, g_k, g_shape) =
                     build_clo_call_bridge(store, combinators, *g, &g_arg_triples, inner_params, inner_concrete, inner_facts)?;
@@ -5843,9 +5623,8 @@ fn resolve_closure_if_tree(
                 // construction exactly (both `call_ref(g)` applied to the
                 // same denoted args over the same frame): reused directly
                 // from `build_clo_call_bridge`'s own first return value
-                // rather than rebuilt, avoiding a second, separately
-                // stale-prone construction.
-                let leaf_value = Anchored::new(&combinators.cp.arith, g_call_at_denoted);
+                // rather than rebuilt, avoiding redundant work.
+                let leaf_value = g_call_at_denoted;
 
                 // Recurse into `g`'s own further resolution -- the same
                 // machinery `ClosureRhsShape::Call`'s own root-level arm
@@ -5858,7 +5637,7 @@ fn resolve_closure_if_tree(
                 let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, leaf_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(
                     store,
                     combinators,
-                    &leaf_value.at(&combinators.cp.arith),
+                    &leaf_value.clone(),
                     &g_call_at_lit_env_lit_args,
                     &g_bridge,
                     &g_axiom_at_literals,
@@ -5870,46 +5649,39 @@ fn resolve_closure_if_tree(
                     extra_arg_triples,
                 )?;
 
-                let leaf_value = leaf_value.at(&combinators.cp.arith);
+                let leaf_value = leaf_value.clone();
                 let full_proof = kernel::refl(leaf_value.clone());
                 let resolution = IfTreeLeafResolution::Indirect {
                     chosen,
                     chosen_cap_triples,
                     chosen_arg_triples,
-                    leaf_to_chosen: Anchored::new(&combinators.cp.arith, leaf_to_chosen),
-                    chosen_value: Anchored::new(&combinators.cp.arith, chosen_value),
-                    apply_eq_chosen: Anchored::new(&combinators.cp.arith, apply_eq_chosen),
+                    leaf_to_chosen,
+                    chosen_value,
+                    apply_eq_chosen,
                 };
                 Some((resolution, leaf_value.clone(), leaf_value, full_proof))
             }
         },
         DecisionTree::If { cond, then_branch, else_branch } => {
             let (result_c, denote_c, proof_c) = eval_and_prove(store, *cond, combinators, inner_params, inner_concrete, inner_facts)?;
-            let denote_c = Anchored::new(&combinators.cp.arith, denote_c);
-            let proof_c = Anchored::new(&combinators.cp.arith, proof_c);
 
             let (taken, other) = if result_c != 0 { (then_branch, else_branch) } else { (else_branch, then_branch) };
             let (resolution, taken_subtree_value, leaf_value, taken_proof) =
                 resolve_closure_if_tree(store, combinators, taken, leaf_shapes, inner_params, inner_concrete, inner_facts, k, extra_arg_triples)?;
-            let taken_subtree_value = Anchored::new(&combinators.cp.arith, taken_subtree_value);
-            let leaf_value = Anchored::new(&combinators.cp.arith, leaf_value);
-            let taken_proof = Anchored::new(&combinators.cp.arith, taken_proof);
             let other_value = closure_if_tree_value_at_literals(store, combinators, other, leaf_shapes, inner_params, inner_concrete, inner_facts, k)?;
-            let other_value = Anchored::new(&combinators.cp.arith, other_value);
 
             combinators.cp.arith.lit(result_c);
             let ite_eq_axiom = combinators.ite_clo_eq_ref(result_c, k);
-            let ite_eq_axiom = Anchored::new(&combinators.cp.arith, ite_eq_axiom);
 
             // Nothing pushes past here -- resolve everything fresh, in
             // one batch, only once nothing more is left to push.
-            let denote_c = denote_c.at(&combinators.cp.arith);
-            let proof_c = proof_c.at(&combinators.cp.arith);
-            let taken_subtree_value = taken_subtree_value.at(&combinators.cp.arith);
-            let leaf_value = leaf_value.at(&combinators.cp.arith);
-            let taken_proof = taken_proof.at(&combinators.cp.arith);
-            let other_value = other_value.at(&combinators.cp.arith);
-            let ite_eq_axiom = ite_eq_axiom.at(&combinators.cp.arith);
+            let denote_c = denote_c.clone();
+            let proof_c = proof_c.clone();
+            let taken_subtree_value = taken_subtree_value.clone();
+            let leaf_value = leaf_value.clone();
+            let taken_proof = taken_proof.clone();
+            let other_value = other_value.clone();
+            let ite_eq_axiom = ite_eq_axiom.clone();
             let lit_xc = combinators.cp.arith.lit_ref(result_c);
             let ite_clo = combinators.cp.ite_clo_ref(k);
             let int_ty = combinators.cp.arith.int_ty();
@@ -5979,12 +5751,12 @@ fn build_env_expr(combinators: &mut ClosureCombinators, captures: &[u32], params
     let mut values = Vec::with_capacity(captures.len());
     for &rel in captures {
         let v = params.get(rel as usize)?.clone();
-        values.push(Anchored::new(&combinators.cp.arith, v));
+        values.push(v);
     }
     let mk_env_expr = combinators.cp.mk_env_ref(&sig);
-    let mk_env = Anchored::new(&combinators.cp.arith, mk_env_expr);
-    let mk_env = mk_env.at(&combinators.cp.arith);
-    let values: Vec<Expr> = values.iter().map(|v| v.at(&combinators.cp.arith)).collect();
+    let mk_env = mk_env_expr;
+    let mk_env = mk_env.clone();
+    let values: Vec<Expr> = values.to_vec();
     Some(apply_n(mk_env, values))
 }
 
@@ -6028,16 +5800,6 @@ fn denote_closure(
     params: &[Expr],
     param_types: &[Option<usize>],
 ) -> Option<Denoted> {
-    // Every composite case below follows the same discipline: compute each
-    // sub-denotation and immediately wrap it in `Anchored` (registering a
-    // combinator, or a fresh `call_ref`/`mk_clo_ref`/`ite_clo_ref` --
-    // possibly triggered by a *later* sibling's own denotation -- pushes
-    // further postulates onto
-    // `arith.p.globals`, which would otherwise silently invalidate an
-    // already-resolved `Var` reference held from an earlier sibling, the
-    // same staleness class `Anchored`'s own docs describe), then resolve
-    // everything fresh, in one batch, only once nothing more is left to
-    // push for this node.
     match compile::classify(store, h, params.len(), None) {
         shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
             // A parameter-typed closure, called through `call_indirect`:
@@ -6045,14 +5807,13 @@ fn denote_closure(
             // always `Int` regardless of the callee's own signature.
             AppShape::ParamCall { root, args, .. } => {
                 let callee = denote_closure(store, root, combinators, params, param_types)?.clo()?;
-                let callee = Anchored::new(&combinators.cp.arith, callee);
                 let mut arg_exprs = Vec::with_capacity(args.len());
                 for &a in &args {
                     let e = denote_closure(store, a, combinators, params, param_types)?.int()?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let callee = callee.at(&combinators.cp.arith);
-                let arg_exprs: Vec<Expr> = arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
+                let callee = callee.clone();
+                let arg_exprs: Vec<Expr> = arg_exprs.to_vec();
                 let applied = apply_n(callee, arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: call_indirect application");
@@ -6094,12 +5855,11 @@ fn denote_closure(
                 let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
                 let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
                 let pap_fn = combinators.pap_ref(root, k, param_types)?;
-                let pap_fn = Anchored::new(&combinators.cp.arith, pap_fn);
                 let env_expr = if root_captures.is_empty() {
                     None
                 } else {
                     let e = build_env_expr(combinators, &root_captures, params, param_types)?;
-                    Some(Anchored::new(&combinators.cp.arith, e))
+                    Some(e)
                 };
                 let mut arg_exprs = Vec::with_capacity(k);
                 for (j, &a) in args.iter().enumerate() {
@@ -6108,21 +5868,16 @@ fn denote_closure(
                     // unchanged by only k of arity args being supplied.
                     let d = denote_closure(store, a, combinators, params, param_types)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, param_types.len(), None, param_types))?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let pap_fn = pap_fn.at(&combinators.cp.arith);
+                let pap_fn = pap_fn.clone();
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.at(&combinators.cp.arith));
+                    all_args.push(env_expr.clone());
                 }
-                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                all_args.extend(arg_exprs.iter().cloned());
                 let applied = apply_n(pap_fn, all_args);
-                // Anchored *before* computing `clo_ty(arity - k)`
-                // below -- see `denote_with_placeholders`'s identical
-                // case for the rationale.
-                let applied = Anchored::new(&combinators.cp.arith, applied);
                 let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
-                let applied = applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: partial application");
                 Some(Denoted::Clo(applied))
             }
@@ -6135,12 +5890,11 @@ fn denote_closure(
                 let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
                 let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
                 let call_fn = combinators.call_ref(root, &captures, param_types)?;
-                let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
                 let env_expr = if captures.is_empty() {
                     None
                 } else {
                     let e = build_env_expr(combinators, &captures, params, param_types)?;
-                    Some(Anchored::new(&combinators.cp.arith, e))
+                    Some(e)
                 };
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
@@ -6148,27 +5902,21 @@ fn denote_closure(
                     // see param_types_for's/denote's own convention.
                     let d = denote_closure(store, a, combinators, params, param_types)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, param_types.len(), None, param_types))?;
-                    arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    arg_exprs.push(e);
                 }
-                let call_fn = call_fn.at(&combinators.cp.arith);
+                let call_fn = call_fn.clone();
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.at(&combinators.cp.arith));
+                    all_args.push(env_expr.clone());
                 }
-                all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+                all_args.extend(arg_exprs.iter().cloned());
                 let sat_applied = apply_n(call_fn, all_args);
-                // Anchored *before* `combinator_return_type`'s own
-                // `clo_ty(k)` lookup below -- see
-                // `denote_with_placeholders`'s identical case for the
-                // rationale.
-                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
                 let return_ty = combinator_return_type(store, root).unwrap_or(None);
                 let returns_clo = return_ty.is_some();
                 let sat_ty = match return_ty {
                     Some(k) => combinators.cp.clo_ty(k),
                     None => combinators.cp.arith.int_ty(),
                 };
-                let sat_applied = sat_applied.at(&combinators.cp.arith);
                 debug_assert_has_type(&combinators.cp.arith.p, &sat_applied, &sat_ty, "denote_closure: direct combinator call");
 
                 if args.len() == arity {
@@ -6191,14 +5939,11 @@ fn denote_closure(
                     return None;
                 }
                 let extra_args = &args[arity..];
-                let sat_applied = Anchored::new(&combinators.cp.arith, sat_applied);
                 let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
                 for &a in extra_args {
                     let e = denote_closure(store, a, combinators, params, param_types)?.int()?;
-                    extra_arg_exprs.push(Anchored::new(&combinators.cp.arith, e));
+                    extra_arg_exprs.push(e);
                 }
-                let sat_applied = sat_applied.at(&combinators.cp.arith);
-                let extra_arg_exprs: Vec<Expr> = extra_arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)).collect();
                 let applied = apply_n(sat_applied, extra_arg_exprs);
                 let int_ty = combinators.cp.arith.int_ty();
                 debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: over-application dispatch");
@@ -6208,25 +5953,16 @@ fn denote_closure(
         Shape::OtherCall => None,
         Shape::If(c, t, e) => {
             let dc = denote_closure(store, c, combinators, params, param_types)?.int()?;
-            let dc = Anchored::new(&combinators.cp.arith, dc);
             let dt = denote_closure(store, t, combinators, params, param_types)?;
             let dt_is_clo = matches!(dt, Denoted::Clo(_));
-            let dt = Anchored::new(&combinators.cp.arith, match dt {
+            let dt = match dt {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
-            });
+            };
             let de = denote_closure(store, e, combinators, params, param_types)?;
             let de_is_clo = matches!(de, Denoted::Clo(_));
-            // Anchored *before* branching on `dt_is_clo`/`de_is_clo`, not just
-            // resolved inline in each arm below: `ite_clo_ref` (unlike
-            // `ite_ref`, which never pushes) lazily postulates on its first
-            // use, which would otherwise silently invalidate an unanchored
-            // `dt`/`de` held across that push -- the exact staleness class
-            // `Anchored`'s own docs describe (caught immediately by
-            // `debug_assert_has_type` on the very first Clo-branch test,
-            // before it could reach anything outside this module).
-            let de = Anchored::new(&combinators.cp.arith, match de {
+            let de = match de {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
-            });
+            };
             // Both branches Int (the common case) or both Clo (an If choosing
             // between two closures, e.g. `if c then (\y.x+y) else (\y.x-y)`) --
             // a mismatch (one of each) is rejected, same as any other
@@ -6234,9 +5970,6 @@ fn denote_closure(
             match (dt_is_clo, de_is_clo) {
                 (false, false) => {
                     let ite = combinators.cp.arith.ite_ref(); // pre-postulated once in ArithPostulates::new -- never pushes
-                    let dc = dc.at(&combinators.cp.arith);
-                    let dt = dt.at(&combinators.cp.arith);
-                    let de = de.at(&combinators.cp.arith);
                     let applied = kernel::app3(ite, dc, dt, de);
                     let int_ty = combinators.cp.arith.int_ty();
                     debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: If (Int branches)");
@@ -6258,9 +5991,9 @@ fn denote_closure(
                         return None;
                     }
                     let ite_clo = combinators.cp.ite_clo_ref(t_arity);
-                    let dc = dc.at(&combinators.cp.arith);
-                    let dt = dt.at(&combinators.cp.arith);
-                    let de = de.at(&combinators.cp.arith);
+                    let dc = dc.clone();
+                    let dt = dt.clone();
+                    let de = de.clone();
                     let applied = kernel::app3(ite_clo, dc, dt, de);
                     let clo_ty = combinators.cp.clo_ty(t_arity);
                     debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: If (Clo branches)");
@@ -6280,10 +6013,9 @@ fn denote_closure(
         Shape::Lit(n) => Some(Denoted::Int(combinators.cp.arith.lit_ref(n))),
         Shape::Prim(op, a, b) => {
             let da = denote_closure(store, a, combinators, params, param_types)?.int()?;
-            let da = Anchored::new(&combinators.cp.arith, da);
             let db = denote_closure(store, b, combinators, params, param_types)?.int()?;
             let op_ref = combinators.cp.arith.op_ref(op); // pre-postulated once -- never pushes
-            let da = da.at(&combinators.cp.arith);
+            let da = da.clone();
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: Prim");
@@ -6306,11 +6038,10 @@ fn denote_closure(
             if captures.is_empty() {
                 return Some(Denoted::Clo(sym));
             }
-            let sym = Anchored::new(&combinators.cp.arith, sym);
             let env = build_env_expr(combinators, &captures, params, param_types)?;
-            let env_expr = Anchored::new(&combinators.cp.arith, env);
-            let sym = sym.at(&combinators.cp.arith);
-            let env_expr = env_expr.at(&combinators.cp.arith);
+            let env_expr = env;
+            let sym = sym.clone();
+            let env_expr = env_expr.clone();
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: capturing closure value");
@@ -6471,37 +6202,32 @@ struct ConcreteClo {
 
 /// One frame slot's own concretely-known value, threaded through
 /// `eval_dyn`'s walk -- the per-instance analogue of `denote_closure`'s
-/// `params`/`param_types` pair. Every slot here is `Anchored` rather than
-/// a bare postulate (contrast `denote_closure`'s `params`): a substituted value (an inlined callee's own parameter,
-/// or a closure's own captured value read back later) is an arbitrary
-/// compound expression, not a fresh, unsubstituted postulate -- exactly
-/// the case `Anchored` exists for (see its own docs). Every `Int` slot
-/// also carries its own concrete numeral, for concretely following an
-/// `If`'s own condition the same way `classify_step` already does.
+/// `params`/`param_types` pair. Every slot here holds an arbitrary compound
+/// `Expr` rather than a bare postulate (contrast `denote_closure`'s
+/// `params`): a substituted value (an inlined callee's own parameter, or a
+/// closure's own captured value read back later) can be one, not a fresh,
+/// unsubstituted postulate. Every `Int` slot also carries its own concrete
+/// numeral, for concretely following an `If`'s own condition the same way
+/// `classify_step` already does.
 #[derive(Clone)]
 enum DynVal {
-    Int(Anchored, i64),
-    Clo(Anchored, Rc<ConcreteClo>),
+    Int(Expr, i64),
+    Clo(Expr, Rc<ConcreteClo>),
 }
 
 /// `denote_closure`'s per-instance counterpart to `Denoted`: a `Clo` here
 /// additionally carries its own `ConcreteClo` -- *which* literal lambda
 /// this concretely is, and the frame to resolve its own captures against
 /// -- since a per-instance proof, unlike the universal one, can actually
-/// answer that question. Holds `Anchored`, not a raw `Expr` (contrast
-/// `Denoted`): `eval_dyn` frequently builds several of these (e.g. one
-/// per argument at a call site) *before* they're all actually consumed,
-/// and a call site's own further construction (`call_ref`, `clo_ty`, ...)
-/// may lazily push more postulates in between -- exactly the staleness
-/// class `Anchored`'s own docs describe, just one level up from a single
-/// built term to this enum's own payload. Anchoring at construction, not
-/// at first use, is what `denote_closure` already does for its own
-/// `Denoted` values at each composite case's own boundary; this does the
-/// same, just carried in the type itself since `eval_dyn`'s own values
-/// routinely outlive more than one such case.
+/// answer that question. `eval_dyn` frequently builds several of these
+/// (e.g. one per argument at a call site) before they're all actually
+/// consumed, holding each across further construction (`call_ref`,
+/// `clo_ty`, ...) that may lazily push more postulates -- safe since a
+/// pushed postulate is a `Const` and shifts nothing (`RELATED_WORK.md`
+/// §69).
 enum DynDenoted {
-    Int(Anchored),
-    Clo(Anchored, Rc<ConcreteClo>),
+    Int(Expr),
+    Clo(Expr, Rc<ConcreteClo>),
 }
 
 /// Projects `frame` down to plain `i64`s, for `eval_concrete`'s own
@@ -6627,23 +6353,23 @@ fn collect_literals_dyn(store: &TermStore, h: Hash, out: &mut Vec<i64>) {
 /// indices are `captures`, reading each captured value's current value
 /// directly out of `frame` -- the per-instance analogue of
 /// `build_env_expr`, differing only in resolving each slot via `frame`'s
-/// own `Anchored` value rather than a raw postulate position (see
-/// `DynVal`'s own docs for why a substituted slot needs this).
+/// own `Expr` value rather than a raw postulate position (see `DynVal`'s
+/// own docs for why a substituted slot may hold one).
 fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, captures: &[u32], frame: &[DynVal]) -> Option<Expr> {
     let frame_types = dyn_frame_param_types(store, frame)?;
     let sig = capture_sig(captures, &frame_types)?;
     let mut values = Vec::with_capacity(captures.len());
     for &rel in captures {
         let e = match frame.get(rel as usize)? {
-            DynVal::Int(a, _) => a.at(&combinators.cp.arith),
-            DynVal::Clo(a, _) => a.at(&combinators.cp.arith),
+            DynVal::Int(a, _) => a.clone(),
+            DynVal::Clo(a, _) => a.clone(),
         };
-        values.push(Anchored::new(&combinators.cp.arith, e));
+        values.push(e);
     }
     let mk_env_expr = combinators.cp.mk_env_ref(&sig);
-    let mk_env = Anchored::new(&combinators.cp.arith, mk_env_expr);
-    let mk_env = mk_env.at(&combinators.cp.arith);
-    let values: Vec<Expr> = values.iter().map(|v| v.at(&combinators.cp.arith)).collect();
+    let mk_env = mk_env_expr;
+    let mk_env = mk_env.clone();
+    let values: Vec<Expr> = values.to_vec();
     Some(apply_n(mk_env, values))
 }
 
@@ -6850,20 +6576,13 @@ fn eval_dyn_direct_call(
     // Ordinary opaque call: mirrors `denote_closure`'s own
     // `LitLambdaExact` construction exactly, just resolving `root`'s own
     // captures against `root_frame` instead of `params`.
-    // Every sub-piece (`call_fn`, `env_expr`, each `arg_exprs` entry) is
-    // already `Anchored` (either just-built here, or carried in from
-    // `arg_vals` above) -- nothing is resolved via `.at()` until every
-    // last lazy push (`call_ref`, `build_env_expr_dyn`, `clo_ty` below)
-    // is done, the same discipline `denote_closure`'s own composite
-    // cases already follow.
     let root_frame_types = dyn_frame_param_types(store, root_frame)?;
     let call_fn = combinators.call_ref(root, &captures, &root_frame_types)?;
-    let call_fn = Anchored::new(&combinators.cp.arith, call_fn);
     let env_expr = if captures.is_empty() {
         None
     } else {
         let e = build_env_expr_dyn(store, combinators, &captures, root_frame)?;
-        Some(Anchored::new(&combinators.cp.arith, e))
+        Some(e)
     };
     let mut arg_exprs = Vec::with_capacity(root_arity);
     for (j, v) in arg_vals.into_iter().enumerate() {
@@ -6878,20 +6597,19 @@ fn eval_dyn_direct_call(
         };
         arg_exprs.push(e);
     }
-    let call_fn = call_fn.at(&combinators.cp.arith);
+    let call_fn = call_fn.clone();
     let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
     if let Some(env_expr) = &env_expr {
-        all_args.push(env_expr.at(&combinators.cp.arith));
+        all_args.push(env_expr.clone());
     }
-    all_args.extend(arg_exprs.iter().map(|a| a.at(&combinators.cp.arith)));
+    all_args.extend(arg_exprs.iter().cloned());
     let applied = apply_n(call_fn, all_args);
-    let applied = Anchored::new(&combinators.cp.arith, applied);
     // `return_ty` was already checked above: `needs_inline` is true
     // whenever it's `Some`, so this opaque path -- reached only when
     // `needs_inline` was false -- always has a plain `Int` result here.
     debug_assert!(return_ty.is_none(), "a Clo-returning root should always have been inlined above");
     let int_ty = combinators.cp.arith.int_ty();
-    let applied_resolved = applied.at(&combinators.cp.arith);
+    let applied_resolved = applied.clone();
     debug_assert_has_type(&combinators.cp.arith.p, &applied_resolved, &int_ty, "eval_dyn: direct combinator call");
     Some(DynDenoted::Int(applied))
 }
@@ -6947,11 +6665,8 @@ fn eval_dyn_inline_call(
     for (j, (v, &a)) in arg_vals.into_iter().zip(args.iter()).enumerate() {
         let pos = root_arity - 1 - j;
         child[pos] = Some(match v {
-            // `e` is already `Anchored` (built no later than this call's
-            // own `arg_vals` loop, in `eval_dyn_direct_call`) -- safe to
-            // carry into the child frame unchanged; `DynVal`'s own
-            // `.at()` will reshift it correctly whenever it's eventually
-            // resolved, however much more gets pushed in between.
+            // `e` carries into the child frame unchanged, safe to resolve
+            // however much more gets pushed in between.
             DynDenoted::Int(e) => {
                 let n = eval_concrete_dyn(store, a, calling_frame)?;
                 DynVal::Int(e, n)
@@ -7051,10 +6766,6 @@ fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut ClosureCombinator
         }
         Shape::CombinatorCall { root, args, .. } => eval_dyn_direct_call(store, combinators, root, frame, &args, self_ctx, budget, frame),
         Shape::OtherCall => None,
-        // `e` is already `Anchored` (from `DynVal`) -- pass it through
-        // unchanged rather than resolving now, so it stays safe to hold
-        // across whatever this read's own caller does before actually
-        // consuming it.
         Shape::Var(i) => {
             if let Some((_, self_arity)) = self_ctx
                 && i as usize == self_arity
@@ -7071,17 +6782,17 @@ fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut ClosureCombinator
                 DynVal::Clo(e, cc) => Some(DynDenoted::Clo(e, cc)),
             }
         }
-        Shape::Lit(n) => Some(DynDenoted::Int(Anchored::new(&combinators.cp.arith, combinators.cp.arith.lit_ref(n)))),
+        Shape::Lit(n) => Some(DynDenoted::Int(combinators.cp.arith.lit_ref(n))),
         Shape::Prim(op, a, b) => {
             let DynDenoted::Int(da) = eval_dyn(store, a, combinators, self_ctx, budget, frame)? else { return None };
             let DynDenoted::Int(db) = eval_dyn(store, b, combinators, self_ctx, budget, frame)? else { return None };
             let op_ref = combinators.cp.arith.op_ref(op); // pre-postulated once -- never pushes
-            let da = da.at(&combinators.cp.arith);
-            let db = db.at(&combinators.cp.arith);
+            let da = da.clone();
+            let db = db.clone();
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "eval_dyn: Prim");
-            Some(DynDenoted::Int(Anchored::new(&combinators.cp.arith, applied)))
+            Some(DynDenoted::Int(applied))
         }
         Shape::Combinator { .. } => {
             let (arity, body, is_rec) = compile::peel(store, h)?;
@@ -7099,23 +6810,19 @@ fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut ClosureCombinator
             let sym = combinators.register(h, &captures, &frame_types)?;
             let cc = Rc::new(ConcreteClo { root: h, frame: frame.to_vec() });
             if captures.is_empty() {
-                return Some(DynDenoted::Clo(Anchored::new(&combinators.cp.arith, sym), cc));
+                return Some(DynDenoted::Clo(sym, cc));
             }
-            // `register` (just above) already primes `clo_ty(arity)` as
+            // `register` (just above) already computes `clo_ty(arity)` as
             // part of building `mk_clo_ref`'s own type, so the explicit
-            // `clo_ty(arity)` call below is a cache hit, never a fresh
-            // push -- safe to resolve `sym`/`env_expr` fresh immediately
-            // before it, the same ordering `denote_closure`'s identical
-            // case already relies on.
-            let sym = Anchored::new(&combinators.cp.arith, sym);
+            // `clo_ty(arity)` call below is a cache hit, not a fresh
+            // computation.
             let env = build_env_expr_dyn(store, combinators, &captures, frame)?;
-            let env_expr = Anchored::new(&combinators.cp.arith, env);
-            let sym = sym.at(&combinators.cp.arith);
-            let env_expr = env_expr.at(&combinators.cp.arith);
+            let env_expr = env;
+            let sym = sym.clone();
+            let env_expr = env_expr.clone();
             let applied = kernel::app(sym, env_expr);
             let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "eval_dyn: capturing closure value");
-            let applied = Anchored::new(&combinators.cp.arith, applied);
             Some(DynDenoted::Clo(applied, cc))
         }
     }
@@ -7166,7 +6873,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
         let int_ty = combinators.cp.arith.int_ty();
         let pos = combinators.cp.arith.p.push(int_ty);
         let e = combinators.cp.arith.p.get(pos);
-        frame.push(DynVal::Int(Anchored::new(&combinators.cp.arith, e), n));
+        frame.push(DynVal::Int(e, n));
     }
 
     let mut budget = DynBudget::new();
@@ -7180,11 +6887,11 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
     // fresh only afterward -- the same ordering `prove_closure_expr`'s
     // own identical step already relies on.
     let (result_ty, denotation) = match denoted {
-        DynDenoted::Int(e) => (combinators.cp.arith.int_ty(), e.at(&combinators.cp.arith)),
+        DynDenoted::Int(e) => (combinators.cp.arith.int_ty(), e.clone()),
         DynDenoted::Clo(e, cc) => {
             let (k, _, _) = compile::peel(store, cc.root)?;
             let ty = combinators.cp.clo_ty(k);
-            (ty, e.at(&combinators.cp.arith))
+            (ty, e.clone())
         }
     };
     let proof = kernel::refl(denotation.clone());
@@ -7321,18 +7028,15 @@ mod tests {
         let mut arith = ArithPostulates::new();
         let nat = kernel::NatPostulates::new(&mut arith.p);
 
-        // Push every postulate this prototype needs *first* -- two opaque
+        // Push every postulate this prototype needs first -- two opaque
         // arity-2 closure values (f, g, exactly like
         // `ClosureCombinators::combinator_value`'s own postulated
         // constant), two opaque Ints to call the chosen one with, and one
         // opaque arity-3 closure value (h, for the arity-mismatch check) --
-        // then resolve every reference fresh in one final pass with no
-        // further pushes in between. Interleaving a `p.get` with a later
-        // `p.push` would go stale (exactly the `Anchored`-staleness bug
-        // class `RELATED_WORK.md` documents: a `Var`'s correct de Bruijn
-        // index depends on how many postulates exist *right now*, and this
-        // prototype hit that bug on its first run, confirming the class is
-        // just as live here as anywhere else in this project).
+        // then resolve every reference in a final pass. Before stage 3
+        // (`RELATED_WORK.md` §68), interleaving a `p.get` with a later
+        // `p.push` would have gone stale; a pushed `Const` shifts nothing,
+        // so the ordering here is now just for readability.
         let f_pos = arith.p.push(curried_arrow(&arith.int_ty(), 2));
         let g_pos = arith.p.push(curried_arrow(&arith.int_ty(), 2));
         let a_pos = arith.p.push(arith.int_ty());
@@ -7844,8 +7548,8 @@ mod tests {
             let mut combinators = ClosureCombinators::new(&s);
             combinators.cp.arith.lit(w_val);
             let w_lit = combinators.cp.arith.lit_ref(w_val);
-            let w_param = Anchored::new(&combinators.cp.arith, w_lit.clone());
-            let w_fact = Anchored::new(&combinators.cp.arith, kernel::refl(w_lit));
+            let w_param = w_lit.clone();
+            let w_fact = kernel::refl(w_lit);
             combinators.cp.arith.lit(a_val);
             combinators.cp.arith.lit(c_val);
             let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[w_param], &[w_val], &[w_fact])
