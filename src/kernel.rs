@@ -249,8 +249,8 @@ fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Recursive fields are `Rc`, not `Box`: `Expr` is built and re-threaded
-/// through deeply nested proof terms (`proof.rs`'s `Anchored`, the Ev-witness
-/// builder's per-call-site composition, ...) almost entirely by `.clone()`,
+/// through deeply nested proof terms (the Ev-witness builder's
+/// per-call-site composition, ...) almost entirely by `.clone()`,
 /// and a `Box`-tree clone is a full deep copy -- cost that scales with the
 /// *entire* accumulated proof term, not with what actually changed. With
 /// `Rc`, `#[derive(Clone)]` on `Expr` clones each field by bumping a
@@ -555,9 +555,8 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
 // --- shifting & substitution (standard de Bruijn machinery) -------------
 
 /// Add `amount` to every free variable at or above `cutoff`. Exposed
-/// (beyond this module's own substitution machinery) for reindexing a
-/// term built at one ambient context depth for reuse at a deeper one --
-/// see `proof.rs`'s `Anchored`.
+/// (beyond this module's own substitution machinery) for moving a term
+/// under a new binder, e.g. the `cong` motives in `proof.rs`.
 pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     // Adding 0 changes no index, and a term whose loose variables all sit
     // below `cutoff` has none to change: either way `e` comes back as is.
@@ -754,7 +753,7 @@ fn free_escaped(l: u32) -> String {
 /// (this is sharing, not hash-consing) -- but a subterm that's genuinely
 /// the same `Rc` allocation, reached from several places while reducing one
 /// larger term (exactly what happens once a proof term embeds the same
-/// `Anchored` value or `cong_n` argument in multiple positions), is
+/// subterm or `cong_n` argument in multiple positions), is
 /// normalized once and reused everywhere else it's referenced, instead of
 /// being re-walked -- and, for `whnf` specifically, potentially
 /// re-beta-reduced, which is where repeated-substitution cost actually
@@ -1677,8 +1676,7 @@ impl Postulates {
     pub fn close(&mut self, s: Scope, binder: Binder, body: Expr) -> Expr {
         assert!(self.scopes == s.depth + 1, "scopes must close innermost-first");
         // A loose `Var` here would be captured by the new binders: it's a
-        // sign a scope local (from the old push-then-truncate regime this
-        // superseded) escaped `bind`.
+        // sign a scope local escaped `bind`.
         assert!(loose_of(&body) == 0, "close's body has a loose Var: a scope local escaped bind (RELATED_WORK §70)");
         let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
         let mut acc = abstract_frees(&body, s.first, &levels, 0);
