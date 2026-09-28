@@ -147,7 +147,7 @@
 //! just follows one concrete path per call, denoting whatever it finds
 //! along the way), so neither of those needed widening.
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use std::rc::Rc;
 
 use crate::compile::{self, Shape};
@@ -3057,45 +3057,6 @@ fn canonical_params(combinators: &ClosureCombinators<'_>, concrete: &[i64]) -> (
     (params, param_facts)
 }
 
-/// Runs `eval_and_prove` on every condition and self-call argument that
-/// `build_ev_witness` will meet on `concrete`'s trace, and throws the
-/// results away. Every postulate those calls push (`assume_prim_fact` and
-/// the like, each memoised) then exists before the witness is built, so
-/// nothing grows the context while it is built, and a `memo` hit shares
-/// the stored witness instead of copying it (`RELATED_WORK.md` §62). It
-/// only saves work: a push it misses costs
-/// that sharing, not correctness. `seen` bounds it the way `budget` bounds
-/// `build_ev_witness`: one entry per distinct call.
-fn push_ev_facts(
-    store: &TermStore,
-    combinators: &mut ClosureCombinators<'_>,
-    self_call: SelfCall,
-    leaves: &[Leaf],
-    concrete: &[i64],
-    seen: &mut HashSet<Vec<i64>>,
-) -> Option<()> {
-    if !seen.insert(concrete.to_vec()) {
-        return Some(());
-    }
-    if seen.len() > WITNESS_NODE_BUDGET {
-        return None;
-    }
-    let leaf = &leaves[trace_leaf(store, leaves, concrete)?];
-    let (params, param_facts) = canonical_params(combinators, concrete);
-    for &(cond, _lit) in &leaf.path {
-        eval_and_prove(store, cond, combinators, &params, concrete, &param_facts)?;
-    }
-    for call in &leaf.calls {
-        let mut new_concrete = Vec::with_capacity(self_call.arity);
-        for i in 0..self_call.arity {
-            let (x, _, _) = eval_and_prove(store, call[self_call.arity - 1 - i], combinators, &params, concrete, &param_facts)?;
-            new_concrete.push(x);
-        }
-        push_ev_facts(store, combinators, self_call, leaves, &new_concrete, seen)?;
-    }
-    Some(())
-}
-
 /// Builds an actual `e : Ev(params, v)` witness for one specific call,
 /// following the real trace `concrete` determines (mirroring
 /// `classify_step`, but for any leaf `flatten_tree` found, not just a tail
@@ -3291,7 +3252,6 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
         scaffold.combinators.lit(c);
     }
 
-    push_ev_facts(store, &mut scaffold.combinators, scaffold.self_call, &scaffold.leaves, &concrete, &mut HashSet::new())?;
     let mut budget = WITNESS_NODE_BUDGET;
     let mut memo = HashMap::new();
     let (v, e) = build_ev_witness(
