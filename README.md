@@ -335,10 +335,12 @@ This is stated precisely because it would be easy to overclaim here.
   and could just as easily be triggered for the first time from inside a
   temporary scope. Since these registrations depend only on a combinator's
   hash and a capture *count* — never the actual parameter values —
-  `prime_closure_postulates` pre-triggers every one a self-call argument
-  *or a leaf's own expression* will need via a lightweight structural walk
+  `prime_closure_postulates` pre-triggered every one a self-call argument
+  *or a leaf's own expression* would need via a lightweight structural walk
   (no parameter values needed at all), the same upfront-priming fix
-  widened to cover closure creation, not just a call through a parameter.
+  widened to cover closure creation, not just a call through a parameter —
+  removed in stage 4, once a push inside a scope stopped panicking
+  (`RELATED_WORK.md` §72).
   Also honestly scoped: the *instance* (per-call) specialization remains
   untouched and still rejects a self-call argument or leaf expression that
   creates a closure — `kernel_verified` doesn't depend on that, so this
@@ -406,9 +408,9 @@ This is stated precisely because it would be easy to overclaim here.
   `ClosureCombinators::call_ref`'s own type construction read `int_ty`/
   `clo_ty` in a loop *before* possibly pushing a fresh `Env` postulate
   afterward, silently invalidating those earlier reads — the same
-  staleness class `Anchored` exists to prevent, just inside one function's
-  own type construction rather than across `denote_closure`'s recursive
-  calls. Caught by the `#[cfg(debug_assertions)]` `debug_assert_has_type`
+  staleness class `Anchored` existed to prevent (removed in stage 4,
+  `RELATED_WORK.md` §72), just inside one function's own type construction
+  rather than across `denote_closure`'s recursive calls. Caught by the `#[cfg(debug_assertions)]` `debug_assert_has_type`
   checks on the very first test exercising a direct call to a capturing
   combinator, before it could reach anything outside this module. A
   literal lambda applied to *fewer* arguments than its own arity (a
@@ -451,7 +453,9 @@ This is stated precisely because it would be easy to overclaim here.
   `mk_env_ref` a capturing root's `build_env_expr` call also needs, so
   that lazy push could still happen for the first time from inside a
   rolled-back `params_and_close_typed` scope — the exact staleness class
-  this whole pre-priming mechanism exists to prevent, caught by
+  this whole pre-priming mechanism existed to prevent (both the priming
+  pass and the scope-open panic it guarded against are gone as of stage 4,
+  `RELATED_WORK.md` §72), caught by
   `compile_fuzz`'s random-term fuzzing (not by any hand-written test) via
   a `debug_assert_has_type` panic in `denote_closure_typed`'s own partial
   application case.
@@ -591,9 +595,8 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   own cost for a closure-typed loop-carried parameter (`iterate`'s
   shape, see the closures-fragment table row above), which unlike
   `closures_fragment_proof`'s own group *does* go through
-  `build_universal`'s full induction pipeline
-  (`denote_closure_typed`/`prime_closure_postulates`, not just
-  `denote_closure`): at ~13.7ms, noticeably more than the same 2-leaf
+  `build_universal`'s full induction pipeline (`denote_closure_typed`, not
+  just `denote_closure`): at ~13.7ms, noticeably more than the same 2-leaf
   shape's plain-arithmetic counterpart (`gcd_2_leaves`, ~9.0ms above) —
   the closure-typed pipeline's extra bookkeeping costs something even on
   a term, like this one, that never actually creates a closure inside the
@@ -782,8 +785,9 @@ guards against by hand): caught immediately, at seed 22.
   code happened to construct the term.
 - **`kernel::Expr`'s recursive fields are `Rc`, not `Box`**: `Expr` is built
   once and then threaded through many `.clone()` calls as it's composed into
-  larger proof terms (`proof.rs`'s `Anchored` reshifting pattern especially,
-  but also plain composition like `cong_n`'s per-argument accumulation) —
+  larger proof terms (`proof.rs`'s pre-stage-4 `Anchored` reshifting
+  pattern especially, `RELATED_WORK.md` §72, but also plain composition
+  like `cong_n`'s per-argument accumulation) —
   with `Box`, every one of those clones was a full deep copy, cost scaling
   with however large the accumulated term had grown by that point, not with
   what actually changed. With `Rc`, `#[derive(Clone)]` clones each field by
@@ -836,15 +840,19 @@ guards against by hand): caught immediately, at seed 22.
   validation as the literature means it — a genuine per-compilation
   validator's success would cover every input, and building one is a
   route tatic hasn't taken (see §28).
-- **`Anchored`, and a staleness bug it doesn't automatically prevent**: a
-  postulate's `Expr` reference is only valid relative to the postulate
-  context's length *at the moment it's resolved* (`kernel::Postulates::get`
-  computes a fresh `Var` index each call); `Anchored` reshifts one held
-  across further pushes, but nothing stops code from resolving a plain
-  `Expr` and holding it unwrapped instead. That exact mistake caused two
-  real bugs in this project (the `Ev`-witness builder, then
-  `denote_closure`), each only surfacing as an opaque kernel type-mismatch
-  far from the actual cause. `proof.rs` now has `debug_assert_has_type`
+- **`Anchored`, and a staleness bug it doesn't automatically prevent**
+  (history; the type is gone as of stage 4, `RELATED_WORK.md` §72): back
+  when a postulate's `Expr` reference was a `Var` index, only valid
+  relative to the postulate context's length *at the moment it's
+  resolved*, `Anchored` reshifted one held across further pushes, but
+  nothing stopped code from resolving a plain `Expr` and holding it
+  unwrapped instead. That exact mistake caused two real bugs in this
+  project (the `Ev`-witness builder, then `denote_closure`), each only
+  surfacing as an opaque kernel type-mismatch far from the actual cause.
+  Stage 3 made the whole class structurally impossible — `Postulates::get`
+  now returns a `Const`, which no push shifts (§69) — so `Anchored` had
+  nothing left to do and was deleted. `proof.rs` still has
+  `debug_assert_has_type`
   (debug-only, zero-cost in release), called at the return point of every
   function that composes an `Expr` from more than one recursive sub-call,
   to turn a future instance of this bug class into an immediate,
@@ -1117,7 +1125,8 @@ guards against by hand): caught immediately, at seed 22.
   each, and made large proofs 44-58% faster (§69), and a scope's
   parameters as free levels, so a leaked parameter fails the check
   (§70). The µs-scale proofs are 51-83% slower across stage 3: checking
-  every pushed postulate costs ~4 µs a proof (§69). Stage 4, removing the
-  workarounds this makes unnecessary, is designed but not built. If the proof gate is ever relaxed, the next step
+  every pushed postulate costs ~4 µs a proof (§69). Stage 4 is built (§72):
+  `push_ev_facts`, the closure priming, `Anchored`, and `Params` are gone,
+  and a push may now happen while a scope is open. If the proof gate is ever relaxed, the next step
   is a typed IR that `ir::check` checks (§46's B5): it closes the arity
   and Int-vs-closure agreements for compiled code in one place.

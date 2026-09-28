@@ -5778,6 +5778,58 @@ as V8, Lean's parallel kernel checking and Coq's proof workers do
 (hides the remaining ~0.5-1 ms of theorem per recursive term); run
 Cranelift beside the proof (saves the shorter of the two).
 
+## 72. Stage 4: what stage 3 made unnecessary
+
+Plan: `docs/superpowers/specs/2026-09-25-kernel-constants-and-loose-ranges-design.md`,
+"Stage 4: remove what no longer pays" (untrusted, Tasks 1-4).
+
+**What was removed.**
+- §62's prepass, `push_ev_facts`: the call in `instance_from_scaffold` and
+  the ~40-line function itself (Task 1, cde516e).
+- The closure priming (Task 2, c00aa59/41092e1): 3 functions
+  (`prime_closure_postulates`, `prime_direct_call`,
+  `prime_closure_if_tree_leaves`), 2 loops in `build_universal`, 3
+  remaining call sites into them, and 8 discarded-result priming calls
+  (`mk_env_ref`/`clo_ty`) across 5 other functions — counted from
+  `git show c00aa59 -- src/proof.rs`. `Postulates::push`'s scope-open
+  assertion (kernel.rs) went with it, so §70's JIT panic path is gone: no
+  push can panic for being inside a scope any more. Kept: the literal
+  pre-pass loop in `clo_eq_ref_if_tree` (and its twins in `call_eq_ref` and
+  `build_universal`) — `denote`'s `lit_ref` still expects every literal
+  pre-postulated, unrelated to the panic mechanism being removed.
+- `Anchored` and `Params` (Task 3, 6b71ff1/2af1250): both types and their
+  impls deleted. `Anchored::at` was already the identity on a closed term
+  (§70's finding). `src/proof.rs` was 11,277 lines at the plan's base
+  commit (ff5e79b), 10,410 now.
+
+**Decision's cost, stated plainly.** `push` still asserts a pushed type is
+closed, but no longer that no scope is open. A closed-typed local pushed by
+mistake inside a scope no longer panics — it becomes an extra global that
+`close` leaves alone.
+
+**Measured.**
+- Task 1: fib(16) DAG 10466 → 10466 (unchanged); best build+check
+  9.4373 → 9.7930 ms (×1.038, 10 interleaved rounds), measured under
+  ~53-55% CPU load from another session's job, Defender RTP off.
+- Tasks 2-3: DAG stayed 10466 throughout; all gates (338 lib tests, clippy
+  `-D warnings`, `kernel_soundness_fuzz`, `compile_fuzz`, `golden_wat`,
+  `ir_fuzz`) passed at every step — these changes were comment/dead-code
+  and type-erasure only, no proof-shape change.
+- A/B pending: ff5e79b vs cde516e, `target/ab4`.
+- The push-check prelude cost (§69, ~4 µs/proof) is handled separately, by
+  `ArithPostulates::new`'s thread-local prelude (7e6d61c, outside this
+  plan); its own A/B is also pending.
+
+**What changed in behaviour.**
+- A push may happen while a scope is open (kernel.rs `Postulates::push`);
+  it still asserts the pushed type is closed and infers to a `Sort`.
+- Lazy postulates (`clo_ty`, `mk_env_ref`, `ite_clo_ref`, ...) push on
+  first use with no priming pass and no panic risk from being inside a
+  scope.
+- Every site that held a resolved `Expr` across further pushes now just
+  holds the `Expr`: a `Const` doesn't shift (§69), so `Anchored` had
+  nothing left to do.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
