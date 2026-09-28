@@ -332,10 +332,12 @@ impl JitEngine {
     ///    concrete samples in one pass
     ///    (`proof::prove_tail_recursive_universal_with_instances`) purely to
     ///    record stronger, call-specific evidence
-    ///    (`Stats::universal_instances_checked`) -- cheap since it clones
-    ///    the already-built scaffold per sample rather than re-deriving the
-    ///    theorem from scratch each time, but not required:
-    ///    `kernel_verified` is already `true` from the theorem alone, so
+    ///    (`Stats::universal_instances_checked`) -- cloning the
+    ///    already-built scaffold per sample avoids re-deriving the theorem
+    ///    from scratch each time, but the instances are still a large
+    ///    share of cold JIT time (`RELATED_WORK.md` section 71: ~34%), and
+    ///    not required: `kernel_verified` is already `true` from the
+    ///    theorem alone, so
     ///    any shape whose instances this step doesn't get (an arity
     ///    mismatch, a `Clo`-typed top-level parameter -- see
     ///    `instance_from_scaffold`) is unaffected. Branching recursion

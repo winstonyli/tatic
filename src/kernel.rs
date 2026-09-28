@@ -4217,6 +4217,40 @@ mod tests {
         assert_eq!(p.globals.len(), 2);
     }
 
+    /// A push inside a scope survives `abandon` too: `abandon` rolls back
+    /// bound parameters but not globals, so `globals.len()` is unchanged
+    /// and the pushed value still type-checks (RELATED_WORK §70, stage 4).
+    #[test]
+    fn a_push_inside_a_scope_survives_abandon() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let _x = p.bind(p.get(a));
+        let c = p.push(p.get(a));
+        assert_eq!(p.globals.len(), 2);
+        p.abandon(s);
+        assert_eq!(p.globals.len(), 2);
+        assert!(p.check(&p.get(c), &p.get(a)).is_ok());
+    }
+
+    /// A push inside a nested scope survives both `close`s, the same way
+    /// a push in a single scope survives one (RELATED_WORK §70, stage 4).
+    #[test]
+    fn a_push_inside_a_nested_scope_survives_both_closes() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let outer = p.open();
+        let _x = p.bind(p.get(a));
+        let inner = p.open();
+        let y = p.bind(p.get(a));
+        let c = p.push(p.get(a));
+        let inner_closed = p.close(inner, Binder::Pi, id(p.get(a), y, p.get(c)));
+        let closed = p.close(outer, Binder::Pi, inner_closed);
+        assert_eq!(closed, pi(Expr::Const(0), pi(Expr::Const(0), id(Expr::Const(0), var(0), Expr::Const(1)))));
+        assert!(p.check(&closed, &sort(0)).is_ok());
+        assert_eq!(p.globals.len(), 2);
+    }
+
     #[test]
     #[should_panic(expected = "closed")]
     fn a_push_inside_a_scope_still_rejects_a_parameter_in_its_type() {

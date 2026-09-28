@@ -311,7 +311,10 @@ This is stated precisely because it would be easy to overclaim here.
   arity once, before any temporary scope gets the chance, and confirmed
   via a dedicated regression test (mixed `Clo`/`Int` parameters, needed
   since the bug isn't observable when every parameter happens to be
-  `Int`) that fails the same way when the fix is reverted.
+  `Int`) that fails the same way when the fix is reverted (the pre-push
+  and `apply_ref` itself are both removed in stage 4: a push inside a
+  scope stopped panicking, and `clo_ty` no longer pushes, so there is no
+  memo entry left to go stale, `RELATED_WORK.md` §72).
 
   A self-call *argument* may also genuinely *create* a closure and call it
   right there, e.g. `f(n-1, (\y. acc+y)(n))` — exactly the shape

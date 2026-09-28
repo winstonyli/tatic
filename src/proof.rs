@@ -713,7 +713,7 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // §70), never pushed onto `globals`; a lazily-memoized postulate
 // (`ClosureCombinators::register`/`call_ref`/`pap_ref`,
 // `ClosurePostulates::mk_env_ref`/`env_ty`/`ite_clo_ref`) may be pushed from
-// inside one without going stale.
+// inside one.
 //
 // A self-call *argument* may also genuinely *create* a closure and (fully
 // or partially) call it right there, e.g. `f(n-1, (\y. acc+y)(n))` --
@@ -788,7 +788,7 @@ fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Ex
 fn debug_assert_has_type(p: &Postulates, e: &Expr, expected: &Expr, label: &str) {
     if let Err(err) = p.check_open(e, expected) {
         panic!(
-            "staleness/composition bug in {label}: the value doesn't have its expected type.\n  \
+            "composition bug in {label}: the value doesn't have its expected type.\n  \
              error: {err}\n  value: {e:?}\n  expected type: {expected:?}"
         );
     }
@@ -2038,10 +2038,6 @@ fn eval_and_prove(
             let fact = combinators.cp.arith.assume_prim_fact(op, xa, xb);
             let result = apply_prim_concrete(op, xa, xb);
 
-            // Nothing pushes onto arith.p.globals from here on, so resolving
-            // everything fresh now (past `assume_prim_fact`'s own push)
-            // keeps it all valid for the rest of this call.
-            let (da, pa, db, pb) = (da.clone(), pa.clone(), db.clone(), pb.clone());
             let int_ty = combinators.cp.arith.int_ty();
             let f = combinators.cp.arith.op_ref(op);
             let cong = kernel::cong_n(
@@ -2073,14 +2069,6 @@ fn eval_and_prove(
             let fact = combinators.cp.arith.assume_ite_fact(xc, xt, xe);
             let result = if xc != 0 { xt } else { xe };
 
-            let (dc, pc, dt, pt, de, pe) = (
-                dc.clone(),
-                pc.clone(),
-                dt.clone(),
-                pt.clone(),
-                de.clone(),
-                pe.clone(),
-            );
             let int_ty = combinators.cp.arith.int_ty();
             let f = combinators.cp.arith.ite_ref();
             let cong = kernel::cong_n(
@@ -3267,10 +3255,8 @@ fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>
         &mut memo,
     )?;
 
-    // Fresh past all the growth `build_ev_witness` just did.
-    let theorem_proof = scaffold.theorem_proof.clone();
     let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.combinators.lit_ref(c)).collect();
-    let applied = apply_n(theorem_proof, params.into_iter().chain([v, e]));
+    let applied = apply_n(scaffold.theorem_proof.clone(), params.into_iter().chain([v, e]));
     let ty = scaffold.combinators.cp.arith.p.infer(&applied).ok()?;
     let (lhs, rhs) = match kernel::whnf(&ty) {
         Expr::Id(_, ref lhs, ref rhs) => ((**lhs).clone(), (**rhs).clone()),
@@ -4360,10 +4346,10 @@ impl<'a> ClosureCombinators<'a> {
     ///
     /// Every postulate this axiom's own RHS references (`register`'s own
     /// value expression for each `Abs` leaf, `pap_ref`'s for each `Pap`
-    /// one, `mk_env_ref` for any leaf that captures, `clo_ty(k)`/
-    /// `ite_clo_ref(k)` for the `If` shape) may be pushed lazily from
-    /// inside the `params_and_close_typed` closure below that binds
-    /// `root`'s own quantified captures/params.
+    /// one, `mk_env_ref` for any leaf that captures, `ite_clo_ref(k)` for
+    /// the `If` shape) may be pushed lazily from inside the
+    /// `params_and_close_typed` closure below that binds `root`'s own
+    /// quantified captures/params.
     fn clo_eq_ref_if_tree(&mut self, root: Hash, arity: usize, body: Hash, is_rec: bool, k: usize) -> Option<(Expr, ClosureRhsShape)> {
         // Deliberately *not* `classify_tree` -- that function additionally
         // restricts every `cond` to a direct comparison
@@ -4921,10 +4907,8 @@ impl<'a> ClosureCombinators<'a> {
             // LHS: `pap_value(more_{k-1}..more_0)`, called directly -- the
             // same descending order this axiom's own construction (and
             // `apply_clo_eq_ref`'s) has always applied its own trailing
-            // `Int` params in, now with no `apply_ref` hop to cross (the
-            // order itself is unchanged: `pap_ref(g,s)`'s own codomain
-            // *is* `curried_int_ty(k)`, the exact same Pi-chain shape
-            // `apply_ref(k)`'s own trailing arguments used to match).
+            // `Int` params in: `pap_ref(g,s)`'s own codomain *is*
+            // `curried_int_ty(k)`.
             let lhs = apply_n(pap_value, more.iter().rev().cloned());
 
             // RHS: `call_ref(g)(g_env?, a_0..a_{s-1}, b_{k-1}..b_0)` --
@@ -6771,41 +6755,25 @@ mod tests {
         assert!(compile::try_compile(&s, f).is_some());
     }
 
-    /// **Architecture prototype, predating the real migration this
-    /// motivated.** Investigated whether the whole `Clo_k`-as-a-family-of-
-    /// opaque-`Sort(0)`-postulates scheme (`ClosurePostulates::clo_ty`,
-    /// plus what was then a separate `apply_ref` axiom, one fresh
-    /// postulate pair per distinct arity a term uses) could instead be
-    /// built from the *literal* curried `Int -> .. -> Int` arrow type --
-    /// no new postulate at all -- reusing `Int` (already postulated by
-    /// `ArithPostulates`) rather than adding anything new. `clo_ty` itself
-    /// (Phase 1) and `apply_ref` (Phase 2) were since migrated for real
-    /// along exactly these lines -- see `RELATED_WORK.md` section 11.
-    /// This standalone test is kept as the isolated confirmation it always
-    /// was, not superseded by the real migration landing. Confirms:
+    /// Confirms a `Clo_k`-shaped value can be built as the literal curried
+    /// `Int -> .. -> Int` arrow type, reusing `Int` (already postulated by
+    /// `ArithPostulates`) instead of an opaque `Sort(0)` postulate family
+    /// (`RELATED_WORK.md` section 11):
     ///
-    /// 1. A `Clo_k`-shaped value (an opaque postulated constant of the
-    ///    literal arrow type) can be called directly via ordinary
-    ///    `kernel::app`, typechecking as `Int` with no separate "how to
-    ///    call this" axiom needed at all -- confirmed for real once
-    ///    `apply_ref` was actually removed and its dozen call sites
-    ///    migrated (Phase 2).
+    /// 1. Such a value can be called directly via ordinary `kernel::app`,
+    ///    typechecking as `Int` with no separate "how to call this" axiom
+    ///    needed at all.
     /// 2. `bool_rec` instantiated at a *constant* motive (`\_:Bool. A`) is a
     ///    real `ite : Bool -> A -> A -> A` for any `A`, with its
     ///    computation-rule axioms (`bool_rec_true_eq`/`bool_rec_false_eq`)
-    ///    already proving `ite`'s own -- a standalone fact, still true, but
-    ///    (per `RELATED_WORK.md` section 11's own correction) it does
-    ///    *not* extend to eliminating the real `ite_clo_ref`, whose
-    ///    condition is `Int`-typed rather than `Bool`-typed and so has no
-    ///    bridge to `bool_rec`'s own motive; `ite_clo_ref` was correctly
-    ///    left untouched by the real migration.
+    ///    already proving `ite`'s own -- but this does *not* extend to
+    ///    `ite_clo_ref`, whose condition is `Int`-typed rather than
+    ///    `Bool`-typed and so has no bridge to `bool_rec`'s own motive.
     /// 3. Two different arities are still genuinely distinct types --
     ///    `kernel::check` rejects a `Clo_3`-shaped value where a `Clo_2` is
     ///    expected, for free, from ordinary Pi-type structural inequality --
     ///    so this doesn't reopen the arity-blind-`Clo` unsoundness
     ///    `TYPES.md` section 6.2 documents.
-    ///
-    /// See the design investigation this answers in `RELATED_WORK.md`.
     #[test]
     fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
         fn curried_arrow(int_ty: &Expr, k: usize) -> Expr {
