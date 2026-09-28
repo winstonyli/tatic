@@ -233,11 +233,8 @@ impl ArithPostulates {
     }
 
     /// Postulate a fresh `Int`-typed constant for `n` if one doesn't
-    /// already exist. Scope parameters are `Free`s, not `Var`s, and
-    /// `push`ing a global never shifts them, so `lit` may be called at any
-    /// point relative to a scope's parameters. The only real constraint is
-    /// `Postulates::push`'s own: `lit` can't be the first thing to push a
-    /// global while a scope is open, since `push` panics there.
+    /// already exist. Scope parameters are `Free`s, and a push inside a
+    /// scope adds a global, so `lit` may be called at any point.
     pub fn lit(&mut self, n: i64) -> Expr {
         if let Some(&pos) = self.literal_pos.get(&n) {
             return self.p.get(pos);
@@ -712,24 +709,12 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // `Clo`-typed values is in scope too (`ite_clo_ref`, same as
 // `denote_closure`'s own) -- see `build_universal`'s own doc comment below
 // for the one thing still out of scope here (a captured free variable).
-// Caught a real bug while building this: `ClosurePostulates::apply_ref`'s
-// lazy-postulate memoization was designed for `denote_closure`'s own
-// usage, where the postulate context only ever grows. At the time,
-// `params_and_close_typed` pushed its own scope's locals onto that same
-// context and rolled them back on close, so `apply_ref`'s *first* call for
-// a given arity, if triggered from inside one of those temporary scopes,
-// memoized a position that then got rolled back while the memo entry
-// stayed, silently going stale. Fixed by pre-pushing every arity the body
-// will ever need, once, before any temporary scope gets the chance --
-// caught immediately by `kernel::check`'s own final re-verification (a
-// lambda-domain mismatch), not silently accepted, and confirmed by
-// deliberately reintroducing it: a dedicated regression test (mixed
-// `Clo`/`Int` parameters, so the bug is actually observable) failed the
-// same way before the fix. `params_and_close_typed`'s scope locals are
-// `Free`s now (`RELATED_WORK.md` §70), never pushed onto `globals`, so this
-// exact staleness can't recur -- but `Postulates::push` panics while a
-// scope is open, so the pre-pushing this bug motivated is still required,
-// just to avoid a panic instead of a silent one.
+// `params_and_close_typed`'s scope locals are `Free`s (`RELATED_WORK.md`
+// §70), never pushed onto `globals`, and a push may now happen inside an
+// open scope (`RELATED_WORK.md` §70, stage 4), so a lazily-memoized
+// postulate (`ClosurePostulates::apply_ref`/`register`/`call_ref`/`pap_ref`/
+// `mk_env_ref`/`ite_clo_ref`) may be first triggered from inside one without
+// going stale or panicking.
 //
 // A self-call *argument* may also genuinely *create* a closure and (fully
 // or partially) call it right there, e.g. `f(n-1, (\y. acc+y)(n))` --
@@ -750,22 +735,13 @@ pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Op
 // `collect_literals` already does) mirror `denote_closure_typed`'s/
 // `denote_closure`'s handling too -- e.g. `(\y. n+y)(5) + f(n-1)`, a
 // closure-call's result combined arithmetically with the recursive call
-// directly, not nested inside any self-call's own argument list. Caught
-// the *same class* of staleness bug a second time, in a new place:
+// directly, not nested inside any self-call's own argument list.
 // `register`/`call_ref`/`pap_ref`, and transitively `mk_env_ref`/`env_ty`
-// for a capturing one, are *all* lazily memoized exactly like `apply_ref`,
-// and either `denote_closure_typed`'s or `denote_with_placeholders`'s
-// first real call (from inside a temporary scope) could trigger any of
-// them for the first time just as easily. Since these registrations
-// depend only on a combinator's `Hash` and a capture *count* -- never the
-// actual parameter *values* -- `prime_closure_postulates` pre-triggers
-// every one a self-call argument *or a leaf's own expression* will need
-// via a lightweight structural walk (no `params` needed at all, and now
-// itself self-call-aware -- matching `find_self_calls`'s own precedence,
-// stopping at a self-call occurrence rather than walking into it, since
-// that occurrence's own arguments are primed separately), the same
-// upfront-priming fix widened to cover closure creation, not just a call
-// through a parameter. Also honestly scoped: `eval_and_prove`/
+// for a capturing one, are all lazily memoized the same way `apply_ref`
+// is, and either `denote_closure_typed`'s or `denote_with_placeholders`'s
+// first real call (from inside a temporary scope) may trigger any of them
+// for the first time -- fine now that a push may happen inside an open
+// scope. Also honestly scoped: `eval_and_prove`/
 // `build_ev_witness` (the *instance*, per-call specialization) remain
 // untouched and still reject `App`/`Abs` outright, so a concrete instance
 // proof for either shape still declines -- `kernel_verified` doesn't
@@ -1276,8 +1252,8 @@ fn denote_with_placeholders(
 ///
 /// `params` are the enclosing scope's bound parameters (`Params`), which
 /// no push shifts. `register`/`call_ref`/`pap_ref` each push a postulate
-/// on first use, which panics inside a scope, so `build_universal` primes
-/// them first (`prime_closure_postulates`). A bare `Term::Rec` (a
+/// on first use, which may now happen while a scope is open
+/// (`RELATED_WORK.md` §70, stage 4). A bare `Term::Rec` (a
 /// self-recursive combinator *nested* inside another one's body) stays
 /// out of scope, unlike `denote_closure`'s own fragment -- proving one induction correct while assuming another is a genuinely
 /// different, unexplored problem, not attempted here.
@@ -1515,140 +1491,6 @@ fn denote_closure_typed(
     }
 }
 
-/// A structural pre-pass over one self-call argument *or* one leaf's own
-/// expression, mirroring exactly which shapes `denote_closure_typed`/
-/// `denote_with_placeholders` will recognize when they later denote this
-/// same term for real, but never resolving an actual `Var` value (unlike
-/// either of those, no `params` needed) -- purely to force every lazy
-/// postulate a nested closure creation/call site will need
-/// (`ClosureCombinators::register`/`call_ref`/`pap_ref`, and transitively
-/// `ClosurePostulates::mk_env_ref`/`env_ty` for a capturing one) to get
-/// pushed *now*, before any temporary `params_and_close_typed` scope gets
-/// the chance to trigger one itself -- `Postulates::push` panics while a
-/// scope is open (`RELATED_WORK.md` §70), so a lazy postulate's first use
-/// has to happen out here, not inside one -- see `build_universal`'s own
-/// call sites for the full rationale (the same class of bug `apply_ref`'s
-/// own upfront pre-push already fixed). Returns `None` for
-/// exactly the shapes the real denotation would itself reject, so a
-/// priming failure here means the real call would have failed anyway --
-/// `build_universal` propagates it with `?`, failing fast before any of
-/// the expensive `Ev`/leaf/theorem construction below.
-fn prime_closure_postulates(
-    store: &TermStore,
-    h: Hash,
-    self_call: SelfCall,
-    param_types: &[Option<usize>],
-    combinators: &mut ClosureCombinators<'_>,
-) -> Option<()> {
-    // Mirrors `find_self_calls`'s own precedence: a self-call occurrence
-    // (never appearing inside a self-call argument itself, per
-    // `find_self_calls`'s own invariant, so this only ever actually fires
-    // when priming a *leaf's own* expression) is a stopping point, not
-    // walked into -- its own arguments are primed separately, by
-    // `build_universal`'s dedicated pass over `leaf.calls`.
-    match compile::classify(store, h, self_call.arity, Some(self_call.idx)) {
-        Shape::SelfCall(_) => Some(()),
-        shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
-            AppShape::ParamCall { args, .. } => {
-                for &a in &args {
-                    prime_closure_postulates(store, a, self_call, param_types, combinators)?;
-                }
-                Some(())
-            }
-            AppShape::LitLambdaPartial { root, args, .. } => {
-                combinators.pap_ref(root, args.len(), param_types)?;
-                // `pap_ref` itself only primes the pap combinator's own
-                // postulate, not the transitive `mk_env_ref` a capturing
-                // root's own `build_env_expr` call will need -- that has
-                // to be primed here too, the same way
-                // `prime_direct_call` primes it below, or its first push
-                // can still happen from inside a temporary
-                // `params_and_close_typed` scope and panic
-                // (`Postulates::push` panics while a scope is open).
-                let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
-                let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
-                if !root_captures.is_empty() {
-                    let sig = capture_sig(&root_captures, param_types)?;
-                    combinators.cp.mk_env_ref(&sig);
-                }
-                for &a in &args {
-                    prime_closure_postulates(store, a, self_call, param_types, combinators)?;
-                }
-                Some(())
-            }
-            // Primes `call_ref` for root's own saturated call, shared
-            // between an exact match and an over-application's own
-            // leading portion (`prime_direct_call`) -- an over-application
-            // needs no further priming of its own now: calling the
-            // saturated result (a `Clo`-typed value) with the extra
-            // arguments is ordinary application, no `apply_ref` axiom to
-            // prime (see `RELATED_WORK.md` section 11). Whether the
-            // saturated call's result is actually `Clo`-typed (required
-            // for the real denotation to accept this at all -- see
-            // `combinator_return_type`) isn't checked here, deliberately:
-            // priming just needs to cover every postulate the real pass
-            // *might* touch, and an unneeded prime for a term the real
-            // pass later rejects anyway is harmless, not unsound.
-            AppShape::LitLambdaExact { root, args, .. } => {
-                prime_direct_call(store, root, param_types, combinators)?;
-                for &a in &args {
-                    prime_closure_postulates(store, a, self_call, param_types, combinators)?;
-                }
-                Some(())
-            }
-            AppShape::LitLambdaOver { root, args, .. } => {
-                prime_direct_call(store, root, param_types, combinators)?;
-                for &a in &args {
-                    prime_closure_postulates(store, a, self_call, param_types, combinators)?;
-                }
-                Some(())
-            }
-        },
-        Shape::OtherCall => None,
-        Shape::Var(_) | Shape::Lit(_) => Some(()),
-        Shape::Prim(_, a, b) => {
-            prime_closure_postulates(store, a, self_call, param_types, combinators)?;
-            prime_closure_postulates(store, b, self_call, param_types, combinators)
-        }
-        Shape::If(c, t, e) => {
-            prime_closure_postulates(store, c, self_call, param_types, combinators)?;
-            prime_closure_postulates(store, t, self_call, param_types, combinators)?;
-            prime_closure_postulates(store, e, self_call, param_types, combinators)
-        }
-        Shape::Combinator { is_rec: false } => {
-            let (arity, body, is_rec) = compile::peel(store, h)?;
-            if arity == 0 {
-                return None;
-            }
-            let captures = compile::free_vars(store, body, arity, is_rec);
-            combinators.register(h, &captures, param_types)?;
-            if !captures.is_empty() {
-                let sig = capture_sig(&captures, param_types)?;
-                combinators.cp.mk_env_ref(&sig);
-            }
-            Some(())
-        }
-        Shape::Combinator { is_rec: true } => None,
-    }
-}
-
-/// Primes `root`'s own `call_ref` postulate and, if it captures, the
-/// transitive `mk_env_ref` its own environment construction will need --
-/// shared by `prime_closure_postulates`' `AppShape::LitLambdaExact`/
-/// `LitLambdaOver` arms (an over-application needs no further priming of
-/// its own: calling the saturated result's extra arguments is ordinary
-/// application, no axiom to prime -- see `RELATED_WORK.md` section 11).
-fn prime_direct_call(store: &TermStore, root: Hash, param_types: &[Option<usize>], combinators: &mut ClosureCombinators<'_>) -> Option<()> {
-    let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
-    let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
-    combinators.call_ref(root, &captures, param_types)?;
-    if !captures.is_empty() {
-        let sig = capture_sig(&captures, param_types)?;
-        combinators.cp.mk_env_ref(&sig);
-    }
-    Some(())
-}
-
 /// A term built once at a specific point in `globals` (`arith.p.globals.len()`
 /// at the time), for reuse at a *later* point after more postulates have
 /// been pushed. Globals only grow and a postulate is a `Const`, which no
@@ -1724,9 +1566,8 @@ fn params_and_close(
 /// Like [`params_and_close`], but for `build_universal`'s own closure-aware
 /// pipeline: binds one fresh parameter per entry of `param_types`, typed
 /// `Clo_k` or `Int` to match, so `build`'s own params may be mixed-typed.
-/// `clo_ty(k)`'s first use pushes a postulate, which panics inside a
-/// scope; `build_universal`'s upfront `clo_ty` priming loop makes every
-/// arity `param_types` mentions a cache hit here.
+/// `clo_ty(k)`'s first use pushes a postulate, which may now happen while
+/// this scope is open (`RELATED_WORK.md` §70, stage 4).
 fn params_and_close_typed(
     arith: &mut ClosureCombinators<'_>,
     param_types: &[Option<usize>],
@@ -1923,87 +1764,6 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     };
     let ev_pos = arith.p.push(ev_ty);
     let ev_of = |arith: &ArithPostulates, params: &[Expr], v: Expr| -> Expr { ev_of(arith, ev_pos, params, v) };
-
-    // Pre-push every `ite_clo_ref(k)` (see its own docs -- `clo_ty`
-    // eagerly primes it as a side effect; `clo_ty` itself no longer
-    // pushes anything of its own, and a closure-typed parameter's own
-    // call sites need no `apply_k` priming either, since calling a
-    // `Clo_k`-typed value is now ordinary application -- see
-    // `RELATED_WORK.md` section 11 -- so `ite_clo_ref` is the only
-    // postulate left to worry about here) that a closure-typed parameter's
-    // own arity `k` will need, *before* any of the temporary
-    // `params_and_close_typed` scopes below gets a chance to trigger its
-    // lazy push itself. `arith.p.globals` only ever grows, so a postulate's
-    // absolute position, once recorded (`ClosurePostulates::ite_clo_pos`),
-    // stays valid forever -- but `Postulates::push` panics while a scope is
-    // open (`RELATED_WORK.md` §70), and `params_and_close_typed`'s own
-    // parameters are `Free`s bound inside such a scope, not pushed
-    // postulates. If a given `k`'s *first* use happened from inside one of
-    // those temporary scopes, priming it there would panic outright rather
-    // than build a stale proof; pre-pushing here, before any scope opens,
-    // is what keeps that panic from ever firing. This priming is kept until
-    // stage 4 for exactly that reason. Unlike the single, arity-blind `Clo`
-    // this fragment used to postulate, there's no longer one universal
-    // `clo_ty`/`ite_clo_ref` to prime unconditionally regardless of which
-    // arities the term actually uses -- every arity `param_types` mentions
-    // is primed here; every *other* arity a `Clo`-typed value could turn
-    // out to have (a directly-called combinator's own return type, a
-    // partial application's own resulting arity, a freshly-created
-    // closure's own peeled arity) is primed transitively below, by
-    // `prime_closure_postulates`'s own structural walk through
-    // `register`/`call_ref`/`pap_ref` (each of which calls `clo_ty` with
-    // the *correct* arity for its own postulate's domain/codomain as part
-    // of building it, priming or real construction alike).
-    for k in param_types.iter().flatten() {
-        arith.clo_ty(*k);
-    }
-
-    // Same fix, widened: a self-call argument, or a leaf's own top-level
-    // expression, may itself *create* a closure and (fully or partially)
-    // call it (`denote_closure_typed`'s/`denote_with_placeholders`'s own
-    // `Term::Abs | Term::Rec` cases) -- `ClosureCombinators::register`/
-    // `call_ref`/`pap_ref`, and transitively `ClosurePostulates::env_ty`/
-    // `mk_env_ref` for a capturing one, are *all* lazily memoized the same
-    // way `ite_clo_ref` is, so each needs the same upfront priming before
-    // `new_params_for`'s/`combines`' first real call (from inside a
-    // temporary scope) gets the chance to trigger one itself. Every leaf,
-    // both its own expression and every self-call occurrence's own
-    // argument list, is scanned once, structurally
-    // (`prime_closure_postulates`, which needs no actual parameter
-    // *values* -- these registrations depend only on a combinator's
-    // `Hash` and a capture *count*, not what the captures currently hold).
-    for leaf in &leaves {
-        prime_closure_postulates(store, leaf.expr, self_call, &param_types, &mut arith)?;
-        for call in &leaf.calls {
-            for &a in call {
-                prime_closure_postulates(store, a, self_call, &param_types, &mut arith)?;
-            }
-        }
-    }
-
-    // Audited (prompted by the `ite_clo_ref` staleness bug above): every
-    // lazily-memoized `ClosurePostulates` field --
-    // `combinator_value_pos`/`combinator_call_pos`/
-    // `env_ty_pos`/`mk_env_pos`/`mk_clo_pos`/`pap_pos`/`ite_clo_pos` -- is
-    // now primed above, before any `params_and_close_typed` scope below
-    // gets a chance to trigger a first-ever lazy push itself. `literal_pos`
-    // is primed even earlier, via the `collect_literals`/`arith.lit(n)`
-    // pass this function starts with; `fact_pos`/`ite_fact_pos`
-    // (`assume_prim_fact`/`assume_ite_fact`) are exempt on a different
-    // footing -- they're only ever touched by `eval_and_prove`, called
-    // from `build_ev_witness`/`instance_from_scaffold` *after*
-    // `build_universal` has already returned, with `arith.p.globals` only
-    // ever having grown since, the same non-truncating regime
-    // `prove_closure_expr`'s own usage of `ite_clo_ref` relies on. A *new*
-    // lazily-memoized
-    // postulate added to `ClosurePostulates` in the future, reachable from
-    // inside `denote_closure_typed`/`denote_with_placeholders`, needs the
-    // same treatment (either priming here, if it's `Hash`/signature-keyed
-    // like `register`/`call_ref`/`pap_ref`/`mk_env_ref`, or an unconditional
-    // prime call like `ite_clo_ref`'s above if it isn't). Missing it is
-    // not a compile error: it waits for a term that happens to hit it
-    // from inside a scope, where the push panics with "push while a
-    // scope is open" (`RELATED_WORK.md` §70).
 
     // Binds `v_1:Int .. v_k:Int` then `e_1:Ev(new_params_1,v_1) ..
     // e_k:Ev(new_params_k,v_k)` for a leaf's `calls` (one `(v,e)` pair per
@@ -2609,9 +2369,9 @@ fn eval_and_prove_direct_call(
     let n = root_captures.len();
 
     // The computation-rule axiom for `root` -- its own first use for this
-    // `Hash` may lazily push (and, transitively, prime `call_ref`/
-    // `mk_env_ref` for this exact shape too), so fetched before anything
-    // above is combined into a larger term.
+    // `Hash` may lazily push (and, transitively, `call_ref`/`mk_env_ref`
+    // for this exact shape too), so fetched before anything above is
+    // combined into a larger term.
     let axiom = combinators.call_eq_ref(root)?;
     let axiom = Anchored::new(&combinators.cp.arith, axiom);
 
@@ -2644,7 +2404,7 @@ fn eval_and_prove_direct_call(
         None
     };
 
-    let call_fn = combinators.call_ref(root, &root_captures, &[])?; // cache hit -- primed by call_eq_ref above
+    let call_fn = combinators.call_ref(root, &root_captures, &[])?;
     let d_args: Vec<Expr> = arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
     let lit_args: Vec<Expr> = arg_triples
         .iter()
@@ -2833,7 +2593,7 @@ fn inner_closure_literal_value(
         cap_triples.push((x, d, p));
     }
     let inner_dummy: Vec<Option<usize>> = vec![None; inner_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-    let sym = combinators.register(inner, &inner_captures, &inner_dummy)?; // cache hit -- primed by clo_eq_ref
+    let sym = combinators.register(inner, &inner_captures, &inner_dummy)?;
     let value = if cap_triples.is_empty() {
         sym
     } else {
@@ -2845,7 +2605,7 @@ fn inner_closure_literal_value(
                 combinators.cp.arith.lit_ref(x)
             })
             .collect();
-        let mk_env_expr = combinators.cp.mk_env_ref(&inner_sig); // cache hit -- primed by clo_eq_ref
+        let mk_env_expr = combinators.cp.mk_env_ref(&inner_sig);
         kernel::app(sym, apply_n(mk_env_expr, lit_c))
     };
     Some((value, cap_triples))
@@ -2926,9 +2686,9 @@ fn build_clo_call_bridge(
 
     // The `Clo_k`-typed computation-rule axiom for `subject`'s own
     // saturated call -- its own first use for this `Hash` may lazily push
-    // (and transitively prime `call_ref`/`mk_env_ref`/`register`/
-    // `ite_clo_ref` for this exact shape too, see its own docs), so
-    // fetched before anything above is combined into a larger term.
+    // (and transitively `call_ref`/`mk_env_ref`/`register`/`ite_clo_ref`
+    // for this exact shape too, see its own docs), so fetched before
+    // anything above is combined into a larger term.
     let (axiom, shape) = combinators.clo_eq_ref(subject)?;
     let axiom = Anchored::new(&combinators.cp.arith, axiom);
 
@@ -2961,7 +2721,7 @@ fn build_clo_call_bridge(
         None
     };
 
-    let call_fn = combinators.call_ref(subject, &subject_captures, &[])?; // cache hit -- primed by clo_eq_ref above
+    let call_fn = combinators.call_ref(subject, &subject_captures, &[])?;
     let d_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
     let lit_sat_args: Vec<Expr> = sat_arg_triples
         .iter()
@@ -3129,7 +2889,7 @@ fn resolve_closure_shape_to_leaf(
             let tree_value_at_literals = tree_value_at_literals.at(&combinators.cp.arith);
             let leaf_value = leaf_value.at(&combinators.cp.arith);
             let tree_to_leaf_value = tree_to_leaf_value.at(&combinators.cp.arith);
-            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed by clo_eq_ref via clo_ty(k)
+            let clo_ty = combinators.cp.clo_ty(k);
 
             // `axiom_at_literals`'s own RHS is exactly the tree's own
             // formula at literals (`tree_value_at_literals`, independently
@@ -3261,13 +3021,13 @@ fn resolve_closure_shape_to_leaf(
             let bridge_here = bridge.at(&combinators.cp.arith);
             let axiom_at_literals_here = axiom_at_literals.at(&combinators.cp.arith);
             let pap_fn = pap_fn.at(&combinators.cp.arith);
-            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed by clo_eq_ref_pap via pap_ref
+            let clo_ty = combinators.cp.clo_ty(k);
 
             let g_env_denoted = if g_cap_triples.is_empty() {
                 None
             } else {
                 let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
-                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed by clo_eq_ref_pap
+                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
                 let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
                 Some(apply_n(mk_env_expr, cd))
             };
@@ -3438,7 +3198,7 @@ fn eval_and_prove_call_over(
     debug_assert_eq!(k, k_check, "eval_and_prove_call_over: build_clo_call_bridge's own k must match combinator_return_type(root)");
 
     // `resolve_closure_shape_to_leaf` below may lazily push further
-    // postulates (its own recursion into a `Call`'s own `g`, priming
+    // postulates (its own recursion into a `Call`'s own `g`, reaching
     // `apply_clo_eq_ref`/`apply_pap_eq_ref`, ...) -- anchor `call_at_denoted`
     // now so it can be re-resolved fresh afterward, in the shared tail;
     // the other three are consumed (cloned) immediately inside that call,
@@ -4815,10 +4575,9 @@ impl<'a> ClosureCombinators<'a> {
             self.cp.arith.lit(lit_n);
         }
 
-        // Prime `call_ref` for this exact shape first (which itself primes
-        // `mk_env_ref`/`clo_ty` etc. as needed) -- may lazily push, and the
-        // quantified construction below needs a stable base depth to build
-        // from.
+        // Resolved (and, transitively, `mk_env_ref`/`clo_ty` etc. pushed as
+        // needed) before the quantified construction below, which needs a
+        // stable base depth to build from.
         let call_fn = self.call_ref(h, &captures, &dummy_caller_param_types)?;
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
 
@@ -4980,26 +4739,10 @@ impl<'a> ClosureCombinators<'a> {
     /// Every postulate this axiom's own RHS references (`register`'s own
     /// value expression for each `Abs` leaf, `pap_ref`'s for each `Pap`
     /// one, `mk_env_ref` for any leaf that captures, `clo_ty(k)`/
-    /// `ite_clo_ref(k)` for the `If` shape) is
-    /// primed *before* `params_and_close_typed` binds `root`'s own
-    /// quantified captures/params below, not lazily from inside that
-    /// closure: `Postulates::push` panics while a scope is open
-    /// (`RELATED_WORK.md` §70), so a lazy push from *inside* the closure
-    /// would panic outright rather than silently becoming a spurious,
-    /// unused extra `Pi` argument in this axiom's own type, the way it
-    /// could when a scope's locals were pushed onto the context itself
-    /// (unlike `call_eq_ref`, whose own
-    /// `mk_env_ref` call inside its closure is, in every actual caller,
-    /// already primed by the time it runs -- `eval_and_prove` is only
-    /// ever reached from `instance_from_scaffold`, which always builds
-    /// the closure-aware universal proof first, over the same
-    /// `combinators`, and that pass's own `denote_with_placeholders`
-    /// already primes `mk_env_ref` for `root`'s own capture signature;
-    /// `root`'s own body, though, is never *entered* by that pass at all
-    /// -- `ClosureCombinators`'s own docs: "a combinator's body is never
-    /// denoted here... registering one never discovers more work" -- so
-    /// nothing upstream of this axiom ever primes any leaf's own
-    /// postulates ahead of time the way it does for `root`'s own).
+    /// `ite_clo_ref(k)` for the `If` shape) may be pushed lazily from
+    /// inside the `params_and_close_typed` closure below that binds
+    /// `root`'s own quantified captures/params: a push may happen while a
+    /// scope is open (`RELATED_WORK.md` §70, stage 4).
     fn clo_eq_ref_if_tree(&mut self, root: Hash, arity: usize, body: Hash, is_rec: bool, k: usize) -> Option<(Expr, ClosureRhsShape)> {
         // Deliberately *not* `classify_tree` -- that function additionally
         // restricts every `cond` to a direct comparison
@@ -5039,19 +4782,8 @@ impl<'a> ClosureCombinators<'a> {
             self.cp.arith.lit(lit_n);
         }
 
-        // Prime `call_ref`/`mk_env_ref` for `root`'s own shape (mirrors
-        // `call_eq_ref`'s identical priming), `register`/`mk_env_ref` for
-        // every leaf's own shape, and `clo_ty(k)` (which also eagerly
-        // primes `ite_clo_ref(k)`) -- see this method's own docs for why
-        // this must all happen *before* `params_and_close_typed` below,
-        // not lazily inside its closure.
         let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
-        if n_captures > 0 {
-            self.cp.mk_env_ref(&sig);
-        }
-        prime_closure_if_tree_leaves(self, &leaf_shapes)?;
-        self.cp.clo_ty(k); // also primes ite_clo_ref(k), see its own docs
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
         // order (captures first, then `root`'s own params) `call_eq_ref`
@@ -5100,7 +4832,7 @@ impl<'a> ClosureCombinators<'a> {
             // quantified vars instead of a caller's real `params`.
             let rhs = build_closure_if_tree_rhs(store, combinators, &tree, &leaf_shapes, &params_full, k)?;
 
-            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed above
+            let clo_ty = combinators.cp.clo_ty(k);
             Some(kernel::id(clo_ty, lhs, rhs))
         })?;
         let pos = self.cp.arith.p.push(ty);
@@ -5141,12 +4873,12 @@ impl<'a> ClosureCombinators<'a> {
     /// `Int`-typed; `args` themselves may be arbitrary `Var`/`Lit`/`Prim`/
     /// `If` expressions over `root`'s own scope (denoted via `denote`).
     ///
-    /// Same priming discipline as `clo_eq_ref_if_tree`'s own docs
-    /// describe: `call_ref`/`mk_env_ref` for `root`'s own shape, `g`'s own
+    /// `call_ref`/`mk_env_ref` for `root`'s own shape, `g`'s own
     /// `call_ref`/`mk_env_ref` too (needed directly in the RHS below,
-    /// *not* `g`'s own `clo_eq_ref` axiom -- see above), all primed before
-    /// `params_and_close_typed` pushes `root`'s own quantified
-    /// captures/params, not lazily from inside that closure.
+    /// *not* `g`'s own `clo_eq_ref` axiom -- see above), may be pushed
+    /// lazily from inside the `params_and_close_typed` closure that
+    /// quantifies `root`'s own captures/params: a push may happen while a
+    /// scope is open (`RELATED_WORK.md` §70, stage 4).
     fn clo_eq_ref_call(&mut self, root: Hash, arity: usize, body: Hash, is_rec: bool, k: usize) -> Option<(Expr, ClosureRhsShape)> {
         let Shape::CombinatorCall { root: g, args, .. } = compile::classify(self.store, body, arity, is_rec.then_some(arity as u32)) else {
             return None;
@@ -5182,23 +4914,16 @@ impl<'a> ClosureCombinators<'a> {
             self.cp.arith.lit(lit_n);
         }
 
-        // Prime `call_ref`/`mk_env_ref` for `root`'s own shape, then `g`'s
-        // own -- see this method's own docs for why this must happen
-        // before `params_and_close_typed` below.
+        // `root`'s own shape, resolved (and, transitively, `mk_env_ref`
+        // pushed as needed) before the quantified construction below, which
+        // needs a stable base depth to build from.
         let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
-        if n_captures > 0 {
-            self.cp.mk_env_ref(&sig);
-        }
         let (g_arity2, g_body, g_is_rec) = compile::peel(self.store, g)?;
         let g_captures = compile::free_vars(self.store, g_body, g_arity2, g_is_rec);
         let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let g_call_fn = self.call_ref(g, &g_captures, &g_dummy)?;
         let g_call_fn = Anchored::new(&self.cp.arith, g_call_fn);
-        if !g_captures.is_empty() {
-            let g_sig = capture_sig(&g_captures, &g_dummy)?;
-            self.cp.mk_env_ref(&g_sig);
-        }
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
         // order `clo_eq_ref_pap`/`call_eq_ref` both use.
@@ -5239,7 +4964,7 @@ impl<'a> ClosureCombinators<'a> {
                 None
             } else {
                 let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
-                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed above
+                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
                 let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
                 Some(apply_n(mk_env_expr, cs2))
             };
@@ -5252,7 +4977,7 @@ impl<'a> ClosureCombinators<'a> {
             g_args.extend(arg_exprs);
             let rhs = apply_n(g_call_fn_here, g_args);
 
-            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed by call_ref(g) above
+            let clo_ty = combinators.cp.clo_ty(k);
             Some(kernel::id(clo_ty, lhs, rhs))
         })?;
         let pos = self.cp.arith.p.push(ty);
@@ -5273,11 +4998,11 @@ impl<'a> ClosureCombinators<'a> {
     /// of their own -- widening that is a separate, not-yet-attempted
     /// follow-on (see `RELATED_WORK.md`).
     ///
-    /// Same priming discipline as `clo_eq_ref_if_tree`'s own docs
-    /// describe: `call_ref`/`mk_env_ref` for `root`'s own shape,
-    /// `pap_ref`/`mk_env_ref` for `g`'s, all primed before
-    /// `params_and_close_typed` pushes `root`'s own quantified
-    /// captures/params, not lazily from inside that closure.
+    /// `call_ref`/`mk_env_ref` for `root`'s own shape, `pap_ref`/
+    /// `mk_env_ref` for `g`'s, may be pushed lazily from inside the
+    /// `params_and_close_typed` closure that quantifies `root`'s own
+    /// captures/params: a push may happen while a scope is open
+    /// (`RELATED_WORK.md` §70, stage 4).
     fn clo_eq_ref_pap(&mut self, root: Hash, arity: usize, body: Hash, is_rec: bool, _param_types: &[Option<usize>], k: usize) -> Option<(Expr, ClosureRhsShape)> {
         let Shape::CombinatorCall { root: g, args, .. } = compile::classify(self.store, body, arity, is_rec.then_some(arity as u32)) else {
             return None;
@@ -5315,23 +5040,16 @@ impl<'a> ClosureCombinators<'a> {
             self.cp.arith.lit(lit_n);
         }
 
-        // Prime `call_ref`/`mk_env_ref` for `root`'s own shape, `pap_ref`/
-        // `mk_env_ref` for `g`'s -- see this method's own docs for why
-        // this must happen before `params_and_close_typed` below.
+        // `root`'s own shape, resolved (and, transitively, `mk_env_ref`
+        // pushed as needed) before the quantified construction below, which
+        // needs a stable base depth to build from.
         let call_fn = self.call_ref(root, &captures, &dummy_caller_param_types)?;
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
-        if n_captures > 0 {
-            self.cp.mk_env_ref(&sig);
-        }
         let (_, g_body, g_is_rec) = compile::peel(self.store, g)?;
         let g_captures = compile::free_vars(self.store, g_body, g_arity, g_is_rec);
         let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
         let pap_fn = self.pap_ref(g, args.len(), &g_dummy)?;
         let pap_fn = Anchored::new(&self.cp.arith, pap_fn);
-        if !g_captures.is_empty() {
-            let g_sig = capture_sig(&g_captures, &g_dummy)?;
-            self.cp.mk_env_ref(&g_sig);
-        }
 
         // Quantify `n_captures + arity` fresh `Int` postulates -- same
         // order `clo_eq_ref_if_tree`/`call_eq_ref` both use.
@@ -5374,7 +5092,7 @@ impl<'a> ClosureCombinators<'a> {
                 None
             } else {
                 let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
-                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed above
+                let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
                 let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
                 Some(apply_n(mk_env_expr, cs2))
             };
@@ -5387,7 +5105,7 @@ impl<'a> ClosureCombinators<'a> {
             pap_args.extend(arg_exprs);
             let rhs = apply_n(pap_fn_here, pap_args);
 
-            let clo_ty = combinators.cp.clo_ty(k); // cache hit -- primed by pap_ref above
+            let clo_ty = combinators.cp.clo_ty(k);
             Some(kernel::id(clo_ty, lhs, rhs))
         })?;
         let pos = self.cp.arith.p.push(ty);
@@ -5474,10 +5192,10 @@ impl<'a> ClosureCombinators<'a> {
     /// `call_eq_ref` is: `register`'s and `mk_clo_ref`'s combined meaning
     /// *is* "calling the closure that value represents", so relating it to
     /// `call_ref(inner_root)` (already pinned by `call_eq_ref`) states
-    /// nothing new, just makes the connection kernel-checkable. See
-    /// `clo_eq_ref`'s own docs for why every postulate this references
-    /// must be primed *before* the quantified construction below, not
-    /// lazily from inside it.
+    /// nothing new, just makes the connection kernel-checkable. Every
+    /// postulate this references may be pushed lazily from inside the
+    /// quantified construction below: a push may happen while a scope is
+    /// open (`RELATED_WORK.md` §70, stage 4).
     fn apply_clo_eq_ref(&mut self, inner_root: Hash) -> Option<Expr> {
         if let Some(&pos) = self.cp.apply_clo_eq_pos.get(&inner_root) {
             return Some(self.cp.arith.p.get(pos));
@@ -5500,9 +5218,6 @@ impl<'a> ClosureCombinators<'a> {
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let value_fn = self.register(inner_root, &captures, &dummy_caller_param_types)?;
         let value_fn = Anchored::new(&self.cp.arith, value_fn);
-        if n_captures > 0 {
-            self.cp.mk_env_ref(&sig);
-        }
 
         let quant_types = vec![None; n_captures + arity];
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
@@ -5512,7 +5227,7 @@ impl<'a> ClosureCombinators<'a> {
             let call_fn_here = call_fn.at(&combinators.cp.arith);
 
             let (closure_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
-                let mk_env_expr = combinators.cp.mk_env_ref(&sig); // cache hit -- primed above
+                let mk_env_expr = combinators.cp.mk_env_ref(&sig);
                 let env = apply_n(mk_env_expr, cs.iter().cloned());
                 (kernel::app(value_fn_here, env.clone()), Some(env))
             } else {
@@ -5583,9 +5298,6 @@ impl<'a> ClosureCombinators<'a> {
         let call_fn = Anchored::new(&self.cp.arith, call_fn);
         let pap_fn = self.pap_ref(g, s, &dummy_caller_param_types)?;
         let pap_fn = Anchored::new(&self.cp.arith, pap_fn);
-        if n_captures > 0 {
-            self.cp.mk_env_ref(&sig);
-        }
 
         // Quantify `n_captures + g_arity` fresh `Int` postulates -- same
         // order (captures first, then `g`'s own `s` supplied params, then
@@ -5600,7 +5312,7 @@ impl<'a> ClosureCombinators<'a> {
             let call_fn_here = call_fn.at(&combinators.cp.arith);
 
             let (pap_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
-                let mk_env_expr = combinators.cp.mk_env_ref(&sig); // cache hit -- primed above
+                let mk_env_expr = combinators.cp.mk_env_ref(&sig);
                 let env = apply_n(mk_env_expr, cs.iter().cloned());
                 let v = apply_n(pap_fn_here, std::iter::once(env.clone()).chain(supplied.iter().cloned()));
                 (v, Some(env))
@@ -5800,61 +5512,18 @@ fn collect_closure_if_tree_literals(store: &TermStore, tree: &DecisionTree, arit
     }
 }
 
-/// Primes `register`/`mk_env_ref` for every `Abs`-shaped leaf, `pap_ref`/
-/// `mk_env_ref` for every `Pap`-shaped one's own `g`, `call_ref`/
-/// `mk_env_ref` for every `Call`-shaped one's own `g` -- mirrors
-/// `clo_eq_ref_if_tree`'s own single-pair `prime_inner` (`Abs` case),
-/// `clo_eq_ref_pap`'s own priming (`Pap` case), and `clo_eq_ref_call`'s own
-/// priming (`Call` case), generalized to every leaf `leaf_shapes` (from
-/// `classify_closure_if_tree_leaves`) names.
-fn prime_closure_if_tree_leaves(combinators: &mut ClosureCombinators<'_>, leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>) -> Option<()> {
-    for (&h, shape) in leaf_shapes {
-        match shape {
-            ClosureIfTreeLeafShape::Abs { captures } => {
-                let dummy: Vec<Option<usize>> = vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-                combinators.register(h, captures, &dummy)?;
-                if !captures.is_empty() {
-                    let sig = capture_sig(captures, &dummy)?;
-                    combinators.cp.mk_env_ref(&sig);
-                }
-            }
-            ClosureIfTreeLeafShape::Pap { g, args } => {
-                let (g_arity, g_body, g_is_rec) = compile::peel(combinators.store, *g)?;
-                let g_captures = compile::free_vars(combinators.store, g_body, g_arity, g_is_rec);
-                let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-                combinators.pap_ref(*g, args.len(), &g_dummy)?;
-                if !g_captures.is_empty() {
-                    let g_sig = capture_sig(&g_captures, &g_dummy)?;
-                    combinators.cp.mk_env_ref(&g_sig);
-                }
-            }
-            ClosureIfTreeLeafShape::Call { g, .. } => {
-                let (g_arity, g_body, g_is_rec) = compile::peel(combinators.store, *g)?;
-                let g_captures = compile::free_vars(combinators.store, g_body, g_arity, g_is_rec);
-                let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-                combinators.call_ref(*g, &g_captures, &g_dummy)?;
-                if !g_captures.is_empty() {
-                    let g_sig = capture_sig(&g_captures, &g_dummy)?;
-                    combinators.cp.mk_env_ref(&g_sig);
-                }
-            }
-        }
-    }
-    Some(())
-}
-
 /// An `Abs`-shaped leaf's own `register`/`mk_env_ref` value expression,
 /// over abstract `params_full` -- `clo_eq_ref_if_tree`'s own single-pair
 /// `value_expr`, generalized to read a leaf's own captures from
 /// `captures` (from `leaf_shapes`) instead of a locally-closed-over pair.
 fn closure_leaf_value_expr(combinators: &mut ClosureCombinators<'_>, leaf: Hash, captures: &[u32], params_full: &[Expr]) -> Option<Expr> {
     let dummy: Vec<Option<usize>> = vec![None; captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-    let sym = combinators.register(leaf, captures, &dummy)?; // cache hit -- primed above
+    let sym = combinators.register(leaf, captures, &dummy)?;
     if captures.is_empty() {
         Some(sym)
     } else {
         let sig: Vec<Option<usize>> = vec![None; captures.len()];
-        let mk_env_expr = combinators.cp.mk_env_ref(&sig); // cache hit -- primed above
+        let mk_env_expr = combinators.cp.mk_env_ref(&sig);
         let cs2: Vec<Expr> = captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
         Some(kernel::app(sym, apply_n(mk_env_expr, cs2)))
     }
@@ -5870,12 +5539,12 @@ fn closure_leaf_pap_value_expr(store: &TermStore, combinators: &mut ClosureCombi
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
     let s = args.len();
     let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-    let pap_fn = combinators.pap_ref(g, s, &g_dummy)?; // cache hit -- primed by prime_closure_if_tree_leaves
+    let pap_fn = combinators.pap_ref(g, s, &g_dummy)?;
     let g_env = if g_captures.is_empty() {
         None
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
-        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed above
+        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
         let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
         Some(apply_n(mk_env_expr, cs2))
     };
@@ -5898,12 +5567,12 @@ fn closure_leaf_call_value_expr(store: &TermStore, combinators: &mut ClosureComb
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
     let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-    let call_fn = combinators.call_ref(g, &g_captures, &g_dummy)?; // cache hit -- primed by prime_closure_if_tree_leaves
+    let call_fn = combinators.call_ref(g, &g_captures, &g_dummy)?;
     let g_env = if g_captures.is_empty() {
         None
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
-        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed above
+        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
         let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
         Some(apply_n(mk_env_expr, cs2))
     };
@@ -5943,7 +5612,7 @@ fn build_closure_if_tree_rhs(
             let dc = denote(store, *cond, &combinators.cp.arith, params_full)?;
             let dt = build_closure_if_tree_rhs(store, combinators, then_branch, leaf_shapes, params_full, k)?;
             let de = build_closure_if_tree_rhs(store, combinators, else_branch, leaf_shapes, params_full, k)?;
-            let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed by clo_ty(k) above
+            let ite_clo = combinators.cp.ite_clo_ref(k);
             Some(kernel::app3(ite_clo, dc, dt, de))
         }
     }
@@ -5989,12 +5658,12 @@ fn inner_closure_pap_value(
     }
 
     let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-    let pap_fn = combinators.pap_ref(g, s, &g_dummy)?; // cache hit -- primed by prime_closure_if_tree_leaves
+    let pap_fn = combinators.pap_ref(g, s, &g_dummy)?;
     let g_env_denoted = if g_cap_triples.is_empty() {
         None
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
-        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed above
+        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
         let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.at(&combinators.cp.arith)).collect();
         Some(apply_n(mk_env_expr, cd))
     };
@@ -6032,12 +5701,12 @@ fn inner_closure_call_value(
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
     let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
-    let call_fn = combinators.call_ref(g, &g_captures, &g_dummy)?; // cache hit -- primed by prime_closure_if_tree_leaves
+    let call_fn = combinators.call_ref(g, &g_captures, &g_dummy)?;
     let g_env_denoted = if g_captures.is_empty() {
         None
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
-        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig); // cache hit -- primed above
+        let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
         let cd: Vec<Expr> = g_captures
             .iter()
             .map(|&rel| inner_params.get(rel as usize).map(|a| a.at(&combinators.cp.arith)))
@@ -6266,7 +5935,7 @@ fn resolve_closure_if_tree(
             let other_value = other_value.at(&combinators.cp.arith);
             let ite_eq_axiom = ite_eq_axiom.at(&combinators.cp.arith);
             let lit_xc = combinators.cp.arith.lit_ref(result_c);
-            let ite_clo = combinators.cp.ite_clo_ref(k); // cache hit -- primed by clo_eq_ref via clo_ty(k)
+            let ite_clo = combinators.cp.ite_clo_ref(k);
             let int_ty = combinators.cp.arith.int_ty();
             let clo_ty = combinators.cp.clo_ty(k);
 
@@ -8773,13 +8442,17 @@ mod tests {
         // partially applies a *capturing* literal lambda (one argument
         // short) and completes it through caller, rather than creating and
         // immediately calling a fully-applied closure. This is exactly the
-        // shape that exposed a real staleness bug: prime_closure_postulates's
-        // own partial-application branch primed pap_ref but not the
-        // transitive mk_env_ref a capturing root's build_env_expr call also
-        // needs, so that lazy push could still happen for the first time
-        // from inside a rolled-back params_and_close_typed scope -- caught
-        // by compile_fuzz's random-term fuzzing before this dedicated
-        // regression test existed.
+        // shape that exposed a real staleness bug, back when a push inside
+        // a scope panicked and this term's lazy postulates had to be
+        // pre-triggered outside one: the pre-triggering pass's own
+        // partial-application branch primed pap_ref but not the transitive
+        // mk_env_ref a capturing root's build_env_expr call also needs, so
+        // that lazy push could still happen for the first time from inside
+        // a rolled-back params_and_close_typed scope -- caught by
+        // compile_fuzz's random-term fuzzing before this dedicated
+        // regression test existed. A push inside a scope is now allowed
+        // (RELATED_WORK.md §70, stage 4), so this term is kept as a
+        // regression test, not because the bug could still recur.
         let mut s = TermStore::new();
         let x = s.var(1);
         let y = s.var(0);

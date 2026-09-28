@@ -1510,6 +1510,11 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 /// Levels come from a counter that never reuses one, so a `Free` that
 /// escapes its scope can't be bound by a later scope's `close` and is
 /// rejected by the kernel instead (`RELATED_WORK.md` §70).
+///
+/// A `push` may happen inside an open scope: it adds a global, which that
+/// scope's `close` doesn't wrap. Its type must be closed, so a scope's own
+/// entry, whose type mentions a parameter, can't be pushed by mistake;
+/// bind it.
 #[derive(Clone)]
 pub struct Postulates {
     pub globals: Globals,
@@ -1630,7 +1635,6 @@ impl Postulates {
         Postulates { globals: Globals::new(), params: Vec::new(), next_free: 0, scopes: 0 }
     }
     pub fn push(&mut self, ty: Expr) -> usize {
-        assert!(self.scopes == 0, "push while a scope is open: bind a scope's entries (RELATED_WORK §70)");
         let pos = self.globals.len();
         assert!(loose_of(&ty) == 0 && free_of(&ty) == 0, "a postulate's type must be closed: {ty:?}");
         // RELATED_WORK §68: an ill-formed entry sat in the context unchecked
@@ -4198,13 +4202,29 @@ mod tests {
         p.abandon(s);
     }
 
+    /// A push inside a scope adds a global: `close` doesn't wrap it, and
+    /// the closed term refers to it by `Const` (RELATED_WORK §70, stage 4).
     #[test]
-    #[should_panic(expected = "push while a scope is open")]
-    fn push_panics_inside_a_scope() {
+    fn a_push_inside_a_scope_is_a_global_that_close_leaves_alone() {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let s = p.open();
+        let x = p.bind(p.get(a));
+        let c = p.push(p.get(a));
+        let closed = p.close(s, Binder::Pi, id(p.get(a), x, p.get(c)));
+        assert_eq!(closed, pi(Expr::Const(0), id(Expr::Const(0), var(0), Expr::Const(1))));
+        assert!(p.check(&closed, &sort(0)).is_ok());
+        assert_eq!(p.globals.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "closed")]
+    fn a_push_inside_a_scope_still_rejects_a_parameter_in_its_type() {
         let mut p = Postulates::new();
         let a = p.push(sort(0));
         let _s = p.open();
-        p.push(p.get(a));
+        let x = p.bind(p.get(a));
+        p.push(id(p.get(a), x.clone(), x));
     }
 
     /// Closing over a bound parameter with `Pi` builds a type and with
