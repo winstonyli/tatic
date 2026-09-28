@@ -525,11 +525,10 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   tail-recursive one (`gcd`, compiled to a loop), and straight-line
   `factorial`. Shows both the steady-state speedup and how much of it the
   one-time compile+verify cost eats into — `fib`'s cold-compile cost
-  includes building its (two-self-call) universal proof plus a few
-  concrete-instance attempts `jit.rs` tries alongside it (see "Proof
-  strategies" above, now all 3 of them succeeding since branching-leaf
-  instances stopped being declined), which together put that one case's
-  cold time on this machine at 29 ms, idle, on 2026-09-25 (about 140 ms
+  includes building its (two-self-call) universal proof. That number,
+  29 ms, idle, on 2026-09-25, also included 3 concrete instances of the
+  theorem, which `JitEngine::prove_instances` now leaves off by default
+  (`RELATED_WORK.md` §73; it was about 140 ms
   before `subst_top` substituted in one pass, `RELATED_WORK.md` §53; ~15ms with
   no kernel proof involved at all); the warm (cached) case is unaffected
   either way, since none of this runs again for a hash already in the cache.

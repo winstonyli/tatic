@@ -150,7 +150,8 @@ pub struct Stats {
     /// universal theorem (`proof::prove_tail_recursive_instance`), on top
     /// of `kernel_proofs_checked`'s single per-term theorem. Additional
     /// evidence only -- `kernel_verified` doesn't depend on this, so it
-    /// stays `0` for terms the universal proof doesn't apply to at all.
+    /// stays `0` for terms the universal proof doesn't apply to at all,
+    /// and always unless `JitEngine::prove_instances` is set.
     /// Branching recursion (e.g. naive Fibonacci) gets real per-instance
     /// evidence too now, not a blanket decline -- see
     /// `build_ev_witness`'s own `memo`-based fix in `proof.rs`.
@@ -166,6 +167,11 @@ pub struct JitEngine {
     rt: Store<()>,
     cache: HashMap<Hash, CacheEntry>,
     pub stats: Stats,
+    /// Also prove the universal theorem at a few concrete samples
+    /// (`Stats::universal_instances_checked`). Off by default: installation
+    /// rests on the theorem alone, and the instances cost ~34% of a cold
+    /// call (`RELATED_WORK.md` §71, §73).
+    pub prove_instances: bool,
 }
 
 impl JitEngine {
@@ -177,6 +183,7 @@ impl JitEngine {
             rt,
             cache: HashMap::new(),
             stats: Stats::default(),
+            prove_instances: false,
         }
     }
 
@@ -327,17 +334,15 @@ impl JitEngine {
     ///    closures, ...).
     /// 3. `prove_tail_recursive_universal` -- a tail-recursive term whose
     ///    shape it covers gets one universal theorem, also covering every
-    ///    input, via real induction rather than per-sample checking. Once
-    ///    this succeeds, also tries instantiating that theorem at a few
+    ///    input, via real induction rather than per-sample checking. With
+    ///    `prove_instances` set, it also instantiates that theorem at a few
     ///    concrete samples in one pass
-    ///    (`proof::prove_tail_recursive_universal_with_instances`) purely to
-    ///    record stronger, call-specific evidence
-    ///    (`Stats::universal_instances_checked`) -- cloning the
-    ///    already-built scaffold per sample avoids re-deriving the theorem
-    ///    from scratch each time, but the instances are still a large
-    ///    share of cold JIT time (`RELATED_WORK.md` section 71: ~34%), and
-    ///    not required: `kernel_verified` is already `true` from the
-    ///    theorem alone, so
+    ///    (`proof::prove_tail_recursive_universal_with_instances`), which
+    ///    adds a kernel-checked proof that each of those calls terminates
+    ///    (`Stats::universal_instances_checked`). That is off by default:
+    ///    it costs ~34% of cold JIT time, and `verify()` already runs those
+    ///    inputs (`RELATED_WORK.md` §71, §73). `kernel_verified` is `true`
+    ///    from the theorem alone, so
     ///    any shape whose instances this step doesn't get (an arity
     ///    mismatch, a `Clo`-typed top-level parameter -- see
     ///    `instance_from_scaffold`) is unaffected. Branching recursion
@@ -392,10 +397,14 @@ impl JitEngine {
         // arity the battery is a finite probe of an `i64` domain and says
         // nothing about an argument outside it.
         let per_sample = if arity == 0 { ProofStrength::Universal } else { ProofStrength::Samples };
-        let instance_samples: Vec<Vec<i64>> = samples.iter().take(3).cloned().collect();
-        if let Some((_, instances)) = proof::prove_tail_recursive_universal_with_instances(terms, h, &instance_samples)
-        {
-            self.stats.universal_instances_checked += instances.iter().filter(|i| i.is_some()).count() as u64;
+        if self.prove_instances {
+            let instance_samples: Vec<Vec<i64>> = samples.iter().take(3).cloned().collect();
+            if let Some((_, instances)) = proof::prove_tail_recursive_universal_with_instances(terms, h, &instance_samples)
+            {
+                self.stats.universal_instances_checked += instances.iter().filter(|i| i.is_some()).count() as u64;
+                return ProofStrength::Universal;
+            }
+        } else if proof::prove_tail_recursive_universal(terms, h).is_some() {
             return ProofStrength::Universal;
         }
         if !samples.is_empty() && samples.iter().all(|sample| proof::prove_tail_recursive_call(terms, h, sample).is_some()) {
@@ -915,6 +924,7 @@ mod tests {
         let straight_line = s.abs(inner);
 
         let mut jit = JitEngine::new();
+        jit.prove_instances = true;
         assert_eq!(jit.apply(&s, straight_line, &[3, 5]).unwrap(), 6);
         assert!(jit.is_kernel_verified(straight_line));
         assert_eq!(jit.stats.kernel_proofs_checked, 1);
@@ -977,10 +987,23 @@ mod tests {
         let fibonacci = fib(&mut s);
 
         let mut jit = JitEngine::new();
+        jit.prove_instances = true;
         assert_eq!(jit.apply(&s, fibonacci, &[10]).unwrap(), 55);
         assert!(jit.is_kernel_verified(fibonacci));
         assert_eq!(jit.stats.kernel_proofs_checked, 1);
         assert_eq!(jit.stats.universal_instances_checked, 3);
+    }
+
+    #[test]
+    fn instances_are_off_by_default_and_the_theorem_alone_verifies() {
+        let mut s = TermStore::new();
+        let fibonacci = fib(&mut s);
+
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, fibonacci, &[10]).unwrap(), 55);
+        assert!(jit.is_kernel_verified(fibonacci));
+        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+        assert_eq!(jit.stats.universal_instances_checked, 0);
     }
 
     #[test]

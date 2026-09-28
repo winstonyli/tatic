@@ -5873,7 +5873,8 @@ covers the same points by execution, and it stays.
 default. Tests turn it on, and `proof.rs` keeps the builder and its own
 tests, including the fib16 probe. Dropping them outright was the
 alternative; one sample instead of three keeps two-thirds of a cost that
-buys nothing. The saving is re-measured with `jit_cold_compile_and_verify`.
+buys nothing. Built as `JitEngine::prove_instances`; the saving is
+re-measured with `jit_cold_compile_and_verify`.
 
 ## Sources
 
