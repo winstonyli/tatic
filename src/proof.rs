@@ -762,12 +762,9 @@ fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Ex
 
 // --- hardening against composition bugs -----------------------------------
 //
-// Before stage 3 (`RELATED_WORK.md` §68), a function composing an `Expr`
-// from more than one recursive sub-call could hold an already-resolved
-// sub-`Expr` across a *later* postulate push and silently produce an
-// ill-typed (or well-typed but semantically wrong) term; a pushed `Const`
-// postulate shifts nothing, so that specific bug class can't recur, but a
-// composition mistake of some other kind still can.
+// A function composing an `Expr` from more than one recursive sub-call can
+// still make a composition mistake, even though a pushed `Const` shifts
+// nothing (`RELATED_WORK.md` §68, §69).
 //
 // This helper turns any such mistake into an immediate, precisely located
 // panic instead: called once at the *return point* of any function that
@@ -1599,10 +1596,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     // `Int` per `param_types[i]`. `v` (innermost) is wrapped first, then
     // `param_types` in *reverse*, matching `ev_of`/`apply_n`'s own
     // left-to-right application order (`params[0]` applied first, ending
-    // up outermost; `v` applied last, ending up innermost). Before stage 3
-    // (`RELATED_WORK.md` §68), `clo_ty(k)`'s first-use push left every
-    // domain built before it one level stale; a pushed `Const` shifts
-    // nothing, so building each domain here needs no further care.
+    // up outermost; `v` applied last, ending up innermost).
     let ev_ty = {
         let mut doms = Vec::with_capacity(param_types.len());
         for pt in &param_types {
@@ -6870,10 +6864,7 @@ mod tests {
         // `ClosureCombinators::combinator_value`'s own postulated
         // constant), two opaque Ints to call the chosen one with, and one
         // opaque arity-3 closure value (h, for the arity-mismatch check) --
-        // then resolve every reference in a final pass. Before stage 3
-        // (`RELATED_WORK.md` §68), interleaving a `p.get` with a later
-        // `p.push` would have gone stale; a pushed `Const` shifts nothing,
-        // so the ordering here is now just for readability.
+        // then resolve every reference in a final pass.
         let f_pos = arith.p.push(curried_arrow(&arith.int_ty(), 2));
         let g_pos = arith.p.push(curried_arrow(&arith.int_ty(), 2));
         let a_pos = arith.p.push(arith.int_ty());
