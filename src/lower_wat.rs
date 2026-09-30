@@ -933,6 +933,35 @@ mod tests {
         assert_eq!(memory.data(&store)[second as usize + 59_999], 0xCD);
     }
 
+    /// A refused `memory.grow` (here a 2-page cap, standing in for the 4 GiB
+    /// edge) is dropped by the allocator, so `alloc` still returns a pointer,
+    /// but its block lies past the end of memory: a later access traps
+    /// instead of reading a wrong value. (Does not exercise the `i32` wrap
+    /// itself, which needs 4 GiB.)
+    #[test]
+    fn alloc_past_a_refused_grow_hands_out_an_out_of_bounds_block() {
+        let mut w = String::new();
+        w.push_str("(module\n");
+        emit_allocator(&mut w);
+        w.push_str("  (export \"alloc\" (func $alloc))\n");
+        w.push_str("  (export \"memory\" (memory 0))\n");
+        w.push_str(")\n");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, wat::parse_str(&w).unwrap()).unwrap();
+        let limits = wasmtime::StoreLimitsBuilder::new().memory_size(2 * 65536).build();
+        let mut store = wasmtime::Store::new(&engine, limits);
+        store.limiter(|l| l);
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+
+        let ok = alloc.call(&mut store, 100_000).unwrap(); // grows to 2 pages, allowed
+        assert!(ok as usize + 100_000 <= memory.data_size(&store));
+        let bad = alloc.call(&mut store, 100_000).unwrap(); // needs 4 pages, refused
+        assert_eq!(memory.size(&store), 2);
+        assert!(bad as usize + 100_000 > memory.data_size(&store), "block must lie out of bounds");
+    }
+
     /// Unpacks a closure value's `(env_ptr, table_idx)` halves the same
     /// way the compiler's own generated code does (see module docs).
     fn unpack(v: i64) -> (i32, i32) {
