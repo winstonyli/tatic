@@ -5801,7 +5801,7 @@ Same probe shape as above (throwaway ignored test in `jit.rs`, fresh `JitEngine`
 | compile + typing | 0.83 | 5% |
 | pure / closure provers, fallback | 0.36 | 2% |
 
-Two findings. (1) `verify` is 4.6 of its 5.0 ms on `fib` alone: the interpreter evaluating `fib(20)`. Every other term costs under 0.08 ms. Dropping or capping the large sample for non-tail recursion is the cheapest cold-path saving (about 30% of this total), and it needs no design. (2) The theorem does not depend on the compiled module, so it could run in parallel with `instantiate` + `verify` (14.4 ms serial vs a critical path of about 10.4 ms, at most 28%). That needs a thread and a per-thread kernel/prelude; not built. Change (1) was then made: the largest `SAMPLE_ARGS` entry is 12 instead of 20. The full release suite passes unchanged, and `fib_30`'s cold call went 12.8 to 6.1 ms (-52%; the other cold benches moved 1-25% but the 1f8fd96 baseline ran at 29% CPU and this at 2%, so only the `fib` figure is attributable). Change (2) was not built.
+Two findings. (1) `verify` is 4.6 of its 5.0 ms on `fib` alone: the interpreter evaluating `fib(20)`. Every other term costs under 0.08 ms. Dropping or capping the large sample for non-tail recursion is the cheapest cold-path saving (about 30% of this total), and it needs no design. (2) The theorem does not depend on the compiled module, so it could run in parallel with `instantiate` + `verify` (14.4 ms serial vs a critical path of about 10.4 ms, at most 28%). That needs a thread and a per-thread kernel/prelude; not built. Change (1) was then made: the largest `SAMPLE_ARGS` entry is 12 instead of 20. The full release suite passes unchanged, and `fib_30`'s cold call went 12.8 to 6.1 ms (-52%; the other cold benches moved 1-25% but the 1f8fd96 baseline ran at 29% CPU, so only the `fib` figure is attributable (§74)). Change (2) was not built.
 
 ## 72. Stage 4: what stage 3 made unnecessary
 
@@ -5923,26 +5923,28 @@ and instances are most of what such a term does on a cold call (not
 profiled); `fib_30` is dominated by `verify()` running `fib` on the
 samples (§71), so the saving is a smaller share.
 
-## 74. Baseline at 1f8fd96 (stage 4, prelude cache, `prove_instances` off)
+## 74. Baseline at f5d51e5 (verify samples capped at 12, stage 4, prelude cache, `prove_instances` off)
 
-Criterion, `--warm-up-time 3 --measurement-time 8`, pinned to 12 cores at BelowNormal, Defender RTP off. Whole-machine CPU was 29% before the run and 10% after, so this is *not* a fully quiet baseline (the 20% bar was missed); it is a reference for later A/Bs, not a substitute for them. Raw output: `target/baseline/{proofs,execution}.txt` (untracked). Medians:
+Criterion, `--warm-up-time 3 --measurement-time 8`, pinned to 12 cores at BelowNormal, Defender RTP off, whole-machine CPU 18.6% before and 7.4% after. Raw output: `target/baseline/{proofs,execution}.txt` (untracked). Medians:
 
 | bench | median |
 |---|---|
-| straight_line_refl_proof | 4.1 us |
-| gcd_relational_proof_single_call | 6.4 us |
-| universal_proof_one_time gcd 2 / 3 leaves | 556 us / 962 us |
-| gcd_relational x1 / x5 / x10 | 5.3 / 32 / 61 us |
-| gcd universal x1 | 584 us |
-| closures_fragment_proof (4 variants) | 5.0-9.8 us |
-| closure_typed_loop_carried universal | 887 us |
-| over_application instance proofs | 1.6-2.0 ms |
-| non_tail_closure_recursion instance proofs | 9.1-9.8 us |
-| fib_30 interpreter / jit cold / jit warm | 668 ms / 12.8 ms / 5.4 ms |
-| gcd loop cold / warm | 1.11 ms / 156 ns |
-| capturing_closure_loop cold / warm | 1.13 ms / 5.4 us |
-| partial_application_loop cold / warm | 1.20 ms / 4.6 us |
-| closure_typed_loop_carried cold / warm | 10.8 ms / 34 us |
+| straight_line_refl_proof | 3.4 us |
+| gcd_relational_proof_single_call | 5.1 us |
+| universal_proof_one_time gcd 2 / 3 leaves | 446 us / 724 us |
+| gcd_relational x1 / x5 / x10 | 4.2 / 26 / 48 us |
+| gcd universal x1 | 452 us |
+| closures_fragment_proof (4 variants) | 4.0-7.9 us |
+| closure_typed_loop_carried universal | 659 us |
+| over_application instance proofs | 1.2-1.5 ms |
+| non_tail_closure_recursion instance proofs | 8.4-8.6 us |
+| fib_30 interpreter / jit cold / jit warm | 621 ms / 6.0 ms / 4.5 ms |
+| gcd loop interpreter / cold / warm | 2.6 us / 810 us / 122 ns |
+| capturing_closure_loop cold / warm | 880 us / 4.4 us |
+| partial_application_loop cold / warm | 969 us / 4.5 us |
+| closure_typed_loop_carried cold / warm | 10.0 ms / 32.5 us |
+
+A first pass at 1f8fd96 ran with the machine at 29% CPU and read 15-25% slower across the board, *including the interpreter benches whose code did not change* (fib_30 interpreter 668 vs 621 ms). That is the size of the load effect: compare A/Bs only within one run, and treat this table, not that pass, as the reference. The only code change between the two is the sample cap, so `fib_30`'s cold call (12.8 to 6.0 ms) is the one figure it explains; the other cold benches' 10-20% are load.
 
 ## Sources
 
