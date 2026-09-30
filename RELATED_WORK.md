@@ -5962,6 +5962,17 @@ What it means here.
 - Rupicola is deliberately incomplete: it produces good code where an expert supplied lemmas. The same stance fits a JIT whose fallback is the interpreter.
 - Design sketch: `docs/superpowers/specs/2026-09-30-bitvector-interface-design.md`, section 10.
 
+## 76. Search-guided rewriting: what prior systems verify, and what guides them
+
+Surveyed 2026-09-30 from search-result summaries only (no paper was read in full, so every line is a pointer to check, not a finding).
+
+- **STOKE** (Schkufza et al.): MCMC search over x86-64 programs with a cost function that combines correctness and speed. It has equivalence checking from tests, through bounded verification, to fully formal verification. Search is stochastic and unguided by a learned model; the checker is what makes results trustworthy. Same split as `specialise.rs` / `spec_check.rs`.
+- **AlphaDev** (DeepMind, Nature 2023): reinforcement learning plays an "assembly game", adding one instruction at a time, rewarded for correct and fast sorts; results reached LLVM libc++. The summaries found do not say how correctness is checked; not verified here, so do not cite it as a proof-producing system.
+- **egg** (POPL 2021): equality saturation with e-graphs, rebuilding, and e-class analyses. The non-learned baseline for rewrite-order search: it applies all rules and extracts the cheapest term, which sidesteps phase ordering.
+- **Learned guidance for equality saturation** (2023 to 2025 workshop and arXiv papers): MCTS over e-graph construction (MCTS-GEB), LLM-proposed rewrite checkpoints with e-graphs filling the gaps (LGuess), and rule-phase ordering from a dependency graph. Titles and one-line abstracts only.
+
+What it means here. Every system that scales keeps the checker separate from the search, as this repo does. The non-learned baseline (egg-style saturation plus a cost table) is the thing to measure first. The census in the bit-vector design doc (section 14) shows the corpus has almost no matches for the first three rules, so a learned guide has nothing to learn from until a benchmark with real rewrite opportunities exists. Not surveyed: learned proof search in proof assistants (the lemma-proving half).
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -6050,3 +6061,8 @@ What it means here.
 - [Relational Compilation for Performance-Critical Applications (Pit-Claudel, Philipoom, Jamner, Erbsen and Chlipala, PLDI 2022)](https://par.nsf.gov/biblio/10413141)
 - [Pit-Claudel, PhD thesis, relational compilation chapter](https://people.csail.mit.edu/cpitcla/thesis/thesis.html)
 - [Rupicola repository](https://github.com/mit-plv/rupicola)
+- [Faster sorting algorithms discovered using deep reinforcement learning (AlphaDev), summary](https://www.deeplearning.ai/the-batch/alphadev-a-new-system-for-high-speed-algorithmic-sorting-of-lists-and-numbers)
+- [Stochastic Superoptimization (STOKE), arXiv 1211.0557](https://ar5iv.arxiv.org/html/1211.0557)
+- [egg: Fast and Extensible Equality Saturation, arXiv 2004.03082](https://arxiv.org/abs/2004.03082)
+- [Equality Saturation Guided by Large Language Models, arXiv 2511.00403](https://arxiv.org/html/2511.00403v1)
+- [Optimizing Tensor Computation Graphs with Equality Saturation and MCTS, arXiv 2410.05534](https://arxiv.org/pdf/2410.05534)
