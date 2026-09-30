@@ -233,8 +233,17 @@ fn ck(name: &str, e: &Expr, ty: &Expr) {
 /// `(proof, statement)` of `Pi x:Bv_n. GoodBv x -> Id(Bv_n, add x (lit rhs_lit), x)` using the
 /// `add x 0 = x` proof; `rhs_lit != 0` gives a statement the proof must not check against.
 fn add_zero_proof(n: usize, rhs_lit: u128) -> (Expr, Expr) {
-    let (p1, _) = bit_lemma(id(bool0(), xor(xor(var(0), f()), f()), var(0)), refl(t()), refl(f()));
-    let carry = |a: Expr, c: Expr| or(and(a.clone(), f()), and(c, xor(a, f())));
+    add_identity_proof(n, rhs_lit, false)
+}
+
+/// `left = true` proves `add zero x = x` instead (the literal is the first operand).
+fn add_identity_proof(n: usize, rhs_lit: u128, left: bool) -> (Expr, Expr) {
+    // `xor(a, false)` with the operands in the order `add` uses them
+    let xf = move |a: Expr| if left { xor(f(), a) } else { xor(a, f()) };
+    let carry = move |a: Expr, c: Expr| {
+        if left { or(and(f(), a.clone()), and(c, xor(f(), a))) } else { or(and(a.clone(), f()), and(c, xor(a, f()))) }
+    };
+    let (p1, _) = bit_lemma(id(bool0(), xor(xf(var(0)), f()), var(0)), refl(t()), refl(f()));
     let (p2, _) = bit_lemma(id(bool0(), carry(var(0), f()), f()), refl(f()), refl(f()));
 
     // ctx of the step body: [x, g, a_0..a_(n-1), ga_0..ga_(n-1)], depth d = 2 + 2n
@@ -252,7 +261,7 @@ fn add_zero_proof(n: usize, rhs_lit: u128) -> (Expr, Expr) {
             None => step_to_false,
             Some(pci) => {
                 let ai1 = shift(&a(i), 0, 1);
-                let fmap = lam(bool0(), or(and(ai1.clone(), f()), and(var(0), xor(ai1, f()))));
+                let fmap = lam(bool0(), carry(ai1, var(0)));
                 let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
                 trans_proof(&bool0(), &next, &carry(a(i), f()), &f(), rewritten, step_to_false)
             }
@@ -264,15 +273,15 @@ fn add_zero_proof(n: usize, rhs_lit: u128) -> (Expr, Expr) {
     let mut s = Vec::new();
     let mut e = Vec::new();
     for i in 0..n {
-        let s_i = xor(xor(a(i), f()), c[i].clone());
-        let to_a = app2(p1.clone(), a(i), ga(i)); // xor(xor(a_i,f),f) = a_i
+        let s_i = xor(xf(a(i)), c[i].clone());
+        let to_a = app2(p1.clone(), a(i), ga(i)); // xor(xf(a_i),f) = a_i
         let proof = match &pc[i] {
             None => to_a,
             Some(pci) => {
                 let ai1 = shift(&a(i), 0, 1);
-                let fmap = lam(bool0(), xor(xor(ai1, f()), var(0)));
+                let fmap = lam(bool0(), xor(xf(ai1), var(0)));
                 let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
-                trans_proof(&bool0(), &s_i, &xor(xor(a(i), f()), f()), &a(i), rewritten, to_a)
+                trans_proof(&bool0(), &s_i, &xor(xf(a(i)), f()), &a(i), rewritten, to_a)
             }
         };
         s.push(s_i);
@@ -294,9 +303,10 @@ fn add_zero_proof(n: usize, rhs_lit: u128) -> (Expr, Expr) {
         step = lam(bool0(), step);
     }
     let rhs = lit(n, rhs_lit);
-    let motive = lam(bv_ty(n), id(bv_ty(n), app2(add(n), var(0), rhs.clone()), var(0)));
+    let sum = |x: Expr, r: Expr| if left { app2(add(n), r, x) } else { app2(add(n), x, r) };
+    let motive = lam(bv_ty(n), id(bv_ty(n), sum(var(0), rhs.clone()), var(0)));
     let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
-    let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), id(bv_ty(n), app2(add(n), var(0), rhs), var(0))));
+    let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), id(bv_ty(n), sum(var(0), rhs), var(0))));
     (proof, stmt)
 }
 
@@ -322,6 +332,14 @@ fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
         // Mutation: the same proof must not prove `add x 1 = x`.
         let (proof1, stmt1) = add_zero_proof(n, 1);
         assert!(check(&Ctx::new(), &proof1, &stmt1).is_err(), "add x 1 = x must be rejected at n={n}");
+
+        // Left identity: add zero x = x, by the same pattern with the operands swapped.
+        let (lp, lstmt) = add_identity_proof(n, 0, true);
+        let t1 = Instant::now();
+        ck(&format!("add 0 x = x at n={n}"), &lp, &lstmt);
+        println!("LEMMA n={n}: add 0 x = x checked in {:?}", t1.elapsed());
+        let (lp1, lstmt1) = add_identity_proof(n, 1, true);
+        assert!(check(&Ctx::new(), &lp1, &lstmt1).is_err(), "add 1 x = x must be rejected at n={n}");
     }
 }
 
