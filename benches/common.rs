@@ -22,6 +22,26 @@ pub fn factorial(s: &mut TermStore) -> Hash {
     s.rec(abs)
 }
 
+/// `rec f n = if n <= 0 then 0 else n * 8 + 0 + f(n - 1)`: a term with the identity and
+/// strength-reduction patterns the lemma-database rules target (`x + 0`, `x * 2^k`), so a
+/// rewrite has something to win on (bit-vector design doc, section 14).
+pub fn redundant_arithmetic_recursion(s: &mut TermStore) -> Hash {
+    let n = s.var(0);
+    let f = s.var(1);
+    let zero = s.lit(0);
+    let one = s.lit(1);
+    let eight = s.lit(8);
+    let cond = s.prim(PrimOp::Le, n, zero);
+    let scaled = s.prim(PrimOp::Mul, n, eight);
+    let padded = s.prim(PrimOp::Add, scaled, zero);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let rec_call = s.app(f, n_minus_1);
+    let else_branch = s.prim(PrimOp::Add, padded, rec_call);
+    let body = s.if_(cond, zero, else_branch);
+    let abs = s.abs(body);
+    s.rec(abs)
+}
+
 /// `rec f n = if n < 2 then n else f(n - 1) + f(n - 2)` (naive, exponential;
 /// not tail-recursive, so `compile.rs` emits a plain `call`, not a loop).
 pub fn fib(s: &mut TermStore) -> Hash {

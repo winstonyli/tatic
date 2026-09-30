@@ -53,6 +53,7 @@ fn census_of_rule_patterns_over_the_corpus() {
     let corpus: Vec<(&str, PlainBuilder)> = vec![
         ("factorial", common::factorial),
         ("fib", common::fib),
+        ("redundant_arithmetic_recursion", common::redundant_arithmetic_recursion),
         ("gcd", common::gcd),
         ("gcd_with_two_base_cases", common::gcd_with_two_base_cases),
         ("capturing_closure_loop", common::capturing_closure_loop),
@@ -80,6 +81,14 @@ fn census_of_rule_patterns_over_the_corpus() {
     }
     println!("CENSUS total: nodes={} prims={} x+0={} x*1={} x*2^k={}", tot.0, tot.1, tot.2, tot.3, tot.4);
     // Pinned so a corpus change is noticed: the corpus has no redundant identity patterns, and
-    // exactly one power-of-two multiply (`straight_line`).
-    assert_eq!(tot, (272, 49, 0, 0, 1));
+    // one power-of-two multiply in `straight_line`, plus `redundant_arithmetic_recursion`, which
+    // was added to hold one `x+0` and one `x*8`.
+    assert_eq!(tot, (286, 54, 1, 0, 2));
+}
+
+#[test]
+fn the_redundant_arithmetic_benchmark_compiles() {
+    let mut s = TermStore::new();
+    let h = common::redundant_arithmetic_recursion(&mut s);
+    assert!(tatic::compile::try_compile(&s, h).is_some());
 }

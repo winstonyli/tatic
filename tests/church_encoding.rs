@@ -109,4 +109,29 @@ fn church_bool_nat_and_good_subtype_compute_by_conv() {
     assert!(def_eq(&app(child_ty.clone(), f1.clone()), &empty), "ChildTy false1 == empty");
     let nat_w = wty(bool1.clone(), app(child_ty.clone(), var(0)));
     tc("W(Bool1, ChildTy)", &nat_w);
+
+    // ---- Pair equality: two routes to Good 1 agree definitionally (beta only)...
+    let good1_a = app2(good_succ.clone(), num(0), good_zero.clone());
+    let good1_b = lam(arrow(nat.clone(), sort(0)), lam(app(var(0), zero.clone()), lam(steptys.clone(),
+        app2(var(0), num(0), var(1)))));
+    assert!(def_eq(&good1_a, &good1_b), "canonical Good 1 proofs agree");
+    let p_a = pair(good_body.clone(), num(1), good1_a.clone());
+    let p_b = pair(good_body.clone(), num(1), good1_b.clone());
+    assert!(def_eq(&p_a, &p_b), "pairs with agreeing proofs agree");
+    // ...but a symbolic proof is not its own eta-expansion (no eta in the kernel).
+    let ident = lam(nat.clone(), lam(app(good.clone(), var(0)), var(0)));
+    let eta = lam(nat.clone(), lam(app(good.clone(), var(0)),
+        lam(arrow(nat.clone(), sort(0)), lam(app(var(0), zero.clone()), lam(steptys.clone(),
+            app3(var(3), var(2), var(1), var(0)))))));
+    assert!(!def_eq(&ident, &eta), "no eta: a symbolic Good proof differs from its expansion");
+
+    // ---- Empty -> Nat by WRec with a constant motive (empty = W(unit, \_.unit)).
+    let unit = id(nat.clone(), zero.clone(), zero.clone());
+    let empty = wty(unit.clone(), unit.clone());
+    let motive = lam(empty.clone(), nat.clone());
+    // step u f ih = ih tt   ctx [u,f,ih]: ih = var0
+    let step = lam(unit.clone(), lam(arrow(unit.clone(), empty.clone()), lam(pi(unit.clone(), nat.clone()),
+        app(var(0), refl(zero.clone())))));
+    let elim = lam(empty.clone(), wrec(motive, unit.clone(), step, var(0)));
+    ck("empty elim : empty -> nat", &elim, &arrow(empty.clone(), nat.clone()));
 }
