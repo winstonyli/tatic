@@ -5983,6 +5983,10 @@ Fetched 2026-09-30 (source files read through a summarising fetch; the two paper
 - **Kleeblatt, "On a strongly normalizing STG machine with an application to dependent type checking" (TU Berlin, 2011)**: compiled normalisation inside a dependent type checker, "satisfying efficiency" (abstract only).
 - **Abel, Coquand and Dybjer, NbE for Martin-Lof type theory (LICS 2007)**: environment-based evaluation then read back (search summary only).
 
+- **Agda `Reduce.Fast`**: a call-by-need environment machine with an implicit heap (Hackage module doc, search-summary level).
+- **smalltt** (Kovacs): NbE with closures and de Bruijn levels; its README reports elaboration 8 to 30 times faster than Agda on synthetic benchmarks and Church-numeral conversion at 0.712 s against 19.7 s for Agda (the author's own benchmarks, not reproduced here).
+- **Rocq `cClosure.ml`**: a forced closure updates its mutable cell in place so later references share the result (`Zupdate`); `FLOCKED` marks a cell being updated.
+
 What it means here. Lean's kernel is eager and fast, so eager substitution is not the flaw by itself; this lemma's O(n^2)-node bodies under O(n) betas are. Rocq's closure design is the one precedent for removing body construction inside a small kernel. The compiled routes put an untrusted code generator into checking, which this repo keeps apart on purpose. Options and a gate are in `docs/superpowers/specs/2026-09-30-kernel-node-churn-options.md`.
 
 ## 78. Can normalization be eased? Explicit conversion, proof irrelevance, observational, cubical, categorical views
@@ -6104,3 +6108,7 @@ What it means here. No line of work removes normalization while keeping decidabl
 - [Normalization for cubical type theory (Sterling and Angiuli, LICS 2021)](https://arxiv.org/abs/2101.11479)
 - [Two-level type theory and applications (Annenkov et al.)](https://arxiv.org/abs/1705.03307)
 - [Normalisation by evaluation for type theory, in type theory (Altenkirch and Kaposi, LMCS 2017)](https://lmcs.episciences.org/2588)
+- [smalltt README (Kovacs)](https://github.com/AndrasKovacs/smalltt)
+- [Agda `Reduce.Fast`](https://hackage-content-origin.haskell.org/package/Agda-2.6.1.3/docs/Agda-TypeChecking-Reduce-Fast.html)
+- [Rocq `cClosure.ml`](https://github.com/rocq-prover/rocq/blob/master/kernel/cClosure.ml)
+- [Checking dependent types with normalization by evaluation: a tutorial (Christiansen)](https://davidchristiansen.dk/tutorials/nbe/)
