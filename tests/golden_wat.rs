@@ -27,6 +27,7 @@ fn corpus() -> Vec<(&'static str, Builder)> {
     vec![
         ("factorial", Box::new(common::factorial)),
         ("fib", Box::new(common::fib)),
+        ("redundant_arithmetic_recursion", Box::new(common::redundant_arithmetic_recursion)),
         ("gcd", Box::new(common::gcd)),
         ("gcd_with_two_base_cases", Box::new(common::gcd_with_two_base_cases)),
         ("capturing_closure_loop", Box::new(common::capturing_closure_loop)),

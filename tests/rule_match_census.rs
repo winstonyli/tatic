@@ -91,4 +91,5 @@ fn the_redundant_arithmetic_benchmark_compiles() {
     let mut s = TermStore::new();
     let h = common::redundant_arithmetic_recursion(&mut s);
     assert!(tatic::compile::try_compile(&s, h).is_some());
+    assert_eq!(tatic::eval::apply_term(&s, h, &[10]).unwrap(), 440);
 }

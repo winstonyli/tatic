@@ -120,6 +120,27 @@ fn factorial_10(c: &mut Criterion) {
     group.finish();
 }
 
+/// `n*8 + 0 + f(n-1)`: the baseline for the lemma-database rules (`x+0`, `x*2^k`), which would
+/// rewrite it. Non-tail recursion, `f(10) = 440`.
+fn redundant_arithmetic_10(c: &mut Criterion) {
+    let mut group = c.benchmark_group("redundant_arithmetic_10");
+
+    let mut store = TermStore::new();
+    let h = common::redundant_arithmetic_recursion(&mut store);
+
+    group.bench_function("interpreter", |b| {
+        b.iter(|| eval::apply_term(&store, h, black_box(&[10])).unwrap())
+    });
+
+    let mut jit = JitEngine::new();
+    warm(&mut jit, &store, h, &[10], true);
+    group.bench_function("jit_warm_cache_hit", |b| {
+        b.iter(|| jit.apply(&store, h, black_box(&[10])).unwrap())
+    });
+
+    group.finish();
+}
+
 fn capturing_closure_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("capturing_closure_loop");
 
@@ -323,6 +344,7 @@ criterion_group!(
     fib_30,
     gcd_large,
     factorial_10,
+    redundant_arithmetic_10,
     capturing_closure_loop,
     partial_application_loop,
     closure_typed_loop_carried_parameter_loop,
