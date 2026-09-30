@@ -590,6 +590,17 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_verify_battery_probes_zero_negatives_and_a_loop_that_runs_many_times() {
+        // What `verify` is the only check of (the emitted code) depends on the
+        // battery reaching these; the cap at 12 (RELATED_WORK.md §71) must not
+        // shrink it below them.
+        let samples: Vec<i64> = sample_arg_vectors(1).into_iter().map(|v| v[0]).collect();
+        assert!(samples.contains(&0), "no zero");
+        assert!(samples.iter().any(|&a| a < 0), "no negative");
+        assert!(samples.iter().any(|&a| a >= 10), "no input that iterates 10+ times");
+    }
     use super::*;
     use crate::term::{PrimOp, TermStore};
 

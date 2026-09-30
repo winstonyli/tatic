@@ -5803,6 +5803,8 @@ Same probe shape as above (throwaway ignored test in `jit.rs`, fresh `JitEngine`
 
 Two findings. (1) `verify` is 4.6 of its 5.0 ms on `fib` alone: the interpreter evaluating `fib(20)`. Every other term costs under 0.08 ms. Dropping or capping the large sample for non-tail recursion is the cheapest cold-path saving (about 30% of this total), and it needs no design. (2) The theorem does not depend on the compiled module, so it could run in parallel with `instantiate` + `verify` (14.4 ms serial vs a critical path of about 10.4 ms, at most 28%). That needs a thread and a per-thread kernel/prelude; not built. Change (1) was then made: the largest `SAMPLE_ARGS` entry is 12 instead of 20. The full release suite passes unchanged, and `fib_30`'s cold call went 12.8 to 6.1 ms (-52%; the other cold benches moved 1-25% but the 1f8fd96 baseline ran at 29% CPU, so only the `fib` figure is attributable (§74)). Change (2) was not built.
 
+Re-profile with the cap in (same probe, CPU 39% before from other load, RTP off, so read shares rather than absolutes): 12.4 ms total over the 21 terms. `instantiate` 6.3 ms (51%), universal theorem 4.4 (36%), compile + typing 0.9 (8%), `verify` 0.6 (5%), everything else 0.4. `fib`'s `verify` fell from 4.6 ms to 0.13. Cranelift is now the largest slice; the theorem is second, and it alone is what running it beside `instantiate` + `verify` could hide (a 35% ceiling).
+
 ## 72. Stage 4: what stage 3 made unnecessary
 
 Plan: `docs/superpowers/plans/2026-09-27-stage-4-remove-what-no-longer-pays.md`.
