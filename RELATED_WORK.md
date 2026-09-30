@@ -5789,6 +5789,20 @@ as V8, Lean's parallel kernel checking and Coq's proof workers do
 (hides the remaining ~0.5-1 ms of theorem per recursive term); run
 Cranelift beside the proof (saves the shorter of the two).
 
+### Re-profile at 1f8fd96 (stage 4, prelude cache, `prove_instances` off)
+
+Same probe shape as above (throwaway ignored test in `jit.rs`, fresh `JitEngine` per run, best of 7 per term, summed over the 21 `test_corpus` terms; pinned, BelowNormal, RTP off, CPU 6% before). Total 15.5 ms:
+
+| phase | ms | share |
+|---|---|---|
+| `instantiate` (wasm parse + Cranelift + instance) | 5.41 | 35% |
+| `verify` (compiled vs interpreter on `SAMPLE_ARGS`) | 5.02 | 32% |
+| universal theorem (`prove_tail_recursive_universal`) | 4.01 | 26% |
+| compile + typing | 0.83 | 5% |
+| pure / closure provers, fallback | 0.36 | 2% |
+
+Two findings. (1) `verify` is 4.6 of its 5.0 ms on `fib` alone: the interpreter evaluating `fib(20)`. Every other term costs under 0.08 ms. Dropping or capping the large sample for non-tail recursion is the cheapest cold-path saving (about 30% of this total), and it needs no design. (2) The theorem does not depend on the compiled module, so it could run in parallel with `instantiate` + `verify` (14.4 ms serial vs a critical path of about 10.4 ms, at most 28%). That needs a thread and a per-thread kernel/prelude; not built. Neither change was made here.
+
 ## 72. Stage 4: what stage 3 made unnecessary
 
 Plan: `docs/superpowers/plans/2026-09-27-stage-4-remove-what-no-longer-pays.md`.
