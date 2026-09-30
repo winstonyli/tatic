@@ -5985,6 +5985,20 @@ Fetched 2026-09-30 (source files read through a summarising fetch; the two paper
 
 What it means here. Lean's kernel is eager and fast, so eager substitution is not the flaw by itself; this lemma's O(n^2)-node bodies under O(n) betas are. Rocq's closure design is the one precedent for removing body construction inside a small kernel. The compiled routes put an untrusted code generator into checking, which this repo keeps apart on purpose. Options and a gate are in `docs/superpowers/specs/2026-09-30-kernel-node-churn-options.md`.
 
+## 78. Can normalization be eased? Explicit conversion, proof irrelevance, observational, cubical, categorical views
+
+Searched 2026-09-30. Abstract or search-summary level only (the OTT paper's PDF could not be parsed here); every line is a pointer to check.
+
+- **Explicit conversion** (nLab "explicit conversion"): conversions become terms `p : a = b` instead of a judgment `a == b`. The nLab page does not discuss proof size or decidability.
+- **Eliminating reflection from type theory** (Winterhalter, Sozeau and Tabareau, CPP 2019): extensional type theory (equality reflection, undecidable checking) is translated to intensional type theory with UIP and funext, turning each use of reflection into an explicit equality proof. This moves the conversion work into the proof term; it does not remove it.
+- **Observational type theory** (Altenkirch, McBride and Swierstra, PLPV 2007): equality is defined by recursion on the type; it is proof-irrelevant and substitutive, while definitional equality stays decidable as in ITT (search summary).
+- **Definitional proof irrelevance without K** (Gilbert, Cockx, Sozeau and Tabareau, POPL 2019): all proofs of a proposition are definitionally equal, so conversion need not compare or normalise proofs; a criterion on which propositions may be eliminated keeps checking decidable and compatible with univalence.
+- **Cubical type theory** (Sterling and Angiuli, LICS 2021): normalization was the last major open metatheory problem; proved by a reduction-free gluing argument, giving decidable judgmental equality. Cubical adds computation (Kan operations) for univalence and funext, so it makes normalization larger, not smaller.
+- **Two-level type theory** (Annenkov, Capriotti, Kraus and Sattler, 2023): an inner fibrant (HoTT) level and an outer level with UIP whose equality is internalised judgmental equality.
+- **Categories with families and NbE** (Altenkirch and Kaposi, LMCS 2017): substitution is a primitive of the syntax; NbE is extracted from a presheaf model with no rewriting.
+
+What it means here. No line of work removes normalization while keeping decidable checking of computing terms: they either move it into proofs (explicit conversion, reflection elimination), skip it for proofs (proof irrelevance, OTT), make it cheaper (closures and NbE, from the CwF view where substitution is explicit), or enlarge it (cubical). The bit-vector lemma's cost is conversion over computational terms (`add`), which only the third route touches.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -6083,3 +6097,10 @@ What it means here. Lean's kernel is eager and fast, so eager substitution is no
 - [A compiled implementation of strong reduction (Gregoire and Leroy, ICFP 2002)](https://xavierleroy.org/bibrefs/Gregoire-Leroy-02.html)
 - [On a strongly normalizing STG machine with an application to dependent type checking (Kleeblatt, TU Berlin 2011)](https://depositonce.tu-berlin.de/items/512ba4cd-ff0c-4f33-a5c2-a8fdc66dc03c)
 - [Normalization by evaluation for Martin-Lof type theory (Abel, Coquand and Dybjer, LICS 2007)](https://lics.siglog.org/2007/AbelCoquandDybjer-NormalizationbyEval.html)
+- [nLab: explicit conversion](https://ncatlab.org/nlab/show/explicit%20conversion)
+- [Eliminating reflection from type theory (Winterhalter, Sozeau and Tabareau, CPP 2019)](https://hal.archives-ouvertes.fr/hal-01849166)
+- [Observational equality, now! (Altenkirch, McBride and Swierstra, PLPV 2007)](https://people.cs.nott.ac.uk/psztxa/publ/obseqnow.pdf)
+- [Definitional proof-irrelevance without K (Gilbert et al., POPL 2019)](https://rocq-prover.org/papers/definitional-proof-irrelevance-without-k)
+- [Normalization for cubical type theory (Sterling and Angiuli, LICS 2021)](https://arxiv.org/abs/2101.11479)
+- [Two-level type theory and applications (Annenkov et al.)](https://arxiv.org/abs/1705.03307)
+- [Normalisation by evaluation for type theory, in type theory (Altenkirch and Kaposi, LMCS 2017)](https://lmcs.episciences.org/2588)
