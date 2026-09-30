@@ -5909,6 +5909,27 @@ and instances are most of what such a term does on a cold call (not
 profiled); `fib_30` is dominated by `verify()` running `fib` on the
 samples (§71), so the saving is a smaller share.
 
+## 74. Baseline at 1f8fd96 (stage 4, prelude cache, `prove_instances` off)
+
+Criterion, `--warm-up-time 3 --measurement-time 8`, pinned to 12 cores at BelowNormal, Defender RTP off. Whole-machine CPU was 29% before the run and 10% after, so this is *not* a fully quiet baseline (the 20% bar was missed); it is a reference for later A/Bs, not a substitute for them. Raw output: `target/baseline/{proofs,execution}.txt` (untracked). Medians:
+
+| bench | median |
+|---|---|
+| straight_line_refl_proof | 4.1 us |
+| gcd_relational_proof_single_call | 6.4 us |
+| universal_proof_one_time gcd 2 / 3 leaves | 556 us / 962 us |
+| gcd_relational x1 / x5 / x10 | 5.3 / 32 / 61 us |
+| gcd universal x1 | 584 us |
+| closures_fragment_proof (4 variants) | 5.0-9.8 us |
+| closure_typed_loop_carried universal | 887 us |
+| over_application instance proofs | 1.6-2.0 ms |
+| non_tail_closure_recursion instance proofs | 9.1-9.8 us |
+| fib_30 interpreter / jit cold / jit warm | 668 ms / 12.8 ms / 5.4 ms |
+| gcd loop cold / warm | 1.11 ms / 156 ns |
+| capturing_closure_loop cold / warm | 1.13 ms / 5.4 us |
+| partial_application_loop cold / warm | 1.20 ms / 4.6 us |
+| closure_typed_loop_carried cold / warm | 10.8 ms / 34 us |
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
