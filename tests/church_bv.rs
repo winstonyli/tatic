@@ -3,6 +3,11 @@
 use std::time::Instant;
 use tatic::kernel::*;
 
+// The allocator `main.rs` ships with: the lib's own `#[global_allocator]` is
+// `#[cfg(test)]`, so without this these timings ran on the system heap.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn bool0() -> Expr {
     pi(sort(0), arrow(var(0), arrow(var(0), var(0))))
 }
