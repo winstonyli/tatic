@@ -67,7 +67,9 @@ use crate::eval::{self, EvalError};
 use crate::proof;
 use crate::term::{Hash, TermStore};
 
-const SAMPLE_ARGS: &[i64] = &[0, 1, 2, 3, 5, -1, -3, 7, 20];
+// The largest is 12, not 20: `verify` interprets every sample, and `fib(20)`
+// alone was 4.6 of a 15.5 ms cold-call total (RELATED_WORK.md §71).
+const SAMPLE_ARGS: &[i64] = &[0, 1, 2, 3, 5, -1, -3, 7, 12];
 
 /// What the kernel proof accompanying a compiled term actually covers.
 ///

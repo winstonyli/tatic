@@ -528,8 +528,8 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   includes building its (two-self-call) universal proof. That number,
   29 ms, idle, on 2026-09-25, also included 3 concrete instances of the
   theorem, which `JitEngine::prove_instances` now leaves off by default
-  (`RELATED_WORK.md` §73; it is 12.8 ms at 1f8fd96, §74, and a third
-  of a cold call is `verify` running the interpreter on `fib(20)`, §71; it was about 140 ms
+  (`RELATED_WORK.md` §73; it is 12.8 ms at 1f8fd96, §74, and 6.1 ms once `verify`
+  stopped interpreting `fib(20)`, §71; it was about 140 ms
   before `subst_top` substituted in one pass, `RELATED_WORK.md` §53; ~15ms with
   no kernel proof involved at all); the warm (cached) case is unaffected
   either way, since none of this runs again for a hash already in the cache.
