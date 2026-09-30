@@ -5948,6 +5948,20 @@ Criterion, `--warm-up-time 3 --measurement-time 8`, pinned to 12 cores at BelowN
 
 A first pass at 1f8fd96 ran with the machine at 29% CPU and read 15-25% slower across the board, *including the interpreter benches whose code did not change* (fib_30 interpreter 668 vs 621 ms). That is the size of the load effect: compare A/Bs only within one run, and treat this table, not that pass, as the reference. The only code change between the two is the sample cap, so `fib_30`'s cold call (12.8 to 6.0 ms) is the one figure it explains; the other cold benches' 10-20% are load.
 
+## 75. Relational compilation (Rupicola) as the shape of "found to be equivalent"
+
+Read on 2026-09-30 from Pit-Claudel's thesis page and the Rupicola README; the PLDI 2022 PDF could not be text-extracted here, so anything below marked "not stated" was absent from those pages, not from the paper.
+
+What it does. Compiling a functional program `s` is recast as proving `exists t, t ~ s` for a low-level program `t`, so the result carries its own correctness proof (the thesis's wording: "correct-by-construction"). The search unifies the goal against the conclusions of compilation lemmas held in a hint database, each lemma's premises becoming subgoals, with priorities on the hints. The thesis page shows the shape on a circuit compiler, not on Rupicola itself: `Op "add" [c1; c2] ~ Z.add g1 g2` from `c1 ~ g1` and `c2 ~ g2`, plus a premise that the operator's semantics is `Z.add`.
+
+Loops. "Each type of loop is compiled [by] a custom lemma": separate lemmas for maps, folds and range iteration. The thesis states that invariant inference is then automatic, because each lemma expresses the intermediate state through the corresponding high-level iterator rather than through low-level primitives. Not stated on the pages read: the lemma statements themselves, the trusted base, and any timings.
+
+What it means here.
+- tatic's universal tail-recursion theorem (`loop_val(params, v, e) = v` over an `Ev` derivation) is already a per-loop-shape lemma whose invariant is stated on the high-level side. Rupicola's design says to add a shape by adding a lemma, not by changing the compiler.
+- `specialise.rs` plus `spec_check.rs` already has the architecture: an untrusted search emits a trace, and a small checker replays it. A rewrite-lemma database would add steps to that trace that are checked by the kernel rather than certificate-checked (§37).
+- Rupicola is deliberately incomplete: it produces good code where an expert supplied lemmas. The same stance fits a JIT whose fallback is the interpreter.
+- Design sketch: `docs/superpowers/specs/2026-09-30-bitvector-interface-design.md`, section 10.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -6033,3 +6047,6 @@ A first pass at 1f8fd96 ran with the machine at 29% CPU and read 15-25% slower a
 - [Lean reference: validating proofs (`decide +kernel`)](https://lean-lang.org/doc/reference/latest/ValidatingProofs/)
 - [LLVM #102092: an unneeded -verify-machineinstrs](https://github.com/llvm/llvm-project/issues/102092)
 - [GCC configure: --enable-checking](https://gcc.gnu.org/install/configure.html)
+- [Relational Compilation for Performance-Critical Applications (Pit-Claudel, Philipoom, Jamner, Erbsen and Chlipala, PLDI 2022)](https://par.nsf.gov/biblio/10413141)
+- [Pit-Claudel, PhD thesis, relational compilation chapter](https://people.csail.mit.edu/cpitcla/thesis/thesis.html)
+- [Rupicola repository](https://github.com/mit-plv/rupicola)
