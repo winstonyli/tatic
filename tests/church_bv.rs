@@ -78,6 +78,43 @@ fn add(n: usize) -> Expr {
     lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), outer))))
 }
 
+/// Like `add`, but each carry is bound once by `(\c. rest) carry_expr`, so the body stays O(n)
+/// nodes instead of O(n^2) (a carry used twice per position is otherwise copied by every beta).
+fn add_shared(n: usize) -> Expr {
+    add_mode(n, 0)
+}
+fn add_mode(n: usize, mode: u8) -> Expr {
+    let d0 = 4 + 2 * n; // depth with all of a's and b's bits open
+    let a_at = |j: usize, depth: usize| var((depth - 1 - (4 + j)) as u32);
+    let b_at = |j: usize, depth: usize| var((depth - 1 - (4 + n + j)) as u32);
+    let df = d0 + n.saturating_sub(1); // depth once c_1 .. c_(n-1) are bound
+    let carry_at_final = |j: usize| if j == 0 { f() } else { var((n - 1 - j) as u32) };
+    let sums = (0..n)
+        .map(|i| match mode {
+            1 => f(),
+            2 => xor(a_at(i, df), b_at(i, df)),
+            _ => xor(xor(a_at(i, df), b_at(i, df)), carry_at_final(i)),
+        })
+        .collect();
+    let mut body = apps(var((df - 1 - 3) as u32), sums);
+    for i in (0..if mode == 0 { n.saturating_sub(1) } else { 0 }).rev() {
+        let depth = d0 + i; // i carries bound so far; c_i is var(0) when i >= 1
+        let ci = if i == 0 { f() } else { var(0) };
+        let x = xor(a_at(i, depth), b_at(i, depth));
+        let e = or(and(a_at(i, depth), b_at(i, depth)), and(ci, x));
+        body = app(lam(bool0(), body), e);
+    }
+    for _ in 0..n {
+        body = lam(bool0(), body);
+    }
+    let mut inner = app2(var(n as u32 + 2), var(n as u32 + 1), body);
+    for _ in 0..n {
+        inner = lam(bool0(), inner);
+    }
+    let outer = app2(var(3), var(1), inner);
+    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), outer))))
+}
+
 fn is_ok(r: Result<Expr, String>) -> bool {
     match r {
         Ok(_) => true,
@@ -117,4 +154,36 @@ fn church_bitvector_add_computes_by_conv_at_8_bits() {
 #[ignore]
 fn church_bitvector_add_computes_by_conv_at_64_bits() {
     run(64);
+}
+
+#[test]
+#[ignore]
+fn scaling_probe() {
+    for n in [8usize, 16, 24, 32, 48] {
+        let ad = add_shared(n);
+        let mask = (1u128 << n) - 1;
+        let (x, y) = (0x0123_4567_89AB_CDEFu128 & mask, 0xFEDC_BA98_7654_3210u128 & mask);
+        let got = app2(ad.clone(), lit(n, x), lit(n, y));
+        let t0 = Instant::now();
+        let w = normalize(&got);
+        let tn = t0.elapsed();
+        let t1 = Instant::now();
+        assert!(def_eq(&got, &lit(n, (x + y) & mask)));
+        println!("SCALE n={n}: normalize {tn:?}, def_eq {:?}", t1.elapsed());
+        let _ = w;
+    }
+}
+
+#[test]
+#[ignore]
+fn skeleton_probe() {
+    for mode in [1u8, 2] {
+        for n in [16usize, 32, 64] {
+            let ad = add_mode(n, mode);
+            let got = app2(ad, lit(n, 0x5555), lit(n, 0x3333));
+            let t0 = Instant::now();
+            let _ = normalize(&got);
+            println!("SKEL mode={mode} n={n}: normalize {:?}", t0.elapsed());
+        }
+    }
 }
