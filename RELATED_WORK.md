@@ -5973,6 +5973,18 @@ Surveyed 2026-09-30 from search-result summaries only (no paper was read in full
 
 What it means here. Every system that scales keeps the checker separate from the search, as this repo does. The non-learned baseline (egg-style saturation plus a cost table) is the thing to measure first. The census in the bit-vector design doc (section 14) shows the corpus has almost no matches for the first three rules, so a learned guide has nothing to learn from until a benchmark with real rewrite opportunities exists. Not surveyed: learned proof search in proof assistants (the lemma-proving half).
 
+## 77. Eager versus lazy substitution in kernels
+
+Fetched 2026-09-30 (source files read through a summarising fetch; the two papers and the NbE line are abstract or search-result level only).
+
+- **Lean 4 kernel**: `instantiate` skips by loose-bvar range and runs through `replace_rec_fn`, whose per-call cache is keyed by (pointer, offset) and used only for likely-shared nodes. Substitution is eager; beta instantiates the lambda body directly. The same memo was tried here and was slower on the lemma (bitvector design doc, section 20).
+- **Rocq kernel** (`cClosure.mli`): lazy closures `FCLOS of constr * usubs`, `FLambda` keeping its body under an environment, and `Zupdate`/`FLOCKED` for sharing an evaluated result.
+- **Gregoire and Leroy, "A compiled implementation of strong reduction" (ICFP 2002)**: bytecode abstract machine (from the ZAM) that weakly reduces open terms, plus a read-back procedure; "important speed-ups" over Coq's old reducer (abstract only).
+- **Kleeblatt, "On a strongly normalizing STG machine with an application to dependent type checking" (TU Berlin, 2011)**: compiled normalisation inside a dependent type checker, "satisfying efficiency" (abstract only).
+- **Abel, Coquand and Dybjer, NbE for Martin-Lof type theory (LICS 2007)**: environment-based evaluation then read back (search summary only).
+
+What it means here. Lean's kernel is eager and fast, so eager substitution is not the flaw by itself; this lemma's O(n^2)-node bodies under O(n) betas are. Rocq's closure design is the one precedent for removing body construction inside a small kernel. The compiled routes put an untrusted code generator into checking, which this repo keeps apart on purpose. Options and a gate are in `docs/superpowers/specs/2026-09-30-kernel-node-churn-options.md`.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -6066,3 +6078,8 @@ What it means here. Every system that scales keeps the checker separate from the
 - [egg: Fast and Extensible Equality Saturation, arXiv 2004.03082](https://arxiv.org/abs/2004.03082)
 - [Equality Saturation Guided by Large Language Models, arXiv 2511.00403](https://arxiv.org/html/2511.00403v1)
 - [Optimizing Tensor Computation Graphs with Equality Saturation and MCTS, arXiv 2410.05534](https://arxiv.org/pdf/2410.05534)
+- [Rocq `cClosure.mli` (lazy reduction: `FCLOS`, `FLambda`, `Zupdate`)](https://github.com/rocq-prover/rocq/blob/master/kernel/cClosure.mli)
+- [Lean 4 `instantiate.cpp`](https://github.com/leanprover/lean4/blob/master/src/kernel/instantiate.cpp)
+- [A compiled implementation of strong reduction (Gregoire and Leroy, ICFP 2002)](https://xavierleroy.org/bibrefs/Gregoire-Leroy-02.html)
+- [On a strongly normalizing STG machine with an application to dependent type checking (Kleeblatt, TU Berlin 2011)](https://depositonce.tu-berlin.de/items/512ba4cd-ff0c-4f33-a5c2-a8fdc66dc03c)
+- [Normalization by evaluation for Martin-Lof type theory (Abel, Coquand and Dybjer, LICS 2007)](https://lics.siglog.org/2007/AbelCoquandDybjer-NormalizationbyEval.html)
