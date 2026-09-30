@@ -17,7 +17,12 @@ pub mod typing;
 #[cfg(test)]
 extern crate self as tatic;
 // The allocator `main.rs` ships with, so timing probes such as
-// `fib16_instance_proof_cost` measure what runs (RELATED_WORK §66).
+// `fib16_instance_proof_cost` measure what runs (RELATED_WORK §66). This
+// covers only the lib's own unit tests: an integration test (`tests/*.rs`) or
+// bench is its own binary and needs its own `#[global_allocator]` to time
+// anything, else it runs on the system heap (about 2x slower on the lemma in
+// `tests/church_bv.rs`). Declared in `src/main.rs`, `benches/*.rs` and
+// `tests/church_bv.rs`; add it to any new timing test.
 #[cfg(test)]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
