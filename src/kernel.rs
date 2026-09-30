@@ -1095,13 +1095,30 @@ pub type Ctx = im::Vector<Expr>;
 /// constant is an axiom.
 pub type Globals = im::Vector<Expr>;
 
-fn ctx_lookup(ctx: &Ctx, k: u32) -> Result<Expr, String> {
+/// The checker's working context: the caller's `base` plus the binders
+/// entered since, in a plain `Vec` pushed and truncated in place. Cloning
+/// and pushing an `im::Vector` at every binder copies a shared tail
+/// (about 15% of samples on the bit-vector lemma); `base` is cloned once
+/// per top-level call.
+struct CtxScope {
+    base: Ctx,
+    local: Vec<Expr>,
+}
+
+impl CtxScope {
+    fn new(base: &Ctx) -> CtxScope {
+        CtxScope { base: base.clone(), local: Vec::new() }
+    }
+}
+
+fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
     let k_usize = k as usize;
-    if k_usize >= ctx.len() {
+    let len = ctx.base.len() + ctx.local.len();
+    if k_usize >= len {
         return Err(format!("unbound variable #{k}"));
     }
-    let idx = ctx.len() - 1 - k_usize;
-    let ty = &ctx[idx];
+    let idx = len - 1 - k_usize;
+    let ty = if idx < ctx.base.len() { &ctx.base[idx] } else { &ctx.local[idx - ctx.base.len()] };
     if free_of(ty) > 0 {
         return Err(free_escaped(free_of(ty) - 1));
     }
@@ -1165,29 +1182,33 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
 /// segment. They are kept because smaller hot frames cost nothing, not
 /// because anything depends on them.
 #[inline(never)]
-fn infer_sigma(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_sigma(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
     let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
-    let mut ctx2 = ctx.clone();
-    ctx2.push_back((**a).clone());
+    let depth = ctx.local.len();
+    ctx.local.push((**a).clone());
     let cid2 = ic.enter(cid, a);
-    let j = expect_sort(&infer_rc(g, ic, &ctx2, cid2, b)?)?;
+    let j = infer_rc(g, ic, ctx, cid2, b);
+    ctx.local.truncate(depth);
+    let j = expect_sort(&j?)?;
     Ok(Expr::Sort(i.max(j)))
 }
 
 #[inline(never)]
-fn infer_pair(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_pair(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
     let ta = infer_rc(g, ic, ctx, cid, a)?;
-    let mut ctx2 = ctx.clone();
-    ctx2.push_back(ta.clone());
+    let depth = ctx.local.len();
+    ctx.local.push(ta.clone());
     let cid2 = ic.fresh();
-    expect_sort(&infer_rc(g, ic, &ctx2, cid2, fam)?)?;
+    let tf = infer_rc(g, ic, ctx, cid2, fam);
+    ctx.local.truncate(depth);
+    expect_sort(&tf?)?;
     let expected_b_ty = subst_top(fam, a);
     check_rc(g, ic, ctx, cid, b, &expected_b_ty)?;
     Ok(sigma(ta, (**fam).clone()))
 }
 
 #[inline(never)]
-fn infer_sigrec(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_sigrec(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
     let (sa, sb) = expect_sigma(&infer_rc(g, ic, ctx, cid, target)?)?;
     infer_rc(g, ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
 
@@ -1224,7 +1245,7 @@ fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
 /// `wa`/`wb` would otherwise sit in `infer`'s frame on every call (see
 /// `infer_sigma`).
 #[inline(never)]
-fn infer_sup(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_sup(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
     let ta = infer_rc(g, ic, ctx, cid, a)?;
     let (dom, cod) = expect_pi(&infer_rc(g, ic, ctx, cid, f)?)?;
     // `cod` is written one binder deeper than `f`'s own domain binder; a
@@ -1265,7 +1286,7 @@ pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> 
     if free_of(e) > 0 {
         return Err(free_escaped(free_of(e) - 1));
     }
-    infer_node(globals, &mut InferCache::default(), ctx, 0, &Rc::new(e.clone()))
+    infer_node(globals, &mut InferCache::default(), &mut CtxScope::new(ctx), 0, &Rc::new(e.clone()))
 }
 
 /// [`infer_in`] with no globals.
@@ -1280,7 +1301,7 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 /// ancestor, which is memoised instead, so skipping it keeps the walk
 /// linear in the DAG and costs unshared terms no hashing. Only successes
 /// are stored: an error ends the whole check.
-fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
     if Rc::strong_count(e) == 1 {
         return infer_node(g, ic, ctx, cid, e);
     }
@@ -1293,7 +1314,7 @@ fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>)
     Ok(ty)
 }
 
-fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
     grow(|| match &**e {
         Expr::Var(k) => ctx_lookup(ctx, *k),
         Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
@@ -1301,18 +1322,22 @@ fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr
         Expr::Free(l) => Err(free_escaped(*l)),
         Expr::Pi(a, b) => {
             let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
-            let mut ctx2 = ctx.clone();
-            ctx2.push_back((**a).clone());
+            let depth = ctx.local.len();
+            ctx.local.push((**a).clone());
             let cid2 = ic.enter(cid, a);
-            let j = expect_sort(&infer_rc(g, ic, &ctx2, cid2, b)?)?;
+            let j = infer_rc(g, ic, ctx, cid2, b);
+    ctx.local.truncate(depth);
+    let j = expect_sort(&j?)?;
             Ok(Expr::Sort(i.max(j)))
         }
         Expr::Lam(a, body) => {
             expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
-            let mut ctx2 = ctx.clone();
-            ctx2.push_back((**a).clone());
+            let depth = ctx.local.len();
+            ctx.local.push((**a).clone());
             let cid2 = ic.enter(cid, a);
-            let tbody = infer_rc(g, ic, &ctx2, cid2, body)?;
+            let tbody = infer_rc(g, ic, ctx, cid2, body);
+            ctx.local.truncate(depth);
+            let tbody = tbody?;
             Ok(pi((**a).clone(), tbody))
         }
         Expr::App(f, a) => {
@@ -1360,10 +1385,12 @@ fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr
         }
         Expr::W(a, b) => {
             let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
-            let mut ctx2 = ctx.clone();
-            ctx2.push_back((**a).clone());
+            let depth = ctx.local.len();
+            ctx.local.push((**a).clone());
             let cid2 = ic.enter(cid, a);
-            let j = expect_sort(&infer_rc(g, ic, &ctx2, cid2, b)?)?;
+            let j = infer_rc(g, ic, ctx, cid2, b);
+    ctx.local.truncate(depth);
+    let j = expect_sort(&j?)?;
             Ok(Expr::Sort(i.max(j)))
         }
         Expr::Sup(a, f) => infer_sup(g, ic, ctx, cid, a, f),
@@ -1443,8 +1470,9 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     // and never infer it, so a malformed claim would otherwise be proved.
     // One cache for both, so a claim's subterms the proof shares hit it.
     let mut ic = InferCache::default();
-    expect_sort(&infer_rc(globals, &mut ic, ctx, 0, &Rc::new(expected.clone()))?)?;
-    check_rc(globals, &mut ic, ctx, 0, &Rc::new(e.clone()), expected)
+    let mut scope = CtxScope::new(ctx);
+    expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &Rc::new(expected.clone()))?)?;
+    check_rc(globals, &mut ic, &mut scope, 0, &Rc::new(e.clone()), expected)
 }
 
 /// [`check_in`] with no globals.
@@ -1452,7 +1480,7 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
     check_in(&Globals::new(), ctx, e, expected)
 }
 
-fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
+fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
     grow(|| {
         if let Expr::Lam(a, body) = &**e
             && let Expr::Pi(ref dom, ref cod) = whnf(expected)
@@ -1463,10 +1491,12 @@ fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>,
             if !def_eq(a, dom) {
                 return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
             }
-            let mut ctx2 = ctx.clone();
-            ctx2.push_back((**a).clone());
+            let depth = ctx.local.len();
+            ctx.local.push((**a).clone());
             let cid2 = ic.enter(cid, a);
-            return check_rc(g, ic, &ctx2, cid2, body, cod);
+            let r = check_rc(g, ic, ctx, cid2, body, cod);
+            ctx.local.truncate(depth);
+            return r;
         }
         let inferred = infer_rc(g, ic, ctx, cid, e)?;
         if def_eq(&inferred, expected) {
