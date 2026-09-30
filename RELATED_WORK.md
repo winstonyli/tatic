@@ -5687,6 +5687,17 @@ at e82f77e found the cause: `push`'s `infer`, run on every postulate.
 8.2 µs; `ArithPostulates::new` alone (10 pushes) takes 4.8 µs, and every
 proof builds one.
 
+**Prelude cache.** `ArithPostulates::new` builds and checks its prelude
+once per thread and clones it (7e6d61c). A/B of 64d4edd vs 7e6d61c
+(`target/abA`, 5 pairs, RTP off, 2026-09-28; best-of):
+`straight_line_refl` 8.80 → 3.67 µs (−58%), `gcd_relational_single_call`
+10.8 → 5.3 µs (−51%), `relational_x1/x5/x10` −54%/−48%/−52%, the closure
+fragment −31% to −53%, the non-tail closure-recursion instance proofs
+−26% and −38%. The universal and over-application proofs (0.4-1.8 ms)
+moved within ±9%. That removes the fixed cost above and lands under the
+4.7 µs `straight_line_refl` took before this stage (above; a different
+run, so indicative).
+
 **What the flip broke.** Only a test: `kernel_soundness_fuzz`'s
 globals-vs-context differential built both sides from the builder's
 context, which is now `Const`s. It builds its `Var` side by hand
@@ -5820,10 +5831,23 @@ mistake inside a scope no longer panics — it becomes an extra global that
   `prime_closure_if_tree_leaves` pushed while iterating a
   `hashbrown::HashMap` (per-process seeded), so push order now follows
   the deterministic proof traversal.
-- A/B pending: ff5e79b vs cde516e, `target/ab4`.
 - The push-check prelude cost (§69, ~4 µs/proof) is handled separately, by
   `ArithPostulates::new`'s thread-local prelude (7e6d61c, outside this
-  plan); its own A/B is also pending.
+  plan); its A/B is in §69.
+
+**Cost.** A/B of ff5e79b vs 4e59ebf (`target/ab4`, RTP off, 2026-09-28;
+clean runs only). `fib(16)`, 20 pairs on a quiet machine (5% CPU): DAG
+10,466 → 10,466, build 3.83 → 3.58 ms best (4.25 → 4.06 median), check
+2.56 → 2.54 ms best (2.75 → 2.85 median). A first 10-pair run overnight,
+with another session's job on the machine, had only 3 clean head samples
+and read 12-16% slower on best-of; the quiet run did not reproduce it.
+Proof benches, 5 pairs: three of the four closure-fragment proofs got
+21-28% faster (non-capturing 6.56 → 4.70 µs, partial application
+7.87 → 5.89 µs; capturing −3%), the
+non-tail closure-recursion instance proofs 18-19%, the over-application
+instance proofs 7-10%. The rest moved within ±4% (`universal_x1` 432 →
+433 µs). The cold JIT (`jit_cold_compile_and_verify`, 5 pairs) moved
+between −3.2% and +0.7% best-of on all six terms.
 
 **What changed in behaviour.**
 - A push may happen while a scope is open (kernel.rs `Postulates::push`);
@@ -5873,8 +5897,17 @@ covers the same points by execution, and it stays.
 default. Tests turn it on, and `proof.rs` keeps the builder and its own
 tests, including the fib16 probe. Dropping them outright was the
 alternative; one sample instead of three keeps two-thirds of a cost that
-buys nothing. Built as `JitEngine::prove_instances`; the saving is
-re-measured with `jit_cold_compile_and_verify`.
+buys nothing. Built as `JitEngine::prove_instances` (5cbedfa).
+
+**Cost.** A/B of 4e59ebf vs 5cbedfa (`target/ab5`, `jit_cold_compile_and_verify`,
+5 pairs, RTP off, 2026-09-28; best-of): `gcd` 2194 → 875 µs (−60%),
+`capturing_closure_loop` 2057 → 955 µs (−54%), `partial_application_loop`
+2138 → 1052 µs (−51%), `fib_30` 13,721 → 12,079 µs (−12%). The two
+closure-typed loops, which get no instances, moved −2% and +3%. That is
+more than §71's 34% for the first three, presumably because the theorem
+and instances are most of what such a term does on a cold call (not
+profiled); `fib_30` is dominated by `verify()` running `fib` on the
+samples (§71), so the saving is a smaller share.
 
 ## Sources
 
