@@ -188,7 +188,7 @@ fn skeleton_probe() {
     }
 }
 
-// ---- Universal lemma over a symbolic 2-bit tuple: `add x zero = x` for `x` with a `GoodBv` witness.
+// ---- Universal lemma over a symbolic n-bit tuple: `add x zero = x` for `x` with a `GoodBv` witness.
 
 /// GoodBool a := Pi P:(Bool -> Sort1). P true -> P false -> P a   (ctx [a])
 fn good_bool() -> Expr {
@@ -201,65 +201,138 @@ fn bit_lemma(motive_body: Expr, at_true: Expr, at_false: Expr) -> (Expr, Expr) {
     let ty = pi(bool0(), arrow(app(good_bool(), var(0)), motive_body));
     (proof, ty)
 }
-fn mk2(a0: Expr, a1: Expr) -> Expr {
-    lam(sort(1), lam(karrow(2), app2(var(0), shift(&a0, 0, 2), shift(&a1, 0, 2))))
+fn mk(args: &[Expr]) -> Expr {
+    let n = args.len();
+    lam(sort(1), lam(karrow(n), apps(var(0), args.iter().map(|a| shift(a, 0, 2)).collect())))
 }
-/// GoodBv x := Pi P:(Bv2 -> Sort2). (Pi a0 a1. GoodBool a0 -> GoodBool a1 -> P (mk a0 a1)) -> P x   (ctx [x])
-fn good_bv2() -> Expr {
-    let step = pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)), app(var(4), mk2(var(3), var(2)))))));
-    lam(bv_ty(2), pi(arrow(bv_ty(2), sort(2)), pi(step, app(var(1), var(2)))))
+/// The hypothesis type of `GoodBv`, placed with `P` as the innermost outer binder:
+/// `Pi a_0..a_(n-1). GoodBool a_0 -> .. -> GoodBool a_(n-1) -> P (mk a_0 .. a_(n-1))`.
+fn good_bv_step(n: usize) -> Expr {
+    // at ctx [.. P a_0..a_(n-1) ga_0..ga_(n-1)]: P = var(2n), a_i = var(2n-1-i)
+    let args: Vec<Expr> = (0..n).map(|i| var((2 * n - 1 - i) as u32)).collect();
+    let mut body = app(var(2 * n as u32), mk(&args));
+    for _ in 0..n {
+        body = pi(app(good_bool(), var(n as u32 - 1)), body);
+    }
+    for _ in 0..n {
+        body = pi(bool0(), body);
+    }
+    body
+}
+/// GoodBv x := Pi P:(Bv_n -> Sort2). (step) -> P x   (ctx [x])
+fn good_bv(n: usize) -> Expr {
+    lam(bv_ty(n), pi(arrow(bv_ty(n), sort(2)), pi(good_bv_step(n), app(var(1), var(2)))))
+}
+
+fn ck(name: &str, e: &Expr, ty: &Expr) {
+    if let Err(m) = check(&Ctx::new(), e, ty) {
+        panic!("{name}: {}", m.chars().take(400).collect::<String>());
+    }
+}
+
+/// `(proof, statement)` of `Pi x:Bv_n. GoodBv x -> Id(Bv_n, add x (lit rhs_lit), x)` using the
+/// `add x 0 = x` proof; `rhs_lit != 0` gives a statement the proof must not check against.
+fn add_zero_proof(n: usize, rhs_lit: u128) -> (Expr, Expr) {
+    let (p1, _) = bit_lemma(id(bool0(), xor(xor(var(0), f()), f()), var(0)), refl(t()), refl(f()));
+    let carry = |a: Expr, c: Expr| or(and(a.clone(), f()), and(c, xor(a, f())));
+    let (p2, _) = bit_lemma(id(bool0(), carry(var(0), f()), f()), refl(f()), refl(f()));
+
+    // ctx of the step body: [x, g, a_0..a_(n-1), ga_0..ga_(n-1)], depth d = 2 + 2n
+    let d = 2 + 2 * n;
+    let a = |i: usize| var((d - 1 - (2 + i)) as u32);
+    let ga = |i: usize| var((d - 1 - (2 + n + i)) as u32);
+    // carries c_0 = false, c_(i+1) = carry(a_i, c_i), with proofs pc_i : Id(c_i, false)
+    let mut c = vec![f()];
+    let mut pc: Vec<Option<Expr>> = vec![None]; // None = c_0 is literally `false`
+    for i in 0..n {
+        let next = carry(a(i), c[i].clone());
+        // carry(a_i, c_i) = carry(a_i, false) by c_i = false, then = false by the bit lemma
+        let step_to_false = app2(p2.clone(), a(i), ga(i));
+        let proof = match &pc[i] {
+            None => step_to_false,
+            Some(pci) => {
+                let ai1 = shift(&a(i), 0, 1);
+                let fmap = lam(bool0(), or(and(ai1.clone(), f()), and(var(0), xor(ai1, f()))));
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                trans_proof(&bool0(), &next, &carry(a(i), f()), &f(), rewritten, step_to_false)
+            }
+        };
+        c.push(next);
+        pc.push(Some(proof));
+    }
+    // sum bits s_i = xor(xor(a_i, false), c_i) = a_i
+    let mut s = Vec::new();
+    let mut e = Vec::new();
+    for i in 0..n {
+        let s_i = xor(xor(a(i), f()), c[i].clone());
+        let to_a = app2(p1.clone(), a(i), ga(i)); // xor(xor(a_i,f),f) = a_i
+        let proof = match &pc[i] {
+            None => to_a,
+            Some(pci) => {
+                let ai1 = shift(&a(i), 0, 1);
+                let fmap = lam(bool0(), xor(xor(ai1, f()), var(0)));
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                trans_proof(&bool0(), &s_i, &xor(xor(a(i), f()), f()), &a(i), rewritten, to_a)
+            }
+        };
+        s.push(s_i);
+        e.push(proof);
+    }
+    let ys: Vec<Expr> = (0..n).map(|i| a(i)).collect();
+    // f_n = \u_0..u_(n-1). \C k. k u_0 .. u_(n-1)   (ctx [u.., C, k]: k = var0, u_i = var(n+1-i))
+    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    fbody = lam(sort(1), lam(karrow(n), fbody));
+    for _ in 0..n {
+        fbody = lam(bool0(), fbody);
+    }
+    let body = cong_n(&bool0(), &bv_ty(n), &fbody, &s, &ys, e);
+    let mut step = body;
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    let rhs = lit(n, rhs_lit);
+    let motive = lam(bv_ty(n), id(bv_ty(n), app2(add(n), var(0), rhs.clone()), var(0)));
+    let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
+    let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), id(bv_ty(n), app2(add(n), var(0), rhs), var(0))));
+    (proof, stmt)
 }
 
 #[test]
-fn add_zero_is_the_identity_on_a_symbolic_good_two_bit_vector() {
-    let ck = |name: &str, e: &Expr, ty: &Expr| {
-        if let Err(m) = check(&Ctx::new(), e, ty) {
-            panic!("{name}: {}", m.chars().take(400).collect::<String>());
-        }
-    };
-    // per-bit lemmas (see tests/church_lemmas.rs)
+fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
+    // per-bit lemma, stated against its own type
     let (p1, ty1) = bit_lemma(id(bool0(), xor(xor(var(0), f()), f()), var(0)), refl(t()), refl(f()));
     ck("sum bit", &p1, &ty1);
-    let carry = |a: Expr| or(and(a.clone(), f()), and(f(), xor(a, f())));
-    let (p2, ty2) = bit_lemma(id(bool0(), carry(var(0)), f()), refl(f()), refl(f()));
-    ck("carry bit", &p2, &ty2);
-
-    // GoodBv is inhabited by canonical tuples: good_mk a0 a1 ga0 ga1 = \P h. h a0 a1 ga0 ga1
+    // GoodBv is inhabited by canonical tuples (n = 2): good_mk = \a0 a1 ga0 ga1 P h. h a0 a1 ga0 ga1
+    let n = 2;
     let good_mk = lam(bool0(), lam(bool0(), lam(app(good_bool(), var(1)), lam(app(good_bool(), var(1)),
-        lam(arrow(bv_ty(2), sort(2)),
-            lam(pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)), app(var(4), mk2(var(3), var(2))))))),
-                app(app(app(app(var(0), var(5)), var(4)), var(3)), var(2))))))));
-    let good_mk_ty = pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)), app(good_bv2(), mk2(var(3), var(2)))))));
+        lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n),
+            app(app(app(app(var(0), var(5)), var(4)), var(3)), var(2))))))));
+    let good_mk_ty = pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)),
+        app(good_bv(n), mk(&[var(3), var(2)]))))));
     ck("good_mk", &good_mk, &good_mk_ty);
 
-    // the main lemma, for x : Bv2 with g : GoodBv x
-    let add2 = add(2);
-    let zero2 = lit(2, 0);
-    let motive = lam(bv_ty(2), id(bv_ty(2), app2(add2.clone(), var(0), zero2.clone()), var(0)));
-    // step body, at ctx [x, g, a0, a1, ga0, ga1]
-    let (a0, a1, ga0, ga1) = (var(3), var(2), var(1), var(0));
-    let s0 = xor(xor(a0.clone(), f()), f());
-    let c1 = carry(a0.clone());
-    let s1 = xor(xor(a1.clone(), f()), c1.clone());
-    let s1_zero_carry = xor(xor(a1.clone(), f()), f());
-    let e0 = app2(p1.clone(), a0.clone(), ga0.clone());
-    let pc = app2(p2.clone(), a0.clone(), ga0);
-    let fmap = lam(bool0(), xor(xor(shift(&a1, 0, 1), f()), var(0)));
-    let c1_to_f = cong1(&bool0(), &bool0(), &fmap, c1, f(), pc);
-    let e1 = trans_proof(&bool0(), &s1, &s1_zero_carry, &a1, c1_to_f, app2(p1.clone(), a1.clone(), ga1));
-    let f2 = lam(bool0(), lam(bool0(), lam(sort(1), lam(karrow(2), app2(var(0), var(3), var(2))))));
-    let body = cong_n(&bool0(), &bv_ty(2), &f2, &[s0, s1], &[a0, a1], vec![e0, e1]);
-    let step = lam(bool0(), lam(bool0(), lam(app(good_bool(), var(1)), lam(app(good_bool(), var(1)), body))));
-    let proof = lam(bv_ty(2), lam(app(good_bv2(), var(0)), app2(var(0), motive, step.clone())));
-    let stmt = pi(bv_ty(2), arrow(app(good_bv2(), var(0)), id(bv_ty(2), app2(add2, var(0), zero2), var(0))));
-    let t0 = Instant::now();
-    ck("add x 0 = x", &proof, &stmt);
-    println!("LEMMA add x 0 = x (2 bits) checked in {:?}", t0.elapsed());
+    for n in [1usize, 2, 3, 4, 8] {
+        let (proof, stmt) = add_zero_proof(n, 0);
+        let t0 = Instant::now();
+        ck(&format!("add x 0 = x at n={n}"), &proof, &stmt);
+        println!("LEMMA n={n}: add x 0 = x checked in {:?}", t0.elapsed());
+        // Mutation: the same proof must not prove `add x 1 = x`.
+        let (proof1, stmt1) = add_zero_proof(n, 1);
+        assert!(check(&Ctx::new(), &proof1, &stmt1).is_err(), "add x 1 = x must be rejected at n={n}");
+    }
+}
 
-    // Mutation: the same proof shape must not prove `add x 1 = x`.
-    let one2 = lit(2, 1);
-    let motive1 = lam(bv_ty(2), id(bv_ty(2), app2(add(2), var(0), one2.clone()), var(0)));
-    let proof1 = lam(bv_ty(2), lam(app(good_bv2(), var(0)), app2(var(0), motive1, step.clone())));
-    let stmt1 = pi(bv_ty(2), arrow(app(good_bv2(), var(0)), id(bv_ty(2), app2(add(2), var(0), one2), var(0))));
-    assert!(check(&Ctx::new(), &proof1, &stmt1).is_err(), "add x 1 = x must be rejected");
+/// Growth of the universal lemma's check time with width (machine load varies; indicative only).
+#[test]
+#[ignore]
+fn add_zero_lemma_scaling() {
+    for n in [8usize, 16, 32, 64] {
+        let (proof, stmt) = add_zero_proof(n, 0);
+        let t0 = Instant::now();
+        ck(&format!("n={n}"), &proof, &stmt);
+        println!("LEMMA-SCALE n={n}: {:?}", t0.elapsed());
+    }
 }
