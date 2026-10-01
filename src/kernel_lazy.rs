@@ -38,6 +38,35 @@ struct Memo {
     /// depend on the level it is compared at, only on the levels inside it).
     equal: HashMap<(usize, usize), (V, V)>,
 }
+/// Counters for `def_eq_lazy_shared`, to see where its time goes (read with `take_stats`).
+#[derive(Default, Debug, Clone)]
+pub struct Stats {
+    pub eval_calls: u64,
+    pub eval_keyed: u64,
+    pub eval_hits: u64,
+    pub cell_calls: u64,
+    pub cell_keyed: u64,
+    pub cell_hits: u64,
+    pub key_slots: u64,
+    pub conv_calls: u64,
+    pub conv_ptr_hits: u64,
+    pub conv_equal_hits: u64,
+    pub force_evals: u64,
+    pub cells_len: usize,
+    pub vals_len: usize,
+    pub equal_len: usize,
+}
+thread_local! {
+    static STATS: RefCell<Stats> = RefCell::new(Stats::default());
+}
+fn bump(f: impl FnOnce(&mut Stats)) {
+    STATS.with(|s| f(&mut s.borrow_mut()));
+}
+/// The counters since the last call (map sizes are those at the end of the last shared call).
+pub fn take_stats() -> Stats {
+    STATS.with(|s| std::mem::take(&mut *s.borrow_mut()))
+}
+
 thread_local! {
     static MEMO: RefCell<Option<Memo>> = const { RefCell::new(None) };
 }
@@ -54,6 +83,7 @@ fn memo_key(e: &KRc<Expr>, env: &Env) -> (usize, Vec<usize>) {
             None => break,
         }
     }
+    bump(|s| s.key_slots += cells.len() as u64);
     (KRc::as_ptr(e) as *const u8 as usize, cells)
 }
 
@@ -77,11 +107,14 @@ enum Cell {
 impl Thunk {
     fn delay(e: &KRc<Expr>, env: &Env) -> Thunk {
         let fresh = || Thunk(Rc::new(RefCell::new(Cell::Delayed(e.clone(), env.clone()))));
+        bump(|s| s.cell_calls += 1);
         if !memo_on(e) {
             return fresh();
         }
+        bump(|s| s.cell_keyed += 1);
         let key = memo_key(e, env);
         if let Some(t) = MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.cells.get(&key).map(|x| x.2.clone()))) {
+            bump(|s| s.cell_hits += 1);
             return t;
         }
         let t = fresh();
@@ -98,7 +131,10 @@ impl Thunk {
         let cell = std::mem::replace(&mut *self.0.borrow_mut(), Cell::Running);
         let v = match cell {
             Cell::Done(v) => v,
-            Cell::Delayed(e, env) => eval(&env, &e),
+            Cell::Delayed(e, env) => {
+                bump(|s| s.force_evals += 1);
+                eval(&env, &e)
+            }
             Cell::Lazy(f) => f(),
             Cell::Running => panic!("kernel_lazy: a cell depends on itself"),
         };
@@ -192,11 +228,14 @@ fn wrec(motive: &Thunk, cty: &Clo, step: &Thunk, target: V) -> V {
 }
 
 fn eval(env: &Env, e: &KRc<Expr>) -> V {
+    bump(|s| s.eval_calls += 1);
     if !memo_on(e) {
         return eval_node(env, e);
     }
+    bump(|s| s.eval_keyed += 1);
     let key = memo_key(e, env);
     if let Some(v) = MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.vals.get(&key).map(|x| x.2.clone()))) {
+        bump(|s| s.eval_hits += 1);
         return v;
     }
     let v = eval_node(env, e);
@@ -252,12 +291,15 @@ fn conv_clo(l: u32, x: &Clo, y: &Clo) -> bool {
 }
 
 fn conv(l: u32, x: &V, y: &V) -> bool {
+    bump(|s| s.conv_calls += 1);
     if Rc::ptr_eq(x, y) {
+        bump(|s| s.conv_ptr_hits += 1);
         return true;
     }
     let key = (Rc::as_ptr(x) as *const u8 as usize, Rc::as_ptr(y) as *const u8 as usize);
     let on = MEMO.with(|m| m.borrow().is_some());
     if on && MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.equal.contains_key(&key))) {
+        bump(|s| s.conv_equal_hits += 1);
         return true;
     }
     let r = conv_node(l, x, y);
@@ -309,6 +351,16 @@ pub fn def_eq_lazy(a: &Expr, b: &Expr, depth: u32) -> bool {
 pub fn def_eq_lazy_shared(a: &Expr, b: &Expr, depth: u32) -> bool {
     MEMO.with(|m| *m.borrow_mut() = Some(Memo::default()));
     let r = def_eq_lazy(a, b, depth);
+    let (c, v, q) = MEMO.with(|m| {
+        let m = m.borrow();
+        let m = m.as_ref().unwrap();
+        (m.cells.len(), m.vals.len(), m.equal.len())
+    });
+    bump(|s| {
+        s.cells_len += c;
+        s.vals_len += v;
+        s.equal_len += q;
+    });
     MEMO.with(|m| *m.borrow_mut() = None);
     r
 }
