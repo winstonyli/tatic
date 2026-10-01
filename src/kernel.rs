@@ -576,8 +576,13 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// `shift` for an `e` already known to have a loose variable at or above
 /// `cutoff` (and `amount != 0`).
 fn shift_unchecked(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+    shift_via(e, cutoff, amount, &|x, c| shift_child(x, c, amount))
+}
+
+/// `shift_unchecked` with the shifting of each child done by `go`, which gets the child and the
+/// cutoff for it.
+fn shift_via(e: &Expr, cutoff: u32, amount: i32, go: &impl Fn(&Rc<Expr>, u32) -> Rc<Expr>) -> Expr {
     walk_count(1);
-    let go = |x: &Rc<Expr>, c: u32| shift_child(x, c, amount);
     grow(|| match e {
         Expr::Var(k) => {
             if *k >= cutoff {
@@ -609,7 +614,7 @@ fn shift_unchecked(e: &Expr, cutoff: u32, amount: i32) -> Expr {
             step: go(step, cutoff),
             target: go(target, cutoff),
         },
-        Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => shift_sigma_family(e, cutoff, amount),
+        Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => shift_sigma_family(e, cutoff, go),
     })
 }
 
@@ -632,8 +637,7 @@ fn shift_child(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Rc<Expr> {
 /// `infer_sigma`'s docs for why these extractions exist and why they
 /// are kept.
 #[inline(never)]
-fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
-    let go = |x: &Rc<Expr>, c: u32| shift_child(x, c, amount);
+fn shift_sigma_family(e: &Expr, cutoff: u32, go: &impl Fn(&Rc<Expr>, u32) -> Rc<Expr>) -> Expr {
     match e {
         Expr::Sigma(a, b) => Expr::Sigma(go(a, cutoff), go(b, cutoff + 1)),
         Expr::Pair(fam, a, b) => Expr::Pair(go(fam, cutoff + 1), go(a, cutoff), go(b, cutoff)),
@@ -644,6 +648,33 @@ fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
         },
         _ => unreachable!("shift_sigma_family called on a non-Sigma-family Expr"),
     }
+}
+
+/// Shifted copies already built, by (node, cutoff, amount), for builders that shift the same large
+/// terms many times (`cong_n`): each node is then shifted once per (cutoff, amount) and the copies are
+/// shared. Keeps the source nodes alive so a pointer is not reused for another node.
+#[derive(Default)]
+pub struct ShiftMemo(std::cell::RefCell<PtrMap<(usize, u32, i32), (Rc<Expr>, Rc<Expr>)>>);
+
+/// [`shift`] through `memo`.
+pub fn shift_memo(e: &Expr, cutoff: u32, amount: i32, memo: &ShiftMemo) -> Expr {
+    if amount == 0 || loose_of(e) <= cutoff {
+        return e.clone();
+    }
+    shift_via(e, cutoff, amount, &|x, c| shift_memo_child(x, c, amount, memo))
+}
+
+fn shift_memo_child(x: &Rc<Expr>, cutoff: u32, amount: i32, memo: &ShiftMemo) -> Rc<Expr> {
+    if x.loose() <= cutoff {
+        return x.clone();
+    }
+    let key = (Rc::as_ptr(x) as usize, cutoff, amount);
+    if let Some((_, r)) = memo.0.borrow().get(&key) {
+        return r.clone();
+    }
+    let r = Rc::new(shift_memo(x, cutoff, amount, memo));
+    memo.0.borrow_mut().insert(key, (x.clone(), r.clone()));
+    r
 }
 
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
@@ -2301,6 +2332,11 @@ pub fn transport(sort_k: u32, a_ty: Expr, b_ty: Expr, p: Expr, x: Expr) -> Expr 
 /// computes. `b_ty` is `f`'s codomain, independent of `a_ty` (its domain);
 /// callers where `f : A -> A` may pass the same `Expr` for both.
 pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
+    cong1_in(&ShiftMemo::default(), a_ty, b_ty, f, a, b, p)
+}
+
+fn cong1_in(memo: &ShiftMemo, a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
+    let shift = |e: &Expr, c: u32, n: i32| shift_memo(e, c, n, memo);
     // motive(a', b', _) := Id(B, f a', f b')
     let motive = lam(
         a_ty.clone(),
@@ -2324,6 +2360,11 @@ pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> E
 /// `p2 : Id(A,y,z)`. `a_ty`/`x` must be valid in the same context as
 /// `p1`/`p2` (they are held fixed while eliminating on `p2`).
 pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr) -> Expr {
+    trans_proof_in(&ShiftMemo::default(), a_ty, x, y, z, p1, p2)
+}
+
+fn trans_proof_in(memo: &ShiftMemo, a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr) -> Expr {
+    let shift = |e: &Expr, c: u32, n: i32| shift_memo(e, c, n, memo);
     // motive(y', z', _) := Id(A, x, y') -> Id(A, x, z')
     let motive = lam(
         a_ty.clone(),
@@ -2355,6 +2396,8 @@ pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr
 pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: Vec<Expr>) -> Expr {
     assert_eq!(xs.len(), ys.len());
     assert_eq!(xs.len(), ps.len());
+    let memo = ShiftMemo::default();
+    let shift = |e: &Expr, c: u32, n: i32| shift_memo(e, c, n, &memo);
     let apply = |args: &[Expr]| -> Expr { args.iter().cloned().fold(f.clone(), app) };
     let lhs_all = apply(xs);
     if xs.is_empty() {
@@ -2375,12 +2418,12 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
         // *full* application under one open binder, not a curried partial
         // one, so its codomain is `f`'s own full result type `b_ty`
         // regardless of `i`.
-        let step = cong1(a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
+        let step = cong1_in(&memo, a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
         cur_args[i] = ys[i].clone();
         let after = apply(&cur_args);
         acc = Some(match acc {
             None => (step, after),
-            Some((prev, mid)) => (trans_proof(b_ty, &lhs_all, &mid, &after, prev, step), after),
+            Some((prev, mid)) => (trans_proof_in(&memo, b_ty, &lhs_all, &mid, &after, prev, step), after),
         });
     }
     acc.unwrap().0
@@ -2836,6 +2879,22 @@ mod tests {
             }
             for i in 0..6 {
                 assert_eq!(is_var_free(&e, i), is_var_free_ref(&e, i), "is_var_free({e:?}, {i})");
+            }
+        }
+    }
+
+    /// `shift_memo` equals `shift` on random terms, with one memo shared across terms, cutoffs and
+    /// amounts (so entries are reused and must be keyed by all three).
+    #[test]
+    fn shift_memo_matches_shift() {
+        let mut next = splitmix(57);
+        let memo = ShiftMemo::default();
+        for _ in 0..20_000 {
+            let e = random_term(&mut next);
+            for c in 0..4 {
+                for n in [1, 2, 3] {
+                    assert_eq!(shift_memo(&e, c, n, &memo), shift(&e, c, n), "shift_memo({e:?}, {c}, {n})");
+                }
             }
         }
     }
