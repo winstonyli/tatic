@@ -1429,6 +1429,30 @@ fn good_add(n: usize) -> (Expr, Expr) {
     let (g_and, _) = good2(&|a, b| and(a, b), &|a, b| a && b);
     let (g_or, _) = good2(&|a, b| or(a, b), &|a, b| a || b);
     let (g_xor, _) = good2(&|a, b| xor(a, b), &|a, b| a != b);
+    good_vec(n, add(n), &move |a, b, ga, gb| {
+        let mut c = f();
+        let mut gc = good_bit(false);
+        let (mut s, mut gs) = (vec![], vec![]);
+        for i in 0..n {
+            let x = xor(a[i].clone(), b[i].clone());
+            let gx = apps(g_xor.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()]);
+            s.push(xor(x.clone(), c.clone()));
+            gs.push(apps(g_xor.clone(), vec![x.clone(), c.clone(), gx.clone(), gc.clone()]));
+            let ab = and(a[i].clone(), b[i].clone());
+            let g_ab = apps(g_and.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()]);
+            let cx = and(c.clone(), x.clone());
+            let g_cx = apps(g_and.clone(), vec![c.clone(), x.clone(), gc.clone(), gx]);
+            let nc = or(ab.clone(), cx.clone());
+            gc = apps(g_or.clone(), vec![ab, cx, g_ab, g_cx]);
+            c = nc;
+        }
+        (s, gs)
+    })
+}
+
+/// `(proof, type)` of `Pi x y. GoodBv x -> GoodBv y -> GoodBv (vec x y)` for a binary vector operation
+/// whose result bits and their `GoodBool` witnesses `bits(a, b, ga, gb)` are built from the operands'.
+fn good_vec(n: usize, vec: Expr, bits: &dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> (Vec<Expr>, Vec<Expr>)) -> (Expr, Expr) {
     // `GoodBv (add x y)` is a Sort3 claim, so it cannot be a motive for the witnesses (`Bv -> Sort2`):
     // take the claim's own `P` and `st` first, then eliminate `gx` and `gy` into `P (add x' y')`.
     // ctx: x, y, gx, gy, P, st, a_0.., ga_0.., b_0.., gb_0..
@@ -1438,22 +1462,12 @@ fn good_add(n: usize) -> (Expr, Expr) {
     let ga = |i: usize| var((db - 1 - (6 + n + i)) as u32);
     let b = |i: usize| var((db - 1 - (da + i)) as u32);
     let gb = |i: usize| var((db - 1 - (da + n + i)) as u32);
-    let mut c = f();
-    let mut gc = good_bit(false);
-    let (mut s, mut gs) = (vec![], vec![]);
-    for i in 0..n {
-        let x = xor(a(i), b(i));
-        let gx = apps(g_xor.clone(), vec![a(i), b(i), ga(i), gb(i)]);
-        s.push(xor(x.clone(), c.clone()));
-        gs.push(apps(g_xor.clone(), vec![x.clone(), c.clone(), gx.clone(), gc.clone()]));
-        let ab = and(a(i), b(i));
-        let g_ab = apps(g_and.clone(), vec![a(i), b(i), ga(i), gb(i)]);
-        let cx = and(c.clone(), x.clone());
-        let g_cx = apps(g_and.clone(), vec![c.clone(), x.clone(), gc.clone(), gx]);
-        let nc = or(ab.clone(), cx.clone());
-        gc = apps(g_or.clone(), vec![ab, cx, g_ab, g_cx]);
-        c = nc;
-    }
+    let (s, gs) = bits(
+        &(0..n).map(a).collect::<Vec<_>>(),
+        &(0..n).map(b).collect::<Vec<_>>(),
+        &(0..n).map(ga).collect::<Vec<_>>(),
+        &(0..n).map(gb).collect::<Vec<_>>(),
+    );
     let st_b = var((db - 1 - 5) as u32);
     let binders = |mut body: Expr| {
         for _ in 0..n {
@@ -1468,16 +1482,16 @@ fn good_add(n: usize) -> (Expr, Expr) {
     let a_da = |i: usize| var((da - 1 - (6 + i)) as u32);
     let mka = mk(&(0..n).map(|i| shift(&a_da(i), 0, 1)).collect::<Vec<_>>());
     // under the `y'` binder at depth da + 1: P = var(da - 1 - 4 + 1)
-    let motive_y = lam(bv_ty(n), app(var((da - 4) as u32), app2(add(n), mka, var(0))));
+    let motive_y = lam(bv_ty(n), app(var((da - 4) as u32), app2(vec.clone(), mka, var(0))));
     let gy = var((da - 1 - 3) as u32);
     let step_x = binders(app2(gy, motive_y, step_y));
     // under the `x'` binder at depth 7: P = var 2, y = var 5
-    let motive_x = lam(bv_ty(n), app(var(2), app2(add(n), var(0), var(5))));
+    let motive_x = lam(bv_ty(n), app(var(2), app2(vec.clone(), var(0), var(5))));
     let body = app2(var(3), motive_x, step_x);
     let proof = lam(bv_ty(n), lam(bv_ty(n), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)),
         lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n), body))))));
     let ty = pi(bv_ty(n), pi(bv_ty(n), arrow(app(good_bv(n), var(1)), arrow(app(good_bv(n), var(0)),
-        app(good_bv(n), app2(add(n), var(1), var(0)))))));
+        app(good_bv(n), app2(vec, var(1), var(0)))))));
     (proof, ty)
 }
 
@@ -1500,5 +1514,130 @@ fn add_preserves_goodness() {
         let t0 = Instant::now();
         ck(&format!("good_add n={n}"), &p, &ty);
         println!("GOOD-ADD n={n}: checked in {:?}", t0.elapsed());
+    }
+}
+
+/// Width scaling of the H3, D2 and `good_add` proofs (design doc section 89).
+#[test]
+#[ignore]
+fn bv_lemma_scaling_h3_d2_good_add() {
+    for n in [32usize, 64, 128] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let l = (1u128 << (n - 1)) | 1;
+        let l = if n >= 128 { l } else { l & ((1u128 << n) - 1) };
+        let t0 = Instant::now();
+        let (p, s) = eq_lit_sound(n, l, l);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        ck("H3", &p, &s);
+        println!("SCALE-H3 n={n}: build {built:?}, check {:?}", t1.elapsed());
+        let t0 = Instant::now();
+        let (p, s) = wrap_div_keeps_r(n, true);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        ck("D2", &p, &s);
+        println!("SCALE-D2 n={n}: build {built:?}, check {:?}", t1.elapsed());
+        let t0 = Instant::now();
+        let (p, s) = good_add(n);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        ck("good_add", &p, &s);
+        println!("SCALE-GOODADD n={n}: build {built:?}, check {:?}", t1.elapsed());
+    }
+}
+
+// ---- H4 (design doc section 89): `toN (or a b) = toN a + toN b` when the bit ranges are disjoint.
+
+/// `\a b. \C k. a C (\a_i.. b C (\b_i.. k (op a_0 b_0) .. (op a_(n-1) b_(n-1))))`, like `add` with no carry.
+fn bitwise(n: usize, op: &dyn Fn(Expr, Expr) -> Expr) -> Expr {
+    let d = 4 + 2 * n;
+    let v = |pos: usize| var((d - 1 - pos) as u32);
+    let outs = (0..n).map(|i| op(v(4 + i), v(4 + n + i))).collect();
+    let mut body = apps(v(3), outs);
+    for _ in 0..n {
+        body = lam(bool0(), body);
+    }
+    let mut inner = app2(var(n as u32 + 2), var(n as u32 + 1), body);
+    for _ in 0..n {
+        inner = lam(bool0(), inner);
+    }
+    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), app2(var(3), var(1), inner)))))
+}
+fn or_bv(n: usize) -> Expr {
+    bitwise(n, &|a, b| or(a, b))
+}
+fn good_or_bv(n: usize) -> (Expr, Expr) {
+    let (g_or, _) = good2(&|a, b| or(a, b), &|a, b| a || b);
+    good_vec(n, or_bv(n), &move |a, b, ga, gb| {
+        let s = (0..n).map(|i| or(a[i].clone(), b[i].clone())).collect();
+        let gs = (0..n).map(|i| apps(g_or.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()])).collect();
+        (s, gs)
+    })
+}
+/// `\P st. st bits.. goods..`: the canonical `GoodBv (mk bits)` from `GoodBool` witnesses.
+fn good_tuple(bits: &[Expr], goods: &[Expr]) -> Expr {
+    let n = bits.len();
+    let sh = |e: &Expr| shift(e, 0, 2);
+    lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n), apps(var(0), bits.iter().chain(goods).map(sh).collect())))
+}
+
+/// `(proof, statement)`: for `a` with free low bits `0..k` (higher bits false) and `b` with free high bits
+/// `k..n` (lower bits false), `toN (or a b) = toN a + toN b`, each with its canonical witness.
+fn or_disjoint_proof(n: usize, k: usize, stated_sum_with_a_twice: bool) -> (Expr, Expr) {
+    let (g_or_bv, _) = good_or_bv(n);
+    // ctx [bit_0..bit_(n-1), g_0..g_(n-1)]
+    let d = 2 * n;
+    let bit_v = |j: usize| var((d - 1 - j) as u32);
+    let good_v = |j: usize| var((d - 1 - (n + j)) as u32);
+    let a_bits: Vec<Expr> = (0..n).map(|i| if i < k { bit_v(i) } else { f() }).collect();
+    let a_good: Vec<Expr> = (0..n).map(|i| if i < k { good_v(i) } else { good_bit(false) }).collect();
+    let b_bits: Vec<Expr> = (0..n).map(|i| if i >= k { bit_v(i) } else { f() }).collect();
+    let b_good: Vec<Expr> = (0..n).map(|i| if i >= k { good_v(i) } else { good_bit(false) }).collect();
+    // `mk` shifts its arguments by 2; `good_tuple` does too, so both take the operands at depth d
+    let (x, y) = (mk(&a_bits), mk(&b_bits));
+    let (gx, gy) = (good_tuple(&a_bits, &a_good), good_tuple(&b_bits, &b_good));
+    let gor = apps(g_or_bv, vec![x.clone(), y.clone(), gx.clone(), gy.clone()]);
+    let lhs = app2(to_n(n), app2(or_bv(n), x.clone(), y.clone()), gor);
+    let (tx, ty) = (app2(to_n(n), x.clone(), gx), app2(to_n(n), y, gy));
+    let rhs = if stated_sum_with_a_twice { app2(nat_add(), tx.clone(), tx) } else { app2(nat_add(), tx, ty) };
+    let mut proof = refl(lhs.clone());
+    let mut stmt = id(nat_ty(), lhs, rhs);
+    for _ in 0..n {
+        proof = lam(app(good_bool(), var(n as u32 - 1)), proof);
+        stmt = pi(app(good_bool(), var(n as u32 - 1)), stmt);
+    }
+    for _ in 0..n {
+        proof = lam(bool0(), proof);
+        stmt = pi(bool0(), stmt);
+    }
+    (proof, stmt)
+}
+
+#[test]
+fn or_of_disjoint_vectors_adds_in_to_n() {
+    for n in [2usize, 4, 8] {
+        let _scope = tatic::kernel::InternScope::enter();
+        for k in 1..n {
+            let (p, s) = or_disjoint_proof(n, k, false);
+            ck(&format!("H4 n={n} k={k}"), &p, &s);
+            let (p2, s2) = or_disjoint_proof(n, k, true);
+            assert!(check(&Ctx::new(), &p2, &s2).is_err(), "toN a + toN a must be rejected, n={n} k={k}");
+        }
+    }
+}
+
+/// H4 by width, half-and-half split (design doc section 89). Stops at n=14: `nat_lit(2^i)` is unary, so the
+/// terms double in size per bit; n=16 had not finished after 10 minutes.
+#[test]
+#[ignore]
+fn or_disjoint_scaling() {
+    for n in [6usize, 8, 10, 12, 14] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let t0 = Instant::now();
+        let (p, s) = or_disjoint_proof(n, n / 2, false);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        ck("H4", &p, &s);
+        println!("SCALE-H4 n={n}: build {built:?}, check {:?}", t1.elapsed());
     }
 }
