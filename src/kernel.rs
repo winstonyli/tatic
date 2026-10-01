@@ -684,7 +684,14 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
                     let k = INTERNAL.with(|c| c.get());
                     let internal = (0..k).any(|i| is_var_free(arg, i));
                     let cost = WALKS.with(|w| w[1].get()) - v0;
+                    // Slots 15/16: distinct (argument, depth) pairs within one `def_eq` and the shift
+                    // visits they cost, i.e. what a per-query shift memo would still pay.
+                    let fresh = SEEN.with(|m| m.borrow_mut().insert((arg as *const Expr, d)));
                     WALKS.with(|w| {
+                        if fresh {
+                            w[15].set(w[15].get() + 1);
+                            w[16].set(w[16].get() + cost);
+                        }
                         w[9].set(w[9].get() + cost);
                         let (n, c) = if internal { (10, 12) } else { (11, 13) };
                         w[n].set(w[n].get() + 1);
@@ -692,6 +699,58 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
                     });
                 }
                 r
+            } else {
+                Expr::Var(*k)
+            }
+        }
+        Expr::Sort(i) => Expr::Sort(*i),
+        Expr::Const(l) => Expr::Const(*l),
+        Expr::Free(l) => Expr::Free(*l),
+        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
+        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
+        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
+        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
+        Expr::Refl(a) => Expr::Refl(go(a, d)),
+        Expr::J { motive, base, a, b, p } => Expr::J { motive: go(motive, d), base: go(base, d), a: go(a, d), b: go(b, d), p: go(p, d) },
+        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
+        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
+        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
+            motive: go(motive, d),
+            children_ty: go(children_ty, d + 1),
+            step: go(step, d),
+            target: go(target, d),
+        },
+        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
+        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
+        Expr::SigRec { motive, step, target } => Expr::SigRec { motive: go(motive, d), step: go(step, d), target: go(target, d) },
+    })
+}
+
+#[cfg(feature = "record-defeq")]
+fn instantiate_memo(e: &Expr, args: &[&Expr], d: u32, memo: &std::cell::RefCell<HashMap<(*const Expr, u32), Rc<Expr>>>) -> Expr {
+    if loose_of(e) <= d {
+        return e.clone();
+    }
+    walk_count(0);
+    let m = args.len() as u32;
+    let go = |x: &Rc<Expr>, d: u32| {
+        if x.loose() <= d {
+            return x.clone();
+        }
+        let key = (Rc::as_ptr(x), d);
+        if let Some(r) = memo.borrow().get(&key) {
+            return r.clone();
+        }
+        let r = Rc::new(instantiate_memo(x, args, d, memo));
+        memo.borrow_mut().insert(key, r.clone());
+        r
+    };
+    grow(|| match e {
+        Expr::Var(k) => {
+            if *k >= d + m {
+                Expr::Var(*k - m)
+            } else if *k >= d {
+                shift(args[(m - 1 - (*k - d)) as usize], 0, d as i32)
             } else {
                 Expr::Var(*k)
             }
@@ -1097,6 +1156,8 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
 /// `a`/`b` reference overlapping subterms, which two sides of a proof
 /// obligation very often do (the same postulates, the same sub-witnesses).
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
+    #[cfg(feature = "record-defeq")]
+    SEEN.with(|m| m.borrow_mut().clear());
     conv(a, b, &mut ReductionCache::default())
 }
 
@@ -1610,7 +1671,11 @@ thread_local! {
 // `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static WALKS: [std::cell::Cell<u64>; 15] = const { [const { std::cell::Cell::new(0) }; 15] };
+    static WALKS: [std::cell::Cell<u64>; 17] = const { [const { std::cell::Cell::new(0) }; 17] };
+}
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static SEEN: std::cell::RefCell<HashSet<(*const Expr, u32)>> = std::cell::RefCell::new(HashSet::new());
 }
 #[cfg(feature = "record-defeq")]
 thread_local! {
@@ -1625,8 +1690,27 @@ fn walk_count(i: usize) {
 #[inline(always)]
 fn walk_count(_: usize) {}
 #[cfg(feature = "record-defeq")]
-pub fn take_walk_counts() -> [u64; 15] {
+pub fn take_walk_counts() -> [u64; 17] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
+}
+
+/// Probe for option C: `e` with each of its first `depth` free variables replaced by a distinct
+/// `Free`, so a comparison afterwards works on closed terms.
+#[cfg(feature = "record-defeq")]
+pub fn rename_context_to_frees(e: &Expr, depth: u32) -> Expr {
+    let frees: Vec<Expr> = (0..depth).map(Expr::Free).collect();
+    let refs: Vec<&Expr> = frees.iter().collect();
+    instantiate_n(e, &refs, 0)
+}
+
+/// `rename_context_to_frees` for a pair of sides sharing one pointer-keyed memo, so a node reached
+/// twice is renamed once.
+#[cfg(feature = "record-defeq")]
+pub fn rename_pair_memo(a: &Expr, b: &Expr, depth: u32) -> (Expr, Expr) {
+    let frees: Vec<Expr> = (0..depth).map(Expr::Free).collect();
+    let refs: Vec<&Expr> = frees.iter().collect();
+    let memo = std::cell::RefCell::new(HashMap::new());
+    (instantiate_memo(a, &refs, 0, &memo), instantiate_memo(b, &refs, 0, &memo))
 }
 
 /// Beta steps `whnf_step` took since the last call.

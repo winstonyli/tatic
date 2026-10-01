@@ -576,6 +576,27 @@ fn walk_counts_on_hard_queries() {
             take_beta_count(),
             w[0], w[1], w[2], w[3], w[4]
         );
+        // Option C probe: rename the context to Frees, then compare.
+        let _ = take_walk_counts();
+        let t1 = Instant::now();
+        let mut rename_visits = 0;
+        let mut renamed = Vec::new();
+        for (a, b, c) in &hard {
+            let (ra, rb) = rename_pair_memo(a, b, *c);
+            renamed.push((ra, rb));
+        }
+        let rw = take_walk_counts();
+        rename_visits += rw[0];
+        let t_rename = t1.elapsed();
+        let t2 = Instant::now();
+        for (ra, rb) in &renamed {
+            assert!(def_eq(ra, rb));
+        }
+        let cw = take_walk_counts();
+        println!(
+            "RENAME n={n}: rename {t_rename:?} ({rename_visits} visits); then def_eq {:?} instantiate={} shift={} eq={} conv_whnf={} (plain: instantiate={} shift={} eq={})",
+            t2.elapsed(), cw[0], cw[1], cw[2], cw[3], w[0], w[1], w[2]
+        );
         println!(
             "PROBE n={n}: uses={} depth0={} deeper-closed={} deeper-loose={} shift visits from deeper-loose={} of {}",
             w[5], w[6], w[7], w[8], w[9], w[1]
@@ -583,6 +604,10 @@ fn walk_counts_on_hard_queries() {
         println!(
             "PROBE2 n={n}: conv binders opened={}; deeper-loose uses internal={} ctx-only={}; shift visits internal={} ctx-only={}",
             w[14], w[10], w[11], w[12], w[13]
+        );
+        println!(
+            "PROBE3 n={n}: distinct (arg,depth) shifts per def_eq={} of {}; their shift visits={} of {}",
+            w[15], w[8], w[16], w[1]
         );
     }
 }
