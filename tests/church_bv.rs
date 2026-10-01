@@ -764,6 +764,13 @@ fn profile_scoped(n: usize) {
     ck("profile scoped", &proof, &stmt);
 }
 
+/// As `profile_scoped_n512`, on a thread with a 1 GiB stack, so `grow` never needs a new segment.
+#[test]
+#[ignore]
+fn profile_scoped_n512_big_stack() {
+    std::thread::Builder::new().stack_size(1 << 30).spawn(|| profile_scoped(512)).unwrap().join().unwrap();
+}
+
 #[test]
 #[ignore]
 fn profile_scoped_n256() {
