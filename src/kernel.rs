@@ -60,6 +60,13 @@ impl Rc<Expr> {
         Rc(std::rc::Rc::new(Node { loose: loose_of(&e), free: free_of(&e), val: e }))
     }
 
+    /// As [`Rc::new`] with the ranges supplied by the caller, who must
+    /// know them to equal `loose_of(&e)` and `free_of(&e)`.
+    fn with_ranges(e: Expr, loose: u32, free: u32) -> Self {
+        debug_assert!(loose == loose_of(&e) && free == free_of(&e));
+        Rc(std::rc::Rc::new(Node { loose, free, val: e }))
+    }
+
     /// One more than the largest loose `Var` index in this node, 0 when
     /// it's closed (saturating at `u32::MAX`, as [`loose_of`]).
     pub fn loose(&self) -> u32 {
@@ -563,6 +570,12 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     if amount == 0 || loose_of(e) <= cutoff {
         return e.clone();
     }
+    shift_unchecked(e, cutoff, amount)
+}
+
+/// `shift` for an `e` already known to have a loose variable at or above
+/// `cutoff` (and `amount != 0`).
+fn shift_unchecked(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     walk_count(1);
     let go = |x: &Rc<Expr>, c: u32| shift_child(x, c, amount);
     grow(|| match e {
@@ -602,7 +615,17 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 
 /// `shift` of one child: the same `Rc` when it has nothing to shift.
 fn shift_child(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Rc<Expr> {
-    if x.loose() <= cutoff { x.clone() } else { Rc::new(shift(x, cutoff, amount)) }
+    if x.loose() <= cutoff {
+        return x.clone();
+    }
+    let e = shift_unchecked(x, cutoff, amount);
+    // The largest loose variable sat at or above `cutoff`, so it moves by
+    // exactly `amount`; `Free` levels don't change. (Saturated ranges
+    // are recomputed.)
+    match x.loose() {
+        u32::MAX => Rc::new(e),
+        l => Rc::with_ranges(e, (l as i64 + amount as i64) as u32, x.free()),
+    }
 }
 
 /// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
