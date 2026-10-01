@@ -153,16 +153,30 @@ mod hc_probe {
     use std::cell::{Cell, RefCell};
     use std::hash::{Hash, Hasher};
 
+    /// Repeat statistics per kind of operation: 0 `instantiate_n`, 1 `shift`, 2 `whnf_step`, 3
+    /// `conv_whnf`.
+    pub const KINDS: usize = 4;
+
     thread_local! {
         static TABLE: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
         /// 0 nodes built, 1 of them new to the table.
         static BUILT: [Cell<u64>; 2] = const { [const { Cell::new(0) }; 2] };
-        static INST_SEEN: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
-        /// 0 non-trivial calls, 1 maximal repeated calls, 2 visits inside them, 3 visits in all calls
-        /// at depth 0, 4 depth-0 calls, 5 depth-0 repeats, 6 visits inside depth-0 repeats.
-        static INST: [Cell<u64>; 8] = const { [const { Cell::new(0) }; 8] };
-        static DEPTH: Cell<u32> = const { Cell::new(0) };
-        static IN_REPEAT: Cell<bool> = const { Cell::new(false) };
+        static SEEN: RefCell<[HashSet<u64>; KINDS]> = RefCell::new(Default::default());
+        /// Per kind: 0 calls, 1 maximal repeated calls, 2 work inside them, 3 work in all depth-0
+        /// calls, 4 depth-0 calls, 5 depth-0 repeats, 6 work inside depth-0 repeats.
+        static STATS: [[Cell<u64>; 8]; KINDS] = const { [const { [const { Cell::new(0) }; 8] }; KINDS] };
+        static DEPTH: [Cell<u32>; KINDS] = const { [const { Cell::new(0) }; KINDS] };
+        static IN_REPEAT: [Cell<bool>; KINDS] = const { [const { Cell::new(false) }; KINDS] };
+    }
+
+    /// Work done so far, for the kind: its own walk's visits for `instantiate_n` and `shift`, the
+    /// sum of all three walks for the others.
+    fn work(kind: usize) -> u64 {
+        WALKS.with(|w| match kind {
+            0 => w[0].get(),
+            1 => w[1].get(),
+            _ => w[0].get() + w[1].get() + w[2].get(),
+        })
     }
 
     fn structure_hash(e: &Expr) -> u64 {
@@ -208,31 +222,26 @@ mod hc_probe {
         BUILT.with(|b| (b[0].replace(0), b[1].replace(0)))
     }
 
-    pub fn take_inst() -> [u64; 8] {
-        INST.with(|c| std::array::from_fn(|i| c[i].replace(0)))
+    pub fn take_inst() -> [[u64; 8]; KINDS] {
+        STATS.with(|c| std::array::from_fn(|k| std::array::from_fn(|i| c[k][i].replace(0))))
     }
 
-    /// Guard for one `instantiate_n` call: notes whether the same (term, arguments, depth) was
-    /// instantiated before, and the visits a memo hit would have skipped.
-    pub struct InstGuard {
+    /// Guard for one call of kind `kind`: notes whether the same key was seen before, and the work a
+    /// memo hit would have skipped.
+    pub struct Guard {
+        kind: usize,
         v0: u64,
         repeat: bool,
         outer_repeat: bool,
         top: bool,
     }
 
-    pub fn inst_enter(e: &Expr, args: &[&Expr], d: u32) -> InstGuard {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        id_of(e, false).hash(&mut h);
-        for a in args {
-            id_of(a, false).hash(&mut h);
-        }
-        d.hash(&mut h);
-        let key = h.finish();
-        let repeat = !INST_SEEN.with(|s| s.borrow_mut().insert(key));
-        let top = DEPTH.with(|c| c.replace(c.get() + 1)) == 0;
-        let outer_repeat = IN_REPEAT.with(|c| c.replace(c.get() || repeat));
-        INST.with(|c| {
+    fn start(kind: usize, key: u64) -> Guard {
+        let repeat = !SEEN.with(|s| s.borrow_mut()[kind].insert(key));
+        let top = DEPTH.with(|c| c[kind].replace(c[kind].get() + 1)) == 0;
+        let outer_repeat = IN_REPEAT.with(|c| c[kind].replace(c[kind].get() || repeat));
+        STATS.with(|c| {
+            let c = &c[kind];
             c[0].set(c[0].get() + 1);
             if top {
                 c[4].set(c[4].get() + 1);
@@ -244,15 +253,17 @@ mod hc_probe {
                 c[5].set(c[5].get() + 1);
             }
         });
-        InstGuard { v0: WALKS.with(|w| w[0].get()), repeat, outer_repeat, top }
+        Guard { kind, v0: work(kind), repeat, outer_repeat, top }
     }
 
-    impl Drop for InstGuard {
+    impl Drop for Guard {
         fn drop(&mut self) {
-            let visits = WALKS.with(|w| w[0].get()) - self.v0;
-            DEPTH.with(|c| c.set(c.get() - 1));
-            IN_REPEAT.with(|c| c.set(self.outer_repeat));
-            INST.with(|c| {
+            let visits = work(self.kind) - self.v0;
+            let k = self.kind;
+            DEPTH.with(|c| c[k].set(c[k].get() - 1));
+            IN_REPEAT.with(|c| c[k].set(self.outer_repeat));
+            STATS.with(|c| {
+                let c = &c[k];
                 if self.repeat && !self.outer_repeat {
                     c[2].set(c[2].get() + visits);
                 }
@@ -264,6 +275,34 @@ mod hc_probe {
                 }
             });
         }
+    }
+
+    pub fn inst_enter(e: &Expr, args: &[&Expr], d: u32) -> Guard {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        id_of(e, false).hash(&mut h);
+        for a in args {
+            id_of(a, false).hash(&mut h);
+        }
+        d.hash(&mut h);
+        start(0, h.finish())
+    }
+
+    pub fn shift_enter(e: &Expr, cutoff: u32, amount: i32) -> Guard {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        id_of(e, false).hash(&mut h);
+        (cutoff, amount).hash(&mut h);
+        start(1, h.finish())
+    }
+
+    pub fn whnf_enter(e: &Expr) -> Guard {
+        start(2, id_of(e, false))
+    }
+
+    pub fn conv_enter(x: &Expr, y: &Expr) -> Guard {
+        let (a, b) = (id_of(x, false), id_of(y, false));
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (a.min(b), a.max(b)).hash(&mut h);
+        start(3, h.finish())
     }
 }
 
@@ -730,6 +769,8 @@ fn shift_unchecked(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// `shift_unchecked` with the shifting of each child done by `go`, which gets the child and the
 /// cutoff for it.
 fn shift_via(e: &Expr, cutoff: u32, amount: i32, go: &impl Fn(&Rc<Expr>, u32) -> Rc<Expr>) -> Expr {
+    #[cfg(feature = "record-defeq")]
+    let _hc_guard = hc_probe::shift_enter(e, cutoff, amount);
     walk_count(1);
     grow(|| match e {
         Expr::Var(k) => {
@@ -1300,6 +1341,8 @@ fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
 /// and each level of a stuck spine then reduced the whole spine below it
 /// again (`RELATED_WORK.md` §48, §59).
 fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
+    #[cfg(feature = "record-defeq")]
+    let _hc_guard = hc_probe::whnf_enter(e);
     grow(|| match e {
         Expr::App(f, a) => {
             if matches!(&**f, Expr::App(..))
@@ -1523,6 +1566,8 @@ fn conv_rc(a: &Rc<Expr>, b: &Rc<Expr>, cache: &mut ReductionCache) -> bool {
 /// Compares two weak head normal forms: same constructor, then `conv` on
 /// each pair of children, in the order `nf_impl` visits them.
 fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
+    #[cfg(feature = "record-defeq")]
+    let _hc_guard = hc_probe::conv_enter(x, y);
     walk_count(3);
     #[cfg(feature = "record-defeq")]
     {

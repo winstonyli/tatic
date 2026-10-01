@@ -609,7 +609,10 @@ fn walk_counts_on_hard_queries() {
             let (built, new) = tatic::kernel::take_hc_built();
             let i = tatic::kernel::take_hc_inst();
             println!("HC n={n}: nodes built in the check={built}, of which structurally new={new} ({:.1}% would be intern hits)", 100.0 * (built - new) as f64 / built.max(1) as f64);
-            println!("INST-MEMO n={n}: non-trivial calls={} maximal repeated calls={} visits skipped by a global memo={} of {} visits at depth 0 ({:.1}%); depth-0 calls={} repeats={} visits in them={}", i[0], i[1], i[2], i[3], 100.0 * i[2] as f64 / i[3].max(1) as f64, i[4], i[5], i[6]);
+            for (k, name) in ["instantiate", "shift", "whnf_step", "conv_whnf"].iter().enumerate() {
+                let c = i[k];
+                println!("REPEAT n={n} {name}: calls={} maximal repeated calls={} work skipped by a global memo={} of {} ({:.1}%)", c[0], c[1], c[2], c[3], 100.0 * c[2] as f64 / c[3].max(1) as f64);
+            }
         }
         println!("CHECK n={n}: whole check {:?}", tck.elapsed());
         { let (pd, pt) = tatic::kernel::term_sizes(&proof); let (sd, st) = tatic::kernel::term_sizes(&stmt); println!("SIZE n={n}: proof dag={pd} tree={pt}; statement dag={sd} tree={st}"); }
@@ -707,4 +710,54 @@ fn whole_check_time() {
 fn profile_add_zero_n64() {
     let (proof, stmt) = add_zero_proof(64, 0);
     ck("profile n=64", &proof, &stmt);
+}
+
+/// Cost of an intern-table hit against building a node, for the hash-consing design (doc section 59):
+/// 16 million App nodes over a pool of 16k leaves and 64k distinct (child, child) pairs, built fresh
+/// with `Rc::new` against looked up in a pointer-keyed map.
+#[test]
+#[ignore]
+fn intern_lookup_vs_rc_new() {
+    use std::collections::HashMap;
+    use std::hash::{BuildHasherDefault, Hasher};
+    #[derive(Default)]
+    struct Fx(u64);
+    impl Hasher for Fx {
+        fn finish(&self) -> u64 {
+            self.0.rotate_left(26)
+        }
+        fn write(&mut self, _: &[u8]) {
+            unreachable!()
+        }
+        fn write_usize(&mut self, x: usize) {
+            self.0 = (self.0.rotate_left(5) ^ x as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+    use tatic::kernel::Rc;
+    let leaves: Vec<Rc<Expr>> = (0..16384u32).map(|i| Rc::new(Expr::Var(i))).collect();
+    let mut state = 12345u64;
+    let mut next = move || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (state >> 33) as usize
+    };
+    let pairs: Vec<(usize, usize)> = (0..65536).map(|_| (next() % 16384, next() % 16384)).collect();
+    const N: usize = 16_000_000;
+    let mut sink = 0usize;
+    let t = Instant::now();
+    for k in 0..N {
+        let (a, b) = pairs[k & 65535];
+        let node = Rc::new(Expr::App(leaves[a].clone(), leaves[b].clone()));
+        sink += node.loose() as usize;
+    }
+    let build = t.elapsed();
+    let mut table: HashMap<(usize, usize), Rc<Expr>, BuildHasherDefault<Fx>> = HashMap::default();
+    let t = Instant::now();
+    for k in 0..N {
+        let (a, b) = pairs[k & 65535];
+        let key = (Rc::as_ptr(&leaves[a]) as usize, Rc::as_ptr(&leaves[b]) as usize);
+        let node = table.entry(key).or_insert_with(|| Rc::new(Expr::App(leaves[a].clone(), leaves[b].clone()))).clone();
+        sink += node.loose() as usize;
+    }
+    let intern = t.elapsed();
+    println!("INTERN-BENCH (sink {sink}): {N} builds: Rc::new {:?} ({:.0} ns each), intern lookup {:?} ({:.0} ns each); table entries {}", build, build.as_nanos() as f64 / N as f64, intern, intern.as_nanos() as f64 / N as f64, table.len());
 }
