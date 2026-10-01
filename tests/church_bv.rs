@@ -358,7 +358,7 @@ fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
 #[test]
 #[ignore]
 fn add_zero_lemma_scaling() {
-    for n in [8usize, 16, 32, 64] {
+    for n in [8usize, 16, 32, 64, 128] {
         let (proof, stmt) = add_zero_proof(n, 0);
         let t0 = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);
@@ -557,7 +557,7 @@ fn replay_defeq_queries() {
 #[test]
 #[ignore]
 fn walk_counts_on_hard_queries() {
-    for n in [8usize, 16, 32] {
+    for n in [8usize, 16, 32, 64] {
         let (proof, stmt) = add_zero_proof(n, 0);
         let _ = take_defeq_log();
         ck(&format!("n={n}"), &proof, &stmt);
