@@ -920,3 +920,96 @@ fn table_lookup_cost_by_size() {
         println!("LOOKUP size={size}: {:.0} ns per hit (sink {s})", d.as_nanos() as f64 / probes.len() as f64);
     }
 }
+
+// ---- Division wrapper obligations (design doc section 5): D3 and the equality test it needs.
+// `div_s` is abstract: only the wrapper's guard is under test, so its result `r = div_s a b` is a
+// variable with a `GoodBv` witness (a Church Bool0 cannot select between Bv values, so the
+// wrapper muxes bitwise with and/or/not).
+
+fn not_(x: Expr) -> Expr {
+    xor(x, t())
+}
+fn mux(c: Expr, x: Expr, y: Expr) -> Expr {
+    or(and(c.clone(), x), and(not_(c), y))
+}
+/// `\a b. a Bool0 (\a_i. b Bool0 (\b_i. and_i xnor(a_i, b_i)))`, closed, of type `Bv_n -> Bv_n -> Bool0`.
+fn eq_bv(n: usize) -> Expr {
+    // ctx [a, b, a_0.., b_0..]: a_i = var(2n-1-i), b_i = var(n-1-i)
+    let mut acc = t();
+    for i in 0..n {
+        acc = and(acc, not_(xor(var((2 * n - 1 - i) as u32), var((n - 1 - i) as u32))));
+    }
+    for _ in 0..n {
+        acc = lam(bool0(), acc);
+    }
+    let mut inner = app2(var(n as u32), bool0(), acc);
+    for _ in 0..n {
+        inner = lam(bool0(), inner);
+    }
+    lam(bv_ty(n), lam(bv_ty(n), app2(var(1), bool0(), inner)))
+}
+/// `wrapping_div`'s result for operands `a`, `b` given the raw quotient `r`: `MIN` when `a = MIN` and
+/// `b = -1`, else `r`, bit by bit.
+fn wrap_div(n: usize, a: Expr, b: Expr, r: Expr) -> Expr {
+    let min = 1u128 << (n - 1);
+    let all = if n == 128 { u128::MAX } else { (1u128 << n) - 1 };
+    let cond = and(app2(eq_bv(n), a, lit(n, min)), app2(eq_bv(n), b, lit(n, all)));
+    // ctx [.., C, k, r_0..]: k = var(n), r_i = var(n-1-i)
+    let outs = (0..n).map(|i| mux(cond.clone(), bit((min >> i) & 1 == 1), var((n - 1 - i) as u32))).collect();
+    let mut body = apps(var(n as u32), outs);
+    for _ in 0..n {
+        body = lam(bool0(), body);
+    }
+    lam(sort(1), lam(karrow(n), app2(shift(&r, 0, 2), var(1), body)))
+}
+/// `(proof, statement)` of `Pi r. GoodBv r -> Id(Bv_n, wrap_div(a, b, r), MIN)`; true for
+/// `a = MIN, b = -1` (D3: `wrapping_div MIN (-1) = MIN`), false (and rejected) for other operands.
+fn wrap_div_min_proof(n: usize, a: u128, b: u128) -> (Expr, Expr) {
+    let min = 1u128 << (n - 1);
+    let body = |r: Expr| id(bv_ty(n), wrap_div(n, lit(n, a), lit(n, b), r), lit(n, min));
+    let mut step = refl(lit(n, min));
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    let motive = lam(bv_ty(n), body(var(0)));
+    let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
+    let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), body(var(0))));
+    (proof, stmt)
+}
+
+#[test]
+fn eq_bv_computes_on_literals() {
+    for n in [1usize, 4, 8] {
+        let ty = pi(bv_ty(n), pi(bv_ty(n), bool0()));
+        ck("eq_bv type", &eq_bv(n), &ty.clone());
+        let mask = (1u128 << n) - 1;
+        for (x, y) in [(0u128, 0u128), (1, 1), (mask, mask), (0, 1), (1, 0), (mask, 0), (0b101 & mask, 0b100 & mask)] {
+            let got = app2(eq_bv(n), lit(n, x), lit(n, y));
+            assert!(def_eq(&got, &bit(x == y)), "eq {x} {y} at n={n}");
+        }
+    }
+}
+
+#[test]
+fn wrapping_div_min_by_minus_one_is_min() {
+    for n in [1usize, 2, 4, 8, 32, 64] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let (min, all) = (1u128 << (n - 1), if n == 128 { u128::MAX } else { (1u128 << n) - 1 });
+        let (p, s) = wrap_div_min_proof(n, min, all);
+        let t0 = Instant::now();
+        ck(&format!("D3 at n={n}"), &p, &s);
+        println!("D3 n={n}: checked in {:?}", t0.elapsed());
+        // The guard must bite: other operands leave `r` alone, so the same proof is rejected.
+        for (a, b) in [(min, all - 1), (min + 1, all), (0, all), (min, 0)] {
+            if n >= 2 || (a, b) != (min, 0) {
+                let (p2, s2) = wrap_div_min_proof(n, a & all, b & all);
+                if (a & all, b & all) != (min, all) {
+                    assert!(check(&Ctx::new(), &p2, &s2).is_err(), "D3 must fail for a={a:#x} b={b:#x} at n={n}");
+                }
+            }
+        }
+    }
+}
