@@ -576,5 +576,9 @@ fn walk_counts_on_hard_queries() {
             take_beta_count(),
             w[0], w[1], w[2], w[3], w[4]
         );
+        println!(
+            "PROBE n={n}: uses={} depth0={} deeper-closed={} deeper-loose={} shift visits from deeper-loose={} of {}",
+            w[5], w[6], w[7], w[8], w[9], w[1]
+        );
     }
 }

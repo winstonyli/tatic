@@ -663,7 +663,25 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
             if *k >= d + m {
                 Expr::Var(*k - m)
             } else if *k >= d {
-                shift(args[(m - 1 - (*k - d)) as usize], 0, d as i32)
+                let arg = args[(m - 1 - (*k - d)) as usize];
+                // Probe slots: 5 uses, 6 at depth 0, 7 deeper with a closed argument, 8 deeper with
+                // loose variables, 9 `shift` visits those last uses cost.
+                walk_count(5);
+                if d == 0 {
+                    walk_count(6);
+                } else if loose_of(arg) == 0 {
+                    walk_count(7);
+                } else {
+                    walk_count(8);
+                }
+                #[cfg(feature = "record-defeq")]
+                let v0 = WALKS.with(|w| w[1].get());
+                let r = shift(arg, 0, d as i32);
+                #[cfg(feature = "record-defeq")]
+                if d > 0 && loose_of(arg) > 0 {
+                    WALKS.with(|w| w[9].set(w[9].get() + w[1].get() - v0));
+                }
+                r
             } else {
                 Expr::Var(*k)
             }
@@ -1553,7 +1571,7 @@ thread_local! {
 // `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static WALKS: [std::cell::Cell<u64>; 5] = const { [const { std::cell::Cell::new(0) }; 5] };
+    static WALKS: [std::cell::Cell<u64>; 10] = const { [const { std::cell::Cell::new(0) }; 10] };
 }
 #[cfg(feature = "record-defeq")]
 #[inline(always)]
@@ -1564,7 +1582,7 @@ fn walk_count(i: usize) {
 #[inline(always)]
 fn walk_count(_: usize) {}
 #[cfg(feature = "record-defeq")]
-pub fn take_walk_counts() -> [u64; 5] {
+pub fn take_walk_counts() -> [u64; 10] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
 }
 
