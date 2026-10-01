@@ -1886,6 +1886,29 @@ impl Drop for SiteGuard {
 fn site(i: usize) -> SiteGuard {
     SiteGuard(SITE.with(|c| c.replace(i)))
 }
+/// (nodes counted once per allocation, nodes counted once per occurrence) in `e`.
+#[cfg(feature = "record-defeq")]
+pub fn term_sizes(e: &Expr) -> (usize, u128) {
+    fn go(e: &Expr, seen: &mut HashMap<*const Expr, u128>) -> u128 {
+        let mut n = 1u128;
+        same_shape(e, e, |p, _| {
+            let k = Rc::as_ptr(p);
+            n += match seen.get(&k) {
+                Some(&t) => t,
+                None => {
+                    let t = go(p, seen);
+                    seen.insert(k, t);
+                    t
+                }
+            };
+            true
+        });
+        n
+    }
+    let mut seen = HashMap::new();
+    let tree = go(e, &mut seen);
+    (seen.len() + 1, tree)
+}
 #[cfg(feature = "record-defeq")]
 pub fn take_site_counts() -> [[u64; 3]; 4] {
     SITES.with(|s| std::array::from_fn(|i| std::array::from_fn(|j| s[i][j].replace(0))))
