@@ -243,6 +243,12 @@ fn add_zero_proof(n: usize, rhs_lit: u128) -> (Expr, Expr) {
 
 /// `left = true` proves `add zero x = x` instead (the literal is the first operand).
 fn add_identity_proof(n: usize, rhs_lit: u128, left: bool) -> (Expr, Expr) {
+    add_identity_proof_over(n, rhs_lit, left, add)
+}
+
+/// Same, with the statement stated over `adder` (`add` or `add_shared`); the proof body is unchanged,
+/// so `adder`'s result must be convertible to the inlined-carry tuple the proof builds.
+fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(usize) -> Expr) -> (Expr, Expr) {
     // `xor(a, false)` with the operands in the order `add` uses them
     let xf = move |a: Expr| if left { xor(f(), a) } else { xor(a, f()) };
     let carry = move |a: Expr, c: Expr| {
@@ -308,7 +314,7 @@ fn add_identity_proof(n: usize, rhs_lit: u128, left: bool) -> (Expr, Expr) {
         step = lam(bool0(), step);
     }
     let rhs = lit(n, rhs_lit);
-    let sum = |x: Expr, r: Expr| if left { app2(add(n), r, x) } else { app2(add(n), x, r) };
+    let sum = |x: Expr, r: Expr| if left { app2(adder(n), r, x) } else { app2(adder(n), x, r) };
     let motive = lam(bv_ty(n), id(bv_ty(n), sum(var(0), rhs.clone()), var(0)));
     let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
     let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), id(bv_ty(n), sum(var(0), rhs), var(0))));
@@ -489,5 +495,29 @@ fn add_comm_scaling() {
         let t0 = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);
         println!("COMM-SCALE n={n}: {:?}", t0.elapsed());
+    }
+}
+
+/// Probe: `add_shared x 0 = x` (carries let-bound in the statement), original `add` kept alongside.
+#[test]
+fn add_shared_zero_is_the_identity_on_a_symbolic_good_vector() {
+    for n in [1usize, 2, 4, 8] {
+        let (proof, stmt) = add_identity_proof_over(n, 0, false, add_shared);
+        let t0 = Instant::now();
+        ck(&format!("add_shared x 0 = x at n={n}"), &proof, &stmt);
+        println!("SHARED n={n}: checked in {:?}", t0.elapsed());
+        let (p1, s1) = add_identity_proof_over(n, 1, false, add_shared);
+        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "add_shared x 1 = x must be rejected at n={n}");
+    }
+}
+
+#[test]
+#[ignore]
+fn add_shared_zero_scaling() {
+    for n in [8usize, 16, 32] {
+        let (proof, stmt) = add_identity_proof_over(n, 0, false, add_shared);
+        let t0 = Instant::now();
+        ck(&format!("n={n}"), &proof, &stmt);
+        println!("SHARED-SCALE n={n}: {:?}", t0.elapsed());
     }
 }
