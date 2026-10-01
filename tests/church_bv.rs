@@ -805,3 +805,33 @@ fn intern_lookup_vs_rc_new() {
     let intern = t.elapsed();
     println!("INTERN-BENCH (sink {sink}): {N} builds: Rc::new {:?} ({:.0} ns each), intern lookup {:?} ({:.0} ns each); table entries {}", build, build.as_nanos() as f64 / N as f64, intern, intern.as_nanos() as f64 / N as f64, table.len());
 }
+
+/// Cost of a lookup in a pointer-keyed table against the table's size (design doc section 72):
+/// random hits in a `hashbrown` map whose entries are 40 bytes, like the instantiate memo's.
+#[test]
+#[ignore]
+fn table_lookup_cost_by_size() {
+    use hashbrown::HashMap;
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for size in [1usize << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22] {
+        let mut m: HashMap<(usize, u64, u32), (usize, usize)> = HashMap::default();
+        let keys: Vec<(usize, u64, u32)> = (0..size).map(|_| (next() as usize, next(), 0)).collect();
+        for k in &keys {
+            m.insert(*k, (1, 2));
+        }
+        let probes: Vec<usize> = (0..2_000_000).map(|_| next() as usize % size).collect();
+        let t = Instant::now();
+        let mut s = 0usize;
+        for &i in &probes {
+            s += m.get(&keys[i]).unwrap().0;
+        }
+        let d = t.elapsed();
+        println!("LOOKUP size={size}: {:.0} ns per hit (sink {s})", d.as_nanos() as f64 / probes.len() as f64);
+    }
+}
