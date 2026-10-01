@@ -1816,6 +1816,162 @@ fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
     }
 }
 
+// ---- Rewriting with proven lemmas (search note section 10). An `add` conjecture is simplified on both sides by
+// the library lemmas `add a 0 = a`, `add 0 a = a` and `add a b = add b a` (the last used to order the operands),
+// each rewrite justified by `cong_n` on the enclosing operator and chained with `trans_proof`; if the two
+// results are then equal, or both add-free, `bitwise_law` closes the gap.
+
+/// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
+fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
+    let all = (1u128 << n) - 1;
+    match t {
+        Term::V(i) => goods[*i].clone(),
+        Term::Zero => (lit(n, 0), good_lit(n, 0)),
+        Term::Ones => (lit(n, all), good_lit(n, all)),
+        Term::Op(o, a, b) => {
+            let ((av, aw), (bv, bw)) = (witnessed(a, n, goods), witnessed(b, n, goods));
+            let (op, good_op) = match o {
+                0 => (add(n), good_add(n).0),
+                _ => {
+                    let o = *o;
+                    let opf = move |p: Expr, q: Expr| match o {
+                        1 => and(p, q),
+                        2 => or(p, q),
+                        _ => xor(p, q),
+                    };
+                    let (g, _) = match o {
+                        1 => good2(&|p, q| and(p, q), &|p, q| p && q),
+                        2 => good2(&|p, q| or(p, q), &|p, q| p || q),
+                        _ => good2(&|p, q| xor(p, q), &|p, q| p != q),
+                    };
+                    let vec = bitwise(n, &opf);
+                    let (gp, _) = good_vec(n, vec.clone(), &move |a, b, ga, gb| {
+                        let s = (0..n).map(|i| opf(a[i].clone(), b[i].clone())).collect();
+                        let gs = (0..n).map(|i| apps(g.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()])).collect();
+                        (s, gs)
+                    });
+                    (vec, gp)
+                }
+            };
+            (app2(op.clone(), av.clone(), bv.clone()), apps(good_op, vec![av, bv, aw, bw]))
+        }
+    }
+}
+
+/// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`.
+fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
+    let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
+    let ev = |t: &Term| t.eval(ops, n, &vals);
+    let Term::Op(o, a, b) = t else { return (t.clone(), refl(ev(t))) };
+    let ((a2, pa), (b2, pb)) = (rewrite(a, n, ops, goods), rewrite(b, n, ops, goods));
+    let cong = cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa, pb]);
+    let t1 = Term::Op(*o, Box::new(a2.clone()), Box::new(b2.clone()));
+    if *o != 0 {
+        return (t1, cong);
+    }
+    let (av, aw) = witnessed(&a2, n, goods);
+    let (bv, bw) = witnessed(&b2, n, goods);
+    let step = if matches!(b2, Term::Zero) {
+        Some((a2.clone(), app2(add_identity_proof(n, 0, false).0, av, aw)))
+    } else if matches!(a2, Term::Zero) {
+        Some((b2.clone(), app2(add_identity_proof(n, 0, true).0, bv, bw)))
+    } else if b2.show() < a2.show() {
+        Some((Term::Op(0, Box::new(b2.clone()), Box::new(a2.clone())), apps(add_comm_proof(n, false).0, vec![av, bv, aw, bw])))
+    } else {
+        None
+    };
+    match step {
+        None => (t1, cong),
+        Some((t2, p)) => {
+            let proof = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&t2), cong, p);
+            (t2, proof)
+        }
+    }
+}
+
+/// `t` with each variable and each `add` subterm replaced by an atom variable (up to two, by `show`).
+fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>) -> Option<Term> {
+    match t {
+        Term::Zero | Term::Ones => Some(t.clone()),
+        Term::V(_) | Term::Op(0, ..) => {
+            let i = match atoms.iter().position(|a| a.show() == t.show()) {
+                Some(i) => i,
+                None => {
+                    atoms.push(t.clone());
+                    atoms.len() - 1
+                }
+            };
+            (i < 2).then(|| Term::V(i))
+        }
+        Term::Op(o, a, b) => Some(Term::Op(*o, Box::new(abstract_atoms(a, atoms)?), Box::new(abstract_atoms(b, atoms)?))),
+    }
+}
+
+/// Proof of `Id(Bv_n, a, b)` in context `[x, y, gx, gy]` for rewritten terms: `refl`; the bitwise law over atoms
+/// (when it holds on all four bit values, so the kernel check cannot fail); or, for two sums, `cong_n` on
+/// proofs for their operands. `None` otherwise.
+fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
+    let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
+    let ev = |t: &Term| t.eval(ops, n, &vals);
+    if a.show() == b.show() {
+        return Some(refl(ev(a)));
+    }
+    let mut atoms = vec![];
+    if let (Some(a1), Some(a2)) = (abstract_atoms(a, &mut atoms), abstract_atoms(b, &mut atoms)) {
+        let holds = (0..4).all(|m| {
+            let bits = [bit(m & 1 == 1), bit(m & 2 == 2)];
+            let truth = |t: &Term| normalize(&t.bit(&bits));
+            truth(&a1) == truth(&a2)
+        });
+        if holds {
+            let w: Vec<(Expr, Expr)> = (0..2).map(|i| atoms.get(i).map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
+            return Some(apps(bitwise_law(n, &a1, &a2).0, vec![w[0].0.clone(), w[1].0.clone(), w[0].1.clone(), w[1].1.clone()]));
+        }
+    }
+    if let (Term::Op(0, a1, a2), Term::Op(0, b1, b2)) = (a, b) {
+        let (p1, p2) = (prove_eq(n, ops, goods, a1, b1)?, prove_eq(n, ops, goods, a2, b2)?);
+        return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[0], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
+    }
+    None
+}
+
+/// Proof of `t1 = t2` over two good vectors by rewriting both sides and closing with `prove_eq`; `None` when
+/// that cannot.
+fn rewrite_law(n: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
+    let ops = [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b))];
+    let goods = [(var(3), var(1)), (var(2), var(0))];
+    let vals = [var(3), var(2)];
+    let (r1, p1) = rewrite(t1, n, &ops, &goods);
+    let (r2, p2) = rewrite(t2, n, &ops, &goods);
+    let ev = |t: &Term| t.eval(&ops, n, &vals);
+    let bv = bv_ty(n);
+    let mid = prove_eq(n, &ops, &goods, &r1, &r2)?;
+    let to_r2 = trans_proof(&bv, &ev(t1), &ev(&r1), &ev(&r2), p1, mid);
+    let body = trans_proof(&bv, &ev(t1), &ev(&r2), &ev(t2), to_r2, sym(&bv, &ev(t2), &ev(&r2), p2));
+    let proof = lam(bv.clone(), lam(bv.clone(), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)), body))));
+    let claim = id(bv.clone(), ev(t1), ev(t2));
+    let stmt = pi(bv.clone(), pi(bv.clone(), pi(app(good_bv(n), var(1)), pi(app(good_bv(n), var(1)), claim))));
+    Some((proof, stmt))
+}
+
+#[test]
+fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
+    let v = |i: usize| Term::V(i);
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let n = 4;
+    for (name, t1, t2) in [
+        ("or (add x 0) y = or y x", op(2, op(0, v(0), Term::Zero), v(1)), op(2, v(1), v(0))),
+        ("xor (add x y) y = xor y (add y x)", op(3, op(0, v(0), v(1)), v(1)), op(3, v(1), op(0, v(1), v(0)))),
+        ("add (and x y) y = add y (and y x)", op(0, op(1, v(0), v(1)), v(1)), op(0, v(1), op(1, v(1), v(0)))),
+    ] {
+        let (p, s) = rewrite_law(n, &t1, &t2).unwrap_or_else(|| panic!("{name}: no rewrite proof"));
+        ck(name, &p, &s);
+    }
+    // a false law is refused by the truth-table pre-check, and an unprovable true one (associativity) by lack of a rule
+    assert!(rewrite_law(n, &op(0, v(0), v(1)), &op(0, v(0), v(0))).is_none());
+    assert!(rewrite_law(n, &op(0, op(0, v(0), v(1)), v(1)), &op(0, v(0), op(0, v(1), v(1)))).is_none());
+}
+
 /// Mine at width `MINER_N` (default 4) over `MINER_VARS` variables (default 2), `MINER_DEEP=1` for terms two
 /// operators deep. Prints the classes, then tries every conjecture over x, y with the generic builder.
 #[test]
@@ -1835,6 +1991,7 @@ fn conjecture_miner() {
     let show = std::env::var("MINER_SHOW").is_ok();
     // Every conjecture (class representative = shortest term) over x, y, by what can check it.
     let (mut by_builder, mut rejected, mut needs_add, mut needs_z) = (0, vec![], vec![], 0);
+    let (mut by_rewrite, mut rewrite_bugs) = (0, vec![]);
     let t1 = Instant::now();
     for c in classes.values().filter(|c| c.len() > 1) {
         let mut members: Vec<&Term> = c.iter().map(|&i| &ts[i]).collect();
@@ -1847,7 +2004,11 @@ fn conjecture_miner() {
             if members[0].max_var().max(other.max_var()) > 1 {
                 needs_z += 1;
             } else if members[0].uses_add() || other.uses_add() {
-                needs_add.push(law);
+                match rewrite_law(n, members[0], other) {
+                    Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_rewrite += 1,
+                    Some(_) => rewrite_bugs.push(law),
+                    None => needs_add.push(law),
+                }
             } else {
                 let (p, s) = bitwise_law(n, members[0], other);
                 if check(&Ctx::new(), &p, &s).is_ok() {
@@ -1859,7 +2020,8 @@ fn conjecture_miner() {
         }
     }
     println!("MINER generic builder: {by_builder} proved, {} rejected {rejected:?}, in {:?}", rejected.len(), t1.elapsed());
-    println!("MINER no builder: {} need `add`, {needs_z} use a third variable", needs_add.len());
+    println!("MINER rewrite: {by_rewrite} proved, {} failed to check {:?}", rewrite_bugs.len(), &rewrite_bugs[..rewrite_bugs.len().min(5)]);
+    println!("MINER no builder: {} still need `add`, {needs_z} use a third variable", needs_add.len());
     for law in needs_add.iter().take(12) {
         println!("  needs add: {law}");
     }
