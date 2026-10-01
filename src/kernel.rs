@@ -928,6 +928,9 @@ mod hc {
         /// (source node, argument-set id, depth) -> (the source, kept alive; its instantiation).
         inst: PtrMap<(usize, u64, u32), (Rc<Expr>, Rc<Expr>)>,
         shifts: PtrMap<(usize, u32, i32), (Rc<Expr>, Rc<Expr>)>,
+        /// (node, depth, argument count) -> (the node, kept alive; whether it has a loose `Var` in
+        /// `[depth, depth + count)`).
+        uses: PtrMap<(usize, u32, u32), (Rc<Expr>, bool)>,
         /// Argument sets of two or more nodes, by their node pointers.
         arg_sets: HashMap<Vec<usize>, u64>,
     }
@@ -1137,6 +1140,41 @@ mod hc {
         (a, b)
     }
 
+    /// Whether `x` mentions a loose `Var` in `[d, d + m)`, i.e. whether instantiating `m` arguments
+    /// at depth `d` can put any of them in. When it cannot, the result is `x` shifted down by `m`
+    /// above `d + m`, whatever the arguments are. Memoised per (node, depth, count): at n=256 99% of
+    /// the memo entries keyed by argument list were for such nodes (doc section 64).
+    pub fn uses(x: &Rc<Expr>, d: u32, m: u32) -> bool {
+        if x.loose() <= d {
+            return false;
+        }
+        if let Expr::Var(k) = &**x {
+            return *k < d + m;
+        }
+        let key = (Rc::as_ptr(x) as usize, d, m);
+        if let Some(r) = TABLE.with(|t| t.borrow().uses.get(&key).map(|(_, r)| *r)) {
+            return r;
+        }
+        let r = grow(|| {
+            let mut found = false;
+            let mut i = 0;
+            for_kids(x, |c| {
+                // Index of the child among its parent's, and whether that child sits under a binder.
+                let under = match &**x {
+                    Expr::Pi(..) | Expr::Lam(..) | Expr::W(..) | Expr::Sigma(..) => i == 1,
+                    Expr::WRec { .. } => i == 1,
+                    Expr::Pair(..) => i == 0,
+                    _ => false,
+                };
+                i += 1;
+                found = found || uses(c, d + under as u32, m);
+            });
+            found
+        });
+        TABLE.with(|t| t.borrow_mut().uses.insert(key, (x.clone(), r)));
+        r
+    }
+
     /// An id for the argument list: the interned node's address for one argument (even), an
     /// odd table id for several; 0 while the table is off (which it leaves after `WARM_UP` calls).
     pub fn args_id(args: &[&Expr]) -> u64 {
@@ -1217,6 +1255,10 @@ mod hc {
         (e.clone(), expected.clone())
     }
     #[inline(always)]
+    pub fn uses(_: &Rc<Expr>, _: u32, _: u32) -> bool {
+        true
+    }
+    #[inline(always)]
     pub fn args_id(_: &[&Expr]) -> u64 {
         0
     }
@@ -1278,6 +1320,9 @@ fn inst_rec(e: &Expr, args: &[&Expr], aid: u64, d: u32) -> Expr {
     let go = |x: &Rc<Expr>, d: u32| {
         if x.loose() <= d {
             return x.clone();
+        }
+        if aid != 0 && x.loose() != u32::MAX && !hc::uses(x, d, m) {
+            return shift_child(x, d + m, -(m as i32));
         }
         if let Some(r) = hc::inst_get(x, aid, d) {
             return r;
