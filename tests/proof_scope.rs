@@ -45,3 +45,31 @@ fn universal_proof_with_and_without_a_scope() {
         }
     }
 }
+
+/// How much a real proof repeats itself: distinct allocations against occurrences, unscoped and
+/// built inside an `InternScope` (design doc section 80). A large ratio is what makes the scope pay.
+#[test]
+#[ignore]
+fn real_proofs_dag_against_tree_size() {
+    type Build = fn(&mut TermStore) -> tatic::term::Hash;
+    let programs: [(&str, Build); 4] = [
+        ("factorial", common::factorial),
+        ("fib", common::fib),
+        ("gcd", common::gcd),
+        ("gcd_3_leaves", common::gcd_with_two_base_cases),
+    ];
+    for (name, build) in programs {
+        let mut s = TermStore::new();
+        let h = build(&mut s);
+        let sizes = |scoped: bool| {
+            let _scope = scoped.then(InternScope::enter);
+            prove_tail_recursive_universal(&s, h).map(|p| kernel::term_sizes(&p.theorem_proof))
+        };
+        match (sizes(false), sizes(true)) {
+            (Some((d0, t0)), Some((d1, _))) => {
+                println!("REAL-SHARING {name}: tree {t0} nodes, distinct unscoped {d0} ({:.1}x), scoped {d1} ({:.1}x)", t0 as f64 / d0 as f64, t0 as f64 / d1 as f64)
+            }
+            _ => println!("REAL-SHARING {name}: no universal proof"),
+        }
+    }
+}
