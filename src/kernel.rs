@@ -942,6 +942,8 @@ fn whnf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Rc<Expr> {
     if let Some(hit) = cache.whnf.get(&key) {
         return hit.clone();
     }
+    #[cfg(feature = "record-defeq")]
+    struct_probe(e);
     let result = whnf_step(e, cache).map_or_else(|| e.clone(), Rc::new);
     cache.whnf.insert(key, result.clone());
     result
@@ -1492,6 +1494,95 @@ thread_local! {
 #[cfg(feature = "record-defeq")]
 thread_local! {
     static BETAS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Probe: on each `whnf_rc` cache miss, whether a structurally equal term was already missed at a
+/// different address (so a content-keyed cache would have hit). Per-call state lives in
+/// `PROBE`; nodes are kept alive so addresses are not reused.
+#[cfg(feature = "record-defeq")]
+#[derive(Default)]
+struct Probe {
+    memo: HashMap<usize, (Rc<Expr>, u64, u128)>,
+    seen: HashMap<u64, usize>,
+    misses: u64,
+    dup_misses: u64,
+    miss_nodes: u128,
+    dup_nodes: u128,
+}
+
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static PROBE: std::cell::RefCell<Probe> = std::cell::RefCell::new(Probe::default());
+}
+
+#[cfg(feature = "record-defeq")]
+fn probe_kids(e: &Expr) -> Vec<&Rc<Expr>> {
+    use Expr::*;
+    match e {
+        Var(_) | Sort(_) | Const(_) | Free(_) => vec![],
+        Refl(a) => vec![a],
+        Pi(a, b) | Lam(a, b) | App(a, b) | W(a, b) | Sup(a, b) | Sigma(a, b) => vec![a, b],
+        Id(a, b, c) | Pair(a, b, c) => vec![a, b, c],
+        J { motive, base, a, b, p } => vec![motive, base, a, b, p],
+        WRec { motive, children_ty, step, target } => vec![motive, children_ty, step, target],
+        SigRec { motive, step, target } => vec![motive, step, target],
+    }
+}
+
+/// (structural hash, tree size) of a node, memoised by address.
+#[cfg(feature = "record-defeq")]
+fn probe_info(p: &mut Probe, e: &Rc<Expr>) -> (u64, u128) {
+    use std::hash::{Hash, Hasher};
+    let addr = Rc::as_ptr(e) as usize;
+    if let Some((_, h, n)) = p.memo.get(&addr) {
+        return (*h, *n);
+    }
+    let mut hs = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(&**e).hash(&mut hs);
+    match &**e {
+        Expr::Var(i) | Expr::Sort(i) | Expr::Const(i) | Expr::Free(i) => i.hash(&mut hs),
+        _ => {}
+    }
+    let mut n: u128 = 1;
+    for k in probe_kids(e) {
+        let (h, kn) = probe_info(p, k);
+        h.hash(&mut hs);
+        n += kn;
+    }
+    let h = hs.finish();
+    p.memo.insert(addr, (e.clone(), h, n));
+    (h, n)
+}
+
+#[cfg(feature = "record-defeq")]
+fn struct_probe(e: &Rc<Expr>) {
+    PROBE.with(|p| {
+        let mut p = p.borrow_mut();
+        let (h, n) = probe_info(&mut p, e);
+        p.misses += 1;
+        p.miss_nodes += n;
+        let addr = Rc::as_ptr(e) as usize;
+        match p.seen.get(&h) {
+            Some(&a) if a != addr => {
+                p.dup_misses += 1;
+                p.dup_nodes += n;
+            }
+            Some(_) => {}
+            None => {
+                p.seen.insert(h, addr);
+            }
+        }
+    });
+}
+
+/// `(whnf-cache misses, of which a structurally equal term missed earlier at another address,
+/// tree nodes over all misses, tree nodes over those duplicates)`, then resets.
+#[cfg(feature = "record-defeq")]
+pub fn take_struct_probe() -> (u64, u64, u128, u128) {
+    PROBE.with(|p| {
+        let p = std::mem::take(&mut *p.borrow_mut());
+        (p.misses, p.dup_misses, p.miss_nodes, p.dup_nodes)
+    })
 }
 
 /// Beta steps `whnf_step` took since the last call.

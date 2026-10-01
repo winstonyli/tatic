@@ -550,3 +550,73 @@ fn replay_defeq_queries() {
         println!("REPLAY n={n}: evals={} conv={}", st.eval_calls, st.conv_calls);
     }
 }
+
+/// Probes on the lemma's hard queries, for the `add` statement and the `add_shared` statement:
+/// (1) tree size vs DAG size of the compared terms, (2) how many kernel `whnf` cache misses were
+/// of a structurally equal term already missed at another address (within one `def_eq` call).
+/// Run: `cargo test --release --features record-defeq --test church_bv probe_hard -- --ignored --nocapture`
+#[cfg(feature = "record-defeq")]
+#[test]
+#[ignore]
+fn probe_hard_queries() {
+    fn kids(e: &Expr) -> Vec<&Rc<Expr>> {
+        match e {
+            Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => vec![],
+            Expr::Refl(a) => vec![a],
+            Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => vec![a, b],
+            Expr::Id(a, b, c) | Expr::Pair(a, b, c) => vec![a, b, c],
+            Expr::J { motive, base, a, b, p } => vec![motive, base, a, b, p],
+            Expr::WRec { motive, children_ty, step, target } => vec![motive, children_ty, step, target],
+            Expr::SigRec { motive, step, target } => vec![motive, step, target],
+        }
+    }
+    fn tree(e: &Expr, dag: &mut std::collections::HashMap<usize, u128>) -> u128 {
+        1 + kids(e)
+            .into_iter()
+            .map(|k| {
+                let a = Rc::as_ptr(k) as usize;
+                if let Some(&n) = dag.get(&a) {
+                    return n;
+                }
+                let n = tree(k, dag);
+                dag.insert(a, n);
+                n
+            })
+            .sum::<u128>()
+    }
+    for (name, adder) in [("add", add as fn(usize) -> Expr), ("add_shared", add_shared as fn(usize) -> Expr)] {
+        for n in [8usize, 16, 32] {
+            let (proof, stmt) = add_identity_proof_over(n, 0, false, adder);
+            let _ = take_defeq_log();
+            ck(&format!("{name} n={n}"), &proof, &stmt);
+            let qs = take_defeq_log();
+            let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
+            let (mut tot_tree, mut max_tree, mut tot_dag) = (0u128, 0u128, 0usize);
+            for (a, b, _) in &hard {
+                let mut m = std::collections::HashMap::new();
+                let t = tree(a, &mut m) + tree(b, &mut m);
+                tot_tree += t;
+                max_tree = max_tree.max(t);
+                tot_dag += m.len() + 2;
+            }
+            let _ = take_beta_count();
+            let _ = take_struct_probe();
+            let t0 = Instant::now();
+            let (mut miss, mut dup, mut mn, mut dn) = (0u64, 0u64, 0u128, 0u128);
+            for (a, b, _) in &hard {
+                assert!(def_eq(a, b));
+                let (m, d, x, y) = take_struct_probe();
+                miss += m;
+                dup += d;
+                mn += x;
+                dn += y;
+            }
+            println!(
+                "PROBE {name} n={n}: hard={} tree_total={tot_tree} tree_max={max_tree} dag_total={tot_dag} betas={} time(with probe)={:?} | whnf misses={miss} dup={dup} miss_nodes={mn} dup_nodes={dn}",
+                hard.len(),
+                take_beta_count(),
+                t0.elapsed()
+            );
+        }
+    }
+}
