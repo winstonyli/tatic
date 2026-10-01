@@ -565,11 +565,16 @@ fn walk_counts_on_hard_queries() {
         let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
         let _ = take_walk_counts();
         let _ = take_beta_count();
+        let _ = take_chain_counts();
+        let _ = take_direct_counts();
         let t0 = Instant::now();
         for (a, b, _) in &hard {
             assert!(def_eq(a, b));
         }
         let w = take_walk_counts();
+        let (chained, chain_visits) = take_chain_counts();
+        println!("WALK n={n}: betas whose body is a lambda (count, visits) = {:?}", take_direct_counts());
+        println!("WALK n={n}: chained betas={chained} visits spent producing the applied lambda={chain_visits} of {}", w[0]);
         println!(
             "WALK n={n}: time={:?} betas={} instantiate={} shift={} eq={} conv_whnf={} nf_whnf={}",
             t0.elapsed(),

@@ -842,12 +842,26 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
 fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     grow(|| match e {
         Expr::App(f, a) => {
+            #[cfg(feature = "record-defeq")]
+            let before = chain_enter();
             let wf = whnf_rc(f, cache);
+            #[cfg(feature = "record-defeq")]
+            chain_exit(before, matches!(&*wf, Expr::Lam(..)));
             match &*wf {
                 Expr::Lam(_, body) => {
                     #[cfg(feature = "record-defeq")]
                     BETAS.with(|c| c.set(c.get() + 1));
-                    Some(whnf_impl(&subst_top(body, a), cache))
+                    #[cfg(feature = "record-defeq")]
+                    let v0 = WALKS.with(|w| w[0].get());
+                    let r = subst_top(body, a);
+                    #[cfg(feature = "record-defeq")]
+                    if matches!(&**body, Expr::Lam(..)) {
+                        DIRECT.with(|c| {
+                            let (n, v) = c.get();
+                            c.set((n + 1, v + WALKS.with(|w| w[0].get()) - v0));
+                        });
+                    }
+                    Some(whnf_impl(&r, cache))
                 }
                 _ => (!Rc::ptr_eq(&wf, f)).then(|| Expr::App(wf, a.clone())),
             }
@@ -1516,6 +1530,54 @@ fn walk_count(_: usize) {}
 #[cfg(feature = "record-defeq")]
 pub fn take_walk_counts() -> [u64; 5] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
+}
+
+// Betas that consume a lambda another beta just produced (`(\. \. b) x y`: the first beta's
+// result is the second's function), and the `instantiate` visits spent producing those lambdas
+// at the outermost level of each chain. State: (depth, chained betas, visits).
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static CHAIN: std::cell::Cell<(u32, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
+}
+#[cfg(feature = "record-defeq")]
+fn chain_enter() -> (u64, u64) {
+    CHAIN.with(|c| {
+        let (d, n, v) = c.get();
+        c.set((d + 1, n, v));
+    });
+    (BETAS.with(|b| b.get()), WALKS.with(|w| w[0].get()))
+}
+#[cfg(feature = "record-defeq")]
+fn chain_exit((betas0, visits0): (u64, u64), got_lam: bool) {
+    let (betas, visits) = (BETAS.with(|b| b.get()), WALKS.with(|w| w[0].get()));
+    CHAIN.with(|c| {
+        let (d, mut n, mut v) = c.get();
+        if got_lam && betas > betas0 {
+            n += 1;
+            if d == 1 {
+                v += visits - visits0;
+            }
+        }
+        c.set((d - 1, n, v));
+    });
+}
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static DIRECT: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+/// `(betas whose lambda body is itself a lambda, their `instantiate` visits)`, then resets: the part of
+/// the chain a multi-argument substitution could fuse without reduction in between.
+#[cfg(feature = "record-defeq")]
+pub fn take_direct_counts() -> (u64, u64) {
+    DIRECT.with(|c| c.replace((0, 0)))
+}
+/// `(betas whose function was produced by a beta, instantiate visits spent producing it)`, then resets.
+#[cfg(feature = "record-defeq")]
+pub fn take_chain_counts() -> (u64, u64) {
+    CHAIN.with(|c| {
+        let (_, n, v) = c.replace((0, 0, 0));
+        (n, v)
+    })
 }
 
 /// Beta steps `whnf_step` took since the last call.
