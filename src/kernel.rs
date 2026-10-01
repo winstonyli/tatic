@@ -679,7 +679,17 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
                 let r = shift(arg, 0, d as i32);
                 #[cfg(feature = "record-defeq")]
                 if d > 0 && loose_of(arg) > 0 {
-                    WALKS.with(|w| w[9].set(w[9].get() + w[1].get() - v0));
+                    // Slots 10/11: uses whose argument mentions a binder `conv` opened (internal) or
+                    // only the checker's context; 12/13 the shift visits each class cost.
+                    let k = INTERNAL.with(|c| c.get());
+                    let internal = (0..k).any(|i| is_var_free(arg, i));
+                    let cost = WALKS.with(|w| w[1].get()) - v0;
+                    WALKS.with(|w| {
+                        w[9].set(w[9].get() + cost);
+                        let (n, c) = if internal { (10, 12) } else { (11, 13) };
+                        w[n].set(w[n].get() + 1);
+                        w[c].set(w[c].get() + cost);
+                    });
                 }
                 r
             } else {
@@ -1122,6 +1132,35 @@ fn conv_rc(a: &Rc<Expr>, b: &Rc<Expr>, cache: &mut ReductionCache) -> bool {
 /// each pair of children, in the order `nf_impl` visits them.
 fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
     walk_count(3);
+    #[cfg(feature = "record-defeq")]
+    {
+        // Probe: track how many binders `conv` has opened (by comparing bodies without
+        // instantiating them), so a loose variable in a substituted argument can be told apart as
+        // internal or a reference to the checker's context.
+        let mut idx = 0;
+        let under = match x {
+            Expr::Pi(..) | Expr::Lam(..) | Expr::W(..) | Expr::Sigma(..) => 1,
+            Expr::Pair(..) | Expr::WRec { .. } => 1,
+            _ => usize::MAX,
+        };
+        let x_pair = matches!(x, Expr::Pair(..));
+        return grow(|| {
+            same_shape(x, y, |p, q| {
+                let opens = if x_pair { idx == 0 } else { idx == under };
+                idx += 1;
+                if opens {
+                    walk_count(14);
+                    INTERNAL.with(|c| c.set(c.get() + 1));
+                }
+                let r = conv_rc(p, q, cache);
+                if opens {
+                    INTERNAL.with(|c| c.set(c.get() - 1));
+                }
+                r
+            })
+        });
+    }
+    #[cfg(not(feature = "record-defeq"))]
     grow(|| same_shape(x, y, |p, q| conv_rc(p, q, cache)))
 }
 
@@ -1571,7 +1610,11 @@ thread_local! {
 // `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static WALKS: [std::cell::Cell<u64>; 10] = const { [const { std::cell::Cell::new(0) }; 10] };
+    static WALKS: [std::cell::Cell<u64>; 15] = const { [const { std::cell::Cell::new(0) }; 15] };
+}
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static INTERNAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 #[cfg(feature = "record-defeq")]
 #[inline(always)]
@@ -1582,7 +1625,7 @@ fn walk_count(i: usize) {
 #[inline(always)]
 fn walk_count(_: usize) {}
 #[cfg(feature = "record-defeq")]
-pub fn take_walk_counts() -> [u64; 10] {
+pub fn take_walk_counts() -> [u64; 15] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
 }
 

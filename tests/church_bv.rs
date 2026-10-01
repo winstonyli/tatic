@@ -580,5 +580,9 @@ fn walk_counts_on_hard_queries() {
             "PROBE n={n}: uses={} depth0={} deeper-closed={} deeper-loose={} shift visits from deeper-loose={} of {}",
             w[5], w[6], w[7], w[8], w[9], w[1]
         );
+        println!(
+            "PROBE2 n={n}: conv binders opened={}; deeper-loose uses internal={} ctx-only={}; shift visits internal={} ctx-only={}",
+            w[14], w[10], w[11], w[12], w[13]
+        );
     }
 }
