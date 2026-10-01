@@ -354,6 +354,17 @@ fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
     }
 }
 
+/// Size of the generated proof by width, without checking it (`record-defeq` for `term_sizes`).
+#[cfg(feature = "record-defeq")]
+#[test]
+#[ignore]
+fn proof_size_scaling() {
+    for n in [16usize, 32, 64, 128, 256] {
+        let (proof, _) = add_zero_proof(n, 0);
+        println!("PROOF-SIZE n={n}: dag={}", tatic::kernel::term_sizes(&proof).0);
+    }
+}
+
 /// Growth of the universal lemma's check time with width (machine load varies; indicative only).
 #[test]
 #[ignore]

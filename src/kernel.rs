@@ -2365,6 +2365,9 @@ pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr
 
 fn trans_proof_in(memo: &ShiftMemo, a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr) -> Expr {
     let shift = |e: &Expr, c: u32, n: i32| shift_memo(e, c, n, memo);
+    // `arrow`, with its codomain shifted through the memo (a plain `shift` copies the shifted `x`
+    // afresh at every call).
+    let arrow = |a: Expr, b: Expr| pi(a, shift(&b, 0, 1));
     // motive(y', z', _) := Id(A, x, y') -> Id(A, x, z')
     let motive = lam(
         a_ty.clone(),
