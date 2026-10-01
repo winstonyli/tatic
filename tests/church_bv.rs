@@ -543,6 +543,32 @@ fn add_comm_scaling() {
     }
 }
 
+/// As `add_comm_scaling`, built and checked inside one `InternScope`, up to the widths in the
+/// environment variable `COMM_NS` (comma separated; default 8,16,32,64). Prints build and check time
+/// separately and the proof DAG (design doc section 81).
+#[test]
+#[ignore]
+fn add_comm_scaling_scoped() {
+    let ns: Vec<usize> = std::env::var("COMM_NS")
+        .unwrap_or_else(|_| "8,16,32,64".into())
+        .split(',')
+        .map(|v| v.trim().parse().unwrap())
+        .collect();
+    for n in ns {
+        let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
+        let t0 = Instant::now();
+        let (proof, stmt) = add_comm_proof(n, false);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        ck(&format!("n={n}"), &proof, &stmt);
+        println!(
+            "COMM-SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
+            t1.elapsed(),
+            tatic::kernel::term_sizes(&proof).0
+        );
+    }
+}
+
 /// Probe: `add_shared x 0 = x` (carries let-bound in the statement), original `add` kept alongside.
 #[test]
 fn add_shared_zero_is_the_identity_on_a_symbolic_good_vector() {
