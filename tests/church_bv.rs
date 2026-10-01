@@ -391,6 +391,26 @@ fn add_zero_lemma_scaling() {
     }
 }
 
+/// As `add_zero_lemma_scaling`, but building and checking inside one `InternScope`, so the proof is
+/// interned as it is built (design doc section 69). Prints build and check time separately.
+#[test]
+#[ignore]
+fn add_zero_lemma_scaling_scoped() {
+    for n in [8usize, 16, 32, 64, 128, 256, 512] {
+        let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
+        let t0 = Instant::now();
+        let (proof, stmt) = add_zero_proof(n, 0);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        ck(&format!("n={n}"), &proof, &stmt);
+        println!(
+            "SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
+            t1.elapsed(),
+            tatic::kernel::term_sizes(&proof).0
+        );
+    }
+}
+
 // ---- Commutativity: `add x y = add y x` for `x`, `y` with `GoodBv` witnesses.
 
 /// Closed proof of `Pi a b c c'. GoodBool a -> GoodBool b -> Id(c, c') -> Id(F(a,b,c), F(b,a,c'))`,

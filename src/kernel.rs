@@ -706,14 +706,33 @@ pub fn var(k: u32) -> Expr {
 pub fn sort(i: u32) -> Expr {
     Expr::Sort(i)
 }
+/// While one is alive, terms built with this module's constructors (`app`, `lam`, `pi`, ...) and
+/// the nodes `shift`/`instantiate` make are interned: structurally equal children are one node, so
+/// a proof that repeats itself is a small DAG, and the checks run inside it (`check_in`, `infer_in`,
+/// `def_eq`) find the terms already canonical. Hold one across building a proof and checking it.
+/// Tables and memos live until the outermost one drops; without the `hashcons` feature it does
+/// nothing. Per thread.
+#[must_use]
+pub struct InternScope(#[allow(dead_code)] hc::Scope);
+
+impl InternScope {
+    pub fn enter() -> InternScope {
+        let s = hc::Scope::enter();
+        hc::activate();
+        InternScope(s)
+    }
+}
+
+/// The constructors below make each child through `hc::intern_new`: inside an [`InternScope`] equal
+/// children are one node, outside it is `Rc::new`.
 pub fn pi(a: Expr, b: Expr) -> Expr {
-    Expr::Pi(Rc::new(a), Rc::new(b))
+    Expr::Pi(hc::intern_new(a), hc::intern_new(b))
 }
 pub fn lam(a: Expr, body: Expr) -> Expr {
-    Expr::Lam(Rc::new(a), Rc::new(body))
+    Expr::Lam(hc::intern_new(a), hc::intern_new(body))
 }
 pub fn app(f: Expr, a: Expr) -> Expr {
-    Expr::App(Rc::new(f), Rc::new(a))
+    Expr::App(hc::intern_new(f), hc::intern_new(a))
 }
 pub fn app2(f: Expr, a: Expr, b: Expr) -> Expr {
     app(app(f, a), b)
@@ -722,45 +741,45 @@ pub fn app3(f: Expr, a: Expr, b: Expr, c: Expr) -> Expr {
     app(app2(f, a, b), c)
 }
 pub fn id(a: Expr, x: Expr, y: Expr) -> Expr {
-    Expr::Id(Rc::new(a), Rc::new(x), Rc::new(y))
+    Expr::Id(hc::intern_new(a), hc::intern_new(x), hc::intern_new(y))
 }
 pub fn refl(a: Expr) -> Expr {
-    Expr::Refl(Rc::new(a))
+    Expr::Refl(hc::intern_new(a))
 }
 pub fn jelim(motive: Expr, base: Expr, a: Expr, b: Expr, p: Expr) -> Expr {
     Expr::J {
-        motive: Rc::new(motive),
-        base: Rc::new(base),
-        a: Rc::new(a),
-        b: Rc::new(b),
-        p: Rc::new(p),
+        motive: hc::intern_new(motive),
+        base: hc::intern_new(base),
+        a: hc::intern_new(a),
+        b: hc::intern_new(b),
+        p: hc::intern_new(p),
     }
 }
 pub fn wty(a: Expr, b: Expr) -> Expr {
-    Expr::W(Rc::new(a), Rc::new(b))
+    Expr::W(hc::intern_new(a), hc::intern_new(b))
 }
 pub fn sup(a: Expr, f: Expr) -> Expr {
-    Expr::Sup(Rc::new(a), Rc::new(f))
+    Expr::Sup(hc::intern_new(a), hc::intern_new(f))
 }
 pub fn wrec(motive: Expr, children_ty: Expr, step: Expr, target: Expr) -> Expr {
     Expr::WRec {
-        motive: Rc::new(motive),
-        children_ty: Rc::new(children_ty),
-        step: Rc::new(step),
-        target: Rc::new(target),
+        motive: hc::intern_new(motive),
+        children_ty: hc::intern_new(children_ty),
+        step: hc::intern_new(step),
+        target: hc::intern_new(target),
     }
 }
 pub fn sigma(a: Expr, b: Expr) -> Expr {
-    Expr::Sigma(Rc::new(a), Rc::new(b))
+    Expr::Sigma(hc::intern_new(a), hc::intern_new(b))
 }
 pub fn pair(fam: Expr, a: Expr, b: Expr) -> Expr {
-    Expr::Pair(Rc::new(fam), Rc::new(a), Rc::new(b))
+    Expr::Pair(hc::intern_new(fam), hc::intern_new(a), hc::intern_new(b))
 }
 pub fn sigrec(motive: Expr, step: Expr, target: Expr) -> Expr {
     Expr::SigRec {
-        motive: Rc::new(motive),
-        step: Rc::new(step),
-        target: Rc::new(target),
+        motive: hc::intern_new(motive),
+        step: hc::intern_new(step),
+        target: hc::intern_new(target),
     }
 }
 /// A non-dependent function type `a -> b`.
@@ -888,7 +907,7 @@ fn shift_memo_child(x: &Rc<Expr>, cutoff: u32, amount: i32, memo: &ShiftMemo) ->
     if let Some((_, r)) = memo.0.borrow().get(&key) {
         return r.clone();
     }
-    let r = Rc::new(shift_memo(x, cutoff, amount, memo));
+    let r = hc::intern_new(shift_memo(x, cutoff, amount, memo));
     memo.0.borrow_mut().insert(key, (x.clone(), r.clone()));
     r
 }
@@ -955,6 +974,18 @@ mod hc {
             DEPTH.with(|d| d.set(d.get() + 1));
             Scope
         }
+    }
+
+    /// Switches the table on now (inside a scope), instead of after `WARM_UP` calls.
+    pub fn activate() {
+        if !active() {
+            let g = NEXT_GENERATION.with(|g| g.replace(g.get() + 1));
+            GENERATION.with(|c| c.set(g));
+        }
+    }
+
+    pub fn intern_new(e: Expr) -> Rc<Expr> {
+        intern(e, None)
     }
 
     impl Drop for Scope {
@@ -1251,6 +1282,14 @@ mod hc {
         pub fn enter() -> Scope {
             Scope
         }
+    }
+
+    #[inline(always)]
+    pub fn activate() {}
+
+    #[inline(always)]
+    pub fn intern_new(e: Expr) -> Rc<Expr> {
+        Rc::new(e)
     }
 
     #[inline(always)]
@@ -2753,13 +2792,13 @@ fn abstract_frees_in(e: &Expr, first: u32, levels: &[u32], d: u32, memo: &mut Fr
             return x.clone();
         }
         if Rc::strong_count(x) == 1 {
-            return Rc::new(abstract_frees_in(x, first, levels, d, memo));
+            return hc::intern_new(abstract_frees_in(x, first, levels, d, memo));
         }
         let key = (PtrKey(x.clone()), d);
         if let Some(r) = memo.get(&key) {
             return r.clone();
         }
-        let r = Rc::new(abstract_frees_in(x, first, levels, d, memo));
+        let r = hc::intern_new(abstract_frees_in(x, first, levels, d, memo));
         memo.insert(key, r.clone());
         r
     };
