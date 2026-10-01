@@ -726,6 +726,12 @@ pub fn sort(i: u32) -> Expr {
 /// `def_eq`) find the terms already canonical. Hold one across building a proof and checking it.
 /// Tables and memos live until the outermost one drops; without the `hashcons` feature it does
 /// nothing. Per thread.
+///
+/// Worth it for large proofs and a loss for small ones: it halves the check and, at n=512, saves
+/// half the time and memory of the whole build-and-check, but building inside it costs more per
+/// node, so a proof that checks in well under a millisecond (the gcd proofs) is about 20% slower
+/// overall (doc sections 69 and 71). `check_in` already interns large inputs by itself; this scope
+/// is for proofs big enough that the builder's own sharing matters.
 #[must_use]
 pub struct InternScope(#[allow(dead_code)] hc::Scope);
 
