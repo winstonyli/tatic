@@ -1157,6 +1157,8 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
 /// obligation very often do (the same postulates, the same sub-witnesses).
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
     #[cfg(feature = "record-defeq")]
+    let _g = site(3);
+    #[cfg(feature = "record-defeq")]
     SEEN.with(|m| m.borrow_mut().clear());
     conv(a, b, &mut ReductionCache::default())
 }
@@ -1304,6 +1306,8 @@ fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
     // current length requires shifting by `k + 1`, not `k` — e.g. for
     // `Var(0)` itself (k=0), its stored type was written one binder
     // shallower than "now", so it still needs a shift of 1.
+    #[cfg(feature = "record-defeq")]
+    let _g = site(1);
     #[cfg(feature = "record-defeq")]
     {
         // Probe slot 17: `shift` visits spent in this lookup.
@@ -1529,6 +1533,8 @@ fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e:
         Expr::App(f, a) => {
             let (dom, cod) = expect_pi(&infer_rc(g, ic, ctx, cid, f)?)?;
             check_rc(g, ic, ctx, cid, a, &dom)?;
+            #[cfg(feature = "record-defeq")]
+            let _g = site(2);
             Ok(subst_top(&cod, a))
         }
         Expr::Id(a, x, y) => {
@@ -1690,10 +1696,37 @@ thread_local! {
 thread_local! {
     static INTERNAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
+// Probe: `[instantiate, shift, eq]` visits by call site (0 other, 1 `ctx_lookup`, 2 `App` rule's
+// `subst_top`, 3 `def_eq`).
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static SITE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SITES: [[std::cell::Cell<u64>; 3]; 4] = const { [const { [const { std::cell::Cell::new(0) }; 3] }; 4] };
+}
+#[cfg(feature = "record-defeq")]
+struct SiteGuard(usize);
+#[cfg(feature = "record-defeq")]
+impl Drop for SiteGuard {
+    fn drop(&mut self) {
+        SITE.with(|c| c.set(self.0));
+    }
+}
+#[cfg(feature = "record-defeq")]
+fn site(i: usize) -> SiteGuard {
+    SiteGuard(SITE.with(|c| c.replace(i)))
+}
+#[cfg(feature = "record-defeq")]
+pub fn take_site_counts() -> [[u64; 3]; 4] {
+    SITES.with(|s| std::array::from_fn(|i| std::array::from_fn(|j| s[i][j].replace(0))))
+}
 #[cfg(feature = "record-defeq")]
 #[inline(always)]
 fn walk_count(i: usize) {
     WALKS.with(|w| w[i].set(w[i].get() + 1));
+    if i < 3 {
+        let site = SITE.with(|c| c.get());
+        SITES.with(|s| s[site][i].set(s[site][i].get() + 1));
+    }
 }
 #[cfg(not(feature = "record-defeq"))]
 #[inline(always)]

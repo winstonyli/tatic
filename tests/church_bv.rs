@@ -536,6 +536,21 @@ fn replay_defeq_queries() {
         ck(&format!("n={n}"), &proof, &stmt);
         let qs = take_defeq_log();
         let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
+        {
+            // Probe: eq visits per easy (equal) query, bucketed.
+            let _ = take_walk_counts();
+            let mut buckets = [(0u64, 0u64); 5]; // (queries, visits) for 0, 1-3, 4-15, 16-63, 64+
+            for (a, b, _) in qs.iter().filter(|(a, b, _)| a == b) {
+                let v0 = take_walk_counts()[2];
+                assert!(def_eq(a, b));
+                let v = take_walk_counts()[2];
+                let _ = v0;
+                let k = match v { 0 => 0, 1..=3 => 1, 4..=15 => 2, 16..=63 => 3, _ => 4 };
+                buckets[k].0 += 1;
+                buckets[k].1 += v;
+            }
+            println!("EASY n={n}: (queries, eq visits) by visits-per-query 0 / 1-3 / 4-15 / 16-63 / 64+ = {buckets:?}");
+        }
         let t0 = Instant::now();
         let _ = take_beta_count();
         let k: Vec<bool> = hard.iter().map(|(a, b, _)| def_eq(a, b)).collect();
@@ -560,12 +575,33 @@ fn walk_counts_on_hard_queries() {
     for n in [8usize, 16, 32, 64] {
         let (proof, stmt) = add_zero_proof(n, 0);
         let _ = take_defeq_log();
+        let _ = take_site_counts();
+        let _ = take_walk_counts();
         let tck = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);
         println!("CHECK n={n}: whole check {:?}", tck.elapsed());
         { let w = take_walk_counts(); println!("CHECK n={n}: whole-check visits instantiate={} shift={} eq={} conv_whnf={} shift-in-ctx_lookup={}", w[0], w[1], w[2], w[3], w[17]); }
+        {
+            let sc = take_site_counts();
+            println!("SITES n={n} [instantiate, shift, eq]: other={:?} ctx_lookup={:?} app_subst={:?} def_eq={:?}", sc[0], sc[1], sc[2], sc[3]);
+        }
         let qs = take_defeq_log();
         let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
+        {
+            // Probe: eq visits per easy (equal) query, bucketed.
+            let _ = take_walk_counts();
+            let mut buckets = [(0u64, 0u64); 5]; // (queries, visits) for 0, 1-3, 4-15, 16-63, 64+
+            for (a, b, _) in qs.iter().filter(|(a, b, _)| a == b) {
+                let v0 = take_walk_counts()[2];
+                assert!(def_eq(a, b));
+                let v = take_walk_counts()[2];
+                let _ = v0;
+                let k = match v { 0 => 0, 1..=3 => 1, 4..=15 => 2, 16..=63 => 3, _ => 4 };
+                buckets[k].0 += 1;
+                buckets[k].1 += v;
+            }
+            println!("EASY n={n}: (queries, eq visits) by visits-per-query 0 / 1-3 / 4-15 / 16-63 / 64+ = {buckets:?}");
+        }
         let _ = take_walk_counts();
         let _ = take_beta_count();
         let t0 = Instant::now();
@@ -613,4 +649,12 @@ fn walk_counts_on_hard_queries() {
             w[15], w[8], w[16], w[1]
         );
     }
+}
+
+/// One check of the universal lemma at n=64, for profiling (`SAMPLY.md`): no timing, no logging.
+#[test]
+#[ignore]
+fn profile_add_zero_n64() {
+    let (proof, stmt) = add_zero_proof(64, 0);
+    ck("profile n=64", &proof, &stmt);
 }
