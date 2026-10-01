@@ -520,7 +520,9 @@ fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
 
 #[test]
 fn add_is_commutative_on_symbolic_good_vectors() {
-    for n in [1usize, 2, 4] {
+    // n=16 guards the failure path: rejecting a false statement once printed its terms as trees, which
+    // took minutes at this width (doc section 82).
+    for n in [1usize, 2, 4, 16] {
         let (proof, stmt) = add_comm_proof(n, false);
         let t0 = Instant::now();
         ck(&format!("add x y = add y x at n={n}"), &proof, &stmt);

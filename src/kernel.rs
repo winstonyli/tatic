@@ -701,6 +701,35 @@ impl Drop for Expr {
     }
 }
 
+/// `x` printed with `{:?}`, cut off after about 400 characters. A term is a DAG but prints as a tree,
+/// so the full text of an error's terms can be exponentially large in the DAG's size (the rejection
+/// of a false statement at n=12 spent 99% of its 11 s, and 2.4 GB, in formatting the message;
+/// doc section 82). The writer fails once it is full, which stops the printer's recursion.
+pub(crate) fn brief<T: fmt::Debug + ?Sized>(x: &T) -> String {
+    const LIMIT: usize = 400;
+    struct Limited(String);
+    impl fmt::Write for Limited {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            let room = LIMIT.saturating_sub(self.0.len());
+            if s.len() > room {
+                let mut cut = room;
+                while !s.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                self.0.push_str(&s[..cut]);
+                return Err(fmt::Error);
+            }
+            self.0.push_str(s);
+            Ok(())
+        }
+    }
+    let mut out = Limited(String::new());
+    if fmt::Write::write_fmt(&mut out, format_args!("{x:?}")).is_err() {
+        out.0.push_str(" ...");
+    }
+    out.0
+}
+
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         grow(|| match self {
@@ -1588,7 +1617,7 @@ fn is_var_free(e: &Expr, idx: u32) -> bool {
 #[cold]
 #[inline(never)]
 fn sup_codomain_depends_on_own_argument(cod_nf: &Expr) -> String {
-    format!("sup: children function's codomain must not depend on its own argument: {cod_nf:?}")
+    format!("sup: children function's codomain must not depend on its own argument: {}", brief(cod_nf))
 }
 
 /// The error for a `Free` reaching the type checker, out of line and
@@ -2220,7 +2249,7 @@ fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
 fn const_type(g: &Globals, l: u32) -> Result<Expr, String> {
     match g.get(l as usize) {
         Some(ty) if loose_of(ty) == 0 && free_of(ty) == 0 => Ok(ty.clone()),
-        Some(ty) => Err(format!("constant @{l}'s type isn't closed: {ty:?}")),
+        Some(ty) => Err(format!("constant @{l}'s type isn't closed: {}", brief(ty))),
         None => Err(format!("unknown constant @{l}")),
     }
 }
@@ -2228,28 +2257,28 @@ fn const_type(g: &Globals, l: u32) -> Result<Expr, String> {
 fn expect_sort(e: &Expr) -> Result<u32, String> {
     match whnf(e) {
         Expr::Sort(i) => Ok(i),
-        other => Err(format!("expected a Sort, got {other:?}")),
+        other => Err(format!("expected a Sort, got {}", brief(&other))),
     }
 }
 
 fn expect_pi(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
         Expr::Pi(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
-        other => Err(format!("expected a Pi type, got {other:?}")),
+        other => Err(format!("expected a Pi type, got {}", brief(&other))),
     }
 }
 
 fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
         Expr::W(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
-        other => Err(format!("expected a W type, got {other:?}")),
+        other => Err(format!("expected a W type, got {}", brief(&other))),
     }
 }
 
 fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
     match whnf(e) {
         Expr::Sigma(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
-        other => Err(format!("expected a Sigma type, got {other:?}")),
+        other => Err(format!("expected a Sigma type, got {}", brief(&other))),
     }
 }
 
@@ -2322,7 +2351,7 @@ fn infer_sigrec(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, 
 #[cold]
 #[inline(never)]
 fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
-    format!("wrec: children_ty doesn't match target's own real children-type: {:?} vs {:?}", nf(children_ty), nf(wb))
+    format!("wrec: children_ty doesn't match target's own real children-type: {} vs {}", brief(&nf(children_ty)), brief(&nf(wb)))
 }
 
 /// `infer`'s own `Sup` arm, out of line: `ta`/`dom`/`cod`/`w_candidate`/
@@ -2345,12 +2374,14 @@ fn infer_sup(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: 
     let w_candidate = subst_top(&cod, a);
     let (wa, wb) = expect_w(&w_candidate)?;
     if !def_eq(&wa, &ta) {
-        return Err(format!("sup: element type mismatch: {wa:?} vs {ta:?}"));
+        return Err(format!("sup: element type mismatch: {} vs {}", brief(&wa), brief(&ta)));
     }
     let expected_dom = subst_top(&wb, a);
     if !def_eq(&dom, &expected_dom) {
         return Err(format!(
-            "sup: children-function domain mismatch: {dom:?} vs {expected_dom:?}"
+            "sup: children-function domain mismatch: {} vs {}",
+            brief(&dom),
+            brief(&expected_dom)
         ));
     }
     Ok(wty(wa, wb))
@@ -2722,7 +2753,7 @@ fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
             // ill-typed annotation that reduces to `dom`.
             expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
             if !def_eq(a, dom) {
-                return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
+                return Err(format!("lambda domain mismatch: {} vs {}", brief(a), brief(dom)));
             }
             let depth = ctx.local.len();
             ctx.local.push((**a).clone());
@@ -2738,9 +2769,9 @@ fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
             Ok(())
         } else {
             Err(format!(
-                "type mismatch: inferred {:?}, expected {:?}",
-                nf(&inferred),
-                nf(expected)
+                "type mismatch: inferred {}, expected {}",
+                brief(&nf(&inferred)),
+                brief(&nf(expected))
             ))
         }
     })
@@ -3568,6 +3599,22 @@ mod tests {
     /// as a walk of the whole term finds it (0 when closed). The
     /// pool's variables are below 4 and binders only lower them, so
     /// checking indices below 8 covers every one that can occur.
+    /// A DAG whose tree is 2^60 nodes prints as about 400 characters, at once (doc section 82).
+    #[test]
+    fn brief_bounds_the_text_of_an_exponential_tree() {
+        let mut e = sort(0);
+        for _ in 0..60 {
+            let shared = Rc::new(e);
+            e = Expr::App(shared.clone(), shared);
+        }
+        let t = std::time::Instant::now();
+        let text = brief(&e);
+        assert!(text.len() <= 400 + 4, "{} chars", text.len());
+        assert!(text.ends_with(" ..."));
+        assert!(t.elapsed() < std::time::Duration::from_millis(100), "took {:?}", t.elapsed());
+        assert_eq!(brief(&sort(3)), "Type3");
+    }
+
     #[test]
     fn loose_matches_a_walk() {
         let mut next = splitmix(11);
