@@ -23,7 +23,43 @@
 
 use crate::kernel::{Expr, Rc as KRc, grow};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+
+/// Pointer-keyed sharing for `def_eq_lazy_shared`: a node referenced from more than one place is
+/// evaluated once per (node, the cells its loose variables are bound to), and a cell for such a
+/// node is built once per the same key. Each entry keeps its key's node and environment alive so
+/// the addresses in the key stay unique.
+#[derive(Default)]
+struct Memo {
+    cells: HashMap<(usize, Vec<usize>), (KRc<Expr>, Env, Thunk)>,
+    vals: HashMap<(usize, Vec<usize>), (KRc<Expr>, Env, V)>,
+    /// Pairs of values already found convertible (at any level: a value's meaning does not
+    /// depend on the level it is compared at, only on the levels inside it).
+    equal: HashMap<(usize, usize), (V, V)>,
+}
+thread_local! {
+    static MEMO: RefCell<Option<Memo>> = const { RefCell::new(None) };
+}
+
+fn memo_key(e: &KRc<Expr>, env: &Env) -> (usize, Vec<usize>) {
+    let mut cells = Vec::new();
+    let mut node = env.as_ref();
+    for _ in 0..e.loose() {
+        match node {
+            Some(n) => {
+                cells.push(Rc::as_ptr(&n.head.0) as *const u8 as usize);
+                node = n.tail.as_ref();
+            }
+            None => break,
+        }
+    }
+    (KRc::as_ptr(e) as *const u8 as usize, cells)
+}
+
+fn memo_on(e: &KRc<Expr>) -> bool {
+    KRc::strong_count(e) > 1 && MEMO.with(|m| m.borrow().is_some())
+}
 
 type V = Rc<Val>;
 
@@ -40,7 +76,17 @@ enum Cell {
 
 impl Thunk {
     fn delay(e: &KRc<Expr>, env: &Env) -> Thunk {
-        Thunk(Rc::new(RefCell::new(Cell::Delayed(e.clone(), env.clone()))))
+        let fresh = || Thunk(Rc::new(RefCell::new(Cell::Delayed(e.clone(), env.clone()))));
+        if !memo_on(e) {
+            return fresh();
+        }
+        let key = memo_key(e, env);
+        if let Some(t) = MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.cells.get(&key).map(|x| x.2.clone()))) {
+            return t;
+        }
+        let t = fresh();
+        MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.cells.insert(key, (e.clone(), env.clone(), t.clone()))));
+        t
     }
     fn lazy(f: impl FnOnce() -> V + 'static) -> Thunk {
         Thunk(Rc::new(RefCell::new(Cell::Lazy(Box::new(f)))))
@@ -146,6 +192,19 @@ fn wrec(motive: &Thunk, cty: &Clo, step: &Thunk, target: V) -> V {
 }
 
 fn eval(env: &Env, e: &KRc<Expr>) -> V {
+    if !memo_on(e) {
+        return eval_node(env, e);
+    }
+    let key = memo_key(e, env);
+    if let Some(v) = MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.vals.get(&key).map(|x| x.2.clone()))) {
+        return v;
+    }
+    let v = eval_node(env, e);
+    MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.vals.insert(key, (e.clone(), env.clone(), v.clone()))));
+    v
+}
+
+fn eval_node(env: &Env, e: &KRc<Expr>) -> V {
     grow(|| {
         let d = |x: &KRc<Expr>| Thunk::delay(x, env);
         let c = |x: &KRc<Expr>| Clo::Term(env.clone(), x.clone());
@@ -196,6 +255,19 @@ fn conv(l: u32, x: &V, y: &V) -> bool {
     if Rc::ptr_eq(x, y) {
         return true;
     }
+    let key = (Rc::as_ptr(x) as *const u8 as usize, Rc::as_ptr(y) as *const u8 as usize);
+    let on = MEMO.with(|m| m.borrow().is_some());
+    if on && MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.equal.contains_key(&key))) {
+        return true;
+    }
+    let r = conv_node(l, x, y);
+    if on && r {
+        MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.equal.insert(key, (x.clone(), y.clone()))));
+    }
+    r
+}
+
+fn conv_node(l: u32, x: &V, y: &V) -> bool {
     grow(|| match (&**x, &**y) {
         (Val::Sort(i), Val::Sort(j)) | (Val::Const(i), Val::Const(j)) | (Val::Free(i), Val::Free(j)) | (Val::Level(i), Val::Level(j)) => i == j,
         (Val::Pi(a1, b1), Val::Pi(a2, b2))
@@ -233,13 +305,45 @@ pub fn def_eq_lazy(a: &Expr, b: &Expr, depth: u32) -> bool {
     conv(depth, &eval(&env, &a), &eval(&env, &b))
 }
 
+/// `def_eq_lazy` with the pointer-keyed sharing above, for the same inputs.
+pub fn def_eq_lazy_shared(a: &Expr, b: &Expr, depth: u32) -> bool {
+    MEMO.with(|m| *m.borrow_mut() = Some(Memo::default()));
+    let r = def_eq_lazy(a, b, depth);
+    MEMO.with(|m| *m.borrow_mut() = None);
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::kernel::{app, def_eq, id, jelim, lam, pair, pi, refl, shift, sigma, sigrec, sort, sup, var, wrec, wty};
 
     fn eq(a: &Expr, b: &Expr, depth: u32) -> bool {
-        def_eq_lazy(a, b, depth)
+        let plain = def_eq_lazy(a, b, depth);
+        assert_eq!(plain, def_eq_lazy_shared(a, b, depth), "shared and plain disagree on {a:?} vs {b:?}");
+        plain
+    }
+
+    /// A doubling DAG: `a_(k+1) = Sup(a_k, a_k)` with both children the same `Rc`. Two independently
+    /// built copies compare in O(k) with sharing and O(2^k) without.
+    #[test]
+    fn shared_mode_keeps_a_doubling_dag_linear() {
+        fn dag(k: u32) -> Expr {
+            let mut n = KRc::new(sort(0));
+            for _ in 0..k {
+                n = KRc::new(Expr::Sup(n.clone(), n.clone()));
+            }
+            (*n).clone()
+        }
+        let k = 40;
+        let (a, b) = (dag(k), dag(k));
+        assert!(def_eq_lazy_shared(&a, &b, 0));
+        // a differing leaf is still found
+        let mut c = KRc::new(sort(1));
+        for _ in 0..k {
+            c = KRc::new(Expr::Sup(c.clone(), c.clone()));
+        }
+        assert!(!def_eq_lazy_shared(&a, &(*c).clone(), 0));
     }
 
     #[test]
