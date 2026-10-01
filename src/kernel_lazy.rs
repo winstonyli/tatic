@@ -55,6 +55,52 @@ pub struct Stats {
     pub cells_len: usize,
     pub vals_len: usize,
     pub equal_len: usize,
+    /// Memo lookups and hits, split by `[eval, cell]` and bucketed by key length, by the node's
+    /// strong count, and by its `Expr` variant (see `record`).
+    pub by_klen: [[Hist; 2]; 1],
+    pub by_count: [[Hist; 2]; 1],
+    pub by_kind: [[Hist; 2]; 1],
+}
+#[derive(Default, Debug, Clone, Copy)]
+pub struct Hist {
+    pub lookups: [u64; 10],
+    pub hits: [u64; 10],
+}
+fn record(cell: usize, e: &KRc<Expr>, klen: usize, hit: bool) {
+    let kl = match klen {
+        0..=4 => klen,
+        5..=6 => 5,
+        7..=8 => 6,
+        9..=12 => 7,
+        13..=20 => 8,
+        _ => 9,
+    };
+    let cnt = match KRc::strong_count(e) {
+        0..=2 => 0,
+        3 => 1,
+        4 => 2,
+        5..=8 => 3,
+        9..=16 => 4,
+        17..=64 => 5,
+        _ => 6,
+    };
+    let kind = match &**e {
+        Expr::Var(_) => 0,
+        Expr::App(..) => 1,
+        Expr::Lam(..) => 2,
+        Expr::Pi(..) => 3,
+        Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => 4,
+        Expr::Id(..) | Expr::Refl(_) | Expr::J { .. } => 5,
+        _ => 6,
+    };
+    bump(|s| {
+        for (h, i) in [(&mut s.by_klen[0][cell], kl), (&mut s.by_count[0][cell], cnt), (&mut s.by_kind[0][cell], kind)] {
+            h.lookups[i] += 1;
+            if hit {
+                h.hits[i] += 1;
+            }
+        }
+    });
 }
 thread_local! {
     static STATS: RefCell<Stats> = RefCell::new(Stats::default());
@@ -87,8 +133,17 @@ fn memo_key(e: &KRc<Expr>, env: &Env) -> (usize, Vec<usize>) {
     (KRc::as_ptr(e) as *const u8 as usize, cells)
 }
 
+thread_local! {
+    static MAX_LOOSE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+/// Only nodes with at most this many loose variables are memoised by `def_eq_lazy_shared`
+/// (default `0`: closed nodes only, whose key is just their address; `u32::MAX` memoises all).
+pub fn set_memo_max_loose(n: u32) {
+    MAX_LOOSE.with(|c| c.set(n));
+}
+
 fn memo_on(e: &KRc<Expr>) -> bool {
-    KRc::strong_count(e) > 1 && MEMO.with(|m| m.borrow().is_some())
+    KRc::strong_count(e) > 1 && e.loose() <= MAX_LOOSE.with(|c| c.get()) && MEMO.with(|m| m.borrow().is_some())
 }
 
 type V = Rc<Val>;
@@ -115,9 +170,11 @@ impl Thunk {
         let key = memo_key(e, env);
         if let Some(t) = MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.cells.get(&key).map(|x| x.2.clone()))) {
             bump(|s| s.cell_hits += 1);
+            record(1, e, key.1.len(), true);
             return t;
         }
         let t = fresh();
+        record(1, e, key.1.len(), false);
         MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.cells.insert(key, (e.clone(), env.clone(), t.clone()))));
         t
     }
@@ -236,8 +293,10 @@ fn eval(env: &Env, e: &KRc<Expr>) -> V {
     let key = memo_key(e, env);
     if let Some(v) = MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.vals.get(&key).map(|x| x.2.clone()))) {
         bump(|s| s.eval_hits += 1);
+        record(0, e, key.1.len(), true);
         return v;
     }
+    record(0, e, key.1.len(), false);
     let v = eval_node(env, e);
     MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.vals.insert(key, (e.clone(), env.clone(), v.clone()))));
     v
