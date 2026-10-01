@@ -2112,11 +2112,26 @@ fn fingerprint(t: &Term, ops: &[Expr], n: usize, nvars: usize, cache: &mut NfCac
 /// template: per bit, case analysis on the two `GoodBool` witnesses with `refl` leaves (the kernel decides
 /// each leaf), then `cong_n` and the two witness eliminations. A false conjecture fails to check.
 fn bitwise_law(n: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
-    let ops = [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b))];
     let (bit_law, _) = lemma2(
         &|a, b| id(bool0(), t1.bit(&[a.clone(), b.clone()]), t2.bit(&[a, b])),
         &|va, vb| refl(t1.bit(&[bit(va), bit(vb)])),
     );
+    two_var_law(n, t1, t2, &|a, ga, b, gb| {
+        let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
+        for i in 0..n {
+            s1.push(t1.bit(&[a(i), b(i)]));
+            s2.push(t2.bit(&[a(i), b(i)]));
+            e.push(apps(bit_law.clone(), vec![a(i), b(i), ga(i), gb(i)]));
+        }
+        (s1, s2, e)
+    })
+}
+
+type BitFn<'a> = &'a dyn Fn(usize) -> Expr;
+/// The skeleton shared by two-variable laws `t1(x, y) = t2(x, y)`: eliminates the two `GoodBv` witnesses and
+/// calls `per_bit(a, ga, b, gb)` (the bit and witness variables) for the per-bit equalities `(s1, s2, proofs)`.
+fn two_var_law(n: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(BitFn, BitFn, BitFn, BitFn) -> (Vec<Expr>, Vec<Expr>, Vec<Expr>)) -> (Expr, Expr) {
+    let ops = [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b))];
     // ctx: x, y, gx, gy, a_0.., ga_0.., b_0.., gb_0..
     let d1 = 4 + 2 * n;
     let d2 = d1 + 2 * n;
@@ -2124,12 +2139,7 @@ fn bitwise_law(n: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
     let ga = |i: usize| var((d2 - 1 - (4 + n + i)) as u32);
     let b = |i: usize| var((d2 - 1 - (d1 + i)) as u32);
     let gb = |i: usize| var((d2 - 1 - (d1 + n + i)) as u32);
-    let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
-    for i in 0..n {
-        s1.push(t1.bit(&[a(i), b(i)]));
-        s2.push(t2.bit(&[a(i), b(i)]));
-        e.push(apps(bit_law.clone(), vec![a(i), b(i), ga(i), gb(i)]));
-    }
+    let (s1, s2, e) = per_bit(&a, &ga, &b, &gb);
     let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
     fbody = lam(sort(1), lam(karrow(n), fbody));
     for _ in 0..n {
@@ -2424,6 +2434,100 @@ fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
     assert!(rewrite_law(n, &op(0, v(0), v(1)), &op(0, v(0), v(0))).is_none());
 }
 
+// ---- Carry-chain builder (search note section 13): `add A B = T` for bitwise A, B, T over x, y, with no
+// lemma-specific template. It *discovers* the proof invariant: a constant value R for the carry that is
+// inductive (the carry stays R for every pair of operand bits, starting from the initial `false`) and under
+// which every sum bit equals the target bit. Both are decided by truth table before anything is built.
+
+/// The constant carry value (as a literal bit) that works for `add a b = t`, if any.
+fn find_constant_carry(a: &Term, b: &Term, t: &Term) -> Option<bool> {
+    let carry = |x: Expr, y: Expr, c: Expr| or(and(x.clone(), y.clone()), and(c, xor(x, y)));
+    [false, true].into_iter().find(|&r| {
+        // the initial carry is `false`, so only `false` can be maintained from the start
+        !r && (0..4).all(|m| {
+            let bits = [bit(m & 1 == 1), bit(m & 2 == 2)];
+            let (ab, bb, tb) = (a.bit(&bits), b.bit(&bits), t.bit(&bits));
+            normalize(&carry(ab.clone(), bb.clone(), bit(r))) == bit(r) && normalize(&sum3(ab, bb, bit(r))) == normalize(&tb)
+        })
+    })
+}
+
+/// Proof of `t1 = t2` where `t1 = add A B` (bitwise `A`, `B`) and `t2` is bitwise, over two good vectors, by the
+/// discovered constant-carry invariant; `None` when no constant carry works.
+fn carry_chain_law(n: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
+    let Term::Op(0, a_term, b_term) = t1 else { return None };
+    if a_term.uses_add() || b_term.uses_add() || t2.uses_add() || t1.max_var().max(t2.max_var()) > 1 {
+        return None;
+    }
+    let r = bit(find_constant_carry(a_term, b_term, t2)?);
+    let carry = |x: Expr, y: Expr, c: Expr| or(and(x.clone(), y.clone()), and(c, xor(x, y)));
+    // per-bit lemmas, by case analysis on the two operand bits
+    let (p_carry, _) = lemma2(
+        &|x, y| id(bool0(), carry(a_term.bit(&[x.clone(), y.clone()]), b_term.bit(&[x.clone(), y.clone()]), r.clone()), r.clone()),
+        &|_, _| refl(r.clone()),
+    );
+    let (p_sum, _) = lemma2(
+        &|x, y| id(bool0(), sum3(a_term.bit(&[x.clone(), y.clone()]), b_term.bit(&[x.clone(), y.clone()]), r.clone()), t2.bit(&[x, y])),
+        &|vx, vy| refl(t2.bit(&[bit(vx), bit(vy)])),
+    );
+    Some(two_var_law(n, t1, t2, &|a, ga, b, gb| {
+        let bl = bool0();
+        let (ai, bi) = (|i: usize| a_term.bit(&[a(i), b(i)]), |i: usize| b_term.bit(&[a(i), b(i)]));
+        let mut c = vec![r.clone()];
+        let mut pc: Vec<Option<Expr>> = vec![None];
+        let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
+        for i in 0..n {
+            let args = vec![a(i), b(i), ga(i), gb(i)];
+            // sum bit: rewrite the carry to R, then the sum lemma
+            let s_i = sum3(ai(i), bi(i), c[i].clone());
+            let to_target = apps(p_sum.clone(), args.clone());
+            e.push(match &pc[i] {
+                None => to_target,
+                Some(pci) => {
+                    let fmap = lam(bl.clone(), sum3(shift(&ai(i), 0, 1), shift(&bi(i), 0, 1), var(0)));
+                    let rewritten = cong1(&bl, &bl, &fmap, c[i].clone(), r.clone(), pci.clone());
+                    trans_proof(&bl, &s_i, &sum3(ai(i), bi(i), r.clone()), &t2.bit(&[a(i), b(i)]), rewritten, to_target)
+                }
+            });
+            s1.push(s_i);
+            s2.push(t2.bit(&[a(i), b(i)]));
+            // next carry stays R
+            let next = carry(ai(i), bi(i), c[i].clone());
+            let stays = apps(p_carry.clone(), args);
+            pc.push(Some(match &pc[i] {
+                None => stays,
+                Some(pci) => {
+                    let fmap = lam(bl.clone(), carry(shift(&ai(i), 0, 1), shift(&bi(i), 0, 1), var(0)));
+                    let rewritten = cong1(&bl, &bl, &fmap, c[i].clone(), r.clone(), pci.clone());
+                    trans_proof(&bl, &next, &carry(ai(i), bi(i), r.clone()), &r, rewritten, stays)
+                }
+            }));
+            c.push(next);
+        }
+        (s1, s2, e)
+    }))
+}
+
+#[test]
+fn carry_chain_builder_finds_the_constant_carry() {
+    let v = |i: usize| Term::V(i);
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    for n in [1usize, 2, 4] {
+        for (name, t1, t2) in [
+            ("add x (xor x -1) = -1", op(0, v(0), op(3, v(0), Term::Ones)), Term::Ones),
+            ("add (xor -1 y) y = -1", op(0, op(3, Term::Ones, v(1)), v(1)), Term::Ones),
+            ("add x 0 = x", op(0, v(0), Term::Zero), v(0)),
+            ("add (and x 0) y = y", op(0, op(1, v(0), Term::Zero), v(1)), v(1)),
+        ] {
+            let (p, s) = carry_chain_law(n, &t1, &t2).unwrap_or_else(|| panic!("{name}: no constant carry"));
+            ck(&format!("{name} at n={n}"), &p, &s);
+        }
+        // no constant carry exists for these
+        assert!(carry_chain_law(n, &op(0, v(0), v(1)), &op(0, v(1), v(0))).is_none());
+        assert!(carry_chain_law(n, &op(0, v(0), Term::Ones), &v(0)).is_none());
+    }
+}
+
 /// Mine at width `MINER_N` (default 4) over `MINER_VARS` variables (default 2), `MINER_DEEP=1` for terms two
 /// operators deep. Prints the classes, then tries every conjecture over x, y with the generic builder.
 #[test]
@@ -2444,7 +2548,7 @@ fn conjecture_miner() {
     let show = std::env::var("MINER_SHOW").is_ok();
     // Every conjecture (class representative = shortest term) over x, y, by what can check it.
     let (mut by_builder, mut rejected, mut needs_add, mut needs_z) = (0, vec![], vec![], 0);
-    let (mut by_rewrite, mut rewrite_bugs) = (0, vec![]);
+    let (mut by_rewrite, mut rewrite_bugs, mut by_chain) = (0, vec![], 0);
     let t1 = Instant::now();
     for c in classes.values().filter(|c| c.len() > 1) {
         let mut members: Vec<&Term> = c.iter().map(|&i| &ts[i]).collect();
@@ -2460,7 +2564,14 @@ fn conjecture_miner() {
                 match rewrite_law(n, members[0], other) {
                     Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_rewrite += 1,
                     Some(_) => rewrite_bugs.push(law),
-                    None => needs_add.push(law),
+                    None => {
+                        // the generic carry-chain builder, in either orientation
+                        let chain = carry_chain_law(n, members[0], other).or_else(|| carry_chain_law(n, other, members[0]));
+                        match chain {
+                            Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_chain += 1,
+                            _ => needs_add.push(law),
+                        }
+                    }
                 }
             } else {
                 let (p, s) = bitwise_law(n, members[0], other);
@@ -2473,6 +2584,7 @@ fn conjecture_miner() {
         }
     }
     println!("MINER generic builder: {by_builder} proved, {} rejected {rejected:?}, in {:?}", rejected.len(), t1.elapsed());
+    println!("MINER carry-chain builder: {by_chain} proved");
     println!("MINER rewrite: {by_rewrite} proved, {} failed to check {:?}", rewrite_bugs.len(), &rewrite_bugs[..rewrite_bugs.len().min(5)]);
     println!("MINER no builder: {} still need `add`, {needs_z} use a third variable", needs_add.len());
     for law in needs_add.iter().take(12) {
