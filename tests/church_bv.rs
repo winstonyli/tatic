@@ -953,7 +953,8 @@ fn eq_bv(n: usize) -> Expr {
 fn wrap_div(n: usize, a: Expr, b: Expr, r: Expr) -> Expr {
     let min = 1u128 << (n - 1);
     let all = if n == 128 { u128::MAX } else { (1u128 << n) - 1 };
-    let cond = and(app2(eq_bv(n), a, lit(n, min)), app2(eq_bv(n), b, lit(n, all)));
+    // the guard sits under `C k r_0..`, so `a` and `b` move past those n + 2 binders
+    let cond = and(app2(eq_bv(n), shift(&a, 0, n as i32 + 2), lit(n, min)), app2(eq_bv(n), shift(&b, 0, n as i32 + 2), lit(n, all)));
     // ctx [.., C, k, r_0..]: k = var(n), r_i = var(n-1-i)
     let outs = (0..n).map(|i| mux(cond.clone(), bit((min >> i) & 1 == 1), var((n - 1 - i) as u32))).collect();
     let mut body = apps(var(n as u32), outs);
@@ -1121,5 +1122,383 @@ fn sdiv_flag_matches_the_spec_on_literals() {
                 assert!(!def_eq(&got, &bit(!some)), "flag must not be both, a={a:#x} b={b:#x} n={n}");
             }
         }
+    }
+}
+
+// ---- H3, forward direction (design doc section 87): `GoodBv x -> eq x L = true -> x = L` for a literal `L`.
+
+/// `GoodBool` of a literal bit: `\P h1 h0. h_b`.
+fn good_bit(b: bool) -> Expr {
+    lam(arrow(bool0(), sort(1)), lam(app(var(0), t()), lam(app(var(1), f()), var(if b { 1 } else { 0 }))))
+}
+/// Closed `Pi a b. GoodBool a -> GoodBool b -> body(a, b)` by case analysis on both; `leaf(va, vb)` proves
+/// `body(lit va, lit vb)` (it must be a closed term).
+fn lemma2(body: &dyn Fn(Expr, Expr) -> Expr, leaf: &dyn Fn(bool, bool) -> Expr) -> (Expr, Expr) {
+    // ctx [a, b, ga, gb]; eliminating `a` under a motive binder puts `b` at var 3
+    let elim_b = |va: bool| app3(var(0), lam(bool0(), body(bit(va), var(0))), leaf(va, true), leaf(va, false));
+    let proof_body = app3(var(1), lam(bool0(), body(var(0), var(3))), elim_b(true), elim_b(false));
+    let proof = lam(bool0(), lam(bool0(), lam(app(good_bool(), var(1)), lam(app(good_bool(), var(1)), proof_body))));
+    let ty = pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)), body(var(3), var(2))))));
+    (proof, ty)
+}
+fn id_t(x: Expr) -> Expr {
+    id(bool0(), x, t())
+}
+/// `\h. h` against a hypothesis `Id(Bool0, v, true)` whose `v` computes to `false`, or `refl`.
+fn hyp_or_refl(h_ty: Expr, trivial: bool) -> Expr {
+    lam(h_ty, if trivial { refl(t()) } else { var(0) })
+}
+/// `(proof, type)` of `Pi c y. Good c -> Good y -> Id(and c y, true) -> Id(c, true)` (`left`) or `-> Id(y, true)`.
+fn and_peel(left: bool) -> (Expr, Expr) {
+    lemma2(
+        &move |c, y| arrow(id_t(and(c.clone(), y.clone())), id_t(if left { c } else { y })),
+        &move |a, b| hyp_or_refl(id_t(and(bit(a), bit(b))), if left { a } else { b }),
+    )
+}
+/// `Pi c y. Good c -> Good y -> Good (and c y)`. Not by `lemma2`: `Good` is a Sort2 claim and the bit
+/// eliminator reaches only Sort1, so this applies the witnesses to the caller's own motive `P`:
+/// `fun c y gc gy P h1 h0 => gc (fun c' => P (and c' y)) (gy (fun y' => P (and true y')) h1 h0) h0`.
+fn good_and_lemma() -> (Expr, Expr) {
+    // ctx [c, y, gc, gy, P, h1, h0, c']
+    let motive = lam(bool0(), app(var(3), and(var(0), var(6))));
+    // `and true y` is the eta-expansion of `y`, which conversion does not identify with `y`: eliminate `y` too
+    let motive_y = lam(bool0(), app(var(3), and(t(), var(0))));
+    let body = app3(var(4), motive, app3(var(3), motive_y, var(1), var(0)), var(0));
+    let pty = arrow(bool0(), sort(1));
+    let proof = lam(bool0(), lam(bool0(), lam(app(good_bool(), var(1)), lam(app(good_bool(), var(1)),
+        lam(pty, lam(app(var(0), t()), lam(app(var(1), f()), body)))))));
+    let ty = pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)),
+        app(good_bool(), and(var(3), var(2)))))));
+    (proof, ty)
+}
+/// `Pi x:Bool0. Good x -> Id(xnor(x, l), true) -> Id(x, l)` for the literal bit `l`.
+fn bit_from_xnor(l: bool) -> (Expr, Expr) {
+    let xn = move |x: Expr| not_(xor(x, bit(l)));
+    bit_lemma_hyp(
+        move |x| arrow(id_t(xn(x.clone())), id(bool0(), x, bit(l))),
+        // x = true / x = false: equal to `l` (refl), else the hypothesis is `false = true`
+        move |v| {
+            let h = id_t(xn(bit(v)));
+            lam(h.clone(), if v == l { refl(bit(l)) } else if v { sym(&bool0(), &f(), &t(), var(0)) } else { var(0) })
+        },
+    )
+}
+/// `Pi x. Good x -> Good (xnor(x, l))`, as `good_and_lemma`: `fun x gx P h1 h0 => gx (fun x' => P (xnor x' l)) h_(!l) h_l`.
+fn good_xnor_lit(l: bool) -> (Expr, Expr) {
+    // ctx [x, gx, P, h1, h0, x']
+    let motive = lam(bool0(), app(var(3), not_(xor(var(0), bit(l)))));
+    // xnor(true, l) is true iff l; xnor(false, l) is true iff !l
+    let hv = |v: bool| if v == l { var(1) } else { var(0) };
+    let body = app3(var(3), motive, hv(true), hv(false));
+    let proof = lam(bool0(), lam(app(good_bool(), var(0)), lam(arrow(bool0(), sort(1)),
+        lam(app(var(0), t()), lam(app(var(1), f()), body)))));
+    let ty = pi(bool0(), arrow(app(good_bool(), var(0)), app(good_bool(), not_(xor(var(0), bit(l))))));
+    (proof, ty)
+}
+/// `bit_lemma` with the two leaves made by `leaf(value)`; `body` builds the claim from the variable.
+fn bit_lemma_hyp(body: impl Fn(Expr) -> Expr, leaf: impl Fn(bool) -> Expr) -> (Expr, Expr) {
+    bit_lemma(body(var(0)), leaf(true), leaf(false))
+}
+
+/// `(proof, statement)` of `Pi x. GoodBv x -> Id(Bool0, eq_bv x L, true) -> Id(Bv_n, x, L)`, `L = lit(n, l)`.
+fn eq_lit_sound(n: usize, l: u128, stated: u128) -> (Expr, Expr) {
+    let lb = |i: usize| (l >> i) & 1 == 1;
+    let (peel_l, _) = and_peel(true);
+    let (peel_r, _) = and_peel(false);
+    let (good_and, _) = good_and_lemma();
+    let (bit_eq_t, _) = bit_from_xnor(true);
+    let (bit_eq_f, _) = bit_from_xnor(false);
+    let (gx_t, _) = good_xnor_lit(true);
+    let (gx_f, _) = good_xnor_lit(false);
+    // ctx of the step body: [x, g, a_0.., ga_0.., h]; `at(d)` places a_i / ga_i at depth d
+    let a_at = |d: usize, i: usize| var((d - 1 - (2 + i)) as u32);
+    let ga_at = |d: usize, i: usize| var((d - 1 - (2 + n + i)) as u32);
+    let chain = |d: usize, k: usize| {
+        let mut acc = t();
+        for i in 0..k {
+            acc = and(acc, not_(xor(a_at(d, i), bit(lb(i)))));
+        }
+        acc
+    };
+    let d = 2 + 2 * n;
+    let dh = d + 1;
+    // good witnesses of the chain prefixes and of each xnor, at depth dh
+    let xn = |i: usize| not_(xor(a_at(dh, i), bit(lb(i))));
+    let gxn = |i: usize| apps(if lb(i) { gx_t.clone() } else { gx_f.clone() }, vec![a_at(dh, i), ga_at(dh, i)]);
+    let mut gc = vec![good_bit(true)];
+    for i in 0..n {
+        gc.push(apps(good_and.clone(), vec![chain(dh, i), xn(i), gc[i].clone(), gxn(i)]));
+    }
+    // peel h : Id(chain_n, true) down to Id(xnor_i, true), then to Id(a_i, l_i)
+    let mut h = var(0);
+    let mut ps = vec![None; n];
+    for k in (1..=n).rev() {
+        let args = |gcv: &Expr| vec![chain(dh, k - 1), xn(k - 1), gcv.clone(), gxn(k - 1), h.clone()];
+        let hx = apps(peel_r.clone(), args(&gc[k - 1]));
+        let h_next = apps(peel_l.clone(), args(&gc[k - 1]));
+        let be = if lb(k - 1) { bit_eq_t.clone() } else { bit_eq_f.clone() };
+        ps[k - 1] = Some(apps(be, vec![a_at(dh, k - 1), ga_at(dh, k - 1), hx]));
+        h = h_next;
+    }
+    let ps: Vec<Expr> = ps.into_iter().map(|p| p.unwrap()).collect();
+    let xs: Vec<Expr> = (0..n).map(|i| a_at(dh, i)).collect();
+    let ls: Vec<Expr> = (0..n).map(|i| bit(lb(i))).collect();
+    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    fbody = lam(sort(1), lam(karrow(n), fbody));
+    for _ in 0..n {
+        fbody = lam(bool0(), fbody);
+    }
+    let concl = cong_n(&bool0(), &bv_ty(n), &fbody, &xs, &ls, ps);
+    let mut step = lam(id_t(chain(d, n)), concl);
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    let big_l = lit(n, stated);
+    let claim = |x: Expr| arrow(id_t(app2(eq_bv(n), x.clone(), lit(n, l))), id(bv_ty(n), x, big_l.clone()));
+    let motive = lam(bv_ty(n), claim(var(0)));
+    let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
+    let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), claim(var(0))));
+    (proof, stmt)
+}
+
+#[test]
+fn eq_with_a_literal_implies_equality_on_good_vectors() {
+    // the bit lemmas, against their own types
+    for (name, (p, ty)) in [
+        ("and_l", and_peel(true)),
+        ("and_r", and_peel(false)),
+        ("good_and", good_and_lemma()),
+        ("bit_t", bit_from_xnor(true)),
+        ("bit_f", bit_from_xnor(false)),
+        ("gx_t", good_xnor_lit(true)),
+        ("gx_f", good_xnor_lit(false)),
+    ] {
+        ck(name, &p, &ty);
+    }
+    for n in [1usize, 2, 4, 8, 32] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let mask = (1u128 << n) - 1;
+        for l in [0u128, 1, 0b1010 & mask, mask, 1u128 << (n - 1)] {
+            let (p, s) = eq_lit_sound(n, l, l);
+            let t0 = Instant::now();
+            ck(&format!("H3 n={n} l={l:#x}"), &p, &s);
+            if l == mask {
+                println!("H3 n={n}: checked in {:?}", t0.elapsed());
+            }
+            // Mutation: the conclusion `x = L'` for another literal must be rejected.
+            let (p2, s2) = eq_lit_sound(n, l, l ^ 1);
+            assert!(check(&Ctx::new(), &p2, &s2).is_err(), "x = L xor 1 must be rejected, n={n} l={l:#x}");
+        }
+    }
+}
+
+// ---- D1 (guard => None) and D2 (payload) for symbolic operands (design doc section 87).
+
+fn min_all(n: usize) -> (u128, u128) {
+    (1u128 << (n - 1), if n == 128 { u128::MAX } else { (1u128 << n) - 1 })
+}
+/// `(proof, statement)` of `Pi a b. Id(b, lit z) -> Id(sdiv_some a b, false)`: true for `z = 0`, false (and
+/// rejected) otherwise.
+fn sdiv_none_if_zero(n: usize, z: u128) -> (Expr, Expr) {
+    // ctx [a, b, h]: a = var 2, b = var 1
+    let ff = lam(bv_ty(n), sdiv_some(n, var(3), var(0)));
+    let proof = lam(bv_ty(n), lam(bv_ty(n), lam(id(bv_ty(n), var(0), lit(n, z)),
+        cong1(&bv_ty(n), &bool0(), &ff, var(1), lit(n, z), var(0)))));
+    // statement at ctx [a, b]: Id(b, lit z) -> Id(flag, f)   (arrow: bodies at ctx [a, b])
+    let stmt = pi(bv_ty(n), pi(bv_ty(n), arrow(id(bv_ty(n), var(0), lit(n, z)), id(bool0(), sdiv_some(n, var(1), var(0)), f()))));
+    (proof, stmt)
+}
+/// `(proof, statement)` of `Pi a b. Id(a, MIN) -> Id(b, lit w) -> Id(sdiv_some a b, false)`; `w = -1` is the overflow case.
+fn sdiv_none_on_overflow(n: usize, w: u128) -> (Expr, Expr) {
+    let (min, all) = min_all(n);
+    // F = \a' b'. flag a' b'   (closed)
+    let ff = lam(bv_ty(n), lam(bv_ty(n), sdiv_some(n, var(1), var(0))));
+    // ctx [a, b, ha, hb]
+    let proof = lam(bv_ty(n), lam(bv_ty(n), lam(id(bv_ty(n), var(1), lit(n, min)), lam(id(bv_ty(n), var(1), lit(n, w)),
+        cong_n(&bv_ty(n), &bool0(), &ff, &[var(3), var(2)], &[lit(n, min), lit(n, all)], vec![var(1), var(0)])))));
+    let stmt = pi(bv_ty(n), pi(bv_ty(n), arrow(id(bv_ty(n), var(1), lit(n, min)), arrow(id(bv_ty(n), var(0), lit(n, w)),
+        id(bool0(), sdiv_some(n, var(1), var(0)), f())))));
+    (proof, stmt)
+}
+/// `(proof, statement)` of `Pi a b. Id(Bool0, guard a b, false) -> Pi r. GoodBv r -> Id(Bv, wrap_div a b r, r)`,
+/// where `guard a b = eq a MIN and eq b -1`: with the guard false the wrapper returns the raw quotient `r`.
+fn wrap_div_keeps_r(n: usize, claimed: bool) -> (Expr, Expr) {
+    let (min, all) = min_all(n);
+    let guard = |a: Expr, b: Expr| and(app2(eq_bv(n), a, lit(n, min)), app2(eq_bv(n), b, lit(n, all)));
+    // F c = \C k. k (mux c m_0 r_0) .. with r = mk r_0..; at ctx [a, b, h, r, gr, r_0.., gr_0.., c]
+    let m = |i: usize| bit((min >> i) & 1 == 1);
+    let d = 5 + 2 * n; // ctx depth before the \c binder
+    let r_at = |i: usize, depth: usize| var((depth - 1 - (5 + i)) as u32);
+    // under \C k: depth d + 1 + 2, c = var(2), r_i = var(d+2 - 1 - (5+i) + 0)
+    let outs: Vec<Expr> = (0..n).map(|i| mux(var(2), m(i), r_at(i, d + 3))).collect();
+    let fbody = lam(sort(1), lam(karrow(n), apps(var(0), outs)));
+    let ff = lam(bool0(), fbody);
+    let g_at = |a: Expr, b: Expr| guard(a, b);
+    // h : Id(guard a b, f) at ctx [a, b, h, ...]: h = var(d - 1 - 2)
+    let h = var((d - 1 - 2) as u32);
+    let (ga, gb) = (var((d - 1) as u32), var((d - 2) as u32));
+    let guard_ab = g_at(ga, gb);
+    let to_f = cong1(&bool0(), &bv_ty(n), &ff, guard_ab.clone(), f(), h);
+    // With the guard false each bit is `mux f m r_i`, which computes to the eta-expansion of `r_i` (and
+    // conversion has no eta), so close the gap bit by bit: `r_i = eta r_i` by cases on `GoodBool r_i`.
+    let eta = |x: Expr| lam(sort(0), lam(var(0), lam(var(1), app3(shift(&x, 0, 3), var(2), var(1), var(0)))));
+    let (e_lemma, _) = bit_lemma(id(bool0(), var(0), eta(var(0))), refl(t()), refl(f()));
+    let gr_at = |i: usize| var((d - 1 - (5 + n + i)) as u32);
+    let ps: Vec<Expr> = (0..n)
+        .map(|i| sym(&bool0(), &r_at(i, d), &eta(r_at(i, d)), app2(e_lemma.clone(), r_at(i, d), gr_at(i))))
+        .collect();
+    let etas: Vec<Expr> = (0..n).map(|i| eta(r_at(i, d))).collect();
+    let rs: Vec<Expr> = (0..n).map(|i| r_at(i, d)).collect();
+    let mut tuple = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    tuple = lam(sort(1), lam(karrow(n), tuple));
+    for _ in 0..n {
+        tuple = lam(bool0(), tuple);
+    }
+    let to_r = cong_n(&bool0(), &bv_ty(n), &tuple, &etas, &rs, ps);
+    let f_false = app(ff.clone(), f());
+    let mk_r = mk(&rs);
+    let step_body = trans_proof(&bv_ty(n), &app(ff.clone(), guard_ab), &f_false, &mk_r, to_f, to_r);
+    let mut step = step_body;
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    // statement pieces at ctx [a, b, h, r]
+    let target = |a: Expr, b: Expr, r: Expr| id(bv_ty(n), wrap_div(n, a, b, r.clone()), if claimed { r } else { lit(n, 0) });
+    // motive at ctx [a, b, h, r, gr, r']: a = var 5, b = var 4
+    let motive = lam(bv_ty(n), target(var(5), var(4), var(0)));
+    let body = app2(var(0), motive, step);
+    let proof = lam(bv_ty(n), lam(bv_ty(n), lam(id(bool0(), guard(var(1), var(0)), f()),
+        lam(bv_ty(n), lam(app(good_bv(n), var(0)), body)))));
+    // statement: Pi a b. Id(guard, f) -> Pi r. GoodBv r -> target   (arrow bodies at the outer ctx)
+    let stmt = pi(bv_ty(n), pi(bv_ty(n), arrow(id(bool0(), guard(var(1), var(0)), f()),
+        pi(bv_ty(n), arrow(app(good_bv(n), var(0)), target(var(2), var(1), var(0)))))));
+    (proof, stmt)
+}
+
+#[test]
+fn sdiv_is_none_on_the_guard_and_wrapper_keeps_r_otherwise() {
+    for n in [1usize, 2, 4, 8, 32] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let (_, all) = min_all(n);
+        let (p, s) = sdiv_none_if_zero(n, 0);
+        ck(&format!("D1 b=0, n={n}"), &p, &s);
+        let (p1, s1) = sdiv_none_if_zero(n, 1);
+        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "b=1 must not give None, n={n}");
+        let (p, s) = sdiv_none_on_overflow(n, all);
+        ck(&format!("D1 overflow, n={n}"), &p, &s);
+        let (p1, s1) = sdiv_none_on_overflow(n, all ^ 1);
+        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "b=-2 must not give None, n={n}");
+        let t0 = Instant::now();
+        let (p, s) = wrap_div_keeps_r(n, true);
+        ck(&format!("D2 payload, n={n}"), &p, &s);
+        println!("D2 payload n={n}: checked in {:?}", t0.elapsed());
+        let (p1, s1) = wrap_div_keeps_r(n, false);
+        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "payload is not 0, n={n}");
+    }
+}
+
+// ---- `GoodBv` is preserved by `add` (design doc section 87): the witness `toN` needs for `add x y`.
+
+/// `Pi c y. Good c -> Good y -> Good (op c y)` for a binary bit operation with truth table `tab`, by
+/// eliminating both witnesses into the caller's own motive `P` (Good is Sort2; see `good_and_lemma`).
+fn good2(op: &dyn Fn(Expr, Expr) -> Expr, tab: &dyn Fn(bool, bool) -> bool) -> (Expr, Expr) {
+    // ctx [c, y, gc, gy, P, h1, h0]; `hv` picks the leaf for a truth value
+    let hv = |v: bool| if v { var(1) } else { var(0) };
+    let motive = lam(bool0(), app(var(3), op(var(0), var(6))));
+    let branch = |c: bool| {
+        // under the `y'` binder: P = var 3
+        let m = lam(bool0(), app(var(3), op(bit(c), var(0))));
+        app3(var(3), m, hv(tab(c, true)), hv(tab(c, false)))
+    };
+    let body = app3(var(4), motive, branch(true), branch(false));
+    let proof = lam(bool0(), lam(bool0(), lam(app(good_bool(), var(1)), lam(app(good_bool(), var(1)),
+        lam(arrow(bool0(), sort(1)), lam(app(var(0), t()), lam(app(var(1), f()), body)))))));
+    let ty = pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)),
+        app(good_bool(), op(var(3), var(2)))))));
+    (proof, ty)
+}
+
+/// `(proof, type)` of `Pi x y. GoodBv x -> GoodBv y -> GoodBv (add x y)`.
+fn good_add(n: usize) -> (Expr, Expr) {
+    let (g_and, _) = good2(&|a, b| and(a, b), &|a, b| a && b);
+    let (g_or, _) = good2(&|a, b| or(a, b), &|a, b| a || b);
+    let (g_xor, _) = good2(&|a, b| xor(a, b), &|a, b| a != b);
+    // `GoodBv (add x y)` is a Sort3 claim, so it cannot be a motive for the witnesses (`Bv -> Sort2`):
+    // take the claim's own `P` and `st` first, then eliminate `gx` and `gy` into `P (add x' y')`.
+    // ctx: x, y, gx, gy, P, st, a_0.., ga_0.., b_0.., gb_0..
+    let da = 6 + 2 * n;
+    let db = da + 2 * n;
+    let a = |i: usize| var((db - 1 - (6 + i)) as u32);
+    let ga = |i: usize| var((db - 1 - (6 + n + i)) as u32);
+    let b = |i: usize| var((db - 1 - (da + i)) as u32);
+    let gb = |i: usize| var((db - 1 - (da + n + i)) as u32);
+    let mut c = f();
+    let mut gc = good_bit(false);
+    let (mut s, mut gs) = (vec![], vec![]);
+    for i in 0..n {
+        let x = xor(a(i), b(i));
+        let gx = apps(g_xor.clone(), vec![a(i), b(i), ga(i), gb(i)]);
+        s.push(xor(x.clone(), c.clone()));
+        gs.push(apps(g_xor.clone(), vec![x.clone(), c.clone(), gx.clone(), gc.clone()]));
+        let ab = and(a(i), b(i));
+        let g_ab = apps(g_and.clone(), vec![a(i), b(i), ga(i), gb(i)]);
+        let cx = and(c.clone(), x.clone());
+        let g_cx = apps(g_and.clone(), vec![c.clone(), x.clone(), gc.clone(), gx]);
+        let nc = or(ab.clone(), cx.clone());
+        gc = apps(g_or.clone(), vec![ab, cx, g_ab, g_cx]);
+        c = nc;
+    }
+    let st_b = var((db - 1 - 5) as u32);
+    let binders = |mut body: Expr| {
+        for _ in 0..n {
+            body = lam(app(good_bool(), var(n as u32 - 1)), body);
+        }
+        for _ in 0..n {
+            body = lam(bool0(), body);
+        }
+        body
+    };
+    let step_y = binders(apps(st_b, s.into_iter().chain(gs).collect()));
+    let a_da = |i: usize| var((da - 1 - (6 + i)) as u32);
+    let mka = mk(&(0..n).map(|i| shift(&a_da(i), 0, 1)).collect::<Vec<_>>());
+    // under the `y'` binder at depth da + 1: P = var(da - 1 - 4 + 1)
+    let motive_y = lam(bv_ty(n), app(var((da - 4) as u32), app2(add(n), mka, var(0))));
+    let gy = var((da - 1 - 3) as u32);
+    let step_x = binders(app2(gy, motive_y, step_y));
+    // under the `x'` binder at depth 7: P = var 2, y = var 5
+    let motive_x = lam(bv_ty(n), app(var(2), app2(add(n), var(0), var(5))));
+    let body = app2(var(3), motive_x, step_x);
+    let proof = lam(bv_ty(n), lam(bv_ty(n), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)),
+        lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n), body))))));
+    let ty = pi(bv_ty(n), pi(bv_ty(n), arrow(app(good_bv(n), var(1)), arrow(app(good_bv(n), var(0)),
+        app(good_bv(n), app2(add(n), var(1), var(0)))))));
+    (proof, ty)
+}
+
+#[test]
+fn add_preserves_goodness() {
+    for (name, op, tab) in [
+        ("and", &(|a, b| and(a, b)) as &dyn Fn(Expr, Expr) -> Expr, &(|a: bool, b: bool| a && b) as &dyn Fn(bool, bool) -> bool),
+        ("or", &|a, b| or(a, b), &|a, b| a || b),
+        ("xor", &|a, b| xor(a, b), &|a, b| a != b),
+    ] {
+        let (p, ty) = good2(op, tab);
+        ck(&format!("good_{name}"), &p, &ty);
+    }
+    // a wrong truth table must be rejected
+    let (p, ty) = good2(&|a, b| and(a, b), &|a, b| a || b);
+    assert!(check(&Ctx::new(), &p, &ty).is_err(), "and with the or table must be rejected");
+    for n in [1usize, 2, 4, 8, 32] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let (p, ty) = good_add(n);
+        let t0 = Instant::now();
+        ck(&format!("good_add n={n}"), &p, &ty);
+        println!("GOOD-ADD n={n}: checked in {:?}", t0.elapsed());
     }
 }
