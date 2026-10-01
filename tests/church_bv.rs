@@ -580,7 +580,7 @@ fn walk_counts_on_hard_queries() {
         let tck = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);
         println!("CHECK n={n}: whole check {:?}", tck.elapsed());
-        { let w = take_walk_counts(); println!("CHECK n={n}: whole-check visits instantiate={} shift={} eq={} conv_whnf={} shift-in-ctx_lookup={}", w[0], w[1], w[2], w[3], w[17]); }
+        { let w = take_walk_counts(); println!("CHECK n={n}: whole-check visits instantiate={} shift={} eq={} conv_whnf={} shift-in-ctx_lookup={}", w[0], w[1], w[2], w[3], w[17]); println!("INFER-MEMO n={n}: single-ref calls={} hits={} misses={} binder entries={}", w[18], w[19], w[20], w[21]); }
         {
             let sc = take_site_counts();
             println!("SITES n={n} [instantiate, shift, eq]: other={:?} ctx_lookup={:?} app_subst={:?} def_eq={:?}", sc[0], sc[1], sc[2], sc[3]);
@@ -648,6 +648,23 @@ fn walk_counts_on_hard_queries() {
             "PROBE3 n={n}: distinct (arg,depth) shifts per def_eq={} of {}; their shift visits={} of {}",
             w[15], w[8], w[16], w[1]
         );
+    }
+}
+
+/// Whole-check wall time without the `record-defeq` feature, best of 3 per width, with the machine's
+/// CPU load before and after (`LONG_RUNS.md`): the figure to compare across kernel changes.
+#[test]
+#[ignore]
+fn whole_check_time() {
+    for n in [32usize, 64] {
+        let (proof, stmt) = add_zero_proof(n, 0);
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            ck(&format!("n={n}"), &proof, &stmt);
+            best = best.min(t0.elapsed());
+        }
+        println!("WHOLE n={n}: best of 3 = {best:?}");
     }
 }
 

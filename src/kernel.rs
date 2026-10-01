@@ -859,11 +859,41 @@ fn free_escaped(l: u32) -> String {
 /// lives -- from scratch at every occurrence.
 #[derive(Default)]
 struct ReductionCache {
-    whnf: HashMap<PtrKey, Rc<Expr>>,
-    nf: HashMap<PtrKey, Expr>,
+    whnf: PtrMap<PtrKey, Rc<Expr>>,
+    nf: PtrMap<PtrKey, Expr>,
     /// Pairs `def_eq` found syntactically unequal; see [`eq_noting`].
-    unequal: HashSet<(PtrKey, PtrKey)>,
+    unequal: PtrSet<(PtrKey, PtrKey)>,
 }
+
+/// Hashes the integers a [`PtrKey`] key is made of (a pointer, a context id) by multiply and
+/// rotate, with no per-map random seed: every `def_eq` call builds a `ReductionCache`, most of
+/// them for a comparison that ends at `==` without inserting anything, and seeding three hashers
+/// for each showed as 4% of a whole check (bit-vector design doc §47). The
+/// keys are the checker's own pointers, not attacker-chosen input, so there is nothing for a
+/// random seed to defend.
+#[derive(Default, Clone, Copy)]
+struct PtrHasher(u64);
+impl std::hash::Hasher for PtrHasher {
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u64(*b as u64);
+        }
+    }
+    fn write_u64(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(5) ^ x).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    fn write_u32(&mut self, x: u32) {
+        self.write_u64(x as u64);
+    }
+    fn write_usize(&mut self, x: usize) {
+        self.write_u64(x as u64);
+    }
+}
+type PtrMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<PtrHasher>>;
+type PtrSet<K> = HashSet<K, std::hash::BuildHasherDefault<PtrHasher>>;
 
 /// `infer`'s memo for one public `infer` or `check` call (`RELATED_WORK.md`
 /// §63). A context is named by an id: 0 is the caller's, and entering a
@@ -876,14 +906,15 @@ struct ReductionCache {
 /// address is reused within the call.
 #[derive(Default)]
 struct InferCache {
-    types: HashMap<(PtrKey, u32), Expr>,
-    contexts: HashMap<(u32, PtrKey), u32>,
+    types: PtrMap<(PtrKey, u32), Expr>,
+    contexts: PtrMap<(u32, PtrKey), u32>,
     next: u32,
 }
 
 impl InferCache {
     /// The id of context `cid` extended by a binder of type `a`.
     fn enter(&mut self, cid: u32, a: &Rc<Expr>) -> u32 {
+        walk_count(21);
         let next = &mut self.next;
         *self.contexts.entry((cid, PtrKey(a.clone()))).or_insert_with(|| {
             *next += 1;
@@ -931,11 +962,6 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
     whnf_step(e, cache).unwrap_or_else(|| e.clone())
 }
 
-/// `whnf`, or `None` when `e` is already in weak head normal form. A stuck
-/// term keeps its allocations: its arguments' and also its stuck head's or
-/// target's. `ReductionCache` is keyed by pointer, so a copy misses it,
-/// and each level of a stuck spine then reduced the whole spine below it
-/// again (`RELATED_WORK.md` §48, §59).
 /// `whnf_step` for an application spine `h a1 ... ak` (`k >= 2`) whose head reduces to a lambda:
 /// peel as many directly nested lambdas as there are arguments and substitute all of them in one
 /// `instantiate_n` pass, instead of one `subst_top` per argument, each rebuilding the body the next
@@ -970,6 +996,11 @@ fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     Some(whnf_impl(&r, cache))
 }
 
+/// `whnf`, or `None` when `e` is already in weak head normal form. A stuck
+/// term keeps its allocations: its arguments' and also its stuck head's or
+/// target's. `ReductionCache` is keyed by pointer, so a copy misses it,
+/// and each level of a stuck spine then reduced the whole spine below it
+/// again (`RELATED_WORK.md` §48, §59).
 fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     grow(|| match e {
         Expr::App(f, a) => {
@@ -1231,7 +1262,7 @@ fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
 /// the way. `conv` recurses into exactly those pairs next, and without the
 /// note each would repeat the walk below it: quadratic on a chain that
 /// differs only at the bottom (`RELATED_WORK.md` §61).
-fn eq_noting(a: &Expr, b: &Expr, unequal: &mut HashSet<(PtrKey, PtrKey)>) -> bool {
+fn eq_noting(a: &Expr, b: &Expr, unequal: &mut PtrSet<(PtrKey, PtrKey)>) -> bool {
     walk_count(2);
     grow(|| {
         same_shape(a, b, |p, q| {
@@ -1492,13 +1523,18 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 /// linear in the DAG and costs unshared terms no hashing. Only successes
 /// are stored: an error ends the whole check.
 fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+    // Probe slots 18 single-reference calls, 19 memo hits, 20 memo misses (inserts), 21 binder
+    // entries (`InferCache::enter`).
     if Rc::strong_count(e) == 1 {
+        walk_count(18);
         return infer_node(g, ic, ctx, cid, e);
     }
     let key = (PtrKey(e.clone()), cid);
     if let Some(ty) = ic.types.get(&key) {
+        walk_count(19);
         return Ok(ty.clone());
     }
+    walk_count(20);
     let ty = infer_node(g, ic, ctx, cid, e)?;
     ic.types.insert(key, ty.clone());
     Ok(ty)
@@ -1686,7 +1722,7 @@ thread_local! {
 // `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static WALKS: [std::cell::Cell<u64>; 18] = const { [const { std::cell::Cell::new(0) }; 18] };
+    static WALKS: [std::cell::Cell<u64>; 22] = const { [const { std::cell::Cell::new(0) }; 22] };
 }
 #[cfg(feature = "record-defeq")]
 thread_local! {
@@ -1732,7 +1768,7 @@ fn walk_count(i: usize) {
 #[inline(always)]
 fn walk_count(_: usize) {}
 #[cfg(feature = "record-defeq")]
-pub fn take_walk_counts() -> [u64; 18] {
+pub fn take_walk_counts() -> [u64; 22] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
 }
 
