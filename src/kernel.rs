@@ -909,6 +909,12 @@ struct InferCache {
     types: PtrMap<(PtrKey, u32), Expr>,
     contexts: PtrMap<(u32, PtrKey), u32>,
     next: u32,
+    /// Probe: for each context id, (parent id, binder type pointer, its loose range).
+    #[cfg(feature = "record-defeq")]
+    info: Vec<(u32, usize, u32)>,
+    /// Probe: (node pointer, signature of the bindings it can depend on) seen so far.
+    #[cfg(feature = "record-defeq")]
+    relaxed: std::collections::HashSet<(usize, u64)>,
 }
 
 impl InferCache {
@@ -916,8 +922,17 @@ impl InferCache {
     fn enter(&mut self, cid: u32, a: &Rc<Expr>) -> u32 {
         walk_count(21);
         let next = &mut self.next;
+        #[cfg(feature = "record-defeq")]
+        let info = &mut self.info;
         *self.contexts.entry((cid, PtrKey(a.clone()))).or_insert_with(|| {
             *next += 1;
+            #[cfg(feature = "record-defeq")]
+            {
+                if info.len() <= *next as usize {
+                    info.resize(*next as usize + 1, (0, 0, 0));
+                }
+                info[*next as usize] = (cid, Rc::as_ptr(a) as usize, a.loose());
+            }
             *next
         })
     }
@@ -926,7 +941,47 @@ impl InferCache {
     /// of the term, like a `Pair`'s inferred first component.
     fn fresh(&mut self) -> u32 {
         self.next += 1;
+        #[cfg(feature = "record-defeq")]
+        {
+            if self.info.len() <= self.next as usize {
+                self.info.resize(self.next as usize + 1, (0, 0, 0));
+            }
+            // unique pointer value, never equal to a real address
+            self.info[self.next as usize] = (0, usize::MAX - self.next as usize, u32::MAX);
+        }
         self.next
+    }
+
+    /// Probe: a signature of the innermost bindings `e` can depend on in context `cid` (the loose
+    /// range of `e`, closed over the loose ranges of those bindings' own types), and how many that
+    /// is.
+    #[cfg(feature = "record-defeq")]
+    fn relevant_signature(&self, cid: u32, e: &Expr) -> (u64, u32) {
+        let mut chain: Vec<(usize, u32)> = Vec::new();
+        let mut c = cid;
+        while c != 0 {
+            let (parent, ptr, loose) = self.info[c as usize];
+            chain.push((ptr, loose));
+            c = parent;
+        }
+        let mut need = loose_of(e) as usize;
+        let mut p = 0;
+        while p < need && p < chain.len() {
+            let m = chain[p].1;
+            if m == u32::MAX {
+                need = chain.len();
+            } else {
+                need = need.max(p + 1 + m as usize);
+            }
+            p += 1;
+        }
+        let take = need.min(chain.len());
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &(ptr, _) in &chain[..take] {
+            h = (h ^ ptr as u64).wrapping_mul(0x100_0000_01b3);
+        }
+        h ^= (need > chain.len()) as u64;
+        (h, take as u32)
     }
 }
 
@@ -1530,6 +1585,21 @@ fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
         return infer_node(g, ic, ctx, cid, e);
     }
     let key = (PtrKey(e.clone()), cid);
+    #[cfg(feature = "record-defeq")]
+    {
+        // Probe slots 22 relaxed-key lookups, 23 strict misses a relaxed key would have hit, 24 sum
+        // of window sizes.
+        let (sig, take) = ic.relevant_signature(cid, e);
+        walk_count(22);
+        WALKS.with(|w| w[24].set(w[24].get() + take as u64));
+        let seen = !ic.relaxed.insert((Rc::as_ptr(e) as usize, sig));
+        if seen && !ic.types.contains_key(&key) {
+            walk_count(23);
+            if loose_of(e) == 0 {
+                walk_count(25);
+            }
+        }
+    }
     if let Some(ty) = ic.types.get(&key) {
         walk_count(19);
         return Ok(ty.clone());
@@ -1722,7 +1792,7 @@ thread_local! {
 // `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static WALKS: [std::cell::Cell<u64>; 22] = const { [const { std::cell::Cell::new(0) }; 22] };
+    static WALKS: [std::cell::Cell<u64>; 26] = const { [const { std::cell::Cell::new(0) }; 26] };
 }
 #[cfg(feature = "record-defeq")]
 thread_local! {
@@ -1768,7 +1838,7 @@ fn walk_count(i: usize) {
 #[inline(always)]
 fn walk_count(_: usize) {}
 #[cfg(feature = "record-defeq")]
-pub fn take_walk_counts() -> [u64; 22] {
+pub fn take_walk_counts() -> [u64; 26] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
 }
 
