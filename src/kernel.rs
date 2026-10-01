@@ -1918,7 +1918,6 @@ fn site(i: usize) -> SiteGuard {
     SiteGuard(SITE.with(|c| c.replace(i)))
 }
 /// (nodes counted once per allocation, nodes counted once per occurrence) in `e`.
-#[cfg(feature = "record-defeq")]
 pub fn term_sizes(e: &Expr) -> (usize, u128) {
     fn go(e: &Expr, seen: &mut HashMap<*const Expr, u128>) -> u128 {
         let mut n = 1u128;

@@ -354,8 +354,22 @@ fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
     }
 }
 
-/// Size of the generated proof by width, without checking it (`record-defeq` for `term_sizes`).
-#[cfg(feature = "record-defeq")]
+/// Scaling gate: the `add x 0 = x` proof's size (nodes counted once per allocation) must keep growing
+/// by no more than 4.5x per doubling of the width, and stay under a fixed size at n=64. Both were
+/// breached by an unshared shift in `cong_n`/`trans_proof` (design doc sections 54-56: 8x per doubling,
+/// 1.58M nodes at n=64, against 3.0x and 288k now). A new proof builder that copies where it should
+/// share fails here, not months later in a timing. Check-time visit counts are gated by hand with
+/// `walk_counts_on_hard_queries` (needs the `record-defeq` feature).
+#[test]
+fn add_zero_proof_size_scales_gently() {
+    let size = |n: usize| tatic::kernel::term_sizes(&add_zero_proof(n, 0).0).0;
+    let (s16, s32, s64) = (size(16), size(32), size(64));
+    assert!(s32 as f64 / s16 as f64 <= 4.5, "n=16 -> 32: {s16} -> {s32} nodes");
+    assert!(s64 as f64 / s32 as f64 <= 4.5, "n=32 -> 64: {s32} -> {s64} nodes");
+    assert!(s64 <= 400_000, "n=64: {s64} nodes");
+}
+
+/// Size of the generated proof by width, without checking it.
 #[test]
 #[ignore]
 fn proof_size_scaling() {
