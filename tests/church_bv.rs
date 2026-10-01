@@ -1906,6 +1906,83 @@ fn add_is_associative_on_symbolic_good_vectors() {
     }
 }
 
+// ---- `add x (xor x -1) = -1` (x + ~x), a carry that stays false (search note section 12).
+
+/// `(proof, statement)` of `Pi x. GoodBv x -> Id(Bv_n, add x (xor x -1), -1)`; `wrong` states `= 0` instead.
+fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {
+    let nb = |a: Expr| xor(a, t());
+    let carry = move |a: Expr, c: Expr| or(and(a.clone(), nb(a.clone())), and(c, xor(a.clone(), nb(a))));
+    let sum = move |a: Expr, c: Expr| xor(xor(a.clone(), nb(a)), c);
+    let (p1, _) = bit_lemma(id(bool0(), sum(var(0), f()), t()), refl(t()), refl(t()));
+    let (p2, _) = bit_lemma(id(bool0(), carry(var(0), f()), f()), refl(f()), refl(f()));
+    // ctx of the step body: [x, g, a_0..a_(n-1), ga_0..ga_(n-1)]
+    let d = 2 + 2 * n;
+    let a = |i: usize| var((d - 1 - (2 + i)) as u32);
+    let ga = |i: usize| var((d - 1 - (2 + n + i)) as u32);
+    let mut c = vec![f()];
+    let mut pc: Vec<Option<Expr>> = vec![None];
+    for i in 0..n {
+        let next = carry(a(i), c[i].clone());
+        let to_false = app2(p2.clone(), a(i), ga(i));
+        let proof = match &pc[i] {
+            None => to_false,
+            Some(pci) => {
+                let fmap = lam(bool0(), carry(shift(&a(i), 0, 1), var(0)));
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                trans_proof(&bool0(), &next, &carry(a(i), f()), &f(), rewritten, to_false)
+            }
+        };
+        c.push(next);
+        pc.push(Some(proof));
+    }
+    let (mut s, mut e) = (vec![], vec![]);
+    for i in 0..n {
+        let s_i = sum(a(i), c[i].clone());
+        let to_t = app2(p1.clone(), a(i), ga(i));
+        let proof = match &pc[i] {
+            None => to_t,
+            Some(pci) => {
+                let fmap = lam(bool0(), sum(shift(&a(i), 0, 1), var(0)));
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                trans_proof(&bool0(), &s_i, &sum(a(i), f()), &t(), rewritten, to_t)
+            }
+        };
+        s.push(s_i);
+        e.push(proof);
+    }
+    let ys: Vec<Expr> = (0..n).map(|_| t()).collect();
+    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    fbody = lam(sort(1), lam(karrow(n), fbody));
+    for _ in 0..n {
+        fbody = lam(bool0(), fbody);
+    }
+    let mut step = cong_n(&bool0(), &bv_ty(n), &fbody, &s, &ys, e);
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    let ones = lit(n, (1u128 << n) - 1);
+    let rhs = if wrong { lit(n, 0) } else { ones.clone() };
+    let xv = bitwise(n, &|p, q| xor(p, q));
+    let claim = |x: Expr| id(bv_ty(n), app2(add(n), x.clone(), app2(xv.clone(), x, ones.clone())), rhs.clone());
+    let motive = lam(bv_ty(n), claim(var(0)));
+    let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
+    let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), claim(var(0))));
+    (proof, stmt)
+}
+
+#[test]
+fn add_of_x_and_not_x_is_all_ones() {
+    for n in [1usize, 2, 4, 8] {
+        let (p, s) = add_not_proof(n, false);
+        ck(&format!("add x (xor x -1) = -1 at n={n}"), &p, &s);
+        let (p, s) = add_not_proof(n, true);
+        assert!(check(&Ctx::new(), &p, &s).is_err(), "... = 0 must be rejected at n={n}");
+    }
+}
+
 // ---- Conjecture miner (design note 2026-10-01-search-execution-blend-design.md, sections 7-9).
 // Terms over x, y (and z) are *run* on every tuple of n-bit literals by the kernel (`normalize`); terms with
 // the same results are conjectured equal; each conjecture is then *checked*: by the matching library
@@ -2107,6 +2184,24 @@ fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
 // each rewrite justified by `cong_n` on the enclosing operator and chained with `trans_proof`; if the two
 // results are then equal, or both add-free, `bitwise_law` closes the gap.
 
+thread_local! {
+    static CLOSED: std::cell::RefCell<std::collections::HashMap<String, (Expr, Expr)>> = Default::default();
+}
+/// A closed library term built once per key (the proofs and witnesses the rewriter reuses at every step).
+fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
+    if let Some(v) = CLOSED.with(|c| c.borrow().get(&key).cloned()) {
+        return v;
+    }
+    let v = build();
+    CLOSED.with(|c| c.borrow_mut().insert(key, v.clone()));
+    v
+}
+
+/// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: zero, comm, assoc, not, collapse).
+fn ablated(name: &str) -> bool {
+    std::env::var("ABLATE").is_ok_and(|v| v.split(',').any(|x| x == name))
+}
+
 /// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
 fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
     let all = (1u128 << n) - 1;
@@ -2117,8 +2212,8 @@ fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
         Term::Op(o, a, b) => {
             let ((av, aw), (bv, bw)) = (witnessed(a, n, goods), witnessed(b, n, goods));
             let (op, good_op) = match o {
-                0 => (add(n), good_add(n).0),
-                _ => {
+                0 => (add(n), memo(format!("good_add{n}"), || good_add(n)).0),
+                _ => memo(format!("gbit{n}_{o}"), || {
                     let o = *o;
                     let opf = move |p: Expr, q: Expr| match o {
                         1 => and(p, q),
@@ -2137,7 +2232,7 @@ fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
                         (s, gs)
                     });
                     (vec, gp)
-                }
+                }),
             };
             (app2(op.clone(), av.clone(), bv.clone()), apps(good_op, vec![av, bv, aw, bw]))
         }
@@ -2155,7 +2250,7 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
     if *o != 0 {
         // a bitwise node equal to 0, -1 or one of its atoms collapses to it (truth table, then `bitwise_law`)
         let mut atoms = vec![];
-        if let Some(abs) = abstract_atoms(&t1, &mut atoms) {
+        if let (false, Some(abs)) = (ablated("collapse"), abstract_atoms(&t1, &mut atoms)) {
             let truth = |t: &Term| (0..4).map(|m| normalize(&t.bit(&[bit(m & 1 == 1), bit(m & 2 == 2)]))).collect::<Vec<_>>();
             let want = truth(&abs);
             let cands = [Term::Zero, Term::Ones, Term::V(0), Term::V(1)];
@@ -2168,29 +2263,52 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
                 }
             }
         }
+        // commutative operands in a fixed order (constants last), by the generic bitwise law
+        let key = |t: &Term| match t {
+            Term::Zero => "~0".to_string(),
+            Term::Ones => "~1".to_string(),
+            _ => t.show(),
+        };
+        if key(&b2) < key(&a2) {
+            let t2 = Term::Op(*o, Box::new(b2.clone()), Box::new(a2.clone()));
+            let ((av, aw), (bv, bw)) = (witnessed(&a2, n, goods), witnessed(&b2, n, goods));
+            let swap = |x: Term, y: Term| Term::Op(*o, Box::new(x), Box::new(y));
+            let law = apps(bitwise_law(n, &swap(Term::V(0), Term::V(1)), &swap(Term::V(1), Term::V(0))).0, vec![av, bv, aw, bw]);
+            return (t2.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&t2), cong, law));
+        }
         return (t1, cong);
     }
     let (av, aw) = witnessed(&a2, n, goods);
     let (bv, bw) = witnessed(&b2, n, goods);
     let assoc = |p: &Term, q: &Term, r: &Term| {
         let ((pv, pw), (qv, qw), (rv, rw)) = (witnessed(p, n, goods), witnessed(q, n, goods), witnessed(r, n, goods));
-        apps(add_assoc_proof(n, false).0, vec![pv, qv, rv, pw, qw, rw])
+        apps(memo(format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
     };
     let sum = |p: &Term, q: &Term| Term::Op(0, Box::new(p.clone()), Box::new(q.clone()));
-    let step = if matches!(b2, Term::Zero) {
-        Some((a2.clone(), app2(add_identity_proof(n, 0, false).0, av, aw)))
-    } else if matches!(a2, Term::Zero) {
-        Some((b2.clone(), app2(add_identity_proof(n, 0, true).0, bv, bw)))
-    } else if let Term::Op(0, p, q) = &a2 {
+    let step = if !ablated("zero") && matches!(b2, Term::Zero) {
+        Some((a2.clone(), app2(memo(format!("idr{n}"), || add_identity_proof(n, 0, false)).0, av, aw)))
+    } else if !ablated("zero") && matches!(a2, Term::Zero) {
+        Some((b2.clone(), app2(memo(format!("idl{n}"), || add_identity_proof(n, 0, true)).0, bv, bw)))
+    } else if !ablated("not") && matches!(&b2, Term::Op(3, p, q) if p.show() == a2.show() && matches!(**q, Term::Ones)) {
+        // a + ~a = -1
+        Some((Term::Ones, app2(memo(format!("not{n}"), || add_not_proof(n, false)).0, av, aw)))
+    } else if !ablated("not") && !ablated("comm") && matches!(&a2, Term::Op(3, p, q) if p.show() == b2.show() && matches!(**q, Term::Ones)) {
+        // ~b + b = b + ~b = -1
+        let lemma = app2(memo(format!("not{n}"), || add_not_proof(n, false)).0, bv.clone(), bw.clone());
+        let comm = apps(memo(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv.clone(), aw, bw]);
+        let swapped = witnessed(&Term::Op(0, Box::new(b2.clone()), Box::new(a2.clone())), n, goods).0;
+        let ones = witnessed(&Term::Ones, n, goods).0;
+        Some((Term::Ones, trans_proof(&bv_ty(n), &ev(&t1), &swapped, &ones, comm, lemma)))
+    } else if let (false, Term::Op(0, p, q)) = (ablated("assoc"), &a2) {
         // (p + q) + r = p + (q + r)
         Some((sum(p, &sum(q, &b2)), assoc(p, q, &b2)))
-    } else if let Term::Op(0, bp, bq) = &b2 {
+    } else if let (false, Term::Op(0, bp, bq)) = (ablated("assoc") || ablated("comm"), &b2) {
         if bp.show() < a2.show() {
             // a + (b + c) = (a + b) + c = (b + a) + c = b + (a + c)
             let (a_, b_, c_) = (&a2, &**bp, &**bq);
             let ((av2, aw2), (bv2, bw2), (cv2, _)) = (witnessed(a_, n, goods), witnessed(b_, n, goods), witnessed(c_, n, goods));
             let (ab, ba) = (witnessed(&sum(a_, b_), n, goods).0, witnessed(&sum(b_, a_), n, goods).0);
-            let comm = apps(add_comm_proof(n, false).0, vec![av2, bv2, aw2, bw2]);
+            let comm = apps(memo(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av2, bv2, aw2, bw2]);
             let swap = cong_n(&bv_ty(n), &bv_ty(n), &ops[0], &[ab.clone(), cv2.clone()], &[ba.clone(), cv2.clone()], vec![comm, refl(cv2)]);
             let (acc, bc, a_bc) = (witnessed(&sum(&sum(a_, b_), c_), n, goods).0, witnessed(&sum(&sum(b_, a_), c_), n, goods).0, witnessed(&t1, n, goods).0);
             let target = sum(b_, &sum(a_, c_));
@@ -2201,8 +2319,8 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
         } else {
             None
         }
-    } else if b2.show() < a2.show() {
-        Some((sum(&b2, &a2), apps(add_comm_proof(n, false).0, vec![av, bv, aw, bw])))
+    } else if !ablated("comm") && b2.show() < a2.show() {
+        Some((sum(&b2, &a2), apps(memo(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv, aw, bw])))
     } else {
         None
     };
