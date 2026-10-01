@@ -1641,3 +1641,96 @@ fn or_disjoint_scaling() {
         println!("SCALE-H4 n={n}: build {built:?}, check {:?}", t1.elapsed());
     }
 }
+
+// ---- Conjecture miner (design note 2026-10-01-search-execution-blend-design.md, section 7).
+// Terms over x, y are *run* on every pair of n-bit literals by the kernel (`normalize`); terms with the same
+// results are conjectured equal; the conjectures that match a known lemma's shape are then *checked* with that
+// lemma's generator. Execution and checking share one loop: the kernel is both the evaluator and the judge.
+
+#[derive(Clone)]
+enum Term {
+    X,
+    Y,
+    Zero,
+    Ones,
+    Op(usize, Box<Term>, Box<Term>),
+}
+const OPS: [&str; 4] = ["add", "and", "or", "xor"];
+impl Term {
+    fn show(&self) -> String {
+        match self {
+            Term::X => "x".into(),
+            Term::Y => "y".into(),
+            Term::Zero => "0".into(),
+            Term::Ones => "-1".into(),
+            Term::Op(o, a, b) => format!("{}({}, {})", OPS[*o], a.show(), b.show()),
+        }
+    }
+    fn eval(&self, ops: &[Expr], n: usize, x: u128, y: u128) -> Expr {
+        match self {
+            Term::X => lit(n, x),
+            Term::Y => lit(n, y),
+            Term::Zero => lit(n, 0),
+            Term::Ones => lit(n, (1u128 << n) - 1),
+            Term::Op(o, a, b) => app2(ops[*o].clone(), a.eval(ops, n, x, y), b.eval(ops, n, x, y)),
+        }
+    }
+}
+
+/// The leaves `x, y, 0, -1` and every operator applied to two leaves (deeper terms are the next experiment).
+fn terms() -> Vec<Term> {
+    let leaves = vec![Term::X, Term::Y, Term::Zero, Term::Ones];
+    let mut all = leaves.clone();
+    for o in 0..OPS.len() {
+        for a in &leaves {
+            for b in &leaves {
+                all.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+            }
+        }
+    }
+    all
+}
+
+fn fingerprint(t: &Term, ops: &[Expr], n: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for x in 0..(1u128 << n) {
+        for y in 0..(1u128 << n) {
+            format!("{:?}", normalize(&t.eval(ops, n, x, y))).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+#[test]
+#[ignore]
+fn conjecture_miner() {
+    let n: usize = std::env::var("MINER_N").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    let ops = [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b))];
+    let ts = terms();
+    let t0 = Instant::now();
+    let mut classes: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
+    for (i, t) in ts.iter().enumerate() {
+        classes.entry(fingerprint(t, &ops, n)).or_default().push(i);
+    }
+    println!("MINER n={n}: {} terms, {} behaviour classes, run in {:?}", ts.len(), classes.len(), t0.elapsed());
+    let class_of = |t: &Term| classes.values().find(|c| c.iter().any(|&i| ts[i].show() == t.show())).cloned();
+    let mut conjectures = 0;
+    for c in classes.values().filter(|c| c.len() > 1) {
+        conjectures += c.len() - 1;
+        println!("  CLASS: {}", c.iter().map(|&i| ts[i].show()).collect::<Vec<_>>().join(" = "));
+    }
+    println!("MINER: {conjectures} equality conjectures");
+    // Known lemmas: is the conjecture in a class, and does its generator's proof check?
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let in_same = |a: &Term, b: &Term| class_of(a).map_or(false, |c| c.iter().any(|&i| ts[i].show() == b.show()));
+    let known: [(&str, bool, Option<bool>); 3] = [
+        ("add x 0 = x", in_same(&op(0, Term::X, Term::Zero), &Term::X), Some(check(&Ctx::new(), &add_zero_proof(n, 0).0, &add_zero_proof(n, 0).1).is_ok())),
+        ("add 0 x = x", in_same(&op(0, Term::Zero, Term::X), &Term::X), Some({ let (p, s) = add_identity_proof(n, 0, true); check(&Ctx::new(), &p, &s).is_ok() })),
+        ("add x y = add y x", in_same(&op(0, Term::X, Term::Y), &op(0, Term::Y, Term::X)), Some({ let (p, s) = add_comm_proof(n, false); check(&Ctx::new(), &p, &s).is_ok() })),
+    ];
+    for (name, mined, proved) in known {
+        println!("MINER known lemma {name}: conjectured by the miner: {mined}; its template proof checks: {proved:?}");
+        assert!(mined, "{name} must be rediscovered as a conjecture");
+    }
+}
