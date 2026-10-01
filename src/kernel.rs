@@ -643,17 +643,27 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
 /// A subterm with no loose variable at or above its depth is kept by
 /// pointer.
 fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
+    instantiate_n(e, &[s], d)
+}
+
+/// `instantiate` for `args.len()` binders at once: `e` lives under that many binders, `args` are in
+/// application order (so the last one is `Var(0)`), and the result is `e` with all of them
+/// discharged. Equal to calling `subst_top` once per argument, outermost first, without building the
+/// intermediate terms: each argument is shifted past the `d` binders it ends up under, and `e`'s own
+/// free variables above the discharged ones drop by `args.len()`.
+fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
     if loose_of(e) <= d {
         return e.clone();
     }
     walk_count(0);
-    let go = |x: &Rc<Expr>, d: u32| if x.loose() <= d { x.clone() } else { Rc::new(instantiate(x, s, d)) };
+    let m = args.len() as u32;
+    let go = |x: &Rc<Expr>, d: u32| if x.loose() <= d { x.clone() } else { Rc::new(instantiate_n(x, args, d)) };
     grow(|| match e {
         Expr::Var(k) => {
-            if *k == d {
-                shift(s, 0, d as i32)
-            } else if *k > d {
-                Expr::Var(*k - 1)
+            if *k >= d + m {
+                Expr::Var(*k - m)
+            } else if *k >= d {
+                shift(args[(m - 1 - (*k - d)) as usize], 0, d as i32)
             } else {
                 Expr::Var(*k)
             }
@@ -839,9 +849,48 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
 /// target's. `ReductionCache` is keyed by pointer, so a copy misses it,
 /// and each level of a stuck spine then reduced the whole spine below it
 /// again (`RELATED_WORK.md` §48, §59).
+/// `whnf_step` for an application spine `h a1 ... ak` (`k >= 2`) whose head reduces to a lambda:
+/// peel as many directly nested lambdas as there are arguments and substitute all of them in one
+/// `instantiate_n` pass, instead of one `subst_top` per argument, each rebuilding the body the next
+/// one rebuilds again. Arguments left over are applied to the result. `None` when the head is not a
+/// lambda, so the caller's one-argument path runs unchanged (and keeps a stuck spine's per-prefix
+/// cache entries).
+fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
+    let mut args: Vec<&Rc<Expr>> = Vec::new();
+    let mut head = e;
+    while let Expr::App(g, b) = head {
+        args.push(b);
+        head = g;
+    }
+    args.reverse();
+    let wh = whnf_rc(&Rc::new(head.clone()), cache);
+    let Expr::Lam(_, first) = &*wh else { return None };
+    let mut body: &Expr = first;
+    let mut taken = 1;
+    while taken < args.len()
+        && let Expr::Lam(_, inner) = body
+    {
+        body = inner;
+        taken += 1;
+    }
+    #[cfg(feature = "record-defeq")]
+    BETAS.with(|c| c.set(c.get() + taken as u64));
+    let subst: Vec<&Expr> = args[..taken].iter().map(|a| &***a).collect();
+    let mut r = instantiate_n(body, &subst, 0);
+    for a in &args[taken..] {
+        r = Expr::App(Rc::new(r), (*a).clone());
+    }
+    Some(whnf_impl(&r, cache))
+}
+
 fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     grow(|| match e {
         Expr::App(f, a) => {
+            if matches!(&**f, Expr::App(..))
+                && let Some(r) = beta_spine(e, cache)
+            {
+                return Some(r);
+            }
             #[cfg(feature = "record-defeq")]
             let before = chain_enter();
             let wf = whnf_rc(f, cache);
@@ -2468,6 +2517,36 @@ mod tests {
             for i in 0..6 {
                 assert_eq!(is_var_free(&e, i), is_var_free_ref(&e, i), "is_var_free({e:?}, {i})");
             }
+        }
+    }
+
+    /// `instantiate_n` equals one `subst_top` per argument, outermost first, on random terms.
+    #[test]
+    fn instantiate_n_matches_sequential_substitution() {
+        let mut next = splitmix(41);
+        for _ in 0..20_000 {
+            let e = random_term(&mut next);
+            let m = 1 + (next() % 3) as usize;
+            let args: Vec<Expr> = (0..m).map(|_| random_term(&mut next)).collect();
+            // `lam^m(e)` applied to `args`, one beta at a time
+            let mut body = e.clone();
+            for _ in 1..m {
+                body = lam(sort(0), body);
+            }
+            let mut cur = body;
+            for (i, a) in args.iter().enumerate() {
+                let next_body = instantiate_ref(&cur, a, 0);
+                cur = if i + 1 < m {
+                    match &next_body {
+                        Expr::Lam(_, b) => (**b).clone(),
+                        other => panic!("lost the inner lambda: {other:?}"),
+                    }
+                } else {
+                    next_body
+                };
+            }
+            let refs: Vec<&Expr> = args.iter().collect();
+            assert_eq!(instantiate_n(&e, &refs, 0), cur, "e {e:?}, args {args:?}");
         }
     }
 
