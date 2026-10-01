@@ -391,6 +391,12 @@ pub fn free_of(e: &Expr) -> u32 {
 const RED_ZONE: usize = 100 * 1024;
 /// Size of each new segment `grow` allocates.
 const STACK_PER_RECURSION: usize = 1024 * 1024;
+/// Size of the one segment a large `check_in` runs on. On Windows stacker builds a fiber per
+/// segment and frees it on return, so a deep recursion that straddles a segment boundary pays that
+/// cost at every crossing (65k+ times at n=512, a third of the CPU in page faults, doc section 76).
+/// Starting the check on a segment big enough that it never reaches the end avoids it; reserving it
+/// costs nothing until touched, and a deeper recursion still chains further segments.
+const CHECK_SEGMENT: usize = 64 * 1024 * 1024;
 
 thread_local! {
     /// The lowest stack address the current segment can reach with
@@ -444,12 +450,6 @@ fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
     fn floor_here() -> Option<usize> {
         stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
     }
-    struct Restore(usize);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            FLOOR.with(|f| f.set(self.0));
-        }
-    }
     if FLOOR.with(|f| f.get()) == usize::MAX
         && let Some(floor) = floor_here()
     {
@@ -458,7 +458,21 @@ fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
             return f();
         }
     }
-    stacker::grow(STACK_PER_RECURSION, || {
+    on_segment(STACK_PER_RECURSION, f)
+}
+
+/// Runs `f` on a new stack segment of `size` bytes, with `FLOOR` describing it meanwhile.
+fn on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
+    fn floor_here() -> Option<usize> {
+        stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
+    }
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FLOOR.with(|f| f.set(self.0));
+        }
+    }
+    stacker::grow(size, || {
         let _restore = Restore(FLOOR.with(|f| f.replace(floor_here().unwrap_or(usize::MAX))));
         f()
     })
@@ -1164,6 +1178,12 @@ mod hc {
         r
     }
 
+    /// Whether `check_in`'s term and claim are large (the same bound that makes `canonical_inputs`
+    /// intern them), so that it runs them on one big stack segment (`on_segment`).
+    pub fn large(e: &Expr, expected: &Expr) -> bool {
+        exceeds(&[e, expected], LARGE)
+    }
+
     /// `check_in`'s term and claim, with every node under them interned when they are large, so the
     /// comparisons against types the checker builds (which are interned) meet canonical nodes on
     /// both sides. Small inputs are returned as they are.
@@ -1298,6 +1318,10 @@ mod hc {
             Some((l, f)) => Rc::with_ranges(e, l, f),
             None => Rc::new(e),
         }
+    }
+    #[inline(always)]
+    pub fn large(_: &Expr, _: &Expr) -> bool {
+        false
     }
     #[inline(always)]
     pub fn canonical_inputs(e: &Expr, expected: &Expr) -> (Expr, Expr) {
@@ -2538,11 +2562,15 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     // and never infer it, so a malformed claim would otherwise be proved.
     // One cache for both, so a claim's subterms the proof shares hit it.
     let _hc = hc::Scope::enter();
+    let large = hc::large(e, expected);
     let (e, expected) = hc::canonical_inputs(e, expected);
-    let mut ic = InferCache::default();
-    let mut scope = CtxScope::new(ctx);
-    expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &hc::intern(expected.clone(), None))?)?;
-    check_rc(globals, &mut ic, &mut scope, 0, &hc::intern(e, None), &expected)
+    let body = || {
+        let mut ic = InferCache::default();
+        let mut scope = CtxScope::new(ctx);
+        expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &hc::intern(expected.clone(), None))?)?;
+        check_rc(globals, &mut ic, &mut scope, 0, &hc::intern(e, None), &expected)
+    };
+    if large { on_segment(CHECK_SEGMENT, body) } else { body() }
 }
 
 /// [`check_in`] with no globals.
