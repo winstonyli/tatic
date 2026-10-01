@@ -909,9 +909,12 @@ struct InferCache {
     types: PtrMap<(PtrKey, u32), Expr>,
     contexts: PtrMap<(u32, PtrKey), u32>,
     next: u32,
-    /// Probe: for each context id, (parent id, binder type pointer, its loose range).
-    #[cfg(feature = "record-defeq")]
+    /// For each context id, (parent id, binder type pointer, that type's loose range); a binder with
+    /// no type of the term (`fresh`) has loose range `u32::MAX`.
     info: Vec<(u32, usize, u32)>,
+    /// Interned windows of binder types, outermost first: (window id of the outer part, pointer of
+    /// the next binder type inward) to the window's id. 0 is the empty window.
+    windows: PtrMap<(u32, usize), u32>,
     /// Probe: (node pointer, signature of the bindings it can depend on) seen so far.
     #[cfg(feature = "record-defeq")]
     relaxed: std::collections::HashSet<(usize, u64)>,
@@ -922,17 +925,13 @@ impl InferCache {
     fn enter(&mut self, cid: u32, a: &Rc<Expr>) -> u32 {
         walk_count(21);
         let next = &mut self.next;
-        #[cfg(feature = "record-defeq")]
         let info = &mut self.info;
         *self.contexts.entry((cid, PtrKey(a.clone()))).or_insert_with(|| {
             *next += 1;
-            #[cfg(feature = "record-defeq")]
-            {
-                if info.len() <= *next as usize {
-                    info.resize(*next as usize + 1, (0, 0, 0));
-                }
-                info[*next as usize] = (cid, Rc::as_ptr(a) as usize, a.loose());
+            if info.len() <= *next as usize {
+                info.resize(*next as usize + 1, (0, 0, 0));
             }
+            info[*next as usize] = (cid, Rc::as_ptr(a) as usize, a.loose());
             *next
         })
     }
@@ -941,15 +940,55 @@ impl InferCache {
     /// of the term, like a `Pair`'s inferred first component.
     fn fresh(&mut self) -> u32 {
         self.next += 1;
-        #[cfg(feature = "record-defeq")]
-        {
-            if self.info.len() <= self.next as usize {
-                self.info.resize(self.next as usize + 1, (0, 0, 0));
-            }
-            // unique pointer value, never equal to a real address
-            self.info[self.next as usize] = (0, usize::MAX - self.next as usize, u32::MAX);
+        if self.info.len() <= self.next as usize {
+            self.info.resize(self.next as usize + 1, (0, 0, 0));
         }
+        self.info[self.next as usize] = (0, 0, u32::MAX);
         self.next
+    }
+
+    /// The id `infer_rc` keys its memo by for node `e` in context `cid`: the interned window of
+    /// the innermost binder types `e` can depend on, instead of the whole context. `e`'s loose range
+    /// says how many binders it mentions; each of those binders' types may mention outer binders in
+    /// turn, so the window grows to cover them (a type with loose range `m` at position `p`, counted
+    /// from the innermost, reaches binder `p + m`). Inside that window nothing else is consulted:
+    /// `infer` looks up only variables of `e`, and a lookup's answer is that binder's type shifted,
+    /// whose own variables are in the window by construction. So two contexts with the same window
+    /// give `e` the same answer, in the same variable numbering (indices count from the innermost
+    /// binder either way). Window ids have the top bit set, so they never meet a whole-context id.
+    /// Falls back to `cid` when the window would pass a binder the term doesn't name (`fresh`), run
+    /// past the call's own binders into the caller's context, or exceed `MAX_WINDOW`.
+    fn memo_context(&mut self, cid: u32, e: &Expr) -> u32 {
+        const WINDOW_BIT: u32 = 1 << 31;
+        const MAX_WINDOW: usize = 8;
+        let mut need = loose_of(e) as usize;
+        if need == 0 {
+            return WINDOW_BIT;
+        }
+        let mut ptrs = [0usize; MAX_WINDOW];
+        let mut c = cid;
+        let mut p = 0;
+        while p < need {
+            if c == 0 || p >= MAX_WINDOW {
+                return cid;
+            }
+            let (parent, ptr, loose) = self.info[c as usize];
+            if loose == u32::MAX {
+                return cid;
+            }
+            ptrs[p] = ptr;
+            if loose > 0 {
+                need = need.max(p + 1 + loose as usize);
+            }
+            c = parent;
+            p += 1;
+        }
+        let mut wid = 0;
+        for &ptr in ptrs[..need].iter().rev() {
+            let next = self.windows.len() as u32 + 1;
+            wid = *self.windows.entry((wid, ptr)).or_insert(next);
+        }
+        WINDOW_BIT | wid
     }
 
     /// Probe: a signature of the innermost bindings `e` can depend on in context `cid` (the loose
@@ -1584,7 +1623,10 @@ fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
         walk_count(18);
         return infer_node(g, ic, ctx, cid, e);
     }
-    let key = (PtrKey(e.clone()), cid);
+    // Keyed by the window of binders the node can depend on, not the whole context, so one
+    // inference serves every binder stack that agrees on that window (bit-vector design doc §50:
+    // 96 to 99.5% of the whole-context misses were such repeats).
+    let key = (PtrKey(e.clone()), ic.memo_context(cid, e));
     #[cfg(feature = "record-defeq")]
     {
         // Probe slots 22 relaxed-key lookups, 23 strict misses a relaxed key would have hit, 24 sum
@@ -3192,7 +3234,7 @@ mod tests {
         let ctx = memo_test_ctx();
         let mut next = splitmix(7);
         let mut typed = 0;
-        for _ in 0..20_000 {
+        for _ in 0..100_000 {
             let mut pool: Vec<Rc<Expr>> = (0..4).map(|k| Rc::new(var(k))).chain([Rc::new(sort(0))]).collect();
             for _ in 0..10 {
                 let kind = next() % 8;
