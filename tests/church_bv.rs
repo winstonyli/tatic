@@ -359,3 +359,135 @@ fn add_zero_lemma_scaling() {
         println!("LEMMA-SCALE n={n}: {:?}", t0.elapsed());
     }
 }
+
+// ---- Commutativity: `add x y = add y x` for `x`, `y` with `GoodBv` witnesses.
+
+/// Closed proof of `Pi a b c c'. GoodBool a -> GoodBool b -> Id(c, c') -> Id(F(a,b,c), F(b,a,c'))`,
+/// by case analysis on `a` and `b` only (`c`, `c'` stay symbolic). Each leaf is a congruence in
+/// the last argument; the swap `F(a,b,_)` vs `F(b,a,_)` is closed by conversion once `a`, `b` are
+/// literal bits (it is valid only for an `F` that is commutative in its first two arguments).
+fn comm_lemma(ff: &dyn Fn(Expr, Expr, Expr) -> Expr) -> Expr {
+    // ctx [a, b, c, c', ga, gb]
+    fn elim(ff: &dyn Fn(Expr, Expr, Expr) -> Expr, vals: [Option<bool>; 2]) -> Expr {
+        let which = match vals.iter().position(|v| v.is_none()) {
+            Some(w) => w,
+            None => {
+                let (av, bv) = (bit(vals[0].unwrap()), bit(vals[1].unwrap()));
+                let fmap = lam(bool0(), ff(av, bv, var(0)));
+                // under the \p binder: c = var 4, c' = var 3
+                return lam(id(bool0(), var(3), var(2)), cong1(&bool0(), &bool0(), &fmap, var(4), var(3), var(0)));
+            }
+        };
+        // motive at depth 7 (inside its own binder): c = var 4, c' = var 3
+        let operand = |k: usize| match vals[k] {
+            _ if k == which => var(0),
+            Some(v) => bit(v),
+            None => var(6 - k as u32),
+        };
+        let (x, y) = (operand(0), operand(1));
+        let body = pi(
+            id(bool0(), var(4), var(3)),
+            id(
+                bool0(),
+                shift(&ff(x.clone(), y.clone(), var(4)), 0, 1),
+                shift(&ff(y, x, var(3)), 0, 1),
+            ),
+        );
+        let motive = lam(bool0(), body);
+        let g = var(1 - which as u32);
+        let mut vt = vals;
+        vt[which] = Some(true);
+        let mut vf = vals;
+        vf[which] = Some(false);
+        app3(g, motive, elim(ff, vt), elim(ff, vf))
+    }
+    let body = elim(ff, [None, None]);
+    lam(bool0(), lam(bool0(), lam(bool0(), lam(bool0(),
+        lam(app(good_bool(), var(3)), lam(app(good_bool(), var(3)), body))))))
+}
+
+/// `(proof, statement)` of `Pi x y. GoodBv x -> GoodBv y -> Id(Bv_n, add x y, add y x)`.
+/// `wrong` changes the statement's right-hand side to `add x x`, which the proof must not check against.
+fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
+    let carry = |a: Expr, b: Expr, c: Expr| or(and(a.clone(), b.clone()), and(c, xor(a, b)));
+    let sum = |a: Expr, b: Expr, c: Expr| xor(xor(a, b), c);
+    let cc = comm_lemma(&carry);
+    let sc = comm_lemma(&sum);
+    // ctx: x, y, gx, gy, a_0.., ga_0.., b_0.., gb_0..
+    let d1 = 4 + 2 * n;
+    let d2 = d1 + 2 * n;
+    let a = |i: usize| var((d2 - 1 - (4 + i)) as u32);
+    let ga = |i: usize| var((d2 - 1 - (4 + n + i)) as u32);
+    let b = |i: usize| var((d2 - 1 - (d1 + i)) as u32);
+    let gb = |i: usize| var((d2 - 1 - (d1 + n + i)) as u32);
+    // c_i = carry of add (mk a) (mk b); c'_i = carry of add (mk b) (mk a); pc_i : Id(c_i, c'_i)
+    let mut c = vec![f()];
+    let mut c2 = vec![f()];
+    let mut pc = vec![refl(f())];
+    let (mut s, mut s2, mut e) = (vec![], vec![], vec![]);
+    for i in 0..n {
+        s.push(sum(a(i), b(i), c[i].clone()));
+        s2.push(sum(b(i), a(i), c2[i].clone()));
+        e.push(apps(sc.clone(), vec![a(i), b(i), c[i].clone(), c2[i].clone(), ga(i), gb(i), pc[i].clone()]));
+        let (nc, nc2) = (carry(a(i), b(i), c[i].clone()), carry(b(i), a(i), c2[i].clone()));
+        pc.push(apps(cc.clone(), vec![a(i), b(i), c[i].clone(), c2[i].clone(), ga(i), gb(i), pc[i].clone()]));
+        c.push(nc);
+        c2.push(nc2);
+    }
+    // f_n = \u_0..u_(n-1). \C k. k u_0 .. u_(n-1)
+    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    fbody = lam(sort(1), lam(karrow(n), fbody));
+    for _ in 0..n {
+        fbody = lam(bool0(), fbody);
+    }
+    let binders = |mut body: Expr| {
+        for _ in 0..n {
+            body = lam(app(good_bool(), var(n as u32 - 1)), body);
+        }
+        for _ in 0..n {
+            body = lam(bool0(), body);
+        }
+        body
+    };
+    let step_y = binders(cong_n(&bool0(), &bv_ty(n), &fbody, &s, &s2, e));
+    // inside the a-step (depth d1): eliminate y
+    let a1 = |i: usize| var((d1 - 1 - (4 + i)) as u32);
+    let mka = mk(&(0..n).map(|i| shift(&a1(i), 0, 1)).collect::<Vec<_>>());
+    let motive_y = lam(bv_ty(n), id(bv_ty(n), app2(add(n), mka.clone(), var(0)), app2(add(n), var(0), mka)));
+    let gy = var((d1 - 1 - 3) as u32);
+    let step_x = binders(app2(gy, motive_y, step_y));
+    let rhs = |x: Expr, y: Expr| if wrong { app2(add(n), x.clone(), x) } else { app2(add(n), y, x) };
+    // depth 5 (inside the motive binder): x' = var 0, y = var 3
+    let motive_x = lam(bv_ty(n), id(bv_ty(n), app2(add(n), var(0), var(3)), rhs(var(0), var(3))));
+    let body = app2(var(1), motive_x, step_x);
+    let proof = lam(bv_ty(n), lam(bv_ty(n), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)), body))));
+    // statement at ctx [x, y, gx, gy]: x = var 3, y = var 2
+    let stmt = pi(bv_ty(n), pi(bv_ty(n), pi(app(good_bv(n), var(1)), pi(app(good_bv(n), var(1)),
+        id(bv_ty(n), app2(add(n), var(3), var(2)), rhs(var(3), var(2)))))));
+    (proof, stmt)
+}
+
+#[test]
+fn add_is_commutative_on_symbolic_good_vectors() {
+    for n in [1usize, 2, 4] {
+        let (proof, stmt) = add_comm_proof(n, false);
+        let t0 = Instant::now();
+        ck(&format!("add x y = add y x at n={n}"), &proof, &stmt);
+        println!("COMM n={n}: checked in {:?}", t0.elapsed());
+        // Mutation: `add x y = add x x` must be rejected, by its own proof and by this one.
+        let (wp, ws) = add_comm_proof(n, true);
+        assert!(check(&Ctx::new(), &wp, &ws).is_err(), "wrong statement must be rejected at n={n}");
+        assert!(check(&Ctx::new(), &proof, &ws).is_err(), "add x y = add x x must be rejected at n={n}");
+    }
+}
+
+#[test]
+#[ignore]
+fn add_comm_scaling() {
+    for n in [8usize, 16, 32] {
+        let (proof, stmt) = add_comm_proof(n, false);
+        let t0 = Instant::now();
+        ck(&format!("n={n}"), &proof, &stmt);
+        println!("COMM-SCALE n={n}: {:?}", t0.elapsed());
+    }
+}
