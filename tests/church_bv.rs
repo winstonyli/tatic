@@ -783,6 +783,20 @@ fn profile_scoped_n512() {
     profile_scoped(512);
 }
 
+/// A large check must not churn stack segments: before `check_in` ran large checks on one big
+/// segment, n=256 switched about 11,000 times and n=512 over 65,000 (doc sections 76 and 77), each a
+/// Windows fiber. Ignored because n=256 is slow in a debug build; run with `--release`.
+#[test]
+#[ignore]
+fn a_large_check_does_not_churn_stack_segments() {
+    let (proof, stmt) = add_zero_proof(256, 0);
+    let before = tatic::kernel::segment_switches();
+    ck("n=256", &proof, &stmt);
+    let switches = tatic::kernel::segment_switches() - before;
+    println!("segment switches in the n=256 check: {switches}");
+    assert!(switches < 100, "{switches} stack segment switches in one check");
+}
+
 /// Cost of an intern-table hit against building a node, for the hash-consing design (doc section 59):
 /// 16 million App nodes over a pool of 16k leaves and 64k distinct (child, child) pairs, built fresh
 /// with `Rc::new` against looked up in a pointer-keyed map.

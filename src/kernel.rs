@@ -461,8 +461,20 @@ fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
     on_segment(STACK_PER_RECURSION, f)
 }
 
+thread_local! {
+    static SEGMENT_SWITCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has moved onto a new stack segment (by `grow` or a large `check_in`).
+/// A segment is a fiber on Windows, so a recursion that crosses a boundary over and over is costly
+/// (doc section 76): tests read this to catch a return of that.
+pub fn segment_switches() -> u64 {
+    SEGMENT_SWITCHES.with(|c| c.get())
+}
+
 /// Runs `f` on a new stack segment of `size` bytes, with `FLOOR` describing it meanwhile.
 fn on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
+    SEGMENT_SWITCHES.with(|c| c.set(c.get() + 1));
     fn floor_here() -> Option<usize> {
         stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
     }
