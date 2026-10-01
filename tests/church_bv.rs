@@ -756,6 +756,26 @@ fn profile_add_zero_n512() {
     ck("profile n=512", &proof, &stmt);
 }
 
+/// Build and check the n=256 / n=512 lemma inside one `InternScope`, for profiling the scoped check
+/// alone per width (`SAMPLY.md`; the profiling task passes no environment, so one test per width).
+fn profile_scoped(n: usize) {
+    let _scope = tatic::kernel::InternScope::enter();
+    let (proof, stmt) = add_zero_proof(n, 0);
+    ck("profile scoped", &proof, &stmt);
+}
+
+#[test]
+#[ignore]
+fn profile_scoped_n256() {
+    profile_scoped(256);
+}
+
+#[test]
+#[ignore]
+fn profile_scoped_n512() {
+    profile_scoped(512);
+}
+
 /// Cost of an intern-table hit against building a node, for the hash-consing design (doc section 59):
 /// 16 million App nodes over a pool of 16k leaves and 64k distinct (child, child) pairs, built fresh
 /// with `Rc::new` against looked up in a pointer-keyed map.
