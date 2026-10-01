@@ -1013,3 +1013,113 @@ fn wrapping_div_min_by_minus_one_is_min() {
         }
     }
 }
+
+// ---- H1 probe (design doc section 86): the numeric view `toN` on a vector with a `GoodBv` witness.
+// A Church `Bool0` eliminates only into Sort0, but the Church `Nat` below lives in Sort1, so a bit
+// cannot be turned into a number by applying it; the `GoodBool` eliminator (motive into Sort1) can.
+
+/// Church Nat at Sort0: `Pi C:Sort0. C -> (C -> C) -> C`.
+fn nat_ty() -> Expr {
+    pi(sort(0), pi(var(0), pi(arrow(var(1), var(1)), var(2))))
+}
+fn nat_lit(k: u128) -> Expr {
+    let mut body = var(1);
+    for _ in 0..k {
+        body = app(var(0), body);
+    }
+    lam(sort(0), lam(var(0), lam(arrow(var(1), var(1)), body)))
+}
+/// `\a b. \C z s. a C (b C z s) s`
+fn nat_add() -> Expr {
+    lam(nat_ty(), lam(nat_ty(), lam(sort(0), lam(var(0), lam(arrow(var(1), var(1)),
+        app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0)))))))
+}
+/// `GoodBv` with the motive in Sort1 (so it can eliminate into `Nat`): `Pi P:(Bv_n -> Sort1). step -> P x`.
+fn good_bv1(n: usize) -> Expr {
+    lam(bv_ty(n), pi(arrow(bv_ty(n), sort(1)), pi(good_bv_step(n), app(var(1), var(2)))))
+}
+/// `\x g. g good_bv1 (\a.. ga.. P s. s a.. ga..)`, of type `Pi x. GoodBv x -> GoodBv1 x`: the Sort2
+/// witness gives the Sort1 one, by eliminating into `GoodBv1` itself (a Sort2 type).
+fn lift_good(n: usize) -> Expr {
+    // ctx [x, g, a_0.., ga_0.., P, s]: a_i = var(2n+1-i), ga_i = var(n+1-i)
+    let args = (0..n).map(|i| var((2 * n + 1 - i) as u32)).chain((0..n).map(|i| var((n + 1 - i) as u32))).collect();
+    let mut step = lam(arrow(bv_ty(n), sort(1)), lam(good_bv_step(n), apps(var(0), args)));
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), good_bv1(n), step)))
+}
+/// `\x. \g:GoodBv x. (lift g) (\_. Nat) (\a_0.. ga_0.. . sum_i (ga_i (\_. Nat) 2^i 0))`
+fn to_n(n: usize) -> Expr {
+    // ctx [x, g, a_0.., ga_0..]: ga_i = var(n-1-i)
+    let mut sum = nat_lit(0);
+    for i in 0..n {
+        let bit_val = app3(var((n - 1 - i) as u32), lam(bool0(), nat_ty()), nat_lit(1 << i), nat_lit(0));
+        sum = app2(nat_add(), sum, bit_val);
+    }
+    for _ in 0..n {
+        sum = lam(app(good_bool(), var(n as u32 - 1)), sum);
+    }
+    for _ in 0..n {
+        sum = lam(bool0(), sum);
+    }
+    let motive = lam(bv_ty(n), nat_ty());
+    let lifted = app2(lift_good(n), var(1), var(0));
+    lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(lifted, motive, sum)))
+}
+/// Canonical `GoodBv (lit n v)`: `\P step. step bits.. (\P h1 h0. h_bit)..`
+fn good_lit(n: usize, v: u128) -> Expr {
+    let bit_good = |b: bool| lam(arrow(bool0(), sort(1)), lam(app(var(0), t()), lam(app(var(1), f()), var(if b { 1 } else { 0 }))));
+    let mut args: Vec<Expr> = (0..n).map(|i| bit((v >> i) & 1 == 1)).collect();
+    args.extend((0..n).map(|i| bit_good((v >> i) & 1 == 1)));
+    lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n), apps(var(0), args)))
+}
+
+#[test]
+fn to_n_computes_on_good_literals() {
+    for n in [1usize, 4, 8] {
+        let ty = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), nat_ty()));
+        let lift_ty = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), app(good_bv1(n), var(0))));
+        ck("lift_good type", &lift_good(n), &lift_ty);
+        ck("toN type", &to_n(n), &ty);
+        let mask = (1u128 << n) - 1;
+        for v in [0u128, 1, 5 & mask, mask] {
+            ck("good_lit", &good_lit(n, v), &app(good_bv(n), lit(n, v)));
+            let got = app2(to_n(n), lit(n, v), good_lit(n, v));
+            assert!(def_eq(&got, &nat_lit(v)), "toN {v} at n={n}");
+            assert!(!def_eq(&got, &nat_lit(v + 1)), "toN {v}+1 must differ at n={n}");
+        }
+    }
+}
+
+/// Whether `sdiv a b` is `Some`: `not (eq b 0 or (eq a MIN and eq b -1))`, a `Bool0`. The `Option` is
+/// the pair (this flag, `wrap_div a b (div_s a b)`): a `Bool0` cannot select between `Option` values
+/// (design doc section 86), so the flag stands for None/Some.
+fn sdiv_some(n: usize, a: Expr, b: Expr) -> Expr {
+    let min = 1u128 << (n - 1);
+    let all = if n == 128 { u128::MAX } else { (1u128 << n) - 1 };
+    let overflow = and(app2(eq_bv(n), a, lit(n, min)), app2(eq_bv(n), b.clone(), lit(n, all)));
+    not_(or(app2(eq_bv(n), b, lit(n, 0)), overflow))
+}
+
+/// D1/D2 on literals: the flag is `false` exactly for `b = 0` and `a = MIN, b = -1`.
+#[test]
+fn sdiv_flag_matches_the_spec_on_literals() {
+    for n in [4usize, 8, 32, 64] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let all = if n == 64 { u64::MAX as u128 } else { (1u128 << n) - 1 };
+        let min = 1u128 << (n - 1);
+        let samples = [0u128, 1, 2, min - 1, min, min + 1, all - 1, all];
+        for &a in &samples {
+            for &b in &samples {
+                let some = b != 0 && !(a == min && b == all);
+                let got = sdiv_some(n, lit(n, a), lit(n, b));
+                assert!(def_eq(&got, &bit(some)), "sdiv flag a={a:#x} b={b:#x} n={n}");
+                assert!(!def_eq(&got, &bit(!some)), "flag must not be both, a={a:#x} b={b:#x} n={n}");
+            }
+        }
+    }
+}
