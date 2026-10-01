@@ -1480,6 +1480,17 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
     check_in(&Globals::new(), ctx, e, expected)
 }
 
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static DEFEQ_LOG: std::cell::RefCell<Vec<(Expr, Expr, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drains the `(inferred, expected, context depth)` triples `check_rc` compared since the last call.
+#[cfg(feature = "record-defeq")]
+pub fn take_defeq_log() -> Vec<(Expr, Expr, u32)> {
+    DEFEQ_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
 fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
     grow(|| {
         if let Expr::Lam(a, body) = &**e
@@ -1499,6 +1510,8 @@ fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
             return r;
         }
         let inferred = infer_rc(g, ic, ctx, cid, e)?;
+        #[cfg(feature = "record-defeq")]
+        DEFEQ_LOG.with(|l| l.borrow_mut().push((inferred.clone(), expected.clone(), (ctx.base.len() + ctx.local.len()) as u32)));
         if def_eq(&inferred, expected) {
             Ok(())
         } else {

@@ -521,3 +521,29 @@ fn add_shared_zero_scaling() {
         println!("SHARED-SCALE n={n}: {:?}", t0.elapsed());
     }
 }
+
+/// Replays every `def_eq` query the `add x 0 = x` lemma's check makes through the kernel and
+/// through `kernel_lazy`, same exe back to back. Needs `--features record-defeq`.
+/// Run: `cargo test --release --features record-defeq --test church_bv replay_defeq -- --ignored --nocapture`
+#[cfg(feature = "record-defeq")]
+#[test]
+#[ignore]
+fn replay_defeq_queries() {
+    use tatic::kernel_lazy::{def_eq_lazy_shared, take_stats};
+    for n in [8usize, 16, 32] {
+        let (proof, stmt) = add_zero_proof(n, 0);
+        let _ = take_defeq_log();
+        ck(&format!("n={n}"), &proof, &stmt);
+        let qs = take_defeq_log();
+        let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
+        let t0 = Instant::now();
+        let k: Vec<bool> = hard.iter().map(|(a, b, _)| def_eq(a, b)).collect();
+        let tk = t0.elapsed();
+        let _ = take_stats();
+        let t1 = Instant::now();
+        let s: Vec<bool> = hard.iter().map(|(a, b, d)| def_eq_lazy_shared(a, b, *d)).collect();
+        let ts = t1.elapsed();
+        println!("REPLAY n={n}: queries={} hard={} kernel {tk:?} shared {ts:?} agree={}", qs.len(), hard.len(), k == s);
+        println!("REPLAY n={n}: {:?}", take_stats());
+    }
+}

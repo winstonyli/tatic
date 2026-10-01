@@ -19,6 +19,11 @@ stacker = "0.1.25"
 wasmtime = "42.0.1"
 wat = "1.245.1"
 
+[features]
+# Records every `def_eq(inferred, expected)` that `check_rc` makes (see `take_defeq_log`), so a test can
+# replay them through another evaluator. Off by default; adds nothing to the default build.
+record-defeq = []
+
 [dev-dependencies]
 criterion = "0.5"
 
