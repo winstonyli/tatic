@@ -563,6 +563,7 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
     if amount == 0 || loose_of(e) <= cutoff {
         return e.clone();
     }
+    walk_count(1);
     let go = |x: &Rc<Expr>, c: u32| shift_child(x, c, amount);
     grow(|| match e {
         Expr::Var(k) => {
@@ -629,7 +630,24 @@ fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// codomain, usually `Int`, and shifting the argument there cost a walk of
 /// it per application (`RELATED_WORK.md` §50, §58).
 fn subst_top(body: &Expr, s: &Expr) -> Expr {
-    instantiate(body, s, 0)
+    #[cfg(feature = "record-defeq")]
+    INST_SEEN.with(|x| x.borrow_mut().clear());
+    #[cfg(feature = "record-defeq")]
+    let (repeat, v0) = (beta_pair_probe(body, s), WALKS.with(|w| w[0].get()));
+    let r = instantiate(body, s, 0);
+    #[cfg(feature = "record-defeq")]
+    BETA_VISITS.with(|c| {
+        let v = WALKS.with(|w| w[0].get()) - v0;
+        let mut b = c.get();
+        b.0 += v;
+        if repeat {
+            b.1 += v;
+        }
+        c.set(b);
+    });
+    #[cfg(feature = "record-defeq")]
+    INST_SEEN.with(|x| WALKS_DISTINCT.with(|d| d.set(d.get() + x.borrow().len() as u64)));
+    r
 }
 
 /// `subst_top`'s substitution in one pass: under `d` binders of `e`,
@@ -645,6 +663,9 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
     if loose_of(e) <= d {
         return e.clone();
     }
+    walk_count(0);
+    #[cfg(feature = "record-defeq")]
+    INST_SEEN.with(|x| x.borrow_mut().insert((e as *const Expr as usize, d)));
     let go = |x: &Rc<Expr>, d: u32| if x.loose() <= d { x.clone() } else { Rc::new(instantiate(x, s, d)) };
     grow(|| match e {
         Expr::Var(k) => {
@@ -961,6 +982,7 @@ fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
 /// `nf` of a term already in weak head normal form: its constructor over
 /// the `nf` of each child.
 fn nf_whnf(w: &Expr, cache: &mut ReductionCache) -> Expr {
+    walk_count(4);
     grow(|| match w {
         Expr::Var(k) => Expr::Var(*k),
         Expr::Sort(i) => Expr::Sort(*i),
@@ -1052,6 +1074,7 @@ fn conv_rc(a: &Rc<Expr>, b: &Rc<Expr>, cache: &mut ReductionCache) -> bool {
 /// Compares two weak head normal forms: same constructor, then `conv` on
 /// each pair of children, in the order `nf_impl` visits them.
 fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
+    walk_count(3);
     grow(|| same_shape(x, y, |p, q| conv_rc(p, q, cache)))
 }
 
@@ -1060,6 +1083,7 @@ fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
 /// note each would repeat the walk below it: quadratic on a chain that
 /// differs only at the bottom (`RELATED_WORK.md` §61).
 fn eq_noting(a: &Expr, b: &Expr, unequal: &mut HashSet<(PtrKey, PtrKey)>) -> bool {
+    walk_count(2);
     grow(|| {
         same_shape(a, b, |p, q| {
             Rc::ptr_eq(p, q) || eq_noting(p, q, unequal) || {
@@ -1583,6 +1607,93 @@ pub fn take_struct_probe() -> (u64, u64, u128, u128) {
         let p = std::mem::take(&mut *p.borrow_mut());
         (p.misses, p.dup_misses, p.miss_nodes, p.dup_nodes)
     })
+}
+
+// Node visits by `[instantiate, shift, eq_noting, conv_whnf, nf_whnf]` since the last
+// `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static WALKS: [std::cell::Cell<u64>; 5] = const { [const { std::cell::Cell::new(0) }; 5] };
+}
+#[cfg(feature = "record-defeq")]
+#[inline(always)]
+fn walk_count(i: usize) {
+    WALKS.with(|w| w[i].set(w[i].get() + 1));
+}
+#[cfg(not(feature = "record-defeq"))]
+#[inline(always)]
+fn walk_count(_: usize) {}
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static INST_SEEN: std::cell::RefCell<std::collections::HashSet<(usize, u32)>> = std::cell::RefCell::new(Default::default());
+    static WALKS_DISTINCT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static BETA_PAIRS: std::cell::RefCell<(std::collections::HashSet<(u64, u64)>, u64, u64)> = std::cell::RefCell::new(Default::default());
+}
+#[cfg(feature = "record-defeq")]
+fn shash(e: &Expr, memo: &mut std::collections::HashMap<usize, u64>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hs = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(e).hash(&mut hs);
+    if let Expr::Var(i) | Expr::Sort(i) | Expr::Const(i) | Expr::Free(i) = e {
+        i.hash(&mut hs);
+    }
+    for k in probe_kids(e) {
+        let a = Rc::as_ptr(k) as usize;
+        let h = match memo.get(&a) {
+            Some(&h) => h,
+            None => {
+                let h = shash(k, memo);
+                memo.insert(a, h);
+                h
+            }
+        };
+        h.hash(&mut hs);
+    }
+    hs.finish()
+}
+/// Counts betas whose (body, argument) pair, by structure, was substituted before.
+#[cfg(feature = "record-defeq")]
+fn beta_pair_probe(body: &Expr, s: &Expr) -> bool {
+    let mut m = std::collections::HashMap::new();
+    let key = (shash(body, &mut m), shash(s, &mut m));
+    BETA_PAIRS.with(|b| {
+        let mut b = b.borrow_mut();
+        b.1 += 1;
+        let fresh = b.0.insert(key);
+        if !fresh {
+            b.2 += 1;
+        }
+        !fresh
+    })
+}
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static BETA_VISITS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+/// `(instantiate visits over all betas, over betas that repeated an earlier (body, argument))`, then resets.
+#[cfg(feature = "record-defeq")]
+pub fn take_beta_visits() -> (u64, u64) {
+    BETA_VISITS.with(|c| c.replace((0, 0)))
+}
+/// `(betas, of which the same (body, argument) structure was substituted earlier)`, then resets.
+#[cfg(feature = "record-defeq")]
+pub fn take_beta_pairs() -> (u64, u64) {
+    BETA_PAIRS.with(|b| {
+        let b = std::mem::take(&mut *b.borrow_mut());
+        (b.1, b.2)
+    })
+}
+/// Distinct (node, depth) pairs `instantiate` visited, summed per `subst_top` call, since the last call.
+#[cfg(feature = "record-defeq")]
+pub fn take_instantiate_distinct() -> u64 {
+    WALKS_DISTINCT.with(|d| d.replace(0))
+}
+#[cfg(feature = "record-defeq")]
+pub fn take_walk_counts() -> [u64; 5] {
+    WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
 }
 
 /// Beta steps `whnf_step` took since the last call.

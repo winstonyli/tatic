@@ -620,3 +620,37 @@ fn probe_hard_queries() {
         }
     }
 }
+
+/// Which traversals pay by tree node: visits per kernel function on the hard queries, beside the
+/// DAG and tree sizes of the compared terms. Run like `replay_defeq_queries`.
+#[cfg(feature = "record-defeq")]
+#[test]
+#[ignore]
+fn walk_counts_on_hard_queries() {
+    for n in [8usize, 16, 32] {
+        let (proof, stmt) = add_zero_proof(n, 0);
+        let _ = take_defeq_log();
+        ck(&format!("n={n}"), &proof, &stmt);
+        let qs = take_defeq_log();
+        let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
+        let _ = take_walk_counts();
+        let _ = take_instantiate_distinct();
+        let _ = take_beta_pairs();
+        let _ = take_beta_visits();
+        let _ = take_beta_count();
+        let t0 = Instant::now();
+        for (a, b, _) in &hard {
+            assert!(def_eq(a, b));
+        }
+        let w = take_walk_counts();
+        println!(
+            "WALK n={n}: time={:?} betas={} instantiate_distinct={} instantiate={} shift={} eq={} conv_whnf={} nf_whnf={} beta_pairs(total,repeat)={:?}",
+            t0.elapsed(),
+            take_beta_count(),
+            take_instantiate_distinct(),
+            w[0], w[1], w[2], w[3], w[4],
+            take_beta_pairs()
+        );
+        println!("WALK n={n}: instantiate visits (all betas, repeated betas) = {:?}", take_beta_visits());
+    }
+}
