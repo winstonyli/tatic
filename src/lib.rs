@@ -4,6 +4,7 @@ pub mod eval;
 pub(crate) mod ir;
 pub mod jit;
 pub mod kernel;
+pub mod kernel_lazy;
 pub(crate) mod lower_wat;
 pub mod proof;
 pub mod spec_check;
