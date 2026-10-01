@@ -1015,10 +1015,14 @@ mod hc {
     /// The table's node for `e` (built with `ranges` when it is new and they are known), or a fresh
     /// one while the table is off.
     pub fn intern(e: Expr, ranges: Option<(u32, u32)>) -> Rc<Expr> {
-        let build = |e: Expr| match ranges {
+        intern_as(e, |e| match ranges {
             Some((l, f)) => Rc::with_ranges(e, l, f),
             None => Rc::new(e),
-        };
+        })
+    }
+
+    /// `intern`, with `build` making the node when the table has none for `e` (and while it is off).
+    fn intern_as(e: Expr, build: impl FnOnce(Expr) -> Rc<Expr>) -> Rc<Expr> {
         let generation = generation();
         if generation == 0 {
             return build(e);
@@ -1118,7 +1122,13 @@ mod hc {
             return r.clone();
         }
         let e = grow(|| map_kids(rc, &mut |c| canon(c, memo)));
-        let r = intern(e, Some((rc.loose(), rc.free())));
+        // Children all unchanged (leaves, or nodes whose children were already the table's): put this
+        // node itself in the table instead of allocating its twin.
+        let r = if same_shape(&e, rc, |p, q| Rc::ptr_eq(p, q)) {
+            intern_as(e, |_| rc.clone())
+        } else {
+            intern(e, Some((rc.loose(), rc.free())))
+        };
         memo.insert(key, r.clone());
         r
     }
