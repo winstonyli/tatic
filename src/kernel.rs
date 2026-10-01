@@ -52,19 +52,40 @@ pub struct Rc<T>(std::rc::Rc<Node<T>>);
 struct Node<T> {
     loose: u32,
     free: u32,
+    /// Probe: id of this node's structure in a simulated hash-cons table (`hc_probe`).
+    #[cfg(feature = "record-defeq")]
+    canon: u64,
     val: T,
 }
 
 impl Rc<Expr> {
     pub fn new(e: Expr) -> Self {
-        Rc(std::rc::Rc::new(Node { loose: loose_of(&e), free: free_of(&e), val: e }))
+        Rc(std::rc::Rc::new(Node {
+            loose: loose_of(&e),
+            free: free_of(&e),
+            #[cfg(feature = "record-defeq")]
+            canon: hc_probe::intern(&e),
+            val: e,
+        }))
     }
 
     /// As [`Rc::new`] with the ranges supplied by the caller, who must
     /// know them to equal `loose_of(&e)` and `free_of(&e)`.
     fn with_ranges(e: Expr, loose: u32, free: u32) -> Self {
         debug_assert!(loose == loose_of(&e) && free == free_of(&e));
-        Rc(std::rc::Rc::new(Node { loose, free, val: e }))
+        Rc(std::rc::Rc::new(Node {
+            loose,
+            free,
+            #[cfg(feature = "record-defeq")]
+            canon: hc_probe::intern(&e),
+            val: e,
+        }))
+    }
+
+    /// Probe: this node's id in the simulated hash-cons table.
+    #[cfg(feature = "record-defeq")]
+    pub fn canon(&self) -> u64 {
+        self.0.canon
     }
 
     /// One more than the largest loose `Var` index in this node, 0 when
@@ -121,6 +142,133 @@ impl<T: fmt::Debug> fmt::Debug for Rc<T> {
         self.0.val.fmt(f)
     }
 }
+
+
+/// Probes for hash-consing and a global `instantiate` memo (bit-vector design doc section 58):
+/// a simulated intern table gives each node the id its structure would have, from its constructor,
+/// leaf value and children's ids. Nothing here changes any result.
+#[cfg(feature = "record-defeq")]
+mod hc_probe {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::hash::{Hash, Hasher};
+
+    thread_local! {
+        static TABLE: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+        /// 0 nodes built, 1 of them new to the table.
+        static BUILT: [Cell<u64>; 2] = const { [const { Cell::new(0) }; 2] };
+        static INST_SEEN: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+        /// 0 non-trivial calls, 1 maximal repeated calls, 2 visits inside them, 3 visits in all calls
+        /// at depth 0, 4 depth-0 calls, 5 depth-0 repeats, 6 visits inside depth-0 repeats.
+        static INST: [Cell<u64>; 8] = const { [const { Cell::new(0) }; 8] };
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+        static IN_REPEAT: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn structure_hash(e: &Expr) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::mem::discriminant(e).hash(&mut h);
+        match e {
+            Expr::Var(k) | Expr::Sort(k) | Expr::Const(k) | Expr::Free(k) => k.hash(&mut h),
+            _ => {
+                same_shape(e, e, |p, _| {
+                    p.canon().hash(&mut h);
+                    true
+                });
+            }
+        }
+        h.finish()
+    }
+
+    fn id_of(e: &Expr, count: bool) -> u64 {
+        let h = structure_hash(e);
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            let next = t.len() as u64;
+            let new = !t.contains_key(&h);
+            let id = *t.entry(h).or_insert(next);
+            if count {
+                BUILT.with(|b| {
+                    b[0].set(b[0].get() + 1);
+                    if new {
+                        b[1].set(b[1].get() + 1);
+                    }
+                });
+            }
+            id
+        })
+    }
+
+    pub fn intern(e: &Expr) -> u64 {
+        id_of(e, true)
+    }
+
+    /// (nodes built, distinct structures among them new to the table) since the last call.
+    pub fn take_built() -> (u64, u64) {
+        BUILT.with(|b| (b[0].replace(0), b[1].replace(0)))
+    }
+
+    pub fn take_inst() -> [u64; 8] {
+        INST.with(|c| std::array::from_fn(|i| c[i].replace(0)))
+    }
+
+    /// Guard for one `instantiate_n` call: notes whether the same (term, arguments, depth) was
+    /// instantiated before, and the visits a memo hit would have skipped.
+    pub struct InstGuard {
+        v0: u64,
+        repeat: bool,
+        outer_repeat: bool,
+        top: bool,
+    }
+
+    pub fn inst_enter(e: &Expr, args: &[&Expr], d: u32) -> InstGuard {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        id_of(e, false).hash(&mut h);
+        for a in args {
+            id_of(a, false).hash(&mut h);
+        }
+        d.hash(&mut h);
+        let key = h.finish();
+        let repeat = !INST_SEEN.with(|s| s.borrow_mut().insert(key));
+        let top = DEPTH.with(|c| c.replace(c.get() + 1)) == 0;
+        let outer_repeat = IN_REPEAT.with(|c| c.replace(c.get() || repeat));
+        INST.with(|c| {
+            c[0].set(c[0].get() + 1);
+            if top {
+                c[4].set(c[4].get() + 1);
+            }
+            if repeat && !outer_repeat {
+                c[1].set(c[1].get() + 1);
+            }
+            if top && repeat {
+                c[5].set(c[5].get() + 1);
+            }
+        });
+        InstGuard { v0: WALKS.with(|w| w[0].get()), repeat, outer_repeat, top }
+    }
+
+    impl Drop for InstGuard {
+        fn drop(&mut self) {
+            let visits = WALKS.with(|w| w[0].get()) - self.v0;
+            DEPTH.with(|c| c.set(c.get() - 1));
+            IN_REPEAT.with(|c| c.set(self.outer_repeat));
+            INST.with(|c| {
+                if self.repeat && !self.outer_repeat {
+                    c[2].set(c[2].get() + visits);
+                }
+                if self.top {
+                    c[3].set(c[3].get() + visits);
+                    if self.repeat {
+                        c[6].set(c[6].get() + visits);
+                    }
+                }
+            });
+        }
+    }
+}
+
+#[cfg(feature = "record-defeq")]
+pub use hc_probe::{take_built as take_hc_built, take_inst as take_hc_inst};
 
 /// One more than the largest loose `Var` index in `e`, 0 when it's
 /// closed, from its children's cached ranges. A child one binder deeper
@@ -709,6 +857,8 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
     if loose_of(e) <= d {
         return e.clone();
     }
+    #[cfg(feature = "record-defeq")]
+    let _hc_guard = hc_probe::inst_enter(e, args, d);
     walk_count(0);
     let m = args.len() as u32;
     let go = |x: &Rc<Expr>, d: u32| if x.loose() <= d { x.clone() } else { Rc::new(instantiate_n(x, args, d)) };

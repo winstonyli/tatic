@@ -602,8 +602,15 @@ fn walk_counts_on_hard_queries() {
         let _ = take_defeq_log();
         let _ = take_site_counts();
         let _ = take_walk_counts();
+        let _ = (tatic::kernel::take_hc_built(), tatic::kernel::take_hc_inst());
         let tck = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);
+        {
+            let (built, new) = tatic::kernel::take_hc_built();
+            let i = tatic::kernel::take_hc_inst();
+            println!("HC n={n}: nodes built in the check={built}, of which structurally new={new} ({:.1}% would be intern hits)", 100.0 * (built - new) as f64 / built.max(1) as f64);
+            println!("INST-MEMO n={n}: non-trivial calls={} maximal repeated calls={} visits skipped by a global memo={} of {} visits at depth 0 ({:.1}%); depth-0 calls={} repeats={} visits in them={}", i[0], i[1], i[2], i[3], 100.0 * i[2] as f64 / i[3].max(1) as f64, i[4], i[5], i[6]);
+        }
         println!("CHECK n={n}: whole check {:?}", tck.elapsed());
         { let (pd, pt) = tatic::kernel::term_sizes(&proof); let (sd, st) = tatic::kernel::term_sizes(&stmt); println!("SIZE n={n}: proof dag={pd} tree={pt}; statement dag={sd} tree={st}"); }
         { let w = take_walk_counts(); println!("CHECK n={n}: whole-check visits instantiate={} shift={} eq={} conv_whnf={} shift-in-ctx_lookup={}", w[0], w[1], w[2], w[3], w[17]); println!("INFER-MEMO n={n}: single-ref calls={} hits={} misses={} binder entries={}", w[18], w[19], w[20], w[21]); println!("RELAXED-MEMO n={n}: memo-eligible lookups={} extra hits under a relevance key={} of which closed nodes={} (strict misses {}), mean window={:.1}", w[22], w[23], w[25], w[20], w[24] as f64 / w[22].max(1) as f64); }
