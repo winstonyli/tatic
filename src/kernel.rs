@@ -55,6 +55,9 @@ struct Node<T> {
     /// Probe: id of this node's structure in a simulated hash-cons table (`hc_probe`).
     #[cfg(feature = "record-defeq")]
     canon: u64,
+    /// `hashcons`: the table generation this node is canonical in (0: not), see `hc`.
+    #[cfg(feature = "hashcons")]
+    generation: std::cell::Cell<u32>,
     val: T,
 }
 
@@ -65,6 +68,8 @@ impl Rc<Expr> {
             free: free_of(&e),
             #[cfg(feature = "record-defeq")]
             canon: hc_probe::intern(&e),
+            #[cfg(feature = "hashcons")]
+            generation: std::cell::Cell::new(0),
             val: e,
         }))
     }
@@ -78,8 +83,25 @@ impl Rc<Expr> {
             free,
             #[cfg(feature = "record-defeq")]
             canon: hc_probe::intern(&e),
+            #[cfg(feature = "hashcons")]
+            generation: std::cell::Cell::new(0),
             val: e,
         }))
+    }
+
+    /// Whether this node and everything under it came from the current `hc` table, so that two
+    /// canonical nodes are structurally equal exactly when they are the same node. Always false
+    /// without the `hashcons` feature, or outside a scope.
+    #[cfg(feature = "hashcons")]
+    #[inline(always)]
+    pub(crate) fn canonical(&self) -> bool {
+        let g = self.0.generation.get();
+        g != 0 && g == hc::generation()
+    }
+    #[cfg(not(feature = "hashcons"))]
+    #[inline(always)]
+    pub(crate) fn canonical(&self) -> bool {
+        false
     }
 
     /// Probe: this node's id in the simulated hash-cons table.
@@ -552,7 +574,7 @@ pub enum Expr {
 /// so for any `T: Eq`).
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
-        grow(|| same_shape(self, other, |p, q| p == q))
+        grow(|| same_shape(self, other, |p, q| Rc::ptr_eq(p, q) || (!(p.canonical() && q.canonical()) && **p == **q)))
     }
 }
 
@@ -899,9 +921,17 @@ mod hc {
         arg_sets: HashMap<Vec<usize>, u64>,
     }
 
+    /// Non-trivial `instantiate_n` calls in a scope before the table switches on: a small check
+    /// would only pay for the table.
+    const WARM_UP: u32 = if cfg!(test) { 0 } else { 3000 };
+
     thread_local! {
         static TABLE: RefCell<Table> = RefCell::new(Table::default());
         static DEPTH: Cell<u32> = const { Cell::new(0) };
+        static CALLS: Cell<u32> = const { Cell::new(0) };
+        /// 0 until the table is on in this scope, then the scope's generation (never 0, never reused).
+        static GENERATION: Cell<u32> = const { Cell::new(0) };
+        static NEXT_GENERATION: Cell<u32> = const { Cell::new(1) };
     }
 
     pub struct Scope;
@@ -919,6 +949,8 @@ mod hc {
                 d.set(d.get() - 1);
                 d.get() == 0
             }) {
+                GENERATION.with(|g| g.set(0));
+                CALLS.with(|c| c.set(0));
                 let old = TABLE.with(|t| std::mem::take(&mut *t.borrow_mut()));
                 drop(old);
             }
@@ -926,12 +958,58 @@ mod hc {
     }
 
     #[inline(always)]
-    fn active() -> bool {
-        DEPTH.with(|d| d.get() > 0)
+    pub fn generation() -> u32 {
+        GENERATION.with(|g| g.get())
     }
 
-    fn key_of(e: &Expr) -> NodeKey {
-        let (tag, leaf) = match e {
+    #[inline(always)]
+    fn active() -> bool {
+        generation() != 0
+    }
+
+    /// Calls `f` on each child, in a fixed order per constructor.
+    #[inline(always)]
+    fn for_kids(e: &Expr, mut f: impl FnMut(&Rc<Expr>)) {
+        match e {
+            Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => {}
+            Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
+                f(a);
+                f(b);
+            }
+            Expr::Refl(a) => f(a),
+            Expr::Id(a, b, c) | Expr::Pair(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => {
+                f(a);
+                f(b);
+                f(c);
+            }
+            Expr::J { motive, base, a, b, p } => {
+                f(motive);
+                f(base);
+                f(a);
+                f(b);
+                f(p);
+            }
+            Expr::WRec { motive, children_ty, step, target } => {
+                f(motive);
+                f(children_ty);
+                f(step);
+                f(target);
+            }
+        }
+    }
+
+    /// The table's node for `e` (built with `ranges` when it is new and they are known), or a fresh
+    /// one while the table is off.
+    pub fn intern(e: Expr, ranges: Option<(u32, u32)>) -> Rc<Expr> {
+        let build = |e: Expr| match ranges {
+            Some((l, f)) => Rc::with_ranges(e, l, f),
+            None => Rc::new(e),
+        };
+        let generation = generation();
+        if generation == 0 {
+            return build(e);
+        }
+        let (tag, leaf) = match &e {
             Expr::Var(k) => (0, *k),
             Expr::Sort(k) => (1, *k),
             Expr::Const(k) => (2, *k),
@@ -951,38 +1029,41 @@ mod hc {
         };
         let mut kids = [0usize; 5];
         let mut i = 0;
-        same_shape(e, e, |p, _| {
+        let mut canonical = true;
+        for_kids(&e, |p| {
             kids[i] = Rc::as_ptr(p) as usize;
             i += 1;
-            true
+            canonical &= p.canonical();
         });
-        NodeKey { tag, leaf, kids }
-    }
-
-    /// The table's node for `e` (built with `ranges` when it is new and they are known), or a fresh
-    /// one outside a scope.
-    pub fn intern(e: Expr, ranges: Option<(u32, u32)>) -> Rc<Expr> {
-        let build = |e: Expr| match ranges {
-            Some((l, f)) => Rc::with_ranges(e, l, f),
-            None => Rc::new(e),
-        };
-        if !active() {
-            return build(e);
-        }
-        let key = key_of(&e);
-        if let Some(n) = TABLE.with(|t| t.borrow().nodes.get(&key).cloned()) {
-            return n;
-        }
-        let n = build(e);
-        TABLE.with(|t| t.borrow_mut().nodes.insert(key, n.clone()));
-        n
+        TABLE.with(|t| match t.borrow_mut().nodes.entry(NodeKey { tag, leaf, kids }) {
+            hashbrown::hash_map::Entry::Occupied(o) => o.get().clone(),
+            hashbrown::hash_map::Entry::Vacant(v) => {
+                let n = build(e);
+                if canonical {
+                    n.0.generation.set(generation);
+                }
+                v.insert(n.clone());
+                n
+            }
+        })
     }
 
     /// An id for the argument list: the interned node's address for one argument (even), an
-    /// odd table id for several; 0 outside a scope.
+    /// odd table id for several; 0 while the table is off (which it leaves after `WARM_UP` calls).
     pub fn args_id(args: &[&Expr]) -> u64 {
         if !active() {
-            return 0;
+            if DEPTH.with(|d| d.get()) == 0 {
+                return 0;
+            }
+            let n = CALLS.with(|c| {
+                c.set(c.get() + 1);
+                c.get()
+            });
+            if n < WARM_UP {
+                return 0;
+            }
+            let g = NEXT_GENERATION.with(|g| g.replace(g.get() + 1));
+            GENERATION.with(|c| c.set(g));
         }
         let ptrs: Vec<usize> = args.iter().map(|a| Rc::as_ptr(&intern((*a).clone(), None)) as usize).collect();
         if let [p] = ptrs[..] {
@@ -1819,7 +1900,7 @@ fn eq_noting(a: &Expr, b: &Expr, unequal: &mut PtrSet<(PtrKey, PtrKey)>) -> bool
     walk_count(2);
     grow(|| {
         same_shape(a, b, |p, q| {
-            Rc::ptr_eq(p, q) || eq_noting(p, q, unequal) || {
+            Rc::ptr_eq(p, q) || (!(p.canonical() && q.canonical()) && eq_noting(p, q, unequal)) || {
                 unequal.insert((PtrKey(p.clone()), PtrKey(q.clone())));
                 false
             }
@@ -3437,7 +3518,8 @@ mod tests {
     #[test]
     fn a_node_is_56_bytes() {
         assert_eq!(std::mem::size_of::<Expr>(), 48);
-        assert_eq!(std::mem::size_of::<Node<Expr>>(), 56);
+        // The `hashcons` generation (a third `u32`) costs a word.
+        assert_eq!(std::mem::size_of::<Node<Expr>>(), if cfg!(feature = "hashcons") { 64 } else { 56 });
     }
 
     /// A random `Expr` of every variant, ill-typed as often as not, with
