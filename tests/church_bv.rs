@@ -728,6 +728,14 @@ fn profile_add_zero_n256() {
     ck("profile n=256", &proof, &stmt);
 }
 
+/// As `profile_add_zero_n64`, at n=512.
+#[test]
+#[ignore]
+fn profile_add_zero_n512() {
+    let (proof, stmt) = add_zero_proof(512, 0);
+    ck("profile n=512", &proof, &stmt);
+}
+
 /// Cost of an intern-table hit against building a node, for the hash-consing design (doc section 59):
 /// 16 million App nodes over a pool of 16k leaves and 64k distinct (child, child) pairs, built fresh
 /// with `Rc::new` against looked up in a pointer-keyed map.
