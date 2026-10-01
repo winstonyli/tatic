@@ -630,24 +630,7 @@ fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// codomain, usually `Int`, and shifting the argument there cost a walk of
 /// it per application (`RELATED_WORK.md` §50, §58).
 fn subst_top(body: &Expr, s: &Expr) -> Expr {
-    #[cfg(feature = "record-defeq")]
-    INST_SEEN.with(|x| x.borrow_mut().clear());
-    #[cfg(feature = "record-defeq")]
-    let (repeat, v0) = (beta_pair_probe(body, s), WALKS.with(|w| w[0].get()));
-    let r = instantiate(body, s, 0);
-    #[cfg(feature = "record-defeq")]
-    BETA_VISITS.with(|c| {
-        let v = WALKS.with(|w| w[0].get()) - v0;
-        let mut b = c.get();
-        b.0 += v;
-        if repeat {
-            b.1 += v;
-        }
-        c.set(b);
-    });
-    #[cfg(feature = "record-defeq")]
-    INST_SEEN.with(|x| WALKS_DISTINCT.with(|d| d.set(d.get() + x.borrow().len() as u64)));
-    r
+    instantiate(body, s, 0)
 }
 
 /// `subst_top`'s substitution in one pass: under `d` binders of `e`,
@@ -664,8 +647,6 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
         return e.clone();
     }
     walk_count(0);
-    #[cfg(feature = "record-defeq")]
-    INST_SEEN.with(|x| x.borrow_mut().insert((e as *const Expr as usize, d)));
     let go = |x: &Rc<Expr>, d: u32| if x.loose() <= d { x.clone() } else { Rc::new(instantiate(x, s, d)) };
     grow(|| match e {
         Expr::Var(k) => {
@@ -963,8 +944,6 @@ fn whnf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Rc<Expr> {
     if let Some(hit) = cache.whnf.get(&key) {
         return hit.clone();
     }
-    #[cfg(feature = "record-defeq")]
-    struct_probe(e);
     let result = whnf_step(e, cache).map_or_else(|| e.clone(), Rc::new);
     cache.whnf.insert(key, result.clone());
     result
@@ -1520,95 +1499,6 @@ thread_local! {
     static BETAS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Probe: on each `whnf_rc` cache miss, whether a structurally equal term was already missed at a
-/// different address (so a content-keyed cache would have hit). Per-call state lives in
-/// `PROBE`; nodes are kept alive so addresses are not reused.
-#[cfg(feature = "record-defeq")]
-#[derive(Default)]
-struct Probe {
-    memo: HashMap<usize, (Rc<Expr>, u64, u128)>,
-    seen: HashMap<u64, usize>,
-    misses: u64,
-    dup_misses: u64,
-    miss_nodes: u128,
-    dup_nodes: u128,
-}
-
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static PROBE: std::cell::RefCell<Probe> = std::cell::RefCell::new(Probe::default());
-}
-
-#[cfg(feature = "record-defeq")]
-fn probe_kids(e: &Expr) -> Vec<&Rc<Expr>> {
-    use Expr::*;
-    match e {
-        Var(_) | Sort(_) | Const(_) | Free(_) => vec![],
-        Refl(a) => vec![a],
-        Pi(a, b) | Lam(a, b) | App(a, b) | W(a, b) | Sup(a, b) | Sigma(a, b) => vec![a, b],
-        Id(a, b, c) | Pair(a, b, c) => vec![a, b, c],
-        J { motive, base, a, b, p } => vec![motive, base, a, b, p],
-        WRec { motive, children_ty, step, target } => vec![motive, children_ty, step, target],
-        SigRec { motive, step, target } => vec![motive, step, target],
-    }
-}
-
-/// (structural hash, tree size) of a node, memoised by address.
-#[cfg(feature = "record-defeq")]
-fn probe_info(p: &mut Probe, e: &Rc<Expr>) -> (u64, u128) {
-    use std::hash::{Hash, Hasher};
-    let addr = Rc::as_ptr(e) as usize;
-    if let Some((_, h, n)) = p.memo.get(&addr) {
-        return (*h, *n);
-    }
-    let mut hs = std::collections::hash_map::DefaultHasher::new();
-    std::mem::discriminant(&**e).hash(&mut hs);
-    match &**e {
-        Expr::Var(i) | Expr::Sort(i) | Expr::Const(i) | Expr::Free(i) => i.hash(&mut hs),
-        _ => {}
-    }
-    let mut n: u128 = 1;
-    for k in probe_kids(e) {
-        let (h, kn) = probe_info(p, k);
-        h.hash(&mut hs);
-        n += kn;
-    }
-    let h = hs.finish();
-    p.memo.insert(addr, (e.clone(), h, n));
-    (h, n)
-}
-
-#[cfg(feature = "record-defeq")]
-fn struct_probe(e: &Rc<Expr>) {
-    PROBE.with(|p| {
-        let mut p = p.borrow_mut();
-        let (h, n) = probe_info(&mut p, e);
-        p.misses += 1;
-        p.miss_nodes += n;
-        let addr = Rc::as_ptr(e) as usize;
-        match p.seen.get(&h) {
-            Some(&a) if a != addr => {
-                p.dup_misses += 1;
-                p.dup_nodes += n;
-            }
-            Some(_) => {}
-            None => {
-                p.seen.insert(h, addr);
-            }
-        }
-    });
-}
-
-/// `(whnf-cache misses, of which a structurally equal term missed earlier at another address,
-/// tree nodes over all misses, tree nodes over those duplicates)`, then resets.
-#[cfg(feature = "record-defeq")]
-pub fn take_struct_probe() -> (u64, u64, u128, u128) {
-    PROBE.with(|p| {
-        let p = std::mem::take(&mut *p.borrow_mut());
-        (p.misses, p.dup_misses, p.miss_nodes, p.dup_nodes)
-    })
-}
-
 // Node visits by `[instantiate, shift, eq_noting, conv_whnf, nf_whnf]` since the last
 // `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
 #[cfg(feature = "record-defeq")]
@@ -1623,74 +1513,6 @@ fn walk_count(i: usize) {
 #[cfg(not(feature = "record-defeq"))]
 #[inline(always)]
 fn walk_count(_: usize) {}
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static INST_SEEN: std::cell::RefCell<std::collections::HashSet<(usize, u32)>> = std::cell::RefCell::new(Default::default());
-    static WALKS_DISTINCT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static BETA_PAIRS: std::cell::RefCell<(std::collections::HashSet<(u64, u64)>, u64, u64)> = std::cell::RefCell::new(Default::default());
-}
-#[cfg(feature = "record-defeq")]
-fn shash(e: &Expr, memo: &mut std::collections::HashMap<usize, u64>) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hs = std::collections::hash_map::DefaultHasher::new();
-    std::mem::discriminant(e).hash(&mut hs);
-    if let Expr::Var(i) | Expr::Sort(i) | Expr::Const(i) | Expr::Free(i) = e {
-        i.hash(&mut hs);
-    }
-    for k in probe_kids(e) {
-        let a = Rc::as_ptr(k) as usize;
-        let h = match memo.get(&a) {
-            Some(&h) => h,
-            None => {
-                let h = shash(k, memo);
-                memo.insert(a, h);
-                h
-            }
-        };
-        h.hash(&mut hs);
-    }
-    hs.finish()
-}
-/// Counts betas whose (body, argument) pair, by structure, was substituted before.
-#[cfg(feature = "record-defeq")]
-fn beta_pair_probe(body: &Expr, s: &Expr) -> bool {
-    let mut m = std::collections::HashMap::new();
-    let key = (shash(body, &mut m), shash(s, &mut m));
-    BETA_PAIRS.with(|b| {
-        let mut b = b.borrow_mut();
-        b.1 += 1;
-        let fresh = b.0.insert(key);
-        if !fresh {
-            b.2 += 1;
-        }
-        !fresh
-    })
-}
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static BETA_VISITS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
-}
-/// `(instantiate visits over all betas, over betas that repeated an earlier (body, argument))`, then resets.
-#[cfg(feature = "record-defeq")]
-pub fn take_beta_visits() -> (u64, u64) {
-    BETA_VISITS.with(|c| c.replace((0, 0)))
-}
-/// `(betas, of which the same (body, argument) structure was substituted earlier)`, then resets.
-#[cfg(feature = "record-defeq")]
-pub fn take_beta_pairs() -> (u64, u64) {
-    BETA_PAIRS.with(|b| {
-        let b = std::mem::take(&mut *b.borrow_mut());
-        (b.1, b.2)
-    })
-}
-/// Distinct (node, depth) pairs `instantiate` visited, summed per `subst_top` call, since the last call.
-#[cfg(feature = "record-defeq")]
-pub fn take_instantiate_distinct() -> u64 {
-    WALKS_DISTINCT.with(|d| d.replace(0))
-}
 #[cfg(feature = "record-defeq")]
 pub fn take_walk_counts() -> [u64; 5] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
