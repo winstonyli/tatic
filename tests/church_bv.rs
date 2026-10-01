@@ -543,6 +543,22 @@ fn add_comm_scaling() {
     }
 }
 
+/// One rejection check at width `COMM_N`: `COMM_CASE` is `own` (the wrong statement against its own
+/// proof) or `right` (the right proof against the wrong statement). Prints the verdict and time.
+/// For running one case under a memory watchdog (design doc section 82).
+#[test]
+#[ignore]
+fn add_comm_rejection_probe() {
+    let n: usize = std::env::var("COMM_N").unwrap().parse().unwrap();
+    let case = std::env::var("COMM_CASE").unwrap();
+    let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
+    let (proof, _) = add_comm_proof(n, false);
+    let (wp, ws) = add_comm_proof(n, true);
+    let t0 = Instant::now();
+    let r = if case == "own" { check(&Ctx::new(), &wp, &ws) } else { check(&Ctx::new(), &proof, &ws) };
+    println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
+}
+
 /// As `add_comm_scaling`, built and checked inside one `InternScope`, up to the widths in the
 /// environment variable `COMM_NS` (comma separated; default 8,16,32,64). Prints build and check time
 /// separately and the proof DAG (design doc section 81).
