@@ -560,7 +560,10 @@ fn walk_counts_on_hard_queries() {
     for n in [8usize, 16, 32, 64] {
         let (proof, stmt) = add_zero_proof(n, 0);
         let _ = take_defeq_log();
+        let tck = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);
+        println!("CHECK n={n}: whole check {:?}", tck.elapsed());
+        { let w = take_walk_counts(); println!("CHECK n={n}: whole-check visits instantiate={} shift={} eq={} conv_whnf={} shift-in-ctx_lookup={}", w[0], w[1], w[2], w[3], w[17]); }
         let qs = take_defeq_log();
         let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
         let _ = take_walk_counts();

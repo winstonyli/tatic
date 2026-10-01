@@ -1304,6 +1304,15 @@ fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
     // current length requires shifting by `k + 1`, not `k` — e.g. for
     // `Var(0)` itself (k=0), its stored type was written one binder
     // shallower than "now", so it still needs a shift of 1.
+    #[cfg(feature = "record-defeq")]
+    {
+        // Probe slot 17: `shift` visits spent in this lookup.
+        let v0 = WALKS.with(|w| w[1].get());
+        let r = shift(ty, 0, k as i32 + 1);
+        WALKS.with(|w| w[17].set(w[17].get() + w[1].get() - v0));
+        return Ok(r);
+    }
+    #[cfg(not(feature = "record-defeq"))]
     Ok(shift(ty, 0, k as i32 + 1))
 }
 
@@ -1671,7 +1680,7 @@ thread_local! {
 // `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static WALKS: [std::cell::Cell<u64>; 17] = const { [const { std::cell::Cell::new(0) }; 17] };
+    static WALKS: [std::cell::Cell<u64>; 18] = const { [const { std::cell::Cell::new(0) }; 18] };
 }
 #[cfg(feature = "record-defeq")]
 thread_local! {
@@ -1690,7 +1699,7 @@ fn walk_count(i: usize) {
 #[inline(always)]
 fn walk_count(_: usize) {}
 #[cfg(feature = "record-defeq")]
-pub fn take_walk_counts() -> [u64; 17] {
+pub fn take_walk_counts() -> [u64; 18] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
 }
 
