@@ -2099,10 +2099,10 @@ fn nf_cached(t: &Term, ops: &[Expr], n: usize, tuple: u128, cache: &mut NfCache)
     e
 }
 
-fn fingerprint(t: &Term, ops: &[Expr], n: usize, nvars: usize, cache: &mut NfCache) -> u64 {
+fn fingerprint(t: &Term, ops: &[Expr], n: usize, tuples: &[u128], cache: &mut NfCache) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for tuple in 0..(1u128 << (n * nvars)) {
+    for &tuple in tuples {
         format!("{:?}", nf_cached(t, ops, n, tuple, cache)).hash(&mut h);
     }
     h.finish()
@@ -2249,6 +2249,27 @@ fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
     }
 }
 
+/// A sum of two (atom-abstracted) bitwise operands that a constant carry reduces to 0, -1 or one of its atoms:
+/// the rewritten term and the proof from `carry_chain_law` instantiated at the atoms' values and witnesses.
+fn chain_step(n: usize, a: &Term, b: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
+    if ablated("chain") {
+        return None;
+    }
+    let mut atoms = vec![];
+    let (a1, b1) = (abstract_atoms(a, &mut atoms)?, abstract_atoms(b, &mut atoms)?);
+    for cand in [Term::Zero, Term::Ones, Term::V(0), Term::V(1)] {
+        if matches!(cand, Term::V(i) if i >= atoms.len()) || find_constant_carry(&a1, &b1, &cand).is_none() {
+            continue;
+        }
+        let law = carry_chain_law(n, &Term::Op(0, Box::new(a1.clone()), Box::new(b1.clone())), &cand)?;
+        let w: Vec<(Expr, Expr)> = (0..2).map(|i| atoms.get(i).map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
+        let proof = apps(law.0, vec![w[0].0.clone(), w[1].0.clone(), w[0].1.clone(), w[1].1.clone()]);
+        let target = if let Term::V(i) = cand { atoms[i].clone() } else { cand };
+        return Some((target, proof));
+    }
+    None
+}
+
 /// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`.
 fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
     let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
@@ -2309,6 +2330,8 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
         let swapped = witnessed(&Term::Op(0, Box::new(b2.clone()), Box::new(a2.clone())), n, goods).0;
         let ones = witnessed(&Term::Ones, n, goods).0;
         Some((Term::Ones, trans_proof(&bv_ty(n), &ev(&t1), &swapped, &ones, comm, lemma)))
+    } else if let Some(r) = chain_step(n, &a2, &b2, goods) {
+        Some(r)
     } else if let (false, Term::Op(0, p, q)) = (ablated("assoc"), &a2) {
         // (p + q) + r = p + (q + r)
         Some((sum(p, &sum(q, &b2)), assoc(p, q, &b2)))
@@ -2528,6 +2551,223 @@ fn carry_chain_builder_finds_the_constant_carry() {
     }
 }
 
+// ---- Searching for the carry-state encoding (search note section 14). A sum of three leaves, such as
+// `add (add x y) z` or `add x (add y z)`, is a ripple machine with two carries (c, d). Two such sums agree if
+// some encoding phi = (phi1, phi2) of the carry pair (two Boolean functions of (c, d)) carries enough
+// information: each side's output bit and next phi-values must be functions of (x bit, y bit, phi(c, d)), the same
+// functions for both sides. `find_state_encoding` searches all 16 x 16 encodings by truth table; the proof is the
+// associativity proof with the discovered phi in place of the hand-derived (xor, and).
+
+/// The bit a leaf contributes at one position, given the position's operand bits.
+fn leaf_gb(l: &Term, a: &Gb, b: &Gb) -> Gb {
+    match l {
+        Term::V(0) => a.clone(),
+        Term::V(_) => b.clone(),
+        Term::Zero => Gb { e: f(), g: good_bit(false) },
+        _ => Gb { e: t(), g: good_bit(true) },
+    }
+}
+
+/// The three leaves of `add (add u v) w` or `add u (add v w)` and whether the inner sum is on the left.
+fn tree_leaves(t: &Term) -> Option<([Term; 3], bool)> {
+    let is_leaf = |t: &Term| !matches!(t, Term::Op(..));
+    let Term::Op(0, l, r) = t else { return None };
+    match (&**l, &**r) {
+        (Term::Op(0, u, v), w) if is_leaf(u) && is_leaf(v) && is_leaf(w) => Some(([(**u).clone(), (**v).clone(), w.clone()], true)),
+        (u, Term::Op(0, v, w)) if is_leaf(u) && is_leaf(v) && is_leaf(w) => Some(([u.clone(), (**v).clone(), (**w).clone()], false)),
+        _ => None,
+    }
+}
+
+/// One position of the two-carry machine: `(output bit, next inner carry, next outer carry)`.
+fn tree_step(g: &GoodOps, left: bool, leaves: &[Gb; 3], c: &Gb, d: &Gb) -> (Gb, Gb, Gb) {
+    let [x, y, z] = leaves;
+    if left {
+        let s = g.sum3(x, y, c);
+        (g.sum3(&s, z, d), g.maj(x, y, c), g.maj(&s, z, d))
+    } else {
+        let t = g.sum3(y, z, c);
+        (g.sum3(x, &t, d), g.maj(y, z, c), g.maj(x, &t, d))
+    }
+}
+
+struct Encoding {
+    phi: [[bool; 4]; 2],
+    /// `g[k][xb, yb, p, q]` for k = output, next phi1, next phi2 (index `8 xb + 4 yb + 2 p + q`).
+    g: [[bool; 16]; 3],
+}
+
+/// Searches the encodings of the carry pair for the two machines; `None` if none carries enough information.
+fn find_state_encoding(t1: &Term, t2: &Term, gops: &GoodOps) -> Option<Encoding> {
+    let ((l1, left1), (l2, left2)) = (tree_leaves(t1)?, tree_leaves(t2)?);
+    // each machine's (out, c', d') on all 16 assignments of (xb, yb, c, d), computed once by the kernel
+    let raw = |leaves: &[Term; 3], left: bool| -> Vec<[bool; 3]> {
+        (0..16)
+            .map(|m| {
+                let bitgb = |v: bool| Gb { e: bit(v), g: f() };
+                let (xb, yb, c, d) = (bitgb(m & 8 != 0), bitgb(m & 4 != 0), bitgb(m & 2 != 0), bitgb(m & 1 != 0));
+                let lv = [leaf_gb(&leaves[0], &xb, &yb), leaf_gb(&leaves[1], &xb, &yb), leaf_gb(&leaves[2], &xb, &yb)];
+                let (o, c2, d2) = tree_step(gops, left, &lv, &c, &d);
+                let truth = |g: &Gb| normalize(&g.e) == t();
+                [truth(&o), truth(&c2), truth(&d2)]
+            })
+            .collect()
+    };
+    let machines = [raw(&l1, left1), raw(&l2, left2)];
+    for tab1 in 0..16u8 {
+        for tab2 in 0..16u8 {
+            let phi = [[0, 1, 2, 3].map(|i| tab1 >> i & 1 == 1), [0, 1, 2, 3].map(|i| tab2 >> i & 1 == 1)];
+            let ph = |k: usize, c: bool, d: bool| phi[k][c as usize * 2 + d as usize];
+            let mut g: [[Option<bool>; 16]; 3] = [[None; 16]; 3];
+            let mut ok = true;
+            'machines: for mach in &machines {
+                for m in 0..16usize {
+                    let (xy, c, d) = (m >> 2, m & 2 != 0, m & 1 != 0);
+                    let key = xy * 4 + ph(0, c, d) as usize * 2 + ph(1, c, d) as usize;
+                    let [out, c2, d2] = mach[m];
+                    for (k, v) in [(0, out), (1, ph(0, c2, d2)), (2, ph(1, c2, d2))] {
+                        match g[k][key] {
+                            Some(old) if old != v => {
+                                ok = false;
+                                break 'machines;
+                            }
+                            _ => g[k][key] = Some(v),
+                        }
+                    }
+                }
+            }
+            if ok {
+                let mut gt = [[false; 16]; 3];
+                for k in 0..3 {
+                    for i in 0..16 {
+                        gt[k][i] = g[k][i].unwrap_or(false);
+                    }
+                }
+                return Some(Encoding { phi, g: gt });
+            }
+        }
+    }
+    None
+}
+
+/// Proof of `t1 = t2` for two sums of three leaves over two good vectors, with the carry encoding found by
+/// `find_state_encoding`; `None` when there is none.
+fn add_tree_law(n: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
+    let gops = GoodOps::new();
+    let enc = find_state_encoding(t1, t2, &gops)?;
+    let ((l1, left1), (l2, left2)) = (tree_leaves(t1)?, tree_leaves(t2)?);
+    let sides = [(l1, left1), (l2, left2)];
+    let phi_expr = |k: usize, c: Expr, d: Expr| table_expr(&[c, d], &|b| enc.phi[k][b[0] as usize * 2 + b[1] as usize]);
+    let g_expr = |k: usize, v: &[Expr]| table_expr(v, &|b| enc.g[k][(b[0] as usize) * 8 + (b[1] as usize) * 4 + (b[2] as usize) * 2 + b[3] as usize]);
+    // F_k of a side at symbolic (xb, yb, c, d): k = 0 output, 1 and 2 the next phi values
+    let side_f = |side: usize, k: usize, v: &[Expr]| -> Expr {
+        let dummy = |e: &Expr| Gb { e: e.clone(), g: f() };
+        let (xb, yb) = (dummy(&v[0]), dummy(&v[1]));
+        let lv = [leaf_gb(&sides[side].0[0], &xb, &yb), leaf_gb(&sides[side].0[1], &xb, &yb), leaf_gb(&sides[side].0[2], &xb, &yb)];
+        let (o, c2, d2) = tree_step(&gops, sides[side].1, &lv, &dummy(&v[2]), &dummy(&v[3]));
+        match k {
+            0 => o.e,
+            _ => phi_expr(k - 1, c2.e, d2.e),
+        }
+    };
+    // lemmas Id(F_k, G_k(xb, yb, phi1(c, d), phi2(c, d))) by case analysis on the four bits
+    let lemmas: Vec<Vec<Expr>> = (0..2)
+        .map(|side| {
+            (0..3)
+                .map(|k| {
+                    lemma_n(
+                        4,
+                        &|v| {
+                            let (p, q) = (phi_expr(0, v[2].clone(), v[3].clone()), phi_expr(1, v[2].clone(), v[3].clone()));
+                            id(bool0(), side_f(side, k, v), g_expr(k, &[v[0].clone(), v[1].clone(), p, q]))
+                        },
+                        &|bits| refl(side_f(side, k, &bits.iter().map(|b| bit(*b)).collect::<Vec<_>>())),
+                    )
+                    .0
+                })
+                .collect()
+        })
+        .collect();
+    Some(two_var_law(n, t1, t2, &|a, ga, b, gb| {
+        let bl = bool0();
+        let tr = |x: &Expr, y: &Expr, w: &Expr, p: Expr, q: Expr| trans_proof(&bl, x, y, w, p, q);
+        let zero = Gb { e: f(), g: good_bit(false) };
+        let mut st = [zero.clone(), zero.clone(), zero.clone(), zero]; // cl, dl, er, fr
+        let mut ip = refl(phi_expr(0, f(), f()));
+        let mut iq = refl(phi_expr(1, f(), f()));
+        let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
+        for i in 0..n {
+            let (xg, yg) = (Gb { e: a(i), g: ga(i) }, Gb { e: b(i), g: gb(i) });
+            let (xb, yb) = (a(i), b(i));
+            let state = |side: usize| (st[2 * side].clone(), st[2 * side + 1].clone());
+            let pq = |side: usize| {
+                let (c, d) = state(side);
+                (phi_expr(0, c.e.clone(), d.e.clone()), phi_expr(1, c.e, d.e))
+            };
+            let g_at = |k: usize, (p, q): (Expr, Expr)| g_expr(k, &[xb.clone(), yb.clone(), p, q]);
+            let link = |k: usize, ip: &Expr, iq: &Expr| {
+                let (pl, ql) = pq(0);
+                let (pr, qr) = pq(1);
+                let fmap = lam(bl.clone(), lam(bl.clone(), g_expr(k, &[shift(&xb, 0, 2), shift(&yb, 0, 2), var(1), var(0)])));
+                cong_n(&bl, &bl, &fmap, &[pl, ql], &[pr, qr], vec![ip.clone(), iq.clone()])
+            };
+            let eq = |k: usize| {
+                let vs = |side: usize| {
+                    let (c, d) = state(side);
+                    [xb.clone(), yb.clone(), c.e, d.e]
+                };
+                let (fl, fr) = (side_f(0, k, &vs(0)), side_f(1, k, &vs(1)));
+                let (gl, gr) = (g_at(k, pq(0)), g_at(k, pq(1)));
+                let inst = |side: usize| {
+                    let (c, d) = state(side);
+                    apps(lemmas[side][k].clone(), vec![xb.clone(), yb.clone(), c.e, d.e, ga(i), gb(i), c.g, d.g])
+                };
+                let back = sym(&bl, &fr, &gr, inst(1));
+                let mid = tr(&gl, &gr, &fr, link(k, &ip, &iq), back);
+                (fl.clone(), fr.clone(), tr(&fl, &gl, &fr, inst(0), mid))
+            };
+            let (fl0, fr0, p_out) = eq(0);
+            let (_, _, p_p) = eq(1);
+            let (_, _, p_q) = eq(2);
+            s1.push(fl0);
+            s2.push(fr0);
+            e.push(p_out);
+            ip = p_p;
+            iq = p_q;
+            let old = st.clone();
+            for side in 0..2 {
+                let lv = sides[side].0.clone().map(|l| leaf_gb(&l, &xg, &yg));
+                let (_, c2, d2) = tree_step(&gops, sides[side].1, &lv, &old[2 * side], &old[2 * side + 1]);
+                st[2 * side] = c2;
+                st[2 * side + 1] = d2;
+            }
+        }
+        (s1, s2, e)
+    }))
+}
+
+#[test]
+fn state_encoding_search_proves_three_leaf_sum_laws() {
+    let v = |i: usize| Term::V(i);
+    let op = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    for n in [1usize, 2, 4] {
+        for (name, t1, t2) in [
+            ("add (add x y) y = add x (add y y)", op(op(v(0), v(1)), v(1)), op(v(0), op(v(1), v(1)))),
+            ("add (add y y) -1 = add y (add y -1)", op(op(v(1), v(1)), Term::Ones), op(v(1), op(v(1), Term::Ones))),
+            ("add (add x -1) -1 = add x (add -1 -1)", op(op(v(0), Term::Ones), Term::Ones), op(v(0), op(Term::Ones, Term::Ones))),
+        ] {
+            if n == 1 {
+                let e = find_state_encoding(&t1, &t2, &GoodOps::new()).unwrap();
+                println!("ENCODING {name}: phi1 {:?} phi2 {:?} (index 2c+d)", e.phi[0], e.phi[1]);
+            }
+            let (p, s) = add_tree_law(n, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
+            ck(&format!("{name} at n={n}"), &p, &s);
+        }
+        // a false law has no encoding
+        assert!(add_tree_law(n, &op(op(v(0), v(1)), v(1)), &op(v(0), op(v(0), v(0)))).is_none());
+    }
+}
+
 /// Mine at width `MINER_N` (default 4) over `MINER_VARS` variables (default 2), `MINER_DEEP=1` for terms two
 /// operators deep. Prints the classes, then tries every conjecture over x, y with the generic builder.
 #[test]
@@ -2540,15 +2780,32 @@ fn conjecture_miner() {
     let t0 = Instant::now();
     let mut classes: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
     let mut cache = NfCache::default();
+    // all input tuples, or `MINER_SAMPLE` of them (a fixed pseudo-random subset plus the all-zero and all-one
+    // tuples): a class may then hold a false equality, which no proof builder or kernel check will accept
+    let total = 1u128 << (n * nvars);
+    let sample = env("MINER_SAMPLE", 0) as u128;
+    let tuples: Vec<u128> = if sample == 0 || sample >= total {
+        (0..total).collect()
+    } else {
+        let mut x = 0x9e3779b97f4a7c15u128;
+        let mut v = vec![0, total - 1];
+        for _ in 0..sample {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            v.push((x >> 40) % total);
+        }
+        v.sort();
+        v.dedup();
+        v
+    };
     for (i, t) in ts.iter().enumerate() {
-        classes.entry(fingerprint(t, &ops, n, nvars, &mut cache)).or_default().push(i);
+        classes.entry(fingerprint(t, &ops, n, &tuples, &mut cache)).or_default().push(i);
     }
     let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
     println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
     let show = std::env::var("MINER_SHOW").is_ok();
     // Every conjecture (class representative = shortest term) over x, y, by what can check it.
     let (mut by_builder, mut rejected, mut needs_add, mut needs_z) = (0, vec![], vec![], 0);
-    let (mut by_rewrite, mut rewrite_bugs, mut by_chain) = (0, vec![], 0);
+    let (mut by_rewrite, mut rewrite_bugs, mut by_chain, mut by_tree) = (0, vec![], 0, 0);
     let t1 = Instant::now();
     for c in classes.values().filter(|c| c.len() > 1) {
         let mut members: Vec<&Term> = c.iter().map(|&i| &ts[i]).collect();
@@ -2569,7 +2826,10 @@ fn conjecture_miner() {
                         let chain = carry_chain_law(n, members[0], other).or_else(|| carry_chain_law(n, other, members[0]));
                         match chain {
                             Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_chain += 1,
-                            _ => needs_add.push(law),
+                            _ => match add_tree_law(n, members[0], other) {
+                                Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_tree += 1,
+                                _ => needs_add.push(law),
+                            },
                         }
                     }
                 }
@@ -2584,7 +2844,7 @@ fn conjecture_miner() {
         }
     }
     println!("MINER generic builder: {by_builder} proved, {} rejected {rejected:?}, in {:?}", rejected.len(), t1.elapsed());
-    println!("MINER carry-chain builder: {by_chain} proved");
+    println!("MINER carry-chain builder: {by_chain} proved, state-encoding search: {by_tree} proved");
     println!("MINER rewrite: {by_rewrite} proved, {} failed to check {:?}", rewrite_bugs.len(), &rewrite_bugs[..rewrite_bugs.len().min(5)]);
     println!("MINER no builder: {} still need `add`, {needs_z} use a third variable", needs_add.len());
     for law in needs_add.iter().take(12) {
