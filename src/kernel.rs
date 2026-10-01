@@ -969,7 +969,7 @@ mod hc {
 
     /// Calls `f` on each child, in a fixed order per constructor.
     #[inline(always)]
-    fn for_kids(e: &Expr, mut f: impl FnMut(&Rc<Expr>)) {
+    fn for_kids<'a>(e: &'a Expr, mut f: impl FnMut(&'a Rc<Expr>)) {
         match e {
             Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => {}
             Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
@@ -1048,6 +1048,84 @@ mod hc {
         })
     }
 
+    /// Terms larger than this many nodes (counted once per allocation) are interned on entry to a
+    /// scope; smaller ones are left to the lazy switch-on. Unit tests intern every input.
+    const LARGE: usize = if cfg!(test) { 0 } else { 3000 };
+
+    /// Whether the terms reachable from `roots` have more than `limit` distinct nodes.
+    fn exceeds(roots: &[&Expr], limit: usize) -> bool {
+        let mut seen: PtrSet<usize> = PtrSet::default();
+        let mut stack: Vec<&Expr> = roots.to_vec();
+        while let Some(e) = stack.pop() {
+            let mut kids: Vec<&Rc<Expr>> = Vec::new();
+            for_kids(e, |p| kids.push(p));
+            for p in kids {
+                if seen.insert(Rc::as_ptr(p) as usize) {
+                    if seen.len() > limit {
+                        return true;
+                    }
+                    stack.push(p);
+                }
+            }
+        }
+        limit == 0 && !roots.is_empty()
+    }
+
+    /// `e` with each child replaced by `f` of it.
+    fn map_kids(e: &Expr, f: &mut impl FnMut(&Rc<Expr>) -> Rc<Expr>) -> Expr {
+        match e {
+            Expr::Var(k) => Expr::Var(*k),
+            Expr::Sort(k) => Expr::Sort(*k),
+            Expr::Const(k) => Expr::Const(*k),
+            Expr::Free(k) => Expr::Free(*k),
+            Expr::Pi(a, b) => Expr::Pi(f(a), f(b)),
+            Expr::Lam(a, b) => Expr::Lam(f(a), f(b)),
+            Expr::App(a, b) => Expr::App(f(a), f(b)),
+            Expr::W(a, b) => Expr::W(f(a), f(b)),
+            Expr::Sup(a, b) => Expr::Sup(f(a), f(b)),
+            Expr::Sigma(a, b) => Expr::Sigma(f(a), f(b)),
+            Expr::Refl(a) => Expr::Refl(f(a)),
+            Expr::Id(a, b, c) => Expr::Id(f(a), f(b), f(c)),
+            Expr::Pair(a, b, c) => Expr::Pair(f(a), f(b), f(c)),
+            Expr::SigRec { motive, step, target } => Expr::SigRec { motive: f(motive), step: f(step), target: f(target) },
+            Expr::J { motive, base, a, b, p } => Expr::J { motive: f(motive), base: f(base), a: f(a), b: f(b), p: f(p) },
+            Expr::WRec { motive, children_ty, step, target } => {
+                Expr::WRec { motive: f(motive), children_ty: f(children_ty), step: f(step), target: f(target) }
+            }
+        }
+    }
+
+    fn canon(rc: &Rc<Expr>, memo: &mut HashMap<usize, Rc<Expr>>) -> Rc<Expr> {
+        if rc.canonical() {
+            return rc.clone();
+        }
+        let key = Rc::as_ptr(rc) as usize;
+        if let Some(r) = memo.get(&key) {
+            return r.clone();
+        }
+        let e = grow(|| map_kids(rc, &mut |c| canon(c, memo)));
+        let r = intern(e, Some((rc.loose(), rc.free())));
+        memo.insert(key, r.clone());
+        r
+    }
+
+    /// `check_in`'s term and claim, with every node under them interned when they are large, so the
+    /// comparisons against types the checker builds (which are interned) meet canonical nodes on
+    /// both sides. Small inputs are returned as they are.
+    pub fn canonical_inputs(e: &Expr, expected: &Expr) -> (Expr, Expr) {
+        if !active() {
+            if DEPTH.with(|d| d.get()) == 0 || !exceeds(&[e, expected], LARGE) {
+                return (e.clone(), expected.clone());
+            }
+            let g = NEXT_GENERATION.with(|g| g.replace(g.get() + 1));
+            GENERATION.with(|c| c.set(g));
+        }
+        let mut memo = HashMap::new();
+        let a = map_kids(e, &mut |c| canon(c, &mut memo));
+        let b = map_kids(expected, &mut |c| canon(c, &mut memo));
+        (a, b)
+    }
+
     /// An id for the argument list: the interned node's address for one argument (even), an
     /// odd table id for several; 0 while the table is off (which it leaves after `WARM_UP` calls).
     pub fn args_id(args: &[&Expr]) -> u64 {
@@ -1122,6 +1200,10 @@ mod hc {
             Some((l, f)) => Rc::with_ranges(e, l, f),
             None => Rc::new(e),
         }
+    }
+    #[inline(always)]
+    pub fn canonical_inputs(e: &Expr, expected: &Expr) -> (Expr, Expr) {
+        (e.clone(), expected.clone())
     }
     #[inline(always)]
     pub fn args_id(_: &[&Expr]) -> u64 {
@@ -2351,10 +2433,11 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     // and never infer it, so a malformed claim would otherwise be proved.
     // One cache for both, so a claim's subterms the proof shares hit it.
     let _hc = hc::Scope::enter();
+    let (e, expected) = hc::canonical_inputs(e, expected);
     let mut ic = InferCache::default();
     let mut scope = CtxScope::new(ctx);
-    expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &Rc::new(expected.clone()))?)?;
-    check_rc(globals, &mut ic, &mut scope, 0, &Rc::new(e.clone()), expected)
+    expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &hc::intern(expected.clone(), None))?)?;
+    check_rc(globals, &mut ic, &mut scope, 0, &hc::intern(e, None), &expected)
 }
 
 /// [`check_in`] with no globals.

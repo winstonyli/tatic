@@ -20,12 +20,13 @@ wasmtime = "42.0.1"
 wat = "1.245.1"
 
 [features]
+default = ["hashcons"]
 # Records every `def_eq(inferred, expected)` that `check_rc` makes (see `take_defeq_log`), so a test can
 # replay them through another evaluator. Off by default; adds nothing to the default build.
 record-defeq = []
 # Hash-consing prototype (bit-vector design doc section 60): inside `check`/`infer`/`def_eq`, the nodes
 # `instantiate` and `shift` build are interned, and both are memoised by (node, arguments, depth) and
-# (node, cutoff, amount). Off by default.
+# (node, cutoff, amount). On by default (design doc section 62); build with --no-default-features to turn it off.
 hashcons = []
 
 [dev-dependencies]
