@@ -2304,6 +2304,22 @@ fn chain_step(n: usize, a: &Term, b: &Term, goods: &[(Expr, Expr)]) -> Option<(T
     None
 }
 
+/// A sum tree of add-free leaves that the carry-encoding search shows equal to 0, -1 or a variable: that value and
+/// the proof (`add_tree_law` at the variables' values and witnesses). Ablation name `tree`.
+fn tree_step(n: usize, t1: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
+    if ablated("tree") {
+        return None;
+    }
+    let k = goods.len();
+    for cand in [Term::Zero, Term::Ones].into_iter().chain((0..k).map(Term::V)) {
+        if let Some(law) = add_tree_law(n, k, t1, &cand) {
+            let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
+            return Some((cand, apps(law.0, args)));
+        }
+    }
+    None
+}
+
 /// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`.
 fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
     let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
@@ -2366,6 +2382,8 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
         let ones = witnessed(&Term::Ones, n, goods).0;
         Some((Term::Ones, trans_proof(&bv_ty(n), &ev(&t1), &swapped, &ones, comm, lemma)))
     } else if let Some(r) = chain_step(n, &a2, &b2, goods) {
+        Some(r)
+    } else if let Some(r) = tree_step(n, &t1, goods) {
         Some(r)
     } else if let (false, Term::Op(0, p, q)) = (ablated("assoc"), &a2) {
         // (p + q) + r = p + (q + r)
@@ -2447,6 +2465,12 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
             return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[0], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
         }
         // two sums of add-free leaves: the carry-encoding proof at the variables' values
+        let law = add_tree_law(n, k, a, b)?;
+        let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
+        return Some(apps(law.0, args));
+    }
+    // a sum against an add-free term (a sum with no carries)
+    if matches!(a, Term::Op(0, ..)) != matches!(b, Term::Op(0, ..)) {
         let law = add_tree_law(n, k, a, b)?;
         let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
         return Some(apps(law.0, args));
@@ -2649,14 +2673,16 @@ enum Src {
     Node(usize),
 }
 
-/// A sum tree flattened in post-order: `nodes[i]` adds two sources; the last node is the root.
+/// A sum tree flattened in post-order: `nodes[i]` adds two sources; `root` is the last node, or the only leaf of
+/// a bare add-free term (no carries).
 struct Machine {
     leaves: Vec<Term>,
     nodes: Vec<(Src, Src)>,
+    root: Src,
 }
 
 impl Machine {
-    /// `None` unless `t` is a sum (at least one `add`) whose leaves are add-free.
+    /// `None` unless `t`'s leaves are add-free (a sum tree, or a single add-free term).
     fn parse(t: &Term) -> Option<Machine> {
         fn go(t: &Term, m: &mut Machine) -> Option<Src> {
             match t {
@@ -2672,9 +2698,9 @@ impl Machine {
                 }
             }
         }
-        let mut m = Machine { leaves: vec![], nodes: vec![] };
-        go(t, &mut m)?;
-        (!m.nodes.is_empty()).then_some(m)
+        let mut m = Machine { leaves: vec![], nodes: vec![], root: Src::Leaf(0) };
+        m.root = go(t, &mut m)?;
+        Some(m)
     }
 
     /// One position: `(output bit, next carries)` from the operand bits `u` and the carries `s`.
@@ -2691,7 +2717,11 @@ impl Machine {
             val.push(v);
             next.push(c);
         }
-        (val.pop().unwrap(), next)
+        let out = match self.root {
+            Src::Leaf(j) => leaf[j].clone(),
+            Src::Node(j) => val[j].clone(),
+        };
+        (out, next)
     }
 }
 
@@ -2757,33 +2787,45 @@ fn find_state_encoding(m1: &Machine, m2: &Machine, k: usize, m: usize, gops: &Go
     None
 }
 
-/// The family of total-carry encodings: the number of carries that are set, in binary (enough bits for the
-/// larger machine), per side. A sum tree satisfies `sum of leaf bits + total carry = output + 2 * next total`, so
-/// this works for any shape and carry count; it is not searched for but tried when the table search cannot run.
-fn total_carry_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps) -> Option<Encoding> {
+/// Searches the symmetric encodings: `m` Boolean functions of the number of carries that are set (a table over
+/// `0..=cmax`, the same for both machines, so their carry counts may differ). The number of set carries in binary is
+/// among them: a sum tree satisfies `sum of leaf bits + total carry = output + 2 * next total carry`.
+fn symmetric_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps) -> Option<Encoding> {
     let cmax = m1.nodes.len().max(m2.nodes.len());
-    let m = (usize::BITS - cmax.leading_zeros()) as usize; // bits of `cmax`
-    let side = |mach: &Machine| -> Vec<Vec<bool>> {
-        let c = mach.nodes.len();
-        (0..m).map(|j| (0..1usize << c).map(|s| (s.count_ones() as usize) >> (m - 1 - j) & 1 == 1).collect()).collect()
-    };
-    let phi = [side(m1), side(m2)];
     let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
-    try_encoding(&raw, k, &phi).map(|g| Encoding { phi, g })
+    let w = cmax + 1;
+    for m in 1..=3usize {
+        if w * m > 18 {
+            break;
+        }
+        for code in 0..1usize << (w * m) {
+            let side = |mach: &Machine| -> Vec<Vec<bool>> {
+                (0..m).map(|j| (0..1usize << mach.nodes.len()).map(|s| (code >> ((m - 1 - j) * w)) >> s.count_ones() & 1 == 1).collect()).collect()
+            };
+            let phi = [side(m1), side(m2)];
+            if let Some(g) = try_encoding(&raw, k, &phi) {
+                return Some(Encoding { phi, g });
+            }
+        }
+    }
+    None
 }
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
-/// `find_state_encoding` when the carry counts agree (at most 3), otherwise (or failing that) the total-carry
-/// family (at most 5 carries per side); `None` when there is none.
+/// `find_state_encoding` when the carry counts agree (at most 3), otherwise (or failing that) the symmetric
+/// search (at most 5 carries per side); `None` when there is none.
 fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
     let (m1, m2) = (Machine::parse(t1)?, Machine::parse(t2)?);
     let cs = [m1.nodes.len(), m2.nodes.len()];
     if cs[0].max(cs[1]) > 5 {
         return None;
     }
+    if cs[0] + cs[1] == 0 {
+        return None;
+    }
     let gops = GoodOps::new();
     let searched = (cs[0] == cs[1] && cs[0] <= 3).then(|| (1..=cs[0].min(2)).find_map(|m| find_state_encoding(&m1, &m2, k, m, &gops))).flatten();
-    let enc = searched.or_else(|| total_carry_encoding(&m1, &m2, k, &gops))?;
+    let enc = searched.or_else(|| symmetric_encoding(&m1, &m2, k, &gops))?;
     let m = enc.phi[0].len();
     let machines = [m1, m2];
     let phi_expr = |side: usize, j: usize, s: &[Expr]| table_expr(s, &|b| enc.phi[side][j][index_of(b)]);
@@ -2908,7 +2950,7 @@ fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leaves() 
 }
 
 #[test]
-fn total_carry_encoding_handles_unequal_carry_counts_and_five_leaves() {
+fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leaves() {
     let v = |i: usize| Term::V(i);
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let add = |a: Term, b: Term| op(0, a, b);
@@ -2916,6 +2958,12 @@ fn total_carry_encoding_handles_unequal_carry_counts_and_five_leaves() {
         // one add against two: the zero leaf adds a carry that never fires
         let (p, s) = add_tree_law(n, 2, &add(v(1), Term::Ones), &add(Term::Ones, add(v(1), Term::Zero))).expect("unequal counts");
         ck(&format!("y + -1 = -1 + (y + 0) at n={n}"), &p, &s);
+        // a bare leaf is a sum with no carries
+        let (p, s) = add_tree_law(n, 2, &v(1), &add(v(1), Term::Zero)).expect("bare leaf");
+        ck(&format!("y = y + 0 at n={n}"), &p, &s);
+        let (p, s) = add_tree_law(n, 2, &op(3, v(0), Term::Ones), &add(op(3, v(0), Term::Ones), Term::Zero)).expect("bare bitwise leaf");
+        ck(&format!("x^-1 = (x^-1) + 0 at n={n}"), &p, &s);
+        assert!(add_tree_law(n, 2, &v(1), &add(v(1), Term::Ones)).is_none());
         // five leaves, four carries
         let l = add(add(add(add(v(0), v(1)), v(2)), v(0)), v(1));
         let r = add(v(0), add(v(1), add(v(2), add(v(0), v(1)))));
@@ -2923,6 +2971,27 @@ fn total_carry_encoding_handles_unequal_carry_counts_and_five_leaves() {
         ck(&format!("five leaves at n={n}"), &p, &s);
         assert!(add_tree_law(n, 3, &l, &add(v(0), add(v(1), add(v(2), add(v(0), v(0)))))).is_none());
         assert!(add_tree_law(n, 2, &add(v(1), Term::Ones), &add(v(0), add(v(1), Term::Zero))).is_none());
+    }
+}
+
+/// Build and check time of the carry-encoding proof by number of carries (n = 4, three operands).
+#[test]
+#[ignore]
+fn tree_proof_cost_by_carries() {
+    let v = |i: usize| Term::V(i);
+    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
+    for n in [2usize, 4] {
+        for c in 2..=5usize {
+            let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
+            let right = leaves[..c].iter().rev().fold(leaves[c].clone(), |a, b| add(b.clone(), a));
+            let t0 = Instant::now();
+            let (p, s) = add_tree_law(n, 3, &left, &right).expect("encoding");
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            let ok = check(&Ctx::new(), &p, &s).is_ok();
+            println!("TREECOST n={n} carries={c}: build {built:?}, check {:?}, ok {ok}", t1.elapsed());
+        }
     }
 }
 
