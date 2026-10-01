@@ -842,7 +842,11 @@ fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
         Expr::App(f, a) => {
             let wf = whnf_rc(f, cache);
             match &*wf {
-                Expr::Lam(_, body) => Some(whnf_impl(&subst_top(body, a), cache)),
+                Expr::Lam(_, body) => {
+                    #[cfg(feature = "record-defeq")]
+                    BETAS.with(|c| c.set(c.get() + 1));
+                    Some(whnf_impl(&subst_top(body, a), cache))
+                }
                 _ => (!Rc::ptr_eq(&wf, f)).then(|| Expr::App(wf, a.clone())),
             }
         }
@@ -1483,6 +1487,17 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
 #[cfg(feature = "record-defeq")]
 thread_local! {
     static DEFEQ_LOG: std::cell::RefCell<Vec<(Expr, Expr, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    static BETAS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Beta steps `whnf_step` took since the last call.
+#[cfg(feature = "record-defeq")]
+pub fn take_beta_count() -> u64 {
+    BETAS.with(|c| c.replace(0))
 }
 
 /// Drains the `(inferred, expected, context depth)` triples `check_rc` compared since the last call.

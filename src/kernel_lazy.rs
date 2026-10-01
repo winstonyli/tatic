@@ -42,6 +42,7 @@ struct Memo {
 #[derive(Default, Debug, Clone)]
 pub struct Stats {
     pub eval_calls: u64,
+    pub betas: u64,
     pub eval_keyed: u64,
     pub eval_hits: u64,
     pub cell_calls: u64,
@@ -230,7 +231,10 @@ enum Clo {
 impl Clo {
     fn apply(&self, arg: Thunk) -> V {
         match self {
-            Clo::Term(env, body) => eval(&push(env, arg), body),
+            Clo::Term(env, body) => {
+                bump(|s| s.betas += 1);
+                eval(&push(env, arg), body)
+            }
             Clo::Ih { motive, cty, step, f } => {
                 let target = apply(&f.force(), arg);
                 wrec(motive, cty, step, target)

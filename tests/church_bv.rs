@@ -537,13 +537,16 @@ fn replay_defeq_queries() {
         let qs = take_defeq_log();
         let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
         let t0 = Instant::now();
+        let _ = take_beta_count();
         let k: Vec<bool> = hard.iter().map(|(a, b, _)| def_eq(a, b)).collect();
         let tk = t0.elapsed();
+        let kernel_betas = take_beta_count();
         let _ = take_stats();
         let t1 = Instant::now();
         let s: Vec<bool> = hard.iter().map(|(a, b, d)| def_eq_lazy_shared(a, b, *d)).collect();
         let ts = t1.elapsed();
-        println!("REPLAY n={n}: queries={} hard={} kernel {tk:?} shared {ts:?} agree={}", qs.len(), hard.len(), k == s);
-        println!("REPLAY n={n}: {:?}", take_stats());
+        let st = take_stats();
+        println!("REPLAY n={n}: queries={} hard={} kernel {tk:?} shared {ts:?} agree={} kernel_betas={kernel_betas} lazy_betas={}", qs.len(), hard.len(), k == s, st.betas);
+        println!("REPLAY n={n}: evals={} conv={}", st.eval_calls, st.conv_calls);
     }
 }
