@@ -1642,95 +1642,246 @@ fn or_disjoint_scaling() {
     }
 }
 
-// ---- Conjecture miner (design note 2026-10-01-search-execution-blend-design.md, section 7).
-// Terms over x, y are *run* on every pair of n-bit literals by the kernel (`normalize`); terms with the same
-// results are conjectured equal; the conjectures that match a known lemma's shape are then *checked* with that
-// lemma's generator. Execution and checking share one loop: the kernel is both the evaluator and the judge.
+// ---- Conjecture miner (design note 2026-10-01-search-execution-blend-design.md, sections 7-9).
+// Terms over x, y (and z) are *run* on every tuple of n-bit literals by the kernel (`normalize`); terms with
+// the same results are conjectured equal; each conjecture is then *checked*: by the matching library
+// generator, or by a generic builder (`bitwise_law`) that has no template for the particular lemma.
 
 #[derive(Clone)]
 enum Term {
-    X,
-    Y,
+    V(usize),
     Zero,
     Ones,
     Op(usize, Box<Term>, Box<Term>),
 }
 const OPS: [&str; 4] = ["add", "and", "or", "xor"];
+const VARS: [&str; 3] = ["x", "y", "z"];
 impl Term {
     fn show(&self) -> String {
         match self {
-            Term::X => "x".into(),
-            Term::Y => "y".into(),
+            Term::V(i) => VARS[*i].into(),
             Term::Zero => "0".into(),
             Term::Ones => "-1".into(),
             Term::Op(o, a, b) => format!("{}({}, {})", OPS[*o], a.show(), b.show()),
         }
     }
-    fn eval(&self, ops: &[Expr], n: usize, x: u128, y: u128) -> Expr {
+    /// The term as an expression, with `vals[i]` for variable `i`.
+    fn eval(&self, ops: &[Expr], n: usize, vals: &[Expr]) -> Expr {
         match self {
-            Term::X => lit(n, x),
-            Term::Y => lit(n, y),
+            Term::V(i) => vals[*i].clone(),
             Term::Zero => lit(n, 0),
             Term::Ones => lit(n, (1u128 << n) - 1),
-            Term::Op(o, a, b) => app2(ops[*o].clone(), a.eval(ops, n, x, y), b.eval(ops, n, x, y)),
+            Term::Op(o, a, b) => app2(ops[*o].clone(), a.eval(ops, n, vals), b.eval(ops, n, vals)),
+        }
+    }
+    fn uses_add(&self) -> bool {
+        match self {
+            Term::Op(o, a, b) => *o == 0 || a.uses_add() || b.uses_add(),
+            _ => false,
+        }
+    }
+    fn max_var(&self) -> usize {
+        match self {
+            Term::V(i) => *i,
+            Term::Op(_, a, b) => a.max_var().max(b.max_var()),
+            _ => 0,
+        }
+    }
+    /// The term's value at one bit position, a `Bool0`, given the variables' bits (`bits[v]`); bitwise ops only.
+    fn bit(&self, bits: &[Expr]) -> Expr {
+        match self {
+            Term::V(i) => bits[*i].clone(),
+            Term::Zero => f(),
+            Term::Ones => t(),
+            Term::Op(o, a, b) => {
+                let (x, y) = (a.bit(bits), b.bit(bits));
+                match o {
+                    1 => and(x, y),
+                    2 => or(x, y),
+                    3 => xor(x, y),
+                    _ => panic!("`add` is not bitwise"),
+                }
+            }
         }
     }
 }
 
-/// The leaves `x, y, 0, -1` and every operator applied to two leaves (deeper terms are the next experiment).
-fn terms() -> Vec<Term> {
-    let leaves = vec![Term::X, Term::Y, Term::Zero, Term::Ones];
-    let mut all = leaves.clone();
+/// Leaves, every operator applied to two leaves, and (with `deep`) every operator applied to such a term
+/// and a leaf, in either order.
+fn terms(nvars: usize, deep: bool) -> Vec<Term> {
+    let mut leaves: Vec<Term> = (0..nvars).map(Term::V).collect();
+    leaves.push(Term::Zero);
+    leaves.push(Term::Ones);
+    let mut level1 = vec![];
     for o in 0..OPS.len() {
         for a in &leaves {
             for b in &leaves {
-                all.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+                level1.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+            }
+        }
+    }
+    let mut all = leaves.clone();
+    all.extend(level1.clone());
+    if deep {
+        for o in 0..OPS.len() {
+            for a in &level1 {
+                for b in &leaves {
+                    all.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+                    all.push(Term::Op(o, Box::new(b.clone()), Box::new(a.clone())));
+                }
             }
         }
     }
     all
 }
 
-fn fingerprint(t: &Term, ops: &[Expr], n: usize) -> u64 {
+fn fingerprint(t: &Term, ops: &[Expr], n: usize, nvars: usize) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for x in 0..(1u128 << n) {
-        for y in 0..(1u128 << n) {
-            format!("{:?}", normalize(&t.eval(ops, n, x, y))).hash(&mut h);
-        }
+    for tuple in 0..(1u128 << (n * nvars)) {
+        let vals: Vec<Expr> = (0..nvars).map(|v| lit(n, (tuple >> (n * v)) & ((1u128 << n) - 1))).collect();
+        format!("{:?}", normalize(&t.eval(ops, n, &vals))).hash(&mut h);
     }
     h.finish()
 }
 
+/// Generic proof of `t1(x, y) = t2(x, y)` for bitwise terms over two good vectors, with no lemma-specific
+/// template: per bit, case analysis on the two `GoodBool` witnesses with `refl` leaves (the kernel decides
+/// each leaf), then `cong_n` and the two witness eliminations. A false conjecture fails to check.
+fn bitwise_law(n: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
+    let ops = [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b))];
+    let (bit_law, _) = lemma2(
+        &|a, b| id(bool0(), t1.bit(&[a.clone(), b.clone()]), t2.bit(&[a, b])),
+        &|va, vb| refl(t1.bit(&[bit(va), bit(vb)])),
+    );
+    // ctx: x, y, gx, gy, a_0.., ga_0.., b_0.., gb_0..
+    let d1 = 4 + 2 * n;
+    let d2 = d1 + 2 * n;
+    let a = |i: usize| var((d2 - 1 - (4 + i)) as u32);
+    let ga = |i: usize| var((d2 - 1 - (4 + n + i)) as u32);
+    let b = |i: usize| var((d2 - 1 - (d1 + i)) as u32);
+    let gb = |i: usize| var((d2 - 1 - (d1 + n + i)) as u32);
+    let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
+    for i in 0..n {
+        s1.push(t1.bit(&[a(i), b(i)]));
+        s2.push(t2.bit(&[a(i), b(i)]));
+        e.push(apps(bit_law.clone(), vec![a(i), b(i), ga(i), gb(i)]));
+    }
+    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    fbody = lam(sort(1), lam(karrow(n), fbody));
+    for _ in 0..n {
+        fbody = lam(bool0(), fbody);
+    }
+    let binders = |mut body: Expr| {
+        for _ in 0..n {
+            body = lam(app(good_bool(), var(n as u32 - 1)), body);
+        }
+        for _ in 0..n {
+            body = lam(bool0(), body);
+        }
+        body
+    };
+    let step_y = binders(cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e));
+    let a1 = |i: usize| var((d1 - 1 - (4 + i)) as u32);
+    let mka = mk(&(0..n).map(|i| shift(&a1(i), 0, 1)).collect::<Vec<_>>());
+    let claim = |x: Expr, y: Expr| id(bv_ty(n), t1.eval(&ops, n, &[x.clone(), y.clone()]), t2.eval(&ops, n, &[x, y]));
+    let motive_y = lam(bv_ty(n), claim(mka, var(0)));
+    let gy = var((d1 - 1 - 3) as u32);
+    let step_x = binders(app2(gy, motive_y, step_y));
+    let motive_x = lam(bv_ty(n), claim(var(0), var(3)));
+    let proof = lam(bv_ty(n), lam(bv_ty(n), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)),
+        app2(var(1), motive_x, step_x)))));
+    let stmt = pi(bv_ty(n), pi(bv_ty(n), pi(app(good_bv(n), var(1)), pi(app(good_bv(n), var(1)), claim(var(3), var(2))))));
+    (proof, stmt)
+}
+
+#[test]
+fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
+    let v = |i: usize| Term::V(i);
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    for n in [1usize, 2, 4] {
+        for (name, t1, t2) in [
+            ("and x y = and y x", op(1, v(0), v(1)), op(1, v(1), v(0))),
+            ("xor x x = 0", op(3, v(0), v(0)), Term::Zero),
+            ("or x -1 = -1", op(2, v(0), Term::Ones), Term::Ones),
+            ("and x (or x y) = x", op(1, v(0), op(2, v(0), v(1))), v(0)),
+        ] {
+            let (p, s) = bitwise_law(n, &t1, &t2);
+            ck(&format!("{name} at n={n}"), &p, &s);
+        }
+        for (name, t1, t2) in [("and x y = or x y", op(1, v(0), v(1)), op(2, v(0), v(1))), ("xor x x = -1", op(3, v(0), v(0)), Term::Ones)] {
+            let (p, s) = bitwise_law(n, &t1, &t2);
+            assert!(check(&Ctx::new(), &p, &s).is_err(), "false law `{name}` must be rejected at n={n}");
+        }
+    }
+}
+
+/// Mine at width `MINER_N` (default 4) over `MINER_VARS` variables (default 2), `MINER_DEEP=1` for terms two
+/// operators deep. Prints the classes, then tries every conjecture over x, y with the generic builder.
 #[test]
 #[ignore]
 fn conjecture_miner() {
-    let n: usize = std::env::var("MINER_N").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (n, nvars, deep) = (env("MINER_N", 4), env("MINER_VARS", 2), env("MINER_DEEP", 0) == 1);
     let ops = [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b))];
-    let ts = terms();
+    let ts = terms(nvars, deep);
     let t0 = Instant::now();
     let mut classes: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
     for (i, t) in ts.iter().enumerate() {
-        classes.entry(fingerprint(t, &ops, n)).or_default().push(i);
+        classes.entry(fingerprint(t, &ops, n, nvars)).or_default().push(i);
     }
-    println!("MINER n={n}: {} terms, {} behaviour classes, run in {:?}", ts.len(), classes.len(), t0.elapsed());
-    let class_of = |t: &Term| classes.values().find(|c| c.iter().any(|&i| ts[i].show() == t.show())).cloned();
-    let mut conjectures = 0;
+    let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
+    println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
+    let show = std::env::var("MINER_SHOW").is_ok();
+    // Every conjecture (class representative = shortest term) over x, y, by what can check it.
+    let (mut by_builder, mut rejected, mut needs_add, mut needs_z) = (0, vec![], vec![], 0);
+    let t1 = Instant::now();
     for c in classes.values().filter(|c| c.len() > 1) {
-        conjectures += c.len() - 1;
-        println!("  CLASS: {}", c.iter().map(|&i| ts[i].show()).collect::<Vec<_>>().join(" = "));
+        let mut members: Vec<&Term> = c.iter().map(|&i| &ts[i]).collect();
+        members.sort_by_key(|t| t.show().len());
+        for other in &members[1..] {
+            let law = format!("{} = {}", members[0].show(), other.show());
+            if show {
+                println!("  CONJ: {law}");
+            }
+            if members[0].max_var().max(other.max_var()) > 1 {
+                needs_z += 1;
+            } else if members[0].uses_add() || other.uses_add() {
+                needs_add.push(law);
+            } else {
+                let (p, s) = bitwise_law(n, members[0], other);
+                if check(&Ctx::new(), &p, &s).is_ok() {
+                    by_builder += 1;
+                } else {
+                    rejected.push(law);
+                }
+            }
+        }
     }
-    println!("MINER: {conjectures} equality conjectures");
-    // Known lemmas: is the conjecture in a class, and does its generator's proof check?
+    println!("MINER generic builder: {by_builder} proved, {} rejected {rejected:?}, in {:?}", rejected.len(), t1.elapsed());
+    println!("MINER no builder: {} need `add`, {needs_z} use a third variable", needs_add.len());
+    for law in needs_add.iter().take(12) {
+        println!("  needs add: {law}");
+    }
+    // Known library lemmas: does the miner conjecture them, and does the template proof check?
+    let v = |i: usize| Term::V(i);
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let in_same = |a: &Term, b: &Term| class_of(a).map_or(false, |c| c.iter().any(|&i| ts[i].show() == b.show()));
-    let known: [(&str, bool, Option<bool>); 3] = [
-        ("add x 0 = x", in_same(&op(0, Term::X, Term::Zero), &Term::X), Some(check(&Ctx::new(), &add_zero_proof(n, 0).0, &add_zero_proof(n, 0).1).is_ok())),
-        ("add 0 x = x", in_same(&op(0, Term::Zero, Term::X), &Term::X), Some({ let (p, s) = add_identity_proof(n, 0, true); check(&Ctx::new(), &p, &s).is_ok() })),
-        ("add x y = add y x", in_same(&op(0, Term::X, Term::Y), &op(0, Term::Y, Term::X)), Some({ let (p, s) = add_comm_proof(n, false); check(&Ctx::new(), &p, &s).is_ok() })),
-    ];
-    for (name, mined, proved) in known {
-        println!("MINER known lemma {name}: conjectured by the miner: {mined}; its template proof checks: {proved:?}");
-        assert!(mined, "{name} must be rediscovered as a conjecture");
+    let same = |a: &Term, b: &Term| {
+        classes.values().any(|c| c.iter().any(|&i| ts[i].show() == a.show()) && c.iter().any(|&i| ts[i].show() == b.show()))
+    };
+    let (p0, s0) = add_zero_proof(n, 0);
+    let (p1, s1) = add_identity_proof(n, 0, true);
+    let (p2, s2) = add_comm_proof(n, false);
+    for (name, mined, proved) in [
+        ("add x 0 = x", same(&op(0, v(0), Term::Zero), &v(0)), check(&Ctx::new(), &p0, &s0).is_ok()),
+        ("add 0 x = x", same(&op(0, Term::Zero, v(0)), &v(0)), check(&Ctx::new(), &p1, &s1).is_ok()),
+        ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), check(&Ctx::new(), &p2, &s2).is_ok()),
+    ] {
+        println!("MINER known lemma {name}: conjectured {mined}, template proof checks {proved}");
+        assert!(mined && proved, "{name}");
+    }
+    if deep && nvars >= 3 {
+        let assoc = same(&op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2))));
+        println!("MINER add associativity conjectured: {assoc}");
     }
 }
