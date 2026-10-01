@@ -383,7 +383,7 @@ fn proof_size_scaling() {
 #[test]
 #[ignore]
 fn add_zero_lemma_scaling() {
-    for n in [8usize, 16, 32, 64, 128] {
+    for n in [8usize, 16, 32, 64, 128, 256] {
         let (proof, stmt) = add_zero_proof(n, 0);
         let t0 = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);

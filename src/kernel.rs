@@ -904,11 +904,22 @@ mod hc {
     use super::*;
     use std::cell::{Cell, RefCell};
 
-    #[derive(PartialEq, Eq, Hash)]
+    #[derive(PartialEq, Eq)]
     struct NodeKey {
         tag: u8,
         leaf: u32,
         kids: [usize; 5],
+    }
+
+    /// Folds the fields into six words (the derived impl also hashes the array's length and the tag
+    /// on its own: eight mixing steps per lookup).
+    impl std::hash::Hash for NodeKey {
+        fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+            h.write_u64(((self.tag as u64) << 32) | self.leaf as u64);
+            for k in self.kids {
+                h.write_usize(k);
+            }
+        }
     }
 
     #[derive(Default)]
