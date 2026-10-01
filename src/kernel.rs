@@ -812,14 +812,19 @@ fn shift_child(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Rc<Expr> {
     if x.loose() <= cutoff {
         return x.clone();
     }
+    if let Some(r) = hc::shift_get(x, cutoff, amount) {
+        return r;
+    }
     let e = shift_unchecked(x, cutoff, amount);
     // The largest loose variable sat at or above `cutoff`, so it moves by
     // exactly `amount`; `Free` levels don't change. (Saturated ranges
     // are recomputed.)
-    match x.loose() {
-        u32::MAX => Rc::new(e),
-        l => Rc::with_ranges(e, (l as i64 + amount as i64) as u32, x.free()),
-    }
+    let r = match x.loose() {
+        u32::MAX => hc::intern(e, None),
+        l => hc::intern(e, Some(((l as i64 + amount as i64) as u32, x.free()))),
+    };
+    hc::shift_put(x, cutoff, amount, &r);
+    r
 }
 
 /// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
@@ -866,6 +871,195 @@ fn shift_memo_child(x: &Rc<Expr>, cutoff: u32, amount: i32, memo: &ShiftMemo) ->
     r
 }
 
+/// The hash-consing prototype (`hashcons` feature, bit-vector design doc section 60). While a
+/// [`hc::Scope`] is open, `instantiate_n` and `shift_child` intern the nodes they build and
+/// memoise their results; the table and memos are dropped with the outermost scope. A node is
+/// interned under an exact key (constructor, leaf value, child pointers), so two nodes merge only
+/// if structurally equal; ones built elsewhere simply stay distinct. With the feature off every
+/// function here is a no-op that makes the callers behave as before.
+#[cfg(feature = "hashcons")]
+mod hc {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    #[derive(PartialEq, Eq, Hash)]
+    struct NodeKey {
+        tag: u8,
+        leaf: u32,
+        kids: [usize; 5],
+    }
+
+    #[derive(Default)]
+    struct Table {
+        nodes: PtrMap<NodeKey, Rc<Expr>>,
+        /// (source node, argument-set id, depth) -> (the source, kept alive; its instantiation).
+        inst: PtrMap<(usize, u64, u32), (Rc<Expr>, Rc<Expr>)>,
+        shifts: PtrMap<(usize, u32, i32), (Rc<Expr>, Rc<Expr>)>,
+        /// Argument sets of two or more nodes, by their node pointers.
+        arg_sets: HashMap<Vec<usize>, u64>,
+    }
+
+    thread_local! {
+        static TABLE: RefCell<Table> = RefCell::new(Table::default());
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+    }
+
+    pub struct Scope;
+
+    impl Scope {
+        pub fn enter() -> Scope {
+            DEPTH.with(|d| d.set(d.get() + 1));
+            Scope
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            if DEPTH.with(|d| {
+                d.set(d.get() - 1);
+                d.get() == 0
+            }) {
+                let old = TABLE.with(|t| std::mem::take(&mut *t.borrow_mut()));
+                drop(old);
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn active() -> bool {
+        DEPTH.with(|d| d.get() > 0)
+    }
+
+    fn key_of(e: &Expr) -> NodeKey {
+        let (tag, leaf) = match e {
+            Expr::Var(k) => (0, *k),
+            Expr::Sort(k) => (1, *k),
+            Expr::Const(k) => (2, *k),
+            Expr::Free(k) => (3, *k),
+            Expr::Pi(..) => (4, 0),
+            Expr::Lam(..) => (5, 0),
+            Expr::App(..) => (6, 0),
+            Expr::Id(..) => (7, 0),
+            Expr::Refl(..) => (8, 0),
+            Expr::J { .. } => (9, 0),
+            Expr::W(..) => (10, 0),
+            Expr::Sup(..) => (11, 0),
+            Expr::WRec { .. } => (12, 0),
+            Expr::Sigma(..) => (13, 0),
+            Expr::Pair(..) => (14, 0),
+            Expr::SigRec { .. } => (15, 0),
+        };
+        let mut kids = [0usize; 5];
+        let mut i = 0;
+        same_shape(e, e, |p, _| {
+            kids[i] = Rc::as_ptr(p) as usize;
+            i += 1;
+            true
+        });
+        NodeKey { tag, leaf, kids }
+    }
+
+    /// The table's node for `e` (built with `ranges` when it is new and they are known), or a fresh
+    /// one outside a scope.
+    pub fn intern(e: Expr, ranges: Option<(u32, u32)>) -> Rc<Expr> {
+        let build = |e: Expr| match ranges {
+            Some((l, f)) => Rc::with_ranges(e, l, f),
+            None => Rc::new(e),
+        };
+        if !active() {
+            return build(e);
+        }
+        let key = key_of(&e);
+        if let Some(n) = TABLE.with(|t| t.borrow().nodes.get(&key).cloned()) {
+            return n;
+        }
+        let n = build(e);
+        TABLE.with(|t| t.borrow_mut().nodes.insert(key, n.clone()));
+        n
+    }
+
+    /// An id for the argument list: the interned node's address for one argument (even), an
+    /// odd table id for several; 0 outside a scope.
+    pub fn args_id(args: &[&Expr]) -> u64 {
+        if !active() {
+            return 0;
+        }
+        let ptrs: Vec<usize> = args.iter().map(|a| Rc::as_ptr(&intern((*a).clone(), None)) as usize).collect();
+        if let [p] = ptrs[..] {
+            return p as u64;
+        }
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            let next = 2 * t.arg_sets.len() as u64 + 1;
+            *t.arg_sets.entry(ptrs).or_insert(next)
+        })
+    }
+
+    pub fn inst_get(x: &Rc<Expr>, aid: u64, d: u32) -> Option<Rc<Expr>> {
+        if aid == 0 {
+            return None;
+        }
+        TABLE.with(|t| t.borrow().inst.get(&(Rc::as_ptr(x) as usize, aid, d)).map(|(_, r)| r.clone()))
+    }
+
+    pub fn inst_put(x: &Rc<Expr>, aid: u64, d: u32, r: &Rc<Expr>) {
+        if aid != 0 {
+            TABLE.with(|t| t.borrow_mut().inst.insert((Rc::as_ptr(x) as usize, aid, d), (x.clone(), r.clone())));
+        }
+    }
+
+    pub fn shift_get(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Option<Rc<Expr>> {
+        if !active() {
+            return None;
+        }
+        TABLE.with(|t| t.borrow().shifts.get(&(Rc::as_ptr(x) as usize, cutoff, amount)).map(|(_, r)| r.clone()))
+    }
+
+    pub fn shift_put(x: &Rc<Expr>, cutoff: u32, amount: i32, r: &Rc<Expr>) {
+        if active() {
+            TABLE.with(|t| t.borrow_mut().shifts.insert((Rc::as_ptr(x) as usize, cutoff, amount), (x.clone(), r.clone())));
+        }
+    }
+}
+
+#[cfg(not(feature = "hashcons"))]
+mod hc {
+    use super::*;
+
+    pub struct Scope;
+
+    impl Scope {
+        #[inline(always)]
+        pub fn enter() -> Scope {
+            Scope
+        }
+    }
+
+    #[inline(always)]
+    pub fn intern(e: Expr, ranges: Option<(u32, u32)>) -> Rc<Expr> {
+        match ranges {
+            Some((l, f)) => Rc::with_ranges(e, l, f),
+            None => Rc::new(e),
+        }
+    }
+    #[inline(always)]
+    pub fn args_id(_: &[&Expr]) -> u64 {
+        0
+    }
+    #[inline(always)]
+    pub fn inst_get(_: &Rc<Expr>, _: u64, _: u32) -> Option<Rc<Expr>> {
+        None
+    }
+    #[inline(always)]
+    pub fn inst_put(_: &Rc<Expr>, _: u64, _: u32, _: &Rc<Expr>) {}
+    #[inline(always)]
+    pub fn shift_get(_: &Rc<Expr>, _: u32, _: i32) -> Option<Rc<Expr>> {
+        None
+    }
+    #[inline(always)]
+    pub fn shift_put(_: &Rc<Expr>, _: u32, _: i32, _: &Rc<Expr>) {}
+}
+
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
 /// deeper) with `s`, then discharge that binder. `s` is walked only where
 /// `body` uses it, so not at all when `body` doesn't mention `Var(0)`:
@@ -898,11 +1092,26 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
     if loose_of(e) <= d {
         return e.clone();
     }
+    inst_rec(e, args, hc::args_id(args), d)
+}
+
+/// `instantiate_n`'s recursion, with the argument list's id for the `hashcons` memo (0: none).
+fn inst_rec(e: &Expr, args: &[&Expr], aid: u64, d: u32) -> Expr {
     #[cfg(feature = "record-defeq")]
     let _hc_guard = hc_probe::inst_enter(e, args, d);
     walk_count(0);
     let m = args.len() as u32;
-    let go = |x: &Rc<Expr>, d: u32| if x.loose() <= d { x.clone() } else { Rc::new(instantiate_n(x, args, d)) };
+    let go = |x: &Rc<Expr>, d: u32| {
+        if x.loose() <= d {
+            return x.clone();
+        }
+        if let Some(r) = hc::inst_get(x, aid, d) {
+            return r;
+        }
+        let r = if aid == 0 { Rc::new(inst_rec(x, args, aid, d)) } else { hc::intern(inst_rec(x, args, aid, d), None) };
+        hc::inst_put(x, aid, d, &r);
+        r
+    };
     grow(|| match e {
         Expr::Var(k) => {
             if *k >= d + m {
@@ -1528,6 +1737,7 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
 /// `a`/`b` reference overlapping subterms, which two sides of a proof
 /// obligation very often do (the same postulates, the same sub-witnesses).
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
+    let _hc = hc::Scope::enter();
     #[cfg(feature = "record-defeq")]
     let _g = site(3);
     #[cfg(feature = "record-defeq")]
@@ -1850,6 +2060,7 @@ pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> 
     if free_of(e) > 0 {
         return Err(free_escaped(free_of(e) - 1));
     }
+    let _hc = hc::Scope::enter();
     infer_node(globals, &mut InferCache::default(), &mut CtxScope::new(ctx), 0, &Rc::new(e.clone()))
 }
 
@@ -2058,6 +2269,7 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     // (RELATED_WORK §67): the rules below compare `expected` by `def_eq`
     // and never infer it, so a malformed claim would otherwise be proved.
     // One cache for both, so a claim's subterms the proof shares hit it.
+    let _hc = hc::Scope::enter();
     let mut ic = InferCache::default();
     let mut scope = CtxScope::new(ctx);
     expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &Rc::new(expected.clone()))?)?;
