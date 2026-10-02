@@ -2500,6 +2500,74 @@ fn tree_step(n: usize, t1: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)
     None
 }
 
+/// A library law used as a left-to-right rewrite rule: `lhs = rhs` over the pattern variables `V(0)..`, each instance
+/// proved from the law `add_tree_law` proves once (per width) for the patterns themselves. `name` is the `ABLATE` key.
+struct Rule {
+    name: &'static str,
+    lhs: Term,
+    rhs: Term,
+}
+
+fn rules() -> Vec<Rule> {
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let v = Term::V;
+    let shl = |a: Term| Term::Op(6, Box::new(a), Box::new(Term::Zero));
+    vec![
+        Rule { name: "shldist", lhs: shl(op(0, v(0), v(1))), rhs: op(0, shl(v(0)), shl(v(1))) },
+        Rule { name: "shldistsub", lhs: shl(op(4, v(0), v(1))), rhs: op(4, shl(v(0)), shl(v(1))) },
+        Rule { name: "double", lhs: op(0, v(0), v(0)), rhs: shl(v(0)) },
+        Rule { name: "doublechain", lhs: op(0, v(0), op(0, v(0), v(1))), rhs: op(0, shl(v(0)), v(1)) },
+    ]
+}
+
+/// First-order match of the pattern `p` against `t`, binding pattern variables in `sub` (a repeated variable must see equal terms).
+fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
+    match (p, t) {
+        (Term::V(i), _) => match &sub[*i] {
+            Some(b) => b.show() == t.show(),
+            None => {
+                sub[*i] = Some(t.clone());
+                true
+            }
+        },
+        (Term::Zero, Term::Zero) | (Term::Ones, Term::Ones) => true,
+        (Term::Op(o, a, b), Term::Op(o2, c, d)) => o == o2 && match_pat(a, c, sub) && match_pat(b, d, sub),
+        _ => false,
+    }
+}
+
+fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
+    match p {
+        Term::V(i) => sub[*i].clone().expect("bound"),
+        Term::Op(o, a, b) => Term::Op(*o, Box::new(subst_pat(a, sub)), Box::new(subst_pat(b, sub))),
+        _ => p.clone(),
+    }
+}
+
+/// Instances of `rule_step` by rule name, for the audit.
+static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the proof.
+fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
+    for r in rules() {
+        let k = r.lhs.max_var().max(r.rhs.max_var()) + 1;
+        let mut sub = vec![None; k];
+        if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
+            continue;
+        }
+        let law = memo(format!("rule_{}{n}", r.name), || add_tree_law(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
+        let w: Vec<(Expr, Expr)> = sub.iter().map(|s| witnessed(s.as_ref().unwrap(), n, goods)).collect();
+        let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
+        let mut hits = RULE_HITS.lock().unwrap();
+        match hits.iter_mut().find(|h| h.0 == r.name) {
+            Some(h) => h.1 += 1,
+            None => hits.push((r.name, 1)),
+        }
+        return Some((subst_pat(&r.rhs, &sub), apps(law.0, args)));
+    }
+    None
+}
+
 /// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`.
 fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
     let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
@@ -2516,15 +2584,8 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
         };
     }
     if *o == 6 {
-        // a shift of a sum: shl1 (p + q) = shl1 p + shl1 q, by the carry-encoding proof of that law (name `shldist`)
-        if let (false, Term::Op(0, p, q)) = (ablated("shldist"), &a2) {
-            let v = |i: usize| Term::V(i);
-            let shl = |a: Term| Term::Op(6, Box::new(a), Box::new(Term::Zero));
-            let sum = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
-            let law = memo(format!("shldist{n}"), || add_tree_law(n, 2, &shl(sum(v(0), v(1))), &sum(shl(v(0)), shl(v(1)))).expect("shl distributes over add"));
-            let ((pv, pw), (qv, qw)) = (witnessed(p, n, goods), witnessed(q, n, goods));
-            let target = sum(shl((**p).clone()), shl((**q).clone()));
-            let step = apps(law.0, vec![pv, qv, pw, qw]);
+        // a shift: the library rules (`shldist`, ...), else unchanged
+        if let Some((target, step)) = rule_step(n, &t1, goods) {
             let (t3, p3) = rewrite(&target, n, ops, goods);
             let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
             return (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&target), &ev(&t3), first, p3));
@@ -2584,6 +2645,8 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
         let swapped = witnessed(&Term::Op(0, Box::new(b2.clone()), Box::new(a2.clone())), n, goods).0;
         let ones = witnessed(&Term::Ones, n, goods).0;
         Some((Term::Ones, trans_proof(&bv_ty(n), &ev(&t1), &swapped, &ones, comm, lemma)))
+    } else if let Some(r) = rule_step(n, &t1, goods) {
+        Some(r)
     } else if let Some(r) = chain_step(n, &a2, &b2, goods) {
         Some(r)
     } else if let Some(r) = tree_step(n, &t1, goods) {
@@ -2640,6 +2703,9 @@ fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
         Term::Op(o, a, b) => Some(Term::Op(*o, Box::new(abstract_atoms(a, atoms, cap)?), Box::new(abstract_atoms(b, atoms, cap)?))),
     }
 }
+
+/// How many times `prove_eq` closed a pair with a whole-term machine proof (the rewriting did not finish the job).
+static MACHINE_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Pairs whose machines have more carries than this try generalizing a shared subterm first.
 const GENERALIZE_ABOVE: usize = 3;
@@ -2727,6 +2793,7 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
     }
     // the carry-encoding proof for the two terms as bit-serial machines, at the variables' values
     let law = add_tree_law(n, k, a, b)?;
+    MACHINE_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
     return Some(apps(law.0, args));
 }
@@ -4657,30 +4724,42 @@ fn decision_diagram_proofs_check_and_beat_the_case_tree() {
     println!("DD 14-bit parity chains: build {built:?}, check {:?}", t1.elapsed());
 }
 
-/// Rewriting with the library laws versus the direct machine proof (search note section 34): `c(x+y) = cx + cy` by
-/// pushing `shl1` through the sums (law `shldist`, proved once) and ordering the sums, against the 9-11 carry machine.
-/// Env `ABLATE=shldist` removes the law, so the same call falls back to the machine proof.
+/// Rewriting with the library rules over every constant-multiplication law (search note section 35): per law the
+/// carries of the target machines, whether a whole-term machine proof was still needed, build and check times; the
+/// totals show what the rules buy. `ABLATE=shldist,shldistsub,double,doublechain` (any subset) removes rules.
 #[test]
 #[ignore]
-fn rewrite_from_the_shift_law_versus_the_machine() {
+fn rewrite_rules_over_the_mul_laws() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("REWRITE machine at start: {}", machine_state());
-    let (x, y) = (Term::V(0), Term::V(1));
-    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
-    let maxc = std::env::var("MULMINER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(11);
-    for c in 3..=maxc {
-        let (t1, t2) = (mul_const(c, &add(x.clone(), y.clone())), add(mul_const(c, &x), mul_const(c, &y)));
+    println!("RULES machine at start: {}", machine_state());
+    let max = std::env::var("MULMINER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+    let (mut proved, mut none, mut machine_free, mut over_cap, t0) = (0, 0, 0, 0, Instant::now());
+    for (name, t1, t2) in mul_laws(max) {
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) {
+            continue;
+        }
+        let cs = [&t1, &t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
+        let before = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         let r = rewrite_law(4, 2, &t1, &t2);
         let built = t.elapsed();
+        let fell = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed) - before;
         match r {
             Some((p, s)) => {
                 let t = Instant::now();
-                ck(&format!("{c}(x+y)"), &p, &s);
-                println!("REWRITE {c}(x+y) = {c}x + {c}y: build {built:?}, check {:?}", t.elapsed());
+                ck(&name, &p, &s);
+                proved += 1;
+                machine_free += (fell == 0) as u32;
+                over_cap += (cs[0].max(cs[1]) > carry_cap()) as u32;
+                println!("RULES {name}: carries {cs:?}, machine proofs used {fell}, build {built:?}, check {:?}", t.elapsed());
             }
-            None => println!("REWRITE {c}(x+y) = {c}x + {c}y: no proof, {built:?}"),
+            None => {
+                none += 1;
+                println!("RULES {name}: carries {cs:?}, no proof, {built:?}");
+            }
         }
     }
-    println!("REWRITE machine at end: {}", machine_state());
+    println!("RULES machine at end: {}", machine_state());
+    println!("RULES rule instances: {:?}", RULE_HITS.lock().unwrap());
+    println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
 }
