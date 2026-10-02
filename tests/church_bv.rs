@@ -3145,6 +3145,9 @@ fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
     sym(&bl, &app(fmap.clone(), f()), &app(fmap, t()), p)
 }
 
+/// Nanoseconds spent in `add_tree_law`'s encoding searches: [all-states hit, all-states miss, reachable retry].
+static PROF: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
 /// `find_state_encoding` when the carry counts agree (at most 3), otherwise (or failing that) the symmetric
 /// search (at most 6 carries per side); `None` when there is none.
@@ -3170,14 +3173,20 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
         searched.or_else(|| symmetric_encoding(&m1, &m2, k, &gops, reach)).or_else(|| joint_encoding(&m1, &m2, k, &gops, reach))
     };
     // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
-    let (enc, inv): (Encoding, Option<Reach>) = match attempt(None) {
+    let t_all = Instant::now();
+    let first = attempt(None);
+    PROF[if first.is_some() { 0 } else { 1 }].fetch_add(t_all.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+    let (enc, inv): (Encoding, Option<Reach>) = match first {
         Some(e) => (e, None),
         None => {
+            let t_reach = Instant::now();
             let r = [reachable(&raw_table(&m1, k, &gops)), reachable(&raw_table(&m2, k, &gops))];
             if r.iter().all(|v| v.iter().all(|x| *x)) {
                 return None;
             }
-            (attempt(Some(&r))?, Some(r))
+            let second = attempt(Some(&r));
+            PROF[2].fetch_add(t_reach.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+            (second?, Some(r))
         }
     };
     let m = enc.phi[0].len();
@@ -3723,34 +3732,52 @@ fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
 fn lt_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
     let n = 4usize;
-    let pool = lt_pool(2);
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let nv = env("LTMINER_VARS", 2);
+    let cap = env("LTMINER_MAX", 0);
+    let pool = lt_pool(nv);
     let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
     for a in &pool {
         for b in &pool {
             let t = Term::Op(5, Box::new(a.clone()), Box::new(b.clone()));
-            let sig: Vec<u128> = (0..256u128).map(|i| t.interp(n, &[i & 15, i >> 4])).collect();
+            let sig: Vec<u128> = (0..1u128 << (n * nv)).map(|i| t.interp(n, &(0..nv).map(|v| i >> (n * v) & 15).collect::<Vec<_>>())).collect();
             groups.entry(sig).or_default().push(t);
         }
     }
     let (mut total, mut proved, mut none) = (0, 0, 0);
     let t0 = Instant::now();
-    for g in groups.values().filter(|g| g.len() > 1) {
-        for t2 in &g[1..] {
+    let (mut t_law, mut t_ck) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+    let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
+    conj.sort_by_key(|(a, b)| (a.show(), b.show()));
+    if cap > 0 && conj.len() > cap {
+        let stride = conj.len() / cap;
+        conj = conj.into_iter().step_by(stride).take(cap).collect();
+    }
+    {
+        for (g0, t2) in &conj {
+            let g = [g0.clone()];
             total += 1;
-            match add_tree_law(n, 2, &g[0], t2) {
+            let tl = Instant::now();
+            let law = add_tree_law(n, nv, &g[0], t2);
+            t_law += tl.elapsed();
+            match law {
                 Some((p, s)) => {
+                    let tc = Instant::now();
                     ck(&format!("{} = {}", g[0].show(), t2.show()), &p, &s);
+                    t_ck += tc.elapsed();
                     proved += 1;
                 }
                 None => {
                     none += 1;
                     // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
-                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, 2));
+                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, nv));
                     println!("LTMINER no proof ({}): {} = {}", if generic { "holds at widths 1..6" } else { "width-specific" }, g[0].show(), t2.show());
                 }
             }
         }
     }
+    let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
+    println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}", pf(0), pf(1), pf(2));
     println!("LTMINER {} groups, {total} conjectures, {proved} proved, {none} without a proof, {:?}", groups.len(), t0.elapsed());
 }
 
@@ -4079,4 +4106,41 @@ fn shl_conjecture_miner() {
         }
     }
     println!("SHLMINER {} terms, {} groups, {total} conjectures with at most 4 carries per side ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
+}
+
+/// `c * t` (mod 2^n) as shift-and-add: the sum of `shl1^i t` over the set bits `i` of `c`.
+fn mul_const(c: u32, t: &Term) -> Term {
+    let shl = |a: Term, k: u32| (0..k).fold(a, |acc, _| Term::Op(6, Box::new(acc), Box::new(Term::Zero)));
+    let mut parts = (0..32).filter(|i| c >> i & 1 == 1).map(|i| shl(t.clone(), i));
+    let first = parts.next().expect("c is nonzero");
+    parts.fold(first, |acc, p| Term::Op(0, Box::new(acc), Box::new(p)))
+}
+
+#[test]
+fn multiplication_by_constants_as_shift_and_add_machines() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let v = |i: usize| Term::V(i);
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let shl = |a: Term| op(6, a, Term::Zero);
+    let n = 4usize;
+    let laws = [
+        ("3x = x + 2x, written both ways", mul_const(3, &v(0)), op(0, shl(v(0)), v(0))),
+        ("2x = x + x", mul_const(2, &v(0)), op(0, v(0), v(0))),
+        ("6x = 2 * 3x", mul_const(6, &v(0)), shl(mul_const(3, &v(0)))),
+        ("5x = 4x + x", mul_const(5, &v(0)), op(0, v(0), shl(shl(v(0))))),
+        ("7x = 8x - x", mul_const(7, &v(0)), op(4, shl(shl(shl(v(0)))), v(0))),
+        ("3 (x + y) = 3x + 3y", mul_const(3, &op(0, v(0), v(1))), op(0, mul_const(3, &v(0)), mul_const(3, &v(1)))),
+        ("3 (x - y) = 3x - 3y", mul_const(3, &op(4, v(0), v(1))), op(4, mul_const(3, &v(0)), mul_const(3, &v(1)))),
+        ("(x + y) + 2 (x + y) = 3x + 3y", op(0, op(0, v(0), v(1)), shl(op(0, v(0), v(1)))), op(0, mul_const(3, &v(0)), mul_const(3, &v(1)))),
+    ];
+    for (name, t1, t2) in &laws {
+        assert!((1..=6).all(|w| t1.plausibly_equals(t2, w, 2)), "{name} is not a law");
+        let t0 = Instant::now();
+        let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
+        let built = t0.elapsed();
+        ck(name, &p, &s);
+        println!("MUL {name}: build {built:?}, total {:?}", t0.elapsed());
+    }
+    // false: 3x is not 4x - 2
+    assert!(add_tree_law(n, 2, &mul_const(3, &v(0)), &mul_const(5, &v(0))).is_none());
 }
