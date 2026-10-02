@@ -2551,6 +2551,7 @@ fn rules() -> Vec<Rule> {
     let v = Term::V;
     let shl = |a: Term| Term::Op(6, Box::new(a), Box::new(Term::Zero));
     let shr = |a: Term| Term::Op(7, Box::new(a), Box::new(Term::Zero));
+    let lt = |a: Term, b: Term| Term::Op(5, Box::new(a), Box::new(b));
     let mut all = vec![
         Rule { name: "shldist", lhs: shl(op(0, v(0), v(1))), rhs: op(0, shl(v(0)), shl(v(1))) },
         Rule { name: "shldistsub", lhs: shl(op(4, v(0), v(1))), rhs: op(4, shl(v(0)), shl(v(1))) },
@@ -2559,6 +2560,10 @@ fn rules() -> Vec<Rule> {
         Rule { name: "shldistxor", lhs: shl(op(3, v(0), v(1))), rhs: op(3, shl(v(0)), shl(v(1))) },
         Rule { name: "notsub", lhs: op(3, v(0), Term::Ones), rhs: op(4, Term::Ones, v(0)) },
         Rule { name: "notsubl", lhs: op(3, Term::Ones, v(0)), rhs: op(4, Term::Ones, v(0)) },
+        // lt is false when the right side is 0, the left side is -1, or the sides are equal (mined, section 43)
+        Rule { name: "ltself", lhs: lt(v(0), v(0)), rhs: lt(Term::Ones, Term::Ones) },
+        Rule { name: "ltzero", lhs: lt(v(0), Term::Zero), rhs: lt(Term::Ones, Term::Ones) },
+        Rule { name: "ltmax", lhs: lt(Term::Ones, v(0)), rhs: lt(Term::Ones, Term::Ones) },
         Rule { name: "shrzero", lhs: shr(Term::Zero), rhs: Term::Zero },
         Rule { name: "shrdistand", lhs: shr(op(1, v(0), v(1))), rhs: op(1, shr(v(0)), shr(v(1))) },
         Rule { name: "shrdistor", lhs: shr(op(2, v(0), v(1))), rhs: op(2, shr(v(0)), shr(v(1))) },
@@ -2669,6 +2674,10 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
         let k = r.lhs.max_var().max(r.rhs.max_var()) + 1;
         let mut sub = vec![None; k];
         if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
+            continue;
+        }
+        // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
+        if subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() == t.show() {
             continue;
         }
         if RULE_BUDGET.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) <= 0 {
@@ -5149,6 +5158,11 @@ fn rule_miner() {
     };
     let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
     println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
+    if env("RULEMINER_SHOW", 0) == 1 {
+        for (l, r) in &cands {
+            println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
+        }
+    }
     // cumulative greedy: each round adds the candidate that, on top of the rules chosen so far, fixes the most
     // stragglers (no whole-term machine proof) and then shrinks the normalized terms most; a straggler often needs two
     // rules together, which a one-rule-at-a-time score cannot see
@@ -5164,7 +5178,13 @@ fn rule_miner() {
             let ok = rewrite_law(n, 2, &s.1, &s.2).is_some();
             fixed[si] = ok && fallbacks() - before < s.4;
             budget();
-            size += (rewrite(&s.1, n, &ops, &goods).0.size() + rewrite(&s.2, n, &ops, &goods).0.size()) as i64;
+            // the rule order's own measure: operator nodes first, then variable occurrences
+            let measure = |t: &Term| {
+                let mut occ = [0usize; 8];
+                t.occurrences(&mut occ);
+                (t.ops_count() * 16 + occ.iter().sum::<usize>()) as i64
+            };
+            size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
         }
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.store(i64::MAX / 2, std::sync::atomic::Ordering::Relaxed);
@@ -5243,4 +5263,35 @@ fn rewrite_law_proves_lt_laws() {
         ck(name, &p, &s);
     }
     assert!(rewrite_law(n, 2, &op(5, x.clone(), y.clone()), &op(5, y.clone(), x.clone())).is_none());
+}
+
+#[test]
+fn lt_rules_with_constant_right_sides_are_provable() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let lt = |a: Term, b: Term| Term::Op(5, Box::new(a), Box::new(b));
+    let n = 4;
+    for k in [1usize, 2] {
+        for (l, r) in [(lt(Term::Ones, Term::V(0)), lt(Term::Ones, Term::Ones)), (lt(Term::V(0), Term::V(0)), lt(Term::Ones, Term::Ones))] {
+            let (p, s) = prove_rule(n, k, &l, &r).unwrap_or_else(|| panic!("k={k}: {} -> {}", l.show(), r.show()));
+            ck("lt rule", &p, &s);
+        }
+    }
+}
+
+/// Two root rules close `lt(x, x) = lt(-1, x + y)` without a machine proof of the whole law.
+#[test]
+fn lt_root_rules_close_constant_false_laws() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let (x, y) = (Term::V(0), Term::V(1));
+    let lt = |a: Term, b: Term| Term::Op(5, Box::new(a), Box::new(b));
+    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let falsum = lt(Term::Ones, Term::Ones);
+    EXTRA_RULES.with(|e| *e.borrow_mut() = vec![(lt(x.clone(), x.clone()), falsum.clone()), (lt(Term::Ones, x.clone()), falsum.clone())]);
+    let before = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+    let r = rewrite_law(4, 2, &lt(x.clone(), x.clone()), &lt(Term::Ones, add(x.clone(), y.clone())));
+    let fell = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed) - before;
+    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    let (p, s) = r.expect("proved");
+    ck("lt(x,x) = lt(-1, x+y)", &p, &s);
+    assert_eq!(fell, 0, "no whole-term machine proof");
 }
