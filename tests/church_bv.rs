@@ -2830,8 +2830,8 @@ fn carry_chain_builder_finds_the_constant_carry() {
 // leaf an add-free bitwise term over `k` vectors) is a ripple machine with `c` carries, one per `add` node. Two
 // such sums agree if some encoding phi = (phi_1..phi_m) of the carry vector (m Boolean functions of the `c`
 // carries) carries enough information: each side's output bit and next phi-values must be functions of (the `k`
-// operand bits, phi(carries)), the same functions on both sides. `find_state_encoding` searches the encodings by
-// truth table (so `c <= 3`: 256^m tables); the proof is the associativity proof with the discovered phi in
+// operand bits, phi(carries)), the same functions on both sides. `moore_encoding` computes the coarsest one by partition
+// refinement; the proof is the associativity proof with the discovered phi in
 // place of the hand-derived (xor, and) -- for a three-leaf sum, the total carry in binary.
 
 /// The value of an add-free bitwise term at one bit position, with its `GoodBool` witness, given the operand bits.
@@ -2898,32 +2898,6 @@ impl Machine {
     /// Whether the root is `lt`: the result is the last carry after the final position, not a vector.
     fn last(&self) -> bool {
         matches!(self.root, Src::Node(i) if self.nodes[i].2 == 5)
-    }
-
-    /// Per carry, whether it counts negatively in the total-carry invariant: the carry of an add enters its
-    /// output with sign +, a sub's with sign -, times the sign of the node's output in the root (the right operand
-    /// of a sub enters negatively). Through a bitwise node the sign is passed on unchanged (a heuristic there).
-    fn negative(&self) -> Vec<bool> {
-        let mut neg = vec![];
-        fn go(m: &Machine, src: Src, path_neg: bool, neg: &mut Vec<Option<bool>>) {
-            if let Src::Node(i) = src {
-                let (a, b, o) = m.nodes[i];
-                let sub = o == 4 || o == 5;
-                if matches!(o, 0 | 4 | 5 | 6) {
-                    neg[i] = Some(path_neg != sub);
-                }
-                go(m, a, path_neg, neg);
-                go(m, b, path_neg != sub, neg);
-            }
-        }
-        let mut per_node = vec![None; self.nodes.len()];
-        go(self, self.root, false, &mut per_node);
-        for (i, n) in self.nodes.iter().enumerate() {
-            if matches!(n.2, 0 | 4 | 5 | 6) {
-                neg.push(per_node[i].unwrap_or(false));
-            }
-        }
-        neg
     }
 
     /// One position: `(output bit, next carries)` from the operand bits `u` and the carries `s`.
@@ -3034,114 +3008,46 @@ fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 2], 
     Some(g.into_iter().map(|t| t.into_iter().map(|v| v.unwrap_or(false)).collect()).collect())
 }
 
-/// How many label choices one `label_search` may try before giving up (a failing search is exponential).
-const LABEL_BUDGET: usize = 200_000;
-
-/// Backtracking search for an `m`-bit encoding that factors through a position map: `pos[side][s]` (below `w`) is
-/// the class of carry vector `s`, and every class gets a label of `m` bits (its phi values). A row of the raw table
-/// says "(operand bits, label of the class) -> (output, label of the next class)", so two rows that agree on the
-/// first must agree on the second; this is checked as soon as the classes involved are labelled. Labels are
-/// introduced in order (relabelling does not change validity), so class 0 gets 0 and symmetric branches are skipped.
-fn label_search(raw: &[Vec<Vec<bool>>; 2], k: usize, pos: &[Vec<usize>; 2], w: usize, m: usize, last: bool, reach: Option<&Reach>) -> Option<Encoding> {
-    let mut rows: Vec<(usize, usize, bool, usize)> = vec![];
-    for side in 0..2 {
-        let c = raw[side][0].len() - 1;
-        if last {
-            // the final result is the last carry, so a class must determine it (the same function on both sides)
-            for s in (0..1usize << c).filter(|s| reach.is_none_or(|rc| rc[side][*s])) {
-                rows.push((usize::MAX, pos[side][s], s & 1 == 1, pos[side][s]));
+/// The coarsest consistent encoding, by Moore partition refinement over the carry vectors of both machines (all of
+/// them, or only the `reach`able ones): two vectors share a class iff no input sequence tells them apart (the same
+/// outputs, and with a root `lt` the same final bit). The class number, in binary, is the phi value. `None` when the
+/// two start states (all-false) differ, i.e. the terms differ at some width.
+fn moore_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
+    let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
+    let cs = [m1.carries(), m2.carries()];
+    let last = m1.last();
+    let live = |side: usize, s: usize| reach.is_none_or(|rc| rc[side][s]);
+    // class[side][s]; unreachable vectors stay in class 0 and are never looked at
+    let mut class: [Vec<usize>; 2] = [0, 1].map(|side| (0..1usize << cs[side]).map(|s| if last && live(side, s) { s & 1 } else { 0 }).collect());
+    let mut count = 0;
+    loop {
+        let mut ids: std::collections::HashMap<Vec<(usize, bool, usize)>, usize> = Default::default();
+        let mut next: [Vec<usize>; 2] = [vec![0; class[0].len()], vec![0; class[1].len()]];
+        for side in 0..2 {
+            for s in (0..1usize << cs[side]).filter(|s| live(side, *s)) {
+                let sig: Vec<(usize, bool, usize)> = std::iter::once((class[side][s], false, 0))
+                    .chain((0..1usize << k).map(|u| {
+                        let row = &raw[side][u << cs[side] | s];
+                        (usize::MAX, row[0], class[side][index_of(&row[1..])])
+                    }))
+                    .collect();
+                let fresh = ids.len();
+                next[side][s] = *ids.entry(sig).or_insert(fresh);
             }
         }
-        for (r, row) in raw[side].iter().enumerate().filter(|(r, _)| reach.is_none_or(|rc| rc[side][r & ((1 << c) - 1)])) {
-            rows.push((r >> c, pos[side][r & ((1 << c) - 1)], row[0], pos[side][index_of(&row[1..])]));
+        let done = ids.len() == count;
+        count = ids.len();
+        class = next;
+        if done {
+            break;
         }
     }
-    rows.sort();
-    rows.dedup();
-    let used_pos: Vec<bool> = (0..w).map(|p| rows.iter().any(|r| r.1 == p || r.3 == p)).collect();
-    fn consistent(rows: &[(usize, usize, bool, usize)], lab: &[usize], p: usize) -> bool {
-        let mut seen: std::collections::HashMap<(usize, usize), (bool, usize)> = Default::default();
-        for &(u, ps, out, pn) in rows {
-            if ps > p || pn > p {
-                continue;
-            }
-            let v = (out, lab[pn]);
-            if *seen.entry((u, lab[ps])).or_insert(v) != v {
-                return false;
-            }
-        }
-        true
-    }
-    fn go(rows: &[(usize, usize, bool, usize)], used_pos: &[bool], lab: &mut Vec<usize>, p: usize, labels: usize, max: usize, budget: &mut usize) -> bool {
-        if p == lab.len() {
-            return true;
-        }
-        let top = if used_pos[p] { labels.min(max - 1) } else { 0 };
-        for l in 0..=top {
-            lab[p] = l;
-            if *budget == 0 {
-                return false;
-            }
-            *budget -= 1;
-            if consistent(rows, lab, p) && go(rows, used_pos, lab, p + 1, labels.max(l + 1), max, budget) {
-                return true;
-            }
-        }
-        false
-    }
-    let mut lab = vec![0; w];
-    let mut budget = LABEL_BUDGET;
-    if !go(&rows, &used_pos, &mut lab, 0, 0, 1 << m, &mut budget) {
+    if class[0][0] != class[1][0] {
         return None;
     }
-    let side = |side: usize| -> Vec<Vec<bool>> {
-        (0..m).map(|j| (0..pos[side].len()).map(|s| lab[pos[side][s]] >> (m - 1 - j) & 1 == 1).collect()).collect()
-    };
-    let phi = [side(0), side(1)];
-    try_encoding(raw, k, &phi, reach).map(|g| Encoding { phi, g })
-}
-
-/// Searches `m`-bit encodings of the carry vector, the same for both machines (equal carry counts `c`, at most 3);
-/// `None` if none carries enough information.
-fn find_state_encoding(m1: &Machine, m2: &Machine, k: usize, m: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
-    let c = m1.carries();
-    let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
-    let id: Vec<usize> = (0..1 << c).collect();
-    label_search(&raw, k, &[id.clone(), id], 1 << c, m, m1.last(), reach)
-}
-
-/// Searches the symmetric encodings: `m` Boolean functions of the pair (number of set positive carries, number of
-/// set negative ones; see `negative`), as a table over `0..=a_max` x `0..=s_max` shared by both machines, so their carry counts may
-/// differ. For adds only, the number of set carries in binary is among them: a sum tree satisfies `sum of leaf bits
-/// + total carry = output + 2 * next total carry`.
-fn symmetric_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
-    let negs = [m1.negative(), m2.negative()];
-    let count = |side: usize, neg: bool| negs[side].iter().filter(|n| **n == neg).count();
-    let (a_max, s_max) = (count(0, false).max(count(1, false)), count(0, true).max(count(1, true)));
-    let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
-    let w = (a_max + 1) * (s_max + 1);
-    // the table position of a carry vector `s` (first node most significant)
-    let pos = |side: usize, s: usize| {
-        let c = negs[side].len();
-        let (mut pa, mut pb) = (0, 0);
-        for (i, neg) in negs[side].iter().enumerate() {
-            if s >> (c - 1 - i) & 1 == 1 {
-                if *neg { pb += 1 } else { pa += 1 }
-            }
-        }
-        pa * (s_max + 1) + pb
-    };
-    let table: [Vec<usize>; 2] = [0, 1].map(|side| (0..1usize << negs[side].len()).map(|s| pos(side, s)).collect());
-    (1..=3usize).find_map(|m| label_search(&raw, k, &table, w, m, m1.last(), reach))
-}
-
-/// The general search: every carry vector of either machine is its own class (the two all-false vectors are one,
-/// both machines start there), so the encodings of the two sides need not relate by any counting.
-fn joint_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
-    let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
-    let (n0, n1) = (1usize << m1.carries(), 1usize << m2.carries());
-    let table = [(0..n0).collect::<Vec<_>>(), (0..n1).map(|s| if s == 0 { 0 } else { n0 + s - 1 }).collect()];
-    (1..=5usize).find_map(|m| label_search(&raw, k, &table, n0 + n1 - 1, m, m1.last(), reach))
+    let m = (count.max(2) - 1).ilog2() as usize + 1;
+    let phi: [Vec<Vec<bool>>; 2] = [0, 1].map(|side| (0..m).map(|j| class[side].iter().map(|c| c >> (m - 1 - j) & 1 == 1).collect()).collect());
+    try_encoding(&raw, k, &phi, reach).map(|g| Encoding { phi, g })
 }
 
 /// `Id(Bool0, a, b)` from `h : Id(Bool0, false, true)`, for any Boolean `a`, `b`: congruence of `\c. mux c a b`.
@@ -3157,8 +3063,7 @@ static LEMMA_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 static PROF: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
-/// `find_state_encoding` when the carry counts agree (at most 3), otherwise (or failing that) the symmetric
-/// search (at most 6 carries per side); `None` when there is none.
+/// `moore_encoding` (first over all carry states, then over the reachable ones); `None` when there is none.
 fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
     if !t1.plausibly_equals(t2, n, k) {
         return None;
@@ -3177,8 +3082,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
     }
     let gops = GoodOps::new();
     let attempt = |reach: Option<&Reach>| {
-        let searched = (cs[0] == cs[1] && cs[0] <= 3).then(|| (1..=cs[0].min(2)).find_map(|m| find_state_encoding(&m1, &m2, k, m, &gops, reach))).flatten();
-        searched.or_else(|| symmetric_encoding(&m1, &m2, k, &gops, reach)).or_else(|| joint_encoding(&m1, &m2, k, &gops, reach))
+        moore_encoding(&m1, &m2, k, &gops, reach)
     };
     // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
     let t_all = Instant::now();
@@ -3392,8 +3296,8 @@ fn state_encoding_search_proves_three_leaf_sum_laws() {
             ("add (add x -1) -1 = add x (add -1 -1)", op(op(v(0), Term::Ones), Term::Ones), op(v(0), op(Term::Ones, Term::Ones))),
         ] {
             if n == 1 {
-                let e = find_state_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, 2, &GoodOps::new(), None).unwrap();
-                println!("ENCODING {name}: phi1 {:?} phi2 {:?} (index 2c+d)", e.phi[0][0], e.phi[0][1]);
+                let e = moore_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, &GoodOps::new(), None).unwrap();
+                println!("ENCODING {name}: {} phi bits, phi1 {:?}", e.phi[0].len(), e.phi[0]);
             }
             let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
             ck(&format!("{name} at n={n}"), &p, &s);
@@ -4094,9 +3998,9 @@ fn shl_conjecture_miner() {
     let (mut total, mut proved, mut generic_none, mut t_none, mut carry_free, mut skipped, t0) = (0, 0, 0, 0, 0, 0, Instant::now());
     for g in groups.values().filter(|g| g.len() > 1) {
         for t2 in &g[1..] {
-            let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > 4));
+            let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > 6));
             if big {
-                skipped += 1; // the joint search over up to 2^6 + 2^6 classes does not finish in useful time
+                skipped += 1; // beyond the carry cap of add_tree_law
                 continue;
             }
             total += 1;
@@ -4120,7 +4024,7 @@ fn shl_conjecture_miner() {
             }
         }
     }
-    println!("SHLMINER {} terms, {} groups, {total} conjectures with at most 4 carries per side ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
+    println!("SHLMINER {} terms, {} groups, {total} conjectures with at most 6 carries per side ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
 }
 
 /// `c * t` (mod 2^n) as shift-and-add: the sum of `shl1^i t` over the set bits `i` of `c`.
