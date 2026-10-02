@@ -2585,6 +2585,24 @@ impl Term {
         }
     }
     /// All subterms (with repeats), the term itself first.
+    /// Operator nodes.
+    fn ops_count(&self) -> usize {
+        match self {
+            Term::Op(_, a, b) => 1 + a.ops_count() + b.ops_count(),
+            _ => 0,
+        }
+    }
+    /// Occurrences of each variable (`out[v]`).
+    fn occurrences(&self, out: &mut [usize; 8]) {
+        match self {
+            Term::V(v) => out[*v] += 1,
+            Term::Op(_, a, b) => {
+                a.occurrences(out);
+                b.occurrences(out);
+            }
+            _ => {}
+        }
+    }
     fn subterms(&self, out: &mut Vec<Term>) {
         out.push(self.clone());
         if let Term::Op(_, a, b) = self {
@@ -2602,6 +2620,21 @@ fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
     } else {
         add_tree_law(n, k, l, r)
     }
+}
+
+/// Whether `l -> r` goes down in the rule order: no variable occurs more often in `r`, and `r` has fewer operator nodes
+/// (a strict drop makes every rewrite sequence finite, since a substitution only multiplies variable occurrences that
+/// did not increase) or, at equal operator count, fewer variable occurrences in total (a tie-break: not a termination
+/// proof, which `RULE_BUDGET` still backs up).
+fn rule_order_ok(l: &Term, r: &Term) -> bool {
+    let (mut lo, mut ro) = ([0usize; 8], [0usize; 8]);
+    l.occurrences(&mut lo);
+    r.occurrences(&mut ro);
+    if (0..8).any(|v| ro[v] > lo[v]) {
+        return false;
+    }
+    let (lc, rc) = (l.ops_count(), r.ops_count());
+    rc < lc || (rc == lc && ro.iter().sum::<usize>() < lo.iter().sum::<usize>())
 }
 
 fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
@@ -4918,7 +4951,8 @@ fn rule_miner() {
         conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
     } else if family == "shr" {
         // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
-        let pool = lt_pool(2);
+        // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
+        let pool = if env("RULEMINER_DEEP", 0) == 1 { terms(2, true) } else { lt_pool(2) };
         let shr = |a: &Term| Term::Op(7, Box::new(a.clone()), Box::new(Term::Zero));
         let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
         pool_conjectures(all, n, nv, 0)
@@ -5046,9 +5080,8 @@ fn rule_miner() {
                 let is_lt = matches!(pat, Term::Op(5, ..));
                 let Some(group) = (if is_lt { &index_lt } else { &index }).get(&sig(&pat)) else { continue };
                 let uses = |t: &Term, v: usize| t.show().contains(VARS[v]);
-                // an `lt` rule may keep the size: the order is (size, text), so it stays strict
-                let smaller = |r: &Term| if is_lt { (r.size(), r.show()) < (pat.size(), pat.show()) } else { r.size() < pat.size() };
-                for r in group.iter().filter(|r| smaller(r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
+                let _ = is_lt;
+                for r in group.iter().filter(|r| rule_order_ok(&pat, r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
                     cands.push((pat.clone(), r.clone()));
                 }
             }
@@ -5057,6 +5090,8 @@ fn rule_miner() {
     // cross-side candidates: a subterm of one normalized side and a subterm of the other with the same value, both
     // abstracted by the same cuts (up to four variables): the rule `abstract(s) -> abstract(s')`
     let cross_cap = env("RULEMINER_VARS", 4);
+    // RULEMINER_STRICT=1: cross-side rules must go down in the rule order too (by default they may grow, as `subdist` does)
+    let strict = env("RULEMINER_STRICT", 0) == 1;
     for st in &stragglers {
         let (mut sl, mut sr) = (vec![], vec![]);
         st.3[0].subterms(&mut sl);
@@ -5091,7 +5126,7 @@ fn rule_miner() {
                                 _ => t.clone(),
                             }
                         }
-                        if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
+                        if bare(&yy) && yy.size() < pat.size() + 4 && (!strict || rule_order_ok(&pat, &renum(&yy))) && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
                             cands.push((pat.clone(), renum(&yy)));
                         }
                     }
