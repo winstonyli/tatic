@@ -3983,9 +3983,11 @@ fn shifts_inside_sums_are_machines_and_their_laws_check() {
 fn shl_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
     let n = 4usize;
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (nv, cap) = (env("SHLMINER_VARS", 2), env("SHLMINER_MAX", 0));
     let b = |o: usize, a: &Term, c: &Term| Term::Op(o, Box::new(a.clone()), Box::new(c.clone()));
     let shl = |a: &Term| b(6, a, &Term::Zero);
-    let leaves = [Term::V(0), Term::V(1), Term::Zero, Term::Ones];
+    let leaves: Vec<Term> = (0..nv).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
     let mut base: Vec<Term> = leaves.to_vec();
     base.extend(leaves.iter().map(&shl));
     let sh: Vec<Term> = leaves.iter().map(&shl).collect();
@@ -4003,19 +4005,26 @@ fn shl_conjecture_miner() {
     pool.extend(level1.iter().map(&shl));
     let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
     for t in &pool {
-        let sig: Vec<u128> = (0..256u128).map(|i| t.interp(n, &[i & 15, i >> 4])).collect();
+        let sig: Vec<u128> = (0..1u128 << (n * nv)).map(|i| t.interp(n, &(0..nv).map(|v| i >> (n * v) & 15).collect::<Vec<_>>())).collect();
         groups.entry(sig).or_default().push(t.clone());
     }
+    let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
+    conj.sort_by_key(|(a, b)| (a.show(), b.show()));
+    if cap > 0 && conj.len() > cap {
+        let stride = conj.len() / cap;
+        conj = conj.into_iter().step_by(stride).take(cap).collect();
+    }
     let (mut total, mut proved, mut generic_none, mut t_none, mut carry_free, mut skipped, t0) = (0, 0, 0, 0, 0, 0, Instant::now());
-    for g in groups.values().filter(|g| g.len() > 1) {
-        for t2 in &g[1..] {
-            let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > 6));
+    for (g0, t2) in &conj {
+        let g = [g0.clone()];
+        {
+            let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap()));
             if big {
                 skipped += 1; // beyond the carry cap of add_tree_law
                 continue;
             }
             total += 1;
-            match add_tree_law(n, 2, &g[0], t2) {
+            match add_tree_law(n, nv, &g[0], t2) {
                 Some((p, s)) => {
                     ck(&format!("{} = {}", g[0].show(), t2.show()), &p, &s);
                     proved += 1;
@@ -4023,7 +4032,7 @@ fn shl_conjecture_miner() {
                 None if [&g[0], t2].iter().all(|t| Machine::parse(t).is_none_or(|m| m.carries() == 0)) => carry_free += 1, // `bitwise_law` territory
                 None => {
                     // a law that fails at another width cannot have a proof for all widths
-                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, 2));
+                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, nv));
                     t_none += 1;
                     if generic {
                         generic_none += 1;
@@ -4035,7 +4044,7 @@ fn shl_conjecture_miner() {
             }
         }
     }
-    println!("SHLMINER {} terms, {} groups, {total} conjectures with at most 6 carries per side ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
+    println!("SHLMINER {} terms, {} groups, {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
 }
 
 /// `c * t` (mod 2^n) as shift-and-add: the sum of `shl1^i t` over the set bits `i` of `c`.
@@ -4087,6 +4096,7 @@ fn mul_conjecture_miner() {
     let n = 4usize;
     let (x, y) = (Term::V(0), Term::V(1));
     let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
     let mut laws: Vec<(String, Term, Term)> = vec![];
     for a in 1..=max {
         for b in a..=max {
@@ -4095,6 +4105,7 @@ fn mul_conjecture_miner() {
         }
         laws.push((format!("{a}(x+y) = {a}x + {a}y"), mul_const(a, &add(x.clone(), y.clone())), add(mul_const(a, &x), mul_const(a, &y))));
     }
+    laws.retain(|l| l.0.contains(&only));
     let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());
     for (name, t1, t2) in &laws {
         let cs = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
