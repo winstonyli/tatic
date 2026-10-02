@@ -3873,6 +3873,23 @@ fn conjecture_miner() {
 // ---- Comparison (search note section 20): `lt a b` is the final borrow of the chain for `a - b`, a `Bool0` result.
 
 /// The terms `lt` is mined over: the leaves and every operator applied to two leaves.
+/// The conjectures of a term pool: terms with equal values on every width-`n` tuple of `nv` variables are paired with
+/// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
+fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
+    let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
+    for t in pool {
+        let sig: Vec<u128> = (0..1u128 << (n * nv)).map(|i| t.interp(n, &(0..nv).map(|v| i >> (n * v) & ((1 << n) - 1)).collect::<Vec<_>>())).collect();
+        groups.entry(sig).or_default().push(t);
+    }
+    let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
+    conj.sort_by_key(|(a, b)| (a.show(), b.show()));
+    if cap > 0 && conj.len() > cap {
+        let stride = conj.len() / cap;
+        conj = conj.into_iter().step_by(stride).take(cap).collect();
+    }
+    conj
+}
+
 fn lt_pool(nvars: usize) -> Vec<Term> {
     let mut leaves: Vec<Term> = (0..nvars).map(Term::V).collect();
     leaves.extend([Term::Zero, Term::Ones]);
@@ -3935,23 +3952,10 @@ fn lt_conjecture_miner() {
     let nv = env("LTMINER_VARS", 2);
     let cap = env("LTMINER_MAX", 0);
     let pool = lt_pool(nv);
-    let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
-    for a in &pool {
-        for b in &pool {
-            let t = Term::Op(5, Box::new(a.clone()), Box::new(b.clone()));
-            let sig: Vec<u128> = (0..1u128 << (n * nv)).map(|i| t.interp(n, &(0..nv).map(|v| i >> (n * v) & 15).collect::<Vec<_>>())).collect();
-            groups.entry(sig).or_default().push(t);
-        }
-    }
     let (mut total, mut proved, mut none) = (0, 0, 0);
     let t0 = Instant::now();
     let (mut t_law, mut t_ck) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
-    let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
-    conj.sort_by_key(|(a, b)| (a.show(), b.show()));
-    if cap > 0 && conj.len() > cap {
-        let stride = conj.len() / cap;
-        conj = conj.into_iter().step_by(stride).take(cap).collect();
-    }
+    let conj = pool_conjectures(pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(5, Box::new(a.clone()), Box::new(b.clone())))), n, nv, cap);
     {
         for (g0, t2) in &conj {
             let g = [g0.clone()];
@@ -3978,7 +3982,7 @@ fn lt_conjecture_miner() {
     let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
     println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.load(std::sync::atomic::Ordering::Relaxed));
     println!("LTMINER machine at end: {}", machine_state());
-    println!("LTMINER {} groups, {total} conjectures, {proved} proved, {none} without a proof, {:?}", groups.len(), t0.elapsed());
+    println!("LTMINER {total} conjectures, {proved} proved, {none} without a proof, {:?}", t0.elapsed());
 }
 
 // ---- Constant shifts (search note section 20). A shift reads another position, so it is not a carry machine; it
@@ -4321,14 +4325,7 @@ fn shl_conjectures(nv: usize) -> Vec<(Term, Term)> {
     let mut pool = base.clone();
     pool.extend(level1.iter().cloned());
     pool.extend(level1.iter().map(&shl));
-    let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
-    for t in &pool {
-        let sig: Vec<u128> = (0..1u128 << (n * nv)).map(|i| t.interp(n, &(0..nv).map(|v| i >> (n * v) & 15).collect::<Vec<_>>())).collect();
-        groups.entry(sig).or_default().push(t.clone());
-    }
-    let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
-    conj.sort_by_key(|(a, b)| (a.show(), b.show()));
-    conj
+    pool_conjectures(pool, n, nv, 0)
 }
 
 /// Pairs over a pool with `shl1` that agree on all width-4 inputs; each is built and kernel-checked.
