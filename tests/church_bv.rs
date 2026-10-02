@@ -2605,6 +2605,7 @@ fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)>
 
 #[test]
 fn laws_over_three_vectors_check_and_false_ones_fail() {
+    let _scope = tatic::kernel::InternScope::enter();
     let v = |i: usize| Term::V(i);
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     for n in [1usize, 3] {
@@ -2945,7 +2946,7 @@ fn symmetric_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps) -> O
         pa * (s_max + 1) + pb
     };
     for m in 1..=3usize {
-        if w * m > 18 {
+        if w * m > 21 {
             break;
         }
         for code in 0..1usize << (w * m) {
@@ -2970,7 +2971,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
     }
     let (m1, m2) = (Machine::parse(t1)?, Machine::parse(t2)?);
     let cs = [m1.carries(), m2.carries()];
-    if cs[0].max(cs[1]) > 5 {
+    if cs[0].max(cs[1]) > 6 {
         return None;
     }
     if cs[0] + cs[1] == 0 {
@@ -3057,6 +3058,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
 
 #[test]
 fn state_encoding_search_proves_three_leaf_sum_laws() {
+    let _scope = tatic::kernel::InternScope::enter();
     let v = |i: usize| Term::V(i);
     let op = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
     for n in [1usize, 2, 4] {
@@ -3079,6 +3081,7 @@ fn state_encoding_search_proves_three_leaf_sum_laws() {
 
 #[test]
 fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leaves() {
+    let _scope = tatic::kernel::InternScope::enter();
     let v = |i: usize| Term::V(i);
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let add = |a: Term, b: Term| op(0, a, b);
@@ -3104,6 +3107,7 @@ fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leaves() 
 
 #[test]
 fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leaves() {
+    let _scope = tatic::kernel::InternScope::enter();
     let v = |i: usize| Term::V(i);
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let add = |a: Term, b: Term| op(0, a, b);
@@ -3133,11 +3137,12 @@ fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leaves()
 fn tree_proof_cost_by_carries() {
     let v = |i: usize| Term::V(i);
     let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
-    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
-    for n in [2usize, 4] {
-        for c in 2..=5usize {
+    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2), v(0)];
+    for n in [4usize] {
+        for c in 2..=6usize {
             let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
             let right = leaves[..c].iter().rev().fold(leaves[c].clone(), |a, b| add(b.clone(), a));
+            let _scope = tatic::kernel::InternScope::enter();
             let t0 = Instant::now();
             let (p, s) = add_tree_law(n, 3, &left, &right).expect("encoding");
             let built = t0.elapsed();
@@ -3150,6 +3155,7 @@ fn tree_proof_cost_by_carries() {
 
 #[test]
 fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
+    let _scope = tatic::kernel::InternScope::enter();
     // computes: a - b mod 2^n on all pairs at n = 3
     let n = 3;
     for a in 0..8u128 {
@@ -3183,11 +3189,71 @@ fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
     }
 }
 
+/// Time of the kernel evaluation of one machine on every (operand bits, carries) assignment.
+#[test]
+#[ignore]
+fn raw_table_probe() {
+    let v = |i: usize| Term::V(i);
+    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
+    let gops = GoodOps::new();
+    for c in 2..=5usize {
+        let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
+        let m = Machine::parse(&left).unwrap();
+        let t0 = Instant::now();
+        let raw = raw_table(&m, 3, &gops);
+        println!("PROBE raw_table carries={c}: {} rows in {:?}", raw.len(), t0.elapsed());
+    }
+}
+
+/// Check time of a case-analysis lemma whose body is the machine's output against itself (c = 3..5, k = 3).
+#[test]
+#[ignore]
+fn machine_lemma_probe() {
+    let v = |i: usize| Term::V(i);
+    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
+    let gops = GoodOps::new();
+    for c in 3..=5usize {
+        let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
+        let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
+        let m = Machine::parse(&left).unwrap();
+        for (what, pick) in [("out", 0usize), ("next carry 0", 1), ("table of next carries", 2)] {
+            let f_of = |vv: &[Expr]| -> Expr {
+                let dummy: Vec<Gb> = vv.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
+                let (o, next) = m.step(&gops, &dummy[..3], &dummy[3..]);
+                match pick {
+                    0 => o.e,
+                    1 => next[0].e.clone(),
+                    _ => table_app(&next.iter().map(|g| g.e.clone()).collect::<Vec<_>>(), &|b| b.iter().filter(|x| **x).count() % 2 == 1),
+                }
+            };
+            let (p, ty) = lemma_n(3 + c, &|vv| id(bool0(), f_of(vv), f_of(vv)), &|b| refl(f_of(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>())));
+            let t0 = Instant::now();
+            let ok = check(&Ctx::new(), &p, &ty).is_ok();
+            println!("PROBE carries={c} {what}: check {:?} ok {ok}", t0.elapsed());
+        }
+    }
+}
+
+/// Where the per-lemma time goes: the case split alone (trivial leaves) against a real machine lemma.
+#[test]
+#[ignore]
+fn lemma_overhead_probe() {
+    for vars in [5usize, 6, 7, 8] {
+        let (p, ty) = lemma_n(vars, &|v| id(bool0(), v[0].clone(), v[0].clone()), &|b| refl(bit(b[0])));
+        let t0 = Instant::now();
+        let ok = check(&Ctx::new(), &p, &ty).is_ok();
+        println!("PROBE trivial lemma over {vars} bits: check {:?} ok {ok}", t0.elapsed());
+    }
+}
+
 /// Mine at width `MINER_N` (default 4) over `MINER_VARS` variables (default 2), `MINER_DEEP=1` for terms two
 /// operators deep. Prints the classes, then tries every conjecture over x, y with the generic builder.
 #[test]
 #[ignore]
 fn conjecture_miner() {
+    let _scope = tatic::kernel::InternScope::enter();
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (n, nvars, deep) = (env("MINER_N", 4), env("MINER_VARS", 2), env("MINER_DEEP", 0) == 1);
     let ops = ops_for(n);
