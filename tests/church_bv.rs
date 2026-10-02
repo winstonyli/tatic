@@ -2058,17 +2058,18 @@ enum Term {
     Ones,
     Op(usize, Box<Term>, Box<Term>),
 }
-/// `lt` (index 5) returns a one-bit vector and only appears at the root of a term.
-const OPS: [&str; 6] = ["add", "and", "or", "xor", "sub", "lt"];
+/// `lt` (index 5) returns a one-bit vector and only appears at the root of a term; `shl1` (index 6) is `a << 1`
+/// and ignores its second operand (a delay cell in the machine).
+const OPS: [&str; 7] = ["add", "and", "or", "xor", "sub", "lt", "shl1"];
 /// How many of `OPS` the miner enumerates: `sub` only with `MINER_SUB=1`.
 fn nops() -> usize {
     if std::env::var("MINER_SUB").is_ok() { 5 } else { 4 }
 }
 /// The Church operators, indexed as `Term::Op`.
-fn ops_for(n: usize) -> [Expr; 6] {
-    [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b)), sub(n), lt_u(n)]
+fn ops_for(n: usize) -> [Expr; 7] {
+    [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b)), sub(n), lt_u(n), lam(bv_ty(n), lam(bv_ty(n), app(shift_bv(n, 1, true), var(1))))]
 }
-const VARS: [&str; 3] = ["x", "y", "z"];
+const VARS: [&str; 8] = ["x", "y", "z", "u", "v", "w", "p", "q"];
 impl Term {
     fn show(&self) -> String {
         match self {
@@ -2102,6 +2103,7 @@ impl Term {
                     2 => x | y,
                     3 => x ^ y,
                     5 => (x < y) as u128,
+                    6 => (x << 1) & mask,
                     _ => x.wrapping_sub(y) & mask,
                 }
             }
@@ -2570,6 +2572,39 @@ fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
     }
 }
 
+/// Pairs whose machines have more carries than this try generalizing a shared subterm first.
+const GENERALIZE_ABOVE: usize = 3;
+
+/// The subterm (with at least one `add` or `sub`, not a whole side) that occurs in both terms and has the most
+/// carries, if any.
+fn shared_subterm(a: &Term, b: &Term) -> Option<Term> {
+    fn subs(t: &Term, out: &mut Vec<Term>) {
+        if let Term::Op(_, x, y) = t {
+            out.push(t.clone());
+            subs(x, out);
+            subs(y, out);
+        }
+    }
+    let (mut sa, mut sb) = (vec![], vec![]);
+    subs(a, &mut sa);
+    subs(b, &mut sb);
+    let in_b: std::collections::HashSet<String> = sb.iter().map(|t| t.show()).collect();
+    sa.into_iter()
+        .filter(|t| t.uses_add() && t.show() != a.show() && t.show() != b.show() && in_b.contains(&t.show()))
+        .max_by_key(|t| Machine::parse(t).map_or(0, |m| m.carries()))
+}
+
+/// `t` with every occurrence of the subterm `x` replaced by `with`.
+fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
+    if t.show() == x.show() {
+        return with.clone();
+    }
+    match t {
+        Term::Op(o, a, b) => Term::Op(*o, Box::new(replace_term(a, x, with)), Box::new(replace_term(b, x, with))),
+        _ => t.clone(),
+    }
+}
+
 /// Proof of `Id(Bv_n, a, b)` in context `[x, y, gx, gy]` for rewritten terms: `refl`; the bitwise law over atoms
 /// (when it holds on all four bit values, so the kernel check cannot fail); or, for two sums, `cong_n` on
 /// proofs for their operands. `None` otherwise.
@@ -2604,6 +2639,20 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
         if o == o2 && *o != 0 && *o != 4 {
             if let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
                 return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
+            }
+        }
+    }
+    // a large pair: a subterm both sides share becomes one more variable (the witness of its value is built by
+    // `witnessed`), which takes its carries out of the machine; the proof for the pair over `k + 1` variables
+    // is the proof for the original pair, since the extra variable's value is the subterm's
+    let cost = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
+    if cost(a).max(cost(b)) > GENERALIZE_ABOVE && k < VARS.len() {
+        if let Some(x) = shared_subterm(a, b) {
+            let mut goods2 = goods.to_vec();
+            goods2.push(witnessed(&x, n, goods));
+            let (a2, b2) = (replace_term(a, &x, &Term::V(k)), replace_term(b, &x, &Term::V(k)));
+            if let Some(p) = prove_eq(n, ops, &goods2, &a2, &b2) {
+                return Some(p);
             }
         }
     }
@@ -2818,7 +2867,8 @@ impl Machine {
         fn go(t: &Term, m: &mut Machine) -> Option<Src> {
             match t {
                 Term::Op(o, a, b) => {
-                    let (a, b) = (go(a, m)?, go(b, m)?);
+                    let a = go(a, m)?;
+                    let b = if *o == 6 { a } else { go(b, m)? };
                     m.nodes.push((a, b, *o));
                     Some(Src::Node(m.nodes.len() - 1))
                 }
@@ -2835,7 +2885,7 @@ impl Machine {
 
     /// The number of carries: one per add or sub node.
     fn carries(&self) -> usize {
-        self.nodes.iter().filter(|n| matches!(n.2, 0 | 4 | 5)).count()
+        self.nodes.iter().filter(|n| matches!(n.2, 0 | 4 | 5 | 6)).count()
     }
 
     /// Whether the root is `lt`: the result is the last carry after the final position, not a vector.
@@ -2852,7 +2902,7 @@ impl Machine {
             if let Src::Node(i) = src {
                 let (a, b, o) = m.nodes[i];
                 let sub = o == 4 || o == 5;
-                if matches!(o, 0 | 4 | 5) {
+                if matches!(o, 0 | 4 | 5 | 6) {
                     neg[i] = Some(path_neg != sub);
                 }
                 go(m, a, path_neg, neg);
@@ -2862,7 +2912,7 @@ impl Machine {
         let mut per_node = vec![None; self.nodes.len()];
         go(self, self.root, false, &mut per_node);
         for (i, n) in self.nodes.iter().enumerate() {
-            if matches!(n.2, 0 | 4 | 5) {
+            if matches!(n.2, 0 | 4 | 5 | 6) {
                 neg.push(per_node[i].unwrap_or(false));
             }
         }
@@ -2884,6 +2934,11 @@ impl Machine {
                 1 => g.and(&x, &y),
                 2 => g.or(&x, &y),
                 3 => g.xor(&x, &y),
+                6 => {
+                    // a delay cell: the output is last position's operand bit
+                    next.push(x.clone());
+                    s[next.len() - 1].clone()
+                }
                 _ => {
                     let c = &s[next.len()];
                     // a subtractor's borrow is maj(~a, b, s)
@@ -2928,8 +2983,28 @@ fn raw_table(mach: &Machine, k: usize, gops: &GoodOps) -> Vec<Vec<bool>> {
         .collect()
 }
 
+type Reach = [Vec<bool>; 2];
+
+/// The carry vectors one machine can reach from all-false by some input sequence (a vector as `index_of` reads it).
+fn reachable(raw: &[Vec<bool>]) -> Vec<bool> {
+    let c = raw[0].len() - 1;
+    let mut seen = vec![false; 1 << c];
+    seen[0] = true;
+    let mut stack = vec![0usize];
+    while let Some(s) = stack.pop() {
+        for u in 0..raw.len() >> c {
+            let next = index_of(&raw[u << c | s][1..]);
+            if !seen[next] {
+                seen[next] = true;
+                stack.push(next);
+            }
+        }
+    }
+    seen
+}
+
 /// The functions `g` for which both machines factor through the encodings `phi` (one set per side), if any.
-fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 2]) -> Option<Vec<Vec<bool>>> {
+fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 2], reach: Option<&Reach>) -> Option<Vec<Vec<bool>>> {
     let m = phi[0].len();
     let mut g: Vec<Vec<Option<bool>>> = vec![vec![None; 1 << (k + m)]; 1 + m];
     for side in 0..2 {
@@ -2937,6 +3012,9 @@ fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 2]) 
         let ph = |s: usize| -> Vec<bool> { phi[side].iter().map(|t| t[s]).collect() };
         for (r, row) in raw[side].iter().enumerate() {
             let (u, s) = (r >> c, r & ((1 << c) - 1));
+            if reach.is_some_and(|rc| !rc[side][s]) {
+                continue;
+            }
             let key = u << m | index_of(&ph(s));
             for (j, v) in std::iter::once(row[0]).chain(ph(index_of(&row[1..]))).enumerate() {
                 match g[j][key] {
@@ -2949,22 +3027,25 @@ fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 2]) 
     Some(g.into_iter().map(|t| t.into_iter().map(|v| v.unwrap_or(false)).collect()).collect())
 }
 
+/// How many label choices one `label_search` may try before giving up (a failing search is exponential).
+const LABEL_BUDGET: usize = 200_000;
+
 /// Backtracking search for an `m`-bit encoding that factors through a position map: `pos[side][s]` (below `w`) is
 /// the class of carry vector `s`, and every class gets a label of `m` bits (its phi values). A row of the raw table
 /// says "(operand bits, label of the class) -> (output, label of the next class)", so two rows that agree on the
 /// first must agree on the second; this is checked as soon as the classes involved are labelled. Labels are
 /// introduced in order (relabelling does not change validity), so class 0 gets 0 and symmetric branches are skipped.
-fn label_search(raw: &[Vec<Vec<bool>>; 2], k: usize, pos: &[Vec<usize>; 2], w: usize, m: usize, last: bool) -> Option<Encoding> {
+fn label_search(raw: &[Vec<Vec<bool>>; 2], k: usize, pos: &[Vec<usize>; 2], w: usize, m: usize, last: bool, reach: Option<&Reach>) -> Option<Encoding> {
     let mut rows: Vec<(usize, usize, bool, usize)> = vec![];
     for side in 0..2 {
         let c = raw[side][0].len() - 1;
         if last {
             // the final result is the last carry, so a class must determine it (the same function on both sides)
-            for s in 0..1usize << c {
+            for s in (0..1usize << c).filter(|s| reach.is_none_or(|rc| rc[side][*s])) {
                 rows.push((usize::MAX, pos[side][s], s & 1 == 1, pos[side][s]));
             }
         }
-        for (r, row) in raw[side].iter().enumerate() {
+        for (r, row) in raw[side].iter().enumerate().filter(|(r, _)| reach.is_none_or(|rc| rc[side][r & ((1 << c) - 1)])) {
             rows.push((r >> c, pos[side][r & ((1 << c) - 1)], row[0], pos[side][index_of(&row[1..])]));
         }
     }
@@ -2984,44 +3065,49 @@ fn label_search(raw: &[Vec<Vec<bool>>; 2], k: usize, pos: &[Vec<usize>; 2], w: u
         }
         true
     }
-    fn go(rows: &[(usize, usize, bool, usize)], used_pos: &[bool], lab: &mut Vec<usize>, p: usize, labels: usize, max: usize) -> bool {
+    fn go(rows: &[(usize, usize, bool, usize)], used_pos: &[bool], lab: &mut Vec<usize>, p: usize, labels: usize, max: usize, budget: &mut usize) -> bool {
         if p == lab.len() {
             return true;
         }
         let top = if used_pos[p] { labels.min(max - 1) } else { 0 };
         for l in 0..=top {
             lab[p] = l;
-            if consistent(rows, lab, p) && go(rows, used_pos, lab, p + 1, labels.max(l + 1), max) {
+            if *budget == 0 {
+                return false;
+            }
+            *budget -= 1;
+            if consistent(rows, lab, p) && go(rows, used_pos, lab, p + 1, labels.max(l + 1), max, budget) {
                 return true;
             }
         }
         false
     }
     let mut lab = vec![0; w];
-    if !go(&rows, &used_pos, &mut lab, 0, 0, 1 << m) {
+    let mut budget = LABEL_BUDGET;
+    if !go(&rows, &used_pos, &mut lab, 0, 0, 1 << m, &mut budget) {
         return None;
     }
     let side = |side: usize| -> Vec<Vec<bool>> {
         (0..m).map(|j| (0..pos[side].len()).map(|s| lab[pos[side][s]] >> (m - 1 - j) & 1 == 1).collect()).collect()
     };
     let phi = [side(0), side(1)];
-    try_encoding(raw, k, &phi).map(|g| Encoding { phi, g })
+    try_encoding(raw, k, &phi, reach).map(|g| Encoding { phi, g })
 }
 
 /// Searches `m`-bit encodings of the carry vector, the same for both machines (equal carry counts `c`, at most 3);
 /// `None` if none carries enough information.
-fn find_state_encoding(m1: &Machine, m2: &Machine, k: usize, m: usize, gops: &GoodOps) -> Option<Encoding> {
+fn find_state_encoding(m1: &Machine, m2: &Machine, k: usize, m: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
     let c = m1.carries();
     let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
     let id: Vec<usize> = (0..1 << c).collect();
-    label_search(&raw, k, &[id.clone(), id], 1 << c, m, m1.last())
+    label_search(&raw, k, &[id.clone(), id], 1 << c, m, m1.last(), reach)
 }
 
 /// Searches the symmetric encodings: `m` Boolean functions of the pair (number of set positive carries, number of
 /// set negative ones; see `negative`), as a table over `0..=a_max` x `0..=s_max` shared by both machines, so their carry counts may
 /// differ. For adds only, the number of set carries in binary is among them: a sum tree satisfies `sum of leaf bits
 /// + total carry = output + 2 * next total carry`.
-fn symmetric_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps) -> Option<Encoding> {
+fn symmetric_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
     let negs = [m1.negative(), m2.negative()];
     let count = |side: usize, neg: bool| negs[side].iter().filter(|n| **n == neg).count();
     let (a_max, s_max) = (count(0, false).max(count(1, false)), count(0, true).max(count(1, true)));
@@ -3039,7 +3125,24 @@ fn symmetric_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps) -> O
         pa * (s_max + 1) + pb
     };
     let table: [Vec<usize>; 2] = [0, 1].map(|side| (0..1usize << negs[side].len()).map(|s| pos(side, s)).collect());
-    (1..=3usize).find_map(|m| label_search(&raw, k, &table, w, m, m1.last()))
+    (1..=3usize).find_map(|m| label_search(&raw, k, &table, w, m, m1.last(), reach))
+}
+
+/// The general search: every carry vector of either machine is its own class (the two all-false vectors are one,
+/// both machines start there), so the encodings of the two sides need not relate by any counting.
+fn joint_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
+    let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
+    let (n0, n1) = (1usize << m1.carries(), 1usize << m2.carries());
+    let table = [(0..n0).collect::<Vec<_>>(), (0..n1).map(|s| if s == 0 { 0 } else { n0 + s - 1 }).collect()];
+    (1..=5usize).find_map(|m| label_search(&raw, k, &table, n0 + n1 - 1, m, m1.last(), reach))
+}
+
+/// `Id(Bool0, a, b)` from `h : Id(Bool0, false, true)`, for any Boolean `a`, `b`: congruence of `\c. mux c a b`.
+fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
+    let bl = bool0();
+    let fmap = lam(bl.clone(), mux(var(0), shift(a, 0, 1), shift(b, 0, 1)));
+    let p = cong1(&bl, &bl, &fmap, f(), t(), h);
+    sym(&bl, &app(fmap.clone(), f()), &app(fmap, t()), p)
 }
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
@@ -3062,14 +3165,29 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
         return None;
     }
     let gops = GoodOps::new();
-    let searched = (cs[0] == cs[1] && cs[0] <= 3).then(|| (1..=cs[0].min(2)).find_map(|m| find_state_encoding(&m1, &m2, k, m, &gops))).flatten();
-    let enc = searched.or_else(|| symmetric_encoding(&m1, &m2, k, &gops))?;
+    let attempt = |reach: Option<&Reach>| {
+        let searched = (cs[0] == cs[1] && cs[0] <= 3).then(|| (1..=cs[0].min(2)).find_map(|m| find_state_encoding(&m1, &m2, k, m, &gops, reach))).flatten();
+        searched.or_else(|| symmetric_encoding(&m1, &m2, k, &gops, reach)).or_else(|| joint_encoding(&m1, &m2, k, &gops, reach))
+    };
+    // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
+    let (enc, inv): (Encoding, Option<Reach>) = match attempt(None) {
+        Some(e) => (e, None),
+        None => {
+            let r = [reachable(&raw_table(&m1, k, &gops)), reachable(&raw_table(&m2, k, &gops))];
+            if r.iter().all(|v| v.iter().all(|x| *x)) {
+                return None;
+            }
+            (attempt(Some(&r))?, Some(r))
+        }
+    };
     let m = enc.phi[0].len();
     // with a root `lt`: the final result as a function `dec` of the phi values
     let mut dec = vec![false; 1 << m];
     for side in 0..2 {
         for s in 0..1usize << cs[side] {
-            dec[index_of(&(0..m).map(|j| enc.phi[side][j][s]).collect::<Vec<_>>())] = s & 1 == 1;
+            if inv.as_ref().is_none_or(|r| r[side][s]) {
+                dec[index_of(&(0..m).map(|j| enc.phi[side][j][s]).collect::<Vec<_>>())] = s & 1 == 1;
+            }
         }
     }
     let machines = [m1, m2];
@@ -3084,6 +3202,29 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
             _ => phi_expr(side, j - 1, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()),
         }
     };
+    let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
+    // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
+    // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
+    let guarded = |side: usize, nv: usize, off: usize, ab: &dyn Fn(&[Expr]) -> (Expr, Expr)| -> Expr {
+        let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
+        lemma_n(
+            nv,
+            &|v| {
+                let (a, b) = ab(v);
+                let inner = id(bool0(), a, b);
+                if inv.is_some() { pi(hty(v), shift(&inner, 0, 1)) } else { inner }
+            },
+            &|bits| {
+                let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
+                let (a, b) = ab(&lits);
+                match &inv {
+                    None => refl(a),
+                    Some(r) => lam(hty(&lits), if r[side][index_of(&bits[off..])] { refl(a) } else { absurd_id(var(0), &a, &b) }),
+                }
+            },
+        )
+        .0
+    };
     // lemmas Id(F_j, G_j(operand bits, phi(carries))) by case analysis on the k + c bits
     let lemmas: Vec<Vec<Expr>> = (0..2)
         .map(|side| {
@@ -3092,17 +3233,25 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
                     if last && j == 0 {
                         return t();
                     }
-                    lemma_n(
-                        k + cs[side],
-                        &|v| {
-                            let key: Vec<Expr> = v[..k].iter().cloned().chain((0..m).map(|q| phi_expr(side, q, &v[k..]))).collect();
-                            id(bool0(), side_f(side, j, v), g_expr(j, &key))
-                        },
-                        &|bits| refl(side_f(side, j, &bits.iter().map(|b| bit(*b)).collect::<Vec<_>>())),
-                    )
-                    .0
+                    guarded(side, k + cs[side], k, &|v| {
+                        let key: Vec<Expr> = v[..k].iter().cloned().chain((0..m).map(|q| phi_expr(side, q, &v[k..]))).collect();
+                        (side_f(side, j, v), g_expr(j, &key))
+                    })
                 })
                 .collect()
+        })
+        .collect();
+    // the invariant is preserved by a step
+    let pres: Vec<Expr> = (0..2)
+        .map(|side| {
+            if inv.is_none() {
+                return t();
+            }
+            guarded(side, k + cs[side], k, &|v| {
+                let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
+                let next = machines[side].step(&gops, &dummy[..k], &dummy[k..]).1;
+                (inv_expr(side, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()), t())
+            })
         })
         .collect();
     let dec_expr = |v: &[Expr]| table_app(v, &|b| dec[index_of(b)]);
@@ -3112,12 +3261,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
             if !last {
                 return t();
             }
-            lemma_n(
-                cs[side],
-                &|v| id(bool0(), v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())),
-                &|bits| refl(bit(bits[cs[side] - 1])),
-            )
-            .0
+            guarded(side, cs[side], 0, &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
@@ -3127,6 +3271,8 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
         let mut st: Vec<Vec<Gb>> = (0..2).map(|side| vec![zero.clone(); cs[side]]).collect();
         // the initial phi values agree by evaluation (both are the constant false)
         let mut ip: Vec<Expr> = (0..m).map(|j| refl(phi_expr(0, j, &vec![f(); cs[0]]))).collect();
+        // the invariant holds at the all-false state (it is reachable)
+        let mut hy: Vec<Expr> = vec![refl(t()), refl(t())];
         let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
         for i in 0..n {
             let ug: Vec<Gb> = (0..k).map(|v| Gb { e: bits(v, i), g: goods(v, i) }).collect();
@@ -3141,7 +3287,11 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
                 let (gl, gr) = (g_expr(j, &key(&pl)), g_expr(j, &key(&pr)));
                 let inst = |side: usize| {
                     let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g.clone())).chain(st[side].iter().map(|g| g.g.clone()));
-                    apps(lemmas[side][j].clone(), args.collect())
+                    let mut args: Vec<Expr> = args.collect();
+                    if inv.is_some() {
+                        args.push(hy[side].clone());
+                    }
+                    apps(lemmas[side][j].clone(), args)
                 };
                 let mut fmap = g_expr(j, &ub.iter().map(|e| shift(e, 0, m as i32)).chain((0..m).map(|q| var((m - 1 - q) as u32))).collect::<Vec<_>>());
                 for _ in 0..m {
@@ -3160,11 +3310,17 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
                 e.push(proofs[0].2.clone());
             }
             ip = proofs[1 - first..].iter().map(|p| p.2.clone()).collect();
+            if inv.is_some() {
+                for side in 0..2 {
+                    let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g.clone())).chain(st[side].iter().map(|g| g.g.clone())).chain([hy[side].clone()]);
+                    hy[side] = apps(pres[side].clone(), args.collect());
+                }
+            }
             for side in 0..2 {
                 st[side] = machines[side].step(&gops, &ug, &st[side]).1;
             }
         }
-        (s1, s2, e, st, ip)
+        (s1, s2, e, st, ip, hy)
     };
     if !last {
         return Some(k_var_law(n, k, t1, t2, &|bits, goods| {
@@ -3173,13 +3329,19 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
         }));
     }
     Some(k_var_law_to(n, k, &bv_ty(1), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
-        let (.., st, ip) = core(bits, goods);
+        let (.., st, ip, hy) = core(bits, goods);
         let bl = bool0();
         let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e.clone()).collect() };
         let pq = |side: usize| -> Vec<Expr> { (0..m).map(|j| phi_expr(side, j, &sx(side))).collect() };
         let (pl, pr) = (pq(0), pq(1));
         let end = |side: usize| st[side][cs[side] - 1].e.clone();
-        let inst = |side: usize| apps(dlemmas[side].clone(), sx(side).into_iter().chain(st[side].iter().map(|g| g.g.clone())).collect());
+        let inst = |side: usize| {
+            let mut args: Vec<Expr> = sx(side).into_iter().chain(st[side].iter().map(|g| g.g.clone())).collect();
+            if inv.is_some() {
+                args.push(hy[side].clone());
+            }
+            apps(dlemmas[side].clone(), args)
+        };
         let (dl, dr) = (dec_expr(&pl), dec_expr(&pr));
         let mut fmap = dec_expr(&(0..m).map(|q| var((m - 1 - q) as u32)).collect::<Vec<_>>());
         for _ in 0..m {
@@ -3206,7 +3368,7 @@ fn state_encoding_search_proves_three_leaf_sum_laws() {
             ("add (add x -1) -1 = add x (add -1 -1)", op(op(v(0), Term::Ones), Term::Ones), op(v(0), op(Term::Ones, Term::Ones))),
         ] {
             if n == 1 {
-                let e = find_state_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, 2, &GoodOps::new()).unwrap();
+                let e = find_state_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, 2, &GoodOps::new(), None).unwrap();
                 println!("ENCODING {name}: phi1 {:?} phi2 {:?} (index 2c+d)", e.phi[0][0], e.phi[0][1]);
             }
             let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
@@ -3540,10 +3702,15 @@ fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
         let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
         ck(name, &p, &s);
     }
-    // limit: these hold only on the reachable carry states (the borrow of `x - 0` never becomes 1, the borrow of
-    // `x + y < x` equals the add's carry), and the encoding lemmas range over all states, so there is no proof yet
-    assert!(add_tree_law(n, 2, &lt(Term::V(0), Term::Zero), &lt(Term::V(1), Term::Zero)).is_none());
-    assert!(add_tree_law(n, 2, &lt(op(0, *v(0), *v(1)), Term::V(0)), &lt(op(0, *v(0), *v(1)), Term::V(1))).is_none());
+    // these hold only on the reachable carry states (the borrow of `x - 0` never becomes 1, the borrow of `x + y < x`
+    // equals the add's carry): proved with lemmas conditional on a reachability invariant
+    for (name, t1, t2) in [
+        ("lt x 0 = lt y 0", lt(Term::V(0), Term::Zero), lt(Term::V(1), Term::Zero)),
+        ("lt (x+y) x = lt (x+y) y", lt(op(0, *v(0), *v(1)), Term::V(0)), lt(op(0, *v(0), *v(1)), Term::V(1))),
+    ] {
+        let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("no proof: {name}"));
+        ck(name, &p, &s);
+    }
     // false laws are not proved: by the plausibility screen, and a wrong proof would not check
     assert!(add_tree_law(n, 2, &lt(Term::V(0), Term::V(1)), &lt(Term::V(1), Term::V(0))).is_none());
     assert!(add_tree_law(n, 2, &lt(Term::V(0), Term::V(1)), &lt(Term::V(0), op(0, *v(1), Term::Ones))).is_none());
@@ -3577,9 +3744,9 @@ fn lt_conjecture_miner() {
                 }
                 None => {
                     none += 1;
-                    if none <= 8 {
-                        println!("LTMINER no proof: {} = {}", g[0].show(), t2.show());
-                    }
+                    // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
+                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, 2));
+                    println!("LTMINER no proof ({}): {} = {}", if generic { "holds at widths 1..6" } else { "width-specific" }, g[0].show(), t2.show());
                 }
             }
         }
@@ -3807,4 +3974,109 @@ fn shift_conjecture_miner() {
         }
     }
     println!("SHIFTMINER {} terms, {} groups, {total} conjectures proved and checked, 0 rejected, {:?}", pool.len(), groups.len(), t0.elapsed());
+}
+
+#[test]
+fn shared_subterms_are_generalized_so_large_sums_stay_provable() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let v = |i: usize| Term::V(i);
+    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let s = add(add(v(0), v(1)), v(2)); // two carries
+    // 8 carries on each side: over the machine cap, so only the generalization (S as one variable) proves it
+    let t1 = add(s.clone(), add(s.clone(), s.clone()));
+    let t2 = add(add(s.clone(), s.clone()), s.clone());
+    assert!(add_tree_law(2, 3, &t1, &t2).is_none());
+    let (p, st) = rewrite_law(2, 3, &t1, &t2).expect("generalized");
+    ck("add S (add S S) = add (add S S) S", &p, &st);
+    // not equal: no proof
+    assert!(rewrite_law(2, 3, &t1, &add(add(s.clone(), s.clone()), v(0))).is_none());
+}
+
+// ---- Left shifts inside machines (search note section 21): `shl1 a` is a delay cell, a carry whose next value is
+// the operand's bit and whose output is the previous one, so sums with shifts are ordinary machines.
+
+#[test]
+fn shifts_inside_sums_are_machines_and_their_laws_check() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let v = |i: usize| Term::V(i);
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let shl = |a: Term| op(6, a, Term::Zero);
+    let n = 4usize;
+    let laws = [
+        ("shl1 x = add x x", shl(v(0)), op(0, v(0), v(0))),
+        ("shl1 (add x y) = add (shl1 x) (shl1 y)", shl(op(0, v(0), v(1))), op(0, shl(v(0)), shl(v(1)))),
+        ("shl1 (sub x y) = sub (shl1 x) (shl1 y)", shl(op(4, v(0), v(1))), op(4, shl(v(0)), shl(v(1)))),
+        ("shl1 (shl1 x) = add (add x x) (add x x)", shl(shl(v(0))), op(0, op(0, v(0), v(0)), op(0, v(0), v(0)))),
+        ("add x (shl1 x) = add (shl1 x) x", op(0, v(0), shl(v(0))), op(0, shl(v(0)), v(0))),
+        ("add (shl1 x) y = add y (shl1 x)", op(0, shl(v(0)), v(1)), op(0, v(1), shl(v(0)))),
+        ("shl1 (xor x y) = xor (shl1 x) (shl1 y)", shl(op(3, v(0), v(1))), op(3, shl(v(0)), shl(v(1)))),
+    ];
+    for (name, t1, t2) in &laws {
+        let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
+        ck(name, &p, &s);
+    }
+    // false laws get no proof
+    assert!(add_tree_law(n, 2, &shl(v(0)), &v(0)).is_none());
+    assert!(add_tree_law(n, 2, &shl(v(0)), &op(0, v(0), v(1))).is_none());
+}
+
+/// Pairs over a pool with `shl1` that agree on all width-4 inputs; each is built and kernel-checked.
+#[test]
+#[ignore]
+fn shl_conjecture_miner() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let n = 4usize;
+    let b = |o: usize, a: &Term, c: &Term| Term::Op(o, Box::new(a.clone()), Box::new(c.clone()));
+    let shl = |a: &Term| b(6, a, &Term::Zero);
+    let leaves = [Term::V(0), Term::V(1), Term::Zero, Term::Ones];
+    let mut base: Vec<Term> = leaves.to_vec();
+    base.extend(leaves.iter().map(&shl));
+    let sh: Vec<Term> = leaves.iter().map(&shl).collect();
+    base.extend(sh.iter().map(&shl));
+    let mut level1 = vec![];
+    for o in 0..5 {
+        for x in &base {
+            for y in &base {
+                level1.push(b(o, x, y));
+            }
+        }
+    }
+    let mut pool = base.clone();
+    pool.extend(level1.iter().cloned());
+    pool.extend(level1.iter().map(&shl));
+    let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
+    for t in &pool {
+        let sig: Vec<u128> = (0..256u128).map(|i| t.interp(n, &[i & 15, i >> 4])).collect();
+        groups.entry(sig).or_default().push(t.clone());
+    }
+    let (mut total, mut proved, mut generic_none, mut t_none, mut carry_free, mut skipped, t0) = (0, 0, 0, 0, 0, 0, Instant::now());
+    for g in groups.values().filter(|g| g.len() > 1) {
+        for t2 in &g[1..] {
+            let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > 4));
+            if big {
+                skipped += 1; // the joint search over up to 2^6 + 2^6 classes does not finish in useful time
+                continue;
+            }
+            total += 1;
+            match add_tree_law(n, 2, &g[0], t2) {
+                Some((p, s)) => {
+                    ck(&format!("{} = {}", g[0].show(), t2.show()), &p, &s);
+                    proved += 1;
+                }
+                None if [&g[0], t2].iter().all(|t| Machine::parse(t).is_none_or(|m| m.carries() == 0)) => carry_free += 1, // `bitwise_law` territory
+                None => {
+                    // a law that fails at another width cannot have a proof for all widths
+                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, 2));
+                    t_none += 1;
+                    if generic {
+                        generic_none += 1;
+                        if generic_none <= 12 {
+                            println!("SHLMINER no proof, holds at widths 1..6: {} = {}", g[0].show(), t2.show());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("SHLMINER {} terms, {} groups, {total} conjectures with at most 4 carries per side ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
 }
