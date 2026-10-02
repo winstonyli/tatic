@@ -4171,17 +4171,10 @@ fn multiplication_by_constants_as_shift_and_add_machines() {
 /// Constant-multiplication laws (`(a + b) x`, `(a b) x`, `a (x + y)`, `(2^j - 1) x`) for constants up to `MULMINER_MAX`
 /// (default 7), each proved by `add_tree_law` and kernel-checked; prints carries per side and cost, so the carry cap
 /// (env `CARRY_CAP`, default 10) can be probed.
-#[test]
-#[ignore]
-fn mul_conjecture_miner() {
-    let _scope = tatic::kernel::InternScope::enter();
-    println!("MULMINER machine at start: {}", machine_state());
-    let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let max = env("MULMINER_MAX", 7);
-    let n = 4usize;
+/// The constant-multiplication laws over constants up to `max`: sums, products, differences, distribution over `x+y`, `x-y`.
+fn mul_laws(max: u32) -> Vec<(String, Term, Term)> {
     let (x, y) = (Term::V(0), Term::V(1));
     let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
-    let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
     let mut laws: Vec<(String, Term, Term)> = vec![];
     for a in 1..=max {
         for b in a..=max {
@@ -4196,6 +4189,19 @@ fn mul_conjecture_miner() {
         laws.push((format!("{a}(x-y) = {a}x - {a}y"), mul_const(a, &sub(x.clone(), y.clone())), sub(mul_const(a, &x), mul_const(a, &y))));
         laws.push((format!("{a}(x+y) = {a}x + {a}y"), mul_const(a, &add(x.clone(), y.clone())), add(mul_const(a, &x), mul_const(a, &y))));
     }
+    laws
+}
+
+#[test]
+#[ignore]
+fn mul_conjecture_miner() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("MULMINER machine at start: {}", machine_state());
+    let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let max = env("MULMINER_MAX", 7);
+    let n = 4usize;
+    let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
+    let mut laws = mul_laws(max);
     laws.retain(|l| l.0.contains(&only));
     let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());
     for (name, t1, t2) in &laws {
@@ -4223,6 +4229,41 @@ fn mul_conjecture_miner() {
     }
     println!("MULMINER machine at end: {}", machine_state());
     println!("MULMINER {} laws, {proved} proved and checked, {capped} over the carry cap, {none} unproved within it, {:?}", laws.len(), t0.elapsed());
+}
+
+/// Ablation audit (search note section 32): for each mul law, what a lemma-finding search would have to invent. The
+/// proof's lemmas `Id(F_j, G_j(bits, phi(carries)))` are decided by the diagram prover once the midpoint (the phi
+/// encodings and the tables `g`) is given, and the midpoint is the coarsest bisimulation, found by `moore_encoding`.
+/// Prints per law: carries per side, states, classes, phi bits, table bits of `g`, the Moore time, the total time.
+#[test]
+#[ignore]
+fn ablation_audit() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("AUDIT machine at start: {}", machine_state());
+    let max = std::env::var("MULMINER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+    let gops = GoodOps::new();
+    let (mut n_laws, mut moore_ns, mut total_ns) = (0, 0u128, 0u128);
+    for (name, t1, t2) in mul_laws(max) {
+        let (Some(m1), Some(m2)) = (Machine::parse(&t1), Machine::parse(&t2)) else { continue };
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) || m1.carries().max(m2.carries()) > carry_cap() {
+            continue;
+        }
+        let t = Instant::now();
+        let Some(enc) = moore_encoding(&m1, &m2, 2, &gops, None) else { continue };
+        let moore = t.elapsed();
+        let t = Instant::now();
+        let proved = add_tree_law(4, 2, &t1, &t2).is_some();
+        let total = t.elapsed();
+        let m = enc.phi[0].len();
+        let classes = (0..2).map(|s| enc.phi[s][0].len()).collect::<Vec<_>>();
+        let gbits = (1 + m) << (2 + m);
+        n_laws += 1;
+        moore_ns += moore.as_nanos();
+        total_ns += total.as_nanos();
+        println!("AUDIT {name}: carries [{}, {}], states {classes:?}, phi bits {m}, g bits {gbits}, moore {moore:?}, proof {total:?}, proved {proved}", m1.carries(), m2.carries());
+    }
+    println!("AUDIT machine at end: {}", machine_state());
+    println!("AUDIT {n_laws} laws, Moore {:.1}s of {:.1}s proof time", moore_ns as f64 / 1e9, total_ns as f64 / 1e9);
 }
 
 // ---- Proof-producing decision diagrams (search note section 29). Each lemma over `nv` bits used to be a full case
