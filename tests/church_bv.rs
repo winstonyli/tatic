@@ -2871,13 +2871,20 @@ impl Machine {
 
     /// Any term over variables and constants: the machine computes it one bit position at a time.
     fn parse(t: &Term) -> Option<Machine> {
-        fn go(t: &Term, m: &mut Machine) -> Option<Src> {
+        // equal subterms are one node (so a chain of delay cells serves every shift of the same operand)
+        fn go(t: &Term, m: &mut Machine, seen: &mut std::collections::HashMap<String, Src>) -> Option<Src> {
             match t {
                 Term::Op(o, a, b) => {
-                    let a = go(a, m)?;
-                    let b = if *o == 6 { a } else { go(b, m)? };
+                    let key = t.show();
+                    if let Some(src) = seen.get(&key) {
+                        return Some(*src);
+                    }
+                    let a = go(a, m, seen)?;
+                    let b = if *o == 6 { a } else { go(b, m, seen)? };
                     m.nodes.push((a, b, *o));
-                    Some(Src::Node(m.nodes.len() - 1))
+                    let src = Src::Node(m.nodes.len() - 1);
+                    seen.insert(key, src);
+                    Some(src)
                 }
                 _ => {
                     m.leaves.push(t.clone());
@@ -2886,7 +2893,7 @@ impl Machine {
             }
         }
         let mut m = Machine { leaves: vec![], nodes: vec![], root: Src::Leaf(0) };
-        m.root = go(t, &mut m)?;
+        m.root = go(t, &mut m, &mut Default::default())?;
         Some(m)
     }
 
@@ -3062,6 +3069,11 @@ fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
 static LEMMA_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PROF: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
+/// The most carries per side `add_tree_law` takes on (each lemma is a case tree over `k + carries` bits); env `CARRY_CAP`.
+fn carry_cap() -> usize {
+    std::env::var("CARRY_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(6)
+}
+
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
 /// `moore_encoding` (first over all carry states, then over the reachable ones); `None` when there is none.
 fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
@@ -3074,7 +3086,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
         return None;
     }
     let cs = [m1.carries(), m2.carries()];
-    if cs[0].max(cs[1]) > 6 {
+    if cs[0].max(cs[1]) > carry_cap() {
         return None;
     }
     if cs[0] + cs[1] == 0 {
@@ -3928,10 +3940,9 @@ fn shared_subterms_are_generalized_so_large_sums_stay_provable() {
     let v = |i: usize| Term::V(i);
     let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
     let s = add(add(v(0), v(1)), v(2)); // two carries
-    // 8 carries on each side: over the machine cap, so only the generalization (S as one variable) proves it
+    // 8 carries on each side before sharing equal subterms (6 after), so `rewrite_law` generalizes S to a variable
     let t1 = add(s.clone(), add(s.clone(), s.clone()));
     let t2 = add(add(s.clone(), s.clone()), s.clone());
-    assert!(add_tree_law(2, 3, &t1, &t2).is_none());
     let (p, st) = rewrite_law(2, 3, &t1, &t2).expect("generalized");
     ck("add S (add S S) = add (add S S) S", &p, &st);
     // not equal: no proof
@@ -4062,4 +4073,51 @@ fn multiplication_by_constants_as_shift_and_add_machines() {
     }
     // false: 3x is not 4x - 2
     assert!(add_tree_law(n, 2, &mul_const(3, &v(0)), &mul_const(5, &v(0))).is_none());
+}
+
+/// Constant-multiplication laws (`(a + b) x`, `(a b) x`, `a (x + y)`, `(2^j - 1) x`) for constants up to `MULMINER_MAX`
+/// (default 7), each proved by `add_tree_law` and kernel-checked; prints carries per side and cost, so the carry cap
+/// (env `CARRY_CAP`, default 6) can be probed.
+#[test]
+#[ignore]
+fn mul_conjecture_miner() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let max = env("MULMINER_MAX", 7);
+    let n = 4usize;
+    let (x, y) = (Term::V(0), Term::V(1));
+    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let mut laws: Vec<(String, Term, Term)> = vec![];
+    for a in 1..=max {
+        for b in a..=max {
+            laws.push((format!("({a}+{b})x = {a}x + {b}x"), mul_const(a + b, &x), add(mul_const(a, &x), mul_const(b, &x))));
+            laws.push((format!("({a}*{b})x = {a}({b}x)"), mul_const(a * b, &x), mul_const(a, &mul_const(b, &x))));
+        }
+        laws.push((format!("{a}(x+y) = {a}x + {a}y"), mul_const(a, &add(x.clone(), y.clone())), add(mul_const(a, &x), mul_const(a, &y))));
+    }
+    let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());
+    for (name, t1, t2) in &laws {
+        let cs = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
+        if !(1..=6).all(|w| t1.plausibly_equals(t2, w, 2)) {
+            continue;
+        }
+        let t = Instant::now();
+        match add_tree_law(n, 2, t1, t2) {
+            Some((p, s)) => {
+                let built = t.elapsed();
+                ck(name, &p, &s);
+                proved += 1;
+                println!("MULMINER {name}: carries {cs:?}, build {built:?}, total {:?}", t.elapsed());
+            }
+            None if cs[0].max(cs[1]) > carry_cap() => {
+                capped += 1;
+                println!("MULMINER {name}: carries {cs:?} over the cap");
+            }
+            None => {
+                none += 1;
+                println!("MULMINER {name}: carries {cs:?}, NO PROOF though it holds at widths 1..6");
+            }
+        }
+    }
+    println!("MULMINER {} laws, {proved} proved and checked, {capped} over the carry cap, {none} unproved within it, {:?}", laws.len(), t0.elapsed());
 }
