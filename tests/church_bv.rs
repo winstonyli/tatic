@@ -2523,6 +2523,7 @@ fn rules() -> Vec<Rule> {
     let mut all = vec![
         Rule { name: "shldist", lhs: shl(op(0, v(0), v(1))), rhs: op(0, shl(v(0)), shl(v(1))) },
         Rule { name: "shldistsub", lhs: shl(op(4, v(0), v(1))), rhs: op(4, shl(v(0)), shl(v(1))) },
+        Rule { name: "shlzero", lhs: shl(Term::Zero), rhs: Term::Zero },
         Rule { name: "double", lhs: op(0, v(0), v(0)), rhs: shl(v(0)) },
         Rule { name: "doublechain", lhs: op(0, v(0), op(0, v(0), v(1))), rhs: op(0, shl(v(0)), v(1)) },
         // mined by `rule_miner` (section 36): cancellation
@@ -4924,13 +4925,15 @@ fn rule_miner() {
         out.retain(|(_, c)| c.len() <= cap);
         out
     }
+    // RULEMINER_ANY=1: also abstract subterms without add/sub (constant folding inside shifts and bitwise nodes)
+    let any_op = env("RULEMINER_ANY", 0) == 1;
     let mut seen_pat: std::collections::HashSet<String> = Default::default();
     let mut cands: Vec<(Term, Term)> = vec![];
     for st in &stragglers {
         let mut subs = vec![];
         st.3[0].subterms(&mut subs);
         st.3[1].subterms(&mut subs);
-        for sub in subs.iter().filter(|t| t.uses_add() && t.size() >= 3) {
+        for sub in subs.iter().filter(|t| (any_op || t.uses_add()) && t.size() >= if any_op { 2 } else { 3 }) {
             for (pat, _) in abstractions(sub, 2) {
                 let Term::Op(..) = pat else { continue };
                 if !seen_pat.insert(pat.show()) || pat.size() > 9 {
