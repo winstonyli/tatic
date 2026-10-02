@@ -2177,6 +2177,19 @@ impl Term {
             self.interp(n, &vals) == other.interp(n, &vals)
         })
     }
+    fn has_shift(&self) -> bool {
+        match self {
+            Term::Op(o, a, b) => *o == 6 || a.has_shift() || b.has_shift(),
+            _ => false,
+        }
+    }
+    /// No add, sub or lt anywhere: bitwise operators and shifts only.
+    fn add_free(&self) -> bool {
+        match self {
+            Term::Op(o, a, b) => matches!(o, 1..=3 | 6) && a.add_free() && b.add_free(),
+            _ => true,
+        }
+    }
     fn uses_add(&self) -> bool {
         match self {
             Term::Op(o, a, b) => *o == 0 || *o == 4 || a.uses_add() || b.uses_add(),
@@ -2279,6 +2292,9 @@ fn bitwise_law(n: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
 
 /// As `bitwise_law`, over `k` good vectors (terms may use variables `0..k`).
 fn bitwise_law_k(n: usize, k: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
+    if t1.has_shift() || t2.has_shift() {
+        return pos_law(n, k, t1, t2);
+    }
     let (bit_law, _) = lemma_n(
         k,
         &|v| id(bool0(), t1.bit(v), t2.bit(v)),
@@ -2523,6 +2539,11 @@ fn rules() -> Vec<Rule> {
     let mut all = vec![
         Rule { name: "shldist", lhs: shl(op(0, v(0), v(1))), rhs: op(0, shl(v(0)), shl(v(1))) },
         Rule { name: "shldistsub", lhs: shl(op(4, v(0), v(1))), rhs: op(4, shl(v(0)), shl(v(1))) },
+        Rule { name: "shldistand", lhs: shl(op(1, v(0), v(1))), rhs: op(1, shl(v(0)), shl(v(1))) },
+        Rule { name: "shldistor", lhs: shl(op(2, v(0), v(1))), rhs: op(2, shl(v(0)), shl(v(1))) },
+        Rule { name: "shldistxor", lhs: shl(op(3, v(0), v(1))), rhs: op(3, shl(v(0)), shl(v(1))) },
+        Rule { name: "notsub", lhs: op(3, v(0), Term::Ones), rhs: op(4, Term::Ones, v(0)) },
+        Rule { name: "notsubl", lhs: op(3, Term::Ones, v(0)), rhs: op(4, Term::Ones, v(0)) },
         Rule { name: "shlzero", lhs: shl(Term::Zero), rhs: Term::Zero },
         Rule { name: "double", lhs: op(0, v(0), v(0)), rhs: shl(v(0)) },
         Rule { name: "doublechain", lhs: op(0, v(0), op(0, v(0), v(1))), rhs: op(0, shl(v(0)), v(1)) },
@@ -2551,6 +2572,16 @@ impl Term {
             a.subterms(out);
             b.subterms(out);
         }
+    }
+}
+
+/// The law behind a rule: bitwise/shift rules by the per-position prover, the rest by the carry machines.
+fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
+    if l.add_free() && r.add_free() {
+        let law = bitwise_law_k(n, k, l, r);
+        check(&Ctx::new(), &law.0, &law.1).ok().map(|_| law)
+    } else {
+        add_tree_law(n, k, l, r)
     }
 }
 
@@ -2591,7 +2622,7 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
         if RULE_BUDGET.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) <= 0 {
             return None;
         }
-        let law = memo(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || add_tree_law(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
+        let law = memo(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
         // a pattern variable the left side does not mention is free in the law: any value serves
         let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
         let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
@@ -2635,6 +2666,24 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
         return (t1, cong);
     }
     if *o != 0 {
+        if let Some((target, step)) = rule_step(n, &t1, goods) {
+            let (t3, p3) = rewrite(&target, n, ops, goods);
+            let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
+            return (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&target), &ev(&t3), first, p3));
+        }
+        // bitwise and shift terms only: a node equal to 0, -1 or one of its own subterms collapses to it, by the
+        // per-position prover (the truth-table collapse below treats a shift as an atom)
+        if let (false, true, true) = (ablated("collapse"), t1.add_free(), t1.has_shift()) {
+            let k = goods.len();
+            let mut subs = vec![];
+            t1.subterms(&mut subs);
+            let cands = [Term::Zero, Term::Ones].into_iter().chain(subs.into_iter().skip(1).filter(|c| c.size() < t1.size()));
+            if let Some(c) = cands.into_iter().find(|c| c.add_free() && (1..=6).all(|w| t1.plausibly_equals(c, w, k))) {
+                let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
+                let law = apps(bitwise_law_k(n, k, &t1, &c).0, args);
+                return (c.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&c), cong, law));
+            }
+        }
         // a bitwise node equal to 0, -1 or one of its atoms collapses to it (truth table, then `bitwise_law`)
         let (mut atoms, k) = (vec![], goods.len());
         if let (false, Some(abs)) = (ablated("collapse"), abstract_atoms(&t1, &mut atoms, k)) {
@@ -4034,20 +4083,73 @@ impl STerm {
     }
 }
 
-/// Proof of `t1 = t2` for shift terms over `k` good vectors: per position, case analysis over the bits both sides read.
+/// Terms whose bit at a position reads bits of the variables at (possibly other) positions: the interface of `pos_law`.
+trait PosTerm {
+    fn pos_eval(&self, n: usize, vals: &[Expr]) -> Expr;
+    fn pos_atoms(&self, n: usize, i: usize, out: &mut Vec<(usize, usize)>);
+    fn pos_bit(&self, n: usize, i: usize, bit: &dyn Fn(usize, usize) -> Expr) -> Expr;
+}
+impl PosTerm for STerm {
+    fn pos_eval(&self, n: usize, vals: &[Expr]) -> Expr {
+        self.eval(n, vals)
+    }
+    fn pos_atoms(&self, n: usize, i: usize, out: &mut Vec<(usize, usize)>) {
+        self.atoms(n, i, out)
+    }
+    fn pos_bit(&self, n: usize, i: usize, bit: &dyn Fn(usize, usize) -> Expr) -> Expr {
+        self.bit_at(n, i, bit)
+    }
+}
+/// `Term`s without add/sub/lt: bitwise operators and `shl1`.
+impl PosTerm for Term {
+    fn pos_eval(&self, n: usize, vals: &[Expr]) -> Expr {
+        self.eval(&ops_for(n), n, vals)
+    }
+    fn pos_atoms(&self, n: usize, i: usize, out: &mut Vec<(usize, usize)>) {
+        match self {
+            Term::V(v) => out.push((*v, i)),
+            Term::Zero | Term::Ones => {}
+            Term::Op(6, a, _) => {
+                if let Some(j) = i.checked_sub(1) {
+                    a.pos_atoms(n, j, out);
+                }
+            }
+            Term::Op(_, a, b) => {
+                a.pos_atoms(n, i, out);
+                b.pos_atoms(n, i, out);
+            }
+        }
+    }
+    fn pos_bit(&self, n: usize, i: usize, bit: &dyn Fn(usize, usize) -> Expr) -> Expr {
+        match self {
+            Term::V(v) => bit(*v, i),
+            Term::Zero => f(),
+            Term::Ones => t(),
+            Term::Op(6, a, _) => i.checked_sub(1).map_or_else(f, |j| a.pos_bit(n, j, bit)),
+            Term::Op(o @ 1..=3, a, b) => BIT_OPS[*o - 1](a.pos_bit(n, i, bit), b.pos_bit(n, i, bit)),
+            Term::Op(o, ..) => panic!("{} is not bitwise or a shift", OPS[*o]),
+        }
+    }
+}
+
 fn shift_law(n: usize, k: usize, t1: &STerm, t2: &STerm) -> (Expr, Expr) {
-    let sides = |args: &[Expr]| (t1.eval(n, args), t2.eval(n, args));
+    pos_law(n, k, t1, t2)
+}
+
+/// Proof of `t1 = t2` over `k` good vectors: per position, case analysis over the bits both sides read.
+fn pos_law<T: PosTerm>(n: usize, k: usize, t1: &T, t2: &T) -> (Expr, Expr) {
+    let sides = |args: &[Expr]| (t1.pos_eval(n, args), t2.pos_eval(n, args));
     k_var_law_to(n, k, &bv_ty(n), &sides, &|bits, goods| {
         let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
         for i in 0..n {
             let mut atoms = vec![];
-            t1.atoms(n, i, &mut atoms);
-            t2.atoms(n, i, &mut atoms);
+            t1.pos_atoms(n, i, &mut atoms);
+            t2.pos_atoms(n, i, &mut atoms);
             atoms.sort();
             atoms.dedup();
             let at = |vals: &[Expr]| {
                 let lookup = |v: usize, j: usize| vals[atoms.iter().position(|a| *a == (v, j)).unwrap()].clone();
-                (t1.bit_at(n, i, &lookup), t2.bit_at(n, i, &lookup))
+                (t1.pos_bit(n, i, &lookup), t2.pos_bit(n, i, &lookup))
             };
             let (lemma, _) = lemma_n(
                 atoms.len(),
@@ -5011,7 +5113,7 @@ fn rule_miner() {
     for (l, r) in &cands {
         // the candidate must itself be provable
         let t = Instant::now();
-        if add_tree_law(n, l.max_var().max(r.max_var()) + 1, l, r).is_none() {
+        if prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_none() {
             continue;
         }
         EXTRA_RULES.with(|e| *e.borrow_mut() = vec![(l.clone(), r.clone())]);
@@ -5052,4 +5154,33 @@ fn rule_miner() {
         }
     }
     println!("RULEMINER machine at end: {}", machine_state());
+}
+
+/// `bitwise_law_k` dispatches to the per-position prover when a shift occurs: shl1 distributes over the bitwise
+/// operators, and a false shift law fails to check.
+#[test]
+fn bitwise_law_proves_shift_laws_and_rejects_false_ones() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let shl = |a: Term| op(6, a, Term::Zero);
+    let (x, y) = (Term::V(0), Term::V(1));
+    for n in [3, 4] {
+        for o in 1..=3 {
+            let (p, s) = bitwise_law_k(n, 2, &shl(op(o, x.clone(), y.clone())), &op(o, shl(x.clone()), shl(y.clone())));
+            ck("shl over bitwise", &p, &s);
+        }
+        let (p, s) = bitwise_law_k(n, 2, &shl(x.clone()), &x);
+        assert!(check(&Ctx::new(), &p, &s).is_err(), "shl x = x must fail");
+    }
+}
+
+#[test]
+fn notsub_rule_is_provable() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    for n in [3, 4] {
+        let r = prove_rule(n, 1, &op(3, Term::V(0), Term::Ones), &op(4, Term::Ones, Term::V(0)));
+        let (p, s) = r.expect("xor(x, -1) = sub(-1, x)");
+        ck("notsub", &p, &s);
+    }
 }
