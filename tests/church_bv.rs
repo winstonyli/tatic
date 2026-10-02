@@ -2627,19 +2627,43 @@ fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
     }
 }
 
-/// Whether `l -> r` goes down in the rule order: no variable occurs more often in `r`, and `r` has fewer operator nodes
-/// (a strict drop makes every rewrite sequence finite, since a substitution only multiplies variable occurrences that
-/// did not increase) or, at equal operator count, fewer variable occurrences in total (a tie-break: not a termination
-/// proof, which `RULE_BUDGET` still backs up).
+/// The rule order's weight of a term, a polynomial interpretation `c + sum_v a_v * x_v` (`x_v >= 1` is the weight of
+/// whatever replaces variable `v`): leaves 1, `shl1`/`shr1` double (`2x`, so distributing a shift over an operator goes
+/// down), every other operator `x + y + 1`.
+fn rule_weight(t: &Term) -> (i64, [i64; 8]) {
+    match t {
+        Term::V(v) => {
+            let mut a = [0; 8];
+            a[*v] = 1;
+            (0, a)
+        }
+        Term::Zero | Term::Ones => (1, [0; 8]),
+        Term::Op(6 | 7, x, _) => {
+            let (c, mut a) = rule_weight(x);
+            a.iter_mut().for_each(|k| *k *= 2);
+            (2 * c, a)
+        }
+        Term::Op(_, x, y) => {
+            let ((c1, a1), (c2, a2)) = (rule_weight(x), rule_weight(y));
+            (c1 + c2 + 1, std::array::from_fn(|v| a1[v] + a2[v]))
+        }
+    }
+}
+
+/// Whether `l -> r` goes down in the rule order: `l` outweighs `r` for every substitution (each variable's coefficient
+/// no smaller, and the weight at all variables = 1 larger by at least 1), or ties there and `r` has fewer variable
+/// occurrences (a tie-break, not a termination proof: `RULE_BUDGET` backs it up, and `rule_step` skips a rewrite that
+/// returns the same term).
 fn rule_order_ok(l: &Term, r: &Term) -> bool {
+    let ((cl, al), (cr, ar)) = (rule_weight(l), rule_weight(r));
+    if (0..8).any(|v| ar[v] > al[v]) {
+        return false;
+    }
+    let diff = cl - cr + (0..8).map(|v| al[v] - ar[v]).sum::<i64>();
     let (mut lo, mut ro) = ([0usize; 8], [0usize; 8]);
     l.occurrences(&mut lo);
     r.occurrences(&mut ro);
-    if (0..8).any(|v| ro[v] > lo[v]) {
-        return false;
-    }
-    let (lc, rc) = (l.ops_count(), r.ops_count());
-    rc < lc || (rc == lc && ro.iter().sum::<usize>() < lo.iter().sum::<usize>())
+    diff >= 1 || (diff == 0 && ro.iter().sum::<usize>() < lo.iter().sum::<usize>())
 }
 
 fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
@@ -5182,7 +5206,8 @@ fn rule_miner() {
             let measure = |t: &Term| {
                 let mut occ = [0usize; 8];
                 t.occurrences(&mut occ);
-                (t.ops_count() * 16 + occ.iter().sum::<usize>()) as i64
+                let (c, a) = rule_weight(t);
+                (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
             };
             size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
         }
