@@ -55,3 +55,24 @@ def show(t):
     return t if isinstance(t,str) else '(%s %s)'%(t[0],' '.join(show(c) for c in t[1:]))
 for c in sorted(hard, key=lambda c: min(len(show(t)) for t in c))[:14]:
     print(' ~ '.join(sorted((show(t) for t in c), key=len)[:3]))
+
+def arith(t): return has(t, ('add','sub'))
+pure = [c for c in hard if any(not arith(t) for t in c)]
+print('hard classes', len(hard), 'with a member free of add/sub (bitwise+shifts only):', len(pure))
+# of those, classes whose hard terms can be reduced by shl rewriting alone: hard member only because of shr over (add x x)/(shl) style
+def only_double(t):
+    # shr operand arithmetic consisting solely of (add p p) nodes
+    if isinstance(t,str): return True
+    if t[0]=='shr' and has(t[1],('add','sub')):
+        def ok(u):
+            if isinstance(u,str): return True
+            if u[0] in ('add',): return u[1]==u[2] and ok(u[1])
+            if u[0]=='sub': return False
+            return all(ok(c) for c in u[1:])
+        return ok(t[1])
+    return all(only_double(c) for c in t[1:])
+dbl = [c for c in pure if all(only_double(t) for t in c if shr_in_arith(t))]
+print('of those, hard members only through add p p (reducible by the double rule):', len(dbl))
+rest = [c for c in hard if c not in pure]
+print('no pure member:', len(rest))
+for c in rest[:6]: print('  ', ' ~ '.join(sorted((show(t) for t in c), key=len)[:3]))

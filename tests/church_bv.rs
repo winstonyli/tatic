@@ -2508,19 +2508,50 @@ struct Rule {
     rhs: Term,
 }
 
+thread_local! {
+    /// Rules added at run time (by the rule miner), after the built-in ones.
+    static EXTRA_RULES: std::cell::RefCell<Vec<(Term, Term)>> = Default::default();
+}
+/// How many more rule applications `rule_step` may make; the rule miner sets it per trial so that a candidate that
+/// undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
+static RULE_BUDGET: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX / 2);
+
 fn rules() -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let v = Term::V;
     let shl = |a: Term| Term::Op(6, Box::new(a), Box::new(Term::Zero));
-    vec![
+    let mut all = vec![
         Rule { name: "shldist", lhs: shl(op(0, v(0), v(1))), rhs: op(0, shl(v(0)), shl(v(1))) },
         Rule { name: "shldistsub", lhs: shl(op(4, v(0), v(1))), rhs: op(4, shl(v(0)), shl(v(1))) },
         Rule { name: "double", lhs: op(0, v(0), v(0)), rhs: shl(v(0)) },
         Rule { name: "doublechain", lhs: op(0, v(0), op(0, v(0), v(1))), rhs: op(0, shl(v(0)), v(1)) },
-    ]
+        // mined by `rule_miner` (section 36): cancellation
+        Rule { name: "cancelr", lhs: op(4, op(0, v(0), v(1)), v(1)), rhs: v(0) },
+        Rule { name: "cancell", lhs: op(4, op(0, v(0), v(1)), v(0)), rhs: v(1) },
+    ];
+    EXTRA_RULES.with(|e| all.extend(e.borrow().iter().map(|(l, r)| Rule { name: "mined", lhs: l.clone(), rhs: r.clone() })));
+    all
 }
 
 /// First-order match of the pattern `p` against `t`, binding pattern variables in `sub` (a repeated variable must see equal terms).
+impl Term {
+    /// Number of nodes.
+    fn size(&self) -> usize {
+        match self {
+            Term::Op(_, a, b) => 1 + a.size() + b.size(),
+            _ => 1,
+        }
+    }
+    /// All subterms (with repeats), the term itself first.
+    fn subterms(&self, out: &mut Vec<Term>) {
+        out.push(self.clone());
+        if let Term::Op(_, a, b) = self {
+            a.subterms(out);
+            b.subterms(out);
+        }
+    }
+}
+
 fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
     match (p, t) {
         (Term::V(i), _) => match &sub[*i] {
@@ -2555,8 +2586,12 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
         if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
             continue;
         }
-        let law = memo(format!("rule_{}{n}", r.name), || add_tree_law(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
-        let w: Vec<(Expr, Expr)> = sub.iter().map(|s| witnessed(s.as_ref().unwrap(), n, goods)).collect();
+        if RULE_BUDGET.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) <= 0 {
+            return None;
+        }
+        let law = memo(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || add_tree_law(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
+        // a pattern variable the left side does not mention is free in the law: any value serves
+        let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
         let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
         let mut hits = RULE_HITS.lock().unwrap();
         match hits.iter_mut().find(|h| h.0 == r.name) {
@@ -2577,7 +2612,12 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
     let cong = cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa, pb]);
     let t1 = Term::Op(*o, Box::new(a2.clone()), Box::new(b2.clone()));
     if *o == 4 {
-        // a difference: only the carry-encoding search applies
+        // a difference: the library rules, then the carry-encoding search
+        if let Some((target, step)) = rule_step(n, &t1, goods) {
+            let (t3, p3) = rewrite(&target, n, ops, goods);
+            let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
+            return (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&target), &ev(&t3), first, p3));
+        }
         return match tree_step(n, &t1, goods) {
             Some((target, law)) => (target.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, law)),
             None => (t1, cong),
@@ -4762,4 +4802,187 @@ fn rewrite_rules_over_the_mul_laws() {
     println!("RULES machine at end: {}", machine_state());
     println!("RULES rule instances: {:?}", RULE_HITS.lock().unwrap());
     println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
+}
+
+/// Rule miner (search note section 36): candidate rules are the equal pairs of the `shl1` pool (two variables, width 4,
+/// the shl miner's pool), oriented to a strictly smaller right side and proved by `add_tree_law`. The targets are the
+/// mul laws that still needed a whole-term machine proof under the built-in rules (the "stragglers"). A candidate is
+/// tried on the stragglers whose normalized terms contain an instance of its left side; it scores by the machine
+/// proofs it removes. Env: `MULMINER_MAX` (default 7), `RULEMINER_TRIALS` (candidate cap, default 400).
+#[test]
+#[ignore]
+fn rule_miner() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("RULEMINER machine at start: {}", machine_state());
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (max, trials) = (env("MULMINER_MAX", 7) as u32, env("RULEMINER_TRIALS", 400));
+    let (n, nv) = (4usize, 2usize);
+    let ops = ops_for(n);
+    let goods: Vec<(Expr, Expr)> = (0..2).map(|i| (var((3 - i) as u32), var((1 - i) as u32))).collect();
+    let fallbacks = || MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+    // stragglers under the built-in rules
+    let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
+    for (name, t1, t2) in mul_laws(max) {
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) {
+            continue;
+        }
+        let before = fallbacks();
+        let t = Instant::now();
+        let r = rewrite_law(n, 2, &t1, &t2);
+        let took = t.elapsed();
+        let fell = fallbacks() - before;
+        if r.is_some() && fell > 0 {
+            let normal = [rewrite(&t1, n, &ops, &goods).0, rewrite(&t2, n, &ops, &goods).0];
+            println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?})", normal[0].show(), normal[1].show());
+            stragglers.push((name, t1, t2, normal, fell, took));
+        }
+    }
+    let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
+    println!("RULEMINER {} stragglers of {} laws, {:.1}s base", stragglers.len(), mul_laws(max).len(), base_time);
+    // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
+    // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
+    // with the same values at width 4 (a pool of all terms up to RULEMINER_SIZE nodes, indexed by value)
+    let psize = env("RULEMINER_SIZE", 5);
+    let mut by_size: Vec<Vec<Term>> = vec![vec![]; psize + 1];
+    by_size[1] = vec![Term::V(0), Term::V(1), Term::Zero, Term::Ones];
+    for sz in 2..=psize {
+        let mut level = vec![];
+        for x in &by_size[sz - 1] {
+            level.push(Term::Op(6, Box::new(x.clone()), Box::new(Term::Zero)));
+        }
+        for i in 1..sz - 1 {
+            for l in &by_size[i] {
+                for r in &by_size[sz - 1 - i] {
+                    for o in [0usize, 1, 2, 3, 4] {
+                        level.push(Term::Op(o, Box::new(l.clone()), Box::new(r.clone())));
+                    }
+                }
+            }
+        }
+        by_size[sz] = level;
+    }
+    let sig = |t: &Term| -> Vec<u128> { (0..256u128).map(|i| t.interp(n, &[i & 15, i >> 4])).collect() };
+    let mut index: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
+    for t in by_size.iter().flatten() {
+        index.entry(sig(t)).or_default().push(t.clone());
+    }
+    println!("RULEMINER pool of {} terms, {} distinct functions", by_size.iter().map(|v| v.len()).sum::<usize>(), index.len());
+    /// The patterns obtained from `t` by cutting subterms into variables: (pattern, cut subterms in variable order).
+    fn abstractions(t: &Term) -> Vec<(Term, Vec<Term>)> {
+        let mut out = vec![];
+        if !matches!(t, Term::Zero | Term::Ones) {
+            out.push((Term::V(0), vec![t.clone()]));
+        } else {
+            out.push((t.clone(), vec![]));
+        }
+        if let Term::Op(o, a, b) = t {
+            for (pa, ca) in abstractions(a) {
+                for (pb, cb) in abstractions(b) {
+                    // renumber the right pattern's variables after the left's, merging equal cut subterms
+                    let mut cuts = ca.clone();
+                    let mut map = vec![];
+                    for c in &cb {
+                        let at = cuts.iter().position(|x| x.show() == c.show()).unwrap_or_else(|| {
+                            cuts.push(c.clone());
+                            cuts.len() - 1
+                        });
+                        map.push(at);
+                    }
+                    if cuts.len() > 2 {
+                        continue;
+                    }
+                    fn renum(p: &Term, map: &[usize]) -> Term {
+                        match p {
+                            Term::V(i) => Term::V(map[*i]),
+                            Term::Op(o, a, b) => Term::Op(*o, Box::new(renum(a, map)), Box::new(renum(b, map))),
+                            _ => p.clone(),
+                        }
+                    }
+                    out.push((Term::Op(*o, Box::new(pa.clone()), Box::new(renum(&pb, &map))), cuts));
+                }
+            }
+        }
+        out.retain(|(_, c)| c.len() <= 2);
+        out
+    }
+    let mut seen_pat: std::collections::HashSet<String> = Default::default();
+    let mut cands: Vec<(Term, Term)> = vec![];
+    for st in &stragglers {
+        let mut subs = vec![];
+        st.3[0].subterms(&mut subs);
+        st.3[1].subterms(&mut subs);
+        for sub in subs.iter().filter(|t| t.uses_add() && t.size() >= 3) {
+            for (pat, _) in abstractions(sub) {
+                let Term::Op(..) = pat else { continue };
+                if !seen_pat.insert(pat.show()) || pat.size() > 9 {
+                    continue;
+                }
+                let Some(group) = index.get(&sig(&pat)) else { continue };
+                let uses = |t: &Term, v: usize| t.show().contains(VARS[v]);
+                for r in group.iter().filter(|r| r.size() < pat.size() && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
+                    cands.push((pat.clone(), r.clone()));
+                }
+            }
+        }
+    }
+    // per left side, the smallest right side only
+    cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
+    cands.dedup_by_key(|(l, _)| l.show());
+    println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
+    // keep candidates whose left side matches a subterm of some straggler's normalized terms
+    let applicable = |l: &Term| {
+        stragglers.iter().any(|s| {
+            let mut subs = vec![];
+            s.3[0].subterms(&mut subs);
+            s.3[1].subterms(&mut subs);
+            subs.iter().any(|t| match_pat(l, t, &mut vec![None; nv]))
+        })
+    };
+    let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
+    println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
+    let mut results = vec![];
+    for (l, r) in &cands {
+        // the candidate must itself be provable
+        let t = Instant::now();
+        if add_tree_law(n, nv, l, r).is_none() {
+            continue;
+        }
+        EXTRA_RULES.with(|e| *e.borrow_mut() = vec![(l.clone(), r.clone())]);
+        let (mut removed, mut time) = (0u64, 0f64);
+        let mut fixed = vec![false; stragglers.len()];
+        for (si, s) in stragglers.iter().enumerate() {
+            RULE_BUDGET.store(200, std::sync::atomic::Ordering::Relaxed);
+            let before = fallbacks();
+            let t = Instant::now();
+            let ok = rewrite_law(n, 2, &s.1, &s.2).is_some();
+            time += t.elapsed().as_secs_f64();
+            fixed[si] = ok && fallbacks() - before < s.4;
+            removed += fixed[si] as u64;
+        }
+        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        RULE_BUDGET.store(i64::MAX / 2, std::sync::atomic::Ordering::Relaxed);
+        let _ = t;
+        results.push((removed, time, l.show(), r.show(), fixed));
+    }
+    results.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.partial_cmp(&b.1).unwrap()));
+    for (removed, time, l, r, _) in results.iter().take(10) {
+        println!("RULEMINER helps {removed} of {} stragglers ({time:.1}s total): {l} -> {r}", stragglers.len());
+    }
+    // greedy cover: the rule fixing most still-unfixed stragglers, until none adds one
+    let mut covered = vec![false; stragglers.len()];
+    loop {
+        let gain = |f: &Vec<bool>| f.iter().zip(&covered).filter(|(a, c)| **a && !**c).count();
+        let Some(best) = results.iter().max_by_key(|r| gain(&r.4)).filter(|r| gain(&r.4) > 0) else { break };
+        println!("RULEMINER chosen (+{}): {} -> {}", gain(&best.4), best.2, best.3);
+        for (c, f) in covered.iter_mut().zip(&best.4) {
+            *c |= *f;
+        }
+    }
+    println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().filter(|c| **c).count(), stragglers.len());
+    for (st, c) in stragglers.iter().zip(&covered) {
+        if !c {
+            println!("RULEMINER uncovered: {}", st.0);
+        }
+    }
+    println!("RULEMINER machine at end: {}", machine_state());
 }
