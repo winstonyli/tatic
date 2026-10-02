@@ -3119,9 +3119,9 @@ fn machine_state() -> String {
         .map_or_else(|| "machine state unavailable".to_string(), |t| t.trim().to_string())
 }
 
-/// The most carries per side `add_tree_law` takes on (each lemma is a case tree over `k + carries` bits); env `CARRY_CAP`.
+/// The most carries per side `add_tree_law` takes on (unguarded lemmas are decision diagrams, guarded ones case trees over `k + carries` bits); env `CARRY_CAP`.
 fn carry_cap() -> usize {
-    std::env::var("CARRY_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(6)
+    std::env::var("CARRY_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(10)
 }
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
@@ -3153,6 +3153,10 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
     let (enc, inv): (Encoding, Option<Reach>) = match first {
         Some(e) => (e, None),
         None => {
+            // guarded lemmas are still case trees over k + c bits, so they keep the old cap
+            if cs[0].max(cs[1]) > 6 {
+                return None;
+            }
             let t_reach = Instant::now();
             let r = [reachable(&raw_table(&m1, k, &gops)), reachable(&raw_table(&m2, k, &gops))];
             if r.iter().all(|v| v.iter().all(|x| *x)) {
@@ -3197,7 +3201,9 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
     let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
-    let use_dd = inv.is_none() && std::env::var("NOBDD").is_err();
+    // diagrams pay off only once the case tree is big (2^nv leaves); below that their per-node proofs cost more
+    let dd_min: usize = std::env::var("DDMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(9);
+    let use_dd = |nv: usize| inv.is_none() && std::env::var("NOBDD").is_err() && nv >= dd_min;
     let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: &dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig)| -> Expr {
         let key = format!("{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
         if let Some(e) = LEMMAS.with(|c| c.borrow().get(&key).cloned()) {
@@ -3205,7 +3211,10 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
             return e;
         }
         let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
-        if use_dd {
+        if inv.is_some() && std::env::var("GUARDTRACE").is_ok() {
+            eprintln!("GUARDED lemma nv={nv} tag={tag}");
+        }
+        if use_dd(nv) {
             if let Some(e) = lemma_dd(nv, dd) {
                 LEMMAS.with(|c| c.borrow_mut().insert(key, e.clone()));
                 return e;
@@ -4161,7 +4170,7 @@ fn multiplication_by_constants_as_shift_and_add_machines() {
 
 /// Constant-multiplication laws (`(a + b) x`, `(a b) x`, `a (x + y)`, `(2^j - 1) x`) for constants up to `MULMINER_MAX`
 /// (default 7), each proved by `add_tree_law` and kernel-checked; prints carries per side and cost, so the carry cap
-/// (env `CARRY_CAP`, default 6) can be probed.
+/// (env `CARRY_CAP`, default 10) can be probed.
 #[test]
 #[ignore]
 fn mul_conjecture_miner() {
