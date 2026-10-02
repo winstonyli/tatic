@@ -2103,9 +2103,21 @@ const OPS: [&str; 7] = ["add", "and", "or", "xor", "sub", "lt", "shl1"];
 fn nops() -> usize {
     if std::env::var("MINER_SUB").is_ok() { 5 } else { 4 }
 }
+/// `\a _. a << 1`, the Church operator of `Term` index 6.
+fn shl1_op(n: usize) -> Expr {
+    lam(bv_ty(n), lam(bv_ty(n), app(shift_bv(n, 1, true), var(1))))
+}
+/// `(proof, type)` of `Pi x y. GoodBv x -> GoodBv y -> GoodBv (shl1 x y)`: output bit `i` is input bit `i - 1`, bit 0 false.
+fn good_shl1(n: usize) -> (Expr, Expr) {
+    good_vec(n, shl1_op(n), &move |a, _b, ga, _gb| {
+        let s = (0..n).map(|i| if i == 0 { f() } else { a[i - 1].clone() }).collect();
+        let gs = (0..n).map(|i| if i == 0 { good_bit(false) } else { ga[i - 1].clone() }).collect();
+        (s, gs)
+    })
+}
 /// The Church operators, indexed as `Term::Op`.
 fn ops_for(n: usize) -> [Expr; 7] {
-    [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b)), sub(n), lt_u(n), lam(bv_ty(n), lam(bv_ty(n), app(shift_bv(n, 1, true), var(1))))]
+    [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b)), sub(n), lt_u(n), shl1_op(n)]
 }
 const VARS: [&str; 8] = ["x", "y", "z", "u", "v", "w", "p", "q"];
 impl Term {
@@ -2421,6 +2433,7 @@ fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
             let (op, good_op) = match o {
                 0 => (add(n), memo(format!("good_add{n}"), || good_add(n)).0),
                 4 => (sub(n), memo(format!("good_sub{n}"), || good_sub(n)).0),
+                6 => (shl1_op(n), memo(format!("good_shl1{n}"), || good_shl1(n)).0),
                 _ => memo(format!("gbit{n}_{o}"), || {
                     let o = *o;
                     let opf = move |p: Expr, q: Expr| match o {
@@ -2501,6 +2514,22 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
             Some((target, law)) => (target.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, law)),
             None => (t1, cong),
         };
+    }
+    if *o == 6 {
+        // a shift of a sum: shl1 (p + q) = shl1 p + shl1 q, by the carry-encoding proof of that law (name `shldist`)
+        if let (false, Term::Op(0, p, q)) = (ablated("shldist"), &a2) {
+            let v = |i: usize| Term::V(i);
+            let shl = |a: Term| Term::Op(6, Box::new(a), Box::new(Term::Zero));
+            let sum = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+            let law = memo(format!("shldist{n}"), || add_tree_law(n, 2, &shl(sum(v(0), v(1))), &sum(shl(v(0)), shl(v(1)))).expect("shl distributes over add"));
+            let ((pv, pw), (qv, qw)) = (witnessed(p, n, goods), witnessed(q, n, goods));
+            let target = sum(shl((**p).clone()), shl((**q).clone()));
+            let step = apps(law.0, vec![pv, qv, pw, qw]);
+            let (t3, p3) = rewrite(&target, n, ops, goods);
+            let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
+            return (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&target), &ev(&t3), first, p3));
+        }
+        return (t1, cong);
     }
     if *o != 0 {
         // a bitwise node equal to 0, -1 or one of its atoms collapses to it (truth table, then `bitwise_law`)
@@ -2598,7 +2627,7 @@ fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, E
 fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
     match t {
         Term::Zero | Term::Ones => Some(t.clone()),
-        Term::V(_) | Term::Op(0 | 4, ..) => {
+        Term::V(_) | Term::Op(0 | 4 | 6, ..) => {
             let i = match atoms.iter().position(|a| a.show() == t.show()) {
                 Some(i) => i,
                 None => {
@@ -4626,4 +4655,32 @@ fn decision_diagram_proofs_check_and_beat_the_case_tree() {
     let t1 = Instant::now();
     ck("parity chains", &pd, &ty);
     println!("DD 14-bit parity chains: build {built:?}, check {:?}", t1.elapsed());
+}
+
+/// Rewriting with the library laws versus the direct machine proof (search note section 34): `c(x+y) = cx + cy` by
+/// pushing `shl1` through the sums (law `shldist`, proved once) and ordering the sums, against the 9-11 carry machine.
+/// Env `ABLATE=shldist` removes the law, so the same call falls back to the machine proof.
+#[test]
+#[ignore]
+fn rewrite_from_the_shift_law_versus_the_machine() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("REWRITE machine at start: {}", machine_state());
+    let (x, y) = (Term::V(0), Term::V(1));
+    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let maxc = std::env::var("MULMINER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(11);
+    for c in 3..=maxc {
+        let (t1, t2) = (mul_const(c, &add(x.clone(), y.clone())), add(mul_const(c, &x), mul_const(c, &y)));
+        let t = Instant::now();
+        let r = rewrite_law(4, 2, &t1, &t2);
+        let built = t.elapsed();
+        match r {
+            Some((p, s)) => {
+                let t = Instant::now();
+                ck(&format!("{c}(x+y)"), &p, &s);
+                println!("REWRITE {c}(x+y) = {c}x + {c}y: build {built:?}, check {:?}", t.elapsed());
+            }
+            None => println!("REWRITE {c}(x+y) = {c}x + {c}y: no proof, {built:?}"),
+        }
+    }
+    println!("REWRITE machine at end: {}", machine_state());
 }
