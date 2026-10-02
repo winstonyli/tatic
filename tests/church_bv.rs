@@ -2352,6 +2352,8 @@ fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
 // results are then equal, or both add-free, `bitwise_law` closes the gap.
 
 thread_local! {
+    /// Lemmas built by `add_tree_law`, keyed on the side machine, encoding tables and lemma tag; shared across conjectures.
+    static LEMMAS: std::cell::RefCell<std::collections::HashMap<String, Expr>> = Default::default();
     static CLOSED: std::cell::RefCell<std::collections::HashMap<String, (Expr, Expr)>> = Default::default();
 }
 /// A closed library term built once per key (the proofs and witnesses the rewriter reuses at every step).
@@ -2845,7 +2847,7 @@ fn term_gb(g: &GoodOps, tm: &Term, u: &[Gb]) -> Gb {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Src {
     Leaf(usize),
     Node(usize),
@@ -2862,6 +2864,11 @@ struct Machine {
 }
 
 impl Machine {
+    /// A description that determines the machine (for lemma cache keys).
+    fn key(&self) -> String {
+        format!("{}|{:?}|{:?}", self.leaves.iter().map(|l| l.show()).collect::<Vec<_>>().join(","), self.nodes, self.root)
+    }
+
     /// Any term over variables and constants: the machine computes it one bit position at a time.
     fn parse(t: &Term) -> Option<Machine> {
         fn go(t: &Term, m: &mut Machine) -> Option<Src> {
@@ -3146,6 +3153,7 @@ fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
 }
 
 /// Nanoseconds spent in `add_tree_law`'s encoding searches: [all-states hit, all-states miss, reachable retry].
+static LEMMA_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PROF: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
@@ -3214,9 +3222,14 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
     let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
-    let guarded = |side: usize, nv: usize, off: usize, ab: &dyn Fn(&[Expr]) -> (Expr, Expr)| -> Expr {
+    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr)| -> Expr {
+        let key = format!("{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
+        if let Some(e) = LEMMAS.with(|c| c.borrow().get(&key).cloned()) {
+            LEMMA_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return e;
+        }
         let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
-        lemma_n(
+        let e = lemma_n(
             nv,
             &|v| {
                 let (a, b) = ab(v);
@@ -3232,7 +3245,9 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
                 }
             },
         )
-        .0
+        .0;
+        LEMMAS.with(|c| c.borrow_mut().insert(key, e.clone()));
+        e
     };
     // lemmas Id(F_j, G_j(operand bits, phi(carries))) by case analysis on the k + c bits
     let lemmas: Vec<Vec<Expr>> = (0..2)
@@ -3242,7 +3257,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
                     if last && j == 0 {
                         return t();
                     }
-                    guarded(side, k + cs[side], k, &|v| {
+                    guarded(side, k + cs[side], k, &format!("F{j}|{:?}", enc.g[j]), &|v| {
                         let key: Vec<Expr> = v[..k].iter().cloned().chain((0..m).map(|q| phi_expr(side, q, &v[k..]))).collect();
                         (side_f(side, j, v), g_expr(j, &key))
                     })
@@ -3256,7 +3271,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
             if inv.is_none() {
                 return t();
             }
-            guarded(side, k + cs[side], k, &|v| {
+            guarded(side, k + cs[side], k, "P", &|v| {
                 let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
                 let next = machines[side].step(&gops, &dummy[..k], &dummy[k..]).1;
                 (inv_expr(side, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()), t())
@@ -3270,7 +3285,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
             if !last {
                 return t();
             }
-            guarded(side, cs[side], 0, &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
+            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
@@ -3777,7 +3792,7 @@ fn lt_conjecture_miner() {
         }
     }
     let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
-    println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}", pf(0), pf(1), pf(2));
+    println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.load(std::sync::atomic::Ordering::Relaxed));
     println!("LTMINER {} groups, {total} conjectures, {proved} proved, {none} without a proof, {:?}", groups.len(), t0.elapsed());
 }
 
