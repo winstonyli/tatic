@@ -1736,11 +1736,49 @@ fn lemma_n(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) -> E
     (proof, ty)
 }
 
-/// A truth table over `vars` as a closed lambda applied to them, so that large argument expressions are not
-/// duplicated once per row (the Shannon expansion of `table_expr` repeats each variable 2^depth times).
+/// The reduced ordered decision diagram of a truth table over `nv` variables: nodes `(level, hi, lo)` with ids from 2
+/// (0 is false, 1 is true), and the root id. A node whose two children coincide is skipped.
+struct TabBdd {
+    nodes: Vec<(usize, usize, usize)>,
+    root: usize,
+}
+
+fn tab_bdd(nv: usize, tab: &dyn Fn(&[bool]) -> bool) -> TabBdd {
+    fn go(nv: usize, tab: &dyn Fn(&[bool]) -> bool, fixed: &mut Vec<bool>, nodes: &mut Vec<(usize, usize, usize)>, unique: &mut std::collections::HashMap<(usize, usize, usize), usize>) -> usize {
+        if fixed.len() == nv {
+            return tab(fixed) as usize;
+        }
+        let level = fixed.len();
+        fixed.push(true);
+        let hi = go(nv, tab, fixed, nodes, unique);
+        fixed.pop();
+        fixed.push(false);
+        let lo = go(nv, tab, fixed, nodes, unique);
+        fixed.pop();
+        if hi == lo {
+            return hi;
+        }
+        *unique.entry((level, hi, lo)).or_insert_with(|| {
+            nodes.push((level, hi, lo));
+            nodes.len() + 1
+        })
+    }
+    let mut nodes = vec![];
+    let root = go(nv, tab, &mut vec![], &mut nodes, &mut Default::default());
+    TabBdd { nodes, root }
+}
+
+/// A truth table over `vars` as a closed lambda applied to them (so large argument expressions are not duplicated
+/// once per row), whose body is the table's reduced decision diagram as nested `mux`es.
 fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
     let k = vars.len();
-    let mut body = table_expr(&(0..k).map(|i| var((k - 1 - i) as u32)).collect::<Vec<_>>(), tab);
+    let d = tab_bdd(k, tab);
+    let bv: Vec<Expr> = (0..k).map(|i| var((k - 1 - i) as u32)).collect();
+    let mut exprs: Vec<Expr> = vec![f(), t()];
+    for &(level, hi, lo) in &d.nodes {
+        exprs.push(mux(bv[level].clone(), exprs[hi].clone(), exprs[lo].clone()));
+    }
+    let mut body = exprs[d.root].clone();
     for _ in 0..k {
         body = lam(bool0(), body);
     }
@@ -2835,11 +2873,11 @@ fn carry_chain_builder_finds_the_constant_carry() {
 // place of the hand-derived (xor, and) -- for a three-leaf sum, the total carry in binary.
 
 /// The value of an add-free bitwise term at one bit position, with its `GoodBool` witness, given the operand bits.
-fn term_gb(g: &GoodOps, tm: &Term, u: &[Gb]) -> Gb {
+fn term_gb<G: Gates>(g: &G, tm: &Term, u: &[G::S]) -> G::S {
     match tm {
         Term::V(i) => u[*i].clone(),
-        Term::Zero => Gb { e: f(), g: good_bit(false) },
-        Term::Ones => Gb { e: t(), g: good_bit(true) },
+        Term::Zero => g.konst(false),
+        Term::Ones => g.konst(true),
         Term::Op(1, a, b) => g.and(&term_gb(g, a, u), &term_gb(g, b, u)),
         Term::Op(2, a, b) => g.or(&term_gb(g, a, u), &term_gb(g, b, u)),
         Term::Op(3, a, b) => g.xor(&term_gb(g, a, u), &term_gb(g, b, u)),
@@ -2908,10 +2946,10 @@ impl Machine {
     }
 
     /// One position: `(output bit, next carries)` from the operand bits `u` and the carries `s`.
-    fn step(&self, g: &GoodOps, u: &[Gb], s: &[Gb]) -> (Gb, Vec<Gb>) {
-        let leaf: Vec<Gb> = self.leaves.iter().map(|l| term_gb(g, l, u)).collect();
-        let (mut val, mut next): (Vec<Gb>, Vec<Gb>) = (vec![], vec![]);
-        let ones = Gb { e: t(), g: good_bit(true) };
+    fn step<G: Gates>(&self, g: &G, u: &[G::S], s: &[G::S]) -> (G::S, Vec<G::S>) {
+        let leaf: Vec<G::S> = self.leaves.iter().map(|l| term_gb(g, l, u)).collect();
+        let (mut val, mut next): (Vec<G::S>, Vec<G::S>) = (vec![], vec![]);
+        let ones = g.konst(true);
         for (a, b, o) in self.nodes.iter() {
             let src = |s: &Src| match s {
                 Src::Leaf(j) => leaf[*j].clone(),
@@ -3069,6 +3107,18 @@ fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
 static LEMMA_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PROF: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
+/// One line of machine state to print with every timing (LONG_RUNS.md): Defender real-time protection and total CPU
+/// load over two seconds, read through PowerShell; "unavailable" off Windows.
+fn machine_state() -> String {
+    let script = r"'RTP=' + (Get-MpComputerStatus).RealTimeProtectionEnabled + ' CPU=' + [int](Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 -MaxSamples 2).CounterSamples[-1].CookedValue + '%'";
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "machine state unavailable".to_string(), |t| t.trim().to_string())
+}
+
 /// The most carries per side `add_tree_law` takes on (each lemma is a case tree over `k + carries` bits); env `CARRY_CAP`.
 fn carry_cap() -> usize {
     std::env::var("CARRY_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(6)
@@ -3135,16 +3185,32 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
             _ => phi_expr(side, j - 1, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()),
         }
     };
+    // the same functions over diagram signals (F_j of a side, and G_j at the operand bits and the phi values)
+    let phi_sig = |g: &DdGates, side: usize, j: usize, s: &[Sig]| g.table(s, &|b| enc.phi[side][j][index_of(b)]);
+    let side_sig = |g: &DdGates, side: usize, j: usize, v: &[Sig]| -> Sig {
+        let (o, next) = machines[side].step(g, &v[..k], &v[k..]);
+        match j {
+            0 => o,
+            _ => phi_sig(g, side, j - 1, &next),
+        }
+    };
     let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
-    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr)| -> Expr {
+    let use_dd = inv.is_none() && std::env::var("NOBDD").is_err();
+    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: &dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig)| -> Expr {
         let key = format!("{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
         if let Some(e) = LEMMAS.with(|c| c.borrow().get(&key).cloned()) {
             LEMMA_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return e;
         }
         let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
+        if use_dd {
+            if let Some(e) = lemma_dd(nv, dd) {
+                LEMMAS.with(|c| c.borrow_mut().insert(key, e.clone()));
+                return e;
+            }
+        }
         let e = lemma_n(
             nv,
             &|v| {
@@ -3176,6 +3242,9 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
                     guarded(side, k + cs[side], k, &format!("F{j}|{:?}", enc.g[j]), &|v| {
                         let key: Vec<Expr> = v[..k].iter().cloned().chain((0..m).map(|q| phi_expr(side, q, &v[k..]))).collect();
                         (side_f(side, j, v), g_expr(j, &key))
+                    }, &|g, v| {
+                        let key: Vec<Sig> = v[..k].iter().cloned().chain((0..m).map(|q| phi_sig(g, side, q, &v[k..]))).collect();
+                        (side_sig(g, side, j, v), g.table(&key, &|b| enc.g[j][index_of(b)]))
                     })
                 })
                 .collect()
@@ -3191,7 +3260,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
                 let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
                 let next = machines[side].step(&gops, &dummy[..k], &dummy[k..]).1;
                 (inv_expr(side, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()), t())
-            })
+            }, &|_, v| (v[0].clone(), v[0].clone()))
         })
         .collect();
     let dec_expr = |v: &[Expr]| table_app(v, &|b| dec[index_of(b)]);
@@ -3201,7 +3270,9 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
             if !last {
                 return t();
             }
-            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
+            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())), &|g, v| {
+                (v[cs[side] - 1].clone(), g.table(&(0..m).map(|q| phi_sig(g, side, q, v)).collect::<Vec<_>>(), &|b| dec[index_of(b)]))
+            })
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
@@ -3662,6 +3733,7 @@ fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
 #[ignore]
 fn lt_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
+    println!("LTMINER machine at start: {}", machine_state());
     let n = 4usize;
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let nv = env("LTMINER_VARS", 2);
@@ -3709,6 +3781,7 @@ fn lt_conjecture_miner() {
     }
     let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
     println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.load(std::sync::atomic::Ordering::Relaxed));
+    println!("LTMINER machine at end: {}", machine_state());
     println!("LTMINER {} groups, {total} conjectures, {proved} proved, {none} without a proof, {:?}", groups.len(), t0.elapsed());
 }
 
@@ -3982,6 +4055,7 @@ fn shifts_inside_sums_are_machines_and_their_laws_check() {
 #[ignore]
 fn shl_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
+    println!("SHLMINER machine at start: {}", machine_state());
     let n = 4usize;
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (nv, cap) = (env("SHLMINER_VARS", 2), env("SHLMINER_MAX", 0));
@@ -4044,6 +4118,7 @@ fn shl_conjecture_miner() {
             }
         }
     }
+    println!("SHLMINER machine at end: {}", machine_state());
     println!("SHLMINER {} terms, {} groups, {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
 }
 
@@ -4091,6 +4166,7 @@ fn multiplication_by_constants_as_shift_and_add_machines() {
 #[ignore]
 fn mul_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
+    println!("MULMINER machine at start: {}", machine_state());
     let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let max = env("MULMINER_MAX", 7);
     let n = 4usize;
@@ -4102,7 +4178,13 @@ fn mul_conjecture_miner() {
         for b in a..=max {
             laws.push((format!("({a}+{b})x = {a}x + {b}x"), mul_const(a + b, &x), add(mul_const(a, &x), mul_const(b, &x))));
             laws.push((format!("({a}*{b})x = {a}({b}x)"), mul_const(a * b, &x), mul_const(a, &mul_const(b, &x))));
+            if b > a {
+                let sub = |l: Term, r: Term| Term::Op(4, Box::new(l), Box::new(r));
+                laws.push((format!("({b}-{a})x = {b}x - {a}x"), mul_const(b - a, &x), sub(mul_const(b, &x), mul_const(a, &x))));
+            }
         }
+        let sub = |l: Term, r: Term| Term::Op(4, Box::new(l), Box::new(r));
+        laws.push((format!("{a}(x-y) = {a}x - {a}y"), mul_const(a, &sub(x.clone(), y.clone())), sub(mul_const(a, &x), mul_const(a, &y))));
         laws.push((format!("{a}(x+y) = {a}x + {a}y"), mul_const(a, &add(x.clone(), y.clone())), add(mul_const(a, &x), mul_const(a, &y))));
     }
     laws.retain(|l| l.0.contains(&only));
@@ -4130,5 +4212,368 @@ fn mul_conjecture_miner() {
             }
         }
     }
+    println!("MULMINER machine at end: {}", machine_state());
     println!("MULMINER {} laws, {proved} proved and checked, {capped} over the carry cap, {none} unproved within it, {:?}", laws.len(), t0.elapsed());
+}
+
+// ---- Proof-producing decision diagrams (search note section 29). Each lemma over `nv` bits used to be a full case
+// tree (2^nv leaves). Here every signal carries a reduced ordered decision diagram node `n` and a kernel proof
+// `Id(e, C(n))` that its gate expression equals the node's canonical term `C(n)` (nested `mux` over the bit variables),
+// built gate by gate: `op(C(a), C(b)) = C(apply(op, a, b))` is proved by recursion on the diagrams (Harrison's BDD rule
+// for HOL, 1995), each step an instance of a closed lemma, memoized per node pair. Two signals have the same node iff
+// they are the same Boolean function, so an equality lemma is `trans` of one proof with the `sym` of the other.
+
+/// The binary gates of a diagram: 0 and, 1 or, 2 xor.
+fn bop(op: usize, a: Expr, b: Expr) -> Expr {
+    match op {
+        0 => and(a, b),
+        1 => or(a, b),
+        _ => xor(a, b),
+    }
+}
+fn bop_val(op: usize, a: bool, b: bool) -> bool {
+    match op {
+        0 => a && b,
+        1 => a || b,
+        _ => a != b,
+    }
+}
+fn bop_fn(op: usize) -> Expr {
+    match op {
+        0 => and_(),
+        1 => or_(),
+        _ => xor_(),
+    }
+}
+
+/// The closed lemmas the diagram's steps instantiate (each `Pi bits. GoodBool bits -> Id(Bool0, l, r)`), over bits in
+/// the order given: `same[op]`: `op (mux v a b) (mux v c d) = mux v (op a c) (op b d)` (`v a b c d`); `skipl[op]`:
+/// `op (mux v a b) y = mux v (op a y) (op b y)` (`v a b y`); `skipr[op]`: `op x (mux v c d) = mux v (op x c) (op x d)`
+/// (`v x c d`); `red`: `mux v x x = x` (`v x`); `var`: `v = mux v true false` (`v`).
+struct DdLemmas {
+    same: Vec<Expr>,
+    skipl: Vec<Expr>,
+    skipr: Vec<Expr>,
+    red: Expr,
+    var: Expr,
+}
+
+thread_local! {
+    static DD_LEMMAS: std::cell::RefCell<Option<std::rc::Rc<DdLemmas>>> = Default::default();
+}
+
+/// `Id(Bool0, lhs, rhs)` over `k` bits by case analysis (each leaf is `refl`, checked by evaluation).
+fn eq_lemma(k: usize, lhs: &dyn Fn(&[Expr]) -> Expr, rhs: &dyn Fn(&[Expr]) -> Expr) -> Expr {
+    lemma_n(k, &|v| id(bool0(), lhs(v), rhs(v)), &|bits| refl(lhs(&bits.iter().map(|b| bit(*b)).collect::<Vec<_>>()))).0
+}
+
+fn dd_lemmas() -> std::rc::Rc<DdLemmas> {
+    if let Some(l) = DD_LEMMAS.with(|c| c.borrow().clone()) {
+        return l;
+    }
+    let mut same = vec![];
+    let mut skipl = vec![];
+    let mut skipr = vec![];
+    for op in 0..3 {
+        same.push(eq_lemma(
+            5,
+            &move |v| bop(op, mux(v[0].clone(), v[1].clone(), v[2].clone()), mux(v[0].clone(), v[3].clone(), v[4].clone())),
+            &move |v| mux(v[0].clone(), bop(op, v[1].clone(), v[3].clone()), bop(op, v[2].clone(), v[4].clone())),
+        ));
+        skipl.push(eq_lemma(
+            4,
+            &move |v| bop(op, mux(v[0].clone(), v[1].clone(), v[2].clone()), v[3].clone()),
+            &move |v| mux(v[0].clone(), bop(op, v[1].clone(), v[3].clone()), bop(op, v[2].clone(), v[3].clone())),
+        ));
+        skipr.push(eq_lemma(
+            4,
+            &move |v| bop(op, v[1].clone(), mux(v[0].clone(), v[2].clone(), v[3].clone())),
+            &move |v| mux(v[0].clone(), bop(op, v[1].clone(), v[2].clone()), bop(op, v[1].clone(), v[3].clone())),
+        ));
+    }
+    let red = eq_lemma(2, &|v| mux(v[0].clone(), v[1].clone(), v[1].clone()), &|v| v[1].clone());
+    let var = eq_lemma(1, &|v| v[0].clone(), &|v| mux(v[0].clone(), t(), f()));
+    let l = std::rc::Rc::new(DdLemmas { same, skipl, skipr, red, var });
+    DD_LEMMAS.with(|c| *c.borrow_mut() = Some(l.clone()));
+    l
+}
+
+/// A Boolean expression `e`, its diagram node `n`, and `p : Id(Bool0, e, C(n))`.
+#[derive(Clone)]
+struct Sig {
+    e: Expr,
+    n: usize,
+    p: Expr,
+}
+
+/// The diagram under construction for one lemma: bit variable `i` is `vars[i]` with witness `goods[i]`.
+struct Dd {
+    lem: std::rc::Rc<DdLemmas>,
+    vars: Vec<Expr>,
+    goods: Vec<Expr>,
+    gops: GoodOps,
+    /// `(variable, hi, lo)`, node id = index + 2 (0 is false, 1 is true).
+    nodes: Vec<(usize, usize, usize)>,
+    unique: std::collections::HashMap<(usize, usize, usize), usize>,
+    canon: std::collections::HashMap<usize, (Expr, Expr)>,
+    applied: std::collections::HashMap<(usize, usize, usize), (usize, Expr)>,
+}
+
+impl Dd {
+    fn mk(&mut self, var: usize, hi: usize, lo: usize) -> usize {
+        if hi == lo {
+            return hi;
+        }
+        if let Some(n) = self.unique.get(&(var, hi, lo)) {
+            return *n;
+        }
+        self.nodes.push((var, hi, lo));
+        let n = self.nodes.len() + 1;
+        self.unique.insert((var, hi, lo), n);
+        n
+    }
+    fn var_of(&self, n: usize) -> usize {
+        if n < 2 { usize::MAX } else { self.nodes[n - 2].0 }
+    }
+    /// The canonical term of node `n` and its `GoodBool` witness.
+    fn canon(&mut self, n: usize) -> (Expr, Expr) {
+        if n < 2 {
+            return (bit(n == 1), good_bit(n == 1));
+        }
+        if let Some(c) = self.canon.get(&n) {
+            return c.clone();
+        }
+        let (v, hi, lo) = self.nodes[n - 2];
+        let (ch, gh) = self.canon(hi);
+        let (cl, gl) = self.canon(lo);
+        let c = Gb { e: self.vars[v].clone(), g: self.goods[v].clone() };
+        let one = Gb { e: t(), g: good_bit(true) };
+        let not_c = self.gops.xor(&c, &one);
+        let a1 = self.gops.and(&c, &Gb { e: ch, g: gh });
+        let a2 = self.gops.and(&not_c, &Gb { e: cl, g: gl });
+        let r = self.gops.or(&a1, &a2);
+        self.canon.insert(n, (r.e.clone(), r.g.clone()));
+        (r.e, r.g)
+    }
+    /// The node of `op(a, b)` and a proof of `Id(Bool0, op(C(a), C(b)), C(node))`.
+    fn apply(&mut self, op: usize, a: usize, b: usize) -> (usize, Expr) {
+        if let Some(r) = self.applied.get(&(op, a, b)) {
+            return r.clone();
+        }
+        let (ca, ga) = self.canon(a);
+        let (cb, gb) = self.canon(b);
+        let res = if a < 2 && b < 2 {
+            (bop_val(op, a == 1, b == 1) as usize, refl(bop(op, ca, cb)))
+        } else {
+            let (va, vb) = (self.var_of(a), self.var_of(b));
+            let m = va.min(vb);
+            let (ah, al) = if va == m { (self.nodes[a - 2].1, self.nodes[a - 2].2) } else { (a, a) };
+            let (bh, bl) = if vb == m { (self.nodes[b - 2].1, self.nodes[b - 2].2) } else { (b, b) };
+            let (rh, ph) = self.apply(op, ah, bh);
+            let (rl, pl) = self.apply(op, al, bl);
+            let r = self.mk(m, rh, rl);
+            let (v, gv) = (self.vars[m].clone(), self.goods[m].clone());
+            let ((cah, gah), (cal, gal), (cbh, gbh), (cbl, gbl)) = (self.canon(ah), self.canon(al), self.canon(bh), self.canon(bl));
+            let ((crh, grh), (crl, _)) = (self.canon(rh), self.canon(rl));
+            let step1 = if va == m && vb == m {
+                apps(self.lem.same[op].clone(), vec![v.clone(), cah.clone(), cal.clone(), cbh.clone(), cbl.clone(), gv.clone(), gah, gal, gbh, gbl])
+            } else if va == m {
+                apps(self.lem.skipl[op].clone(), vec![v.clone(), cah.clone(), cal.clone(), cb.clone(), gv.clone(), gah, gal, gb])
+            } else {
+                apps(self.lem.skipr[op].clone(), vec![v.clone(), ca.clone(), cbh.clone(), cbl.clone(), gv.clone(), ga, gbh, gbl])
+            };
+            let (xh, xl) = (bop(op, cah, cbh), bop(op, cal, cbl));
+            let mid = mux(v.clone(), xh.clone(), xl.clone());
+            let target = mux(v.clone(), crh.clone(), crl.clone());
+            let fm = lam(bool0(), lam(bool0(), mux(shift(&v, 0, 2), var(1), var(0))));
+            let step2 = cong_n(&bool0(), &bool0(), &fm, &[xh, xl], &[crh.clone(), crl.clone()], vec![ph, pl]);
+            let lhs = bop(op, ca, cb);
+            let p12 = trans_proof(&bool0(), &lhs, &mid, &target, step1, step2);
+            if rh == rl {
+                let red = apps(self.lem.red.clone(), vec![v, crh.clone(), gv, grh]);
+                (r, trans_proof(&bool0(), &lhs, &target, &crh, p12, red))
+            } else {
+                (r, p12)
+            }
+        };
+        self.applied.insert((op, a, b), res.clone());
+        res
+    }
+}
+
+/// The gate operations shared by the proof-term builder (`GoodOps`, over `Gb`) and the diagram (`DdGates`, over `Sig`).
+trait Gates {
+    type S: Clone;
+    fn and(&self, x: &Self::S, y: &Self::S) -> Self::S;
+    fn or(&self, x: &Self::S, y: &Self::S) -> Self::S;
+    fn xor(&self, x: &Self::S, y: &Self::S) -> Self::S;
+    fn konst(&self, b: bool) -> Self::S;
+    /// The truth table `tab` over the signals `vars`.
+    fn table(&self, vars: &[Self::S], tab: &dyn Fn(&[bool]) -> bool) -> Self::S;
+    fn sum3(&self, a: &Self::S, b: &Self::S, c: &Self::S) -> Self::S {
+        let ab = self.xor(a, b);
+        self.xor(&ab, c)
+    }
+    fn maj(&self, a: &Self::S, b: &Self::S, c: &Self::S) -> Self::S {
+        let (ab, x) = (self.and(a, b), self.xor(a, b));
+        let cx = self.and(c, &x);
+        self.or(&ab, &cx)
+    }
+}
+
+impl Gates for GoodOps {
+    type S = Gb;
+    fn and(&self, x: &Gb, y: &Gb) -> Gb {
+        GoodOps::and(self, x, y)
+    }
+    fn or(&self, x: &Gb, y: &Gb) -> Gb {
+        GoodOps::or(self, x, y)
+    }
+    fn xor(&self, x: &Gb, y: &Gb) -> Gb {
+        GoodOps::xor(self, x, y)
+    }
+    fn konst(&self, b: bool) -> Gb {
+        Gb { e: bit(b), g: good_bit(b) }
+    }
+    /// The witness is a placeholder: claims built this way are only stated, never proved through it.
+    fn table(&self, vars: &[Gb], tab: &dyn Fn(&[bool]) -> bool) -> Gb {
+        Gb { e: table_app(&vars.iter().map(|g| g.e.clone()).collect::<Vec<_>>(), tab), g: f() }
+    }
+}
+
+struct DdGates {
+    dd: std::cell::RefCell<Dd>,
+}
+
+impl DdGates {
+    fn new(vars: Vec<Expr>, goods: Vec<Expr>) -> DdGates {
+        DdGates {
+            dd: std::cell::RefCell::new(Dd {
+                lem: dd_lemmas(),
+                vars,
+                goods,
+                gops: GoodOps::new(),
+                nodes: vec![],
+                unique: Default::default(),
+                canon: Default::default(),
+                applied: Default::default(),
+            }),
+        }
+    }
+    fn var_sig(&self, i: usize) -> Sig {
+        let mut dd = self.dd.borrow_mut();
+        let n = dd.mk(i, 1, 0);
+        let (v, gv) = (dd.vars[i].clone(), dd.goods[i].clone());
+        Sig { e: v.clone(), n, p: apps(dd.lem.var.clone(), vec![v, gv]) }
+    }
+    fn gate(&self, op: usize, x: &Sig, y: &Sig) -> Sig {
+        let mut dd = self.dd.borrow_mut();
+        let (r, pr) = dd.apply(op, x.n, y.n);
+        let (cx, cy, cr) = (dd.canon(x.n).0, dd.canon(y.n).0, dd.canon(r).0);
+        let congp = cong_n(&bool0(), &bool0(), &bop_fn(op), &[x.e.clone(), y.e.clone()], &[cx.clone(), cy.clone()], vec![x.p.clone(), y.p.clone()]);
+        let p = trans_proof(&bool0(), &bop(op, x.e.clone(), y.e.clone()), &bop(op, cx, cy), &cr, congp, pr);
+        Sig { e: bop(op, x.e.clone(), y.e.clone()), n: r, p }
+    }
+    /// `Id(Bool0, a.e, b.e)` when both signals are the same function.
+    fn equate(&self, a: &Sig, b: &Sig) -> Option<Expr> {
+        if a.n != b.n {
+            return None;
+        }
+        let c = self.dd.borrow_mut().canon(a.n).0;
+        Some(trans_proof(&bool0(), &a.e, &c, &b.e, a.p.clone(), sym(&bool0(), &b.e, &c, b.p.clone())))
+    }
+}
+
+impl Gates for DdGates {
+    type S = Sig;
+    fn and(&self, x: &Sig, y: &Sig) -> Sig {
+        self.gate(0, x, y)
+    }
+    fn or(&self, x: &Sig, y: &Sig) -> Sig {
+        self.gate(1, x, y)
+    }
+    fn xor(&self, x: &Sig, y: &Sig) -> Sig {
+        self.gate(2, x, y)
+    }
+    fn konst(&self, b: bool) -> Sig {
+        Sig { e: bit(b), n: b as usize, p: refl(bit(b)) }
+    }
+    /// The table's own reduced diagram, composed along its nodes (each node a `mux` of the signal at its level), so the
+    /// expression is the body of `table_app` instantiated; `e` is stated in `table_app` form (the same term up to beta).
+    fn table(&self, vars: &[Sig], tab: &dyn Fn(&[bool]) -> bool) -> Sig {
+        let d = tab_bdd(vars.len(), tab);
+        let one = self.konst(true);
+        let mut sigs: Vec<Sig> = vec![self.konst(false), one.clone()];
+        for &(level, hi, lo) in &d.nodes {
+            let c = &vars[level];
+            let not_c = self.xor(c, &one);
+            let (a1, a2) = (self.and(c, &sigs[hi]), self.and(&not_c, &sigs[lo]));
+            let s = self.or(&a1, &a2);
+            sigs.push(s);
+        }
+        let mut s = sigs[d.root].clone();
+        s.e = table_app(&vars.iter().map(|v| v.e.clone()).collect::<Vec<_>>(), tab);
+        s
+    }
+}
+
+/// Closed `Pi bits. GoodBool bits -> Id(Bool0, a, b)` for the two signals `build` makes from the bit variables, by
+/// diagrams instead of a case tree; `None` when they are different functions. Same shape as `lemma_n`'s proof.
+fn lemma_dd(nv: usize, build: &dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig)) -> Option<Expr> {
+    let vars: Vec<Expr> = (0..nv).map(|m| var((2 * nv - 1 - m) as u32)).collect();
+    let goods: Vec<Expr> = (0..nv).map(|m| var((nv - 1 - m) as u32)).collect();
+    let g = DdGates::new(vars, goods);
+    let inputs: Vec<Sig> = (0..nv).map(|i| g.var_sig(i)).collect();
+    let (a, b) = build(&g, &inputs);
+    let mut proof = g.equate(&a, &b)?;
+    for _ in 0..nv {
+        proof = lam(app(good_bool(), var(nv as u32 - 1)), proof);
+    }
+    for _ in 0..nv {
+        proof = lam(bool0(), proof);
+    }
+    Some(proof)
+}
+
+#[test]
+fn decision_diagram_proofs_check_and_beat_the_case_tree() {
+    let _scope = tatic::kernel::InternScope::enter();
+    // associativity of xor over 3 bits, against `lemma_n`'s statement
+    let sides = |g: &DdGates, v: &[Sig]| (g.xor(&g.xor(&v[0], &v[1]), &v[2]), g.xor(&v[0], &g.xor(&v[1], &v[2])));
+    let (pn, ty) = lemma_n(
+        3,
+        &|v| id(bool0(), xor(xor(v[0].clone(), v[1].clone()), v[2].clone()), xor(v[0].clone(), xor(v[1].clone(), v[2].clone()))),
+        &|bits| {
+            let l = |i: usize| bit(bits[i]);
+            refl(xor(xor(l(0), l(1)), l(2)))
+        },
+    );
+    ck("case tree", &pn, &ty);
+    let pd = lemma_dd(3, &sides).expect("same function");
+    ck("diagram", &pd, &ty);
+    // a false equation has no diagram proof
+    assert!(lemma_dd(2, &|g, v| (g.and(&v[0], &v[1]), g.or(&v[0], &v[1]))).is_none());
+    // a chain of 14 bits in two association orders: 2^14 case-tree leaves, a few dozen diagram nodes
+    let nv = 14;
+    let chain = |g: &DdGates, v: &[Sig]| {
+        let left = v[1..].iter().fold(v[0].clone(), |a, b| g.xor(&a, b));
+        let right = v[..nv - 1].iter().rev().fold(v[nv - 1].clone(), |a, b| g.xor(b, &a));
+        (left, right)
+    };
+    let t0 = Instant::now();
+    let pd = lemma_dd(nv, &chain).expect("parity chains agree");
+    let built = t0.elapsed();
+    let vv = |m: usize| var((2 * nv - 1 - m) as u32);
+    let left = (1..nv).fold(vv(0), |a, i| xor(a, vv(i)));
+    let right = (0..nv - 1).rev().fold(vv(nv - 1), |a, i| xor(vv(i), a));
+    let mut ty = id(bool0(), left, right);
+    for _ in 0..nv {
+        ty = pi(app(good_bool(), var(nv as u32 - 1)), ty);
+    }
+    for _ in 0..nv {
+        ty = pi(bool0(), ty);
+    }
+    let t1 = Instant::now();
+    ck("parity chains", &pd, &ty);
+    println!("DD 14-bit parity chains: build {built:?}, check {:?}", t1.elapsed());
 }
