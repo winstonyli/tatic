@@ -2528,6 +2528,7 @@ fn rules() -> Vec<Rule> {
         // mined by `rule_miner` (section 36): cancellation
         Rule { name: "cancelr", lhs: op(4, op(0, v(0), v(1)), v(1)), rhs: v(0) },
         Rule { name: "cancell", lhs: op(4, op(0, v(0), v(1)), v(0)), rhs: v(1) },
+        Rule { name: "subdist", lhs: op(4, op(0, v(0), v(1)), op(0, v(2), v(3))), rhs: op(0, op(4, v(0), v(2)), op(4, v(1), v(3))) },
     ];
     EXTRA_RULES.with(|e| all.extend(e.borrow().iter().map(|(l, r)| Rule { name: "mined", lhs: l.clone(), rhs: r.clone() })));
     all
@@ -4195,15 +4196,10 @@ fn shifts_inside_sums_are_machines_and_their_laws_check() {
     assert!(add_tree_law(n, 2, &shl(v(0)), &op(0, v(0), v(1))).is_none());
 }
 
-/// Pairs over a pool with `shl1` that agree on all width-4 inputs; each is built and kernel-checked.
-#[test]
-#[ignore]
-fn shl_conjecture_miner() {
-    let _scope = tatic::kernel::InternScope::enter();
-    println!("SHLMINER machine at start: {}", machine_state());
+/// The equal pairs of the `shl1` pool over `nv` variables at width 4 (leaves, shifted leaves, every operator on two of
+/// them, and shifts of those), each group's first term paired with the others.
+fn shl_conjectures(nv: usize) -> Vec<(Term, Term)> {
     let n = 4usize;
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let (nv, cap) = (env("SHLMINER_VARS", 2), env("SHLMINER_MAX", 0));
     let b = |o: usize, a: &Term, c: &Term| Term::Op(o, Box::new(a.clone()), Box::new(c.clone()));
     let shl = |a: &Term| b(6, a, &Term::Zero);
     let leaves: Vec<Term> = (0..nv).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
@@ -4229,6 +4225,21 @@ fn shl_conjecture_miner() {
     }
     let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
     conj.sort_by_key(|(a, b)| (a.show(), b.show()));
+    conj
+}
+
+/// Pairs over a pool with `shl1` that agree on all width-4 inputs; each is built and kernel-checked.
+#[test]
+#[ignore]
+fn shl_conjecture_miner() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("SHLMINER machine at start: {}", machine_state());
+    let n = 4usize;
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (nv, cap) = (env("SHLMINER_VARS", 2), env("SHLMINER_MAX", 0));
+    let b = |o: usize, a: &Term, c: &Term| Term::Op(o, Box::new(a.clone()), Box::new(c.clone()));
+    let shl = |a: &Term| b(6, a, &Term::Zero);
+    let mut conj = shl_conjectures(nv);
     if cap > 0 && conj.len() > cap {
         let stride = conj.len() / cap;
         conj = conj.into_iter().step_by(stride).take(cap).collect();
@@ -4264,7 +4275,7 @@ fn shl_conjecture_miner() {
         }
     }
     println!("SHLMINER machine at end: {}", machine_state());
-    println!("SHLMINER {} terms, {} groups, {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", pool.len(), groups.len(), t0.elapsed());
+    println!("SHLMINER {} listed conjectures ({} after the cap), {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", conj.len(), conj.len(), t0.elapsed());
 }
 
 /// `c * t` (mod 2^n) as shift-and-add: the sum of `shl1^i t` over the set bits `i` of `c`.
@@ -4822,8 +4833,16 @@ fn rule_miner() {
     let fallbacks = || MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
-    for (name, t1, t2) in mul_laws(max) {
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) {
+    let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
+    let laws: Vec<(String, Term, Term)> = if family == "shl" {
+        let conj = shl_conjectures(2);
+        let stride = (conj.len() / env("RULEMINER_LAWS", 250)).max(1);
+        conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+    } else {
+        mul_laws(max)
+    };
+    for (name, t1, t2) in laws.iter().cloned() {
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
             continue;
         }
         let before = fallbacks();
@@ -4838,7 +4857,7 @@ fn rule_miner() {
         }
     }
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
-    println!("RULEMINER {} stragglers of {} laws, {:.1}s base", stragglers.len(), mul_laws(max).len(), base_time);
+    println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base", stragglers.len(), laws.len(), base_time);
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
     // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values at width 4 (a pool of all terms up to RULEMINER_SIZE nodes, indexed by value)
@@ -4868,7 +4887,7 @@ fn rule_miner() {
     }
     println!("RULEMINER pool of {} terms, {} distinct functions", by_size.iter().map(|v| v.len()).sum::<usize>(), index.len());
     /// The patterns obtained from `t` by cutting subterms into variables: (pattern, cut subterms in variable order).
-    fn abstractions(t: &Term) -> Vec<(Term, Vec<Term>)> {
+    fn abstractions(t: &Term, cap: usize) -> Vec<(Term, Vec<Term>)> {
         let mut out = vec![];
         if !matches!(t, Term::Zero | Term::Ones) {
             out.push((Term::V(0), vec![t.clone()]));
@@ -4876,8 +4895,8 @@ fn rule_miner() {
             out.push((t.clone(), vec![]));
         }
         if let Term::Op(o, a, b) = t {
-            for (pa, ca) in abstractions(a) {
-                for (pb, cb) in abstractions(b) {
+            for (pa, ca) in abstractions(a, cap) {
+                for (pb, cb) in abstractions(b, cap) {
                     // renumber the right pattern's variables after the left's, merging equal cut subterms
                     let mut cuts = ca.clone();
                     let mut map = vec![];
@@ -4888,7 +4907,7 @@ fn rule_miner() {
                         });
                         map.push(at);
                     }
-                    if cuts.len() > 2 {
+                    if cuts.len() > cap {
                         continue;
                     }
                     fn renum(p: &Term, map: &[usize]) -> Term {
@@ -4902,7 +4921,7 @@ fn rule_miner() {
                 }
             }
         }
-        out.retain(|(_, c)| c.len() <= 2);
+        out.retain(|(_, c)| c.len() <= cap);
         out
     }
     let mut seen_pat: std::collections::HashSet<String> = Default::default();
@@ -4912,7 +4931,7 @@ fn rule_miner() {
         st.3[0].subterms(&mut subs);
         st.3[1].subterms(&mut subs);
         for sub in subs.iter().filter(|t| t.uses_add() && t.size() >= 3) {
-            for (pat, _) in abstractions(sub) {
+            for (pat, _) in abstractions(sub, 2) {
                 let Term::Op(..) = pat else { continue };
                 if !seen_pat.insert(pat.show()) || pat.size() > 9 {
                     continue;
@@ -4921,6 +4940,51 @@ fn rule_miner() {
                 let uses = |t: &Term, v: usize| t.show().contains(VARS[v]);
                 for r in group.iter().filter(|r| r.size() < pat.size() && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
                     cands.push((pat.clone(), r.clone()));
+                }
+            }
+        }
+    }
+    // cross-side candidates: a subterm of one normalized side and a subterm of the other with the same value, both
+    // abstracted by the same cuts (up to four variables): the rule `abstract(s) -> abstract(s')`
+    let cross_cap = env("RULEMINER_VARS", 4);
+    for st in &stragglers {
+        let (mut sl, mut sr) = (vec![], vec![]);
+        st.3[0].subterms(&mut sl);
+        st.3[1].subterms(&mut sr);
+        for (xs, ys) in [(&sl, &sr), (&sr, &sl)] {
+            for x in xs.iter().filter(|t| t.uses_add() && t.size() >= 3 && t.size() <= 13) {
+                for y in ys.iter().filter(|t| t.size() <= 13 && t.show() != x.show()) {
+                    if !(1..=4).all(|w| x.plausibly_equals(y, w, 2)) {
+                        continue;
+                    }
+                    for (pat, cuts) in abstractions(x, cross_cap) {
+                        let Term::Op(..) = pat else { continue };
+                        if cuts.len() <= 2 || pat.size() > 13 {
+                            continue; // up to two variables is the pool route's job
+                        }
+                        // express y with the same cuts, through placeholders V(4+j)
+                        let mut yy = y.clone();
+                        for (j, c) in cuts.iter().enumerate() {
+                            yy = replace_term(&yy, c, &Term::V(4 + j));
+                        }
+                        fn bare(t: &Term) -> bool {
+                            match t {
+                                Term::V(i) => *i >= 4,
+                                Term::Op(_, a, b) => bare(a) && bare(b),
+                                _ => true,
+                            }
+                        }
+                        fn renum(t: &Term) -> Term {
+                            match t {
+                                Term::V(i) => Term::V(i - 4),
+                                Term::Op(o, a, b) => Term::Op(*o, Box::new(renum(a)), Box::new(renum(b))),
+                                _ => t.clone(),
+                            }
+                        }
+                        if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
+                            cands.push((pat.clone(), renum(&yy)));
+                        }
+                    }
                 }
             }
         }
@@ -4935,7 +4999,7 @@ fn rule_miner() {
             let mut subs = vec![];
             s.3[0].subterms(&mut subs);
             s.3[1].subterms(&mut subs);
-            subs.iter().any(|t| match_pat(l, t, &mut vec![None; nv]))
+            subs.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))
         })
     };
     let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
@@ -4944,7 +5008,7 @@ fn rule_miner() {
     for (l, r) in &cands {
         // the candidate must itself be provable
         let t = Instant::now();
-        if add_tree_law(n, nv, l, r).is_none() {
+        if add_tree_law(n, l.max_var().max(r.max_var()) + 1, l, r).is_none() {
             continue;
         }
         EXTRA_RULES.with(|e| *e.borrow_mut() = vec![(l.clone(), r.clone())]);
