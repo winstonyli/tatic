@@ -5433,7 +5433,12 @@ fn rule_miner() {
     // the step budget and the same-term check in `rule_step` then keep the rewriter terminating, and soundness is unaffected
     let loose = env("RULEMINER_LOOSE", 0) == 1;
     if proposer != "mined" {
-        cands = pilot_candidates(&proposer, &env);
+        // `goal`: each straggler's normalized sides as a rule, in both directions (the goal-as-lemma baseline, section 69)
+        cands = if proposer == "goal" {
+            stragglers.iter().flat_map(|st| [(st.3[0].clone(), st.3[1].clone()), (st.3[1].clone(), st.3[0].clone())]).filter(|(l, r)| l.show() != r.show()).collect()
+        } else {
+            pilot_candidates(&proposer, &env)
+        };
         let ordered = cands.iter().filter(|(l, r)| loose || rule_order_ok(l, r)).count();
         println!("RULEMINER proposer {proposer}: {} proposed, {ordered} decreasing in the rule order", cands.len());
     }
