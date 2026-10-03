@@ -5106,7 +5106,7 @@ fn rewrite_rules_over_the_mul_laws() {
 
 /// Proposers for the pilot (search note section 66), used by `rule_miner` instead of its own candidate generator when
 /// `RULEMINER_PROPOSER` is set: `random` (`RULEMINER_PROPOSALS` random rules, default 20000, no value check; the verifier alone decides)
-/// or `transfer` (the first 20 promoted rules, mined on mul, shl and lt only, with every variable replaced by `x`, `y`, `0` or `-1`).
+/// `file` (rules read from `RULEMINER_PROPOSER_FILE`), or `transfer` (the first 20 promoted rules, mined on mul, shl and lt only, with every variable replaced by `x`, `y`, `0` or `-1`).
 fn pilot_candidates(proposer: &str, env: &dyn Fn(&str, usize) -> usize) -> Vec<(Term, Term)> {
     let mut out: Vec<(Term, Term)> = vec![];
     match proposer {
@@ -5160,6 +5160,25 @@ fn pilot_candidates(proposer: &str, env: &dyn Fn(&str, usize) -> usize) -> Vec<(
                             out.push((l2, r2));
                         }
                     }
+                }
+            }
+        }
+        // `file`: rules from `RULEMINER_PROPOSER_FILE`, one `lhs -> rhs` per line in `Term::show` syntax (blank lines and `#` comments
+        // skipped), so any outside proposer (a model, a person) can feed the same verifier and scoring
+        "file" => {
+            let path = std::env::var("RULEMINER_PROPOSER_FILE").expect("RULEMINER_PROPOSER_FILE");
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+            let mut seen = std::collections::HashSet::new();
+            for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+                let Some((l, r)) = line.split_once(" -> ") else {
+                    println!("RULEMINER proposer file: skipped (no ' -> '): {line}");
+                    continue;
+                };
+                let parsed = std::panic::catch_unwind(|| (parse_term(l.trim()), parse_term(r.trim())));
+                match parsed {
+                    Ok((l, r)) if matches!(l, Term::Op(..)) && l.show() != r.show() && seen.insert(format!("{} => {}", l.show(), r.show())) => out.push((l, r)),
+                    Ok(_) => {}
+                    Err(_) => println!("RULEMINER proposer file: skipped (unparsable): {line}"),
                 }
             }
         }
