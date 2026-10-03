@@ -6225,7 +6225,8 @@ fn folds_constants(t: &Term) -> bool {
 /// Rule corpus for a model proposer (search note section 68): true rules `lhs -> rhs` over at most three variables, the
 /// left side larger than the right, drawn from the two-variable depth-2 pool and the `add3` pool. Every line is plausible
 /// at widths 1-6 and proved (and kernel-checked) at widths 3 and 4. Written to `CORPUS_OUT` in the `file:` proposer's
-/// syntax. Env: `CORPUS_MAX` (default 3000 rules, evenly spaced among the candidates), `CORPUS_PER_LEFT` (default 6).
+/// syntax. Env: `CORPUS_MAX` (default 3000 rules, evenly spaced among the candidates), `CORPUS_PER_LEFT` (default 6),
+/// `CORPUS_DEEP=1` (also the deep `add3` and `mix3` pools), `CORPUS_CHARS` (longest line kept, default unlimited).
 #[test]
 #[ignore]
 fn mint_corpus() {
@@ -6235,6 +6236,12 @@ fn mint_corpus() {
     let (max, per_left) = (env("CORPUS_MAX", 3000), env("CORPUS_PER_LEFT", 6));
     let mut pool = terms(2, true);
     pool.extend(add3_pool(false));
+    if env("CORPUS_DEEP", 0) == 1 {
+        // the pools the stragglers live in (deep `add3`, `mix3`); the caller removes the held-out families afterwards
+        pool.extend(add3_pool(true));
+        pool.extend(mix3_pool());
+    }
+    let max_chars = env("CORPUS_CHARS", 1000);
     let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
     for t in pool {
         let sig = (0..4096u128).map(|i| t.interp(4, &[i & 15, i >> 4 & 15, i >> 8])).collect();
@@ -6258,7 +6265,7 @@ fn mint_corpus() {
     for (l, r) in cands.iter().step_by(stride).take(max) {
         tried += 1;
         let k = l.max_var().max(r.max_var()) + 1;
-        if !(1..=6).all(|w| l.plausibly_equals(r, w, k)) || [l, r].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
+        if l.show().len() + r.show().len() + 4 > max_chars || !(1..=6).all(|w| l.plausibly_equals(r, w, k)) || [l, r].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
             continue;
         }
         let proved = [3usize, 4].iter().all(|&n| prove_rule(n, k, l, r).is_some_and(|p| check(&Ctx::new(), &p.0, &p.1).is_ok()));
