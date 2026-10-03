@@ -2544,7 +2544,9 @@ thread_local! {
 }
 /// How many more rule applications `rule_step` may make; the rule miner sets it per trial so that a candidate that
 /// undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
-static RULE_BUDGET: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX / 2);
+thread_local! {
+    static RULE_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(i64::MAX / 2) };
+}
 
 fn rules() -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
@@ -2782,7 +2784,7 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
         if subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() == t.show() {
             continue;
         }
-        if RULE_BUDGET.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) <= 0 {
+        if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
             return None;
         }
         let law = memo(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
@@ -2969,7 +2971,10 @@ fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
 }
 
 /// How many times `prove_eq` closed a pair with a whole-term machine proof (the rewriting did not finish the job).
-static MACHINE_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Per thread, so that the parallel miner's workers each read their own before/after difference.
+thread_local! {
+    static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 /// Pairs whose machines have more carries than this try generalizing a shared subterm first.
 const GENERALIZE_ABOVE: usize = 3;
@@ -3060,7 +3065,7 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
     }
     // the carry-encoding proof for the two terms as bit-serial machines, at the variables' values
     let law = add_tree_law(n, k, a, b)?;
-    MACHINE_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
     let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
     return Some(apps(law.0, args));
 }
@@ -3152,7 +3157,7 @@ fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)>
                 Some(proof) => proof,
                 None => {
                     let law = add_tree_law(n, k, &r1, &r2)?;
-                    MACHINE_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
                     apps(law.0, goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect())
                 }
             }
@@ -5074,11 +5079,11 @@ fn rewrite_rules_over_the_mul_laws() {
             continue;
         }
         let cs = [&t1, &t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
-        let before = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+        let before = MACHINE_FALLBACKS.with(|c| c.get());
         let t = Instant::now();
         let r = rewrite_law(4, 2, &t1, &t2);
         let built = t.elapsed();
-        let fell = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed) - before;
+        let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
         match r {
             Some((p, s)) => {
                 let t = Instant::now();
@@ -5108,13 +5113,18 @@ fn rewrite_rules_over_the_mul_laws() {
 #[ignore]
 fn rule_miner() {
     let _scope = tatic::kernel::InternScope::enter();
+    // phase clock: `phase(label)` prints the seconds since the previous mark
+    let last = std::cell::Cell::new(Instant::now());
+    let phase = |label: &str| {
+        println!("RULEMINER time {label}: {:.1}s", last.replace(Instant::now()).elapsed().as_secs_f64());
+    };
     println!("RULEMINER machine at start: {}", machine_state());
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (max, trials) = (env("MULMINER_MAX", 7) as u32, env("RULEMINER_TRIALS", 400));
     let (n, nv) = (4usize, 2usize);
     let ops = ops_for(n);
     let goods: Vec<(Expr, Expr)> = (0..2).map(|i| (var((3 - i) as u32), var((1 - i) as u32))).collect();
-    let fallbacks = || MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+    let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
@@ -5163,6 +5173,7 @@ fn rule_miner() {
     }
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
     println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
+    phase("laws and stragglers");
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
     // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values at width 4 (a pool of all terms up to RULEMINER_SIZE nodes, indexed by value)
@@ -5313,6 +5324,7 @@ fn rule_miner() {
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, _)| l.show());
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
+    phase("candidate generation");
     // keep candidates whose left side matches a subterm of some straggler's normalized terms
     let applicable = |l: &Term| {
         stragglers.iter().any(|s| {
@@ -5334,9 +5346,14 @@ fn rule_miner() {
     // rules together, which a one-rule-at-a-time score cannot see
     let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
     println!("RULEMINER {} provable candidates", provable.len());
+    phase("provable filter");
     let score = |extra: &[(Term, Term)]| -> (Vec<bool>, i64) {
+        // built here so that worker threads (each with its own intern scope) do not share expressions
+        let ops = ops_for(n);
+        let goods: Vec<(Expr, Expr)> = (0..2).map(|i| (var((3 - i) as u32), var((1 - i) as u32))).collect();
+        let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         EXTRA_RULES.with(|e| *e.borrow_mut() = extra.to_vec());
-        let budget = || RULE_BUDGET.store(200, std::sync::atomic::Ordering::Relaxed);
+        let budget = || RULE_BUDGET.with(|b| b.set(200));
         let (mut fixed, mut size) = (vec![false; stragglers.len()], 0i64);
         for (si, s) in stragglers.iter().enumerate() {
             budget();
@@ -5354,7 +5371,7 @@ fn rule_miner() {
             size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
         }
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
-        RULE_BUDGET.store(i64::MAX / 2, std::sync::atomic::Ordering::Relaxed);
+        RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (fixed, size)
     };
     let mut chosen: Vec<(Term, Term)> = vec![];
@@ -5362,10 +5379,38 @@ fn rule_miner() {
     for _ in 0..env("RULEMINER_ROUNDS", 8) {
         let count = |f: &Vec<bool>| f.iter().filter(|c| **c).count() as i64;
         let mut best: Option<(i64, (Term, Term), Vec<bool>, i64)> = None;
-        for cand in &provable {
-            let mut with = chosen.clone();
-            with.push((*cand).clone());
-            let (f, sz) = score(&with);
+        // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
+        // scope; the results are folded in candidate order, so the choice does not depend on the thread count
+        let threads = env("RULEMINER_THREADS", 1).clamp(1, 12);
+        let scored: Vec<(Vec<bool>, i64)> = {
+            let run = |idx: &[usize]| -> Vec<(usize, (Vec<bool>, i64))> {
+                let _scope = tatic::kernel::InternScope::enter();
+                idx.iter()
+                    .map(|&i| {
+                        let mut with = chosen.clone();
+                        with.push(provable[i].clone());
+                        (i, score(&with))
+                    })
+                    .collect()
+            };
+            let mut all: Vec<(usize, (Vec<bool>, i64))> = if threads == 1 {
+                run(&(0..provable.len()).collect::<Vec<_>>())
+            } else {
+                std::thread::scope(|sc| {
+                    let handles: Vec<_> = (0..threads)
+                        .map(|t| {
+                            let idx: Vec<usize> = (t..provable.len()).step_by(threads).collect();
+                            let run = &run;
+                            std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || run(&idx)).unwrap()
+                        })
+                        .collect();
+                    handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+                })
+            };
+            all.sort_by_key(|x| x.0);
+            all.into_iter().map(|x| x.1).collect()
+        };
+        for (cand, (f, sz)) in provable.iter().zip(scored) {
             let gain = (count(&f) - count(&covered)) * 1000 + (size - sz);
             if gain > 0 && best.as_ref().is_none_or(|b| gain > b.0) {
                 best = Some((gain, (*cand).clone(), f, sz));
@@ -5373,6 +5418,7 @@ fn rule_miner() {
         }
         let Some((_, rule, f, sz)) = best else { break };
         println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
+        phase(&format!("round over {} candidates", provable.len()));
         chosen.push(rule);
         (covered, size) = (f, sz);
     }
@@ -5454,9 +5500,9 @@ fn lt_root_rules_close_constant_false_laws() {
     let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
     let falsum = lt(Term::Ones, Term::Ones);
     EXTRA_RULES.with(|e| *e.borrow_mut() = vec![(lt(x.clone(), x.clone()), falsum.clone()), (lt(Term::Ones, x.clone()), falsum.clone())]);
-    let before = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+    let before = MACHINE_FALLBACKS.with(|c| c.get());
     let r = rewrite_law(4, 2, &lt(x.clone(), x.clone()), &lt(Term::Ones, add(x.clone(), y.clone())));
-    let fell = MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed) - before;
+    let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
     EXTRA_RULES.with(|e| e.borrow_mut().clear());
     let (p, s) = r.expect("proved");
     ck("lt(x,x) = lt(-1, x+y)", &p, &s);
@@ -5693,7 +5739,7 @@ fn lt_borrow_bit_probe() {
     ];
     for (l, r) in laws {
         let (l, r) = (parse_term(l), parse_term(r));
-        let fall = || MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+        let fall = || MACHINE_FALLBACKS.with(|c| c.get());
         let before = fall();
         let direct = rewrite_law(4, 2, &l, &r).is_some();
         let direct_fell = fall() - before;
