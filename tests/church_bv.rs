@@ -5539,7 +5539,7 @@ fn rule_miner() {
             subs.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))
         })
     };
-    let cands: Vec<(Term, Term)> = if proposer == "mined" { cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect() } else { cands };
+    let cands: Vec<(Term, Term)> = if proposer == "mined" || proposer == "file" { cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect() } else { cands };
     println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
     if env("RULEMINER_SHOW", 0) == 1 {
         for (l, r) in &cands {

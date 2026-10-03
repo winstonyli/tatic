@@ -6,4 +6,4 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-burn = { version = "=0.22.0-pre.4", default-features = false, features = ["wgpu", "vulkan", "autodiff", "std"] }
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["wgpu", "vulkan", "autodiff", "std", "optim"] }

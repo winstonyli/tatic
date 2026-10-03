@@ -4,7 +4,8 @@ usage: corpus_augment.py CORPUS HELDOUT_FILE... OUT_PREFIX
 
 A rule's family is the set of rules reachable by renaming x/y/z and swapping the operands of add/and/or/xor
 (sound: each is true whenever the rule is). Every family that contains a held-out rule goes to OUT_PREFIX.test;
-the other corpus rules, with all their variants, go to OUT_PREFIX.train. Prints counts."""
+the other corpus rules, with all their variants, go to OUT_PREFIX.train; every variant of a held-out rule goes to
+OUT_PREFIX.heldout. Prints counts."""
 import itertools, sys
 
 COMM = {"add", "and", "or", "xor"}
@@ -58,6 +59,6 @@ for rule in corpus:
     vs = variants(rule)
     (test if vs & held_family else train).update(vs)
 train -= test
-for name, data in (("train", train), ("test", test)):
+for name, data in (("train", train), ("test", test), ("heldout", held_family)):
     open(f"{sys.argv[-1]}.{name}", "w").write("".join(sorted(x + "\n" for x in data)))
 print(f"{len(corpus)} corpus rules; held-out rules {len(held)} with {len(held_family)} variants; train {len(train)}, test(corpus-side) {len(test)}")
