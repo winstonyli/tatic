@@ -1,0 +1,9 @@
+[package]
+name = "rulelm"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["wgpu", "vulkan", "autodiff", "std"] }
