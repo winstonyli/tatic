@@ -6060,19 +6060,26 @@ fn scaling_sweep() {
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "4,8,16,32".into()).split(',').map(|w| w.parse().unwrap()).collect();
-    let all = family_laws(&family, &env, 4, 2, env("MULMINER_MAX", 7) as u32);
+    let kv = if family == "add3" || family == "mix3" { 3 } else { 2 };
+    if let Ok(f) = std::env::var("SWEEP_RULES") {
+        let rules = std::fs::read_to_string(f).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+        EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+    }
+    let all = family_laws(&family, &env, 4, kv, env("MULMINER_MAX", 7) as u32);
     let ok: Vec<&(String, Term, Term)> = all
         .iter()
-        .filter(|(_, a, b)| (1..=6).all(|w| a.plausibly_equals(b, w, 2)) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())))
+        .filter(|(_, a, b)| (1..=6).all(|w| a.plausibly_equals(b, w, kv)) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())))
         .collect();
     let sample = env("SWEEP_SAMPLE", 30).min(ok.len()).max(1);
     let picked: Vec<&&(String, Term, Term)> = (0..sample).map(|i| &ok[i * ok.len() / sample]).collect();
     for &w in &widths {
         let (mut proved, mut none, mut build, mut check_t, mut worst) = (0, 0, 0f64, 0f64, (0f64, String::new()));
+        let fb0 = MACHINE_FALLBACKS.with(|c| c.get());
         for law in &picked {
             let (name, t1, t2) = &***law;
+            RULE_BUDGET.with(|b| b.set(200));
             let t = Instant::now();
-            let r = rewrite_law(w, 2, t1, t2);
+            let r = rewrite_law(w, kv, t1, t2);
             let b = t.elapsed().as_secs_f64();
             build += b;
             match r {
@@ -6089,10 +6096,10 @@ fn scaling_sweep() {
                 None => none += 1,
             }
         }
-        println!("SCALE {family} n={w}: {proved} proved, {none} unproved of {}; build {build:.1}s, check {check_t:.1}s, slowest {:.2}s ({})", picked.len(), worst.0, worst.1);
+        println!("SCALE {family} n={w}: {proved} proved, {none} unproved of {}; build {build:.1}s, check {check_t:.1}s, slowest {:.2}s ({}), {} machine proofs", picked.len(), worst.0, worst.1, MACHINE_FALLBACKS.with(|c| c.get()) - fb0);
     }
     let t = Instant::now();
-    for &w in &widths {
+    for &w in widths.iter().filter(|_| std::env::var("SWEEP_RULES").is_err()) {
         let t = Instant::now();
         for (l, r) in promoted_rules() {
             assert!(prove_rule(w, l.max_var().max(r.max_var()) + 1, l, r).is_some(), "promoted rule not provable at width {w}");
