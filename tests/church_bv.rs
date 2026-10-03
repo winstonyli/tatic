@@ -5829,3 +5829,57 @@ fn soundness_sweep() {
     println!("SWEEP {family}: {} laws; true: {checked} proofs kernel-checked at widths {widths:?}, {unproved} unproved; false at some width: {false_laws} laws, {refused} (law, width) pairs refused; {:?}", laws.len(), t0.elapsed());
     println!("SWEEP machine at end: {}", machine_state());
 }
+
+/// Scaling probe (search note section 65): a sample of each family's laws (`SWEEP_SAMPLE`, default 30, evenly spaced among the
+/// true laws within the carry cap) proved by `rewrite_law` and kernel-checked at each of `SWEEP_WIDTHS` (default `4,8,16,32`),
+/// then every promoted rule via `prove_rule`. Per width: proofs, unproved, build and check seconds (sum and max), flushed as it goes.
+#[test]
+#[ignore]
+fn scaling_sweep() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("SCALE machine at start: {}", machine_state());
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
+    let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "4,8,16,32".into()).split(',').map(|w| w.parse().unwrap()).collect();
+    let all = family_laws(&family, &env, 4, 2, env("MULMINER_MAX", 7) as u32);
+    let ok: Vec<&(String, Term, Term)> = all
+        .iter()
+        .filter(|(_, a, b)| (1..=6).all(|w| a.plausibly_equals(b, w, 2)) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())))
+        .collect();
+    let sample = env("SWEEP_SAMPLE", 30).min(ok.len()).max(1);
+    let picked: Vec<&&(String, Term, Term)> = (0..sample).map(|i| &ok[i * ok.len() / sample]).collect();
+    for &w in &widths {
+        let (mut proved, mut none, mut build, mut check_t, mut worst) = (0, 0, 0f64, 0f64, (0f64, String::new()));
+        for law in &picked {
+            let (name, t1, t2) = &***law;
+            let t = Instant::now();
+            let r = rewrite_law(w, 2, t1, t2);
+            let b = t.elapsed().as_secs_f64();
+            build += b;
+            match r {
+                Some((p, s)) => {
+                    let t = Instant::now();
+                    ck(name, &p, &s);
+                    let c = t.elapsed().as_secs_f64();
+                    check_t += c;
+                    proved += 1;
+                    if b + c > worst.0 {
+                        worst = (b + c, name.clone());
+                    }
+                }
+                None => none += 1,
+            }
+        }
+        println!("SCALE {family} n={w}: {proved} proved, {none} unproved of {}; build {build:.1}s, check {check_t:.1}s, slowest {:.2}s ({})", picked.len(), worst.0, worst.1);
+    }
+    let t = Instant::now();
+    for &w in &widths {
+        let t = Instant::now();
+        for (l, r) in promoted_rules() {
+            assert!(prove_rule(w, l.max_var().max(r.max_var()) + 1, l, r).is_some(), "promoted rule not provable at width {w}");
+        }
+        println!("SCALE promoted rules n={w}: {:.1}s for {}", t.elapsed().as_secs_f64(), promoted_rules().len());
+    }
+    let _ = t;
+    println!("SCALE machine at end: {}", machine_state());
+}
