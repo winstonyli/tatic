@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One summary line per rule-miner family (mul, shl, lt, shr): stragglers, covered, wall time, with CPU load and
+# One summary line per rule-miner family (default mul shl lt; FAMILIES="shr" adds the 10-minute shr run): stragglers, covered, wall time, with CPU load and
 # Defender state taken before the runs (LONG_RUNS.md). Pass env such as ABLATE=... through; MINER_EXE reuses a built test exe.
 #
 #   scripts/miner_summary.sh
@@ -12,7 +12,7 @@ rtp=$(powershell -NoProfile -Command "(Get-MpComputerStatus).RealTimeProtectionE
 echo "cpu=${cpu}% defender_rtp=${rtp} ablate=${ABLATE:-none} exe=${exe}"
 powershell -NoProfile -Command "(Get-Process -Id $$ -ErrorAction SilentlyContinue) | Out-Null; (Get-Process -Id (Get-Process -Id \$PID).Id).PriorityClass='BelowNormal'" >/dev/null 2>&1 || true
 export RULEMINER_ANY=${RULEMINER_ANY:-1} RULEMINER_ROUNDS=${RULEMINER_ROUNDS:-20}
-for fam in ${FAMILIES:-mul shl lt shr}; do
+for fam in ${FAMILIES:-mul shl lt}; do
   extra=""
   case $fam in
     mul) extra="MULMINER_MAX=${MULMINER_MAX:-5}" ;;
