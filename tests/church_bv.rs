@@ -5437,3 +5437,99 @@ fn encoding_search_rediscovers_library_lemmas_from_statements() {
     // a non-law is refused
     assert!(add_tree_law(4, 2, &op(0, v(0), v(1)), &op(0, v(0), v(0))).is_none());
 }
+
+// ---- Variable multiplication as a circuit (search note section 58, goal D option b): `mul x y` as shift-and-add
+// partial products over bits, `row_i[j] = y_i & x_(j-i)`, summed by ripple adders. Laws are proved per width by case
+// analysis on all 2n input bits with `refl` leaves, so they are finite and compare circuits only (no numeric meaning).
+
+/// `\a b. \C k. a C (\a_i.. b C (\b_i.. k out_0 .. out_(n-1)))` where `outs(a_bits, b_bits)` gives the output bits.
+fn bits_circuit(n: usize, outs: &dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>) -> Expr {
+    let d = 4 + 2 * n;
+    let v = |pos: usize| var((d - 1 - pos) as u32);
+    let a: Vec<Expr> = (0..n).map(|i| v(4 + i)).collect();
+    let b: Vec<Expr> = (0..n).map(|i| v(4 + n + i)).collect();
+    let mut body = apps(v(3), outs(&a, &b));
+    for _ in 0..n {
+        body = lam(bool0(), body);
+    }
+    let mut inner = app2(var(n as u32 + 2), var(n as u32 + 1), body);
+    for _ in 0..n {
+        inner = lam(bool0(), inner);
+    }
+    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), app2(var(3), var(1), inner)))))
+}
+
+fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
+    let mut carry = f();
+    let mut sums = vec![];
+    for i in 0..a.len() {
+        let x = xor(a[i].clone(), b[i].clone());
+        sums.push(xor(x.clone(), carry.clone()));
+        carry = ripple_carry(false, a[i].clone(), b[i].clone(), carry, x);
+    }
+    sums
+}
+
+type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+
+/// `Pi x y. GoodBv x -> GoodBv y -> Id(Bv_n, L x y, R x y)` where `L`, `R` are the circuits of the output-bit
+/// functions `l`, `r` of the `n` bits of `x` and of `y`. Per output bit, case analysis on all `2n` input bits with
+/// `refl` leaves, then `cong_n` and the witness eliminations (the skeleton of `bitwise_law_k`).
+fn circuit_law(n: usize, l: BitsFn, r: BitsFn) -> (Expr, Expr) {
+    let (lc, rc) = (bits_circuit(n, l), bits_circuit(n, r));
+    let lemmas: Vec<Expr> = (0..n)
+        .map(|j| {
+            lemma_n(
+                2 * n,
+                &|v| id(bool0(), l(&v[..n], &v[n..])[j].clone(), r(&v[..n], &v[n..])[j].clone()),
+                &|b| {
+                    let a: Vec<Expr> = b.iter().map(|x| bit(*x)).collect();
+                    refl(l(&a[..n], &a[n..])[j].clone())
+                },
+            )
+            .0
+        })
+        .collect();
+    k_var_law_to(n, 2, &bv_ty(n), &|args| (app2(lc.clone(), args[0].clone(), args[1].clone()), app2(rc.clone(), args[0].clone(), args[1].clone())), &|bits, goods| {
+        let (xb, yb): (Vec<Expr>, Vec<Expr>) = ((0..n).map(|i| bits(0, i)).collect(), (0..n).map(|i| bits(1, i)).collect());
+        let (s1, s2) = (l(&xb, &yb), r(&xb, &yb));
+        let witnesses: Vec<Expr> = (0..n).map(|i| goods(0, i)).chain((0..n).map(|i| goods(1, i))).collect();
+        let e = (0..n).map(|j| apps(lemmas[j].clone(), xb.iter().chain(&yb).cloned().chain(witnesses.iter().cloned()).collect())).collect();
+        let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+        fbody = lam(sort(1), lam(karrow(n), fbody));
+        for _ in 0..n {
+            fbody = lam(bool0(), fbody);
+        }
+        cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e)
+    })
+}
+
+fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
+    let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i].clone(), x[j - i].clone()) }).collect() };
+    (1..n).fold(row(0), |acc, i| add_rows(&acc, &row(i)))
+}
+fn const_bits(n: usize, c: u128) -> Vec<Expr> {
+    (0..n).map(|i| bit((c >> i) & 1 == 1)).collect()
+}
+
+#[test]
+fn mul_circuit_laws_by_case_analysis_and_false_ones_rejected() {
+    for n in [2usize, 3, 4] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let m = |x: &[Expr], y: &[Expr]| mul_bits(n, x, y);
+        let t0 = Instant::now();
+        let laws: Vec<(&str, Box<dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>>, Box<dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>>)> = vec![
+            ("mul x y = mul y x", Box::new(move |x, y| mul_bits(n, x, y)), Box::new(move |x, y| mul_bits(n, y, x))),
+            ("mul x 1 = x", Box::new(move |x, _| mul_bits(n, x, &const_bits(n, 1))), Box::new(|x, _| x.to_vec())),
+            ("mul x 0 = 0", Box::new(move |x, _| mul_bits(n, x, &const_bits(n, 0))), Box::new(move |_, _| const_bits(n, 0))),
+            ("mul x 2 = add x x", Box::new(move |x, _| mul_bits(n, x, &const_bits(n, 2))), Box::new(|x, _| add_rows(x, x))),
+        ];
+        for (name, l, r) in &laws {
+            let (p, s) = circuit_law(n, &**l, &**r);
+            ck(&format!("{name} n={n}"), &p, &s);
+            println!("MUL {name} n={n}: {:?}", t0.elapsed());
+        }
+        let (p, s) = circuit_law(n, &m, &|x, y| add_rows(x, y));
+        assert!(check(&Ctx::new(), &p, &s).is_err(), "mul = add must be rejected, n={n}");
+    }
+}
