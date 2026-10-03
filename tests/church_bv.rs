@@ -2963,6 +2963,9 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
             }
         }
     }
+    if let Some(p) = shr_mask_eq(n, ops, goods, a, b) {
+        return Some(p);
+    }
     // a large pair: a subterm both sides share becomes one more variable (the witness of its value is built by
     // `witnessed`), which takes its carries out of the machine; the proof for the pair over `k + 1` variables
     // is the proof for the original pair, since the extra variable's value is the subterm's
@@ -2982,6 +2985,62 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
     MACHINE_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
     return Some(apps(law.0, args));
+}
+
+/// `shr1 A = shr1 B` (or `0 = shr1 B`, as `shr1 0`) for machine-expressible `A`, `B`, without a lookahead machine: the
+/// bit-0 mask law `shr1 t = shr1 (t & M)`, `M = shl1 -1`, turns the pair into the shift-free law `A & M = B & M`
+/// (search note section 47).
+fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
+    let (vals, bv) = (goods.iter().map(|g| g.0.clone()).collect::<Vec<_>>(), bv_ty(n));
+    let ev = |t: &Term| t.eval(ops, n, &vals);
+    let shr = |t: &Term| Term::Op(7, Box::new(t.clone()), Box::new(Term::Zero));
+    let (mask, one_arg) = (Term::Op(6, Box::new(Term::Ones), Box::new(Term::Zero)), |t: &Term| match t {
+        Term::Op(7, x, _) if Machine::parse(x).is_some() => Some((**x).clone()),
+        Term::Zero => Some(Term::Zero),
+        _ => None,
+    });
+    if !matches!(a, Term::Op(7, ..)) && !matches!(b, Term::Op(7, ..)) {
+        return None;
+    }
+    let (x, y) = (one_arg(a)?, one_arg(b)?);
+    // the pair `A & M`, `B & M`: rewrite both, close with `prove_eq` (a machine law when they stay arithmetic)
+    let (ta, tb) = (Term::Op(1, Box::new(x.clone()), Box::new(mask.clone())), Term::Op(1, Box::new(y.clone()), Box::new(mask.clone())));
+    let ((r1, p1), (r2, p2)) = (rewrite(&ta, n, ops, goods), rewrite(&tb, n, ops, goods));
+    let mid = prove_eq(n, ops, goods, &r1, &r2)?;
+    let mid = trans_proof(&bv, &ev(&ta), &ev(&r1), &ev(&tb), p1, trans_proof(&bv, &ev(&r1), &ev(&r2), &ev(&tb), mid, sym(&bv, &ev(&tb), &ev(&r2), p2)));
+    let cong = cong_n(&bv, &bv, &ops[7], &[ev(&ta), ev(&Term::Zero)], &[ev(&tb), ev(&Term::Zero)], vec![mid, refl(ev(&Term::Zero))]);
+    // `a = shr1 (A & M)` and `b = shr1 (B & M)`
+    let side_proof = |orig: &Term, arg: &Term| -> Option<Expr> {
+        if matches!(orig, Term::Zero) {
+            // `0 = shr1 0 = shr1 (0 & M)`: the second step is a congruence on `0 = 0 & M` by the rewriter
+            let (r, pr) = rewrite(&Term::Op(1, Box::new(Term::Zero), Box::new(mask.clone())), n, ops, goods);
+            if r.show() != "0" {
+                return None;
+            }
+            let (target, step) = rule_step(n, &shr(&Term::Zero), goods)?;
+            if target.show() != "0" {
+                return None;
+            }
+            let z = ev(&Term::Zero);
+            let and0 = Term::Op(1, Box::new(Term::Zero), Box::new(mask.clone()));
+            let shr_and0 = shr(&and0);
+            // shr1 0 = shr1 (0 & M) by congruence on `0 = 0 & M` (sym of the rewrite proof)
+            let c = cong_n(&bv, &bv, &ops[7], &[z.clone(), z.clone()], &[ev(&and0), z.clone()], vec![sym(&bv, &ev(&and0), &z, pr), refl(z.clone())]);
+            let zero_to_shr0 = sym(&bv, &ev(&shr(&Term::Zero)), &z, step);
+            Some(trans_proof(&bv, &z, &ev(&shr(&Term::Zero)), &ev(&shr_and0), zero_to_shr0, c))
+        } else {
+            let law = memo(format!("shrmask{n}"), || {
+                let (l, r) = (shr(&Term::V(0)), shr(&Term::Op(1, Box::new(Term::V(0)), Box::new(Term::Op(6, Box::new(Term::Ones), Box::new(Term::Zero))))));
+                prove_rule(n, 1, &l, &r).expect("shrmask law")
+            });
+            let w = witnessed(arg, n, goods);
+            Some(apps(law.0, vec![w.0, w.1]))
+        }
+    };
+    let (pa, pb) = (side_proof(a, &x)?, side_proof(b, &y)?);
+    let (sa, sb) = (shr(&ta), shr(&tb));
+    let first = trans_proof(&bv, &ev(a), &ev(&sa), &ev(&sb), pa, cong);
+    Some(trans_proof(&bv, &ev(a), &ev(&sb), &ev(b), first, sym(&bv, &ev(b), &ev(&sb), pb)))
 }
 
 /// Proof of `t1 = t2` over two good vectors by rewriting both sides and closing with `prove_eq`; `None` when
@@ -3024,8 +3083,11 @@ fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)>
     } else {
         let (r1, p1) = rewrite(t1, n, &ops, &goods);
         let (r2, p2) = rewrite(t2, n, &ops, &goods);
-        let mid = prove_eq(n, &ops, &goods, &r1, &r2)?;
-        (r1, p1, r2, p2, mid)
+        match prove_eq(n, &ops, &goods, &r1, &r2) {
+            Some(mid) => (r1, p1, r2, p2, mid),
+            // the rewriter may have pushed the shifts down to atoms; the mask reduction applies to the original sides
+            None => (t1.clone(), refl(ev(t1)), t2.clone(), refl(ev(t2)), shr_mask_eq(n, &ops, &goods, t1, t2)?),
+        }
     };
     let to_r2 = trans_proof(&root, &ev(t1), &ev(&r1), &ev(&r2), p1, mid);
     let body = trans_proof(&root, &ev(t1), &ev(&r2), &ev(t2), to_r2, sym(&root, &ev(t2), &ev(&r2), p2));
@@ -5002,6 +5064,7 @@ fn rule_miner() {
     } else {
         mul_laws(max)
     };
+    let mut unproved = 0usize;
     for (name, t1, t2) in laws.iter().cloned() {
         if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
             continue;
@@ -5012,15 +5075,16 @@ fn rule_miner() {
         let took = t.elapsed();
         let fell = fallbacks() - before;
         // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
+        unproved += r.is_none() as usize;
         let fell = if r.is_none() { fell.max(1) } else { fell };
         if r.is_none() || fell > 0 {
             let normal = [rewrite(&t1, n, &ops, &goods).0, rewrite(&t2, n, &ops, &goods).0];
-            println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?})", normal[0].show(), normal[1].show());
+            println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
             stragglers.push((name, t1, t2, normal, fell, took));
         }
     }
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
-    println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base", stragglers.len(), laws.len(), base_time);
+    println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
     // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values at width 4 (a pool of all terms up to RULEMINER_SIZE nodes, indexed by value)
@@ -5319,4 +5383,32 @@ fn lt_root_rules_close_constant_false_laws() {
     let (p, s) = r.expect("proved");
     ck("lt(x,x) = lt(-1, x+y)", &p, &s);
     assert_eq!(fell, 0, "no whole-term machine proof");
+}
+
+#[test]
+fn shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let v = Term::V;
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let shr = |a: Term| op(7, a, Term::Zero);
+    let laws = [
+        // closed argument: shr1 1 = 0
+        (Term::Zero, shr(op(4, Term::Zero, Term::Ones))),
+        // the arguments differ only in bit 0
+        (shr(op(0, v(0), v(0))), shr(op(4, op(0, v(0), v(0)), Term::Ones))),
+        (shr(op(0, op(4, v(0), Term::Ones), v(1))), shr(op(4, op(0, v(0), v(1)), Term::Ones))),
+        // shifts the rewriter pushes down to atoms (`shr1 (1)`, `shr1 -1`): closed by the mask on the original sides
+        (Term::Zero, shr(op(1, op(4, Term::Zero, Term::Ones), v(1)))),
+        (shr(op(1, op(3, v(0), v(1)), v(0))), shr(op(1, v(0), op(3, v(1), Term::Ones)))),
+    ];
+    for n in [1usize, 3, 4] {
+        for (l, r) in &laws {
+            let (p, s) = rewrite_law(n, 2, l, r).unwrap_or_else(|| panic!("no proof: {} = {} at n={n}", l.show(), r.show()));
+            ck(&format!("{} = {} at n={n}", l.show(), r.show()), &p, &s);
+        }
+    }
+    // not laws: the arguments differ above bit 0
+    for (l, r) in [(shr(op(0, v(0), v(1))), shr(op(0, v(0), v(0)))), (Term::Zero, shr(op(0, v(0), Term::Ones)))] {
+        assert!(rewrite_law(4, 2, &l, &r).is_none(), "{} = {}", l.show(), r.show());
+    }
 }
