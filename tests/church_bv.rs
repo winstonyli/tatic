@@ -2553,8 +2553,8 @@ thread_local! {
     /// Rules added at run time (by the rule miner), after the built-in ones.
     static EXTRA_RULES: std::cell::RefCell<Vec<(Term, Term)>> = Default::default();
 }
-/// How many more rule applications `rule_step` may make; the rule miner sets it per trial so that a candidate that
-/// undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
+// How many more rule applications `rule_step` may make; the rule miner sets it per trial so that a candidate that
+// undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
 thread_local! {
     static RULE_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(i64::MAX / 2) };
 }
@@ -2680,14 +2680,6 @@ impl Term {
             _ => 1,
         }
     }
-    /// All subterms (with repeats), the term itself first.
-    /// Operator nodes.
-    fn ops_count(&self) -> usize {
-        match self {
-            Term::Op(_, a, b) => 1 + a.ops_count() + b.ops_count(),
-            _ => 0,
-        }
-    }
     /// Occurrences of each variable (`out[v]`).
     fn occurrences(&self, out: &mut [usize; 8]) {
         match self {
@@ -2699,6 +2691,7 @@ impl Term {
             _ => {}
         }
     }
+    /// All subterms (with repeats), the term itself first.
     fn subterms(&self, out: &mut Vec<Term>) {
         out.push(self.clone());
         if let Term::Op(_, a, b) = self {
@@ -3039,8 +3032,8 @@ fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
     }
 }
 
-/// How many times `prove_eq` closed a pair with a whole-term machine proof (the rewriting did not finish the job).
-/// Per thread, so that the parallel miner's workers each read their own before/after difference.
+// How many times `prove_eq` closed a pair with a whole-term machine proof (the rewriting did not finish the job).
+// Per thread, so that the parallel miner's workers each read their own before/after difference.
 thread_local! {
     static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -4600,8 +4593,6 @@ fn shl_conjecture_miner() {
     let n = 4usize;
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (nv, cap) = (env("SHLMINER_VARS", 2), env("SHLMINER_MAX", 0));
-    let b = |o: usize, a: &Term, c: &Term| Term::Op(o, Box::new(a.clone()), Box::new(c.clone()));
-    let shl = |a: &Term| b(6, a, &Term::Zero);
     let mut conj = shl_conjectures(nv);
     if cap > 0 && conj.len() > cap {
         let stride = conj.len() / cap;
