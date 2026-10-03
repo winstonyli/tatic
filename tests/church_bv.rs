@@ -2784,16 +2784,25 @@ fn tie_greater(l: &Term, r: &Term) -> bool {
     }
 }
 
-/// `rule_order_ok`, or a tie in it (same weight, same variable occurrences) broken by `tie_greater`.
-fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
-    if rule_order_ok(l, r) {
-        return true;
-    }
+/// Whether `l` and `r` tie in the rule order: same weight and same variable occurrences.
+fn rule_tied(l: &Term, r: &Term) -> bool {
     let ((cl, al), (cr, ar)) = (rule_weight(l), rule_weight(r));
     let (mut lo, mut ro) = ([0usize; 8], [0usize; 8]);
     l.occurrences(&mut lo);
     r.occurrences(&mut ro);
-    cl == cr && al == ar && lo.iter().sum::<usize>() == ro.iter().sum::<usize>() && tie_greater(l, r)
+    cl == cr && al == ar && lo.iter().sum::<usize>() == ro.iter().sum::<usize>()
+}
+
+/// A permutative rule: tied in the rule order and not oriented by `tie_greater` either way (`add(sub(x, y), z) ->
+/// add(sub(z, y), x)`). `rule_step` applies it only when the instance's right side is smaller than its left side by
+/// `show()`, a total order on the instances (ordered rewriting), so it cannot undo itself.
+fn rule_permutative(l: &Term, r: &Term) -> bool {
+    !rule_order_ok(l, r) && rule_tied(l, r) && !tie_greater(l, r) && !tie_greater(r, l)
+}
+
+/// `rule_order_ok`, or a tie in it broken by `tie_greater`, or a permutative rule.
+fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
+    rule_order_ok(l, r) || (rule_tied(l, r) && (tie_greater(l, r) || rule_permutative(l, r)))
 }
 
 fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
@@ -2832,6 +2841,10 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
         }
         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
         if subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() == t.show() {
+            continue;
+        }
+        // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
+        if rule_permutative(&r.lhs, &r.rhs) && subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() >= t.show() {
             continue;
         }
         if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
@@ -5269,6 +5282,15 @@ fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: u
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
+    } else if family == "mix3" {
+        // bit-trick laws: arithmetic and bitwise operators and `shl1` mixed over three variables (section 73)
+        pool_conjectures(mix3_pool(), n, 3, 0)
+            .into_iter()
+            .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+            .step_by(env("RULEMINER_STRIDE", 1))
+            .take(env("RULEMINER_LAWS", 250))
+            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
+            .collect()
     } else if family == "lt" {
         let pool = lt_pool(2);
         let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(5, Box::new(a.clone()), Box::new(b.clone()))));
@@ -5304,7 +5326,7 @@ fn rule_miner() {
     };
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
-    let (n, nv, kv) = (4usize, 2usize, if family == "add3" { 3usize } else { 2 });
+    let (n, nv, kv) = (4usize, 2usize, if family == "add3" || family == "mix3" { 3usize } else { 2 });
     let ops = ops_for(n);
     let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
     let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
@@ -5548,6 +5570,17 @@ fn rule_miner() {
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (fixed, size)
     };
+    // RULEMINER_BUNDLE=1: also score all provable candidates added together (rules that only work in combination, section 73)
+    if env("RULEMINER_BUNDLE", 0) == 1 {
+        let all: Vec<(Term, Term)> = provable.iter().map(|c| (*c).clone()).collect();
+        let (f, _) = score(&all);
+        println!("RULEMINER bundle of {} rules covers {} of {} stragglers", all.len(), f.iter().filter(|c| **c).count(), stragglers.len());
+        for (st, c) in stragglers.iter().zip(&f) {
+            if !c {
+                println!("RULEMINER bundle uncovered: {}", st.0);
+            }
+        }
+    }
     let mut chosen: Vec<(Term, Term)> = vec![];
     let (mut covered, mut size) = score(&chosen);
     for _ in 0..env("RULEMINER_ROUNDS", 8) {
@@ -6095,6 +6128,39 @@ fn add3_pool(deep: bool) -> Vec<Term> {
     }
 }
 
+/// The pool of the `mix3` family: depth-1 terms over `x`, `y`, `z` and the constants (all of `add`, `and`, `or`, `xor`, `sub`
+/// and `shl1`), then each operator over a depth-1 term and a leaf (both orders) and `shl1` of a depth-1 term, and the sum of
+/// two depth-1 terms.
+fn mix3_pool() -> Vec<Term> {
+    let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
+    let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
+    let mut d1 = leaves.clone();
+    for o in 0..5 {
+        for a in &leaves {
+            for b in &leaves {
+                d1.push(op(o, a, b));
+            }
+        }
+    }
+    d1.extend(leaves.iter().map(|a| op(6, a, &Term::Zero)));
+    let mut p = d1.clone();
+    for o in 0..5 {
+        for a in &d1 {
+            for b in &leaves {
+                p.push(op(o, a, b));
+                p.push(op(o, b, a));
+            }
+        }
+    }
+    p.extend(d1.iter().map(|a| op(6, a, &Term::Zero)));
+    for a in &d1 {
+        for b in &d1 {
+            p.push(op(0, a, b));
+        }
+    }
+    p
+}
+
 /// Three-variable probe (benchmark with headroom): equal pairs of the depth-1 pool over `x`, `y`, `z`, proved by
 /// `rewrite_law` at width 4, counting the ones that still need a whole-term machine proof.
 #[test]
@@ -6198,4 +6264,12 @@ fn tie_break_orients_reassociation_not_commutativity() {
     }
     let (l, r) = (t("add(x, y)"), t("add(y, x)"));
     assert!(!rule_order_or_tie(&l, &r) && !rule_order_or_tie(&r, &l));
+}
+
+#[test]
+fn permutative_rules_are_admitted_and_oriented_by_instance() {
+    let t = |s: &str| parse_term(s);
+    let (l, r) = (t("add(sub(x, y), z)"), t("add(sub(z, y), x)"));
+    assert!(rule_permutative(&l, &r) && rule_order_or_tie(&l, &r));
+    assert!(!rule_permutative(&t("sub(sub(x, y), z)"), &t("sub(x, add(y, z))")), "reassociation is oriented by the tie-break instead");
 }
