@@ -5104,6 +5104,34 @@ fn rewrite_rules_over_the_mul_laws() {
     println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
 }
 
+/// The candidate laws of a miner family (`mul`, `shl`, `lt`, `shr`; the `RULEMINER_*` env vars size them).
+fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
+    if family == "shl" {
+        let conj = shl_conjectures(2);
+        let stride = (conj.len() / env("RULEMINER_LAWS", 250)).max(1);
+        conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+    } else if family == "shr" {
+        // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
+        // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
+        let pool = if env("RULEMINER_DEEP", 0) == 1 { terms(2, true) } else { lt_pool(2) };
+        let shr = |a: &Term| Term::Op(7, Box::new(a.clone()), Box::new(Term::Zero));
+        let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
+        pool_conjectures(all, n, nv, 0)
+            .into_iter()
+            .filter(|(a, b)| a.has_shift() || b.has_shift())
+            .step_by(env("RULEMINER_STRIDE", 1))
+            .take(env("RULEMINER_LAWS", 250))
+            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
+            .collect()
+    } else if family == "lt" {
+        let pool = lt_pool(2);
+        let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(5, Box::new(a.clone()), Box::new(b.clone()))));
+        pool_conjectures(all, n, nv, env("RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+    } else {
+        mul_laws(max)
+    }
+}
+
 /// Rule miner (search note section 36): candidate rules are the equal pairs of the `shl1` pool (two variables, width 4,
 /// the shl miner's pool), oriented to a strictly smaller right side and proved by `add_tree_law`. The targets are the
 /// mul laws that still needed a whole-term machine proof under the built-in rules (the "stragglers"). A candidate is
@@ -5128,30 +5156,7 @@ fn rule_miner() {
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
-    let laws: Vec<(String, Term, Term)> = if family == "shl" {
-        let conj = shl_conjectures(2);
-        let stride = (conj.len() / env("RULEMINER_LAWS", 250)).max(1);
-        conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-    } else if family == "shr" {
-        // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
-        // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
-        let pool = if env("RULEMINER_DEEP", 0) == 1 { terms(2, true) } else { lt_pool(2) };
-        let shr = |a: &Term| Term::Op(7, Box::new(a.clone()), Box::new(Term::Zero));
-        let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
-        pool_conjectures(all, n, nv, 0)
-            .into_iter()
-            .filter(|(a, b)| a.has_shift() || b.has_shift())
-            .step_by(env("RULEMINER_STRIDE", 1))
-            .take(env("RULEMINER_LAWS", 250))
-            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
-            .collect()
-    } else if family == "lt" {
-        let pool = lt_pool(2);
-        let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(5, Box::new(a.clone()), Box::new(b.clone()))));
-        pool_conjectures(all, n, nv, env("RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-    } else {
-        mul_laws(max)
-    };
+    let laws = family_laws(&family, &env, n, nv, max);
     let mut unproved = 0usize;
     for (name, t1, t2) in laws.iter().cloned() {
         if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
@@ -5699,16 +5704,44 @@ fn mul_circuit_three_vector_laws() {
     }
 }
 
+/// Whether `l -> r` decreases in the rule order and is provable at widths 3 and 4 (the admission test for a rule).
+fn rule_admissible(l: &Term, r: &Term) -> bool {
+    rule_order_ok(l, r) && [3usize, 4].iter().all(|&n| prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some())
+}
+
 #[test]
 fn promoted_rules_are_ordered_and_provable() {
     let _scope = tatic::kernel::InternScope::enter();
     for (l, r) in promoted_rules() {
         assert_eq!(parse_term(&l.show()).show(), l.show());
-        assert!(rule_order_ok(l, r), "{} -> {} is not decreasing in the rule order", l.show(), r.show());
-        for n in [3usize, 4] {
-            assert!(prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some(), "{} -> {} not provable at width {n}", l.show(), r.show());
+        assert!(rule_admissible(l, r), "{} -> {} is not decreasing in the rule order or not provable at widths 3 and 4", l.show(), r.show());
+    }
+}
+
+/// The admission test refuses wrong rules: every promoted rule with its right side replaced by another promoted rule's
+/// right side over the same variables (so it stays well-formed and, where the order allows, decreasing) is refused unless
+/// it happens to be a true law.
+#[test]
+fn rule_admission_refuses_wrong_rules() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let rs = promoted_rules();
+    let (mut refused, mut tried) = (0, 0);
+    for (l, _) in rs {
+        for (_, r) in rs {
+            let vars = |t: &Term| (0..8).filter(|v| t.show().contains(VARS[*v])).collect::<Vec<_>>();
+            if vars(r).iter().any(|v| !vars(l).contains(v)) || l.size() <= r.size() {
+                continue;
+            }
+            tried += 1;
+            let true_law = (1..=6).all(|w| l.plausibly_equals(r, w, 2));
+            if !true_law {
+                assert!(!rule_admissible(l, r), "wrong rule admitted: {} -> {}", l.show(), r.show());
+                refused += 1;
+            }
         }
     }
+    println!("ADMISSION {refused} wrong rules refused of {tried} tried");
+    assert!(refused > 50, "too few wrong rules exercised: {refused}");
 }
 
 /// Probe (search note section 61): the 7 non-constant `lt` stragglers restated through the borrow bit, at width 4.
@@ -5748,4 +5781,51 @@ fn lt_borrow_bit_probe() {
         let via = rewrite_law(4, 2, &bl, &br).is_some();
         println!("BORROW {} = {}: lt form proved={direct} machine proofs {direct_fell}; borrow form proved={via} machine proofs {}", l.show(), r.show(), fall() - before);
     }
+}
+
+/// Soundness sweep (search note section 64). `SWEEP_FAMILY` (mul, shl, lt, shr; sized by the `RULEMINER_*` vars),
+/// `SWEEP_WIDTHS` (default `3,4`). (A) Every law plausible at widths 1-6 that the rewriter proves is kernel-checked at each
+/// width. (B) Every law equal at width 4 but false at some width `w` in 1..=6 must be refused at `w` (no proof, or a proof
+/// the kernel rejects). Prints counts; panics on a failed check or an accepted false law.
+#[test]
+#[ignore]
+fn soundness_sweep() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("SWEEP machine at start: {}", machine_state());
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
+    let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "3,4".into()).split(',').map(|w| w.parse().unwrap()).collect();
+    let laws = family_laws(&family, &env, 4, 2, env("MULMINER_MAX", 7) as u32);
+    let capped = |t: &Term, w: usize| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap()) && w > 0;
+    let (mut checked, mut unproved, mut refused, mut false_laws) = (0usize, 0usize, 0usize, 0usize);
+    let t0 = Instant::now();
+    for (name, t1, t2) in &laws {
+        if capped(t1, 1) || capped(t2, 1) {
+            continue;
+        }
+        let true_everywhere = (1..=6).all(|w| t1.plausibly_equals(t2, w, 2));
+        if true_everywhere {
+            for &w in &widths {
+                match rewrite_law(w, 2, t1, t2) {
+                    Some((p, s)) => {
+                        if let Err(m) = check(&Ctx::new(), &p, &s) {
+                            panic!("kernel rejected the proof of {name} at width {w}: {}", m.chars().take(300).collect::<String>());
+                        }
+                        checked += 1;
+                    }
+                    None => unproved += 1,
+                }
+            }
+        } else {
+            false_laws += 1;
+            for w in (1..=6).filter(|w| !t1.plausibly_equals(t2, *w, 2)) {
+                if let Some((p, s)) = rewrite_law(w, 2, t1, t2) {
+                    assert!(check(&Ctx::new(), &p, &s).is_err(), "FALSE law accepted: {name} at width {w}");
+                }
+                refused += 1;
+            }
+        }
+    }
+    println!("SWEEP {family}: {} laws; true: {checked} proofs kernel-checked at widths {widths:?}, {unproved} unproved; false at some width: {false_laws} laws, {refused} (law, width) pairs refused; {:?}", laws.len(), t0.elapsed());
+    println!("SWEEP machine at end: {}", machine_state());
 }
