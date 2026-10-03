@@ -5664,3 +5664,42 @@ fn promoted_rules_are_ordered_and_provable() {
         }
     }
 }
+
+/// Probe (search note section 61): the 7 non-constant `lt` stragglers restated through the borrow bit, at width 4.
+/// `lt(a, b)` is the top bit of `B(a, b) = (~a & b) | (~(a ^ b) & (a - b))`, so `lt(a, b) = lt(c, d)` becomes the
+/// shift-free law `B(a, b) & TOP = B(c, d) & TOP` (`TOP` = 8). Prints, per law, whether the rewriter proves it and how many
+/// whole-term machine proofs it still needed, next to the same count for the `lt` form.
+#[test]
+#[ignore]
+fn lt_borrow_bit_probe() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let b = |o: usize, a: Term, c: Term| Term::Op(o, Box::new(a), Box::new(c));
+    let not = |a: Term| b(3, a, Term::Ones);
+    let one = b(4, Term::Zero, Term::Ones);
+    let top = b(6, b(6, b(6, one, Term::Zero), Term::Zero), Term::Zero);
+    let borrow = |t: &Term| -> Term {
+        let Term::Op(5, x, y) = t else { panic!("not an lt") };
+        let (x, y) = ((**x).clone(), (**y).clone());
+        b(2, b(1, not(x.clone()), y.clone()), b(1, not(b(3, x.clone(), y.clone())), b(4, x, y)))
+    };
+    let laws = [
+        ("lt(0, xor(x, y))", "lt(and(0, y), sub(y, x))"),
+        ("lt(add(x, x), x)", "lt(sub(-1, x), xor(x, 0))"),
+        ("lt(add(x, y), -1)", "lt(xor(y, x), or(0, -1))"),
+        ("lt(add(y, y), y)", "lt(sub(-1, y), and(y, y))"),
+        ("lt(x, add(x, x))", "lt(or(0, x), sub(0, x))"),
+        ("lt(x, xor(y, -1))", "lt(or(y, 0), xor(-1, x))"),
+        ("lt(y, add(y, y))", "lt(xor(y, 0), sub(0, y))"),
+    ];
+    for (l, r) in laws {
+        let (l, r) = (parse_term(l), parse_term(r));
+        let fall = || MACHINE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+        let before = fall();
+        let direct = rewrite_law(4, 2, &l, &r).is_some();
+        let direct_fell = fall() - before;
+        let (bl, br) = (b(1, borrow(&l), top.clone()), b(1, borrow(&r), top.clone()));
+        let before = fall();
+        let via = rewrite_law(4, 2, &bl, &br).is_some();
+        println!("BORROW {} = {}: lt form proved={direct} machine proofs {direct_fell}; borrow form proved={via} machine proofs {}", l.show(), r.show(), fall() - before);
+    }
+}
