@@ -2547,6 +2547,9 @@ struct Rule {
 }
 
 thread_local! {
+    /// Set by the rule miner while scoring (`RULEMINER_FAST=1`): `prove_eq` counts a machine fallback without building its proof
+    /// (the returned proof is a placeholder, never checked).
+    static SCORE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Rules added at run time (by the rule miner), after the built-in ones.
     static EXTRA_RULES: std::cell::RefCell<Vec<(Term, Term)>> = Default::default();
 }
@@ -3109,6 +3112,11 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
                 return Some(p);
             }
         }
+    }
+    // scoring mode: only whether the rewriting needed this fallback matters, so count it without building the machine proof
+    if SCORE_ONLY.with(|s| s.get()) && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap() {
+        MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
+        return Some(var(0));
     }
     // the carry-encoding proof for the two terms as bit-serial machines, at the variables' values
     let law = add_tree_law(n, k, a, b)?;
@@ -5287,9 +5295,13 @@ fn rule_miner() {
     println!("RULEMINER machine at start: {}", machine_state());
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (max, trials) = (env("MULMINER_MAX", 7) as u32, env("RULEMINER_TRIALS", 400));
-    // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70); the step budget
+    // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70), 2: no order check; the step budget
     // and the same-term check in `rule_step` still back up termination, and soundness is unaffected
-    let ok_order = |l: &Term, r: &Term| if env("RULEMINER_PERM", 0) == 1 { rule_order_or_tie(l, r) } else { rule_order_ok(l, r) };
+    let ok_order = |l: &Term, r: &Term| match env("RULEMINER_PERM", 0) {
+        0 => rule_order_ok(l, r),
+        1 => rule_order_or_tie(l, r),
+        _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
+    };
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family == "add3" { 3usize } else { 2 });
@@ -5512,7 +5524,9 @@ fn rule_miner() {
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         EXTRA_RULES.with(|e| *e.borrow_mut() = extra.to_vec());
-        let budget = || RULE_BUDGET.with(|b| b.set(200));
+        let steps = env("RULEMINER_STEPS", 200) as i64;
+        let budget = || RULE_BUDGET.with(|b| b.set(steps));
+        SCORE_ONLY.with(|s| s.set(env("RULEMINER_FAST", 0) == 1));
         let (mut fixed, mut size) = (vec![false; stragglers.len()], 0i64);
         for (si, s) in stragglers.iter().enumerate() {
             budget();
@@ -5529,6 +5543,7 @@ fn rule_miner() {
             };
             size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
         }
+        SCORE_ONLY.with(|s| s.set(false));
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (fixed, size)
@@ -5548,7 +5563,12 @@ fn rule_miner() {
                     .map(|&i| {
                         let mut with = chosen.clone();
                         with.push(provable[i].clone());
-                        (i, score(&with))
+                        let t = Instant::now();
+                        let r = score(&with);
+                        if env("RULEMINER_TRACE", 0) == 1 {
+                            println!("RULEMINER trace candidate {i}: {:.1}s", t.elapsed().as_secs_f64());
+                        }
+                        (i, r)
                     })
                     .collect()
             };
