@@ -1,0 +1,23 @@
+add(sub(x, y), z) -> sub(add(x, z), y)
+add(x, sub(y, z)) -> sub(add(x, y), z)
+sub(x, sub(y, z)) -> sub(add(x, z), y)
+sub(sub(x, y), z) -> sub(x, add(y, z))
+add(sub(x, y), z) -> add(sub(z, y), x)
+sub(sub(x, y), z) -> sub(sub(x, z), y)
+add(add(x, y), z) -> add(add(x, z), y)
+sub(x, xor(y, -1)) -> sub(add(x, y), -1)
+sub(add(x, y), x) -> y
+sub(add(y, x), x) -> y
+add(sub(x, y), y) -> x
+add(y, sub(x, y)) -> x
+sub(add(x, add(y, z)), z) -> add(x, y)
+sub(add(x, add(y, z)), y) -> add(x, z)
+sub(add(x, add(y, z)), x) -> add(y, z)
+sub(add(add(x, y), z), z) -> add(x, y)
+sub(add(add(x, y), z), y) -> add(x, z)
+sub(add(add(x, y), z), x) -> add(y, z)
+sub(add(x, y), add(x, z)) -> sub(y, z)
+sub(add(x, y), add(z, x)) -> sub(y, z)
+sub(add(y, x), add(x, z)) -> sub(y, z)
+sub(add(y, x), add(z, x)) -> sub(y, z)
+add(xor(x, -1), y) -> add(-1, sub(y, x))

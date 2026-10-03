@@ -2828,6 +2828,9 @@ fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
     }
 }
 
+/// Print every rule application (set by the `normal_forms` debug test).
+static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Instances of `rule_step` by rule name, for the audit.
 static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
 
@@ -2842,6 +2845,9 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
         if subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() == t.show() {
             continue;
+        }
+        if TRACE_RULES.load(std::sync::atomic::Ordering::Relaxed) {
+            println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
         if rule_permutative(&r.lhs, &r.rhs) && subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() >= t.show() {
@@ -6289,6 +6295,7 @@ fn normal_forms() {
     let _scope = tatic::kernel::InternScope::enter();
     let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("NF_RULES").unwrap_or_default()).unwrap_or_default().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
     EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+    TRACE_RULES.store(std::env::var("NF_TRACE").is_ok(), std::sync::atomic::Ordering::Relaxed);
     RULE_BUDGET.with(|b| b.set(200));
     let (n, k) = (4, 3);
     let ops = ops_for(n);
@@ -6300,4 +6307,36 @@ fn normal_forms() {
         let (na, nb) = (rewrite(&a, n, &ops, &goods).0, rewrite(&b, n, &ops, &goods).0);
         println!("NF {} | {} {}", na.show(), nb.show(), if na.show() == nb.show() { "SAME" } else { "DIFF" });
     }
+}
+
+/// Kernel check of a rule set (search note section 75): every law of `CHECK_FAMILY` (sized by the `RULEMINER_*` vars, as in
+/// `rule_miner`) that `rewrite_law` proves under the built-in rules (less `ABLATE`) plus the rules in `CHECK_RULES` is
+/// checked by the kernel at width 4; prints how many were proved, how many without a whole-term machine proof.
+#[test]
+#[ignore]
+fn rule_set_kernel_check() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
+    let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+    let kv = if family == "add3" || family == "mix3" { 3 } else { 2 };
+    let laws = family_laws(&family, &env, 4, kv, 7);
+    EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+    let (mut proved, mut free, mut none) = (0, 0, 0);
+    for (name, t1, t2) in laws {
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) {
+            continue;
+        }
+        RULE_BUDGET.with(|b| b.set(200));
+        let before = MACHINE_FALLBACKS.with(|c| c.get());
+        match rewrite_law(4, kv, &t1, &t2) {
+            Some((p, s)) => {
+                ck(&name, &p, &s);
+                proved += 1;
+                free += (MACHINE_FALLBACKS.with(|c| c.get()) == before) as u32;
+            }
+            None => none += 1,
+        }
+    }
+    println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved");
 }
