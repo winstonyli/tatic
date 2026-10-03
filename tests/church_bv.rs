@@ -5325,6 +5325,9 @@ fn rule_miner() {
         _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
     };
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
+    // RULEMINER_BASE=<file>: rules (`lhs -> rhs` lines) in force throughout, the stragglers are those left with them (section 74)
+    let base: Vec<(Term, Term)> = std::env::var("RULEMINER_BASE").ok().map(|f| std::fs::read_to_string(f).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()).unwrap_or_default();
+    EXTRA_RULES.with(|e| *e.borrow_mut() = base.clone());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family == "add3" || family == "mix3" { 3usize } else { 2 });
     let ops = ops_for(n);
@@ -5340,6 +5343,8 @@ fn rule_miner() {
         }
         let before = fallbacks();
         let t = Instant::now();
+        // base rules may loop; the step budget bounds them (the built-in rules never reach it)
+        RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { env("RULEMINER_STEPS", 200) as i64 }));
         let r = rewrite_law(n, kv, &t1, &t2);
         let took = t.elapsed();
         let fell = fallbacks() - before;
@@ -5347,6 +5352,7 @@ fn rule_miner() {
         unproved += r.is_none() as usize;
         let fell = if r.is_none() { fell.max(1) } else { fell };
         if r.is_none() || fell > 0 {
+            RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { env("RULEMINER_STEPS", 200) as i64 }));
             let normal = [rewrite(&t1, n, &ops, &goods).0, rewrite(&t2, n, &ops, &goods).0];
             println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
             stragglers.push((name, t1, t2, normal, fell, took));
@@ -5545,7 +5551,7 @@ fn rule_miner() {
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
-        EXTRA_RULES.with(|e| *e.borrow_mut() = extra.to_vec());
+        EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(extra).cloned().collect());
         let steps = env("RULEMINER_STEPS", 200) as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
         SCORE_ONLY.with(|s| s.set(env("RULEMINER_FAST", 0) == 1));
@@ -6273,4 +6279,25 @@ fn permutative_rules_are_admitted_and_oriented_by_instance() {
     let (l, r) = (t("add(sub(x, y), z)"), t("add(sub(z, y), x)"));
     assert!(rule_permutative(&l, &r) && rule_order_or_tie(&l, &r));
     assert!(!rule_permutative(&t("sub(sub(x, y), z)"), &t("sub(x, add(y, z))")), "reassociation is oriented by the tie-break instead");
+}
+
+/// Debug aid: the normal forms of both sides of the laws in `NF_LAWS` (`lhs = rhs` per line) under the built-in rules plus
+/// the `lhs -> rhs` rules in `NF_RULES`, three variables, width 4.
+#[test]
+#[ignore]
+fn normal_forms() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("NF_RULES").unwrap_or_default()).unwrap_or_default().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+    EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+    RULE_BUDGET.with(|b| b.set(200));
+    let (n, k) = (4, 3);
+    let ops = ops_for(n);
+    let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
+    for line in std::fs::read_to_string(std::env::var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
+        let (a, b) = line.split_once(" = ").unwrap();
+        let (a, b) = (parse_term(a), parse_term(b));
+        RULE_BUDGET.with(|c| c.set(200));
+        let (na, nb) = (rewrite(&a, n, &ops, &goods).0, rewrite(&b, n, &ops, &goods).0);
+        println!("NF {} | {} {}", na.show(), nb.show(), if na.show() == nb.show() { "SAME" } else { "DIFF" });
+    }
 }
