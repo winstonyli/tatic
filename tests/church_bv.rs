@@ -5412,3 +5412,28 @@ fn shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones() {
         assert!(rewrite_law(4, 2, &l, &r).is_none(), "{} = {}", l.show(), r.show());
     }
 }
+
+/// Lemma ablation, end to end (search note section 51): the library lemmas `add x 0 = x`, `add 0 x = x`, `add x y = add y x`,
+/// `add x ~x = -1` and associativity are proved from the statement alone, by the Moore-refinement encoding search inside
+/// `add_tree_law` (no rewrite rule, no hand-written invariant), and checked by the kernel at several widths.
+#[test]
+fn encoding_search_rediscovers_library_lemmas_from_statements() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let v = Term::V;
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let laws = [
+        ("add x 0 = x", 1, op(0, v(0), Term::Zero), v(0)),
+        ("add 0 x = x", 1, op(0, Term::Zero, v(0)), v(0)),
+        ("add x y = add y x", 2, op(0, v(0), v(1)), op(0, v(1), v(0))),
+        ("add x ~x = -1", 1, op(0, v(0), op(3, v(0), Term::Ones)), Term::Ones),
+        ("add (add x y) z = add x (add y z)", 3, op(0, op(0, v(0), v(1)), v(2)), op(0, v(0), op(0, v(1), v(2)))),
+    ];
+    for n in [1usize, 3, 4] {
+        for (name, k, l, r) in &laws {
+            let (p, s) = add_tree_law(n, *k, l, r).unwrap_or_else(|| panic!("no proof: {name} at n={n}"));
+            ck(&format!("{name} at n={n}"), &p, &s);
+        }
+    }
+    // a non-law is refused
+    assert!(add_tree_law(4, 2, &op(0, v(0), v(1)), &op(0, v(0), v(0))).is_none());
+}
