@@ -2754,6 +2754,45 @@ fn rule_order_ok(l: &Term, r: &Term) -> bool {
     diff >= 1 || (diff == 0 && ro.iter().sum::<usize>() < lo.iter().sum::<usize>())
 }
 
+/// Head precedence for the tie-break order (`add` highest, then `sub`, `xor`, `and`, `or`, `lt`, the shifts).
+fn head_prec(o: usize) -> i32 {
+    [6, 3, 2, 4, 5, 1, 0, 0][o]
+}
+
+/// The tie-break of the rule order (search note section 70), for patterns of equal weight and equal variable counts: `l`
+/// above `r` by head precedence, else, for equal heads, at the first differing operand pair (left to right) by size and
+/// then recursively. It orients reassociation rules (`sub(sub(x, y), z) -> sub(x, add(y, z))`) and `add`/`sub`
+/// exchanges, not commutativity (`add(x, y) -> add(y, x)` has variables at the differing pair).
+fn tie_greater(l: &Term, r: &Term) -> bool {
+    match (l, r) {
+        (Term::Op(lo, la, lb), Term::Op(ro, ra, rb)) => {
+            if lo != ro {
+                return head_prec(*lo) > head_prec(*ro);
+            }
+            for (a, b) in [(la, ra), (lb, rb)] {
+                if a.show() != b.show() {
+                    return a.size() > b.size() || (a.size() == b.size() && tie_greater(a, b));
+                }
+            }
+            false
+        }
+        (Term::Op(..), _) => true,
+        _ => false,
+    }
+}
+
+/// `rule_order_ok`, or a tie in it (same weight, same variable occurrences) broken by `tie_greater`.
+fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
+    if rule_order_ok(l, r) {
+        return true;
+    }
+    let ((cl, al), (cr, ar)) = (rule_weight(l), rule_weight(r));
+    let (mut lo, mut ro) = ([0usize; 8], [0usize; 8]);
+    l.occurrences(&mut lo);
+    r.occurrences(&mut ro);
+    cl == cr && al == ar && lo.iter().sum::<usize>() == ro.iter().sum::<usize>() && tie_greater(l, r)
+}
+
 fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
     match (p, t) {
         (Term::V(i), _) => match &sub[*i] {
@@ -5215,9 +5254,11 @@ fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: u
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
     } else if family == "add3" {
-        pool_conjectures(add3_pool(), n, 3, 0)
+        pool_conjectures(add3_pool(env("RULEMINER_DEEP3", 0) == 1), n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+            .step_by(env("RULEMINER_STRIDE", 1))
+            .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
     } else if family == "lt" {
@@ -5246,6 +5287,9 @@ fn rule_miner() {
     println!("RULEMINER machine at start: {}", machine_state());
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (max, trials) = (env("MULMINER_MAX", 7) as u32, env("RULEMINER_TRIALS", 400));
+    // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70); the step budget
+    // and the same-term check in `rule_step` still back up termination, and soundness is unaffected
+    let ok_order = |l: &Term, r: &Term| if env("RULEMINER_PERM", 0) == 1 { rule_order_or_tie(l, r) } else { rule_order_ok(l, r) };
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family == "add3" { 3usize } else { 2 });
@@ -5370,7 +5414,7 @@ fn rule_miner() {
                 let Some(group) = (if is_lt { &index_lt } else { &index }).get(&sig(&pat)) else { continue };
                 let uses = |t: &Term, v: usize| t.has_var(v);
                 let _ = is_lt;
-                for r in group.iter().filter(|r| rule_order_ok(&pat, r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
+                for r in group.iter().filter(|r| ok_order(&pat, r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
                     cands.push((pat.clone(), r.clone()));
                 }
             }
@@ -5415,7 +5459,7 @@ fn rule_miner() {
                                 _ => t.clone(),
                             }
                         }
-                        if bare(&yy) && yy.size() < pat.size() + 4 && (!strict || rule_order_ok(&pat, &renum(&yy))) && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
+                        if bare(&yy) && yy.size() < pat.size() + 4 && (!strict || ok_order(&pat, &renum(&yy))) && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
                             cands.push((pat.clone(), renum(&yy)));
                         }
                     }
@@ -5429,9 +5473,6 @@ fn rule_miner() {
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
     // the pilot's proposers replace the miner's own generator (`RULEMINER_PROPOSER`: random, transfer; section 66)
     let proposer = std::env::var("RULEMINER_PROPOSER").unwrap_or_else(|_| "mined".into());
-    // RULEMINER_LOOSE=1: a proposed rule need not go down in the rule order (permutation and reassociation rules tie in it);
-    // the step budget and the same-term check in `rule_step` then keep the rewriter terminating, and soundness is unaffected
-    let loose = env("RULEMINER_LOOSE", 0) == 1;
     if proposer != "mined" {
         // `goal`: each straggler's normalized sides as a rule, in both directions (the goal-as-lemma baseline, section 69)
         cands = if proposer == "goal" {
@@ -5439,7 +5480,7 @@ fn rule_miner() {
         } else {
             pilot_candidates(&proposer, &env)
         };
-        let ordered = cands.iter().filter(|(l, r)| loose || rule_order_ok(l, r)).count();
+        let ordered = cands.iter().filter(|(l, r)| ok_order(l, r)).count();
         println!("RULEMINER proposer {proposer}: {} proposed, {ordered} decreasing in the rule order", cands.len());
     }
     phase("candidate generation");
@@ -5462,7 +5503,7 @@ fn rule_miner() {
     // cumulative greedy: each round adds the candidate that, on top of the rules chosen so far, fixes the most
     // stragglers (no whole-term machine proof) and then shrinks the normalized terms most; a straggler often needs two
     // rules together, which a one-rule-at-a-time score cannot see
-    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| (proposer == "mined" || loose || rule_order_ok(l, r)) && prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
+    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| (proposer == "mined" || ok_order(l, r)) && prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
     println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
     phase("provable filter");
     let score = |extra: &[(Term, Term)]| -> (Vec<bool>, i64) {
@@ -5998,7 +6039,9 @@ fn scaling_sweep() {
 }
 
 /// The pool of the `add3` family: terms over `x`, `y`, `z` with at most one sum or difference above depth-1 terms.
-fn add3_pool() -> Vec<Term> {
+///
+/// `deep`: also the sums and differences of two depth-1 terms built from `add`, `sub` and `xor` (about 2^15 more terms).
+fn add3_pool(deep: bool) -> Vec<Term> {
     {
         let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
         let mut p = leaves.clone();
@@ -6018,6 +6061,16 @@ fn add3_pool() -> Vec<Term> {
                 }
             }
         }
+        if deep {
+            let arith: Vec<Term> = d1.iter().filter(|t| matches!(t, Term::Op(0 | 3 | 4, ..))).cloned().collect();
+            for o in [0usize, 4] {
+                for a in &arith {
+                    for b in &arith {
+                        p.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+                    }
+                }
+            }
+        }
         p
     }
 }
@@ -6029,7 +6082,7 @@ fn add3_pool() -> Vec<Term> {
 fn three_var_probe() {
     let _scope = tatic::kernel::InternScope::enter();
     println!("PROBE3 machine at start: {}", machine_state());
-    let pool = add3_pool();
+    let pool = add3_pool(false);
     let conj = pool_conjectures(pool.clone(), 4, 3, 0);
     println!("PROBE3 pool {} terms, {} conjectures", pool.len(), conj.len());
     let (mut ok, mut straggler, mut unproved) = (0, 0, 0);
@@ -6076,7 +6129,7 @@ fn mint_corpus() {
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (max, per_left) = (env("CORPUS_MAX", 3000), env("CORPUS_PER_LEFT", 6));
     let mut pool = terms(2, true);
-    pool.extend(add3_pool());
+    pool.extend(add3_pool(false));
     let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
     for t in pool {
         let sig = (0..4096u128).map(|i| t.interp(4, &[i & 15, i >> 4 & 15, i >> 8])).collect();
@@ -6113,4 +6166,16 @@ fn mint_corpus() {
     std::fs::write(&path, out).unwrap();
     println!("CORPUS {kept} rules kept of {tried} tried, written to {path}");
     println!("CORPUS machine at end: {}", machine_state());
+}
+
+#[test]
+fn tie_break_orients_reassociation_not_commutativity() {
+    let t = |s: &str| parse_term(s);
+    for (l, r) in [("sub(sub(x, y), z)", "sub(x, add(y, z))"), ("add(sub(x, y), z)", "sub(add(x, z), y)")] {
+        let (l, r) = (t(l), t(r));
+        assert!(!rule_order_ok(&l, &r) && rule_order_or_tie(&l, &r), "{} -> {}", l.show(), r.show());
+        assert!(!rule_order_or_tie(&r, &l), "{} -> {} must not be oriented both ways", r.show(), l.show());
+    }
+    let (l, r) = (t("add(x, y)"), t("add(y, x)"));
+    assert!(!rule_order_or_tie(&l, &r) && !rule_order_or_tie(&r, &l));
 }
