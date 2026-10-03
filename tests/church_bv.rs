@@ -5104,6 +5104,70 @@ fn rewrite_rules_over_the_mul_laws() {
     println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
 }
 
+/// Proposers for the pilot (search note section 66), used by `rule_miner` instead of its own candidate generator when
+/// `RULEMINER_PROPOSER` is set: `random` (`RULEMINER_PROPOSALS` random rules, default 20000, no value check; the verifier alone decides)
+/// or `transfer` (the first 20 promoted rules, mined on mul, shl and lt only, with every variable replaced by `x`, `y`, `0` or `-1`).
+fn pilot_candidates(proposer: &str, env: &dyn Fn(&str, usize) -> usize) -> Vec<(Term, Term)> {
+    let mut out: Vec<(Term, Term)> = vec![];
+    match proposer {
+        "random" => {
+            let mut seed = 0x2545_f491_4f6c_dd1du64;
+            let mut next = move |m: usize| -> usize {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed >> 11) as usize % m
+            };
+            // a random term of exactly `size` nodes over the leaves `x`, `y`, `0`, `-1` and the ops add, and, or, xor, sub, shl1, shr1
+            fn rand_term(size: usize, next: &mut dyn FnMut(usize) -> usize) -> Term {
+                if size == 1 {
+                    return [Term::V(0), Term::V(1), Term::Zero, Term::Ones][next(4)].clone();
+                }
+                let o = if size == 2 { 6 + next(2) } else { [0usize, 1, 2, 3, 4, 6, 7][next(7)] };
+                if o >= 6 {
+                    return Term::Op(o, Box::new(rand_term(size - 1, next)), Box::new(Term::Zero));
+                }
+                let l = 1 + next(size - 2);
+                Term::Op(o, Box::new(rand_term(l, next)), Box::new(rand_term(size - 1 - l, next)))
+            }
+            let uses = |t: &Term, v: usize| t.show().contains(VARS[v]);
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..env("RULEMINER_PROPOSALS", 20000) {
+                let ls = 3 + next(7);
+                let l = rand_term(ls, &mut next);
+                let r = rand_term(1 + next(ls - 1), &mut next);
+                if matches!(l, Term::Op(..)) && (0..2).all(|v| !uses(&r, v) || uses(&l, v)) && l.show() != r.show() && seen.insert(format!("{} => {}", l.show(), r.show())) {
+                    out.push((l, r));
+                }
+            }
+        }
+        "transfer" => {
+            fn subst(t: &Term, to: &[Term]) -> Term {
+                match t {
+                    Term::V(i) => to[*i].clone(),
+                    Term::Op(o, a, b) => Term::Op(*o, Box::new(subst(a, to)), Box::new(subst(b, to))),
+                    _ => t.clone(),
+                }
+            }
+            let choices = [Term::V(0), Term::V(1), Term::Zero, Term::Ones];
+            let mut seen = std::collections::HashSet::new();
+            for (l, r) in promoted_rules().iter().take(20) {
+                for a in &choices {
+                    for b in &choices {
+                        let to = [a.clone(), b.clone()];
+                        let (l2, r2) = (subst(l, &to), subst(r, &to));
+                        if matches!(l2, Term::Op(..)) && l2.show() != r2.show() && seen.insert(format!("{} => {}", l2.show(), r2.show())) {
+                            out.push((l2, r2));
+                        }
+                    }
+                }
+            }
+        }
+        _ => panic!("unknown proposer {proposer}"),
+    }
+    out
+}
+
 /// The candidate laws of a miner family (`mul`, `shl`, `lt`, `shr`; the `RULEMINER_*` env vars size them).
 fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
     if family == "shl" {
@@ -5329,6 +5393,13 @@ fn rule_miner() {
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, _)| l.show());
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
+    // the pilot's proposers replace the miner's own generator (`RULEMINER_PROPOSER`: random, transfer; section 66)
+    let proposer = std::env::var("RULEMINER_PROPOSER").unwrap_or_else(|_| "mined".into());
+    if proposer != "mined" {
+        cands = pilot_candidates(&proposer, &env);
+        let ordered = cands.iter().filter(|(l, r)| rule_order_ok(l, r)).count();
+        println!("RULEMINER proposer {proposer}: {} proposed, {ordered} decreasing in the rule order", cands.len());
+    }
     phase("candidate generation");
     // keep candidates whose left side matches a subterm of some straggler's normalized terms
     let applicable = |l: &Term| {
@@ -5339,7 +5410,7 @@ fn rule_miner() {
             subs.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))
         })
     };
-    let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
+    let cands: Vec<(Term, Term)> = if proposer == "mined" { cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect() } else { cands };
     println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
     if env("RULEMINER_SHOW", 0) == 1 {
         for (l, r) in &cands {
@@ -5349,8 +5420,8 @@ fn rule_miner() {
     // cumulative greedy: each round adds the candidate that, on top of the rules chosen so far, fixes the most
     // stragglers (no whole-term machine proof) and then shrinks the normalized terms most; a straggler often needs two
     // rules together, which a one-rule-at-a-time score cannot see
-    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
-    println!("RULEMINER {} provable candidates", provable.len());
+    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| (proposer == "mined" || rule_order_ok(l, r)) && prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
+    println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
     phase("provable filter");
     let score = |extra: &[(Term, Term)]| -> (Vec<bool>, i64) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
