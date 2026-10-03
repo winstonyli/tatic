@@ -2576,8 +2576,86 @@ fn rules() -> Vec<Rule> {
         Rule { name: "cancell", lhs: op(4, op(0, v(0), v(1)), v(0)), rhs: v(1) },
         Rule { name: "subdist", lhs: op(4, op(0, v(0), v(1)), op(0, v(2), v(3))), rhs: op(0, op(4, v(0), v(2)), op(4, v(1), v(3))) },
     ];
+    all.extend(promoted_rules().iter().map(|(l, r)| Rule { name: "promoted", lhs: l.clone(), rhs: r.clone() }));
     EXTRA_RULES.with(|e| all.extend(e.borrow().iter().map(|(l, r)| Rule { name: "mined", lhs: l.clone(), rhs: r.clone() })));
     all
+}
+
+/// Rules chosen by `rule_miner` (search note section 60), promoted into the library as `lhs -> rhs` in `Term::show` syntax.
+/// `ABLATE=promoted` removes them all; `promoted_rules_are_ordered_and_provable` checks order and proof.
+const PROMOTED: &[(&str, &str)] = &[
+    ("sub(shl1(x, 0), x)", "x"),
+    ("sub(add(shl1(x, 0), y), x)", "add(x, y)"),
+    ("sub(shl1(shl1(x, 0), 0), x)", "add(add(x, x), x)"),
+    ("sub(x, 0)", "x"),
+    ("sub(x, shl1(x, 0))", "sub(0, x)"),
+    ("xor(shl1(-1, 0), shl1(shl1(-1, 0), 0))", "shl1(sub(0, -1), 0)"),
+    ("sub(shl1(shl1(-1, 0), 0), -1)", "add(-1, add(-1, -1))"),
+    ("lt(sub(x, y), x)", "lt(add(-1, y), x)"),
+    ("lt(0, xor(x, -1))", "lt(x, -1)"),
+    ("lt(xor(x, -1), -1)", "lt(0, x)"),
+    ("lt(add(x, y), x)", "lt(sub(-1, x), y)"),
+    ("lt(add(x, y), y)", "lt(sub(-1, x), y)"),
+    ("lt(xor(x, -1), sub(y, x))", "lt(y, x)"),
+    ("lt(xor(x, -1), xor(y, -1))", "lt(y, x)"),
+    ("lt(0, sub(x, -1))", "lt(x, -1)"),
+    ("lt(xor(x, -1), add(-1, x))", "lt(sub(0, x), x)"),
+    ("lt(shl1(x, 0), -1)", "lt(0, -1)"),
+    ("lt(xor(x, -1), shl1(-1, 0))", "lt(sub(0, -1), x)"),
+    ("lt(x, add(-1, x))", "lt(x, sub(0, -1))"),
+    ("lt(x, add(x, y))", "lt(x, sub(0, y))"),
+    // from the shr family, second round (section 60)
+    ("sub(x, sub(0, y))", "add(x, y)"),
+    ("sub(x, add(x, y))", "sub(0, y)"),
+    ("sub(sub(x, y), x)", "sub(0, y)"),
+    ("add(sub(0, x), y)", "sub(y, x)"),
+    ("sub(0, xor(x, -1))", "sub(x, -1)"),
+    ("add(sub(x, y), x)", "sub(shl1(x, 0), y)"),
+    ("sub(xor(x, -1), x)", "sub(-1, shl1(x, 0))"),
+    ("sub(sub(x, -1), -1)", "sub(x, shl1(-1, 0))"),
+    ("sub(x, add(y, x))", "sub(0, y)"),
+    ("add(-1, xor(x, -1))", "sub(shl1(-1, 0), x)"),
+    ("sub(xor(x, -1), -1)", "sub(0, x)"),
+    ("sub(or(x, y), x)", "and(sub(-1, x), y)"),
+    ("sub(or(x, y), y)", "and(sub(-1, y), x)"),
+    ("sub(sub(0, x), x)", "sub(0, shl1(x, 0))"),
+    ("sub(-1, sub(x, -1))", "sub(shl1(-1, 0), x)"),
+];
+
+/// A `Term` from its `show` syntax: `0`, `-1`, a variable name, or `op(a, b)`.
+fn parse_term(s: &str) -> Term {
+    fn go(s: &[u8], i: &mut usize) -> Term {
+        let start = *i;
+        while *i < s.len() && !matches!(s[*i], b'(' | b',' | b')' | b' ') {
+            *i += 1;
+        }
+        let name = std::str::from_utf8(&s[start..*i]).unwrap();
+        if *i < s.len() && s[*i] == b'(' {
+            let o = OPS.iter().position(|o| *o == name).unwrap_or_else(|| panic!("unknown op {name}"));
+            *i += 1;
+            let a = go(s, i);
+            assert_eq!(&s[*i..*i + 2], b", ");
+            *i += 2;
+            let b = go(s, i);
+            assert_eq!(s[*i], b')');
+            *i += 1;
+            return Term::Op(o, Box::new(a), Box::new(b));
+        }
+        match name {
+            "0" => Term::Zero,
+            "-1" => Term::Ones,
+            _ => Term::V(VARS.iter().position(|v| *v == name).unwrap_or_else(|| panic!("unknown leaf {name}"))),
+        }
+    }
+    let mut i = 0;
+    let t = go(s.as_bytes(), &mut i);
+    assert_eq!(i, s.len(), "trailing input in {s}");
+    t
+}
+
+fn promoted_rules() -> &'static Vec<(Term, Term)> {
+    static CACHE: std::sync::OnceLock<Vec<(Term, Term)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| PROMOTED.iter().map(|(l, r)| (parse_term(l), parse_term(r))).collect())
 }
 
 /// First-order match of the pattern `p` against `t`, binding pattern variables in `sub` (a repeated variable must see equal terms).
@@ -5572,5 +5650,17 @@ fn mul_circuit_three_vector_laws() {
             &|v| add_rows(&mul_bits(n, &v[0], &v[1]), &v[2]),
         );
         assert!(check(&Ctx::new(), &bad.0, &bad.1).is_err(), "false distributivity must be rejected, n={n}");
+    }
+}
+
+#[test]
+fn promoted_rules_are_ordered_and_provable() {
+    let _scope = tatic::kernel::InternScope::enter();
+    for (l, r) in promoted_rules() {
+        assert_eq!(parse_term(&l.show()).show(), l.show());
+        assert!(rule_order_ok(l, r), "{} -> {} is not decreasing in the rule order", l.show(), r.show());
+        for n in [3usize, 4] {
+            assert!(prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some(), "{} -> {} not provable at width {n}", l.show(), r.show());
+        }
     }
 }
