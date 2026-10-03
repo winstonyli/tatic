@@ -2209,6 +2209,14 @@ impl Term {
             _ => false,
         }
     }
+    /// Whether variable `v` occurs in the term (`show().contains(..)` would also match `xor` and `sub`).
+    fn has_var(&self, v: usize) -> bool {
+        match self {
+            Term::V(i) => *i == v,
+            Term::Op(_, a, b) => a.has_var(v) || b.has_var(v),
+            _ => false,
+        }
+    }
     fn max_var(&self) -> usize {
         match self {
             Term::V(i) => *i,
@@ -5130,7 +5138,7 @@ fn pilot_candidates(proposer: &str, env: &dyn Fn(&str, usize) -> usize) -> Vec<(
                 let l = 1 + next(size - 2);
                 Term::Op(o, Box::new(rand_term(l, next)), Box::new(rand_term(size - 1 - l, next)))
             }
-            let uses = |t: &Term, v: usize| t.show().contains(VARS[v]);
+            let uses = |t: &Term, v: usize| t.has_var(v);
             let mut seen = std::collections::HashSet::new();
             for _ in 0..env("RULEMINER_PROPOSALS", 20000) {
                 let ls = 3 + next(7);
@@ -5206,6 +5214,12 @@ fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: u
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
+    } else if family == "add3" {
+        pool_conjectures(add3_pool(), n, 3, 0)
+            .into_iter()
+            .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
+            .collect()
     } else if family == "lt" {
         let pool = lt_pool(2);
         let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(5, Box::new(a.clone()), Box::new(b.clone()))));
@@ -5232,22 +5246,23 @@ fn rule_miner() {
     println!("RULEMINER machine at start: {}", machine_state());
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (max, trials) = (env("MULMINER_MAX", 7) as u32, env("RULEMINER_TRIALS", 400));
-    let (n, nv) = (4usize, 2usize);
+    let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
+    // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
+    let (n, nv, kv) = (4usize, 2usize, if family == "add3" { 3usize } else { 2 });
     let ops = ops_for(n);
-    let goods: Vec<(Expr, Expr)> = (0..2).map(|i| (var((3 - i) as u32), var((1 - i) as u32))).collect();
+    let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
     let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
-    let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
     let laws = family_laws(&family, &env, n, nv, max);
     let mut unproved = 0usize;
     for (name, t1, t2) in laws.iter().cloned() {
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
             continue;
         }
         let before = fallbacks();
         let t = Instant::now();
-        let r = rewrite_law(n, 2, &t1, &t2);
+        let r = rewrite_law(n, kv, &t1, &t2);
         let took = t.elapsed();
         let fell = fallbacks() - before;
         // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
@@ -5285,7 +5300,7 @@ fn rule_miner() {
         }
         by_size[sz] = level;
     }
-    let sig = |t: &Term| -> Vec<u128> { (0..256u128).map(|i| t.interp(n, &[i & 15, i >> 4])).collect() };
+    let sig = |t: &Term| -> Vec<u128> { (0..1u128 << (4 * kv)).map(|i| t.interp(n, &(0..kv).map(|v| i >> (4 * v) & 15).collect::<Vec<_>>())).collect() };
     let mut index: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
     for t in by_size.iter().flatten() {
         index.entry(sig(t)).or_default().push(t.clone());
@@ -5353,7 +5368,7 @@ fn rule_miner() {
                 }
                 let is_lt = matches!(pat, Term::Op(5, ..));
                 let Some(group) = (if is_lt { &index_lt } else { &index }).get(&sig(&pat)) else { continue };
-                let uses = |t: &Term, v: usize| t.show().contains(VARS[v]);
+                let uses = |t: &Term, v: usize| t.has_var(v);
                 let _ = is_lt;
                 for r in group.iter().filter(|r| rule_order_ok(&pat, r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
                     cands.push((pat.clone(), r.clone()));
@@ -5373,7 +5388,7 @@ fn rule_miner() {
         for (xs, ys) in [(&sl, &sr), (&sr, &sl)] {
             for x in xs.iter().filter(|t| t.uses_add() && t.size() >= 3 && t.size() <= 13) {
                 for y in ys.iter().filter(|t| t.size() <= 13 && t.show() != x.show()) {
-                    if !(1..=4).all(|w| x.plausibly_equals(y, w, 2)) {
+                    if !(1..=4).all(|w| x.plausibly_equals(y, w, kv)) {
                         continue;
                     }
                     for (pat, cuts) in abstractions(x, cross_cap) {
@@ -5414,9 +5429,12 @@ fn rule_miner() {
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
     // the pilot's proposers replace the miner's own generator (`RULEMINER_PROPOSER`: random, transfer; section 66)
     let proposer = std::env::var("RULEMINER_PROPOSER").unwrap_or_else(|_| "mined".into());
+    // RULEMINER_LOOSE=1: a proposed rule need not go down in the rule order (permutation and reassociation rules tie in it);
+    // the step budget and the same-term check in `rule_step` then keep the rewriter terminating, and soundness is unaffected
+    let loose = env("RULEMINER_LOOSE", 0) == 1;
     if proposer != "mined" {
         cands = pilot_candidates(&proposer, &env);
-        let ordered = cands.iter().filter(|(l, r)| rule_order_ok(l, r)).count();
+        let ordered = cands.iter().filter(|(l, r)| loose || rule_order_ok(l, r)).count();
         println!("RULEMINER proposer {proposer}: {} proposed, {ordered} decreasing in the rule order", cands.len());
     }
     phase("candidate generation");
@@ -5439,13 +5457,13 @@ fn rule_miner() {
     // cumulative greedy: each round adds the candidate that, on top of the rules chosen so far, fixes the most
     // stragglers (no whole-term machine proof) and then shrinks the normalized terms most; a straggler often needs two
     // rules together, which a one-rule-at-a-time score cannot see
-    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| (proposer == "mined" || rule_order_ok(l, r)) && prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
+    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| (proposer == "mined" || loose || rule_order_ok(l, r)) && prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
     println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
     phase("provable filter");
     let score = |extra: &[(Term, Term)]| -> (Vec<bool>, i64) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
-        let goods: Vec<(Expr, Expr)> = (0..2).map(|i| (var((3 - i) as u32), var((1 - i) as u32))).collect();
+        let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         EXTRA_RULES.with(|e| *e.borrow_mut() = extra.to_vec());
         let budget = || RULE_BUDGET.with(|b| b.set(200));
@@ -5453,7 +5471,7 @@ fn rule_miner() {
         for (si, s) in stragglers.iter().enumerate() {
             budget();
             let before = fallbacks();
-            let ok = rewrite_law(n, 2, &s.1, &s.2).is_some();
+            let ok = rewrite_law(n, kv, &s.1, &s.2).is_some();
             fixed[si] = ok && fallbacks() - before < s.4;
             budget();
             // the rule order's own measure: operator nodes first, then variable occurrences
@@ -5818,7 +5836,7 @@ fn rule_admission_refuses_wrong_rules() {
     let (mut refused, mut tried) = (0, 0);
     for (l, _) in rs {
         for (_, r) in rs {
-            let vars = |t: &Term| (0..8).filter(|v| t.show().contains(VARS[*v])).collect::<Vec<_>>();
+            let vars = |t: &Term| (0..8).filter(|v| t.has_var(*v)).collect::<Vec<_>>();
             if vars(r).iter().any(|v| !vars(l).contains(v)) || l.size() <= r.size() {
                 continue;
             }
@@ -5972,4 +5990,122 @@ fn scaling_sweep() {
     }
     let _ = t;
     println!("SCALE machine at end: {}", machine_state());
+}
+
+/// The pool of the `add3` family: terms over `x`, `y`, `z` with at most one sum or difference above depth-1 terms.
+fn add3_pool() -> Vec<Term> {
+    {
+        let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
+        let mut p = leaves.clone();
+        for o in 0..5 {
+            for a in &leaves {
+                for b in &leaves {
+                    p.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+                }
+            }
+        }
+        // one more level: a sum or difference of a depth-1 term and a leaf
+        let d1 = p.clone();
+        for o in [0usize, 4] {
+            for a in &d1 {
+                for b in &leaves {
+                    p.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+                }
+            }
+        }
+        p
+    }
+}
+
+/// Three-variable probe (benchmark with headroom): equal pairs of the depth-1 pool over `x`, `y`, `z`, proved by
+/// `rewrite_law` at width 4, counting the ones that still need a whole-term machine proof.
+#[test]
+#[ignore]
+fn three_var_probe() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("PROBE3 machine at start: {}", machine_state());
+    let pool = add3_pool();
+    let conj = pool_conjectures(pool.clone(), 4, 3, 0);
+    println!("PROBE3 pool {} terms, {} conjectures", pool.len(), conj.len());
+    let (mut ok, mut straggler, mut unproved) = (0, 0, 0);
+    for (a, b) in conj.iter().filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v))) {
+        if !(1..=6).all(|w| a.plausibly_equals(b, w, 3)) {
+            continue;
+        }
+        let before = MACHINE_FALLBACKS.with(|c| c.get());
+        match rewrite_law(4, 3, a, b) {
+            Some(_) => {
+                let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
+                ok += 1;
+                if fell > 0 {
+                    straggler += 1;
+                    println!("PROBE3 straggler {} = {} ({fell})", a.show(), b.show());
+                }
+            }
+            None => {
+                unproved += 1;
+                println!("PROBE3 unproved {} = {}", a.show(), b.show());
+            }
+        }
+    }
+    println!("PROBE3 {ok} proved ({straggler} with a machine proof), {unproved} unproved");
+}
+
+/// Whether `t` has an operator node whose operands contain no variable.
+fn folds_constants(t: &Term) -> bool {
+    match t {
+        Term::Op(_, a, b) => [a, b].iter().all(|t| (0..3).all(|v| !t.has_var(v))) || folds_constants(a) || folds_constants(b),
+        _ => false,
+    }
+}
+
+/// Rule corpus for a model proposer (search note section 68): true rules `lhs -> rhs` over at most three variables, the
+/// left side larger than the right, drawn from the two-variable depth-2 pool and the `add3` pool. Every line is plausible
+/// at widths 1-6 and proved (and kernel-checked) at widths 3 and 4. Written to `CORPUS_OUT` in the `file:` proposer's
+/// syntax. Env: `CORPUS_MAX` (default 3000 rules, evenly spaced among the candidates), `CORPUS_PER_LEFT` (default 6).
+#[test]
+#[ignore]
+fn mint_corpus() {
+    let _scope = tatic::kernel::InternScope::enter();
+    println!("CORPUS machine at start: {}", machine_state());
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (max, per_left) = (env("CORPUS_MAX", 3000), env("CORPUS_PER_LEFT", 6));
+    let mut pool = terms(2, true);
+    pool.extend(add3_pool());
+    let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
+    for t in pool {
+        let sig = (0..4096u128).map(|i| t.interp(4, &[i & 15, i >> 4 & 15, i >> 8])).collect();
+        groups.entry(sig).or_default().push(t);
+    }
+    let vars = |t: &Term| (0..3).filter(|v| t.has_var(*v)).collect::<Vec<_>>();
+    let mut cands: Vec<(Term, Term)> = vec![];
+    for g in groups.values_mut() {
+        g.sort_by_key(|t| (t.size(), t.show()));
+        g.dedup_by_key(|t| t.show());
+        // skip trivial left sides: fewer than two distinct variables, or a subterm of constants only (constant folding)
+        for (i, l) in g.iter().enumerate().filter(|(_, l)| l.size() >= 3 && vars(l).len() >= 2 && !folds_constants(l)) {
+            cands.extend(g[..i].iter().filter(|r| r.size() < l.size() && vars(r).iter().all(|v| vars(l).contains(v))).take(per_left).map(|r| (l.clone(), r.clone())));
+        }
+    }
+    cands.sort_by_key(|(l, r)| (l.show(), r.show()));
+    let stride = (cands.len() / max).max(1);
+    println!("CORPUS {} candidates, stride {stride}", cands.len());
+    let mut out = String::new();
+    let (mut kept, mut tried) = (0, 0);
+    for (l, r) in cands.iter().step_by(stride).take(max) {
+        tried += 1;
+        let k = l.max_var().max(r.max_var()) + 1;
+        if !(1..=6).all(|w| l.plausibly_equals(r, w, k)) || [l, r].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
+            continue;
+        }
+        let proved = [3usize, 4].iter().all(|&n| prove_rule(n, k, l, r).is_some_and(|p| check(&Ctx::new(), &p.0, &p.1).is_ok()));
+        if proved {
+            kept += 1;
+            out += &format!("{} -> {}\n", l.show(), r.show());
+        }
+    }
+    let path = std::env::var("CORPUS_OUT").expect("CORPUS_OUT");
+    std::fs::write(&path, out).unwrap();
+    println!("CORPUS {kept} rules kept of {tried} tried, written to {path}");
+    println!("CORPUS machine at end: {}", machine_state());
 }
