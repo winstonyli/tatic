@@ -5471,30 +5471,35 @@ fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
 }
 
 type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+type KBitsFn<'a> = &'a dyn Fn(&[Vec<Expr>]) -> Vec<Expr>;
 
 /// `Pi x y. GoodBv x -> GoodBv y -> Id(Bv_n, L x y, R x y)` where `L`, `R` are the circuits of the output-bit
 /// functions `l`, `r` of the `n` bits of `x` and of `y`. Per output bit, case analysis on all `2n` input bits with
 /// `refl` leaves, then `cong_n` and the witness eliminations (the skeleton of `bitwise_law_k`).
 fn circuit_law(n: usize, l: BitsFn, r: BitsFn) -> (Expr, Expr) {
     let (lc, rc) = (bits_circuit(n, l), bits_circuit(n, r));
+    circuit_law_k(n, 2, &|a| (app2(lc.clone(), a[0].clone(), a[1].clone()), app2(rc.clone(), a[0].clone(), a[1].clone())), &|v| l(&v[0], &v[1]), &|v| r(&v[0], &v[1]))
+}
+
+/// As `circuit_law` over `k` vectors: `sides(vectors)` builds the two sides from circuits, `l`/`r` give their output
+/// bits from the `k` vectors' bits (the sides must reduce to those bits by conversion).
+fn circuit_law_k(n: usize, k: usize, sides: &dyn Fn(&[Expr]) -> (Expr, Expr), l: KBitsFn, r: KBitsFn) -> (Expr, Expr) {
+    let split = |v: &[Expr]| -> Vec<Vec<Expr>> { (0..k).map(|i| v[i * n..(i + 1) * n].to_vec()).collect() };
     let lemmas: Vec<Expr> = (0..n)
         .map(|j| {
             lemma_n(
-                2 * n,
-                &|v| id(bool0(), l(&v[..n], &v[n..])[j].clone(), r(&v[..n], &v[n..])[j].clone()),
-                &|b| {
-                    let a: Vec<Expr> = b.iter().map(|x| bit(*x)).collect();
-                    refl(l(&a[..n], &a[n..])[j].clone())
-                },
+                k * n,
+                &|v| id(bool0(), l(&split(v))[j].clone(), r(&split(v))[j].clone()),
+                &|b| refl(l(&split(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>()))[j].clone()),
             )
             .0
         })
         .collect();
-    k_var_law_to(n, 2, &bv_ty(n), &|args| (app2(lc.clone(), args[0].clone(), args[1].clone()), app2(rc.clone(), args[0].clone(), args[1].clone())), &|bits, goods| {
-        let (xb, yb): (Vec<Expr>, Vec<Expr>) = ((0..n).map(|i| bits(0, i)).collect(), (0..n).map(|i| bits(1, i)).collect());
-        let (s1, s2) = (l(&xb, &yb), r(&xb, &yb));
-        let witnesses: Vec<Expr> = (0..n).map(|i| goods(0, i)).chain((0..n).map(|i| goods(1, i))).collect();
-        let e = (0..n).map(|j| apps(lemmas[j].clone(), xb.iter().chain(&yb).cloned().chain(witnesses.iter().cloned()).collect())).collect();
+    k_var_law_to(n, k, &bv_ty(n), sides, &|bits, goods| {
+        let vb: Vec<Vec<Expr>> = (0..k).map(|v| (0..n).map(|i| bits(v, i)).collect()).collect();
+        let (s1, s2) = (l(&vb), r(&vb));
+        let witnesses: Vec<Expr> = (0..k).flat_map(|v| (0..n).map(move |i| (v, i))).map(|(v, i)| goods(v, i)).collect();
+        let e = (0..n).map(|j| apps(lemmas[j].clone(), vb.iter().flatten().cloned().chain(witnesses.iter().cloned()).collect())).collect();
         let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
         fbody = lam(sort(1), lam(karrow(n), fbody));
         for _ in 0..n {
@@ -5531,5 +5536,41 @@ fn mul_circuit_laws_by_case_analysis_and_false_ones_rejected() {
         }
         let (p, s) = circuit_law(n, &m, &|x, y| add_rows(x, y));
         assert!(check(&Ctx::new(), &p, &s).is_err(), "mul = add must be rejected, n={n}");
+    }
+}
+
+/// Three-vector laws: `mul` distributes over `add`, and is associative (circuits composed from the two-vector ones).
+#[test]
+fn mul_circuit_three_vector_laws() {
+    for n in [2usize, 3] {
+        let _scope = tatic::kernel::InternScope::enter();
+        let (mc, ac) = (bits_circuit(n, &move |x, y| mul_bits(n, x, y)), bits_circuit(n, &|x, y| add_rows(x, y)));
+        let t0 = Instant::now();
+        let dist = circuit_law_k(
+            n,
+            3,
+            &|a| (app2(mc.clone(), a[0].clone(), app2(ac.clone(), a[1].clone(), a[2].clone())), app2(ac.clone(), app2(mc.clone(), a[0].clone(), a[1].clone()), app2(mc.clone(), a[0].clone(), a[2].clone()))),
+            &|v| mul_bits(n, &v[0], &add_rows(&v[1], &v[2])),
+            &|v| add_rows(&mul_bits(n, &v[0], &v[1]), &mul_bits(n, &v[0], &v[2])),
+        );
+        ck(&format!("mul distributes n={n}"), &dist.0, &dist.1);
+        let assoc = circuit_law_k(
+            n,
+            3,
+            &|a| (app2(mc.clone(), app2(mc.clone(), a[0].clone(), a[1].clone()), a[2].clone()), app2(mc.clone(), a[0].clone(), app2(mc.clone(), a[1].clone(), a[2].clone()))),
+            &|v| mul_bits(n, &mul_bits(n, &v[0], &v[1]), &v[2]),
+            &|v| mul_bits(n, &v[0], &mul_bits(n, &v[1], &v[2])),
+        );
+        ck(&format!("mul assoc n={n}"), &assoc.0, &assoc.1);
+        println!("MUL3 n={n}: {:?}", t0.elapsed());
+        // false: x * (y + z) = x * y + z
+        let bad = circuit_law_k(
+            n,
+            3,
+            &|a| (app2(mc.clone(), a[0].clone(), app2(ac.clone(), a[1].clone(), a[2].clone())), app2(ac.clone(), app2(mc.clone(), a[0].clone(), a[1].clone()), a[2].clone())),
+            &|v| mul_bits(n, &v[0], &add_rows(&v[1], &v[2])),
+            &|v| add_rows(&mul_bits(n, &v[0], &v[1]), &v[2]),
+        );
+        assert!(check(&Ctx::new(), &bad.0, &bad.1).is_err(), "false distributivity must be rejected, n={n}");
     }
 }
