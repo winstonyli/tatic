@@ -6255,7 +6255,7 @@ fn mint_corpus() {
 }
 
 #[test]
-fn tie_break_orients_reassociation_not_commutativity() {
+fn tie_break_orients_reassociation_and_leaves_commutativity_permutative() {
     let t = |s: &str| parse_term(s);
     for (l, r) in [("sub(sub(x, y), z)", "sub(x, add(y, z))"), ("add(sub(x, y), z)", "sub(add(x, z), y)")] {
         let (l, r) = (t(l), t(r));
@@ -6263,7 +6263,8 @@ fn tie_break_orients_reassociation_not_commutativity() {
         assert!(!rule_order_or_tie(&r, &l), "{} -> {} must not be oriented both ways", r.show(), l.show());
     }
     let (l, r) = (t("add(x, y)"), t("add(y, x)"));
-    assert!(!rule_order_or_tie(&l, &r) && !rule_order_or_tie(&r, &l));
+    // commutativity is not oriented by the tie-break; it is permutative (instance-ordered), in both directions
+    assert!(!tie_greater(&l, &r) && !tie_greater(&r, &l) && rule_permutative(&l, &r) && rule_permutative(&r, &l));
 }
 
 #[test]
