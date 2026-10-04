@@ -2564,6 +2564,22 @@ thread_local! {
     static RULE_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(i64::MAX / 2) };
 }
 
+/// The mined rule set selected by `RULESET` (`add3_mm` or `mix3_mm`, the files in `scripts/data`; section 84), in force
+/// after the built-in rules; empty when unset. `ABLATE=ruleset` removes it again. The two sets were mined without
+/// `ABLATE=subdist`.
+fn rule_set() -> &'static Vec<(Term, Term)> {
+    static SET: std::sync::OnceLock<Vec<(Term, Term)>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let text = match std::env::var("RULESET").as_deref() {
+            Ok("add3_mm") => include_str!("../scripts/data/add3_mm_rules.txt"),
+            Ok("mix3_mm") => include_str!("../scripts/data/mix3_mm_rules.txt"),
+            Ok(other) => panic!("unknown RULESET {other}"),
+            Err(_) => "",
+        };
+        text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+    })
+}
+
 fn rules() -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let v = Term::V;
@@ -2595,6 +2611,7 @@ fn rules() -> Vec<Rule> {
         Rule { name: "subdist", lhs: op(4, op(0, v(0), v(1)), op(0, v(2), v(3))), rhs: op(0, op(4, v(0), v(2)), op(4, v(1), v(3))) },
     ];
     all.extend(promoted_rules().iter().map(|(l, r)| Rule { name: "promoted", lhs: l.clone(), rhs: r.clone() }));
+    all.extend(rule_set().iter().map(|(l, r)| Rule { name: "ruleset", lhs: l.clone(), rhs: r.clone() }));
     EXTRA_RULES.with(|e| all.extend(e.borrow().iter().map(|(l, r)| Rule { name: "mined", lhs: l.clone(), rhs: r.clone() })));
     all
 }
@@ -6476,4 +6493,20 @@ fn rule_set_kernel_check() {
         }
     }
     println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved");
+}
+
+/// Each rule of the promoted sets parses, is a true law at widths 1-4, and is proved (and kernel-checked) at width 4.
+#[test]
+fn promoted_rule_sets_are_proved() {
+    let _scope = tatic::kernel::InternScope::enter();
+    for text in [include_str!("../scripts/data/add3_mm_rules.txt"), include_str!("../scripts/data/mix3_mm_rules.txt")] {
+        let rs: Vec<(Term, Term)> = text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+        assert!(rs.len() >= 7);
+        for (l, r) in rs {
+            let k = l.max_var().max(r.max_var()) + 1;
+            assert!((1..=4).all(|w| l.plausibly_equals(&r, w, k)), "{} -> {}", l.show(), r.show());
+            let (p, t) = prove_rule(4, k, &l, &r).unwrap_or_else(|| panic!("{} -> {} not provable", l.show(), r.show()));
+            ck(&l.show(), &p, &t);
+        }
+    }
 }
