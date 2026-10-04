@@ -2098,6 +2098,22 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     (proof, stmt)
 }
 
+/// Build and check time of `add (add x y) z = add x (add y z)` at growing widths (`ASSOC_NS`, default 8,16,32,64), scoped.
+#[test]
+#[ignore]
+pub fn add_assoc_scaling_scoped() {
+    let ns: Vec<usize> = std::env::var("ASSOC_NS").unwrap_or_else(|_| "8,16,32,64".into()).split(',').map(|v| v.trim().parse().unwrap()).collect();
+    for n in ns {
+        let _scope = tatic::kernel::InternScope::enter();
+        let t0 = Instant::now();
+        let (proof, stmt) = add_assoc_proof(n, false);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        ck(&format!("n={n}"), &proof, &stmt);
+        println!("ASSOC-SCOPED n={n}: build {built:?}, check {:?}", t1.elapsed());
+    }
+}
+
 #[test]
 pub fn add_is_associative_on_symbolic_good_vectors() {
     for n in [1usize, 2, 4] {
