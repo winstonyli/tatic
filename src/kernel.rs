@@ -946,11 +946,16 @@ fn shift_sigma_family(e: &Expr, cutoff: u32, go: &impl Fn(&Rc<Expr>, u32) -> Rc<
     }
 }
 
+/// A source node and its copy.
+type RcPair = (Rc<Expr>, Rc<Expr>);
+/// (node address, cutoff, amount).
+type ShiftKey = (usize, u32, i32);
+
 /// Shifted copies already built, by (node, cutoff, amount), for builders that shift the same large
 /// terms many times (`cong_n`): each node is then shifted once per (cutoff, amount) and the copies are
 /// shared. Keeps the source nodes alive so a pointer is not reused for another node.
 #[derive(Default)]
-pub struct ShiftMemo(std::cell::RefCell<PtrMap<(usize, u32, i32), (Rc<Expr>, Rc<Expr>)>>);
+pub struct ShiftMemo(std::cell::RefCell<PtrMap<ShiftKey, RcPair>>);
 
 /// [`shift`] through `memo`.
 pub fn shift_memo(e: &Expr, cutoff: u32, amount: i32, memo: &ShiftMemo) -> Expr {
@@ -1006,8 +1011,8 @@ mod hc {
     struct Table {
         nodes: PtrMap<NodeKey, Rc<Expr>>,
         /// (source node, argument-set id, depth) -> (the source, kept alive; its instantiation).
-        inst: PtrMap<(usize, u64, u32), (Rc<Expr>, Rc<Expr>)>,
-        shifts: PtrMap<(usize, u32, i32), (Rc<Expr>, Rc<Expr>)>,
+        inst: PtrMap<(usize, u64, u32), RcPair>,
+        shifts: PtrMap<ShiftKey, RcPair>,
         /// (node, depth, argument count) -> (the node, kept alive; whether it has a loose `Var` in
         /// `[depth, depth + count)`).
         uses: PtrMap<(usize, u32, u32), (Rc<Expr>, bool)>,
@@ -1219,7 +1224,7 @@ mod hc {
         let e = grow(|| map_kids(rc, &mut |c| canon(c, memo)));
         // Children all unchanged (leaves, or nodes whose children were already the table's): put this
         // node itself in the table instead of allocating its twin.
-        let r = if same_shape(&e, rc, |p, q| Rc::ptr_eq(p, q)) {
+        let r = if same_shape(&e, rc, Rc::ptr_eq) {
             intern_as(e, |_| rc.clone())
         } else {
             intern(e, Some((rc.loose(), rc.free())))
@@ -3680,7 +3685,7 @@ mod tests {
         let mut next = splitmix(41);
         for _ in 0..20_000 {
             let e = random_term(&mut next);
-            let m = 1 + (next() % 3) as usize;
+            let m = 1 + (next() % 3);
             let args: Vec<Expr> = (0..m).map(|_| random_term(&mut next)).collect();
             // `lam^m(e)` applied to `args`, one beta at a time
             let mut body = e.clone();

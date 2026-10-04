@@ -26,14 +26,17 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// (node address, addresses of the cells its loose variables are bound to).
+type CellKey = (usize, Vec<usize>);
+
 /// Pointer-keyed sharing for `def_eq_lazy_shared`: a node referenced from more than one place is
 /// evaluated once per (node, the cells its loose variables are bound to), and a cell for such a
 /// node is built once per the same key. Each entry keeps its key's node and environment alive so
 /// the addresses in the key stay unique.
 #[derive(Default)]
 struct Memo {
-    cells: HashMap<(usize, Vec<usize>), (KRc<Expr>, Env, Thunk)>,
-    vals: HashMap<(usize, Vec<usize>), (KRc<Expr>, Env, V)>,
+    cells: HashMap<CellKey, (KRc<Expr>, Env, Thunk)>,
+    vals: HashMap<CellKey, (KRc<Expr>, Env, V)>,
     /// Pairs of values already found convertible (at any level: a value's meaning does not
     /// depend on the level it is compared at, only on the levels inside it).
     equal: HashMap<(usize, usize), (V, V)>,
