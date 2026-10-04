@@ -770,6 +770,42 @@ pub fn tie_greater(l: &Term, r: &Term) -> bool {
     }
 }
 
+/// Rank of a leaf or head in the lexicographic path order below: leaves under all operators, operators by `head_prec`
+/// and then index, so the precedence is total.
+fn lpo_rank(t: &Term) -> (i32, i64) {
+    match t {
+        Term::Zero => (-3, 0),
+        Term::Ones => (-2, 0),
+        Term::V(i) => (-1, *i as i64),
+        Term::Op(o, ..) => (head_prec(*o), *o as i64),
+    }
+}
+
+/// `s > t` in the lexicographic path order with the total precedence of `lpo_rank` (`PERM_ORDER=lpo`, section 89). It is
+/// a reduction order (well-founded, closed under contexts) and total on terms, so an instance that goes down in it
+/// cannot be rewritten back, whatever the surrounding term; `show()` comparison of an instance is not closed under contexts.
+pub fn lpo_greater(s: &Term, t: &Term) -> bool {
+    let Term::Op(_, sa, sb) = s else {
+        return !matches!(t, Term::Op(..)) && lpo_rank(s) > lpo_rank(t);
+    };
+    if [sa, sb].into_iter().any(|x| x.show() == t.show() || lpo_greater(x, t)) {
+        return true;
+    }
+    let Term::Op(_, ta, tb) = t else { return true };
+    let (rs, rt) = (lpo_rank(s), lpo_rank(t));
+    if rs > rt {
+        return lpo_greater(s, ta) && lpo_greater(s, tb);
+    }
+    if rs < rt {
+        return false;
+    }
+    if sa.show() != ta.show() {
+        lpo_greater(sa, ta) && lpo_greater(s, tb)
+    } else {
+        lpo_greater(sb, tb)
+    }
+}
+
 /// Whether `l` and `r` tie in the rule order: same weight and same variable occurrences.
 pub fn rule_tied(l: &Term, r: &Term) -> bool {
     let ((cl, al), (cr, ar)) = (rule_weight(l), rule_weight(r));
@@ -938,7 +974,14 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
             println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
-        if rule_permutative(&r.lhs, &r.rhs) {
+        let lpo = std::env::var("PERM_ORDER").as_deref() == Ok("lpo");
+        if lpo && rule_tied(&r.lhs, &r.rhs) && !rule_order_ok(&r.lhs, &r.rhs) {
+            // every rule that ties in the weight order must go down in the path order, instance by instance
+            let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
+            if !lpo_greater(t, &inst) {
+                continue;
+            }
+        } else if rule_permutative(&r.lhs, &r.rhs) {
             let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
             // `PERM_ORDER=tie` (section 87): the instance must go down in the tie-break order of the other rules, and only
             // when that order does not separate the two terms does `show()` decide; by default `show()` alone
@@ -1519,3 +1562,38 @@ pub fn carry_chain_builder_finds_the_constant_carry() {
 // operand bits, phi(carries)), the same functions on both sides. `moore_encoding` computes the coarsest one by partition
 // refinement; the proof is the associativity proof with the discovered phi in
 // place of the hand-derived (xor, and) -- for a three-leaf sum, the total carry in binary.
+
+/// `lpo_greater` is a strict total order on the terms over two variables up to 4 nodes, and closed under contexts.
+#[test]
+fn lpo_is_a_strict_total_order_closed_under_contexts() {
+    let b = |o: usize, a: &Term, c: &Term| Term::Op(o, Box::new(a.clone()), Box::new(c.clone()));
+    let mut by_size: Vec<Vec<Term>> = vec![vec![], vec![Term::V(0), Term::V(1), Term::Zero, Term::Ones]];
+    for sz in 2..=4 {
+        let mut level = vec![];
+        for i in 1..sz - 1 {
+            for l in &by_size[i] {
+                for r in &by_size[sz - 1 - i] {
+                    for o in 0..8 {
+                        level.push(b(o, l, r));
+                    }
+                }
+            }
+        }
+        by_size.push(level);
+    }
+    let all: Vec<Term> = by_size.into_iter().flatten().collect();
+    for s in &all {
+        assert!(!lpo_greater(s, s));
+        for t in &all {
+            if s.show() != t.show() {
+                assert!(lpo_greater(s, t) ^ lpo_greater(t, s), "{} vs {}", s.show(), t.show());
+                if lpo_greater(s, t) {
+                    for o in [0usize, 4] {
+                        assert!(lpo_greater(&b(o, s, &Term::V(0)), &b(o, t, &Term::V(0))));
+                        assert!(lpo_greater(&b(o, &Term::V(1), s), &b(o, &Term::V(1), t)));
+                    }
+                }
+            }
+        }
+    }
+}
