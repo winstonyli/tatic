@@ -296,6 +296,11 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
 }
 
 /// A combinator's own arity. A wrapper takes whatever its root still needs.
+/// Bytes per value slot (an `i64`): the stride of environments and call frames in linear memory.
+const WORD_BYTES: usize = 8;
+/// A WebAssembly memory page.
+const PAGE_BYTES: usize = 65536;
+
 fn comb_arity(m: &Module, idx: usize) -> usize {
     match &m.combinators[idx] {
         Combinator::Lifted(f) => f.arity,
@@ -560,7 +565,7 @@ impl Lowering<'_> {
             self.node(cx, a, w, indent);
         }
         // Nothing below recurses, so the scratch locals are safe again.
-        push_line(w, indent, &format!("i32.const {}", (1 + args.len()) * 8));
+        push_line(w, indent, &format!("i32.const {}", (1 + args.len()) * WORD_BYTES));
         push_line(w, indent, "call $alloc");
         push_line(w, indent, "local.set $envtmp");
         // `i64.store` wants the address below the value, so each value is
@@ -570,7 +575,7 @@ impl Lowering<'_> {
             push_line(w, indent, "local.set $papenv");
             push_line(w, indent, "local.get $envtmp");
             push_line(w, indent, "local.get $papenv");
-            push_line(w, indent, &format!("i64.store offset={}", slot * 8));
+            push_line(w, indent, &format!("i64.store offset={}", slot * WORD_BYTES));
         }
         push_line(w, indent, "local.get $envtmp");
     }
@@ -605,7 +610,7 @@ fn read(cx: &FnCx, r: Read, w: &mut String, indent: usize) {
         (Read::Env(k), EnvAccess::Params) => push_line(w, indent, &format!("local.get $e{k}")),
         (Read::Env(k), _) => {
             push_line(w, indent, "local.get $env");
-            push_line(w, indent, &format!("i64.load offset={}", k * 8));
+            push_line(w, indent, &format!("i64.load offset={}", k as usize * WORD_BYTES));
         }
     }
 }
@@ -617,13 +622,13 @@ fn push_closure_env(cx: &FnCx, env: &[Read], w: &mut String, indent: usize) {
         push_line(w, indent, "i32.const 0");
         return;
     }
-    push_line(w, indent, &format!("i32.const {}", env.len() * 8));
+    push_line(w, indent, &format!("i32.const {}", env.len() * WORD_BYTES));
     push_line(w, indent, "call $alloc");
     push_line(w, indent, "local.set $envtmp");
     for (slot, r) in env.iter().enumerate() {
         push_line(w, indent, "local.get $envtmp");
         read(cx, *r, w, indent);
-        push_line(w, indent, &format!("i64.store offset={}", slot * 8));
+        push_line(w, indent, &format!("i64.store offset={}", slot * WORD_BYTES));
     }
     push_line(w, indent, "local.get $envtmp");
 }
@@ -654,19 +659,19 @@ fn emit_allocator(w: &mut String) {
     // Grow if $need would exceed the current memory size in bytes.
     push_line(w, 4, "local.get $need");
     push_line(w, 4, "memory.size");
-    push_line(w, 4, "i32.const 65536");
+    push_line(w, 4, &format!("i32.const {PAGE_BYTES}"));
     push_line(w, 4, "i32.mul");
     push_line(w, 4, "i32.gt_u");
     push_line(w, 4, "if");
-    // pages_needed = ceil(($need - current_bytes) / 65536)
+    // pages_needed = ceil(($need - current_bytes) / PAGE_BYTES)
     push_line(w, 6, "local.get $need");
     push_line(w, 6, "memory.size");
-    push_line(w, 6, "i32.const 65536");
+    push_line(w, 6, &format!("i32.const {PAGE_BYTES}"));
     push_line(w, 6, "i32.mul");
     push_line(w, 6, "i32.sub");
     push_line(w, 6, "i32.const 65535");
     push_line(w, 6, "i32.add");
-    push_line(w, 6, "i32.const 65536");
+    push_line(w, 6, &format!("i32.const {PAGE_BYTES}"));
     push_line(w, 6, "i32.div_u");
     push_line(w, 6, "memory.grow");
     push_line(w, 6, "drop");
@@ -771,7 +776,7 @@ fn emit_pap_wrapper(name: &str, root_idx: usize, root_arity: usize, supplied: us
     push_line(w, 4, "i32.wrap_i64");
     for slot in 0..supplied {
         push_line(w, 4, "local.get $env");
-        push_line(w, 4, &format!("i64.load offset={}", (slot + 1) * 8));
+        push_line(w, 4, &format!("i64.load offset={}", (slot + 1) * WORD_BYTES));
     }
     for i in 0..remaining {
         push_line(w, 4, &format!("local.get $p{i}"));
@@ -842,23 +847,23 @@ fn emit_curried_stages(idx: usize, arity: usize, env_len: usize, base_table_inde
             push_line(w, 4, "local.get $env");
             for slot in 0..i {
                 push_line(w, 4, "local.get $env");
-                push_line(w, 4, &format!("i64.load offset={}", (env_len + slot) * 8));
+                push_line(w, 4, &format!("i64.load offset={}", (env_len + slot) * WORD_BYTES));
             }
             push_line(w, 4, "local.get $arg");
             push_line(w, 4, &format!("call $c{idx}"));
         } else {
-            push_line(w, 4, &format!("i32.const {}", (env_len + i + 1) * 8));
+            push_line(w, 4, &format!("i32.const {}", (env_len + i + 1) * WORD_BYTES));
             push_line(w, 4, "call $alloc");
             push_line(w, 4, "local.set $envtmp");
             for slot in 0..(env_len + i) {
                 push_line(w, 4, "local.get $envtmp");
                 push_line(w, 4, "local.get $env");
-                push_line(w, 4, &format!("i64.load offset={}", slot * 8));
-                push_line(w, 4, &format!("i64.store offset={}", slot * 8));
+                push_line(w, 4, &format!("i64.load offset={}", slot * WORD_BYTES));
+                push_line(w, 4, &format!("i64.store offset={}", slot * WORD_BYTES));
             }
             push_line(w, 4, "local.get $envtmp");
             push_line(w, 4, "local.get $arg");
-            push_line(w, 4, &format!("i64.store offset={}", (env_len + i) * 8));
+            push_line(w, 4, &format!("i64.store offset={}", (env_len + i) * WORD_BYTES));
             push_line(w, 4, "local.get $envtmp");
             push_line(w, 4, "i64.extend_i32_u");
             push_line(w, 4, "i64.const 32");
@@ -948,7 +953,7 @@ mod tests {
         w.push_str(")\n");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, wat::parse_str(&w).unwrap()).unwrap();
-        let limits = wasmtime::StoreLimitsBuilder::new().memory_size(2 * 65536).build();
+        let limits = wasmtime::StoreLimitsBuilder::new().memory_size(2 * PAGE_BYTES).build();
         let mut store = wasmtime::Store::new(&engine, limits);
         store.limiter(|l| l);
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
