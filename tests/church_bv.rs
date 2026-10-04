@@ -2562,6 +2562,8 @@ thread_local! {
 // undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
 thread_local! {
     static RULE_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(i64::MAX / 2) };
+    /// Loop detector for the rule miner (`RULEMINER_NOLOOP=1`): how often `rule_step` fired on each term since the last clear.
+    static RULE_SEEN: std::cell::RefCell<Option<std::collections::HashMap<String, u32>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The mined rule set selected by `RULESET` (`add3_mm` or `mix3_mm`, the files in `scripts/data`; section 84), in force
@@ -2933,9 +2935,26 @@ static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// Instances of `rule_step` by rule name, for the audit.
 static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
 
+/// Constant folding (`ABLATE=fold`): a closed term equal at widths 1-6 to `0`, `-1` or `1` (written `sub(0, -1)`, the
+/// library has no literal `1`), without `shr1`, is a rule `t -> constant`, proved like any other rule.
+fn fold_rule(t: &Term) -> Option<Rule> {
+    fn closed(t: &Term) -> bool {
+        match t {
+            Term::V(_) | Term::Op(7, ..) => false, // `shr1` is not a machine: `prove_rule` cannot prove laws over it
+            Term::Op(_, a, b) => closed(a) && closed(b),
+            _ => true,
+        }
+    }
+    let one = Term::Op(4, Box::new(Term::Zero), Box::new(Term::Ones));
+    if !matches!(t, Term::Op(o, ..) if *o != 5) || ablated("fold") || t.show() == one.show() || !closed(t) {
+        return None;
+    }
+    [Term::Zero, Term::Ones, one].into_iter().find(|c| (1..=6).all(|w| t.plausibly_equals(c, w, 1))).map(|c| Rule { name: "fold", lhs: t.clone(), rhs: c })
+}
+
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the proof.
 fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
-    for r in rules() {
+    for r in fold_rule(t).into_iter().chain(rules()) {
         let k = r.lhs.max_var().max(r.rhs.max_var()) + 1;
         let mut sub = vec![None; k];
         if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
@@ -2953,8 +2972,18 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
             continue;
         }
         if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
+            RULE_SEEN.with(|m| {
+                if let Some(m) = m.borrow_mut().as_mut() {
+                    m.insert(" exhausted".into(), 0);
+                }
+            });
             return None;
         }
+        RULE_SEEN.with(|m| {
+            if let Some(m) = m.borrow_mut().as_mut() {
+                *m.entry(t.show()).or_insert(0) += 1;
+            }
+        });
         let law = memo(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
         // a pattern variable the left side does not mention is free in the law: any value serves
         let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
@@ -5676,7 +5705,14 @@ fn rule_miner() {
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
         SCORE_ONLY.with(|s| s.set(env("RULEMINER_FAST", 0) == 1));
         let (mut fixed, mut size) = (vec![false; stragglers.len()], 0i64);
+        // RULEMINER_NOLOOP=1: a candidate set under which a law exhausts the step budget with some term rewritten 3 or more times
+        // (a cycle among the rules, section 85) is rejected
+        let noloop = env("RULEMINER_NOLOOP", 0) == 1;
+        let mut looped = false;
         for (si, s) in stragglers.iter().enumerate() {
+            if noloop {
+                RULE_SEEN.with(|m| *m.borrow_mut() = Some(Default::default()));
+            }
             budget();
             let before = fallbacks();
             let ok = rewrite_law(n, kv, &s.1, &s.2).is_some();
@@ -5690,10 +5726,15 @@ fn rule_miner() {
                 (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
             };
             size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
+            looped |= noloop && RULE_SEEN.with(|m| m.borrow().as_ref().is_some_and(|m| m.contains_key(" exhausted") && m.values().any(|c| *c >= 3)));
         }
+        RULE_SEEN.with(|m| *m.borrow_mut() = None);
         SCORE_ONLY.with(|s| s.set(false));
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+        if looped {
+            return (vec![false; stragglers.len()], i64::MAX / 4);
+        }
         (fixed, size)
     };
     // RULEMINER_BUNDLE=1: also score all provable candidates added together (rules that only work in combination, section 73)
@@ -6508,5 +6549,18 @@ fn promoted_rule_sets_are_proved() {
             let (p, t) = prove_rule(4, k, &l, &r).unwrap_or_else(|| panic!("{} -> {} not provable", l.show(), r.show()));
             ck(&l.show(), &p, &t);
         }
+    }
+}
+
+/// Constant folding: closed terms equal to 0, -1 or 1 normalize to `0`, `-1`, `sub(0, -1)`, with no machine proof.
+#[test]
+fn closed_terms_fold_to_constants() {
+    let _scope = tatic::kernel::InternScope::enter();
+    for (a, b) in [("sub(-1, add(-1, -1))", "sub(0, -1)"), ("sub(add(0, 0), -1)", "sub(0, -1)"), ("xor(-1, -1)", "0"), ("add(-1, add(-1, sub(0, -1)))", "-1")] {
+        let (t1, t2) = (parse_term(a), parse_term(b));
+        let before = MACHINE_FALLBACKS.with(|c| c.get());
+        let (p, ty) = rewrite_law(4, 1, &t1, &t2).unwrap_or_else(|| panic!("{a} = {b} not proved"));
+        ck(a, &p, &ty);
+        assert_eq!(MACHINE_FALLBACKS.with(|c| c.get()), before, "{a} = {b} needed a machine proof");
     }
 }
