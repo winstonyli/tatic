@@ -2403,12 +2403,12 @@ fn k_var_law_to(n: usize, k: usize, ty: &Expr, sides: &dyn Fn(&[Expr]) -> (Expr,
         step = binders(app2(at(depth(j), k + j + 1), motive(j + 1, depth(j)), step));
     }
     let body = app2(at(2 * k, k), motive(0, 2 * k), step);
-    let g = |v: usize| app(good_bv(n), var((k - 1) as u32 + 0 * v as u32));
+    let g = || app(good_bv(n), var((k - 1) as u32));
     let mut proof = body;
     let mut stmt = claim((0..k).map(|v| var((2 * k - 1 - v) as u32)).collect());
-    for v in (0..k).rev() {
-        proof = lam(g(v), proof);
-        stmt = pi(g(v), stmt);
+    for _ in 0..k {
+        proof = lam(g(), proof);
+        stmt = pi(g(), stmt);
     }
     for _ in 0..k {
         proof = lam(bv_ty(n), proof);
