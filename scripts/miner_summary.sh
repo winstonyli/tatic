@@ -18,7 +18,7 @@ for fam in ${FAMILIES:-mul shl lt}; do
     mul) extra="MULMINER_MAX=${MULMINER_MAX:-5}" ;;
     shl) extra="RULEMINER_LAWS=${RULEMINER_LAWS:-300}" ;;
     lt) extra="RULEMINER_LAWS=${RULEMINER_LAWS:-150}" ;;
-    shr) extra="RULEMINER_DEEP=1 MINER_SUB=1 RULEMINER_STRIDE=3 RULEMINER_LAWS=${RULEMINER_LAWS:-900}" ;;
+    shr) extra="RULEMINER_DEEP=1 MINER_SUB=1 RULEMINER_STRIDE=3 RULEMINER_LAWS=${RULEMINER_LAWS:-900} RULESET=${RULESET:-add3_mm}" ;; # add3_mm: 880 -> 890 machine-free shr laws (section 90); RULESET=<other> to change
   esac
   t0=$(date +%s)
   out=$(env RULEMINER_FAMILY=$fam $extra cmd //c start //wait //b //belownormal //affinity FFF "$exe" search::rule_miner --ignored --nocapture --exact 2>&1 || true)
