@@ -2563,10 +2563,12 @@ thread_local! {
 thread_local! {
     static RULE_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(i64::MAX / 2) };
     /// Loop detector for the rule miner (`RULEMINER_NOLOOP=1`): how often `rule_step` fired on each term since the last clear.
+    /// Rules (`lhs -> rhs`) being proved by `prove_rule` through the rewriter; `rule_step` skips them.
+    static PROVING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
     static RULE_SEEN: std::cell::RefCell<Option<std::collections::HashMap<String, u32>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The mined rule set selected by `RULESET` (`add3_mm` or `mix3_mm`, the files in `scripts/data`; section 84), in force
+/// The mined rule set selected by `RULESET` (`add3_mm`, `mix3_mm`, `add3_nl`, `mix3_nl`, the files in `scripts/data`; sections 84 and 87), in force
 /// after the built-in rules; empty when unset. `ABLATE=ruleset` removes it again. The two sets were mined without
 /// `ABLATE=subdist`.
 fn rule_set() -> &'static Vec<(Term, Term)> {
@@ -2575,6 +2577,8 @@ fn rule_set() -> &'static Vec<(Term, Term)> {
         let text = match std::env::var("RULESET").as_deref() {
             Ok("add3_mm") => include_str!("../scripts/data/add3_mm_rules.txt"),
             Ok("mix3_mm") => include_str!("../scripts/data/mix3_mm_rules.txt"),
+            Ok("add3_nl") => include_str!("../scripts/data/add3_nl_rules.txt"),
+            Ok("mix3_nl") => include_str!("../scripts/data/mix3_nl_rules.txt"),
             Ok(other) => panic!("unknown RULESET {other}"),
             Err(_) => "",
         };
@@ -2730,6 +2734,16 @@ fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
     if l.add_free() && r.add_free() {
         let law = bitwise_law_k(n, k, l, r);
         check(&Ctx::new(), &law.0, &law.1).ok().map(|_| law)
+    } else if matches!(l, Term::Op(7, ..)) && matches!(r, Term::Op(7, ..) | Term::Zero) || matches!(r, Term::Op(7, ..)) && matches!(l, Term::Zero) {
+        // laws with a `shr1` root are not machines: prove them with the rewriter (which falls back on the bit-0 mask
+        // reduction), without the rule being proved, so that it cannot be used in its own proof
+        let key = format!("{} -> {}", l.show(), r.show());
+        PROVING.with(|p| p.borrow_mut().push(key));
+        let saved = RULE_BUDGET.with(|b| b.replace(10_000));
+        let out = rewrite_law(n, k, l, r);
+        RULE_BUDGET.with(|b| b.set(saved));
+        PROVING.with(|p| p.borrow_mut().pop());
+        out
     } else {
         add_tree_law(n, k, l, r)
     }
@@ -2960,6 +2974,9 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
         if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
             continue;
         }
+        if PROVING.with(|p| !p.borrow().is_empty() && p.borrow().contains(&format!("{} -> {}", r.lhs.show(), r.rhs.show()))) {
+            continue;
+        }
         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
         if subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() == t.show() {
             continue;
@@ -2968,8 +2985,18 @@ fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)>
             println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
-        if rule_permutative(&r.lhs, &r.rhs) && subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() >= t.show() {
-            continue;
+        if rule_permutative(&r.lhs, &r.rhs) {
+            let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
+            // `PERM_ORDER=tie` (section 87): the instance must go down in the tie-break order of the other rules, and only
+            // when that order does not separate the two terms does `show()` decide; by default `show()` alone
+            let down = if std::env::var("PERM_ORDER").as_deref() == Ok("tie") {
+                tie_greater(t, &inst) || (!tie_greater(&inst, t) && inst.show() < t.show())
+            } else {
+                inst.show() < t.show()
+            };
+            if !down {
+                continue;
+            }
         }
         if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
             RULE_SEEN.with(|m| {
@@ -6540,7 +6567,7 @@ fn rule_set_kernel_check() {
 #[test]
 fn promoted_rule_sets_are_proved() {
     let _scope = tatic::kernel::InternScope::enter();
-    for text in [include_str!("../scripts/data/add3_mm_rules.txt"), include_str!("../scripts/data/mix3_mm_rules.txt")] {
+    for text in [include_str!("../scripts/data/add3_mm_rules.txt"), include_str!("../scripts/data/mix3_mm_rules.txt"), include_str!("../scripts/data/add3_nl_rules.txt"), include_str!("../scripts/data/mix3_nl_rules.txt")] {
         let rs: Vec<(Term, Term)> = text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
         assert!(rs.len() >= 7);
         for (l, r) in rs {
