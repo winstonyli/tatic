@@ -1161,7 +1161,7 @@ fn denote_with_placeholders(
                 _ => None,
             }
         }
-        Shape::Combinator { is_rec: true } => None,
+        Shape::Combinator { .. } => None, // a bare `Term::Rec` is out of scope when there is a self-call,
     }
 }
 
@@ -1197,12 +1197,17 @@ fn denote_with_placeholders(
 fn denote_closure_typed(
     store: &TermStore,
     h: Hash,
-    self_call: SelfCall,
+    self_call: Option<SelfCall>,
     param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
     params: &[Expr],
 ) -> Option<Denoted> {
-    match compile::classify(store, h, self_call.arity, Some(self_call.idx)) {
+    // with a self-call: its arity and index; without one (`denote_closure`), the function's own parameter counts and no index
+    let (classify_arity, classify_idx, ret_arity, ret_idx) = match self_call {
+        Some(sc) => (sc.arity, Some(sc.idx), sc.arity, Some(sc.idx)),
+        None => (params.len(), None, param_types.len(), None),
+    };
+    match compile::classify(store, h, classify_arity, classify_idx) {
         // Never substituted here -- see this function's own docs.
         Shape::SelfCall(_) => None,
         shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
@@ -1242,7 +1247,7 @@ fn denote_closure_typed(
                 let mut arg_exprs = Vec::with_capacity(k);
                 for (j, &a) in args.iter().enumerate() {
                     let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
-                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, ret_arity, ret_idx, param_types))?;
                     arg_exprs.push(e);
                 }
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
@@ -1270,7 +1275,7 @@ fn denote_closure_typed(
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
                     let d = denote_closure_typed(store, a, self_call, param_types, combinators, params)?;
-                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, self_call.arity, Some(self_call.idx), param_types))?;
+                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, ret_arity, ret_idx, param_types))?;
                     arg_exprs.push(e);
                 }
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
@@ -1354,8 +1359,8 @@ fn denote_closure_typed(
                     // See `denote_with_placeholders`'s identical case for
                     // why `return_type_of` (not `Denoted::Clo` itself) is
                     // the source of the shared arity here.
-                    let t_arity = return_type_of(store, t, self_call.arity, Some(self_call.idx), param_types).flatten()?;
-                    let e_arity = return_type_of(store, e, self_call.arity, Some(self_call.idx), param_types).flatten()?;
+                    let t_arity = return_type_of(store, t, ret_arity, ret_idx, param_types).flatten()?;
+                    let e_arity = return_type_of(store, e, ret_arity, ret_idx, param_types).flatten()?;
                     if t_arity != e_arity {
                         return None;
                     }
@@ -1372,7 +1377,7 @@ fn denote_closure_typed(
         // threaded onward as the next iteration's own closure-typed
         // parameter, `f(n-1, \y. acc+y)`. Mirrors `denote_closure`'s own
         // value-leaf `Term::Abs | Term::Rec` case exactly.
-        Shape::Combinator { is_rec: false } => {
+        Shape::Combinator { is_rec } if !(is_rec && self_call.is_some()) => {
             let (arity, body, is_rec) = compile::peel(store, h)?;
             if arity == 0 {
                 return None;
@@ -1388,7 +1393,7 @@ fn denote_closure_typed(
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure_typed: capturing closure value");
             Some(Denoted::Clo(applied))
         }
-        Shape::Combinator { is_rec: true } => None,
+        Shape::Combinator { .. } => None, // a bare `Term::Rec` is out of scope when there is a self-call,
     }
 }
 
@@ -1583,7 +1588,7 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> 
     let new_params_for = |arith: &mut ClosureCombinators<'_>, call_args: &[Hash], params: &[Expr]| -> Option<Vec<Expr>> {
         (0..arity)
             .map(|i| {
-                let d = denote_closure_typed(store, call_args[arity - 1 - i], self_call, &param_types, arith, params)?;
+                let d = denote_closure_typed(store, call_args[arity - 1 - i], Some(self_call), &param_types, arith, params)?;
                 match param_types[i] {
                     Some(_) => d.clo(),
                     None => d.int(),
@@ -5604,244 +5609,7 @@ fn denote_closure(
     params: &[Expr],
     param_types: &[Option<usize>],
 ) -> Option<Denoted> {
-    match compile::classify(store, h, params.len(), None) {
-        shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
-            // A parameter-typed closure, called through `call_indirect`:
-            // per lower_wat.rs's `call_indirect` dispatch, arguments are
-            // always `Int` regardless of the callee's own signature.
-            AppShape::ParamCall { root, args, .. } => {
-                let callee = denote_closure(store, root, combinators, params, param_types)?.clo()?;
-                let mut arg_exprs = Vec::with_capacity(args.len());
-                for &a in &args {
-                    let e = denote_closure(store, a, combinators, params, param_types)?.int()?;
-                    arg_exprs.push(e);
-                }
-                let applied = apply_n(callee, arg_exprs);
-                let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: call_indirect application");
-                Some(Denoted::Int(applied))
-            }
-            // A literal lambda -- or a named self-recursive combinator, the
-            // same table `Term::Abs` uses (compile.rs's own combinator
-            // table doesn't distinguish self-recursive from not; neither
-            // does this, since a call is postulated opaque either way --
-            // see `param_types_for`/`ClosureCombinators::register`/
-            // `call_ref`, all already generic over `is_rec`) -- in function
-            // position, applied to exactly its own arity (a direct static
-            // call, `AppShape::LitLambdaExact`), fewer arguments than its
-            // own arity (compile.rs's compile-time-desugared partial
-            // application, `register_partial_app`'s wrapper,
-            // `AppShape::LitLambdaPartial` -- `pap_ref` covers a
-            // self-recursive root here too, the same opaque-call reasoning),
-            // or more (`AppShape::LitLambdaOver`: `root`'s own saturated
-            // call is built first, exactly as the direct-call case does,
-            // then whatever it denotes is dispatched on the extra
-            // arguments directly, exactly like the `ParamCall` case
-            // above -- see `combinator_return_type`'s own docs for why
-            // this is sound without denoting `root`'s body in the usual
-            // sense). Each argument's expected type matches the *callee's
-            // own* parameter type at that position (`Clo` or `Int`), which
-            // is what lets e.g. `twice(inc, 5)` pass a closure and a plain
-            // `Int` to the same call.
-            AppShape::LitLambdaPartial { root, args, callee_param_types } => {
-                // Compile-time-desugared partial application: build
-                // mk_pap_root_k(a_1,...,a_k), a Clo-typed value -- see
-                // pap_ref's own docs for why the supplied arguments are
-                // denoted normally here rather than resolved through any
-                // Env/build_env_expr-style machinery (unlike root's
-                // *own* environment, when it captures, which does need
-                // build_env_expr, exactly as a direct call to a
-                // capturing root does below).
-                let arity = callee_param_types.len();
-                let k = args.len();
-                let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
-                let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
-                let pap_fn = combinators.pap_ref(root, k, param_types)?;
-                let env_expr = if root_captures.is_empty() {
-                    None
-                } else {
-                    let e = build_env_expr(combinators, &root_captures, params, param_types)?;
-                    Some(e)
-                };
-                let mut arg_exprs = Vec::with_capacity(k);
-                for (j, &a) in args.iter().enumerate() {
-                    // args[j] (application order) is Var(arity-1-j) --
-                    // see param_types_for's/denote's own convention;
-                    // unchanged by only k of arity args being supplied.
-                    let d = denote_closure(store, a, combinators, params, param_types)?;
-                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, param_types.len(), None, param_types))?;
-                    arg_exprs.push(e);
-                }
-                let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
-                if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.clone());
-                }
-                all_args.extend(arg_exprs.iter().cloned());
-                let applied = apply_n(pap_fn, all_args);
-                let clo_ty = combinators.cp.clo_ty(arity - k + pap_extra_arity(store, root));
-                debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: partial application");
-                Some(Denoted::Clo(applied))
-            }
-            // `args.len() >= arity`: build `root`'s own saturated call
-            // first -- shared between an exact match and an
-            // over-application's own leading portion.
-            AppShape::LitLambdaExact { root, args, callee_param_types } | AppShape::LitLambdaOver { root, args, callee_param_types } => {
-                let arity = callee_param_types.len();
-                let sat_args = &args[..arity];
-                let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
-                let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
-                let call_fn = combinators.call_ref(root, &captures, param_types)?;
-                let env_expr = if captures.is_empty() {
-                    None
-                } else {
-                    let e = build_env_expr(combinators, &captures, params, param_types)?;
-                    Some(e)
-                };
-                let mut arg_exprs = Vec::with_capacity(arity);
-                for (j, &a) in sat_args.iter().enumerate() {
-                    // args[j] (application order) is Var(arity-1-j) --
-                    // see param_types_for's/denote's own convention.
-                    let d = denote_closure(store, a, combinators, params, param_types)?;
-                    let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, param_types.len(), None, param_types))?;
-                    arg_exprs.push(e);
-                }
-                let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
-                if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.clone());
-                }
-                all_args.extend(arg_exprs.iter().cloned());
-                let sat_applied = apply_n(call_fn, all_args);
-                let return_ty = combinator_return_type(store, root).unwrap_or(None);
-                let returns_clo = return_ty.is_some();
-                let sat_ty = match return_ty {
-                    Some(k) => combinators.cp.clo_ty(k),
-                    None => combinators.cp.arith.int_ty(),
-                };
-                debug_assert_has_type(&combinators.cp.arith.p, &sat_applied, &sat_ty, "denote_closure: direct combinator call");
-
-                if args.len() == arity {
-                    return Some(if returns_clo { Denoted::Clo(sat_applied) } else { Denoted::Int(sat_applied) });
-                }
-
-                // Over-application: dispatch the extra arguments on
-                // `root`'s own saturated result directly, exactly like
-                // calling a closure-typed variable (the
-                // `ParamCall` case above), just with the callee freshly
-                // computed rather than read from `params`. Only sound
-                // when that result genuinely denotes a further `Clo` --
-                // unlike compile.rs (which has no type system to check
-                // this at all, relying entirely on jit.rs's sample
-                // verification), an unsound premise here would let the
-                // kernel "prove" something false, so a plain-`Int`
-                // `sat_applied` rejects outright rather than compiling a
-                // bad proof.
-                if !returns_clo {
-                    return None;
-                }
-                let extra_args = &args[arity..];
-                let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
-                for &a in extra_args {
-                    let e = denote_closure(store, a, combinators, params, param_types)?.int()?;
-                    extra_arg_exprs.push(e);
-                }
-                let applied = apply_n(sat_applied, extra_arg_exprs);
-                let int_ty = combinators.cp.arith.int_ty();
-                debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: over-application dispatch");
-                Some(Denoted::Int(applied))
-            }
-        },
-        Shape::OtherCall => None,
-        Shape::If(c, t, e) => {
-            let dc = denote_closure(store, c, combinators, params, param_types)?.int()?;
-            let dt = denote_closure(store, t, combinators, params, param_types)?;
-            let dt_is_clo = matches!(dt, Denoted::Clo(_));
-            let dt = match dt {
-                Denoted::Int(e) | Denoted::Clo(e) => e,
-            };
-            let de = denote_closure(store, e, combinators, params, param_types)?;
-            let de_is_clo = matches!(de, Denoted::Clo(_));
-            let de = match de {
-                Denoted::Int(e) | Denoted::Clo(e) => e,
-            };
-            // Both branches Int (the common case) or both Clo (an If choosing
-            // between two closures, e.g. `if c then (\y.x+y) else (\y.x-y)`) --
-            // a mismatch (one of each) is rejected, same as any other
-            // Int/Clo confusion in this fragment.
-            match (dt_is_clo, de_is_clo) {
-                (false, false) => {
-                    let ite = combinators.cp.arith.ite_ref(); // pre-postulated once in ArithPostulates::new -- never pushes
-                    let applied = kernel::app3(ite, dc, dt, de);
-                    let int_ty = combinators.cp.arith.int_ty();
-                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: If (Int branches)");
-                    Some(Denoted::Int(applied))
-                }
-                (true, true) => {
-                    // See `denote_with_placeholders`'s identical case for why
-                    // `return_type_of` (not `Denoted::Clo` itself) is the
-                    // source of the shared arity here; `denote_closure` has no
-                    // self-call concept of its own (`prove_closure_expr` never
-                    // sets one up), so `self_idx` is always `None` and `arity`
-                    // is this whole function's own top-level arity
-                    // (`param_types.len()`), the same pair `Var(i)`'s own
-                    // in-range check just below already relies on.
-                    let top_arity = param_types.len();
-                    let t_arity = return_type_of(store, t, top_arity, None, param_types).flatten()?;
-                    let e_arity = return_type_of(store, e, top_arity, None, param_types).flatten()?;
-                    if t_arity != e_arity {
-                        return None;
-                    }
-                    let ite_clo = combinators.cp.ite_clo_ref(t_arity);
-                    let applied = kernel::app3(ite_clo, dc, dt, de);
-                    let clo_ty = combinators.cp.clo_ty(t_arity);
-                    debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: If (Clo branches)");
-                    Some(Denoted::Clo(applied))
-                }
-                _ => None,
-            }
-        }
-        Shape::Var(i) => {
-            let i = i as usize;
-            let p = params.get(i)?.clone();
-            match *param_types.get(i)? {
-                Some(_) => Some(Denoted::Clo(p)),
-                None => Some(Denoted::Int(p)),
-            }
-        }
-        Shape::Lit(n) => Some(Denoted::Int(combinators.cp.arith.lit_ref(n))),
-        Shape::Prim(op, a, b) => {
-            let da = denote_closure(store, a, combinators, params, param_types)?.int()?;
-            let db = denote_closure(store, b, combinators, params, param_types)?.int()?;
-            let op_ref = combinators.cp.arith.op_ref(op); // pre-postulated once -- never pushes
-            let applied = kernel::app2(op_ref, da, db);
-            let int_ty = combinators.cp.arith.int_ty();
-            debug_assert_has_type(&combinators.cp.arith.p, &applied, &int_ty, "denote_closure: Prim");
-            Some(Denoted::Int(applied))
-        }
-        // A literal lambda used as a bare value -- or a named self-recursive
-        // combinator (`Term::Rec`) used the same way, e.g. `let fact = rec
-        // f n = .. in g fact` -- register/build_env_expr are already
-        // generic over `is_rec` (see the App-root match above), so this
-        // only ever needed widening the pattern, not the logic: whether
-        // `h` recurses is never examined, since a call is postulated
-        // opaque either way.
-        Shape::Combinator { .. } => {
-            let (arity, body, is_rec) = compile::peel(store, h)?;
-            if arity == 0 {
-                return None;
-            }
-            let captures = compile::free_vars(store, body, arity, is_rec);
-            let sym = combinators.register(h, &captures, param_types)?;
-            if captures.is_empty() {
-                return Some(Denoted::Clo(sym));
-            }
-            let env = build_env_expr(combinators, &captures, params, param_types)?;
-            let applied = kernel::app(sym, env);
-            let clo_ty = combinators.cp.clo_ty(arity);
-            debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "denote_closure: capturing closure value");
-            Some(Denoted::Clo(applied))
-        }
-        Shape::SelfCall(_) => None,
-    }
+    denote_closure_typed(store, h, None, param_types, combinators, params)
 }
 
 /// Attempts to build an [`EquivalenceProof`] for `h`, covering every input,
