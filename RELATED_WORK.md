@@ -2807,7 +2807,7 @@ mode is a field of the module, known before any WAT is written. Renames:
 `compile_node` → `build_node` (term shape) plus `lower_wat` templates (emitted
 code); `compile_var_read` → `build_read`; `emit_dynamic_apply` →
 `Lowering::dynamic_apply`; `push_pap_env` → `Lowering::pap_env`. Cold-compile
-timings (`jit_cold_compile_and_verify` medians, the step's base `deb8ec7` →
+timings (`jit_cold_compile_and_verify` medians, the step's base `deb8ec7 (unpublished)` →
 after, median of three interleaved runs of each build) are fib_30 227 → 227
 ms, gcd 78.9 → 73.5 ms, capturing_closure_loop 67.8 → 65.6 ms,
 partial_application_loop 67.2 → 64.6 ms,
@@ -5531,7 +5531,7 @@ load-bearing in both entry points.
 
 **Measured.** Stage 2 claims no speedup: it adds one `max` per
 `Rc::new`, one parameter per typing frame, and the O(1) doors. Base is
-331a7bd (stage 1 with mimalloc), head is 8a13e5e; both built once and run
+331a7bd (unpublished) (stage 1 with mimalloc), head is 8a13e5e; both built once and run
 interleaved with `scripts/quiet_ab/` (§66), Defender real-time
 protection off throughout.
 
@@ -5677,7 +5677,7 @@ compares fib(8) with fib(16) (`2*large < 5*small`), and
 `fib16_instance_proof_builds_and_checks_quickly` guards it at 3 s (188 ms
 in a debug build).
 
-**Cost.** A/B of 576f5fe vs e273fcc (`target/ab3a`, 10 fib pairs and 5
+**Cost.** A/B of 576f5fe (unpublished) vs e273fcc (`target/ab3a`, 10 fib pairs and 5
 proof-bench pairs, clean only, RTP off, 2026-09-27). `fib(16)`: DAG
 227,157 → 10,501 nodes, build 136.9 → 4.2 ms best (174.5 → 4.9 median),
 check 153.7 → 2.8 ms best (194.2 → 3.1 median). Universal and instance
@@ -5750,7 +5750,7 @@ noise. The µs-scale proofs got 20-29% faster (`straight_line_refl` 10.1 →
 7.5 µs), the large ones 0-4%. So `bind`'s release `infer` stays: whatever
 it costs is less than what 3b saved, likely 3a's split of the context into
 globals and a local `Ctx` at every check (not profiled). Across stage 3
-(576f5fe → d8dff3f), large proofs are 44-58% faster and the µs-scale ones
+(576f5fe (unpublished) → d8dff3f), large proofs are 44-58% faster and the µs-scale ones
 still 51-83% slower, from §69's push checks.
 
 ## 71. Where a cold JIT call's time goes
@@ -5830,7 +5830,7 @@ Spec: `docs/superpowers/specs/2026-09-25-kernel-constants-and-loose-ranges-desig
 - `Anchored` and `Params` (Task 3, e3087fc/9f4f25e/30b7fd0): both types and their
   impls deleted. `Anchored::at` was already the identity on a closed term
   (§70's finding). `src/proof.rs` was 11,277 lines at the plan's base
-  commit (ff5e79b), 10,410 now.
+  commit (ff5e79b (unpublished)), 10,410 now.
 
 **Decision's cost, stated plainly.** `push` still asserts a pushed type is
 closed, but no longer that no scope is open. A closed-typed local pushed by
@@ -5853,7 +5853,7 @@ mistake inside a scope no longer panics — it becomes an extra global that
   `ArithPostulates::new`'s thread-local prelude (a8238e6, outside this
   plan); its A/B is in §69.
 
-**Cost.** A/B of ff5e79b vs bf52ba4 (`target/ab4`, RTP off, 2026-09-28;
+**Cost.** A/B of ff5e79b (unpublished) vs bf52ba4 (`target/ab4`, RTP off, 2026-09-28;
 clean runs only). `fib(16)`, 20 pairs on a quiet machine (5% CPU): DAG
 10,466 → 10,466, build 3.83 → 3.58 ms best (4.25 → 4.06 median), check
 2.56 → 2.54 ms best (2.75 → 2.85 median). A first 10-pair run overnight,
