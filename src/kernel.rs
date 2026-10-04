@@ -1017,7 +1017,10 @@ mod hc {
 
     /// Non-trivial `instantiate_n` calls in a scope before the table switches on: a small check
     /// would only pay for the table.
-    const WARM_UP: u32 = if cfg!(test) { 0 } else { 3000 };
+    #[cfg(test)]
+    const WARM_UP: u32 = 0;
+    #[cfg(not(test))]
+    const WARM_UP: u32 = 3000;
 
     thread_local! {
         static TABLE: RefCell<Table> = RefCell::new(Table::default());
@@ -1294,6 +1297,7 @@ mod hc {
                 c.set(c.get() + 1);
                 c.get()
             });
+            #[allow(clippy::absurd_extreme_comparisons)] // `WARM_UP` is 0 under test
             if n < WARM_UP {
                 return 0;
             }
