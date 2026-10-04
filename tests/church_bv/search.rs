@@ -488,7 +488,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
         // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
         // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
         let pool = if env("RULEMINER_DEEP", 0) == 1 { terms(2, true) } else { lt_pool(2) };
-        let shr = |a: &Term| Term::Op(7, Box::new(a.clone()), Box::new(Term::Zero));
+        let shr = |a: &Term| Term::Op(SHR1, Box::new(a.clone()), Box::new(Term::Zero));
         let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
         pool_conjectures(all, n, nv, 0)
             .into_iter()
@@ -516,7 +516,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .collect()
     } else if family == "lt" {
         let pool = lt_pool(2);
-        let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(5, Box::new(a.clone()), Box::new(b.clone()))));
+        let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(LT, Box::new(a.clone()), Box::new(b.clone()))));
         pool_conjectures(all, n, nv, env("RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
     } else {
         mul_laws(max)
@@ -649,8 +649,8 @@ pub fn rule_miner() {
     for sz in 2..=psize {
         let mut level = vec![];
         for x in &by_size[sz - 1] {
-            level.push(Term::Op(6, Box::new(x.clone()), Box::new(Term::Zero)));
-            level.push(Term::Op(7, Box::new(x.clone()), Box::new(Term::Zero)));
+            level.push(Term::Op(SHL1, Box::new(x.clone()), Box::new(Term::Zero)));
+            level.push(Term::Op(SHR1, Box::new(x.clone()), Box::new(Term::Zero)));
         }
         for i in 1..sz - 1 {
             for l in &by_size[i] {
@@ -672,7 +672,7 @@ pub fn rule_miner() {
     let mut index_lt: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
     for a in by_size.iter().take(4).flatten() {
         for b in by_size.iter().take(4).flatten() {
-            let t = Term::Op(5, Box::new(a.clone()), Box::new(b.clone()));
+            let t = Term::Op(LT, Box::new(a.clone()), Box::new(b.clone()));
             index_lt.entry(sig(&t)).or_default().push(t);
         }
     }
@@ -723,13 +723,13 @@ pub fn rule_miner() {
         let mut subs = vec![];
         st.3[0].subterms(&mut subs);
         st.3[1].subterms(&mut subs);
-        for sub in subs.iter().filter(|t| matches!(t, Term::Op(5, ..)) || (any_op || t.uses_add()) && t.size() >= if any_op { 2 } else { 3 }) {
+        for sub in subs.iter().filter(|t| matches!(t, Term::Op(LT, ..)) || (any_op || t.uses_add()) && t.size() >= if any_op { 2 } else { 3 }) {
             for (pat, _) in abstractions(sub, 2) {
                 let Term::Op(..) = pat else { continue };
                 if !seen_pat.insert(pat.show()) || pat.size() > 9 {
                     continue;
                 }
-                let is_lt = matches!(pat, Term::Op(5, ..));
+                let is_lt = matches!(pat, Term::Op(LT, ..));
                 let Some(group) = (if is_lt { &index_lt } else { &index }).get(&sig(&pat)) else { continue };
                 let uses = |t: &Term, v: usize| t.has_var(v);
                 let _ = is_lt;
@@ -1033,7 +1033,7 @@ pub fn rewrite_law_proves_lt_laws() {
 #[test]
 pub fn lt_rules_with_constant_right_sides_are_provable() {
     let _scope = tatic::kernel::InternScope::enter();
-    let lt = |a: Term, b: Term| Term::Op(5, Box::new(a), Box::new(b));
+    let lt = |a: Term, b: Term| Term::Op(LT, Box::new(a), Box::new(b));
     let n = 4;
     for k in [1usize, 2] {
         for (l, r) in [(lt(Term::Ones, Term::V(0)), lt(Term::Ones, Term::Ones)), (lt(Term::V(0), Term::V(0)), lt(Term::Ones, Term::Ones))] {
@@ -1048,8 +1048,8 @@ pub fn lt_rules_with_constant_right_sides_are_provable() {
 pub fn lt_root_rules_close_constant_false_laws() {
     let _scope = tatic::kernel::InternScope::enter();
     let (x, y) = (Term::V(0), Term::V(1));
-    let lt = |a: Term, b: Term| Term::Op(5, Box::new(a), Box::new(b));
-    let add = |a: Term, b: Term| Term::Op(0, Box::new(a), Box::new(b));
+    let lt = |a: Term, b: Term| Term::Op(LT, Box::new(a), Box::new(b));
+    let add = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
     let falsum = lt(Term::Ones, Term::Ones);
     EXTRA_RULES.with(|e| *e.borrow_mut() = vec![(lt(x.clone(), x.clone()), falsum.clone()), (lt(Term::Ones, x.clone()), falsum.clone())]);
     let before = MACHINE_FALLBACKS.with(|c| c.get());
@@ -1304,7 +1304,7 @@ pub fn lt_borrow_bit_probe() {
     let one = b(4, Term::Zero, Term::Ones);
     let top = b(6, b(6, b(6, one, Term::Zero), Term::Zero), Term::Zero);
     let borrow = |t: &Term| -> Term {
-        let Term::Op(5, x, y) = t else { panic!("not an lt") };
+        let Term::Op(LT, x, y) = t else { panic!("not an lt") };
         let (x, y) = ((**x).clone(), (**y).clone());
         b(2, b(1, not(x.clone()), y.clone()), b(1, not(b(3, x.clone(), y.clone())), b(4, x, y)))
     };
@@ -1462,7 +1462,7 @@ pub fn add3_pool(deep: bool) -> Vec<Term> {
             }
         }
         if deep {
-            let arith: Vec<Term> = d1.iter().filter(|t| matches!(t, Term::Op(0 | 3 | 4, ..))).cloned().collect();
+            let arith: Vec<Term> = d1.iter().filter(|t| matches!(t, Term::Op(ADD | XOR | SUB, ..))).cloned().collect();
             for o in [0usize, 4] {
                 for a in &arith {
                     for b in &arith {

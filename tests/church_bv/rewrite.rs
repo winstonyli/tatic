@@ -7,6 +7,15 @@ pub enum Term {
     Ones,
     Op(usize, Box<Term>, Box<Term>),
 }
+/// `Term::Op` indices (the position in `OPS`).
+pub const ADD: usize = 0;
+pub const AND: usize = 1;
+pub const OR: usize = 2;
+pub const XOR: usize = 3;
+pub const SUB: usize = 4;
+pub const LT: usize = 5;
+pub const SHL1: usize = 6;
+pub const SHR1: usize = 7;
 /// `lt` (index 5) returns a one-bit vector and only appears at the root of a term; `shl1` (index 6) is `a << 1`
 /// and ignores its second operand (a delay cell in the machine); `shr1` (index 7) is `a >> 1`, also unary, and not a machine.
 pub const OPS: [&str; 8] = ["add", "and", "or", "xor", "sub", "lt", "shl1", "shr1"];
@@ -103,20 +112,20 @@ impl Term {
     }
     pub fn has_shift(&self) -> bool {
         match self {
-            Term::Op(o, a, b) => *o == 6 || *o == 7 || a.has_shift() || b.has_shift(),
+            Term::Op(o, a, b) => *o == SHL1 || *o == SHR1 || a.has_shift() || b.has_shift(),
             _ => false,
         }
     }
     /// No add, sub or lt anywhere: bitwise operators and shifts only.
     pub fn add_free(&self) -> bool {
         match self {
-            Term::Op(o, a, b) => matches!(o, 1..=3 | 6 | 7) && a.add_free() && b.add_free(),
+            Term::Op(o, a, b) => matches!(*o, AND..=XOR | SHL1 | SHR1) && a.add_free() && b.add_free(),
             _ => true,
         }
     }
     pub fn uses_add(&self) -> bool {
         match self {
-            Term::Op(o, a, b) => *o == 0 || *o == 4 || a.uses_add() || b.uses_add(),
+            Term::Op(o, a, b) => *o == ADD || *o == SUB || a.uses_add() || b.uses_add(),
             _ => false,
         }
     }
@@ -421,7 +430,7 @@ pub fn chain_step(n: usize, a: &Term, b: &Term, goods: &[(Expr, Expr)]) -> Optio
         if matches!(cand, Term::V(i) if i >= atoms.len()) || find_constant_carry(&a1, &b1, &cand).is_none() {
             continue;
         }
-        let law = carry_chain_law(n, &Term::Op(0, Box::new(a1.clone()), Box::new(b1.clone())), &cand)?;
+        let law = carry_chain_law(n, &Term::Op(ADD, Box::new(a1.clone()), Box::new(b1.clone())), &cand)?;
         let w: Vec<(Expr, Expr)> = (0..2).map(|i| atoms.get(i).map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
         let proof = apps(law.0, vec![w[0].0.clone(), w[1].0.clone(), w[0].1.clone(), w[1].1.clone()]);
         let target = if let Term::V(i) = cand { atoms[i].clone() } else { cand };
@@ -495,9 +504,9 @@ pub fn rule_set() -> &'static Vec<(Term, Term)> {
 pub fn rules() -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let v = Term::V;
-    let shl = |a: Term| Term::Op(6, Box::new(a), Box::new(Term::Zero));
-    let shr = |a: Term| Term::Op(7, Box::new(a), Box::new(Term::Zero));
-    let lt = |a: Term, b: Term| Term::Op(5, Box::new(a), Box::new(b));
+    let shl = |a: Term| Term::Op(SHL1, Box::new(a), Box::new(Term::Zero));
+    let shr = |a: Term| Term::Op(SHR1, Box::new(a), Box::new(Term::Zero));
+    let lt = |a: Term, b: Term| Term::Op(LT, Box::new(a), Box::new(b));
     let mut all = vec![
         Rule { name: "shldist", lhs: shl(op(0, v(0), v(1))), rhs: op(0, shl(v(0)), shl(v(1))) },
         Rule { name: "shldistsub", lhs: shl(op(4, v(0), v(1))), rhs: op(4, shl(v(0)), shl(v(1))) },
@@ -640,7 +649,7 @@ pub fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)
     if l.add_free() && r.add_free() {
         let law = bitwise_law_k(n, k, l, r);
         check(&Ctx::new(), &law.0, &law.1).ok().map(|_| law)
-    } else if matches!(l, Term::Op(7, ..)) && matches!(r, Term::Op(7, ..) | Term::Zero) || matches!(r, Term::Op(7, ..)) && matches!(l, Term::Zero) {
+    } else if matches!(l, Term::Op(SHR1, ..)) && matches!(r, Term::Op(SHR1, ..) | Term::Zero) || matches!(r, Term::Op(SHR1, ..)) && matches!(l, Term::Zero) {
         // laws with a `shr1` root are not machines: prove them with the rewriter (which falls back on the bit-0 mask
         // reduction), without the rule being proved, so that it cannot be used in its own proof
         let key = format!("{} -> {}", l.show(), r.show());
@@ -666,7 +675,7 @@ pub fn rule_weight(t: &Term) -> (i64, [i64; 8]) {
             (0, a)
         }
         Term::Zero | Term::Ones => (1, [0; 8]),
-        Term::Op(6 | 7, x, _) => {
+        Term::Op(SHL1 | SHR1, x, _) => {
             let (c, mut a) = rule_weight(x);
             a.iter_mut().for_each(|k| *k *= 2);
             (2 * c, a)
@@ -858,13 +867,13 @@ pub static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mu
 pub fn fold_rule(t: &Term) -> Option<Rule> {
     fn closed(t: &Term) -> bool {
         match t {
-            Term::V(_) | Term::Op(7, ..) => false, // `shr1` is not a machine: `prove_rule` cannot prove laws over it
+            Term::V(_) | Term::Op(SHR1, ..) => false, // `shr1` is not a machine: `prove_rule` cannot prove laws over it
             Term::Op(_, a, b) => closed(a) && closed(b),
             _ => true,
         }
     }
-    let one = Term::Op(4, Box::new(Term::Zero), Box::new(Term::Ones));
-    if !matches!(t, Term::Op(o, ..) if *o != 5) || ablated("fold") || t.show() == one.show() || !closed(t) {
+    let one = Term::Op(SUB, Box::new(Term::Zero), Box::new(Term::Ones));
+    if !matches!(t, Term::Op(o, ..) if *o != LT) || ablated("fold") || t.show() == one.show() || !closed(t) {
         return None;
     }
     [Term::Zero, Term::Ones, one].into_iter().find(|c| (1..=6).all(|w| t.plausibly_equals(c, w, 1))).map(|c| Rule { name: "fold", lhs: t.clone(), rhs: c })
@@ -937,7 +946,7 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
     let ((a2, pa), (b2, pb)) = (rewrite(a, n, ops, goods), rewrite(b, n, ops, goods));
     let cong = cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa.clone(), pb.clone()]);
     let t1 = Term::Op(*o, Box::new(a2.clone()), Box::new(b2.clone()));
-    if *o == 5 {
+    if *o == LT {
         // an `lt` root: the operands rewritten, one bit out
         let cong = cong_n(&bv_ty(n), &bv_ty(1), &ops[5], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa, pb]);
         if let Some((target, step)) = rule_step(n, &t1, goods) {
@@ -947,7 +956,7 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
         }
         return (t1, cong);
     }
-    if *o == 4 {
+    if *o == SUB {
         // a difference: the library rules, then the carry-encoding search
         if let Some((target, step)) = rule_step(n, &t1, goods) {
             let (t3, p3) = rewrite(&target, n, ops, goods);
@@ -959,7 +968,7 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
             None => (t1, cong),
         };
     }
-    if *o == 6 || *o == 7 {
+    if *o == SHL1 || *o == SHR1 {
         // a shift: the library rules (`shldist`, ...), else unchanged
         if let Some((target, step)) = rule_step(n, &t1, goods) {
             let (t3, p3) = rewrite(&target, n, ops, goods);
@@ -968,7 +977,7 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
         }
         return (t1, cong);
     }
-    if *o != 0 {
+    if *o != ADD {
         if let Some((target, step)) = rule_step(n, &t1, goods) {
             let (t3, p3) = rewrite(&target, n, ops, goods);
             let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
@@ -1024,19 +1033,19 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
         let ((pv, pw), (qv, qw), (rv, rw)) = (witnessed(p, n, goods), witnessed(q, n, goods), witnessed(r, n, goods));
         apps(memo(format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
     };
-    let sum = |p: &Term, q: &Term| Term::Op(0, Box::new(p.clone()), Box::new(q.clone()));
+    let sum = |p: &Term, q: &Term| Term::Op(ADD, Box::new(p.clone()), Box::new(q.clone()));
     let step = if !ablated("zero") && matches!(b2, Term::Zero) {
         Some((a2.clone(), app2(memo(format!("idr{n}"), || add_identity_proof(n, 0, false)).0, av, aw)))
     } else if !ablated("zero") && matches!(a2, Term::Zero) {
         Some((b2.clone(), app2(memo(format!("idl{n}"), || add_identity_proof(n, 0, true)).0, bv, bw)))
-    } else if !ablated("not") && matches!(&b2, Term::Op(3, p, q) if p.show() == a2.show() && matches!(**q, Term::Ones)) {
+    } else if !ablated("not") && matches!(&b2, Term::Op(XOR, p, q) if p.show() == a2.show() && matches!(**q, Term::Ones)) {
         // a + ~a = -1
         Some((Term::Ones, app2(memo(format!("not{n}"), || add_not_proof(n, false)).0, av, aw)))
-    } else if !ablated("not") && !ablated("comm") && matches!(&a2, Term::Op(3, p, q) if p.show() == b2.show() && matches!(**q, Term::Ones)) {
+    } else if !ablated("not") && !ablated("comm") && matches!(&a2, Term::Op(XOR, p, q) if p.show() == b2.show() && matches!(**q, Term::Ones)) {
         // ~b + b = b + ~b = -1
         let lemma = app2(memo(format!("not{n}"), || add_not_proof(n, false)).0, bv.clone(), bw.clone());
         let comm = apps(memo(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv.clone(), aw, bw]);
-        let swapped = witnessed(&Term::Op(0, Box::new(b2.clone()), Box::new(a2.clone())), n, goods).0;
+        let swapped = witnessed(&Term::Op(ADD, Box::new(b2.clone()), Box::new(a2.clone())), n, goods).0;
         let ones = witnessed(&Term::Ones, n, goods).0;
         Some((Term::Ones, trans_proof(&bv_ty(n), &ev(&t1), &swapped, &ones, comm, lemma)))
     } else if let Some(r) = rule_step(n, &t1, goods) {
@@ -1045,10 +1054,10 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
         Some(r)
     } else if let Some(r) = tree_step(n, &t1, goods) {
         Some(r)
-    } else if let (false, Term::Op(0, p, q)) = (ablated("assoc"), &a2) {
+    } else if let (false, Term::Op(ADD, p, q)) = (ablated("assoc"), &a2) {
         // (p + q) + r = p + (q + r)
         Some((sum(p, &sum(q, &b2)), assoc(p, q, &b2)))
-    } else if let (false, Term::Op(0, bp, bq)) = (ablated("assoc") || ablated("comm"), &b2) {
+    } else if let (false, Term::Op(ADD, bp, bq)) = (ablated("assoc") || ablated("comm"), &b2) {
         if bp.show() < a2.show() {
             // a + (b + c) = (a + b) + c = (b + a) + c = b + (a + c)
             let (a_, b_, c_) = (&a2, &**bp, &**bq);
@@ -1084,7 +1093,7 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
 pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
     match t {
         Term::Zero | Term::Ones => Some(t.clone()),
-        Term::V(_) | Term::Op(0 | 4 | 6 | 7, ..) => {
+        Term::V(_) | Term::Op(ADD | SUB | SHL1 | SHR1, ..) => {
             let i = match atoms.iter().position(|a| a.show() == t.show()) {
                 Some(i) => i,
                 None => {
@@ -1166,7 +1175,7 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
             }
     // equal bitwise operators: congruence on the operands
     if let (Term::Op(o, a1, a2), Term::Op(o2, b1, b2)) = (a, b)
-        && o == o2 && *o != 0 && *o != 4
+        && o == o2 && *o != ADD && *o != SUB
             && let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
                 return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
             }
@@ -1204,18 +1213,18 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
 pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
     let (vals, bv) = (goods.iter().map(|g| g.0.clone()).collect::<Vec<_>>(), bv_ty(n));
     let ev = |t: &Term| t.eval(ops, n, &vals);
-    let shr = |t: &Term| Term::Op(7, Box::new(t.clone()), Box::new(Term::Zero));
-    let (mask, one_arg) = (Term::Op(6, Box::new(Term::Ones), Box::new(Term::Zero)), |t: &Term| match t {
-        Term::Op(7, x, _) if Machine::parse(x).is_some() => Some((**x).clone()),
+    let shr = |t: &Term| Term::Op(SHR1, Box::new(t.clone()), Box::new(Term::Zero));
+    let (mask, one_arg) = (Term::Op(SHL1, Box::new(Term::Ones), Box::new(Term::Zero)), |t: &Term| match t {
+        Term::Op(SHR1, x, _) if Machine::parse(x).is_some() => Some((**x).clone()),
         Term::Zero => Some(Term::Zero),
         _ => None,
     });
-    if !matches!(a, Term::Op(7, ..)) && !matches!(b, Term::Op(7, ..)) {
+    if !matches!(a, Term::Op(SHR1, ..)) && !matches!(b, Term::Op(SHR1, ..)) {
         return None;
     }
     let (x, y) = (one_arg(a)?, one_arg(b)?);
     // the pair `A & M`, `B & M`: rewrite both, close with `prove_eq` (a machine law when they stay arithmetic)
-    let (ta, tb) = (Term::Op(1, Box::new(x.clone()), Box::new(mask.clone())), Term::Op(1, Box::new(y.clone()), Box::new(mask.clone())));
+    let (ta, tb) = (Term::Op(AND, Box::new(x.clone()), Box::new(mask.clone())), Term::Op(AND, Box::new(y.clone()), Box::new(mask.clone())));
     let ((r1, p1), (r2, p2)) = (rewrite(&ta, n, ops, goods), rewrite(&tb, n, ops, goods));
     let mid = prove_eq(n, ops, goods, &r1, &r2)?;
     let mid = trans_proof(&bv, &ev(&ta), &ev(&r1), &ev(&tb), p1, trans_proof(&bv, &ev(&r1), &ev(&r2), &ev(&tb), mid, sym(&bv, &ev(&tb), &ev(&r2), p2)));
@@ -1224,7 +1233,7 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
     let side_proof = |orig: &Term, arg: &Term| -> Option<Expr> {
         if matches!(orig, Term::Zero) {
             // `0 = shr1 0 = shr1 (0 & M)`: the second step is a congruence on `0 = 0 & M` by the rewriter
-            let (r, pr) = rewrite(&Term::Op(1, Box::new(Term::Zero), Box::new(mask.clone())), n, ops, goods);
+            let (r, pr) = rewrite(&Term::Op(AND, Box::new(Term::Zero), Box::new(mask.clone())), n, ops, goods);
             if r.show() != "0" {
                 return None;
             }
@@ -1233,7 +1242,7 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
                 return None;
             }
             let z = ev(&Term::Zero);
-            let and0 = Term::Op(1, Box::new(Term::Zero), Box::new(mask.clone()));
+            let and0 = Term::Op(AND, Box::new(Term::Zero), Box::new(mask.clone()));
             let shr_and0 = shr(&and0);
             // shr1 0 = shr1 (0 & M) by congruence on `0 = 0 & M` (sym of the rewrite proof)
             let c = cong_n(&bv, &bv, &ops[7], &[z.clone(), z.clone()], &[ev(&and0), z.clone()], vec![sym(&bv, &ev(&and0), &z, pr), refl(z.clone())]);
@@ -1241,7 +1250,7 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
             Some(trans_proof(&bv, &z, &ev(&shr(&Term::Zero)), &ev(&shr_and0), zero_to_shr0, c))
         } else {
             let law = memo(format!("shrmask{n}"), || {
-                let (l, r) = (shr(&Term::V(0)), shr(&Term::Op(1, Box::new(Term::V(0)), Box::new(Term::Op(6, Box::new(Term::Ones), Box::new(Term::Zero))))));
+                let (l, r) = (shr(&Term::V(0)), shr(&Term::Op(AND, Box::new(Term::V(0)), Box::new(Term::Op(SHL1, Box::new(Term::Ones), Box::new(Term::Zero))))));
                 prove_rule(n, 1, &l, &r).expect("shrmask law")
             });
             let w = witnessed(arg, n, goods);
@@ -1264,7 +1273,7 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
     let bv = bv_ty(n);
     // an `lt` root (a one-bit result) is rewritten under its operands, then closed by congruence or, failing that,
     // by the `lt` machine proof for the rewritten pair; `lt` occurs only at the root
-    let lt_roots = matches!((t1, t2), (Term::Op(5, ..), Term::Op(5, ..)));
+    let lt_roots = matches!((t1, t2), (Term::Op(LT, ..), Term::Op(LT, ..)));
     let root = if lt_roots { bv_ty(1) } else { bv.clone() };
     let (r1, p1, r2, p2, mid) = if lt_roots {
         // `rewrite` normalizes the operands and applies the root rules; equal results close by `refl`, `lt` roots with
@@ -1273,7 +1282,7 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
         let mid = if r1.show() == r2.show() {
             refl(ev(&r1))
         } else {
-            let by_operands = if let (Term::Op(5, a2, b2), Term::Op(5, c2, d2)) = (&r1, &r2) {
+            let by_operands = if let (Term::Op(LT, a2, b2), Term::Op(LT, c2, d2)) = (&r1, &r2) {
                 match (prove_eq(n, &ops, &goods, a2, c2), prove_eq(n, &ops, &goods, b2, d2)) {
                     (Some(pa), Some(pb)) => Some(cong_n(&bv, &root, &ops[5], &[ev(a2), ev(b2)], &[ev(c2), ev(d2)], vec![pa, pb])),
                     _ => None,
@@ -1378,7 +1387,7 @@ pub fn find_constant_carry(a: &Term, b: &Term, t: &Term) -> Option<bool> {
 /// Proof of `t1 = t2` where `t1 = add A B` (bitwise `A`, `B`) and `t2` is bitwise, over two good vectors, by the
 /// discovered constant-carry invariant; `None` when no constant carry works.
 pub fn carry_chain_law(n: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
-    let Term::Op(0, a_term, b_term) = t1 else { return None };
+    let Term::Op(ADD, a_term, b_term) = t1 else { return None };
     if a_term.uses_add() || b_term.uses_add() || t2.uses_add() || t1.max_var().max(t2.max_var()) > 1 {
         return None;
     }
