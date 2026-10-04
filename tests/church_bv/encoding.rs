@@ -355,6 +355,110 @@ pub fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(us
     (proof, stmt)
 }
 
+/// `add_identity_proof_over` with the carries bound once in the proof as well (design doc section 90b): each carry `c_j`
+/// and its proof `pc_j : Id(c_j, false)` are lambda-bound variables, `(\c pc. rest) (carry a_(j-1) c_(j-1)) proof_j`, so
+/// every term and type the proof body builds mentions `c_j` as one variable, not an O(j)-node expression. Stated over
+/// `adder` (use `add_shared`, so the statement is shaped the same way).
+pub fn add_identity_proof_shared(n: usize, rhs_lit: u128, left: bool, adder: fn(usize) -> Expr) -> (Expr, Expr) {
+    let xf = move |a: Expr| if left { xor(f(), a) } else { xor(a, f()) };
+    let carry = move |a: Expr, c: Expr| {
+        if left { or(and(f(), a.clone()), and(c, xor(f(), a))) } else { or(and(a.clone(), f()), and(c, xor(a, f()))) }
+    };
+    let (p1, _) = bit_lemma(id(bool0(), xor(xf(var(0)), f()), var(0)), refl(t()), refl(f()));
+    let (p2, _) = bit_lemma(id(bool0(), carry(var(0), f()), f()), refl(f()), refl(f()));
+    // step-body context [x, g, a_0..a_(n-1), ga_0..ga_(n-1), c_1, pc_1, c_2, pc_2, ..]; `k` pairs are bound
+    let d = 2 + 2 * n;
+    let a = move |i: usize, k: usize| var((d + 2 * k - 1 - (2 + i)) as u32);
+    let ga = move |i: usize, k: usize| var((d + 2 * k - 1 - (2 + n + i)) as u32);
+    let cv = move |j: usize, k: usize| if j == 0 { f() } else { var((d + 2 * k - 1 - (d + 2 * (j - 1))) as u32) };
+    let pv = move |j: usize, k: usize| var((d + 2 * k - 1 - (d + 2 * (j - 1) + 1)) as u32);
+    // proof that c_(j+1) = carry(a_j, c_j) is false, at `k` bound pairs (j <= k)
+    let next_false = |j: usize, k: usize| {
+        let step_to_false = app2(p2.clone(), a(j, k), ga(j, k));
+        if j == 0 {
+            return step_to_false;
+        }
+        let cj = cv(j, k);
+        let fmap = lam(bool0(), carry(shift(&a(j, k), 0, 1), var(0)));
+        let rewritten = cong1(&bool0(), &bool0(), &fmap, cj.clone(), f(), pv(j, k));
+        trans_proof(&bool0(), &carry(a(j, k), cj), &carry(a(j, k), f()), &f(), rewritten, step_to_false)
+    };
+    let kn = n.saturating_sub(1);
+    // innermost: the sums with every carry a variable
+    let mut s = Vec::new();
+    let mut e = Vec::new();
+    for i in 0..n {
+        let ci = cv(i, kn);
+        let s_i = xor(xf(a(i, kn)), ci.clone());
+        let to_a = app2(p1.clone(), a(i, kn), ga(i, kn));
+        let proof = if i == 0 {
+            to_a
+        } else {
+            let fmap = lam(bool0(), xor(xf(shift(&a(i, kn), 0, 1)), var(0)));
+            let rewritten = cong1(&bool0(), &bool0(), &fmap, ci.clone(), f(), pv(i, kn));
+            trans_proof(&bool0(), &s_i, &xor(xf(a(i, kn)), f()), &a(i, kn), rewritten, to_a)
+        };
+        s.push(s_i);
+        e.push(proof);
+    }
+    let ys: Vec<Expr> = (0..n).map(|i| a(i, kn)).collect();
+    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    fbody = lam(sort(1), lam(karrow(n), fbody));
+    for _ in 0..n {
+        fbody = lam(bool0(), fbody);
+    }
+    let mut body = cong_n(&bool0(), &bv_ty(n), &fbody, &s, &ys, e);
+    // bind c_(j+1), pc_(j+1) from the inside out: level k binds the pair for j = k
+    for k in (0..kn).rev() {
+        let binder = lam(bool0(), lam(id(bool0(), var(0), f()), body));
+        body = app2(binder, carry(a(k, k), cv(k, k)), next_false(k, k));
+    }
+    let mut step = body;
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    let rhs = lit(n, rhs_lit);
+    let sum = |x: Expr, r: Expr| if left { app2(adder(n), r, x) } else { app2(adder(n), x, r) };
+    let motive = lam(bv_ty(n), id(bv_ty(n), sum(var(0), rhs.clone()), var(0)));
+    let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
+    let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), id(bv_ty(n), sum(var(0), rhs), var(0))));
+    (proof, stmt)
+}
+
+#[test]
+pub fn shared_carry_proof_checks_and_rejects_wrong_statements() {
+    for n in [1usize, 2, 3, 4, 8] {
+        for left in [false, true] {
+            let (proof, stmt) = add_identity_proof_shared(n, 0, left, add_shared);
+            ck(&format!("shared n={n} left={left}"), &proof, &stmt);
+            let (proof1, stmt1) = add_identity_proof_shared(n, 1, left, add_shared);
+            assert!(check(&Ctx::new(), &proof1, &stmt1).is_err(), "rhs 1 must be rejected at n={n} left={left}");
+        }
+    }
+}
+
+/// Section 90b: the shared-carry proof against the inlined one, same exe, alternating, n = 16, 32 (and 64 with `SHARED_N64=1`).
+#[test]
+#[ignore]
+pub fn shared_carry_scaling() {
+    let ns: Vec<usize> = if std::env::var("SHARED_N64").is_ok() { vec![16, 32, 64] } else { vec![16, 32] };
+    for n in ns {
+        for round in 0..2 {
+            let (p, s) = add_identity_proof_shared(n, 0, false, add_shared);
+            let t0 = Instant::now();
+            ck("shared", &p, &s);
+            let shared = t0.elapsed();
+            let (p, s) = add_identity_proof(n, 0, false);
+            let t1 = Instant::now();
+            ck("inlined", &p, &s);
+            println!("SHARED-CARRY n={n} round={round}: shared {shared:?}, inlined {:?}", t1.elapsed());
+        }
+    }
+}
+
 #[test]
 pub fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
     // per-bit lemma, stated against its own type
