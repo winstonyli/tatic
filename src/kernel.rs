@@ -21,18 +21,21 @@
 //!     favor of `W`: it doesn't reduce by `refl`, only propositionally.
 //!
 //! Everything else (Bool, Nat, non-dependent pairs, ...) is a *definition*
-//! built from these five, not a further primitive. See the tests at the
-//! bottom for worked examples, including a proof that uses `J` (symmetry
+//! built from these five, not a further primitive. See the tests in `kernel/tests.rs`
+//! for worked examples, including a proof that uses `J` (symmetry
 //! of `Id`), a `WRec`-defined function whose defining equation holds by
 //! `refl` alone (i.e. genuinely *computes*, which is the whole point of
 //! choosing `W` over an impredicative/Church encoding), and a `SigRec`
 //! projection that computes the same way.
 //!
-//! This module is intentionally free-standing: it does not (yet) replace
-//! `term`/`eval`/`compile`/`jit`. Wiring the JIT's "found to be equivalent"
-//! check through an actual `Id`-typed, kernel-checked proof term (instead
-//! of empirical sampling) is the natural next step once this kernel is
-//! trusted, not something folded into this pass.
+//! Besides those formers an `Expr` has `Var` (de Bruijn index), `Free` (a level, for builder parameters) and `Const`
+//! (a postulate or definition in `Globals`).
+//!
+//! This is the trusted core: the proof pipeline (`proof`, `jit`) builds terms and has this module check them; nothing
+//! else decides equality or typing. Layout: this file holds `Expr`, `shift`/`instantiate`, the hash-consing layer
+//! (`hc`), `whnf`/`def_eq`/`normalize` and `infer`/`check`. Child modules: `postulates` (builders over `Globals`, not
+//! read by the checker), `tests`, and `hc_probe` (measurement only, behind the `record-defeq` feature). The
+//! closure-based `kernel_lazy::def_eq` is an untrusted second evaluator used to test `def_eq` differentially.
 
 use hashbrown::{HashMap, HashSet};
 use std::fmt;
