@@ -2803,6 +2803,90 @@ fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
     rule_order_ok(l, r) || (rule_tied(l, r) && (tie_greater(l, r) || rule_permutative(l, r)))
 }
 
+/// The one-step neighbours of `t` (section 83): any rule of `rs` (given in both directions) at any subterm, commutation
+/// and association of add/and/or/xor.
+fn nbrs(t: &Term, rs: &[(Term, Term)], out: &mut Vec<Term>) {
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    for (l, r) in rs {
+        let mut sub = vec![None; l.max_var().max(r.max_var()) + 1];
+        if match_pat(l, t, &mut sub) && sub.iter().all(Option::is_some) {
+            out.push(subst_pat(r, &sub));
+        }
+    }
+    if let Term::Op(o, a, b) = t {
+        if *o <= 3 {
+            out.push(op(*o, (**b).clone(), (**a).clone()));
+            if let Term::Op(o2, x, y) = &**a {
+                if o2 == o {
+                    out.push(op(*o, (**x).clone(), op(*o, (**y).clone(), (**b).clone())));
+                }
+            }
+            if let Term::Op(o2, y, z) = &**b {
+                if o2 == o {
+                    out.push(op(*o, op(*o, (**a).clone(), (**y).clone()), (**z).clone()));
+                }
+            }
+        }
+        let mut inner = vec![];
+        nbrs(a, rs, &mut inner);
+        out.extend(inner.into_iter().map(|x| op(*o, x, (**b).clone())));
+        let mut inner = vec![];
+        nbrs(b, rs, &mut inner);
+        out.extend(inner.into_iter().map(|x| op(*o, (**a).clone(), x)));
+    }
+}
+
+/// Bidirectional search from `a` and `b` for a common term: `(midpoint, steps from a, steps from b)` within `depth`
+/// steps per side, terms at most twice the larger of `a` and `b`.
+fn midpoint_search(a: &Term, b: &Term, rs: &[(Term, Term)], depth: usize) -> Option<(Term, usize, usize)> {
+    let cap = 2 * a.size().max(b.size());
+    let mut seen: [std::collections::HashMap<String, usize>; 2] = Default::default();
+    let mut frontier: [Vec<Term>; 2] = [vec![a.clone()], vec![b.clone()]];
+    seen[0].insert(a.show(), 0);
+    seen[1].insert(b.show(), 0);
+    for d in 0..=depth {
+        for i in 0..2 {
+            for t in &frontier[i] {
+                if let Some(d2) = seen[1 - i].get(&t.show()) {
+                    let d1 = seen[i][&t.show()];
+                    return Some((t.clone(), if i == 0 { d1 } else { *d2 }, if i == 0 { *d2 } else { d1 }));
+                }
+            }
+        }
+        if d == depth {
+            break;
+        }
+        for i in 0..2 {
+            let mut next = vec![];
+            for t in &frontier[i] {
+                let mut out = vec![];
+                nbrs(t, rs, &mut out);
+                for x in out {
+                    if x.size() <= cap && !seen[i].contains_key(&x.show()) {
+                        seen[i].insert(x.show(), d + 1);
+                        next.push(x);
+                    }
+                }
+            }
+            frontier[i] = next;
+        }
+    }
+    None
+}
+
+/// `(a, b)` with the common context removed: descend while the heads agree and one operand is equal.
+fn local_diff(a: &Term, b: &Term) -> (Term, Term) {
+    if let (Term::Op(o, a1, a2), Term::Op(o2, b1, b2)) = (a, b) {
+        if o == o2 && a1.show() == b1.show() {
+            return local_diff(a2, b2);
+        }
+        if o == o2 && a2.show() == b2.show() {
+            return local_diff(a1, b1);
+        }
+    }
+    (a.clone(), b.clone())
+}
+
 fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
     match (p, t) {
         (Term::V(i), _) => match &sub[*i] {
@@ -5517,7 +5601,24 @@ fn rule_miner() {
     let proposer = std::env::var("RULEMINER_PROPOSER").unwrap_or_else(|_| "mined".into());
     if proposer != "mined" {
         // `goal`: each straggler's normalized sides as a rule, in both directions (the goal-as-lemma baseline, section 69)
-        cands = if proposer == "goal" {
+        cands = if proposer == "midpoint" {
+            // section 83: the halves of a path between a straggler's normal forms (common context removed), both directions
+            let rs: Vec<(Term, Term)> = rules().into_iter().filter(|r| !ablated(r.name)).flat_map(|r| [(r.lhs.clone(), r.rhs.clone()), (r.rhs, r.lhs)]).collect();
+            let depth = env("RULEMINER_MIDPOINT", 3);
+            let mut out: Vec<(Term, Term)> = vec![];
+            for st in &stragglers {
+                if let Some((m, ..)) = midpoint_search(&st.3[0], &st.3[1], &rs, depth) {
+                    for (x, y) in [(&st.3[0], &m), (&m, &st.3[1])] {
+                        let (l, r) = local_diff(x, y);
+                        out.extend([(l.clone(), r.clone()), (r, l)]);
+                    }
+                }
+            }
+            out.retain(|(l, r)| l.show() != r.show() && l.max_var() < 3 && r.max_var() < 3);
+            out.sort_by_key(|(l, r)| (l.show(), r.show()));
+            out.dedup_by_key(|(l, r)| (l.show(), r.show()));
+            out
+        } else if proposer == "goal" {
             stragglers.iter().flat_map(|st| [(st.3[0].clone(), st.3[1].clone()), (st.3[1].clone(), st.3[0].clone())]).filter(|(l, r)| l.show() != r.show()).collect()
         } else {
             pilot_candidates(&proposer, &env)
@@ -5655,36 +5756,6 @@ fn rule_miner() {
     if depth > 0 {
         EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(&chosen).cloned().collect());
         let rs: Vec<(Term, Term)> = rules().into_iter().filter(|r| !ablated(r.name)).flat_map(|r| [(r.lhs.clone(), r.rhs.clone()), (r.rhs, r.lhs)]).collect();
-        fn nbrs(t: &Term, rs: &[(Term, Term)], out: &mut Vec<Term>) {
-            let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-            for (l, r) in rs {
-                let mut sub = vec![None; l.max_var().max(r.max_var()) + 1];
-                if match_pat(l, t, &mut sub) && sub.iter().all(Option::is_some) {
-                    out.push(subst_pat(r, &sub));
-                }
-            }
-            if let Term::Op(o, a, b) = t {
-                if *o <= 3 {
-                    out.push(op(*o, (**b).clone(), (**a).clone()));
-                    if let Term::Op(o2, x, y) = &**a {
-                        if o2 == o {
-                            out.push(op(*o, (**x).clone(), op(*o, (**y).clone(), (**b).clone())));
-                        }
-                    }
-                    if let Term::Op(o2, y, z) = &**b {
-                        if o2 == o {
-                            out.push(op(*o, op(*o, (**a).clone(), (**y).clone()), (**z).clone()));
-                        }
-                    }
-                }
-                let mut inner = vec![];
-                nbrs(a, rs, &mut inner);
-                out.extend(inner.into_iter().map(|x| op(*o, x, (**b).clone())));
-                let mut inner = vec![];
-                nbrs(b, rs, &mut inner);
-                out.extend(inner.into_iter().map(|x| op(*o, (**a).clone(), x)));
-            }
-        }
         let (mut found, mut total) = (0, 0);
         for (st, c) in stragglers.iter().zip(&covered) {
             if *c {
@@ -5693,47 +5764,13 @@ fn rule_miner() {
             total += 1;
             RULE_BUDGET.with(|b| b.set(env("RULEMINER_STEPS", 200) as i64));
             let nf = [rewrite(&st.1, n, &ops, &goods).0, rewrite(&st.2, n, &ops, &goods).0];
-            let cap = 2 * nf[0].size().max(nf[1].size());
-            let mut seen: [std::collections::HashMap<String, (Term, usize)>; 2] = Default::default();
-            let mut frontier: [Vec<Term>; 2] = [vec![nf[0].clone()], vec![nf[1].clone()]];
-            for i in 0..2 {
-                seen[i].insert(nf[i].show(), (nf[i].clone(), 0));
-            }
-            let mut hit: Option<(Term, usize, usize)> = None;
-            'search: for d in 0..=depth {
-                for i in 0..2 {
-                    for t in &frontier[i] {
-                        if let Some((_, d2)) = seen[1 - i].get(&t.show()) {
-                            let (da, db) = if i == 0 { (seen[0][&t.show()].1, *d2) } else { (*d2, seen[1][&t.show()].1) };
-                            hit = Some((t.clone(), da, db));
-                            break 'search;
-                        }
-                    }
-                }
-                if d == depth {
-                    break;
-                }
-                for i in 0..2 {
-                    let mut next = vec![];
-                    for t in &frontier[i] {
-                        let mut out = vec![];
-                        nbrs(t, &rs, &mut out);
-                        for x in out {
-                            if x.size() <= cap && !seen[i].contains_key(&x.show()) {
-                                seen[i].insert(x.show(), (x.clone(), d + 1));
-                                next.push(x);
-                            }
-                        }
-                    }
-                    frontier[i] = next;
-                }
-            }
+            let hit = midpoint_search(&nf[0], &nf[1], &rs, depth);
             match hit {
                 Some((m, da, db)) => {
                     found += 1;
                     println!("RULEMINER midpoint {}: depths {da}+{db}, sizes {} / {} / mid {}: {} ~ {} via {}", st.0, nf[0].size(), nf[1].size(), m.size(), nf[0].show(), nf[1].show(), m.show());
                 }
-                None => println!("RULEMINER midpoint {}: none within depth {depth} ({} + {} terms seen): {} ~ {}", st.0, seen[0].len(), seen[1].len(), nf[0].show(), nf[1].show()),
+                None => println!("RULEMINER midpoint {}: none within depth {depth}: {} ~ {}", st.0, nf[0].show(), nf[1].show()),
             }
         }
         println!("RULEMINER midpoints found for {found} of {total} uncovered stragglers");
