@@ -3,6 +3,15 @@
 use std::time::Instant;
 use tatic::kernel::*;
 
+type BitPair = (Vec<Expr>, Vec<Expr>);
+type BitTriple = (Vec<Expr>, Vec<Expr>, Vec<Expr>);
+/// Output bits of a circuit from the two operands' bits.
+type BitsDyn = dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
+type DdBuild<'a> = &'a dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig);
+/// A rule candidate's score: (gain, (lhs, rhs), per-law outcomes, cost).
+type ScoredRule = (i64, (Term, Term), Vec<bool>, i64);
+
 // The allocator `main.rs` ships with: the lib's own `#[global_allocator]` is
 // `#[cfg(test)]`, so without this these timings ran on the system heap.
 #[global_allocator]
@@ -340,7 +349,7 @@ fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(usize)
         s.push(s_i);
         e.push(proof);
     }
-    let ys: Vec<Expr> = (0..n).map(|i| a(i)).collect();
+    let ys: Vec<Expr> = (0..n).map(a).collect();
     // f_n = \u_0..u_(n-1). \C k. k u_0 .. u_(n-1)   (ctx [u.., C, k]: k = var0, u_i = var(n+1-i))
     let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
     fbody = lam(sort(1), lam(karrow(n), fbody));
@@ -1509,7 +1518,7 @@ fn good_ripple(n: usize, sub: bool) -> (Expr, Expr) {
 
 /// `(proof, type)` of `Pi x y. GoodBv x -> GoodBv y -> GoodBv (vec x y)` for a binary vector operation
 /// whose result bits and their `GoodBool` witnesses `bits(a, b, ga, gb)` are built from the operands'.
-fn good_vec(n: usize, vec: Expr, bits: &dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> (Vec<Expr>, Vec<Expr>)) -> (Expr, Expr) {
+fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
     // `GoodBv (add x y)` is a Sort3 claim, so it cannot be a motive for the witnesses (`Bv -> Sort2`):
     // take the claim's own `P` and `st` first, then eliminate `gx` and `gy` into `P (add x' y')`.
     // ctx: x, y, gx, gy, P, st, a_0.., ga_0.., b_0.., gb_0..
@@ -2341,7 +2350,7 @@ fn bitwise_law_k(n: usize, k: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
 type BitFn<'a> = &'a dyn Fn(usize) -> Expr;
 type VarBitFn<'a> = &'a dyn Fn(usize, usize) -> Expr;
 /// The skeleton of two-variable laws: see `k_var_law`; `per_bit(a, ga, b, gb)` gets the bit and witness variables.
-fn two_var_law(n: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(BitFn, BitFn, BitFn, BitFn) -> (Vec<Expr>, Vec<Expr>, Vec<Expr>)) -> (Expr, Expr) {
+fn two_var_law(n: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(BitFn, BitFn, BitFn, BitFn) -> BitTriple) -> (Expr, Expr) {
     k_var_law(n, 2, t1, t2, &|bits, goods| per_bit(&|i| bits(0, i), &|i| goods(0, i), &|i| bits(1, i), &|i| goods(1, i)))
 }
 
@@ -2349,7 +2358,7 @@ fn two_var_law(n: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(BitFn, BitFn, Bi
 /// in turn and calls `per_bit(bits, goods)` (`bits(v, i)`, `goods(v, i)`: bit `i` of vector `v` and its `GoodBool`
 /// witness, as variables) for the per-bit equalities `(s1, s2, proofs)`; the result is `Pi x_1..x_k.
 /// GoodBv x_1 -> .. -> GoodBv x_k -> Id(Bv_n, t1, t2)`.
-fn k_var_law(n: usize, k: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(VarBitFn, VarBitFn) -> (Vec<Expr>, Vec<Expr>, Vec<Expr>)) -> (Expr, Expr) {
+fn k_var_law(n: usize, k: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(VarBitFn, VarBitFn) -> BitTriple) -> (Expr, Expr) {
     k_var_law_to(n, k, &bv_ty(n), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
         let (s1, s2, e) = per_bit(bits, goods);
         let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
@@ -2849,16 +2858,14 @@ fn nbrs(t: &Term, rs: &[(Term, Term)], out: &mut Vec<Term>) {
     if let Term::Op(o, a, b) = t {
         if *o <= 3 {
             out.push(op(*o, (**b).clone(), (**a).clone()));
-            if let Term::Op(o2, x, y) = &**a {
-                if o2 == o {
+            if let Term::Op(o2, x, y) = &**a
+                && o2 == o {
                     out.push(op(*o, (**x).clone(), op(*o, (**y).clone(), (**b).clone())));
                 }
-            }
-            if let Term::Op(o2, y, z) = &**b {
-                if o2 == o {
+            if let Term::Op(o2, y, z) = &**b
+                && o2 == o {
                     out.push(op(*o, op(*o, (**a).clone(), (**y).clone()), (**z).clone()));
                 }
-            }
         }
         let mut inner = vec![];
         nbrs(a, rs, &mut inner);
@@ -3188,7 +3195,7 @@ fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
                     atoms.len() - 1
                 }
             };
-            (i < cap).then(|| Term::V(i))
+            (i < cap).then_some(Term::V(i))
         }
         Term::Op(o, a, b) => Some(Term::Op(*o, Box::new(abstract_atoms(a, atoms, cap)?), Box::new(abstract_atoms(b, atoms, cap)?))),
     }
@@ -3255,21 +3262,17 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
             return Some(apps(bitwise_law_k(n, k, &a1, &a2).0, args));
         }
     }
-    if let (Term::Op(o @ (0 | 4), a1, a2), Term::Op(o2, b1, b2)) = (a, b) {
-        if o == o2 {
-            if let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
+    if let (Term::Op(o @ (0 | 4), a1, a2), Term::Op(o2, b1, b2)) = (a, b)
+        && o == o2
+            && let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
                 return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
             }
-        }
-    }
     // equal bitwise operators: congruence on the operands
-    if let (Term::Op(o, a1, a2), Term::Op(o2, b1, b2)) = (a, b) {
-        if o == o2 && *o != 0 && *o != 4 {
-            if let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
+    if let (Term::Op(o, a1, a2), Term::Op(o2, b1, b2)) = (a, b)
+        && o == o2 && *o != 0 && *o != 4
+            && let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
                 return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
             }
-        }
-    }
     if let Some(p) = shr_mask_eq(n, ops, goods, a, b) {
         return Some(p);
     }
@@ -3277,8 +3280,8 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
     // `witnessed`), which takes its carries out of the machine; the proof for the pair over `k + 1` variables
     // is the proof for the original pair, since the extra variable's value is the subterm's
     let cost = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
-    if cost(a).max(cost(b)) > GENERALIZE_ABOVE && k < VARS.len() {
-        if let Some(x) = shared_subterm(a, b) {
+    if cost(a).max(cost(b)) > GENERALIZE_ABOVE && k < VARS.len()
+        && let Some(x) = shared_subterm(a, b) {
             let mut goods2 = goods.to_vec();
             goods2.push(witnessed(&x, n, goods));
             let (a2, b2) = (replace_term(a, &x, &Term::V(k)), replace_term(b, &x, &Term::V(k)));
@@ -3286,7 +3289,6 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
                 return Some(p);
             }
         }
-    }
     // scoring mode: only whether the rewriting needed this fallback matters, so count it without building the machine proof
     if SCORE_ONLY.with(|s| s.get()) && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap() {
         MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
@@ -3296,7 +3298,7 @@ fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) 
     let law = add_tree_law(n, k, a, b)?;
     MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
     let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
-    return Some(apps(law.0, args));
+    Some(apps(law.0, args))
 }
 
 /// `shr1 A = shr1 B` (or `0 = shr1 B`, as `shr1 0`) for machine-expressible `A`, `B`, without a lookahead machine: the
@@ -3895,7 +3897,7 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
     // diagrams pay off only once the case tree is big (2^nv leaves); below that their per-node proofs cost more
     let dd_min: usize = std::env::var("DDMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(9);
     let use_dd = |nv: usize| inv.is_none() && std::env::var("NOBDD").is_err() && nv >= dd_min;
-    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: &dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig)| -> Expr {
+    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: DdBuild| -> Expr {
         let key = format!("{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
         if let Some(e) = LEMMAS.with(|c| c.borrow().get(&key).cloned()) {
             LEMMA_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3905,12 +3907,11 @@ fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)
         if inv.is_some() && std::env::var("GUARDTRACE").is_ok() {
             eprintln!("GUARDED lemma nv={nv} tag={tag}");
         }
-        if use_dd(nv) {
-            if let Some(e) = lemma_dd(nv, dd) {
+        if use_dd(nv)
+            && let Some(e) = lemma_dd(nv, dd) {
                 LEMMAS.with(|c| c.borrow_mut().insert(key, e.clone()));
                 return e;
             }
-        }
         let e = lemma_n(
             nv,
             &|v| {
@@ -5232,7 +5233,7 @@ impl Gates for DdGates {
 
 /// Closed `Pi bits. GoodBool bits -> Id(Bool0, a, b)` for the two signals `build` makes from the bit variables, by
 /// diagrams instead of a case tree; `None` when they are different functions. Same shape as `lemma_n`'s proof.
-fn lemma_dd(nv: usize, build: &dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig)) -> Option<Expr> {
+fn lemma_dd(nv: usize, build: DdBuild) -> Option<Expr> {
     let vars: Vec<Expr> = (0..nv).map(|m| var((2 * nv - 1 - m) as u32)).collect();
     let goods: Vec<Expr> = (0..nv).map(|m| var((nv - 1 - m) as u32)).collect();
     let g = DdGates::new(vars, goods);
@@ -5779,7 +5780,7 @@ fn rule_miner() {
     let (mut covered, mut size) = score(&chosen);
     for _ in 0..env("RULEMINER_ROUNDS", 8) {
         let count = |f: &Vec<bool>| f.iter().filter(|c| **c).count() as i64;
-        let mut best: Option<(i64, (Term, Term), Vec<bool>, i64)> = None;
+        let mut best: Option<ScoredRule> = None;
         // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
         // scope; the results are folded in candidate order, so the choice does not depend on the thread count
         let threads = env("RULEMINER_THREADS", 1).clamp(1, 12);
@@ -5999,7 +6000,7 @@ fn encoding_search_rediscovers_library_lemmas_from_statements() {
 // analysis on all 2n input bits with `refl` leaves, so they are finite and compare circuits only (no numeric meaning).
 
 /// `\a b. \C k. a C (\a_i.. b C (\b_i.. k out_0 .. out_(n-1)))` where `outs(a_bits, b_bits)` gives the output bits.
-fn bits_circuit(n: usize, outs: &dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>) -> Expr {
+fn bits_circuit(n: usize, outs: BitsFn) -> Expr {
     let d = 4 + 2 * n;
     let v = |pos: usize| var((d - 1 - pos) as u32);
     let a: Vec<Expr> = (0..n).map(|i| v(4 + i)).collect();
@@ -6079,7 +6080,7 @@ fn mul_circuit_laws_by_case_analysis_and_false_ones_rejected() {
         let _scope = tatic::kernel::InternScope::enter();
         let m = |x: &[Expr], y: &[Expr]| mul_bits(n, x, y);
         let t0 = Instant::now();
-        let laws: Vec<(&str, Box<dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>>, Box<dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>>)> = vec![
+        let laws: Vec<(&str, Box<BitsDyn>, Box<BitsDyn>)> = vec![
             ("mul x y = mul y x", Box::new(move |x, y| mul_bits(n, x, y)), Box::new(move |x, y| mul_bits(n, y, x))),
             ("mul x 1 = x", Box::new(move |x, _| mul_bits(n, x, &const_bits(n, 1))), Box::new(|x, _| x.to_vec())),
             ("mul x 0 = 0", Box::new(move |x, _| mul_bits(n, x, &const_bits(n, 0))), Box::new(move |_, _| const_bits(n, 0))),
