@@ -1,0 +1,7 @@
+add(sub(x, y), z) -> add(sub(z, y), x)
+sub(add(x, y), z) -> add(sub(x, z), y)
+add(x, sub(y, z)) -> add(sub(x, z), y)
+sub(x, sub(y, z)) -> add(sub(x, y), z)
+add(sub(sub(x, y), -1), z) -> add(sub(x, y), sub(z, -1))
+add(sub(sub(x, y), y), z) -> add(sub(x, y), sub(z, y))
+add(sub(sub(x, y), z), x) -> add(sub(x, y), sub(x, z))
