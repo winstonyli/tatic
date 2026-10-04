@@ -1702,6 +1702,21 @@ pub fn rule_set_kernel_check() {
         }
     }
     println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved");
+    // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
+    let (ops, goods): (_, Vec<(Expr, Expr)>) = (ops_for(4), (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect());
+    let (mut same, mut total) = (0, 0);
+    for (_, t1, t2) in family_laws(&family, &env, 4, kv, 7) {
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) {
+            continue;
+        }
+        RULE_BUDGET.with(|b| b.set(200));
+        let n1 = rewrite(&t1, 4, &ops, &goods).0.show();
+        RULE_BUDGET.with(|b| b.set(200));
+        let n2 = rewrite(&t2, 4, &ops, &goods).0.show();
+        total += 1;
+        same += (n1 == n2) as u32;
+    }
+    println!("NFSAME {same} of {total} laws have equal normal forms on both sides");
 }
 
 /// Each rule of the promoted sets parses, is a true law at widths 1-4, and is proved (and kernel-checked) at width 4.
