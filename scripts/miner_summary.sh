@@ -21,7 +21,7 @@ for fam in ${FAMILIES:-mul shl lt}; do
     shr) extra="RULEMINER_DEEP=1 MINER_SUB=1 RULEMINER_STRIDE=3 RULEMINER_LAWS=${RULEMINER_LAWS:-900}" ;;
   esac
   t0=$(date +%s)
-  out=$(env RULEMINER_FAMILY=$fam $extra cmd //c start //wait //b //belownormal //affinity FFF "$exe" rule_miner --ignored --nocapture --exact 2>&1 || true)
+  out=$(env RULEMINER_FAMILY=$fam $extra cmd //c start //wait //b //belownormal //affinity FFF "$exe" search::rule_miner --ignored --nocapture --exact 2>&1 || true)
   s=$(( $(date +%s) - t0 ))
   head=$(grep -m1 'stragglers of' <<<"$out" | sed "s/^RULEMINER [a-z]*: //")
   cov=$(grep -m1 'stragglers covered' <<<"$out" | sed "s/^RULEMINER [a-z]*: //")
