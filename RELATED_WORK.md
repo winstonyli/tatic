@@ -1,5 +1,7 @@
 # Related work
 
+> Note: paths under `docs/superpowers/` and `scripts/experiments/` cited below point to internal planning notes and experiment scripts that are not in this repository.
+
 This document is not a design proposal — it's a record of the formal-logic
 and compiler-runtime landscape surveyed while scoping possible future work
 (see `README.md`'s own Future Work list, and `TYPES.md` for what this

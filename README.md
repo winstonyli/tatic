@@ -22,6 +22,42 @@ verification against a reference interpreter (always), and, where the term
 falls in a covered fragment, an actual **kernel-checked proof** that the
 compiled and interpreted readings agree.
 
+## Scope
+
+tatic is a research prototype, not a production compiler. The compilable
+fragment is small (simply typed `Int -> ... -> Int` terms with closures);
+anything else is served by the interpreter. Kernel-checked equivalence proofs
+cover only the terms in the proof fragment; elsewhere the compiled code is
+checked against the interpreter on sample inputs only. Alongside the JIT, the
+repository holds a Church-encoded bit-vector library and a rewrite-rule miner
+(`tests/church_bv/`, `tools/rulelm/`), which are research experiments and are
+not needed to use the JIT.
+
+## Requirements
+
+- A recent stable Rust toolchain: the crate uses edition 2024, and its
+  dependencies declare a minimum of Rust 1.91 (the crate itself declares no
+  `rust-version`). `tools/rulelm` is a separate crate whose `burn` dependency
+  needs Rust 1.95 and a Vulkan-capable discrete GPU (it selects
+  `Device::vulkan(DeviceKind::DiscreteGpu(0))`); it is optional.
+- Development and measurements were done on Windows 11. The Rust code is not
+  Windows-specific, but several helper scripts under `scripts/` use bash and
+  PowerShell (for example `scripts/quiet_ab/pin.ps1`), and the recorded
+  timings come from one laptop.
+
+## License and development notes
+
+Licensed under the Apache License, Version 2.0 (see `LICENSE`; copyright 2026
+Winston Li).
+
+This project was developed with substantial AI assistance: over 90% of the
+commits (500 of 536 when this note was written) carry a `Co-Authored-By:
+Claude` trailer, and the design notes in `RELATED_WORK.md` were written the
+same way. Treat the measurements and proofs as claims to re-run, not as
+audited results. The internal planning notes and experiment scripts that some
+commits and `RELATED_WORK.md` refer to (`docs/superpowers/`,
+`scripts/experiments/`) are not part of this repository.
+
 ## Quick start
 
 ```sh
