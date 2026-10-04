@@ -523,6 +523,7 @@ pub fn rules() -> Vec<Rule> {
         Rule { name: "shrdistand", lhs: shr(op(1, v(0), v(1))), rhs: op(1, shr(v(0)), shr(v(1))) },
         Rule { name: "shrdistor", lhs: shr(op(2, v(0), v(1))), rhs: op(2, shr(v(0)), shr(v(1))) },
         Rule { name: "shrdistxor", lhs: shr(op(3, v(0), v(1))), rhs: op(3, shr(v(0)), shr(v(1))) },
+        Rule { name: "shrnot", lhs: shrnot_rule().0, rhs: shrnot_rule().1 },
         Rule { name: "shlzero", lhs: shl(Term::Zero), rhs: Term::Zero },
         Rule { name: "double", lhs: op(0, v(0), v(0)), rhs: shl(v(0)) },
         Rule { name: "doublechain", lhs: op(0, v(0), op(0, v(0), v(1))), rhs: op(0, shl(v(0)), v(1)) },
@@ -644,9 +645,48 @@ impl Term {
     }
 }
 
+/// `shr1(sub(-1, x)) -> xor(shr1(x), shr1(-1))`: a shift of a bitwise not (`sub(-1, x)` is what `notsub` makes of
+/// `xor(x, -1)`) distributes like the other bitwise operators; without it the not blocks `shrdistxor`.
+pub fn shrnot_rule() -> (Term, Term) {
+    let b = |o: usize, x: Term, y: Term| Term::Op(o, Box::new(x), Box::new(y));
+    let shr = |x: Term| b(SHR1, x, Term::Zero);
+    (shr(b(SUB, Term::Ones, Term::V(0))), b(XOR, shr(Term::V(0)), shr(Term::Ones)))
+}
+
+/// Proof of the `shrnot` rule through the middle term `shr1(xor(x, -1))`: the rewriter proves it equal to the left side
+/// (with `notsub` on) and to the right side (with `notsub` off, so `shrdistxor` sees the xor), neither using `shrnot`.
+pub fn shr_not_law(n: usize) -> Option<(Expr, Expr)> {
+    let b = |o: usize, x: Term, y: Term| Term::Op(o, Box::new(x), Box::new(y));
+    let (l, r) = shrnot_rule();
+    let m = b(SHR1, b(XOR, Term::V(0), Term::Ones), Term::Zero);
+    let key = |(lhs, rhs): (&Term, &Term)| format!("{} -> {}", lhs.show(), rhs.show());
+    let own = key((&l, &r));
+    let notsub = rules().into_iter().find(|x| x.name == "notsub").map(|x| key((&x.lhs, &x.rhs)))?;
+    let prove = |blocked: &[String], t1: &Term, t2: &Term| {
+        let outer = PROVING.with(|p| p.borrow().len());
+        PROVING.with(|p| p.borrow_mut().extend(blocked.iter().cloned()));
+        let out = rewrite_law(n, 1, t1, t2);
+        PROVING.with(|p| p.borrow_mut().truncate(outer));
+        out
+    };
+    let to_left = prove(std::slice::from_ref(&own), &m, &l)?;
+    let to_right = prove(&[own, notsub], &m, &r)?;
+    let (ops, bv) = (ops_for(n), bv_ty(n));
+    let vals = vec![var(1)];
+    let ev = |t: &Term| t.eval(&ops, n, &vals);
+    let args = vec![var(1), var(0)];
+    let (p1, p2) = (apps(to_left.0, args.clone()), apps(to_right.0, args));
+    let body = trans_proof(&bv, &ev(&l), &ev(&m), &ev(&r), sym(&bv, &ev(&m), &ev(&l), p1), p2);
+    let g = app(good_bv(n), var(0));
+    let stmt = pi(g.clone(), id(bv.clone(), ev(&l), ev(&r)));
+    Some((lam(bv.clone(), lam(g, body)), pi(bv, stmt)))
+}
+
 /// The law behind a rule: bitwise/shift rules by the per-position prover, the rest by the carry machines.
 pub fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
-    if l.add_free() && r.add_free() {
+    if (l.show(), r.show()) == (shrnot_rule().0.show(), shrnot_rule().1.show()) {
+        shr_not_law(n)
+    } else if l.add_free() && r.add_free() {
         let law = bitwise_law_k(n, k, l, r);
         check(&Ctx::new(), &law.0, &law.1).ok().map(|_| law)
     } else if matches!(l, Term::Op(SHR1, ..)) && matches!(r, Term::Op(SHR1, ..) | Term::Zero) || matches!(r, Term::Op(SHR1, ..)) && matches!(l, Term::Zero) {
@@ -1166,6 +1206,18 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
             let w: Vec<(Expr, Expr)> = (0..k).map(|i| atoms.get(i).map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
             let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
             return Some(apps(bitwise_law_k(n, k, &a1, &a2).0, args));
+        }
+    }
+    // add-free terms with shifts: the per-position prover, when the law holds exhaustively at widths 1..=5 (a position
+    // reads only a few neighbours, so widths this small contain every case; the kernel checks the proof regardless)
+    if k <= 3 && a.add_free() && b.add_free() && (a.has_shift() || b.has_shift()) {
+        let holds = (1..=5usize).all(|w| (0..1u128 << (w * k)).all(|i| {
+            let vals: Vec<u128> = (0..k).map(|v| (i >> (w * v)) & low_bits(w)).collect();
+            a.interp(w, &vals) == b.interp(w, &vals)
+        }));
+        if holds {
+            let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
+            return Some(apps(bitwise_law_k(n, k, a, b).0, args));
         }
     }
     if let (Term::Op(o @ (0 | 4), a1, a2), Term::Op(o2, b1, b2)) = (a, b)

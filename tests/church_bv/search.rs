@@ -1651,6 +1651,27 @@ pub fn normal_forms() {
     }
 }
 
+/// The `shrnot` rule and the laws it closes: a shift of a bitwise not distributes over xor, so both sides reach the same
+/// xor of shifted atoms without a whole-term machine proof.
+#[test]
+pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
+    let _scope = tatic::kernel::InternScope::enter();
+    for n in [4usize, 8] {
+        let (l, r) = shrnot_rule();
+        let (p, s) = prove_rule(n, 1, &l, &r).expect("shrnot");
+        ck(&format!("shrnot n={n}"), &p, &s);
+    }
+    for (a, b) in [
+        ("shr1(sub(-1, xor(x, y)), 0)", "xor(shr1(y, 0), xor(shr1(-1, 0), shr1(x, 0)))"),
+        ("shr1(xor(xor(x, y), -1), 0)", "shr1(xor(sub(-1, x), y), 0)"),
+    ] {
+        let before = MACHINE_FALLBACKS.with(|c| c.get());
+        let (p, s) = rewrite_law(4, 2, &parse_term(a), &parse_term(b)).unwrap_or_else(|| panic!("{a} = {b}"));
+        ck(a, &p, &s);
+        assert_eq!(MACHINE_FALLBACKS.with(|c| c.get()), before, "{a} = {b} needed a machine proof");
+    }
+}
+
 /// Kernel check of a rule set (search note section 75): every law of `CHECK_FAMILY` (sized by the `RULEMINER_*` vars, as in
 /// `rule_miner`) that `rewrite_law` proves under the built-in rules (less `ABLATE`) plus the rules in `CHECK_RULES` is
 /// checked by the kernel at width 4; prints how many were proved, how many without a whole-term machine proof.
