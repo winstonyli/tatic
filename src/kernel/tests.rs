@@ -385,11 +385,12 @@ fn beta_leaves_const_and_free_alone() {
 }
 
 /// Both ranges fit the padding stage 1 left (`RELATED_WORK.md` §64):
-/// a node is a 48-byte `Expr` and two `u32`s.
+/// a node is a 48-byte `Expr`, two `u32`s and the hash-consing generation (the name predates it; `record-defeq`
+/// adds the probe's `canon` word, so it is checked without that feature).
+#[cfg(not(feature = "record-defeq"))]
 #[test]
-fn a_node_is_56_bytes() {
+fn a_node_is_64_bytes() {
     assert_eq!(std::mem::size_of::<Expr>(), 48);
-    // The hash-consing `generation` (a third `u32`) costs a word.
     assert_eq!(std::mem::size_of::<Node<Expr>>(), 64);
 }
 
