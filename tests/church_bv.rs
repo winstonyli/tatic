@@ -208,7 +208,7 @@ fn church_bitvector_add_computes_by_conv_at_64_bits() {
 fn scaling_probe() {
     for n in [8usize, 16, 24, 32, 48] {
         let ad = add_shared(n);
-        let mask = (1u128 << n) - 1;
+        let mask = low_bits(n);
         let (x, y) = (0x0123_4567_89AB_CDEFu128 & mask, 0xFEDC_BA98_7654_3210u128 & mask);
         let got = app2(ad.clone(), lit(n, x), lit(n, y));
         let t0 = Instant::now();
@@ -1028,7 +1028,7 @@ fn eq_bv_computes_on_literals() {
     for n in [1usize, 4, 8] {
         let ty = pi(bv_ty(n), pi(bv_ty(n), bool0()));
         ck("eq_bv type", &eq_bv(n), &ty.clone());
-        let mask = (1u128 << n) - 1;
+        let mask = low_bits(n);
         for (x, y) in [(0u128, 0u128), (1, 1), (mask, mask), (0, 1), (1, 0), (mask, 0), (0b101 & mask, 0b100 & mask)] {
             let got = app2(eq_bv(n), lit(n, x), lit(n, y));
             assert!(def_eq(&got, &bit(x == y)), "eq {x} {y} at n={n}");
@@ -1128,7 +1128,7 @@ fn to_n_computes_on_good_literals() {
         let lift_ty = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), app(good_bv1(n), var(0))));
         ck("lift_good type", &lift_good(n), &lift_ty);
         ck("toN type", &to_n(n), &ty);
-        let mask = (1u128 << n) - 1;
+        let mask = low_bits(n);
         for v in [0u128, 1, 5 & mask, mask] {
             ck("good_lit", &good_lit(n, v), &app(good_bv(n), lit(n, v)));
             let got = app2(to_n(n), lit(n, v), good_lit(n, v));
@@ -1322,7 +1322,7 @@ fn eq_with_a_literal_implies_equality_on_good_vectors() {
     }
     for n in [1usize, 2, 4, 8, 32] {
         let _scope = tatic::kernel::InternScope::enter();
-        let mask = (1u128 << n) - 1;
+        let mask = low_bits(n);
         for l in [0u128, 1, 0b1010 & mask, mask, 1u128 << (n - 1)] {
             let (p, s) = eq_lit_sound(n, l, l);
             let t0 = Instant::now();
@@ -5647,6 +5647,96 @@ fn rule_miner() {
         if !c {
             println!("RULEMINER uncovered: {}", st.0);
         }
+    }
+    // midpoint probe (section 83): for each uncovered straggler, bidirectional search from the two normal forms (under
+    // the base and chosen rules) over single steps of any rule in both directions, commutation and association of
+    // add/and/or/xor; depth `RULEMINER_MIDPOINT` per side, terms capped at twice the larger normal form
+    let depth = env("RULEMINER_MIDPOINT", 0);
+    if depth > 0 {
+        EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(&chosen).cloned().collect());
+        let rs: Vec<(Term, Term)> = rules().into_iter().filter(|r| !ablated(r.name)).flat_map(|r| [(r.lhs.clone(), r.rhs.clone()), (r.rhs, r.lhs)]).collect();
+        fn nbrs(t: &Term, rs: &[(Term, Term)], out: &mut Vec<Term>) {
+            let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+            for (l, r) in rs {
+                let mut sub = vec![None; l.max_var().max(r.max_var()) + 1];
+                if match_pat(l, t, &mut sub) && sub.iter().all(Option::is_some) {
+                    out.push(subst_pat(r, &sub));
+                }
+            }
+            if let Term::Op(o, a, b) = t {
+                if *o <= 3 {
+                    out.push(op(*o, (**b).clone(), (**a).clone()));
+                    if let Term::Op(o2, x, y) = &**a {
+                        if o2 == o {
+                            out.push(op(*o, (**x).clone(), op(*o, (**y).clone(), (**b).clone())));
+                        }
+                    }
+                    if let Term::Op(o2, y, z) = &**b {
+                        if o2 == o {
+                            out.push(op(*o, op(*o, (**a).clone(), (**y).clone()), (**z).clone()));
+                        }
+                    }
+                }
+                let mut inner = vec![];
+                nbrs(a, rs, &mut inner);
+                out.extend(inner.into_iter().map(|x| op(*o, x, (**b).clone())));
+                let mut inner = vec![];
+                nbrs(b, rs, &mut inner);
+                out.extend(inner.into_iter().map(|x| op(*o, (**a).clone(), x)));
+            }
+        }
+        let (mut found, mut total) = (0, 0);
+        for (st, c) in stragglers.iter().zip(&covered) {
+            if *c {
+                continue;
+            }
+            total += 1;
+            RULE_BUDGET.with(|b| b.set(env("RULEMINER_STEPS", 200) as i64));
+            let nf = [rewrite(&st.1, n, &ops, &goods).0, rewrite(&st.2, n, &ops, &goods).0];
+            let cap = 2 * nf[0].size().max(nf[1].size());
+            let mut seen: [std::collections::HashMap<String, (Term, usize)>; 2] = Default::default();
+            let mut frontier: [Vec<Term>; 2] = [vec![nf[0].clone()], vec![nf[1].clone()]];
+            for i in 0..2 {
+                seen[i].insert(nf[i].show(), (nf[i].clone(), 0));
+            }
+            let mut hit: Option<(Term, usize, usize)> = None;
+            'search: for d in 0..=depth {
+                for i in 0..2 {
+                    for t in &frontier[i] {
+                        if let Some((_, d2)) = seen[1 - i].get(&t.show()) {
+                            let (da, db) = if i == 0 { (seen[0][&t.show()].1, *d2) } else { (*d2, seen[1][&t.show()].1) };
+                            hit = Some((t.clone(), da, db));
+                            break 'search;
+                        }
+                    }
+                }
+                if d == depth {
+                    break;
+                }
+                for i in 0..2 {
+                    let mut next = vec![];
+                    for t in &frontier[i] {
+                        let mut out = vec![];
+                        nbrs(t, &rs, &mut out);
+                        for x in out {
+                            if x.size() <= cap && !seen[i].contains_key(&x.show()) {
+                                seen[i].insert(x.show(), (x.clone(), d + 1));
+                                next.push(x);
+                            }
+                        }
+                    }
+                    frontier[i] = next;
+                }
+            }
+            match hit {
+                Some((m, da, db)) => {
+                    found += 1;
+                    println!("RULEMINER midpoint {}: depths {da}+{db}, sizes {} / {} / mid {}: {} ~ {} via {}", st.0, nf[0].size(), nf[1].size(), m.size(), nf[0].show(), nf[1].show(), m.show());
+                }
+                None => println!("RULEMINER midpoint {}: none within depth {depth} ({} + {} terms seen): {} ~ {}", st.0, seen[0].len(), seen[1].len(), nf[0].show(), nf[1].show()),
+            }
+        }
+        println!("RULEMINER midpoints found for {found} of {total} uncovered stragglers");
     }
     println!("RULEMINER machine at end: {}", machine_state());
 }
