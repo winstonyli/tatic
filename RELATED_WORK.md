@@ -2880,7 +2880,7 @@ generator builds only non-recursive IR (self-calls are covered separately
 by the fixed per-template test) -- any interaction between the generator's
 shapes and recursion.
 
-**Cost.** Cold-compile medians (`jit_cold_compile_and_verify`, `ecd8c9d`
+**Cost.** Cold-compile medians (`jit_cold_compile_and_verify`, `0aaa7de`
 -- no gate -- vs this branch, median of five interleaved runs per build
 after the machine proved noisy): fib_30 314 → 302 ms, gcd 165 → 127 ms,
 capturing_closure_loop 86.6 → 102 ms, partial_application_loop 103 → 103
@@ -5239,7 +5239,7 @@ This builds stage 1 of §64: cached loose ranges, without constants.
   are one line each. But its reason, at `infer_sigma`, is only that
   smaller hot frames cost nothing, and that still holds.
 
-**Measured.** `scripts/bench_ab.sh 417e2fd --bench proofs`, 3 rounds,
+**Measured.** `scripts/bench_ab.sh 43b5e15 --bench proofs`, 3 rounds,
 CPU 4 to 9% around every run. Each round runs base, candidate, then base
 again; *noise* is that rerun against base. Round 1's noise was -7 to -63%,
 so it's unreliable. Round 2's noise was within ±8% except `relational_x1`
@@ -5293,7 +5293,7 @@ another session held 7 to 8.5 cores (a lower bound: until the 25H2
 upgrade on 2026-09-25, Windows undercounted per-process CPU time, so
 every "held N cores" figure in this file is at least that). Rerun idle from the spike patch
 (`docs/superpowers/spikes/2026-09-25-constants-and-loose-ranges.patch`,
-applied to 9f250e5; `SPIKE=... cargo test --release --lib spike_fib -- --ignored`; best of 5, in-process), `fib(16)` goes from 785 ms to
+applied to e9f10e6; `SPIKE=... cargo test --release --lib spike_fib -- --ignored`; best of 5, in-process), `fib(16)` goes from 785 ms to
 690 ms prove plus re-check, 12%. Stage 1's probe in the same idle window,
 best of 3, goes from 800 ms to 686 ms, 14% (build 417 to 365 ms, check
 383 to 321 ms). So stage 1 matches the spike, and the load inflated the
@@ -5346,7 +5346,7 @@ columns (base rerun against base) reach -63%. Mimalloc rounds 2 and 3
 were quiet, with noise within -19% to +11%, and only they are used
 below.
 
-**Stage 1 against 417e2fd, again.** Best of 3, candidate against base:
+**Stage 1 against 43b5e15, again.** Best of 3, candidate against base:
 `gcd_2_leaves` and `gcd_3_leaves` -28% and -29%,
 `closure_typed_loop_carried_parameter_universal_proof` -24%,
 `pap_producing_root` -21%, the closure fragment and non-tail proofs -11%
@@ -5360,7 +5360,7 @@ move by 30% with the machine's state.
 
 **mimalloc.** The `mimalloc` crate (0.1.52) as `#[global_allocator]` in
 `benches/proofs.rs` and, under `cfg(test)`, in `src/lib.rs`, against
-HEAD (bdacb39) with the system allocator. The shipped binary was left
+HEAD (6cf2c67) with the system allocator. The shipped binary was left
 alone. Best of rounds 2 and 3:
 
 | bench | system | mimalloc | change |
@@ -5408,7 +5408,7 @@ the `\Process(*)` counters, which do read them, still accounted for only
 86% of the machine. The rest is processes that start and exit between
 samples, such as other sessions' shell commands and our own short runs.
 
-**`relational_x10`, settled.** 5 clean pairs of the proofs bench, 417e2fd
+**`relational_x10`, settled.** 5 clean pairs of the proofs bench, 43b5e15
 against HEAD (stage 1), other processes at 5 to 17%:
 
 | bench | best | median |
@@ -5531,7 +5531,7 @@ load-bearing in both entry points.
 
 **Measured.** Stage 2 claims no speedup: it adds one `max` per
 `Rc::new`, one parameter per typing frame, and the O(1) doors. Base is
-331a7bd (stage 1 with mimalloc), head is 98b0e3e; both built once and run
+331a7bd (stage 1 with mimalloc), head is 8a13e5e; both built once and run
 interleaved with `scripts/quiet_ab/` (§66), Defender real-time
 protection off throughout.
 
@@ -5631,7 +5631,7 @@ since a pushed `Const` shifts nothing. Its `push` is also the place to
 infer each global's type to a `Sort`, once, which would have caught this
 at the push.
 
-**Cost.** A/B of 30aaf10 vs 21807cf (`scripts/quiet_ab`, clean pairs
+**Cost.** A/B of fa6458d vs 8d24f07 (`scripts/quiet_ab`, clean pairs
 only, Defender RTP off, 2026-09-26/27). `fib(16)`'s instance proof, 5
 pairs: check best 133.6 → 147.3 ms (+10%), median 144.0 → 164.9 ms
 (+14%); build unchanged. Proof benches (`target/ab/proofs2`, 6 base and 5
@@ -5677,20 +5677,20 @@ compares fib(8) with fib(16) (`2*large < 5*small`), and
 `fib16_instance_proof_builds_and_checks_quickly` guards it at 3 s (188 ms
 in a debug build).
 
-**Cost.** A/B of 576f5fe vs 5d4e065 (`target/ab3a`, 10 fib pairs and 5
+**Cost.** A/B of 576f5fe vs e273fcc (`target/ab3a`, 10 fib pairs and 5
 proof-bench pairs, clean only, RTP off, 2026-09-27). `fib(16)`: DAG
 227,157 → 10,501 nodes, build 136.9 → 4.2 ms best (174.5 → 4.9 median),
 check 153.7 → 2.8 ms best (194.2 → 3.1 median). Universal and instance
 proofs 43-57% faster (`universal_x1` 783 → 444 µs, the if-between-closures
 instance proof 3685 → 1596 µs). The µs-scale proofs got 87-155% slower
 (`straight_line_refl` 4.7 → 10.1 µs), a fixed ~5-10 µs a proof. A probe
-at e82f77e found the cause: `push`'s `infer`, run on every postulate.
+at d8dff3f found the cause: `push`'s `infer`, run on every postulate.
 `straight_line_refl` pushes 14 postulates, whose checks take 4.0 of its
 8.2 µs; `ArithPostulates::new` alone (10 pushes) takes 4.8 µs, and every
 proof builds one.
 
 **Prelude cache.** `ArithPostulates::new` builds and checks its prelude
-once per thread and clones it (7e6d61c). A/B of 64d4edd vs 7e6d61c
+once per thread and clones it (a8238e6). A/B of ab4fc7d vs a8238e6
 (`target/abA`, 5 pairs, RTP off, 2026-09-28; best-of):
 `straight_line_refl` 8.80 → 3.67 µs (−58%), `gcd_relational_single_call`
 10.8 → 5.3 µs (−51%), `relational_x1/x5/x10` −54%/−48%/−52%, the closure
@@ -5743,20 +5743,20 @@ panics instead of going stale, and that panic reaches the JIT's
 (`prime_closure_postulates`) prevents it on every corpus and fuzz path;
 stage 4 must relax the panic if it removes the priming.
 
-**Cost.** None; 3b is faster. A/B of 5d4e065 vs e82f77e (`target/ab3b`,
+**Cost.** None; 3b is faster. A/B of e273fcc vs d8dff3f (`target/ab3b`,
 10 fib pairs and 5 proof-bench pairs, clean only, RTP off, 2026-09-27).
 `fib(16)`: build 4.18 → 4.26 ms and check 2.74 → 2.76 ms best, within
 noise. The µs-scale proofs got 20-29% faster (`straight_line_refl` 10.1 →
 7.5 µs), the large ones 0-4%. So `bind`'s release `infer` stays: whatever
 it costs is less than what 3b saved, likely 3a's split of the context into
 globals and a local `Ctx` at every check (not profiled). Across stage 3
-(576f5fe → e82f77e), large proofs are 44-58% faster and the µs-scale ones
+(576f5fe → d8dff3f), large proofs are 44-58% faster and the µs-scale ones
 still 51-83% slower, from §69's push checks.
 
 ## 71. Where a cold JIT call's time goes
 
 The question was whether any of the cold path could run in parallel or
-on the GPU. A throwaway probe (b592ffd, release, pinned, Defender RTP
+on the GPU. A throwaway probe (fe36eaf, release, pinned, Defender RTP
 off, 2026-09-27) timed each phase of `compile_verify_and_apply` on a
 fresh engine for every `test_corpus` term, best of 7. Summed over the 21
 terms (35.6 ms):
@@ -5791,7 +5791,7 @@ as V8, Lean's parallel kernel checking and Coq's proof workers do
 (hides the remaining ~0.5-1 ms of theorem per recursive term); run
 Cranelift beside the proof (saves the shorter of the two).
 
-### Re-profile at 1f8fd96 (stage 4, prelude cache, `prove_instances` off)
+### Re-profile at fbc988b (stage 4, prelude cache, `prove_instances` off)
 
 Same probe shape as above (throwaway ignored test in `jit.rs`, fresh `JitEngine` per run, best of 7 per term, summed over the 21 `test_corpus` terms; pinned, BelowNormal, RTP off, CPU 6% before). Total 15.5 ms:
 
@@ -5803,7 +5803,7 @@ Same probe shape as above (throwaway ignored test in `jit.rs`, fresh `JitEngine`
 | compile + typing | 0.83 | 5% |
 | pure / closure provers, fallback | 0.36 | 2% |
 
-Two findings. (1) `verify` is 4.6 of its 5.0 ms on `fib` alone: the interpreter evaluating `fib(20)`. Every other term costs under 0.08 ms. Dropping or capping the large sample for non-tail recursion is the cheapest cold-path saving (about 30% of this total), and it needs no design. (2) The theorem does not depend on the compiled module, so it could run in parallel with `instantiate` + `verify` (14.4 ms serial vs a critical path of about 10.4 ms, at most 28%). That needs a thread and a per-thread kernel/prelude; not built. Change (1) was then made: the largest `SAMPLE_ARGS` entry is 12 instead of 20. The full release suite passes unchanged, and `fib_30`'s cold call went 12.8 to 6.1 ms (-52%; the other cold benches moved 1-25% but the 1f8fd96 baseline ran at 29% CPU, so only the `fib` figure is attributable (§74)). Change (2) was not built.
+Two findings. (1) `verify` is 4.6 of its 5.0 ms on `fib` alone: the interpreter evaluating `fib(20)`. Every other term costs under 0.08 ms. Dropping or capping the large sample for non-tail recursion is the cheapest cold-path saving (about 30% of this total), and it needs no design. (2) The theorem does not depend on the compiled module, so it could run in parallel with `instantiate` + `verify` (14.4 ms serial vs a critical path of about 10.4 ms, at most 28%). That needs a thread and a per-thread kernel/prelude; not built. Change (1) was then made: the largest `SAMPLE_ARGS` entry is 12 instead of 20. The full release suite passes unchanged, and `fib_30`'s cold call went 12.8 to 6.1 ms (-52%; the other cold benches moved 1-25% but the fbc988b baseline ran at 29% CPU, so only the `fib` figure is attributable (§74)). Change (2) was not built.
 
 Re-profile with the cap in (same probe, CPU 39% before from other load, RTP off, so read shares rather than absolutes): 12.4 ms total over the 21 terms. `instantiate` 6.3 ms (51%), universal theorem 4.4 (36%), compile + typing 0.9 (8%), `verify` 0.6 (5%), everything else 0.4. `fib`'s `verify` fell from 4.6 ms to 0.13. Cranelift is now the largest slice; the theorem is second, and it alone is what running it beside `instantiate` + `verify` could hide (a 35% ceiling).
 
@@ -5815,19 +5815,19 @@ Spec: `docs/superpowers/specs/2026-09-25-kernel-constants-and-loose-ranges-desig
 
 **What was removed.**
 - §62's prepass, `push_ev_facts`: the call in `instance_from_scaffold` and
-  the ~40-line function itself (Task 1, cde516e).
-- The closure priming (Task 2, c00aa59/41092e1): 3 functions
+  the ~40-line function itself (Task 1, d434088).
+- The closure priming (Task 2, 1614bdf/47d50fb): 3 functions
   (`prime_closure_postulates`, `prime_direct_call`,
   `prime_closure_if_tree_leaves`), 2 loops in `build_universal`, 3
   remaining call sites into them, and 8 discarded-result priming calls
   (`mk_env_ref`/`clo_ty`) across 5 other functions — counted from
-  `git show c00aa59 -- src/proof.rs`. `Postulates::push`'s scope-open
+  `git show 1614bdf -- src/proof.rs`. `Postulates::push`'s scope-open
   assertion (kernel.rs) went with it, so §70's JIT panic path is gone: no
   push can panic for being inside a scope any more. Kept: the literal
   pre-pass loop in `clo_eq_ref_if_tree` (and its twins in `call_eq_ref` and
   `build_universal`) — `denote`'s `lit_ref` still expects every literal
   pre-postulated, unrelated to the panic mechanism being removed.
-- `Anchored` and `Params` (Task 3, 6b71ff1/2af1250/b7c4812): both types and their
+- `Anchored` and `Params` (Task 3, e3087fc/9f4f25e/30b7fd0): both types and their
   impls deleted. `Anchored::at` was already the identity on a closed term
   (§70's finding). `src/proof.rs` was 11,277 lines at the plan's base
   commit (ff5e79b), 10,410 now.
@@ -5850,10 +5850,10 @@ mistake inside a scope no longer panics — it becomes an extra global that
   `hashbrown::HashMap` (per-process seeded), so push order now follows
   the deterministic proof traversal.
 - The push-check prelude cost (§69, ~4 µs/proof) is handled separately, by
-  `ArithPostulates::new`'s thread-local prelude (7e6d61c, outside this
+  `ArithPostulates::new`'s thread-local prelude (a8238e6, outside this
   plan); its A/B is in §69.
 
-**Cost.** A/B of ff5e79b vs 4e59ebf (`target/ab4`, RTP off, 2026-09-28;
+**Cost.** A/B of ff5e79b vs bf52ba4 (`target/ab4`, RTP off, 2026-09-28;
 clean runs only). `fib(16)`, 20 pairs on a quiet machine (5% CPU): DAG
 10,466 → 10,466, build 3.83 → 3.58 ms best (4.25 → 4.06 median), check
 2.56 → 2.54 ms best (2.75 → 2.85 median). A first 10-pair run overnight,
@@ -5915,9 +5915,9 @@ covers the same points by execution, and it stays.
 default. Tests turn it on, and `proof.rs` keeps the builder and its own
 tests, including the fib16 probe. Dropping them outright was the
 alternative; one sample instead of three keeps two-thirds of a cost that
-buys nothing. Built as `JitEngine::prove_instances` (5cbedfa).
+buys nothing. Built as `JitEngine::prove_instances` (ba66f11).
 
-**Cost.** A/B of 4e59ebf vs 5cbedfa (`target/ab5`, `jit_cold_compile_and_verify`,
+**Cost.** A/B of bf52ba4 vs ba66f11 (`target/ab5`, `jit_cold_compile_and_verify`,
 5 pairs, RTP off, 2026-09-28; best-of): `gcd` 2194 → 875 µs (−60%),
 `capturing_closure_loop` 2057 → 955 µs (−54%), `partial_application_loop`
 2138 → 1052 µs (−51%), `fib_30` 13,721 → 12,079 µs (−12%). The two
@@ -5927,7 +5927,7 @@ and instances are most of what such a term does on a cold call (not
 profiled); `fib_30` is dominated by `verify()` running `fib` on the
 samples (§71), so the saving is a smaller share.
 
-## 74. Baseline at f5d51e5 (verify samples capped at 12, stage 4, prelude cache, `prove_instances` off)
+## 74. Baseline at 0c3c2fb (verify samples capped at 12, stage 4, prelude cache, `prove_instances` off)
 
 Criterion, `--warm-up-time 3 --measurement-time 8`, pinned to 12 cores at BelowNormal, Defender RTP off, whole-machine CPU 18.6% before and 7.4% after. Raw output: `target/baseline/{proofs,execution}.txt` (untracked). Medians:
 
@@ -5948,7 +5948,7 @@ Criterion, `--warm-up-time 3 --measurement-time 8`, pinned to 12 cores at BelowN
 | partial_application_loop cold / warm | 969 us / 4.5 us |
 | closure_typed_loop_carried cold / warm | 10.0 ms / 32.5 us |
 
-A first pass at 1f8fd96 ran with the machine at 29% CPU and read 15-25% slower across the board, *including the interpreter benches whose code did not change* (fib_30 interpreter 668 vs 621 ms). That is the size of the load effect: compare A/Bs only within one run, and treat this table, not that pass, as the reference. The only code change between the two is the sample cap, so `fib_30`'s cold call (12.8 to 6.0 ms) is the one figure it explains; the other cold benches' 10-20% are load.
+A first pass at fbc988b ran with the machine at 29% CPU and read 15-25% slower across the board, *including the interpreter benches whose code did not change* (fib_30 interpreter 668 vs 621 ms). That is the size of the load effect: compare A/Bs only within one run, and treat this table, not that pass, as the reference. The only code change between the two is the sample cap, so `fib_30`'s cold call (12.8 to 6.0 ms) is the one figure it explains; the other cold benches' 10-20% are load.
 
 ## 75. Relational compilation (Rupicola) as the shape of "found to be equivalent"
 
