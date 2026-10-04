@@ -5460,6 +5460,61 @@ fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: u
     }
 }
 
+/// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `from_env`).
+struct MinerConfig {
+    /// `MULMINER_MAX`: largest constant in the mul family.
+    max: u32,
+    /// `RULEMINER_TRIALS`: candidate cap.
+    trials: usize,
+    /// `RULEMINER_PERM`: 0 strict rule order, 1 ties broken by `tie_greater`, 2 no order check.
+    perm: usize,
+    /// `RULEMINER_STEPS`: per-law rewrite budget once a base set is loaded.
+    steps: usize,
+    /// `RULEMINER_SIZE`: node cap of the goal proposer's pool.
+    size: usize,
+    /// `RULEMINER_VARS`: variable cap of cross-side rules.
+    vars: usize,
+    /// `RULEMINER_ROUNDS`: greedy rounds.
+    rounds: usize,
+    /// `RULEMINER_THREADS`: scoring threads, clamped to 1..=12.
+    threads: usize,
+    /// `RULEMINER_MIDPOINT`: search depth per side; unset means 3 for the `midpoint` proposer, 0 (off) for the final probe.
+    midpoint: Option<usize>,
+    /// `RULEMINER_ANY`, `_STRICT`, `_SHOW`, `_FAST`, `_NOLOOP`, `_BUNDLE`, `_TRACE`: set to 1 to enable.
+    any_op: bool,
+    strict: bool,
+    show: bool,
+    fast: bool,
+    noloop: bool,
+    bundle: bool,
+    trace: bool,
+}
+
+impl MinerConfig {
+    fn from_env() -> Self {
+        let num = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let flag = |k: &str| num(k, 0) == 1;
+        MinerConfig {
+            max: num("MULMINER_MAX", 7) as u32,
+            trials: num("RULEMINER_TRIALS", 400),
+            perm: num("RULEMINER_PERM", 0),
+            steps: num("RULEMINER_STEPS", 200),
+            size: num("RULEMINER_SIZE", 5),
+            vars: num("RULEMINER_VARS", 4),
+            rounds: num("RULEMINER_ROUNDS", 8),
+            threads: num("RULEMINER_THREADS", 1).clamp(1, 12),
+            midpoint: std::env::var("RULEMINER_MIDPOINT").ok().and_then(|v| v.parse().ok()),
+            any_op: flag("RULEMINER_ANY"),
+            strict: flag("RULEMINER_STRICT"),
+            show: flag("RULEMINER_SHOW"),
+            fast: flag("RULEMINER_FAST"),
+            noloop: flag("RULEMINER_NOLOOP"),
+            bundle: flag("RULEMINER_BUNDLE"),
+            trace: flag("RULEMINER_TRACE"),
+        }
+    }
+}
+
 /// Rule miner (search note section 36): candidate rules are the equal pairs of the `shl1` pool (two variables, width 4,
 /// the shl miner's pool), oriented to a strictly smaller right side and proved by `add_tree_law`. The targets are the
 /// mul laws that still needed a whole-term machine proof under the built-in rules (the "stragglers"). A candidate is
@@ -5476,10 +5531,11 @@ fn rule_miner() {
     };
     println!("RULEMINER machine at start: {}", machine_state());
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let (max, trials) = (env("MULMINER_MAX", 7) as u32, env("RULEMINER_TRIALS", 400));
+    let cfg = MinerConfig::from_env();
+    let (max, trials) = (cfg.max, cfg.trials);
     // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70), 2: no order check; the step budget
     // and the same-term check in `rule_step` still back up termination, and soundness is unaffected
-    let ok_order = |l: &Term, r: &Term| match env("RULEMINER_PERM", 0) {
+    let ok_order = |l: &Term, r: &Term| match cfg.perm {
         0 => rule_order_ok(l, r),
         1 => rule_order_or_tie(l, r),
         _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
@@ -5504,7 +5560,7 @@ fn rule_miner() {
         let before = fallbacks();
         let t = Instant::now();
         // base rules may loop; the step budget bounds them (the built-in rules never reach it)
-        RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { env("RULEMINER_STEPS", 200) as i64 }));
+        RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { cfg.steps as i64 }));
         let r = rewrite_law(n, kv, &t1, &t2);
         let took = t.elapsed();
         let fell = fallbacks() - before;
@@ -5512,7 +5568,7 @@ fn rule_miner() {
         unproved += r.is_none() as usize;
         let fell = if r.is_none() { fell.max(1) } else { fell };
         if r.is_none() || fell > 0 {
-            RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { env("RULEMINER_STEPS", 200) as i64 }));
+            RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { cfg.steps as i64 }));
             let normal = [rewrite(&t1, n, &ops, &goods).0, rewrite(&t2, n, &ops, &goods).0];
             println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
             stragglers.push((name, t1, t2, normal, fell, took));
@@ -5524,7 +5580,7 @@ fn rule_miner() {
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
     // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values at width 4 (a pool of all terms up to RULEMINER_SIZE nodes, indexed by value)
-    let psize = env("RULEMINER_SIZE", 5);
+    let psize = cfg.size;
     let mut by_size: Vec<Vec<Term>> = vec![vec![]; psize + 1];
     by_size[1] = vec![Term::V(0), Term::V(1), Term::Zero, Term::Ones];
     for sz in 2..=psize {
@@ -5597,7 +5653,7 @@ fn rule_miner() {
         out
     }
     // RULEMINER_ANY=1: also abstract subterms without add/sub (constant folding inside shifts and bitwise nodes)
-    let any_op = env("RULEMINER_ANY", 0) == 1;
+    let any_op = cfg.any_op;
     let mut seen_pat: std::collections::HashSet<String> = Default::default();
     let mut cands: Vec<(Term, Term)> = vec![];
     for st in &stragglers {
@@ -5622,9 +5678,9 @@ fn rule_miner() {
     }
     // cross-side candidates: a subterm of one normalized side and a subterm of the other with the same value, both
     // abstracted by the same cuts (up to four variables): the rule `abstract(s) -> abstract(s')`
-    let cross_cap = env("RULEMINER_VARS", 4);
+    let cross_cap = cfg.vars;
     // RULEMINER_STRICT=1: cross-side rules must go down in the rule order too (by default they may grow, as `subdist` does)
-    let strict = env("RULEMINER_STRICT", 0) == 1;
+    let strict = cfg.strict;
     for st in &stragglers {
         let (mut sl, mut sr) = (vec![], vec![]);
         st.3[0].subterms(&mut sl);
@@ -5678,7 +5734,7 @@ fn rule_miner() {
         cands = if proposer == "midpoint" {
             // section 83: the halves of a path between a straggler's normal forms (common context removed), both directions
             let rs: Vec<(Term, Term)> = rules().into_iter().filter(|r| !ablated(r.name)).flat_map(|r| [(r.lhs.clone(), r.rhs.clone()), (r.rhs, r.lhs)]).collect();
-            let depth = env("RULEMINER_MIDPOINT", 3);
+            let depth = cfg.midpoint.unwrap_or(3);
             let mut out: Vec<(Term, Term)> = vec![];
             for st in &stragglers {
                 if let Some((m, ..)) = midpoint_search(&st.3[0], &st.3[1], &rs, depth) {
@@ -5712,7 +5768,7 @@ fn rule_miner() {
     };
     let cands: Vec<(Term, Term)> = if proposer == "mined" || proposer == "file" { cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect() } else { cands };
     println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
-    if env("RULEMINER_SHOW", 0) == 1 {
+    if cfg.show {
         for (l, r) in &cands {
             println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
         }
@@ -5729,13 +5785,13 @@ fn rule_miner() {
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(extra).cloned().collect());
-        let steps = env("RULEMINER_STEPS", 200) as i64;
+        let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
-        SCORE_ONLY.with(|s| s.set(env("RULEMINER_FAST", 0) == 1));
+        SCORE_ONLY.with(|s| s.set(cfg.fast));
         let (mut fixed, mut size) = (vec![false; stragglers.len()], 0i64);
         // RULEMINER_NOLOOP=1: a candidate set under which a law exhausts the step budget with some term rewritten 3 or more times
         // (a cycle among the rules, section 85) is rejected
-        let noloop = env("RULEMINER_NOLOOP", 0) == 1;
+        let noloop = cfg.noloop;
         let mut looped = false;
         for (si, s) in stragglers.iter().enumerate() {
             if noloop {
@@ -5766,7 +5822,7 @@ fn rule_miner() {
         (fixed, size)
     };
     // RULEMINER_BUNDLE=1: also score all provable candidates added together (rules that only work in combination, section 73)
-    if env("RULEMINER_BUNDLE", 0) == 1 {
+    if cfg.bundle {
         let all: Vec<(Term, Term)> = provable.iter().map(|c| (*c).clone()).collect();
         let (f, _) = score(&all);
         println!("RULEMINER bundle of {} rules covers {} of {} stragglers", all.len(), f.iter().filter(|c| **c).count(), stragglers.len());
@@ -5778,12 +5834,12 @@ fn rule_miner() {
     }
     let mut chosen: Vec<(Term, Term)> = vec![];
     let (mut covered, mut size) = score(&chosen);
-    for _ in 0..env("RULEMINER_ROUNDS", 8) {
+    for _ in 0..cfg.rounds {
         let count = |f: &Vec<bool>| f.iter().filter(|c| **c).count() as i64;
         let mut best: Option<ScoredRule> = None;
         // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
         // scope; the results are folded in candidate order, so the choice does not depend on the thread count
-        let threads = env("RULEMINER_THREADS", 1).clamp(1, 12);
+        let threads = cfg.threads.clamp(1, 12);
         let scored: Vec<(Vec<bool>, i64)> = {
             let run = |idx: &[usize]| -> Vec<(usize, (Vec<bool>, i64))> {
                 let _scope = tatic::kernel::InternScope::enter();
@@ -5793,7 +5849,7 @@ fn rule_miner() {
                         with.push(provable[i].clone());
                         let t = Instant::now();
                         let r = score(&with);
-                        if env("RULEMINER_TRACE", 0) == 1 {
+                        if cfg.trace {
                             println!("RULEMINER trace candidate {i}: {:.1}s", t.elapsed().as_secs_f64());
                         }
                         (i, r)
@@ -5838,7 +5894,7 @@ fn rule_miner() {
     // midpoint probe (section 83): for each uncovered straggler, bidirectional search from the two normal forms (under
     // the base and chosen rules) over single steps of any rule in both directions, commutation and association of
     // add/and/or/xor; depth `RULEMINER_MIDPOINT` per side, terms capped at twice the larger normal form
-    let depth = env("RULEMINER_MIDPOINT", 0);
+    let depth = cfg.midpoint.unwrap_or(0);
     if depth > 0 {
         EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(&chosen).cloned().collect());
         let rs: Vec<(Term, Term)> = rules().into_iter().filter(|r| !ablated(r.name)).flat_map(|r| [(r.lhs.clone(), r.rhs.clone()), (r.rhs, r.lhs)]).collect();
@@ -5848,7 +5904,7 @@ fn rule_miner() {
                 continue;
             }
             total += 1;
-            RULE_BUDGET.with(|b| b.set(env("RULEMINER_STEPS", 200) as i64));
+            RULE_BUDGET.with(|b| b.set(cfg.steps as i64));
             let nf = [rewrite(&st.1, n, &ops, &goods).0, rewrite(&st.2, n, &ops, &goods).0];
             let hit = midpoint_search(&nf[0], &nf[1], &rs, depth);
             match hit {
