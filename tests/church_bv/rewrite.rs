@@ -824,7 +824,9 @@ pub fn rule_permutative(l: &Term, r: &Term) -> bool {
 
 /// `rule_order_ok`, or a tie in it broken by `tie_greater`, or a permutative rule.
 pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
-    rule_order_ok(l, r) || (rule_tied(l, r) && (tie_greater(l, r) || rule_permutative(l, r)))
+    // `PERM_ORDER=lpo` (section 89): `rule_step` orients every tied rule instance by instance, so both directions are admissible
+    let lpo = std::env::var("PERM_ORDER").as_deref() == Ok("lpo");
+    rule_order_ok(l, r) || (rule_tied(l, r) && (lpo || tie_greater(l, r) || rule_permutative(l, r)))
 }
 
 /// The one-step neighbours of `t` (section 83): any rule of `rs` (given in both directions) at any subterm, commutation
