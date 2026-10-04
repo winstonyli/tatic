@@ -645,7 +645,8 @@ fn op_prec(op: PrimOp) -> u8 {
 /// current scope -- the exact mirror of `Parser::scope`.
 fn print_at(store: &TermStore, h: Hash, names: &mut Vec<String>, min_prec: u8) -> String {
     let (own_prec, text) = match store.resolve(h) {
-        Term::Var(i) => (6, names[names.len() - 1 - *i as usize].clone()),
+        // a free variable (index past the binders in scope) has no name: `#i`, which does not reparse
+        Term::Var(i) => (6, names.len().checked_sub(1 + *i as usize).map_or_else(|| format!("#{i}"), |k| names[k].clone())),
         // `-n` is unary minus, not an atom: bare as an application's
         // argument (`f -2`) it would reparse as the subtraction `f - 2`,
         // and as its function (`-2 x`) as `-(2 x)`.
@@ -718,6 +719,13 @@ pub fn print(store: &TermStore, h: Hash) -> String {
 mod tests {
     use super::*;
     use crate::eval;
+
+    #[test]
+    fn printing_a_free_variable_does_not_panic() {
+        let mut store = TermStore::new();
+        let v = store.intern(Term::Var(2));
+        assert_eq!(print(&store, v), "#2");
+    }
 
     #[test]
     fn literal() {
