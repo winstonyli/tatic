@@ -1402,6 +1402,7 @@ pub fn scaling_sweep() {
     let picked: Vec<&&(String, Term, Term)> = (0..sample).map(|i| &ok[i * ok.len() / sample]).collect();
     for &w in &widths {
         let (mut proved, mut none, mut build, mut check_t, mut worst) = (0, 0, 0f64, 0f64, (0f64, String::new()));
+        let mut dags: Vec<usize> = vec![];
         let fb0 = MACHINE_FALLBACKS.with(|c| c.get());
         for law in &picked {
             let (name, t1, t2) = &***law;
@@ -1412,6 +1413,7 @@ pub fn scaling_sweep() {
             build += b;
             match r {
                 Some((p, s)) => {
+                    dags.push(tatic::kernel::term_sizes(&p).0 as usize);
                     let t = Instant::now();
                     ck(name, &p, &s);
                     let c = t.elapsed().as_secs_f64();
@@ -1425,6 +1427,10 @@ pub fn scaling_sweep() {
             }
         }
         println!("SCALE {family} n={w}: {proved} proved, {none} unproved of {}; build {build:.1}s, check {check_t:.1}s, slowest {:.2}s ({}), {} machine proofs", picked.len(), worst.0, worst.1, MACHINE_FALLBACKS.with(|c| c.get()) - fb0);
+        dags.sort();
+        if let Some(m) = dags.get(dags.len() / 2) {
+            println!("SCALE {family} n={w}: proof dag nodes: median {m}, max {}, total {}", dags[dags.len() - 1], dags.iter().sum::<usize>());
+        }
     }
     let t = Instant::now();
     for &w in widths.iter().filter(|_| std::env::var("SWEEP_RULES").is_err()) {
