@@ -1383,7 +1383,9 @@ pub fn soundness_sweep() {
 #[test]
 #[ignore]
 pub fn scaling_sweep() {
-    let _scope = tatic::kernel::InternScope::enter();
+    // SWEEP_SCOPE=law: one intern scope per law instead of one for the sweep (separates table size from per-node cost)
+    let per_law = std::env::var("SWEEP_SCOPE").is_ok_and(|v| v == "law");
+    let _scope = (!per_law).then(tatic::kernel::InternScope::enter);
     println!("SCALE machine at start: {}", machine_state());
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
@@ -1406,6 +1408,7 @@ pub fn scaling_sweep() {
         let fb0 = MACHINE_FALLBACKS.with(|c| c.get());
         for law in &picked {
             let (name, t1, t2) = &***law;
+            let _law_scope = per_law.then(tatic::kernel::InternScope::enter);
             RULE_BUDGET.with(|b| b.set(200));
             let t = Instant::now();
             let r = rewrite_law(w, kv, t1, t2);
