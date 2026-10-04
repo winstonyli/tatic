@@ -37,6 +37,11 @@ fn and(a: Expr, b: Expr) -> Expr { app2(and_(), a, b) }
 fn or(a: Expr, b: Expr) -> Expr { app2(or_(), a, b) }
 fn xor(a: Expr, b: Expr) -> Expr { app2(xor_(), a, b) }
 
+/// The `n` low bits set (`n` up to 128).
+fn low_bits(n: usize) -> u128 {
+    if n >= 128 { u128::MAX } else { (1u128 << n) - 1 }
+}
+
 /// Bool0 -> ... -> Bool0 -> C (n arrows), in a context whose top variable is C.
 fn karrow(n: usize) -> Expr {
     if n == 0 { var(0) } else { arrow(bool0(), karrow(n - 1)) }
@@ -2064,7 +2069,7 @@ fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     for _ in 0..n {
         step = lam(bool0(), step);
     }
-    let ones = lit(n, (1u128 << n) - 1);
+    let ones = lit(n, low_bits(n));
     let rhs = if wrong { lit(n, 0) } else { ones.clone() };
     let xv = bitwise(n, &|p, q| xor(p, q));
     let claim = |x: Expr| id(bv_ty(n), app2(add(n), x.clone(), app2(xv.clone(), x, ones.clone())), rhs.clone());
@@ -2146,13 +2151,13 @@ impl Term {
         match self {
             Term::V(i) => vals[*i].clone(),
             Term::Zero => lit(n, 0),
-            Term::Ones => lit(n, (1u128 << n) - 1),
+            Term::Ones => lit(n, low_bits(n)),
             Term::Op(o, a, b) => app2(ops[*o].clone(), a.eval(ops, n, vals), b.eval(ops, n, vals)),
         }
     }
     /// The value on the width-`n` operands `vals`, in plain integers (a cheap screen for false laws).
     fn interp(&self, n: usize, vals: &[u128]) -> u128 {
-        let mask = (1u128 << n) - 1;
+        let mask = low_bits(n);
         match self {
             Term::V(i) => vals[*i],
             Term::Zero => 0,
@@ -2174,7 +2179,7 @@ impl Term {
     }
     /// Whether `self` and `other` agree on the corners and 200 pseudo-random width-`n` tuples over `k` variables.
     fn plausibly_equals(&self, other: &Term, n: usize, k: usize) -> bool {
-        let mask = (1u128 << n) - 1;
+        let mask = low_bits(n);
         let mut seed = 0x9e37_79b9_7f4a_7c15u128;
         (0..204).all(|i| {
             let vals: Vec<u128> = (0..k)
@@ -2277,7 +2282,7 @@ type NfCache = std::collections::HashMap<(String, u128), Expr>;
 /// The normal form of `t` on the input `tuple`, from the normal forms of its operands: each subterm is
 /// normalized once per tuple across all terms, and the operands enter already normal.
 fn nf_cached(t: &Term, ops: &[Expr], n: usize, tuple: u128, cache: &mut NfCache) -> Expr {
-    let mask = (1u128 << n) - 1;
+    let mask = low_bits(n);
     let Term::Op(o, a, b) = t else {
         return match t {
             Term::V(i) => lit(n, (tuple >> (n * i)) & mask),
@@ -2460,7 +2465,7 @@ fn ablated(name: &str) -> bool {
 
 /// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
 fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
-    let all = (1u128 << n) - 1;
+    let all = low_bits(n);
     match t {
         Term::V(i) => goods[*i].clone(),
         Term::Zero => (lit(n, 0), good_lit(n, 0)),
