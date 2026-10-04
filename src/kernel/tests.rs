@@ -389,8 +389,8 @@ fn beta_leaves_const_and_free_alone() {
 #[test]
 fn a_node_is_56_bytes() {
     assert_eq!(std::mem::size_of::<Expr>(), 48);
-    // The `hashcons` generation (a third `u32`) costs a word.
-    assert_eq!(std::mem::size_of::<Node<Expr>>(), if cfg!(feature = "hashcons") { 64 } else { 56 });
+    // The hash-consing `generation` (a third `u32`) costs a word.
+    assert_eq!(std::mem::size_of::<Node<Expr>>(), 64);
 }
 
 /// A random `Expr` of every variant, ill-typed as often as not, with

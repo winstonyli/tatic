@@ -55,8 +55,7 @@ struct Node<T> {
     /// Probe: id of this node's structure in a simulated hash-cons table (`hc_probe`).
     #[cfg(feature = "record-defeq")]
     canon: u64,
-    /// `hashcons`: the table generation this node is canonical in (0: not), see `hc`.
-    #[cfg(feature = "hashcons")]
+    /// The `hc` table generation this node is canonical in (0: not).
     generation: std::cell::Cell<u32>,
     val: T,
 }
@@ -68,7 +67,6 @@ impl Rc<Expr> {
             free: free_of(&e),
             #[cfg(feature = "record-defeq")]
             canon: hc_probe::intern(&e),
-            #[cfg(feature = "hashcons")]
             generation: std::cell::Cell::new(0),
             val: e,
         }))
@@ -83,25 +81,18 @@ impl Rc<Expr> {
             free,
             #[cfg(feature = "record-defeq")]
             canon: hc_probe::intern(&e),
-            #[cfg(feature = "hashcons")]
             generation: std::cell::Cell::new(0),
             val: e,
         }))
     }
 
     /// Whether this node and everything under it came from the current `hc` table, so that two
-    /// canonical nodes are structurally equal exactly when they are the same node. Always false
-    /// without the `hashcons` feature, or outside a scope.
-    #[cfg(feature = "hashcons")]
+    /// canonical nodes are structurally equal exactly when they are the same node. False outside
+    /// a scope.
     #[inline(always)]
     pub(crate) fn canonical(&self) -> bool {
         let g = self.0.generation.get();
         g != 0 && g == hc::generation()
-    }
-    #[cfg(not(feature = "hashcons"))]
-    #[inline(always)]
-    pub(crate) fn canonical(&self) -> bool {
-        false
     }
 
     /// Probe: this node's id in the simulated hash-cons table.
@@ -765,8 +756,7 @@ pub fn sort(i: u32) -> Expr {
 /// the nodes `shift`/`instantiate` make are interned: structurally equal children are one node, so
 /// a proof that repeats itself is a small DAG, and the checks run inside it (`check_in`, `infer_in`,
 /// `def_eq`) find the terms already canonical. Hold one across building a proof and checking it.
-/// Tables and memos live until the outermost one drops; without the `hashcons` feature it does
-/// nothing. Per thread.
+/// Tables and memos live until the outermost one drops. Per thread.
 ///
 /// Worth it for large proofs and a loss for small ones: it halves the check and, at n=512, saves
 /// half the time and memory of the whole build-and-check, but building inside it costs more per
@@ -978,13 +968,12 @@ fn shift_memo_child(x: &Rc<Expr>, cutoff: u32, amount: i32, memo: &ShiftMemo) ->
     r
 }
 
-/// The hash-consing prototype (`hashcons` feature, bit-vector design doc section 60). While a
+/// The hash-consing layer (bit-vector design doc sections 60 and 62). While a
 /// [`hc::Scope`] is open, `instantiate_n` and `shift_child` intern the nodes they build and
 /// memoise their results; the table and memos are dropped with the outermost scope. A node is
 /// interned under an exact key (constructor, leaf value, child pointers), so two nodes merge only
 /// if structurally equal; ones built elsewhere simply stay distinct. With the feature off every
 /// function here is a no-op that makes the callers behave as before.
-#[cfg(feature = "hashcons")]
 mod hc {
     use super::*;
     use std::cell::{Cell, RefCell};
@@ -1347,64 +1336,6 @@ mod hc {
     }
 }
 
-#[cfg(not(feature = "hashcons"))]
-mod hc {
-    use super::*;
-
-    pub struct Scope;
-
-    impl Scope {
-        #[inline(always)]
-        pub fn enter() -> Scope {
-            Scope
-        }
-    }
-
-    #[inline(always)]
-    pub fn activate() {}
-
-    #[inline(always)]
-    pub fn intern_new(e: Expr) -> Rc<Expr> {
-        Rc::new(e)
-    }
-
-    #[inline(always)]
-    pub fn intern(e: Expr, ranges: Option<(u32, u32)>) -> Rc<Expr> {
-        match ranges {
-            Some((l, f)) => Rc::with_ranges(e, l, f),
-            None => Rc::new(e),
-        }
-    }
-    #[inline(always)]
-    pub fn large(_: &Expr, _: &Expr) -> bool {
-        false
-    }
-    #[inline(always)]
-    pub fn canonical_inputs(e: &Expr, expected: &Expr) -> (Expr, Expr) {
-        (e.clone(), expected.clone())
-    }
-    #[inline(always)]
-    pub fn uses(_: &Rc<Expr>, _: u32, _: u32) -> bool {
-        true
-    }
-    #[inline(always)]
-    pub fn args_id(_: &[&Expr]) -> u64 {
-        0
-    }
-    #[inline(always)]
-    pub fn inst_get(_: &Rc<Expr>, _: u64, _: u32) -> Option<Rc<Expr>> {
-        None
-    }
-    #[inline(always)]
-    pub fn inst_put(_: &Rc<Expr>, _: u64, _: u32, _: &Rc<Expr>) {}
-    #[inline(always)]
-    pub fn shift_get(_: &Rc<Expr>, _: u32, _: i32) -> Option<Rc<Expr>> {
-        None
-    }
-    #[inline(always)]
-    pub fn shift_put(_: &Rc<Expr>, _: u32, _: i32, _: &Rc<Expr>) {}
-}
-
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
 /// deeper) with `s`, then discharge that binder. `s` is walked only where
 /// `body` uses it, so not at all when `body` doesn't mention `Var(0)`:
@@ -1440,7 +1371,7 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
     inst_rec(e, args, hc::args_id(args), d)
 }
 
-/// `instantiate_n`'s recursion, with the argument list's id for the `hashcons` memo (0: none).
+/// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo (0: none).
 fn inst_rec(e: &Expr, args: &[&Expr], aid: u64, d: u32) -> Expr {
     #[cfg(feature = "record-defeq")]
     let _hc_guard = hc_probe::inst_enter(e, args, d);
