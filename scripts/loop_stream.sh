@@ -5,11 +5,13 @@
 # *before* it is mined, so M is what the stream costs when rules arrive as it does.
 # Opt-in (default off): WINDOW=cum mines OFFSET..OFFSET+(r+1)*B after batch r; POOL=1 carries the miner's candidates over rounds
 # (RULEMINER_SHOW, $out/pool.txt, RULEMINER_EXTRA); MODEL=1 adds $PROPOSER_FILE_CMD's lines to the extra candidates (PROPOSER stays mined).
+# WARM=<skip>:<laws> (not with ref) first mines once on that held-out slice, so the stream starts with those rules in force.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
 B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}; PROPOSER=${PROPOSER:-mined}
 : "${EXE:?set EXE}"
 case "${WINDOW:-}" in ""|cum) ;; *) echo "WINDOW must be empty or cum, got ${WINDOW}" >&2; exit 2 ;; esac
+case "${WARM:-}" in ""|[0-9]*:[0-9]*) ;; *) echo "WARM must be <skip>:<laws>, got ${WARM}" >&2; exit 2 ;; esac
 rules="$out/rules.txt"; : > "$rules"; : > "$out/m.tsv"
 win="RULEMINER_FAMILY=add3 CHECK_FAMILY=add3 RULEMINER_DEEP3=${DEEP3:-1} RULEMINER_STRIDE=${STRIDE:-7}"
 mc="RULEMINER_PERM=1 RULEMINER_STEPS=40 RULEMINER_THREADS=${THREADS:-6} RULEMINER_ROUNDS=${ROUNDS:-8}"
@@ -45,6 +47,7 @@ serve() { # skip -> prints "M laws"
 }
 
 if [ "$mode" = ref ]; then mine ref "$OFFSET" $((B * K)); fi
+if [ -n "${WARM:-}" ] && [ "$mode" != ref ]; then mine warm "${WARM%%:*}" "${WARM##*:}"; fi
 total=0
 for ((r = 0; r < K; r++)); do
   skip=$((OFFSET + r * B)); t0=$(date +%s)
