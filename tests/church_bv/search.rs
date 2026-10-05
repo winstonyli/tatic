@@ -458,22 +458,29 @@ pub fn pilot_candidates(proposer: &str, env: &dyn Fn(&str, usize) -> usize) -> V
         // skipped), so any outside proposer (a model, a person) can feed the same verifier and scoring
         "file" => {
             let path = std::env::var("RULEMINER_PROPOSER_FILE").expect("RULEMINER_PROPOSER_FILE");
-            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-            let mut seen = std::collections::HashSet::new();
-            for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-                let Some((l, r)) = line.split_once(" -> ") else {
-                    println!("RULEMINER proposer file: skipped (no ' -> '): {line}");
-                    continue;
-                };
-                let parsed = std::panic::catch_unwind(|| (parse_term(l.trim()), parse_term(r.trim())));
-                match parsed {
-                    Ok((l, r)) if matches!(l, Term::Op(..)) && l.show() != r.show() && seen.insert(format!("{} => {}", l.show(), r.show())) => out.push((l, r)),
-                    Ok(_) => {}
-                    Err(_) => println!("RULEMINER proposer file: skipped (unparsable): {line}"),
-                }
-            }
+            out = read_rule_file(&path);
         }
         _ => panic!("unknown proposer {proposer}"),
+    }
+    out
+}
+
+/// Rules from a file, one `lhs -> rhs` per line in `Term::show` syntax (blank lines and `#` comments skipped); shared by the `file` proposer and `RULEMINER_EXTRA`.
+pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut out = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let Some((l, r)) = line.split_once(" -> ") else {
+            println!("RULEMINER proposer file: skipped (no ' -> '): {line}");
+            continue;
+        };
+        let parsed = std::panic::catch_unwind(|| (parse_term(l.trim()), parse_term(r.trim())));
+        match parsed {
+            Ok((l, r)) if matches!(l, Term::Op(..)) && l.show() != r.show() && seen.insert(format!("{} => {}", l.show(), r.show())) => out.push((l, r)),
+            Ok(_) => {}
+            Err(_) => println!("RULEMINER proposer file: skipped (unparsable): {line}"),
+        }
     }
     out
 }
@@ -502,6 +509,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .step_by(env("RULEMINER_STRIDE", 1))
+            .skip(env("RULEMINER_SKIP", 0))
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
@@ -511,6 +519,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .step_by(env("RULEMINER_STRIDE", 1))
+            .skip(env("RULEMINER_SKIP", 0))
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
@@ -521,6 +530,26 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
     } else {
         mul_laws(max)
     }
+}
+
+/// `RULEMINER_SKIP` windows: consecutive windows tile the law sequence, and a window past the end is empty.
+#[test]
+pub fn family_law_windows_tile_the_sequence() {
+    let laws = |skip: usize, take: usize| {
+        let env = move |k: &str, d: usize| match k {
+            "RULEMINER_SKIP" => skip,
+            "RULEMINER_LAWS" => take,
+            "RULEMINER_STRIDE" => 1,
+            _ => d,
+        };
+        family_laws("add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
+    };
+    let whole = laws(0, 12);
+    assert_eq!(whole.len(), 12);
+    let mut tiled = laws(0, 5);
+    tiled.extend(laws(5, 7));
+    assert_eq!(tiled, whole);
+    assert!(laws(usize::MAX / 2, 5).is_empty());
 }
 
 /// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `from_env`).
@@ -551,6 +580,20 @@ pub struct MinerConfig {
     pub noloop: bool,
     pub bundle: bool,
     pub trace: bool,
+    /// `RULEMINER_GENERAL=<w>`: each candidate's gain is lowered by `w * rule_specificity` (default 0: off), so general rules beat narrow ones of similar coverage.
+    pub general: i64,
+}
+
+/// How narrow a rule is: its left side's size plus 3 per constant leaf (`Zero`, `Ones`) on either side.
+pub fn rule_specificity(l: &Term, r: &Term) -> i64 {
+    fn consts(t: &Term) -> i64 {
+        match t {
+            Term::Zero | Term::Ones => 1,
+            Term::Op(_, a, b) => consts(a) + consts(b),
+            _ => 0,
+        }
+    }
+    l.size() as i64 + 3 * (consts(l) + consts(r))
 }
 
 impl MinerConfig {
@@ -574,6 +617,7 @@ impl MinerConfig {
             noloop: flag("RULEMINER_NOLOOP"),
             bundle: flag("RULEMINER_BUNDLE"),
             trace: flag("RULEMINER_TRACE"),
+            general: num("RULEMINER_GENERAL", 0) as i64,
         }
     }
 }
@@ -786,6 +830,20 @@ pub fn rule_miner() {
             }
         }
     }
+    // `RULEMINER_EXTRA=<file>`: extra candidates (the `file` proposer's line format) joining the miner's own, before the one-per-left-side pass
+    if let Ok(path) = std::env::var("RULEMINER_EXTRA") {
+        if std::env::var("RULEMINER_PROPOSER").map_or(true, |p| p == "mined") {
+            let extra = read_rule_file(&path);
+            println!("RULEMINER {} extra candidates from {path}", extra.len());
+            cands.extend(extra);
+        }
+    }
+    // `RULEMINER_NOIDENT=1`: drop identity candidates (`l -> l`, from the pool route); they fix nothing but occupy scoring trials
+    if std::env::var("RULEMINER_NOIDENT").is_ok_and(|v| v == "1") {
+        let before = cands.len();
+        cands.retain(|(l, r)| l.show() != r.show());
+        println!("RULEMINER dropped {} identity candidates", before - cands.len());
+    }
     // per left side, the smallest right side only
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, _)| l.show());
@@ -937,8 +995,9 @@ pub fn rule_miner() {
             all.into_iter().map(|x| x.1).collect()
         };
         for (cand, (f, sz)) in provable.iter().zip(scored) {
-            let gain = (count(&f) - count(&covered)) * 1000 + (size - sz);
-            if gain > 0 && best.as_ref().is_none_or(|b| gain > b.0) {
+            let raw = (count(&f) - count(&covered)) * 1000 + (size - sz);
+            let gain = raw - cfg.general * rule_specificity(&cand.0, &cand.1);
+            if raw > 0 && best.as_ref().is_none_or(|b| gain > b.0) {
                 best = Some((gain, (*cand).clone(), f, sz));
             }
         }
@@ -999,6 +1058,30 @@ pub fn bitwise_law_proves_shift_laws_and_rejects_false_ones() {
         let (p, s) = bitwise_law_k(n, 2, &shl(x.clone()), &x);
         assert!(check(&Ctx::new(), &p, &s).is_err(), "shl x = x must fail");
     }
+}
+
+/// `read_rule_file` (behind `RULEMINER_EXTRA` and the `file` proposer) parses `lhs -> rhs` lines and skips comments and blanks.
+#[test]
+pub fn general_rules_are_less_specific() {
+    let spec = |s: &str| {
+        let (l, r) = s.split_once(" -> ").unwrap();
+        rule_specificity(&parse_term(l), &parse_term(r))
+    };
+    let general = spec("sub(x, sub(y, z)) -> add(sub(x, y), z)");
+    let narrow = spec("sub(add(x, y), xor(z, -1)) -> add(sub(y, -1), add(x, z))");
+    assert!(general < narrow, "{general} {narrow}");
+}
+
+#[test]
+pub fn extra_candidates_are_merged() {
+    let path = std::env::temp_dir().join(format!("extra_candidates_{}.txt", std::process::id()));
+    std::fs::write(&path, "# comment\n\nadd(sub(x, y), z) -> add(sub(z, y), x)\nand(x, x) -> x\n").unwrap();
+    let rules = read_rule_file(path.to_str().unwrap());
+    std::fs::remove_file(&path).ok();
+    let shown: Vec<(String, String)> = rules.iter().map(|(l, r)| (l.show(), r.show())).collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert_eq!(shown[0], (parse_term("add(sub(x, y), z)").show(), parse_term("add(sub(z, y), x)").show()));
+    assert_eq!(shown[1], (parse_term("and(x, x)").show(), parse_term("x").show()));
 }
 
 #[test]
