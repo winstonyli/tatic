@@ -508,6 +508,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
         pool_conjectures(add3_pool(env("RULEMINER_DEEP3", 0) == 1), n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+            .skip(env("RULEMINER_PHASE", 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
             .step_by(env("RULEMINER_STRIDE", 1))
             .skip(env("RULEMINER_SKIP", 0))
             .take(env("RULEMINER_LAWS", 250))
@@ -550,6 +551,24 @@ pub fn family_law_windows_tile_the_sequence() {
     tiled.extend(laws(5, 7));
     assert_eq!(tiled, whole);
     assert!(laws(usize::MAX / 2, 5).is_empty());
+}
+
+/// `RULEMINER_PHASE`: with stride 2 the two phases are disjoint and together are the stride-1 sequence.
+#[test]
+pub fn family_law_phases_are_disjoint() {
+    let laws = |stride: usize, phase: usize, take: usize| {
+        let env = move |k: &str, d: usize| match k {
+            "RULEMINER_STRIDE" => stride,
+            "RULEMINER_PHASE" => phase,
+            "RULEMINER_LAWS" => take,
+            _ => d,
+        };
+        family_laws("add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
+    };
+    let (even, odd, whole) = (laws(2, 0, 6), laws(2, 1, 6), laws(1, 0, 12));
+    assert_eq!(even.len() + odd.len(), 12);
+    let woven: Vec<String> = even.iter().zip(&odd).flat_map(|(a, b)| [a.clone(), b.clone()]).collect();
+    assert_eq!(woven, whole);
 }
 
 /// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `from_env`).
