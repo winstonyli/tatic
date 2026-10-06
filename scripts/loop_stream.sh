@@ -7,18 +7,21 @@
 # (RULEMINER_SHOW, $out/pool.txt, RULEMINER_EXTRA); MODEL=1 adds $PROPOSER_FILE_CMD's lines to the extra candidates (PROPOSER stays mined).
 # WARM=<skip>:<laws>[:<phase>] (not with ref) first mines once on that held-out slice (RULEMINER_PHASE selects the residue class of the
 # STRIDE sequence: phase 1 at STRIDE=2 is the laws between the served ones), so the stream starts with those rules in force.
+# SPLIT=0|1 restricts everything to one structure-based half of the laws (RULEMINER_SHAPE); the WARM mine then uses the other half.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
 B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}; PROPOSER=${PROPOSER:-mined}
 : "${EXE:?set EXE}"
 case "${WINDOW:-}" in ""|cum) ;; *) echo "WINDOW must be empty or cum, got ${WINDOW}" >&2; exit 2 ;; esac
+case "${SPLIT:-}" in ""|0|1) ;; *) echo "SPLIT must be 0 or 1, got ${SPLIT}" >&2; exit 2 ;; esac
 case "${WARM:-}" in ""|[0-9]*:[0-9]*) ;; *) echo "WARM must be <skip>:<laws>[:<phase>], got ${WARM}" >&2; exit 2 ;; esac
 rules="$out/rules.txt"; : > "$rules"; : > "$out/m.tsv"
 win="RULEMINER_FAMILY=add3 CHECK_FAMILY=add3 RULEMINER_DEEP3=${DEEP3:-1} RULEMINER_STRIDE=${STRIDE:-7}"
 mc="RULEMINER_PERM=1 RULEMINER_STEPS=40 RULEMINER_THREADS=${THREADS:-6} RULEMINER_ROUNDS=${ROUNDS:-8}"
 
 mine() { # name skip laws [phase] -> appends the chosen rules to $rules
-  local file_env=() extra_env=() extra="$out/extra_$1.txt"
+  local file_env=() extra_env=() extra="$out/extra_$1.txt" shp=${SPLIT:-2}
+  if [ "$1" = warm ] && [ -n "${SPLIT:-}" ]; then shp=$((1 - SPLIT)); fi
   if [ "$PROPOSER" = file ]; then
     $PROPOSER_FILE_CMD "$1" > "$out/cand_$1.txt"
     file_env=(RULEMINER_PROPOSER=file "RULEMINER_PROPOSER_FILE=$out/cand_$1.txt")
@@ -32,7 +35,7 @@ mine() { # name skip laws [phase] -> appends the chosen rules to $rules
     if [ -s "$extra" ]; then extra_env=("RULEMINER_EXTRA=$extra"); fi
   fi
   if [ "${POOL:-0}" = 1 ]; then extra_env+=(RULEMINER_SHOW=1); fi
-  if ! env $win $mc "${file_env[@]}" "${extra_env[@]}" RULEMINER_SKIP=$2 RULEMINER_LAWS=$3 RULEMINER_PHASE=${4:-0} RULEMINER_BASE="$rules" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine_$1.log" 2>&1; then
+  if ! env $win $mc "${file_env[@]}" "${extra_env[@]}" RULEMINER_SKIP=$2 RULEMINER_LAWS=$3 RULEMINER_PHASE=${4:-0} RULEMINER_SHAPE=$shp RULEMINER_BASE="$rules" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine_$1.log" 2>&1; then
     echo "loop_stream: rule_miner failed (see $out/mine_$1.log)" >&2; exit 1
   fi
   { grep -E "RULEMINER chosen" "$out/mine_$1.log" | grep -- " -> " | sed 's/.*size): //' >> "$rules"; } || true
@@ -43,7 +46,7 @@ mine() { # name skip laws [phase] -> appends the chosen rules to $rules
 }
 serve() { # skip -> prints "M laws"
   local line
-  line=$(env $win RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
+  line=$(env $win RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
   echo "$line" | sed -E 's/CHECKED ([0-9]+) laws kernel-checked \(([0-9]+) with no whole-term machine proof\), ([0-9]+) not proved/\1 \2 \3/' | awk '{print $1-$2+$3, $1+$3}'
 }
 

@@ -508,6 +508,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
         pool_conjectures(add3_pool(env("RULEMINER_DEEP3", 0) == 1), n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+            .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
             .skip(env("RULEMINER_PHASE", 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
             .step_by(env("RULEMINER_STRIDE", 1))
             .skip(env("RULEMINER_SKIP", 0))
@@ -551,6 +552,53 @@ pub fn family_law_windows_tile_the_sequence() {
     tiled.extend(laws(5, 7));
     assert_eq!(tiled, whole);
     assert!(laws(usize::MAX / 2, 5).is_empty());
+}
+
+/// Which of two halves a law belongs to, by the shape of its two sides with variables erased (constants and operators kept):
+/// laws that differ only in which variables appear share a half, so near-variants never straddle a split.
+pub fn shape_part(a: &Term, b: &Term) -> usize {
+    fn skeleton(t: &Term, out: &mut String) {
+        match t {
+            Term::V(_) => out.push('v'),
+            Term::Zero => out.push('0'),
+            Term::Ones => out.push('1'),
+            Term::Op(o, x, y) => {
+                out.push_str(&format!("({o} "));
+                skeleton(x, out);
+                out.push(' ');
+                skeleton(y, out);
+                out.push(')');
+            }
+        }
+    }
+    let mut s = String::new();
+    skeleton(a, &mut s);
+    s.push('=');
+    skeleton(b, &mut s);
+    // FNV-1a: deterministic across runs and platforms
+    let h = s.bytes().fold(0xcbf29ce484222325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100000001b3));
+    (h >> 32) as usize & 1
+}
+
+/// `RULEMINER_SHAPE`: the two shape halves are disjoint, together are the whole sequence, and renaming variables keeps a law in its half.
+#[test]
+pub fn family_law_shape_halves_partition() {
+    let laws = |shape: usize| {
+        let env = move |k: &str, d: usize| match k {
+            "RULEMINER_SHAPE" => shape,
+            "RULEMINER_LAWS" => 100000,
+            "RULEMINER_STRIDE" => 1,
+            "RULEMINER_DEEP3" => 1,
+            _ => d,
+        };
+        family_laws("add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<std::collections::BTreeSet<_>>()
+    };
+    let (whole, h0, h1) = (laws(2), laws(0), laws(1));
+    println!("shape halves: {} + {} = {}", h0.len(), h1.len(), whole.len());
+    assert!(h0.is_disjoint(&h1) && h0.len() + h1.len() == whole.len(), "{} {} {}", h0.len(), h1.len(), whole.len());
+    assert!(!h0.is_empty() && !h1.is_empty());
+    let (x, y, z) = (parse_term("add(x, y)"), parse_term("add(y, z)"), parse_term("sub(x, z)"));
+    assert_eq!(shape_part(&x, &z), shape_part(&y, &z));
 }
 
 /// `RULEMINER_PHASE`: with stride 2 the two phases are disjoint and together are the stride-1 sequence.
