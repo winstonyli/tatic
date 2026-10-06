@@ -8,6 +8,9 @@
 # WARM=<skip>:<laws>[:<phase>] (not with ref) first mines once on that held-out slice (RULEMINER_PHASE selects the residue class of the
 # STRIDE sequence: phase 1 at STRIDE=2 is the laws between the served ones), so the stream starts with those rules in force.
 # SPLIT=0|1 restricts everything to one structure-based half of the laws (RULEMINER_SHAPE); the WARM mine then uses the other half.
+# WARM_RULES=<file> starts with that rule file in force instead of mining a WARM slice (a deterministic warm mine need not be repeated:
+# reuse the rules.txt of a finished static run). The loop does not mine after the last batch (it could not change any M), so the final
+# rule count is the rules in force at the last batch.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
@@ -52,14 +55,17 @@ serve() { # skip -> prints "M laws"
 }
 
 if [ "$mode" = ref ]; then mine ref "$OFFSET" $((B * K)); fi
-if [ -n "${WARM:-}" ] && [ "$mode" != ref ]; then IFS=: read -r ws wl wp <<< "$WARM"; mine warm "$ws" "$wl" "${wp:-0}"; fi
+if [ -n "${WARM_RULES:-}" ] && [ "$mode" != ref ]; then
+  [ -f "$WARM_RULES" ] || { echo "WARM_RULES file not found: $WARM_RULES" >&2; exit 2; }
+  cp "$WARM_RULES" "$rules"
+elif [ -n "${WARM:-}" ] && [ "$mode" != ref ]; then IFS=: read -r ws wl wp <<< "$WARM"; mine warm "$ws" "$wl" "${wp:-0}"; fi
 total=0
 for ((r = 0; r < K; r++)); do
   skip=$((OFFSET + r * B)); t0=$(date +%s)
   read -r m laws < <(serve "$skip")
   printf '%s\t%s\t%s\t%s\t%s\n' "$r" "$m" "$laws" "$(wc -l < "$rules")" "$(( $(date +%s) - t0 ))" >> "$out/m.tsv"
   total=$((total + m))
-  if [ "$mode" = loop ]; then
+  if [ "$mode" = loop ] && [ "$r" -lt $((K - 1)) ]; then
     if [ "${WINDOW:-}" = cum ]; then mine "$r" "$OFFSET" $((B * (r + 1))); else mine "$r" "$skip" "$B"; fi
   fi
 done
