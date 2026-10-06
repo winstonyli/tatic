@@ -8,6 +8,7 @@
 # WARM=<skip>:<laws>[:<phase>] (not with ref) first mines once on that held-out slice (RULEMINER_PHASE selects the residue class of the
 # STRIDE sequence: phase 1 at STRIDE=2 is the laws between the served ones), so the stream starts with those rules in force.
 # SPLIT=0|1 restricts everything to one structure-based half of the laws (RULEMINER_SHAPE); the WARM mine then uses the other half.
+# RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
 B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}; PROPOSER=${PROPOSER:-mined}
