@@ -927,6 +927,14 @@ pub fn rule_miner() {
         cands.retain(|(l, r)| l.show() != r.show());
         println!("RULEMINER dropped {} identity candidates", before - cands.len());
     }
+    // `RULEMINER_NODUPLHS=1`: drop candidates whose left side already has a rule in force (`RULEMINER_BASE`); the one-per-left-side pass
+    // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
+    if std::env::var("RULEMINER_NODUPLHS").is_ok_and(|v| v == "1") {
+        let before = cands.len();
+        let in_force: std::collections::HashSet<String> = base.iter().map(|(l, _)| l.show()).collect();
+        cands.retain(|(l, _)| !in_force.contains(&l.show()));
+        println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
+    }
     // per left side, the smallest right side only
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, _)| l.show());
@@ -1014,7 +1022,7 @@ pub fn rule_miner() {
                 (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
             };
             size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
-            looped |= noloop && RULE_SEEN.with(|m| m.borrow().as_ref().is_some_and(|m| m.contains_key(" exhausted") && m.values().any(|c| *c >= 3)));
+            looped |= noloop && RULE_SEEN.with(|m| m.borrow().as_ref().is_some_and(|m| m.contains_key("\0exhausted") && m.values().any(|c| *c >= 3)));
         }
         RULE_SEEN.with(|m| *m.borrow_mut() = None);
         SCORE_ONLY.with(|s| s.set(false));

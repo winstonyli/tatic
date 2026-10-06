@@ -999,7 +999,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
         if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
             RULE_SEEN.with(|m| {
                 if let Some(m) = m.borrow_mut().as_mut() {
-                    m.insert(" exhausted".into(), 0);
+                    m.insert("\0exhausted".into(), 0);
                 }
             });
             return None;
