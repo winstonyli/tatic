@@ -557,6 +557,10 @@ pub fn family_law_windows_tile_the_sequence() {
 /// Which of two halves a law belongs to, by the shape of its two sides with variables erased (constants and operators kept):
 /// laws that differ only in which variables appear share a half, so near-variants never straddle a split.
 pub fn shape_part(a: &Term, b: &Term) -> usize {
+    shape_part_salted(a, b, &std::env::var("RULEMINER_SHAPE_SALT").unwrap_or_default()) // a different salt gives a different split; unset keeps the original halves
+}
+
+fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
     fn skeleton(t: &Term, out: &mut String) {
         match t {
             Term::V(_) => out.push('v'),
@@ -571,7 +575,7 @@ pub fn shape_part(a: &Term, b: &Term) -> usize {
             }
         }
     }
-    let mut s = String::new();
+    let mut s = salt.to_string();
     skeleton(a, &mut s);
     s.push('=');
     skeleton(b, &mut s);
@@ -599,6 +603,18 @@ pub fn family_law_shape_halves_partition() {
     assert!(!h0.is_empty() && !h1.is_empty());
     let (x, y, z) = (parse_term("add(x, y)"), parse_term("add(y, z)"), parse_term("sub(x, z)"));
     assert_eq!(shape_part(&x, &z), shape_part(&y, &z));
+}
+
+/// A different salt re-splits the laws (so the split is not one fixed key), and each salt still keeps variable renamings together.
+#[test]
+pub fn shape_salt_changes_the_split() {
+    let laws = ["add(x, y)", "sub(add(x, y), z)", "add(sub(x, y), z)", "sub(x, sub(y, z))", "add(x, sub(y, z))", "sub(xor(x, -1), y)", "add(shl1(x, 0), y)", "sub(add(x, y), xor(z, -1))"];
+    let rhs = parse_term("sub(x, y)");
+    let half = |salt: &str| laws.iter().map(|l| shape_part_salted(&parse_term(l), &rhs, salt)).collect::<Vec<_>>();
+    assert_ne!(half(""), half("a"));
+    for salt in ["", "a"] {
+        assert_eq!(shape_part_salted(&parse_term("add(x, y)"), &rhs, salt), shape_part_salted(&parse_term("add(y, z)"), &rhs, salt));
+    }
 }
 
 /// `RULEMINER_PHASE`: with stride 2 the two phases are disjoint and together are the stride-1 sequence.
