@@ -520,6 +520,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
         pool_conjectures(mix3_pool(), n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+            .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // as for add3
             .step_by(env("RULEMINER_STRIDE", 1))
             .skip(env("RULEMINER_SKIP", 0))
             .take(env("RULEMINER_LAWS", 250))
@@ -604,6 +605,12 @@ fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
 /// `RULEMINER_SHAPE`: the two shape halves are disjoint, together are the whole sequence, and renaming variables keeps a law in its half.
 #[test]
 pub fn family_law_shape_halves_partition() {
+    for family in ["add3", "mix3"] {
+        shape_halves_partition(family);
+    }
+}
+
+fn shape_halves_partition(family: &str) {
     let laws = |shape: usize| {
         let env = move |k: &str, d: usize| match k {
             "RULEMINER_SHAPE" => shape,
@@ -612,10 +619,10 @@ pub fn family_law_shape_halves_partition() {
             "RULEMINER_DEEP3" => 1,
             _ => d,
         };
-        family_laws("add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<std::collections::BTreeSet<_>>()
+        family_laws(family, &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<std::collections::BTreeSet<_>>()
     };
     let (whole, h0, h1) = (laws(2), laws(0), laws(1));
-    println!("shape halves: {} + {} = {}", h0.len(), h1.len(), whole.len());
+    println!("shape halves {family}: {} + {} = {}", h0.len(), h1.len(), whole.len());
     assert!(h0.is_disjoint(&h1) && h0.len() + h1.len() == whole.len(), "{} {} {}", h0.len(), h1.len(), whole.len());
     assert!(!h0.is_empty() && !h1.is_empty());
     let (x, y, z) = (parse_term("add(x, y)"), parse_term("add(y, z)"), parse_term("sub(x, z)"));
