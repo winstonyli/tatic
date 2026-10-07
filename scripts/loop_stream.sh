@@ -11,6 +11,7 @@
 # WARM_RULES=<file> starts with that rule file in force instead of mining a WARM slice (a deterministic warm mine need not be repeated:
 # reuse the rules.txt of a finished static run). The loop does not mine after the last batch (it could not change any M), so the final
 # rule count is the rules in force at the last batch.
+# FAMILY=add3|mix3 (default add3) picks the law family; the add3-only options (DEEP3, SPLIT, WARM phase) do nothing for mix3.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
@@ -20,7 +21,7 @@ case "${WINDOW:-}" in ""|cum) ;; *) echo "WINDOW must be empty or cum, got ${WIN
 case "${SPLIT:-}" in ""|0|1) ;; *) echo "SPLIT must be 0 or 1, got ${SPLIT}" >&2; exit 2 ;; esac
 case "${WARM:-}" in ""|[0-9]*:[0-9]*) ;; *) echo "WARM must be <skip>:<laws>[:<phase>], got ${WARM}" >&2; exit 2 ;; esac
 rules="$out/rules.txt"; : > "$rules"; : > "$out/m.tsv"
-win="RULEMINER_FAMILY=add3 CHECK_FAMILY=add3 RULEMINER_DEEP3=${DEEP3:-1} RULEMINER_STRIDE=${STRIDE:-7}"
+win="RULEMINER_FAMILY=${FAMILY:-add3} CHECK_FAMILY=${FAMILY:-add3} RULEMINER_DEEP3=${DEEP3:-1} RULEMINER_STRIDE=${STRIDE:-7}"
 mc="RULEMINER_PERM=1 RULEMINER_STEPS=40 RULEMINER_THREADS=${THREADS:-6} RULEMINER_ROUNDS=${ROUNDS:-8}"
 
 mine() { # name skip laws [phase] -> appends the chosen rules to $rules
