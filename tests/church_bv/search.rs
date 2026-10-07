@@ -794,9 +794,9 @@ pub fn rule_miner() {
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
     println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
     phase("laws and stragglers");
-    // `RULEMINER_GUARD=<k>`: about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
+    // `RULEMINER_GUARD=<k>` (default 120, 0 = off): about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
     // the same 1000 per law as it gains per straggler fixed (the miner otherwise sees only the stragglers and cannot see a regression)
-    let guard_k = env("RULEMINER_GUARD", 0);
+    let guard_k = env("RULEMINER_GUARD", 120); // default 120; 0 turns the check off
     let mut scored = stragglers.clone();
     let mut guard_w = 1000i64; // each sampled guard law stands for clean/sampled laws, so a regression costs that many times 1000
     if guard_k > 0 && !clean.is_empty() {
@@ -967,9 +967,9 @@ pub fn rule_miner() {
         cands.retain(|(l, r)| l.show() != r.show());
         println!("RULEMINER dropped {} identity candidates", before - cands.len());
     }
-    // `RULEMINER_NODUPLHS=1`: drop candidates whose left side already has a rule in force (`RULEMINER_BASE`); the one-per-left-side pass
+    // `RULEMINER_NODUPLHS` (default on, 0 = off): drop candidates whose left side already has a rule in force (`RULEMINER_BASE`); the one-per-left-side pass
     // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
-    if std::env::var("RULEMINER_NODUPLHS").is_ok_and(|v| v == "1") {
+    if std::env::var("RULEMINER_NODUPLHS").map_or(true, |v| v != "0") {
         let before = cands.len();
         let in_force: std::collections::HashSet<String> = base.iter().map(|(l, _)| l.show()).collect();
         cands.retain(|(l, _)| !in_force.contains(&l.show()));

@@ -77,12 +77,13 @@ reproducible part.
   force), and `SPLIT=0|1` (one structure-based half of the laws).
 - The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
   settings from `RULEMINER_*` environment variables. Options added for this
-  experiment, all off by default: `NOIDENT` (drop identity candidates),
+  experiment, off by default unless noted: `NOIDENT` (drop identity candidates),
   `GENERAL` (generality penalty), `PHASE` (residue class of a strided law
   sequence), `SHAPE` and `SHAPE_SALT` (structure-based split of the laws),
-  `NODUPLHS` (no candidate whose left side already has a rule in force), and
-  `GUARD=<k>` (also score k laws that are already machine-free, so a rule that
-  fixes stragglers but breaks those is not chosen).
+  `NODUPLHS` (no candidate whose left side already has a rule in force; on by
+  default, `0` turns it off), and `GUARD=<k>` (also score k laws that are
+  already machine-free, so a rule that fixes stragglers but breaks those is not
+  chosen; default 120, `0` turns it off).
 - Unit tests for the split and the guard sampling: `shape_halves_partition`,
   `shape_salt_changes_the_split`, `guard_plan_samples_and_weights` in
   `tests/church_bv/search.rs`.
