@@ -12,7 +12,7 @@
 # reuse the rules.txt of a finished static run). The loop does not mine after the last batch (it could not change any M), so the final
 # rule count is the rules in force at the last batch.
 # scripts/rules/reassoc.txt: four general reassociation rules (mined on add3; they also cut mix3 from 136 to 29 machine proofs): use as WARM_RULES.
-# FAMILY=add3|mix3 (default add3) picks the law family; the add3-only options (DEEP3, SPLIT, WARM phase) do nothing for mix3.
+# FAMILY=add3|mix3|sbo3 (default add3) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"

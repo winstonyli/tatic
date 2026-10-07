@@ -515,9 +515,10 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
-    } else if family == "mix3" {
-        // bit-trick laws: arithmetic and bitwise operators and `shl1` mixed over three variables (section 73)
-        pool_conjectures(mix3_pool(), n, 3, 0)
+    } else if family == "mix3" || family == "sbo3" {
+        // mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed over three variables (section 73)
+        // sbo3: add, sub, and, or only, a leaf on either side at every level (no xor, no shl1)
+        pool_conjectures(if family == "mix3" { mix3_pool() } else { sbo3_pool() }, n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // as for add3
@@ -605,7 +606,7 @@ fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
 /// `RULEMINER_SHAPE`: the two shape halves are disjoint, together are the whole sequence, and renaming variables keeps a law in its half.
 #[test]
 pub fn family_law_shape_halves_partition() {
-    for family in ["add3", "mix3"] {
+    for family in ["add3", "mix3", "sbo3"] {
         shape_halves_partition(family);
     }
 }
@@ -759,7 +760,7 @@ pub fn rule_miner() {
     let base: Vec<(Term, Term)> = std::env::var("RULEMINER_BASE").ok().map(|f| std::fs::read_to_string(f).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()).unwrap_or_default();
     EXTRA_RULES.with(|e| *e.borrow_mut() = base.clone());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
-    let (n, nv, kv) = (4usize, 2usize, if family == "add3" || family == "mix3" { 3usize } else { 2 });
+    let (n, nv, kv) = (4usize, 2usize, if family_vars(&family) == 3 { 3usize } else { 2 });
     let ops = ops_for(n);
     let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
     let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
@@ -1607,7 +1608,7 @@ pub fn scaling_sweep() {
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "4,8,16,32".into()).split(',').map(|w| w.parse().unwrap()).collect();
-    let kv = if family == "add3" || family == "mix3" { 3 } else { 2 };
+    let kv = family_vars(&family);
     if let Ok(f) = std::env::var("SWEEP_RULES") {
         let rules = std::fs::read_to_string(f).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
         EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
@@ -1699,6 +1700,43 @@ pub fn add3_pool(deep: bool) -> Vec<Term> {
         }
         p
     }
+}
+
+/// Variables per law of a family: the three-variable families (add3, mix3, sbo3) against the two-variable rest.
+pub fn family_vars(family: &str) -> usize {
+    if matches!(family, "add3" | "mix3" | "sbo3") { 3 } else { 2 }
+}
+
+/// Terms of the `sbo3` family: add, sub, and, or over three variables, depth two: each operator over a depth-1 term and a leaf (both orders), and sums and differences of two depth-1 terms.
+pub fn sbo3_pool() -> Vec<Term> {
+    let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
+    let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
+    let ops = [ADD, SUB, AND, OR];
+    let mut d1 = leaves.clone();
+    for o in ops {
+        for a in &leaves {
+            for b in &leaves {
+                d1.push(op(o, a, b));
+            }
+        }
+    }
+    let mut p = d1.clone();
+    for o in ops {
+        for a in &d1 {
+            for b in &leaves {
+                p.push(op(o, a, b));
+                p.push(op(o, b, a));
+            }
+        }
+    }
+    for o in [ADD, SUB] {
+        for a in &d1 {
+            for b in &d1 {
+                p.push(op(o, a, b));
+            }
+        }
+    }
+    p
 }
 
 /// The pool of the `mix3` family: depth-1 terms over `x`, `y`, `z` and the constants (all of `add`, `and`, `or`, `xor`, `sub`
@@ -1908,7 +1946,7 @@ pub fn rule_set_kernel_check() {
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
     let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
-    let kv = if family == "add3" || family == "mix3" { 3 } else { 2 };
+    let kv = family_vars(&family);
     let laws = family_laws(&family, &env, 4, kv, 7);
     EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
     let (mut proved, mut free, mut none) = (0, 0, 0);

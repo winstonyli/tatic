@@ -71,7 +71,7 @@ reproducible part.
   `church_bv` test executable). `none` serves with no rules, `ref` mines once on
   the whole stream, `loop` mines after each batch. It writes `OUTDIR/m.tsv`
   (round, M, laws, rules in force, seconds). The header documents all options:
-  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3`, `WINDOW=cum`, `POOL`,
+  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3`, `WINDOW=cum`, `POOL`,
   `MODEL` (needs `scripts/loop_candidates.sh` and a `rulelm` checkpoint),
   `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
   force; `scripts/rules/reassoc.txt` holds four general reassociation rules
