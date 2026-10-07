@@ -74,7 +74,9 @@ reproducible part.
   `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3`, `WINDOW=cum`, `POOL`,
   `MODEL` (needs `scripts/loop_candidates.sh` and a `rulelm` checkpoint),
   `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
-  force), and `SPLIT=0|1` (one structure-based half of the laws).
+  force; `scripts/rules/reassoc.txt` holds four general reassociation rules
+  that cut machine proofs on both add3 and mix3 streams), and `SPLIT=0|1` (one
+  structure-based half of the laws).
 - The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
   settings from `RULEMINER_*` environment variables. Options added for this
   experiment, off by default unless noted: `NOIDENT` (drop identity candidates),
