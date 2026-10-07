@@ -556,6 +556,23 @@ pub fn family_law_windows_tile_the_sequence() {
 
 /// Which of two halves a law belongs to, by the shape of its two sides with variables erased (constants and operators kept):
 /// laws that differ only in which variables appear share a half, so near-variants never straddle a split.
+/// `RULEMINER_GUARD`: from `clean` machine-free laws, score about `k`: every `step`-th, each standing for `clean / sampled` laws (weight in
+/// units of 1000 per straggler), so the sample's net gain estimates the whole window's.
+pub fn guard_plan(clean: usize, k: usize) -> (usize, i64) {
+    let step = clean.div_ceil(k.max(1)).max(1);
+    (step, 1000 * clean as i64 / clean.div_ceil(step).max(1) as i64)
+}
+
+#[test]
+pub fn guard_plan_samples_and_weights() {
+    assert_eq!(guard_plan(538, 120), (5, 4981)); // 108 laws sampled, each standing for about 5
+    assert_eq!(guard_plan(100, 1000), (1, 1000)); // k above the count: every law, unit weight
+    assert_eq!(guard_plan(100, 100), (1, 1000));
+    let (step, w) = guard_plan(7, 3);
+    assert_eq!((step, w), (3, 2333)); // laws 0, 3, 6: three laws for seven
+    assert_eq!(guard_plan(0, 5).0, 1); // no clean laws: nothing to sample (the caller skips the guard)
+}
+
 pub fn shape_part(a: &Term, b: &Term) -> usize {
     shape_part_salted(a, b, &std::env::var("RULEMINER_SHAPE_SALT").unwrap_or_default()) // a different salt gives a different split; unset keeps the original halves
 }
@@ -743,6 +760,7 @@ pub fn rule_miner() {
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
     let laws = family_laws(&family, &env, n, nv, max);
     let mut unproved = 0usize;
+    let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
     for (name, t1, t2) in laws.iter().cloned() {
         if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
             continue;
@@ -762,11 +780,26 @@ pub fn rule_miner() {
             let normal = [rewrite(&t1, n, &ops, &goods).0, rewrite(&t2, n, &ops, &goods).0];
             println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
             stragglers.push((name, t1, t2, normal, fell, took));
+        } else {
+            clean.push((name, t1, t2));
         }
     }
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
     println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
     phase("laws and stragglers");
+    // `RULEMINER_GUARD=<k>`: about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
+    // the same 1000 per law as it gains per straggler fixed (the miner otherwise sees only the stragglers and cannot see a regression)
+    let guard_k = env("RULEMINER_GUARD", 0);
+    let mut scored = stragglers.clone();
+    let mut guard_w = 1000i64; // each sampled guard law stands for clean/sampled laws, so a regression costs that many times 1000
+    if guard_k > 0 && !clean.is_empty() {
+        let (step, w) = guard_plan(clean.len(), guard_k);
+        guard_w = w;
+        for (name, t1, t2) in clean.iter().step_by(step) {
+            scored.push((name.clone(), t1.clone(), t2.clone(), [t1.clone(), t2.clone()], 1, std::time::Duration::ZERO));
+        }
+        println!("RULEMINER guard: {} machine-free laws scored of {} (weight {guard_w} each)", scored.len() - stragglers.len(), clean.len());
+    }
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
     // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values at width 4 (a pool of all terms up to RULEMINER_SIZE nodes, indexed by value)
@@ -1000,12 +1033,12 @@ pub fn rule_miner() {
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
         SCORE_ONLY.with(|s| s.set(cfg.fast));
-        let (mut fixed, mut size) = (vec![false; stragglers.len()], 0i64);
+        let (mut fixed, mut size) = (vec![false; scored.len()], 0i64);
         // RULEMINER_NOLOOP=1: a candidate set under which a law exhausts the step budget with some term rewritten 3 or more times
         // (a cycle among the rules, section 85) is rejected
         let noloop = cfg.noloop;
         let mut looped = false;
-        for (si, s) in stragglers.iter().enumerate() {
+        for (si, s) in scored.iter().enumerate() {
             if noloop {
                 RULE_SEEN.with(|m| *m.borrow_mut() = Some(Default::default()));
             }
@@ -1021,7 +1054,9 @@ pub fn rule_miner() {
                 let (c, a) = rule_weight(t);
                 (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
             };
-            size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
+            if si < stragglers.len() {
+                size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
+            }
             looped |= noloop && RULE_SEEN.with(|m| m.borrow().as_ref().is_some_and(|m| m.contains_key("\0exhausted") && m.values().any(|c| *c >= 3)));
         }
         RULE_SEEN.with(|m| *m.borrow_mut() = None);
@@ -1029,7 +1064,7 @@ pub fn rule_miner() {
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         if looped {
-            return (vec![false; stragglers.len()], i64::MAX / 4);
+            return (vec![false; scored.len()], i64::MAX / 4);
         }
         (fixed, size)
     };
@@ -1047,7 +1082,8 @@ pub fn rule_miner() {
     let mut chosen: Vec<(Term, Term)> = vec![];
     let (mut covered, mut size) = score(&chosen);
     for _ in 0..cfg.rounds {
-        let count = |f: &Vec<bool>| f.iter().filter(|c| **c).count() as i64;
+        let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
+        let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
         let mut best: Option<ScoredRule> = None;
         // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
         // scope; the results are folded in candidate order, so the choice does not depend on the thread count
@@ -1086,7 +1122,7 @@ pub fn rule_miner() {
             all.into_iter().map(|x| x.1).collect()
         };
         for (cand, (f, sz)) in provable.iter().zip(scored) {
-            let raw = (count(&f) - count(&covered)) * 1000 + (size - sz);
+            let raw = (count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz);
             let gain = raw - cfg.general * rule_specificity(&cand.0, &cand.1);
             if raw > 0 && best.as_ref().is_none_or(|b| gain > b.0) {
                 best = Some((gain, (*cand).clone(), f, sz));
@@ -1098,7 +1134,7 @@ pub fn rule_miner() {
         chosen.push(rule);
         (covered, size) = (f, sz);
     }
-    println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().filter(|c| **c).count(), stragglers.len());
+    println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
     for (st, c) in stragglers.iter().zip(&covered) {
         if !c {
             println!("RULEMINER uncovered: {}", st.0);
