@@ -58,6 +58,38 @@ audited results. The internal planning notes and experiment scripts that some
 commits and `RELATED_WORK.md` refer to (`docs/superpowers/`,
 `scripts/experiments/`) are not part of this repository.
 
+## The end-to-end loop experiment
+
+An experiment on whether rule mining can run alongside execution: laws are
+served in batches, rules are mined from each served batch, and the next batch
+is served under the rules mined so far. The metric M is the number of laws that
+still need a whole-term machine proof. The measured results are not in this
+repository (they live in local notes), so treat the code below as the
+reproducible part.
+
+- `scripts/loop_stream.sh none|ref|loop OUTDIR` is the driver (`EXE` names the
+  `church_bv` test executable). `none` serves with no rules, `ref` mines once on
+  the whole stream, `loop` mines after each batch. It writes `OUTDIR/m.tsv`
+  (round, M, laws, rules in force, seconds). The header documents all options:
+  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3`, `WINDOW=cum`, `POOL`,
+  `MODEL` (needs `scripts/loop_candidates.sh` and a `rulelm` checkpoint),
+  `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
+  force), and `SPLIT=0|1` (one structure-based half of the laws).
+- The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
+  settings from `RULEMINER_*` environment variables. Options added for this
+  experiment, all off by default: `NOIDENT` (drop identity candidates),
+  `GENERAL` (generality penalty), `PHASE` (residue class of a strided law
+  sequence), `SHAPE` and `SHAPE_SALT` (structure-based split of the laws),
+  `NODUPLHS` (no candidate whose left side already has a rule in force), and
+  `GUARD=<k>` (also score k laws that are already machine-free, so a rule that
+  fixes stragglers but breaks those is not chosen).
+- Unit tests for the split and the guard sampling: `shape_halves_partition`,
+  `shape_salt_changes_the_split`, `guard_plan_samples_and_weights` in
+  `tests/church_bv/search.rs`.
+
+The planning notes and the per-experiment scripts and logs are not part of the
+repository (see the previous section).
+
 ## Quick start
 
 ```sh
