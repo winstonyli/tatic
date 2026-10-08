@@ -90,6 +90,14 @@ reproducible part.
   `shape_salt_changes_the_split`, `guard_plan_samples_and_weights` in
   `tests/church_bv/search.rs`.
 
+Headline result, single runs with no noise estimate (machine proofs M; `none` =
+no rules, `ref` = rules mined once on the whole stream): on three families
+(add3, mix3, sbo3) a loop started from `scripts/rules/reassoc.txt` recovered
+about 80% of `ref`'s gain on add3 and sbo3 (add3 194 / 76 / 51 for none /
+seeded loop / ref; sbo3 181 / 60 / 31), against 37-48% for a loop started
+cold. The four rules were first mined on add3, so sbo3 (built from similar
+operators) is a related family, not an independent test.
+
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).
 
