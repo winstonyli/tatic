@@ -103,6 +103,11 @@ lowers M on five of six streams and never raises it, including two streams
 disjoint from the ones it was picked on (add3 77 to 63, sbo3 68 to 65). A
 seventh rule from the same mining runs changed M by at most 1 on five streams,
 so the library appears to stop helping at six.
+Over six disjoint samples of each stream the six rules gave M = 32-35 on add3
+(four rules 44-53, none 86-109) and 48-59 on sbo3 (four rules 54-65, none
+122-141), so differences of one or two proofs on a single stream are within
+the sample-to-sample spread. On the shl, shr and lt families the rules change
+nothing.
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).
