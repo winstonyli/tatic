@@ -74,8 +74,8 @@ reproducible part.
   `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3`, `WINDOW=cum`, `POOL`,
   `MODEL` (needs `scripts/loop_candidates.sh` and a `rulelm` checkpoint),
   `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
-  force; `scripts/rules/reassoc.txt` holds four general reassociation rules
-  that cut machine proofs on both add3 and mix3 streams), and `SPLIT=0|1` (one
+  force; `scripts/rules/reassoc.txt` holds five general reassociation rules
+  that cut machine proofs on add3, mix3 and sbo3 streams), and `SPLIT=0|1` (one
   structure-based half of the laws).
 - The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
   settings from `RULEMINER_*` environment variables. Options added for this
@@ -90,7 +90,11 @@ reproducible part.
   `shape_salt_changes_the_split`, `guard_plan_samples_and_weights` in
   `tests/church_bv/search.rs`.
 
-Headline result, single runs with no noise estimate (machine proofs M; `none` =
+Headline result, single runs with no noise estimate; the loop numbers below
+were measured with the first four rules of that file (the fifth,
+`sub(sub(x,y),z) -> sub(sub(x,z),y)`, was added later and lowers M further on
+three other streams (partly overlapping the first two): add3 stride 2 143 to 118, sbo3 stride 5 40 to 35, mix3
+offset 0 unchanged at 19) (machine proofs M; `none` =
 no rules, `ref` = rules mined once on the whole stream): on three families
 (add3, mix3, sbo3) a loop started from `scripts/rules/reassoc.txt` recovered
 about 80% of `ref`'s gain on add3 and sbo3 (add3 194 / 76 / 51 for none /
