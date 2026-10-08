@@ -522,6 +522,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // as for add3
+            .skip(env("RULEMINER_PHASE", 0)) // as for add3
             .step_by(env("RULEMINER_STRIDE", 1))
             .skip(env("RULEMINER_SKIP", 0))
             .take(env("RULEMINER_LAWS", 250))

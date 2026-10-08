@@ -74,7 +74,7 @@ reproducible part.
   `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3`, `WINDOW=cum`, `POOL`,
   `MODEL` (needs `scripts/loop_candidates.sh` and a `rulelm` checkpoint),
   `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
-  force; `scripts/rules/reassoc.txt` holds five general reassociation rules
+  force; `scripts/rules/reassoc.txt` holds six general reassociation rules
   that cut machine proofs on add3, mix3 and sbo3 streams), and `SPLIT=0|1` (one
   structure-based half of the laws).
 - The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
@@ -92,15 +92,17 @@ reproducible part.
 
 Headline result (machine proofs M; `none` = no rules, `ref` = rules mined once
 on the whole stream; single runs, no noise estimate). A loop started from the
-five rules in `scripts/rules/reassoc.txt` recovered about 85% of `ref`'s gain on
-add3 and sbo3: add3 194 / 71 / 51 for none / seeded loop / ref, sbo3 181 / 55 /
-31, against 37-48% for a loop started cold (add3 125, sbo3 126). On mix3
-(offset 600) the seeded loop gives 26 against 136 with no rules; there is no
-`ref` run. The first four rules were mined on add3 and the fifth was picked
-from add3 and sbo3 runs, so sbo3 (built from similar operators) is a related
-family, not an independent test; the fifth rule also lowered M on three other
-streams that partly overlap those (add3 stride 2: 143 to 118, sbo3 stride 5:
-40 to 35, mix3 offset 0: unchanged at 19).
+first five rules in `scripts/rules/reassoc.txt` recovered about 85% of `ref`'s
+gain on add3 and sbo3: add3 194 / 71 / 51 for none / seeded loop / ref, sbo3
+181 / 55 / 31, against 37-48% for a loop started cold (add3 125, sbo3 126). On
+mix3 (offset 600) the seeded loop gives 26 against 136 with no rules and 6 for
+`ref` (85%). The first four rules were mined on add3; the fifth and sixth
+(`sub(sub(x,y),z) -> sub(sub(x,z),y)` and `sub(xor(x,-1),y) -> sub(-1,add(x,y))`)
+were picked from add3 and sbo3 runs, so sbo3 (built from similar operators) is
+a related family, not an independent test. Served statically, the sixth rule
+lowers M on five of six streams and never raises it, including two streams
+disjoint from the ones it was picked on (add3 77 to 63, sbo3 68 to 65). The
+seeded-loop numbers above were not rerun with the sixth rule.
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).

@@ -11,7 +11,8 @@
 # WARM_RULES=<file> starts with that rule file in force instead of mining a WARM slice (a deterministic warm mine need not be repeated:
 # reuse the rules.txt of a finished static run). The loop does not mine after the last batch (it could not change any M), so the final
 # rule count is the rules in force at the last batch.
-# scripts/rules/reassoc.txt: five general reassociation rules (mined on add3; they also cut mix3 from 136 to 26 machine proofs): use as WARM_RULES.
+# scripts/rules/reassoc.txt: six general reassociation rules (mined on add3; they also cut mix3 from 136 to 26 machine proofs): use as WARM_RULES.
+# SPHASE=<n> serves the residue class n of the STRIDE sequence (default 0), a stream disjoint from the phase-0 one; mining windows use WARM phase only.
 # FAMILY=add3|mix3|sbo3 (default add3) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 set -euo pipefail
@@ -52,7 +53,7 @@ mine() { # name skip laws [phase] -> appends the chosen rules to $rules
 }
 serve() { # skip -> prints "M laws"
   local line
-  line=$(env $win RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
+  line=$(env $win RULEMINER_PHASE=${SPHASE:-0} RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
   echo "$line" | sed -E 's/CHECKED ([0-9]+) laws kernel-checked \(([0-9]+) with no whole-term machine proof\), ([0-9]+) not proved/\1 \2 \3/' | awk '{print $1-$2+$3, $1+$3}'
 }
 
