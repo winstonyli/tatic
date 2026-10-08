@@ -515,11 +515,11 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
-    } else if family == "mix3" || family == "sbo3" || family == "cmp3" {
+    } else if family == "mix3" || family == "sbo3" || family == "cmp3" || family == "cmp3d" {
         // mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed over three variables (section 73)
         // sbo3: add, sub, and, or only, a leaf on either side at every level (no xor, no shl1)
         // cmp3: `lt` of two small add/sub/shl1 terms: laws about comparisons
-        pool_conjectures(match family { "mix3" => mix3_pool(), "sbo3" => sbo3_pool(), _ => cmp3_pool() }, n, 3, 0)
+        pool_conjectures(match family { "mix3" => mix3_pool(), "sbo3" => sbo3_pool(), "cmp3" => cmp3_pool(false), _ => cmp3_pool(true) }, n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // as for add3
@@ -608,7 +608,7 @@ fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
 /// `RULEMINER_SHAPE`: the two shape halves are disjoint, together are the whole sequence, and renaming variables keeps a law in its half.
 #[test]
 pub fn family_law_shape_halves_partition() {
-    for family in ["add3", "mix3", "sbo3", "cmp3"] {
+    for family in ["add3", "mix3", "sbo3", "cmp3", "cmp3d"] {
         shape_halves_partition(family);
     }
 }
@@ -1706,13 +1706,13 @@ pub fn add3_pool(deep: bool) -> Vec<Term> {
 
 /// Variables per law of a family: the three-variable families (add3, mix3, sbo3) against the two-variable rest.
 pub fn family_vars(family: &str) -> usize {
-    if matches!(family, "add3" | "mix3" | "sbo3" | "cmp3") { 3 } else { 2 }
+    if matches!(family, "add3" | "mix3" | "sbo3" | "cmp3" | "cmp3d") { 3 } else { 2 }
 }
 
 /// Terms of the `cmp3` family: `lt` of two arithmetic terms (add, sub, `shl1` over three variables, depth one: an operator over two
 /// leaves, `shl1` of a leaf, or a leaf), so each law is a statement about a comparison. `lt` is never nested under arithmetic: the
 /// encoding types its result differently.
-pub fn cmp3_pool() -> Vec<Term> {
+pub fn cmp3_pool(deep: bool) -> Vec<Term> {
     let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
     let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
     let mut d1 = leaves.clone();
@@ -1724,6 +1724,29 @@ pub fn cmp3_pool() -> Vec<Term> {
         }
     }
     d1.extend(leaves.iter().map(|a| op(SHL1, a, &Term::Zero)));
+    if deep {
+        // cmp3d: the right argument may also be a sum or difference of a variable-only depth-1 term and a variable, so a comparison
+        // can contain a reassociation redex (cmp3d mixes the comparison and the add/sub structures)
+        let vars: Vec<Term> = (0..3).map(Term::V).collect();
+        let mut v1 = vars.clone();
+        for o in [ADD, SUB] {
+            for a in &vars {
+                for b in &vars {
+                    v1.push(op(o, a, b));
+                }
+            }
+        }
+        let mut e = d1.clone();
+        for o in [ADD, SUB] {
+            for a in &v1 {
+                for b in &vars {
+                    e.push(op(o, a, b));
+                    e.push(op(o, b, a));
+                }
+            }
+        }
+        return d1.iter().flat_map(|a| e.iter().map(|b| op(LT, a, b)).collect::<Vec<_>>()).collect();
+    }
     d1.iter().flat_map(|a| d1.iter().map(|b| op(LT, a, b)).collect::<Vec<_>>()).collect()
 }
 
