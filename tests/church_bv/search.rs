@@ -515,10 +515,11 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
-    } else if family == "mix3" || family == "sbo3" {
+    } else if family == "mix3" || family == "sbo3" || family == "cmp3" {
         // mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed over three variables (section 73)
         // sbo3: add, sub, and, or only, a leaf on either side at every level (no xor, no shl1)
-        pool_conjectures(if family == "mix3" { mix3_pool() } else { sbo3_pool() }, n, 3, 0)
+        // cmp3: add, sub, lt and shl1: comparisons and doubling mixed with arithmetic, none of the bitwise operators
+        pool_conjectures(match family { "mix3" => mix3_pool(), "sbo3" => sbo3_pool(), _ => cmp3_pool() }, n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // as for add3
@@ -607,7 +608,7 @@ fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
 /// `RULEMINER_SHAPE`: the two shape halves are disjoint, together are the whole sequence, and renaming variables keeps a law in its half.
 #[test]
 pub fn family_law_shape_halves_partition() {
-    for family in ["add3", "mix3", "sbo3"] {
+    for family in ["add3", "mix3", "sbo3", "cmp3"] {
         shape_halves_partition(family);
     }
 }
@@ -1705,7 +1706,42 @@ pub fn add3_pool(deep: bool) -> Vec<Term> {
 
 /// Variables per law of a family: the three-variable families (add3, mix3, sbo3) against the two-variable rest.
 pub fn family_vars(family: &str) -> usize {
-    if matches!(family, "add3" | "mix3" | "sbo3") { 3 } else { 2 }
+    if matches!(family, "add3" | "mix3" | "sbo3" | "cmp3") { 3 } else { 2 }
+}
+
+/// Terms of the `cmp3` family: add, sub, lt over three variables, depth two (each operator over a depth-1 term and a leaf, both orders),
+/// with `shl1` of leaves and of depth-1 terms, and sums and differences of two depth-1 terms.
+pub fn cmp3_pool() -> Vec<Term> {
+    let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
+    let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
+    let ops = [ADD, SUB, LT];
+    let mut d1 = leaves.clone();
+    for o in ops {
+        for a in &leaves {
+            for b in &leaves {
+                d1.push(op(o, a, b));
+            }
+        }
+    }
+    d1.extend(leaves.iter().map(|a| op(SHL1, a, &Term::Zero)));
+    let mut p = d1.clone();
+    for o in ops {
+        for a in &d1 {
+            for b in &leaves {
+                p.push(op(o, a, b));
+                p.push(op(o, b, a));
+            }
+        }
+    }
+    p.extend(d1.iter().map(|a| op(SHL1, a, &Term::Zero)));
+    for o in [ADD, SUB] {
+        for a in &d1 {
+            for b in &d1 {
+                p.push(op(o, a, b));
+            }
+        }
+    }
+    p
 }
 
 /// Terms of the `sbo3` family: add, sub, and, or over three variables, depth two: each operator over a depth-1 term and a leaf (both orders), and sums and differences of two depth-1 terms.

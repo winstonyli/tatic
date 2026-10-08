@@ -12,7 +12,7 @@
 # reuse the rules.txt of a finished static run). The loop does not mine after the last batch (it could not change any M), so the final
 # rule count is the rules in force at the last batch.
 # scripts/rules/reassoc.txt: six general reassociation rules (mined on add3; they also cut mix3 from 136 to 26 machine proofs): use as WARM_RULES.
-# SPHASE=<n> serves the residue class n of the STRIDE sequence (default 0), a stream disjoint from the phase-0 one; mining windows use WARM phase only.
+# SPHASE=<n> serves the residue class n of the STRIDE sequence (default 0), a stream disjoint from the phase-0 one; the loop mines the same residue class it serves; a WARM mine uses its own phase (default 0).
 # FAMILY=add3|mix3|sbo3 (default add3) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 set -euo pipefail
@@ -42,7 +42,7 @@ mine() { # name skip laws [phase] -> appends the chosen rules to $rules
     if [ -s "$extra" ]; then extra_env=("RULEMINER_EXTRA=$extra"); fi
   fi
   if [ "${POOL:-0}" = 1 ]; then extra_env+=(RULEMINER_SHOW=1); fi
-  if ! env $win $mc "${file_env[@]}" "${extra_env[@]}" RULEMINER_SKIP=$2 RULEMINER_LAWS=$3 RULEMINER_PHASE=${4:-0} RULEMINER_SHAPE=$shp RULEMINER_BASE="$rules" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine_$1.log" 2>&1; then
+  if ! env $win $mc "${file_env[@]}" "${extra_env[@]}" RULEMINER_SKIP=$2 RULEMINER_LAWS=$3 RULEMINER_PHASE=${4:-${SPHASE:-0}} RULEMINER_SHAPE=$shp RULEMINER_BASE="$rules" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine_$1.log" 2>&1; then
     echo "loop_stream: rule_miner failed (see $out/mine_$1.log)" >&2; exit 1
   fi
   { grep -E "RULEMINER chosen" "$out/mine_$1.log" | grep -- " -> " | sed 's/.*size): //' >> "$rules"; } || true
