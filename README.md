@@ -108,6 +108,9 @@ Over six disjoint samples of each stream the six rules gave M = 32-35 on add3
 122-141), so differences of one or two proofs on a single stream are within
 the sample-to-sample spread. On the shl, shr and lt families the rules change
 nothing.
+Loops on four disjoint samples: seeded 31-34 on add3 and 46-55 on sbo3, cold
+60-73 and 93-112, so seeded beats cold on every sample; mining on top of the
+seeded start adds 1 proof on add3 and 3-6 on sbo3 over the static six rules.
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).
