@@ -92,17 +92,17 @@ reproducible part.
 
 Headline result (machine proofs M; `none` = no rules, `ref` = rules mined once
 on the whole stream; single runs, no noise estimate). A loop started from the
-first five rules in `scripts/rules/reassoc.txt` recovered about 85% of `ref`'s
-gain on add3 and sbo3: add3 194 / 71 / 51 for none / seeded loop / ref, sbo3
-181 / 55 / 31, against 37-48% for a loop started cold (add3 125, sbo3 126). On
-mix3 (offset 600) the seeded loop gives 26 against 136 with no rules and 6 for
-`ref` (85%). The first four rules were mined on add3; the fifth and sixth
+six rules in `scripts/rules/reassoc.txt` recovered 83-92% of `ref`'s gain: add3
+194 / 62 / 51 for none / seeded loop / ref, sbo3 181 / 56 / 31, mix3 (offset
+600) 136 / 22 / 6. A loop started cold recovered 37-48% on add3 and sbo3 (add3
+125, sbo3 126). The first four rules were mined on add3; the fifth and sixth
 (`sub(sub(x,y),z) -> sub(sub(x,z),y)` and `sub(xor(x,-1),y) -> sub(-1,add(x,y))`)
 were picked from add3 and sbo3 runs, so sbo3 (built from similar operators) is
 a related family, not an independent test. Served statically, the sixth rule
 lowers M on five of six streams and never raises it, including two streams
-disjoint from the ones it was picked on (add3 77 to 63, sbo3 68 to 65). The
-seeded-loop numbers above were not rerun with the sixth rule.
+disjoint from the ones it was picked on (add3 77 to 63, sbo3 68 to 65). A
+seventh rule from the same mining runs changed M by at most 1 on five streams,
+so the library appears to stop helping at six.
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).
