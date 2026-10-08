@@ -740,11 +740,14 @@ impl MinerConfig {
 #[test]
 #[ignore]
 pub fn rule_miner() {
-    // `<exe>.env` next to the test exe (lines `KEY=VALUE`) sets the environment before anything reads it: a profiler launcher that
-    // cannot pass env (the elevated Samply task) runs the same configuration this way. Main-thread test, no other thread reads env yet.
+    // `<exe>.env` next to the test exe (lines `KEY=VALUE`) sets variables that are not already set, before anything reads the
+    // environment: a profiler launcher that cannot pass env (the elevated Samply task) runs the same configuration this way.
+    // Main-thread test, no other thread reads env yet.
     if let Ok(text) = std::env::current_exe().map(|mut p| { p.as_mut_os_string().push(".env"); p }).and_then(std::fs::read_to_string) {
         for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
-            unsafe { std::env::set_var(k.trim(), v.trim()) };
+            if std::env::var_os(k.trim()).is_none() {
+                unsafe { std::env::set_var(k.trim(), v.trim()) };
+            }
         }
     }
     let _scope = tatic::kernel::InternScope::enter();
