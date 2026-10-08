@@ -518,7 +518,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
     } else if family == "mix3" || family == "sbo3" || family == "cmp3" {
         // mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed over three variables (section 73)
         // sbo3: add, sub, and, or only, a leaf on either side at every level (no xor, no shl1)
-        // cmp3: add, sub, lt and shl1: comparisons and doubling mixed with arithmetic, none of the bitwise operators
+        // cmp3: `lt` of two small add/sub/shl1 terms: laws about comparisons
         pool_conjectures(match family { "mix3" => mix3_pool(), "sbo3" => sbo3_pool(), _ => cmp3_pool() }, n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
@@ -1709,14 +1709,14 @@ pub fn family_vars(family: &str) -> usize {
     if matches!(family, "add3" | "mix3" | "sbo3" | "cmp3") { 3 } else { 2 }
 }
 
-/// Terms of the `cmp3` family: add, sub, lt over three variables, depth two (each operator over a depth-1 term and a leaf, both orders),
-/// with `shl1` of leaves and of depth-1 terms, and sums and differences of two depth-1 terms.
+/// Terms of the `cmp3` family: `lt` of two arithmetic terms (add, sub, `shl1` over three variables, depth one: an operator over two
+/// leaves, `shl1` of a leaf, or a leaf), so each law is a statement about a comparison. `lt` is never nested under arithmetic: the
+/// encoding types its result differently.
 pub fn cmp3_pool() -> Vec<Term> {
     let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
     let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
-    let ops = [ADD, SUB, LT];
     let mut d1 = leaves.clone();
-    for o in ops {
+    for o in [ADD, SUB] {
         for a in &leaves {
             for b in &leaves {
                 d1.push(op(o, a, b));
@@ -1724,24 +1724,7 @@ pub fn cmp3_pool() -> Vec<Term> {
         }
     }
     d1.extend(leaves.iter().map(|a| op(SHL1, a, &Term::Zero)));
-    let mut p = d1.clone();
-    for o in ops {
-        for a in &d1 {
-            for b in &leaves {
-                p.push(op(o, a, b));
-                p.push(op(o, b, a));
-            }
-        }
-    }
-    p.extend(d1.iter().map(|a| op(SHL1, a, &Term::Zero)));
-    for o in [ADD, SUB] {
-        for a in &d1 {
-            for b in &d1 {
-                p.push(op(o, a, b));
-            }
-        }
-    }
-    p
+    d1.iter().flat_map(|a| d1.iter().map(|b| op(LT, a, b)).collect::<Vec<_>>()).collect()
 }
 
 /// Terms of the `sbo3` family: add, sub, and, or over three variables, depth two: each operator over a depth-1 term and a leaf (both orders), and sums and differences of two depth-1 terms.

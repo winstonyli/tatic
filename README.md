@@ -111,6 +111,11 @@ nothing.
 Loops on four disjoint samples: seeded 31-34 on add3 and 46-55 on sbo3, cold
 60-73 and 93-112, so seeded beats cold on every sample; mining on top of the
 seeded start adds 1 proof on add3 and 3-6 on sbo3 over the static six rules.
+The library is specific to add/sub structure: on `cmp3` (comparisons `lt` of
+small arithmetic terms; 308 laws) the six rules change nothing (21 proofs with
+or without them) while three comparison-specific rules, found by `ref` or by a
+loop after its first batch, take it to 3 (`ref`) or 19 (loops, which pay the
+first batch in full).
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).
