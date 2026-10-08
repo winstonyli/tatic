@@ -90,17 +90,17 @@ reproducible part.
   `shape_salt_changes_the_split`, `guard_plan_samples_and_weights` in
   `tests/church_bv/search.rs`.
 
-Headline result, single runs with no noise estimate; the loop numbers below
-were measured with the first four rules of that file (the fifth,
-`sub(sub(x,y),z) -> sub(sub(x,z),y)`, was added later and lowers M further on
-three other streams (partly overlapping the first two): add3 stride 2 143 to 118, sbo3 stride 5 40 to 35, mix3
-offset 0 unchanged at 19) (machine proofs M; `none` =
-no rules, `ref` = rules mined once on the whole stream): on three families
-(add3, mix3, sbo3) a loop started from `scripts/rules/reassoc.txt` recovered
-about 80% of `ref`'s gain on add3 and sbo3 (add3 194 / 76 / 51 for none /
-seeded loop / ref; sbo3 181 / 60 / 31), against 37-48% for a loop started
-cold. The four rules were first mined on add3, so sbo3 (built from similar
-operators) is a related family, not an independent test.
+Headline result (machine proofs M; `none` = no rules, `ref` = rules mined once
+on the whole stream; single runs, no noise estimate). A loop started from the
+five rules in `scripts/rules/reassoc.txt` recovered about 85% of `ref`'s gain on
+add3 and sbo3: add3 194 / 71 / 51 for none / seeded loop / ref, sbo3 181 / 55 /
+31, against 37-48% for a loop started cold (add3 125, sbo3 126). On mix3
+(offset 600) the seeded loop gives 26 against 136 with no rules; there is no
+`ref` run. The first four rules were mined on add3 and the fifth was picked
+from add3 and sbo3 runs, so sbo3 (built from similar operators) is a related
+family, not an independent test; the fifth rule also lowered M on three other
+streams that partly overlap those (add3 stride 2: 143 to 118, sbo3 stride 5:
+40 to 35, mix3 offset 0: unchanged at 19).
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).
