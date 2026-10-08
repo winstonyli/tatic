@@ -116,8 +116,8 @@ small arithmetic terms; 308 laws) the six rules change nothing (21 proofs with
 or without them) while three comparison-specific rules, found by `ref` or by a
 loop after its first batch, take it to 3 (`ref`) or 19 (loops, which pay the
 first batch in full).
-On a family mixing both structures (`cmp3d`, 6194 laws; the comparison rules were
-mined on a subset of it, so not independent) the six rules plus the three
+On a family mixing both structures (`cmp3d`, 6194 laws; the comparison rules, in
+`scripts/rules/cmp.txt`, were mined on a subset of it, so not independent) the six rules plus the three
 comparison rules gave 69 against 130 with no rules, a loop seeded with them 54,
 a cold loop 78 and `ref` 39; the comparison rules alone gave 124. Neither set
 changed the two-variable `lt` family.

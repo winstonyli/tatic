@@ -1,0 +1,3 @@
+lt(add(x, y), sub(x, z)) -> lt(add(x, y), add(y, z))
+lt(add(x, y), sub(y, z)) -> lt(add(x, y), add(x, z))
+lt(sub(x, y), sub(x, z)) -> lt(sub(x, y), sub(z, y))
