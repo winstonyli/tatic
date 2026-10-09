@@ -527,7 +527,7 @@ pub fn rule_set() -> &'static Vec<(Term, Term)> {
             Ok(other) => panic!("unknown RULESET {other}"),
             Err(_) => "",
         };
-        text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+        parse_rules(&text)
     })
 }
 
@@ -608,6 +608,11 @@ pub const PROMOTED: &[(&str, &str)] = &[
     ("sub(sub(0, x), x)", "sub(0, shl1(x, 0))"),
     ("sub(-1, sub(x, -1))", "sub(shl1(-1, 0), x)"),
 ];
+
+/// The rules of a rule file: one `lhs -> rhs` per line, other lines ignored.
+pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
+    text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+}
 
 /// A `Term` from its `show` syntax: `0`, `-1`, a variable name, or `op(a, b)`.
 pub fn parse_term(s: &str) -> Term {
@@ -962,44 +967,26 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
     let ev = |t: &Term| t.eval(ops, n, &vals);
     let Term::Op(o, a, b) = t else { return (t.clone(), refl(ev(t))) };
     let ((a2, pa), (b2, pb)) = (rewrite(a, n, ops, goods), rewrite(b, n, ops, goods));
-    let cong = cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa.clone(), pb.clone()]);
+    // an `lt` root gives one bit, every other operator a vector
+    let rt = bv_ty(if *o == LT { 1 } else { n });
+    let cong = cong_n(&bv_ty(n), &rt, &ops[*o], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa, pb]);
     let t1 = Term::Op(*o, Box::new(a2.clone()), Box::new(b2.clone()));
-    if *o == LT {
-        // an `lt` root: the operands rewritten, one bit out
-        let cong = cong_n(&bv_ty(n), &bv_ty(1), &ops[5], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa, pb]);
-        if let Some((target, step)) = rule_step(n, &t1, goods) {
-            let (t3, p3) = rewrite(&target, n, ops, goods);
-            let first = trans_proof(&bv_ty(1), &ev(t), &ev(&t1), &ev(&target), cong, step);
-            return (t3.clone(), trans_proof(&bv_ty(1), &ev(t), &ev(&target), &ev(&t3), first, p3));
-        }
-        return (t1, cong);
-    }
-    if *o == SUB {
-        // a difference: the library rules, then the carry-encoding search
-        if let Some((target, step)) = rule_step(n, &t1, goods) {
-            let (t3, p3) = rewrite(&target, n, ops, goods);
-            let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
-            return (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&target), &ev(&t3), first, p3));
-        }
-        return match tree_step(n, &t1, goods) {
-            Some((target, law)) => (target.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, law)),
-            None => (t1, cong),
-        };
-    }
-    if *o == SHL1 || *o == SHR1 {
-        // a shift: the library rules (`shldist`, ...), else unchanged
-        if let Some((target, step)) = rule_step(n, &t1, goods) {
-            let (t3, p3) = rewrite(&target, n, ops, goods);
-            let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
-            return (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&target), &ev(&t3), first, p3));
-        }
-        return (t1, cong);
-    }
     if *o != ADD {
+        // the library rules first (`shldist`, ...)
         if let Some((target, step)) = rule_step(n, &t1, goods) {
             let (t3, p3) = rewrite(&target, n, ops, goods);
-            let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, step);
-            return (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&target), &ev(&t3), first, p3));
+            let first = trans_proof(&rt, &ev(t), &ev(&t1), &ev(&target), cong, step);
+            return (t3.clone(), trans_proof(&rt, &ev(t), &ev(&target), &ev(&t3), first, p3));
+        }
+        if *o == SUB {
+            // a difference: then the carry-encoding search
+            return match tree_step(n, &t1, goods) {
+                Some((target, law)) => (target.clone(), trans_proof(&rt, &ev(t), &ev(&t1), &ev(&target), cong, law)),
+                None => (t1, cong),
+            };
+        }
+        if matches!(*o, LT | SHL1 | SHR1) {
+            return (t1, cong);
         }
         // bitwise and shift terms only: a node equal to 0, -1 or one of its own subterms collapses to it, by the
         // per-position prover (the truth-table collapse below treats a shift as an atom)

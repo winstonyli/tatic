@@ -654,7 +654,7 @@ pub fn rule_miner() {
     };
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
     // RULEMINER_BASE=<file>: rules (`lhs -> rhs` lines) in force throughout, the stragglers are those left with them (section 74)
-    let base: Vec<(Term, Term)> = std::env::var("RULEMINER_BASE").ok().map(|f| std::fs::read_to_string(f).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()).unwrap_or_default();
+    let base: Vec<(Term, Term)> = std::env::var("RULEMINER_BASE").ok().map(|f| parse_rules(&std::fs::read_to_string(f).unwrap())).unwrap_or_default();
     EXTRA_RULES.with(|e| *e.borrow_mut() = base.clone());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family_vars(&family) == 3 { 3usize } else { 2 });
@@ -1400,7 +1400,7 @@ pub fn scaling_sweep() {
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "4,8,16,32".into()).split(',').map(|w| w.parse().unwrap()).collect();
     let kv = family_vars(&family);
     if let Ok(f) = std::env::var("SWEEP_RULES") {
-        let rules = std::fs::read_to_string(f).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+        let rules = parse_rules(&std::fs::read_to_string(f).unwrap());
         EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
     }
     let all = family_laws(&family, &env_or::<usize>, 4, kv, env_or("MULMINER_MAX", 7) as u32);
@@ -1653,7 +1653,7 @@ pub fn permutative_rules_are_admitted_and_oriented_by_instance() {
 #[ignore]
 pub fn normal_forms() {
     let _scope = tatic::kernel::InternScope::enter();
-    let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("NF_RULES").unwrap_or_default()).unwrap_or_default().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+    let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(std::env::var("NF_RULES").unwrap_or_default()).unwrap_or_default());
     EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
     TRACE_RULES.store(std::env::var("NF_TRACE").is_ok(), std::sync::atomic::Ordering::Relaxed);
     RULE_BUDGET.with(|b| b.set(200));
@@ -1690,6 +1690,17 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
     }
 }
 
+/// The setup of the rule-set check tests: the `CHECK_RULES` installed as extra rules, `CHECK_FAMILY`'s variable count, and the laws of
+/// the family (sized by the `RULEMINER_*` vars) that are plausible at widths 1-6.
+fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
+    let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
+    let rules = parse_rules(&std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap());
+    let kv = family_vars(&family);
+    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7).into_iter().filter(|(_, t1, t2)| (1..=6).all(|w| t1.plausibly_equals(t2, w, kv))).collect();
+    EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+    (rules, kv, laws)
+}
+
 /// Kernel check of a rule set (search note section 75): every law of `CHECK_FAMILY` (sized by the `RULEMINER_*` vars, as in
 /// `rule_miner`) that `rewrite_law` proves under the built-in rules (less `ABLATE`) plus the rules in `CHECK_RULES` is
 /// checked by the kernel at width 4; prints how many were proved, how many without a whole-term machine proof.
@@ -1697,21 +1708,14 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
 #[ignore]
 pub fn rule_set_kernel_check() {
     let _scope = tatic::kernel::InternScope::enter();
-    let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
-    let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
-    let kv = family_vars(&family);
-    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7);
-    EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+    let (_, kv, laws) = check_laws();
     let (mut proved, mut free, mut none) = (0, 0, 0);
-    for (name, t1, t2) in laws {
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) {
-            continue;
-        }
+    for (name, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
         let before = MACHINE_FALLBACKS.with(|c| c.get());
-        match rewrite_law(4, kv, &t1, &t2) {
+        match rewrite_law(4, kv, t1, t2) {
             Some((p, s)) => {
-                ck(&name, &p, &s);
+                ck(name, &p, &s);
                 proved += 1;
                 free += (MACHINE_FALLBACKS.with(|c| c.get()) == before) as u32;
             }
@@ -1722,14 +1726,11 @@ pub fn rule_set_kernel_check() {
     // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
     let (ops, goods): (_, Vec<(Expr, Expr)>) = (ops_for(4), (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect());
     let (mut same, mut total) = (0, 0);
-    for (_, t1, t2) in family_laws(&family, &env_or::<usize>, 4, kv, 7) {
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) {
-            continue;
-        }
+    for (_, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
-        let n1 = rewrite(&t1, 4, &ops, &goods).0.show();
+        let n1 = rewrite(t1, 4, &ops, &goods).0.show();
         RULE_BUDGET.with(|b| b.set(200));
-        let n2 = rewrite(&t2, 4, &ops, &goods).0.show();
+        let n2 = rewrite(t2, 4, &ops, &goods).0.show();
         total += 1;
         same += (n1 == n2) as u32;
     }
@@ -1745,26 +1746,19 @@ pub fn rule_set_kernel_check() {
 pub fn proof_cost_split() {
     use std::time::{Duration, Instant};
     let _scope = tatic::kernel::InternScope::enter();
-    let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
-    let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
-    let kv = family_vars(&family);
-    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7);
-    EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+    let (rules, kv, laws) = check_laws();
     #[derive(Default)]
     struct Acc { n: u32, build: Duration, check: Duration, nodes: usize, occ: u128 }
     let mut acc = [Acc::default(), Acc::default()]; // [rules, machine]
     let mut none = 0;
-    for (name, t1, t2) in laws {
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) {
-            continue;
-        }
+    for (name, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
         let before = MACHINE_FALLBACKS.with(|c| c.get());
         let t = Instant::now();
-        let Some((p, s)) = rewrite_law(4, kv, &t1, &t2) else { none += 1; continue };
+        let Some((p, s)) = rewrite_law(4, kv, t1, t2) else { none += 1; continue };
         let build = t.elapsed();
         let t = Instant::now();
-        ck(&name, &p, &s);
+        ck(name, &p, &s);
         let check = t.elapsed();
         let (nodes, occ) = tatic::kernel::term_sizes(&p);
         let a = &mut acc[(MACHINE_FALLBACKS.with(|c| c.get()) != before) as usize];
@@ -1793,7 +1787,7 @@ pub fn proof_cost_split() {
 pub fn promoted_rule_sets_are_proved() {
     let _scope = tatic::kernel::InternScope::enter();
     for text in [include_str!("../../scripts/data/add3_mm_rules.txt"), include_str!("../../scripts/data/mix3_mm_rules.txt"), include_str!("../../scripts/data/add3_nl_rules.txt"), include_str!("../../scripts/data/mix3_nl_rules.txt")] {
-        let rs: Vec<(Term, Term)> = text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+        let rs: Vec<(Term, Term)> = parse_rules(&text);
         assert!(rs.len() >= 7);
         for (l, r) in rs {
             let k = l.max_var().max(r.max_var()) + 1;
