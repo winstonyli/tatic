@@ -121,6 +121,12 @@ On a family mixing both structures (`cmp3d`, 6194 laws; the comparison rules, in
 comparison rules gave 69 against 130 with no rules, a loop seeded with them 54,
 a cold loop 78 and `ref` 39; the comparison rules alone gave 124. Neither set
 changed the two-variable `lt` family.
+Over six disjoint `cmp3d` streams (stride 15, four batches of 100, approximate
+`RULEMINER_FAST` mining) the seeded loop beat the cold loop every time, by 17-31
+proofs (cold 74-93, seeded 43-73). Almost all of that is the first batch, served
+before a cold loop has mined anything (gap 13-29); from the second batch on the two
+are within a few proofs, so the library is a head start, not a lasting advantage.
+The comparison rules never fire on add3, sbo3 or mix3 and never raise M there.
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).
