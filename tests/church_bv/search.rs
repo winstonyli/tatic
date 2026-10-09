@@ -363,7 +363,7 @@ pub fn decision_diagram_proofs_check_and_beat_the_case_tree() {
 pub fn rewrite_rules_over_the_mul_laws() {
     let _scope = tatic::kernel::InternScope::enter();
     println!("RULES machine at start: {}", machine_state());
-    let max = std::env::var("MULMINER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+    let max = env_or("MULMINER_MAX", 7);
     let (mut proved, mut none, mut machine_free, mut over_cap, t0) = (0, 0, 0, 0, Instant::now());
     for (name, t1, t2) in mul_laws(max) {
         if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) {
@@ -602,16 +602,15 @@ pub struct MinerConfig {
 
 impl MinerConfig {
     pub fn from_env() -> Self {
-        let num = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-        let flag = |k: &str| num(k, 0) == 1;
+        let flag = |k: &str| env_or(k, 0) == 1;
         MinerConfig {
-            max: num("MULMINER_MAX", 7) as u32,
-            trials: num("RULEMINER_TRIALS", 400),
-            perm: num("RULEMINER_PERM", 0),
-            steps: num("RULEMINER_STEPS", 200),
-            vars: num("RULEMINER_VARS", 4),
-            rounds: num("RULEMINER_ROUNDS", 8),
-            threads: num("RULEMINER_THREADS", 1).clamp(1, 12),
+            max: env_or("MULMINER_MAX", 7) as u32,
+            trials: env_or("RULEMINER_TRIALS", 400),
+            perm: env_or("RULEMINER_PERM", 0),
+            steps: env_or("RULEMINER_STEPS", 200),
+            vars: env_or("RULEMINER_VARS", 4),
+            rounds: env_or("RULEMINER_ROUNDS", 8),
+            threads: env_or("RULEMINER_THREADS", 1).clamp(1, 12),
             any_op: flag("RULEMINER_ANY"),
             show: flag("RULEMINER_SHOW"),
             fast: flag("RULEMINER_FAST"),
@@ -644,7 +643,6 @@ pub fn rule_miner() {
         println!("RULEMINER time {label}: {:.1}s", last.replace(Instant::now()).elapsed().as_secs_f64());
     };
     println!("RULEMINER machine at start: {}", machine_state());
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let cfg = MinerConfig::from_env();
     let (max, trials) = (cfg.max, cfg.trials);
     // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70), 2: no order check; the step budget
@@ -665,7 +663,7 @@ pub fn rule_miner() {
     let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
-    let laws = family_laws(&family, &env, n, nv, max);
+    let laws = family_laws(&family, &env_or::<usize>, n, nv, max);
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
     for (name, t1, t2) in laws.iter().cloned() {
@@ -696,7 +694,7 @@ pub fn rule_miner() {
     phase("laws and stragglers");
     // `RULEMINER_GUARD=<k>` (default 120, 0 = off): about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
     // the same 1000 per law as it gains per straggler fixed (the miner otherwise sees only the stragglers and cannot see a regression)
-    let guard_k = env("RULEMINER_GUARD", 120); // default 120; 0 turns the check off
+    let guard_k = env_or("RULEMINER_GUARD", 120); // default 120; 0 turns the check off
     let mut scored = stragglers.clone();
     let mut guard_w = 1000i64; // each sampled guard law stands for clean/sampled laws, so a regression costs that many times 1000
     if guard_k > 0 && !clean.is_empty() {
@@ -1351,10 +1349,9 @@ pub fn lt_borrow_bit_probe() {
 pub fn soundness_sweep() {
     let _scope = tatic::kernel::InternScope::enter();
     println!("SWEEP machine at start: {}", machine_state());
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "3,4".into()).split(',').map(|w| w.parse().unwrap()).collect();
-    let laws = family_laws(&family, &env, 4, 2, env("MULMINER_MAX", 7) as u32);
+    let laws = family_laws(&family, &env_or::<usize>, 4, 2, env_or("MULMINER_MAX", 7) as u32);
     let capped = |t: &Term, w: usize| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap()) && w > 0;
     let (mut checked, mut unproved, mut refused, mut false_laws) = (0usize, 0usize, 0usize, 0usize);
     let t0 = Instant::now();
@@ -1399,7 +1396,6 @@ pub fn scaling_sweep() {
     let per_law = std::env::var("SWEEP_SCOPE").is_ok_and(|v| v == "law");
     let _scope = (!per_law).then(tatic::kernel::InternScope::enter);
     println!("SCALE machine at start: {}", machine_state());
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "4,8,16,32".into()).split(',').map(|w| w.parse().unwrap()).collect();
     let kv = family_vars(&family);
@@ -1407,12 +1403,12 @@ pub fn scaling_sweep() {
         let rules = std::fs::read_to_string(f).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
         EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
     }
-    let all = family_laws(&family, &env, 4, kv, env("MULMINER_MAX", 7) as u32);
+    let all = family_laws(&family, &env_or::<usize>, 4, kv, env_or("MULMINER_MAX", 7) as u32);
     let ok: Vec<&(String, Term, Term)> = all
         .iter()
         .filter(|(_, a, b)| (1..=6).all(|w| a.plausibly_equals(b, w, kv)) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())))
         .collect();
-    let sample = env("SWEEP_SAMPLE", 30).min(ok.len()).max(1);
+    let sample = env_or("SWEEP_SAMPLE", 30).min(ok.len()).max(1);
     let picked: Vec<&&(String, Term, Term)> = (0..sample).map(|i| &ok[i * ok.len() / sample]).collect();
     for &w in &widths {
         let (mut proved, mut none, mut build, mut check_t, mut worst) = (0, 0, 0f64, 0f64, (0f64, String::new()));
@@ -1463,37 +1459,28 @@ pub fn scaling_sweep() {
 ///
 /// `deep`: also the sums and differences of two depth-1 terms built from `add`, `sub` and `xor` (about 2^15 more terms).
 pub fn add3_pool(deep: bool) -> Vec<Term> {
-    {
-        let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
-        let mut p = leaves.clone();
-        for o in 0..5 {
-            for a in &leaves {
-                for b in &leaves {
-                    p.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
-                }
+    let leaves = leaves3();
+    let d1 = depth1(&[ADD, AND, OR, XOR, SUB], false);
+    let mut p = d1.clone();
+    // one more level: a sum or difference of a depth-1 term and a leaf
+    for o in [ADD, SUB] {
+        for a in &d1 {
+            for b in &leaves {
+                p.push(mk(o, a, b));
             }
         }
-        // one more level: a sum or difference of a depth-1 term and a leaf
-        let d1 = p.clone();
-        for o in [0usize, 4] {
-            for a in &d1 {
-                for b in &leaves {
-                    p.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
-                }
-            }
-        }
-        if deep {
-            let arith: Vec<Term> = d1.iter().filter(|t| matches!(t, Term::Op(ADD | XOR | SUB, ..))).cloned().collect();
-            for o in [0usize, 4] {
-                for a in &arith {
-                    for b in &arith {
-                        p.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
-                    }
-                }
-            }
-        }
-        p
     }
+    if deep {
+        let arith: Vec<Term> = d1.iter().filter(|t| matches!(t, Term::Op(ADD | XOR | SUB, ..))).cloned().collect();
+        for o in [ADD, SUB] {
+            for a in &arith {
+                for b in &arith {
+                    p.push(mk(o, a, b));
+                }
+            }
+        }
+    }
+    p
 }
 
 /// The three-variable families, by name. `pool3` is the single place that maps one to its term pool; everything else (law selection,
@@ -1507,8 +1494,8 @@ pub const THREE_VAR_FAMILIES: [&str; 5] = ["add3", "mix3", "sbo3", "cmp3", "cmp3
 pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Term>> {
     Some(match family {
         "add3" => add3_pool(env("RULEMINER_DEEP3", 0) == 1),
-        "mix3" => mix3_pool(),
-        "sbo3" => sbo3_pool(),
+        "mix3" => depth2_pool(&[ADD, AND, OR, XOR, SUB], true, &[ADD]),
+        "sbo3" => depth2_pool(&[ADD, SUB, AND, OR], false, &[ADD, SUB]),
         "cmp3" => cmp3_pool(false),
         "cmp3d" => cmp3_pool(true),
         _ => return None,
@@ -1524,17 +1511,8 @@ pub fn family_vars(family: &str) -> usize {
 /// leaves, `shl1` of a leaf, or a leaf), so each law is a statement about a comparison. `lt` is never nested under arithmetic: the
 /// encoding types its result differently.
 pub fn cmp3_pool(deep: bool) -> Vec<Term> {
-    let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
-    let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
-    let mut d1 = leaves.clone();
-    for o in [ADD, SUB] {
-        for a in &leaves {
-            for b in &leaves {
-                d1.push(op(o, a, b));
-            }
-        }
-    }
-    d1.extend(leaves.iter().map(|a| op(SHL1, a, &Term::Zero)));
+    let op = mk;
+    let d1 = depth1(&[ADD, SUB], true);
     if deep {
         // cmp3d: the right argument may also be a sum or difference of a variable-only depth-1 term and a variable, so a comparison
         // can contain a reassociation redex (cmp3d mixes the comparison and the add/sub structures)
@@ -1561,69 +1539,57 @@ pub fn cmp3_pool(deep: bool) -> Vec<Term> {
     d1.iter().flat_map(|a| d1.iter().map(|b| op(LT, a, b)).collect::<Vec<_>>()).collect()
 }
 
-/// Terms of the `sbo3` family: add, sub, and, or over three variables, depth two: each operator over a depth-1 term and a leaf (both orders), and sums and differences of two depth-1 terms.
-pub fn sbo3_pool() -> Vec<Term> {
-    let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
-    let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
-    let ops = [ADD, SUB, AND, OR];
-    let mut d1 = leaves.clone();
-    for o in ops {
-        for a in &leaves {
-            for b in &leaves {
-                d1.push(op(o, a, b));
-            }
-        }
-    }
+/// Terms of the depth-2 families (sbo3, mix3): the depth-1 terms, each of `ops` over a depth-1 term and a leaf (both orders), `shl1` of
+/// each depth-1 term when `shl`, and each of `sums` over two depth-1 terms.
+pub fn depth2_pool(ops: &[usize], shl: bool, sums: &[usize]) -> Vec<Term> {
+    let leaves = leaves3();
+    let d1 = depth1(ops, shl);
     let mut p = d1.clone();
-    for o in ops {
+    for &o in ops {
         for a in &d1 {
             for b in &leaves {
-                p.push(op(o, a, b));
-                p.push(op(o, b, a));
+                p.push(mk(o, a, b));
+                p.push(mk(o, b, a));
             }
         }
     }
-    for o in [ADD, SUB] {
+    if shl {
+        p.extend(d1.iter().map(|a| mk(SHL1, a, &Term::Zero)));
+    }
+    for &o in sums {
         for a in &d1 {
             for b in &d1 {
-                p.push(op(o, a, b));
+                p.push(mk(o, a, b));
             }
         }
     }
     p
 }
 
-/// The pool of the `mix3` family: depth-1 terms over `x`, `y`, `z` and the constants (all of `add`, `and`, `or`, `xor`, `sub`
-/// and `shl1`), then each operator over a depth-1 term and a leaf (both orders) and `shl1` of a depth-1 term, and the sum of
-/// two depth-1 terms.
-pub fn mix3_pool() -> Vec<Term> {
-    let leaves: Vec<Term> = (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect();
-    let op = |o: usize, a: &Term, b: &Term| Term::Op(o, Box::new(a.clone()), Box::new(b.clone()));
+/// `x`, `y`, `z`, `0` and `-1`.
+fn leaves3() -> Vec<Term> {
+    (0..3).map(Term::V).chain([Term::Zero, Term::Ones]).collect()
+}
+
+fn mk(o: usize, a: &Term, b: &Term) -> Term {
+    Term::Op(o, Box::new(a.clone()), Box::new(b.clone()))
+}
+
+/// The depth-1 terms: the leaves, each of `ops` over two leaves, and, with `shl`, `shl1` of a leaf.
+fn depth1(ops: &[usize], shl: bool) -> Vec<Term> {
+    let leaves = leaves3();
     let mut d1 = leaves.clone();
-    for o in 0..5 {
+    for &o in ops {
         for a in &leaves {
             for b in &leaves {
-                d1.push(op(o, a, b));
+                d1.push(mk(o, a, b));
             }
         }
     }
-    d1.extend(leaves.iter().map(|a| op(6, a, &Term::Zero)));
-    let mut p = d1.clone();
-    for o in 0..5 {
-        for a in &d1 {
-            for b in &leaves {
-                p.push(op(o, a, b));
-                p.push(op(o, b, a));
-            }
-        }
+    if shl {
+        d1.extend(leaves.iter().map(|a| mk(SHL1, a, &Term::Zero)));
     }
-    p.extend(d1.iter().map(|a| op(6, a, &Term::Zero)));
-    for a in &d1 {
-        for b in &d1 {
-            p.push(op(0, a, b));
-        }
-    }
-    p
+    d1
 }
 
 /// Three-variable probe (benchmark with headroom): equal pairs of the depth-1 pool over `x`, `y`, `z`, proved by
@@ -1731,11 +1697,10 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
 #[ignore]
 pub fn rule_set_kernel_check() {
     let _scope = tatic::kernel::InternScope::enter();
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
     let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
     let kv = family_vars(&family);
-    let laws = family_laws(&family, &env, 4, kv, 7);
+    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7);
     EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
     let (mut proved, mut free, mut none) = (0, 0, 0);
     for (name, t1, t2) in laws {
@@ -1757,7 +1722,7 @@ pub fn rule_set_kernel_check() {
     // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
     let (ops, goods): (_, Vec<(Expr, Expr)>) = (ops_for(4), (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect());
     let (mut same, mut total) = (0, 0);
-    for (_, t1, t2) in family_laws(&family, &env, 4, kv, 7) {
+    for (_, t1, t2) in family_laws(&family, &env_or::<usize>, 4, kv, 7) {
         if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) {
             continue;
         }
@@ -1780,11 +1745,10 @@ pub fn rule_set_kernel_check() {
 pub fn proof_cost_split() {
     use std::time::{Duration, Instant};
     let _scope = tatic::kernel::InternScope::enter();
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
     let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
     let kv = family_vars(&family);
-    let laws = family_laws(&family, &env, 4, kv, 7);
+    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7);
     EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
     #[derive(Default)]
     struct Acc { n: u32, build: Duration, check: Duration, nodes: usize, occ: u128 }

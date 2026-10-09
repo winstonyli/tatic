@@ -68,7 +68,7 @@ impl Machine {
 
     /// The number of carries: one per add or sub node.
     pub fn carries(&self) -> usize {
-        self.nodes.iter().filter(|n| matches!(n.2, 0 | 4 | 5 | 6)).count()
+        self.nodes.iter().filter(|n| OP_INFO[n.2].carries).count()
     }
 
     /// Whether the root is `lt`: the result is the last carry after the final position, not a vector.
@@ -252,7 +252,7 @@ pub fn machine_state() -> String {
 
 /// The most carries per side `add_tree_law` takes on (unguarded lemmas are decision diagrams, guarded ones case trees over `k + carries` bits); env `CARRY_CAP`.
 pub fn carry_cap() -> usize {
-    std::env::var("CARRY_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(10)
+    env_or("CARRY_CAP", 10)
 }
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
@@ -333,7 +333,7 @@ pub fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, E
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
     // diagrams pay off only once the case tree is big (2^nv leaves); below that their per-node proofs cost more
-    let dd_min: usize = std::env::var("DDMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(9);
+    let dd_min: usize = env_or("DDMIN", 9);
     let use_dd = |nv: usize| inv.is_none() && std::env::var("NOBDD").is_err() && nv >= dd_min;
     let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: DdBuild| -> Expr {
         let key = format!("{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
@@ -704,8 +704,7 @@ pub fn lemma_overhead_probe() {
 #[ignore]
 pub fn conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let (n, nvars, deep) = (env("MINER_N", 4), env("MINER_VARS", 2), env("MINER_DEEP", 0) == 1);
+    let (n, nvars, deep) = (env_or("MINER_N", 4), env_or("MINER_VARS", 2), env_or("MINER_DEEP", 0) == 1);
     let ops = ops_for(n);
     let ts = terms(nvars, deep);
     let t0 = Instant::now();
@@ -714,7 +713,7 @@ pub fn conjecture_miner() {
     // all input tuples, or `MINER_SAMPLE` of them (a fixed pseudo-random subset plus the all-zero and all-one
     // tuples): a class may then hold a false equality, which no proof builder or kernel check will accept
     let total = 1u128 << (n * nvars);
-    let sample = env("MINER_SAMPLE", 0) as u128;
+    let sample = env_or("MINER_SAMPLE", 0) as u128;
     let tuples: Vec<u128> = if sample == 0 || sample >= total {
         (0..total).collect()
     } else {
@@ -891,9 +890,8 @@ pub fn lt_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
     println!("LTMINER machine at start: {}", machine_state());
     let n = 4usize;
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let nv = env("LTMINER_VARS", 2);
-    let cap = env("LTMINER_MAX", 0);
+    let nv = env_or("LTMINER_VARS", 2);
+    let cap = env_or("LTMINER_MAX", 0);
     let pool = lt_pool(nv);
     let (mut total, mut proved, mut none) = (0, 0, 0);
     let t0 = Instant::now();
@@ -993,7 +991,7 @@ impl PosTerm for Term {
                 if i + 1 < n { a.pos_bit(n, i + 1, bit) } else { f() }
             }
             Term::Op(o @ 1..=3, a, b) => BIT_OPS[*o - 1](a.pos_bit(n, i, bit), b.pos_bit(n, i, bit)),
-            Term::Op(o, ..) => panic!("{} is not bitwise or a shift", OPS[*o]),
+            Term::Op(o, ..) => panic!("{} is not bitwise or a shift", OP_INFO[*o].name),
         }
     }
 }
@@ -1192,8 +1190,7 @@ pub fn shl_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
     println!("SHLMINER machine at start: {}", machine_state());
     let n = 4usize;
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let (nv, cap) = (env("SHLMINER_VARS", 2), env("SHLMINER_MAX", 0));
+    let (nv, cap) = (env_or("SHLMINER_VARS", 2), env_or("SHLMINER_MAX", 0));
     let mut conj = shl_conjectures(nv);
     if cap > 0 && conj.len() > cap {
         let stride = conj.len() / cap;
@@ -1299,8 +1296,7 @@ pub fn mul_laws(max: u32) -> Vec<(String, Term, Term)> {
 pub fn mul_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
     println!("MULMINER machine at start: {}", machine_state());
-    let env = |k: &str, d: u32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let max = env("MULMINER_MAX", 7);
+    let max = env_or("MULMINER_MAX", 7);
     let n = 4usize;
     let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
     let mut laws = mul_laws(max);
@@ -1342,7 +1338,7 @@ pub fn mul_conjecture_miner() {
 pub fn ablation_audit() {
     let _scope = tatic::kernel::InternScope::enter();
     println!("AUDIT machine at start: {}", machine_state());
-    let max = std::env::var("MULMINER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+    let max = env_or("MULMINER_MAX", 7);
     let gops = GoodOps::new();
     let (mut n_laws, mut moore_ns, mut total_ns) = (0, 0u128, 0u128);
     for (name, t1, t2) in mul_laws(max) {

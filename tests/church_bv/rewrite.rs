@@ -7,7 +7,7 @@ pub enum Term {
     Ones,
     Op(usize, Box<Term>, Box<Term>),
 }
-/// `Term::Op` indices (the position in `OPS`).
+/// `Term::Op` indices (the position in `OP_INFO`).
 pub const ADD: usize = 0;
 pub const AND: usize = 1;
 pub const OR: usize = 2;
@@ -18,10 +18,42 @@ pub const SHL1: usize = 6;
 pub const SHR1: usize = 7;
 /// `lt` (index 5) returns a one-bit vector and only appears at the root of a term; `shl1` (index 6) is `a << 1`
 /// and ignores its second operand (a delay cell in the machine); `shr1` (index 7) is `a >> 1`, also unary, and not a machine.
-pub const OPS: [&str; 8] = ["add", "and", "or", "xor", "sub", "lt", "shl1", "shr1"];
-/// How many of `OPS` the miner enumerates: `sub` only with `MINER_SUB=1`.
+pub struct OpInfo {
+    pub name: &'static str,
+    /// a carry (or delay) cell in the machine: add, sub, lt, shl1
+    pub carries: bool,
+    /// combines its operands' bits at the same position
+    pub bitwise: bool,
+    pub shift: bool,
+    /// head precedence for the rule order's tie-break (higher is greater)
+    pub prec: i32,
+}
+const fn info(name: &'static str, carries: bool, bitwise: bool, shift: bool, prec: i32) -> OpInfo {
+    OpInfo { name, carries, bitwise, shift, prec }
+}
+/// Every fact about an operator, indexed as `Term::Op` (the one place that says which ops carry, are bitwise or shift).
+pub const OP_INFO: [OpInfo; 8] = [
+    info("add", true, false, false, 6),
+    info("and", false, true, false, 3),
+    info("or", false, true, false, 2),
+    info("xor", false, true, false, 4),
+    info("sub", true, false, false, 5),
+    info("lt", true, false, false, 1),
+    info("shl1", true, false, true, 0),
+    info("shr1", false, false, true, 0),
+];
+/// How many of `OP_INFO` the miner enumerates: `sub` only with `MINER_SUB=1`.
 pub fn nops() -> usize {
     if std::env::var("MINER_SUB").is_ok() { 5 } else { 4 }
+}
+/// The environment variable `k` parsed as `T`, or `d` when unset or unparsable (every experiment knob reads through this).
+pub fn env_or<T: std::str::FromStr>(k: &str, d: T) -> T {
+    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+}
+/// `PERM_ORDER` (`tie`, `lpo` or unset), read once: `rule_step` is hot.
+pub fn perm_order() -> &'static str {
+    static P: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    P.get_or_init(|| std::env::var("PERM_ORDER").unwrap_or_default())
 }
 /// `\a _. a << 1`, the Church operator of `Term` index 6.
 pub fn shl1_op(n: usize) -> Expr {
@@ -58,7 +90,7 @@ impl Term {
             Term::V(i) => VARS[*i].into(),
             Term::Zero => "0".into(),
             Term::Ones => "-1".into(),
-            Term::Op(o, a, b) => format!("{}({}, {})", OPS[*o], a.show(), b.show()),
+            Term::Op(o, a, b) => format!("{}({}, {})", OP_INFO[*o].name, a.show(), b.show()),
         }
     }
     /// The term as an expression, with `vals[i]` for variable `i`.
@@ -112,14 +144,14 @@ impl Term {
     }
     pub fn has_shift(&self) -> bool {
         match self {
-            Term::Op(o, a, b) => *o == SHL1 || *o == SHR1 || a.has_shift() || b.has_shift(),
+            Term::Op(o, a, b) => OP_INFO[*o].shift || a.has_shift() || b.has_shift(),
             _ => false,
         }
     }
     /// No add, sub or lt anywhere: bitwise operators and shifts only.
     pub fn add_free(&self) -> bool {
         match self {
-            Term::Op(o, a, b) => matches!(*o, AND..=XOR | SHL1 | SHR1) && a.add_free() && b.add_free(),
+            Term::Op(o, a, b) => (OP_INFO[*o].bitwise || OP_INFO[*o].shift) && a.add_free() && b.add_free(),
             _ => true,
         }
     }
@@ -586,7 +618,7 @@ pub fn parse_term(s: &str) -> Term {
         }
         let name = std::str::from_utf8(&s[start..*i]).unwrap();
         if *i < s.len() && s[*i] == b'(' {
-            let o = OPS.iter().position(|o| *o == name).unwrap_or_else(|| panic!("unknown op {name}"));
+            let o = OP_INFO.iter().position(|o| o.name == name).unwrap_or_else(|| panic!("unknown op {name}"));
             *i += 1;
             let a = go(s, i);
             assert_eq!(&s[*i..*i + 2], b", ");
@@ -741,11 +773,6 @@ pub fn rule_order_ok(l: &Term, r: &Term) -> bool {
     diff >= 1 || (diff == 0 && ro.iter().sum::<usize>() < lo.iter().sum::<usize>())
 }
 
-/// Head precedence for the tie-break order (`add` highest, then `sub`, `xor`, `and`, `or`, `lt`, the shifts).
-pub fn head_prec(o: usize) -> i32 {
-    [6, 3, 2, 4, 5, 1, 0, 0][o]
-}
-
 /// The tie-break of the rule order (search note section 70), for patterns of equal weight and equal variable counts: `l`
 /// above `r` by head precedence, else, for equal heads, at the first differing operand pair (left to right) by size and
 /// then recursively. It orients reassociation rules (`sub(sub(x, y), z) -> sub(x, add(y, z))`) and `add`/`sub`
@@ -754,7 +781,7 @@ pub fn tie_greater(l: &Term, r: &Term) -> bool {
     match (l, r) {
         (Term::Op(lo, la, lb), Term::Op(ro, ra, rb)) => {
             if lo != ro {
-                return head_prec(*lo) > head_prec(*ro);
+                return OP_INFO[*lo].prec > OP_INFO[*ro].prec;
             }
             for (a, b) in [(la, ra), (lb, rb)] {
                 if a.show() != b.show() {
@@ -768,14 +795,14 @@ pub fn tie_greater(l: &Term, r: &Term) -> bool {
     }
 }
 
-/// Rank of a leaf or head in the lexicographic path order below: leaves under all operators, operators by `head_prec`
+/// Rank of a leaf or head in the lexicographic path order below: leaves under all operators, operators by `OpInfo::prec`
 /// and then index, so the precedence is total.
 fn lpo_rank(t: &Term) -> (i32, i64) {
     match t {
         Term::Zero => (-3, 0),
         Term::Ones => (-2, 0),
         Term::V(i) => (-1, *i as i64),
-        Term::Op(o, ..) => (head_prec(*o), *o as i64),
+        Term::Op(o, ..) => (OP_INFO[*o].prec, *o as i64),
     }
 }
 
@@ -823,7 +850,7 @@ pub fn rule_permutative(l: &Term, r: &Term) -> bool {
 /// `rule_order_ok`, or a tie in it broken by `tie_greater`, or a permutative rule.
 pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
     // `PERM_ORDER=lpo` (section 89): `rule_step` orients every tied rule instance by instance, so both directions are admissible
-    let lpo = std::env::var("PERM_ORDER").as_deref() == Ok("lpo");
+    let lpo = perm_order() == "lpo";
     rule_order_ok(l, r) || (rule_tied(l, r) && (lpo || tie_greater(l, r) || rule_permutative(l, r)))
 }
 
@@ -892,7 +919,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
             println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
-        let lpo = std::env::var("PERM_ORDER").as_deref() == Ok("lpo");
+        let lpo = perm_order() == "lpo";
         if lpo && rule_tied(&r.lhs, &r.rhs) && !rule_order_ok(&r.lhs, &r.rhs) {
             // every rule that ties in the weight order must go down in the path order, instance by instance
             let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
@@ -903,7 +930,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
             let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
             // `PERM_ORDER=tie` (section 87): the instance must go down in the tie-break order of the other rules, and only
             // when that order does not separate the two terms does `show()` decide; by default `show()` alone
-            let down = if std::env::var("PERM_ORDER").as_deref() == Ok("tie") {
+            let down = if perm_order() == "tie" {
                 tie_greater(t, &inst) || (!tie_greater(&inst, t) && inst.show() < t.show())
             } else {
                 inst.show() < t.show()
