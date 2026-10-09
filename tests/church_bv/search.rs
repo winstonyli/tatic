@@ -1771,6 +1771,59 @@ pub fn rule_set_kernel_check() {
     println!("NFSAME {same} of {total} laws have equal normal forms on both sides");
 }
 
+/// Where the kernel's work goes under a rule set: like `rule_set_kernel_check` (same `CHECK_FAMILY`, `CHECK_RULES`, `RULEMINER_*` vars), but
+/// reports, for the laws proved without a whole-term machine proof ("rules") and for those that needed one ("machine"), the count, the
+/// time to build the proof, the time for the kernel to check it, and its size (unique nodes / nodes per occurrence); then the same
+/// for the proofs of the rules themselves, which a conversion rule or a one-time admission would pay once.
+#[test]
+#[ignore]
+pub fn proof_cost_split() {
+    use std::time::{Duration, Instant};
+    let _scope = tatic::kernel::InternScope::enter();
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
+    let rules: Vec<(Term, Term)> = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap().lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect();
+    let kv = family_vars(&family);
+    let laws = family_laws(&family, &env, 4, kv, 7);
+    EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+    #[derive(Default)]
+    struct Acc { n: u32, build: Duration, check: Duration, nodes: usize, occ: u128 }
+    let mut acc = [Acc::default(), Acc::default()]; // [rules, machine]
+    let mut none = 0;
+    for (name, t1, t2) in laws {
+        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) {
+            continue;
+        }
+        RULE_BUDGET.with(|b| b.set(200));
+        let before = MACHINE_FALLBACKS.with(|c| c.get());
+        let t = Instant::now();
+        let Some((p, s)) = rewrite_law(4, kv, &t1, &t2) else { none += 1; continue };
+        let build = t.elapsed();
+        let t = Instant::now();
+        ck(&name, &p, &s);
+        let check = t.elapsed();
+        let (nodes, occ) = tatic::kernel::term_sizes(&p);
+        let a = &mut acc[(MACHINE_FALLBACKS.with(|c| c.get()) != before) as usize];
+        (a.n, a.build, a.check, a.nodes, a.occ) = (a.n + 1, a.build + build, a.check + check, a.nodes + nodes, a.occ + occ);
+    }
+    let mut ra = Acc::default();
+    for (l, r) in &rules {
+        let k = l.max_var().max(r.max_var()) + 1;
+        let t = Instant::now();
+        let Some((p, ty)) = prove_rule(4, k, l, r) else { continue };
+        let build = t.elapsed();
+        let t = Instant::now();
+        ck(&l.show(), &p, &ty);
+        let check = t.elapsed();
+        let (nodes, occ) = tatic::kernel::term_sizes(&p);
+        (ra.n, ra.build, ra.check, ra.nodes, ra.occ) = (ra.n + 1, ra.build + build, ra.check + check, ra.nodes + nodes, ra.occ + occ);
+    }
+    for (what, a) in [("rules", &acc[0]), ("machine", &acc[1]), ("rule-proofs", &ra)] {
+        println!("COST {what}: n={} build={:.1}ms check={:.1}ms nodes={} occurrences={}", a.n, a.build.as_secs_f64() * 1e3, a.check.as_secs_f64() * 1e3, a.nodes, a.occ);
+    }
+    println!("COST not-proved={none}");
+}
+
 /// Each rule of the promoted sets parses, is a true law at widths 1-4, and is proved (and kernel-checked) at width 4.
 #[test]
 pub fn promoted_rule_sets_are_proved() {
