@@ -395,91 +395,21 @@ pub fn rewrite_rules_over_the_mul_laws() {
     println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
 }
 
-/// Proposers for the pilot (search note section 66), used by `rule_miner` instead of its own candidate generator when
-/// `RULEMINER_PROPOSER` is set: `random` (`RULEMINER_PROPOSALS` random rules, default 20000, no value check; the verifier alone decides)
-/// `file` (rules read from `RULEMINER_PROPOSER_FILE`), or `transfer` (the first 20 promoted rules, mined on mul, shl and lt only, with every variable replaced by `x`, `y`, `0` or `-1`).
-pub fn pilot_candidates(proposer: &str, env: &dyn Fn(&str, usize) -> usize) -> Vec<(Term, Term)> {
-    let mut out: Vec<(Term, Term)> = vec![];
-    match proposer {
-        "random" => {
-            let mut seed = 0x2545_f491_4f6c_dd1du64;
-            let mut next = move |m: usize| -> usize {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                (seed >> 11) as usize % m
-            };
-            // a random term of exactly `size` nodes over the leaves `x`, `y`, `0`, `-1` and the ops add, and, or, xor, sub, shl1, shr1
-            fn rand_term(size: usize, next: &mut dyn FnMut(usize) -> usize) -> Term {
-                if size == 1 {
-                    return [Term::V(0), Term::V(1), Term::Zero, Term::Ones][next(4)].clone();
-                }
-                let o = if size == 2 { 6 + next(2) } else { [0usize, 1, 2, 3, 4, 6, 7][next(7)] };
-                if o >= 6 {
-                    return Term::Op(o, Box::new(rand_term(size - 1, next)), Box::new(Term::Zero));
-                }
-                let l = 1 + next(size - 2);
-                Term::Op(o, Box::new(rand_term(l, next)), Box::new(rand_term(size - 1 - l, next)))
-            }
-            let uses = |t: &Term, v: usize| t.has_var(v);
-            let mut seen = std::collections::HashSet::new();
-            for _ in 0..env("RULEMINER_PROPOSALS", 20000) {
-                let ls = 3 + next(7);
-                let l = rand_term(ls, &mut next);
-                let r = rand_term(1 + next(ls - 1), &mut next);
-                if matches!(l, Term::Op(..)) && (0..2).all(|v| !uses(&r, v) || uses(&l, v)) && l.show() != r.show() && seen.insert(format!("{} => {}", l.show(), r.show())) {
-                    out.push((l, r));
-                }
-            }
-        }
-        "transfer" => {
-            fn subst(t: &Term, to: &[Term]) -> Term {
-                match t {
-                    Term::V(i) => to[*i].clone(),
-                    Term::Op(o, a, b) => Term::Op(*o, Box::new(subst(a, to)), Box::new(subst(b, to))),
-                    _ => t.clone(),
-                }
-            }
-            let choices = [Term::V(0), Term::V(1), Term::Zero, Term::Ones];
-            let mut seen = std::collections::HashSet::new();
-            for (l, r) in promoted_rules().iter().take(20) {
-                for a in &choices {
-                    for b in &choices {
-                        let to = [a.clone(), b.clone()];
-                        let (l2, r2) = (subst(l, &to), subst(r, &to));
-                        if matches!(l2, Term::Op(..)) && l2.show() != r2.show() && seen.insert(format!("{} => {}", l2.show(), r2.show())) {
-                            out.push((l2, r2));
-                        }
-                    }
-                }
-            }
-        }
-        // `file`: rules from `RULEMINER_PROPOSER_FILE`, one `lhs -> rhs` per line in `Term::show` syntax (blank lines and `#` comments
-        // skipped), so any outside proposer (a model, a person) can feed the same verifier and scoring
-        "file" => {
-            let path = std::env::var("RULEMINER_PROPOSER_FILE").expect("RULEMINER_PROPOSER_FILE");
-            out = read_rule_file(&path);
-        }
-        _ => panic!("unknown proposer {proposer}"),
-    }
-    out
-}
-
-/// Rules from a file, one `lhs -> rhs` per line in `Term::show` syntax (blank lines and `#` comments skipped); shared by the `file` proposer and `RULEMINER_EXTRA`.
+/// Rules from a file, one `lhs -> rhs` per line in `Term::show` syntax (blank lines and `#` comments skipped); the format of `RULEMINER_EXTRA`.
 pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mut out = vec![];
     let mut seen = std::collections::HashSet::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
         let Some((l, r)) = line.split_once(" -> ") else {
-            println!("RULEMINER proposer file: skipped (no ' -> '): {line}");
+            println!("RULEMINER extra file: skipped (no ' -> '): {line}");
             continue;
         };
         let parsed = std::panic::catch_unwind(|| (parse_term(l.trim()), parse_term(r.trim())));
         match parsed {
             Ok((l, r)) if matches!(l, Term::Op(..)) && l.show() != r.show() && seen.insert(format!("{} => {}", l.show(), r.show())) => out.push((l, r)),
             Ok(_) => {}
-            Err(_) => println!("RULEMINER proposer file: skipped (unparsable): {line}"),
+            Err(_) => println!("RULEMINER extra file: skipped (unparsable): {line}"),
         }
     }
     out
@@ -504,26 +434,12 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
-    } else if family == "add3" {
-        pool_conjectures(add3_pool(env("RULEMINER_DEEP3", 0) == 1), n, 3, 0)
+    } else if let Some(pool) = pool3(family, env) {
+        pool_conjectures(pool, n, 3, 0)
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
             .skip(env("RULEMINER_PHASE", 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
-            .step_by(env("RULEMINER_STRIDE", 1))
-            .skip(env("RULEMINER_SKIP", 0))
-            .take(env("RULEMINER_LAWS", 250))
-            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
-            .collect()
-    } else if family == "mix3" || family == "sbo3" || family == "cmp3" || family == "cmp3d" {
-        // mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed over three variables (section 73)
-        // sbo3: add, sub, and, or only, a leaf on either side at every level (no xor, no shl1)
-        // cmp3: `lt` of two small add/sub/shl1 terms: laws about comparisons
-        pool_conjectures(match family { "mix3" => mix3_pool(), "sbo3" => sbo3_pool(), "cmp3" => cmp3_pool(false), _ => cmp3_pool(true) }, n, 3, 0)
-            .into_iter()
-            .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
-            .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // as for add3
-            .skip(env("RULEMINER_PHASE", 0)) // as for add3
             .step_by(env("RULEMINER_STRIDE", 1))
             .skip(env("RULEMINER_SKIP", 0))
             .take(env("RULEMINER_LAWS", 250))
@@ -608,7 +524,7 @@ fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
 /// `RULEMINER_SHAPE`: the two shape halves are disjoint, together are the whole sequence, and renaming variables keeps a law in its half.
 #[test]
 pub fn family_law_shape_halves_partition() {
-    for family in ["add3", "mix3", "sbo3", "cmp3", "cmp3d"] {
+    for family in THREE_VAR_FAMILIES {
         shape_halves_partition(family);
     }
 }
@@ -672,38 +588,16 @@ pub struct MinerConfig {
     pub perm: usize,
     /// `RULEMINER_STEPS`: per-law rewrite budget once a base set is loaded.
     pub steps: usize,
-    /// `RULEMINER_SIZE`: node cap of the goal proposer's pool.
-    pub size: usize,
     /// `RULEMINER_VARS`: variable cap of cross-side rules.
     pub vars: usize,
     /// `RULEMINER_ROUNDS`: greedy rounds.
     pub rounds: usize,
     /// `RULEMINER_THREADS`: scoring threads, clamped to 1..=12.
     pub threads: usize,
-    /// `RULEMINER_MIDPOINT`: search depth per side; unset means 3 for the `midpoint` proposer, 0 (off) for the final probe.
-    pub midpoint: Option<usize>,
-    /// `RULEMINER_ANY`, `_STRICT`, `_SHOW`, `_FAST`, `_NOLOOP`, `_BUNDLE`, `_TRACE`: set to 1 to enable.
+    /// `RULEMINER_ANY`, `_SHOW`, `_FAST`: set to 1 to enable.
     pub any_op: bool,
-    pub strict: bool,
     pub show: bool,
     pub fast: bool,
-    pub noloop: bool,
-    pub bundle: bool,
-    pub trace: bool,
-    /// `RULEMINER_GENERAL=<w>`: each candidate's gain is lowered by `w * rule_specificity` (default 0: off), so general rules beat narrow ones of similar coverage.
-    pub general: i64,
-}
-
-/// How narrow a rule is: its left side's size plus 3 per constant leaf (`Zero`, `Ones`) on either side.
-pub fn rule_specificity(l: &Term, r: &Term) -> i64 {
-    fn consts(t: &Term) -> i64 {
-        match t {
-            Term::Zero | Term::Ones => 1,
-            Term::Op(_, a, b) => consts(a) + consts(b),
-            _ => 0,
-        }
-    }
-    l.size() as i64 + 3 * (consts(l) + consts(r))
 }
 
 impl MinerConfig {
@@ -715,19 +609,12 @@ impl MinerConfig {
             trials: num("RULEMINER_TRIALS", 400),
             perm: num("RULEMINER_PERM", 0),
             steps: num("RULEMINER_STEPS", 200),
-            size: num("RULEMINER_SIZE", 5),
             vars: num("RULEMINER_VARS", 4),
             rounds: num("RULEMINER_ROUNDS", 8),
             threads: num("RULEMINER_THREADS", 1).clamp(1, 12),
-            midpoint: std::env::var("RULEMINER_MIDPOINT").ok().and_then(|v| v.parse().ok()),
             any_op: flag("RULEMINER_ANY"),
-            strict: flag("RULEMINER_STRICT"),
             show: flag("RULEMINER_SHOW"),
             fast: flag("RULEMINER_FAST"),
-            noloop: flag("RULEMINER_NOLOOP"),
-            bundle: flag("RULEMINER_BUNDLE"),
-            trace: flag("RULEMINER_TRACE"),
-            general: num("RULEMINER_GENERAL", 0) as i64,
         }
     }
 }
@@ -822,8 +709,8 @@ pub fn rule_miner() {
     }
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
     // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
-    // with the same values at width 4 (a pool of all terms up to RULEMINER_SIZE nodes, indexed by value)
-    let psize = cfg.size;
+    // with the same values at width 4 (a pool of all terms up to 5 nodes, indexed by value)
+    let psize = 5;
     let mut by_size: Vec<Vec<Term>> = vec![vec![]; psize + 1];
     by_size[1] = vec![Term::V(0), Term::V(1), Term::Zero, Term::Ones];
     for sz in 2..=psize {
@@ -922,8 +809,6 @@ pub fn rule_miner() {
     // cross-side candidates: a subterm of one normalized side and a subterm of the other with the same value, both
     // abstracted by the same cuts (up to four variables): the rule `abstract(s) -> abstract(s')`
     let cross_cap = cfg.vars;
-    // RULEMINER_STRICT=1: cross-side rules must go down in the rule order too (by default they may grow, as `subdist` does)
-    let strict = cfg.strict;
     for st in &stragglers {
         let (mut sl, mut sr) = (vec![], vec![]);
         st.3[0].subterms(&mut sl);
@@ -958,7 +843,7 @@ pub fn rule_miner() {
                                 _ => t.clone(),
                             }
                         }
-                        if bare(&yy) && yy.size() < pat.size() + 4 && (!strict || ok_order(&pat, &renum(&yy))) && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
+                        if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
                             cands.push((pat.clone(), renum(&yy)));
                         }
                     }
@@ -966,19 +851,11 @@ pub fn rule_miner() {
             }
         }
     }
-    // `RULEMINER_EXTRA=<file>`: extra candidates (the `file` proposer's line format) joining the miner's own, before the one-per-left-side pass
+    // `RULEMINER_EXTRA=<file>`: extra candidates (`lhs -> rhs` lines) joining the miner's own, before the one-per-left-side pass
     if let Ok(path) = std::env::var("RULEMINER_EXTRA") {
-        if std::env::var("RULEMINER_PROPOSER").map_or(true, |p| p == "mined") {
-            let extra = read_rule_file(&path);
-            println!("RULEMINER {} extra candidates from {path}", extra.len());
-            cands.extend(extra);
-        }
-    }
-    // `RULEMINER_NOIDENT=1`: drop identity candidates (`l -> l`, from the pool route); they fix nothing but occupy scoring trials
-    if std::env::var("RULEMINER_NOIDENT").is_ok_and(|v| v == "1") {
-        let before = cands.len();
-        cands.retain(|(l, r)| l.show() != r.show());
-        println!("RULEMINER dropped {} identity candidates", before - cands.len());
+        let extra = read_rule_file(&path);
+        println!("RULEMINER {} extra candidates from {path}", extra.len());
+        cands.extend(extra);
     }
     // `RULEMINER_NODUPLHS` (default on, 0 = off): drop candidates whose left side already has a rule in force (`RULEMINER_BASE`); the one-per-left-side pass
     // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
@@ -992,35 +869,6 @@ pub fn rule_miner() {
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, _)| l.show());
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
-    // the pilot's proposers replace the miner's own generator (`RULEMINER_PROPOSER`: random, transfer; section 66)
-    let proposer = std::env::var("RULEMINER_PROPOSER").unwrap_or_else(|_| "mined".into());
-    if proposer != "mined" {
-        // `goal`: each straggler's normalized sides as a rule, in both directions (the goal-as-lemma baseline, section 69)
-        cands = if proposer == "midpoint" {
-            // section 83: the halves of a path between a straggler's normal forms (common context removed), both directions
-            let rs: Vec<(Term, Term)> = rules().into_iter().filter(|r| !ablated(r.name)).flat_map(|r| [(r.lhs.clone(), r.rhs.clone()), (r.rhs, r.lhs)]).collect();
-            let depth = cfg.midpoint.unwrap_or(3);
-            let mut out: Vec<(Term, Term)> = vec![];
-            for st in &stragglers {
-                if let Some((m, ..)) = midpoint_search(&st.3[0], &st.3[1], &rs, depth) {
-                    for (x, y) in [(&st.3[0], &m), (&m, &st.3[1])] {
-                        let (l, r) = local_diff(x, y);
-                        out.extend([(l.clone(), r.clone()), (r, l)]);
-                    }
-                }
-            }
-            out.retain(|(l, r)| l.show() != r.show() && l.max_var() < 3 && r.max_var() < 3);
-            out.sort_by_key(|(l, r)| (l.show(), r.show()));
-            out.dedup_by_key(|(l, r)| (l.show(), r.show()));
-            out
-        } else if proposer == "goal" {
-            stragglers.iter().flat_map(|st| [(st.3[0].clone(), st.3[1].clone()), (st.3[1].clone(), st.3[0].clone())]).filter(|(l, r)| l.show() != r.show()).collect()
-        } else {
-            pilot_candidates(&proposer, &env)
-        };
-        let ordered = cands.iter().filter(|(l, r)| ok_order(l, r)).count();
-        println!("RULEMINER proposer {proposer}: {} proposed, {ordered} decreasing in the rule order", cands.len());
-    }
     phase("candidate generation");
     // keep candidates whose left side matches a subterm of some straggler's normalized terms
     let applicable = |l: &Term| {
@@ -1031,7 +879,7 @@ pub fn rule_miner() {
             subs.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))
         })
     };
-    let cands: Vec<(Term, Term)> = if proposer == "mined" || proposer == "file" { cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect() } else { cands };
+    let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
     println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
     if cfg.show {
         for (l, r) in &cands {
@@ -1041,7 +889,7 @@ pub fn rule_miner() {
     // cumulative greedy: each round adds the candidate that, on top of the rules chosen so far, fixes the most
     // stragglers (no whole-term machine proof) and then shrinks the normalized terms most; a straggler often needs two
     // rules together, which a one-rule-at-a-time score cannot see
-    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| (proposer == "mined" || ok_order(l, r)) && prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
+    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
     println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
     phase("provable filter");
     let score = |extra: &[(Term, Term)]| -> (Vec<bool>, i64) {
@@ -1054,14 +902,7 @@ pub fn rule_miner() {
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
         SCORE_ONLY.with(|s| s.set(cfg.fast));
         let (mut fixed, mut size) = (vec![false; scored.len()], 0i64);
-        // RULEMINER_NOLOOP=1: a candidate set under which a law exhausts the step budget with some term rewritten 3 or more times
-        // (a cycle among the rules, section 85) is rejected
-        let noloop = cfg.noloop;
-        let mut looped = false;
         for (si, s) in scored.iter().enumerate() {
-            if noloop {
-                RULE_SEEN.with(|m| *m.borrow_mut() = Some(Default::default()));
-            }
             budget();
             let before = fallbacks();
             let ok = rewrite_law(n, kv, &s.1, &s.2).is_some();
@@ -1077,28 +918,12 @@ pub fn rule_miner() {
             if si < stragglers.len() {
                 size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
             }
-            looped |= noloop && RULE_SEEN.with(|m| m.borrow().as_ref().is_some_and(|m| m.contains_key("\0exhausted") && m.values().any(|c| *c >= 3)));
         }
-        RULE_SEEN.with(|m| *m.borrow_mut() = None);
         SCORE_ONLY.with(|s| s.set(false));
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
-        if looped {
-            return (vec![false; scored.len()], i64::MAX / 4);
-        }
         (fixed, size)
     };
-    // RULEMINER_BUNDLE=1: also score all provable candidates added together (rules that only work in combination, section 73)
-    if cfg.bundle {
-        let all: Vec<(Term, Term)> = provable.iter().map(|c| (*c).clone()).collect();
-        let (f, _) = score(&all);
-        println!("RULEMINER bundle of {} rules covers {} of {} stragglers", all.len(), f.iter().filter(|c| **c).count(), stragglers.len());
-        for (st, c) in stragglers.iter().zip(&f) {
-            if !c {
-                println!("RULEMINER bundle uncovered: {}", st.0);
-            }
-        }
-    }
     let mut chosen: Vec<(Term, Term)> = vec![];
     let (mut covered, mut size) = score(&chosen);
     for _ in 0..cfg.rounds {
@@ -1115,12 +940,7 @@ pub fn rule_miner() {
                     .map(|&i| {
                         let mut with = chosen.clone();
                         with.push(provable[i].clone());
-                        let t = Instant::now();
-                        let r = score(&with);
-                        if cfg.trace {
-                            println!("RULEMINER trace candidate {i}: {:.1}s", t.elapsed().as_secs_f64());
-                        }
-                        (i, r)
+                        (i, score(&with))
                     })
                     .collect()
             };
@@ -1143,9 +963,8 @@ pub fn rule_miner() {
         };
         for (cand, (f, sz)) in provable.iter().zip(scored) {
             let raw = (count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz);
-            let gain = raw - cfg.general * rule_specificity(&cand.0, &cand.1);
-            if raw > 0 && best.as_ref().is_none_or(|b| gain > b.0) {
-                best = Some((gain, (*cand).clone(), f, sz));
+            if raw > 0 && best.as_ref().is_none_or(|b| raw > b.0) {
+                best = Some((raw, (*cand).clone(), f, sz));
             }
         }
         let Some((_, rule, f, sz)) = best else { break };
@@ -1159,32 +978,6 @@ pub fn rule_miner() {
         if !c {
             println!("RULEMINER uncovered: {}", st.0);
         }
-    }
-    // midpoint probe (section 83): for each uncovered straggler, bidirectional search from the two normal forms (under
-    // the base and chosen rules) over single steps of any rule in both directions, commutation and association of
-    // add/and/or/xor; depth `RULEMINER_MIDPOINT` per side, terms capped at twice the larger normal form
-    let depth = cfg.midpoint.unwrap_or(0);
-    if depth > 0 {
-        EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(&chosen).cloned().collect());
-        let rs: Vec<(Term, Term)> = rules().into_iter().filter(|r| !ablated(r.name)).flat_map(|r| [(r.lhs.clone(), r.rhs.clone()), (r.rhs, r.lhs)]).collect();
-        let (mut found, mut total) = (0, 0);
-        for (st, c) in stragglers.iter().zip(&covered) {
-            if *c {
-                continue;
-            }
-            total += 1;
-            RULE_BUDGET.with(|b| b.set(cfg.steps as i64));
-            let nf = [rewrite(&st.1, n, &ops, &goods).0, rewrite(&st.2, n, &ops, &goods).0];
-            let hit = midpoint_search(&nf[0], &nf[1], &rs, depth);
-            match hit {
-                Some((m, da, db)) => {
-                    found += 1;
-                    println!("RULEMINER midpoint {}: depths {da}+{db}, sizes {} / {} / mid {}: {} ~ {} via {}", st.0, nf[0].size(), nf[1].size(), m.size(), nf[0].show(), nf[1].show(), m.show());
-                }
-                None => println!("RULEMINER midpoint {}: none within depth {depth}: {} ~ {}", st.0, nf[0].show(), nf[1].show()),
-            }
-        }
-        println!("RULEMINER midpoints found for {found} of {total} uncovered stragglers");
     }
     println!("RULEMINER machine at end: {}", machine_state());
 }
@@ -1207,18 +1000,7 @@ pub fn bitwise_law_proves_shift_laws_and_rejects_false_ones() {
     }
 }
 
-/// `read_rule_file` (behind `RULEMINER_EXTRA` and the `file` proposer) parses `lhs -> rhs` lines and skips comments and blanks.
-#[test]
-pub fn general_rules_are_less_specific() {
-    let spec = |s: &str| {
-        let (l, r) = s.split_once(" -> ").unwrap();
-        rule_specificity(&parse_term(l), &parse_term(r))
-    };
-    let general = spec("sub(x, sub(y, z)) -> add(sub(x, y), z)");
-    let narrow = spec("sub(add(x, y), xor(z, -1)) -> add(sub(y, -1), add(x, z))");
-    assert!(general < narrow, "{general} {narrow}");
-}
-
+/// `read_rule_file` (behind `RULEMINER_EXTRA`) parses `lhs -> rhs` lines and skips comments and blanks.
 #[test]
 pub fn extra_candidates_are_merged() {
     let path = std::env::temp_dir().join(format!("extra_candidates_{}.txt", std::process::id()));
@@ -1714,9 +1496,28 @@ pub fn add3_pool(deep: bool) -> Vec<Term> {
     }
 }
 
-/// Variables per law of a family: the three-variable families (add3, mix3, sbo3) against the two-variable rest.
+/// The three-variable families, by name. `pool3` is the single place that maps one to its term pool; everything else (law selection,
+/// `family_vars`, the shape-halves test) follows from it.
+pub const THREE_VAR_FAMILIES: [&str; 5] = ["add3", "mix3", "sbo3", "cmp3", "cmp3d"];
+
+/// The term pool of a three-variable family (`None` for any other family). add3: the add/sub/xor reassociation family (`RULEMINER_DEEP3=1`
+/// for the deeper pool); mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed (section 73); sbo3: add, sub, and, or only,
+/// a leaf on either side at every level; cmp3: `lt` of two small add/sub/shl1 terms (laws about comparisons); cmp3d: cmp3 with
+/// reassociation redexes inside the comparison.
+pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Term>> {
+    Some(match family {
+        "add3" => add3_pool(env("RULEMINER_DEEP3", 0) == 1),
+        "mix3" => mix3_pool(),
+        "sbo3" => sbo3_pool(),
+        "cmp3" => cmp3_pool(false),
+        "cmp3d" => cmp3_pool(true),
+        _ => return None,
+    })
+}
+
+/// Variables per law of a family: the three-variable families against the two-variable rest.
 pub fn family_vars(family: &str) -> usize {
-    if matches!(family, "add3" | "mix3" | "sbo3" | "cmp3" | "cmp3d") { 3 } else { 2 }
+    if THREE_VAR_FAMILIES.contains(&family) { 3 } else { 2 }
 }
 
 /// Terms of the `cmp3` family: `lt` of two arithmetic terms (add, sub, `shl1` over three variables, depth one: an operator over two
@@ -1857,72 +1658,6 @@ pub fn three_var_probe() {
         }
     }
     println!("PROBE3 {ok} proved ({straggler} with a machine proof), {unproved} unproved");
-}
-
-/// Whether `t` has an operator node whose operands contain no variable.
-pub fn folds_constants(t: &Term) -> bool {
-    match t {
-        Term::Op(_, a, b) => [a, b].iter().all(|t| (0..3).all(|v| !t.has_var(v))) || folds_constants(a) || folds_constants(b),
-        _ => false,
-    }
-}
-
-/// Rule corpus for a model proposer (search note section 68): true rules `lhs -> rhs` over at most three variables, the
-/// left side larger than the right, drawn from the two-variable depth-2 pool and the `add3` pool. Every line is plausible
-/// at widths 1-6 and proved (and kernel-checked) at widths 3 and 4. Written to `CORPUS_OUT` in the `file:` proposer's
-/// syntax. Env: `CORPUS_MAX` (default 3000 rules, evenly spaced among the candidates), `CORPUS_PER_LEFT` (default 6),
-/// `CORPUS_DEEP=1` (also the deep `add3` and `mix3` pools), `CORPUS_CHARS` (longest line kept, default unlimited).
-#[test]
-#[ignore]
-pub fn mint_corpus() {
-    let _scope = tatic::kernel::InternScope::enter();
-    println!("CORPUS machine at start: {}", machine_state());
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
-    let (max, per_left) = (env("CORPUS_MAX", 3000), env("CORPUS_PER_LEFT", 6));
-    let mut pool = terms(2, true);
-    pool.extend(add3_pool(false));
-    if env("CORPUS_DEEP", 0) == 1 {
-        // the pools the stragglers live in (deep `add3`, `mix3`); the caller removes the held-out families afterwards
-        pool.extend(add3_pool(true));
-        pool.extend(mix3_pool());
-    }
-    let max_chars = env("CORPUS_CHARS", 1000);
-    let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
-    for t in pool {
-        let sig = (0..4096u128).map(|i| t.interp(4, &[i & 15, i >> 4 & 15, i >> 8])).collect();
-        groups.entry(sig).or_default().push(t);
-    }
-    let vars = |t: &Term| (0..3).filter(|v| t.has_var(*v)).collect::<Vec<_>>();
-    let mut cands: Vec<(Term, Term)> = vec![];
-    for g in groups.values_mut() {
-        g.sort_by_key(|t| (t.size(), t.show()));
-        g.dedup_by_key(|t| t.show());
-        // skip trivial left sides: fewer than two distinct variables, or a subterm of constants only (constant folding)
-        for (i, l) in g.iter().enumerate().filter(|(_, l)| l.size() >= 3 && vars(l).len() >= 2 && !folds_constants(l)) {
-            cands.extend(g[..i].iter().filter(|r| r.size() < l.size() && vars(r).iter().all(|v| vars(l).contains(v))).take(per_left).map(|r| (l.clone(), r.clone())));
-        }
-    }
-    cands.sort_by_key(|(l, r)| (l.show(), r.show()));
-    let stride = (cands.len() / max).max(1);
-    println!("CORPUS {} candidates, stride {stride}", cands.len());
-    let mut out = String::new();
-    let (mut kept, mut tried) = (0, 0);
-    for (l, r) in cands.iter().step_by(stride).take(max) {
-        tried += 1;
-        let k = l.max_var().max(r.max_var()) + 1;
-        if l.show().len() + r.show().len() + 4 > max_chars || !(1..=6).all(|w| l.plausibly_equals(r, w, k)) || [l, r].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
-            continue;
-        }
-        let proved = [3usize, 4].iter().all(|&n| prove_rule(n, k, l, r).is_some_and(|p| check(&Ctx::new(), &p.0, &p.1).is_ok()));
-        if proved {
-            kept += 1;
-            out += &format!("{} -> {}\n", l.show(), r.show());
-        }
-    }
-    let path = std::env::var("CORPUS_OUT").expect("CORPUS_OUT");
-    std::fs::write(&path, out).unwrap();
-    println!("CORPUS {kept} rules kept of {tried} tried, written to {path}");
-    println!("CORPUS machine at end: {}", machine_state());
 }
 
 #[test]

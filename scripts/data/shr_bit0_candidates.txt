@@ -1,9 +1,0 @@
-# bit-0 laws of section 90 (shr1 takes its filler argument explicitly, `shr1(t, 0)`)
-shr1(xor(x, sub(0, -1)), 0) -> shr1(x, 0)
-shr1(xor(sub(0, -1), x), 0) -> shr1(x, 0)
-shr1(and(x, sub(0, -1)), 0) -> 0
-shr1(and(sub(0, -1), x), 0) -> 0
-shr1(sub(add(x, x), -1), 0) -> shr1(add(x, x), 0)
-shr1(add(x, sub(x, -1)), 0) -> shr1(add(x, x), 0)
-shr1(sub(x, sub(-1, x)), 0) -> shr1(add(x, x), 0)
-shr1(sub(x, xor(x, -1)), 0) -> shr1(add(x, x), 0)

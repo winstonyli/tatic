@@ -477,10 +477,8 @@ thread_local! {
 // undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
 thread_local! {
     pub static RULE_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(i64::MAX / 2) };
-    /// Loop detector for the rule miner (`RULEMINER_NOLOOP=1`): how often `rule_step` fired on each term since the last clear.
     /// Rules (`lhs -> rhs`) being proved by `prove_rule` through the rewriter; `rule_step` skips them.
     pub static PROVING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-    pub static RULE_SEEN: std::cell::RefCell<Option<std::collections::HashMap<String, u32>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The mined rule set selected by `RULESET` (`add3_mm`, `mix3_mm`, `add3_nl`, `mix3_nl`, the files in `scripts/data`; sections 84 and 87), in force
@@ -829,88 +827,6 @@ pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
     rule_order_ok(l, r) || (rule_tied(l, r) && (lpo || tie_greater(l, r) || rule_permutative(l, r)))
 }
 
-/// The one-step neighbours of `t` (section 83): any rule of `rs` (given in both directions) at any subterm, commutation
-/// and association of add/and/or/xor.
-pub fn nbrs(t: &Term, rs: &[(Term, Term)], out: &mut Vec<Term>) {
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    for (l, r) in rs {
-        let mut sub = vec![None; l.max_var().max(r.max_var()) + 1];
-        if match_pat(l, t, &mut sub) && sub.iter().all(Option::is_some) {
-            out.push(subst_pat(r, &sub));
-        }
-    }
-    if let Term::Op(o, a, b) = t {
-        if *o <= 3 {
-            out.push(op(*o, (**b).clone(), (**a).clone()));
-            if let Term::Op(o2, x, y) = &**a
-                && o2 == o {
-                    out.push(op(*o, (**x).clone(), op(*o, (**y).clone(), (**b).clone())));
-                }
-            if let Term::Op(o2, y, z) = &**b
-                && o2 == o {
-                    out.push(op(*o, op(*o, (**a).clone(), (**y).clone()), (**z).clone()));
-                }
-        }
-        let mut inner = vec![];
-        nbrs(a, rs, &mut inner);
-        out.extend(inner.into_iter().map(|x| op(*o, x, (**b).clone())));
-        let mut inner = vec![];
-        nbrs(b, rs, &mut inner);
-        out.extend(inner.into_iter().map(|x| op(*o, (**a).clone(), x)));
-    }
-}
-
-/// Bidirectional search from `a` and `b` for a common term: `(midpoint, steps from a, steps from b)` within `depth`
-/// steps per side, terms at most twice the larger of `a` and `b`.
-pub fn midpoint_search(a: &Term, b: &Term, rs: &[(Term, Term)], depth: usize) -> Option<(Term, usize, usize)> {
-    let cap = 2 * a.size().max(b.size());
-    let mut seen: [std::collections::HashMap<String, usize>; 2] = Default::default();
-    let mut frontier: [Vec<Term>; 2] = [vec![a.clone()], vec![b.clone()]];
-    seen[0].insert(a.show(), 0);
-    seen[1].insert(b.show(), 0);
-    for d in 0..=depth {
-        for i in 0..2 {
-            for t in &frontier[i] {
-                if let Some(d2) = seen[1 - i].get(&t.show()) {
-                    let d1 = seen[i][&t.show()];
-                    return Some((t.clone(), if i == 0 { d1 } else { *d2 }, if i == 0 { *d2 } else { d1 }));
-                }
-            }
-        }
-        if d == depth {
-            break;
-        }
-        for i in 0..2 {
-            let mut next = vec![];
-            for t in &frontier[i] {
-                let mut out = vec![];
-                nbrs(t, rs, &mut out);
-                for x in out {
-                    if x.size() <= cap && !seen[i].contains_key(&x.show()) {
-                        seen[i].insert(x.show(), d + 1);
-                        next.push(x);
-                    }
-                }
-            }
-            frontier[i] = next;
-        }
-    }
-    None
-}
-
-/// `(a, b)` with the common context removed: descend while the heads agree and one operand is equal.
-pub fn local_diff(a: &Term, b: &Term) -> (Term, Term) {
-    if let (Term::Op(o, a1, a2), Term::Op(o2, b1, b2)) = (a, b) {
-        if o == o2 && a1.show() == b1.show() {
-            return local_diff(a2, b2);
-        }
-        if o == o2 && a2.show() == b2.show() {
-            return local_diff(a1, b1);
-        }
-    }
-    (a.clone(), b.clone())
-}
-
 pub fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
     match (p, t) {
         (Term::V(i), _) => match &sub[*i] {
@@ -997,18 +913,8 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
             }
         }
         if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
-            RULE_SEEN.with(|m| {
-                if let Some(m) = m.borrow_mut().as_mut() {
-                    m.insert("\0exhausted".into(), 0);
-                }
-            });
             return None;
         }
-        RULE_SEEN.with(|m| {
-            if let Some(m) = m.borrow_mut().as_mut() {
-                *m.entry(t.show()).or_insert(0) += 1;
-            }
-        });
         let law = memo(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
         // a pattern variable the left side does not mention is free in the law: any value serves
         let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();

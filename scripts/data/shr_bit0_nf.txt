@@ -1,5 +1,0 @@
-# section 90: rules over the normal forms of the add3_mm shr leftovers (see normal_forms output in logs/shrbit0nf.out)
-shr1(sub(0, -1), 0) -> 0
-shr1(sub(shl1(x, 0), -1), 0) -> shr1(shl1(x, 0), 0)
-shr1(sub(x, xor(x, -1)), 0) -> shr1(shl1(x, 0), 0)
-shr1(sub(x, xor(y, -1)), 0) -> shr1(add(sub(x, -1), y), 0)
