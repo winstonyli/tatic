@@ -30,16 +30,14 @@ anything else is served by the interpreter. Kernel-checked equivalence proofs
 cover only the terms in the proof fragment; elsewhere the compiled code is
 checked against the interpreter on sample inputs only. Alongside the JIT, the
 repository holds a Church-encoded bit-vector library and a rewrite-rule miner
-(`tests/church_bv/`, `tools/rulelm/`), which are research experiments and are
+(`tests/church_bv/`), which are research experiments and are
 not needed to use the JIT.
 
 ## Requirements
 
 - A recent stable Rust toolchain: the crate uses edition 2024, and its
   dependencies declare a minimum of Rust 1.91 (the crate itself declares no
-  `rust-version`). `tools/rulelm` is a separate crate whose `burn` dependency
-  needs Rust 1.95 and a Vulkan-capable discrete GPU (it selects
-  `Device::vulkan(DeviceKind::DiscreteGpu(0))`); it is optional.
+  `rust-version`).
 - Development and measurements were done on Windows 11. The Rust code is not
   Windows-specific, but several helper scripts under `scripts/` use bash and
   PowerShell (for example `scripts/quiet_ab/pin.ps1`), and the recorded
@@ -71,8 +69,7 @@ reproducible part.
   `church_bv` test executable). `none` serves with no rules, `ref` mines once on
   the whole stream, `loop` mines after each batch. It writes `OUTDIR/m.tsv`
   (round, M, laws, rules in force, seconds). The header documents all options:
-  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3|cmp3`, `WINDOW=cum`, `POOL`,
-  `MODEL` (needs `scripts/loop_candidates.sh` and a `rulelm` checkpoint),
+  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3|cmp3|cmp3d`, `WINDOW=cum`, `POOL`,
   `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
   force; `scripts/rules/reassoc.txt` holds six general reassociation rules
   that cut machine proofs on add3, mix3 and sbo3 streams), and `SPLIT=0|1` (one

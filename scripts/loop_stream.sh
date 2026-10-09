@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Round driver for the end-to-end loop (design notes under docs/superpowers/, not in this repository).
-#   EXE=<church_bv test exe> [B=150 K=4 OFFSET=0 PROPOSER=mined] scripts/loop_stream.sh none|ref|loop OUTDIR
+#   EXE=<church_bv test exe> [B=150 K=4 OFFSET=0] scripts/loop_stream.sh none|ref|loop OUTDIR
 # Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of the add3 sequence (STRIDE, default 7). It is served under the rules in force
 # *before* it is mined, so M is what the stream costs when rules arrive as it does.
 # Opt-in (default off): WINDOW=cum mines OFFSET..OFFSET+(r+1)*B after batch r; POOL=1 carries the miner's candidates over rounds
-# (RULEMINER_SHOW, $out/pool.txt, RULEMINER_EXTRA); MODEL=1 adds $PROPOSER_FILE_CMD's lines to the extra candidates (PROPOSER stays mined).
+# (RULEMINER_SHOW, $out/pool.txt, RULEMINER_EXTRA).
 # WARM=<skip>:<laws>[:<phase>] (not with ref) first mines once on that held-out slice (RULEMINER_PHASE selects the residue class of the
 # STRIDE sequence: phase 1 at STRIDE=2 is the laws between the served ones), so the stream starts with those rules in force.
 # SPLIT=0|1 restricts everything to one structure-based half of the laws (RULEMINER_SHAPE); the WARM mine then uses the other half.
@@ -13,13 +13,13 @@
 # rule count is the rules in force at the last batch.
 # scripts/rules/reassoc.txt: six general reassociation rules (mined on add3; they also cut mix3 from 136 to 26 machine proofs): use as WARM_RULES.
 # SPHASE=<n> serves the residue class n of the STRIDE sequence (default 0), a stream disjoint from the phase-0 one; the loop mines the same residue class it serves; a WARM mine uses its own phase (default 0).
-# FAMILY=add3|mix3|sbo3 (default add3) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
+# FAMILY=add3|mix3|sbo3|cmp3|cmp3d (default add3; the three-variable families, THREE_VAR_FAMILIES in tests/church_bv/search.rs) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 # THREADS=<n> (default 2) sizes the miner pool. To share the machine, also pin and lower priority at launch: cmd //c start "" //b //belownormal //affinity 5000 bash <script> (0x5000 = two physical cores, assuming adjacent logical cores are SMT siblings).
 # RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without searching for or building their proofs: about 10x faster mining on cmp3d, but approximate (it can pick different rules; M 41 vs 40 on one ref mine). Use it for exploration, not headline numbers. Serving and the M count are unaffected.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
-B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}; PROPOSER=${PROPOSER:-mined}
+B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}
 : "${EXE:?set EXE}"
 case "${WINDOW:-}" in ""|cum) ;; *) echo "WINDOW must be empty or cum, got ${WINDOW}" >&2; exit 2 ;; esac
 case "${SPLIT:-}" in ""|0|1) ;; *) echo "SPLIT must be 0 or 1, got ${SPLIT}" >&2; exit 2 ;; esac
@@ -29,22 +29,15 @@ win="RULEMINER_FAMILY=${FAMILY:-add3} CHECK_FAMILY=${FAMILY:-add3} RULEMINER_DEE
 mc="RULEMINER_PERM=1 RULEMINER_STEPS=40 RULEMINER_THREADS=${THREADS:-2} RULEMINER_ROUNDS=${ROUNDS:-8}"
 
 mine() { # name skip laws [phase] -> appends the chosen rules to $rules
-  local file_env=() extra_env=() extra="$out/extra_$1.txt" shp=${SPLIT:-2}
+  local extra_env=() extra="$out/extra_$1.txt" shp=${SPLIT:-2}
   if [ "$1" = warm ] && [ -n "${SPLIT:-}" ]; then shp=$((1 - SPLIT)); fi
-  if [ "$PROPOSER" = file ]; then
-    $PROPOSER_FILE_CMD "$1" > "$out/cand_$1.txt"
-    file_env=(RULEMINER_PROPOSER=file "RULEMINER_PROPOSER_FILE=$out/cand_$1.txt")
-  fi
-  if [ "${POOL:-0}" = 1 ] || [ "${MODEL:-0}" = 1 ]; then # extra candidates: the cumulative pool and/or the model's lines
+  if [ "${POOL:-0}" = 1 ]; then # extra candidates: the cumulative pool
     : > "$extra"
-    if [ "${POOL:-0}" = 1 ] && [ -f "$out/pool.txt" ]; then cat "$out/pool.txt" >> "$extra"; fi
-    if [ "${MODEL:-0}" = 1 ] && [ "$PROPOSER" != file ]; then
-      $PROPOSER_FILE_CMD "$1" > "$out/cand_$1.txt"; cat "$out/cand_$1.txt" >> "$extra"
-    fi
+    if [ -f "$out/pool.txt" ]; then cat "$out/pool.txt" >> "$extra"; fi
     if [ -s "$extra" ]; then extra_env=("RULEMINER_EXTRA=$extra"); fi
   fi
   if [ "${POOL:-0}" = 1 ]; then extra_env+=(RULEMINER_SHOW=1); fi
-  if ! env $win $mc "${file_env[@]}" "${extra_env[@]}" RULEMINER_SKIP=$2 RULEMINER_LAWS=$3 RULEMINER_PHASE=${4:-${SPHASE:-0}} RULEMINER_SHAPE=$shp RULEMINER_BASE="$rules" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine_$1.log" 2>&1; then
+  if ! env $win $mc "${extra_env[@]}" RULEMINER_SKIP=$2 RULEMINER_LAWS=$3 RULEMINER_PHASE=${4:-${SPHASE:-0}} RULEMINER_SHAPE=$shp RULEMINER_BASE="$rules" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine_$1.log" 2>&1; then
     echo "loop_stream: rule_miner failed (see $out/mine_$1.log)" >&2; exit 1
   fi
   { grep -E "RULEMINER chosen" "$out/mine_$1.log" | grep -- " -> " | sed 's/.*size): //' >> "$rules"; } || true
@@ -74,4 +67,4 @@ for ((r = 0; r < K; r++)); do
     if [ "${WINDOW:-}" = cum ]; then mine "$r" "$OFFSET" $((B * (r + 1))); else mine "$r" "$skip" "$B"; fi
   fi
 done
-echo "mode=$mode proposer=$PROPOSER B=$B K=$K offset=$OFFSET total_M=$total rules=$(wc -l < "$rules")"
+echo "mode=$mode B=$B K=$K offset=$OFFSET total_M=$total rules=$(wc -l < "$rules")"
