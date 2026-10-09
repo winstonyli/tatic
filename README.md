@@ -117,7 +117,10 @@ On a family mixing both structures (`cmp3d`, 6194 laws; the comparison rules, in
 `scripts/rules/cmp.txt`, were mined on a subset of it, so not independent) the six rules plus the three
 comparison rules gave 69 against 130 with no rules, a loop seeded with them 54,
 a cold loop 78 and `ref` 39; the comparison rules alone gave 124. Neither set
-changed the two-variable `lt` family.
+changed the two-variable `lt` family. (`cmp.txt` has since gained a fourth rule,
+`lt(0, sub(0, x)) -> lt(0, x)`, found by the loops; the numbers above and in the
+next paragraph are for the first three. With it, static M on phases 0/1/2 of the
+stride-15 sequence is 66/83/85 instead of 69/84/88.)
 Over six disjoint `cmp3d` streams (stride 15, four batches of 100, approximate
 `RULEMINER_FAST` mining) the seeded loop beat the cold loop every time, by 17-31
 proofs (cold 74-93, seeded 43-73). Almost all of that is the first batch, served
