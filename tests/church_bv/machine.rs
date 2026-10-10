@@ -951,7 +951,10 @@ pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usiz
     let mut memo = SigMemo::new(n, nv);
     let mut groups: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for t in pool {
-        groups.entry(memo.sig(&t).to_vec()).or_default().push(t);
+        // a comparison (one-bit result) never equals an n-bit term, even when their signatures coincide
+        let mut key = memo.sig(&t).to_vec();
+        key.push(matches!(&t, Term::Op(LT, ..)) as u8);
+        groups.entry(key).or_default().push(t);
     }
     let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
     conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));

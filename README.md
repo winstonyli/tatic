@@ -69,7 +69,7 @@ reproducible part.
   `church_bv` test executable). `none` serves with no rules, `ref` mines once on
   the whole stream, `loop` mines after each batch. It writes `OUTDIR/m.tsv`
   (round, M, laws, rules in force, seconds). The header documents all options:
-  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3|cmp3|cmp3d`, `WINDOW=cum`, `POOL`,
+  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3|cmp3|cmp3d|u3`, `WINDOW=cum`, `POOL`,
   `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
   force; `scripts/rules/reassoc.txt` holds six general reassociation rules
   that cut machine proofs on add3, mix3 and sbo3 streams), and `SPLIT=0|1` (one
@@ -127,6 +127,33 @@ proofs (cold 74-93, seeded 43-73). Almost all of that is the first batch, served
 before a cold loop has mined anything (gap 13-29); from the second batch on the two
 are within a few proofs, so the library is a head start, not a lasting advantage.
 The comparison rules never fire on add3, sbo3 or mix3 and never raise M there.
+
+Shuffled streams and transfer between families. Sorted batches are lexicographic
+ranges of the law sequence, which mixes learning with batch structure, so
+`RULEMINER_SHUFFLE=<salt>` (exported; 0 = off) reorders the three-variable
+families by a hash and makes each batch a random sample. All numbers below are
+single runs with `RULEMINER_FAST`, `B=100 K=3`, three disjoint streams per family
+(stride 15 cmp3d, 7 add3, 11 sbo3, mix3 7), total M summed over the three
+streams, salt 1 unless noted; libraries are mined on the shuffled phase-0 stream
+of their family (8 rules each; `FAMILY=u3` is the union of the add3, sbo3 and
+cmp3d pools, for mining one library on a mixed stream).
+
+| target | cold | own library | other family's library | pooled (merged) | mined on u3 |
+|---|---|---|---|---|---|
+| cmp3d | 190 (salt 2: 182) | 80 (96) | 118-119 (126) | 82 | 137 |
+| add3 | 183 (165) | 62 (51) | 56-65 (37-68) | 51 | 72 |
+| sbo3 | 126 (117) | 46 (47) | 52-66 (55-66) | 45 | 54 |
+| mix3 (held out) | 66 | n/a | n/a | 13 | 20 |
+
+Seeding with any library beat cold on every stream (18 of 18 own-library streams over two salts, all cross
+runs), a library from another family recovers most of the gain except for cmp3d,
+which needs its comparison rules, and a library pooled from the other families
+transfers to mix3 although mix3 contributed none of its rules. The pooled library
+is the union of the three families' libraries with add3's `sub`/`sub`
+orientation dropped (the orientations conflict and a plain union would cycle); a
+library mined directly on the mixed stream is a little worse than the merged one
+(eight rules cannot hold both families' specific rules). Exact (non-FAST) mining
+reproduced the FAST totals on two cmp3d streams.
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).

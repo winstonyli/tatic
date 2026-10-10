@@ -13,7 +13,7 @@
 # rule count is the rules in force at the last batch.
 # scripts/rules/reassoc.txt: six general reassociation rules (mined on add3; they also cut mix3 from 136 to 26 machine proofs): use as WARM_RULES.
 # SPHASE=<n> serves the residue class n of the STRIDE sequence (default 0), a stream disjoint from the phase-0 one; the loop mines the same residue class it serves; a WARM mine uses its own phase (default 0).
-# FAMILY=add3|mix3|sbo3|cmp3|cmp3d (default add3; the three-variable families, THREE_VAR_FAMILIES in tests/church_bv/search.rs) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
+# FAMILY=add3|mix3|sbo3|cmp3|cmp3d|u3 (u3 = union of the add3, sbo3 and cmp3d pools; default add3; the three-variable families, THREE_VAR_FAMILIES in tests/church_bv/search.rs) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 # THREADS=<n> (default 2) sizes the miner pool. To share the machine, also pin and lower priority at launch: cmd //c start "" //b //belownormal //affinity 5000 bash <script> (0x5000 = two physical cores, assuming adjacent logical cores are SMT siblings).
 # MACHINE_STATE=0 skips the loop's two machine-state probes (about 6 s each); a sweep of loops should record the state once itself (the ignored test `machine_state_line` prints it).

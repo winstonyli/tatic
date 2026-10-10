@@ -1563,7 +1563,7 @@ pub fn add3_pool(deep: bool) -> Vec<Term> {
 
 /// The three-variable families, by name. `pool3` is the single place that maps one to its term pool; everything else (law selection,
 /// `family_vars`, the shape-halves test) follows from it.
-pub const THREE_VAR_FAMILIES: [&str; 5] = ["add3", "mix3", "sbo3", "cmp3", "cmp3d"];
+pub const THREE_VAR_FAMILIES: [&str; 6] = ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3"];
 
 /// The term pool of a three-variable family (`None` for any other family). add3: the add/sub/xor reassociation family (`RULEMINER_DEEP3=1`
 /// for the deeper pool); mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed (section 73); sbo3: add, sub, and, or only,
@@ -1576,6 +1576,11 @@ pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Ter
         "sbo3" => depth2_pool(&[ADD, SUB, AND, OR], false, &[ADD, SUB]),
         "cmp3" => cmp3_pool(false),
         "cmp3d" => cmp3_pool(true),
+        // u3: the union of the add3, sbo3 and cmp3d pools (a mixed stream for mining one library over several families)
+        "u3" => {
+            let mut seen = std::collections::HashSet::new();
+            ["add3", "sbo3", "cmp3d"].iter().flat_map(|f| pool3(f, env).unwrap()).filter(|t| seen.insert(t.show())).collect()
+        }
         _ => return None,
     })
 }
