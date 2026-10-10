@@ -411,6 +411,38 @@ pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
 }
 
 /// The candidate laws of a miner family (`mul`, `shl`, `lt`, `shr`; the `RULEMINER_*` env vars size them).
+/// `laws` reordered by a hash of the salt and each law's text (FNV-1a: deterministic across runs); salt 0 keeps the order.
+pub fn shuffled(mut laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
+    if salt != 0 {
+        laws.sort_by_cached_key(|(a, b)| format!("{salt}|{} = {}", a.show(), b.show()).bytes().fold(0xcbf29ce484222325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100000001b3)));
+    }
+    laws
+}
+
+/// `RULEMINER_SHUFFLE`: a permutation of the sorted sequence, fixed per salt, different between salts, and the batches of a shuffled
+/// stream differ from the lexicographic ones.
+#[test]
+pub fn shuffle_is_a_fixed_permutation() {
+    let laws = |salt: usize, take: usize| {
+        let env = move |k: &str, d: usize| match k {
+            "RULEMINER_SHUFFLE" => salt,
+            "RULEMINER_LAWS" => take,
+            "RULEMINER_STRIDE" => 1,
+            "RULEMINER_DEEP3" => 1,
+            _ => d,
+        };
+        family_laws("add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
+    };
+    let (sorted, a, a2, b) = (laws(0, 100000), laws(1, 100000), laws(1, 100000), laws(2, 100000));
+    assert_eq!(a, a2, "same salt, same order");
+    assert_ne!(a, sorted);
+    assert_ne!(a, b);
+    let set = |v: &Vec<String>| v.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    assert!(set(&a) == set(&sorted) && set(&b) == set(&sorted) && a.len() == sorted.len(), "a permutation");
+    let first_char = |v: &[String]| v.iter().take(50).map(|s| s.chars().next().unwrap()).collect::<std::collections::BTreeSet<_>>();
+    println!("first 50 laws, leading characters: sorted {:?}, shuffled {:?}", first_char(&sorted), first_char(&a));
+}
+
 pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
     if family == "shl" {
         let conj = shl_conjectures(2);
@@ -430,7 +462,9 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
     } else if let Some(pool) = pool3(family, env) {
-        pool_conjectures(pool, n, 3, 0)
+        // `RULEMINER_SHUFFLE=<salt>` (0 = off): the sorted sequence is reordered by a hash of each law, so a window of it (a batch, a
+        // stride phase) samples the whole family instead of one lexicographic range
+        shuffled(pool_conjectures(pool, n, 3, 0), env("RULEMINER_SHUFFLE", 0))
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves

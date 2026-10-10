@@ -17,6 +17,7 @@
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 # THREADS=<n> (default 2) sizes the miner pool. To share the machine, also pin and lower priority at launch: cmd //c start "" //b //belownormal //affinity 5000 bash <script> (0x5000 = two physical cores, assuming adjacent logical cores are SMT siblings).
 # MACHINE_STATE=0 skips the loop's two machine-state probes (about 6 s each); a sweep of loops should record the state once itself (the ignored test `machine_state_line` prints it).
+# RULEMINER_SHUFFLE=<salt> (exported, default 0 = off) reorders the three-variable families' sorted law sequence by a hash, so the batches and stride phases are random samples of the family instead of lexicographic ranges.
 # CHECK_FAST=1 does the same for serving (no proof building for machine fallbacks, no kernel check, no NFSAME pass); the CHECKED line and M are unchanged.
 # RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without searching for or building their proofs: about 10x faster mining on cmp3d, but approximate (it can pick different rules; M 41 vs 40 on one ref mine). Use it for exploration, not headline numbers. Serving and the M count are unaffected.
 set -euo pipefail
