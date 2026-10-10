@@ -1565,9 +1565,9 @@ pub fn good_sub(n: usize) -> (Expr, Expr) {
     good_ripple(n, true)
 }
 pub fn good_ripple(n: usize, sub: bool) -> (Expr, Expr) {
-    let (g_and, _) = good2(&|a, b| and(a, b), &|a, b| a && b);
-    let (g_or, _) = good2(&|a, b| or(a, b), &|a, b| a || b);
-    let (g_xor, _) = good2(&|a, b| xor(a, b), &|a, b| a != b);
+    let (g_and, _) = good2(&|a, b| and(a, b), &OP_INFO[1].truth);
+    let (g_or, _) = good2(&|a, b| or(a, b), &OP_INFO[2].truth);
+    let (g_xor, _) = good2(&|a, b| xor(a, b), &OP_INFO[3].truth);
     good_vec(n, if sub { self::sub(n) } else { add(n) }, &move |a, b, ga, gb| {
         let mut c = f();
         let mut gc = good_bit(false);
@@ -1705,7 +1705,7 @@ pub fn or_bv(n: usize) -> Expr {
     bitwise(n, &|a, b| or(a, b))
 }
 pub fn good_or_bv(n: usize) -> (Expr, Expr) {
-    let (g_or, _) = good2(&|a, b| or(a, b), &|a, b| a || b);
+    let (g_or, _) = good2(&|a, b| or(a, b), &OP_INFO[2].truth);
     good_vec(n, or_bv(n), &move |a, b, ga, gb| {
         let s = (0..n).map(|i| or(a[i].clone(), b[i].clone())).collect();
         let gs = (0..n).map(|i| apps(g_or.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()])).collect();
@@ -1941,9 +1941,9 @@ pub struct GoodOps {
 impl GoodOps {
     pub fn new() -> GoodOps {
         GoodOps {
-            and: good2(&|a, b| and(a, b), &|a, b| a && b).0,
-            or: good2(&|a, b| or(a, b), &|a, b| a || b).0,
-            xor: good2(&|a, b| xor(a, b), &|a, b| a != b).0,
+            and: good2(&|a, b| and(a, b), &OP_INFO[1].truth).0,
+            or: good2(&|a, b| or(a, b), &OP_INFO[2].truth).0,
+            xor: good2(&|a, b| xor(a, b), &OP_INFO[3].truth).0,
         }
     }
     pub fn go(&self, w: &Expr, e: Expr, x: &Gb, y: &Gb) -> Gb {

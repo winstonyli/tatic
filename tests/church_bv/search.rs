@@ -9,11 +9,7 @@ pub fn bop(op: usize, a: Expr, b: Expr) -> Expr {
     }
 }
 pub fn bop_val(op: usize, a: bool, b: bool) -> bool {
-    match op {
-        0 => a && b,
-        1 => a || b,
-        _ => a != b,
-    }
+    (OP_INFO[op + 1].truth)(a, b)
 }
 pub fn bop_fn(op: usize) -> Expr {
     match op {

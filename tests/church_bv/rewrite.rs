@@ -27,20 +27,35 @@ pub struct OpInfo {
     pub shift: bool,
     /// head precedence for the rule order's tie-break (higher is greater)
     pub prec: i32,
+    /// the operator on single bits (bitwise ops only)
+    pub truth: fn(bool, bool) -> bool,
+    /// the operator on `n`-bit words, `mask` = 2^n - 1
+    pub word: fn(u128, u128, u128) -> u128,
 }
-const fn info(name: &'static str, carries: bool, bitwise: bool, shift: bool, prec: i32) -> OpInfo {
-    OpInfo { name, carries, bitwise, shift, prec }
+const fn info(
+    name: &'static str,
+    carries: bool,
+    bitwise: bool,
+    shift: bool,
+    prec: i32,
+    truth: fn(bool, bool) -> bool,
+    word: fn(u128, u128, u128) -> u128,
+) -> OpInfo {
+    OpInfo { name, carries, bitwise, shift, prec, truth, word }
 }
 /// Every fact about an operator, indexed as `Term::Op` (the one place that says which ops carry, are bitwise or shift).
+fn no_truth(_: bool, _: bool) -> bool {
+    panic!("not a bitwise operator")
+}
 pub const OP_INFO: [OpInfo; 8] = [
-    info("add", true, false, false, 6),
-    info("and", false, true, false, 3),
-    info("or", false, true, false, 2),
-    info("xor", false, true, false, 4),
-    info("sub", true, false, false, 5),
-    info("lt", true, false, false, 1),
-    info("shl1", true, false, true, 0),
-    info("shr1", false, false, true, 0),
+    info("add", true, false, false, 6, no_truth, |x, y, m| x.wrapping_add(y) & m),
+    info("and", false, true, false, 3, |a, b| a && b, |x, y, _| x & y),
+    info("or", false, true, false, 2, |a, b| a || b, |x, y, _| x | y),
+    info("xor", false, true, false, 4, |a, b| a != b, |x, y, _| x ^ y),
+    info("sub", true, false, false, 5, no_truth, |x, y, m| x.wrapping_sub(y) & m),
+    info("lt", true, false, false, 1, no_truth, |x, y, _| (x < y) as u128),
+    info("shl1", true, false, true, 0, no_truth, |x, _, m| (x << 1) & m),
+    info("shr1", false, false, true, 0, no_truth, |x, _, _| x >> 1),
 ];
 /// How many of `OP_INFO` the miner enumerates: `sub` only with `MINER_SUB=1`.
 pub fn nops() -> usize {
@@ -111,16 +126,7 @@ impl Term {
             Term::Ones => mask,
             Term::Op(o, a, b) => {
                 let (x, y) = (a.interp(n, vals), b.interp(n, vals));
-                match o {
-                    0 => x.wrapping_add(y) & mask,
-                    1 => x & y,
-                    2 => x | y,
-                    3 => x ^ y,
-                    5 => (x < y) as u128,
-                    6 => (x << 1) & mask,
-                    7 => x >> 1,
-                    _ => x.wrapping_sub(y) & mask,
-                }
+                (OP_INFO[*o].word)(x, y, mask)
             }
         }
     }
@@ -419,9 +425,9 @@ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
                         _ => xor(p, q),
                     };
                     let (g, _) = match o {
-                        1 => good2(&|p, q| and(p, q), &|p, q| p && q),
-                        2 => good2(&|p, q| or(p, q), &|p, q| p || q),
-                        _ => good2(&|p, q| xor(p, q), &|p, q| p != q),
+                        1 => good2(&|p, q| and(p, q), &OP_INFO[1].truth),
+                        2 => good2(&|p, q| or(p, q), &OP_INFO[2].truth),
+                        _ => good2(&|p, q| xor(p, q), &OP_INFO[3].truth),
                     };
                     let vec = bitwise(n, &opf);
                     let (gp, _) = good_vec(n, vec.clone(), &move |a, b, ga, gb| {
