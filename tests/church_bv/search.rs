@@ -1698,13 +1698,19 @@ fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
 pub fn rule_set_kernel_check() {
     let _scope = tatic::kernel::InternScope::enter();
     let (_, kv, laws) = check_laws();
+    // CHECK_FAST=1: count only (machine fallbacks are counted without building their proofs, nothing is kernel-checked, no NFSAME pass);
+    // the CHECKED line and so M are unchanged, for exploration (the miner's RULEMINER_FAST, applied to serving)
+    let fast = env_or("CHECK_FAST", 0u8) != 0;
+    SCORE_ONLY.with(|s| s.set(fast));
     let (mut proved, mut free, mut none) = (0, 0, 0);
     for (name, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
         let before = MACHINE_FALLBACKS.with(|c| c.get());
         match rewrite_law(4, kv, t1, t2) {
             Some((p, s)) => {
-                ck(name, &p, &s);
+                if !fast {
+                    ck(name, &p, &s);
+                }
                 proved += 1;
                 free += (MACHINE_FALLBACKS.with(|c| c.get()) == before) as u32;
             }
@@ -1712,6 +1718,9 @@ pub fn rule_set_kernel_check() {
         }
     }
     println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved");
+    if fast {
+        return;
+    }
     // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
     let (ops, goods): (_, Vec<(Expr, Expr)>) = (ops_for(4), (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect());
     let (mut same, mut total) = (0, 0);

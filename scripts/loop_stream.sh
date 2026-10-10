@@ -16,6 +16,7 @@
 # FAMILY=add3|mix3|sbo3|cmp3|cmp3d (default add3; the three-variable families, THREE_VAR_FAMILIES in tests/church_bv/search.rs) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 # THREADS=<n> (default 2) sizes the miner pool. To share the machine, also pin and lower priority at launch: cmd //c start "" //b //belownormal //affinity 5000 bash <script> (0x5000 = two physical cores, assuming adjacent logical cores are SMT siblings).
+# CHECK_FAST=1 does the same for serving (no proof building for machine fallbacks, no kernel check, no NFSAME pass); the CHECKED line and M are unchanged.
 # RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without searching for or building their proofs: about 10x faster mining on cmp3d, but approximate (it can pick different rules; M 41 vs 40 on one ref mine). Use it for exploration, not headline numbers. Serving and the M count are unaffected.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
@@ -48,7 +49,7 @@ mine() { # name skip laws [phase] -> appends the chosen rules to $rules
 }
 serve() { # skip -> prints "M laws"
   local line
-  line=$(env $win RULEMINER_PHASE=${SPHASE:-0} RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
+  line=$(env $win CHECK_FAST=${CHECK_FAST:-0} RULEMINER_PHASE=${SPHASE:-0} RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
   echo "$line" | sed -E 's/CHECKED ([0-9]+) laws kernel-checked \(([0-9]+) with no whole-term machine proof\), ([0-9]+) not proved/\1 \2 \3/' | awk '{print $1-$2+$3, $1+$3}'
 }
 
