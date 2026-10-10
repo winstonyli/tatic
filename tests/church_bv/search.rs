@@ -923,6 +923,7 @@ pub fn rule_miner() {
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(extra).cloned().collect());
+        REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(kv)));
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
         SCORE_ONLY.with(|s| s.set(cfg.fast));
@@ -952,6 +953,7 @@ pub fn rule_miner() {
             })
             .collect();
         SCORE_ONLY.with(|s| s.set(false));
+        REWRITE_MEMO.with(|m| *m.borrow_mut() = None);
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         out

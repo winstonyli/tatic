@@ -974,8 +974,69 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
     None
 }
 
+/// A cached `rewrite`: the result and what the call did besides returning it, so that a hit can replay it.
+struct Rewritten {
+    out: (Term, Expr),
+    /// rule steps used (`RULE_BUDGET`): a hit needs at least this many left
+    steps: i64,
+    fallbacks: u64,
+    /// the terms `rule_step` was asked about (`RULE_TRACE`)
+    trace: Vec<Term>,
+}
+
+/// While `Some`, `rewrite` calls with `goods.len()` goods are cached by (width, term). The rule miner sets it for one rule set
+/// (one `score_laws` call): the result of `rewrite` is a function of the term, the rules in force and the budget left, so a repeat
+/// under the same rules is a hit. Calls with other goods (the generalization path adds witnesses) are not cached.
+pub struct RewriteMemo {
+    goods_len: usize,
+    map: std::collections::HashMap<(usize, String), std::rc::Rc<Rewritten>>,
+}
+
+impl RewriteMemo {
+    pub fn new(goods_len: usize) -> RewriteMemo {
+        RewriteMemo { goods_len, map: Default::default() }
+    }
+}
+
+thread_local! {
+    pub static REWRITE_MEMO: std::cell::RefCell<Option<RewriteMemo>> = const { std::cell::RefCell::new(None) };
+}
+
 /// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`.
 pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
+    let on = matches!(t, Term::Op(..)) && REWRITE_MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.goods_len == goods.len()));
+    if !on {
+        return rewrite_uncached(t, n, ops, goods);
+    }
+    let key = (n, t.show());
+    let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
+    if let Some(c) = hit.filter(|c| RULE_BUDGET.with(|b| b.get()) >= c.steps) {
+        RULE_BUDGET.with(|b| b.set(b.get() - c.steps));
+        MACHINE_FALLBACKS.with(|f| f.set(f.get() + c.fallbacks));
+        RULE_TRACE.with(|tr| {
+            if let Some(v) = tr.borrow_mut().as_mut() {
+                v.extend(c.trace.iter().cloned());
+            }
+        });
+        return c.out.clone();
+    }
+    let (budget0, fallbacks0, trace0) = (RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()), RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v.len())));
+    let out = rewrite_uncached(t, n, ops, goods);
+    let budget1 = RULE_BUDGET.with(|b| b.get());
+    // a call that ran the budget out was cut short by it: its result depends on the budget it started with
+    if budget1 > 0 {
+        let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
+        let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace };
+        REWRITE_MEMO.with(|m| {
+            if let Some(m) = m.borrow_mut().as_mut() {
+                m.map.insert(key, std::rc::Rc::new(entry));
+            }
+        });
+    }
+    out
+}
+
+fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
     let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
     let ev = |t: &Term| t.eval(ops, n, &vals);
     let Term::Op(o, a, b) = t else { return (t.clone(), refl(ev(t))) };
