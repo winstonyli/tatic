@@ -875,12 +875,20 @@ pub fn conjecture_miner() {
 /// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
 pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
     let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
+    let mut vals = vec![0u128; nv];
     for t in pool {
-        let sig: Vec<u128> = (0..1u128 << (n * nv)).map(|i| t.interp(n, &(0..nv).map(|v| i >> (n * v) & ((1 << n) - 1)).collect::<Vec<_>>())).collect();
+        let sig: Vec<u128> = (0..1u128 << (n * nv))
+            .map(|i| {
+                for (v, x) in vals.iter_mut().enumerate() {
+                    *x = i >> (n * v) & ((1 << n) - 1);
+                }
+                t.interp(n, &vals)
+            })
+            .collect();
         groups.entry(sig).or_default().push(t);
     }
     let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
-    conj.sort_by_key(|(a, b)| (a.show(), b.show()));
+    conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));
     if cap > 0 && conj.len() > cap {
         let stride = conj.len() / cap;
         conj = conj.into_iter().step_by(stride).take(cap).collect();
