@@ -879,12 +879,39 @@ pub fn rule_miner() {
             println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
         }
     }
+    // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and the step
+    // budget of this thread, so the workers copy them
+    let provable: Vec<&(Term, Term)> = {
+        let (rules, budget) = (EXTRA_RULES.with(|e| e.borrow().clone()), RULE_BUDGET.with(|b| b.get()));
+        let prove = |idx: &[usize]| -> Vec<usize> {
+            let _scope = tatic::kernel::InternScope::enter();
+            EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+            RULE_BUDGET.with(|b| b.set(budget));
+            idx.iter().copied().filter(|&i| prove_rule(n, cands[i].0.max_var().max(cands[i].1.max_var()) + 1, &cands[i].0, &cands[i].1).is_some()).collect()
+        };
+        let threads = cfg.threads.clamp(1, 12);
+        let mut ok: Vec<usize> = if threads == 1 {
+            prove(&(0..cands.len()).collect::<Vec<_>>())
+        } else {
+            std::thread::scope(|sc| {
+                let handles: Vec<_> = (0..threads)
+                    .map(|t| {
+                        let idx: Vec<usize> = (t..cands.len()).step_by(threads).collect();
+                        let prove = &prove;
+                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || prove(&idx)).unwrap()
+                    })
+                    .collect();
+                handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+            })
+        };
+        ok.sort_unstable();
+        ok.into_iter().map(|i| &cands[i]).collect()
+    };
+    println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
+    phase("provable filter");
     // cumulative greedy: each round adds the candidate that, on top of the rules chosen so far, fixes the most
     // stragglers (no whole-term machine proof) and then shrinks the normalized terms most; a straggler often needs two
     // rules together, which a one-rule-at-a-time score cannot see
-    let provable: Vec<&(Term, Term)> = cands.iter().filter(|(l, r)| prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some()).collect();
-    println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
-    phase("provable filter");
     let score = |extra: &[(Term, Term)]| -> (Vec<bool>, i64) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
