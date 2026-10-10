@@ -264,6 +264,48 @@ impl Drop for MachineBanner {
     }
 }
 
+/// What `prove_checked` found for a law.
+pub enum Verdict {
+    /// proved by `add_tree_law` and accepted by the kernel
+    Proved,
+    /// no proof and a side is over the carry cap
+    OverCap,
+    /// no proof, and neither side has a carry (`bitwise_law` territory)
+    CarryFree,
+    /// no proof within the cap; `generic` = the law holds at widths 1..6 (else it is width-specific and cannot have one)
+    NoProof { generic: bool },
+}
+/// A `Verdict` with the time `add_tree_law` took and the time the kernel took to check its proof.
+pub struct Tried {
+    pub verdict: Verdict,
+    pub law: std::time::Duration,
+    pub check: std::time::Duration,
+}
+/// The driver step shared by the conjecture miners: prove `t1 = t2` over `nv` variables at width `n`, kernel-check the proof, else classify the failure.
+pub fn prove_checked(n: usize, nv: usize, name: &str, t1: &Term, t2: &Term) -> Tried {
+    let t = Instant::now();
+    let law = add_tree_law(n, nv, t1, t2);
+    let law_time = t.elapsed();
+    let verdict = match law {
+        Some((p, s)) => {
+            let t = Instant::now();
+            ck(name, &p, &s);
+            return Tried { verdict: Verdict::Proved, law: law_time, check: t.elapsed() };
+        }
+        None => {
+            let carries = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries())).into_iter().max().unwrap_or(0);
+            if carries > carry_cap() {
+                Verdict::OverCap
+            } else if carries == 0 {
+                Verdict::CarryFree
+            } else {
+                Verdict::NoProof { generic: t1.is_law(t2, nv) }
+            }
+        }
+    };
+    Tried { verdict, law: law_time, check: std::time::Duration::ZERO }
+}
+
 /// The most carries per side `add_tree_law` takes on (unguarded lemmas are decision diagrams, guarded ones case trees over `k + carries` bits); env `CARRY_CAP`.
 pub fn carry_cap() -> usize {
     env_or("CARRY_CAP", 10)
@@ -915,17 +957,12 @@ pub fn lt_conjecture_miner() {
         for (g0, t2) in &conj {
             let g = [g0.clone()];
             total += 1;
-            let tl = Instant::now();
-            let law = add_tree_law(n, nv, &g[0], t2);
-            t_law += tl.elapsed();
-            match law {
-                Some((p, s)) => {
-                    let tc = Instant::now();
-                    ck(&format!("{} = {}", g[0].show(), t2.show()), &p, &s);
-                    t_ck += tc.elapsed();
-                    proved += 1;
-                }
-                None => {
+            let tried = prove_checked(n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2);
+            t_law += tried.law;
+            t_ck += tried.check;
+            match tried.verdict {
+                Verdict::Proved => proved += 1,
+                _ => {
                     none += 1;
                     // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
                     let generic = g[0].is_law(t2, nv);
@@ -1215,15 +1252,12 @@ pub fn shl_conjecture_miner() {
                 continue;
             }
             total += 1;
-            match add_tree_law(n, nv, &g[0], t2) {
-                Some((p, s)) => {
-                    ck(&format!("{} = {}", g[0].show(), t2.show()), &p, &s);
-                    proved += 1;
-                }
-                None if [&g[0], t2].iter().all(|t| Machine::parse(t).is_none_or(|m| m.carries() == 0)) => carry_free += 1, // `bitwise_law` territory
-                None => {
+            match prove_checked(n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2).verdict {
+                Verdict::Proved => proved += 1,
+                Verdict::CarryFree => carry_free += 1, // `bitwise_law` territory
+                Verdict::OverCap => unreachable!("bigger laws are skipped above"),
+                Verdict::NoProof { generic } => {
                     // a law that fails at another width cannot have a proof for all widths
-                    let generic = g[0].is_law(t2, nv);
                     t_none += 1;
                     if generic {
                         generic_none += 1;
@@ -1315,19 +1349,17 @@ pub fn mul_conjecture_miner() {
         if !t1.is_law(t2, 2) {
             continue;
         }
-        let t = Instant::now();
-        match add_tree_law(n, 2, t1, t2) {
-            Some((p, s)) => {
-                let built = t.elapsed();
-                ck(name, &p, &s);
+        let tried = prove_checked(n, 2, name, t1, t2);
+        match tried.verdict {
+            Verdict::Proved => {
                 proved += 1;
-                println!("MULMINER {name}: carries {cs:?}, build {built:?}, total {:?}", t.elapsed());
+                println!("MULMINER {name}: carries {cs:?}, build {:?}, total {:?}", tried.law, tried.law + tried.check);
             }
-            None if cs[0].max(cs[1]) > carry_cap() => {
+            Verdict::OverCap => {
                 capped += 1;
                 println!("MULMINER {name}: carries {cs:?} over the cap");
             }
-            None => {
+            _ => {
                 none += 1;
                 println!("MULMINER {name}: carries {cs:?}, NO PROOF though it holds at widths 1..6");
             }
