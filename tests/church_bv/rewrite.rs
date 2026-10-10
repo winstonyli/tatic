@@ -132,13 +132,17 @@ impl Term {
     }
     /// Agrees on random inputs at every width 1..=6 (the plausibility screen every law passes before a machine tries it).
     pub fn is_law(&self, other: &Term, k: usize) -> bool {
-        (1..=6).all(|w| self.plausibly_equals(other, w, k))
+        self.refute(other, k).is_none()
     }
-    /// Whether `self` and `other` agree on the corners and 200 pseudo-random width-`n` tuples over `k` variables.
-    pub fn plausibly_equals(&self, other: &Term, n: usize, k: usize) -> bool {
+    /// The smallest width in 1..=6 and an input tuple (over `k` variables) where the two sides differ, if the screen finds one.
+    pub fn refute(&self, other: &Term, k: usize) -> Option<(usize, Vec<u128>)> {
+        (1..=6).find_map(|w| self.counterexample(other, w, k).map(|vals| (w, vals)))
+    }
+    /// The first of the corners and 200 pseudo-random width-`n` tuples over `k` variables on which the two sides differ.
+    pub fn counterexample(&self, other: &Term, n: usize, k: usize) -> Option<Vec<u128>> {
         let mask = low_bits(n);
         let mut seed = 0x9e37_79b9_7f4a_7c15u128;
-        (0..204).all(|i| {
+        (0..204).find_map(|i| {
             let vals: Vec<u128> = (0..k)
                 .map(|_| {
                     seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -149,8 +153,12 @@ impl Term {
                     }
                 })
                 .collect();
-            self.interp(n, &vals) == other.interp(n, &vals)
+            (self.interp(n, &vals) != other.interp(n, &vals)).then_some(vals)
         })
+    }
+    /// Whether `self` and `other` agree on the corners and 200 pseudo-random width-`n` tuples over `k` variables.
+    pub fn plausibly_equals(&self, other: &Term, n: usize, k: usize) -> bool {
+        self.counterexample(other, n, k).is_none()
     }
     pub fn has_shift(&self) -> bool {
         match self {
@@ -1514,5 +1522,18 @@ fn lpo_is_a_strict_total_order_closed_under_contexts() {
                 }
             }
         }
+    }
+}
+
+#[test]
+pub fn refute_returns_a_witness_for_false_laws_and_none_for_true_ones() {
+    let t = |s: &str| parse_term(s);
+    for (l, r) in [("add(x, y)", "add(y, x)"), ("xor(x, x)", "0"), ("sub(add(x, y), y)", "x")] {
+        assert!(t(l).refute(&t(r), 2).is_none(), "{l} = {r} is a law");
+    }
+    for (l, r) in [("lt(x, y)", "lt(y, x)"), ("sub(x, y)", "sub(y, x)"), ("and(x, y)", "or(x, y)"), ("shl1(x, 0)", "x")] {
+        let (l, r) = (t(l), t(r));
+        let (w, vals) = l.refute(&r, 2).unwrap_or_else(|| panic!("{} = {} is false", l.show(), r.show()));
+        assert_ne!(l.interp(w, &vals), r.interp(w, &vals), "witness for {} = {}", l.show(), r.show());
     }
 }
