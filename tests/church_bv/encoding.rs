@@ -47,6 +47,15 @@ pub fn apps(mut f: Expr, args: Vec<Expr>) -> Expr {
     }
     f
 }
+/// `\b_0..b_(n-1). \C k. k b_0 .. b_(n-1)`: the vector built from `n` bits (context `[b.., C, k]`: `k` = var 0, `b_i` = var(n+1-i)).
+pub fn bits_to_bv(n: usize) -> Expr {
+    let mut f = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
+    f = lam(sort(1), lam(karrow(n), f));
+    for _ in 0..n {
+        f = lam(bool0(), f);
+    }
+    f
+}
 /// Literal: \C k. k b0 .. b(n-1), least significant bit first.
 pub fn lit(n: usize, v: u128) -> Expr {
     let bits = (0..n).map(|i| bit((v >> i) & 1 == 1)).collect();
@@ -334,11 +343,7 @@ pub fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(us
     }
     let ys: Vec<Expr> = (0..n).map(a).collect();
     // f_n = \u_0..u_(n-1). \C k. k u_0 .. u_(n-1)   (ctx [u.., C, k]: k = var0, u_i = var(n+1-i))
-    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-    fbody = lam(sort(1), lam(karrow(n), fbody));
-    for _ in 0..n {
-        fbody = lam(bool0(), fbody);
-    }
+    let fbody = bits_to_bv(n);
     let body = cong_n(&bool0(), &bv_ty(n), &fbody, &s, &ys, e);
     let mut step = body;
     for _ in 0..n {
@@ -402,11 +407,7 @@ pub fn add_identity_proof_shared(n: usize, rhs_lit: u128, left: bool, adder: fn(
         e.push(proof);
     }
     let ys: Vec<Expr> = (0..n).map(|i| a(i, kn)).collect();
-    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-    fbody = lam(sort(1), lam(karrow(n), fbody));
-    for _ in 0..n {
-        fbody = lam(bool0(), fbody);
-    }
+    let fbody = bits_to_bv(n);
     let mut body = cong_n(&bool0(), &bv_ty(n), &fbody, &s, &ys, e);
     // bind c_(j+1), pc_(j+1) from the inside out: level k binds the pair for j = k
     for k in (0..kn).rev() {
@@ -624,11 +625,7 @@ pub fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
         c2.push(nc2);
     }
     // f_n = \u_0..u_(n-1). \C k. k u_0 .. u_(n-1)
-    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-    fbody = lam(sort(1), lam(karrow(n), fbody));
-    for _ in 0..n {
-        fbody = lam(bool0(), fbody);
-    }
+    let fbody = bits_to_bv(n);
     let binders = |mut body: Expr| {
         for _ in 0..n {
             body = lam(app(good_bool(), var(n as u32 - 1)), body);
@@ -1381,11 +1378,7 @@ pub fn eq_lit_sound(n: usize, l: u128, stated: u128) -> (Expr, Expr) {
     let ps: Vec<Expr> = ps.into_iter().map(|p| p.unwrap()).collect();
     let xs: Vec<Expr> = (0..n).map(|i| a_at(dh, i)).collect();
     let ls: Vec<Expr> = (0..n).map(|i| bit(lb(i))).collect();
-    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-    fbody = lam(sort(1), lam(karrow(n), fbody));
-    for _ in 0..n {
-        fbody = lam(bool0(), fbody);
-    }
+    let fbody = bits_to_bv(n);
     let concl = cong_n(&bool0(), &bv_ty(n), &fbody, &xs, &ls, ps);
     let mut step = lam(id_t(chain(d, n)), concl);
     for _ in 0..n {
@@ -2063,11 +2056,7 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
         er = ner;
         fr = nfr;
     }
-    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-    fbody = lam(sort(1), lam(karrow(n), fbody));
-    for _ in 0..n {
-        fbody = lam(bool0(), fbody);
-    }
+    let fbody = bits_to_bv(n);
     let binders = |mut body: Expr| {
         for _ in 0..n {
             body = lam(app(good_bool(), var(n as u32 - 1)), body);
@@ -2169,11 +2158,7 @@ pub fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {
         e.push(proof);
     }
     let ys: Vec<Expr> = (0..n).map(|_| t()).collect();
-    let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-    fbody = lam(sort(1), lam(karrow(n), fbody));
-    for _ in 0..n {
-        fbody = lam(bool0(), fbody);
-    }
+    let fbody = bits_to_bv(n);
     let mut step = cong_n(&bool0(), &bv_ty(n), &fbody, &s, &ys, e);
     for _ in 0..n {
         step = lam(app(good_bool(), var(n as u32 - 1)), step);

@@ -1026,11 +1026,7 @@ pub fn pos_law<T: PosTerm>(n: usize, k: usize, t1: &T, t2: &T) -> (Expr, Expr) {
             s2.push(b);
             e.push(apps(lemma, args));
         }
-        let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-        fbody = lam(sort(1), lam(karrow(n), fbody));
-        for _ in 0..n {
-            fbody = lam(bool0(), fbody);
-        }
+        let fbody = bits_to_bv(n);
         cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e)
     })
 }

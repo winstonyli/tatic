@@ -299,11 +299,7 @@ pub fn two_var_law(n: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(BitFn, BitFn
 pub fn k_var_law(n: usize, k: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(VarBitFn, VarBitFn) -> BitTriple) -> (Expr, Expr) {
     k_var_law_to(n, k, &bv_ty(n), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
         let (s1, s2, e) = per_bit(bits, goods);
-        let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-        fbody = lam(sort(1), lam(karrow(n), fbody));
-        for _ in 0..n {
-            fbody = lam(bool0(), fbody);
-        }
+        let fbody = bits_to_bv(n);
         cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e)
     })
 }

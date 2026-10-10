@@ -1186,11 +1186,7 @@ pub fn circuit_law_k(n: usize, k: usize, sides: &dyn Fn(&[Expr]) -> (Expr, Expr)
         let (s1, s2) = (l(&vb), r(&vb));
         let witnesses: Vec<Expr> = (0..k).flat_map(|v| (0..n).map(move |i| (v, i))).map(|(v, i)| goods(v, i)).collect();
         let e = (0..n).map(|j| apps(lemmas[j].clone(), vb.iter().flatten().cloned().chain(witnesses.iter().cloned()).collect())).collect();
-        let mut fbody = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
-        fbody = lam(sort(1), lam(karrow(n), fbody));
-        for _ in 0..n {
-            fbody = lam(bool0(), fbody);
-        }
+        let fbody = bits_to_bv(n);
         cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e)
     })
 }
