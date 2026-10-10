@@ -152,7 +152,7 @@ transfers to mix3 although mix3 contributed none of its rules. The pooled librar
 is the union of the three families' libraries with add3's `sub`/`sub`
 orientation dropped (the orientations conflict and a plain union would cycle); a
 library mined directly on the mixed stream is a little worse than the merged one
-(eight rules cannot hold both families' specific rules). Exact (non-FAST) mining
+(at 8 rules, the miner's default cap; with `RULEMINER_ROUNDS=16` the mixed-stream library gives cmp3d 65, better than the merged 82, and leaves the other families unchanged, since the extra rules are all comparison rules). The pooled rules do not change the two-variable shl, shr or lt families (machine-free laws 274/279, 65/65, 220 vs 221 of 248); mix3, which contains shl1 terms, still transferred. Exact (non-FAST) mining
 reproduced the FAST totals on two cmp3d streams.
 
 The planning notes and the per-experiment scripts and logs are not part of the
