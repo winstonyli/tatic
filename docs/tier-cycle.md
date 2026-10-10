@@ -65,6 +65,16 @@ and hard split reflects only the built-in rules. With a mined library installed 
 true laws were add3 1/0/0, sbo3 2/1/1, cmp3d 5/4/2. Uniform pairs almost never hit the laws that M counts: the true ones are nearly
 all cheap with no rules at all. A proposer is worth something to the miner only if it targets hard laws (idea 2 below).
 
+### Difficulty band (2026-10-10)
+`classify_proposals` now returns a `Cost` for each true, unmemorised law (machine proofs used, rule steps of the 200-step budget,
+proved or not). The band is fixed: `Cost::hard` = still needs a machine proof, the laws M counts. `proposal_yield` prints a `BAND` line
+and `BAND_OUT` writes the hard laws as a stream for the loop. `PROPOSER=stream` replays the family's own hash-ordered sequence from
+`YIELD_SKIP`, the baseline experiment 2 compares against. Check, u3 library (salt 1), 300 held-out laws from skip 1000: the stream's
+band is 30 (sbo3) and 9 (cmp3d), exactly M from `rule_set_kernel_check`. The pool proposer's band over the same 300 samples is 0 and 1.
+The hard stream laws used 57 and 13 machine proofs with median rule steps 3 and 1, so the machine-proof count is the useful grade; rule
+steps barely separate them. The stream also has 4-12 laws per 300 whose sides print identically, and 7-18 printed duplicates. All are
+cheap, so M is unaffected.
+
 ### Derivability prune (negative, 2026-10-10)
 Prototype (reverted): drop each rule that the built-in rules plus the earlier kept rules prove machine-free (`rewrite_law`, width 4),
 in mining order as Enumo's `minimize`. It dropped 1 of 8 (add3), 0 of 8 (sbo3, cmp3d), 2 of 25 (u3, salt 1) and 3 of 28 (u3, salt 2)
@@ -96,6 +106,7 @@ Three subagents read the primary sources; items they could not confirm are marke
 
 **Ideas to take, in order of cheapness.**
 1. A Ruler/Enumo-style derivability prune on the mined library. Tried: negative, see Results.
-2. Minimo/STP-style difficulty targeting: proposer samples scored by the kernel (cheap vs hard, machine-proof count) and kept only in a band, instead of a boolean accept.
+2. Minimo/STP-style difficulty targeting: proposer samples scored by the kernel and kept only in a band. Done with a fixed band (see
+   Results); a percentile band is not built.
 3. Collapse control borrowed from FunSearch: signature-clustered sampling with a length preference, using our existing width 1-6 value signature.
 4. AlphaGeometry-style traceback: train the proposer on the sub-terms or lemmas a kernel proof actually used.

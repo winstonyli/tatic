@@ -1967,38 +1967,56 @@ fn try_parse(s: &str, kv: usize) -> Option<Term> {
     (0..8).all(|v| v < kv || !t.has_var(v)).then_some(t)
 }
 
+/// The kernel's cost for a true law under the installed rules: whole-term machine proofs and rule steps (of a 200-step budget) that
+/// `rewrite_law` used, and whether it proved the law at all. The difficulty grade a proposer is scored by.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Cost {
+    pub fallbacks: u64,
+    pub steps: i64,
+    pub proved: bool,
+}
+
+impl Cost {
+    /// The band the miner learns from: laws that still need a machine proof (the ones M counts), or were not proved.
+    pub fn hard(&self) -> bool {
+        !self.proved || self.fallbacks > 0
+    }
+}
+
 /// Classify proposed lines (`lhs = rhs`). `train` holds the laws the proposer was shown, `known` every law of the family (both as
 /// `lhs = rhs` strings, either orientation); the other classes follow from parsing, the width 1-6 screen and `rewrite_law` under the
-/// installed rules.
-pub fn classify_proposals(lines: &[String], kv: usize, train: &HashSet<String>, known: &HashSet<String>) -> Vec<Verdict> {
+/// installed rules, which also gives each true, unmemorised law its `Cost`.
+pub fn classify_proposals(lines: &[String], kv: usize, train: &HashSet<String>, known: &HashSet<String>) -> Vec<(Verdict, Option<Cost>)> {
     let mut seen: HashSet<String> = HashSet::new();
     lines
         .iter()
         .map(|line| {
-            let Some((a, b)) = line.split_once(" = ") else { return Verdict::Unparsed };
-            let (Some(t1), Some(t2)) = (try_parse(a, kv), try_parse(b, kv)) else { return Verdict::Unparsed };
+            let Some((a, b)) = line.split_once(" = ") else { return (Verdict::Unparsed, None) };
+            let (Some(t1), Some(t2)) = (try_parse(a, kv), try_parse(b, kv)) else { return (Verdict::Unparsed, None) };
             let (fwd, rev) = (format!("{} = {}", t1.show(), t2.show()), format!("{} = {}", t2.show(), t1.show()));
             if fwd == rev {
-                return Verdict::Trivial;
+                return (Verdict::Trivial, None);
             }
             if !t1.is_law(&t2, kv) {
-                return Verdict::Refuted;
+                return (Verdict::Refuted, None);
             }
             if !seen.insert(fwd.clone()) || seen.contains(&rev) {
-                return Verdict::Duplicate;
+                return (Verdict::Duplicate, None);
             }
             if train.contains(&fwd) || train.contains(&rev) {
-                return Verdict::Memorised;
+                return (Verdict::Memorised, None);
             }
             RULE_BUDGET.with(|b| b.set(200));
             let before = MACHINE_FALLBACKS.with(|c| c.get());
-            let cheap = rewrite_law(4, kv, &t1, &t2).is_some() && MACHINE_FALLBACKS.with(|c| c.get()) == before;
-            match (known.contains(&fwd) || known.contains(&rev), cheap) {
-                (true, true) => Verdict::KnownCheap,
-                (true, false) => Verdict::KnownHard,
-                (false, true) => Verdict::NovelCheap,
-                (false, false) => Verdict::NovelHard,
-            }
+            let proved = rewrite_law(4, kv, &t1, &t2).is_some();
+            let cost = Cost { fallbacks: MACHINE_FALLBACKS.with(|c| c.get()) - before, steps: 200 - RULE_BUDGET.with(|b| b.get()), proved };
+            let verdict = match (known.contains(&fwd) || known.contains(&rev), cost.hard()) {
+                (true, false) => Verdict::KnownCheap,
+                (true, true) => Verdict::KnownHard,
+                (false, false) => Verdict::NovelCheap,
+                (false, true) => Verdict::NovelHard,
+            };
+            (verdict, Some(cost))
         })
         .collect()
 }
@@ -2036,9 +2054,11 @@ pub fn ngram_lines(text: &str, order: usize, n: usize, seed: u64) -> Vec<String>
         .collect()
 }
 
-/// `YIELD_FAMILY` (default add3), the proposer `PROPOSER=ngram|pool` (or `YIELD_FILE`, one `lhs = rhs` per line) and `YIELD_N` samples
-/// (default 2000); the family window the proposer is shown is the usual `RULEMINER_*` one (`STRIDE`, `PHASE`, `LAWS`). With `CHECK_RULES`
-/// the rules in force decide cheap against hard. `YIELD_OUT` saves the proposed lines. Prints one `YIELD` line.
+/// `YIELD_FAMILY` (default add3), the proposer `PROPOSER=ngram|pool|stream` (or `YIELD_FILE`, one `lhs = rhs` per line) and `YIELD_N`
+/// samples (default 2000); the family window the proposer is shown is the usual `RULEMINER_*` one (`STRIDE`, `PHASE`, `LAWS`). `stream`
+/// replays the family's own sequence from `YIELD_SKIP` (default 1000) instead: the hash-ordered stream as a proposer, whose hard count is
+/// M. With `CHECK_RULES` the rules in force decide cheap against hard. `YIELD_OUT` saves the proposed lines, `BAND_OUT` the hard ones
+/// (`Cost::hard`, known or novel), as a stream for the loop. Prints a `YIELD` and a `BAND` line.
 #[test]
 #[ignore]
 pub fn proposal_yield() {
@@ -2068,7 +2088,15 @@ pub fn proposal_yield() {
             let mut s = 7u64;
             (0..n).map(|_| format!("{} = {}", pool[lcg(&mut s) as usize % pool.len()].show(), pool[lcg(&mut s) as usize % pool.len()].show())).collect()
         }
-        _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool"),
+        (_, Ok("stream")) => {
+            let held_out = |k: &str, d: usize| match k {
+                "RULEMINER_SKIP" => env_or("YIELD_SKIP", 1000usize),
+                "RULEMINER_LAWS" => n,
+                _ => env_or::<usize>(k, d),
+            };
+            strings(family_laws(&family, &held_out, 4, kv, 7))
+        }
+        _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool|stream"),
     };
     if let Ok(out) = std::env::var("YIELD_OUT") {
         std::fs::write(out, lines.join("\n")).unwrap();
@@ -2076,10 +2104,24 @@ pub fn proposal_yield() {
     let (train, known): (HashSet<String>, HashSet<String>) = (train_lines.into_iter().collect(), known_lines.into_iter().collect());
     let verdicts = classify_proposals(&lines, kv, &train, &known);
     let mut count: std::collections::BTreeMap<Verdict, usize> = Default::default();
-    for v in &verdicts {
+    for (v, _) in &verdicts {
         *count.entry(*v).or_default() += 1;
     }
     println!("YIELD family={family} samples={} train={} known={} {count:?}", lines.len(), train.len(), known.len());
+    let band: Vec<(&String, Cost)> = lines.iter().zip(&verdicts).filter_map(|(l, (_, c))| c.filter(Cost::hard).map(|c| (l, c))).collect();
+    let mut steps: Vec<i64> = band.iter().map(|(_, c)| c.steps).collect();
+    steps.sort();
+    println!(
+        "BAND {} hard of {} scored: {} not proved, {} machine proofs, median rule steps {}",
+        band.len(),
+        verdicts.iter().filter(|(_, c)| c.is_some()).count(),
+        band.iter().filter(|(_, c)| !c.proved).count(),
+        band.iter().map(|(_, c)| c.fallbacks).sum::<u64>(),
+        steps.get(steps.len() / 2).copied().unwrap_or(0)
+    );
+    if let Ok(out) = std::env::var("BAND_OUT") {
+        std::fs::write(out, band.iter().map(|(l, _)| format!("{l}\n")).collect::<String>()).unwrap();
+    }
 }
 
 /// The verdicts separate the cases they name.
@@ -2098,7 +2140,14 @@ pub fn classify_proposals_separates_cases() {
     ];
     let train: HashSet<String> = ["add(x, z) = add(z, x)".to_string()].into();
     let known: HashSet<String> = ["add(x, add(y, z)) = add(add(x, y), z)".to_string()].into();
-    let v = classify_proposals(&lines, 3, &train, &known);
+    let scored = classify_proposals(&lines, 3, &train, &known);
+    // a cost exactly for the laws that reach the kernel, and it agrees with the verdict
+    for (v, c) in &scored {
+        let graded = matches!(v, Verdict::KnownCheap | Verdict::KnownHard | Verdict::NovelCheap | Verdict::NovelHard);
+        assert_eq!(c.is_some(), graded, "{v:?}");
+        assert!(c.is_none_or(|c| c.hard() == matches!(v, Verdict::KnownHard | Verdict::NovelHard)), "{v:?} {c:?}");
+    }
+    let v: Vec<Verdict> = scored.iter().map(|(v, _)| *v).collect();
     assert!(matches!(v[0], Verdict::NovelCheap | Verdict::NovelHard), "{:?}", v[0]);
     assert_eq!(v[1..6], [Verdict::Refuted, Verdict::Unparsed, Verdict::Trivial, Verdict::Duplicate, Verdict::Memorised]);
     assert!(matches!(v[6], Verdict::KnownCheap | Verdict::KnownHard), "{:?}", v[6]);
