@@ -1943,3 +1943,174 @@ pub fn closed_terms_fold_to_constants() {
         assert_eq!(MACHINE_FALLBACKS.with(|c| c.get()), before, "{a} = {b} needed a machine proof");
     }
 }
+
+// --- Proposal yield (docs/tier-cycle.md): what a proposer's samples are worth to the kernel ---
+
+/// What the kernel makes of one proposed `lhs = rhs` line. `Cheap` laws are proved with no whole-term machine proof under the rules in
+/// force; `Hard` laws needed one (or were not proved within the rewrite budget).
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
+pub enum Verdict {
+    Unparsed,
+    Trivial,
+    Refuted,
+    Duplicate,
+    Memorised,
+    KnownCheap,
+    KnownHard,
+    NovelCheap,
+    NovelHard,
+}
+
+/// A `Term` from `show` syntax over at most `kv` variables, or `None` for text that does not parse (`parse_term` panics on bad input).
+fn try_parse(s: &str, kv: usize) -> Option<Term> {
+    let t = std::panic::catch_unwind(|| parse_term(s)).ok()?;
+    (0..8).all(|v| v < kv || !t.has_var(v)).then_some(t)
+}
+
+/// Classify proposed lines (`lhs = rhs`). `train` holds the laws the proposer was shown, `known` every law of the family (both as
+/// `lhs = rhs` strings, either orientation); the other classes follow from parsing, the width 1-6 screen and `rewrite_law` under the
+/// installed rules.
+pub fn classify_proposals(lines: &[String], kv: usize, train: &HashSet<String>, known: &HashSet<String>) -> Vec<Verdict> {
+    let mut seen: HashSet<String> = HashSet::new();
+    lines
+        .iter()
+        .map(|line| {
+            let Some((a, b)) = line.split_once(" = ") else { return Verdict::Unparsed };
+            let (Some(t1), Some(t2)) = (try_parse(a, kv), try_parse(b, kv)) else { return Verdict::Unparsed };
+            let (fwd, rev) = (format!("{} = {}", t1.show(), t2.show()), format!("{} = {}", t2.show(), t1.show()));
+            if fwd == rev {
+                return Verdict::Trivial;
+            }
+            if !t1.is_law(&t2, kv) {
+                return Verdict::Refuted;
+            }
+            if !seen.insert(fwd.clone()) || seen.contains(&rev) {
+                return Verdict::Duplicate;
+            }
+            if train.contains(&fwd) || train.contains(&rev) {
+                return Verdict::Memorised;
+            }
+            RULE_BUDGET.with(|b| b.set(200));
+            let before = MACHINE_FALLBACKS.with(|c| c.get());
+            let cheap = rewrite_law(4, kv, &t1, &t2).is_some() && MACHINE_FALLBACKS.with(|c| c.get()) == before;
+            match (known.contains(&fwd) || known.contains(&rev), cheap) {
+                (true, true) => Verdict::KnownCheap,
+                (true, false) => Verdict::KnownHard,
+                (false, true) => Verdict::NovelCheap,
+                (false, false) => Verdict::NovelHard,
+            }
+        })
+        .collect()
+}
+
+use std::collections::HashSet;
+
+fn lcg(s: &mut u64) -> u64 {
+    *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *s >> 33
+}
+
+/// A character n-gram model of `text` (context of `order` bytes), sampled into `n` lines: the stand-in proposer a language model replaces.
+pub fn ngram_lines(text: &str, order: usize, n: usize, seed: u64) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut table: std::collections::HashMap<&[u8], Vec<u8>> = Default::default();
+    for i in 0..bytes.len() {
+        table.entry(&bytes[i.saturating_sub(order)..i]).or_default().push(bytes[i]);
+    }
+    let mut s = seed;
+    (0..n)
+        .map(|_| {
+            let mut out: Vec<u8> = Vec::new();
+            while out.len() < 160 {
+                let ctx = &out[out.len().saturating_sub(order)..];
+                // back off to shorter contexts until one was seen
+                let Some(next) = (0..=ctx.len()).find_map(|k| table.get(&ctx[k..])) else { break };
+                let c = next[lcg(&mut s) as usize % next.len()];
+                if c == b'\n' {
+                    break;
+                }
+                out.push(c);
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        })
+        .collect()
+}
+
+/// `YIELD_FAMILY` (default add3), the proposer `PROPOSER=ngram|pool` (or `YIELD_FILE`, one `lhs = rhs` per line) and `YIELD_N` samples
+/// (default 2000); the family window the proposer is shown is the usual `RULEMINER_*` one (`STRIDE`, `PHASE`, `LAWS`). With `CHECK_RULES`
+/// the rules in force decide cheap against hard. `YIELD_OUT` saves the proposed lines. Prints one `YIELD` line.
+#[test]
+#[ignore]
+pub fn proposal_yield() {
+    let _scope = tatic::kernel::InternScope::enter();
+    std::panic::set_hook(Box::new(|_| {}));
+    let family = std::env::var("YIELD_FAMILY").unwrap_or_else(|_| "add3".into());
+    let kv = family_vars(&family);
+    let n = env_or("YIELD_N", 2000usize);
+    if let Ok(path) = std::env::var("CHECK_RULES") {
+        EXTRA_RULES.with(|e| *e.borrow_mut() = parse_rules(&std::fs::read_to_string(path).unwrap()));
+    }
+    SCORE_ONLY.with(|s| s.set(true));
+    let strings = |laws: Vec<(String, Term, Term)>| -> Vec<String> { laws.into_iter().filter(|(_, a, b)| a.is_law(b, kv)).map(|(s, _, _)| s).collect() };
+    let train_lines = strings(family_laws(&family, &env_or::<usize>, 4, kv, 7));
+    let whole = |k: &str, d: usize| match k {
+        "RULEMINER_STRIDE" => 1,
+        "RULEMINER_PHASE" | "RULEMINER_SKIP" => 0,
+        "RULEMINER_LAWS" => 1_000_000,
+        _ => env_or::<usize>(k, d),
+    };
+    let known_lines = strings(family_laws(&family, &whole, 4, kv, 7));
+    let lines: Vec<String> = match (std::env::var("YIELD_FILE"), std::env::var("PROPOSER").as_deref()) {
+        (Ok(path), _) => std::fs::read_to_string(path).unwrap().lines().map(String::from).collect(),
+        (_, Ok("ngram")) => ngram_lines(&train_lines.join("\n"), env_or("YIELD_ORDER", 8usize), n, 1),
+        (_, Ok("pool")) => {
+            let pool = pool3(&family, &env_or::<usize>).expect("pool proposer needs a three-variable family");
+            let mut s = 7u64;
+            (0..n).map(|_| format!("{} = {}", pool[lcg(&mut s) as usize % pool.len()].show(), pool[lcg(&mut s) as usize % pool.len()].show())).collect()
+        }
+        _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool"),
+    };
+    if let Ok(out) = std::env::var("YIELD_OUT") {
+        std::fs::write(out, lines.join("\n")).unwrap();
+    }
+    let (train, known): (HashSet<String>, HashSet<String>) = (train_lines.into_iter().collect(), known_lines.into_iter().collect());
+    let verdicts = classify_proposals(&lines, kv, &train, &known);
+    let mut count: std::collections::BTreeMap<Verdict, usize> = Default::default();
+    for v in &verdicts {
+        *count.entry(*v).or_default() += 1;
+    }
+    println!("YIELD family={family} samples={} train={} known={} {count:?}", lines.len(), train.len(), known.len());
+}
+
+/// The verdicts separate the cases they name.
+#[test]
+pub fn classify_proposals_separates_cases() {
+    let line = |s: &str| s.to_string();
+    let lines = vec![
+        line("add(x, y) = add(y, x)"),                 // a law, not in either set
+        line("add(x, y) = sub(x, y)"),                 // refuted by the screen
+        line("add(x, y"),                              // does not parse
+        line("add(x, y) = add(x, y)"),                 // trivial
+        line("add(y, x) = add(x, y)"),                 // the first one again, reversed
+        line("add(x, z) = add(z, x)"),                 // in the training set
+        line("add(x, add(y, z)) = add(add(x, y), z)"), // known to the family
+        line("add(x, w) = add(w, x)"),                 // a variable outside the family
+    ];
+    let train: HashSet<String> = ["add(x, z) = add(z, x)".to_string()].into();
+    let known: HashSet<String> = ["add(x, add(y, z)) = add(add(x, y), z)".to_string()].into();
+    let v = classify_proposals(&lines, 3, &train, &known);
+    assert!(matches!(v[0], Verdict::NovelCheap | Verdict::NovelHard), "{:?}", v[0]);
+    assert_eq!(v[1..6], [Verdict::Refuted, Verdict::Unparsed, Verdict::Trivial, Verdict::Duplicate, Verdict::Memorised]);
+    assert!(matches!(v[6], Verdict::KnownCheap | Verdict::KnownHard), "{:?}", v[6]);
+    assert_eq!(v[7], Verdict::Unparsed);
+}
+
+/// The n-gram proposer reproduces its text's line shapes and is deterministic.
+#[test]
+pub fn ngram_lines_are_deterministic_and_line_shaped() {
+    let text = "add(x, y) = add(y, x)\nsub(x, y) = sub(x, y)\nadd(x, add(y, z)) = add(add(x, y), z)";
+    let (a, b) = (ngram_lines(text, 6, 20, 3), ngram_lines(text, 6, 20, 3));
+    assert_eq!(a, b);
+    assert!(a.iter().all(|l| l.len() <= 160 && !l.contains('\n')));
+    assert!(a.iter().any(|l| l.contains(" = ")));
+}
