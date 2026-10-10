@@ -22,6 +22,8 @@ set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
 B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}
 : "${EXE:?set EXE}"
+export MACHINE_BANNER=0 # one machine-state line per loop (start and end) instead of two per mine and serve, which cost about 5 s each
+echo "loop machine at start: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
 case "${WINDOW:-}" in ""|cum) ;; *) echo "WINDOW must be empty or cum, got ${WINDOW}" >&2; exit 2 ;; esac
 case "${SPLIT:-}" in ""|0|1) ;; *) echo "SPLIT must be 0 or 1, got ${SPLIT}" >&2; exit 2 ;; esac
 case "${WARM:-}" in ""|[0-9]*:[0-9]*) ;; *) echo "WARM must be <skip>:<laws>[:<phase>], got ${WARM}" >&2; exit 2 ;; esac
@@ -68,4 +70,5 @@ for ((r = 0; r < K; r++)); do
     if [ "${WINDOW:-}" = cum ]; then mine "$r" "$OFFSET" $((B * (r + 1))); else mine "$r" "$skip" "$B"; fi
   fi
 done
+echo "loop machine at end: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
 echo "mode=$mode B=$B K=$K offset=$OFFSET total_M=$total rules=$(wc -l < "$rules")"

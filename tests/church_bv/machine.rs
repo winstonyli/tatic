@@ -251,17 +251,30 @@ pub fn machine_state() -> String {
 }
 
 /// Prints the machine state (Defender, CPU load) when created and again when dropped, so a timing run records both ends.
+/// `MACHINE_BANNER=0` silences it (each state costs about 5 s): `scripts/loop_stream.sh` records the state once per loop instead.
 pub struct MachineBanner(&'static str);
 impl MachineBanner {
     pub fn start(tag: &'static str) -> Self {
+        if std::env::var("MACHINE_BANNER").is_ok_and(|v| v == "0") {
+            return MachineBanner("");
+        }
         println!("{tag} machine at start: {}", machine_state());
         MachineBanner(tag)
     }
 }
 impl Drop for MachineBanner {
     fn drop(&mut self) {
-        println!("{} machine at end: {}", self.0, machine_state());
+        if !self.0.is_empty() {
+            println!("{} machine at end: {}", self.0, machine_state());
+        }
     }
+}
+
+/// Prints one machine-state line; `scripts/loop_stream.sh` calls it at the start and end of a loop.
+#[test]
+#[ignore]
+pub fn machine_state_line() {
+    println!("machine state: {}", machine_state());
 }
 
 /// What `prove_checked` found for a law.
