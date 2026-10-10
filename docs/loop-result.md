@@ -48,4 +48,7 @@ are local and not in the repository.
   (the shift families show none).
 - **M is machine proofs, not time.** Seeded vs cold is a count of laws, not a speed measurement.
 - **Not a generality claim about theories.** Everything is Church bit-vector arithmetic. Whether the loop works for an axiomatic theory
-  (for example a commutative ring) is open: a complete axiom base has no analogue of M (see the ring note in the local specs).
+  is only probed: in a throwaway spike over commutative-ring terms (axioms only, proofs found by a budgeted search, no kernel; not in this
+  repository), M defined as the laws not proved within the budget separated cold from seeded loops (total M over five streams about
+  100-140 cold vs 0-33 seeded at budgets 100-1000 on three salts, one outlier at budget 100). The ring stream is dominated by a few
+  zero/negation lemmas, so this shows the metric is usable, not that the loop learns a rich theory.
