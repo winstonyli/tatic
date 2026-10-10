@@ -443,8 +443,49 @@ pub fn shuffle_is_a_fixed_permutation() {
     println!("first 50 laws, leading characters: sorted {:?}, shuffled {:?}", first_char(&sorted), first_char(&a));
 }
 
+/// `u3w` interleaves its three families in equal parts: a window of 30 laws holds 10 comparison laws (cmp3d), and its stride and
+/// phase windows are subsequences of the same sequence.
+#[test]
+pub fn u3w_window_is_an_equal_mix() {
+    let laws = |stride: usize, phase: usize| {
+        let env = move |k: &str, d: usize| match k {
+            "RULEMINER_LAWS" => 30,
+            "RULEMINER_STRIDE" => stride,
+            "RULEMINER_PHASE" => phase,
+            _ => d,
+        };
+        family_laws("u3w", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
+    };
+    let w = laws(1, 0);
+    assert_eq!(w.len(), 30);
+    assert_eq!(w.iter().filter(|s| s.contains("lt(")).count(), 10);
+    assert_eq!(laws(3, 1)[..5], w[1..].iter().step_by(3).take(5).cloned().collect::<Vec<_>>()[..]);
+}
+
 pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
-    if family == "shl" {
+    if family == "u3w" {
+        // u3 with equal shares: the add3, sbo3 and cmp3d sequences (each shuffled as `RULEMINER_SHUFFLE` says) interleaved round-robin,
+        // so a window holds the three families in equal parts instead of in proportion to their sizes (cmp3d has 4x add3's laws)
+        let whole = |f: &str| {
+            let e = |k: &str, d: usize| match k {
+                "RULEMINER_STRIDE" => 1,
+                "RULEMINER_PHASE" | "RULEMINER_SKIP" => 0,
+                "RULEMINER_LAWS" => usize::MAX,
+                _ => env(k, d),
+            };
+            family_laws(f, &e, n, nv, max).into_iter()
+        };
+        let mut seqs: Vec<_> = ["add3", "sbo3", "cmp3d"].iter().map(|f| whole(f)).collect();
+        let mut mixed = Vec::new();
+        loop {
+            let before = mixed.len();
+            mixed.extend(seqs.iter_mut().filter_map(|s| s.next()));
+            if mixed.len() == before {
+                break;
+            }
+        }
+        mixed.into_iter().skip(env("RULEMINER_PHASE", 0)).step_by(env("RULEMINER_STRIDE", 1)).skip(env("RULEMINER_SKIP", 0)).take(env("RULEMINER_LAWS", 250)).collect()
+    } else if family == "shl" {
         let conj = shl_conjectures(2);
         let stride = (conj.len() / env("RULEMINER_LAWS", 250)).max(1);
         conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
@@ -1563,7 +1604,7 @@ pub fn add3_pool(deep: bool) -> Vec<Term> {
 
 /// The three-variable families, by name. `pool3` is the single place that maps one to its term pool; everything else (law selection,
 /// `family_vars`, the shape-halves test) follows from it.
-pub const THREE_VAR_FAMILIES: [&str; 6] = ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3"];
+pub const THREE_VAR_FAMILIES: [&str; 7] = ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3", "u3w"];
 
 /// The term pool of a three-variable family (`None` for any other family). add3: the add/sub/xor reassociation family (`RULEMINER_DEEP3=1`
 /// for the deeper pool); mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed (section 73); sbo3: add, sub, and, or only,
