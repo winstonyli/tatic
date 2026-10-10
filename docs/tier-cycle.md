@@ -105,6 +105,16 @@ cheap laws, which feed `RULEMINER_GUARD`, left it at 44. The 8-round cap binds i
 here. For the cycle: the proposer's reward needs a transfer term (does a rule mined from its proposals lower M on the target
 distribution), not difficulty alone. Experiment 2 has to measure that directly.
 
+Salts 2 and 3 (stream vs band only, same setup), held-out M none / stream / band: sbo3 94 / 21 / 24 and 77 / 16 / 16; cmp3d 123 / 38 /
+44 and 101 / 35 / 38. Mining from the band is never better than mining from the stream, and is usually within a few laws; salt 1's
+cmp3d gap (27 vs 42) is the largest of the three.
+
+**Transfer score.** `scripts/transfer_score.sh` (header documents it) mines rules from a law file and prints
+`TRANSFER ... M_before M_after gain` on a held-out window of the target family: the batch-level reward a proposer needs. Check: the
+salt-1 sbo3 stream file gives 94 -> 19 (gain 75), matching the table above. It costs one mine per batch (about 1-5 min FAST), so it
+grades batches, not single proposals. Per-proposal credit (which mined rule a proposal led to, and that rule's own held-out gain) is
+not built.
+
 ### Pool duplicates (2026-10-10)
 The trivial and repeated laws in the stream come from the pools: `pool_duplicates` (ignored diagnostic) counts the add3 pool at 12680
 terms but 12630 distinct, mix3 25245 / 23665, sbo3 26355 / 24105, cmp3d 18720 / 16560, cmp3 3600 / 3600. Depth-one terms such as
