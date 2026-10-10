@@ -313,15 +313,6 @@ pub fn k_var_law_to(n: usize, k: usize, ty: &Expr, sides: &dyn Fn(&[Expr]) -> (E
     let at = |d: usize, pos: usize| var((d - 1 - pos) as u32);
     let last = depth(k - 1);
     let done = finish(&|v, i| at(last, level(v) + i), &|v, i| at(last, level(v) + n + i));
-    let binders = |mut body: Expr| {
-        for _ in 0..n {
-            body = lam(app(good_bool(), var(n as u32 - 1)), body);
-        }
-        for _ in 0..n {
-            body = lam(bool0(), body);
-        }
-        body
-    };
     let claim = |args: Vec<Expr>| {
         let (l, r) = sides(&args);
         id(ty.clone(), l, r)
@@ -341,9 +332,9 @@ pub fn k_var_law_to(n: usize, k: usize, ty: &Expr, sides: &dyn Fn(&[Expr]) -> (E
             .collect();
         lam(bv_ty(n), claim(args))
     };
-    let mut step = binders(done);
+    let mut step = binders(n, done);
     for j in (0..k - 1).rev() {
-        step = binders(app2(at(depth(j), k + j + 1), motive(j + 1, depth(j)), step));
+        step = binders(n, app2(at(depth(j), k + j + 1), motive(j + 1, depth(j)), step));
     }
     let body = app2(at(2 * k, k), motive(0, 2 * k), step);
     let g = || app(good_bv(n), var((k - 1) as u32));

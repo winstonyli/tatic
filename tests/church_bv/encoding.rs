@@ -47,6 +47,16 @@ pub fn apps(mut f: Expr, args: Vec<Expr>) -> Expr {
     }
     f
 }
+/// Wraps `body` in the `2n` binders every n-bit law proof opens with: `n` Bool binders, then `n` `good_bool` hypotheses on them.
+pub fn binders(n: usize, mut body: Expr) -> Expr {
+    for _ in 0..n {
+        body = lam(app(good_bool(), var(n as u32 - 1)), body);
+    }
+    for _ in 0..n {
+        body = lam(bool0(), body);
+    }
+    body
+}
 /// `\b_0..b_(n-1). \C k. k b_0 .. b_(n-1)`: the vector built from `n` bits (context `[b.., C, k]`: `k` = var 0, `b_i` = var(n+1-i)).
 pub fn bits_to_bv(n: usize) -> Expr {
     let mut f = apps(var(0), (0..n).map(|i| var((n + 1 - i) as u32)).collect());
@@ -626,22 +636,13 @@ pub fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     }
     // f_n = \u_0..u_(n-1). \C k. k u_0 .. u_(n-1)
     let fbody = bits_to_bv(n);
-    let binders = |mut body: Expr| {
-        for _ in 0..n {
-            body = lam(app(good_bool(), var(n as u32 - 1)), body);
-        }
-        for _ in 0..n {
-            body = lam(bool0(), body);
-        }
-        body
-    };
-    let step_y = binders(cong_n(&bool0(), &bv_ty(n), &fbody, &s, &s2, e));
+    let step_y = binders(n, cong_n(&bool0(), &bv_ty(n), &fbody, &s, &s2, e));
     // inside the a-step (depth d1): eliminate y
     let a1 = |i: usize| var((d1 - 1 - (4 + i)) as u32);
     let mka = mk(&(0..n).map(|i| shift(&a1(i), 0, 1)).collect::<Vec<_>>());
     let motive_y = lam(bv_ty(n), id(bv_ty(n), app2(add(n), mka.clone(), var(0)), app2(add(n), var(0), mka)));
     let gy = var((d1 - 1 - 3) as u32);
-    let step_x = binders(app2(gy, motive_y, step_y));
+    let step_x = binders(n, app2(gy, motive_y, step_y));
     let rhs = |x: Expr, y: Expr| if wrong { app2(add(n), x.clone(), x) } else { app2(add(n), y, x) };
     // depth 5 (inside the motive binder): x' = var 0, y = var 3
     let motive_x = lam(bv_ty(n), id(bv_ty(n), app2(add(n), var(0), var(3)), rhs(var(0), var(3))));
@@ -1615,22 +1616,13 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
         &(0..n).map(gb).collect::<Vec<_>>(),
     );
     let st_b = var((db - 1 - 5) as u32);
-    let binders = |mut body: Expr| {
-        for _ in 0..n {
-            body = lam(app(good_bool(), var(n as u32 - 1)), body);
-        }
-        for _ in 0..n {
-            body = lam(bool0(), body);
-        }
-        body
-    };
-    let step_y = binders(apps(st_b, s.into_iter().chain(gs).collect()));
+    let step_y = binders(n, apps(st_b, s.into_iter().chain(gs).collect()));
     let a_da = |i: usize| var((da - 1 - (6 + i)) as u32);
     let mka = mk(&(0..n).map(|i| shift(&a_da(i), 0, 1)).collect::<Vec<_>>());
     // under the `y'` binder at depth da + 1: P = var(da - 1 - 4 + 1)
     let motive_y = lam(bv_ty(n), app(var((da - 4) as u32), app2(vec.clone(), mka, var(0))));
     let gy = var((da - 1 - 3) as u32);
-    let step_x = binders(app2(gy, motive_y, step_y));
+    let step_x = binders(n, app2(gy, motive_y, step_y));
     // under the `x'` binder at depth 7: P = var 2, y = var 5
     let motive_x = lam(bv_ty(n), app(var(2), app2(vec.clone(), var(0), var(5))));
     let body = app2(var(3), motive_x, step_x);
@@ -2057,16 +2049,7 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
         fr = nfr;
     }
     let fbody = bits_to_bv(n);
-    let binders = |mut body: Expr| {
-        for _ in 0..n {
-            body = lam(app(good_bool(), var(n as u32 - 1)), body);
-        }
-        for _ in 0..n {
-            body = lam(bool0(), body);
-        }
-        body
-    };
-    let step_z = binders(cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e));
+    let step_z = binders(n, cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e));
     let ad = add(n);
     let claim = |x: Expr, y: Expr, zz: Expr| {
         let rhs_z = if wrong { y.clone() } else { zz.clone() };
@@ -2075,10 +2058,10 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     let mk_at = |d: usize, first: usize, extra: i32| mk(&(0..n).map(|i| shift(&at(d, first + i), 0, extra)).collect::<Vec<_>>());
     // at depth d2: eliminate gz into a motive over z'
     let motive_z = lam(bv_ty(n), claim(mk_at(d2, 6, 1), mk_at(d2, 6 + 2 * n, 1), var(0)));
-    let step_y = binders(app2(at(d2, 5), motive_z, step_z));
+    let step_y = binders(n, app2(at(d2, 5), motive_z, step_z));
     // at depth d1: eliminate gy into a motive over y'
     let motive_y = lam(bv_ty(n), claim(mk_at(d1, 6, 1), var(0), shift(&at(d1, 2), 0, 1)));
-    let step_x = binders(app2(at(d1, 4), motive_y, step_y));
+    let step_x = binders(n, app2(at(d1, 4), motive_y, step_y));
     let motive_x = lam(bv_ty(n), claim(var(0), var(5), var(4)));
     let body = app2(var(2), motive_x, step_x);
     let g = |v: u32| app(good_bv(n), var(v));
