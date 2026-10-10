@@ -913,7 +913,11 @@ pub fn rule_miner() {
     // cumulative greedy: each round adds the candidate that, on top of the rules chosen so far, fixes the most
     // stragglers (no whole-term machine proof) and then shrinks the normalized terms most; a straggler often needs two
     // rules together, which a one-rule-at-a-time score cannot see
-    let score = |extra: &[(Term, Term)]| -> (Vec<bool>, i64) {
+    // `score_laws` rewrites the scored laws `which` under the base rules plus `extra`: per law, whether it needs fewer machine proofs
+    // than under the built-in rules alone, the size of its normalized terms (stragglers only) and, with `record`, every term
+    // `rule_step` was asked about. A candidate whose left side matches none of those terms (rules are tried in order, the candidate
+    // last) cannot change a law's rewriting, so its laws keep the result under the rules chosen so far.
+    let score_laws = |extra: &[(Term, Term)], which: &[usize], record: bool| -> Vec<(bool, i64, Vec<Term>)> {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
@@ -922,31 +926,42 @@ pub fn rule_miner() {
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
         SCORE_ONLY.with(|s| s.set(cfg.fast));
-        let (mut fixed, mut size) = (vec![false; scored.len()], 0i64);
-        for (si, s) in scored.iter().enumerate() {
-            budget();
-            let before = fallbacks();
-            let ok = rewrite_law(n, kv, &s.1, &s.2).is_some();
-            fixed[si] = ok && fallbacks() - before < s.4;
-            budget();
-            // the rule order's own measure: operator nodes first, then variable occurrences
-            let measure = |t: &Term| {
-                let mut occ = [0usize; 8];
-                t.occurrences(&mut occ);
-                let (c, a) = rule_weight(t);
-                (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
-            };
-            if si < stragglers.len() {
-                size += measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0);
-            }
-        }
+        let out = which
+            .iter()
+            .map(|&si| {
+                let s = &scored[si];
+                budget();
+                if record {
+                    RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
+                }
+                let before = fallbacks();
+                let ok = rewrite_law(n, kv, &s.1, &s.2).is_some();
+                let fixed = ok && fallbacks() - before < s.4;
+                budget();
+                // the rule order's own measure: operator nodes first, then variable occurrences
+                let measure = |t: &Term| {
+                    let mut occ = [0usize; 8];
+                    t.occurrences(&mut occ);
+                    let (c, a) = rule_weight(t);
+                    (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
+                };
+                let size = if si < stragglers.len() { measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0) } else { 0 };
+                let mut seen: std::collections::HashSet<String> = Default::default();
+                let trace: Vec<Term> = RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(t.show())).collect();
+                (fixed, size, trace)
+            })
+            .collect();
         SCORE_ONLY.with(|s| s.set(false));
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
-        (fixed, size)
+        out
     };
+    let all_laws: Vec<usize> = (0..scored.len()).collect();
+    let summarize = |ev: &[(bool, i64, Vec<Term>)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
     let mut chosen: Vec<(Term, Term)> = vec![];
-    let (mut covered, mut size) = score(&chosen);
+    let mut base_eval = score_laws(&chosen, &all_laws, true);
+    let (mut covered, mut size) = summarize(&base_eval);
+    let (law_evals, law_reuses) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
     for _ in 0..cfg.rounds {
         let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
         let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
@@ -961,7 +976,15 @@ pub fn rule_miner() {
                     .map(|&i| {
                         let mut with = chosen.clone();
                         with.push(provable[i].clone());
-                        (i, score(&with))
+                        let affected: Vec<usize> = all_laws.iter().copied().filter(|&si| base_eval[si].2.iter().any(|t| match_pat(&provable[i].0, t, &mut vec![None; 8]))).collect();
+                        let fresh = score_laws(&with, &affected, false);
+                        law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
+                        law_reuses.fetch_add(all_laws.len() - affected.len(), std::sync::atomic::Ordering::Relaxed);
+                        let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
+                        for (&si, f) in affected.iter().zip(&fresh) {
+                            ev[si] = (f.0, f.1);
+                        }
+                        (i, (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>()))
                     })
                     .collect()
             };
@@ -992,8 +1015,10 @@ pub fn rule_miner() {
         println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
         phase(&format!("round over {} candidates", provable.len()));
         chosen.push(rule);
-        (covered, size) = (f, sz);
+        base_eval = score_laws(&chosen, &all_laws, true);
+        (covered, size) = summarize(&base_eval);
     }
+    println!("RULEMINER scoring reused {} of {} law evaluations", law_reuses.load(std::sync::atomic::Ordering::Relaxed), law_evals.load(std::sync::atomic::Ordering::Relaxed));
     println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
     for (st, c) in stragglers.iter().zip(&covered) {
         if !c {

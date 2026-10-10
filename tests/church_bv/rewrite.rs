@@ -509,6 +509,9 @@ thread_local! {
     pub static SCORE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Rules added at run time (by the rule miner), after the built-in ones.
     pub static EXTRA_RULES: std::cell::RefCell<Vec<(Term, Term)>> = Default::default();
+    /// While `Some`, `rule_step` records every term it is asked to rewrite: a rule added at the end of the rule list can change a
+    /// rewriting only if its left side matches one of them.
+    pub static RULE_TRACE: std::cell::RefCell<Option<Vec<Term>>> = const { std::cell::RefCell::new(None) };
 }
 // How many more rule applications `rule_step` may make; the rule miner sets it per trial so that a candidate that
 // undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
@@ -912,6 +915,11 @@ pub fn fold_rule(t: &Term) -> Option<Rule> {
 
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the proof.
 pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
+    RULE_TRACE.with(|tr| {
+        if let Some(v) = tr.borrow_mut().as_mut() {
+            v.push(t.clone());
+        }
+    });
     for r in fold_rule(t).into_iter().chain(rules()) {
         let k = r.lhs.max_var().max(r.rhs.max_var()) + 1;
         let mut sub = vec![None; k];
