@@ -1351,7 +1351,8 @@ pub fn soundness_sweep() {
     println!("SWEEP machine at start: {}", machine_state());
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "3,4".into()).split(',').map(|w| w.parse().unwrap()).collect();
-    let laws = family_laws(&family, &env_or::<usize>, 4, 2, env_or("MULMINER_MAX", 7) as u32);
+    let kv = family_vars(&family);
+    let laws = family_laws(&family, &env_or::<usize>, 4, kv, env_or("MULMINER_MAX", 7) as u32);
     let capped = |t: &Term, w: usize| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap()) && w > 0;
     let (mut checked, mut unproved, mut refused, mut false_laws) = (0usize, 0usize, 0usize, 0usize);
     let t0 = Instant::now();
@@ -1359,10 +1360,10 @@ pub fn soundness_sweep() {
         if capped(t1, 1) || capped(t2, 1) {
             continue;
         }
-        let true_everywhere = (1..=6).all(|w| t1.plausibly_equals(t2, w, 2));
+        let true_everywhere = (1..=6).all(|w| t1.plausibly_equals(t2, w, kv));
         if true_everywhere {
             for &w in &widths {
-                match rewrite_law(w, 2, t1, t2) {
+                match rewrite_law(w, kv, t1, t2) {
                     Some((p, s)) => {
                         if let Err(m) = check(&Ctx::new(), &p, &s) {
                             panic!("kernel rejected the proof of {name} at width {w}: {}", m.chars().take(300).collect::<String>());
@@ -1374,8 +1375,8 @@ pub fn soundness_sweep() {
             }
         } else {
             false_laws += 1;
-            for w in (1..=6).filter(|w| !t1.plausibly_equals(t2, *w, 2)) {
-                if let Some((p, s)) = rewrite_law(w, 2, t1, t2) {
+            for w in (1..=6).filter(|w| !t1.plausibly_equals(t2, *w, kv)) {
+                if let Some((p, s)) = rewrite_law(w, kv, t1, t2) {
                     assert!(check(&Ctx::new(), &p, &s).is_err(), "FALSE law accepted: {name} at width {w}");
                 }
                 refused += 1;
