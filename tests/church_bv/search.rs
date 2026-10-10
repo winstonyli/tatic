@@ -1616,34 +1616,29 @@ pub const THREE_VAR_FAMILIES: [&str; 7] = ["add3", "mix3", "sbo3", "cmp3", "cmp3
 /// a leaf on either side at every level; cmp3: `lt` of two small add/sub/shl1 terms (laws about comparisons); cmp3d: cmp3 with
 /// reassociation redexes inside the comparison.
 pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Term>> {
-    Some(match family {
+    let pool: Vec<Term> = match family {
         "add3" => add3_pool(env("RULEMINER_DEEP3", 0) == 1),
         "mix3" => depth2_pool(&[ADD, AND, OR, XOR, SUB], true, &[ADD]),
         "sbo3" => depth2_pool(&[ADD, SUB, AND, OR], false, &[ADD, SUB]),
         "cmp3" => cmp3_pool(false),
         "cmp3d" => cmp3_pool(true),
         // u3: the union of the add3, sbo3 and cmp3d pools (a mixed stream for mining one library over several families)
-        "u3" => {
-            let mut seen = std::collections::HashSet::new();
-            ["add3", "sbo3", "cmp3d"].iter().flat_map(|f| pool3(f, env).unwrap()).filter(|t| seen.insert(t.show())).collect()
-        }
+        "u3" => ["add3", "sbo3", "cmp3d"].iter().flat_map(|f| pool3(f, env).unwrap()).collect(),
         _ => return None,
-    })
+    };
+    // each term once: the builders make some small terms at more than one depth, and a repeat pairs a term with its own copy (a
+    // trivial law) or repeats a law (docs/tier-cycle.md, pool duplicates; law sequences before this dedup differ)
+    let mut seen = std::collections::HashSet::new();
+    Some(pool.into_iter().filter(|t| seen.insert(t.show())).collect())
 }
 
-/// Diagnostic: terms that occur more than once in each three-variable pool (they make trivial and repeated laws).
+/// No three-variable pool repeats a term (a repeat makes trivial and repeated laws).
 #[test]
-#[ignore]
-pub fn pool_duplicates() {
-    for f in ["add3", "mix3", "sbo3", "cmp3", "cmp3d"] {
+pub fn pools_have_no_repeated_terms() {
+    for f in ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3"] {
         let pool = pool3(f, &|k, d| if k == "RULEMINER_DEEP3" { 1 } else { d }).unwrap();
-        let mut count: std::collections::HashMap<String, usize> = Default::default();
-        for t in &pool {
-            *count.entry(t.show()).or_default() += 1;
-        }
-        let mut dups: Vec<(&String, &usize)> = count.iter().filter(|(_, c)| **c > 1).collect();
-        dups.sort();
-        println!("POOLDUP {f}: {} terms, {} distinct, e.g. {:?}", pool.len(), count.len(), &dups[..dups.len().min(4)]);
+        let distinct: HashSet<String> = pool.iter().map(Term::show).collect();
+        assert_eq!(distinct.len(), pool.len(), "{f}");
     }
 }
 

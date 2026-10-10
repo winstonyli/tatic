@@ -31,6 +31,10 @@ are local and not in the repository.
    | sbo3 | 260 vs 155 (.60) | 126 vs 46 (.37) | 117 vs 47 (.40) |
 
    Sorted batches are lexicographic ranges, so their per-batch M mixes learning with batch structure; shuffled streams remove that.
+
+   All numbers on this page predate the dedup of the term pools (`pool3`, after commit `ff664d6`). Some small terms had appeared more
+   than once, which made 2-6% of the laws trivial or repeated. Rerun at salt 1 after the dedup: cmp3d 231 vs 109 (.47), add3 183 vs 62
+   (.34, unchanged), sbo3 128 vs 41 (.32), seeded better on 9 of 9 streams. The other cells were not rerun.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
    foreign): add3 183 / 62 / 56-65, sbo3 126 / 46 / 52-66, cmp3d 190 / 80 / 118-119. cmp3d needs its comparison rules, so it benefits
    least.

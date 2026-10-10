@@ -119,8 +119,9 @@ not built.
 The trivial and repeated laws in the stream come from the pools: `pool_duplicates` (ignored diagnostic) counts the add3 pool at 12680
 terms but 12630 distinct, mix3 25245 / 23665, sbo3 26355 / 24105, cmp3d 18720 / 16560, cmp3 3600 / 3600. Depth-one terms such as
 `add(-1, 0)` are built at more than one level. `pool_conjectures` pairs each group's first term with the rest, so a repeated term gives a
-trivial law (the representative with its own copy) or repeated laws. Not fixed: deduplicating in `pool3` shifts every family's law
-sequence, so the published numbers would no longer reproduce exactly.
+trivial law (the representative with its own copy) or repeated laws. Fixed: `pool3` now keeps each term once (test
+`pools_have_no_repeated_terms`). This shifts every family's law sequence, so the experiments above (run before the fix) do not
+reproduce exactly. The salt-1 headline was re-measured; see `docs/loop-result.md`.
 
 ### Derivability prune (negative, 2026-10-10)
 Prototype (reverted): drop each rule that the built-in rules plus the earlier kept rules prove machine-free (`rewrite_law`, width 4),

@@ -145,6 +145,11 @@ cmp3d pools, for mining one library on a mixed stream).
 | sbo3 | 126 (117) | 46 (47) | 52-66 (55-66) | 45 | 54 |
 | mix3 (held out) | 66 | n/a | n/a | 13 | 20 |
 
+The table was measured before the term pools were deduplicated. The pools had built some small terms at more than one depth, which put
+2-6% trivial or repeated laws into the streams. After the dedup, every family's law sequence shifts. Re-measured at salt 1, cold vs own
+library: cmp3d 231 vs 109, add3 183 vs 62 (unchanged), sbo3 128 vs 41; seeded still beat cold on 9 of 9 streams. The other cells were
+not rerun.
+
 Seeding with any library beat cold on every stream (18 of 18 own-library streams over two salts, all cross
 runs), a library from another family recovers most of the gain except for cmp3d,
 which needs its comparison rules, and a library pooled from the other families
