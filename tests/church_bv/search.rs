@@ -659,6 +659,7 @@ pub fn rule_miner() {
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
     let laws = family_laws(&family, &env_or::<usize>, n, nv, max);
+    phase("law building");
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
     for (name, t1, t2) in laws.iter().cloned() {
@@ -723,17 +724,17 @@ pub fn rule_miner() {
         }
         by_size[sz] = level;
     }
-    let sig = |t: &Term| -> Vec<u128> { (0..1u128 << (4 * kv)).map(|i| t.interp(n, &(0..kv).map(|v| i >> (4 * v) & 15).collect::<Vec<_>>())).collect() };
-    let mut index: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
+    let mut memo = SigMemo::new(n, kv);
+    let mut index: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for t in by_size.iter().flatten() {
-        index.entry(sig(t)).or_default().push(t.clone());
+        index.entry(memo.sig(t).to_vec()).or_default().push(t.clone());
     }
     // `lt` terms (one-bit values) only as roots, indexed apart: their 0/1 values must not meet the n-bit constants
-    let mut index_lt: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
+    let mut index_lt: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for a in by_size.iter().take(4).flatten() {
         for b in by_size.iter().take(4).flatten() {
             let t = Term::Op(LT, Box::new(a.clone()), Box::new(b.clone()));
-            index_lt.entry(sig(&t)).or_default().push(t);
+            index_lt.entry(memo.sig(&t).to_vec()).or_default().push(t);
         }
     }
     println!("RULEMINER pool of {} terms, {} distinct functions", by_size.iter().map(|v| v.len()).sum::<usize>(), index.len());
@@ -790,7 +791,7 @@ pub fn rule_miner() {
                     continue;
                 }
                 let is_lt = matches!(pat, Term::Op(LT, ..));
-                let Some(group) = (if is_lt { &index_lt } else { &index }).get(&sig(&pat)) else { continue };
+                let Some(group) = (if is_lt { &index_lt } else { &index }).get(memo.sig(&pat)) else { continue };
                 let uses = |t: &Term, v: usize| t.has_var(v);
                 let _ = is_lt;
                 for r in group.iter().filter(|r| ok_order(&pat, r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {

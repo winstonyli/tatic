@@ -873,37 +873,56 @@ pub fn conjecture_miner() {
 /// The terms `lt` is mined over: the leaves and every operator applied to two leaves.
 /// The conjectures of a term pool: terms with equal values on every width-`n` tuple of `nv` variables are paired with
 /// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
-pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
-    assert!(n <= 8, "behaviour signatures hold one byte per input");
-    // a term's behaviour is its value on every input; pool terms share subterms, so each distinct subterm is evaluated once,
-    // as a vector over all inputs, and its parent combines its children's vectors
-    let (inputs, mask) = (1usize << (n * nv), low_bits(n));
-    let mut ids: std::collections::HashMap<(usize, usize, usize), usize> = Default::default();
-    let mut sigs: Vec<Vec<u8>> = vec![];
-    fn id_of(t: &Term, n: usize, nv: usize, mask: u128, inputs: usize, ids: &mut std::collections::HashMap<(usize, usize, usize), usize>, sigs: &mut Vec<Vec<u8>>) -> usize {
+/// Behaviour signatures: a term's value on every input (n-bit values of nv variables, one byte each). Pool terms share subterms,
+/// so each distinct subterm is evaluated once and its parent combines its children's vectors.
+pub struct SigMemo {
+    n: usize,
+    mask: u128,
+    inputs: usize,
+    ids: std::collections::HashMap<(usize, usize, usize), usize>,
+    sigs: Vec<Vec<u8>>,
+}
+
+impl SigMemo {
+    pub fn new(n: usize, nv: usize) -> SigMemo {
+        assert!(n <= 8, "behaviour signatures hold one byte per input");
+        SigMemo { n, mask: low_bits(n), inputs: 1usize << (n * nv), ids: Default::default(), sigs: vec![] }
+    }
+
+    /// The id of `t`'s signature; equal ids mean equal behaviour on every input.
+    pub fn id(&mut self, t: &Term) -> usize {
         let key = match t {
             Term::V(v) => (usize::MAX, *v, 0),
             Term::Zero => (usize::MAX - 1, 0, 0),
             Term::Ones => (usize::MAX - 2, 0, 0),
-            Term::Op(o, a, b) => (*o, id_of(a, n, nv, mask, inputs, ids, sigs), id_of(b, n, nv, mask, inputs, ids, sigs)),
+            Term::Op(o, a, b) => (*o, self.id(a), self.id(b)),
         };
-        if let Some(&id) = ids.get(&key) {
+        if let Some(&id) = self.ids.get(&key) {
             return id;
         }
+        let (n, mask) = (self.n, self.mask);
         let sig: Vec<u8> = match t {
-            Term::V(v) => (0..inputs).map(|i| (i >> (n * v) & mask as usize) as u8).collect(),
-            Term::Zero => vec![0; inputs],
-            Term::Ones => vec![mask as u8; inputs],
-            Term::Op(o, ..) => (0..inputs).map(|i| (OP_INFO[*o].word)(sigs[key.1][i] as u128, sigs[key.2][i] as u128, mask) as u8).collect(),
+            Term::V(v) => (0..self.inputs).map(|i| (i >> (n * v) & mask as usize) as u8).collect(),
+            Term::Zero => vec![0; self.inputs],
+            Term::Ones => vec![mask as u8; self.inputs],
+            Term::Op(o, ..) => (0..self.inputs).map(|i| (OP_INFO[*o].word)(self.sigs[key.1][i] as u128, self.sigs[key.2][i] as u128, mask) as u8).collect(),
         };
-        sigs.push(sig);
-        ids.insert(key, sigs.len() - 1);
-        sigs.len() - 1
+        self.sigs.push(sig);
+        self.ids.insert(key, self.sigs.len() - 1);
+        self.sigs.len() - 1
     }
+
+    pub fn sig(&mut self, t: &Term) -> &[u8] {
+        let id = self.id(t);
+        &self.sigs[id]
+    }
+}
+
+pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
+    let mut memo = SigMemo::new(n, nv);
     let mut groups: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for t in pool {
-        let id = id_of(&t, n, nv, mask, inputs, &mut ids, &mut sigs);
-        groups.entry(sigs[id].clone()).or_default().push(t);
+        groups.entry(memo.sig(&t).to_vec()).or_default().push(t);
     }
     let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
     conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));
