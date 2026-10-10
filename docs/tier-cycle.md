@@ -112,8 +112,28 @@ cmp3d gap (27 vs 42) is the largest of the three.
 **Transfer score.** `scripts/transfer_score.sh` (header documents it) mines rules from a law file and prints
 `TRANSFER ... M_before M_after gain` on a held-out window of the target family: the batch-level reward a proposer needs. Check: the
 salt-1 sbo3 stream file gives 94 -> 19 (gain 75), matching the table above. It costs one mine per batch (about 1-5 min FAST), so it
-grades batches, not single proposals. Per-proposal credit (which mined rule a proposal led to, and that rule's own held-out gain) is
-not built.
+grades batches, not single proposals.
+
+**Per-proposal credit.** `search::proposal_credit` (report test `proposal_credit_report`, env on the test). A rule's held-out gain is how
+many more held-out laws are hard without it. A proposal *uses* a rule when it is cheap with the library but hard without that rule.
+Each rule's gain is split evenly over its users. The cost is two passes per rule over the held-out window and the batch, seconds in
+all, with no re-mining. Salt-1 libraries from the band-mining run, held-out windows as there (after the pool dedup, so M differs a
+little from the tables above):
+
+| library mined from | held-out M | sum of rule gains | proposals credited | rules with gain <= 0 |
+|---|---|---|---|---|
+| sbo3 stream | 92 -> 21 | 104 | 70 of 300 | 1 |
+| sbo3 band | 92 -> 22 | 86 | 219 of 300 | 2 |
+| sbo3 mutants | 92 -> 87 | 4 | 45 of 300 | 3 (one at -1) |
+| cmp3d stream | 118 -> 44 | 82 | 83 of 300 | 1 (at -8) |
+| cmp3d band | 118 -> 44 | 86 | 198 of 300 | 0 |
+| cmp3d mutants | 118 -> 84 | 34 | 91 of 247 | 1 |
+
+Reading: the credit separates useful proposals from useless ones within a batch. Mutants that led to non-transferring rules earn
+about nothing, and the stream's credit concentrates on about a quarter of the laws. Ablation gains overlap: their sum exceeds the
+batch gain (104 vs 71) because rules substitute for each other, so credit is a ranking signal, not an additive budget. A rule can
+hurt held-out laws (cmp3d stream, gain -8), so credit can be negative, which is the signal to drop that rule. Every rule here had at
+least one user, so all gain was attributed. Not yet used to train anything.
 
 ### Pool duplicates (2026-10-10)
 The trivial and repeated laws in the stream come from the pools: `pool_duplicates` (ignored diagnostic) counts the add3 pool at 12680

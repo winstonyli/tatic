@@ -1999,6 +1999,87 @@ impl Cost {
     }
 }
 
+/// The `Cost` of `t1 = t2` under the rules installed in `EXTRA_RULES` (a 200-step budget, width 4).
+pub fn law_cost(kv: usize, t1: &Term, t2: &Term) -> Cost {
+    RULE_BUDGET.with(|b| b.set(200));
+    let before = MACHINE_FALLBACKS.with(|c| c.get());
+    let proved = rewrite_law(4, kv, t1, t2).is_some();
+    Cost { fallbacks: MACHINE_FALLBACKS.with(|c| c.get()) - before, steps: 200 - RULE_BUDGET.with(|b| b.get()), proved }
+}
+
+/// Per-proposal credit for a mined library `rules` (docs/tier-cycle.md). Each rule's held-out gain is how many more `held` laws are hard
+/// without it; a proposal uses a rule when it is cheap under `rules` but hard without that rule; each rule's gain is split evenly over
+/// the proposals that use it. Returns the per-rule gains, the per-rule user counts and the per-proposal credits.
+pub fn proposal_credit(rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)], props: &[(Term, Term)]) -> (Vec<i64>, Vec<usize>, Vec<f64>) {
+    let hard = |set: &[(Term, Term)], laws: &[(Term, Term)]| -> Vec<bool> {
+        EXTRA_RULES.with(|e| *e.borrow_mut() = set.to_vec());
+        laws.iter().map(|(a, b)| law_cost(kv, a, b).hard()).collect()
+    };
+    let count = |v: &[bool]| v.iter().filter(|h| **h).count() as i64;
+    let (held_all, props_all) = (count(&hard(rules, held)), hard(rules, props));
+    let (mut gains, mut users, mut credit) = (vec![], vec![], vec![0.0; props.len()]);
+    for i in 0..rules.len() {
+        let without: Vec<(Term, Term)> = rules.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, r)| r.clone()).collect();
+        let gain = count(&hard(&without, held)) - held_all;
+        let uses: Vec<usize> = hard(&without, props).iter().zip(&props_all).enumerate().filter(|(_, (h, h_all))| **h && !**h_all).map(|(p, _)| p).collect();
+        for &p in &uses {
+            credit[p] += gain as f64 / uses.len() as f64;
+        }
+        gains.push(gain);
+        users.push(uses.len());
+    }
+    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    (gains, users, credit)
+}
+
+/// Credit for the proposals in `CREDIT_LAWS` (`lhs = rhs` lines) from the library `CHECK_RULES` mined on them, against the held-out
+/// window of `CHECK_FAMILY` (the `RULEMINER_*` vars: `SKIP`, `LAWS`, `SHUFFLE`). Prints a `CREDIT rule` line per rule (held-out gain,
+/// users) and a `CREDIT total` line; `CREDIT_OUT` saves `credit<TAB>law` per proposal.
+#[test]
+#[ignore]
+pub fn proposal_credit_report() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let (rules, kv, laws) = check_laws();
+    SCORE_ONLY.with(|s| s.set(true));
+    let held: Vec<(Term, Term)> = laws.into_iter().map(|(_, a, b)| (a, b)).collect();
+    let props = read_laws(&std::env::var("CREDIT_LAWS").unwrap());
+    let (gains, users, credit) = proposal_credit(&rules, kv, &held, &props);
+    for (i, (l, r)) in rules.iter().enumerate() {
+        println!("CREDIT rule {} -> {}: held-out gain {}, used by {} proposals", l.show(), r.show(), gains[i], users[i]);
+    }
+    EXTRA_RULES.with(|e| *e.borrow_mut() = vec![]);
+    let m0 = held.iter().filter(|(a, b)| law_cost(kv, a, b).hard()).count();
+    EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+    let m1 = held.iter().filter(|(a, b)| law_cost(kv, a, b).hard()).count();
+    let credited = credit.iter().filter(|c| **c != 0.0).count();
+    println!(
+        "CREDIT total: held-out M {m0} -> {m1} (gain {}), sum of rule gains {}, attributed {:.1}, {credited} of {} proposals credited",
+        m0 as i64 - m1 as i64,
+        gains.iter().sum::<i64>(),
+        credit.iter().sum::<f64>(),
+        props.len()
+    );
+    if let Ok(out) = std::env::var("CREDIT_OUT") {
+        let text: String = props.iter().zip(&credit).map(|((a, b), c)| format!("{c:.3}\t{} = {}\n", a.show(), b.show())).collect();
+        std::fs::write(out, text).unwrap();
+    }
+}
+
+/// A rule's credit goes to the proposal that needs it, in proportion to its held-out gain.
+#[test]
+pub fn proposal_credit_goes_to_rule_users() {
+    let _scope = tatic::kernel::InternScope::enter();
+    SCORE_ONLY.with(|s| s.set(true));
+    let law = |s: &str| s.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap();
+    let rules = parse_rules("lt(x, sub(x, y)) -> lt(x, y)\n");
+    // the proposal and the held-out law are both closed by the rule only if the built-in rules do not already close them
+    let (p, h) = (law("lt(x, sub(x, y)) = lt(x, y)"), law("lt(z, sub(z, x)) = lt(z, x)"));
+    let (gains, users, credit) = proposal_credit(&rules, 3, &[h], &[p, law("add(x, y) = add(y, x)")]);
+    assert_eq!(gains.len(), 1);
+    assert_eq!(credit[1], 0.0, "a proposal that does not use the rule gets nothing");
+    assert_eq!(credit[0], if users[0] == 1 { gains[0] as f64 } else { 0.0 });
+}
+
 /// Classify proposed lines (`lhs = rhs`). `train` holds the laws the proposer was shown, `known` every law of the family (both as
 /// `lhs = rhs` strings, either orientation); the other classes follow from parsing, the width 1-6 screen and `rewrite_law` under the
 /// installed rules, which also gives each true, unmemorised law its `Cost`.
@@ -2022,10 +2103,7 @@ pub fn classify_proposals(lines: &[String], kv: usize, train: &HashSet<String>, 
             if train.contains(&fwd) || train.contains(&rev) {
                 return (Verdict::Memorised, None);
             }
-            RULE_BUDGET.with(|b| b.set(200));
-            let before = MACHINE_FALLBACKS.with(|c| c.get());
-            let proved = rewrite_law(4, kv, &t1, &t2).is_some();
-            let cost = Cost { fallbacks: MACHINE_FALLBACKS.with(|c| c.get()) - before, steps: 200 - RULE_BUDGET.with(|b| b.get()), proved };
+            let cost = law_cost(kv, &t1, &t2);
             let verdict = match (known.contains(&fwd) || known.contains(&rev), cost.hard()) {
                 (true, false) => Verdict::KnownCheap,
                 (true, true) => Verdict::KnownHard,
