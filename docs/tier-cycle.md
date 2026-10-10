@@ -61,7 +61,17 @@ Baselines, 2000 samples, shuffle salt 1, default 250-law training window, no min
 Reading: random pool pairs are about 97% false (2-3% true); the n-gram mostly does not even parse (76-99%) and yields no true new
 law, so a proposer must clearly beat both to be worth wiring in. "Outside the family" means true laws that the family's windowed
 sequence omits (for example fewer than three variables); `known` counts only the family's own laws. With no rules installed the cheap
-and hard split reflects only the built-in rules. Not yet run: the same with a mined library (`CHECK_RULES`), and a learned proposer.
+and hard split reflects only the built-in rules. With a mined library installed (4000 pool samples, salt 1; none / family's own 8-rule library / 25-rule u3 library), the hard
+true laws were add3 1/0/0, sbo3 2/1/1, cmp3d 5/4/2. Uniform pairs almost never hit the laws that M counts: the true ones are nearly
+all cheap with no rules at all. A proposer is worth something to the miner only if it targets hard laws (idea 2 below).
+
+### Derivability prune (negative, 2026-10-10)
+Prototype (reverted): drop each rule that the built-in rules plus the earlier kept rules prove machine-free (`rewrite_law`, width 4),
+in mining order as Enumo's `minimize`. It dropped 1 of 8 (add3), 0 of 8 (sbo3, cmp3d), 2 of 25 (u3, salt 1) and 3 of 28 (u3, salt 2)
+rules. M on 300 held-out shuffled laws (salt 1, skip 1000; CHECK_FAST) rose with the pruned library: u3 salt 1 sbo3 30 -> 49,
+cmp3d 9 -> 15; u3 salt 2 sbo3 49 -> 51, cmp3d 13 -> 14; add3 0 -> 0. A derivable rule is not redundant for a directed, budgeted
+rewriter: it is a shortcut (Enumo's fast-forwarding makes the same point). The libraries are already almost irredundant, so the
+25-rule plateau is not redundancy. Any prune must be judged by M, not derivability.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
@@ -85,7 +95,7 @@ Three subagents read the primary sources; items they could not confirm are marke
 - Learned conjecturing (Urban & Jakubuv 2020, 2005.14664): GPT-2 on Mizar; 9000-10000 proved but not the interesting ones. Gauthier's conjecturing work: UNVERIFIED, not found.
 
 **Ideas to take, in order of cheapness.**
-1. A Ruler/Enumo-style derivability prune on the mined library: drop any rule the rest of the library derives. Cheap to test on the current libraries.
+1. A Ruler/Enumo-style derivability prune on the mined library. Tried: negative, see Results.
 2. Minimo/STP-style difficulty targeting: proposer samples scored by the kernel (cheap vs hard, machine-proof count) and kept only in a band, instead of a boolean accept.
 3. Collapse control borrowed from FunSearch: signature-clustered sampling with a length preference, using our existing width 1-6 value signature.
 4. AlphaGeometry-style traceback: train the proposer on the sub-terms or lemmas a kernel proof actually used.
