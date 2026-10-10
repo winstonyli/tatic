@@ -75,6 +75,43 @@ The hard stream laws used 57 and 13 machine proofs with median rule steps 3 and 
 steps barely separate them. The stream also has 4-12 laws per 300 whose sides print identically, and 7-18 printed duplicates. All are
 cheap, so M is unaffected.
 
+### Mutation proposer and mining from the band (2026-10-10)
+Setup: cold (no rules), shuffle salt 1, `RULEMINER_FAST`, 8-round cap, one run per cell. Seeds = the hard laws of the first 300 stream
+laws (sbo3 75, cmp3d 100). `PROPOSER=mutate` (`MUTATE_SEEDS`, `MUTATE_KIND`) mutates them: `subst` (a variable becomes a small term on
+both sides) and `wrap` (both sides under one operator with a small term) are true by construction; `edit` (one node of one side
+replaced) mostly is not. The band (hard laws) per 1000 mutants:
+
+| family | subst | wrap | edit | mix | pool pairs (per 1000, earlier) |
+|---|---|---|---|---|---|
+| sbo3 | 556 | 846 | 78 (895 refuted) | 534 | ~0.5 |
+| cmp3d | 674 | none (every law is `lt`-rooted) | 75 (902 refuted) | 247 of 667 | ~1 |
+
+So a proposer aimed at hard laws fills the band easily. But do the band laws teach better rules? `RULEMINER_LAWFILE` mines from a file.
+Held-out M (300 laws, skip 2000 sbo3 / 5000 cmp3d; lower is better), each library 8 rules:
+
+| mined from | sbo3 | cmp3d | mining time sbo3 / cmp3d |
+|---|---|---|---|
+| no rules | 94 | 109 | |
+| stream, 300 laws (75 / 102 hard) | 19 | 27 | 47 s / 197 s |
+| band, 300 hard laws from the first 1500 | 22 | 42 | 79 s / 306 s |
+| mutants, 300 / 247 hard | 88 | 80 | 195 s / 253 s |
+| stream + band | 22 | 44 | 105 s / 269 s |
+| stream + mutants | 87 | 82 | 226 s / 261 s |
+
+Reading: being hard is not enough. Hard mutants teach rules that barely transfer back to the family (M 80-88 vs 19-27), because they
+are hard for reasons of their own (context, instances) rather than for the family's. Mining only from the stream's own hard laws is
+no better than mining from the stream, and on cmp3d it is worse (42 vs 27, one run). The guard is not the cause: adding the stream's
+cheap laws, which feed `RULEMINER_GUARD`, left it at 44. The 8-round cap binds in every cell, so more hard laws cannot buy more rules
+here. For the cycle: the proposer's reward needs a transfer term (does a rule mined from its proposals lower M on the target
+distribution), not difficulty alone. Experiment 2 has to measure that directly.
+
+### Pool duplicates (2026-10-10)
+The trivial and repeated laws in the stream come from the pools: `pool_duplicates` (ignored diagnostic) counts the add3 pool at 12680
+terms but 12630 distinct, mix3 25245 / 23665, sbo3 26355 / 24105, cmp3d 18720 / 16560, cmp3 3600 / 3600. Depth-one terms such as
+`add(-1, 0)` are built at more than one level. `pool_conjectures` pairs each group's first term with the rest, so a repeated term gives a
+trivial law (the representative with its own copy) or repeated laws. Not fixed: deduplicating in `pool3` shifts every family's law
+sequence, so the published numbers would no longer reproduce exactly.
+
 ### Derivability prune (negative, 2026-10-10)
 Prototype (reverted): drop each rule that the built-in rules plus the earlier kept rules prove machine-free (`rewrite_law`, width 4),
 in mining order as Enumo's `minimize`. It dropped 1 of 8 (add3), 0 of 8 (sbo3, cmp3d), 2 of 25 (u3, salt 1) and 3 of 28 (u3, salt 2)

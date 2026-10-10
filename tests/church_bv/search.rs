@@ -733,7 +733,12 @@ pub fn rule_miner() {
     let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
-    let laws = family_laws(&family, &env_or::<usize>, n, nv, max);
+    // RULEMINER_LAWFILE=<file>: mine from these `lhs = rhs` lines (a proposer's band, docs/tier-cycle.md) instead of the family's
+    // window; RULEMINER_FAMILY still sets the variable count
+    let laws = match std::env::var("RULEMINER_LAWFILE") {
+        Ok(f) => read_laws(&f).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect(),
+        Err(_) => family_laws(&family, &env_or::<usize>, n, nv, max),
+    };
     phase("law building");
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
@@ -1626,6 +1631,22 @@ pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Ter
     })
 }
 
+/// Diagnostic: terms that occur more than once in each three-variable pool (they make trivial and repeated laws).
+#[test]
+#[ignore]
+pub fn pool_duplicates() {
+    for f in ["add3", "mix3", "sbo3", "cmp3", "cmp3d"] {
+        let pool = pool3(f, &|k, d| if k == "RULEMINER_DEEP3" { 1 } else { d }).unwrap();
+        let mut count: std::collections::HashMap<String, usize> = Default::default();
+        for t in &pool {
+            *count.entry(t.show()).or_default() += 1;
+        }
+        let mut dups: Vec<(&String, &usize)> = count.iter().filter(|(_, c)| **c > 1).collect();
+        dups.sort();
+        println!("POOLDUP {f}: {} terms, {} distinct, e.g. {:?}", pool.len(), count.len(), &dups[..dups.len().min(4)]);
+    }
+}
+
 /// Variables per law of a family: the three-variable families against the two-variable rest.
 pub fn family_vars(family: &str) -> usize {
     if THREE_VAR_FAMILIES.contains(&family) { 3 } else { 2 }
@@ -2054,7 +2075,143 @@ pub fn ngram_lines(text: &str, order: usize, n: usize, seed: u64) -> Vec<String>
         .collect()
 }
 
-/// `YIELD_FAMILY` (default add3), the proposer `PROPOSER=ngram|pool|stream` (or `YIELD_FILE`, one `lhs = rhs` per line) and `YIELD_N`
+/// The `lhs = rhs` lines of a file as term pairs.
+pub fn read_laws(path: &str) -> Vec<(Term, Term)> {
+    std::fs::read_to_string(path).unwrap().lines().filter_map(|l| l.split_once(" = ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+}
+
+/// `t` with variable `v` replaced by `r`.
+fn subst(t: &Term, v: usize, r: &Term) -> Term {
+    match t {
+        Term::V(i) if *i == v => r.clone(),
+        Term::Op(o, a, b) => Term::Op(*o, Box::new(subst(a, v, r)), Box::new(subst(b, v, r))),
+        _ => t.clone(),
+    }
+}
+
+fn nodes(t: &Term) -> usize {
+    match t {
+        Term::Op(_, a, b) => 1 + nodes(a) + nodes(b),
+        _ => 1,
+    }
+}
+
+/// `t` with its `k`-th node in preorder replaced by `r` (`k` counts down, `None` once replaced).
+fn replace_node(t: &Term, k: &mut Option<usize>, r: &Term) -> Term {
+    match *k {
+        Some(0) => {
+            *k = None;
+            return r.clone();
+        }
+        Some(j) => *k = Some(j - 1),
+        None => return t.clone(),
+    }
+    match t {
+        Term::Op(o, a, b) => {
+            let a2 = replace_node(a, k, r);
+            Term::Op(*o, Box::new(a2), Box::new(replace_node(b, k, r)))
+        }
+        _ => t.clone(),
+    }
+}
+
+fn ops_in(t: &Term, out: &mut std::collections::BTreeSet<usize>) {
+    if let Term::Op(o, a, b) = t {
+        out.insert(*o);
+        ops_in(a, out);
+        ops_in(b, out);
+    }
+}
+
+/// Mutants of the seed laws, `n` of them, by `kind`: `subst` (a variable replaced by a small term on both sides) and `wrap` (both sides
+/// put under the same operator with a small term) are true by construction; `edit` (one node of one side replaced by a small term) mostly
+/// is not; `mix` cycles through the three. Small terms are a leaf or one operator of the seeds over leaves; `lt` stays at the root.
+pub fn mutate_laws(seeds: &[(Term, Term)], kv: usize, kind: &str, n: usize, seed: u64) -> Vec<String> {
+    let mut ops = std::collections::BTreeSet::new();
+    for (a, b) in seeds {
+        ops_in(a, &mut ops);
+        ops_in(b, &mut ops);
+    }
+    let inner: Vec<usize> = ops.iter().copied().filter(|&o| o != LT).collect();
+    let mut s = seed;
+    let mut pick = |m: usize| lcg(&mut s) as usize % m.max(1);
+    let mut out = vec![];
+    for i in 0..n {
+        let leaf = |p: &mut dyn FnMut(usize) -> usize| match p(kv + 2) {
+            j if j < kv => Term::V(j),
+            j if j == kv => Term::Zero,
+            _ => Term::Ones,
+        };
+        let small = |p: &mut dyn FnMut(usize) -> usize| {
+            if inner.is_empty() || p(2) == 0 {
+                leaf(p)
+            } else {
+                let o = inner[p(inner.len())];
+                Term::Op(o, Box::new(leaf(p)), Box::new(leaf(p)))
+            }
+        };
+        let (a, b) = &seeds[pick(seeds.len())];
+        let k = match kind {
+            "mix" => ["subst", "wrap", "edit"][i % 3],
+            k => k,
+        };
+        let (a2, b2) = match k {
+            "subst" => {
+                let v = pick(kv);
+                let r = small(&mut pick);
+                (subst(a, v, &r), subst(b, v, &r))
+            }
+            "wrap" => {
+                let rooted = matches!(a, Term::Op(LT, ..)) || matches!(b, Term::Op(LT, ..));
+                let o = if rooted || inner.is_empty() { continue } else { inner[pick(inner.len())] };
+                let (r, left) = (small(&mut pick), pick(2) == 0);
+                let w = |t: &Term| if left { Term::Op(o, Box::new(t.clone()), Box::new(r.clone())) } else { Term::Op(o, Box::new(r.clone()), Box::new(t.clone())) };
+                (w(a), w(b))
+            }
+            "edit" => {
+                let r = small(&mut pick);
+                let side = pick(2);
+                let t = if side == 0 { a } else { b };
+                // the root of an `lt` side stays (`lt` only at the root); other nodes may be replaced
+                let lo = matches!(t, Term::Op(LT, ..)) as usize;
+                let mut k = Some(lo + pick(nodes(t) - lo));
+                let e = replace_node(t, &mut k, &r);
+                if side == 0 { (e, b.clone()) } else { (a.clone(), e) }
+            }
+            _ => panic!("MUTATE_KIND is subst, wrap, edit or mix"),
+        };
+        out.push(format!("{} = {}", a2.show(), b2.show()));
+    }
+    out
+}
+
+/// Mutants keep `lt` at the root, and the true-by-construction kinds stay laws.
+#[test]
+pub fn mutants_are_well_formed() {
+    let seeds: Vec<(Term, Term)> = ["lt(x, sub(x, y)) = lt(x, y)", "sub(x, add(y, z)) = sub(sub(x, y), z)"]
+        .iter()
+        .map(|l| l.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap())
+        .collect();
+    let lt_inside = |t: &Term| -> bool {
+        fn any_lt(t: &Term) -> bool {
+            matches!(t, Term::Op(LT, ..)) || matches!(t, Term::Op(_, a, b) if any_lt(a) || any_lt(b))
+        }
+        matches!(t, Term::Op(_, a, b) if any_lt(a) || any_lt(b))
+    };
+    for kind in ["subst", "wrap", "edit"] {
+        let laws = mutate_laws(&seeds, 3, kind, 60, 5);
+        assert!(!laws.is_empty(), "{kind}");
+        for l in &laws {
+            let (a, b) = l.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap();
+            assert!(!lt_inside(&a) && !lt_inside(&b), "{kind}: {l}");
+            if kind != "edit" {
+                assert!(a.is_law(&b, 3), "{kind}: {l}");
+            }
+        }
+    }
+}
+
+/// `YIELD_FAMILY` (default add3), the proposer `PROPOSER=ngram|pool|stream|mutate` (or `YIELD_FILE`, one `lhs = rhs` per line) and `YIELD_N`
 /// samples (default 2000); the family window the proposer is shown is the usual `RULEMINER_*` one (`STRIDE`, `PHASE`, `LAWS`). `stream`
 /// replays the family's own sequence from `YIELD_SKIP` (default 1000) instead: the hash-ordered stream as a proposer, whose hard count is
 /// M. With `CHECK_RULES` the rules in force decide cheap against hard. `YIELD_OUT` saves the proposed lines, `BAND_OUT` the hard ones
@@ -2096,10 +2253,14 @@ pub fn proposal_yield() {
             };
             strings(family_laws(&family, &held_out, 4, kv, 7))
         }
-        _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool|stream"),
+        (_, Ok("mutate")) => {
+            let seeds = read_laws(&std::env::var("MUTATE_SEEDS").expect("the mutate proposer needs MUTATE_SEEDS (a BAND_OUT file)"));
+            mutate_laws(&seeds, kv, &std::env::var("MUTATE_KIND").unwrap_or_else(|_| "mix".into()), n, 11)
+        }
+        _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool|stream|mutate"),
     };
     if let Ok(out) = std::env::var("YIELD_OUT") {
-        std::fs::write(out, lines.join("\n")).unwrap();
+        std::fs::write(out, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
     }
     let (train, known): (HashSet<String>, HashSet<String>) = (train_lines.into_iter().collect(), known_lines.into_iter().collect());
     let verdicts = classify_proposals(&lines, kv, &train, &known);
