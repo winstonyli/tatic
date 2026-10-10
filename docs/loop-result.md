@@ -50,5 +50,7 @@ are local and not in the repository.
 - **Not a generality claim about theories.** Everything is Church bit-vector arithmetic. Whether the loop works for an axiomatic theory
   is only probed: in a throwaway spike over commutative-ring terms (axioms only, proofs found by a budgeted search, no kernel; not in this
   repository), M defined as the laws not proved within the budget separated cold from seeded loops (total M over five streams about
-  100-140 cold vs 0-33 seeded at budgets 100-1000 on three salts, one outlier at budget 100). The ring stream is dominated by a few
-  zero/negation lemmas, so this shows the metric is usable, not that the loop learns a rich theory.
+  100-140 cold vs 0-33 seeded at budgets 100-1000 on three salts, one outlier at budget 100). With the constants 0 and 1 as leaves the stream is dominated by a few
+  zero/negation lemmas; without constants the separation stays (total M 33-38 cold vs 1-11 seeded) but cold M is small, and the miner finds
+  the key lemmas from sub-terms of the failing laws without a fixed candidate pool. This shows the metric is usable, not that the loop
+  learns a rich theory.
