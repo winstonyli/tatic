@@ -358,11 +358,11 @@ pub fn decision_diagram_proofs_check_and_beat_the_case_tree() {
 #[ignore]
 pub fn rewrite_rules_over_the_mul_laws() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("RULES machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("RULES");
     let max = env_or("MULMINER_MAX", 7);
     let (mut proved, mut none, mut machine_free, mut over_cap, t0) = (0, 0, 0, 0, Instant::now());
     for (name, t1, t2) in mul_laws(max) {
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) {
+        if !t1.is_law(&t2, 2) {
             continue;
         }
         let cs = [&t1, &t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
@@ -386,7 +386,6 @@ pub fn rewrite_rules_over_the_mul_laws() {
             }
         }
     }
-    println!("RULES machine at end: {}", machine_state());
     println!("RULES rule instances: {:?}", RULE_HITS.lock().unwrap());
     println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
 }
@@ -638,7 +637,7 @@ pub fn rule_miner() {
     let phase = |label: &str| {
         println!("RULEMINER time {label}: {:.1}s", last.replace(Instant::now()).elapsed().as_secs_f64());
     };
-    println!("RULEMINER machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("RULEMINER");
     let cfg = MinerConfig::from_env();
     let (max, trials) = (cfg.max, cfg.trials);
     // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70), 2: no order check; the step budget
@@ -663,7 +662,7 @@ pub fn rule_miner() {
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
     for (name, t1, t2) in laws.iter().cloned() {
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, kv)) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
+        if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
             continue;
         }
         let before = fallbacks();
@@ -973,7 +972,6 @@ pub fn rule_miner() {
             println!("RULEMINER uncovered: {}", st.0);
         }
     }
-    println!("RULEMINER machine at end: {}", machine_state());
 }
 
 /// `bitwise_law_k` dispatches to the per-position prover when a shift occurs: shl1 distributes over the bitwise
@@ -1282,7 +1280,7 @@ pub fn rule_admission_refuses_wrong_rules() {
                 continue;
             }
             tried += 1;
-            let true_law = (1..=6).all(|w| l.plausibly_equals(r, w, 2));
+            let true_law = l.is_law(r, 2);
             if !true_law {
                 assert!(!rule_admissible(l, r), "wrong rule admitted: {} -> {}", l.show(), r.show());
                 refused += 1;
@@ -1340,7 +1338,7 @@ pub fn lt_borrow_bit_probe() {
 #[ignore]
 pub fn soundness_sweep() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("SWEEP machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("SWEEP");
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "3,4".into()).split(',').map(|w| w.parse().unwrap()).collect();
     let kv = family_vars(&family);
@@ -1352,7 +1350,7 @@ pub fn soundness_sweep() {
         if capped(t1, 1) || capped(t2, 1) {
             continue;
         }
-        let true_everywhere = (1..=6).all(|w| t1.plausibly_equals(t2, w, kv));
+        let true_everywhere = t1.is_law(t2, kv);
         if true_everywhere {
             for &w in &widths {
                 match rewrite_law(w, kv, t1, t2) {
@@ -1376,7 +1374,6 @@ pub fn soundness_sweep() {
         }
     }
     println!("SWEEP {family}: {} laws; true: {checked} proofs kernel-checked at widths {widths:?}, {unproved} unproved; false at some width: {false_laws} laws, {refused} (law, width) pairs refused; {:?}", laws.len(), t0.elapsed());
-    println!("SWEEP machine at end: {}", machine_state());
 }
 
 /// Scaling probe (search note section 65): a sample of each family's laws (`SWEEP_SAMPLE`, default 30, evenly spaced among the
@@ -1388,7 +1385,7 @@ pub fn scaling_sweep() {
     // SWEEP_SCOPE=law: one intern scope per law instead of one for the sweep (separates table size from per-node cost)
     let per_law = std::env::var("SWEEP_SCOPE").is_ok_and(|v| v == "law");
     let _scope = (!per_law).then(tatic::kernel::InternScope::enter);
-    println!("SCALE machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("SCALE");
     let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
     let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "4,8,16,32".into()).split(',').map(|w| w.parse().unwrap()).collect();
     let kv = family_vars(&family);
@@ -1399,7 +1396,7 @@ pub fn scaling_sweep() {
     let all = family_laws(&family, &env_or::<usize>, 4, kv, env_or("MULMINER_MAX", 7) as u32);
     let ok: Vec<&(String, Term, Term)> = all
         .iter()
-        .filter(|(_, a, b)| (1..=6).all(|w| a.plausibly_equals(b, w, kv)) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())))
+        .filter(|(_, a, b)| a.is_law(b, kv) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())))
         .collect();
     let sample = env_or("SWEEP_SAMPLE", 30).min(ok.len()).max(1);
     let picked: Vec<&&(String, Term, Term)> = (0..sample).map(|i| &ok[i * ok.len() / sample]).collect();
@@ -1445,7 +1442,6 @@ pub fn scaling_sweep() {
         println!("SCALE promoted rules n={w}: {:.1}s for {}", t.elapsed().as_secs_f64(), promoted_rules().len());
     }
     let _ = t;
-    println!("SCALE machine at end: {}", machine_state());
 }
 
 /// The pool of the `add3` family: terms over `x`, `y`, `z` with at most one sum or difference above depth-1 terms.
@@ -1591,13 +1587,13 @@ fn depth1(ops: &[usize], shl: bool) -> Vec<Term> {
 #[ignore]
 pub fn three_var_probe() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("PROBE3 machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("PROBE3");
     let pool = add3_pool(false);
     let conj = pool_conjectures(pool.clone(), 4, 3, 0);
     println!("PROBE3 pool {} terms, {} conjectures", pool.len(), conj.len());
     let (mut ok, mut straggler, mut unproved) = (0, 0, 0);
     for (a, b) in conj.iter().filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v))) {
-        if !(1..=6).all(|w| a.plausibly_equals(b, w, 3)) {
+        if !a.is_law(b, 3) {
             continue;
         }
         let before = MACHINE_FALLBACKS.with(|c| c.get());
@@ -1689,7 +1685,7 @@ fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
     let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
     let rules = parse_rules(&std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap());
     let kv = family_vars(&family);
-    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7).into_iter().filter(|(_, t1, t2)| (1..=6).all(|w| t1.plausibly_equals(t2, w, kv))).collect();
+    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7).into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
     EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
     (rules, kv, laws)
 }

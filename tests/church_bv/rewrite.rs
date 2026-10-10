@@ -130,6 +130,10 @@ impl Term {
             }
         }
     }
+    /// Agrees on random inputs at every width 1..=6 (the plausibility screen every law passes before a machine tries it).
+    pub fn is_law(&self, other: &Term, k: usize) -> bool {
+        (1..=6).all(|w| self.plausibly_equals(other, w, k))
+    }
     /// Whether `self` and `other` agree on the corners and 200 pseudo-random width-`n` tuples over `k` variables.
     pub fn plausibly_equals(&self, other: &Term, n: usize, k: usize) -> bool {
         let mask = low_bits(n);
@@ -895,7 +899,7 @@ pub fn fold_rule(t: &Term) -> Option<Rule> {
     if !matches!(t, Term::Op(o, ..) if *o != LT) || ablated("fold") || t.show() == one.show() || !closed(t) {
         return None;
     }
-    [Term::Zero, Term::Ones, one].into_iter().find(|c| (1..=6).all(|w| t.plausibly_equals(c, w, 1))).map(|c| Rule { name: "fold", lhs: t.clone(), rhs: c })
+    [Term::Zero, Term::Ones, one].into_iter().find(|c| t.is_law(c, 1)).map(|c| Rule { name: "fold", lhs: t.clone(), rhs: c })
 }
 
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the proof.
@@ -988,7 +992,7 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
             let mut subs = vec![];
             t1.subterms(&mut subs);
             let cands = [Term::Zero, Term::Ones].into_iter().chain(subs.into_iter().skip(1).filter(|c| c.size() < t1.size()));
-            if let Some(c) = cands.into_iter().find(|c| c.add_free() && (1..=6).all(|w| t1.plausibly_equals(c, w, k))) {
+            if let Some(c) = cands.into_iter().find(|c| c.add_free() && t1.is_law(c, k)) {
                 let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
                 let law = apps(bitwise_law_k(n, k, &t1, &c).0, args);
                 return (c.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&c), cong, law));

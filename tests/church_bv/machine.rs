@@ -250,6 +250,20 @@ pub fn machine_state() -> String {
         .map_or_else(|| "machine state unavailable".to_string(), |t| t.trim().to_string())
 }
 
+/// Prints the machine state (Defender, CPU load) when created and again when dropped, so a timing run records both ends.
+pub struct MachineBanner(&'static str);
+impl MachineBanner {
+    pub fn start(tag: &'static str) -> Self {
+        println!("{tag} machine at start: {}", machine_state());
+        MachineBanner(tag)
+    }
+}
+impl Drop for MachineBanner {
+    fn drop(&mut self) {
+        println!("{} machine at end: {}", self.0, machine_state());
+    }
+}
+
 /// The most carries per side `add_tree_law` takes on (unguarded lemmas are decision diagrams, guarded ones case trees over `k + carries` bits); env `CARRY_CAP`.
 pub fn carry_cap() -> usize {
     env_or("CARRY_CAP", 10)
@@ -888,7 +902,7 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
 #[ignore]
 pub fn lt_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("LTMINER machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("LTMINER");
     let n = 4usize;
     let nv = env_or("LTMINER_VARS", 2);
     let cap = env_or("LTMINER_MAX", 0);
@@ -914,7 +928,7 @@ pub fn lt_conjecture_miner() {
                 None => {
                     none += 1;
                     // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
-                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, nv));
+                    let generic = g[0].is_law(t2, nv);
                     println!("LTMINER no proof ({}): {} = {}", if generic { "holds at widths 1..6" } else { "width-specific" }, g[0].show(), t2.show());
                 }
             }
@@ -922,7 +936,6 @@ pub fn lt_conjecture_miner() {
     }
     let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
     println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.load(std::sync::atomic::Ordering::Relaxed));
-    println!("LTMINER machine at end: {}", machine_state());
     println!("LTMINER {total} conjectures, {proved} proved, {none} without a proof, {:?}", t0.elapsed());
 }
 
@@ -1184,7 +1197,7 @@ pub fn shl_conjectures(nv: usize) -> Vec<(Term, Term)> {
 #[ignore]
 pub fn shl_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("SHLMINER machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("SHLMINER");
     let n = 4usize;
     let (nv, cap) = (env_or("SHLMINER_VARS", 2), env_or("SHLMINER_MAX", 0));
     let mut conj = shl_conjectures(nv);
@@ -1210,7 +1223,7 @@ pub fn shl_conjecture_miner() {
                 None if [&g[0], t2].iter().all(|t| Machine::parse(t).is_none_or(|m| m.carries() == 0)) => carry_free += 1, // `bitwise_law` territory
                 None => {
                     // a law that fails at another width cannot have a proof for all widths
-                    let generic = (1..=6).all(|w| g[0].plausibly_equals(t2, w, nv));
+                    let generic = g[0].is_law(t2, nv);
                     t_none += 1;
                     if generic {
                         generic_none += 1;
@@ -1222,7 +1235,6 @@ pub fn shl_conjecture_miner() {
             }
         }
     }
-    println!("SHLMINER machine at end: {}", machine_state());
     println!("SHLMINER {} listed conjectures ({} after the cap), {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", conj.len(), conj.len(), t0.elapsed());
 }
 
@@ -1252,7 +1264,7 @@ pub fn multiplication_by_constants_as_shift_and_add_machines() {
         ("(x + y) + 2 (x + y) = 3x + 3y", op(0, op(0, v(0), v(1)), shl(op(0, v(0), v(1)))), op(0, mul_const(3, &v(0)), mul_const(3, &v(1)))),
     ];
     for (name, t1, t2) in &laws {
-        assert!((1..=6).all(|w| t1.plausibly_equals(t2, w, 2)), "{name} is not a law");
+        assert!(t1.is_law(t2, 2), "{name} is not a law");
         let t0 = Instant::now();
         let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
         let built = t0.elapsed();
@@ -1291,7 +1303,7 @@ pub fn mul_laws(max: u32) -> Vec<(String, Term, Term)> {
 #[ignore]
 pub fn mul_conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("MULMINER machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("MULMINER");
     let max = env_or("MULMINER_MAX", 7);
     let n = 4usize;
     let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
@@ -1300,7 +1312,7 @@ pub fn mul_conjecture_miner() {
     let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());
     for (name, t1, t2) in &laws {
         let cs = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
-        if !(1..=6).all(|w| t1.plausibly_equals(t2, w, 2)) {
+        if !t1.is_law(t2, 2) {
             continue;
         }
         let t = Instant::now();
@@ -1321,7 +1333,6 @@ pub fn mul_conjecture_miner() {
             }
         }
     }
-    println!("MULMINER machine at end: {}", machine_state());
     println!("MULMINER {} laws, {proved} proved and checked, {capped} over the carry cap, {none} unproved within it, {:?}", laws.len(), t0.elapsed());
 }
 
@@ -1333,13 +1344,13 @@ pub fn mul_conjecture_miner() {
 #[ignore]
 pub fn ablation_audit() {
     let _scope = tatic::kernel::InternScope::enter();
-    println!("AUDIT machine at start: {}", machine_state());
+    let _banner = MachineBanner::start("AUDIT");
     let max = env_or("MULMINER_MAX", 7);
     let gops = GoodOps::new();
     let (mut n_laws, mut moore_ns, mut total_ns) = (0, 0u128, 0u128);
     for (name, t1, t2) in mul_laws(max) {
         let (Some(m1), Some(m2)) = (Machine::parse(&t1), Machine::parse(&t2)) else { continue };
-        if !(1..=6).all(|w| t1.plausibly_equals(&t2, w, 2)) || m1.carries().max(m2.carries()) > carry_cap() {
+        if !t1.is_law(&t2, 2) || m1.carries().max(m2.carries()) > carry_cap() {
             continue;
         }
         let t = Instant::now();
@@ -1356,7 +1367,6 @@ pub fn ablation_audit() {
         total_ns += total.as_nanos();
         println!("AUDIT {name}: carries [{}, {}], states {classes:?}, phi bits {m}, g bits {gbits}, moore {moore:?}, proof {total:?}, proved {proved}", m1.carries(), m2.carries());
     }
-    println!("AUDIT machine at end: {}", machine_state());
     println!("AUDIT {n_laws} laws, Moore {:.1}s of {:.1}s proof time", moore_ns as f64 / 1e9, total_ns as f64 / 1e9);
 }
 
