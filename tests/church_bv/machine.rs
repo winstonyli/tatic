@@ -965,8 +965,11 @@ pub fn lt_conjecture_miner() {
                 _ => {
                     none += 1;
                     // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
-                    let generic = g[0].is_law(t2, nv);
-                    println!("LTMINER no proof ({}): {} = {}", if generic { "holds at widths 1..6" } else { "width-specific" }, g[0].show(), t2.show());
+                    let why = match g[0].refute(t2, nv) {
+                        None => "holds at widths 1..6".to_string(),
+                        Some((w, vals)) => format!("width-specific, differs at width {w} on {vals:?}"),
+                    };
+                    println!("LTMINER no proof ({why}): {} = {}", g[0].show(), t2.show());
                 }
             }
         }
