@@ -16,6 +16,7 @@
 # FAMILY=add3|mix3|sbo3|cmp3|cmp3d (default add3; the three-variable families, THREE_VAR_FAMILIES in tests/church_bv/search.rs) picks the law family; the add3-only options (DEEP3, WARM phase) do nothing for the others.
 # RULEMINER_SHAPE_SALT=<string> (exported) selects a different structure-based split; unset keeps the original halves.
 # THREADS=<n> (default 2) sizes the miner pool. To share the machine, also pin and lower priority at launch: cmd //c start "" //b //belownormal //affinity 5000 bash <script> (0x5000 = two physical cores, assuming adjacent logical cores are SMT siblings).
+# MACHINE_STATE=0 skips the loop's two machine-state probes (about 6 s each); a sweep of loops should record the state once itself (the ignored test `machine_state_line` prints it).
 # CHECK_FAST=1 does the same for serving (no proof building for machine fallbacks, no kernel check, no NFSAME pass); the CHECKED line and M are unchanged.
 # RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without searching for or building their proofs: about 10x faster mining on cmp3d, but approximate (it can pick different rules; M 41 vs 40 on one ref mine). Use it for exploration, not headline numbers. Serving and the M count are unaffected.
 set -euo pipefail
@@ -23,7 +24,7 @@ mode=$1; out=$2; mkdir -p "$out"
 B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}
 : "${EXE:?set EXE}"
 export MACHINE_BANNER=0 # one machine-state line per loop (start and end) instead of two per mine and serve, which cost about 5 s each
-echo "loop machine at start: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
+[ "${MACHINE_STATE:-1}" = 0 ] || echo "loop machine at start: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
 case "${WINDOW:-}" in ""|cum) ;; *) echo "WINDOW must be empty or cum, got ${WINDOW}" >&2; exit 2 ;; esac
 case "${SPLIT:-}" in ""|0|1) ;; *) echo "SPLIT must be 0 or 1, got ${SPLIT}" >&2; exit 2 ;; esac
 case "${WARM:-}" in ""|[0-9]*:[0-9]*) ;; *) echo "WARM must be <skip>:<laws>[:<phase>], got ${WARM}" >&2; exit 2 ;; esac
@@ -70,5 +71,5 @@ for ((r = 0; r < K; r++)); do
     if [ "${WINDOW:-}" = cum ]; then mine "$r" "$OFFSET" $((B * (r + 1))); else mine "$r" "$skip" "$B"; fi
   fi
 done
-echo "loop machine at end: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
+[ "${MACHINE_STATE:-1}" = 0 ] || echo "loop machine at end: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
 echo "mode=$mode B=$B K=$K offset=$OFFSET total_M=$total rules=$(wc -l < "$rules")"
