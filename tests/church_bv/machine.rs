@@ -874,18 +874,36 @@ pub fn conjecture_miner() {
 /// The conjectures of a term pool: terms with equal values on every width-`n` tuple of `nv` variables are paired with
 /// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
 pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
-    let mut groups: std::collections::HashMap<Vec<u128>, Vec<Term>> = Default::default();
-    let mut vals = vec![0u128; nv];
+    assert!(n <= 8, "behaviour signatures hold one byte per input");
+    // a term's behaviour is its value on every input; pool terms share subterms, so each distinct subterm is evaluated once,
+    // as a vector over all inputs, and its parent combines its children's vectors
+    let (inputs, mask) = (1usize << (n * nv), low_bits(n));
+    let mut ids: std::collections::HashMap<(usize, usize, usize), usize> = Default::default();
+    let mut sigs: Vec<Vec<u8>> = vec![];
+    fn id_of(t: &Term, n: usize, nv: usize, mask: u128, inputs: usize, ids: &mut std::collections::HashMap<(usize, usize, usize), usize>, sigs: &mut Vec<Vec<u8>>) -> usize {
+        let key = match t {
+            Term::V(v) => (usize::MAX, *v, 0),
+            Term::Zero => (usize::MAX - 1, 0, 0),
+            Term::Ones => (usize::MAX - 2, 0, 0),
+            Term::Op(o, a, b) => (*o, id_of(a, n, nv, mask, inputs, ids, sigs), id_of(b, n, nv, mask, inputs, ids, sigs)),
+        };
+        if let Some(&id) = ids.get(&key) {
+            return id;
+        }
+        let sig: Vec<u8> = match t {
+            Term::V(v) => (0..inputs).map(|i| (i >> (n * v) & mask as usize) as u8).collect(),
+            Term::Zero => vec![0; inputs],
+            Term::Ones => vec![mask as u8; inputs],
+            Term::Op(o, ..) => (0..inputs).map(|i| (OP_INFO[*o].word)(sigs[key.1][i] as u128, sigs[key.2][i] as u128, mask) as u8).collect(),
+        };
+        sigs.push(sig);
+        ids.insert(key, sigs.len() - 1);
+        sigs.len() - 1
+    }
+    let mut groups: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for t in pool {
-        let sig: Vec<u128> = (0..1u128 << (n * nv))
-            .map(|i| {
-                for (v, x) in vals.iter_mut().enumerate() {
-                    *x = i >> (n * v) & ((1 << n) - 1);
-                }
-                t.interp(n, &vals)
-            })
-            .collect();
-        groups.entry(sig).or_default().push(t);
+        let id = id_of(&t, n, nv, mask, inputs, &mut ids, &mut sigs);
+        groups.entry(sigs[id].clone()).or_default().push(t);
     }
     let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0].clone(), t2.clone()))).collect();
     conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));
