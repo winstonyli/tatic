@@ -9,7 +9,7 @@
 //! batches before serving them; `loop` mines each batch after serving it (not the last, which could not change any M); `none` only
 //! serves.
 //! Options (env, defaults in brackets): FAMILY [add3] (add3|mix3|sbo3|cmp3|cmp3d|u3|u3w, THREE_VAR_FAMILIES in search.rs), STRIDE [7],
-//! SPHASE [0], B [150], K [4], OFFSET [0], THREADS [2] (miner pool), ROUNDS [8], DEEP3 [1] (add3 only), SPLIT [2] (0|1 restricts
+//! SPHASE [0], B [150], K [4], OFFSET [0], THREADS [2] (miner pool), ROUNDS [no cap], DEEP3 [1] (add3 only), SPLIT [2] (0|1 restricts
 //! everything to one structure-based half of the laws; RULEMINER_SHAPE_SALT picks another split), WARM_RULES=<file> (start with those
 //! rules in force), CHECK_FAST [0] (serve without proof building or kernel checks; M is unchanged), MACHINE_STATE [1] (a machine-state
 //! line at start and end, about 6 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
@@ -21,11 +21,11 @@
 //!
 //! **A sweep** (the experiments of docs/loop-result.md): `SWEEP_OUT=<dir> [SALT=1] [LIB=<dir>] [SWEEP="mines own cold"] <exe>
 //! driver::sweep --exact --ignored --nocapture`. Every stage uses `RULEMINER_FAST=1` and `RULEMINER_SHUFFLE=$SALT`. Stages, in order:
-//! - `mines`: one ref mine per family on its phase-0 stream (`MINES`) -> `lib_<family>/`, summary rows in `mines.tsv` (family, seconds,
-//!   total M, rules, exhausted).
-//! - `own`, `cold`, `cross`, `pooled`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on phases
-//!   1-3, seeded with the family's own library, nothing, each other family's library, or the pooled library (cmp3d's, add3's and
-//!   sbo3's, without two sub/sub orientations add3 mines that conflict with sbo3's). Libraries are read from `LIB/lib_<family>/rules.txt`
+//! - `mines`, optionally `:<family>,..` (default sbo3,add3,mix3,cmp3d; u3 only when named): one ref mine per family on its phase-0
+//!   stream (`MINES`) -> `lib_<family>/`, summary rows in `<stage>.tsv` (family, seconds, total M, rules, exhausted).
+//! - `own`, `cold`, `cross`, `pooled`, `mixed`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on
+//!   phases 1-3, seeded with the family's own library, nothing, each other family's library, the pooled library (cmp3d's, add3's and
+//!   sbo3's, without two sub/sub orientations add3 mines that conflict with sbo3's), or the library mined on u3. Libraries are read from `LIB/lib_<family>/rules.txt`
 //!   (default LIB = SWEEP_OUT). One row per loop in `<stage>.tsv` (`:` becomes `_`): family, stride-phase, from_<source>, total M,
 //!   per-batch M, rules at the end, seconds, exhausted.
 
@@ -69,7 +69,7 @@ impl LoopCfg {
             k: env_or("K", 4),
             offset: env_or("OFFSET", 0),
             threads: env_or("THREADS", 2),
-            rounds: env_or("ROUNDS", 8),
+            rounds: env_or("ROUNDS", usize::MAX),
             deep3: env_or("DEEP3", 1),
             split: env_or("SPLIT", 2),
             warm: std::env::var("WARM_RULES").ok().map(PathBuf::from),
@@ -196,9 +196,11 @@ fn loop_stream() {
     }
 }
 
-/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (2 threads, 16 rounds, full serving check).
-const MINES: [(&str, usize, usize, usize); 4] = [("sbo3", 11, 2, 50), ("add3", 7, 2, 50), ("mix3", 1, 1, 50), ("cmp3d", 15, 2, 100)];
-/// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, 8 rounds, CHECK_FAST).
+/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (2 threads, no round cap, full serving check).
+/// u3 (the union of add3, sbo3 and cmp3d) is mined only when named (`mines:u3`).
+const MINES: [(&str, usize, usize, usize); 5] =
+    [("sbo3", 11, 2, 50), ("add3", 7, 2, 50), ("mix3", 1, 1, 50), ("cmp3d", 15, 2, 100), ("u3", 11, 2, 100)];
+/// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, no round cap, CHECK_FAST).
 const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
 
 #[test]
@@ -220,7 +222,7 @@ fn sweep() {
         k: 3,
         offset: 0,
         threads: 6,
-        rounds: 8,
+        rounds: usize::MAX,
         deep3: 1,
         split: 2,
         warm: None,
@@ -230,12 +232,13 @@ fn sweep() {
     let library = |fam: &str| lib.join(format!("lib_{fam}")).join("rules.txt");
     machine_state("start");
     for stage in stages.split_whitespace() {
-        let (name, fams) = stage.split_once(':').unwrap_or((stage, "cmp3d,add3,sbo3"));
+        let (name, fams) = stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
         let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
         std::fs::write(&tsv, "").unwrap();
         if name == "mines" {
-            for (fam, stride, split, b) in MINES {
-                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, rounds: 16, check_fast: false, ..base("ref", out.join(format!("lib_{fam}")), fam) };
+            for fam in fams.split(',') {
+                let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
+                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, check_fast: false, ..base("ref", out.join(format!("lib_{fam}")), fam) };
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg);
                 append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
@@ -264,6 +267,7 @@ fn sweep() {
                 "cold" => vec!["none"],
                 "cross" => ["cmp3d", "add3", "sbo3"].into_iter().filter(|s| *s != fam).collect(),
                 "pooled" => vec!["pooled"],
+                "mixed" => vec!["u3"],
                 _ => panic!("unknown stage {stage}"),
             };
             for src in srcs {

@@ -17,8 +17,9 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
 - **Loop.** Batch r is served under the rules mined from batches 0..r-1; after serving, the miner mines rules from the batch it just
   served. The last batch is never mined. A *cold* loop starts with no rules; a *seeded* loop starts with a library mined on a different,
   earlier stream (phase 0).
-- **Mining.** Greedy: each round adds the rule that most reduces M on the mined laws; it stops at `RULEMINER_ROUNDS` (default 8) or when
-  nothing helps. The ref mines that make the libraries run 16 rounds since 2026-10-11 (only cmp3d's reaches the cap). `RULEMINER_FAST=1` counts machine fallbacks without building their proofs (about 10x faster; approximate for the
+- **Mining.** Greedy: each round adds the rule that most reduces M on the mined laws; it stops when nothing helps (fewer laws needing
+  the machine, or smaller terms). Until 2026-10-11 it also stopped after `RULEMINER_ROUNDS` (default 8) rounds; that cap is now off by
+  default (`docs/tier-cycle.md`, "cmp3d's library lost its general rules"). `RULEMINER_FAST=1` counts machine fallbacks without building their proofs (about 10x faster; approximate for the
   results below, exact since 2026-10-11: `docs/tier-cycle.md`, "Miner speedups").
 
 ## Findings
@@ -58,13 +59,16 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
    its greedy, capped mine happens to pick. Mining cmp3d's library with 16 rounds brings both rules back (rounds 10 and 12, +1 and
    +3 on cmp3d's own laws) and gives add3 57 (from 147), sbo3 59 (from 95) and cmp3d's own loop 60 (from 68). With every ref mine at
    16 rounds (sbo3's library gains two `or` rules; add3's and mix3's stop by themselves and are unchanged): add3 183 / 60 / 46
-   (sbo3's) and 57 (cmp3d's), sbo3 123 / 31 / 48 (add3's) and 59 (cmp3d's), cmp3d 180 / 60 / 110-113, and pooled mix3 10
-   (`docs/tier-cycle.md`, "cmp3d's library lost its general rules").
+   (sbo3's) and 57 (cmp3d's), sbo3 123 / 31 / 48 (add3's) and 59 (cmp3d's), cmp3d 180 / 60 / 110-113, and pooled mix3 10.
+   With no round cap anywhere (identical libraries; the loops' per-batch mines are no longer cut at 8): add3 183 / 60 / 46 and
+   57, sbo3 123 / 31 / 47 and 58, cmp3d 167 / 60 / 110-113, mix3 cold 60, pooled 10 (`docs/tier-cycle.md`, "cmp3d's library lost
+   its general rules").
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
    dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5; with cycles cut and exact counting, from 60 to 10 (also
    with growing chains cut). It does not change the two-variable shl, shr or lt
    families (pre-dedup check).
-5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
+5. **One library can be mined on a mixed stream.** Current miner (uncapped, salt 1): the u3 mine stops at 17 rules; seeded totals
+   cmp3d 42 (own 60, pooled 60), add3 57 (own 60, pooled 42), sbo3 41 (own 31, pooled 32), mix3 17 (pooled 10). Earlier miner: On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
    (re-mining on the post-dedup u3 stream gave the identical 8- and 25-rule libraries): cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
    66 (66) vs own 62 (62); mix3 16 (20). Pre-dedup, sbo3 was within +-8 of its own library on three of four salts (126/46/54, 117/47/72,
    133/50/52, 142/54/52 for cold/own/mixed); after the dedup its own library is better by 16. The 8-round default cap, not the approximate miner, was the limit: exact mining produced the identical library.

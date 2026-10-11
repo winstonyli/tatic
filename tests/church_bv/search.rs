@@ -660,7 +660,8 @@ pub struct MinerConfig {
     pub steps: usize,
     /// `RULEMINER_VARS`: variable cap of cross-side rules.
     pub vars: usize,
-    /// `RULEMINER_ROUNDS`: greedy rounds.
+    /// `RULEMINER_ROUNDS`: greedy rounds (default no cap: the mine stops when no candidate gains; a cap trimmed general rules,
+    /// docs/tier-cycle.md "cmp3d's library lost its general rules"; with `RULEMINER_SHOW=1`, 0 just lists the candidates).
     pub rounds: usize,
     /// `RULEMINER_THREADS`: scoring threads, clamped to 1..=12.
     pub threads: usize,
@@ -679,7 +680,7 @@ impl MinerConfig {
             perm: env_or("RULEMINER_PERM", 0),
             steps: env_or("RULEMINER_STEPS", 200),
             vars: env_or("RULEMINER_VARS", 4),
-            rounds: env_or("RULEMINER_ROUNDS", 8),
+            rounds: env_or("RULEMINER_ROUNDS", usize::MAX),
             threads: env_or("RULEMINER_THREADS", 1).clamp(1, 12),
             any_op: flag("RULEMINER_ANY"),
             show: flag("RULEMINER_SHOW"),

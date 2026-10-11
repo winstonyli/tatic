@@ -5,14 +5,15 @@
 #   EXE=<church_bv test exe> FAMILY=<target family> LAWS=<file of lhs = rhs lines> scripts/transfer_score.sh OUTDIR
 # BASE=<rules file> is in force for mining and for both M counts (default: no rules). The held-out window is HELD_SKIP (default 2000),
 # HELD_LAWS (default 300) of the family's sequence at stride 1; RULEMINER_SHUFFLE=<salt> (exported) orders it. THREADS (default 2) and
-# ROUNDS (default 8) size the miner; RULEMINER_FAST=1 (exported) mines without building proofs, about 5x faster, with exact counts.
+# ROUNDS (default no cap) size the miner; RULEMINER_FAST=1 (exported) mines without building proofs, about 5x faster, with exact counts.
 # Prints one line: TRANSFER family=.. laws=.. stragglers=.. rules=.. M_before=.. M_after=.. gain=..
 set -euo pipefail
 out=$1; mkdir -p "$out"
 : "${EXE:?set EXE}" "${FAMILY:?set FAMILY}" "${LAWS:?set LAWS}"
+if [ -n "${ROUNDS:-}" ]; then export RULEMINER_ROUNDS=$ROUNDS; fi
 base="$out/base.txt"; if [ -n "${BASE:-}" ]; then cp "$BASE" "$base"; else : > "$base"; fi
 MACHINE_BANNER=0 RULEMINER_FAMILY=$FAMILY RULEMINER_DEEP3=1 RULEMINER_PERM=1 RULEMINER_STEPS=40 RULEMINER_THREADS=${THREADS:-2} \
-  RULEMINER_ROUNDS=${ROUNDS:-8} RULEMINER_BASE="$base" RULEMINER_LAWFILE="$LAWS" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine.log" 2>&1 \
+  RULEMINER_BASE="$base" RULEMINER_LAWFILE="$LAWS" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine.log" 2>&1 \
   || { echo "transfer_score: rule_miner failed (see $out/mine.log)" >&2; exit 1; }
 { cat "$base"; grep -E "RULEMINER chosen" "$out/mine.log" | grep -- " -> " | sed 's/.*size): //' || true; } > "$out/rules.txt"
 m() { # rules file -> laws of the held-out window that still need a machine proof
