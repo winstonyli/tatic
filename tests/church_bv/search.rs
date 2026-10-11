@@ -1805,7 +1805,8 @@ pub fn normal_forms() {
         let (a, b) = (parse_term(a), parse_term(b));
         RULE_BUDGET.with(|c| c.set(200));
         let (na, nb) = (rewrite(&a, n, &ops, &goods).0, rewrite(&b, n, &ops, &goods).0);
-        println!("NF {} | {} {}", na.show(), nb.show(), if na.show() == nb.show() { "SAME" } else { "DIFF" });
+        let carries = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
+        println!("NF {} | {} {} carries {}/{}", na.show(), nb.show(), if na.show() == nb.show() { "SAME" } else { "DIFF" }, carries(&na), carries(&nb));
     }
 }
 
@@ -1935,18 +1936,26 @@ pub fn proof_cost_split() {
 /// `RULEMINER_*` vars), one TSV row per law to `WORK_OUT`: fallbacks, rule steps, proof size (unique nodes), nodes built while
 /// building the proof, kernel node visits while checking it (instantiate, shift, eq, conv and nf whnf, infer misses), beta steps,
 /// the build and check wall times in microseconds (to compare the counts with time), and the counted visits while building (the
-/// one-time lemma checks, and the builders' own `shift`s). Unproved laws are skipped.
+/// one-time lemma checks, and the builders' own `shift`s), each split by slot. Without the feature the counts are zero and the
+/// times are uninstrumented, so a normal-build run gives the times to fit the counts against.
 #[test]
 #[ignore]
-#[cfg(feature = "record-defeq")]
 pub fn law_work_report() {
     use std::{io::Write, time::Instant};
+    #[cfg(feature = "record-defeq")]
     use tatic::kernel::{take_beta_count, take_hc_built, take_walk_counts};
+    #[cfg(not(feature = "record-defeq"))]
+    let (take_beta_count, take_hc_built, take_walk_counts) = (|| 0u64, || (0u64, 0u64), || [0u64; 26]);
     let _scope = tatic::kernel::InternScope::enter();
     let (_, kv, laws) = check_laws();
     let mut out = std::fs::File::create(std::env::var("WORK_OUT").unwrap()).unwrap();
-    writeln!(out, "law\tfallbacks\tsteps\tnodes\tbuilt\tvisits\tbetas\tbuild_us\tcheck_us\tbuild_visits").unwrap();
-    let visits_of = |w: &[u64]| -> u64 { [0, 1, 2, 3, 4, 20].iter().map(|&i| w[i]).sum() };
+    // per counted slot (instantiate, shift, eq, conv_whnf, nf_whnf, infer miss), building (`b_`) and checking (`c_`), to fit
+    // time against counts; `check_built` is the terms interned while checking
+    const SLOTS: [(usize, &str); 6] = [(0, "inst"), (1, "shift"), (2, "eq"), (3, "conv"), (4, "nf"), (20, "infer")];
+    let slot_cols = |p: &str| SLOTS.iter().map(|(_, s)| format!("\t{p}{s}")).collect::<String>();
+    writeln!(out, "law\tfallbacks\tsteps\tnodes\tbuilt\tvisits\tbetas\tbuild_us\tcheck_us\tbuild_visits\tcheck_built{}{}", slot_cols("b_"), slot_cols("c_")).unwrap();
+    let visits_of = |w: &[u64]| -> u64 { SLOTS.iter().map(|&(i, _)| w[i]).sum() };
+    let slots_of = |w: &[u64]| SLOTS.iter().map(|&(i, _)| format!("\t{}", w[i])).collect::<String>();
     take_walk_counts();
     for (name, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
@@ -1957,14 +1966,26 @@ pub fn law_work_report() {
         let build = t.elapsed();
         let (fallbacks, steps, built) = (MACHINE_FALLBACKS.with(|c| c.get()) - before, 200 - RULE_BUDGET.with(|b| b.get()), take_hc_built().0);
         // counted work while building: the one-time lemma checks and the builders' own shifts
-        let build_visits = visits_of(&take_walk_counts());
+        let bw = take_walk_counts();
         take_beta_count();
         let t = Instant::now();
         ck(name, &p, &s);
         let check = t.elapsed();
-        let visits = visits_of(&take_walk_counts());
+        let (cw, check_built) = (take_walk_counts(), take_hc_built().0);
         let nodes = tatic::kernel::term_sizes(&p).0;
-        writeln!(out, "{}\t{fallbacks}\t{steps}\t{nodes}\t{built}\t{visits}\t{}\t{}\t{}\t{build_visits}", name.replace('\t', " "), take_beta_count(), build.as_micros(), check.as_micros()).unwrap();
+        writeln!(
+            out,
+            "{}\t{fallbacks}\t{steps}\t{nodes}\t{built}\t{}\t{}\t{}\t{}\t{}\t{check_built}{}{}",
+            name.replace('\t', " "),
+            visits_of(&cw),
+            take_beta_count(),
+            build.as_micros(),
+            check.as_micros(),
+            visits_of(&bw),
+            slots_of(&bw),
+            slots_of(&cw)
+        )
+        .unwrap();
     }
 }
 

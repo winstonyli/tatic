@@ -306,10 +306,44 @@ of visits with lemma counts in parentheses):
 - **Even without diagrams the library costs more kernel work than none** (41.4M against 37.7M): its rules' own machine proofs
   (3.8M, checked once) and the longer rewriting outweigh the cheaper law checks.
 
-Next: decide whether a total kernel cost (an MDL-like total: law checks plus the one-time lemma checks and building) should replace
-M in the miner's objective and the proposer's reward. On visits the two rank cmp3d's library oppositely, but visits do not track
-time (above), so the cost needs calibrating against time first (per-slot weights plus a construction count, fitted on the
-per-law rows).
+### A rewrite cycle behind cmp3d's leftover laws (2026-10-10)
+Of the 31 cmp3d laws that need a machine proof under the own library, 20 used up the whole rule budget (200 steps; no law does
+without a library; sbo3: 2 of 17). The cause is a cycle between a mined rule and the built-in ones:
+`lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))` (mined) undoes `lt(x, add(x, y)) -> lt(x, sub(0, y))` and `sub(x, 0) -> x`
+(built in), so `lt(y, add(y, z))` loops until the budget runs out. The budget is shared by both sides of a law, so the other side
+is left half-normalised, and the pair needs a machine proof that is larger than the one without the library (more carries, for
+example 6/4 instead of 4/4; `normal_forms` now prints them). 9 of the 31 laws need no machine proof at all without the library.
+On the same 31 laws the kernel visits are 11.6M without the library and 48.1M with it.
+
+The mined rule grows in the rule order (`x` occurs twice on the right), so the order check would reject it; it got in as a
+*cross-side* rule (three or more variables, abstracted from the two sides of a law), which the miner admits without an order
+check, leaving the budget as the only guard against cycles (`search.rs`, `ok_order`). Its reverse direction goes down in the order.
+Not fixed yet; the general fix is to orient cross-side candidates by the rule order like the pool candidates (and drop the ones that
+go down in neither direction), then re-mine and re-measure M.
+
+### Kernel cost calibrated against time (2026-10-10)
+`law_work_report` now writes each counted slot separately for building (`b_`) and checking (`c_`), plus the terms built while
+checking, and also runs in the normal build (counts zero, uninstrumented times). Per-law time (normal build, pinned to two cores,
+the smaller of two runs; the machine was not quiet, 16-58% load from other programs) was fitted against the per-law counts (feature
+build) by non-negative least squares on half of the 1,200 rows (sbo3 and cmp3d, own library and none), and tested on the other
+half. Held-out error (sum of absolute errors over total time): 18% for the fit, 55% for raw visits with one weight. The weights
+are collinear and not individually meaningful; building's `shift` visits got weight 0, as the `bool0` timing found.
+
+| family, library | M | time s | fitted s | total visits (M) |
+|---|---|---|---|---|
+| sbo3, none | 92 | 10.9 | 13.5 | 10.6 |
+| sbo3, own | 17 | 4.8 | 7.0 | 6.1 |
+| cmp3d, none | 118 | 50.8 | 51.7 | 37.7 |
+| cmp3d, own | 31 | 46.2 | 48.9 | 55.1 |
+
+- **By time the own library is cheaper on both families** (sbo3 2.3x, cmp3d 1.1x), the direction M gives; raw visits ranked
+  cmp3d's library the other way. cmp3d gains little because of the cycle above.
+- **Decision: M stays the miner's objective.** It agrees in direction with time on both families, is deterministic, and can be
+  counted without building proofs (`RULEMINER_FAST`), which a fitted cost cannot (it needs the feature build, about 4x slower, and
+  weights tied to this machine). The fitted cost is a check to report beside M, not an objective. The cmp3d gap between M's cut
+  (3.8x) and time's (1.1x) is a defect in the library (the cycle), not in M.
+
+Next: orient cross-side rules (above), re-mine the salt-1 libraries, and re-measure M and time.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
