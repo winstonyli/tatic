@@ -264,8 +264,8 @@ removes the shift and leaves the term identical (per-law M, nodes and check visi
 fell from 8.6M to 2.0M (sbo3) and from 69M to 17.3M (cmp3d).
 
 The rest of cmp3d's builder cost is mostly `lemma_dd` (11.0M): `cong_n` and `trans_proof` shift the J motive at every node of a
-decision diagram. Parked: removing it needs a different proof shape (for example a closed `cong_mux` lemma used as a parameter), not
-a local rewrite.
+decision diagram. Parked: removing it needs a different proof shape (for example a closed `cong_mux` lemma used as a parameter), and
+these shifts are cheap in time (below), so it would change the visit count more than the run time.
 
 Kernel work with parameters as the only path and the new `bool0` (same 300-law windows; M and law-check visits identical to the
 "on" columns above):
@@ -279,12 +279,37 @@ Kernel work with parameters as the only path and the new `bool0` (same 300-law w
 
 - **Total kernel work and M now disagree on cmp3d.** The own library cuts M 3.8x and law-check visits 1.6x, but raises total visits
   1.46x (37.7M to 55.1M), because building under it costs more (52.0M against 32.8M). On sbo3 both agree (total 10.6M to 6.1M).
-  What makes cmp3d's library builds dearer (the mined rules' own machine proofs and their case lemmas, checked once, or more
-  `lemma_dd` work) is not yet split.
 
-Next: split cmp3d's build visits by library (rule-proof checks versus case lemmas versus `lemma_dd`); then decide whether total
-visits (an MDL-like total: law checks plus the one-time lemma checks and building) should replace M in the miner's objective and the
-proposer's reward. On this evidence the two would rank cmp3d's library oppositely.
+Split by region (prototype, reverted: exclusive attribution of counted visits to nested labelled regions, cmp3d, 300 laws, millions
+of visits with lemma counts in parentheses):
+
+| region | none | own | own, `NOBDD=1` |
+|---|---|---|---|
+| case-lemma checks, for the laws' machine proofs | 28.7 (683) | 29.9 (344) | 27.3 (344) |
+| `lemma_dd` building (the case lemmas with nv >= 9) | 0 | 11.0 (15) | 0 |
+| case-lemma checks inside the mined rules' proofs | 0.3 (104) | 3.8 (188) | 3.8 (188) |
+| rewriting and the rest of building | 3.8 | 7.2 | 7.2 |
+| law checks | 4.8 | 3.1 | 3.1 |
+| total | 37.7 | 55.1 | 41.4 |
+
+- **Checking case lemmas is most of the kernel work** (61-77%). The laws' machine proofs need half as many case lemmas under the own
+  library, but each costs about twice as much (87k against 42k visits): the laws the library leaves are the ones with wider machines.
+- **By visits the diagram proofs cost more than the case trees they replace, by time they cost less.** All 15 diagram lemmas come
+  from the laws' machine proofs (none from the rule proofs). With `NOBDD=1` the same lemmas are case trees: building them costs no
+  counted visits (after the `bool0` fix) and checking them costs 2.6M less, so the total falls 55.1M to 41.4M with M unchanged (31).
+  But `proof_cost_split` (normal build, own library, pinned to two cores, five alternating runs each, machine load 7-66% from another
+  program, so best-of) takes 52.2 s CPU with case trees against 47.1 s with diagrams: building 2^nv-leaf trees costs time the
+  visit count does not see. Diagrams stay (`DDMIN=9`).
+- **Shift visits are cheap.** The `bool0` fix removed 2-3x of the build visits but did not change time (same runs: sbo3 5.7-6.8 s old,
+  5.5-6.3 s new; cmp3d 47.5-49.0 s old, 47.1-51.9 s new). So the visit count overweights `shift` and misses term construction; as
+  a cost for the miner's objective it needs weights (or construction counts, `take_hc_built`) checked against time first.
+- **Even without diagrams the library costs more kernel work than none** (41.4M against 37.7M): its rules' own machine proofs
+  (3.8M, checked once) and the longer rewriting outweigh the cheaper law checks.
+
+Next: decide whether a total kernel cost (an MDL-like total: law checks plus the one-time lemma checks and building) should replace
+M in the miner's objective and the proposer's reward. On visits the two rank cmp3d's library oppositely, but visits do not track
+time (above), so the cost needs calibrating against time first (per-slot weights plus a construction count, fitted on the
+per-law rows).
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
