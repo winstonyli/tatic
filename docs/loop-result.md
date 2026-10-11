@@ -32,18 +32,21 @@ are local and not in the repository.
 
    Sorted batches are lexicographic ranges, so their per-batch M mixes learning with batch structure; shuffled streams remove that.
 
-   All numbers on this page predate the dedup of the term pools (`pool3`, after commit `ff664d6`). Some small terms had appeared more
-   than once, which made 2-6% of the laws trivial or repeated. Rerun at salt 1 after the dedup: cmp3d 231 vs 109 (.47), add3 183 vs 62
-   (.34, unchanged), sbo3 128 vs 41 (.32), seeded better on 9 of 9 streams. The other cells were not rerun.
+   The table predates the dedup of the term pools (`pool3`, commit `bd00e69`). Some small terms had appeared more than once, which made
+   2-6% of the laws trivial or repeated and shifted every law sequence. Rerun at salt 1 after the dedup (libraries re-mined): cmp3d
+   231 vs 109 (.47), add3 183 vs 62 (.34, unchanged), sbo3 128 vs 41 (.32), seeded better on 9 of 9 streams. Findings 3-5 below give
+   post-dedup salt-1 numbers with the pre-dedup ones in parentheses; salt 2 was not rerun. Every seeded stream in them (45) beat its
+   cold stream.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
-   foreign): add3 183 / 62 / 56-65, sbo3 126 / 46 / 52-66, cmp3d 190 / 80 / 118-119. cmp3d needs its comparison rules, so it benefits
-   least.
-4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 66 to 13 (mix3 contributed no
-   rule). It does not change the two-variable shl, shr or lt families.
-5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2): cmp3d 54 and 60 (own
-   library 80 and 96); sbo3 within +-8 of its own library on three of four salts (126/46/54, 117/47/72, 133/50/52, 142/54/52 for
-   cold/own/mixed); add3 66 vs own 62 and 51. The 8-round default cap, not the approximate miner, was the limit: exact mining produced the
-   identical library.
+   foreign): add3 183 / 62 / 47-67 (56-65), sbo3 128 / 41 / 53-69 (52-66), cmp3d 231 / 109 / 139-140 (118-119). cmp3d needs its
+   comparison rules, so it benefits least.
+4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
+   dedup; mix3 contributed no rule). It does not change the two-variable shl, shr or lt families (pre-dedup check).
+5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1, with that
+   library mined before the dedup and served on the post-dedup streams: cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
+   66 (66) vs own 62 (62); mix3 16 (20). Pre-dedup, sbo3 was within +-8 of its own library on three of four salts (126/46/54, 117/47/72,
+   133/50/52, 142/54/52 for cold/own/mixed); after the dedup its own library is better by 16. The u3 library has not been re-mined on
+   the post-dedup stream. The 8-round default cap, not the approximate miner, was the limit: exact mining produced the identical library.
 
 ## What this does not show
 - **Single runs.** Per-cell noise is unmeasured; the salts and streams are the only replicates. Differences of a few proofs are not

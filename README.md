@@ -134,26 +134,28 @@ ranges of the law sequence, which mixes learning with batch structure, so
 families by a hash and makes each batch a random sample. All numbers below are
 single runs with `RULEMINER_FAST`, `B=100 K=3`, three disjoint streams per family
 (stride 15 cmp3d, 7 add3, 11 sbo3, mix3 7), total M summed over the three
-streams, salt 1 unless noted; libraries are mined on the shuffled phase-0 stream
+streams, salt 1; libraries are mined on the shuffled phase-0 stream
 of their family (8 rules each; `FAMILY=u3` is the union of the add3, sbo3 and
 cmp3d pools, for mining one library on a mixed stream).
 
-| target | cold | own library | other family's library | pooled (merged) | mined on u3 |
-|---|---|---|---|---|---|
-| cmp3d | 190 (salt 2: 182) | 80 (96) | 118-119 (126) | 82 | 137 |
-| add3 | 183 (165) | 62 (51) | 56-65 (37-68) | 51 | 72 |
-| sbo3 | 126 (117) | 46 (47) | 52-66 (55-66) | 45 | 54 |
-| mix3 (held out) | 66 | n/a | n/a | 13 | 20 |
+| target | cold | own library | other family's library | pooled (merged) | mined on u3, 8 rules | mined on u3, 25 rules |
+|---|---|---|---|---|---|---|
+| cmp3d | 231 (190) | 109 (80) | 139-140 (118-119) | 113 (82) | 138 (137) | 67 (54) |
+| add3 | 183 (183) | 62 (62) | 47-67 (56-65) | 51 (51) | 72 (72) | 66 (66) |
+| sbo3 | 128 (126) | 41 (46) | 53-69 (52-66) | 49 (45) | 58 (54) | 57 (54) |
+| mix3 (held out) | 58 (66) | n/a | n/a | 8 (13) | 16 (20) | 16 (20) |
 
-The table was measured before the term pools were deduplicated. The pools had built some small terms at more than one depth, which put
-2-6% trivial or repeated laws into the streams. After the dedup, every family's law sequence shifts. Re-measured at salt 1, cold vs own
-library: cmp3d 231 vs 109, add3 183 vs 62 (unchanged), sbo3 128 vs 41; seeded still beat cold on 9 of 9 streams. The other cells were
-not rerun.
+Numbers are after the dedup of the term pools (`pool3`, commit `bd00e69`); in parentheses, the same cell before it. The pools had
+built some small terms at more than one depth, which put 2-6% trivial or repeated laws into the streams and shifted every family's law
+sequence. The family libraries were re-mined after the dedup; the two u3 libraries were not (they were mined on the pre-dedup u3
+stream). Seeding with any library beat cold on all 45 seeded streams. Salt-2 numbers (pre-dedup) are in
+[docs/loop-result.md](docs/loop-result.md).
 
-Seeding with any library beat cold on every stream (18 of 18 own-library streams over two salts, all cross
-runs), a library from another family recovers most of the gain except for cmp3d,
+A library from another family recovers most of the gain except for cmp3d,
 which needs its comparison rules, and a library pooled from the other families
-transfers to mix3 although mix3 contributed none of its rules. The pooled library
+transfers to mix3 although mix3 contributed none of its rules. After the dedup the 25-rule u3 library beats the family's own on cmp3d
+by more (67 vs 109), and the merged library stays close to cmp3d's own (113 vs 109). The rest of this paragraph is
+pre-dedup. The pooled library
 is the union of the three families' libraries with add3's `sub`/`sub`
 orientation dropped (the orientations conflict and a plain union would cycle); a
 library mined directly on the mixed stream is a little worse than the merged one
