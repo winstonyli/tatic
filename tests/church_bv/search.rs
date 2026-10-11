@@ -1009,13 +1009,13 @@ pub fn rule_miner() {
     // than under the built-in rules alone, the size of its normalized terms (stragglers only) and, with `record`, every term
     // `rule_step` was asked about. A candidate whose left side matches none of those terms (rules are tried in order, the candidate
     // last) cannot change a law's rewriting, so its laws keep the result under the rules chosen so far.
-    let score_laws = |extra: &[(Term, Term)], which: &[usize], record: bool| -> Vec<(bool, i64, Vec<Term>)> {
+    let score_laws = |extra: &[(Term, Term)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(extra).cloned().collect());
-        REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(kv)));
+        REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
         SCORE_ONLY.with(|s| s.set(cfg.fast));
@@ -1045,10 +1045,10 @@ pub fn rule_miner() {
             })
             .collect();
         SCORE_ONLY.with(|s| s.set(false));
-        REWRITE_MEMO.with(|m| *m.borrow_mut() = None);
+        let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
-        out
+        (out, memo)
     };
     let all_laws: Vec<usize> = (0..scored.len()).collect();
     let summarize = |ev: &[(bool, i64, Vec<Term>)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
@@ -1065,7 +1065,7 @@ pub fn rule_miner() {
         ok
     };
     let mut chosen: Vec<(Term, Term)> = vec![];
-    let mut base_eval = score_laws(&chosen, &all_laws, true);
+    let (mut base_eval, _) = score_laws(&chosen, &all_laws, true, None);
     let (mut covered, mut size) = summarize(&base_eval);
     let (law_evals, law_reuses) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
     let (mut scorings, mut skipped) = (0usize, 0usize);
@@ -1084,61 +1084,67 @@ pub fn rule_miner() {
         order.sort_by_key(|&(b, i)| (std::cmp::Reverse(b), i));
         // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
         // scope, a chunk at a time in order of their bound; scoring stops at a bound below the best gain so far, since those
-        // candidates cannot win, so the choice does not depend on the thread count or the chunking
+        // candidates cannot win, so the choice does not depend on the thread count or the chunking. Each worker keeps a memo valid
+        // under the rules chosen so far: a candidate's scoring is seeded with the entries it cannot change (`RewriteMemo::filtered`),
+        // and the entries it computed without its left side matching their traces join the memo. Expressions are per thread, so
+        // each worker grows its own (1.5x faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
         let threads = cfg.threads.clamp(1, 12);
-        let score = |idx: &[usize]| -> Vec<(usize, (i64, Vec<bool>, i64))> {
-            let run = |idx: &[usize]| -> Vec<(usize, (i64, Vec<bool>, i64))> {
-                let _scope = tatic::kernel::InternScope::enter();
-                idx.iter()
-                    .map(|&i| {
-                        let mut with = chosen.clone();
-                        with.push(provable[i].clone());
-                        let fresh = score_laws(&with, &affected[i], false);
-                        law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
-                        law_reuses.fetch_add(all_laws.len() - affected[i].len(), std::sync::atomic::Ordering::Relaxed);
-                        let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
-                        for (&si, f) in affected[i].iter().zip(&fresh) {
-                            ev[si] = (f.0, f.1);
-                        }
-                        let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
-                        (i, ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), f, sz))
-                    })
-                    .collect()
-            };
-            if threads == 1 {
-                return run(idx);
+        let score_one = |i: usize, memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
+            let mut with = chosen.clone();
+            with.push(provable[i].clone());
+            let untouched = |tr: &[Term]| !tr.iter().any(|t| match_pat(&provable[i].0, t, &mut vec![None; 8]));
+            let (fresh, grown) = score_laws(&with, &affected[i], true, Some(memo.filtered(untouched)));
+            memo.absorb(grown.filtered(untouched));
+            law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
+            law_reuses.fetch_add(all_laws.len() - affected[i].len(), std::sync::atomic::Ordering::Relaxed);
+            let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
+            for (&si, f) in affected[i].iter().zip(&fresh) {
+                ev[si] = (f.0, f.1);
             }
-            std::thread::scope(|sc| {
-                let handles: Vec<_> = (0..threads)
-                    .map(|t| {
-                        let part: Vec<usize> = idx.iter().copied().skip(t).step_by(threads).collect();
-                        let run = &run;
-                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || run(&part)).unwrap()
-                    })
-                    .collect();
-                handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-            })
+            let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
+            ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), f, sz)
         };
         // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
         // candidates whose bound reaches the next best
         let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
         let mut next = 0;
-        let winner = loop {
-            let best = (0..provable.len()).filter(|&i| proofs[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
-            let floor = best.map_or(1, |b| b.0);
-            let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
-            if chunk.is_empty() {
-                let Some((_, i)) = best else { break None };
-                if *proofs[i].get_or_insert_with(|| prove_one(i)) {
-                    break Some(i);
+        let winner = std::thread::scope(|sc| {
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let work: Vec<std::sync::mpsc::Sender<Vec<usize>>> = (0..threads)
+                .map(|_| {
+                    let (tx, rx) = std::sync::mpsc::channel::<Vec<usize>>();
+                    let (done_tx, score_one) = (done_tx.clone(), &score_one);
+                    let worker = move || {
+                        let _scope = tatic::kernel::InternScope::enter();
+                        let mut memo = RewriteMemo::new(kv);
+                        for i in rx.iter().flatten() {
+                            done_tx.send((i, score_one(i, &mut memo))).unwrap();
+                        }
+                    };
+                    std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
+                    tx
+                })
+                .collect();
+            loop {
+                let best = (0..provable.len()).filter(|&i| proofs[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
+                let floor = best.map_or(1, |b| b.0);
+                let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
+                if chunk.is_empty() {
+                    let Some((_, i)) = best else { break None };
+                    if *proofs[i].get_or_insert_with(|| prove_one(i)) {
+                        break Some(i);
+                    }
+                    continue;
                 }
-                continue;
+                next += chunk.len();
+                for (t, tx) in work.iter().enumerate() {
+                    tx.send(chunk.iter().copied().skip(t).step_by(threads).collect()).unwrap();
+                }
+                for (i, r) in done_rx.iter().take(chunk.len()) {
+                    results[i] = Some(r);
+                }
             }
-            next += chunk.len();
-            for (i, r) in score(&chunk) {
-                results[i] = Some(r);
-            }
-        };
+        });
         scorings += next;
         skipped += provable.len() - next;
         phase(&format!("round over {} of {} candidates", next, provable.len()));
@@ -1148,7 +1154,7 @@ pub fn rule_miner() {
         println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
         phase("winner proof");
         chosen.push(rule);
-        base_eval = score_laws(&chosen, &all_laws, true);
+        (base_eval, _) = score_laws(&chosen, &all_laws, true, None);
         (covered, size) = summarize(&base_eval);
     }
     println!("RULEMINER scoring reused {} of {} law evaluations", law_reuses.load(std::sync::atomic::Ordering::Relaxed), law_evals.load(std::sync::atomic::Ordering::Relaxed));

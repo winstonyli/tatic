@@ -458,6 +458,14 @@ through the cut).
   on cmp3d (1367 of 1584) with identical rules (also at one thread on sbo3), but the mine only drops from 95 s to 87-90 s. The
   candidates with the highest bounds are the general patterns that rescore most laws, and they cost the most. They are also the
   ones that can win, so no exact bound skips them. Base evaluation and bounds take 0.3-0.4 s a round.
+- **Seeded memo (exact, 1.5x scoring).** A candidate is tried after the chosen rules, so a memo entry whose trace its left side
+  matches nowhere has the same result with it (`RewriteMemo::filtered`, the per-sub-term form of the `affected` argument; checked by
+  `filtered_memo_entries_hold_under_an_extra_rule`). Each worker keeps a memo valid under the chosen rules for the round. It seeds
+  every candidate's scoring with the entries that candidate cannot change, and it adds the entries the candidate computed without
+  matching their traces. Workers are spawned once a round and fed chunks over a channel, since expressions are per thread and
+  cannot be shared. On cmp3d's ref mine (2 threads, pinned to two cores, ABAB, machine load 30-60%), the scoring rounds take
+  30.5-32.1 s against 45.7-49.1 s. sbo3's take 5.6-7.5 s against 7.0-7.1 s. Rules were identical in every run. A first version
+  rebuilt each worker's memo from all laws every round: 1.4x at one thread but 1.19x at two.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
@@ -474,8 +482,21 @@ Scoring every right side per left side (re-mined at salt 1, total M):
 | cold loop | 183 / 173 | 123 / 124 | | 184 / 214 |
 
 It fixes add3 and mix3 but makes sbo3's and cmp3d's own loops worse and cmp3d's mine 4.5x slower (each left side's rivals are scored
-separately). Kept one per left side. A general fix would choose the orientation by the gain it gives, not by string order, without
-scoring every rival: for instance rescore only the left sides whose kept candidate wins.
+separately). Kept one per left side.
+
+Rescoring only the winner's rivals (a rival replaces the winner on a strictly higher gain, proved lazily) costs little. On add3's
+mine it took `sub(sub(x, y), z) -> sub(x, add(y, z))`, the rule sbo3 has. Still mixed (salt 1, total M, committed miner / rivals):
+
+| | add3 | sbo3 | mix3 | cmp3d |
+|---|---|---|---|---|
+| mine | 18 / 5 | 12 / 12 | 14 / 9 | 30 / 43 (96 s / 163 s) |
+| own loop | 61 / 28 | 35 / 35 | | 68 / 83 |
+| cold loop | 183 / 179 | 123 / 130 | | 184 / 211 |
+
+cmp3d's loss comes from greedy myopia, not from the rival. Its round 3 took the rival `add(sub(x, y), z) -> sub(add(x, z), y)`.
+Round 5 then took the inverse `sub(add(x, y), z) -> add(sub(x, z), y)` at -1 fixed laws for a 7697 size cut, and the pair cycles
+(cut after one lap). Reverted; the patch is not kept. Parked: rival rescoring together with refusing a winner that unfixes laws
+(fewer fixed than before, whatever its size cut). That refusal is general, but it is untested and also changes the baseline.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

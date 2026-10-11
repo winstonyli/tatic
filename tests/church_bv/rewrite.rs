@@ -961,8 +961,9 @@ struct Rewritten {
     /// rule steps used (`RULE_BUDGET`): a hit needs at least this many left
     steps: i64,
     fallbacks: u64,
-    /// the terms `rule_step` was asked about (`RULE_TRACE`)
+    /// the terms `rule_step` was asked about (`RULE_TRACE`), when `traced` (the trace was on)
     trace: Vec<Term>,
+    traced: bool,
 }
 
 /// While `Some`, `rewrite` calls with `goods.len()` goods are cached by (width, term). The rule miner sets it for one rule set
@@ -976,6 +977,17 @@ pub struct RewriteMemo {
 impl RewriteMemo {
     pub fn new(goods_len: usize) -> RewriteMemo {
         RewriteMemo { goods_len, map: Default::default() }
+    }
+
+    /// The traced entries whose traces `keep` accepts. A rule tried after the others changes no entry whose trace it matches
+    /// nowhere, so the rule miner seeds each candidate's scoring with the entries of the rules chosen so far that the candidate
+    /// cannot change.
+    pub fn filtered(&self, keep: impl Fn(&[Term]) -> bool) -> RewriteMemo {
+        RewriteMemo { goods_len: self.goods_len, map: self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (k.clone(), e.clone())).collect() }
+    }
+
+    pub fn absorb(&mut self, other: RewriteMemo) {
+        self.map.extend(other.map);
     }
 }
 
@@ -1031,7 +1043,7 @@ fn rewrite_memo(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Te
     // depends on the terms being rewritten further out
     if budget1 > 0 && CYCLE_CUTS.with(|c| c.get()) == cuts0 {
         let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
-        let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace };
+        let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace, traced: trace0.is_some() };
         REWRITE_MEMO.with(|m| {
             if let Some(m) = m.borrow_mut().as_mut() {
                 m.map.insert(key, std::rc::Rc::new(entry));
@@ -1619,6 +1631,47 @@ fn rewrite_cycles_are_cut() {
     assert!(left > 0, "the step budget ran out");
     let (p, s) = out.expect("proved");
     ck("cycle law", &p, &s);
+}
+
+/// `RewriteMemo::filtered`: a memo built under some rules keeps its results under one more rule, tried last, for the entries whose
+/// traces that rule's left side matches nowhere; the rule miner seeds each candidate's scoring with them. The whole memo would replay
+/// results the extra rule changes.
+#[test]
+fn filtered_memo_entries_hold_under_an_extra_rule() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let (n, kv) = (4, 3);
+    let ops = ops_for(n);
+    let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
+    let terms: Vec<Term> =
+        ["sub(sub(z, x), sub(y, z))", "add(sub(x, y), sub(add(y, z), x))", "sub(add(x, y), sub(z, x))", "or(sub(x, y), and(sub(x, y), z))"].iter().map(|s| parse_term(s)).collect();
+    let base = parse_rules("sub(add(x, y), z) -> add(sub(x, z), y)\n");
+    // every term rewritten under `rules` with `memo` in force: the normal forms, the steps used, and the memo afterwards
+    let run = |rules: &[(Term, Term)], memo: RewriteMemo| {
+        EXTRA_RULES.with(|e| *e.borrow_mut() = rules.to_vec());
+        REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(memo));
+        RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
+        let out: Vec<(String, i64)> = terms
+            .iter()
+            .map(|t| {
+                RULE_BUDGET.with(|b| b.set(200));
+                (rewrite(t, n, &ops, &goods).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
+            })
+            .collect();
+        RULE_TRACE.with(|t| *t.borrow_mut() = None);
+        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+        (out, REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap())
+    };
+    let (_, memo) = run(&base, RewriteMemo::new(kv));
+    for extra in ["sub(sub(x, y), z) -> sub(x, add(y, z))\n", "or(x, and(x, y)) -> x\n"] {
+        let rules: Vec<(Term, Term)> = base.iter().cloned().chain(parse_rules(extra)).collect();
+        let l = &rules.last().unwrap().0;
+        let seed = memo.filtered(|tr| !tr.iter().any(|t| match_pat(l, t, &mut vec![None; 8])));
+        assert!(!seed.map.is_empty() && seed.map.len() < memo.map.len(), "{extra}: the filter kept {} of {}", seed.map.len(), memo.map.len());
+        let fresh = run(&rules, RewriteMemo::new(kv)).0;
+        assert_eq!(run(&rules, seed).0, fresh, "{extra}");
+        assert_ne!(run(&rules, memo.filtered(|_| true)).0, fresh, "{extra}: the extra rule changes nothing here");
+    }
 }
 
 #[test]

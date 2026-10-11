@@ -39,14 +39,18 @@ are local and not in the repository.
    post-dedup salt-1 numbers with the pre-dedup ones in parentheses; salt 2 was not rerun. Every seeded stream in them (45) beat its
    cold stream. Since each side of a law got its own rule budget (2026-10-11, libraries re-mined), salt 1 gives cmp3d 224 vs 74,
    add3 183 vs 67 and sbo3 121 vs 40; findings 3-4 were rerun under it (below). With rewrite cycles cut as well (libraries
-   re-mined again): cmp3d 214 vs 68, add3 183 vs 61, sbo3 123 vs 35, and no law uses up the step budget.
+   re-mined again): cmp3d 214 vs 68, add3 183 vs 61, sbo3 123 vs 35, and no law uses up the step budget. With exact counting in
+   the miner as well (`docs/tier-cycle.md`, "Miner speedups"; the cold loops mine differently): cmp3d 184 vs 68 (one cold law used up
+   the budget), add3 183 vs 61, sbo3 123 vs 35.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
    foreign): add3 183 / 62 / 47-67 (56-65), sbo3 128 / 41 / 53-69 (52-66), cmp3d 231 / 109 / 139-140 (118-119). cmp3d needs its
    comparison rules, so it benefits least. Under the per-side budget (2026-10-11): add3 183 / 67 / 46 (sbo3's library) and 65
    (cmp3d's), sbo3 121 / 40 / 52 (add3's) and 60 (cmp3d's), cmp3d 224 / 74 / 122-123. Foreign cmp3d improved most (from 139-140);
-   add3 now does better with sbo3's library than with its own.
+   add3 now does better with sbo3's library than with its own. With cycles cut and exact counting (libraries re-mined): add3
+   183 / 61 / 46 (sbo3's) and 64 (cmp3d's), sbo3 123 / 35 / 49 (add3's) and 59 (cmp3d's), cmp3d 184 / 68 / 116-121. add3 still
+   does better with sbo3's library: its own orients the `sub` chains the other way (`docs/tier-cycle.md`, "Why add3 did better").
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
-   dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5. It does not change the two-variable shl, shr or lt
+   dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5; with cycles cut and exact counting, from 60 to 10. It does not change the two-variable shl, shr or lt
    families (pre-dedup check).
 5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
    (re-mining on the post-dedup u3 stream gave the identical 8- and 25-rule libraries): cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
