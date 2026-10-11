@@ -53,9 +53,9 @@ are local and not in the repository.
 - **Related families.** add3, sbo3, cmp3d and mix3 share add/sub structure. Transfer to different operator structure is untested
   (the shift families show none).
 - **M is machine proofs, not time.** Seeded vs cold is a count of laws, not a speed measurement. Measured by kernel work, a library
-  cuts checking only when each rule's proof is checked once and its uses refer to it (`LEMMA_PARAMS=1`; the own library needs 2.1x (sbo3) and
-  1.6x (cmp3d) fewer kernel visits to check the laws than no library). With the default inlined proofs, every use re-checks the proof and kernel work does not fall (`docs/tier-cycle.md`,
-  "Instruction count as a metric" and "Lemmas as kernel parameters").
+  cuts checking because each rule's proof is checked once and its uses refer to it as a parameter: the own library needs 2.1x (sbo3)
+  and 1.6x (cmp3d) fewer kernel visits to check the laws than no library. With the earlier inlined proofs every use re-checked the
+  proof and kernel work did not fall (`docs/tier-cycle.md`, "Instruction count as a metric" and "Lemmas as kernel parameters").
 - **Not a generality claim about theories.** Everything is Church bit-vector arithmetic. Whether the loop works for an axiomatic theory
   is only probed: in a throwaway spike over commutative-ring terms (axioms only, proofs found by a budgeted search, no kernel; not in this
   repository), M defined as the laws not proved within the budget separated cold from seeded loops (total M over five streams about

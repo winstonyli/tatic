@@ -1123,7 +1123,7 @@ pub fn bitwise_law_proves_shift_laws_and_rejects_false_ones() {
             ck("shl over bitwise", &p, &s);
         }
         let (p, s) = bitwise_law_k(n, 2, &shl(x.clone()), &x);
-        assert!(check(&Ctx::new(), &p, &s).is_err(), "shl x = x must fail");
+        assert!(holds(&p, &s).is_err(), "shl x = x must fail");
     }
 }
 
@@ -1346,7 +1346,7 @@ pub fn mul_circuit_laws_by_case_analysis_and_false_ones_rejected() {
             println!("MUL {name} n={n}: {:?}", t0.elapsed());
         }
         let (p, s) = circuit_law(n, &m, &|x, y| add_rows(x, y));
-        assert!(check(&Ctx::new(), &p, &s).is_err(), "mul = add must be rejected, n={n}");
+        assert!(holds(&p, &s).is_err(), "mul = add must be rejected, n={n}");
     }
 }
 
@@ -1382,7 +1382,7 @@ pub fn mul_circuit_three_vector_laws() {
             &|v| mul_bits(n, &v[0], &add_rows(&v[1], &v[2])),
             &|v| add_rows(&mul_bits(n, &v[0], &v[1]), &v[2]),
         );
-        assert!(check(&Ctx::new(), &bad.0, &bad.1).is_err(), "false distributivity must be rejected, n={n}");
+        assert!(holds(&bad.0, &bad.1).is_err(), "false distributivity must be rejected, n={n}");
     }
 }
 
@@ -1490,7 +1490,7 @@ pub fn soundness_sweep() {
             for &w in &widths {
                 match rewrite_law(w, kv, t1, t2) {
                     Some((p, s)) => {
-                        if let Err(m) = check(&Ctx::new(), &p, &s) {
+                        if let Err(m) = holds(&p, &s) {
                             panic!("kernel rejected the proof of {name} at width {w}: {}", m.chars().take(300).collect::<String>());
                         }
                         checked += 1;
@@ -1502,7 +1502,7 @@ pub fn soundness_sweep() {
             false_laws += 1;
             for w in (1..=6).filter(|w| !t1.plausibly_equals(t2, *w, kv)) {
                 if let Some((p, s)) = rewrite_law(w, kv, t1, t2) {
-                    assert!(check(&Ctx::new(), &p, &s).is_err(), "FALSE law accepted: {name} at width {w}");
+                    assert!(holds(&p, &s).is_err(), "FALSE law accepted: {name} at width {w}");
                 }
                 refused += 1;
             }
@@ -1934,8 +1934,8 @@ pub fn proof_cost_split() {
 /// Deterministic work per law (needs `--features record-defeq`): like `proof_cost_split` (same `CHECK_FAMILY`, `CHECK_RULES`,
 /// `RULEMINER_*` vars), one TSV row per law to `WORK_OUT`: fallbacks, rule steps, proof size (unique nodes), nodes built while
 /// building the proof, kernel node visits while checking it (instantiate, shift, eq, conv and nf whnf, infer misses), beta steps,
-/// the build and check wall times in microseconds (to compare the counts with time), and the kernel visits while building (the
-/// one-time lemma checks under `LEMMA_PARAMS=1`). Unproved laws are skipped.
+/// the build and check wall times in microseconds (to compare the counts with time), and the counted visits while building (the
+/// one-time lemma checks, and the builders' own `shift`s). Unproved laws are skipped.
 #[test]
 #[ignore]
 #[cfg(feature = "record-defeq")]
@@ -1956,7 +1956,7 @@ pub fn law_work_report() {
         let Some((p, s)) = rewrite_law(4, kv, t1, t2) else { continue };
         let build = t.elapsed();
         let (fallbacks, steps, built) = (MACHINE_FALLBACKS.with(|c| c.get()) - before, 200 - RULE_BUDGET.with(|b| b.get()), take_hc_built().0);
-        // kernel work while building: the one-time lemma checks under `LEMMA_PARAMS=1`
+        // counted work while building: the one-time lemma checks and the builders' own shifts
         let build_visits = visits_of(&take_walk_counts());
         take_beta_count();
         let t = Instant::now();

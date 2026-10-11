@@ -385,7 +385,7 @@ pub fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
         }
         for (name, t1, t2) in [("and x y = or x y", op(1, v(0), v(1)), op(2, v(0), v(1))), ("xor x x = -1", op(3, v(0), v(0)), Term::Ones)] {
             let (p, s) = bitwise_law(n, &t1, &t2);
-            assert!(check(&Ctx::new(), &p, &s).is_err(), "false law `{name}` must be rejected at n={n}");
+            assert!(holds(&p, &s).is_err(), "false law `{name}` must be rejected at n={n}");
         }
     }
 }
@@ -409,20 +409,16 @@ pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
 }
 
 thread_local! {
-    /// The lemma parameters (`LEMMA_PARAMS=1`): one nested scope per bound lemma, outermost first, with the lemma's proof.
-    /// A proof may use the lemmas bound before it (a mined rule proved through a machine proof uses its case lemmas).
+    /// The lemma parameters: one nested scope per bound lemma, outermost first, with the lemma's proof. A proof may use
+    /// the lemmas bound before it (a mined rule proved through a machine proof uses its case lemmas).
     pub static PARAMS: std::cell::RefCell<Option<(Postulates, Vec<(Scope, Expr)>)>> = const { std::cell::RefCell::new(None) };
-    pub static LEMMA_PARAMS: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("LEMMA_PARAMS").is_ok_and(|v| v == "1"));
 }
-/// `memo` for a closed lemma `(proof, statement)`. With `LEMMA_PARAMS=1` the proof is checked once (`ck`, against the
-/// lemmas bound before it) and the lemma is returned as a parameter of that statement, so a law using it is checked
-/// against the parameter, not the proof.
+/// `memo` for a closed lemma `(proof, statement)`: the proof is checked once (`ck`, against the lemmas bound before it)
+/// and the lemma is returned as a parameter of that statement, so a law using it is checked against the parameter, not
+/// the proof. `discharge` turns a term over parameters back into a closed one.
 pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
-    let (p, s) = memo(key.clone(), build);
-    if !LEMMA_PARAMS.with(|c| c.get()) {
-        return (p, s);
-    }
-    memo(format!("param_{key}"), || {
+    memo(key.clone(), || {
+        let (p, s) = build();
         ck(&format!("lemma {key}"), &p, &s);
         PARAMS.with(|c| {
             let mut c = c.borrow_mut();
@@ -763,7 +759,7 @@ pub fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)
         shr_not_law(n)
     } else if l.add_free() && r.add_free() {
         let law = bitwise_law_k(n, k, l, r);
-        check(&Ctx::new(), &law.0, &law.1).ok().map(|_| law)
+        holds(&law.0, &law.1).ok().map(|_| law)
     } else if matches!(l, Term::Op(SHR1, ..)) && matches!(r, Term::Op(SHR1, ..) | Term::Zero) || matches!(r, Term::Op(SHR1, ..)) && matches!(l, Term::Zero) {
         // laws with a `shr1` root are not machines: prove them with the rewriter (which falls back on the bit-0 mask
         // reduction), without the rule being proved, so that it cannot be used in its own proof
@@ -1454,7 +1450,7 @@ pub fn laws_over_three_vectors_check_and_false_ones_fail() {
         // bitwise (x ^ y) ^ z = x ^ (y ^ z)
         let (p, s) = bitwise_law_k(n, 3, &op(3, op(3, v(0), v(1)), v(2)), &op(3, v(0), op(3, v(1), v(2))));
         ck(&format!("xor assoc at n={n}"), &p, &s);
-        assert!(check(&Ctx::new(), &bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).0, &bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).1).is_err());
+        assert!(holds(&bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).0, &bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).1).is_err());
         // add associativity over three vectors, and a non-law
         let (p, s) = rewrite_law(n, 3, &op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2)))).expect("assoc");
         ck(&format!("add assoc at n={n}"), &p, &s);
@@ -1492,7 +1488,6 @@ pub fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
 #[test]
 pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
     let _scope = tatic::kernel::InternScope::enter();
-    LEMMA_PARAMS.with(|c| c.set(true));
     let v = |i: usize| Term::V(i);
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let (p, s) = rewrite_law(2, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
@@ -1512,7 +1507,6 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
     assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
     let all = apps(lam(sm.clone(), lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
     ck("discharged", &discharge(all), &sm);
-    LEMMA_PARAMS.with(|c| c.set(false));
 }
 
 // ---- Carry-chain builder (search note section 13): `add A B = T` for bitwise A, B, T over x, y, with no

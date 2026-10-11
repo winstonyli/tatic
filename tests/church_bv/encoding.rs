@@ -1,7 +1,9 @@
 use super::*;
 
+/// `Pi C. C -> C -> C`, written without `arrow`: its codomain shift ran at every call, and building the motives of the
+/// case-tree lemmas calls this millions of times.
 pub fn bool0() -> Expr {
-    pi(sort(0), arrow(var(0), arrow(var(0), var(0))))
+    pi(sort(0), pi(var(0), pi(var(1), var(2))))
 }
 pub fn t() -> Expr {
     lam(sort(0), lam(var(0), lam(var(1), var(1))))
@@ -282,10 +284,13 @@ pub fn good_bv(n: usize) -> Expr {
     lam(bv_ty(n), pi(arrow(bv_ty(n), sort(2)), pi(good_bv_step(n), app(var(1), var(2)))))
 }
 
-/// Checks `e : ty`, against the lemma parameters (`rewrite::shared_lemma`) when any are bound.
+/// Whether `e : ty`, against the lemma parameters bound so far (`rewrite::shared_lemma`).
+pub fn holds(e: &Expr, ty: &Expr) -> Result<(), String> {
+    PARAMS.with(|c| c.borrow().as_ref().map(|(ps, ..)| ps.check_open(e, ty))).unwrap_or_else(|| check(&Ctx::new(), e, ty))
+}
+/// `holds`, panicking with `name` when it fails.
 pub fn ck(name: &str, e: &Expr, ty: &Expr) {
-    let r = PARAMS.with(|c| c.borrow().as_ref().map(|(ps, ..)| ps.check_open(e, ty))).unwrap_or_else(|| check(&Ctx::new(), e, ty));
-    if let Err(m) = r {
+    if let Err(m) = holds(e, ty) {
         panic!("{name}: {}", m.chars().take(400).collect::<String>());
     }
 }
@@ -448,7 +453,7 @@ pub fn shared_carry_proof_checks_and_rejects_wrong_statements() {
             let (proof, stmt) = add_identity_proof_shared(n, 0, left, add_shared);
             ck(&format!("shared n={n} left={left}"), &proof, &stmt);
             let (proof1, stmt1) = add_identity_proof_shared(n, 1, left, add_shared);
-            assert!(check(&Ctx::new(), &proof1, &stmt1).is_err(), "rhs 1 must be rejected at n={n} left={left}");
+            assert!(holds(&proof1, &stmt1).is_err(), "rhs 1 must be rejected at n={n} left={left}");
         }
     }
 }
@@ -493,7 +498,7 @@ pub fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
         println!("LEMMA n={n}: add x 0 = x checked in {:?}", t0.elapsed());
         // Mutation: the same proof must not prove `add x 1 = x`.
         let (proof1, stmt1) = add_zero_proof(n, 1);
-        assert!(check(&Ctx::new(), &proof1, &stmt1).is_err(), "add x 1 = x must be rejected at n={n}");
+        assert!(holds(&proof1, &stmt1).is_err(), "add x 1 = x must be rejected at n={n}");
 
         // Left identity: add zero x = x, by the same pattern with the operands swapped.
         let (lp, lstmt) = add_identity_proof(n, 0, true);
@@ -501,7 +506,7 @@ pub fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
         ck(&format!("add 0 x = x at n={n}"), &lp, &lstmt);
         println!("LEMMA n={n}: add 0 x = x checked in {:?}", t1.elapsed());
         let (lp1, lstmt1) = add_identity_proof(n, 1, true);
-        assert!(check(&Ctx::new(), &lp1, &lstmt1).is_err(), "add 1 x = x must be rejected at n={n}");
+        assert!(holds(&lp1, &lstmt1).is_err(), "add 1 x = x must be rejected at n={n}");
     }
 }
 
@@ -667,8 +672,8 @@ pub fn add_is_commutative_on_symbolic_good_vectors() {
         println!("COMM n={n}: checked in {:?}", t0.elapsed());
         // Mutation: `add x y = add x x` must be rejected, by its own proof and by this one.
         let (wp, ws) = add_comm_proof(n, true);
-        assert!(check(&Ctx::new(), &wp, &ws).is_err(), "wrong statement must be rejected at n={n}");
-        assert!(check(&Ctx::new(), &proof, &ws).is_err(), "add x y = add x x must be rejected at n={n}");
+        assert!(holds(&wp, &ws).is_err(), "wrong statement must be rejected at n={n}");
+        assert!(holds(&proof, &ws).is_err(), "add x y = add x x must be rejected at n={n}");
     }
 }
 
@@ -695,7 +700,7 @@ pub fn add_comm_rejection_probe() {
     let (proof, _) = add_comm_proof(n, false);
     let (wp, ws) = add_comm_proof(n, true);
     let t0 = Instant::now();
-    let r = if case == "own" { check(&Ctx::new(), &wp, &ws) } else { check(&Ctx::new(), &proof, &ws) };
+    let r = if case == "own" { holds(&wp, &ws) } else { holds(&proof, &ws) };
     println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
 }
 
@@ -734,7 +739,7 @@ pub fn add_shared_zero_is_the_identity_on_a_symbolic_good_vector() {
         ck(&format!("add_shared x 0 = x at n={n}"), &proof, &stmt);
         println!("SHARED n={n}: checked in {:?}", t0.elapsed());
         let (p1, s1) = add_identity_proof_over(n, 1, false, add_shared);
-        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "add_shared x 1 = x must be rejected at n={n}");
+        assert!(holds(&p1, &s1).is_err(), "add_shared x 1 = x must be rejected at n={n}");
     }
 }
 
@@ -1146,7 +1151,7 @@ pub fn wrapping_div_min_by_minus_one_is_min() {
             if n >= 2 || (a, b) != (min, 0) {
                 let (p2, s2) = wrap_div_min_proof(n, a & all, b & all);
                 if (a & all, b & all) != (min, all) {
-                    assert!(check(&Ctx::new(), &p2, &s2).is_err(), "D3 must fail for a={a:#x} b={b:#x} at n={n}");
+                    assert!(holds(&p2, &s2).is_err(), "D3 must fail for a={a:#x} b={b:#x} at n={n}");
                 }
             }
         }
@@ -1424,7 +1429,7 @@ pub fn eq_with_a_literal_implies_equality_on_good_vectors() {
             }
             // Mutation: the conclusion `x = L'` for another literal must be rejected.
             let (p2, s2) = eq_lit_sound(n, l, l ^ 1);
-            assert!(check(&Ctx::new(), &p2, &s2).is_err(), "x = L xor 1 must be rejected, n={n} l={l:#x}");
+            assert!(holds(&p2, &s2).is_err(), "x = L xor 1 must be rejected, n={n} l={l:#x}");
         }
     }
 }
@@ -1523,17 +1528,17 @@ pub fn sdiv_is_none_on_the_guard_and_wrapper_keeps_r_otherwise() {
         let (p, s) = sdiv_none_if_zero(n, 0);
         ck(&format!("D1 b=0, n={n}"), &p, &s);
         let (p1, s1) = sdiv_none_if_zero(n, 1);
-        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "b=1 must not give None, n={n}");
+        assert!(holds(&p1, &s1).is_err(), "b=1 must not give None, n={n}");
         let (p, s) = sdiv_none_on_overflow(n, all);
         ck(&format!("D1 overflow, n={n}"), &p, &s);
         let (p1, s1) = sdiv_none_on_overflow(n, all ^ 1);
-        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "b=-2 must not give None, n={n}");
+        assert!(holds(&p1, &s1).is_err(), "b=-2 must not give None, n={n}");
         let t0 = Instant::now();
         let (p, s) = wrap_div_keeps_r(n, true);
         ck(&format!("D2 payload, n={n}"), &p, &s);
         println!("D2 payload n={n}: checked in {:?}", t0.elapsed());
         let (p1, s1) = wrap_div_keeps_r(n, false);
-        assert!(check(&Ctx::new(), &p1, &s1).is_err(), "payload is not 0, n={n}");
+        assert!(holds(&p1, &s1).is_err(), "payload is not 0, n={n}");
     }
 }
 
@@ -1647,7 +1652,7 @@ pub fn add_preserves_goodness() {
     }
     // a wrong truth table must be rejected
     let (p, ty) = good2(&|a, b| and(a, b), &|a, b| a || b);
-    assert!(check(&Ctx::new(), &p, &ty).is_err(), "and with the or table must be rejected");
+    assert!(holds(&p, &ty).is_err(), "and with the or table must be rejected");
     for n in [1usize, 2, 4, 8, 32] {
         let _scope = tatic::kernel::InternScope::enter();
         let (p, ty) = good_add(n);
@@ -1761,7 +1766,7 @@ pub fn or_of_disjoint_vectors_adds_in_to_n() {
             let (p, s) = or_disjoint_proof(n, k, false);
             ck(&format!("H4 n={n} k={k}"), &p, &s);
             let (p2, s2) = or_disjoint_proof(n, k, true);
-            assert!(check(&Ctx::new(), &p2, &s2).is_err(), "toN a + toN a must be rejected, n={n} k={k}");
+            assert!(holds(&p2, &s2).is_err(), "toN a + toN a must be rejected, n={n} k={k}");
         }
     }
 }
@@ -2099,7 +2104,7 @@ pub fn add_is_associative_on_symbolic_good_vectors() {
         let (p, s) = add_assoc_proof(n, false);
         ck(&format!("add assoc n={n}"), &p, &s);
         let (p, s) = add_assoc_proof(n, true);
-        assert!(check(&Ctx::new(), &p, &s).is_err(), "add (add x y) z = add x (add y y) must be rejected at n={n}");
+        assert!(holds(&p, &s).is_err(), "add (add x y) z = add x (add y y) must be rejected at n={n}");
     }
 }
 
@@ -2172,7 +2177,7 @@ pub fn add_of_x_and_not_x_is_all_ones() {
         let (p, s) = add_not_proof(n, false);
         ck(&format!("add x (xor x -1) = -1 at n={n}"), &p, &s);
         let (p, s) = add_not_proof(n, true);
-        assert!(check(&Ctx::new(), &p, &s).is_err(), "... = 0 must be rejected at n={n}");
+        assert!(holds(&p, &s).is_err(), "... = 0 must be rejected at n={n}");
     }
 }
 

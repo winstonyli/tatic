@@ -210,7 +210,7 @@ save is small: `args_id` re-interns arguments that are often already canonical (
 real lever is not re-checking the rule proofs (above).
 
 ### Lemmas as kernel parameters (2026-10-10)
-With `LEMMA_PARAMS=1`, `shared_lemma` (rewrite.rs) checks each closed lemma's proof once and binds its statement as a parameter in a
+`shared_lemma` (rewrite.rs) checks each closed lemma's proof once and binds its statement as a parameter in a
 `Postulates` scope of its own; the rewriter then uses the parameter (a `Free`) instead of the proof, and `ck` checks with
 `check_open` against the parameters bound so far. One hook covers every closed lemma the proofs reuse: the mined rules, the built-in
 add lemmas (assoc, identity, not, comm), `shrmask`, the GoodBv witness lemmas (`good_add`, `good_sub`, `good_shl1`, `good_shr1`) and
@@ -219,6 +219,12 @@ their first half is an operator that must compute. A lemma's proof may use lemma
 machine proof uses that proof's case lemmas), so the scopes nest in binding order. A law over parameters is not closed; `discharge`
 closes the scopes innermost first, `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, giving a closed term the plain checker accepts
 (`a_law_over_lemma_parameters_discharges_to_a_closed_proof`, including a nested rule). M is unchanged.
+
+This is the only path: the `LEMMA_PARAMS` switch that kept inlined proofs as the default was removed, and every check in the miner and
+the tests goes through `holds`/`ck` (encoding.rs), which check against the parameters bound so far. The "off" columns below were
+measured before the removal and are kept as the record of what inlining cost. The salt-1 cold and own-seeded loops (18 cells,
+`scripts/experiments/cross_run.sh` with `CHECK_FAST=0`, so every served law is built and kernel-checked against the parameters) give
+the same per-batch M and rule counts as the earlier count-only runs in every cell.
 
 Kernel work (`law_work_report`, same windows and `record-defeq` caveat as above). `law_work_report` now also counts kernel visits
 while building a proof, which is where the one-time lemma checks run:
@@ -246,11 +252,39 @@ A first version that bound only the rewriter's lemmas (not the case lemmas) cut 
   case lemmas are numerous and specific to a machine, so checking each once saves less than the rules do (total visits 122.5M to
   106.9M).
 - **Building uses the kernel more than checking does.** Even with parameters off, building the proofs costs 8.6M (sbo3) and 69.1M
-  (cmp3d) kernel visits, uncounted before this column. What in the builder calls the kernel is not yet identified.
+  (cmp3d) kernel visits, uncounted before this column.
 
-Next: find the builder's kernel calls; then decide whether total visits (law checks plus the one-time lemma checks, an MDL-like
-total) should replace M in the miner's objective and the proposer's reward. Parameters as the default for the proof-cost runs is
-open: M is unchanged, so it only affects time.
+### Where the build visits went (2026-10-10)
+An attribution prototype (reverted; per-call-site counters around the builders, parameters off) found the build visits were almost
+all the kernel's `shift`, called by the proof builders themselves rather than by kernel checks. On cmp3d (69M): `lemma_n` 42.7M (its
+motive and its leaf, about half each), `lemma_dd` 12.5M, other shifts 7.3M, `add_tree_law` 2.7M, `raw_table` normalisation 1.9M,
+`nf_whnf` 1.1M. The source was `bool0()` (`Pi C. C -> C -> C`): written with `arrow`, which shifts its codomain, and `and`/`or`/`xor`
+rebuild it at every call, millions of times while building the case-tree motives. `bool0` is now written with explicit `pi`s, which
+removes the shift and leaves the term identical (per-law M, nodes and check visits unchanged). With parameters off, build visits
+fell from 8.6M to 2.0M (sbo3) and from 69M to 17.3M (cmp3d).
+
+The rest of cmp3d's builder cost is mostly `lemma_dd` (11.0M): `cong_n` and `trans_proof` shift the J motive at every node of a
+decision diagram. Parked: removing it needs a different proof shape (for example a closed `cong_mux` lemma used as a parameter), not
+a local rewrite.
+
+Kernel work with parameters as the only path and the new `bool0` (same 300-law windows; M and law-check visits identical to the
+"on" columns above):
+
+| family, library | M | law-check visits (M) | build visits (M), before / after `bool0` | total (M), before / after |
+|---|---|---|---|---|
+| sbo3, none | 92 | 2.5 | 22.9 / 8.2 | 25.3 / 10.6 |
+| sbo3, own | 17 | 1.2 | 11.5 / 4.9 | 12.7 / 6.1 |
+| cmp3d, none | 118 | 4.8 | 99.0 / 32.8 | 103.9 / 37.7 |
+| cmp3d, own | 31 | 3.1 | 103.8 / 52.0 | 106.9 / 55.1 |
+
+- **Total kernel work and M now disagree on cmp3d.** The own library cuts M 3.8x and law-check visits 1.6x, but raises total visits
+  1.46x (37.7M to 55.1M), because building under it costs more (52.0M against 32.8M). On sbo3 both agree (total 10.6M to 6.1M).
+  What makes cmp3d's library builds dearer (the mined rules' own machine proofs and their case lemmas, checked once, or more
+  `lemma_dd` work) is not yet split.
+
+Next: split cmp3d's build visits by library (rule-proof checks versus case lemmas versus `lemma_dd`); then decide whether total
+visits (an MDL-like total: law checks plus the one-time lemma checks and building) should replace M in the miner's objective and the
+proposer's reward. On this evidence the two would rank cmp3d's library oppositely.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

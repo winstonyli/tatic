@@ -680,7 +680,7 @@ pub fn tree_proof_cost_by_carries() {
             let (p, s) = add_tree_law(n, 3, &left, &right).expect("encoding");
             let built = t0.elapsed();
             let t1 = Instant::now();
-            let ok = check(&Ctx::new(), &p, &s).is_ok();
+            let ok = holds(&p, &s).is_ok();
             println!("TREECOST n={n} carries={c}: build {built:?}, check {:?}, ok {ok}", t1.elapsed());
         }
     }
@@ -763,7 +763,7 @@ pub fn machine_lemma_probe() {
             };
             let (p, ty) = lemma_n(3 + c, &|vv| id(bool0(), f_of(vv), f_of(vv)), &|b| refl(f_of(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>())));
             let t0 = Instant::now();
-            let ok = check(&Ctx::new(), &p, &ty).is_ok();
+            let ok = holds(&p, &ty).is_ok();
             println!("PROBE carries={c} {what}: check {:?} ok {ok}", t0.elapsed());
         }
     }
@@ -776,7 +776,7 @@ pub fn lemma_overhead_probe() {
     for vars in [5usize, 6, 7, 8] {
         let (p, ty) = lemma_n(vars, &|v| id(bool0(), v[0].clone(), v[0].clone()), &|b| refl(bit(b[0])));
         let t0 = Instant::now();
-        let ok = check(&Ctx::new(), &p, &ty).is_ok();
+        let ok = holds(&p, &ty).is_ok();
         println!("PROBE trivial lemma over {vars} bits: check {:?} ok {ok}", t0.elapsed());
     }
 }
@@ -834,20 +834,20 @@ pub fn conjecture_miner() {
             }
             if members[0].uses_add() || other.uses_add() {
                 match rewrite_law(n, k, members[0], other) {
-                    Some((p, s)) if k > 2 && check(&Ctx::new(), &p, &s).is_ok() => by_third.1 += 1,
+                    Some((p, s)) if k > 2 && holds(&p, &s).is_ok() => by_third.1 += 1,
                     _ if k > 2 => match add_tree_law(n, k, members[0], other) {
-                        Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_third.1 += 1,
+                        Some((p, s)) if holds(&p, &s).is_ok() => by_third.1 += 1,
                         _ => needs_z += 1,
                     },
-                    Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_rewrite += 1,
+                    Some((p, s)) if holds(&p, &s).is_ok() => by_rewrite += 1,
                     Some(_) => rewrite_bugs.push(law),
                     None => {
                         // the generic carry-chain builder, in either orientation
                         let chain = carry_chain_law(n, members[0], other).or_else(|| carry_chain_law(n, other, members[0]));
                         match chain {
-                            Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_chain += 1,
+                            Some((p, s)) if holds(&p, &s).is_ok() => by_chain += 1,
                             _ => match add_tree_law(n, 2, members[0], other) {
-                                Some((p, s)) if check(&Ctx::new(), &p, &s).is_ok() => by_tree += 1,
+                                Some((p, s)) if holds(&p, &s).is_ok() => by_tree += 1,
                                 _ => needs_add.push(law),
                             },
                         }
@@ -855,7 +855,7 @@ pub fn conjecture_miner() {
                 }
             } else {
                 let (p, s) = bitwise_law_k(n, k, members[0], other);
-                if check(&Ctx::new(), &p, &s).is_ok() {
+                if holds(&p, &s).is_ok() {
                     by_builder += 1;
                     by_third.1 += (k > 2) as usize;
                 } else {
@@ -882,9 +882,9 @@ pub fn conjecture_miner() {
     let (p1, s1) = add_identity_proof(n, 0, true);
     let (p2, s2) = add_comm_proof(n, false);
     for (name, mined, proved) in [
-        ("add x 0 = x", same(&op(0, v(0), Term::Zero), &v(0)), check(&Ctx::new(), &p0, &s0).is_ok()),
-        ("add 0 x = x", same(&op(0, Term::Zero, v(0)), &v(0)), check(&Ctx::new(), &p1, &s1).is_ok()),
-        ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), check(&Ctx::new(), &p2, &s2).is_ok()),
+        ("add x 0 = x", same(&op(0, v(0), Term::Zero), &v(0)), holds(&p0, &s0).is_ok()),
+        ("add 0 x = x", same(&op(0, Term::Zero, v(0)), &v(0)), holds(&p1, &s1).is_ok()),
+        ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), holds(&p2, &s2).is_ok()),
     ] {
         println!("MINER known lemma {name}: conjectured {mined}, template proof checks {proved}");
         assert!(mined && proved, "{name}");
@@ -1197,7 +1197,7 @@ pub fn shift_ops_compute_and_shift_laws_check_and_false_ones_fail() {
                 continue;
             }
             let (p, s) = bitwise_law_k(n, 2, &t1, &t2);
-            assert!(check(&Ctx::new(), &p, &s).is_err(), "false law checked: {} = {}, n={n}", t1.show(), t2.show());
+            assert!(holds(&p, &s).is_err(), "false law checked: {} = {}, n={n}", t1.show(), t2.show());
         }
     }
 }
