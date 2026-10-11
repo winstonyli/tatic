@@ -1,8 +1,9 @@
 # Does the rule-mining loop learn, and do its rules transfer?
 
 Status: measured on one machine, single deterministic runs per cell (no repeated seeds); the only noise estimate is the spread across
-streams and across hash salts. Reproduce with `driver::loop_stream` in `tests/church_bv/driver.rs` (formerly `scripts/loop_stream.sh`; the module comment documents every option); the sweep scripts and raw logs
-are local and not in the repository.
+streams and across hash salts. Reproduce with `driver::sweep` in `tests/church_bv/driver.rs`: `SWEEP="mines own cold cross cold:mix3 pooled:mix3"` runs findings 2-4
+at one salt (about 20 minutes). The module comment documents it and the single-loop driver `driver::loop_stream` (formerly
+`scripts/loop_stream.sh`). Findings measured before 2026-10-11 used local sweep scripts, and the raw logs are not in the repository.
 
 ## Setup
 - **Laws.** A family is a pool of bit-vector terms; its laws are the pairs of pool terms that agree at widths 1-6 (the machine prover then proves them at width 4). Families:

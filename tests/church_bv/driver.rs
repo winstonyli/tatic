@@ -1,9 +1,9 @@
-//! The mine-and-serve loop driver (formerly `scripts/loop_stream.sh`). It runs this exe's `search::rule_set_kernel_check` (serve) and
-//! `search::rule_miner` (mine) as child processes, so each keeps its own thread-locals and env-read config. A shell driver spent
-//! about half a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
+//! The mine-and-serve loop and the sweeps over it (formerly `scripts/loop_stream.sh` and local sweep scripts). Serving
+//! (`search::rule_set_kernel_check`) and mining (`search::rule_miner`) run as child processes of this exe, so each keeps its own
+//! thread-locals and env-read config. Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
+//! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
-//!   LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --ignored --nocapture
-//!
+//! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
 //! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of the family's sequence (residue class SPHASE of stride STRIDE). It is served under
 //! the rules in force *before* it is mined, so M is what the stream costs when rules arrive as it does. `ref` mines once on all K
 //! batches before serving them; `loop` mines each batch after serving it (not the last, which could not change any M); `none` only
@@ -15,129 +15,273 @@
 //! line at start and end, about 6 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
-//! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
-//!
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules), mine_<name>.log and serve_<skip>.log. The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=..`.
+//!
+//! **A sweep** (the experiments of docs/loop-result.md): `SWEEP_OUT=<dir> [SALT=1] [LIB=<dir>] [SWEEP="mines own cold"] <exe>
+//! driver::sweep --exact --ignored --nocapture`. Every stage uses `RULEMINER_FAST=1` and `RULEMINER_SHUFFLE=$SALT`. Stages, in order:
+//! - `mines`: one ref mine per family on its phase-0 stream (`MINES`) -> `lib_<family>/`, summary rows in `mines.tsv` (family, seconds,
+//!   total M, rules, exhausted).
+//! - `own`, `cold`, `cross`, `pooled`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on phases
+//!   1-3, seeded with the family's own library, nothing, each other family's library, or the pooled library (cmp3d's, add3's and
+//!   sbo3's, without two sub/sub orientations add3 mines that conflict with sbo3's). Libraries are read from `LIB/lib_<family>/rules.txt`
+//!   (default LIB = SWEEP_OUT). One row per loop in `<stage>.tsv` (`:` becomes `_`): family, stride-phase, from_<source>, total M,
+//!   per-batch M, rules at the end, seconds, exhausted.
 
 use super::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-struct Loop {
+#[derive(Clone)]
+struct LoopCfg {
+    /// none|ref|loop
+    mode: String,
     out: PathBuf,
-    rules: PathBuf,
-    /// variables both children get
-    common: Vec<(&'static str, String)>,
-    exe: PathBuf,
+    family: String,
+    stride: usize,
+    sphase: usize,
+    b: usize,
+    k: usize,
+    offset: usize,
+    threads: usize,
+    rounds: usize,
+    deep3: usize,
+    split: usize,
+    warm: Option<PathBuf>,
+    check_fast: bool,
+    /// further variables for the children (a sweep's RULEMINER_FAST and RULEMINER_SHUFFLE)
+    env: Vec<(String, String)>,
 }
 
-impl Loop {
-    /// Runs test `name` of this exe with `env` added, output to `log`; returns whether it succeeded.
-    fn child(&self, name: &str, env: &[(&str, String)], log: &Path) -> bool {
-        let f = std::fs::File::create(log).unwrap();
-        let mut c = Command::new(&self.exe);
-        c.args([name, "--exact", "--ignored", "--nocapture"]).stdout(f.try_clone().unwrap()).stderr(f);
-        c.envs(self.common.iter().map(|(k, v)| (*k, v.as_str()))).envs(env.iter().map(|(k, v)| (*k, v.as_str())));
-        c.status().unwrap().success()
+impl LoopCfg {
+    fn from_env() -> LoopCfg {
+        let mode = std::env::var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop");
+        assert!(["none", "ref", "loop"].contains(&mode.as_str()), "LOOP_MODE must be none, ref or loop, got {mode}");
+        LoopCfg {
+            mode,
+            out: PathBuf::from(std::env::var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
+            family: std::env::var("FAMILY").unwrap_or_else(|_| "add3".into()),
+            stride: env_or("STRIDE", 7),
+            sphase: env_or("SPHASE", 0),
+            b: env_or("B", 150),
+            k: env_or("K", 4),
+            offset: env_or("OFFSET", 0),
+            threads: env_or("THREADS", 2),
+            rounds: env_or("ROUNDS", 8),
+            deep3: env_or("DEEP3", 1),
+            split: env_or("SPLIT", 2),
+            warm: std::env::var("WARM_RULES").ok().map(PathBuf::from),
+            check_fast: env_or("CHECK_FAST", 0usize) == 1,
+            env: vec![],
+        }
     }
+}
 
-    fn mine(&self, name: &str, skip: usize, laws: usize) {
-        let log = self.out.join(format!("mine_{name}.log"));
-        let env = [
-            ("RULEMINER_PERM", "1".to_string()),
-            ("RULEMINER_THREADS", env_or("THREADS", 2usize).to_string()),
-            ("RULEMINER_ROUNDS", env_or("ROUNDS", 8usize).to_string()),
-            ("RULEMINER_SKIP", skip.to_string()),
-            ("RULEMINER_LAWS", laws.to_string()),
-            ("RULEMINER_BASE", self.rules.display().to_string()),
-        ];
-        assert!(self.child("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
+struct Summary {
+    total: usize,
+    /// M per batch
+    ms: Vec<usize>,
+    rules: usize,
+    exhausted: usize,
+}
+
+/// Runs test `name` of this exe with `env` added, output to `log`; returns whether it succeeded.
+fn child(name: &str, env: &[(String, String)], log: &Path) -> bool {
+    let f = std::fs::File::create(log).unwrap();
+    let mut c = Command::new(std::env::current_exe().unwrap());
+    c.args([name, "--exact", "--ignored", "--nocapture"]).stdout(f.try_clone().unwrap()).stderr(f).envs(env.iter().cloned());
+    c.status().unwrap().success()
+}
+
+fn append(path: &Path, text: &str) {
+    std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
+}
+
+fn machine_state(when: &str) {
+    let o = Command::new(std::env::current_exe().unwrap()).args(["machine::machine_state_line", "--exact", "--ignored", "--nocapture"]).output().unwrap();
+    let text = String::from_utf8_lossy(&o.stdout);
+    eprintln!("machine at {when}: {}", text.lines().find(|l| l.contains("machine state:")).unwrap_or(""));
+}
+
+fn run_loop(cfg: &LoopCfg) -> Summary {
+    let (out, rules) = (&cfg.out, cfg.out.join("rules.txt"));
+    std::fs::create_dir_all(out).unwrap();
+    let s = |v: usize| v.to_string();
+    let mut common: Vec<(String, String)> = [
+        ("RULEMINER_FAMILY", cfg.family.clone()),
+        ("CHECK_FAMILY", cfg.family.clone()),
+        ("RULEMINER_DEEP3", s(cfg.deep3)),
+        ("RULEMINER_STRIDE", s(cfg.stride)),
+        ("RULEMINER_PHASE", s(cfg.sphase)),
+        ("RULEMINER_SHAPE", s(cfg.split)),
+        // one machine-state line per loop or sweep instead of one per child
+        ("MACHINE_BANNER", "0".to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    common.extend(cfg.env.iter().cloned());
+    let with = |extra: &[(&str, String)]| common.iter().cloned().chain(extra.iter().map(|(k, v)| (k.to_string(), v.clone()))).collect::<Vec<_>>();
+    let count = || std::fs::read_to_string(&rules).unwrap().lines().count();
+    let mine = |name: &str, skip: usize, laws: usize| {
+        let log = out.join(format!("mine_{name}.log"));
+        let env = with(&[
+            ("RULEMINER_PERM", s(1)),
+            ("RULEMINER_THREADS", s(cfg.threads)),
+            ("RULEMINER_ROUNDS", s(cfg.rounds)),
+            ("RULEMINER_SKIP", s(skip)),
+            ("RULEMINER_LAWS", s(laws)),
+            ("RULEMINER_BASE", rules.display().to_string()),
+        ]);
+        assert!(child("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
         let chosen: String = std::fs::read_to_string(&log)
             .unwrap()
             .lines()
             .filter(|l| l.contains("RULEMINER chosen") && l.contains(" -> "))
             .map(|l| format!("{}\n", l.rsplit_once("size): ").map_or(l, |(_, r)| r)))
             .collect();
-        std::fs::OpenOptions::new().append(true).open(&self.rules).unwrap().write_all(chosen.as_bytes()).unwrap();
-    }
-
-    /// (M, laws, laws that used up the rule budget) of the batch at `skip`
-    fn serve(&self, skip: usize, b: usize) -> (usize, usize, usize) {
-        let log = self.out.join(format!("serve_{skip}.log"));
-        let env = [
-            ("CHECK_FAST", env_or("CHECK_FAST", 0usize).to_string()),
-            ("RULEMINER_SKIP", skip.to_string()),
-            ("RULEMINER_LAWS", b.to_string()),
-            ("CHECK_RULES", self.rules.display().to_string()),
-        ];
-        self.child("search::rule_set_kernel_check", &env, &log);
+        append(&rules, &chosen);
+    };
+    // (M, laws, laws that used up the rule budget) of the batch at `skip`
+    let serve = |skip: usize| {
+        let log = out.join(format!("serve_{skip}.log"));
+        let env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
+        child("search::rule_set_kernel_check", &env, &log);
         // CHECKED <n> laws kernel-checked (<k> with no whole-term machine proof), <p> not proved, <x> used up the rule budget
         let text = std::fs::read_to_string(&log).unwrap();
         let line = text.lines().find(|l| l.starts_with("CHECKED ")).unwrap_or_else(|| panic!("no CHECKED line (see {})", log.display()));
         let nums: Vec<usize> = line.split(|c: char| !c.is_ascii_digit()).filter_map(|w| w.parse().ok()).collect();
         let &[n, k, p, x] = &nums[..] else { panic!("unexpected CHECKED line: {line}") };
         (n - k + p, n + p, x)
-    }
-
-    fn machine_state(&self, when: &str) {
-        if env_or("MACHINE_STATE", 1usize) == 0 {
-            return;
+    };
+    match &cfg.warm {
+        Some(w) if cfg.mode != "ref" => {
+            std::fs::copy(w, &rules).unwrap_or_else(|e| panic!("WARM_RULES {}: {e}", w.display()));
         }
-        let o = Command::new(&self.exe).args(["machine::machine_state_line", "--exact", "--ignored", "--nocapture"]).output().unwrap();
-        let text = String::from_utf8_lossy(&o.stdout);
-        eprintln!("loop machine at {when}: {}", text.lines().find(|l| l.contains("machine state:")).unwrap_or(""));
+        _ => std::fs::write(&rules, "").unwrap(),
     }
-
-    fn rule_count(&self) -> usize {
-        std::fs::read_to_string(&self.rules).unwrap().lines().count()
+    std::fs::write(out.join("m.tsv"), "").unwrap();
+    if cfg.mode == "ref" {
+        mine("ref", cfg.offset, cfg.b * cfg.k);
     }
+    let (mut ms, mut exhausted) = (vec![], 0);
+    for r in 0..cfg.k {
+        let (skip, t0) = (cfg.offset + r * cfg.b, std::time::Instant::now());
+        let (m, laws, ex) = serve(skip);
+        append(&out.join("m.tsv"), &format!("{r}\t{m}\t{laws}\t{}\t{}\t{ex}\n", count(), t0.elapsed().as_secs()));
+        ms.push(m);
+        exhausted += ex;
+        if cfg.mode == "loop" && r + 1 < cfg.k {
+            mine(&r.to_string(), skip, cfg.b);
+        }
+    }
+    let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted };
+    println!("mode={} B={} K={} offset={} total_M={} rules={} exhausted={}", cfg.mode, cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted);
+    sum
 }
 
 #[test]
 #[ignore]
 fn loop_stream() {
-    let mode = std::env::var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop");
-    assert!(["none", "ref", "loop"].contains(&mode.as_str()), "LOOP_MODE must be none, ref or loop, got {mode}");
-    let out = PathBuf::from(std::env::var("LOOP_OUT").expect("set LOOP_OUT=<dir>"));
+    let cfg = LoopCfg::from_env();
+    let states = env_or("MACHINE_STATE", 1usize) == 1;
+    if states {
+        machine_state("start");
+    }
+    run_loop(&cfg);
+    if states {
+        machine_state("end");
+    }
+}
+
+/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (2 threads, 8 rounds, full serving check).
+const MINES: [(&str, usize, usize, usize); 4] = [("sbo3", 11, 2, 50), ("add3", 7, 2, 50), ("mix3", 1, 1, 50), ("cmp3d", 15, 2, 100)];
+/// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, 8 rounds, CHECK_FAST).
+const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
+
+#[test]
+#[ignore]
+fn sweep() {
+    let out = PathBuf::from(std::env::var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
     std::fs::create_dir_all(&out).unwrap();
-    let (b, k, offset) = (env_or("B", 150usize), env_or("K", 4usize), env_or("OFFSET", 0usize));
-    let family = std::env::var("FAMILY").unwrap_or_else(|_| "add3".into());
-    let common = vec![
-        ("RULEMINER_FAMILY", family.clone()),
-        ("CHECK_FAMILY", family),
-        ("RULEMINER_DEEP3", env_or("DEEP3", 1usize).to_string()),
-        ("RULEMINER_STRIDE", env_or("STRIDE", 7usize).to_string()),
-        ("RULEMINER_PHASE", env_or("SPHASE", 0usize).to_string()),
-        ("RULEMINER_SHAPE", env_or("SPLIT", 2usize).to_string()),
-        // one machine-state line per loop instead of one per child
-        ("MACHINE_BANNER", "0".to_string()),
-    ];
-    let lp = Loop { rules: out.join("rules.txt"), out: out.clone(), common, exe: std::env::current_exe().unwrap() };
-    match std::env::var("WARM_RULES") {
-        Ok(w) if mode != "ref" => {
-            std::fs::copy(&w, &lp.rules).unwrap_or_else(|e| panic!("WARM_RULES {w}: {e}"));
+    let salt: usize = env_or("SALT", 1);
+    let lib = std::env::var("LIB").map(PathBuf::from).unwrap_or_else(|_| out.clone());
+    let stages = std::env::var("SWEEP").unwrap_or_else(|_| "mines own cold".into());
+    let env = vec![("RULEMINER_FAST".to_string(), "1".to_string()), ("RULEMINER_SHUFFLE".to_string(), salt.to_string())];
+    let base = |mode: &str, out: PathBuf, family: &str| LoopCfg {
+        mode: mode.into(),
+        out,
+        family: family.into(),
+        stride: 1,
+        sphase: 0,
+        b: 100,
+        k: 3,
+        offset: 0,
+        threads: 6,
+        rounds: 8,
+        deep3: 1,
+        split: 2,
+        warm: None,
+        check_fast: true,
+        env: env.clone(),
+    };
+    let library = |fam: &str| lib.join(format!("lib_{fam}")).join("rules.txt");
+    machine_state("start");
+    for stage in stages.split_whitespace() {
+        let (name, fams) = stage.split_once(':').unwrap_or((stage, "cmp3d,add3,sbo3"));
+        let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
+        std::fs::write(&tsv, "").unwrap();
+        if name == "mines" {
+            for (fam, stride, split, b) in MINES {
+                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, check_fast: false, ..base("ref", out.join(format!("lib_{fam}")), fam) };
+                let t0 = std::time::Instant::now();
+                let s = run_loop(&cfg);
+                append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
+            }
+            continue;
         }
-        _ => std::fs::write(&lp.rules, "").unwrap(),
-    }
-    std::fs::write(out.join("m.tsv"), "").unwrap();
-    lp.machine_state("start");
-    if mode == "ref" {
-        lp.mine("ref", offset, b * k);
-    }
-    let (mut total, mut exhausted) = (0, 0);
-    for r in 0..k {
-        let (skip, t0) = (offset + r * b, std::time::Instant::now());
-        let (m, laws, ex) = lp.serve(skip, b);
-        let row = format!("{r}\t{m}\t{laws}\t{}\t{}\t{ex}\n", lp.rule_count(), t0.elapsed().as_secs());
-        std::fs::OpenOptions::new().append(true).open(out.join("m.tsv")).unwrap().write_all(row.as_bytes()).unwrap();
-        (total, exhausted) = (total + m, exhausted + ex);
-        if mode == "loop" && r + 1 < k {
-            lp.mine(&r.to_string(), skip, b);
+        let pooled = out.join("pooled.rules");
+        if name == "pooled" {
+            // two sub/sub orientations (add3 mines them) that conflict with sbo3's
+            let drop = ["sub(x, add(y, z)) -> sub(sub(x, y), z)", "sub(sub(x, y), z) -> sub(sub(x, z), y)"];
+            let mut seen = std::collections::HashSet::new();
+            let mut text = String::new();
+            for fam in ["cmp3d", "add3", "sbo3"] {
+                for l in std::fs::read_to_string(library(fam)).unwrap().lines() {
+                    if !(fam != "cmp3d" && drop.contains(&l)) && seen.insert(l.to_string()) {
+                        text += &format!("{l}\n");
+                    }
+                }
+            }
+            std::fs::write(&pooled, text).unwrap();
+        }
+        for fam in fams.split(',') {
+            let stride = LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1;
+            let srcs: Vec<&str> = match name {
+                "own" => vec![fam],
+                "cold" => vec!["none"],
+                "cross" => ["cmp3d", "add3", "sbo3"].into_iter().filter(|s| *s != fam).collect(),
+                "pooled" => vec!["pooled"],
+                _ => panic!("unknown stage {stage}"),
+            };
+            for src in srcs {
+                let warm = match src {
+                    "none" => None,
+                    "pooled" => Some(pooled.clone()),
+                    s => Some(library(s)),
+                };
+                for p in 1..=3 {
+                    let dir = out.join(format!("{}_{fam}_{p}_{src}", stage.replace(':', "_")));
+                    let cfg = LoopCfg { stride, sphase: p, warm: warm.clone(), ..base("loop", dir, fam) };
+                    let t0 = std::time::Instant::now();
+                    let s = run_loop(&cfg);
+                    let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
+                    append(&tsv, &format!("{fam}\t{stride}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\n", s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted));
+                }
+            }
         }
     }
-    lp.machine_state("end");
-    println!("mode={mode} B={b} K={k} offset={offset} total_M={total} rules={} exhausted={exhausted}", lp.rule_count());
+    machine_state("end");
 }
