@@ -318,8 +318,19 @@ On the same 31 laws the kernel visits are 11.6M without the library and 48.1M wi
 The mined rule grows in the rule order (`x` occurs twice on the right), so the order check would reject it; it got in as a
 *cross-side* rule (three or more variables, abstracted from the two sides of a law), which the miner admits without an order
 check, leaving the budget as the only guard against cycles (`search.rs`, `ok_order`). Its reverse direction goes down in the order.
-Not fixed yet; the general fix is to orient cross-side candidates by the rule order like the pool candidates (and drop the ones that
-go down in neither direction), then re-mine and re-measure M.
+**Ordering cross-side rules makes M worse (negative, reverted).** Orienting each cross-side candidate by the rule order (reversed
+when only the reverse goes down, dropped when neither does), re-mining the salt-1 libraries and re-running the loops (count-only)
+raised total M everywhere: cold 542 to 624 (cmp3d, add3, sbo3), seeded cmp3d 109 to 153, add3 62 to 124, sbo3 41 to 122; the
+libraries' own mining streams went from 45 to 80 (cmp3d). The growing cross-side rules do useful work in every family, not only the
+one that cycles. Some ordered runs still used up the budget (sbo3 seeded: up to 6 laws in a batch), so the order alone does not
+stop it either.
+
+Kept: a tripwire. `rule_set_kernel_check` counts the laws that used up the rule budget (`CHECKED ..., N used up the rule budget`),
+and `scripts/loop_stream.sh` writes it as the sixth column of `m.tsv` and as `exhausted=` in its last line. cmp3d's own library: 23
+of 300 laws; no library: 0.
+
+Next for the cycle: reject a candidate in the miner when it makes a law of the mining batch use up the budget (a cycle check on the
+data, whatever its cause), or give each side of a law its own budget so one cycling side cannot starve the other.
 
 ### Kernel cost calibrated against time (2026-10-10)
 `law_work_report` now writes each counted slot separately for building (`b_`) and checking (`c_`), plus the terms built while
@@ -343,7 +354,7 @@ are collinear and not individually meaningful; building's `shift` visits got wei
   weights tied to this machine). The fitted cost is a check to report beside M, not an objective. The cmp3d gap between M's cut
   (3.8x) and time's (1.1x) is a defect in the library (the cycle), not in M.
 
-Next: orient cross-side rules (above), re-mine the salt-1 libraries, and re-measure M and time.
+Next: stop the cycle without losing the growing cross-side rules (above), then re-measure M and time.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

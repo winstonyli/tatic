@@ -18,6 +18,7 @@
 # THREADS=<n> (default 2) sizes the miner pool. To share the machine, also pin and lower priority at launch: cmd //c start "" //b //belownormal //affinity 5000 bash <script> (0x5000 = two physical cores, assuming adjacent logical cores are SMT siblings).
 # MACHINE_STATE=0 skips the loop's two machine-state probes (about 6 s each); a sweep of loops should record the state once itself (the ignored test `machine_state_line` prints it).
 # RULEMINER_SHUFFLE=<salt> (exported, default 0 = off) reorders the three-variable families' sorted law sequence by a hash, so the batches and stride phases are random samples of the family instead of lexicographic ranges.
+# m.tsv columns: batch, M, laws, rules in force, seconds, laws that used up the rule budget (nonzero means a rewrite cycle or growing rules).
 # CHECK_FAST=1 does the same for serving (no proof building for machine fallbacks, no kernel check, no NFSAME pass); the CHECKED line and M are unchanged.
 # RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without searching for or building their proofs: about 10x faster mining on cmp3d, but approximate (it can pick different rules; M 41 vs 40 on one ref mine). Use it for exploration, not headline numbers. Serving and the M count are unaffected.
 set -euo pipefail
@@ -51,10 +52,10 @@ mine() { # name skip laws [phase] -> appends the chosen rules to $rules
     mv "$out/pool.tmp" "$out/pool.txt"
   fi
 }
-serve() { # skip -> prints "M laws"
+serve() { # skip -> prints "M laws exhausted" (exhausted: laws that used up the rule budget, a sign of a rewrite cycle)
   local line
   line=$(env $win CHECK_FAST=${CHECK_FAST:-0} RULEMINER_PHASE=${SPHASE:-0} RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
-  echo "$line" | sed -E 's/CHECKED ([0-9]+) laws kernel-checked \(([0-9]+) with no whole-term machine proof\), ([0-9]+) not proved/\1 \2 \3/' | awk '{print $1-$2+$3, $1+$3}'
+  echo "$line" | sed -E 's/CHECKED ([0-9]+) laws kernel-checked \(([0-9]+) with no whole-term machine proof\), ([0-9]+) not proved, ([0-9]+) used up the rule budget/\1 \2 \3 \4/' | awk '{print $1-$2+$3, $1+$3, $4}'
 }
 
 if [ "$mode" = ref ]; then mine ref "$OFFSET" $((B * K)); fi
@@ -62,15 +63,15 @@ if [ -n "${WARM_RULES:-}" ] && [ "$mode" != ref ]; then
   [ -f "$WARM_RULES" ] || { echo "WARM_RULES file not found: $WARM_RULES" >&2; exit 2; }
   cp "$WARM_RULES" "$rules"
 elif [ -n "${WARM:-}" ] && [ "$mode" != ref ]; then IFS=: read -r ws wl wp <<< "$WARM"; mine warm "$ws" "$wl" "${wp:-0}"; fi
-total=0
+total=0; exhausted=0
 for ((r = 0; r < K; r++)); do
   skip=$((OFFSET + r * B)); t0=$(date +%s)
-  read -r m laws < <(serve "$skip")
-  printf '%s\t%s\t%s\t%s\t%s\n' "$r" "$m" "$laws" "$(wc -l < "$rules")" "$(( $(date +%s) - t0 ))" >> "$out/m.tsv"
-  total=$((total + m))
+  read -r m laws ex < <(serve "$skip")
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$m" "$laws" "$(wc -l < "$rules")" "$(( $(date +%s) - t0 ))" "$ex" >> "$out/m.tsv"
+  total=$((total + m)); exhausted=$((exhausted + ex))
   if [ "$mode" = loop ] && [ "$r" -lt $((K - 1)) ]; then
     if [ "${WINDOW:-}" = cum ]; then mine "$r" "$OFFSET" $((B * (r + 1))); else mine "$r" "$skip" "$B"; fi
   fi
 done
 [ "${MACHINE_STATE:-1}" = 0 ] || echo "loop machine at end: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
-echo "mode=$mode B=$B K=$K offset=$OFFSET total_M=$total rules=$(wc -l < "$rules")"
+echo "mode=$mode B=$B K=$K offset=$OFFSET total_M=$total rules=$(wc -l < "$rules") exhausted=$exhausted"
