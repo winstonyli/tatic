@@ -196,7 +196,7 @@ fn loop_stream() {
     }
 }
 
-/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (2 threads, 8 rounds, full serving check).
+/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (2 threads, 16 rounds, full serving check).
 const MINES: [(&str, usize, usize, usize); 4] = [("sbo3", 11, 2, 50), ("add3", 7, 2, 50), ("mix3", 1, 1, 50), ("cmp3d", 15, 2, 100)];
 /// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, 8 rounds, CHECK_FAST).
 const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
@@ -235,7 +235,7 @@ fn sweep() {
         std::fs::write(&tsv, "").unwrap();
         if name == "mines" {
             for (fam, stride, split, b) in MINES {
-                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, check_fast: false, ..base("ref", out.join(format!("lib_{fam}")), fam) };
+                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, rounds: 16, check_fast: false, ..base("ref", out.join(format!("lib_{fam}")), fam) };
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg);
                 append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));

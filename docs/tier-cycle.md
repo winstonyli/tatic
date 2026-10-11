@@ -595,7 +595,10 @@ come back in rounds 10 (+1) and 12 (+3). Rounds 13-16 fix nothing and only shrin
 
 The loops seeded from add3's and sbo3's libraries reproduced exactly (48, 46). A rule worth +1 on its own family can be worth
 dozens of laws on another, so a family's mine can't judge transfer, and a round cap set for one family's laws trims general rules.
-The other libraries are still mined with 8 rounds.
+`driver::sweep` now runs every ref mine with 16 rounds (loops still mine 8 per batch). Rerun at salt 1 (stages `mines own cross
+pooled:mix3`; cold loops don't use a library): add3's and mix3's mines stop by themselves at 8 and 2 rules (libraries unchanged),
+sbo3's at 10 (two `or` rules added; own loop 35 to 31), and cmp3d's reaches the cap (mine 83 to 109 s). Every seeded total is
+equal or lower; the changed ones are those above and sbo3's own.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

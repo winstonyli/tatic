@@ -18,7 +18,7 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
   served. The last batch is never mined. A *cold* loop starts with no rules; a *seeded* loop starts with a library mined on a different,
   earlier stream (phase 0).
 - **Mining.** Greedy: each round adds the rule that most reduces M on the mined laws; it stops at `RULEMINER_ROUNDS` (default 8) or when
-  nothing helps. `RULEMINER_FAST=1` counts machine fallbacks without building their proofs (about 10x faster; approximate for the
+  nothing helps. The ref mines that make the libraries run 16 rounds since 2026-10-11 (only cmp3d's reaches the cap). `RULEMINER_FAST=1` counts machine fallbacks without building their proofs (about 10x faster; approximate for the
   results below, exact since 2026-10-11: `docs/tier-cycle.md`, "Miner speedups").
 
 ## Findings
@@ -56,8 +56,10 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
    and lost its two general `sub` rules (`sub(sub(x, y), z) -> sub(x, add(y, z))`, `add(sub(x, y), z) -> add(sub(z, y), x)`).
    Seeding cmp3d improved, but add3 and sbo3 kept less of cmp3d's library than before. Transfer from a library depends on what
    its greedy, capped mine happens to pick. Mining cmp3d's library with 16 rounds brings both rules back (rounds 10 and 12, +1 and
-   +3 on cmp3d's own laws) and gives add3 57 (from 147), sbo3 59 (from 95) and cmp3d's own loop 60 (from 68); the other libraries
-   are still mined with 8 rounds (`docs/tier-cycle.md`, "cmp3d's library lost its general rules").
+   +3 on cmp3d's own laws) and gives add3 57 (from 147), sbo3 59 (from 95) and cmp3d's own loop 60 (from 68). With every ref mine at
+   16 rounds (sbo3's library gains two `or` rules; add3's and mix3's stop by themselves and are unchanged): add3 183 / 60 / 46
+   (sbo3's) and 57 (cmp3d's), sbo3 123 / 31 / 48 (add3's) and 59 (cmp3d's), cmp3d 180 / 60 / 110-113, and pooled mix3 10
+   (`docs/tier-cycle.md`, "cmp3d's library lost its general rules").
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
    dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5; with cycles cut and exact counting, from 60 to 10 (also
    with growing chains cut). It does not change the two-variable shl, shr or lt
