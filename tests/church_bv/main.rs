@@ -3,6 +3,7 @@
 use std::time::Instant;
 use tatic::kernel::*;
 
+mod driver;
 mod encoding;
 mod rewrite;
 mod machine;

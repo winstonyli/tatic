@@ -1,7 +1,7 @@
 # Does the rule-mining loop learn, and do its rules transfer?
 
 Status: measured on one machine, single deterministic runs per cell (no repeated seeds); the only noise estimate is the spread across
-streams and across hash salts. Reproduce with `scripts/loop_stream.sh` (header documents every option); the sweep scripts and raw logs
+streams and across hash salts. Reproduce with `driver::loop_stream` in `tests/church_bv/driver.rs` (formerly `scripts/loop_stream.sh`; the module comment documents every option); the sweep scripts and raw logs
 are local and not in the repository.
 
 ## Setup

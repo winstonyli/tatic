@@ -14,7 +14,7 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
   rules that replace long derivations, so later work is cheaper; verdicts and cost signals train the model.
 
 ## What exists (kernel side)
-- The mine-and-serve loop (`scripts/loop_stream.sh`, `search::rule_miner`): laws are served in batches, rules are mined from them, M
+- The mine-and-serve loop (`driver::loop_stream`, `search::rule_miner`): laws are served in batches, rules are mined from them, M
   (laws still needing a whole-term machine proof) falls. Results and limits are in `docs/loop-result.md`.
 - The explorer is not learned: a hash-ordered stream of a fixed family, and the miner's greedy candidate pool.
 - Rule libraries plateau at about 25 rules on the current families: the fixed vocabulary saturates.
@@ -491,6 +491,13 @@ builtins (`[[ =~ ]]`, `read` loops, `mapfile`, `$EPOCHSECONDS`). On a seeded sbo
 load, RTP off) that took 26.2-35.4 s down to 12.9-15.1 s, with identical m.tsv and rules. The cross-run sbo3 own loops went from
 19-21 s to 12-14 s with identical rows. Running a whole loop in one process would save only the 0.24 s law-list setup per launch,
 about 1 s a loop, so it is not worth doing.
+
+The script was then replaced by a Rust driver, `driver::loop_stream`. It runs serve and mine as child processes of the same exe,
+so it needs no shell and no refactoring of the env-read configs. The script's unused options (`WINDOW`, `POOL`, `WARM`) were
+dropped. Same seeded sbo3 loop, three alternating rounds (pinned to two cores, 19-49% load from other work): Rust driver 9.4-12.2 s,
+trimmed bash script 10.8-23.4 s, and the five exe calls launched straight from PowerShell 9.2-10.3 s. Outputs were identical. On a
+quiet machine the driver saves about 1.4 s a loop and sits within 0.2 s of the direct-launch floor. Under load, bash's fork cost
+grows and the gap widens.
 
 Two other costs showed up:
 - **A growing chain.** cmp3d's cold phase-1 mine spends 24 s of its 31 s in two rounds. Its first winner,

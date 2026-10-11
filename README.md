@@ -65,19 +65,18 @@ still need a whole-term machine proof. The measured results are not in this
 repository (they live in local notes), so treat the code below as the
 reproducible part.
 
-- `scripts/loop_stream.sh none|ref|loop OUTDIR` is the driver (`EXE` names the
-  `church_bv` test executable). `none` serves with no rules, `ref` mines once on
-  the whole stream, `loop` mines after each batch. It writes `OUTDIR/m.tsv`
-  (round, M, laws, rules in force, seconds). The header documents all options:
-  `B`, `K`, `OFFSET`, `STRIDE`, `FAMILY=add3|mix3|sbo3|cmp3|cmp3d|u3`, `WINDOW=cum`, `POOL`,
-  `WARM=<skip>:<laws>[:<phase>]` and `WARM_RULES=<file>` (start with rules in
-  force; `scripts/rules/reassoc.txt` holds six general reassociation rules
-  that cut machine proofs on add3, mix3 and sbo3 streams), and `SPLIT=0|1` (one
-  structure-based half of the laws).
+- The driver is the ignored test `driver::loop_stream` (`tests/church_bv/driver.rs`):
+  `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> <church_bv test exe> driver::loop_stream --exact --ignored --nocapture`.
+  `none` only serves, `ref` mines once on the whole stream, `loop` mines after
+  each batch. It writes `<dir>/m.tsv` (round, M, laws, rules in force, seconds,
+  laws that used up the rule budget). The module comment documents all options:
+  `B`, `K`, `OFFSET`, `STRIDE`, `SPHASE`, `FAMILY=add3|mix3|sbo3|cmp3|cmp3d|u3|u3w`,
+  `WARM_RULES=<file>` (start with rules in force; `scripts/rules/reassoc.txt`
+  holds six general reassociation rules that cut machine proofs on add3, mix3
+  and sbo3 streams), and `SPLIT=0|1` (one structure-based half of the laws).
 - The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
   settings from `RULEMINER_*` environment variables. Options added for this
-  experiment, off by default unless noted: `NOIDENT` (drop identity candidates),
-  `GENERAL` (generality penalty), `PHASE` (residue class of a strided law
+  experiment, off by default unless noted: `PHASE` (residue class of a strided law
   sequence), `SHAPE` and `SHAPE_SALT` (structure-based split of the laws),
   `NODUPLHS` (no candidate whose left side already has a rule in force; on by
   default, `0` turns it off), and `GUARD=<k>` (also score k laws that are
