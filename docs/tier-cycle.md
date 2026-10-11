@@ -329,8 +329,46 @@ Kept: a tripwire. `rule_set_kernel_check` counts the laws that used up the rule 
 and `scripts/loop_stream.sh` writes it as the sixth column of `m.tsv` and as `exhausted=` in its last line. cmp3d's own library: 23
 of 300 laws; no library: 0.
 
-Next for the cycle: reject a candidate in the miner when it makes a law of the mining batch use up the budget (a cycle check on the
-data, whatever its cause), or give each side of a law its own budget so one cycling side cannot starve the other.
+### Per-side rule budget; rejecting cycling candidates is a negative result (2026-10-11)
+**Each side of a law now gets the whole budget** (`rewrite_law`). Afterwards the budget is what the hungrier side left, so the
+tripwire still counts a law whose either side used it up. With libraries re-mined under it (salt 1; sbo3's library is unchanged,
+add3's and cmp3d's differ by one rule each), total M against `loop_dd1` (shared budget):
+
+| | cmp3d | add3 | sbo3 |
+|---|---|---|---|
+| cold | 231 to 224 | 183 to 183 | 128 to 121 |
+| seeded (own library) | 109 to 74 | 62 to 67 | 41 to 40 |
+
+On cmp3d's 300-law timing batch, the old library cut M from 31 to 24. Wall time pinned to two cores on a quiet machine
+(load 9-14%, RTP off; best of two runs, alternating):
+
+| exe | no library | own library |
+|---|---|---|
+| shared budget | 47.7 s | 46.1 s |
+| per-side budget | 47.3 s | 34.6 s |
+
+So the own library now saves 1.37× instead of 1.03×. sbo3's batch is unchanged at 5.8 s. The cycles themselves remain: 28-32
+seeded cmp3d laws per stream still use up the budget, now on one side only.
+
+**Rejecting a candidate that makes a mining-batch law use up the budget makes M worse (negative, reverted).** The miner scores at
+40 steps (`RULEMINER_STEPS`). With the old libraries, 197 of sbo3's 200 mining-window laws normalize in at most 40 steps and 3
+cycle, so a 40-step budget does detect the cycles. But rejecting every candidate that makes even one law cycle throws out the
+best rules. sbo3 lost `add(sub(x, y), z) -> add(sub(z, y), x)` (+18 fixed). The libraries' own windows went from 12 to 24
+(sbo3), 20 to 35 (add3) and 45 to 51 (cmp3d), and mining took about twice as long. Loops (with per-side budget too) gave seeded
+cmp3d 103, add3 91, sbo3 56 against 74 / 67 / 40 without the rejection, and cold 222 / 195 / 144. No law used up the budget in
+any of those runs. A cycle on a few laws costs time; a rejected rule costs M on many.
+
+**Why ordered sbo3 still cycled** (the oriented runs above). It is a true cycle, not 200 steps being too few. On
+`sub(sub(z, x), sub(y, z))` five steps repeat until the budget runs out:
+`sub(sub(x, y), z) -> sub(x, add(y, z))`, `add(x, sub(y, z)) -> sub(x, sub(z, y))`, and three uses of the permutative
+`sub(x, sub(y, z)) -> sub(z, sub(y, x))`. By default, a rule is checked once against the rule order, or for a tie against a rule-level
+tie-break (`rule_order_or_tie`), and then fires on every instance unchecked. Only permutative rules are checked per instance, and
+then by `show()` order. Those are different orders, so steps that mix them need not terminate. `PERM_ORDER=lpo` checks every tied instance against
+one path order. On those three batches it removes all 7 exhausted laws, but M rises from 8 to 18, with libraries mined under the
+default order.
+
+Diagnostics kept: `rule_set_kernel_check` prints `EXHAUSTED <law>` per law; `normal_forms` gives each side its own budget and
+prints `steps a/b`.
 
 ### Kernel cost calibrated against time (2026-10-10)
 `law_work_report` now writes each counted slot separately for building (`b_`) and checking (`c_`), plus the terms built while
@@ -354,7 +392,11 @@ are collinear and not individually meaningful; building's `shift` visits got wei
   weights tied to this machine). The fitted cost is a check to report beside M, not an objective. The cmp3d gap between M's cut
   (3.8x) and time's (1.1x) is a defect in the library (the cycle), not in M.
 
-Next: stop the cycle without losing the growing cross-side rules (above), then re-measure M and time.
+The cmp3d gap is now smaller (time 1.37×, see "Per-side rule budget" above); the cycles still cost every exhausted law 200 steps.
+
+Next: one instance-level order for every tied step. Mine and serve under `PERM_ORDER=lpo`, so the libraries fit that order, and
+compare M against the default order. If M holds, the cycles are gone by construction. Parked alternative: a penalty instead of a
+rejection in the miner (a newly cycling law counts against the candidate, like a lost fix).
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

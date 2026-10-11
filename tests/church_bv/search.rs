@@ -1805,10 +1805,14 @@ pub fn normal_forms() {
     for line in std::fs::read_to_string(std::env::var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
         let (a, b) = line.split_once(" = ").unwrap();
         let (a, b) = (parse_term(a), parse_term(b));
-        RULE_BUDGET.with(|c| c.set(200));
-        let (na, nb) = (rewrite(&a, n, &ops, &goods).0, rewrite(&b, n, &ops, &goods).0);
+        // each side with its own budget, as in `rewrite_law`; `steps` is what each used (200 or more: it used the budget up)
+        let side = |t: &Term| {
+            RULE_BUDGET.with(|c| c.set(200));
+            (rewrite(t, n, &ops, &goods).0, 200 - RULE_BUDGET.with(|c| c.get()))
+        };
+        let ((na, sa), (nb, sb)) = (side(&a), side(&b));
         let carries = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
-        println!("NF {} | {} {} carries {}/{}", na.show(), nb.show(), if na.show() == nb.show() { "SAME" } else { "DIFF" }, carries(&na), carries(&nb));
+        println!("NF {} | {} {} carries {}/{} steps {sa}/{sb}", na.show(), nb.show(), if na.show() == nb.show() { "SAME" } else { "DIFF" }, carries(&na), carries(&nb));
     }
 }
 
@@ -1862,7 +1866,10 @@ pub fn rule_set_kernel_check() {
         let before = MACHINE_FALLBACKS.with(|c| c.get());
         let r = rewrite_law(4, kv, t1, t2);
         // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
-        exhausted += (RULE_BUDGET.with(|b| b.get()) <= 0) as u32;
+        if RULE_BUDGET.with(|b| b.get()) <= 0 {
+            exhausted += 1;
+            println!("EXHAUSTED {name}");
+        }
         match r {
             Some((p, s)) => {
                 if !fast {

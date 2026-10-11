@@ -36,7 +36,8 @@ are local and not in the repository.
    2-6% of the laws trivial or repeated and shifted every law sequence. Rerun at salt 1 after the dedup (libraries re-mined): cmp3d
    231 vs 109 (.47), add3 183 vs 62 (.34, unchanged), sbo3 128 vs 41 (.32), seeded better on 9 of 9 streams. Findings 3-5 below give
    post-dedup salt-1 numbers with the pre-dedup ones in parentheses; salt 2 was not rerun. Every seeded stream in them (45) beat its
-   cold stream.
+   cold stream. Since each side of a law got its own rule budget (2026-10-11, libraries re-mined), salt 1 gives cmp3d 224 vs 74,
+   add3 183 vs 67 and sbo3 121 vs 40. Findings 3-5 were not rerun under it.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
    foreign): add3 183 / 62 / 47-67 (56-65), sbo3 128 / 41 / 53-69 (52-66), cmp3d 231 / 109 / 139-140 (118-119). cmp3d needs its
    comparison rules, so it benefits least.
@@ -55,7 +56,8 @@ are local and not in the repository.
 - **M is machine proofs, not time.** Seeded vs cold is a count of laws, not a speed measurement. Measured by kernel work, a library
   cuts checking because each rule's proof is checked once and its uses refer to it as a parameter: the own library needs 2.1x (sbo3)
   and 1.6x (cmp3d) fewer kernel visits to check the laws than no library, and building plus checking takes 2.3x (sbo3) and 1.1x
-  (cmp3d) less time; cmp3d's small gain comes from a rewrite cycle in its library. With the earlier inlined proofs every use re-checked the
+  (cmp3d) less time. cmp3d's small gain came from a rewrite cycle in its library that starved the other side of a law. Since each
+  side has its own budget, cmp3d's gain is 1.37x (quiet machine, the same 300 laws). With the earlier inlined proofs every use re-checked the
   proof and kernel work did not fall (`docs/tier-cycle.md`, "Instruction count as a metric" and "Lemmas as kernel parameters").
 - **Not a generality claim about theories.** Everything is Church bit-vector arithmetic. Whether the loop works for an axiomatic theory
   is only probed: in a throwaway spike over commutative-ring terms (axioms only, proofs found by a budgeted search, no kernel; not in this

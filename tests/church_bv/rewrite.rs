@@ -1394,10 +1394,15 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
     // by the `lt` machine proof for the rewritten pair; `lt` occurs only at the root
     let lt_roots = matches!((t1, t2), (Term::Op(LT, ..), Term::Op(LT, ..)));
     let root = if lt_roots { bv_ty(1) } else { bv.clone() };
+    // each side gets the whole `RULE_BUDGET`, so a side that cycles cannot leave the other half-normalized; afterwards the
+    // budget is what the hungrier side left, so `RULE_BUDGET <= 0` still says some side used it up
+    let budget0 = RULE_BUDGET.with(|b| b.get());
+    let ((r1, p1), left1) = (rewrite(t1, n, &ops, &goods), RULE_BUDGET.with(|b| b.replace(budget0)));
+    let (r2, p2) = rewrite(t2, n, &ops, &goods);
+    RULE_BUDGET.with(|b| b.set(b.get().min(left1)));
     let (r1, p1, r2, p2, mid) = if lt_roots {
         // `rewrite` normalizes the operands and applies the root rules; equal results close by `refl`, `lt` roots with
         // provable operands by congruence, the rest by the `lt` machine proof of the rewritten pair
-        let ((r1, p1), (r2, p2)) = (rewrite(t1, n, &ops, &goods), rewrite(t2, n, &ops, &goods));
         let mid = if r1.show() == r2.show() {
             refl(ev(&r1))
         } else {
@@ -1420,8 +1425,6 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
         };
         (r1, p1, r2, p2, mid)
     } else {
-        let (r1, p1) = rewrite(t1, n, &ops, &goods);
-        let (r2, p2) = rewrite(t2, n, &ops, &goods);
         match prove_eq(n, &ops, &goods, &r1, &r2) {
             Some(mid) => (r1, p1, r2, p2, mid),
             // the rewriter may have pushed the shifts down to atoms; the mask reduction applies to the original sides
