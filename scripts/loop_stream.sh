@@ -19,6 +19,7 @@
 # MACHINE_STATE=0 skips the loop's two machine-state probes (about 6 s each); a sweep of loops should record the state once itself (the ignored test `machine_state_line` prints it).
 # RULEMINER_SHUFFLE=<salt> (exported, default 0 = off) reorders the three-variable families' sorted law sequence by a hash, so the batches and stride phases are random samples of the family instead of lexicographic ranges.
 # m.tsv columns: batch, M, laws, rules in force, seconds, laws that used up the rule budget (nonzero means a rewrite cycle or growing rules).
+# Each serve's output is kept as serve_<skip>.log, each mine's as mine_<name>.log.
 # CHECK_FAST=1 does the same for serving (no proof building for machine fallbacks, no kernel check, no NFSAME pass); the CHECKED line and M are unchanged.
 # RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without building their proofs, and prove only each round's winning rule: the counts are exact (the same rules as the full miner on sbo3's ref mine, 23 s vs 107 s; docs/tier-cycle.md, "Miner speedups"). Serving and the M count are unaffected.
 set -euo pipefail
@@ -46,17 +47,24 @@ mine() { # name skip laws [phase] -> appends the chosen rules to $rules
   if ! env $win $mc "${extra_env[@]}" RULEMINER_SKIP=$2 RULEMINER_LAWS=$3 RULEMINER_PHASE=${4:-${SPHASE:-0}} RULEMINER_SHAPE=$shp RULEMINER_BASE="$rules" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine_$1.log" 2>&1; then
     echo "loop_stream: rule_miner failed (see $out/mine_$1.log)" >&2; exit 1
   fi
-  { grep -E "RULEMINER chosen" "$out/mine_$1.log" | grep -- " -> " | sed 's/.*size): //' >> "$rules"; } || true
+  local l
+  while IFS= read -r l; do if [[ $l == *"RULEMINER chosen"*" -> "* ]]; then echo "${l##*size): }" >> "$rules"; fi; done < "$out/mine_$1.log"
   if [ "${POOL:-0}" = 1 ]; then
     { { grep -E "RULEMINER candidate: " "$out/mine_$1.log" | sed 's/.*candidate: //'; } || true; if [ -f "$out/pool.txt" ]; then cat "$out/pool.txt"; fi; } | sort -u > "$out/pool.tmp"
     mv "$out/pool.tmp" "$out/pool.txt"
   fi
 }
-serve() { # skip -> prints "M laws exhausted" (exhausted: laws that used up the rule budget, a sign of a rewrite cycle)
-  local line
-  line=$(env $win CHECK_FAST=${CHECK_FAST:-0} RULEMINER_PHASE=${SPHASE:-0} RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture 2>&1 | grep -E "^CHECKED")
-  echo "$line" | sed -E 's/CHECKED ([0-9]+) laws kernel-checked \(([0-9]+) with no whole-term machine proof\), ([0-9]+) not proved, ([0-9]+) used up the rule budget/\1 \2 \3 \4/' | awk '{print $1-$2+$3, $1+$3, $4}'
+# The loop parses with bash builtins, not pipes or $(...): each fork costs 0.15-1 s under Git Bash (docs/tier-cycle.md, "Loop overhead").
+serve() { # skip -> sets m, laws and ex (exhausted: laws that used up the rule budget, a sign of a rewrite cycle)
+  local l log="$out/serve_$1.log" re='^CHECKED ([0-9]+) laws kernel-checked \(([0-9]+) with no whole-term machine proof\), ([0-9]+) not proved, ([0-9]+) used up the rule budget'
+  env $win CHECK_FAST=${CHECK_FAST:-0} RULEMINER_PHASE=${SPHASE:-0} RULEMINER_SHAPE=${SPLIT:-2} RULEMINER_SKIP=$1 RULEMINER_LAWS=$B CHECK_RULES="$rules" "$EXE" search::rule_set_kernel_check --ignored --nocapture > "$log" 2>&1 || true
+  m=
+  while IFS= read -r l; do
+    if [[ $l =~ $re ]]; then m=$((BASH_REMATCH[1] - BASH_REMATCH[2] + BASH_REMATCH[3])) laws=$((BASH_REMATCH[1] + BASH_REMATCH[3])) ex=${BASH_REMATCH[4]}; break; fi
+  done < "$log"
+  [ -n "$m" ] || { echo "loop_stream: no CHECKED line (see $log)" >&2; exit 1; }
 }
+nrules() { local -a a; mapfile -t a < "$rules"; nr=${#a[@]}; }
 
 if [ "$mode" = ref ]; then mine ref "$OFFSET" $((B * K)); fi
 if [ -n "${WARM_RULES:-}" ] && [ "$mode" != ref ]; then
@@ -65,13 +73,14 @@ if [ -n "${WARM_RULES:-}" ] && [ "$mode" != ref ]; then
 elif [ -n "${WARM:-}" ] && [ "$mode" != ref ]; then IFS=: read -r ws wl wp <<< "$WARM"; mine warm "$ws" "$wl" "${wp:-0}"; fi
 total=0; exhausted=0
 for ((r = 0; r < K; r++)); do
-  skip=$((OFFSET + r * B)); t0=$(date +%s)
-  read -r m laws ex < <(serve "$skip")
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$m" "$laws" "$(wc -l < "$rules")" "$(( $(date +%s) - t0 ))" "$ex" >> "$out/m.tsv"
+  skip=$((OFFSET + r * B)); t0=$EPOCHSECONDS
+  serve "$skip"; nrules
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$m" "$laws" "$nr" "$((EPOCHSECONDS - t0))" "$ex" >> "$out/m.tsv"
   total=$((total + m)); exhausted=$((exhausted + ex))
   if [ "$mode" = loop ] && [ "$r" -lt $((K - 1)) ]; then
     if [ "${WINDOW:-}" = cum ]; then mine "$r" "$OFFSET" $((B * (r + 1))); else mine "$r" "$skip" "$B"; fi
   fi
 done
 [ "${MACHINE_STATE:-1}" = 0 ] || echo "loop machine at end: $("$EXE" machine_state_line --ignored --nocapture 2>&1 | grep -m1 "machine state:")" >&2
-echo "mode=$mode B=$B K=$K offset=$OFFSET total_M=$total rules=$(wc -l < "$rules") exhausted=$exhausted"
+nrules
+echo "mode=$mode B=$B K=$K offset=$OFFSET total_M=$total rules=$nr exhausted=$exhausted"

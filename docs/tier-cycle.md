@@ -480,9 +480,19 @@ loops serve with `CHECK_FAST=1`, so there:
 | sbo3 cold | 73 s | 26 s | 26 s |
 | cmp3d cold | 132 s | 22 s | 90 s |
 
-Serving includes its launch, and the remainder is mostly the mines' launches. A loop starts the test exe 15 times, and a launch took
-0.6-1.6 s on a loaded machine. Even `cmd /c exit` took 1.2 s, so this is process-creation cost, not the program. Two other costs
-showed up:
+Serving includes its launch, and the remainder is mostly the mines' launches. Even `cmd /c exit` took 1.2 s from the loop's shell.
+
+**Loop overhead (fixed, 2026-10-11).** The launch cost is Git Bash's fork, not Windows process creation or the exe. Measured from
+PowerShell, `cmd /c exit` takes 12 ms, the test exe's `--list` 14 ms, and a one-law serve 0.24 s (building the law list). Run
+directly, MSYS's `true.exe` takes 17 ms, but `bash -c true` takes 0.3-0.7 s and each further command bash runs adds 0.15-0.35 s
+(about 1 s inside Claude Code's shell). A loop forked about 30 times: 5 exe launches, plus a `$(...)`, a pipe stage or a
+`grep`/`sed`/`awk`/`wc`/`date` for every parsed line. `scripts/loop_stream.sh` and the local `cross_run.sh` now parse with bash
+builtins (`[[ =~ ]]`, `read` loops, `mapfile`, `$EPOCHSECONDS`). On a seeded sbo3 loop (2 threads, pinned to two cores, ABAB, 12%
+load, RTP off) that took 26.2-35.4 s down to 12.9-15.1 s, with identical m.tsv and rules. The cross-run sbo3 own loops went from
+19-21 s to 12-14 s with identical rows. Running a whole loop in one process would save only the 0.24 s law-list setup per launch,
+about 1 s a loop, so it is not worth doing.
+
+Two other costs showed up:
 - **A growing chain.** cmp3d's cold phase-1 mine spends 24 s of its 31 s in two rounds. Its first winner,
   `lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))`, and the candidate `lt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))` rewrite into
   each other, and each lap copies `x` in. The term grows instead of repeating, so the cycle cut never fires and only the 40-step

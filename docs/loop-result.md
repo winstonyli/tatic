@@ -50,8 +50,14 @@ are local and not in the repository.
    add3 now does better with sbo3's library than with its own. With cycles cut and exact counting (libraries re-mined): add3
    183 / 61 / 46 (sbo3's) and 64 (cmp3d's), sbo3 123 / 35 / 49 (add3's) and 59 (cmp3d's), cmp3d 184 / 68 / 116-121. add3 still
    does better with sbo3's library: its own orients the `sub` chains the other way (`docs/tier-cycle.md`, "Why add3 did better").
+   With growing chains cut as well (libraries re-mined; only cmp3d's changed): add3 183 / 60 / 46 (sbo3's) and 147 (cmp3d's), sbo3
+   123 / 35 / 48 (add3's) and 95 (cmp3d's), cmp3d 180 / 68 / 110-113. cmp3d's library now spends its 8 rounds on comparison rules
+   and lost its two general `sub` rules (`sub(sub(x, y), z) -> sub(x, add(y, z))`, `add(sub(x, y), z) -> add(sub(z, y), x)`).
+   Seeding cmp3d improved, but add3 and sbo3 kept less of cmp3d's library than before. Transfer from a library depends on what
+   its greedy, capped mine happens to pick.
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
-   dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5; with cycles cut and exact counting, from 60 to 10. It does not change the two-variable shl, shr or lt
+   dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5; with cycles cut and exact counting, from 60 to 10 (also
+   with growing chains cut). It does not change the two-variable shl, shr or lt
    families (pre-dedup check).
 5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
    (re-mining on the post-dedup u3 stream gave the identical 8- and 25-rule libraries): cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
