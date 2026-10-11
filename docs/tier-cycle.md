@@ -580,6 +580,23 @@ Refusing such winners does not rescue it (salt 1, total M; a refused candidate s
 All variants reverted. A rival orientation is worth revisiting only once the miner scores rules the way serving uses them (the
 same budget), or the gap between the two is understood.
 
+### cmp3d's library lost its general rules to the round cap (2026-10-11)
+After the growth cut, cmp3d's ref mine (salt 1, 400 laws, 8 rounds) no longer picks `sub(sub(x, y), z) -> sub(x, add(y, z))` or
+`add(sub(x, y), z) -> add(sub(z, y), x)`. Both are still candidates. After the four big rules (+32, +41, +34, +20 fixed) they are
+worth little on cmp3d's own laws, and the 8-round cap ends the mine first: rounds 5-8 fix +6, +3, +3, +1. With 16 rounds they
+come back in rounds 10 (+1) and 12 (+3). Rounds 13-16 fix nothing and only shrink terms. Seeding loops with that 16-rule library
+(salt 1, total M; `driver::loop_stream` with `LOOP_MODE=ref ROUNDS=16`, then `driver::sweep` stages `cross:add3,sbo3 own:cmp3d`):
+
+| seeded loop | 8-round cmp3d library | 16-round |
+|---|---|---|
+| add3 | 147 | 57 |
+| sbo3 | 95 | 59 |
+| cmp3d (own) | 68 | 60 |
+
+The loops seeded from add3's and sbo3's libraries reproduced exactly (48, 46). A rule worth +1 on its own family can be worth
+dozens of laws on another, so a family's mine can't judge transfer, and a round cap set for one family's laws trims general rules.
+The other libraries are still mined with 8 rounds.
+
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
 
