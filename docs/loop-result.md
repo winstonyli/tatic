@@ -41,7 +41,8 @@ are local and not in the repository.
    add3 183 vs 67 and sbo3 121 vs 40; findings 3-4 were rerun under it (below). With rewrite cycles cut as well (libraries
    re-mined again): cmp3d 214 vs 68, add3 183 vs 61, sbo3 123 vs 35, and no law uses up the step budget. With exact counting in
    the miner as well (`docs/tier-cycle.md`, "Miner speedups"; the cold loops mine differently): cmp3d 184 vs 68 (one cold law used up
-   the budget), add3 183 vs 61, sbo3 123 vs 35.
+   the budget), add3 183 vs 61, sbo3 123 vs 35. With growing rewrite chains cut too, identity candidates dropped and the miner on
+   serving's 200-step budget: cmp3d 180 vs 68 (no law uses up the budget), add3 183 vs 60, sbo3 123 vs 35.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
    foreign): add3 183 / 62 / 47-67 (56-65), sbo3 128 / 41 / 53-69 (52-66), cmp3d 231 / 109 / 139-140 (118-119). cmp3d needs its
    comparison rules, so it benefits least. Under the per-side budget (2026-10-11): add3 183 / 67 / 46 (sbo3's library) and 65

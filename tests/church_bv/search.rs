@@ -949,6 +949,9 @@ pub fn rule_miner() {
     }
     // per left side, the smallest right side only, ties by `show()`. Scoring every right side instead (each left side's rival
     // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle.md)
+    // an identity (a pattern's pool group holds the pattern itself) never gains, and as the smallest right side it would displace
+    // its left side's real candidates
+    cands.retain(|(l, r)| l.show() != r.show());
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, _)| l.show());
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());

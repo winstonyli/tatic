@@ -994,25 +994,37 @@ impl RewriteMemo {
 thread_local! {
     pub static REWRITE_MEMO: std::cell::RefCell<Option<RewriteMemo>> = const { std::cell::RefCell::new(None) };
     /// the terms `rewrite` is working on, outermost first, and how many calls it cut so far
-    static REWRITE_PATH: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static REWRITE_PATH: std::cell::RefCell<Vec<Term>> = const { std::cell::RefCell::new(Vec::new()) };
     pub static CYCLE_CUTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `s` homeomorphically embeds in `t`: `t` is `s` with nodes inserted (Kruskal). Between terms of equal size it is equality.
+fn embeds(s: &Term, t: &Term) -> bool {
+    let couple = match (s, t) {
+        (Term::V(i), Term::V(j)) => i == j,
+        (Term::Zero, Term::Zero) | (Term::Ones, Term::Ones) => true,
+        (Term::Op(f, s1, s2), Term::Op(g, t1, t2)) => f == g && embeds(s1, t1) && embeds(s2, t2),
+        _ => false,
+    };
+    couple || matches!(t, Term::Op(_, t1, t2) if embeds(s, t1) || embeds(s, t2))
 }
 
 /// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`. Rewriting is deterministic apart from
 /// the step budget, so a call `rewrite(t)` made while `t` itself is being rewritten further out can only repeat that work until the
-/// budget runs out: a rewrite cycle. The cut returns `t` unchanged there, so the chain ends one lap round the cycle instead of at
-/// the budget (docs/tier-cycle.md, "Cycle cut").
+/// budget runs out: a rewrite cycle. A chain that returns to a larger copy of a term it is rewriting (one that term embeds in) is
+/// taken to grow without end. The cut returns `t` unchanged in both cases, so the chain ends one lap round instead of at the budget
+/// (docs/tier-cycle.md, "Cycle cut").
 pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
     if !matches!(t, Term::Op(..)) {
         return rewrite_memo(t, n, ops, goods);
     }
-    let key = t.show();
-    if REWRITE_PATH.with(|p| p.borrow().contains(&key)) {
+    let size = t.size();
+    if REWRITE_PATH.with(|p| p.borrow().iter().any(|s| s.size() <= size && embeds(s, t))) {
         CYCLE_CUTS.with(|c| c.set(c.get() + 1));
         let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
         return (t.clone(), refl(t.eval(ops, n, &vals)));
     }
-    REWRITE_PATH.with(|p| p.borrow_mut().push(key));
+    REWRITE_PATH.with(|p| p.borrow_mut().push(t.clone()));
     let out = rewrite_memo(t, n, ops, goods);
     REWRITE_PATH.with(|p| p.borrow_mut().pop());
     out
@@ -1631,6 +1643,29 @@ fn rewrite_cycles_are_cut() {
     assert!(left > 0, "the step budget ran out");
     let (p, s) = out.expect("proved");
     ck("cycle law", &p, &s);
+}
+
+/// cmp3d's growing chain (docs/tier-cycle.md, "Growth cut"): the two rules rewrite into each other and each lap copies the first
+/// argument in, so no term repeats. The term on the path embeds in its larger copy, and the cut ends the chain there instead of at
+/// the budget (which it runs out with only the repeat cut).
+#[test]
+fn growing_rewrite_chains_are_cut() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
+    EXTRA_RULES.with(|e| *e.borrow_mut() = parse_rules(rules));
+    RULE_BUDGET.with(|b| b.set(200));
+    let cuts0 = CYCLE_CUTS.with(|c| c.get());
+    let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
+    let out = rewrite_law(4, 3, &t1, &t2);
+    let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
+    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+    println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
+    assert!(cuts > 0, "no growth cut");
+    assert!(left > 0, "the step budget ran out");
+    if let Some((p, s)) = out {
+        ck("growth law", &p, &s);
+    }
 }
 
 /// `RewriteMemo::filtered`: a memo built under some rules keeps its results under one more rule, tried last, for the entries whose

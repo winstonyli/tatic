@@ -32,7 +32,7 @@ case "${SPLIT:-}" in ""|0|1) ;; *) echo "SPLIT must be 0 or 1, got ${SPLIT}" >&2
 case "${WARM:-}" in ""|[0-9]*:[0-9]*) ;; *) echo "WARM must be <skip>:<laws>[:<phase>], got ${WARM}" >&2; exit 2 ;; esac
 rules="$out/rules.txt"; : > "$rules"; : > "$out/m.tsv"
 win="RULEMINER_FAMILY=${FAMILY:-add3} CHECK_FAMILY=${FAMILY:-add3} RULEMINER_DEEP3=${DEEP3:-1} RULEMINER_STRIDE=${STRIDE:-7}"
-mc="RULEMINER_PERM=1 RULEMINER_STEPS=40 RULEMINER_THREADS=${THREADS:-2} RULEMINER_ROUNDS=${ROUNDS:-8}"
+mc="RULEMINER_PERM=1 RULEMINER_THREADS=${THREADS:-2} RULEMINER_ROUNDS=${ROUNDS:-8}"
 
 mine() { # name skip laws [phase] -> appends the chosen rules to $rules
   local extra_env=() extra="$out/extra_$1.txt" shp=${SPLIT:-2}
