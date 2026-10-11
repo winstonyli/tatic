@@ -20,7 +20,7 @@
 # RULEMINER_SHUFFLE=<salt> (exported, default 0 = off) reorders the three-variable families' sorted law sequence by a hash, so the batches and stride phases are random samples of the family instead of lexicographic ranges.
 # m.tsv columns: batch, M, laws, rules in force, seconds, laws that used up the rule budget (nonzero means a rewrite cycle or growing rules).
 # CHECK_FAST=1 does the same for serving (no proof building for machine fallbacks, no kernel check, no NFSAME pass); the CHECKED line and M are unchanged.
-# RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without searching for or building their proofs: about 10x faster mining on cmp3d, but approximate (it can pick different rules; M 41 vs 40 on one ref mine). Use it for exploration, not headline numbers. Serving and the M count are unaffected.
+# RULEMINER_FAST=1 (exported) makes the miner count machine fallbacks without building their proofs, and prove only each round's winning rule: the counts are exact (the same rules as the full miner on sbo3's ref mine, 23 s vs 107 s; docs/tier-cycle.md, "Miner speedups"). Serving and the M count are unaffected.
 set -euo pipefail
 mode=$1; out=$2; mkdir -p "$out"
 B=${B:-150}; K=${K:-4}; OFFSET=${OFFSET:-0}

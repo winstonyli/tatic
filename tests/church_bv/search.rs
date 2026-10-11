@@ -742,6 +742,8 @@ pub fn rule_miner() {
     phase("law building");
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
+    // `RULEMINER_FAST` counts the base rules' machine proofs the way it scores candidates: without building them
+    SCORE_ONLY.with(|s| s.set(cfg.fast));
     for (name, t1, t2) in laws.iter().cloned() {
         if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
             continue;
@@ -765,6 +767,7 @@ pub fn rule_miner() {
             clean.push((name, t1, t2));
         }
     }
+    SCORE_ONLY.with(|s| s.set(false));
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
     println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
     phase("laws and stragglers");
@@ -917,10 +920,13 @@ pub fn rule_miner() {
                                 _ => t.clone(),
                             }
                         }
-                        if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert(format!("{} => {}", pat.show(), renum(&yy).show())) {
+                        // `x = y` holds for the straggler's variables, but the cuts become free variables, so the rule itself is checked:
+                        // one that only held through a relation between the cuts would be scored every round and then fail its proof
+                        let rhs = renum(&yy);
+                        if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert(format!("{} => {}", pat.show(), rhs.show())) && (1..=4).all(|w| pat.plausibly_equals(&rhs, w, cuts.len())) {
                             // not ordered: orienting cross-side rules by the rule order raised M in every family (docs/tier-cycle.md,
                             // "A rewrite cycle"); a growing one can cycle with the built-in rules until the step budget runs out
-                            cands.push((pat.clone(), renum(&yy)));
+                            cands.push((pat.clone(), rhs));
                         }
                     }
                 }
@@ -963,9 +969,12 @@ pub fn rule_miner() {
         }
     }
     // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and the step
-    // budget of this thread, so the workers copy them
-    let provable: Vec<&(Term, Term)> = {
-        let (rules, budget) = (EXTRA_RULES.with(|e| e.borrow().clone()), RULE_BUDGET.with(|b| b.get()));
+    // budget of this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
+    // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
+    let (rules, budget) = (EXTRA_RULES.with(|e| e.borrow().clone()), RULE_BUDGET.with(|b| b.get()));
+    let provable: Vec<&(Term, Term)> = if cfg.fast {
+        cands.iter().collect()
+    } else {
         let prove = |idx: &[usize]| -> Vec<usize> {
             let _scope = tatic::kernel::InternScope::enter();
             EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
@@ -1042,6 +1051,20 @@ pub fn rule_miner() {
     };
     let all_laws: Vec<usize> = (0..scored.len()).collect();
     let summarize = |ev: &[(bool, i64, Vec<Term>)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
+    // under `RULEMINER_FAST` the candidates are proved here, once each, against the base rules as the eager filter would
+    let mut proofs: Vec<Option<bool>> = vec![if cfg.fast { None } else { Some(true) }; provable.len()];
+    let mut proved_lazily = |i: usize| -> bool {
+        *proofs[i].get_or_insert_with(|| {
+            let _scope = tatic::kernel::InternScope::enter();
+            EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+            RULE_BUDGET.with(|b| b.set(budget));
+            let (l, r) = provable[i];
+            let ok = prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some();
+            EXTRA_RULES.with(|e| e.borrow_mut().clear());
+            RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+            ok
+        })
+    };
     let mut chosen: Vec<(Term, Term)> = vec![];
     let mut base_eval = score_laws(&chosen, &all_laws, true);
     let (mut covered, mut size) = summarize(&base_eval);
@@ -1049,7 +1072,6 @@ pub fn rule_miner() {
     for _ in 0..cfg.rounds {
         let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
         let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
-        let mut best: Option<ScoredRule> = None;
         // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
         // scope; the results are folded in candidate order, so the choice does not depend on the thread count
         let threads = cfg.threads.clamp(1, 12);
@@ -1089,15 +1111,19 @@ pub fn rule_miner() {
             all.sort_by_key(|x| x.0);
             all.into_iter().map(|x| x.1).collect()
         };
-        for (cand, (f, sz)) in provable.iter().zip(scored) {
-            let raw = (count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz);
-            if raw > 0 && best.as_ref().is_none_or(|b| raw > b.0) {
-                best = Some((raw, (*cand).clone(), f, sz));
-            }
-        }
-        let Some((_, rule, f, sz)) = best else { break };
-        println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
+        // best first, ties to the earlier candidate; the first one that is proved wins
+        let mut ranked: Vec<(i64, usize, Vec<bool>, i64)> = scored
+            .into_iter()
+            .enumerate()
+            .map(|(i, (f, sz))| ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), i, f, sz))
+            .filter(|r| r.0 > 0)
+            .collect();
+        ranked.sort_by_key(|r| (std::cmp::Reverse(r.0), r.1));
         phase(&format!("round over {} candidates", provable.len()));
+        let Some((_, i, f, sz)) = ranked.into_iter().find(|r| proved_lazily(r.1)) else { break };
+        let rule = provable[i].clone();
+        println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
+        phase("winner proof");
         chosen.push(rule);
         base_eval = score_laws(&chosen, &all_laws, true);
         (covered, size) = summarize(&base_eval);

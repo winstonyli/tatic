@@ -65,11 +65,6 @@ pub fn nops() -> usize {
 pub fn env_or<T: std::str::FromStr>(k: &str, d: T) -> T {
     std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
 }
-/// `PERM_ORDER` (`tie`, `lpo` or unset), read once: `rule_step` is hot.
-pub fn perm_order() -> &'static str {
-    static P: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    P.get_or_init(|| std::env::var("PERM_ORDER").unwrap_or_default())
-}
 /// `\a _. a << 1`, the Church operator of `Term` index 6.
 pub fn shl1_op(n: usize) -> Expr {
     lam(bv_ty(n), lam(bv_ty(n), app(shift_bv(n, 1, true), var(1))))
@@ -140,9 +135,13 @@ impl Term {
     }
     /// The first of the corners and 200 pseudo-random width-`n` tuples over `k` variables on which the two sides differ.
     pub fn counterexample(&self, other: &Term, n: usize, k: usize) -> Option<Vec<u128>> {
+        self.counterexample_in(other, n, k, 204)
+    }
+    /// `counterexample` over the first `tries` tuples only.
+    pub fn counterexample_in(&self, other: &Term, n: usize, k: usize, tries: usize) -> Option<Vec<u128>> {
         let mask = low_bits(n);
         let mut seed = 0x9e37_79b9_7f4a_7c15u128;
-        (0..204).find_map(|i| {
+        (0..tries).find_map(|i| {
             let vals: Vec<u128> = (0..k)
                 .map(|_| {
                     seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -417,6 +416,10 @@ thread_local! {
 /// and the lemma is returned as a parameter of that statement, so a law using it is checked against the parameter, not
 /// the proof. `discharge` turns a term over parameters back into a closed one.
 pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
+    // counting only (`SCORE_ONLY`): the rewritten terms do not depend on the lemma, so it is neither built nor checked
+    if SCORE_ONLY.with(|s| s.get()) {
+        return (var(0), var(0));
+    }
     memo(key.clone(), || {
         let (p, s) = build();
         ck(&format!("lemma {key}"), &p, &s);
@@ -836,42 +839,6 @@ pub fn tie_greater(l: &Term, r: &Term) -> bool {
     }
 }
 
-/// Rank of a leaf or head in the lexicographic path order below: leaves under all operators, operators by `OpInfo::prec`
-/// and then index, so the precedence is total.
-fn lpo_rank(t: &Term) -> (i32, i64) {
-    match t {
-        Term::Zero => (-3, 0),
-        Term::Ones => (-2, 0),
-        Term::V(i) => (-1, *i as i64),
-        Term::Op(o, ..) => (OP_INFO[*o].prec, *o as i64),
-    }
-}
-
-/// `s > t` in the lexicographic path order with the total precedence of `lpo_rank` (`PERM_ORDER=lpo`, section 89). It is
-/// a reduction order (well-founded, closed under contexts) and total on terms, so an instance that goes down in it
-/// cannot be rewritten back, whatever the surrounding term; `show()` comparison of an instance is not closed under contexts.
-pub fn lpo_greater(s: &Term, t: &Term) -> bool {
-    let Term::Op(_, sa, sb) = s else {
-        return !matches!(t, Term::Op(..)) && lpo_rank(s) > lpo_rank(t);
-    };
-    if [sa, sb].into_iter().any(|x| x.show() == t.show() || lpo_greater(x, t)) {
-        return true;
-    }
-    let Term::Op(_, ta, tb) = t else { return true };
-    let (rs, rt) = (lpo_rank(s), lpo_rank(t));
-    if rs > rt {
-        return lpo_greater(s, ta) && lpo_greater(s, tb);
-    }
-    if rs < rt {
-        return false;
-    }
-    if sa.show() != ta.show() {
-        lpo_greater(sa, ta) && lpo_greater(s, tb)
-    } else {
-        lpo_greater(sb, tb)
-    }
-}
-
 /// Whether `l` and `r` tie in the rule order: same weight and same variable occurrences.
 pub fn rule_tied(l: &Term, r: &Term) -> bool {
     let ((cl, al), (cr, ar)) = (rule_weight(l), rule_weight(r));
@@ -890,9 +857,7 @@ pub fn rule_permutative(l: &Term, r: &Term) -> bool {
 
 /// `rule_order_ok`, or a tie in it broken by `tie_greater`, or a permutative rule.
 pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
-    // `PERM_ORDER=lpo` (section 89): `rule_step` orients every tied rule instance by instance, so both directions are admissible
-    let lpo = perm_order() == "lpo";
-    rule_order_ok(l, r) || (rule_tied(l, r) && (lpo || tie_greater(l, r) || rule_permutative(l, r)))
+    rule_order_ok(l, r) || (rule_tied(l, r) && (tie_greater(l, r) || rule_permutative(l, r)))
 }
 
 pub fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
@@ -965,23 +930,11 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
             println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
-        let lpo = perm_order() == "lpo";
-        if lpo && rule_tied(&r.lhs, &r.rhs) && !rule_order_ok(&r.lhs, &r.rhs) {
-            // every rule that ties in the weight order must go down in the path order, instance by instance
+        // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
+        // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
+        if rule_permutative(&r.lhs, &r.rhs) {
             let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
-            if !lpo_greater(t, &inst) {
-                continue;
-            }
-        } else if rule_permutative(&r.lhs, &r.rhs) {
-            let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
-            // `PERM_ORDER=tie` (section 87): the instance must go down in the tie-break order of the other rules, and only
-            // when that order does not separate the two terms does `show()` decide; by default `show()` alone
-            let down = if perm_order() == "tie" {
-                tie_greater(t, &inst) || (!tie_greater(&inst, t) && inst.show() < t.show())
-            } else {
-                inst.show() < t.show()
-            };
-            if !down {
+            if inst.show() >= t.show() {
                 continue;
             }
         }
@@ -1028,10 +981,32 @@ impl RewriteMemo {
 
 thread_local! {
     pub static REWRITE_MEMO: std::cell::RefCell<Option<RewriteMemo>> = const { std::cell::RefCell::new(None) };
+    /// the terms `rewrite` is working on, outermost first, and how many calls it cut so far
+    static REWRITE_PATH: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub static CYCLE_CUTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`.
+/// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`. Rewriting is deterministic apart from
+/// the step budget, so a call `rewrite(t)` made while `t` itself is being rewritten further out can only repeat that work until the
+/// budget runs out: a rewrite cycle. The cut returns `t` unchanged there, so the chain ends one lap round the cycle instead of at
+/// the budget (docs/tier-cycle.md, "Cycle cut").
 pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
+    if !matches!(t, Term::Op(..)) {
+        return rewrite_memo(t, n, ops, goods);
+    }
+    let key = t.show();
+    if REWRITE_PATH.with(|p| p.borrow().contains(&key)) {
+        CYCLE_CUTS.with(|c| c.set(c.get() + 1));
+        let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
+        return (t.clone(), refl(t.eval(ops, n, &vals)));
+    }
+    REWRITE_PATH.with(|p| p.borrow_mut().push(key));
+    let out = rewrite_memo(t, n, ops, goods);
+    REWRITE_PATH.with(|p| p.borrow_mut().pop());
+    out
+}
+
+fn rewrite_memo(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
     let on = matches!(t, Term::Op(..)) && REWRITE_MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.goods_len == goods.len()));
     if !on {
         return rewrite_uncached(t, n, ops, goods);
@@ -1049,10 +1024,12 @@ pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Ter
         return c.out.clone();
     }
     let (budget0, fallbacks0, trace0) = (RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()), RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v.len())));
+    let cuts0 = CYCLE_CUTS.with(|c| c.get());
     let out = rewrite_uncached(t, n, ops, goods);
     let budget1 = RULE_BUDGET.with(|b| b.get());
-    // a call that ran the budget out was cut short by it: its result depends on the budget it started with
-    if budget1 > 0 {
+    // a call that ran the budget out was cut short by it: its result depends on the budget it started with; one with a cycle cut
+    // depends on the terms being rewritten further out
+    if budget1 > 0 && CYCLE_CUTS.with(|c| c.get()) == cuts0 {
         let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
         let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace };
         REWRITE_MEMO.with(|m| {
@@ -1314,12 +1291,24 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
                 return Some(p);
             }
         }
-    // scoring mode: only whether the rewriting needed this fallback matters, so count it without building the machine proof
+    machine_fallback(n, goods, a, b)
+}
+
+/// The whole-term machine proof of `a = b` (the carry-encoding proof for the two terms as bit-serial machines, at the variables'
+/// values), counted in `MACHINE_FALLBACKS`; `None` when there is none.
+fn machine_fallback(n: usize, goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
+    let k = goods.len();
+    let cost = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
+    // scoring mode: only whether the rewriting needed this fallback matters, so count it without building the machine proof; a pair
+    // that is not equal fails here as it would in `add_tree_law` (else congruence on unequal operands would count two proofs); a
+    // few tuples suffice to tell, since unequal pairs differ almost everywhere
     if SCORE_ONLY.with(|s| s.get()) && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap() {
+        if a.counterexample_in(b, n, k, 16).is_some() {
+            return None;
+        }
         MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
         return Some(var(0));
     }
-    // the carry-encoding proof for the two terms as bit-serial machines, at the variables' values
     let law = add_tree_law(n, k, a, b)?;
     MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
     let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
@@ -1416,11 +1405,7 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
             };
             match by_operands {
                 Some(proof) => proof,
-                None => {
-                    let law = add_tree_law(n, k, &r1, &r2)?;
-                    MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
-                    apps(law.0, goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect())
-                }
+                None => machine_fallback(n, &goods, &r1, &r2)?,
             }
         };
         (r1, p1, r2, p2, mid)
@@ -1614,39 +1599,26 @@ pub fn carry_chain_builder_finds_the_constant_carry() {
 // refinement; the proof is the associativity proof with the discovered phi in
 // place of the hand-derived (xor, and) -- for a three-leaf sum, the total carry in binary.
 
-/// `lpo_greater` is a strict total order on the terms over two variables up to 4 nodes, and closed under contexts.
+/// sbo3's rewrite cycle (docs/tier-cycle.md, "Why ordered sbo3 still cycled"): two rules and a permutative one bring
+/// `sub(sub(z, x), sub(y, z))` back to itself. `rewrite` cuts it, so the law is proved without using up the step budget, and the
+/// proof checks.
 #[test]
-fn lpo_is_a_strict_total_order_closed_under_contexts() {
-    let b = |o: usize, a: &Term, c: &Term| Term::Op(o, Box::new(a.clone()), Box::new(c.clone()));
-    let mut by_size: Vec<Vec<Term>> = vec![vec![], vec![Term::V(0), Term::V(1), Term::Zero, Term::Ones]];
-    for sz in 2..=4 {
-        let mut level = vec![];
-        for i in 1..sz - 1 {
-            for l in &by_size[i] {
-                for r in &by_size[sz - 1 - i] {
-                    for o in 0..8 {
-                        level.push(b(o, l, r));
-                    }
-                }
-            }
-        }
-        by_size.push(level);
-    }
-    let all: Vec<Term> = by_size.into_iter().flatten().collect();
-    for s in &all {
-        assert!(!lpo_greater(s, s));
-        for t in &all {
-            if s.show() != t.show() {
-                assert!(lpo_greater(s, t) ^ lpo_greater(t, s), "{} vs {}", s.show(), t.show());
-                if lpo_greater(s, t) {
-                    for o in [0usize, 4] {
-                        assert!(lpo_greater(&b(o, s, &Term::V(0)), &b(o, t, &Term::V(0))));
-                        assert!(lpo_greater(&b(o, &Term::V(1), s), &b(o, &Term::V(1), t)));
-                    }
-                }
-            }
-        }
-    }
+fn rewrite_cycles_are_cut() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
+    EXTRA_RULES.with(|e| *e.borrow_mut() = parse_rules(rules));
+    RULE_BUDGET.with(|b| b.set(200));
+    let cuts0 = CYCLE_CUTS.with(|c| c.get());
+    let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
+    let out = rewrite_law(4, 3, &t1, &t2);
+    let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
+    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+    println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
+    assert!(cuts > 0, "no cycle cut");
+    assert!(left > 0, "the step budget ran out");
+    let (p, s) = out.expect("proved");
+    ck("cycle law", &p, &s);
 }
 
 #[test]

@@ -392,11 +392,59 @@ are collinear and not individually meaningful; building's `shift` visits got wei
   weights tied to this machine). The fitted cost is a check to report beside M, not an objective. The cmp3d gap between M's cut
   (3.8x) and time's (1.1x) is a defect in the library (the cycle), not in M.
 
-The cmp3d gap is now smaller (time 1.37×, see "Per-side rule budget" above); the cycles still cost every exhausted law 200 steps.
+The cmp3d gap is now smaller (time 1.37×, see "Per-side rule budget" above), and the cycles that cost each exhausted law 200 steps
+are cut (see "Cycle cut" below).
 
-Next: one instance-level order for every tied step. Mine and serve under `PERM_ORDER=lpo`, so the libraries fit that order, and
-compare M against the default order. If M holds, the cycles are gone by construction. Parked alternative: a penalty instead of a
-rejection in the miner (a newly cycling law counts against the candidate, like a lost fix).
+### Cycle cut; lpo and a cycling penalty are negative results (2026-10-11)
+Three ways to stop the rewrite cycles, each with libraries re-mined under it (salt 1, per-side budget), total M (cmp3d / add3 / sbo3):
+
+| | cold | own library | laws using up the budget, own |
+|---|---|---|---|
+| per-side budget (baseline) | 224 / 183 / 121 | 74 / 67 / 40 | 91 / 60 / 11 |
+| `PERM_ORDER=lpo`, mined and served | 262 / 223 / 189 | 170 / 154 / 156 | 128 / 0 / 0 |
+| miner penalty (`RULEMINER_CYCLE=1`) | 228 / 195 / 135 | 74 / 61 / 40 | 92 / 16 / 11 |
+| **cycle cut** | **214 / 183 / 123** | **68 / 61 / 35** | **0 / 0 / 0** |
+
+- **lpo (negative, deleted).** Checking every tied instance against one path order costs too much coverage: the libraries mined
+  under it are worse everywhere, and cmp3d's unordered cross-side rules still cycle. `PERM_ORDER` is gone, with the older `tie`
+  mode (section 87, never the default and not rerun), since the cut covers the cycles both modes targeted.
+- **Penalty (negative, deleted).** A newly cycling law costs the candidate what a lost fix would. It helps own add3 (61 vs 67)
+  and loses on every cold stream (+47 in all).
+- **Cycle cut (kept, default).** Rewriting is deterministic apart from the step budget, so `rewrite(t)` called while `t` is
+  already being rewritten further out can only repeat that work. `rewrite` keeps the path of terms in progress and returns `t`
+  unchanged (proof `refl`) on a repeat, so the chain ends after one lap instead of at the budget. The rewrite memo does not cache a
+  result that a cut shaped. With the per-side libraries on cmp3d's 300-law batch (loaded machine, not a timing claim): M 24 to 21,
+  exhausted 23 to 0, time 41.5 / 43.9 s to 32.0 / 36.4 s. Test: `rewrite_cycles_are_cut` (sbo3's five-step cycle; fails with
+  the cut disabled).
+
+Cross-family transfer was rerun under the per-side budget (`docs/loop-result.md`, findings 3-4).
+
+### Miner speedups (2026-10-11)
+On cmp3d's ref mine (`RULEMINER_FAST=1`, 2 threads, salt 1) the first two changes took the mine from 600 s to about 210 s (loaded
+machine, alternating runs), with identical rules at each step unless noted:
+- **No rule proofs while counting.** `shared_lemma` returns a placeholder under `SCORE_ONLY`. Rule lemmas had been re-proved in
+  every round, because worker threads are re-spawned and the closed-lemma cache is per thread. Rounds went from 31-79 s to 2-9 s.
+  `TREE_LAWS` does not cache placeholder proofs.
+- **Exact fallback counts.** The `SCORE_ONLY` shortcut counted a machine fallback for any machine-shaped pair, even unequal operands
+  (an `lt` congruence that the full build proves with one fallback counted 2-3). `machine_fallback` now first looks for a counterexample
+  in 16 tuples, and both `prove_eq` and `rewrite_law`'s `lt` branch go through it. Straggler counts now match the full build exactly,
+  so `RULEMINER_FAST` is no longer approximate. The chosen rules change with the exact counts, but the M total stays 37. The
+  straggler phase also runs counting-only (57-79 s to 2 s).
+- **False cross-side candidates.** Abstracting the cut subterms of a cross-side pair into variables can turn a true instance into a
+  false rule (14 of cmp3d's 205, all `lt`). They were scored and then failed the proof filter. Worse, the one-per-left-side pass
+  kept the false rule in place of a true one for the same left side. The generalized rule is now checked before it becomes a
+  candidate.
+- **Lazy proving.** Under `RULEMINER_FAST`, only each round's winner is proved, and an unprovable winner gives way to the next best.
+  This replaces the 71-76 s up-front proof filter; winners take 0.1-1.3 s each. The net gain is smaller than that phase. The 7 true
+  candidates that the false ones had displaced are general `lt(x, ...)` reassociations that cycle. They doubled the scoring rounds
+  (7 to 14 s) until the cycle cut, which now ends those cycles after one lap.
+
+All together, with the cycle cut, on a quieter machine (load 11-17%, adjacent runs): 100 s against 168 s for the build with only the
+first two changes. Scoring rounds take 2-7 s and each winner's proof 0.1-1 s, and the mine's M is 30 against 37 (the rules differ
+through the cut).
+
+Next: the remaining miner cost is scoring. A bound on each candidate's possible gain (affected stragglers times 1000 plus their size)
+could skip candidates that cannot beat the round's best so far; parked until a profile shows how often the bound would bite.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

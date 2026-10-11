@@ -17,7 +17,8 @@ are local and not in the repository.
   served. The last batch is never mined. A *cold* loop starts with no rules; a *seeded* loop starts with a library mined on a different,
   earlier stream (phase 0).
 - **Mining.** Greedy: each round adds the rule that most reduces M on the mined laws; it stops at `RULEMINER_ROUNDS` (default 8) or when
-  nothing helps. `RULEMINER_FAST=1` counts machine fallbacks without building their proofs (about 10x faster, approximate).
+  nothing helps. `RULEMINER_FAST=1` counts machine fallbacks without building their proofs (about 10x faster; approximate for the
+  results below, exact since 2026-10-11: `docs/tier-cycle.md`, "Miner speedups").
 
 ## Findings
 1. **The loop learns within a stream.** Cold per-batch M falls (for example cmp3d 31, 20, 11).
@@ -37,12 +38,16 @@ are local and not in the repository.
    231 vs 109 (.47), add3 183 vs 62 (.34, unchanged), sbo3 128 vs 41 (.32), seeded better on 9 of 9 streams. Findings 3-5 below give
    post-dedup salt-1 numbers with the pre-dedup ones in parentheses; salt 2 was not rerun. Every seeded stream in them (45) beat its
    cold stream. Since each side of a law got its own rule budget (2026-10-11, libraries re-mined), salt 1 gives cmp3d 224 vs 74,
-   add3 183 vs 67 and sbo3 121 vs 40. Findings 3-5 were not rerun under it.
+   add3 183 vs 67 and sbo3 121 vs 40; findings 3-4 were rerun under it (below). With rewrite cycles cut as well (libraries
+   re-mined again): cmp3d 214 vs 68, add3 183 vs 61, sbo3 123 vs 35, and no law uses up the step budget.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
    foreign): add3 183 / 62 / 47-67 (56-65), sbo3 128 / 41 / 53-69 (52-66), cmp3d 231 / 109 / 139-140 (118-119). cmp3d needs its
-   comparison rules, so it benefits least.
+   comparison rules, so it benefits least. Under the per-side budget (2026-10-11): add3 183 / 67 / 46 (sbo3's library) and 65
+   (cmp3d's), sbo3 121 / 40 / 52 (add3's) and 60 (cmp3d's), cmp3d 224 / 74 / 122-123. Foreign cmp3d improved most (from 139-140);
+   add3 now does better with sbo3's library than with its own.
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
-   dedup; mix3 contributed no rule). It does not change the two-variable shl, shr or lt families (pre-dedup check).
+   dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5. It does not change the two-variable shl, shr or lt
+   families (pre-dedup check).
 5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
    (re-mining on the post-dedup u3 stream gave the identical 8- and 25-rule libraries): cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
    66 (66) vs own 62 (62); mix3 16 (20). Pre-dedup, sbo3 was within +-8 of its own library on three of four salts (126/46/54, 117/47/72,

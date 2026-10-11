@@ -5,7 +5,7 @@
 #   EXE=<church_bv test exe> FAMILY=<target family> LAWS=<file of lhs = rhs lines> scripts/transfer_score.sh OUTDIR
 # BASE=<rules file> is in force for mining and for both M counts (default: no rules). The held-out window is HELD_SKIP (default 2000),
 # HELD_LAWS (default 300) of the family's sequence at stride 1; RULEMINER_SHUFFLE=<salt> (exported) orders it. THREADS (default 2) and
-# ROUNDS (default 8) size the miner; RULEMINER_FAST=1 (exported) mines approximately, about 10x faster.
+# ROUNDS (default 8) size the miner; RULEMINER_FAST=1 (exported) mines without building proofs, about 5x faster, with exact counts.
 # Prints one line: TRANSFER family=.. laws=.. stragglers=.. rules=.. M_before=.. M_after=.. gain=..
 set -euo pipefail
 out=$1; mkdir -p "$out"

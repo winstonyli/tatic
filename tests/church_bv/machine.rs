@@ -324,21 +324,24 @@ pub fn carry_cap() -> usize {
     env_or("CARRY_CAP", 10)
 }
 
-/// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
-/// `moore_encoding` (first over all carry states, then over the reachable ones); `None` when there is none.
 thread_local! {
     /// `add_tree_law` results (a closed proof, or none) by width, variable count and the two terms: the rewriter asks for the same
     /// pair again for every law and every mined candidate that reaches the same subterm.
     static TREE_LAWS: std::cell::RefCell<std::collections::HashMap<(usize, usize, String, String), Option<(Expr, Expr)>>> = Default::default();
 }
 
+/// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
+/// `moore_encoding` (first over all carry states, then over the reachable ones); `None` when there is none.
 pub fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
     let key = (n, k, t1.show(), t2.show());
     if let Some(hit) = TREE_LAWS.with(|c| c.borrow().get(&key).cloned()) {
         return hit;
     }
     let law = add_tree_law_uncached(n, k, t1, t2);
-    TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.clone()));
+    // counting only (`SCORE_ONLY`), the law's case lemmas are placeholders (`shared_lemma`): not a proof to reuse
+    if !SCORE_ONLY.with(|s| s.get()) {
+        TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.clone()));
+    }
     law
 }
 

@@ -22,8 +22,6 @@ type BitTriple = (Vec<Expr>, Vec<Expr>, Vec<Expr>);
 type BitsDyn = dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
 type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
 type DdBuild<'a> = &'a dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig);
-/// A rule candidate's score: (gain, (lhs, rhs), per-law outcomes, cost).
-type ScoredRule = (i64, (Term, Term), Vec<bool>, i64);
 
 // The allocator `main.rs` ships with: the lib's own `#[global_allocator]` is
 // `#[cfg(test)]`, so without this these timings ran on the system heap.
