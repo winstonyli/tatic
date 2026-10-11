@@ -1934,7 +1934,8 @@ pub fn proof_cost_split() {
 /// Deterministic work per law (needs `--features record-defeq`): like `proof_cost_split` (same `CHECK_FAMILY`, `CHECK_RULES`,
 /// `RULEMINER_*` vars), one TSV row per law to `WORK_OUT`: fallbacks, rule steps, proof size (unique nodes), nodes built while
 /// building the proof, kernel node visits while checking it (instantiate, shift, eq, conv and nf whnf, infer misses), beta steps,
-/// and the build and check wall times in microseconds (to compare the counts with time). Unproved laws are skipped.
+/// the build and check wall times in microseconds (to compare the counts with time), and the kernel visits while building (the
+/// one-time lemma checks under `LEMMA_PARAMS=1`). Unproved laws are skipped.
 #[test]
 #[ignore]
 #[cfg(feature = "record-defeq")]
@@ -1944,7 +1945,9 @@ pub fn law_work_report() {
     let _scope = tatic::kernel::InternScope::enter();
     let (_, kv, laws) = check_laws();
     let mut out = std::fs::File::create(std::env::var("WORK_OUT").unwrap()).unwrap();
-    writeln!(out, "law\tfallbacks\tsteps\tnodes\tbuilt\tvisits\tbetas\tbuild_us\tcheck_us").unwrap();
+    writeln!(out, "law\tfallbacks\tsteps\tnodes\tbuilt\tvisits\tbetas\tbuild_us\tcheck_us\tbuild_visits").unwrap();
+    let visits_of = |w: &[u64]| -> u64 { [0, 1, 2, 3, 4, 20].iter().map(|&i| w[i]).sum() };
+    take_walk_counts();
     for (name, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
         let before = MACHINE_FALLBACKS.with(|c| c.get());
@@ -1953,15 +1956,15 @@ pub fn law_work_report() {
         let Some((p, s)) = rewrite_law(4, kv, t1, t2) else { continue };
         let build = t.elapsed();
         let (fallbacks, steps, built) = (MACHINE_FALLBACKS.with(|c| c.get()) - before, 200 - RULE_BUDGET.with(|b| b.get()), take_hc_built().0);
-        take_walk_counts();
+        // kernel work while building: the one-time lemma checks under `LEMMA_PARAMS=1`
+        let build_visits = visits_of(&take_walk_counts());
         take_beta_count();
         let t = Instant::now();
         ck(name, &p, &s);
         let check = t.elapsed();
-        let w = take_walk_counts();
-        let visits: u64 = [0, 1, 2, 3, 4, 20].iter().map(|&i| w[i]).sum();
+        let visits = visits_of(&take_walk_counts());
         let nodes = tatic::kernel::term_sizes(&p).0;
-        writeln!(out, "{}\t{fallbacks}\t{steps}\t{nodes}\t{built}\t{visits}\t{}\t{}\t{}", name.replace('\t', " "), take_beta_count(), build.as_micros(), check.as_micros()).unwrap();
+        writeln!(out, "{}\t{fallbacks}\t{steps}\t{nodes}\t{built}\t{visits}\t{}\t{}\t{}\t{build_visits}", name.replace('\t', " "), take_beta_count(), build.as_micros(), check.as_micros()).unwrap();
     }
 }
 

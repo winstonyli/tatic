@@ -1814,6 +1814,11 @@ pub fn lemma_n(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) 
     for _ in 0..k {
         proof = lam(bool0(), proof);
     }
+    (proof, lemma_n_ty(k, body))
+}
+
+/// `lemma_n`'s statement alone: `Pi v_0..v_(k-1). GoodBool v_0 -> .. -> GoodBool v_(k-1) -> body(v)`.
+pub fn lemma_n_ty(k: usize, body: &dyn Fn(&[Expr]) -> Expr) -> Expr {
     let mut ty = body(&(0..k).map(|m| var((2 * k - 1 - m) as u32)).collect::<Vec<_>>());
     for _ in 0..k {
         ty = pi(app(good_bool(), var(k as u32 - 1)), ty);
@@ -1821,7 +1826,7 @@ pub fn lemma_n(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) 
     for _ in 0..k {
         ty = pi(bool0(), ty);
     }
-    (proof, ty)
+    ty
 }
 
 /// The reduced ordered decision diagram of a truth table over `nv` variables: nodes `(level, hi, lo)` with ids from 2

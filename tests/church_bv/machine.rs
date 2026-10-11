@@ -421,39 +421,37 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
     let dd_min: usize = env_or("DDMIN", 9);
     let use_dd = |nv: usize| inv.is_none() && std::env::var("NOBDD").is_err() && nv >= dd_min;
     let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: DdBuild| -> Expr {
-        let key = format!("{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
-        if let Some(e) = LEMMAS.with(|c| c.borrow().get(&key).cloned()) {
+        // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
+        let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
+        if CLOSED.with(|c| c.borrow().contains_key(&key)) {
             LEMMA_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return e;
         }
-        let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
-        if inv.is_some() && std::env::var("GUARDTRACE").is_ok() {
-            eprintln!("GUARDED lemma nv={nv} tag={tag}");
-        }
-        if use_dd(nv)
-            && let Some(e) = lemma_dd(nv, dd) {
-                LEMMAS.with(|c| c.borrow_mut().insert(key, e.clone()));
-                return e;
-            }
-        let e = lemma_n(
-            nv,
-            &|v| {
+        shared_lemma(key, || {
+            let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
+            let body = |v: &[Expr]| {
                 let (a, b) = ab(v);
                 let inner = id(bool0(), a, b);
                 if inv.is_some() { pi(hty(v), shift(&inner, 0, 1)) } else { inner }
-            },
-            &|bits| {
+            };
+            let ty = lemma_n_ty(nv, &body);
+            if inv.is_some() && std::env::var("GUARDTRACE").is_ok() {
+                eprintln!("GUARDED lemma nv={nv} tag={tag}");
+            }
+            if use_dd(nv)
+                && let Some(e) = lemma_dd(nv, dd) {
+                    return (e, ty);
+                }
+            let leaf = |bits: &[bool]| {
                 let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
                 let (a, b) = ab(&lits);
                 match &inv {
                     None => refl(a),
                     Some(r) => lam(hty(&lits), if r[side][index_of(&bits[off..])] { refl(a) } else { absurd_id(var(0), &a, &b) }),
                 }
-            },
-        )
-        .0;
-        LEMMAS.with(|c| c.borrow_mut().insert(key, e.clone()));
-        e
+            };
+            (lemma_n(nv, &body, &leaf).0, ty)
+        })
+        .0
     };
     // lemmas Id(F_j, G_j(operand bits, phi(carries))) by case analysis on the k + c bits
     let lemmas: Vec<Vec<Expr>> = (0..2)

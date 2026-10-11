@@ -396,8 +396,6 @@ pub fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
 // results are then equal, or both add-free, `bitwise_law` closes the gap.
 
 thread_local! {
-    /// Lemmas built by `add_tree_law`, keyed on the side machine, encoding tables and lemma tag; shared across conjectures.
-    pub static LEMMAS: std::cell::RefCell<std::collections::HashMap<String, Expr>> = Default::default();
     pub static CLOSED: std::cell::RefCell<std::collections::HashMap<String, (Expr, Expr)>> = Default::default();
 }
 /// A closed library term built once per key (the proofs and witnesses the rewriter reuses at every step).
@@ -411,39 +409,37 @@ pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
 }
 
 thread_local! {
-    /// The lemma parameters (`LEMMA_PARAMS=1`): one open scope, and per bound lemma its `Free`, proof and statement.
-    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Scope, Vec<(Expr, Expr, Expr)>)>> = const { std::cell::RefCell::new(None) };
+    /// The lemma parameters (`LEMMA_PARAMS=1`): one nested scope per bound lemma, outermost first, with the lemma's proof.
+    /// A proof may use the lemmas bound before it (a mined rule proved through a machine proof uses its case lemmas).
+    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Vec<(Scope, Expr)>)>> = const { std::cell::RefCell::new(None) };
     pub static LEMMA_PARAMS: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("LEMMA_PARAMS").is_ok_and(|v| v == "1"));
 }
-/// `memo` for a closed lemma `(proof, statement)`. With `LEMMA_PARAMS=1` the proof is checked once and the lemma is
-/// returned as a parameter of that statement, so a law using it is checked (`ck`) against the parameter, not the proof.
+/// `memo` for a closed lemma `(proof, statement)`. With `LEMMA_PARAMS=1` the proof is checked once (`ck`, against the
+/// lemmas bound before it) and the lemma is returned as a parameter of that statement, so a law using it is checked
+/// against the parameter, not the proof.
 pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
     let (p, s) = memo(key.clone(), build);
     if !LEMMA_PARAMS.with(|c| c.get()) {
         return (p, s);
     }
     memo(format!("param_{key}"), || {
-        if let Err(m) = check(&Ctx::new(), &p, &s) {
-            panic!("lemma {key}: {}", m.chars().take(400).collect::<String>());
-        }
+        ck(&format!("lemma {key}"), &p, &s);
         PARAMS.with(|c| {
             let mut c = c.borrow_mut();
-            let (ps, _, bound) = c.get_or_insert_with(|| {
-                let mut ps = Postulates::new();
-                let sc = ps.open();
-                (ps, sc, Vec::new())
-            });
+            let (ps, scopes) = c.get_or_insert_with(|| (Postulates::new(), Vec::new()));
+            let sc = ps.open();
             let r = ps.bind(s.clone());
-            bound.push((r.clone(), p, s.clone()));
+            scopes.push((sc, p));
             (r, s)
         })
     })
 }
-/// The lemma parameters bound so far, as `Lam`s around `body`, applied to the lemma proofs: a closed term with no
-/// parameters. Ends the scope; the memoised parameters stay in `CLOSED`, so call it last.
+/// `body` with the lemma parameters discharged, innermost first: `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, a closed term
+/// whose check re-checks every lemma proof `P_i` once. Ends the scopes; the memoised parameters stay in `CLOSED`, so
+/// call it last.
 pub fn discharge(body: Expr) -> Expr {
-    let Some((mut ps, sc, bound)) = PARAMS.with(|c| c.borrow_mut().take()) else { return body };
-    apps(ps.close(sc, Binder::Lam, body), bound.into_iter().map(|(_, p, _)| p).collect())
+    let Some((mut ps, scopes)) = PARAMS.with(|c| c.borrow_mut().take()) else { return body };
+    scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p))
 }
 
 /// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: zero, comm, assoc, not, collapse).
@@ -1503,8 +1499,19 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
     assert!(PARAMS.with(|c| c.borrow().as_ref().is_some_and(|(.., b)| !b.is_empty())), "no lemma was bound");
     assert!(check(&Ctx::new(), &p, &s).is_err(), "a proof over lemma parameters is not closed");
     ck("over parameters", &p, &s);
-    let closed = discharge(p);
-    ck("discharged", &closed, &s);
+    // a machine proof's case lemmas are parameters too
+    let add = |a: Term, b: Term| op(0, a, b);
+    let (pm, sm) = add_tree_law(2, 3, &add(add(v(0), v(1)), v(2)), &add(v(0), add(v(1), v(2)))).expect("assoc3");
+    assert!(check(&Ctx::new(), &pm, &sm).is_err(), "the machine proof's lemmas are not parameters");
+    ck("machine over parameters", &pm, &sm);
+    // a lemma whose proof uses lemmas bound before it: a rule proved through a machine proof
+    let scopes = || PARAMS.with(|c| c.borrow().as_ref().map_or(0, |(_, b)| b.len()));
+    let before = scopes();
+    let (l, r) = (add(op(4, v(0), v(1)), v(2)), add(op(4, v(2), v(1)), v(0)));
+    let (pr, sr) = shared_lemma("nested".into(), || prove_rule(2, 3, &l, &r).expect("rule"));
+    assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
+    let all = apps(lam(sm.clone(), lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
+    ck("discharged", &discharge(all), &sm);
     LEMMA_PARAMS.with(|c| c.set(false));
 }
 

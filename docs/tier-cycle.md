@@ -210,42 +210,47 @@ save is small: `args_id` re-interns arguments that are often already canonical (
 real lever is not re-checking the rule proofs (above).
 
 ### Lemmas as kernel parameters (2026-10-10)
-With `LEMMA_PARAMS=1`, `shared_lemma` (rewrite.rs) checks each closed lemma's proof once and binds its statement as a parameter of
-one open `Postulates` scope; the rewriter then uses the parameter (a `Free`) instead of the proof, and `ck` checks a law with
-`check_open`. It covers every closed lemma the rewriter reuses through one hook: the mined rules, the built-in add lemmas
-(assoc, identity, not, comm), `shrmask`, and the GoodBv witness lemmas (`good_add`, `good_sub`, `good_shl1`, `good_shr1`). The
-`gbit` pairs stay inlined: their first half is an operator that must compute. A law over parameters is not closed, but `discharge`
-wraps the parameters as `Lam`s and applies them to the lemma proofs, giving a closed term the plain checker accepts
-(`a_law_over_lemma_parameters_discharges_to_a_closed_proof`). M is unchanged (same proofs up to the parameters).
+With `LEMMA_PARAMS=1`, `shared_lemma` (rewrite.rs) checks each closed lemma's proof once and binds its statement as a parameter in a
+`Postulates` scope of its own; the rewriter then uses the parameter (a `Free`) instead of the proof, and `ck` checks with
+`check_open` against the parameters bound so far. One hook covers every closed lemma the proofs reuse: the mined rules, the built-in
+add lemmas (assoc, identity, not, comm), `shrmask`, the GoodBv witness lemmas (`good_add`, `good_sub`, `good_shl1`, `good_shr1`) and
+the machine proofs' case lemmas (`add_tree_law`'s `guarded`, which replaced its own `LEMMAS` cache). The `gbit` pairs stay inlined:
+their first half is an operator that must compute. A lemma's proof may use lemmas bound before it (a mined rule proved through a
+machine proof uses that proof's case lemmas), so the scopes nest in binding order. A law over parameters is not closed; `discharge`
+closes the scopes innermost first, `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, giving a closed term the plain checker accepts
+(`a_law_over_lemma_parameters_discharges_to_a_closed_proof`, including a nested rule). M is unchanged.
 
-Kernel work (`law_work_report`, same windows and `record-defeq` caveat as above):
+Kernel work (`law_work_report`, same windows and `record-defeq` caveat as above). `law_work_report` now also counts kernel visits
+while building a proof, which is where the one-time lemma checks run:
 
-| family, library | M | visits off (M) | visits on (M) | check s off / on | machine laws' share of visits, on |
+| family, library | M | law-check visits (M), off / on | build visits (M), off / on | total (M), off / on | median machine-free law, off / on |
 |---|---|---|---|---|---|
-| sbo3, none | 92 | 11.7 | 8.0 | | 0.93 |
-| sbo3, own | 17 | 12.9 | 2.4 | 22.2 / 3.2 | 0.63 |
-| cmp3d, none | 118 | 40.5 | 34.7 | | 0.97 |
-| cmp3d, own | 31 | 53.4 | 28.0 | 120.3 / 58.8 | 0.95 |
+| sbo3, none | 92 | 11.7 / 2.5 | - / 22.9 | - / 25.3 | |
+| sbo3, own | 17 | 12.9 / 1.2 | 8.6 / 11.5 | 21.5 / 12.7 | 32k / 2.3k |
+| cmp3d, none | 118 | 40.5 / 4.8 | - / 99.0 | - / 103.9 | |
+| cmp3d, own | 31 | 53.4 / 3.1 | 69.1 / 103.8 | 122.5 / 106.9 | 46k / 2.5k |
 
-Normal build, `proof_cost_split`, pinned to two cores, ABAB; other sessions held the CPU at 42-63%, so the off times are above the
-earlier 11-13 s:
+Normal build, `proof_cost_split`, own library, pinned to two cores, ABAB, machine quiet (7-15% CPU):
 
-| family (own library) | CPU s off | CPU s on | rule-law check s off / on | machine-law check s off / on | build s off / on |
-|---|---|---|---|---|---|
-| sbo3 | 15.5, 14.9 | 8.0, 8.3 | 8.6, 8.3 / 0.48, 0.47 | 2.2, 2.3 / 1.2, 1.2 | 4.8, 4.5 / 6.1, 5.7 |
-| cmp3d | 87.7, 87.4 | 63.9, 68.3 | 24.6, 24.1 / 0.95, 1.12 | 29.2, 29.9 / 22.9, 26.5 | 37.9, 39.7 / 41.2, 47.8 |
+| family | CPU s off | CPU s on | law check s off / on (rule laws + machine laws) | build s off / on |
+|---|---|---|---|---|
+| sbo3 | 9.7, 10.0 | 5.1, 5.2 | 6.0, 6.3 / 0.37, 0.37 | 2.9, 2.9 / 4.1, 4.3 |
+| cmp3d | 58.3, 58.6 | 44.9, 45.2 | 32.2, 32.4 / 1.2, 1.3 | 23.4, 23.5 / 42.1, 42.4 |
 
-- **A library now cuts checking work.** Machine-free laws cost a median 2.3k visits (sbo3) and 2.5k (cmp3d), against 32k and 46k
-  inlined, and below the 4.7k of the built-in rules inlined. With parameters on both sides, the own library cuts visits 3.3x on sbo3
-  (8.0M to 2.4M) and 1.24x on cmp3d (34.7M to 28.0M), the direction M predicts.
-- **Rule-law checks fall 18-25x; total CPU 1.3-1.9x.** Build rises by the one-time lemma checks (they run at first use) and is now
-  the larger part for rule laws.
-- **What remains is the machine proofs.** They are 63-97% of the visits and most of cmp3d's time (build 32 s, check 23-26 s). Their
-  sub-lemmas (`LEMMAS` in `add_tree_law`, shared across conjectures) are still inlined; they are the next candidates for the same hook.
+A first version that bound only the rewriter's lemmas (not the case lemmas) cut law-check visits to 2.4M (sbo3) and 28.0M (cmp3d).
 
-Next: the machine sub-lemmas as parameters; then decide whether visits (plus the one-time lemma cost, an MDL-like total) should
-replace M in the miner's objective and the proposer's reward. Parameters as the default for the proof-cost runs is open: the
-measured M is unchanged, so it only affects time.
+- **Checking a law is now cheap and a library cuts it.** Law checks fall 16-25x in time and 11-17x in visits; a machine-free law
+  costs a median 2.3-2.5k visits. With parameters on both sides, the own library cuts law-check visits 2.1x on sbo3 (2.5M to 1.2M)
+  and 1.6x on cmp3d (4.8M to 3.1M), the direction M predicts.
+- **Total CPU falls 1.9x (sbo3) and 1.3x (cmp3d).** The rest is building, which now includes the one-time lemma checks. cmp3d's
+  case lemmas are numerous and specific to a machine, so checking each once saves less than the rules do (total visits 122.5M to
+  106.9M).
+- **Building uses the kernel more than checking does.** Even with parameters off, building the proofs costs 8.6M (sbo3) and 69.1M
+  (cmp3d) kernel visits, uncounted before this column. What in the builder calls the kernel is not yet identified.
+
+Next: find the builder's kernel calls; then decide whether total visits (law checks plus the one-time lemma checks, an MDL-like
+total) should replace M in the miner's objective and the proposer's reward. Parameters as the default for the proof-cost runs is
+open: M is unchanged, so it only affects time.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
