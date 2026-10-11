@@ -410,6 +410,42 @@ pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
     v
 }
 
+thread_local! {
+    /// The lemma parameters (`LEMMA_PARAMS=1`): one open scope, and per bound lemma its `Free`, proof and statement.
+    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Scope, Vec<(Expr, Expr, Expr)>)>> = const { std::cell::RefCell::new(None) };
+    pub static LEMMA_PARAMS: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("LEMMA_PARAMS").is_ok_and(|v| v == "1"));
+}
+/// `memo` for a closed lemma `(proof, statement)`. With `LEMMA_PARAMS=1` the proof is checked once and the lemma is
+/// returned as a parameter of that statement, so a law using it is checked (`ck`) against the parameter, not the proof.
+pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
+    let (p, s) = memo(key.clone(), build);
+    if !LEMMA_PARAMS.with(|c| c.get()) {
+        return (p, s);
+    }
+    memo(format!("param_{key}"), || {
+        if let Err(m) = check(&Ctx::new(), &p, &s) {
+            panic!("lemma {key}: {}", m.chars().take(400).collect::<String>());
+        }
+        PARAMS.with(|c| {
+            let mut c = c.borrow_mut();
+            let (ps, _, bound) = c.get_or_insert_with(|| {
+                let mut ps = Postulates::new();
+                let sc = ps.open();
+                (ps, sc, Vec::new())
+            });
+            let r = ps.bind(s.clone());
+            bound.push((r.clone(), p, s.clone()));
+            (r, s)
+        })
+    })
+}
+/// The lemma parameters bound so far, as `Lam`s around `body`, applied to the lemma proofs: a closed term with no
+/// parameters. Ends the scope; the memoised parameters stay in `CLOSED`, so call it last.
+pub fn discharge(body: Expr) -> Expr {
+    let Some((mut ps, sc, bound)) = PARAMS.with(|c| c.borrow_mut().take()) else { return body };
+    apps(ps.close(sc, Binder::Lam, body), bound.into_iter().map(|(_, p, _)| p).collect())
+}
+
 /// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: zero, comm, assoc, not, collapse).
 pub fn ablated(name: &str) -> bool {
     std::env::var("ABLATE").is_ok_and(|v| v.split(',').any(|x| x == name))
@@ -425,10 +461,10 @@ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
         Term::Op(o, a, b) => {
             let ((av, aw), (bv, bw)) = (witnessed(a, n, goods), witnessed(b, n, goods));
             let (op, good_op) = match o {
-                0 => (add(n), memo(format!("good_add{n}"), || good_add(n)).0),
-                4 => (sub(n), memo(format!("good_sub{n}"), || good_sub(n)).0),
-                6 => (shl1_op(n), memo(format!("good_shl1{n}"), || good_shl1(n)).0),
-                7 => (shr1_op(n), memo(format!("good_shr1{n}"), || good_shr1(n)).0),
+                0 => (add(n), shared_lemma(format!("good_add{n}"), || good_add(n)).0),
+                4 => (sub(n), shared_lemma(format!("good_sub{n}"), || good_sub(n)).0),
+                6 => (shl1_op(n), shared_lemma(format!("good_shl1{n}"), || good_shl1(n)).0),
+                7 => (shr1_op(n), shared_lemma(format!("good_shr1{n}"), || good_shr1(n)).0),
                 _ => memo(format!("gbit{n}_{o}"), || {
                     let o = *o;
                     let opf = move |p: Expr, q: Expr| match o {
@@ -960,7 +996,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
         if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
             return None;
         }
-        let law = memo(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
+        let law = shared_lemma(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
         // a pattern variable the left side does not mention is free in the law: any value serves
         let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
         let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
@@ -1110,20 +1146,20 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
     let (bv, bw) = witnessed(&b2, n, goods);
     let assoc = |p: &Term, q: &Term, r: &Term| {
         let ((pv, pw), (qv, qw), (rv, rw)) = (witnessed(p, n, goods), witnessed(q, n, goods), witnessed(r, n, goods));
-        apps(memo(format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
+        apps(shared_lemma(format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
     };
     let sum = |p: &Term, q: &Term| Term::Op(ADD, Box::new(p.clone()), Box::new(q.clone()));
     let step = if !ablated("zero") && matches!(b2, Term::Zero) {
-        Some((a2.clone(), app2(memo(format!("idr{n}"), || add_identity_proof(n, 0, false)).0, av, aw)))
+        Some((a2.clone(), app2(shared_lemma(format!("idr{n}"), || add_identity_proof(n, 0, false)).0, av, aw)))
     } else if !ablated("zero") && matches!(a2, Term::Zero) {
-        Some((b2.clone(), app2(memo(format!("idl{n}"), || add_identity_proof(n, 0, true)).0, bv, bw)))
+        Some((b2.clone(), app2(shared_lemma(format!("idl{n}"), || add_identity_proof(n, 0, true)).0, bv, bw)))
     } else if !ablated("not") && matches!(&b2, Term::Op(XOR, p, q) if p.show() == a2.show() && matches!(**q, Term::Ones)) {
         // a + ~a = -1
-        Some((Term::Ones, app2(memo(format!("not{n}"), || add_not_proof(n, false)).0, av, aw)))
+        Some((Term::Ones, app2(shared_lemma(format!("not{n}"), || add_not_proof(n, false)).0, av, aw)))
     } else if !ablated("not") && !ablated("comm") && matches!(&a2, Term::Op(XOR, p, q) if p.show() == b2.show() && matches!(**q, Term::Ones)) {
         // ~b + b = b + ~b = -1
-        let lemma = app2(memo(format!("not{n}"), || add_not_proof(n, false)).0, bv.clone(), bw.clone());
-        let comm = apps(memo(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv.clone(), aw, bw]);
+        let lemma = app2(shared_lemma(format!("not{n}"), || add_not_proof(n, false)).0, bv.clone(), bw.clone());
+        let comm = apps(shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv.clone(), aw, bw]);
         let swapped = witnessed(&Term::Op(ADD, Box::new(b2.clone()), Box::new(a2.clone())), n, goods).0;
         let ones = witnessed(&Term::Ones, n, goods).0;
         Some((Term::Ones, trans_proof(&bv_ty(n), &ev(&t1), &swapped, &ones, comm, lemma)))
@@ -1142,7 +1178,7 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
             let (a_, b_, c_) = (&a2, &**bp, &**bq);
             let ((av2, aw2), (bv2, bw2), (cv2, _)) = (witnessed(a_, n, goods), witnessed(b_, n, goods), witnessed(c_, n, goods));
             let (ab, ba) = (witnessed(&sum(a_, b_), n, goods).0, witnessed(&sum(b_, a_), n, goods).0);
-            let comm = apps(memo(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av2, bv2, aw2, bw2]);
+            let comm = apps(shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av2, bv2, aw2, bw2]);
             let swap = cong_n(&bv_ty(n), &bv_ty(n), &ops[0], &[ab.clone(), cv2.clone()], &[ba.clone(), cv2.clone()], vec![comm, refl(cv2)]);
             let (acc, bc, a_bc) = (witnessed(&sum(&sum(a_, b_), c_), n, goods).0, witnessed(&sum(&sum(b_, a_), c_), n, goods).0, witnessed(&t1, n, goods).0);
             let target = sum(b_, &sum(a_, c_));
@@ -1154,7 +1190,7 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
             None
         }
     } else if !ablated("comm") && b2.show() < a2.show() {
-        Some((sum(&b2, &a2), apps(memo(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv, aw, bw])))
+        Some((sum(&b2, &a2), apps(shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv, aw, bw])))
     } else {
         None
     };
@@ -1340,7 +1376,7 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
             let zero_to_shr0 = sym(&bv, &ev(&shr(&Term::Zero)), &z, step);
             Some(trans_proof(&bv, &z, &ev(&shr(&Term::Zero)), &ev(&shr_and0), zero_to_shr0, c))
         } else {
-            let law = memo(format!("shrmask{n}"), || {
+            let law = shared_lemma(format!("shrmask{n}"), || {
                 let (l, r) = (shr(&Term::V(0)), shr(&Term::Op(AND, Box::new(Term::V(0)), Box::new(Term::Op(SHL1, Box::new(Term::Ones), Box::new(Term::Zero))))));
                 prove_rule(n, 1, &l, &r).expect("shrmask law")
             });
@@ -1455,6 +1491,21 @@ pub fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
     }
     // a false law is refused by the truth-table pre-check
     assert!(rewrite_law(n, 2, &op(0, v(0), v(1)), &op(0, v(0), v(0))).is_none());
+}
+
+#[test]
+pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
+    let _scope = tatic::kernel::InternScope::enter();
+    LEMMA_PARAMS.with(|c| c.set(true));
+    let v = |i: usize| Term::V(i);
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let (p, s) = rewrite_law(2, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
+    assert!(PARAMS.with(|c| c.borrow().as_ref().is_some_and(|(.., b)| !b.is_empty())), "no lemma was bound");
+    assert!(check(&Ctx::new(), &p, &s).is_err(), "a proof over lemma parameters is not closed");
+    ck("over parameters", &p, &s);
+    let closed = discharge(p);
+    ck("discharged", &closed, &s);
+    LEMMA_PARAMS.with(|c| c.set(false));
 }
 
 // ---- Carry-chain builder (search note section 13): `add A B = T` for bitwise A, B, T over x, y, with no

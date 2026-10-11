@@ -282,8 +282,10 @@ pub fn good_bv(n: usize) -> Expr {
     lam(bv_ty(n), pi(arrow(bv_ty(n), sort(2)), pi(good_bv_step(n), app(var(1), var(2)))))
 }
 
+/// Checks `e : ty`, against the lemma parameters (`rewrite::shared_lemma`) when any are bound.
 pub fn ck(name: &str, e: &Expr, ty: &Expr) {
-    if let Err(m) = check(&Ctx::new(), e, ty) {
+    let r = PARAMS.with(|c| c.borrow().as_ref().map(|(ps, ..)| ps.check_open(e, ty))).unwrap_or_else(|| check(&Ctx::new(), e, ty));
+    if let Err(m) = r {
         panic!("{name}: {}", m.chars().take(400).collect::<String>());
     }
 }

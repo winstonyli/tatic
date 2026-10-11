@@ -189,9 +189,7 @@ other:
 - **The count grades within M's classes, and the classes overlap.** Machine-free laws span 1.5k to 0.5-1.8M visits, machine-proved
   ones 25k to 0.4-3.7M. In every run, 28-122 machine-free laws cost more than the cheapest machine-proved law.
 
-Next (not started): check each rule's proof once and pass the rule to the kernel as a typed parameter (`check_open` already types live
-parameters), so a use costs one application. Then re-measure visits per library and decide whether visits (or visits plus a one-time
-library cost, an MDL-like total) should replace M in the miner's objective and the proposer's reward.
+Done next: lemmas as kernel parameters (below).
 
 ### Hash-consing cost (negative, 2026-10-10)
 Interning was 34% of the profiled time: about 15% in `instantiate_n` (interning its arguments for the memo key in `hc::args_id`, and
@@ -210,6 +208,44 @@ DAGs with about 140x sharing (sbo3 rule laws: 1.57M unique nodes against 220M wi
 also reuses the instantiations of the inlined rule proofs. A table per law is slower, so it is not cleared between laws. What is left to
 save is small: `args_id` re-interns arguments that are often already canonical (at most about 7% of the time, from the profile). The
 real lever is not re-checking the rule proofs (above).
+
+### Lemmas as kernel parameters (2026-10-10)
+With `LEMMA_PARAMS=1`, `shared_lemma` (rewrite.rs) checks each closed lemma's proof once and binds its statement as a parameter of
+one open `Postulates` scope; the rewriter then uses the parameter (a `Free`) instead of the proof, and `ck` checks a law with
+`check_open`. It covers every closed lemma the rewriter reuses through one hook: the mined rules, the built-in add lemmas
+(assoc, identity, not, comm), `shrmask`, and the GoodBv witness lemmas (`good_add`, `good_sub`, `good_shl1`, `good_shr1`). The
+`gbit` pairs stay inlined: their first half is an operator that must compute. A law over parameters is not closed, but `discharge`
+wraps the parameters as `Lam`s and applies them to the lemma proofs, giving a closed term the plain checker accepts
+(`a_law_over_lemma_parameters_discharges_to_a_closed_proof`). M is unchanged (same proofs up to the parameters).
+
+Kernel work (`law_work_report`, same windows and `record-defeq` caveat as above):
+
+| family, library | M | visits off (M) | visits on (M) | check s off / on | machine laws' share of visits, on |
+|---|---|---|---|---|---|
+| sbo3, none | 92 | 11.7 | 8.0 | | 0.93 |
+| sbo3, own | 17 | 12.9 | 2.4 | 22.2 / 3.2 | 0.63 |
+| cmp3d, none | 118 | 40.5 | 34.7 | | 0.97 |
+| cmp3d, own | 31 | 53.4 | 28.0 | 120.3 / 58.8 | 0.95 |
+
+Normal build, `proof_cost_split`, pinned to two cores, ABAB; other sessions held the CPU at 42-63%, so the off times are above the
+earlier 11-13 s:
+
+| family (own library) | CPU s off | CPU s on | rule-law check s off / on | machine-law check s off / on | build s off / on |
+|---|---|---|---|---|---|
+| sbo3 | 15.5, 14.9 | 8.0, 8.3 | 8.6, 8.3 / 0.48, 0.47 | 2.2, 2.3 / 1.2, 1.2 | 4.8, 4.5 / 6.1, 5.7 |
+| cmp3d | 87.7, 87.4 | 63.9, 68.3 | 24.6, 24.1 / 0.95, 1.12 | 29.2, 29.9 / 22.9, 26.5 | 37.9, 39.7 / 41.2, 47.8 |
+
+- **A library now cuts checking work.** Machine-free laws cost a median 2.3k visits (sbo3) and 2.5k (cmp3d), against 32k and 46k
+  inlined, and below the 4.7k of the built-in rules inlined. With parameters on both sides, the own library cuts visits 3.3x on sbo3
+  (8.0M to 2.4M) and 1.24x on cmp3d (34.7M to 28.0M), the direction M predicts.
+- **Rule-law checks fall 18-25x; total CPU 1.3-1.9x.** Build rises by the one-time lemma checks (they run at first use) and is now
+  the larger part for rule laws.
+- **What remains is the machine proofs.** They are 63-97% of the visits and most of cmp3d's time (build 32 s, check 23-26 s). Their
+  sub-lemmas (`LEMMAS` in `add_tree_law`, shared across conjectures) are still inlined; they are the next candidates for the same hook.
+
+Next: the machine sub-lemmas as parameters; then decide whether visits (plus the one-time lemma cost, an MDL-like total) should
+replace M in the miner's objective and the proposer's reward. Parameters as the default for the proof-cost runs is open: the
+measured M is unchanged, so it only affects time.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
