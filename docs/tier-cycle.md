@@ -467,6 +467,29 @@ through the cut).
   30.5-32.1 s against 45.7-49.1 s. sbo3's take 5.6-7.5 s against 7.0-7.1 s. Rules were identical in every run. A first version
   rebuilt each worker's memo from all laws every round: 1.4x at one thread but 1.19x at two.
 
+**Where the time goes now (salt 1, committed miner).** A ref run (`transfer_mines.sh`) is mostly serving. cmp3d's 120 s splits into
+66 s of full kernel checks on 400 laws, 34 s of mining, and about 20 s of process launches and the two machine-state lines. The
+loops serve with `CHECK_FAST=1`, so there:
+
+| loop (3 phases) | total | serving | mine phases |
+|---|---|---|---|
+| add3 own | 54 s | 15 s | 22 s |
+| sbo3 own | 52 s | 20 s | 17 s |
+| cmp3d own | 64 s | 17 s | 29 s |
+| add3 cold | 70 s | 19 s | 28 s |
+| sbo3 cold | 73 s | 26 s | 26 s |
+| cmp3d cold | 132 s | 22 s | 90 s |
+
+Serving includes its launch, and the remainder is mostly the mines' launches. A loop starts the test exe 15 times, and a launch took
+0.6-1.6 s on a loaded machine. Even `cmd /c exit` took 1.2 s, so this is process-creation cost, not the program. Two other costs
+showed up:
+- **A growing chain.** cmp3d's cold phase-1 mine spends 24 s of its 31 s in two rounds. Its first winner,
+  `lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))`, and the candidate `lt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))` rewrite into
+  each other, and each lap copies `x` in. The term grows instead of repeating, so the cycle cut never fires and only the 40-step
+  budget stops it. That one candidate took 17-24 s a round, and the seeded memo does not help (each lap is new).
+- **Identity candidates.** `add(x, y) -> add(x, y)`, `lt(x, y) -> lt(x, y)` and `sub(x, y) -> sub(x, y)` are scored every round
+  (0.35 s each, affecting 90-100 laws) and can never gain.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
@@ -495,8 +518,26 @@ mine it took `sub(sub(x, y), z) -> sub(x, add(y, z))`, the rule sbo3 has. Still 
 
 cmp3d's loss comes from greedy myopia, not from the rival. Its round 3 took the rival `add(sub(x, y), z) -> sub(add(x, z), y)`.
 Round 5 then took the inverse `sub(add(x, y), z) -> add(sub(x, z), y)` at -1 fixed laws for a 7697 size cut, and the pair cycles
-(cut after one lap). Reverted; the patch is not kept. Parked: rival rescoring together with refusing a winner that unfixes laws
-(fewer fixed than before, whatever its size cut). That refusal is general, but it is untested and also changes the baseline.
+(cut after one lap). Reverted; the patch is not kept.
+
+Refusing such winners does not rescue it (salt 1, total M; a refused candidate scores gain 0):
+
+| variant | own add3 / sbo3 / cmp3d | cold add3 / sbo3 / cmp3d |
+|---|---|---|
+| committed miner | 61 / 35 / 68 | 183 / 123 / 184 |
+| refuse a winner that uncovers any covered law | 115 / 86 / 82 | 188 / 155 / 203 |
+| rivals + that refusal | 89 / 79 / 71 | 173 / 154 / 219 |
+| rivals + refuse a net loss in covered laws | 28 / 35 / 94 | 179 / 130 / 211 |
+
+- **The per-law refusal is far worse everywhere.** Good rules that fix many laws often uncover one, and its mines fall behind too
+  (ref M: sbo3 12 to 20, add3 18 to 38).
+- **The net refusal does block cmp3d's inverse rule.** Its cold loops are identical to rivals alone, but cmp3d still loses (ref
+  mine M 46, own loop 94 with 4 laws using up the budget). The rival itself is the problem there. `add(sub(x, y), z) ->
+  sub(add(x, z), y)` scores +43 fixed under the miner's 40-step budget, yet serving the same laws under the 200-step budget leaves
+  more machine proofs. Mining and serving disagree on it.
+
+All variants reverted. A rival orientation is worth revisiting only once the miner scores rules the way serving uses them (the
+same budget), or the gap between the two is understood.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
