@@ -44,7 +44,9 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
    re-mined again): cmp3d 214 vs 68, add3 183 vs 61, sbo3 123 vs 35, and no law uses up the step budget. With exact counting in
    the miner as well (`docs/tier-cycle.md`, "Miner speedups"; the cold loops mine differently): cmp3d 184 vs 68 (one cold law used up
    the budget), add3 183 vs 61, sbo3 123 vs 35. With growing rewrite chains cut too, identity candidates dropped and the miner on
-   serving's 200-step budget: cmp3d 180 vs 68 (no law uses up the budget), add3 183 vs 60, sbo3 123 vs 35.
+   serving's 200-step budget: cmp3d 180 vs 68 (no law uses up the budget), add3 183 vs 60, sbo3 123 vs 35. With no round cap
+   (2026-10-11): salt 1 cmp3d 167 vs 60, add3 183 vs 60, sbo3 123 vs 31; salt 2 (first rerun of salt 2 since the dedup) cmp3d 159
+   vs 61, add3 161 vs 46, sbo3 132 vs 48.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
    foreign): add3 183 / 62 / 47-67 (56-65), sbo3 128 / 41 / 53-69 (52-66), cmp3d 231 / 109 / 139-140 (118-119). cmp3d needs its
    comparison rules, so it benefits least. Under the per-side budget (2026-10-11): add3 183 / 67 / 46 (sbo3's library) and 65
@@ -68,7 +70,9 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
    with growing chains cut). It does not change the two-variable shl, shr or lt
    families (pre-dedup check).
 5. **One library can be mined on a mixed stream.** Current miner (uncapped, salt 1): the u3 mine stops at 17 rules; seeded totals
-   cmp3d 42 (own 60, pooled 60), add3 57 (own 60, pooled 42), sbo3 41 (own 31, pooled 32), mix3 17 (pooled 10). Earlier miner: On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
+   cmp3d 42 (own 60, pooled 60), add3 57 (own 60, pooled 42), sbo3 41 (own 31, pooled 32), mix3 17 (pooled 10). Salt 2 (u3 18
+   rules; cold / own / pooled / u3): cmp3d 159 / 61 / 61 / 55, add3 161 / 46 / 36 / 52, sbo3 132 / 48 / 41 / 67, mix3 70 / - / 17 /
+   40. On both salts the u3 library is best only for cmp3d, and the pooled one is best or within one proof elsewhere. Earlier miner: On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
    (re-mining on the post-dedup u3 stream gave the identical 8- and 25-rule libraries): cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
    66 (66) vs own 62 (62); mix3 16 (20). Pre-dedup, sbo3 was within +-8 of its own library on three of four salts (126/46/54, 117/47/72,
    133/50/52, 142/54/52 for cold/own/mixed); after the dedup its own library is better by 16. The 8-round default cap, not the approximate miner, was the limit: exact mining produced the identical library.

@@ -140,15 +140,17 @@ of their family with no round cap (`FAMILY=u3` is the union of the add3, sbo3 an
 cmp3d pools, for mining one library on a mixed stream). Current numbers (2026-10-11,
 `driver::sweep` stages `mines mines:u3 own cold cross pooled mixed cold:mix3 pooled:mix3 mixed:mix3`):
 
-| target | cold | own library | other family's library | pooled (merged) | mined on u3 (17 rules) |
-|---|---|---|---|---|---|
-| cmp3d | 167 | 60 | 110-113 | 60 | 42 |
-| add3 | 183 | 60 | 46-57 | 42 | 57 |
-| sbo3 | 123 | 31 | 47-58 | 32 | 41 |
-| mix3 (held out) | 60 | n/a | n/a | 10 | 17 |
+Salt 1 / salt 2:
 
-The pooled library is best or tied on every family but cmp3d, where the u3 library
-is better. The rest of this section is the earlier miner (8-round cap, 40-step
+| target | cold | own library | other family's library | pooled (merged) | mined on u3 (17 / 18 rules) |
+|---|---|---|---|---|---|
+| cmp3d | 167 / 159 | 60 / 61 | 110-113 / 97 | 60 / 61 | 42 / 55 |
+| add3 | 183 / 161 | 60 / 46 | 46-57 / 43-87 | 42 / 36 | 57 / 52 |
+| sbo3 | 123 / 132 | 31 / 48 | 47-58 / 55-82 | 32 / 41 | 41 / 67 |
+| mix3 (held out) | 60 / 70 | n/a | n/a | 10 / 17 | 17 / 40 |
+
+On both salts the pooled library is best or within one proof of best on every family
+but cmp3d, where the u3 library is better. The rest of this section is the earlier miner (8-round cap, 40-step
 mining budget), kept as history:
 
 | target | cold | own library | other family's library | pooled (merged) | mined on u3, 8 rules | mined on u3, 25 rules |
