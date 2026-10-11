@@ -1931,6 +1931,40 @@ pub fn proof_cost_split() {
     println!("COST not-proved={none}");
 }
 
+/// Deterministic work per law (needs `--features record-defeq`): like `proof_cost_split` (same `CHECK_FAMILY`, `CHECK_RULES`,
+/// `RULEMINER_*` vars), one TSV row per law to `WORK_OUT`: fallbacks, rule steps, proof size (unique nodes), nodes built while
+/// building the proof, kernel node visits while checking it (instantiate, shift, eq, conv and nf whnf, infer misses), beta steps,
+/// and the build and check wall times in microseconds (to compare the counts with time). Unproved laws are skipped.
+#[test]
+#[ignore]
+#[cfg(feature = "record-defeq")]
+pub fn law_work_report() {
+    use std::{io::Write, time::Instant};
+    use tatic::kernel::{take_beta_count, take_hc_built, take_walk_counts};
+    let _scope = tatic::kernel::InternScope::enter();
+    let (_, kv, laws) = check_laws();
+    let mut out = std::fs::File::create(std::env::var("WORK_OUT").unwrap()).unwrap();
+    writeln!(out, "law\tfallbacks\tsteps\tnodes\tbuilt\tvisits\tbetas\tbuild_us\tcheck_us").unwrap();
+    for (name, t1, t2) in &laws {
+        RULE_BUDGET.with(|b| b.set(200));
+        let before = MACHINE_FALLBACKS.with(|c| c.get());
+        take_hc_built();
+        let t = Instant::now();
+        let Some((p, s)) = rewrite_law(4, kv, t1, t2) else { continue };
+        let build = t.elapsed();
+        let (fallbacks, steps, built) = (MACHINE_FALLBACKS.with(|c| c.get()) - before, 200 - RULE_BUDGET.with(|b| b.get()), take_hc_built().0);
+        take_walk_counts();
+        take_beta_count();
+        let t = Instant::now();
+        ck(name, &p, &s);
+        let check = t.elapsed();
+        let w = take_walk_counts();
+        let visits: u64 = [0, 1, 2, 3, 4, 20].iter().map(|&i| w[i]).sum();
+        let nodes = tatic::kernel::term_sizes(&p).0;
+        writeln!(out, "{}\t{fallbacks}\t{steps}\t{nodes}\t{built}\t{visits}\t{}\t{}\t{}", name.replace('\t', " "), take_beta_count(), build.as_micros(), check.as_micros()).unwrap();
+    }
+}
+
 /// Each rule of the promoted sets parses, is a true law at widths 1-4, and is proved (and kernel-checked) at width 4.
 #[test]
 pub fn promoted_rule_sets_are_proved() {

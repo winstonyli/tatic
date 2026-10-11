@@ -42,18 +42,18 @@ are local and not in the repository.
    comparison rules, so it benefits least.
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
    dedup; mix3 contributed no rule). It does not change the two-variable shl, shr or lt families (pre-dedup check).
-5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1, with that
-   library mined before the dedup and served on the post-dedup streams: cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
+5. **One library can be mined on a mixed stream.** On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup
+   (re-mining on the post-dedup u3 stream gave the identical 8- and 25-rule libraries): cmp3d 67 (54) vs own 109 (80); sbo3 57 (54) vs own 41 (46); add3
    66 (66) vs own 62 (62); mix3 16 (20). Pre-dedup, sbo3 was within +-8 of its own library on three of four salts (126/46/54, 117/47/72,
-   133/50/52, 142/54/52 for cold/own/mixed); after the dedup its own library is better by 16. The u3 library has not been re-mined on
-   the post-dedup stream. The 8-round default cap, not the approximate miner, was the limit: exact mining produced the identical library.
+   133/50/52, 142/54/52 for cold/own/mixed); after the dedup its own library is better by 16. The 8-round default cap, not the approximate miner, was the limit: exact mining produced the identical library.
 
 ## What this does not show
 - **Single runs.** Per-cell noise is unmeasured; the salts and streams are the only replicates. Differences of a few proofs are not
   evidence.
 - **Related families.** add3, sbo3, cmp3d and mix3 share add/sub structure. Transfer to different operator structure is untested
   (the shift families show none).
-- **M is machine proofs, not time.** Seeded vs cold is a count of laws, not a speed measurement.
+- **M is machine proofs, not time.** Seeded vs cold is a count of laws, not a speed measurement. Measured by kernel work, a library
+  does not make checking cheaper yet: each use of a rule re-checks its proof (`docs/tier-cycle.md`, "Instruction count as a metric").
 - **Not a generality claim about theories.** Everything is Church bit-vector arithmetic. Whether the loop works for an axiomatic theory
   is only probed: in a throwaway spike over commutative-ring terms (axioms only, proofs found by a budgeted search, no kernel; not in this
   repository), M defined as the laws not proved within the budget separated cold from seeded loops (total M over five streams about

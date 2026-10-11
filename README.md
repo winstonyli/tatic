@@ -147,8 +147,7 @@ cmp3d pools, for mining one library on a mixed stream).
 
 Numbers are after the dedup of the term pools (`pool3`, commit `bd00e69`); in parentheses, the same cell before it. The pools had
 built some small terms at more than one depth, which put 2-6% trivial or repeated laws into the streams and shifted every family's law
-sequence. The family libraries were re-mined after the dedup; the two u3 libraries were not (they were mined on the pre-dedup u3
-stream). Seeding with any library beat cold on all 45 seeded streams. Salt-2 numbers (pre-dedup) are in
+sequence. All libraries were re-mined after the dedup; both u3 libraries came out identical to the pre-dedup ones. Seeding with any library beat cold on all 45 seeded streams. Salt-2 numbers (pre-dedup) are in
 [docs/loop-result.md](docs/loop-result.md).
 
 A library from another family recovers most of the gain except for cmp3d,
