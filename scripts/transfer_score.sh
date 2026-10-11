@@ -12,7 +12,7 @@ out=$1; mkdir -p "$out"
 : "${EXE:?set EXE}" "${FAMILY:?set FAMILY}" "${LAWS:?set LAWS}"
 if [ -n "${ROUNDS:-}" ]; then export RULEMINER_ROUNDS=$ROUNDS; fi
 base="$out/base.txt"; if [ -n "${BASE:-}" ]; then cp "$BASE" "$base"; else : > "$base"; fi
-MACHINE_BANNER=0 RULEMINER_FAMILY=$FAMILY RULEMINER_DEEP3=1 RULEMINER_PERM=1 RULEMINER_STEPS=40 RULEMINER_THREADS=${THREADS:-2} \
+MACHINE_BANNER=0 RULEMINER_FAMILY=$FAMILY RULEMINER_DEEP3=1 RULEMINER_PERM=1 RULEMINER_THREADS=${THREADS:-2} \
   RULEMINER_BASE="$base" RULEMINER_LAWFILE="$LAWS" "$EXE" search::rule_miner --ignored --nocapture > "$out/mine.log" 2>&1 \
   || { echo "transfer_score: rule_miner failed (see $out/mine.log)" >&2; exit 1; }
 { cat "$base"; grep -E "RULEMINER chosen" "$out/mine.log" | grep -- " -> " | sed 's/.*size): //' || true; } > "$out/rules.txt"

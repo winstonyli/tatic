@@ -112,7 +112,8 @@ cmp3d gap (27 vs 42) is the largest of the three.
 **Transfer score.** `scripts/transfer_score.sh` (header documents it) mines rules from a law file and prints
 `TRANSFER ... M_before M_after gain` on a held-out window of the target family: the batch-level reward a proposer needs. Check: the
 salt-1 sbo3 stream file gives 94 -> 19 (gain 75), matching the table above. It costs one mine per batch (about 1-5 min FAST), so it
-grades batches, not single proposals.
+grades batches, not single proposals. Since 2026-10-11 it mines on serving's 200-step budget (it had kept the miner's old 40) with
+no round cap; on a 30-law salt-1 sbo3 file both budgets mine the same 16 rules (held-out M 92 -> 61).
 
 **Per-proposal credit.** `search::proposal_credit` (report test `proposal_credit_report`, env on the test). A rule's held-out gain is how
 many more held-out laws are hard without it. A proposal *uses* a rule when it is cheap with the library but hard without that rule.
