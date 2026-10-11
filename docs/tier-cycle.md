@@ -413,9 +413,18 @@ Three ways to stop the rewrite cycles, each with libraries re-mined under it (sa
 - **Cycle cut (kept, default).** Rewriting is deterministic apart from the step budget, so `rewrite(t)` called while `t` is
   already being rewritten further out can only repeat that work. `rewrite` keeps the path of terms in progress and returns `t`
   unchanged (proof `refl`) on a repeat, so the chain ends after one lap instead of at the budget. The rewrite memo does not cache a
-  result that a cut shaped. With the per-side libraries on cmp3d's 300-law batch (loaded machine, not a timing claim): M 24 to 21,
-  exhausted 23 to 0, time 41.5 / 43.9 s to 32.0 / 36.4 s. Test: `rewrite_cycles_are_cut` (sbo3's five-step cycle; fails with
-  the cut disabled).
+  result that a cut shaped. Test: `rewrite_cycles_are_cut` (sbo3's five-step cycle; fails with the cut disabled).
+
+Serving time with the cut, on the 300-law calibration batches (pinned to two cores, quiet machine at 5-15% load, RTP off; best of two
+alternating runs):
+
+| batch | no cut, per-side libraries | cut, same libraries | cut, libraries mined under it |
+|---|---|---|---|
+| cmp3d | 34.3 s (M 24, 23 exhausted) | 26.2 s (M 21, 0 exhausted) | 26.0 s (M 21) |
+| sbo3 | 5.7 s (2 exhausted) | 5.2 s | 5.0 s |
+
+So the cut alone makes cmp3d serving 1.31× faster. Against no library (47.3 s, measured earlier without the cut), cmp3d's own library now saves about 1.8×,
+up from 1.37× (per-side budget) and 1.03× (shared budget).
 
 Cross-family transfer was rerun under the per-side budget (`docs/loop-result.md`, findings 3-4).
 
@@ -443,8 +452,30 @@ All together, with the cycle cut, on a quieter machine (load 11-17%, adjacent ru
 first two changes. Scoring rounds take 2-7 s and each winner's proof 0.1-1 s, and the mine's M is 30 against 37 (the rules differ
 through the cut).
 
-Next: the remaining miner cost is scoring. A bound on each candidate's possible gain (affected stragglers times 1000 plus their size)
-could skip candidates that cannot beat the round's best so far; parked until a profile shows how often the bound would bite.
+- **Gain bound (exact, small gain).** A candidate can change only the laws it affects, so its gain is at most 1000 per affected
+  uncovered straggler, `guard_w` per affected uncovered guard law, plus the affected stragglers' sizes. Each round scores candidates
+  in chunks (four per thread), highest bound first, and stops at a bound below the best gain so far. It skips 86% of the scorings
+  on cmp3d (1367 of 1584) with identical rules (also at one thread on sbo3), but the mine only drops from 95 s to 87-90 s. The
+  candidates with the highest bounds are the general patterns that rescore most laws, and they cost the most. They are also the
+  ones that can win, so no exact bound skips them. Base evaluation and bounds take 0.3-0.4 s a round.
+
+### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
+The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
+`sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
+library oriented its `sub` chains the other way. Serving add3 batch 0 (salt 1, phases 1-3) with its own library, sbo3's, and its own
+with the two chain rules swapped for `sub(sub(x, y), z) -> sub(x, add(y, z))` gives M 46, 36 and 27.
+
+Scoring every right side per left side (re-mined at salt 1, total M):
+
+| | add3 | sbo3 | mix3 | cmp3d |
+|---|---|---|---|---|
+| mine, one per left side / every | 18 / 10 | 12 / 12 | 14 / 9 | 30 / 31 (96 s / 427 s) |
+| own loop | 61 / 40 | 35 / 41 | | 68 / 91 |
+| cold loop | 183 / 173 | 123 / 124 | | 184 / 214 |
+
+It fixes add3 and mix3 but makes sbo3's and cmp3d's own loops worse and cmp3d's mine 4.5x slower (each left side's rivals are scored
+separately). Kept one per left side. A general fix would choose the orientation by the gain it gives, not by string order, without
+scoring every rival: for instance rescore only the left sides whose kept candidate wins.
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

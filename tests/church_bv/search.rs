@@ -947,7 +947,8 @@ pub fn rule_miner() {
         cands.retain(|(l, _)| !in_force.contains(&l.show()));
         println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
     }
-    // per left side, the smallest right side only
+    // per left side, the smallest right side only, ties by `show()`. Scoring every right side instead (each left side's rival
+    // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle.md)
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, _)| l.show());
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
@@ -1053,74 +1054,96 @@ pub fn rule_miner() {
     let summarize = |ev: &[(bool, i64, Vec<Term>)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
     // under `RULEMINER_FAST` the candidates are proved here, once each, against the base rules as the eager filter would
     let mut proofs: Vec<Option<bool>> = vec![if cfg.fast { None } else { Some(true) }; provable.len()];
-    let mut proved_lazily = |i: usize| -> bool {
-        *proofs[i].get_or_insert_with(|| {
-            let _scope = tatic::kernel::InternScope::enter();
-            EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
-            RULE_BUDGET.with(|b| b.set(budget));
-            let (l, r) = provable[i];
-            let ok = prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some();
-            EXTRA_RULES.with(|e| e.borrow_mut().clear());
-            RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
-            ok
-        })
+    let prove_one = |i: usize| -> bool {
+        let _scope = tatic::kernel::InternScope::enter();
+        EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+        RULE_BUDGET.with(|b| b.set(budget));
+        let (l, r) = provable[i];
+        let ok = prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some();
+        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+        ok
     };
     let mut chosen: Vec<(Term, Term)> = vec![];
     let mut base_eval = score_laws(&chosen, &all_laws, true);
     let (mut covered, mut size) = summarize(&base_eval);
     let (law_evals, law_reuses) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
+    let (mut scorings, mut skipped) = (0usize, 0usize);
     for _ in 0..cfg.rounds {
         let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
         let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
+        // a candidate changes only the laws whose rewriting asked about a term its left side matches (`affected`), so its gain is at most
+        // 1000 per affected uncovered straggler, `guard_w` per affected uncovered guard law and the affected stragglers' whole size
+        let affected: Vec<Vec<usize>> =
+            provable.iter().map(|(l, _)| all_laws.iter().copied().filter(|&si| base_eval[si].2.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))).collect()).collect();
+        let bound = |i: usize| -> i64 {
+            let gain = |si: usize, w: i64| if covered[si] { 0 } else { w };
+            affected[i].iter().map(|&si| if si < stragglers.len() { gain(si, 1000) + base_eval[si].1 } else { gain(si, guard_w) }).sum()
+        };
+        let mut order: Vec<(i64, usize)> = (0..provable.len()).map(|i| (bound(i), i)).collect();
+        order.sort_by_key(|&(b, i)| (std::cmp::Reverse(b), i));
         // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
-        // scope; the results are folded in candidate order, so the choice does not depend on the thread count
+        // scope, a chunk at a time in order of their bound; scoring stops at a bound below the best gain so far, since those
+        // candidates cannot win, so the choice does not depend on the thread count or the chunking
         let threads = cfg.threads.clamp(1, 12);
-        let scored: Vec<(Vec<bool>, i64)> = {
-            let run = |idx: &[usize]| -> Vec<(usize, (Vec<bool>, i64))> {
+        let score = |idx: &[usize]| -> Vec<(usize, (i64, Vec<bool>, i64))> {
+            let run = |idx: &[usize]| -> Vec<(usize, (i64, Vec<bool>, i64))> {
                 let _scope = tatic::kernel::InternScope::enter();
                 idx.iter()
                     .map(|&i| {
                         let mut with = chosen.clone();
                         with.push(provable[i].clone());
-                        let affected: Vec<usize> = all_laws.iter().copied().filter(|&si| base_eval[si].2.iter().any(|t| match_pat(&provable[i].0, t, &mut vec![None; 8]))).collect();
-                        let fresh = score_laws(&with, &affected, false);
+                        let fresh = score_laws(&with, &affected[i], false);
                         law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
-                        law_reuses.fetch_add(all_laws.len() - affected.len(), std::sync::atomic::Ordering::Relaxed);
+                        law_reuses.fetch_add(all_laws.len() - affected[i].len(), std::sync::atomic::Ordering::Relaxed);
                         let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
-                        for (&si, f) in affected.iter().zip(&fresh) {
+                        for (&si, f) in affected[i].iter().zip(&fresh) {
                             ev[si] = (f.0, f.1);
                         }
-                        (i, (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>()))
+                        let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
+                        (i, ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), f, sz))
                     })
                     .collect()
             };
-            let mut all: Vec<(usize, (Vec<bool>, i64))> = if threads == 1 {
-                run(&(0..provable.len()).collect::<Vec<_>>())
-            } else {
-                std::thread::scope(|sc| {
-                    let handles: Vec<_> = (0..threads)
-                        .map(|t| {
-                            let idx: Vec<usize> = (t..provable.len()).step_by(threads).collect();
-                            let run = &run;
-                            std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || run(&idx)).unwrap()
-                        })
-                        .collect();
-                    handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
-                })
-            };
-            all.sort_by_key(|x| x.0);
-            all.into_iter().map(|x| x.1).collect()
+            if threads == 1 {
+                return run(idx);
+            }
+            std::thread::scope(|sc| {
+                let handles: Vec<_> = (0..threads)
+                    .map(|t| {
+                        let part: Vec<usize> = idx.iter().copied().skip(t).step_by(threads).collect();
+                        let run = &run;
+                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || run(&part)).unwrap()
+                    })
+                    .collect();
+                handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+            })
         };
-        // best first, ties to the earlier candidate; the first one that is proved wins
-        let mut ranked: Vec<(i64, usize, Vec<bool>, i64)> = scored
-            .into_iter()
-            .enumerate()
-            .map(|(i, (f, sz))| ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), i, f, sz))
-            .filter(|r| r.0 > 0)
-            .collect();
-        ranked.sort_by_key(|r| (std::cmp::Reverse(r.0), r.1));
-        phase(&format!("round over {} candidates", provable.len()));
-        let Some((_, i, f, sz)) = ranked.into_iter().find(|r| proved_lazily(r.1)) else { break };
+        // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
+        // candidates whose bound reaches the next best
+        let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
+        let mut next = 0;
+        let winner = loop {
+            let best = (0..provable.len()).filter(|&i| proofs[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
+            let floor = best.map_or(1, |b| b.0);
+            let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
+            if chunk.is_empty() {
+                let Some((_, i)) = best else { break None };
+                if *proofs[i].get_or_insert_with(|| prove_one(i)) {
+                    break Some(i);
+                }
+                continue;
+            }
+            next += chunk.len();
+            for (i, r) in score(&chunk) {
+                results[i] = Some(r);
+            }
+        };
+        scorings += next;
+        skipped += provable.len() - next;
+        phase(&format!("round over {} of {} candidates", next, provable.len()));
+        let Some(i) = winner else { break };
+        let (_, f, sz) = results[i].take().unwrap();
         let rule = provable[i].clone();
         println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
         phase("winner proof");
@@ -1129,6 +1152,7 @@ pub fn rule_miner() {
         (covered, size) = summarize(&base_eval);
     }
     println!("RULEMINER scoring reused {} of {} law evaluations", law_reuses.load(std::sync::atomic::Ordering::Relaxed), law_evals.load(std::sync::atomic::Ordering::Relaxed));
+    println!("RULEMINER the gain bound skipped {skipped} of {} candidate scorings", scorings + skipped);
     println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
     for (st, c) in stragglers.iter().zip(&covered) {
         if !c {
@@ -1876,7 +1900,8 @@ fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
 
 /// Kernel check of a rule set (search note section 75): every law of `CHECK_FAMILY` (sized by the `RULEMINER_*` vars, as in
 /// `rule_miner`) that `rewrite_law` proves under the built-in rules (less `ABLATE`) plus the rules in `CHECK_RULES` is
-/// checked by the kernel at width 4; prints how many were proved, how many without a whole-term machine proof.
+/// checked by the kernel at width 4; prints how many were proved, how many without a whole-term machine proof, and per law
+/// `MACHINE <count> <law>` for the others and `EXHAUSTED <law>` for one that used up the step budget.
 #[test]
 #[ignore]
 pub fn rule_set_kernel_check() {
@@ -1902,7 +1927,11 @@ pub fn rule_set_kernel_check() {
                     ck(name, &p, &s);
                 }
                 proved += 1;
-                free += (MACHINE_FALLBACKS.with(|c| c.get()) == before) as u32;
+                let machine = MACHINE_FALLBACKS.with(|c| c.get()) - before;
+                free += (machine == 0) as u32;
+                if machine > 0 {
+                    println!("MACHINE {machine} {name}");
+                }
             }
             None => none += 1,
         }
