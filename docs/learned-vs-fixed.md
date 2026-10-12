@@ -32,4 +32,6 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
 3. Pooling's drop units: where two libraries' normal forms meet (B's rules with a critical pair against A's that does not
    join), learned per family as preference-phase moves; pooled loops 60/129 to 58/99, every salt-2 family at or below its own
    library (tier-cycle.md, "Drop units", "Joinability units"). A drop needs a hand-set gain floor (2000) against one-law
-   overfit; held-out gain in its place lost (salt 2 103 to 106).
+   overfit; held-out gain in its place lost (salt 2 103 to 106). On three salts harmful drops gain 1000-1033 and helpful ones
+   3215+, so the floor separates two classes rather than being tuned (salt 3 pooled 74 with it, 80 without; "The floor is still
+   needed").

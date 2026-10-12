@@ -932,6 +932,12 @@ Times, 6ca89b3 to d19c654: sweeps 819 to 745 s and 797 to 671 s; mines 321 to 29
 these rows). The mines and cold gains are likely the memo reuse ("Rule-set evaluations reuse..."), the only change those stages
 run; not separated further.
 
+*A third salt keeps the floor* (salt 3, mines/own/pooled at d19c654, then the pooled stage with the floor at 0 on the same
+libraries). Own loops M: cmp3d 29, add3 24, sbo3 27 (80). Pooled with the floor: 23, 24, 27 (74); without it: 29, 24, 27 (80).
+Without the floor cmp3d also drops add3's whole unit for +1033 and lands exactly on its own library; every other drop gains
+13000 or more and is the same either way. Across three salts the drops that hurt gain 1000-1033 and the ones that help 3215 or
+more, so any floor between those gives the same rows; 2000 separates the classes, not tuned to two salts.
+
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
 [learned-vs-fixed.md](learned-vs-fixed.md) (surveyed 2026-10-11, updated as parts move).
