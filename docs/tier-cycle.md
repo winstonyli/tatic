@@ -940,7 +940,7 @@ more, so any floor between those gives the same rows; 2000 separates the classes
 pair of runs) never reach it: their smallest drops gain 5149 and 6099, and with or without the floor the rows match (own 75 and
 98, pooled 64 and 98). Five salts, no drop between 1033 and 3215.
 
-### Operand order: the `show()` order is best of three; comm is not mined back (negative, 2026-10-12)
+### Operand order: `show()` wins only with the promoted rules; without them size first wins; comm is not mined back (2026-10-12)
 Learning operand order (learned-vs-fixed.md, candidate 1) is only worth it if the order matters and the current one is not
 already good. A temporary switch put one term order behind the three places that use it (the bitwise operand sort with constants
 last, `add` comm and left-comm, and the instance check of permutative rules) and ran full sweeps (mines, own, cold, pooled) with
@@ -958,9 +958,21 @@ The order matters (own loops up to 1.8x), and the current one wins 13 of the 16 
 reversed salt 2 pooled. Per family the picture is a little more mixed (size first: salt 1 pooled sbo3 11 against 14, salt 2 own
 sbo3 39 against 40), but no other order wins a family on both salts. Without the built-in comm the miner does not mine it back
 usefully (cold loops 451 to 799, 450 to 798), though each library holds one or more `add` swap rules. The 36 promoted rules were
-mined under the `show()` order, which biases the test toward it; not separated (`ABLATE=promoted` with each order would). The
-switch is removed; a learned precedence (one term order with a precedence learned per family) is parked: the measured headroom
-is the three comparisons above, against the cost of re-scoring every move.
+mined under the `show()` order, which biases the test toward it. Without them (`ABLATE=promoted`, same three orders, the probe's
+build), the ranking turns over:
+
+| `ABLATE=promoted` | mines | own | cold | pooled |
+|---|---|---|---|---|
+| `show()` | 33 / 29 | 139 / 164 | 542 / 497 | 125 / 160 |
+| reversed | 31 / 34 | 160 / 142 | 524 / 515 | 143 / 124 |
+| size first | **19 / 19** | **120 / 118** | **498** / 510 | **88 / 101** |
+
+Size first wins 7 of 8 cells (all but salt 2's cold loops), and `show()` is last or second in every other. Per family the best
+order varies: own loops, add3 26 / 28 best under `show()` / reversed (salt 1 / 2), sbo3 31 / 34 under size first, cmp3d 43 /
+46 under `show()` / reversed. So the earlier verdict came from the promoted rules, which are worth far more than the order (the
+`show()` order with them, own 74 / 102, beats every order without them). The fair comparison, promoted rules re-learned under
+each order, is not run: PROMOTED was learned once and frozen. The switch is removed. Learning the order is no longer parked: the
+order matters by up to 1.6x with the promoted rules out (pooled 160 to 101), and the best order differs per family.
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in

@@ -25,9 +25,11 @@ Columns: *learned in the run*: changes from data while the loop runs. *Learned o
 ## Moving parts to learned: candidates
 Ranked by measured effect; each needs the same check as the rules: mine on phase 0, score on phases 1-3, both salts.
 1. Operand order (`comm`, sorting by text): the most load-bearing fixed choice (ablated: 106 to 880); the mined rules assume it.
-   Parked: re-mined under the reversed and size-first orders, the `show()` order wins 13 of 16 pairwise sweep comparisons (own loops 74/102
-   against 132/147 and 98/117), and without the built-in comm the miner does not recover it (cold 451/450 to 799/798); the
-   promoted rules' bias toward `show()` is not separated (tier-cycle.md, "Operand order").
+   Re-mined under the reversed and size-first orders, the `show()` order wins 13 of 16 pairwise sweep comparisons (own loops
+   74/102 against 132/147 and 98/117), but only because the promoted rules were learned under it: without them size first wins
+   7 of 8 cells (own 120/118 against `show()`'s 139/164) and the best order differs per family. Without the built-in comm the
+   miner does not recover it (cold 451/450 to 799/798). Open: the order and the promoted rules have to be learned together
+   (tier-cycle.md, "Operand order").
 2. The miner's greedy search: a larger one-round gain can lead to a worse finished set (salt 1's cold loss with rivals: 38 of 43
    stragglers covered against 42; tier-cycle.md, "The cold loss is a greedy path loss"). Held-out scoring did not help, since
    the loss is not overfitting; finishing the mine both ways at rival swaps fixed that loss. Extending the lookahead to each
