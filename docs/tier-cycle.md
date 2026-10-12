@@ -724,7 +724,14 @@ M over cmp3d, add3 and sbo3, with the salt-1 pooled library and with no library:
 | `comm` | 880 | |
 
 Nine parts never decide a law on these streams, with or without mined rules; all names are wired (`eq_truth` and the others move
-M). `comm` (sorting operands) matters most: the mined rules are learned on top of a canonical operand order. The library was mined
+M). With no library they also change nothing on mix3, cmp3, u3 and u3w (111, 5, 299, 327). But the unit tests need two of them for
+`shr1` laws, which these streams never send through them: without `eq_pos` the built-in `shrnot` rule's laws need a machine
+proof (`shrnot_rule_is_provable_and_closes_the_shr_not_laws`), and without `shrmask` that test and
+`shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones` fail. The other seven (`zero`, `not`, `chain`, `fold`,
+`eq_cong`, `eq_bitcong`, `generalize`) can all be off with every unit test passing; deleting them was surveyed, not done: `not`
+is likely unreachable (the built-in `notsub` rewrites `xor(x, -1)` first), `fold` and `generalize` have tests that pass without
+them (they would lose their point), and `generalize` alone has helpers only it uses (`shared_subterm`, `GENERALIZE_ABOVE`). The
+two-variable families (shl, shr, lt, mul) were not served. `comm` (sorting operands) matters most: the mined rules are learned on top of a canonical operand order. The library was mined
 with every part present, so a large rise means the library relies on that part, not that it could not be learned.
 
 ### Preferences and rival orientations in the miner (2026-10-11)
