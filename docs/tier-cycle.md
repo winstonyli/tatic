@@ -815,6 +815,18 @@ It overrode 6 of 33 swaps, all in cold loops' mines (cmp3d, add3, sbo3); the ref
 unchanged. All loops now total 1266, against 1302 without rivals. Cost: ref mines 1.8-3.5x slower where swaps occur (add3 42 to
 102 s and 49 to 173 s), sweeps 27-29% longer (883 to 1120 s, 988 to 1272 s; two sweeps at a time).
 
+**Salt 2's pooled add3 loss is two chain normal forms meeting.** With rivals, add3's own loops at salt 2 gain (33 to 22) but its
+pooled loops lose (33 to 43), and sbo3's pooled loops too (38 to 46, own 40); at salt 1 pooling costs nothing (add3 14 own, 13
+pooled). Serving add3's salt-2 phases 1-3 (no mining) under: its own library 32; the pooled library with its learned preferences
+44, without them 85; add3's plus cmp3d's library 56; add3's plus sbo3's 85, the same on every phase as the whole pool. Leaving one
+of sbo3's 12 other rules out of add3 + sbo3 gives at best 71; leaving out its four `sub`/`add` chain orientations together
+(`sub(add(x, y), z) -> add(sub(x, z), y)`, `sub(x, sub(y, z)) -> add(sub(z, y), x)`, `add(sub(x, y), z) -> add(sub(z, y), x)`,
+`add(x, sub(y, z)) -> sub(x, sub(z, y))`) gives 28, and those four alone added to add3's library give 87. Before rivals, add3
+chose three of them itself; with rivals it drops them and orients the chains toward other forms (`add(sub(x, y), z) -> sub(add(x, z), y)`,
+`sub(x, sub(y, z)) -> add(x, sub(z, y))`, `sub(sub(x, y), z) -> sub(x, add(y, z))`). Each family's chain rules make a consistent
+normal form; mixed, a term can be pulled toward both. The learned preferences flip one pair at a time and win back 85 to 44, but
+the four rules matter only together.
+
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
 [learned-vs-fixed.md](learned-vs-fixed.md) (surveyed 2026-10-11, updated as parts move).

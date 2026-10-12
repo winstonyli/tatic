@@ -29,4 +29,6 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    stragglers covered against 42; tier-cycle.md, "The cold loss is a greedy path loss"). Held-out scoring did not help, since
    the loss is not overfitting; finishing the mine both ways at rival swaps fixed that loss. The same lookahead over the top few
    candidates of every round is the general form, untested.
-3. Rule orientation's open loss: salt 2's pooled add3 with rivals (33 to 43).
+3. Rule orientation's open loss: salt 2's pooled add3 with rivals (33 to 43). Families orient the `sub`/`add` chain rules into
+   different normal forms, and pooling mixes them; four of sbo3's chain rules cost add3 32 to 87 together, little alone
+   (tier-cycle.md, "Salt 2's pooled add3 loss"). Pooling would need to choose orientation sets jointly, not one pair at a time.
