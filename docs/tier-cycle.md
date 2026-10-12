@@ -783,7 +783,17 @@ The learned preferences win back most of salt 2's loss, but salt 2's add3 stays 
 salt 2 (+7000 on add3's phase 0) lets add3's own `sub(xor(x, -1), y) -> sub(-1, add(x, y))` beat `sub(x, sub(y, z)) ->
 add(sub(x, y), z)` (in all three libraries) on terms both match, against the specific-first order.
 Over own, cold and pooled loops and both salts, the kept setup (rivals; preferences only on pooled libraries) totals 1289 against
-the baseline's 1302: own and pooled gain, and salt 1's cold loops lose 25 (447 to 472), which stays open.
+the baseline's 1302: own and pooled gain, and salt 1's cold loops lose 25 (447 to 472).
+
+**The cold loss is a transfer loss, not the orientation.** Most of it is cmp3d phase 3 (56 to 69), whose second batch goes from
+6 to 20 after the first batch's mine; every new straggler is an `lt` law. Serving that batch under the first mine's rules: the
+base set gives 6, and with only the rival orientation swapped in still 6; the rivals run's set gives 20, and with its winner
+swapped back 22. What differs is the rest of the set. The base mine chose the general `lt(x, sub(y, z)) -> lt(x, add(sub(x, y),
+z))` (+11 in-sample; without it the base set gives 24). In the rivals run the rival's larger gain (+14 against +10) fixed those
+laws first, and more specific `lt` rules finished the batch. Adding the general rule to the rivals set gives 17, not 6, since the
+specific rules fire first. So the greedy in-sample gain picks between rule sets that fix the mined batch equally, and only one
+of them transfers. This is the open "a gain that credits transfer" item, not something specific to rivals; salt 2's cold loops do
+not lose (451 to 450).
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in

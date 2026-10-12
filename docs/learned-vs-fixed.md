@@ -25,5 +25,6 @@ Columns: *learned in the run*: changes from data while the loop runs. *Learned o
 ## Moving parts to learned: candidates
 Ranked by measured effect; each needs the same check as the rules: mine on phase 0, score on phases 1-3, both salts.
 1. Operand order (`comm`, sorting by text): the most load-bearing fixed choice (ablated: 106 to 880); the mined rules assume it.
-2. Rule orientation's open losses: salt 1's cold loops (447 to 472) and salt 2's pooled add3 (33 to 43) with rivals.
-3. Miner gain weights (or a gain that credits transfer).
+2. Miner gain weights, or a gain that credits transfer: the greedy in-sample gain picks between rule sets that fix a batch
+   equally well, and only some transfer (salt 1's cold loss with rivals is one, tier-cycle.md, "The cold loss is a transfer loss").
+3. Rule orientation's open loss: salt 2's pooled add3 with rivals (33 to 43).
