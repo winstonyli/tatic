@@ -72,7 +72,9 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
    dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5; with cycles cut and exact counting, from 60 to 10 (also
    with growing chains cut); with rules served most specific first, from 61 to 7 (salt 2: 69 to 17). It does not change the two-variable shl, shr or lt
-   families (pre-dedup check).
+   families (pre-dedup check). Since 2026-10-11 the pooled stage has each family learn rule preferences on its phase-0 stream
+   (docs/tier-cycle.md, "Preferences learned on the pooled library"), so `pooled:mix3` holds mix3 out of the rules but not of
+   the preferences; not re-measured.
 5. **One library can be mined on a mixed stream.** With rules served most specific first (salt 1 / salt 2; u3 35 / 29 rules;
    cold / own / pooled / u3): cmp3d 163 / 33 / 36 / 42 and 167 / 40 / 43 / 47, add3 167 / 30 / 27 / 30 and 154 / 33 / 33 / 56, sbo3
    117 / 27 / 24 / 32 and 130 / 40 / 38 / 73, mix3 61 / - / 7 / 14 and 69 / - / 17 / 41. The u3 library is no longer best anywhere;

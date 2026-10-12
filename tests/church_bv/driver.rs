@@ -25,7 +25,8 @@
 //!   stream (`MINES`) -> `lib_<family>/`, summary rows in `<stage>.tsv` (family, seconds, total M, rules, exhausted).
 //! - `own`, `cold`, `cross`, `pooled`, `mixed`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on
 //!   phases 1-3, seeded with the family's own library, nothing, each other family's library, the pooled library (cmp3d's, add3's and
-//!   sbo3's, without two sub/sub orientations add3 mines that conflict with sbo3's), or the library mined on u3. Libraries are read from `LIB/lib_<family>/rules.txt`
+//!   sbo3's, `pooled.rules`, plus the preferences the family learns on it on its phase-0 stream, `pooled_<family>/`; rows in
+//!   `pooled_prefs.tsv` as for mines), or the library mined on u3. Libraries are read from `LIB/lib_<family>/rules.txt`
 //!   (default LIB = SWEEP_OUT). One row per loop in `<stage>.tsv` (`:` becomes `_`): family, stride-phase, from_<source>, total M,
 //!   per-batch M, rules at the end, seconds, exhausted.
 
@@ -158,7 +159,7 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
         (n - k + p, n + p, x)
     };
     match &cfg.warm {
-        Some(w) if cfg.mode != "ref" => {
+        Some(w) => {
             std::fs::copy(w, &rules).unwrap_or_else(|e| panic!("WARM_RULES {}: {e}", w.display()));
         }
         _ => std::fs::write(&rules, "").unwrap(),
@@ -247,19 +248,29 @@ fn sweep() {
             continue;
         }
         let pooled = out.join("pooled.rules");
+        let pooled_for = |fam: &str| out.join(format!("pooled_{fam}")).join("rules.txt");
         if name == "pooled" {
-            // two sub/sub orientations (add3 mines them) that conflict with sbo3's
-            let drop = ["sub(x, add(y, z)) -> sub(sub(x, y), z)", "sub(sub(x, y), z) -> sub(sub(x, z), y)"];
             let mut seen = std::collections::HashSet::new();
             let mut text = String::new();
             for fam in ["cmp3d", "add3", "sbo3"] {
                 for l in std::fs::read_to_string(library(fam)).unwrap().lines() {
-                    if !(fam != "cmp3d" && drop.contains(&l)) && seen.insert(l.to_string()) {
+                    if seen.insert(l.to_string()) {
                         text += &format!("{l}\n");
                     }
                 }
             }
             std::fs::write(&pooled, text).unwrap();
+            std::fs::write(out.join("pooled_prefs.tsv"), "").unwrap();
+            // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins on its
+            // phase-0 stream: a mine with no rule rounds, only preferences (`RULEMINER_PREFS`), on the pooled library
+            for fam in fams.split(',') {
+                let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
+                let mut cfg = LoopCfg { stride, split, b, k: 4, threads: 2, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };
+                cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
+                let t0 = std::time::Instant::now();
+                let s = run_loop(&cfg);
+                append(&out.join("pooled_prefs.tsv"), &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
+            }
         }
         for fam in fams.split(',') {
             let stride = LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1;
@@ -274,7 +285,7 @@ fn sweep() {
             for src in srcs {
                 let warm = match src {
                     "none" => None,
-                    "pooled" => Some(pooled.clone()),
+                    "pooled" => Some(pooled_for(fam)),
                     s => Some(library(s)),
                 };
                 for p in 1..=3 {

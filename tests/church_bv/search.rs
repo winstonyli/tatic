@@ -958,7 +958,8 @@ pub fn rule_miner() {
     cands.retain(|(l, r)| l.show() != r.show());
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup_by_key(|(l, r)| (l.show(), r.show()));
-    // `RULEMINER_RIVALS=1` (experiment): the other right sides of each left side, rescored against a round's winner
+    // rivals: the other right sides of each left side; a round's winner gives way to a rival that gains more on the same laws
+    // (docs/tier-cycle.md, "Preferences and rival orientations in the miner")
     let mut rivals: std::collections::HashMap<String, Vec<(Term, Term)>> = Default::default();
     for (l, r) in &cands {
         rivals.entry(l.show()).or_default().push((l.clone(), r.clone()));
@@ -1170,14 +1171,12 @@ pub fn rule_miner() {
         let (mut g, mut f, mut sz) = results[i].take().unwrap();
         let mut rule = provable[i].clone();
         // the winner's left side with another right side: same affected laws, proved only if it would win
-        if env_or("RULEMINER_RIVALS", 0u8) != 0 {
-            let mut memo = RewriteMemo::new(kv);
-            for rv in rivals.get(&rule.0.show()).into_iter().flatten() {
-                let (rg, rf, rsz) = score_rule(rv, &affected[i], &mut memo);
-                if rg > g && prove_any(rv) {
-                    println!("RULEMINER rival (+{rg} over +{g}): {} -> {} replaces {}", rv.0.show(), rv.1.show(), rule.1.show());
-                    (g, f, sz, rule) = (rg, rf, rsz, rv.clone());
-                }
+        let mut memo = RewriteMemo::new(kv);
+        for rv in rivals.get(&rule.0.show()).into_iter().flatten() {
+            let (rg, rf, rsz) = score_rule(rv, &affected[i], &mut memo);
+            if rg > g && prove_any(rv) {
+                println!("RULEMINER rival (+{rg} over +{g}): {} -> {} replaces {}", rv.0.show(), rv.1.show(), rule.1.show());
+                (g, f, sz, rule) = (rg, rf, rsz, rv.clone());
             }
         }
         println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
@@ -1188,9 +1187,11 @@ pub fn rule_miner() {
     }
     // learned preferences (docs/tier-cycle.md, "Rule order"): where two rules in force both rewrite a term of the scored laws, the
     // first one in order does; each round tries letting the other win, one pair at a time, and keeps the flip with the largest gain
-    // (the rule rounds' gain), until none gains. `RULEMINER_PREFS=0` skips this
+    // (the rule rounds' gain), until none gains. Only with `RULEMINER_PREFS=1`: a family's own rules rarely conflict, so the phase
+    // pays off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
+    // rival orientations in the miner")
     let mut prefs = base_prefs.clone();
-    while env_or("RULEMINER_PREFS", 1u8) != 0 {
+    while env_or("RULEMINER_PREFS", 0u8) != 0 {
         let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
         let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
         *RULE_CONFLICTS.lock().unwrap() = Some(Default::default());

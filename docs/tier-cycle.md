@@ -729,11 +729,11 @@ with every part present, so a large rise means the library relies on that part, 
 
 ### Preferences and rival orientations in the miner (2026-10-11)
 Two greedy extensions of the miner, A/B'd with `driver::sweep` (`mines own cold pooled`) at salts 1 and 2:
-- **Preferences** (`RULEMINER_PREFS`, default on): after the rounds, collect the conflicts on the scored laws and flip the pair with
-  the largest gain, rescoring after each flip, until no flip gains; the flips are written into `rules.txt` as `winner  OVER  loser`
-  lines, which serving and later mines read.
-- **Rivals** (`RULEMINER_RIVALS=1`): after a round's winner is chosen, score the other right sides of its left side on the same
-  laws; one with a larger gain replaces it, if proved.
+- **Preferences** (`RULEMINER_PREFS=1`; on during the A/B, now off by default and used only on pooled libraries, below): after
+  the rounds, collect the conflicts on the scored laws and flip the pair with the largest gain, rescoring after each flip, until
+  no flip gains; the flips are written into `rules.txt` as `winner  OVER  loser` lines, which serving and later mines read.
+- **Rivals** (a switch during the A/B, now always on): after a round's winner is chosen, score the other right sides of its left
+  side on the same laws; one with a larger gain replaces it, if proved.
 
 Total M (own, cold and pooled loops on phases 1-3; mines is the four ref mines on phase 0):
 
@@ -753,6 +753,25 @@ Rivals replace 3-4 winners per add3 mine and one per sbo3 mine, all `sub`/`add` 
 30 to 14 (salt 1) and 33 to 22 (salt 2), and salt 1's pooled loops from 87 to 75. But salt 2's pooled add3 rises from 33 to 71,
 and salt 1's cold cmp3d from 163 to 181. Pooling drops two hand-picked add3 orientations that conflict with sbo3's
 (`driver::sweep`); the rivals change add3's orientations, so the drop list no longer matches them.
+
+**Preferences learned on the pooled library (kept).** The pooled stage now keeps every library's rules (no hand-picked drop
+list) and has each family learn preferences on it: a mine on the family's phase-0 stream (its ref mine's settings) with no rule
+rounds, only the preference phase, on the pooled library; that family's pooled loops start from the result
+(`pooled_<family>/rules.txt`). It takes 12-68 s per family and learns 0-5 preferences. Pooled loops, total M on phases 1-3,
+from the libraries mined with rivals:
+
+| pooled library | salt 1 | salt 2 |
+|---|---|---|
+| baseline (no rivals, drop list) | 87 | 114 (add3 33) |
+| rivals, drop list | 75 | 158 (add3 71) |
+| rivals, everything pooled | 67 | 165 (add3 79) |
+| rivals, everything pooled, learned preferences | **60** | 129 (add3 43) |
+
+The learned preferences win back most of salt 2's loss, but salt 2's add3 stays 10 above the baseline. The top preference at
+salt 2 (+7000 on add3's phase 0) lets add3's own `sub(xor(x, -1), y) -> sub(-1, add(x, y))` beat `sub(x, sub(y, z)) ->
+add(sub(x, y), z)` (in all three libraries) on terms both match, against the specific-first order.
+Over own, cold and pooled loops and both salts, the kept setup (rivals; preferences only on pooled libraries) totals 1289 against
+the baseline's 1302: own and pooled gain, and salt 1's cold loops lose 25 (447 to 472), which stays open.
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
