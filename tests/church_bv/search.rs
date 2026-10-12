@@ -1028,7 +1028,7 @@ pub fn rule_miner() {
     // `prefs`: the rule preferences in force (`set_rule_prefs`). `base_now`: the base rules in force, all of them until the
     // preference phase drops some
     let base_now = std::sync::Mutex::new(base.clone());
-    let score_laws =|extra: &[(Term, Term)], prefs: &[(String, String)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
+    let score_laws = |extra: &[(Term, Term)], prefs: &[(String, String)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
@@ -1291,7 +1291,28 @@ pub fn rule_miner() {
     // rule rounds' gain), until none gains. Only with `RULEMINER_PREFS=1`: a family's own rules rarely conflict, so the phase pays
     // off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
     // rival orientations in the miner")
-    let units = if env_or("RULEMINER_PREFS", 0u8) != 0 { drop_units(&library_sections(&base_text)) } else { vec![] };
+    // two rules meet when a critical pair of theirs does not join: rewritten under the whole pooled base (and its preferences),
+    // its two sides reach different normal forms
+    let joins = |a: &Term, b: &Term| -> bool {
+        set_extra_rules(base.clone());
+        set_rule_prefs(base_prefs.clone());
+        let k = a.max_var().max(b.max_var()) + 1;
+        let ops = ops_for(n);
+        let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
+        let side = |t: &Term| {
+            RULE_BUDGET.with(|c| c.set(cfg.steps as i64));
+            rewrite(t, n, &ops, &goods).0.show()
+        };
+        let same = side(a) == side(b);
+        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+        same
+    };
+    let meet = |r: &(Term, Term), x: &(Term, Term)| critical_pairs(r, x).iter().any(|(a, b)| !joins(a, b));
+    let units = if env_or("RULEMINER_PREFS", 0u8) != 0 { drop_units(&library_sections(&base_text), &meet) } else { vec![] };
+    for (u, rules) in units.iter().enumerate() {
+        println!("RULEMINER drop unit {u}: {}", rules.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect::<Vec<_>>().join("; "));
+    }
     let mut dropped: Vec<usize> = vec![];
     let set_base = |dropped: &[usize]| {
         *base_now.lock().unwrap() = base.iter().filter(|r| !dropped.iter().any(|&u| units[u].contains(r))).cloned().collect();

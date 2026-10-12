@@ -885,7 +885,7 @@ Options for the drop mechanism surveyed after this (2026-10-12; only (a) is buil
 |---|---|---|---|
 | a | Evidence floor: a drop must gain >= 2000 (kept, above) | the one-law drop at salt 1 | a hand-set threshold that separates these runs' gains, not a principled one |
 | b | Held-out gain for drops: split the phase-0 laws in halves and require a gain on both | the same overfit with no threshold (a one-law gain is 0 on one half) | tried, negative (below) |
-| c | Joinability units (Knuth-Bendix): only B's rules whose critical pairs with A's rules do not join under the union | a finer unit than root overlap; for add3 perhaps only the four chain rules (28 by hand vs 32) | the biggest change: critical pairs from `unify`, both sides normalized by the rewriter; most principled; untested |
+| c | Joinability units (Knuth-Bendix): only B's rules whose critical pairs with A's rules do not join under the union | a finer unit than root overlap; for add3 perhaps only the four chain rules (28 by hand vs 32) | tried, kept (below); the units came out larger, not finer |
 | d | Unit preference instead of drop: put all of B's unit under A's rules at once | keeps B's rules where A's do not apply | likely fails: the four chain rules alone cost add3 32 to 87 on terms add3's rules do not match; cheap to falsify by serving |
 | e | Re-mine after drops (`rounds > 0` in the pooled preference mine) | recovers coverage a drop removed | each pooled preference mine becomes a full mine; treats the symptom, not the overfit |
 
@@ -897,6 +897,26 @@ and odd index, guard laws in both), in place of the floor. Pooled loops 60 and 1
 unchanged (sbo3's one-law drop is 0 on one half; cmp3d now drops a 5-rule unit for +1083, both halves positive through size, at
 no cost). At salt 2 cmp3d's +3483 drop has -715 on one half and is refused, and its pooled loops go 37 to 40: a drop that
 transfers can still lose on half the phase-0 laws, so the halves are too strict.
+
+*Full sweeps with drop units (root units, floor).* Every mines, own and cold row at both salts and salt 1's pooled rows match the
+sweeps before drops; salt 2's pooled stage 129 to 103. Times not comparable (CPU at start 21-24% against 13-14%).
+
+*Joinability units (kept).* Two rules meet when one of their critical pairs (`rewrite::critical_pairs`: every position of either
+left side where the other's unifies, at the root or inside, both ways) does not join: rewritten under the whole pooled base and its
+preferences, its two sides reach different normal forms. A unit is B's rules (not also A's) that meet a rule of A's; the floor
+stays. Pooled loops, against root units:
+
+| pooled loops M | salt 1 | salt 2 |
+|---|---|---|
+| root units, floor | 60 (cmp3d 33, add3 13, sbo3 14) | 103 (37, 22, 44) |
+| joinability units, floor | 58 (31, 13, 14) | 99 (37, 22, 40) |
+
+Salt 2's sbo3 reaches its own library's 40, so at salt 2 every family is at or below its own library (cmp3d 37 vs 40, add3 22 vs
+22). The units are larger, not finer: 7 to 25 rules (salt 1) and 12 to 17 (salt 2) against root units' 1 to 12, since inner
+overlaps count and the rewriter's built-in steps do not join every root pair; what makes them better is that they hold the
+rules that actually split normal forms. Cost: building the units takes ~20 s of the first preference round in each family's
+mine (critical pairs rewritten one by one); a pooled stage went from ~120 to ~210 s. The units depend only on the pooled library,
+so the driver could build them once instead of per family; not done. Untested: critical pairs at the root only (smaller units).
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in

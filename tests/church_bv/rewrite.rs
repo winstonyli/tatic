@@ -748,22 +748,70 @@ pub fn library_sections(text: &str) -> Vec<(String, Vec<(Term, Term)>)> {
     out
 }
 
-/// The units a pooled library's rules can be dropped in: for each two libraries A and B, B's rules (not also A's) whose left side
-/// overlaps a rule of A's at the root (`rule_overlaps`). Where two families orient rules into different normal forms, those are
-/// the rules that meet (docs/tier-cycle.md, "Salt 2's pooled add3 loss"); a single rule or a whole library is the wrong size.
-pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)]) -> Vec<Vec<(Term, Term)>> {
+/// The critical pairs of two rules: for each non-variable position of either left side where the other's (variables renamed
+/// apart) unifies, the two results of rewriting that most general instance once by each rule. Variables are renumbered from 0 in
+/// order of appearance.
+pub fn critical_pairs(r1: &(Term, Term), r2: &(Term, Term)) -> Vec<(Term, Term)> {
+    fn shift(t: &Term, k: usize) -> Term {
+        match t {
+            Term::V(i) => Term::V(i + k),
+            Term::Op(o, a, b) => Term::Op(*o, Box::new(shift(a, k)), Box::new(shift(b, k))),
+            _ => t.clone(),
+        }
+    }
+    // `t` with one non-variable position unified with `l` and replaced by `r`, and the unifier
+    fn at(t: &Term, l: &Term, r: &Term, nv: usize) -> Vec<(Vec<Option<Term>>, Term)> {
+        let mut out = vec![];
+        if let Term::Op(o, a, b) = t {
+            let mut s = vec![None; nv];
+            if unify(t, l, &mut s) {
+                out.push((s, r.clone()));
+            }
+            out.extend(at(a, l, r, nv).into_iter().map(|(s, a2)| (s, Term::Op(*o, Box::new(a2), b.clone()))));
+            out.extend(at(b, l, r, nv).into_iter().map(|(s, b2)| (s, Term::Op(*o, a.clone(), Box::new(b2)))));
+        }
+        out
+    }
+    fn apply(t: &Term, s: &[Option<Term>]) -> Term {
+        match t {
+            Term::V(i) => s[*i].as_ref().map_or_else(|| t.clone(), |b| apply(b, s)),
+            Term::Op(o, a, b) => Term::Op(*o, Box::new(apply(a, s)), Box::new(apply(b, s))),
+            _ => t.clone(),
+        }
+    }
+    fn renumber(t: &Term, seen: &mut Vec<usize>) -> Term {
+        match t {
+            Term::V(i) => Term::V(seen.iter().position(|j| j == i).unwrap_or_else(|| {
+                seen.push(*i);
+                seen.len() - 1
+            })),
+            Term::Op(o, a, b) => Term::Op(*o, Box::new(renumber(a, seen)), Box::new(renumber(b, seen))),
+            _ => t.clone(),
+        }
+    }
+    let mut out = vec![];
+    for (p, q) in [(r1, r2), (r2, r1)] {
+        let k = p.0.max_var().max(p.1.max_var()) + 1;
+        let (lq, rq) = (shift(&q.0, k), shift(&q.1, k));
+        let nv = k + lq.max_var().max(rq.max_var()) + 1;
+        for (s, inner) in at(&p.0, &lq, &rq, nv) {
+            let mut seen = vec![];
+            let (x, y) = (renumber(&apply(&p.1, &s), &mut seen), renumber(&apply(&inner, &s), &mut seen));
+            out.push((x, y));
+        }
+    }
+    out
+}
+
+/// The units a pooled library's rules can be dropped in: for each two libraries A and B, B's rules (not also A's) that `meet` a
+/// rule of A's (the miner: a critical pair that does not join). Where two families orient rules into different normal forms,
+/// those are the rules that meet (docs/tier-cycle.md, "Salt 2's pooled add3 loss", "Drop units"); a single rule or a whole
+/// library is the wrong size.
+pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)], meet: &dyn Fn(&(Term, Term), &(Term, Term)) -> bool) -> Vec<Vec<(Term, Term)>> {
     let mut units: Vec<Vec<(Term, Term)>> = vec![];
     for (a, (_, ra)) in sections.iter().enumerate() {
         for (_, rb) in sections.iter().enumerate().filter(|&(b, _)| b != a).map(|(_, s)| s) {
-            let unit: Vec<(Term, Term)> = rb
-                .iter()
-                .filter(|r| !ra.contains(r))
-                .filter(|r| {
-                    let both: Vec<(Term, Term)> = [(*r).clone()].into_iter().chain(ra.iter().cloned()).collect();
-                    rule_overlaps(&both).iter().any(|&(i, j, root)| root && (i == 0) != (j == 0))
-                })
-                .cloned()
-                .collect();
+            let unit: Vec<(Term, Term)> = rb.iter().filter(|r| !ra.contains(r) && ra.iter().any(|x| meet(r, x))).cloned().collect();
             if !unit.is_empty() && !units.contains(&unit) {
                 units.push(unit);
             }
@@ -773,17 +821,29 @@ pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)]) -> Vec<Vec<(Term, Te
 }
 
 #[test]
-fn drop_units_are_the_rules_meeting_another_library_at_the_root() {
+fn drop_units_are_the_rules_meeting_another_library() {
     let text = "# library a\nsub(sub(x, y), z) -> sub(x, add(y, z))\nor(x, x) -> x\n# library b\nsub(sub(x, y), z) -> sub(sub(x, z), y)\nsub(x, sub(y, z)) -> add(sub(x, y), z)\nor(x, x) -> x\nand(x, 0) -> 0\nsub(x, 0) -> x  OVER  or(x, x) -> x\n";
     let s = library_sections(text);
     assert_eq!(s.iter().map(|s| (s.0.as_str(), s.1.len())).collect::<Vec<_>>(), [("a", 2), ("b", 4)]);
     assert_eq!(parse_rules(text).len(), 5, "a rule two libraries share is one rule");
-    let u = drop_units(&s);
+    // here two rules meet when they overlap at all (the miner asks for a critical pair that does not join)
+    let u = drop_units(&s, &|r, a| !critical_pairs(r, a).is_empty());
     let shown = |u: &[(Term, Term)]| u.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect::<Vec<_>>();
     // both of b's sub rules unify with a's sub(sub(x, y), z) at the root; the shared or rule and b's and rule meet nothing of a's
     assert_eq!(shown(&u[0]), ["sub(sub(x, y), z) -> sub(sub(x, z), y)", "sub(x, sub(y, z)) -> add(sub(x, y), z)"]);
     assert_eq!(shown(&u[1]), ["sub(sub(x, y), z) -> sub(x, add(y, z))"]);
     assert_eq!(u.len(), 2);
+}
+
+#[test]
+fn critical_pairs_of_two_orientations() {
+    let r = parse_rules("sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(sub(x, y), z) -> sub(sub(x, z), y)\nor(x, x) -> x\n");
+    let shown: Vec<String> = critical_pairs(&r[0], &r[1]).iter().map(|(a, b)| format!("{} | {}", a.show(), b.show())).collect();
+    // at the root, both ways; and each left side's inner sub(x, y) under the other's
+    assert!(shown.contains(&"sub(x, add(y, z)) | sub(sub(x, z), y)".to_string()), "{shown:?}");
+    assert!(shown.contains(&"sub(sub(x, y), z) | sub(x, add(z, y))".to_string()), "{shown:?}");
+    assert_eq!(shown.len(), 4, "{shown:?}");
+    assert!(critical_pairs(&r[0], &r[2]).is_empty());
 }
 
 /// A `Term` from its `show` syntax: `0`, `-1`, a variable name, or `op(a, b)`.
