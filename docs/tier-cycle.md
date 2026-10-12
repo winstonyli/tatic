@@ -922,6 +922,9 @@ the mines through `RULEMINER_UNITS`): same rows at both salts, pooled stage 212 
 *Critical pairs at the root only (negative, removed).* Units of 1 to 11 rules instead of 7 to 25; pooled loops 60 and 105 against
 58 and 99 (salt 1 cmp3d 31 to 33, salt 2 sbo3 40 to 46). The pairs inside a left side matter.
 
+*The floor is still needed with joinability units.* Without it, pooled loops 71 and 99 against 58 and 99: salt 1's sbo3 again
+drops a unit for +1000 (one phase-0 law) and goes 14 to 27; every other drop gains 3215 or more and is the same either way.
+
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
 [learned-vs-fixed.md](learned-vs-fixed.md) (surveyed 2026-10-11, updated as parts move).
