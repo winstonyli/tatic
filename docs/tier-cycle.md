@@ -794,12 +794,26 @@ round 2, the general rule never led a later round, and specific `lt` rules took 
 rule to the rivals set gives 17, not 6, since the specific rules fire first. The rivals set is worse on the mined batch too, not
 only on the next one: its mine covers 38 of the 43 stragglers against the base mine's 42, and serving the mined batch gives M 5
 against 1 (14 with the general rule added). So the larger one-round gain led to a worse finished set: greedy myopia, not
-overfitting. Salt 2's cold loops do not lose (451 to 450).
+overfitting. Salt 2's cold loops do not lose (451 to 450). Lookahead (below) fixes it.
 
 *Held-out scoring (negative, reverted).* Rank each round's candidates by the smaller of their gains on the even- and odd-indexed
 stragglers (guard laws in both), then by the full gain. On this loop it changes nothing (69 both ways): most gains are +1, so the
 smaller half is 0 for nearly every candidate and the ranking falls back to the full gain; it only swapped the order of the first
 two `sub` rules. It targets overfitting, which this loss is not.
+
+**Lookahead on rival swaps (kept).** When a rival would replace a round's winner, the mine finishes the rest of its rounds both
+ways (greedily, rivals taken, no further lookahead) and keeps the choice whose finished set has the larger value (the gain's
+measure as a total; ties to the rival). On the loop above it keeps the winner and reproduces the base run (56; 42 of 43 covered).
+Sweeps (`mines own cold pooled`), total M:
+
+| | mines s1 | own s1 | cold s1 | pooled s1 | mines s2 | own s2 | cold s2 | pooled s2 |
+|---|---|---|---|---|---|---|---|---|
+| rivals | 23 | 74 | 472 | 60 | 21 | 102 | 450 | 129 |
+| rivals + lookahead | 23 | 74 | **451** | 60 | 21 | 102 | 450 | 129 |
+
+It overrode 6 of 33 swaps, all in cold loops' mines (cmp3d, add3, sbo3); the ref mines' swaps all held, so own and pooled are
+unchanged. All loops now total 1266, against 1302 without rivals. Cost: ref mines 1.8-3.5x slower where swaps occur (add3 42 to
+102 s and 49 to 173 s), sweeps 27-29% longer (883 to 1120 s, 988 to 1272 s; two sweeps at a time).
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
