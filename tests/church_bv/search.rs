@@ -1038,7 +1038,8 @@ pub fn rule_miner() {
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
-        SCORE_ONLY.with(|s| s.set(cfg.fast));
+        // counting only under `RULEMINER_FAST`, or when the caller asked for it (rivals, below)
+        let caller = SCORE_ONLY.with(|s| s.replace(cfg.fast || s.get()));
         let out = which
             .iter()
             .map(|&si| {
@@ -1064,7 +1065,7 @@ pub fn rule_miner() {
                 (fixed, size, trace)
             })
             .collect();
-        SCORE_ONLY.with(|s| s.set(false));
+        SCORE_ONLY.with(|s| s.set(caller));
         let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
@@ -1207,10 +1208,15 @@ pub fn rule_miner() {
         let Some(i) = winner else { return vec![] };
         let g = results[i].as_ref().unwrap().0;
         // the winner's left side with another right side: same affected laws, proved only if it would win
+        // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`; the rewritten terms do not
+        // depend on the proofs): building an unprovable rival's proof as it fired panicked (`sub(x, shl1(x, 0)) -> sub(shr1(0,
+        // 0), x)` once the promoted rules are out)
         let mut memo = RewriteMemo::new(kv);
         let mut rival: Option<((Term, Term), i64)> = None;
         for rv in rivals.get(&provable[i].0.show()).into_iter().flatten() {
+            let fast = SCORE_ONLY.with(|s| s.replace(true));
             let rg = score_rule(rv, &affected[i], &mut memo).0;
+            SCORE_ONLY.with(|s| s.set(fast));
             if rg > rival.as_ref().map_or(g, |r| r.1) && prove_any(rv) {
                 rival = Some((rv.clone(), rg));
             }

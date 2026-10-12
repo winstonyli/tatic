@@ -717,7 +717,7 @@ M over cmp3d, add3 and sbo3, with the salt-1 pooled library and with no library:
 | `zero`, `not`, `chain`, `fold`; in `prove_eq`: `eq_pos`, `eq_cong`, `eq_bitcong`, `shrmask`, `generalize` | 106 | 828 |
 | `eq_truth` (truth table over atoms) | 110 | 832 |
 | `collapse` | 185 | |
-| `promoted` (the 36 promoted rules) | 234 | |
+| `promoted` (the 35 promoted rules) | 234 | |
 | the 21 built-in `rules()` | 257 | |
 | `tree` | 318 | |
 | `assoc` | 373 | |
@@ -957,7 +957,7 @@ reproduced salt 1's HEAD rows exactly. Total M (salt 1 / salt 2):
 The order matters (own loops up to 1.8x), and the current one wins 13 of the 16 pairwise comparisons (each stage and salt against each other order); the exceptions are size first's mines and
 reversed salt 2 pooled. Per family the picture is a little more mixed (size first: salt 1 pooled sbo3 11 against 14, salt 2 own
 sbo3 39 against 40), but no other order wins a family on both salts. Without the built-in comm the miner does not mine it back
-usefully (cold loops 451 to 799, 450 to 798), though each library holds one or more `add` swap rules. The 36 promoted rules were
+usefully (cold loops 451 to 799, 450 to 798), though each library holds one or more `add` swap rules. The 35 promoted rules were
 mined under the `show()` order, which biases the test toward it. Without them (`ABLATE=promoted`, same three orders, the probe's
 build), the ranking turns over:
 
@@ -990,6 +990,13 @@ removal helps in-sample, even below the floor, and backward elimination has noth
 above ("The cold loss is a greedy path loss") is a path the greedy never took, not a rule it should not have kept. Preferences in
 every mine against HEAD: own 74 to 72 (salt 1), cold 451/450 to 450/452, pooled 58/99 to 56/98; mine times not comparable (the
 runs shared the machine with other sweeps).
+
+### Rivals scored by counting only (fix, 2026-10-12)
+With the promoted rules out (`ABLATE=promoted`), `rule_miner` on shl panicked ("rule mined is not provable") on the rival
+`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)`: rivals are scored before they are proved, and scoring built each firing rule's proof,
+which `add_tree_law` cannot do with `shr1`. Rivals are now scored with `SCORE_ONLY` (counting only; the rewritten terms do not
+depend on the proofs), and `score_laws` keeps a caller's `SCORE_ONLY` instead of resetting it. Full sweeps reproduce HEAD's mines,
+own, cold and pooled rows on both salts (23/74/451/58, 21/102/450/99).
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
