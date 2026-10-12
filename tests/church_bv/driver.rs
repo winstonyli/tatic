@@ -25,7 +25,7 @@
 //!   stream (`MINES`) -> `lib_<family>/`, summary rows in `<stage>.tsv` (family, seconds, total M, rules, exhausted).
 //! - `own`, `cold`, `cross`, `pooled`, `mixed`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on
 //!   phases 1-3, seeded with the family's own library, nothing, each other family's library, the pooled library (cmp3d's, add3's and
-//!   sbo3's, `pooled.rules`, plus the preferences the family learns on it on its phase-0 stream, `pooled_<family>/`; rows in
+//!   sbo3's, `pooled.rules`, plus the preferences and rule drops the family learns on it on its phase-0 stream, `pooled_<family>/`; rows in
 //!   `pooled_prefs.tsv` as for mines), or the library mined on u3. Libraries are read from `LIB/lib_<family>/rules.txt`
 //!   (default LIB = SWEEP_OUT). One row per loop in `<stage>.tsv` (`:` becomes `_`): family, stride-phase, from_<source>, total M,
 //!   per-batch M, rules at the end, seconds, exhausted.
@@ -138,8 +138,14 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
         ]);
         assert!(child("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
         // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
-        let chosen: String = std::fs::read_to_string(&log)
-            .unwrap()
+        let text = std::fs::read_to_string(&log).unwrap();
+        // the base rules a preference phase dropped leave the file
+        let dropped: std::collections::HashSet<&str> = text.lines().filter_map(|l| l.strip_prefix("RULEMINER drop (")).filter_map(|l| l.split_once("): ")).map(|(_, r)| r.trim()).collect();
+        if !dropped.is_empty() {
+            let kept: String = std::fs::read_to_string(&rules).unwrap().lines().filter(|l| !dropped.contains(l.trim())).map(|l| format!("{l}\n")).collect();
+            std::fs::write(&rules, kept).unwrap();
+        }
+        let chosen: String = text
             .lines()
             .filter(|l| (l.contains("RULEMINER chosen") || l.contains("RULEMINER prefer")) && l.contains(" -> "))
             .map(|l| format!("{}\n", l.split_once("): ").map_or(l, |(_, r)| r)))
@@ -250,19 +256,13 @@ fn sweep() {
         let pooled = out.join("pooled.rules");
         let pooled_for = |fam: &str| out.join(format!("pooled_{fam}")).join("rules.txt");
         if name == "pooled" {
-            let mut seen = std::collections::HashSet::new();
-            let mut text = String::new();
-            for fam in ["cmp3d", "add3", "sbo3"] {
-                for l in std::fs::read_to_string(library(fam)).unwrap().lines() {
-                    if seen.insert(l.to_string()) {
-                        text += &format!("{l}\n");
-                    }
-                }
-            }
+            // a section per library (`library_sections`; `parse_rules` reads a rule two libraries share once)
+            let text: String = ["cmp3d", "add3", "sbo3"].iter().map(|fam| format!("# library {fam}\n{}\n", std::fs::read_to_string(library(fam)).unwrap().trim_end())).collect();
             std::fs::write(&pooled, text).unwrap();
             std::fs::write(out.join("pooled_prefs.tsv"), "").unwrap();
-            // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins on its
-            // phase-0 stream: a mine with no rule rounds, only preferences (`RULEMINER_PREFS`), on the pooled library
+            // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins, and which
+            // rules where two libraries' normal forms meet to drop (`drop_units`), on its phase-0 stream: a mine with no rule
+            // rounds, only preferences (`RULEMINER_PREFS`), on the pooled library
             for fam in fams.split(',') {
                 let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
                 let mut cfg = LoopCfg { stride, split, b, k: 4, threads: 2, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };

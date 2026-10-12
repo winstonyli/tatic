@@ -5,7 +5,7 @@ Which parts of the reasoning pipeline (rewriter, prover, miner, loop) are learne
 
 **Keep this current.** Update the row when a part becomes learned, when an experiment measures a fixed part (put the number and a
 pointer in "Evidence"), and when a part is added or removed. Experiments' details stay in docs/tier-cycle.md; this page holds the
-verdicts. Last updated 2026-10-11.
+verdicts. Last updated 2026-10-12.
 
 Columns: *learned in the run*: changes from data while the loop runs. *Learned once*: came from data, then frozen in code.
 *Fixed*: written by hand, possibly tuned by experiments (tuning is not learning).
@@ -19,7 +19,7 @@ Columns: *learned in the run*: changes from data while the loop runs. *Learned o
 | Rewrite strategy | | | children first; the steps tried at a node and their order (`rule_step`, `tree_step`, collapse, operand sort by text); built-in `add` steps (constant-carry chains, assoc, comm, with hand-proved lemmas); cycle cut; 200-step budget | outermost first: 106 to 310 ("Rule order"); ablated, pooled library 106: comm 880, assoc 373, tree 318, built-in rules 257, promoted 234, collapse 185; the `x + 0`, `x + ~x` and constant-folding steps were redundant and are deleted; `chain` alone changes nothing but covers for the deleted `x + 0` step (106 to 123 without both) ("Ablating the fixed rewriter and prover parts") |
 | Prover after rewriting (`prove_eq`) | | | a fixed cascade: truth table over atoms, per-position prover, `shr_mask_eq`, then the whole-term machine (counted in M); `CARRY_CAP` = 10 | ablated: only the truth table matters on the three-variable families (106 to 110; 828 to 832 with no library); the per-position prover and `shr_mask_eq` are needed for `shr1` laws (unit tests); congruences and generalization changed nothing and are deleted ("Ablating the fixed rewriter and prover parts") |
 | Miner | | | candidate shapes (pool terms up to 5 nodes; cross-side pairs); at most 400 candidates; gain = 1000 per fixed law + guard weight + size cut; greedy, one rule per round; stops when nothing gains | held-out scoring (min of the gains on two halves of the stragglers) changed nothing (tier-cycle.md); the 8-round cap dropped general rules that transfer (removed); a general rule the gain values at 0 cost add3 108 vs 65 when seeded from cmp3d's library (tier-cycle.md) |
-| Loop and driver | | | batch size, strides, phases, per-family mine settings (`MINES`), the law pools; pooling concatenates libraries | pooling's hand-picked list of dropped orientations replaced by learned preferences (above) |
+| Loop and driver | which pooled rules a family drops (`drop_units`: a library's rules meeting another's at the root), learned per family with the preferences | | batch size, strides, phases, per-family mine settings (`MINES`), the law pools; pooling concatenates libraries; the drop unit's shape and its 2000 gain floor | pooling's hand-picked list of dropped orientations replaced by learned preferences (above); drop units: pooled loops 60 to 60 (salt 1), 129 to 103 (salt 2), whole-library drops were net zero (tier-cycle.md, "Drop units") |
 | Conjecture proposers | the n-gram proposer, trained on law text | | mutation, pool and stream proposers; the difficulty band | |
 
 ## Moving parts to learned: candidates
@@ -29,7 +29,7 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    stragglers covered against 42; tier-cycle.md, "The cold loss is a greedy path loss"). Held-out scoring did not help, since
    the loss is not overfitting; finishing the mine both ways at rival swaps fixed that loss. Extending the lookahead to each
    round's runner-up lost (all loops 1266 to 1348; tier-cycle.md, "Lookahead over runners-up too").
-3. Rule orientation's open loss: salt 2's pooled add3 with rivals (33 to 43). Families orient the `sub`/`add` chain rules into
-   different normal forms, and pooling mixes them; four of sbo3's chain rules cost add3 32 to 87 together, little alone
-   (tier-cycle.md, "Salt 2's pooled add3 loss"). Pooling would need to choose orientation sets jointly, not one pair at a time; dropping
-   whole libraries was net zero (salt 1 60 to 73, salt 2 129 to 116), too coarse.
+3. Pooling's drop units: where two libraries' normal forms meet (B's rules overlapping A's at the root), learned per family as
+   preference-phase moves; pooled loops 60/129 to 60/103, salt 2's add3 43 to 22 (tier-cycle.md, "Drop units"). A drop needs a
+   hand-set gain floor (2000) against one-law overfit; held-out gain could replace it, and joinability (critical pairs) would be
+   a finer unit (options a-e there).

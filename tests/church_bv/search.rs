@@ -1025,13 +1025,15 @@ pub fn rule_miner() {
     // than under the built-in rules alone, the size of its normalized terms (stragglers only) and, with `record`, every term
     // `rule_step` was asked about. A candidate whose left side matches none of those terms (rules are tried in order, the candidate
     // last) cannot change a law's rewriting, so its laws keep the result under the rules chosen so far.
-    // `prefs`: the rule preferences in force (`set_rule_prefs`)
-    let score_laws = |extra: &[(Term, Term)], prefs: &[(String, String)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
+    // `prefs`: the rule preferences in force (`set_rule_prefs`). `base_now`: the base rules in force, all of them until the
+    // preference phase drops some
+    let base_now = std::sync::Mutex::new(base.clone());
+    let score_laws =|extra: &[(Term, Term)], prefs: &[(String, String)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
-        set_extra_rules(base.iter().chain(extra).cloned().collect());
+        set_extra_rules(base_now.lock().unwrap().iter().chain(extra).cloned().collect());
         set_rule_prefs(prefs.to_vec());
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
         let steps = cfg.steps as i64;
@@ -1284,10 +1286,16 @@ pub fn rule_miner() {
     let Chosen { chosen, covered, .. } = s;
     let (scorings, skipped) = (scorings.get(), skipped.get());
     // learned preferences (docs/tier-cycle.md, "Rule order"): where two rules in force both rewrite a term of the scored laws, the
-    // first one in order does; each round tries letting the other win, one pair at a time, and keeps the flip with the largest gain
-    // (the rule rounds' gain), until none gains. Only with `RULEMINER_PREFS=1`: a family's own rules rarely conflict, so the phase
-    // pays off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
+    // first one in order does; each round tries letting the other win, one pair at a time, and dropping each unit of a pooled base
+    // (`drop_units`: the rules where one library's normal forms meet another's), and keeps the move with the largest gain (the
+    // rule rounds' gain), until none gains. Only with `RULEMINER_PREFS=1`: a family's own rules rarely conflict, so the phase pays
+    // off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
     // rival orientations in the miner")
+    let units = if env_or("RULEMINER_PREFS", 0u8) != 0 { drop_units(&library_sections(&base_text)) } else { vec![] };
+    let mut dropped: Vec<usize> = vec![];
+    let set_base = |dropped: &[usize]| {
+        *base_now.lock().unwrap() = base.iter().filter(|r| !dropped.iter().any(|&u| units[u].contains(r))).cloned().collect();
+    };
     let mut prefs = base_prefs.clone();
     while env_or("RULEMINER_PREFS", 0u8) != 0 {
         *RULE_CONFLICTS.lock().unwrap() = Some(Default::default());
@@ -1295,21 +1303,35 @@ pub fn rule_miner() {
         let mut conflicts: Vec<(String, String)> = RULE_CONFLICTS.lock().unwrap().take().unwrap().into_keys().collect();
         conflicts.sort();
         let (f0, size0) = summarize(&now);
-        let best = conflicts
-            .iter()
-            .map(|(w, l)| {
-                let flip = (l.clone(), w.clone());
-                let with: Vec<(String, String)> = prefs.iter().filter(|p| **p != (w.clone(), l.clone())).cloned().chain([flip.clone()]).collect();
-                let (f, sz) = summarize(&score_laws(&chosen, &with, &all_laws, false, None).0);
-                ((count(&f) - count(&f0)) * 1000 + (guarded(&f) - guarded(&f0)) * guard_w + (size0 - sz), flip)
-            })
-            .filter(|(g, _)| *g > 0)
-            .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
-        phase(&format!("preference round over {} conflicts", conflicts.len()));
-        let Some((g, (w, l))) = best else { break };
-        println!("RULEMINER prefer (+{g} gain): {w}  OVER  {l}");
-        prefs.retain(|p| *p != (l.clone(), w.clone()));
-        prefs.push((w, l));
+        let gain = |prefs: &[(String, String)]| {
+            let (f, sz) = summarize(&score_laws(&chosen, prefs, &all_laws, false, None).0);
+            (count(&f) - count(&f0)) * 1000 + (guarded(&f) - guarded(&f0)) * guard_w + (size0 - sz)
+        };
+        // a flip's move key is the pair it makes (winner, loser); a drop's is its unit's index
+        let flipped = |(w, l): &(String, String)| prefs.iter().filter(|p| **p != (l.clone(), w.clone())).cloned().chain([(w.clone(), l.clone())]).collect::<Vec<_>>();
+        let mut moves: Vec<(i64, Result<(String, String), usize>)> = conflicts.iter().map(|(w, l)| (l.clone(), w.clone())).map(|f| (gain(&flipped(&f)), Ok(f))).collect();
+        for u in (0..units.len()).filter(|u| !dropped.contains(u)) {
+            set_base(&[&dropped[..], &[u]].concat());
+            moves.push((gain(&prefs), Err(u)));
+        }
+        set_base(&dropped);
+        // a drop removes many rules at once, so it needs two laws' worth of gain: on one law it overfit (salt 1's sbo3)
+        let best = moves.into_iter().filter(|(g, m)| *g > if m.is_err() { 1999 } else { 0 }).max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        phase(&format!("preference round over {} conflicts and {} drop units", conflicts.len(), units.len() - dropped.len()));
+        match best {
+            None => break,
+            Some((g, Ok((w, l)))) => {
+                println!("RULEMINER prefer (+{g} gain): {w}  OVER  {l}");
+                prefs = flipped(&(w, l));
+            }
+            Some((g, Err(u))) => {
+                for (l, r) in &units[u] {
+                    println!("RULEMINER drop (+{g} gain): {} -> {}", l.show(), r.show());
+                }
+                dropped.push(u);
+                set_base(&dropped);
+            }
+        }
     }
     println!("RULEMINER scoring reused {} of {} law evaluations", law_reuses.load(std::sync::atomic::Ordering::Relaxed), law_evals.load(std::sync::atomic::Ordering::Relaxed));
     println!("RULEMINER the gain bound skipped {skipped} of {} candidate scorings", scorings + skipped);

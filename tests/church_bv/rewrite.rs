@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum Term {
     V(usize),
     Zero,
@@ -724,9 +724,66 @@ pub const PROMOTED: &[(&str, &str)] = &[
     ("sub(-1, sub(x, -1))", "sub(shl1(-1, 0), x)"),
 ];
 
-/// The rules of a rule file: one `lhs -> rhs` per line, other lines (and preference lines, `parse_prefs`) ignored.
+/// The rules of a rule file: one `lhs -> rhs` per line, repeats once, other lines (and preference lines, `parse_prefs`) ignored.
 pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
-    text.lines().filter(|l| !l.contains("  OVER  ")).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+    let mut seen = std::collections::HashSet::new();
+    text.lines().filter(|l| !l.contains("  OVER  ") && seen.insert(l.trim())).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+}
+
+/// A pooled rules file has a section per library (a `# library <name>` line, then its rules; `driver::sweep`); a rule two
+/// libraries share is in both. The sections, in order, with their rules.
+pub fn library_sections(text: &str) -> Vec<(String, Vec<(Term, Term)>)> {
+    let (mut out, mut open): (Vec<(String, Vec<(Term, Term)>)>, bool) = (vec![], false);
+    for l in text.lines() {
+        if let Some(n) = l.strip_prefix("# library ") {
+            out.push((n.trim().to_string(), vec![]));
+            open = true;
+        } else if l.contains("  OVER  ") || (!l.trim().is_empty() && !l.contains(" -> ")) {
+            // a section holds only rule lines (and blank ones)
+            open = false;
+        } else if let Some(s) = out.last_mut().filter(|_| open) {
+            s.1.extend(parse_rules(l));
+        }
+    }
+    out
+}
+
+/// The units a pooled library's rules can be dropped in: for each two libraries A and B, B's rules (not also A's) whose left side
+/// overlaps a rule of A's at the root (`rule_overlaps`). Where two families orient rules into different normal forms, those are
+/// the rules that meet (docs/tier-cycle.md, "Salt 2's pooled add3 loss"); a single rule or a whole library is the wrong size.
+pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)]) -> Vec<Vec<(Term, Term)>> {
+    let mut units: Vec<Vec<(Term, Term)>> = vec![];
+    for (a, (_, ra)) in sections.iter().enumerate() {
+        for (_, rb) in sections.iter().enumerate().filter(|&(b, _)| b != a).map(|(_, s)| s) {
+            let unit: Vec<(Term, Term)> = rb
+                .iter()
+                .filter(|r| !ra.contains(r))
+                .filter(|r| {
+                    let both: Vec<(Term, Term)> = [(*r).clone()].into_iter().chain(ra.iter().cloned()).collect();
+                    rule_overlaps(&both).iter().any(|&(i, j, root)| root && (i == 0) != (j == 0))
+                })
+                .cloned()
+                .collect();
+            if !unit.is_empty() && !units.contains(&unit) {
+                units.push(unit);
+            }
+        }
+    }
+    units
+}
+
+#[test]
+fn drop_units_are_the_rules_meeting_another_library_at_the_root() {
+    let text = "# library a\nsub(sub(x, y), z) -> sub(x, add(y, z))\nor(x, x) -> x\n# library b\nsub(sub(x, y), z) -> sub(sub(x, z), y)\nsub(x, sub(y, z)) -> add(sub(x, y), z)\nor(x, x) -> x\nand(x, 0) -> 0\nsub(x, 0) -> x  OVER  or(x, x) -> x\n";
+    let s = library_sections(text);
+    assert_eq!(s.iter().map(|s| (s.0.as_str(), s.1.len())).collect::<Vec<_>>(), [("a", 2), ("b", 4)]);
+    assert_eq!(parse_rules(text).len(), 5, "a rule two libraries share is one rule");
+    let u = drop_units(&s);
+    let shown = |u: &[(Term, Term)]| u.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect::<Vec<_>>();
+    // both of b's sub rules unify with a's sub(sub(x, y), z) at the root; the shared or rule and b's and rule meet nothing of a's
+    assert_eq!(shown(&u[0]), ["sub(sub(x, y), z) -> sub(sub(x, z), y)", "sub(x, sub(y, z)) -> add(sub(x, y), z)"]);
+    assert_eq!(shown(&u[1]), ["sub(sub(x, y), z) -> sub(x, add(y, z))"]);
+    assert_eq!(u.len(), 2);
 }
 
 /// A `Term` from its `show` syntax: `0`, `-1`, a variable name, or `op(a, b)`.

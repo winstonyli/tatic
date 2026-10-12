@@ -854,7 +854,42 @@ also tried dropping each section whole as a move (the same gain). Pooled loops: 
 add3 dropped its own library (+14000 on phase 0; pooled add3 43 to 37, against 28 with only sbo3's four chain rules gone) and
 cmp3d dropped sbo3's. At salt 1 sbo3 dropped add3's library for +1000, one phase-0 law, and its pooled loops went from 14 to 27.
 A library is too coarse a unit: it removes rules that transfer along with the conflicting ones, on little evidence. A finer
-unit would be the rules that interact (overlap) with the conflicting ones (`rewrite::rule_overlaps`); untested.
+unit would be the rules that interact (overlap) with the conflicting ones (`rewrite::rule_overlaps`); tried next.
+
+*Drop units where two libraries' normal forms meet (kept).* Overlap groups as such are useless: all 26 rules of add3 + sbo3 lie in
+one overlap web (372 pairs), and groups over root overlaps only split by head operator (a `sub` group, an `add` group), each
+mixing both libraries' chain rules. With provenance it works: for libraries A and B, the unit is B's rules (not also A's) whose
+left side overlaps one of A's at the root (`rewrite::drop_units`; the pooled file is written in `# library` sections,
+`library_sections`). For salt 2's add3 + sbo3 that is 7 of sbo3's rules (the four chain rules among them); serving add3 without
+them gives 32 (its own library 32; without only the four, 28). The preference phase tries dropping each unit as a move, beside the
+flips; the driver takes the dropped rules out of the family's library.
+
+| pooled loops M | salt 1 | salt 2 |
+|---|---|---|
+| preferences only | 60 | 129 (cmp3d 40, add3 43, sbo3 46) |
+| + drop units | 73 (sbo3 14 to 27) | 103 (37, 22, 44) |
+| + drop units, a drop needs gain >= 2000 (kept) | 60 (same rows) | 103 |
+
+At salt 2 add3 drops exactly the 7 rules (+16000) and is back to its own 22; cmp3d (+3483) and sbo3 (+6000, 12 rules in two units)
+drop too. At salt 1 sbo3 dropped add3's `sub` chain rules for +1000 (one phase-0 law, 0 of 2 stragglers covered) and lost 13 on
+phases 1-3, the same overfit as the whole-library drop there; cmp3d dropped the same unit for +1083 at no cost. A drop removes
+many rules at once, so it now needs two laws' worth of gain; the 2000 is set by hand on these runs (salt 1's drops 1000 and 1083,
+salt 2's 3483 to 16000). Salt 1 with the floor reproduces every row, so the sectioned file changes nothing by itself. Cost: a
+preference round with 5 units takes ~20% longer at salt 1 (cmp3d 7.1 to 8.9 s over two rounds); at salt 2 the drops end the phase
+sooner (add3 6 rounds 45 s to 2 rounds 13.5 s). Remaining pooled cost against own libraries at salt 2: cmp3d 37 vs 40
+own (better), add3 22 vs 22, sbo3 44 vs 40.
+
+Options for the drop mechanism surveyed after this (2026-10-12; only (a) is built):
+
+| | Option | What it fixes | Cost / risk |
+|---|---|---|---|
+| a | Evidence floor: a drop must gain >= 2000 (kept, above) | the one-law drop at salt 1 | a hand-set threshold that separates these runs' gains, not a principled one |
+| b | Held-out gain for drops: split the phase-0 laws in halves and require a gain on both | the same overfit with no threshold (a one-law gain is 0 on one half) | held-out scoring was negative for rule rounds, but there the loss was greedy myopia, not overfitting; ~2x the drop scoring |
+| c | Joinability units (Knuth-Bendix): only B's rules whose critical pairs with A's rules do not join under the union | a finer unit than root overlap; for add3 perhaps only the four chain rules (28 by hand vs 32) | the biggest change: critical pairs from `unify`, both sides normalized by the rewriter; most principled; untested |
+| d | Unit preference instead of drop: put all of B's unit under A's rules at once | keeps B's rules where A's do not apply | likely fails: the four chain rules alone cost add3 32 to 87 on terms add3's rules do not match; cheap to falsify by serving |
+| e | Re-mine after drops (`rounds > 0` in the pooled preference mine) | recovers coverage a drop removed | each pooled preference mine becomes a full mine; treats the symptom, not the overfit |
+
+Ranking: b (removes the threshold), then c if a family still trails its own library, d only as a quick falsification.
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
