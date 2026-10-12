@@ -974,6 +974,23 @@ order varies: own loops, add3 26 / 28 best under `show()` / reversed (salt 1 / 2
 each order, is not run: PROMOTED was learned once and frozen. The switch is removed. Learning the order is no longer parked: the
 order matters by up to 1.6x with the promoted rules out (pooled 160 to 101), and the best order differs per family.
 
+Where PROMOTED came from (design spec part 2, section 60): `rule_miner` on the older mul, shl, lt and shr families (none a sweep
+family), on 2026-10-02's miner (before rivals, lookahead, preferences and the growth cut); 20 rules of the first round, then 15
+of shr's second-round 17 ("useful", a filter not written down). Their left sides are literal patterns over normal forms in the
+`show()` order, so under another order many cannot match. A fair test re-promotes under each order by one procedure (both
+rounds, every chosen rule), `show()` included as the control; not run.
+
+### Drops of the mine's own rules (negative, removed, 2026-10-12)
+Learned-vs-fixed candidate 2 (the miner's greedy search): a chosen rule that later rules make redundant, or that shadows a later
+rule, stays, since the preference phase drops only a pooled base's units. A temporary switch made each rule the mine chose a drop
+unit of its own (same move, same 2000 floor) and logged every candidate's gain; full sweeps with preferences on in every mine,
+with and without it. The two are identical on every stage (salt 1: mines 23, own 72, cold 450, pooled 56; salt 2: 21, 102, 452,
+98). Of 642 own-rule drop candidates over both salts, none gains: 6 are 0 and 636 lose. So greedy mines leave no rule whose
+removal helps in-sample, even below the floor, and backward elimination has nothing to work on; the greedy loss documented
+above ("The cold loss is a greedy path loss") is a path the greedy never took, not a rule it should not have kept. Preferences in
+every mine against HEAD: own 74 to 72 (salt 1), cold 451/450 to 450/452, pooled 58/99 to 56/98; mine times not comparable (the
+runs shared the machine with other sweeps).
+
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
 [learned-vs-fixed.md](learned-vs-fixed.md) (surveyed 2026-10-11, updated as parts move).
