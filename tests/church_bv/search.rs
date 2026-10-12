@@ -1100,9 +1100,9 @@ pub fn rule_miner() {
     let value = |s: &Chosen| count(&s.covered) * 1000 + guarded(&s.covered) * guard_w - s.size;
     let (law_evals, law_reuses) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
     let (scorings, skipped) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
-    // one round on top of `s`: the winner and its gain, and a rival orientation of it that gains more, if one is proved
-    #[allow(clippy::type_complexity)]
-    let pick = |s: &Chosen| -> Option<((Term, Term), i64, Option<((Term, Term), i64)>)> {
+    // one round on top of `s`: its alternatives with their gains, largest first: a rival orientation of the winner that gains
+    // more, if one is proved, then the winner
+    let pick = |s: &Chosen| -> Vec<((Term, Term), i64)> {
         let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
         // a candidate changes only the laws whose rewriting asked about a term its left side matches (`affected`), so its gain is at most
         // 1000 per affected uncovered straggler, `guard_w` per affected uncovered guard law and the affected stragglers' whole size
@@ -1182,7 +1182,7 @@ pub fn rule_miner() {
         scorings.set(scorings.get() + next);
         skipped.set(skipped.get() + provable.len() - next);
         phase(&format!("round over {} of {} candidates", next, provable.len()));
-        let i = winner?;
+        let Some(i) = winner else { return vec![] };
         let g = results[i].as_ref().unwrap().0;
         // the winner's left side with another right side: same affected laws, proved only if it would win
         let mut memo = RewriteMemo::new(kv);
@@ -1193,29 +1193,73 @@ pub fn rule_miner() {
                 rival = Some((rv.clone(), rg));
             }
         }
-        Some((provable[i].clone(), g, rival))
+        rival.into_iter().chain([(provable[i].clone(), g)]).collect()
     };
     // a rival's larger round gain can lead to a worse finished set (docs/tier-cycle.md, "The cold loss is a greedy path loss"), so
-    // both are finished greedily (rivals taken, no lookahead) and the better finished set's choice is kept, ties to the rival
+    // both are finished greedily (rivals taken, no lookahead) and the better finished set's choice is kept, ties to the rival.
+    // Looking ahead over runners-up too lost ("Lookahead on rival swaps")
     let then = |s: &Chosen, rule: &(Term, Term)| state(s.chosen.iter().chain([rule]).cloned().collect());
-    let finish = |mut s: Chosen, rounds: usize| -> Chosen {
-        for _ in 0..rounds {
-            let Some((rule, _, rival)) = pick(&s) else { break };
-            s = then(&s, &rival.map_or(rule, |r| r.0));
+    // a round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and alternatives' greedy paths often
+    // reach the same set in another order, so picks and finished values are kept by set; the kept alternative's path is also the
+    // next rounds' own
+    let key = |c: &[(Term, Term)]| {
+        let mut v: Vec<String> = c.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect();
+        v.sort();
+        v
+    };
+    #[allow(clippy::type_complexity)]
+    let picks: std::cell::RefCell<std::collections::HashMap<Vec<String>, Vec<((Term, Term), i64)>>> = Default::default();
+    let pick_kept = |s: &Chosen| {
+        let kk = key(&s.chosen);
+        if let Some(v) = picks.borrow().get(&kk) {
+            return v.clone();
         }
-        s
+        let v = pick(s);
+        picks.borrow_mut().insert(kk, v.clone());
+        v
+    };
+    // a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
+    let finished: std::cell::RefCell<std::collections::HashMap<Vec<String>, (i64, usize)>> = Default::default();
+    // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds
+    let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize| -> i64 {
+        let (mut path, mut left) = (vec![], rounds);
+        let (v, mut d) = loop {
+            let kk = key(&chosen);
+            if let Some(&(v, d)) = finished.borrow().get(&kk).filter(|e| e.1 <= left) {
+                break (v, d);
+            }
+            let s = state(chosen);
+            if left == 0 {
+                return value(&s); // cut by the round cap: not kept
+            }
+            let Some((rule, _)) = pick_kept(&s).into_iter().next() else {
+                let v = value(&s);
+                finished.borrow_mut().insert(kk, (v, 0));
+                break (v, 0);
+            };
+            path.push(kk);
+            chosen = s.chosen;
+            chosen.push(rule);
+            left -= 1;
+        };
+        for kk in path.into_iter().rev() {
+            d += 1;
+            finished.borrow_mut().insert(kk, (v, d));
+        }
+        v
     };
     let mut s = state(vec![]);
     for round in 0..cfg.rounds {
-        let Some((mut rule, g, rival)) = pick(&s) else { break };
-        if let Some((rv, rg)) = rival {
+        let alts = pick_kept(&s);
+        let Some(mut rule) = alts.first().map(|a| a.0.clone()) else { break };
+        if alts.len() > 1 {
             let rest = cfg.rounds - round - 1;
-            let (w, r) = (value(&finish(then(&s, &rule), rest)), value(&finish(then(&s, &rv), rest)));
-            println!("RULEMINER lookahead: finished with the rival {r}, with the winner {w}");
-            if r >= w {
-                println!("RULEMINER rival (+{rg} over +{g}): {} -> {} replaces {}", rv.0.show(), rv.1.show(), rule.1.show());
-                rule = rv;
+            let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest)).collect();
+            let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
+            for (a, ((l, r), g)) in alts.iter().enumerate() {
+                println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);
             }
+            rule = alts[best].0.clone();
         }
         let next = then(&s, &rule);
         println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&next.covered) - count(&s.covered), s.size - next.size, rule.0.show(), rule.1.show());
