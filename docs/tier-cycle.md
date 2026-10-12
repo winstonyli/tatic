@@ -643,8 +643,22 @@ README table). Ref mines reach far lower M with more rules (salt 1: sbo3 1 with 
 with 8; cmp3d 13 with 31, was 24 with 16; u3 5 with 35, was 16 with 17), and the loops seeded with a family's own or the pooled
 library roughly halve (salt 1 / 2: add3 own 30 / 33, was 60 / 46; cmp3d own 33 / 40, was 60 / 61; sbo3 own 27 / 40, was 31 / 48;
 pooled add3 27 / 33, sbo3 24 / 38, cmp3d 36 / 43, mix3 7 / 17). One regression: cmp3d's 31-rule library seeds other families
-much worse (add3 108 / 100, was 57 / 87; sbo3 91 / 105, was 58 / 82), though still far below cold. Not yet diagnosed; likely its
-specific comparison-side rules now fire ahead of general ones on add3 and sbo3 terms. cmp3d's ref mine takes 206 s (was 118 s).
+much worse (add3 108 / 100, was 57 / 87; sbo3 91 / 105, was 58 / 82), though still far below cold. cmp3d's ref mine takes 206 s
+(was 118 s).
+
+**The regression is one lost general rule.** cmp3d's new library gained 22 specific `lt` rules and lost 7, among them `add(sub(x, y),
+z) -> add(sub(z, y), x)`. Appending that one rule (salt 1 loops) takes add3 from 108 to 65 and sbo3 from 91 to 58, leaves cmp3d's
+own loop at 33, and leaves the control cells (add3 from sbo3's library 38, sbo3 from add3's 51) unchanged. As with the round cap,
+a rule worth little on its own family (here the specific `lt` rules already cover those laws) is dropped, though it is what
+transfers. The pooled library carries add3's and sbo3's general rules, so it is unaffected.
+
+**Specific first is not an arbitrary choice.** Serving the salt-1 pooled library (no mining, phases 1-3) under three orders, total
+M cmp3d / add3 / sbo3: specific first 43 / 34 / 29 (sum 106), general first (smallest left side first) 68 / 53 / 48 (169), mined
+list order 68 / 50 / 45 (163). That library was mined under specific-first, which favors it, but the older pooled library mined in
+list order also served better under it (155 vs 159). Order matters this much, so options for later (parked): learn a priority
+per rule in the miner (fits the order to the batch, and pooling reopens it), learn which rule wins at each overlapping pair
+(needs a critical-pair finder), or complete overlapping pairs Knuth-Bendix style so the order stops mattering (most work; the
+step budget and cycle cuts would bound it).
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
