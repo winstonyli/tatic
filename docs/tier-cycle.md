@@ -660,6 +660,23 @@ per rule in the miner (fits the order to the batch, and pooling reopens it), lea
 (needs a critical-pair finder), or complete overlapping pairs Knuth-Bendix style so the order stops mattering (most work; the
 step budget and cycle cuts would bound it).
 
+**How many pairs overlap.** `rewrite::rule_overlaps` (syntactic unification, variables renamed apart) lists every pair whose
+left sides unify, the second at a non-variable position of the first; `OVERLAP_RULES=<file>` with the ignored test
+`rule_overlap_report` prints them. In the salt-1 pooled library (56 rules) all 56 rules overlap something: 1035 ordered pairs,
+of which 817 are below the root (the inner rule rewrites a subterm the outer one would match; rule order does not decide these,
+the traversal does), 100 are at the root with one left side an instance of the other (specific first settles these), and 118 at
+the root otherwise (59 unordered pairs; there specific first is only a size-then-text tie-break). Most of the 118 are comparison
+rules (`lt(x, sub(y, z))` against a dozen `lt(.., sub(y, add(..)))` rules); the rest are the `sub`/`add` chain orientations, e.g.
+`sub(x, sub(y, z)) -> add(sub(x, y), z)` against `sub(sub(x, y), z) -> sub(x, add(y, z))`. So learning a winner per overlapping
+pair means about 60 decisions at the root, and completion would face about 1000 critical pairs: per-pair learning is a modest job,
+completion a large one.
+
+**Keeping general rules by a tie-break: no-op.** The miner's candidates are already sorted by left side size (one per left side,
+`search.rs`), and a round's winner breaks gain ties toward the earlier candidate, so ties already go to the smaller left side.
+The lost cmp3d rule was not tied: under specific first, the specific `lt` rules already cover its laws, so it gains nothing on
+cmp3d. Keeping it needs a gain from laws outside the family (the union mine and foreign scoring above), or a library made by
+pooling.
+
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
 

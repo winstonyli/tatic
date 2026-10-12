@@ -900,6 +900,105 @@ pub fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
     }
 }
 
+/// Syntactic unification of `a` and `b` (variables shared, bindings in `sub`), with the occurs check.
+pub fn unify(a: &Term, b: &Term, sub: &mut Vec<Option<Term>>) -> bool {
+    fn resolve(t: &Term, sub: &[Option<Term>]) -> Term {
+        match t {
+            Term::V(i) => sub[*i].as_ref().map_or_else(|| t.clone(), |b| resolve(b, sub)),
+            _ => t.clone(),
+        }
+    }
+    fn occurs(i: usize, t: &Term, sub: &[Option<Term>]) -> bool {
+        match resolve(t, sub) {
+            Term::V(j) => i == j,
+            Term::Op(_, x, y) => occurs(i, &x, sub) || occurs(i, &y, sub),
+            _ => false,
+        }
+    }
+    match (resolve(a, sub), resolve(b, sub)) {
+        (Term::V(i), Term::V(j)) if i == j => true,
+        (Term::V(i), t) | (t, Term::V(i)) => {
+            if occurs(i, &t, sub) {
+                return false;
+            }
+            sub[i] = Some(t);
+            true
+        }
+        (Term::Zero, Term::Zero) | (Term::Ones, Term::Ones) => true,
+        (Term::Op(o, x1, y1), Term::Op(o2, x2, y2)) => o == o2 && unify(&x1, &x2, sub) && unify(&y1, &y2, sub),
+        _ => false,
+    }
+}
+
+/// The overlaps among `rules`: (i, j, at root) for each rule j whose left side unifies with a non-variable subterm of rule i's left
+/// side (variables renamed apart; a rule with itself only below the root). Where two left sides overlap, first-match order decides
+/// which rule rewrites, so these are the pairs a rule order (or completion) has to settle.
+pub fn rule_overlaps(rules: &[(Term, Term)]) -> Vec<(usize, usize, bool)> {
+    fn shift(t: &Term, k: usize) -> Term {
+        match t {
+            Term::V(i) => Term::V(i + k),
+            Term::Op(o, a, b) => Term::Op(*o, Box::new(shift(a, k)), Box::new(shift(b, k))),
+            _ => t.clone(),
+        }
+    }
+    fn subterms<'a>(t: &'a Term, root: bool, out: &mut Vec<(&'a Term, bool)>) {
+        if let Term::Op(_, a, b) = t {
+            out.push((t, root));
+            subterms(a, false, out);
+            subterms(b, false, out);
+        }
+    }
+    let mut found = vec![];
+    for (i, (li, _)) in rules.iter().enumerate() {
+        let mut subs = vec![];
+        subterms(li, true, &mut subs);
+        for (j, (lj, _)) in rules.iter().enumerate() {
+            let k = li.max_var() + 1;
+            let lj = shift(lj, k);
+            if let Some(&(_, root)) = subs.iter().find(|(s, root)| !(i == j && *root) && unify(s, &lj, &mut vec![None; k + lj.max_var() + 1])) {
+                found.push((i, j, root));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn unification_and_overlaps() {
+    let t = parse_term;
+    assert!(unify(&t("sub(sub(x, y), z)"), &t("sub(u, add(x, y))"), &mut vec![None; 8]));
+    assert!(!unify(&t("x"), &t("add(x, y)"), &mut vec![None; 8]), "occurs check");
+    assert!(!unify(&t("sub(x, x)"), &t("sub(0, -1)"), &mut vec![None; 8]), "a variable takes one value");
+    // the two sub/sub orientations overlap at the root; sub(x, y) -> .. overlaps both below and at the root
+    let rules = parse_rules("sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(sub(x, y), z) -> sub(sub(x, z), y)\nlt(x, add(y, z)) -> lt(x, add(z, y))\n");
+    let o = rule_overlaps(&rules);
+    assert!(o.contains(&(0, 1, true)) && o.contains(&(1, 0, true)));
+    assert!(o.contains(&(0, 0, false)), "sub(sub(x, y), z) also matches its own inner sub(x, y) position");
+    assert!(!o.iter().any(|&(i, j, _)| (i == 2) != (j == 2)), "lt rules do not overlap sub rules: {o:?}");
+}
+
+/// `OVERLAP_RULES=<rules file>`: prints every overlapping pair of the file's rules and the counts.
+#[test]
+#[ignore]
+fn rule_overlap_report() {
+    let rules = parse_rules(&std::fs::read_to_string(std::env::var("OVERLAP_RULES").expect("set OVERLAP_RULES=<file>")).unwrap());
+    let o = rule_overlaps(&rules);
+    // a root overlap where one left side is an instance of the other is settled by specific-first order; the rest are not
+    let inst = |a: &Term, b: &Term| match_pat(a, b, &mut vec![None; a.max_var() + 1]);
+    let mut kinds = [0usize; 3];
+    for &(i, j, root) in &o {
+        let (li, lj) = (&rules[i].0, &rules[j].0);
+        let kind = if !root { 0 } else if inst(li, lj) || inst(lj, li) { 1 } else { 2 };
+        kinds[kind] += 1;
+        println!("OVERLAP {} {} -> {}  WITH  {} -> {}", ["inner", "nested", "cross"][kind], li.show(), rules[i].1.show(), lj.show(), rules[j].1.show());
+    }
+    let touched: std::collections::HashSet<usize> = o.iter().flat_map(|&(i, j, _)| [i, j]).collect();
+    println!(
+        "OVERLAPS {} rules, {} overlapping pairs: {} inner, {} at the root with one left side an instance of the other, {} at the root otherwise; {} rules in some overlap",
+        rules.len(), o.len(), kinds[0], kinds[1], kinds[2], touched.len()
+    );
+}
+
 pub fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
     match p {
         Term::V(i) => sub[*i].clone().expect("bound"),
