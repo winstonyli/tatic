@@ -884,12 +884,19 @@ Options for the drop mechanism surveyed after this (2026-10-12; only (a) is buil
 | | Option | What it fixes | Cost / risk |
 |---|---|---|---|
 | a | Evidence floor: a drop must gain >= 2000 (kept, above) | the one-law drop at salt 1 | a hand-set threshold that separates these runs' gains, not a principled one |
-| b | Held-out gain for drops: split the phase-0 laws in halves and require a gain on both | the same overfit with no threshold (a one-law gain is 0 on one half) | held-out scoring was negative for rule rounds, but there the loss was greedy myopia, not overfitting; ~2x the drop scoring |
+| b | Held-out gain for drops: split the phase-0 laws in halves and require a gain on both | the same overfit with no threshold (a one-law gain is 0 on one half) | tried, negative (below) |
 | c | Joinability units (Knuth-Bendix): only B's rules whose critical pairs with A's rules do not join under the union | a finer unit than root overlap; for add3 perhaps only the four chain rules (28 by hand vs 32) | the biggest change: critical pairs from `unify`, both sides normalized by the rewriter; most principled; untested |
 | d | Unit preference instead of drop: put all of B's unit under A's rules at once | keeps B's rules where A's do not apply | likely fails: the four chain rules alone cost add3 32 to 87 on terms add3's rules do not match; cheap to falsify by serving |
 | e | Re-mine after drops (`rounds > 0` in the pooled preference mine) | recovers coverage a drop removed | each pooled preference mine becomes a full mine; treats the symptom, not the overfit |
 
-Ranking: b (removes the threshold), then c if a family still trails its own library, d only as a quick falsification.
+Ranking at the survey: b (removes the threshold), then c if a family still trails its own library, d only as a quick
+falsification. b lost (below).
+
+*Held-out gain for drops (negative, reverted).* A drop qualified when its gain was positive on both halves of the stragglers (even
+and odd index, guard laws in both), in place of the floor. Pooled loops 60 and 106 against the floor's 60 and 103. Salt 1 is
+unchanged (sbo3's one-law drop is 0 on one half; cmp3d now drops a 5-rule unit for +1083, both halves positive through size, at
+no cost). At salt 2 cmp3d's +3483 drop has -715 on one half and is refused, and its pooled loops go 37 to 40: a drop that
+transfers can still lose on half the phase-0 laws, so the halves are too strict.
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in

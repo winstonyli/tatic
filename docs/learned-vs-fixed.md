@@ -31,5 +31,5 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    round's runner-up lost (all loops 1266 to 1348; tier-cycle.md, "Lookahead over runners-up too").
 3. Pooling's drop units: where two libraries' normal forms meet (B's rules overlapping A's at the root), learned per family as
    preference-phase moves; pooled loops 60/129 to 60/103, salt 2's add3 43 to 22 (tier-cycle.md, "Drop units"). A drop needs a
-   hand-set gain floor (2000) against one-law overfit; held-out gain could replace it, and joinability (critical pairs) would be
-   a finer unit (options a-e there).
+   hand-set gain floor (2000) against one-law overfit; held-out gain in its place lost (salt 2 103 to 106); joinability
+   (critical pairs) would be a finer unit (options a-e there).
