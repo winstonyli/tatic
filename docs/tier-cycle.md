@@ -822,6 +822,21 @@ everywhere but salt 2's cold loops: own 74 to 84 and 102 to 117, cold 451 to 467
 sides are the same left side, scored on the same laws, while a runner-up is a different rule, and picking among different rules by
 their finished in-sample value fits the mined batch more closely than the greedy choice does.
 
+*Runners-up chosen held out (negative, reverted, 2026-10-12).* A test of that guess: the same three alternatives (rival,
+winner, runner-up), each finished greedily on the even-indexed stragglers and valued on the odd-indexed ones, and the other way
+round, summed (2-fold; guard laws in both folds; the rounds still choose on every straggler; ties to the earlier alternative).
+Sweeps against HEAD (with the rival-scoring fix, same rows):
+
+| | mines | own | cold | pooled | loops |
+|---|---|---|---|---|---|
+| HEAD | 23 / 21 | 74 / 102 | 451 / 450 | 58 / 99 | 583 / 651 |
+| held-out runners-up | 21 / 20 | 85 / 103 | 435 / 454 | 66 / 91 | 586 / 648 |
+
+All loops 1234 both ways: the in-sample version's loss is gone (so the guess holds in part, the in-sample choice overfit), but
+nothing is gained. It moves M between families rather than lowering it: cmp3d own 33 to 46 and pooled 31 to 41 on salt 1;
+add3 cold 166 to 150 (salt 1), sbo3 pooled 40 to 32 (salt 2). cmp3d's ref mines were 3.5-4.5x slower (266 to 923 s, 170 to
+763 s) and the sweeps about 2.3x longer (shared machine). Patch kept out of the repo; the greedy choice stays.
+
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three

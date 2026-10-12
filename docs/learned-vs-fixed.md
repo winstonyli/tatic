@@ -34,7 +34,9 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
 2. The miner's greedy search: a larger one-round gain can lead to a worse finished set (salt 1's cold loss with rivals: 38 of 43
    stragglers covered against 42; tier-cycle.md, "The cold loss is a greedy path loss"). Held-out scoring did not help, since
    the loss is not overfitting; finishing the mine both ways at rival swaps fixed that loss. Extending the lookahead to each
-   round's runner-up lost (all loops 1266 to 1348; tier-cycle.md, "Lookahead over runners-up too"). Dropping the mine's own
+   round's runner-up lost (all loops 1266 to 1348; tier-cycle.md, "Lookahead over runners-up too"); choosing among them by
+   held-out finished value (2-fold over the stragglers) removes that loss but gains nothing (1234 both ways) at 3.5-4.5x the
+   cmp3d mine time ("Runners-up chosen held out"). Dropping the mine's own
    rules afterwards found nothing: none of 642 candidates gains in-sample (tier-cycle.md, "Drops of the mine's own rules").
 3. Pooling's drop units: where two libraries' normal forms meet (B's rules with a critical pair against A's that does not
    join), learned per family as preference-phase moves; pooled loops 60/129 to 58/99, every salt-2 family at or below its own
