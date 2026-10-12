@@ -925,6 +925,13 @@ the mines through `RULEMINER_UNITS`): same rows at both salts, pooled stage 212 
 *The floor is still needed with joinability units.* Without it, pooled loops 71 and 99 against 58 and 99: salt 1's sbo3 again
 drops a unit for +1000 (one phase-0 law) and goes 14 to 27; every other drop gains 3215 or more and is the same either way.
 
+*Full sweeps at d19c654 against 6ca89b3, run side by side* (same load; CPU at start 10-12% for salt 1, 27-28% for salt 2, no
+quiet window). Every mines, own and cold row matches; pooled 60 to 58 and 129 to 99, the rows of the pooled-stage runs above.
+Times, 6ca89b3 to d19c654: sweeps 819 to 745 s and 797 to 671 s; mines 321 to 290 and 255 to 224 s; cold loops 269 to 220 and
+251 to 209 s; pooled loops 65 to 54 and 85 to 63 s (their libraries are smaller after drops; the preference mines are not in
+these rows). The mines and cold gains are likely the memo reuse ("Rule-set evaluations reuse..."), the only change those stages
+run; not separated further.
+
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
 [learned-vs-fixed.md](learned-vs-fixed.md) (surveyed 2026-10-11, updated as parts move).
