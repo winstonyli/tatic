@@ -936,7 +936,31 @@ run; not separated further.
 libraries). Own loops M: cmp3d 29, add3 24, sbo3 27 (80). Pooled with the floor: 23, 24, 27 (74); without it: 29, 24, 27 (80).
 Without the floor cmp3d also drops add3's whole unit for +1033 and lands exactly on its own library; every other drop gains
 13000 or more and is the same either way. Across three salts the drops that hurt gain 1000-1033 and the ones that help 3215 or
-more, so any floor between those gives the same rows; 2000 separates the classes, not tuned to two salts.
+more, so any floor between those gives the same rows; 2000 separates the classes, not tuned to two salts. Salts 4 and 5 (same
+pair of runs) never reach it: their smallest drops gain 5149 and 6099, and with or without the floor the rows match (own 75 and
+98, pooled 64 and 98). Five salts, no drop between 1033 and 3215.
+
+### Operand order: the `show()` order is best of three; comm is not mined back (negative, 2026-10-12)
+Learning operand order (learned-vs-fixed.md, candidate 1) is only worth it if the order matters and the current one is not
+already good. A temporary switch put one term order behind the three places that use it (the bitwise operand sort with constants
+last, `add` comm and left-comm, and the instance check of permutative rules) and ran full sweeps (mines, own, cold, pooled) with
+the `show()` order, its reverse, and size first (then `show()`), plus `ABLATE=comm` under the `show()` order. A default-order run
+reproduced salt 1's HEAD rows exactly. Total M (salt 1 / salt 2):
+
+| | mines | own | cold | pooled |
+|---|---|---|---|---|
+| `show()` (current) | 23 / 21 | 74 / 102 | 451 / 450 | 58 / 99 |
+| reversed | 29 / 29 | 132 / 147 | 500 / 486 | 106 / 89 |
+| size first | 20 / 17 | 98 / 117 | 478 / 457 | 76 / 117 |
+| `ABLATE=comm` | 86 / 79 | 177 / 222 | 799 / 798 | 161 / 248 |
+
+The order matters (own loops up to 1.8x), and the current one wins 13 of the 16 pairwise comparisons (each stage and salt against each other order); the exceptions are size first's mines and
+reversed salt 2 pooled. Per family the picture is a little more mixed (size first: salt 1 pooled sbo3 11 against 14, salt 2 own
+sbo3 39 against 40), but no other order wins a family on both salts. Without the built-in comm the miner does not mine it back
+usefully (cold loops 451 to 799, 450 to 798), though each library holds one or more `add` swap rules. The 36 promoted rules were
+mined under the `show()` order, which biases the test toward it; not separated (`ABLATE=promoted` with each order would). The
+switch is removed; a learned precedence (one term order with a precedence learned per family) is parked: the measured headroom
+is the three comparisons above, against the cost of re-scoring every move.
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
