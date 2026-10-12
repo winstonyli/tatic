@@ -1921,6 +1921,9 @@ pub fn rule_set_kernel_check() {
     // the CHECKED line and so M are unchanged, for exploration (the miner's RULEMINER_FAST, applied to serving)
     let fast = env_or("CHECK_FAST", 0u8) != 0;
     SCORE_ONLY.with(|s| s.set(fast));
+    if env_or("RULE_CONFLICTS", 0u8) != 0 {
+        *RULE_CONFLICTS.lock().unwrap() = Some(Default::default());
+    }
     let (mut proved, mut free, mut none, mut exhausted) = (0, 0, 0, 0);
     for (name, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
@@ -1947,6 +1950,7 @@ pub fn rule_set_kernel_check() {
         }
     }
     println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved, {exhausted} used up the rule budget");
+    print_rule_conflicts();
     if fast {
         return;
     }

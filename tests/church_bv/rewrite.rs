@@ -1030,6 +1030,34 @@ pub fn fold_rule(t: &Term) -> Option<Rule> {
     [Term::Zero, Term::Ones, one].into_iter().find(|c| t.is_law(c, 1)).map(|c| Rule { name: "fold", lhs: t.clone(), rhs: c })
 }
 
+fn rule_text(r: &Rule) -> String {
+    format!("{} -> {}", r.lhs.show(), r.rhs.show())
+}
+
+/// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms; `print_rule_conflicts` lists them.
+pub static RULE_CONFLICTS: std::sync::Mutex<Option<std::collections::HashMap<(String, String), u64>>> = std::sync::Mutex::new(None);
+
+pub fn print_rule_conflicts() {
+    if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_ref() {
+        let mut v: Vec<_> = m.iter().collect();
+        v.sort_by_key(|(k, c)| (std::cmp::Reverse(**c), (*k).clone()));
+        for ((w, l), c) in &v {
+            println!("CONFLICT {c} {w}  OVER  {l}");
+        }
+        println!("CONFLICTS {} pairs, {} terms", v.len(), v.iter().map(|x| *x.1).sum::<u64>());
+    }
+}
+
+/// `RULE_PREFER=<file>` (experiment): lines `winner  OVER  loser` (each `lhs -> rhs`); where both would rewrite a term, the winner does.
+fn rule_prefer() -> &'static std::collections::HashSet<(String, String)> {
+    static P: std::sync::OnceLock<std::collections::HashSet<(String, String)>> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let Ok(path) = std::env::var("RULE_PREFER") else { return Default::default() };
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("RULE_PREFER {path}: {e}"));
+        text.lines().filter_map(|l| l.split_once("  OVER  ")).map(|(w, l)| (w.trim().to_string(), l.trim().to_string())).collect()
+    })
+}
+
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the proof.
 pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
     RULE_TRACE.with(|tr| {
@@ -1037,46 +1065,63 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
             v.push(t.clone());
         }
     });
-    for r in fold_rule(t).into_iter().chain(rules()) {
-        let k = r.lhs.max_var().max(r.rhs.max_var()) + 1;
-        let mut sub = vec![None; k];
+    let all: Vec<Rule> = fold_rule(t).into_iter().chain(rules()).collect();
+    let fires = |r: &Rule| -> Option<Vec<Option<Term>>> {
+        let mut sub = vec![None; r.lhs.max_var().max(r.rhs.max_var()) + 1];
         if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
-            continue;
+            return None;
         }
-        if PROVING.with(|p| !p.borrow().is_empty() && p.borrow().contains(&format!("{} -> {}", r.lhs.show(), r.rhs.show()))) {
-            continue;
+        if PROVING.with(|p| !p.borrow().is_empty() && p.borrow().contains(&rule_text(r))) {
+            return None;
         }
         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
-        if subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show() == t.show() {
-            continue;
-        }
-        if TRACE_RULES.load(std::sync::atomic::Ordering::Relaxed) {
-            println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
+        let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show();
+        if inst == t.show() {
+            return None;
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
         // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
         // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
-        if rule_permutative(&r.lhs, &r.rhs) {
-            let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
-            if inst.show() >= t.show() {
-                continue;
-            }
-        }
-        if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
+        if rule_permutative(&r.lhs, &r.rhs) && inst >= t.show() {
             return None;
         }
-        let law = shared_lemma(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
-        // a pattern variable the left side does not mention is free in the law: any value serves
-        let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
-        let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
-        let mut hits = RULE_HITS.lock().unwrap();
-        match hits.iter_mut().find(|h| h.0 == r.name) {
-            Some(h) => h.1 += 1,
-            None => hits.push((r.name, 1)),
+        Some(sub)
+    };
+    let (mut i, mut sub) = all.iter().enumerate().find_map(|(i, r)| fires(r).map(|s| (i, s)))?;
+    let prefer = rule_prefer();
+    if !prefer.is_empty() {
+        // follow preferences from the first rule that fires; at most one hop per rule, so a preference cycle stops
+        for _ in 0..all.len() {
+            let me = rule_text(&all[i]);
+            match all.iter().enumerate().find_map(|(j, r)| if j != i && prefer.contains(&(rule_text(r), me.clone())) { fires(r).map(|s| (j, s)) } else { None }) {
+                Some(next) => (i, sub) = next,
+                None => break,
+            }
         }
-        return Some((subst_pat(&r.rhs, &sub), apps(law.0, args)));
     }
-    None
+    if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_mut() {
+        for r in all.iter().skip(i + 1).filter(|r| fires(r).is_some()) {
+            *m.entry((rule_text(&all[i]), rule_text(r))).or_default() += 1;
+        }
+    }
+    let r = &all[i];
+    let k = sub.len();
+    if TRACE_RULES.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
+    }
+    if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
+        return None;
+    }
+    let law = shared_lemma(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
+    // a pattern variable the left side does not mention is free in the law: any value serves
+    let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
+    let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
+    let mut hits = RULE_HITS.lock().unwrap();
+    match hits.iter_mut().find(|h| h.0 == r.name) {
+        Some(h) => h.1 += 1,
+        None => hits.push((r.name, 1)),
+    }
+    Some((subst_pat(&r.rhs, &sub), apps(law.0, args)))
 }
 
 /// A cached `rewrite`: the result and what the call did besides returning it, so that a hit can replay it.
@@ -1193,9 +1238,10 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
     let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
     let ev = |t: &Term| t.eval(ops, n, &vals);
     let Term::Op(o, a, b) = t else { return (t.clone(), refl(ev(t))) };
-    let ((a2, pa), (b2, pb)) = (rewrite(a, n, ops, goods), rewrite(b, n, ops, goods));
     // an `lt` root gives one bit, every other operator a vector
     let rt = bv_ty(if *o == LT { 1 } else { n });
+    // children first: trying the library rules on a node before its children are normalized raised M 3x (docs/tier-cycle.md, "Rule order")
+    let ((a2, pa), (b2, pb)) = (rewrite(a, n, ops, goods), rewrite(b, n, ops, goods));
     let cong = cong_n(&bv_ty(n), &rt, &ops[*o], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa, pb]);
     let t1 = Term::Op(*o, Box::new(a2.clone()), Box::new(b2.clone()));
     if *o != ADD {

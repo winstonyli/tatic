@@ -677,6 +677,54 @@ The lost cmp3d rule was not tied: under specific first, the specific `lt` rules 
 cmp3d. Keeping it needs a gain from laws outside the family (the union mine and foreign scoring above), or a library made by
 pooling.
 
+**Children first is right (outermost is a negative result).** `rewrite` normalizes a node's children before trying rules at the
+node, so an inner overlap goes to the inner rule. A switch that tried the library rules on a node before its children (removed)
+served the salt-1 pooled library at cmp3d / add3 / sbo3 205 / 71 / 34, against 43 / 34 / 29.
+
+**Conflicts that happen.** `RULE_CONFLICTS=1` makes serving (`search::rule_set_kernel_check`) count, per term rewritten, each later
+rule that would also have rewritten it, and print `CONFLICT <terms> <winner>  OVER  <loser>`. Serving the salt-1 pooled library
+hits 63 distinct pairs on phase 0 and 62 on phases 1-3, some with built-in and promoted rules (the static count covers only the
+library's own rules).
+The most frequent (252 terms on phases 1-3) is between two pooled rules with the same left side, `sub(x, sub(y, z))` rewritten to
+`add(sub(x, y), z)` or to `add(sub(z, y), x)`: pooling concatenates libraries, so it can keep two orientations of one left side,
+and then only the text tie-break picks.
+
+**Learned preferences (prototype, kept as a switch).** `RULE_PREFER=<file>` of lines `winner  OVER  loser`: where both rules would
+rewrite a term, the winner does, whatever the order. `scripts/prefer_flips.sh` learns them for a library: it collects the
+conflicts on phase 0, serves each flipped pair alone on phases 0-3, and keeps the flips that lower phase 0's M (about 20 min with 3
+workers). Total M over cmp3d, add3 and sbo3, train (phase 0) and test (phases 1-3):
+
+| pooled library | conflicts | kept | train | test |
+|---|---|---|---|---|
+| salt 1 | 63 | 4 | 26 to 20 | 106 to 89 (cmp3d 43 to 40, add3 34 to 26, sbo3 29 to 23) |
+| salt 2 | 42 | 3 | 28 to 27 | 142 to 137 |
+
+Phase 0 predicts the rest: at salt 1, every flip that lowered phase 0 lowered phases 1-3, and the worst flips on phase 0 were the
+worst on phases 1-3. The salt-1 winners let a `sub(x, sub(y, z))` rule beat `sub(sub(x, y), z) -> sub(x, add(y, z))` (-13 test
+alone): the specific-first order is wrong there. Preferences are per library: the salt-1 file on the salt-2 library gives 142 to
+136. At salt 2, three flips each give -4 train and -11 or -8 test alone, but kept together only -1 and -5: two of them demote the same
+rule in favor of different winners. Keeping flips one at a time and rescoring the rest after each (greedy, like the miner's rounds)
+should recover that; it is the next step, and so is learning them inside the miner, after a mine or per loop batch, so loops
+use them too. The serving runs use no mining (`LOOP_MODE=none`), so these are serving gains on a fixed library.
+
+### Hand-fixed parts (surveyed 2026-10-11)
+What the miner does not learn. The trusted checker (`src/kernel.rs`) stays hand-written for soundness and is not counted.
+- Rewriting (`rewrite.rs`): children-first traversal; the fixed sequence of steps tried at each node (`rule_step`, then `tree_step`
+  for `sub`, truth-table collapse, operand sort by `show()`); the built-in `add` steps (identities, `a + ~a`, assoc and comm with
+  hand-proved lemmas); the built-in `rules()` (some mined once) and `PROMOTED` (mined, frozen); first-match order (built-ins before
+  mined rules; the mined ones specific first, now overridable by `RULE_PREFER`); ordered rewriting of permutative rules on `show()`;
+  the orientation order (`rule_weight`, `rule_order_ok`); the cycle cut; the 200-step budget; `fold_rule`.
+- Proving when rewriting stops (`prove_eq`): a fixed cascade (truth table over atoms, per-position prover, congruences,
+  `shr_mask_eq`, generalization above `GENERALIZE_ABOVE` = 3 carries, then the whole-term machine). Carry caps: `CARRY_CAP` = 10.
+- Miner (`search.rs`): candidate shapes (a pool of terms up to 5 nodes over two variables, and cross-side pairs), one right side per
+  left side (the smallest), at most 400 candidates, the gain weights (1000 per law, guard weight, size cut), greedy one rule per
+  round, stragglers as the laws needing the machine.
+- Driver: strides, batch sizes and phases per family; the law pools (`add3_pool`, `cmp3_pool`, ...); the proposers (only the
+  n-gram one is trained).
+The measured effects so far point at the order and orientation choices (rule order, this section; one right side per left side,
+"Why add3 did better") and the greedy gain (general rules lost: "cmp3d's library lost its general rules"). No experiment has varied
+the `prove_eq` cascade, the built-in `add` normal form, or the carry caps.
+
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
 
