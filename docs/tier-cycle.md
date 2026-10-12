@@ -728,10 +728,15 @@ M). With no library they also change nothing on mix3, cmp3, u3 and u3w (111, 5, 
 `shr1` laws, which these streams never send through them: without `eq_pos` the built-in `shrnot` rule's laws need a machine
 proof (`shrnot_rule_is_provable_and_closes_the_shr_not_laws`), and without `shrmask` that test and
 `shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones` fail. The other seven (`zero`, `not`, `chain`, `fold`,
-`eq_cong`, `eq_bitcong`, `generalize`) can all be off with every unit test passing; deleting them was surveyed, not done: `not`
-is likely unreachable (the built-in `notsub` rewrites `xor(x, -1)` first), `fold` and `generalize` have tests that pass without
-them (they would lose their point), and `generalize` alone has helpers only it uses (`shared_subterm`, `GENERALIZE_ABOVE`). The
-two-variable families (shl, shr, lt, mul) were not served. `comm` (sorting operands) matters most: the mined rules are learned on top of a canonical operand order. The library was mined
+`eq_cong`, `eq_bitcong`, `generalize`) can each be off with every unit test passing. The two-variable families (shl, shr, lt,
+mul) were not served.
+
+**Deleted (2026-10-11): six of them.** Switching all seven off at once raised M (pooled 106 to 123, no library 828 to 870):
+`zero` (`x + 0`) and `chain` (sums a constant carry reduces, `x + 0` among them) cover each other, so each alone looked
+redundant. With either one back, all seven families and both libraries give the numbers above exactly. `chain` stayed, as the
+general case; `zero`, `not`, `fold`, both congruences and `generalize` (with `shared_subterm` and `GENERALIZE_ABOVE`) are
+gone. The tests of folding and of large shared sums still pass, now by the remaining steps. One-at-a-time ablation misses
+parts that back each other up; check a deletion set together before deleting. `comm` (sorting operands) matters most: the mined rules are learned on top of a canonical operand order. The library was mined
 with every part present, so a large rise means the library relies on that part, not that it could not be learned.
 
 ### Preferences and rival orientations in the miner (2026-10-11)

@@ -2108,7 +2108,7 @@ pub fn add_is_associative_on_symbolic_good_vectors() {
     }
 }
 
-// ---- `add x (xor x -1) = -1` (x + ~x), a carry that stays false (search note section 12).
+// ---- `add x (xor x -1) = -1` (x + ~x), a carry that stays false (search note section 12). The rewriter no longer uses it.
 
 /// `(proof, statement)` of `Pi x. GoodBv x -> Id(Bv_n, add x (xor x -1), -1)`; `wrong` states `= 0` instead.
 pub fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {

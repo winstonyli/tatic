@@ -2142,7 +2142,8 @@ pub fn promoted_rule_sets_are_proved() {
     }
 }
 
-/// Constant folding: closed terms equal to 0, -1 or 1 normalize to `0`, `-1`, `sub(0, -1)`, with no machine proof.
+/// Closed terms equal to 0, -1 or 1 normalize to `0`, `-1`, `sub(0, -1)` with no machine proof (by the rules and `tree_step`; a
+/// constant-folding step of its own was removed as redundant).
 #[test]
 pub fn closed_terms_fold_to_constants() {
     let _scope = tatic::kernel::InternScope::enter();

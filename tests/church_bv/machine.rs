@@ -1243,15 +1243,15 @@ pub fn shift_conjecture_miner() {
 }
 
 #[test]
-pub fn shared_subterms_are_generalized_so_large_sums_stay_provable() {
+pub fn large_sums_with_shared_subterms_stay_provable() {
     let _scope = tatic::kernel::InternScope::enter();
     let v = |i: usize| Term::V(i);
     let add = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
     let s = add(add(v(0), v(1)), v(2)); // two carries
-    // 8 carries on each side before sharing equal subterms (6 after), so `rewrite_law` generalizes S to a variable
+    // 8 carries on each side, under `CARRY_CAP` (a step generalizing S to a variable was removed as redundant)
     let t1 = add(s.clone(), add(s.clone(), s.clone()));
     let t2 = add(add(s.clone(), s.clone()), s.clone());
-    let (p, st) = rewrite_law(2, 3, &t1, &t2).expect("generalized");
+    let (p, st) = rewrite_law(2, 3, &t1, &t2).expect("proved");
     ck("add S (add S S) = add (add S S) S", &p, &st);
     // not equal: no proof
     assert!(rewrite_law(2, 3, &t1, &add(add(s.clone(), s.clone()), v(0))).is_none());

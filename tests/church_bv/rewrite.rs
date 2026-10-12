@@ -441,7 +441,8 @@ pub fn discharge(body: Expr) -> Expr {
     scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p))
 }
 
-/// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: zero, comm, assoc, not, collapse).
+/// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: comm, assoc, chain, tree, collapse,
+/// promoted, ruleset, a built-in rule's name, and `prove_eq`'s eq_truth, eq_pos, shrmask).
 pub fn ablated(name: &str) -> bool {
     std::env::var("ABLATE").is_ok_and(|v| v.split(',').any(|x| x == name))
 }
@@ -486,8 +487,10 @@ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
     }
 }
 
-/// A sum of two (atom-abstracted) bitwise operands that a constant carry reduces to 0, -1 or one of its atoms:
-/// the rewritten term and the proof from `carry_chain_law` instantiated at the atoms' values and witnesses.
+/// A sum of two (atom-abstracted) bitwise operands that a constant carry reduces to 0, -1 or one of its atoms (`x + 0`,
+/// `x + ~x`, ...): the rewritten term and the proof from `carry_chain_law` instantiated at the atoms' values and witnesses.
+/// Ablation name `chain`; it and a step for `x + 0` alone covered each other (docs/tier-cycle.md, "Ablating the fixed rewriter
+/// and prover parts").
 pub fn chain_step(n: usize, a: &Term, b: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
     if ablated("chain") {
         return None;
@@ -1061,23 +1064,6 @@ pub static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// Instances of `rule_step` by rule name, for the audit.
 pub static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
 
-/// Constant folding (`ABLATE=fold`): a closed term equal at widths 1-6 to `0`, `-1` or `1` (written `sub(0, -1)`, the
-/// library has no literal `1`), without `shr1`, is a rule `t -> constant`, proved like any other rule.
-pub fn fold_rule(t: &Term) -> Option<Rule> {
-    fn closed(t: &Term) -> bool {
-        match t {
-            Term::V(_) | Term::Op(SHR1, ..) => false, // `shr1` is not a machine: `prove_rule` cannot prove laws over it
-            Term::Op(_, a, b) => closed(a) && closed(b),
-            _ => true,
-        }
-    }
-    let one = Term::Op(SUB, Box::new(Term::Zero), Box::new(Term::Ones));
-    if !matches!(t, Term::Op(o, ..) if *o != LT) || ablated("fold") || t.show() == one.show() || !closed(t) {
-        return None;
-    }
-    [Term::Zero, Term::Ones, one].into_iter().find(|c| t.is_law(c, 1)).map(|c| Rule { name: "fold", lhs: t.clone(), rhs: c })
-}
-
 fn rule_text(r: &Rule) -> String {
     format!("{} -> {}", r.lhs.show(), r.rhs.show())
 }
@@ -1103,7 +1089,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
             v.push(t.clone());
         }
     });
-    let all: Vec<Rule> = fold_rule(t).into_iter().chain(rules()).collect();
+    let all: Vec<Rule> = rules();
     let fires = |r: &Rule| -> Option<Vec<Option<Term>>> {
         let mut sub = vec![None; r.lhs.max_var().max(r.rhs.max_var()) + 1];
         if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
@@ -1353,21 +1339,8 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
         apps(shared_lemma(format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
     };
     let sum = |p: &Term, q: &Term| Term::Op(ADD, Box::new(p.clone()), Box::new(q.clone()));
-    let step = if !ablated("zero") && matches!(b2, Term::Zero) {
-        Some((a2.clone(), app2(shared_lemma(format!("idr{n}"), || add_identity_proof(n, 0, false)).0, av, aw)))
-    } else if !ablated("zero") && matches!(a2, Term::Zero) {
-        Some((b2.clone(), app2(shared_lemma(format!("idl{n}"), || add_identity_proof(n, 0, true)).0, bv, bw)))
-    } else if !ablated("not") && matches!(&b2, Term::Op(XOR, p, q) if p.show() == a2.show() && matches!(**q, Term::Ones)) {
-        // a + ~a = -1
-        Some((Term::Ones, app2(shared_lemma(format!("not{n}"), || add_not_proof(n, false)).0, av, aw)))
-    } else if !ablated("not") && !ablated("comm") && matches!(&a2, Term::Op(XOR, p, q) if p.show() == b2.show() && matches!(**q, Term::Ones)) {
-        // ~b + b = b + ~b = -1
-        let lemma = app2(shared_lemma(format!("not{n}"), || add_not_proof(n, false)).0, bv.clone(), bw.clone());
-        let comm = apps(shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv.clone(), aw, bw]);
-        let swapped = witnessed(&Term::Op(ADD, Box::new(b2.clone()), Box::new(a2.clone())), n, goods).0;
-        let ones = witnessed(&Term::Ones, n, goods).0;
-        Some((Term::Ones, trans_proof(&bv_ty(n), &ev(&t1), &swapped, &ones, comm, lemma)))
-    } else if let Some(r) = rule_step(n, &t1, goods) {
+    // `x + 0` and `x + ~x` are constant-carry sums (`chain_step`); steps of their own were removed as redundant
+    let step = if let Some(r) = rule_step(n, &t1, goods) {
         Some(r)
     } else if let Some(r) = chain_step(n, &a2, &b2, goods) {
         Some(r)
@@ -1432,28 +1405,6 @@ thread_local! {
     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Pairs whose machines have more carries than this try generalizing a shared subterm first.
-pub const GENERALIZE_ABOVE: usize = 3;
-
-/// The subterm (with at least one `add` or `sub`, not a whole side) that occurs in both terms and has the most
-/// carries, if any.
-pub fn shared_subterm(a: &Term, b: &Term) -> Option<Term> {
-    fn subs(t: &Term, out: &mut Vec<Term>) {
-        if let Term::Op(_, x, y) = t {
-            out.push(t.clone());
-            subs(x, out);
-            subs(y, out);
-        }
-    }
-    let (mut sa, mut sb) = (vec![], vec![]);
-    subs(a, &mut sa);
-    subs(b, &mut sb);
-    let in_b: std::collections::HashSet<String> = sb.iter().map(|t| t.show()).collect();
-    sa.into_iter()
-        .filter(|t| t.uses_add() && t.show() != a.show() && t.show() != b.show() && in_b.contains(&t.show()))
-        .max_by_key(|t| Machine::parse(t).map_or(0, |m| m.carries()))
-}
-
 /// `t` with every occurrence of the subterm `x` replaced by `with`.
 pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
     if t.show() == x.show() {
@@ -1474,7 +1425,7 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
     if a.show() == b.show() {
         return Some(refl(ev(a)));
     }
-    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,eq_cong,eq_bitcong,shrmask,generalize`
+    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,shrmask`
     let (mut atoms, k) = (vec![], goods.len());
     if let (false, Some(a1), Some(a2)) = (ablated("eq_truth"), abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
         let holds = (0..1usize << k).all(|m| {
@@ -1500,33 +1451,11 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
             return Some(apps(bitwise_law_k(n, k, a, b).0, args));
         }
     }
-    if let (Term::Op(o @ (0 | 4), a1, a2), Term::Op(o2, b1, b2)) = (a, b)
-        && o == o2 && !ablated("eq_cong")
-            && let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
-                return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
-            }
-    // equal bitwise operators: congruence on the operands
-    if let (Term::Op(o, a1, a2), Term::Op(o2, b1, b2)) = (a, b)
-        && o == o2 && *o != ADD && *o != SUB && !ablated("eq_bitcong")
-            && let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
-                return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
-            }
+    // congruence on equal operators and generalizing a shared subterm into a variable were removed: neither decided a law
+    // (docs/tier-cycle.md, "Ablating the fixed rewriter and prover parts")
     if let Some(p) = shr_mask_eq(n, ops, goods, a, b) {
         return Some(p);
     }
-    // a large pair: a subterm both sides share becomes one more variable (the witness of its value is built by
-    // `witnessed`), which takes its carries out of the machine; the proof for the pair over `k + 1` variables
-    // is the proof for the original pair, since the extra variable's value is the subterm's
-    let cost = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
-    if !ablated("generalize") && cost(a).max(cost(b)) > GENERALIZE_ABOVE && k < VARS.len()
-        && let Some(x) = shared_subterm(a, b) {
-            let mut goods2 = goods.to_vec();
-            goods2.push(witnessed(&x, n, goods));
-            let (a2, b2) = (replace_term(a, &x, &Term::V(k)), replace_term(b, &x, &Term::V(k)));
-            if let Some(p) = prove_eq(n, ops, &goods2, &a2, &b2) {
-                return Some(p);
-            }
-        }
     machine_fallback(n, goods, a, b)
 }
 
