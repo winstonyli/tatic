@@ -820,6 +820,39 @@ pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)], meet: &dyn Fn(&(Term
     units
 }
 
+/// The drop units of a pooled rules file (`library_sections`), where two rules meet when a critical pair of theirs does not
+/// join: rewritten (over `n` bits, `steps` per side) under all the file's rules and preferences, its two sides reach different
+/// normal forms. They depend only on the file, so `driver::sweep` builds them once (`units_text`) for every family's mine.
+pub fn joinability_units(text: &str, n: usize, steps: i64) -> Vec<Vec<(Term, Term)>> {
+    let _scope = tatic::kernel::InternScope::enter();
+    set_extra_rules(parse_rules(text));
+    set_rule_prefs(parse_prefs(text));
+    let ops = ops_for(n);
+    let joins = |a: &Term, b: &Term| {
+        let k = a.max_var().max(b.max_var()) + 1;
+        let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
+        let side = |t: &Term| {
+            RULE_BUDGET.with(|c| c.set(steps));
+            rewrite(t, n, &ops, &goods).0.show()
+        };
+        side(a) == side(b)
+    };
+    let units = drop_units(&library_sections(text), &|r, x| critical_pairs(r, x).iter().any(|(a, b)| !joins(a, b)));
+    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    set_rule_prefs(vec![]);
+    RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+    units
+}
+
+/// Drop units as text: a unit's rules one per line, units separated by blank lines (`parse_units`).
+pub fn units_text(units: &[Vec<(Term, Term)>]) -> String {
+    units.iter().map(|u| u.iter().map(|(l, r)| format!("{} -> {}\n", l.show(), r.show())).collect::<String>()).collect::<Vec<_>>().join("\n")
+}
+
+pub fn parse_units(text: &str) -> Vec<Vec<(Term, Term)>> {
+    text.split("\n\n").map(parse_rules).filter(|u| !u.is_empty()).collect()
+}
+
 #[test]
 fn drop_units_are_the_rules_meeting_another_library() {
     let text = "# library a\nsub(sub(x, y), z) -> sub(x, add(y, z))\nor(x, x) -> x\n# library b\nsub(sub(x, y), z) -> sub(sub(x, z), y)\nsub(x, sub(y, z)) -> add(sub(x, y), z)\nor(x, x) -> x\nand(x, 0) -> 0\nsub(x, 0) -> x  OVER  or(x, x) -> x\n";

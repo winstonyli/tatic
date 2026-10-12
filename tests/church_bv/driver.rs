@@ -258,7 +258,9 @@ fn sweep() {
         if name == "pooled" {
             // a section per library (`library_sections`; `parse_rules` reads a rule two libraries share once)
             let text: String = ["cmp3d", "add3", "sbo3"].iter().map(|fam| format!("# library {fam}\n{}\n", std::fs::read_to_string(library(fam)).unwrap().trim_end())).collect();
-            std::fs::write(&pooled, text).unwrap();
+            std::fs::write(&pooled, &text).unwrap();
+            let units = out.join("pooled.units");
+            std::fs::write(&units, units_text(&joinability_units(&text, 4, env_or("RULEMINER_STEPS", 200i64)))).unwrap();
             std::fs::write(out.join("pooled_prefs.tsv"), "").unwrap();
             // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins, and which
             // rules where two libraries' normal forms meet to drop (`drop_units`), on its phase-0 stream: a mine with no rule
@@ -267,6 +269,7 @@ fn sweep() {
                 let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
                 let mut cfg = LoopCfg { stride, split, b, k: 4, threads: 2, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };
                 cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
+                cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg);
                 append(&out.join("pooled_prefs.tsv"), &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));

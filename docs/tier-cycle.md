@@ -914,9 +914,13 @@ stays. Pooled loops, against root units:
 Salt 2's sbo3 reaches its own library's 40, so at salt 2 every family is at or below its own library (cmp3d 37 vs 40, add3 22 vs
 22). The units are larger, not finer: 7 to 25 rules (salt 1) and 12 to 17 (salt 2) against root units' 1 to 12, since inner
 overlaps count and the rewriter's built-in steps do not join every root pair; what makes them better is that they hold the
-rules that actually split normal forms. Cost: building the units takes ~20 s of the first preference round in each family's
-mine (critical pairs rewritten one by one); a pooled stage went from ~120 to ~210 s. The units depend only on the pooled library,
-so the driver could build them once instead of per family; not done. Untested: critical pairs at the root only (smaller units).
+rules that actually split normal forms. Cost: building the units took ~20 s of the first preference round in each family's
+mine (critical pairs rewritten one by one); a pooled stage went from ~120 to ~210 s. The units depend only on the pooled library
+(and its preferences, none), so the driver now builds them once (`rewrite::joinability_units`, written to `pooled.units`, read by
+the mines through `RULEMINER_UNITS`): same rows at both salts, pooled stage 212 to 142 s and 207 to 152 s.
+
+*Critical pairs at the root only (negative, removed).* Units of 1 to 11 rules instead of 7 to 25; pooled loops 60 and 105 against
+58 and 99 (salt 1 cmp3d 31 to 33, salt 2 sbo3 40 to 46). The pairs inside a left side matter.
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
