@@ -1089,9 +1089,29 @@ pub fn rule_miner() {
         covered: Vec<bool>,
         size: i64,
     }
+    // the last evaluation's memo, under its rules: an entry holds under other rules when no rule in or out matches a term of its
+    // trace (`RewriteMemo::filtered`), so each evaluation is seeded with what the rules that changed cannot touch
+    let key = |c: &[(Term, Term)]| {
+        let mut v: Vec<String> = c.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect();
+        v.sort();
+        v
+    };
+    let state_memo: std::cell::RefCell<Option<(Vec<(Term, Term)>, RewriteMemo)>> = Default::default();
+    let state_time = std::cell::Cell::new(std::time::Duration::ZERO);
     let state = |chosen: Vec<(Term, Term)>| {
-        let (eval, _) = score_laws(&chosen, &base_prefs, &all_laws, true, None);
+        let t0 = Instant::now();
+        let seed = state_memo.borrow_mut().take().map(|(was, memo)| {
+            let (a, b) = (key(&was), key(&chosen));
+            let changed: Vec<&Term> = was.iter().chain(&chosen).filter(|(l, r)| {
+                let s = format!("{} -> {}", l.show(), r.show());
+                a.contains(&s) != b.contains(&s)
+            }).map(|(l, _)| l).collect();
+            memo.filtered(|tr| !tr.iter().any(|t| changed.iter().any(|l| match_pat(l, t, &mut vec![None; 8]))))
+        });
+        let (eval, grown) = score_laws(&chosen, &base_prefs, &all_laws, true, seed);
+        *state_memo.borrow_mut() = Some((chosen.clone(), grown));
         let (covered, size) = summarize(&eval);
+        state_time.set(state_time.get() + t0.elapsed());
         Chosen { chosen, eval, covered, size }
     };
     let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
@@ -1201,12 +1221,7 @@ pub fn rule_miner() {
     let then = |s: &Chosen, rule: &(Term, Term)| state(s.chosen.iter().chain([rule]).cloned().collect());
     // a round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and alternatives' greedy paths often
     // reach the same set in another order, so picks and finished values are kept by set; the kept alternative's path is also the
-    // next rounds' own
-    let key = |c: &[(Term, Term)]| {
-        let mut v: Vec<String> = c.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect();
-        v.sort();
-        v
-    };
+    // next rounds' own (`key`, above)
     #[allow(clippy::type_complexity)]
     let picks: std::cell::RefCell<std::collections::HashMap<Vec<String>, Vec<((Term, Term), i64)>>> = Default::default();
     let pick_kept = |s: &Chosen| {
@@ -1298,6 +1313,7 @@ pub fn rule_miner() {
     }
     println!("RULEMINER scoring reused {} of {} law evaluations", law_reuses.load(std::sync::atomic::Ordering::Relaxed), law_evals.load(std::sync::atomic::Ordering::Relaxed));
     println!("RULEMINER the gain bound skipped {skipped} of {} candidate scorings", scorings + skipped);
+    println!("RULEMINER time in rule-set evaluations: {:.1}s", state_time.get().as_secs_f64());
     println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
     for (st, c) in stragglers.iter().zip(&covered) {
         if !c {

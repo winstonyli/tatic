@@ -829,6 +829,14 @@ alternatives a round (316 to 137 s). Full sweeps reproduce every own, cold and p
 row; sweeps 1120 to 747 s and 1272 to 732 s (two at a time), ref mines 472 to 293 s and 435 to 233 s, so the rival lookahead now
 costs less than it added.
 
+*Rule-set evaluations reuse the last one's memo (kept, exact).* Each evaluation of a chosen set (`state`) is seeded with the
+previous evaluation's rewrite memo, minus the entries whose trace has a term matched by a rule added or removed since
+(`RewriteMemo::filtered`). On the cmp3d cold loop, same choices and M 56; time in these evaluations 9.4 to 2.1 s and 1.1 to 0.3 s
+per mine, loop wall time best 46 to 38 s (two runs each, alternated, the machine at ~50% load from other work). Full sweeps
+reproduce every own, cold and pooled row at both salts (times not comparable: CPU at start 27% against 14%). Keeping the
+candidate scorers' memos across picks too would need worker threads that live for the whole mine (the memos hold thread-interned
+expressions); not done, since scoring already reuses 87% of law evaluations across rounds (89868 of 103100 on cmp3d).
+
 **Salt 2's pooled add3 loss is two chain normal forms meeting.** With rivals, add3's own loops at salt 2 gain (33 to 22) but its
 pooled loops lose (33 to 43), and sbo3's pooled loops too (38 to 46, own 40); at salt 1 pooling costs nothing (add3 14 own, 13
 pooled). Serving add3's salt-2 phases 1-3 (no mining) under: its own library 32; the pooled library with its learned preferences
