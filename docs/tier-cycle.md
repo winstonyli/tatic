@@ -940,7 +940,7 @@ more, so any floor between those gives the same rows; 2000 separates the classes
 pair of runs) never reach it: their smallest drops gain 5149 and 6099, and with or without the floor the rows match (own 75 and
 98, pooled 64 and 98). Five salts, no drop between 1033 and 3215.
 
-### Operand order: `show()` wins only with the promoted rules; without them size first wins; comm is not mined back (2026-10-12)
+### Operand order: `show()` wins, also with the promoted rules re-learned under each order; comm is not mined back (2026-10-12)
 Learning operand order (learned-vs-fixed.md, candidate 1) is only worth it if the order matters and the current one is not
 already good. A temporary switch put one term order behind the three places that use it (the bitwise operand sort with constants
 last, `add` comm and left-comm, and the instance check of permutative rules) and ran full sweeps (mines, own, cold, pooled) with
@@ -969,16 +969,34 @@ build), the ranking turns over:
 
 Size first wins 7 of 8 cells (all but salt 2's cold loops), and `show()` is last or second in every other. Per family the best
 order varies: own loops, add3 26 / 28 best under `show()` / reversed (salt 1 / 2), sbo3 31 / 34 under size first, cmp3d 43 /
-46 under `show()` / reversed. So the earlier verdict came from the promoted rules, which are worth far more than the order (the
-`show()` order with them, own 74 / 102, beats every order without them). The fair comparison, promoted rules re-learned under
-each order, is not run: PROMOTED was learned once and frozen. The switch is removed. Learning the order is no longer parked: the
-order matters by up to 1.6x with the promoted rules out (pooled 160 to 101), and the best order differs per family.
+46 under `show()` / reversed. This suggested the earlier verdict came from the promoted rules, which are worth far more than the order (the
+`show()` order with them, own 74 / 102, beats every order without them).
+
+The fair comparison re-promotes under each order by one procedure (below) and sweeps with that set in place of PROMOTED:
+
+| re-promoted under its own order | mines | own | cold | pooled |
+|---|---|---|---|---|
+| `show()` | 23 / 21 | 74 / 102 | 451 / 450 | 58 / 99 |
+| size first | 30 / **15** | 106 / 129 | 475 / 454 | 79 / 124 |
+
+`show()` reproduces HEAD's rows exactly, though its set differs from PROMOTED in 4 rules (below). Size first wins 1 of 8 cells
+(salt 2's mines). By family the loss is cmp3d (own 33 / 40 under `show()`, 55 / 68 under size first) and add3 (14 / 22 against 22
+/ 36); sbo3 does better under size first on salt 2 (own 40 to 25, pooled 40 to 24) and salt 1's pooled loops (14 to 10). So the
+`ABLATE=promoted` reversal came from the missing rules, not from the order: with the promoted rules re-learned under each order,
+`show()` wins. Learning one global order is parked (no better order found); the only remaining signal is per family (sbo3 under
+size first), which would need the order learned per family together with that family's promoted rules. The switch is removed.
 
 Where PROMOTED came from (design spec part 2, section 60): `rule_miner` on the older mul, shl, lt and shr families (none a sweep
 family), on 2026-10-02's miner (before rivals, lookahead, preferences and the growth cut); 20 rules of the first round, then 15
 of shr's second-round 17 ("useful", a filter not written down). Their left sides are literal patterns over normal forms in the
-`show()` order, so under another order many cannot match. A fair test re-promotes under each order by one procedure (both
-rounds, every chosen rule), `show()` included as the control; not run.
+`show()` order, so under another order many cannot match. The fair test above re-promotes under each order by one procedure,
+with no promoted rules in force: round 1 mines mul (`MULMINER_MAX=5`), shl (300 laws) and lt (150 laws); round 2 mines those and
+shr (`RULEMINER_DEEP=1 MINER_SUB=1 RULEMINER_STRIDE=3`, 900 laws) with round 1's rules in force; every chosen rule is promoted.
+Each order gives 35 distinct rules. Under `show()` the set is PROMOTED but for 4 rules: it lacks `xor(shl1(-1, 0),
+shl1(shl1(-1, 0), 0)) -> shl1(sub(0, -1), 0)` and `sub(-1, sub(x, -1)) -> sub(shl1(-1, 0), x)`, adds `sub(x, xor(x, -1)) ->
+sub(shl1(x, 0), -1)` and `shr1(sub(0, -1), 0) -> shr1(0, 0)`, and orients `sub(x, add(y, x))` to `add(0, sub(0, y))`; so the
+undocumented "useful" filter changed about two rules. Under size first the set is the same but for 3 rules mirrored in operand
+order. Each mine takes 20-100 s.
 
 ### Drops of the mine's own rules (negative, removed, 2026-10-12)
 Learned-vs-fixed candidate 2 (the miner's greedy search): a chosen rule that later rules make redundant, or that shadows a later
