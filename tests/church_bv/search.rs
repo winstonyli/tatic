@@ -726,7 +726,7 @@ pub fn rule_miner() {
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
     // RULEMINER_BASE=<file>: rules (`lhs -> rhs` lines) in force throughout, the stragglers are those left with them (section 74)
     let base: Vec<(Term, Term)> = std::env::var("RULEMINER_BASE").ok().map(|f| parse_rules(&std::fs::read_to_string(f).unwrap())).unwrap_or_default();
-    EXTRA_RULES.with(|e| *e.borrow_mut() = base.clone());
+    set_extra_rules(base.clone());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family_vars(&family) == 3 { 3usize } else { 2 });
     let ops = ops_for(n);
@@ -982,7 +982,7 @@ pub fn rule_miner() {
     } else {
         let prove = |idx: &[usize]| -> Vec<usize> {
             let _scope = tatic::kernel::InternScope::enter();
-            EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+            set_extra_rules(rules.clone());
             RULE_BUDGET.with(|b| b.set(budget));
             idx.iter().copied().filter(|&i| prove_rule(n, cands[i].0.max_var().max(cands[i].1.max_var()) + 1, &cands[i].0, &cands[i].1).is_some()).collect()
         };
@@ -1018,7 +1018,7 @@ pub fn rule_miner() {
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
-        EXTRA_RULES.with(|e| *e.borrow_mut() = base.iter().chain(extra).cloned().collect());
+        set_extra_rules(base.iter().chain(extra).cloned().collect());
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
@@ -1060,7 +1060,7 @@ pub fn rule_miner() {
     let mut proofs: Vec<Option<bool>> = vec![if cfg.fast { None } else { Some(true) }; provable.len()];
     let prove_one = |i: usize| -> bool {
         let _scope = tatic::kernel::InternScope::enter();
-        EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+        set_extra_rules(rules.clone());
         RULE_BUDGET.with(|b| b.set(budget));
         let (l, r) = provable[i];
         let ok = prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some();
@@ -1252,7 +1252,7 @@ pub fn lt_root_rules_close_constant_false_laws() {
     let lt = |a: Term, b: Term| Term::Op(LT, Box::new(a), Box::new(b));
     let add = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
     let falsum = lt(Term::Ones, Term::Ones);
-    EXTRA_RULES.with(|e| *e.borrow_mut() = vec![(lt(x.clone(), x.clone()), falsum.clone()), (lt(Term::Ones, x.clone()), falsum.clone())]);
+    set_extra_rules(vec![(lt(x.clone(), x.clone()), falsum.clone()), (lt(Term::Ones, x.clone()), falsum.clone())]);
     let before = MACHINE_FALLBACKS.with(|c| c.get());
     let r = rewrite_law(4, 2, &lt(x.clone(), x.clone()), &lt(Term::Ones, add(x.clone(), y.clone())));
     let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
@@ -1588,7 +1588,7 @@ pub fn scaling_sweep() {
     let kv = family_vars(&family);
     if let Ok(f) = std::env::var("SWEEP_RULES") {
         let rules = parse_rules(&std::fs::read_to_string(f).unwrap());
-        EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+        set_extra_rules(rules);
     }
     let all = family_laws(&family, &env_or::<usize>, 4, kv, env_or("MULMINER_MAX", 7) as u32);
     let ok: Vec<&(String, Term, Term)> = all
@@ -1856,7 +1856,7 @@ pub fn permutative_rules_are_admitted_and_oriented_by_instance() {
 pub fn normal_forms() {
     let _scope = tatic::kernel::InternScope::enter();
     let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(std::env::var("NF_RULES").unwrap_or_default()).unwrap_or_default());
-    EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+    set_extra_rules(rules);
     TRACE_RULES.store(std::env::var("NF_TRACE").is_ok(), std::sync::atomic::Ordering::Relaxed);
     RULE_BUDGET.with(|b| b.set(200));
     let (n, k) = (4, 3);
@@ -1904,7 +1904,7 @@ fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
     let rules = parse_rules(&std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap());
     let kv = family_vars(&family);
     let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7).into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
-    EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+    set_extra_rules(rules.clone());
     (rules, kv, laws)
 }
 
@@ -2147,7 +2147,7 @@ pub fn law_cost(kv: usize, t1: &Term, t2: &Term) -> Cost {
 /// the proposals that use it. Returns the per-rule gains, the per-rule user counts and the per-proposal credits.
 pub fn proposal_credit(rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)], props: &[(Term, Term)]) -> (Vec<i64>, Vec<usize>, Vec<f64>) {
     let hard = |set: &[(Term, Term)], laws: &[(Term, Term)]| -> Vec<bool> {
-        EXTRA_RULES.with(|e| *e.borrow_mut() = set.to_vec());
+        set_extra_rules(set.to_vec());
         laws.iter().map(|(a, b)| law_cost(kv, a, b).hard()).collect()
     };
     let count = |v: &[bool]| v.iter().filter(|h| **h).count() as i64;
@@ -2182,9 +2182,9 @@ pub fn proposal_credit_report() {
     for (i, (l, r)) in rules.iter().enumerate() {
         println!("CREDIT rule {} -> {}: held-out gain {}, used by {} proposals", l.show(), r.show(), gains[i], users[i]);
     }
-    EXTRA_RULES.with(|e| *e.borrow_mut() = vec![]);
+    set_extra_rules(vec![]);
     let m0 = held.iter().filter(|(a, b)| law_cost(kv, a, b).hard()).count();
-    EXTRA_RULES.with(|e| *e.borrow_mut() = rules.clone());
+    set_extra_rules(rules.clone());
     let m1 = held.iter().filter(|(a, b)| law_cost(kv, a, b).hard()).count();
     let credited = credit.iter().filter(|c| **c != 0.0).count();
     println!(
@@ -2433,7 +2433,7 @@ pub fn proposal_yield() {
     let kv = family_vars(&family);
     let n = env_or("YIELD_N", 2000usize);
     if let Ok(path) = std::env::var("CHECK_RULES") {
-        EXTRA_RULES.with(|e| *e.borrow_mut() = parse_rules(&std::fs::read_to_string(path).unwrap()));
+        set_extra_rules(parse_rules(&std::fs::read_to_string(path).unwrap()));
     }
     SCORE_ONLY.with(|s| s.set(true));
     let strings = |laws: Vec<(String, Term, Term)>| -> Vec<String> { laws.into_iter().filter(|(_, a, b)| a.is_law(b, kv)).map(|(s, _, _)| s).collect() };

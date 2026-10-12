@@ -46,7 +46,9 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
    the budget), add3 183 vs 61, sbo3 123 vs 35. With growing rewrite chains cut too, identity candidates dropped and the miner on
    serving's 200-step budget: cmp3d 180 vs 68 (no law uses up the budget), add3 183 vs 60, sbo3 123 vs 35. With no round cap
    (2026-10-11): salt 1 cmp3d 167 vs 60, add3 183 vs 60, sbo3 123 vs 31; salt 2 (first rerun of salt 2 since the dedup) cmp3d 159
-   vs 61, add3 161 vs 46, sbo3 132 vs 48.
+   vs 61, add3 161 vs 46, sbo3 132 vs 48. With rules served most specific first (any library order serves the same;
+   `docs/tier-cycle.md`, "Rule order"; libraries re-mined), salt 1 / salt 2: cmp3d 163 vs 33 / 167 vs 40, add3 167 vs 30 / 154
+   vs 33, sbo3 117 vs 27 / 130 vs 40.
 3. **Rules transfer between families.** Seeding with another family's library recovers most of the gain (salt 1 total M, cold / own /
    foreign): add3 183 / 62 / 47-67 (56-65), sbo3 128 / 41 / 53-69 (52-66), cmp3d 231 / 109 / 139-140 (118-119). cmp3d needs its
    comparison rules, so it benefits least. Under the per-side budget (2026-10-11): add3 183 / 67 / 46 (sbo3's library) and 65
@@ -64,12 +66,17 @@ at one salt (about 20 minutes). The module comment documents it and the single-l
    (sbo3's) and 57 (cmp3d's), sbo3 123 / 31 / 48 (add3's) and 59 (cmp3d's), cmp3d 180 / 60 / 110-113, and pooled mix3 10.
    With no round cap anywhere (identical libraries; the loops' per-batch mines are no longer cut at 8): add3 183 / 60 / 46 and
    57, sbo3 123 / 31 / 47 and 58, cmp3d 167 / 60 / 110-113, mix3 cold 60, pooled 10 (`docs/tier-cycle.md`, "cmp3d's library lost
-   its general rules").
+   its general rules"). With rules served most specific first (re-mined; salt 1 / salt 2, own / foreign): add3 30 / 38 (sbo3's)
+   and 108 (cmp3d's), 33 / 39 and 100; sbo3 27 / 51 (add3's) and 91 (cmp3d's), 40 / 42 and 105; cmp3d 33 / 98-106, 40 / 94-106.
+   Own libraries roughly halved, but cmp3d's now 31-rule library transfers much worse to add3 and sbo3 (README table).
 4. **A pooled library transfers to a held-out family.** The merged add3+sbo3+cmp3d library took mix3 from 58 to 8 (66 to 13 before the
    dedup; mix3 contributed no rule); under the per-side budget, from 57 to 5; with cycles cut and exact counting, from 60 to 10 (also
-   with growing chains cut). It does not change the two-variable shl, shr or lt
+   with growing chains cut); with rules served most specific first, from 61 to 7 (salt 2: 69 to 17). It does not change the two-variable shl, shr or lt
    families (pre-dedup check).
-5. **One library can be mined on a mixed stream.** Current miner (uncapped, salt 1): the u3 mine stops at 17 rules; seeded totals
+5. **One library can be mined on a mixed stream.** With rules served most specific first (salt 1 / salt 2; u3 35 / 29 rules;
+   cold / own / pooled / u3): cmp3d 163 / 33 / 36 / 42 and 167 / 40 / 43 / 47, add3 167 / 30 / 27 / 30 and 154 / 33 / 33 / 56, sbo3
+   117 / 27 / 24 / 32 and 130 / 40 / 38 / 73, mix3 61 / - / 7 / 14 and 69 / - / 17 / 41. The u3 library is no longer best anywhere;
+   the pooled one is best or within 3. In mined order, uncapped (salt 1): the u3 mine stops at 17 rules; seeded totals
    cmp3d 42 (own 60, pooled 60), add3 57 (own 60, pooled 42), sbo3 41 (own 31, pooled 32), mix3 17 (pooled 10). Salt 2 (u3 18
    rules; cold / own / pooled / u3): cmp3d 159 / 61 / 61 / 55, add3 161 / 46 / 36 / 52, sbo3 132 / 48 / 41 / 67, mix3 70 / - / 17 /
    40. On both salts the u3 library is best only for cmp3d, and the pooled one is best or within one proof elsewhere. Earlier miner: On `u3` the miner stops by itself (25 rules salt 1, 28 salt 2). Salt 1 after the dedup

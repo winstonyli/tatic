@@ -538,11 +538,36 @@ thread_local! {
     /// Set by the rule miner while scoring (`RULEMINER_FAST=1`): `prove_eq` counts a machine fallback without building its proof
     /// (the returned proof is a placeholder, never checked).
     pub static SCORE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Rules added at run time (by the rule miner), after the built-in ones.
+    /// Rules added at run time (by the rule miner), after the built-in ones, in `set_extra_rules` order. Write it only through
+    /// `set_extra_rules` (or clear it).
     pub static EXTRA_RULES: std::cell::RefCell<Vec<(Term, Term)>> = Default::default();
-    /// While `Some`, `rule_step` records every term it is asked to rewrite: a rule added at the end of the rule list can change a
+    /// While `Some`, `rule_step` records every term it is asked to rewrite: a rule added anywhere in the rule list can change a
     /// rewriting only if its left side matches one of them.
     pub static RULE_TRACE: std::cell::RefCell<Option<Vec<Term>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Installs `rules` as the run-time rules, most specific first: larger left sides first, ties by text. `rule_step` applies the first
+/// rule that matches, so a library's order would otherwise change its normal forms: the same pooled library served in six orders
+/// gave total M 47-62 on add3 (docs/tier-cycle.md, "Rule order"). Any order of the same rules now serves identically.
+pub fn set_extra_rules(mut rules: Vec<(Term, Term)>) {
+    rules.sort_by_cached_key(|(l, r)| (std::cmp::Reverse(l.size()), l.show(), r.show()));
+    EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+}
+
+#[test]
+fn rule_order_does_not_change_rewriting() {
+    // overlapping rules: under list order the first one would win on sub(sub(x, y), z) whichever it is
+    let a = "sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(x, y) -> add(x, sub(0, y))\nsub(sub(x, y), z) -> sub(sub(x, z), y)\n";
+    let b = "sub(sub(x, y), z) -> sub(sub(x, z), y)\nsub(x, y) -> add(x, sub(0, y))\nsub(sub(x, y), z) -> sub(x, add(y, z))\n";
+    let installed = |text: &str| {
+        set_extra_rules(parse_rules(text));
+        let shown: Vec<String> = EXTRA_RULES.with(|e| e.borrow().iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect());
+        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        shown
+    };
+    let (ia, ib) = (installed(a), installed(b));
+    assert_eq!(ia, ib);
+    assert!(ia.last().unwrap().starts_with("sub(x, y)"), "the general rule goes after the specific ones: {ia:?}");
 }
 // How many more rule applications `rule_step` may make; the rule miner sets it per trial so that a candidate that
 // undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
@@ -1630,7 +1655,7 @@ pub fn carry_chain_builder_finds_the_constant_carry() {
 fn rewrite_cycles_are_cut() {
     let _scope = tatic::kernel::InternScope::enter();
     let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
-    EXTRA_RULES.with(|e| *e.borrow_mut() = parse_rules(rules));
+    set_extra_rules(parse_rules(rules));
     RULE_BUDGET.with(|b| b.set(200));
     let cuts0 = CYCLE_CUTS.with(|c| c.get());
     let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
@@ -1652,7 +1677,7 @@ fn rewrite_cycles_are_cut() {
 fn growing_rewrite_chains_are_cut() {
     let _scope = tatic::kernel::InternScope::enter();
     let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
-    EXTRA_RULES.with(|e| *e.borrow_mut() = parse_rules(rules));
+    set_extra_rules(parse_rules(rules));
     RULE_BUDGET.with(|b| b.set(200));
     let cuts0 = CYCLE_CUTS.with(|c| c.get());
     let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
@@ -1682,7 +1707,7 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
     let base = parse_rules("sub(add(x, y), z) -> add(sub(x, z), y)\n");
     // every term rewritten under `rules` with `memo` in force: the normal forms, the steps used, and the memo afterwards
     let run = |rules: &[(Term, Term)], memo: RewriteMemo| {
-        EXTRA_RULES.with(|e| *e.borrow_mut() = rules.to_vec());
+        set_extra_rules(rules.to_vec());
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(memo));
         RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
         let out: Vec<(String, i64)> = terms

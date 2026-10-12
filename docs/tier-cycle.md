@@ -625,6 +625,27 @@ add3 42 / 47, sbo3 32 / 37, cmp3d 60 / 58, mix3 10 / 10; other cross cells withi
 187 s). Mixed at best and costlier, so reverted. The pooled cells moving with a reorder alone (sbo3's library holds the same
 rules) means rule order affects serving, which no experiment here controls.
 
+### Rule order (2026-10-11)
+`rule_step` applies the first rule whose left side matches, so overlapping rules give different normal forms in different list
+orders. Serving the salt-1 pooled library (no mining, phases 1-3, total M) in its mined order and five shuffles: add3 53 and 47-62,
+sbo3 43 and 38-52, cmp3d 63 and 63-70. A spread of up to 15 laws from order alone is as large as many differences in the tables
+above (and explains the pooled cells that moved with a reordered library in the foreign-straggler test).
+
+**Fix (kept):** `set_extra_rules` installs the run-time rules most specific first (larger left side first, ties by text), and every
+write to `EXTRA_RULES` goes through it, so any order of the same rules serves identically (test `rule_order_does_not_change_rewriting`,
+which fails without the sort). Ordering by text alone gave the same totals on this library; specificity was kept because a
+specific rule is usually an exception to a general one. Served in all six orders: cmp3d 63, add3 47, sbo3 45 every time. The miner
+scores candidates in the same order, so mining and serving still agree, and its memo argument holds (a rule that matches no traced
+term changes nothing wherever it sits).
+
+Re-baselined with the full sweep (`mines mines:u3 own cold cross pooled mixed cold:mix3 pooled:mix3 mixed:mix3`, salts 1 and 2;
+README table). Ref mines reach far lower M with more rules (salt 1: sbo3 1 with 18 rules, was 10 with 10; add3 8 with 16, was 18
+with 8; cmp3d 13 with 31, was 24 with 16; u3 5 with 35, was 16 with 17), and the loops seeded with a family's own or the pooled
+library roughly halve (salt 1 / 2: add3 own 30 / 33, was 60 / 46; cmp3d own 33 / 40, was 60 / 61; sbo3 own 27 / 40, was 31 / 48;
+pooled add3 27 / 33, sbo3 24 / 38, cmp3d 36 / 43, mix3 7 / 17). One regression: cmp3d's 31-rule library seeds other families
+much worse (add3 108 / 100, was 57 / 87; sbo3 91 / 105, was 58 / 82), though still far below cold. Not yet diagnosed; likely its
+specific comparison-side rules now fire ahead of general ones on add3 and sbo3 terms. cmp3d's ref mine takes 206 s (was 118 s).
+
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.
 

@@ -140,7 +140,18 @@ of their family with no round cap (`FAMILY=u3` is the union of the add3, sbo3 an
 cmp3d pools, for mining one library on a mixed stream). Current numbers (2026-10-11,
 `driver::sweep` stages `mines mines:u3 own cold cross pooled mixed cold:mix3 pooled:mix3 mixed:mix3`):
 
-Salt 1 / salt 2:
+Salt 1 / salt 2, with the run-time rules served most specific first (any order of a library serves the same; see
+`docs/tier-cycle.md`, "Rule order"):
+
+| target | cold | own library | other family's library | pooled (merged) | mined on u3 (35 / 29 rules) |
+|---|---|---|---|---|---|
+| cmp3d | 163 / 167 | 33 / 40 | 98-106 / 94-106 | 36 / 43 | 42 / 47 |
+| add3 | 167 / 154 | 30 / 33 | 38-108 / 39-100 | 27 / 33 | 30 / 56 |
+| sbo3 | 117 / 130 | 27 / 40 | 51-91 / 42-105 | 24 / 38 | 32 / 73 |
+| mix3 (held out) | 61 / 69 | n/a | n/a | 7 / 17 | 14 / 41 |
+
+The pooled library is best or within 3 of best everywhere (the family's own is best on cmp3d). The high ends of the foreign
+ranges are cmp3d's 31-rule library on add3 and sbo3. Before the canonical order (rules in mined order):
 
 | target | cold | own library | other family's library | pooled (merged) | mined on u3 (17 / 18 rules) |
 |---|---|---|---|---|---|
@@ -149,9 +160,7 @@ Salt 1 / salt 2:
 | sbo3 | 123 / 132 | 31 / 48 | 47-58 / 55-82 | 32 / 41 | 41 / 67 |
 | mix3 (held out) | 60 / 70 | n/a | n/a | 10 / 17 | 17 / 40 |
 
-On both salts the pooled library is best or within one proof of best on every family
-but cmp3d, where the u3 library is better. The rest of this section is the earlier miner (8-round cap, 40-step
-mining budget), kept as history:
+The rest of this section is the earlier miner (8-round cap, 40-step mining budget), kept as history:
 
 | target | cold | own library | other family's library | pooled (merged) | mined on u3, 8 rules | mined on u3, 25 rules |
 |---|---|---|---|---|---|---|
