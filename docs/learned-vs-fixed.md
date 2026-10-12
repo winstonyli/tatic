@@ -31,4 +31,5 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    candidates of every round is the general form, untested.
 3. Rule orientation's open loss: salt 2's pooled add3 with rivals (33 to 43). Families orient the `sub`/`add` chain rules into
    different normal forms, and pooling mixes them; four of sbo3's chain rules cost add3 32 to 87 together, little alone
-   (tier-cycle.md, "Salt 2's pooled add3 loss"). Pooling would need to choose orientation sets jointly, not one pair at a time.
+   (tier-cycle.md, "Salt 2's pooled add3 loss"). Pooling would need to choose orientation sets jointly, not one pair at a time; dropping
+   whole libraries was net zero (salt 1 60 to 73, salt 2 129 to 116), too coarse.

@@ -827,6 +827,13 @@ chose three of them itself; with rivals it drops them and orients the chains tow
 normal form; mixed, a term can be pulled toward both. The learned preferences flip one pair at a time and win back 85 to 44, but
 the four rules matter only together.
 
+*Dropping whole libraries (net zero, reverted).* The pooled library written in per-library sections, and the preference phase
+also tried dropping each section whole as a move (the same gain). Pooled loops: salt 1 60 to 73, salt 2 129 to 116. At salt 2
+add3 dropped its own library (+14000 on phase 0; pooled add3 43 to 37, against 28 with only sbo3's four chain rules gone) and
+cmp3d dropped sbo3's. At salt 1 sbo3 dropped add3's library for +1000, one phase-0 law, and its pooled loops went from 14 to 27.
+A library is too coarse a unit: it removes rules that transfer along with the conflicting ones, on little evidence. A finer
+unit would be the rules that interact (overlap) with the conflicting ones (`rewrite::rule_overlaps`); untested.
+
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
 [learned-vs-fixed.md](learned-vs-fixed.md) (surveyed 2026-10-11, updated as parts move).
