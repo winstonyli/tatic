@@ -724,9 +724,12 @@ pub fn rule_miner() {
         _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
     };
     let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
-    // RULEMINER_BASE=<file>: rules (`lhs -> rhs` lines) in force throughout, the stragglers are those left with them (section 74)
-    let base: Vec<(Term, Term)> = std::env::var("RULEMINER_BASE").ok().map(|f| parse_rules(&std::fs::read_to_string(f).unwrap())).unwrap_or_default();
+    // RULEMINER_BASE=<file>: rules (`lhs -> rhs` lines) and their preferences in force throughout, the stragglers are those left with
+    // them (section 74)
+    let base_text = std::env::var("RULEMINER_BASE").ok().map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
+    let (base, base_prefs) = (parse_rules(&base_text), parse_prefs(&base_text));
     set_extra_rules(base.clone());
+    set_rule_prefs(base_prefs.clone());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family_vars(&family) == 3 { 3usize } else { 2 });
     let ops = ops_for(n);
@@ -954,6 +957,13 @@ pub fn rule_miner() {
     // its left side's real candidates
     cands.retain(|(l, r)| l.show() != r.show());
     cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
+    cands.dedup_by_key(|(l, r)| (l.show(), r.show()));
+    // `RULEMINER_RIVALS=1` (experiment): the other right sides of each left side, rescored against a round's winner
+    let mut rivals: std::collections::HashMap<String, Vec<(Term, Term)>> = Default::default();
+    for (l, r) in &cands {
+        rivals.entry(l.show()).or_default().push((l.clone(), r.clone()));
+    }
+    rivals.values_mut().for_each(|v| drop(v.remove(0)));
     cands.dedup_by_key(|(l, _)| l.show());
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
     phase("candidate generation");
@@ -1013,12 +1023,14 @@ pub fn rule_miner() {
     // than under the built-in rules alone, the size of its normalized terms (stragglers only) and, with `record`, every term
     // `rule_step` was asked about. A candidate whose left side matches none of those terms (rules are tried in order, the candidate
     // last) cannot change a law's rewriting, so its laws keep the result under the rules chosen so far.
-    let score_laws = |extra: &[(Term, Term)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
+    // `prefs`: the rule preferences in force (`set_rule_prefs`)
+    let score_laws = |extra: &[(Term, Term)], prefs: &[(String, String)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         set_extra_rules(base.iter().chain(extra).cloned().collect());
+        set_rule_prefs(prefs.to_vec());
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
@@ -1058,18 +1070,18 @@ pub fn rule_miner() {
     let summarize = |ev: &[(bool, i64, Vec<Term>)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
     // under `RULEMINER_FAST` the candidates are proved here, once each, against the base rules as the eager filter would
     let mut proofs: Vec<Option<bool>> = vec![if cfg.fast { None } else { Some(true) }; provable.len()];
-    let prove_one = |i: usize| -> bool {
+    let prove_any = |(l, r): &(Term, Term)| -> bool {
         let _scope = tatic::kernel::InternScope::enter();
         set_extra_rules(rules.clone());
         RULE_BUDGET.with(|b| b.set(budget));
-        let (l, r) = provable[i];
         let ok = prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some();
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         ok
     };
+    let prove_one = |i: usize| prove_any(provable[i]);
     let mut chosen: Vec<(Term, Term)> = vec![];
-    let (mut base_eval, _) = score_laws(&chosen, &all_laws, true, None);
+    let (mut base_eval, _) = score_laws(&chosen, &base_prefs, &all_laws, true, None);
     let (mut covered, mut size) = summarize(&base_eval);
     let (law_evals, law_reuses) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
     let (mut scorings, mut skipped) = (0usize, 0usize);
@@ -1093,21 +1105,23 @@ pub fn rule_miner() {
         // and the entries it computed without its left side matching their traces join the memo. Expressions are per thread, so
         // each worker grows its own (1.5x faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
         let threads = cfg.threads.clamp(1, 12);
-        let score_one = |i: usize, memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
+        // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` its left side can touch
+        let score_rule = |rule: &(Term, Term), aff: &[usize], memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
             let mut with = chosen.clone();
-            with.push(provable[i].clone());
-            let untouched = |tr: &[Term]| !tr.iter().any(|t| match_pat(&provable[i].0, t, &mut vec![None; 8]));
-            let (fresh, grown) = score_laws(&with, &affected[i], true, Some(memo.filtered(untouched)));
+            with.push(rule.clone());
+            let untouched = |tr: &[Term]| !tr.iter().any(|t| match_pat(&rule.0, t, &mut vec![None; 8]));
+            let (fresh, grown) = score_laws(&with, &base_prefs, aff, true, Some(memo.filtered(untouched)));
             memo.absorb(grown.filtered(untouched));
             law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
-            law_reuses.fetch_add(all_laws.len() - affected[i].len(), std::sync::atomic::Ordering::Relaxed);
+            law_reuses.fetch_add(all_laws.len() - aff.len(), std::sync::atomic::Ordering::Relaxed);
             let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
-            for (&si, f) in affected[i].iter().zip(&fresh) {
+            for (&si, f) in aff.iter().zip(&fresh) {
                 ev[si] = (f.0, f.1);
             }
             let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
             ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), f, sz)
         };
+        let score_one = |i: usize, memo: &mut RewriteMemo| score_rule(provable[i], &affected[i], memo);
         // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
         // candidates whose bound reaches the next best
         let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
@@ -1153,13 +1167,52 @@ pub fn rule_miner() {
         skipped += provable.len() - next;
         phase(&format!("round over {} of {} candidates", next, provable.len()));
         let Some(i) = winner else { break };
-        let (_, f, sz) = results[i].take().unwrap();
-        let rule = provable[i].clone();
+        let (mut g, mut f, mut sz) = results[i].take().unwrap();
+        let mut rule = provable[i].clone();
+        // the winner's left side with another right side: same affected laws, proved only if it would win
+        if env_or("RULEMINER_RIVALS", 0u8) != 0 {
+            let mut memo = RewriteMemo::new(kv);
+            for rv in rivals.get(&rule.0.show()).into_iter().flatten() {
+                let (rg, rf, rsz) = score_rule(rv, &affected[i], &mut memo);
+                if rg > g && prove_any(rv) {
+                    println!("RULEMINER rival (+{rg} over +{g}): {} -> {} replaces {}", rv.0.show(), rv.1.show(), rule.1.show());
+                    (g, f, sz, rule) = (rg, rf, rsz, rv.clone());
+                }
+            }
+        }
         println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&f) - count(&covered), size - sz, rule.0.show(), rule.1.show());
         phase("winner proof");
         chosen.push(rule);
-        (base_eval, _) = score_laws(&chosen, &all_laws, true, None);
+        (base_eval, _) = score_laws(&chosen, &base_prefs, &all_laws, true, None);
         (covered, size) = summarize(&base_eval);
+    }
+    // learned preferences (docs/tier-cycle.md, "Rule order"): where two rules in force both rewrite a term of the scored laws, the
+    // first one in order does; each round tries letting the other win, one pair at a time, and keeps the flip with the largest gain
+    // (the rule rounds' gain), until none gains. `RULEMINER_PREFS=0` skips this
+    let mut prefs = base_prefs.clone();
+    while env_or("RULEMINER_PREFS", 1u8) != 0 {
+        let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
+        let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
+        *RULE_CONFLICTS.lock().unwrap() = Some(Default::default());
+        let (now, _) = score_laws(&chosen, &prefs, &all_laws, false, None);
+        let mut conflicts: Vec<(String, String)> = RULE_CONFLICTS.lock().unwrap().take().unwrap().into_keys().collect();
+        conflicts.sort();
+        let (f0, size0) = summarize(&now);
+        let best = conflicts
+            .iter()
+            .map(|(w, l)| {
+                let flip = (l.clone(), w.clone());
+                let with: Vec<(String, String)> = prefs.iter().filter(|p| **p != (w.clone(), l.clone())).cloned().chain([flip.clone()]).collect();
+                let (f, sz) = summarize(&score_laws(&chosen, &with, &all_laws, false, None).0);
+                ((count(&f) - count(&f0)) * 1000 + (guarded(&f) - guarded(&f0)) * guard_w + (size0 - sz), flip)
+            })
+            .filter(|(g, _)| *g > 0)
+            .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        phase(&format!("preference round over {} conflicts", conflicts.len()));
+        let Some((g, (w, l))) = best else { break };
+        println!("RULEMINER prefer (+{g} gain): {w}  OVER  {l}");
+        prefs.retain(|p| *p != (l.clone(), w.clone()));
+        prefs.push((w, l));
     }
     println!("RULEMINER scoring reused {} of {} law evaluations", law_reuses.load(std::sync::atomic::Ordering::Relaxed), law_evals.load(std::sync::atomic::Ordering::Relaxed));
     println!("RULEMINER the gain bound skipped {skipped} of {} candidate scorings", scorings + skipped);
@@ -1897,14 +1950,16 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
     }
 }
 
-/// The setup of the rule-set check tests: the `CHECK_RULES` installed as extra rules, `CHECK_FAMILY`'s variable count, and the laws of
-/// the family (sized by the `RULEMINER_*` vars) that are plausible at widths 1-6.
+/// The setup of the rule-set check tests: the `CHECK_RULES` installed as extra rules (with their preferences), `CHECK_FAMILY`'s
+/// variable count, and the laws of the family (sized by the `RULEMINER_*` vars) that are plausible at widths 1-6.
 fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
     let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
-    let rules = parse_rules(&std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap());
+    let text = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap();
+    let rules = parse_rules(&text);
     let kv = family_vars(&family);
     let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7).into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
     set_extra_rules(rules.clone());
+    set_rule_prefs(parse_prefs(&text));
     (rules, kv, laws)
 }
 

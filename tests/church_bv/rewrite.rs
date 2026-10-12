@@ -544,6 +544,54 @@ thread_local! {
     /// While `Some`, `rule_step` records every term it is asked to rewrite: a rule added anywhere in the rule list can change a
     /// rewriting only if its left side matches one of them.
     pub static RULE_TRACE: std::cell::RefCell<Option<Vec<Term>>> = const { std::cell::RefCell::new(None) };
+    /// Learned rule preferences, (winner, loser) as `lhs -> rhs` text: where both rules would rewrite a term, the winner does,
+    /// whatever the order (docs/tier-cycle.md, "Rule order"). Set with the rules they belong to (`set_rule_prefs`).
+    pub static RULE_PREFS: std::cell::RefCell<std::collections::HashSet<(String, String)>> = Default::default();
+}
+
+/// The preference lines of a rules file, `winner  OVER  loser` with each side a rule `lhs -> rhs` (`parse_rules` skips them),
+/// in the rules' `show()` spelling.
+pub fn parse_prefs(text: &str) -> Vec<(String, String)> {
+    let norm = |r: &str| r.split_once(" -> ").map(|(l, r)| format!("{} -> {}", parse_term(l.trim()).show(), parse_term(r.trim()).show()));
+    text.lines().filter_map(|l| l.split_once("  OVER  ")).filter_map(|(w, l)| Some((norm(w)?, norm(l)?))).collect()
+}
+
+/// Installs `prefs` in order: a later preference replaces an earlier one for the same pair the other way round.
+pub fn set_rule_prefs(prefs: Vec<(String, String)>) {
+    RULE_PREFS.with(|p| {
+        let mut p = p.borrow_mut();
+        p.clear();
+        for (w, l) in prefs {
+            p.remove(&(l.clone(), w.clone()));
+            p.insert((w, l));
+        }
+    });
+}
+
+#[test]
+fn preferences_choose_between_rules_that_both_match() {
+    let text = "sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(x, sub(y, z)) -> add(sub(x, y), z)\n\
+                sub(x, sub(y, z)) -> add(sub(x, y), z)  OVER  sub(sub(x, y), z) -> sub(x, add(y, z))\n";
+    assert_eq!(parse_rules(text).len(), 2, "a preference line is not a rule");
+    let t = parse_term("sub(sub(x, y), sub(z, u))");
+    let goods: Vec<(Expr, Expr)> = (0..4u32).map(|i| (var(7 - i), var(3 - i))).collect();
+    let step = |prefs: Vec<(String, String)>| {
+        let _scope = tatic::kernel::InternScope::enter();
+        set_extra_rules(parse_rules(text));
+        set_rule_prefs(prefs);
+        let out = rule_step(4, &t, &goods).unwrap().0.show();
+        set_extra_rules(vec![]);
+        set_rule_prefs(vec![]);
+        out
+    };
+    // same size, so specific first falls to the text order; the preference overrides it, and a later reverse line undoes it
+    let prefs = parse_prefs(text);
+    assert_eq!(prefs.len(), 1);
+    let (plain, preferred) = (step(vec![]), step(prefs.clone()));
+    assert_ne!(plain, preferred);
+    assert_eq!(preferred, parse_term("add(sub(sub(x, y), z), u)").show());
+    let reverse = (prefs[0].1.clone(), prefs[0].0.clone());
+    assert_eq!(step(vec![prefs[0].clone(), reverse]), plain);
 }
 
 /// Installs `rules` as the run-time rules, most specific first: larger left sides first, ties by text. `rule_step` applies the first
@@ -673,9 +721,9 @@ pub const PROMOTED: &[(&str, &str)] = &[
     ("sub(-1, sub(x, -1))", "sub(shl1(-1, 0), x)"),
 ];
 
-/// The rules of a rule file: one `lhs -> rhs` per line, other lines ignored.
+/// The rules of a rule file: one `lhs -> rhs` per line, other lines (and preference lines, `parse_prefs`) ignored.
 pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
-    text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+    text.lines().filter(|l| !l.contains("  OVER  ")).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
 }
 
 /// A `Term` from its `show` syntax: `0`, `-1`, a variable name, or `op(a, b)`.
@@ -1048,16 +1096,6 @@ pub fn print_rule_conflicts() {
     }
 }
 
-/// `RULE_PREFER=<file>` (experiment): lines `winner  OVER  loser` (each `lhs -> rhs`); where both would rewrite a term, the winner does.
-fn rule_prefer() -> &'static std::collections::HashSet<(String, String)> {
-    static P: std::sync::OnceLock<std::collections::HashSet<(String, String)>> = std::sync::OnceLock::new();
-    P.get_or_init(|| {
-        let Ok(path) = std::env::var("RULE_PREFER") else { return Default::default() };
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("RULE_PREFER {path}: {e}"));
-        text.lines().filter_map(|l| l.split_once("  OVER  ")).map(|(w, l)| (w.trim().to_string(), l.trim().to_string())).collect()
-    })
-}
-
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the proof.
 pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
     RULE_TRACE.with(|tr| {
@@ -1088,8 +1126,11 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
         Some(sub)
     };
     let (mut i, mut sub) = all.iter().enumerate().find_map(|(i, r)| fires(r).map(|s| (i, s)))?;
-    let prefer = rule_prefer();
-    if !prefer.is_empty() {
+    RULE_PREFS.with(|prefer| {
+        let prefer = prefer.borrow();
+        if prefer.is_empty() {
+            return;
+        }
         // follow preferences from the first rule that fires; at most one hop per rule, so a preference cycle stops
         for _ in 0..all.len() {
             let me = rule_text(&all[i]);
@@ -1098,7 +1139,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
                 None => break,
             }
         }
-    }
+    });
     if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_mut() {
         for r in all.iter().skip(i + 1).filter(|r| fires(r).is_some()) {
             *m.entry((rule_text(&all[i]), rule_text(r))).or_default() += 1;
@@ -1433,8 +1474,9 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
     if a.show() == b.show() {
         return Some(refl(ev(a)));
     }
+    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,eq_cong,eq_bitcong,shrmask,generalize`
     let (mut atoms, k) = (vec![], goods.len());
-    if let (Some(a1), Some(a2)) = (abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
+    if let (false, Some(a1), Some(a2)) = (ablated("eq_truth"), abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
         let holds = (0..1usize << k).all(|m| {
             let bits: Vec<Expr> = (0..k).map(|v| bit(m >> v & 1 == 1)).collect();
             let truth = |t: &Term| normalize(&t.bit(&bits));
@@ -1448,7 +1490,7 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
     }
     // add-free terms with shifts: the per-position prover, when the law holds exhaustively at widths 1..=5 (a position
     // reads only a few neighbours, so widths this small contain every case; the kernel checks the proof regardless)
-    if k <= 3 && a.add_free() && b.add_free() && (a.has_shift() || b.has_shift()) {
+    if !ablated("eq_pos") && k <= 3 && a.add_free() && b.add_free() && (a.has_shift() || b.has_shift()) {
         let holds = (1..=5usize).all(|w| (0..1u128 << (w * k)).all(|i| {
             let vals: Vec<u128> = (0..k).map(|v| (i >> (w * v)) & low_bits(w)).collect();
             a.interp(w, &vals) == b.interp(w, &vals)
@@ -1459,13 +1501,13 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
         }
     }
     if let (Term::Op(o @ (0 | 4), a1, a2), Term::Op(o2, b1, b2)) = (a, b)
-        && o == o2
+        && o == o2 && !ablated("eq_cong")
             && let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
                 return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
             }
     // equal bitwise operators: congruence on the operands
     if let (Term::Op(o, a1, a2), Term::Op(o2, b1, b2)) = (a, b)
-        && o == o2 && *o != ADD && *o != SUB
+        && o == o2 && *o != ADD && *o != SUB && !ablated("eq_bitcong")
             && let (Some(p1), Some(p2)) = (prove_eq(n, ops, goods, a1, b1), prove_eq(n, ops, goods, a2, b2)) {
                 return Some(cong_n(&bv_ty(n), &bv_ty(n), &ops[*o], &[ev(a1), ev(a2)], &[ev(b1), ev(b2)], vec![p1, p2]));
             }
@@ -1476,7 +1518,7 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
     // `witnessed`), which takes its carries out of the machine; the proof for the pair over `k + 1` variables
     // is the proof for the original pair, since the extra variable's value is the subterm's
     let cost = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
-    if cost(a).max(cost(b)) > GENERALIZE_ABOVE && k < VARS.len()
+    if !ablated("generalize") && cost(a).max(cost(b)) > GENERALIZE_ABOVE && k < VARS.len()
         && let Some(x) = shared_subterm(a, b) {
             let mut goods2 = goods.to_vec();
             goods2.push(witnessed(&x, n, goods));
@@ -1521,7 +1563,7 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
         Term::Zero => Some(Term::Zero),
         _ => None,
     });
-    if !matches!(a, Term::Op(SHR1, ..)) && !matches!(b, Term::Op(SHR1, ..)) {
+    if ablated("shrmask") || !matches!(a, Term::Op(SHR1, ..)) && !matches!(b, Term::Op(SHR1, ..)) {
         return None;
     }
     let (x, y) = (one_arg(a)?, one_arg(b)?);

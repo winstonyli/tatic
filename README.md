@@ -84,6 +84,8 @@ reproducible part.
   default, `0` turns it off), and `GUARD=<k>` (also score k laws that are
   already machine-free, so a rule that fixes stragglers but breaks those is not
   chosen; default 120, `0` turns it off).
+- Which parts of the rewriter, prover, miner and loop are learned and which are
+  fixed by hand, with the evidence per part: `docs/learned-vs-fixed.md`.
 - Unit tests for the split and the guard sampling: `shape_halves_partition`,
   `shape_salt_changes_the_split`, `guard_plan_samples_and_weights` in
   `tests/church_bv/search.rs`.

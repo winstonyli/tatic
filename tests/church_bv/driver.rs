@@ -15,7 +15,7 @@
 //! line at start and end, about 6 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
-//! Output in LOOP_OUT: rules.txt (the rules in force at the end), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
+//! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules), mine_<name>.log and serve_<skip>.log. The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=..`.
 //!
@@ -124,7 +124,7 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
     .collect();
     common.extend(cfg.env.iter().cloned());
     let with = |extra: &[(&str, String)]| common.iter().cloned().chain(extra.iter().map(|(k, v)| (k.to_string(), v.clone()))).collect::<Vec<_>>();
-    let count = || std::fs::read_to_string(&rules).unwrap().lines().count();
+    let count = || parse_rules(&std::fs::read_to_string(&rules).unwrap()).len();
     let mine = |name: &str, skip: usize, laws: usize| {
         let log = out.join(format!("mine_{name}.log"));
         let env = with(&[
@@ -136,11 +136,12 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
         assert!(child("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
+        // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
         let chosen: String = std::fs::read_to_string(&log)
             .unwrap()
             .lines()
-            .filter(|l| l.contains("RULEMINER chosen") && l.contains(" -> "))
-            .map(|l| format!("{}\n", l.rsplit_once("size): ").map_or(l, |(_, r)| r)))
+            .filter(|l| (l.contains("RULEMINER chosen") || l.contains("RULEMINER prefer")) && l.contains(" -> "))
+            .map(|l| format!("{}\n", l.split_once("): ").map_or(l, |(_, r)| r)))
             .collect();
         append(&rules, &chosen);
     };

@@ -689,8 +689,8 @@ The most frequent (252 terms on phases 1-3) is between two pooled rules with the
 `add(sub(x, y), z)` or to `add(sub(z, y), x)`: pooling concatenates libraries, so it can keep two orientations of one left side,
 and then only the text tie-break picks.
 
-**Learned preferences (prototype, kept as a switch).** `RULE_PREFER=<file>` of lines `winner  OVER  loser`: where both rules would
-rewrite a term, the winner does, whatever the order. `scripts/prefer_flips.sh` learns them for a library: it collects the
+**Learned preferences.** Lines `winner  OVER  loser` in a library (`rules.txt`; first a `RULE_PREFER=<file>` switch): where both
+rules would rewrite a term, the winner does, whatever the order. `scripts/prefer_flips.sh` learns them for a library: it collects the
 conflicts on phase 0, serves each flipped pair alone on phases 0-3, and keeps the flips that lower phase 0's M (about 20 min with 3
 workers). Total M over cmp3d, add3 and sbo3, train (phase 0) and test (phases 1-3):
 
@@ -704,26 +704,59 @@ worst on phases 1-3. The salt-1 winners let a `sub(x, sub(y, z))` rule beat `sub
 alone): the specific-first order is wrong there. Preferences are per library: the salt-1 file on the salt-2 library gives 142 to
 136. At salt 2, three flips each give -4 train and -11 or -8 test alone, but kept together only -1 and -5: two of them demote the same
 rule in favor of different winners. Keeping flips one at a time and rescoring the rest after each (greedy, like the miner's rounds)
-should recover that; it is the next step, and so is learning them inside the miner, after a mine or per loop batch, so loops
-use them too. The serving runs use no mining (`LOOP_MODE=none`), so these are serving gains on a fixed library.
+should recover that. The serving runs use no mining (`LOOP_MODE=none`), so these are serving gains on a fixed library. Learning them
+inside the miner is measured below: a family's own mine hardly ever has conflicts to learn from.
 
-### Hand-fixed parts (surveyed 2026-10-11)
-What the miner does not learn. The trusted checker (`src/kernel.rs`) stays hand-written for soundness and is not counted.
-- Rewriting (`rewrite.rs`): children-first traversal; the fixed sequence of steps tried at each node (`rule_step`, then `tree_step`
-  for `sub`, truth-table collapse, operand sort by `show()`); the built-in `add` steps (identities, `a + ~a`, assoc and comm with
-  hand-proved lemmas); the built-in `rules()` (some mined once) and `PROMOTED` (mined, frozen); first-match order (built-ins before
-  mined rules; the mined ones specific first, now overridable by `RULE_PREFER`); ordered rewriting of permutative rules on `show()`;
-  the orientation order (`rule_weight`, `rule_order_ok`); the cycle cut; the 200-step budget; `fold_rule`.
-- Proving when rewriting stops (`prove_eq`): a fixed cascade (truth table over atoms, per-position prover, congruences,
-  `shr_mask_eq`, generalization above `GENERALIZE_ABOVE` = 3 carries, then the whole-term machine). Carry caps: `CARRY_CAP` = 10.
-- Miner (`search.rs`): candidate shapes (a pool of terms up to 5 nodes over two variables, and cross-side pairs), one right side per
-  left side (the smallest), at most 400 candidates, the gain weights (1000 per law, guard weight, size cut), greedy one rule per
-  round, stragglers as the laws needing the machine.
-- Driver: strides, batch sizes and phases per family; the law pools (`add3_pool`, `cmp3_pool`, ...); the proposers (only the
-  n-gram one is trained).
-The measured effects so far point at the order and orientation choices (rule order, this section; one right side per left side,
-"Why add3 did better") and the greedy gain (general rules lost: "cmp3d's library lost its general rules"). No experiment has varied
-the `prove_eq` cascade, the built-in `add` normal form, or the carry caps.
+### Ablating the fixed rewriter and prover parts (2026-10-11)
+`ABLATE=<names>` switches off one hand-written part. Serving only (`LOOP_MODE=none`, `CHECK_FAST=1`) on phases 1-3, salt 1, total
+M over cmp3d, add3 and sbo3, with the salt-1 pooled library and with no library:
+
+| ablated | pooled library | no library |
+|---|---|---|
+| nothing | 106 | 828 |
+| `zero`, `not`, `chain`, `fold`; in `prove_eq`: `eq_pos`, `eq_cong`, `eq_bitcong`, `shrmask`, `generalize` | 106 | 828 |
+| `eq_truth` (truth table over atoms) | 110 | 832 |
+| `collapse` | 185 | |
+| `promoted` (the 36 promoted rules) | 234 | |
+| the 21 built-in `rules()` | 257 | |
+| `tree` | 318 | |
+| `assoc` | 373 | |
+| `comm` | 880 | |
+
+Nine parts never decide a law on these streams, with or without mined rules; all names are wired (`eq_truth` and the others move
+M). `comm` (sorting operands) matters most: the mined rules are learned on top of a canonical operand order. The library was mined
+with every part present, so a large rise means the library relies on that part, not that it could not be learned.
+
+### Preferences and rival orientations in the miner (2026-10-11)
+Two greedy extensions of the miner, A/B'd with `driver::sweep` (`mines own cold pooled`) at salts 1 and 2:
+- **Preferences** (`RULEMINER_PREFS`, default on): after the rounds, collect the conflicts on the scored laws and flip the pair with
+  the largest gain, rescoring after each flip, until no flip gains; the flips are written into `rules.txt` as `winner  OVER  loser`
+  lines, which serving and later mines read.
+- **Rivals** (`RULEMINER_RIVALS=1`): after a round's winner is chosen, score the other right sides of its left side on the same
+  laws; one with a larger gain replaces it, if proved.
+
+Total M (own, cold and pooled loops on phases 1-3; mines is the four ref mines on phase 0):
+
+| | mines s1 | own s1 | cold s1 | pooled s1 | mines s2 | own s2 | cold s2 | pooled s2 |
+|---|---|---|---|---|---|---|---|---|
+| baseline | 29 | 90 | 447 | 87 | 24 | 113 | 451 | 114 |
+| preferences | 29 | 88 | 446 | 87 | 23 | 112 | 450 | 112 |
+| rivals | 23 | 74 | 472 | 75 | 21 | 104 | 450 | 158 |
+| both | 23 | 72 | 472 | 75 | 21 | 103 | 452 | 151 |
+
+Preferences barely help. The ref mines learned one preference in all, since a family's own rules are chosen one at a time on
+top of each other and rarely conflict. The loops' mines learned 13, 8 of them in pooled loops, where conflicts come from
+pooling, but the pooled loops' M hardly moved: a batch's mine already adds rules for the laws a conflict breaks, while
+`prefer_flips.sh` measured serving a fixed library (106 to 89). The phase also roughly doubled mine times (wall times are rough:
+an orphaned sweep shared the machine for the first ~20 min).
+Rivals replace 3-4 winners per add3 mine and one per sbo3 mine, all `sub`/`add` chain orientations: add3's own loops drop from
+30 to 14 (salt 1) and 33 to 22 (salt 2), and salt 1's pooled loops from 87 to 75. But salt 2's pooled add3 rises from 33 to 71,
+and salt 1's cold cmp3d from 163 to 181. Pooling drops two hand-picked add3 orientations that conflict with sbo3's
+(`driver::sweep`); the rivals change add3's orientations, so the drop list no longer matches them.
+
+### Learned and fixed parts
+Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
+[learned-vs-fixed.md](learned-vs-fixed.md) (surveyed 2026-10-11, updated as parts move).
 
 ## Related work (surveyed 2026-10-10)
 Three subagents read the primary sources; items they could not confirm are marked UNVERIFIED. The "for tatic" lines are our inference.

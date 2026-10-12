@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Learn rule preferences for a library (docs/tier-cycle.md, "Rule order"): serve it on phase 0 of each family with RULE_CONFLICTS=1,
-# then for each conflicting pair serve with the pair flipped (RULE_PREFER) on phases 0-3, and keep the flips that lower phase 0's M.
+# then for each conflicting pair serve with the pair flipped (a preference line appended to the library) on phases 0-3, and keep the
+# flips that lower phase 0's M. The miner learns preferences the same way, greedily, after its rounds (RULEMINER_PREFS).
 #   EXE=<church_bv test exe> LIB=<rules file> scripts/prefer_flips.sh OUTDIR
 # RULEMINER_SHUFFLE (default 1) is the salt; WORKERS (default 3) serve in parallel, one thread each. Writes OUTDIR/learned.txt and
 # prints `PREFER flips=.. learned=.. train base->learned test base->learned` (train: phase 0, test: phases 1-3; total M of cmp3d,
@@ -11,12 +12,14 @@ out=$1; mkdir -p "$out"
 salt=${RULEMINER_SHUFFLE:-1}; W=${WORKERS:-3}
 serve() { # label prefer-file phases.. ; appends `label fam phase M` to $out/m.tsv
   local label=$1 prefer=$2; shift 2
+  # the library with the preference lines appended (a later line for the same pair replaces an earlier one)
+  local lib="$out/lib_$label.rules"; cat "$LIB" ${prefer:+"$prefer"} > "$lib"
   for fam_stride in cmp3d:15 add3:7 sbo3:11; do
     local fam=${fam_stride%:*} stride=${fam_stride#*:}
     for p in "$@"; do
       local d="$out/run_${label}_${fam}_$p"; rm -rf "$d"
-      env ${prefer:+RULE_PREFER=$prefer} ${CONFLICTS:+RULE_CONFLICTS=1} LOOP_MODE=none LOOP_OUT="$d" FAMILY=$fam STRIDE=$stride SPHASE=$p \
-        B=100 K=3 CHECK_FAST=1 MACHINE_STATE=0 WARM_RULES="$LIB" RULEMINER_FAST=1 RULEMINER_SHUFFLE=$salt \
+      env ${CONFLICTS:+RULE_CONFLICTS=1} LOOP_MODE=none LOOP_OUT="$d" FAMILY=$fam STRIDE=$stride SPHASE=$p \
+        B=100 K=3 CHECK_FAST=1 MACHINE_STATE=0 WARM_RULES="$lib" RULEMINER_FAST=1 RULEMINER_SHUFFLE=$salt \
         "$EXE" driver::loop_stream --exact --ignored --nocapture > "$d.log" 2>&1 < /dev/null
       echo "$label $fam $p $(sed -n 's/.*total_M=\([0-9]*\).*/\1/p' "$d.log" | tail -1)" >> "$out/m.tsv"
     done
