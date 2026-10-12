@@ -44,6 +44,7 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
 - Evidence so far is single runs on related add/sub/bitwise/comparison families.
 
 ## Results
+Raw rows, run scripts and the patches of reverted switches are kept per day under `docs/runs/<date>/` (from 2026-10-12).
 ### Experiment 1, kernel side (2026-10-10)
 `search::classify_proposals` gives each proposed `lhs = rhs` line a verdict (unparsed, trivial, refuted, duplicate, memorised, known or
 novel, each cheap or hard); the ignored test `proposal_yield` samples a proposer and prints a `YIELD` line (env documented on the test).

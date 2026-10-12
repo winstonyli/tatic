@@ -1,0 +1,9 @@
+cmp3d	15-1	from_pooled	24	6,9,9	38	23	0
+cmp3d	15-2	from_pooled	23	8,7,8	34	16	0
+cmp3d	15-3	from_pooled	17	2,8,7	37	25	0
+add3	7-1	from_pooled	13	9,4,0	52	11	0
+add3	7-2	from_pooled	14	8,6,0	54	12	0
+add3	7-3	from_pooled	9	2,7,0	50	11	0
+sbo3	11-1	from_pooled	5	3,1,1	44	8	0
+sbo3	11-2	from_pooled	9	4,5,0	48	12	0
+sbo3	11-3	from_pooled	10	5,2,3	47	8	0

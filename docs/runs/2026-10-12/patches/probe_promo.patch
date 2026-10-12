@@ -1,0 +1,88 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 8131272..ca034c4 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -447,6 +447,16 @@ pub fn ablated(name: &str) -> bool {
+     std::env::var("ABLATE").is_ok_and(|v| v.split(',').any(|x| x == name))
+ }
+ 
++/// The term order that sorts commutative operands and orients permutative instances (temporary probe: `ORDER=rev` reverses
++/// the `show()` order, `ORDER=size` compares size first).
++pub fn term_lt(a: &Term, b: &Term) -> bool {
++    match std::env::var("ORDER").as_deref() {
++        Ok("rev") => a.show() > b.show(),
++        Ok("size") => (a.size(), a.show()) < (b.size(), b.show()),
++        _ => a.show() < b.show(),
++    }
++}
++
+ /// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
+ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
+     let all = low_bits(n);
+@@ -912,7 +922,11 @@ pub fn parse_term(s: &str) -> Term {
+ 
+ pub fn promoted_rules() -> &'static Vec<(Term, Term)> {
+     static CACHE: std::sync::OnceLock<Vec<(Term, Term)>> = std::sync::OnceLock::new();
+-    CACHE.get_or_init(|| PROMOTED.iter().map(|(l, r)| (parse_term(l), parse_term(r))).collect())
++    // temporary probe: `PROMOTED_FILE=<rules file>` replaces PROMOTED
++    CACHE.get_or_init(|| match std::env::var("PROMOTED_FILE") {
++        Ok(f) => parse_rules(&std::fs::read_to_string(f).unwrap()),
++        Err(_) => PROMOTED.iter().map(|(l, r)| (parse_term(l), parse_term(r))).collect(),
++    })
+ }
+ 
+ /// First-order match of the pattern `p` against `t`, binding pattern variables in `sub` (a repeated variable must see equal terms).
+@@ -1249,14 +1263,15 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
+             return None;
+         }
+         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
+-        let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show();
++        let inst_t = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
++        let inst = inst_t.show();
+         if inst == t.show() {
+             return None;
+         }
+         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
+         // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
+         // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
+-        if rule_permutative(&r.lhs, &r.rhs) && inst >= t.show() {
++        if rule_permutative(&r.lhs, &r.rhs) && !term_lt(&inst_t, t) {
+             return None;
+         }
+         Some(sub)
+@@ -1468,12 +1483,12 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
+             }
+         }
+         // commutative operands in a fixed order (constants last), by the generic bitwise law
+-        let key = |t: &Term| match t {
+-            Term::Zero => "~0".to_string(),
+-            Term::Ones => "~1".to_string(),
+-            _ => t.show(),
++        let rank = |t: &Term| match t {
++            Term::Zero => 1,
++            Term::Ones => 2,
++            _ => 0,
+         };
+-        if key(&b2) < key(&a2) {
++        if rank(&b2) < rank(&a2) || (rank(&a2) + rank(&b2) == 0 && term_lt(&b2, &a2)) {
+             let t2 = Term::Op(*o, Box::new(b2.clone()), Box::new(a2.clone()));
+             let ((av, aw), (bv, bw)) = (witnessed(&a2, n, goods), witnessed(&b2, n, goods));
+             let swap = |x: Term, y: Term| Term::Op(*o, Box::new(x), Box::new(y));
+@@ -1500,7 +1515,7 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
+         // (p + q) + r = p + (q + r)
+         Some((sum(p, &sum(q, &b2)), assoc(p, q, &b2)))
+     } else if let (false, Term::Op(ADD, bp, bq)) = (ablated("assoc") || ablated("comm"), &b2) {
+-        if bp.show() < a2.show() {
++        if term_lt(bp, &a2) {
+             // a + (b + c) = (a + b) + c = (b + a) + c = b + (a + c)
+             let (a_, b_, c_) = (&a2, &**bp, &**bq);
+             let ((av2, aw2), (bv2, bw2), (cv2, _)) = (witnessed(a_, n, goods), witnessed(b_, n, goods), witnessed(c_, n, goods));
+@@ -1516,7 +1531,7 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
+         } else {
+             None
+         }
+-    } else if !ablated("comm") && b2.show() < a2.show() {
++    } else if !ablated("comm") && term_lt(&b2, &a2) {
+         Some((sum(&b2, &a2), apps(shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv, aw, bw])))
+     } else {
+         None

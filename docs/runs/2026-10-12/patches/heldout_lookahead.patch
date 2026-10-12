@@ -1,0 +1,222 @@
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 6e8e67c..7ae877b 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1119,18 +1119,26 @@ pub fn rule_miner() {
+     };
+     let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
+     let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
+-    // what a round's gain measures, as a total: a rule's gain is the value it adds
+-    let value = |s: &Chosen| count(&s.covered) * 1000 + guarded(&s.covered) * guard_w - s.size;
++    // what a round's gain measures, as a total over the laws a mask `m` counts (a rule's gain is the value it adds): 1000 per
++    // covered straggler less its size, `guard_w` per covered guard law
++    let worth = |si: usize, e: (bool, i64)| if si < stragglers.len() { e.0 as i64 * 1000 - e.1 } else if e.0 { guard_w } else { 0 };
++    let value_on = |ev: &[(bool, i64, Vec<Term>)], m: &[bool]| -> i64 { ev.iter().enumerate().filter(|(si, _)| m[*si]).map(|(si, e)| worth(si, (e.0, e.1))).sum() };
++    // the masks: every law (the rounds), and the two folds of the lookahead, each the even- or odd-indexed stragglers and every
++    // guard law
++    let masks: [Vec<bool>; 3] = [None, Some(0), Some(1)].map(|f| (0..scored.len()).map(|si| si >= stragglers.len() || f.map_or(true, |f| si % 2 == f)).collect());
+     let (law_evals, law_reuses) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
+     let (scorings, skipped) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+-    // one round on top of `s`: its alternatives with their gains, largest first: a rival orientation of the winner that gains
+-    // more, if one is proved, then the winner
+-    let pick = |s: &Chosen| -> Vec<((Term, Term), i64)> {
+-        let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
++    // one round on top of `s`, counting the laws of mask `fold` (`masks`): its alternatives with their gains, largest first: a
++    // rival orientation of the winner that gains more, if one is proved, then the winner, then (on every law only, `fold` 0) the
++    // runner-up
++    let pick = |s: &Chosen, fold: usize| -> Vec<((Term, Term), i64)> {
++        let (chosen, base_eval, covered, m) = (&s.chosen, &s.eval, &s.covered, &masks[fold]);
+         // a candidate changes only the laws whose rewriting asked about a term its left side matches (`affected`), so its gain is at most
+         // 1000 per affected uncovered straggler, `guard_w` per affected uncovered guard law and the affected stragglers' whole size
+-        let affected: Vec<Vec<usize>> =
+-            provable.iter().map(|(l, _)| all_laws.iter().copied().filter(|&si| base_eval[si].2.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))).collect()).collect();
++        let affected: Vec<Vec<usize>> = provable
++            .iter()
++            .map(|(l, _)| all_laws.iter().copied().filter(|&si| m[si] && base_eval[si].2.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))).collect())
++            .collect();
+         let bound = |i: usize| -> i64 {
+             let gain = |si: usize, w: i64| if covered[si] { 0 } else { w };
+             affected[i].iter().map(|&si| if si < stragglers.len() { gain(si, 1000) + base_eval[si].1 } else { gain(si, guard_w) }).sum()
+@@ -1145,7 +1153,7 @@ pub fn rule_miner() {
+         // each worker grows its own (1.5x faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
+         let threads = cfg.threads.clamp(1, 12);
+         // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` its left side can touch
+-        let score_rule = |rule: &(Term, Term), aff: &[usize], memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
++        let score_rule = |rule: &(Term, Term), aff: &[usize], memo: &mut RewriteMemo| -> i64 {
+             let mut with = chosen.clone();
+             with.push(rule.clone());
+             let untouched = |tr: &[Term]| !tr.iter().any(|t| match_pat(&rule.0, t, &mut vec![None; 8]));
+@@ -1153,19 +1161,16 @@ pub fn rule_miner() {
+             memo.absorb(grown.filtered(untouched));
+             law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
+             law_reuses.fetch_add(all_laws.len() - aff.len(), std::sync::atomic::Ordering::Relaxed);
+-            let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
+-            for (&si, f) in aff.iter().zip(&fresh) {
+-                ev[si] = (f.0, f.1);
+-            }
+-            let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
+-            ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), f, sz)
++            aff.iter().zip(&fresh).map(|(&si, f)| worth(si, (f.0, f.1)) - worth(si, (base_eval[si].0, base_eval[si].1))).sum()
+         };
+         let score_one = |i: usize, memo: &mut RewriteMemo| score_rule(provable[i], &affected[i], memo);
+         // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
+-        // candidates whose bound reaches the next best
+-        let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
++        // candidates whose bound reaches the next best; the runner-up is found the same way with the winner left out
++        let mut results: Vec<Option<i64>> = vec![None; provable.len()];
+         let mut next = 0;
+-        let winner = std::thread::scope(|sc| {
++        let mut won: Vec<usize> = vec![];
++        let want = if fold == 0 { 2 } else { 1 };
++        std::thread::scope(|sc| {
+             let (done_tx, done_rx) = std::sync::mpsc::channel();
+             let work: Vec<std::sync::mpsc::Sender<Vec<usize>>> = (0..threads)
+                 .map(|_| {
+@@ -1183,13 +1188,20 @@ pub fn rule_miner() {
+                 })
+                 .collect();
+             loop {
+-                let best = (0..provable.len()).filter(|&i| proofs.borrow()[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
++                let best = (0..provable.len())
++                    .filter(|&i| proofs.borrow()[i] != Some(false) && !won.contains(&i))
++                    .filter_map(|i| results[i].map(|g| (g, i)))
++                    .filter(|r| r.0 > 0)
++                    .max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
+                 let floor = best.map_or(1, |b| b.0);
+                 let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
+                 if chunk.is_empty() {
+-                    let Some((_, i)) = best else { break None };
++                    let Some((_, i)) = best else { break };
+                     if *proofs.borrow_mut()[i].get_or_insert_with(|| prove_one(i)) {
+-                        break Some(i);
++                        won.push(i);
++                        if won.len() == want {
++                            break;
++                        }
+                     }
+                     continue;
+                 }
+@@ -1205,8 +1217,8 @@ pub fn rule_miner() {
+         scorings.set(scorings.get() + next);
+         skipped.set(skipped.get() + provable.len() - next);
+         phase(&format!("round over {} of {} candidates", next, provable.len()));
+-        let Some(i) = winner else { return vec![] };
+-        let g = results[i].as_ref().unwrap().0;
++        let Some(&i) = won.first() else { return vec![] };
++        let g = results[i].unwrap();
+         // the winner's left side with another right side: same affected laws, proved only if it would win
+         // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`; the rewritten terms do not
+         // depend on the proofs): building an unprovable rival's proof as it fired panicked (`sub(x, shl1(x, 0)) -> sub(shr1(0,
+@@ -1215,50 +1227,51 @@ pub fn rule_miner() {
+         let mut rival: Option<((Term, Term), i64)> = None;
+         for rv in rivals.get(&provable[i].0.show()).into_iter().flatten() {
+             let fast = SCORE_ONLY.with(|s| s.replace(true));
+-            let rg = score_rule(rv, &affected[i], &mut memo).0;
++            let rg = score_rule(rv, &affected[i], &mut memo);
+             SCORE_ONLY.with(|s| s.set(fast));
+             if rg > rival.as_ref().map_or(g, |r| r.1) && prove_any(rv) {
+                 rival = Some((rv.clone(), rg));
+             }
+         }
+-        rival.into_iter().chain([(provable[i].clone(), g)]).collect()
++        rival.into_iter().chain(won.iter().map(|&w| (provable[w].clone(), results[w].unwrap()))).collect()
+     };
+-    // a rival's larger round gain can lead to a worse finished set (docs/tier-cycle.md, "The cold loss is a greedy path loss"), so
+-    // both are finished greedily (rivals taken, no lookahead) and the better finished set's choice is kept, ties to the rival.
+-    // Looking ahead over runners-up too lost ("Lookahead on rival swaps")
++    // a larger round gain can lead to a worse finished set (docs/tier-cycle.md, "The cold loss is a greedy path loss"), so each
++    // round's alternatives (the winner's rival, the winner, the runner-up) are finished greedily (rivals taken, no lookahead) and
++    // the choice whose finished sets are worth most held out is kept, ties to the earlier alternative: each alternative is
++    // finished on one fold's stragglers and valued on the other's, both ways. Valued in-sample, looking ahead over runners-up
++    // lost ("Lookahead over runners-up too")
+     let then = |s: &Chosen, rule: &(Term, Term)| state(s.chosen.iter().chain([rule]).cloned().collect());
+-    // a round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and alternatives' greedy paths often
+-    // reach the same set in another order, so picks and finished values are kept by set; the kept alternative's path is also the
+-    // next rounds' own (`key`, above)
++    // a round depends only on the set of rules chosen so far (`set_extra_rules` sorts them) and the mask, and alternatives' greedy
++    // paths often reach the same set in another order, so picks and finished sets are kept by mask and set (`key`, above)
+     #[allow(clippy::type_complexity)]
+-    let picks: std::cell::RefCell<std::collections::HashMap<Vec<String>, Vec<((Term, Term), i64)>>> = Default::default();
+-    let pick_kept = |s: &Chosen| {
+-        let kk = key(&s.chosen);
++    let picks: std::cell::RefCell<std::collections::HashMap<(usize, Vec<String>), Vec<((Term, Term), i64)>>> = Default::default();
++    let pick_kept = |s: &Chosen, fold: usize| {
++        let kk = (fold, key(&s.chosen));
+         if let Some(v) = picks.borrow().get(&kk) {
+             return v.clone();
+         }
+-        let v = pick(s);
++        let v = pick(s, fold);
+         picks.borrow_mut().insert(kk, v.clone());
+         v
+     };
+-    // a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
+-    let finished: std::cell::RefCell<std::collections::HashMap<Vec<String>, (i64, usize)>> = Default::default();
+-    // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds
+-    let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize| -> i64 {
++    // a set finished on a fold and the rounds finishing took, valid under any cap of at least that many rounds
++    #[allow(clippy::type_complexity)]
++    let finished: std::cell::RefCell<std::collections::HashMap<(usize, Vec<String>), (Vec<(Term, Term)>, usize)>> = Default::default();
++    // `chosen` finished greedily on `fold` (each round's first alternative) in at most `rounds` more rounds
++    let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize, fold: usize| -> Vec<(Term, Term)> {
+         let (mut path, mut left) = (vec![], rounds);
+-        let (v, mut d) = loop {
+-            let kk = key(&chosen);
+-            if let Some(&(v, d)) = finished.borrow().get(&kk).filter(|e| e.1 <= left) {
+-                break (v, d);
++        let (end, mut d) = loop {
++            let kk = (fold, key(&chosen));
++            if let Some((end, d)) = finished.borrow().get(&kk).filter(|e| e.1 <= left) {
++                break (end.clone(), *d);
+             }
+-            let s = state(chosen);
+             if left == 0 {
+-                return value(&s); // cut by the round cap: not kept
++                return chosen; // cut by the round cap: not kept
+             }
+-            let Some((rule, _)) = pick_kept(&s).into_iter().next() else {
+-                let v = value(&s);
+-                finished.borrow_mut().insert(kk, (v, 0));
+-                break (v, 0);
++            let s = state(chosen);
++            let Some((rule, _)) = pick_kept(&s, fold).into_iter().next() else {
++                finished.borrow_mut().insert(kk, (s.chosen.clone(), 0));
++                break (s.chosen, 0);
+             };
+             path.push(kk);
+             chosen = s.chosen;
+@@ -1267,17 +1280,31 @@ pub fn rule_miner() {
+         };
+         for kk in path.into_iter().rev() {
+             d += 1;
+-            finished.borrow_mut().insert(kk, (v, d));
++            finished.borrow_mut().insert(kk, (end.clone(), d));
+         }
++        end
++    };
++    // a set's value on a mask
++    let held: std::cell::RefCell<std::collections::HashMap<(usize, Vec<String>), i64>> = Default::default();
++    let value_of = |set: Vec<(Term, Term)>, mask: usize| -> i64 {
++        let kk = (mask, key(&set));
++        if let Some(&v) = held.borrow().get(&kk) {
++            return v;
++        }
++        let v = value_on(&state(set).eval, &masks[mask]);
++        held.borrow_mut().insert(kk, v);
+         v
+     };
+     let mut s = state(vec![]);
+     for round in 0..cfg.rounds {
+-        let alts = pick_kept(&s);
++        let alts = pick_kept(&s, 0);
+         let Some(mut rule) = alts.first().map(|a| a.0.clone()) else { break };
+         if alts.len() > 1 {
+             let rest = cfg.rounds - round - 1;
+-            let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest)).collect();
++            let values: Vec<i64> = alts
++                .iter()
++                .map(|(r, _)| (1..=2).map(|f| value_of(finish(s.chosen.iter().chain([r]).cloned().collect(), rest, f), 3 - f)).sum())
++                .collect();
+             let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
+             for (a, ((l, r), g)) in alts.iter().enumerate() {
+                 println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);

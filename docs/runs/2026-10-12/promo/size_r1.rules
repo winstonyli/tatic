@@ -1,0 +1,20 @@
+lt(sub(x, y), x) -> lt(add(-1, y), x)
+lt(0, xor(x, -1)) -> lt(x, -1)
+lt(xor(x, -1), -1) -> lt(0, x)
+lt(add(x, y), x) -> lt(sub(-1, x), y)
+lt(add(x, y), y) -> lt(sub(-1, x), y)
+lt(xor(x, -1), sub(y, x)) -> lt(y, x)
+lt(xor(x, -1), xor(y, -1)) -> lt(y, x)
+lt(0, sub(x, -1)) -> lt(x, -1)
+lt(xor(x, -1), add(-1, x)) -> lt(sub(0, x), x)
+lt(shl1(x, 0), -1) -> lt(0, -1)
+lt(xor(x, -1), shl1(-1, 0)) -> lt(sub(0, -1), x)
+lt(x, add(-1, x)) -> lt(x, sub(0, -1))
+lt(x, add(x, y)) -> lt(x, sub(0, y))
+sub(shl1(x, 0), x) -> x
+sub(add(x, shl1(y, 0)), y) -> add(x, y)
+sub(shl1(shl1(x, 0), 0), x) -> add(add(x, x), x)
+sub(x, 0) -> x
+sub(x, shl1(x, 0)) -> sub(0, x)
+sub(shl1(x, 0), x) -> x
+sub(shl1(shl1(-1, 0), 0), -1) -> add(-1, add(-1, -1))
