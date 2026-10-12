@@ -785,15 +785,21 @@ add(sub(x, y), z)` (in all three libraries) on terms both match, against the spe
 Over own, cold and pooled loops and both salts, the kept setup (rivals; preferences only on pooled libraries) totals 1289 against
 the baseline's 1302: own and pooled gain, and salt 1's cold loops lose 25 (447 to 472).
 
-**The cold loss is a transfer loss, not the orientation.** Most of it is cmp3d phase 3 (56 to 69), whose second batch goes from
-6 to 20 after the first batch's mine; every new straggler is an `lt` law. Serving that batch under the first mine's rules: the
-base set gives 6, and with only the rival orientation swapped in still 6; the rivals run's set gives 20, and with its winner
+**The cold loss is a greedy path loss, not the orientation.** Most of it is cmp3d phase 3 (56 to 69), whose second batch goes
+from 6 to 20 after the first batch's mine; every new straggler is an `lt` law. Serving that batch under the first mine's rules:
+the base set gives 6, and with only the rival orientation swapped in still 6; the rivals run's set gives 20, and with its winner
 swapped back 22. What differs is the rest of the set. The base mine chose the general `lt(x, sub(y, z)) -> lt(x, add(sub(x, y),
-z))` (+11 in-sample; without it the base set gives 24). In the rivals run the rival's larger gain (+14 against +10) fixed those
-laws first, and more specific `lt` rules finished the batch. Adding the general rule to the rivals set gives 17, not 6, since the
-specific rules fire first. So the greedy in-sample gain picks between rule sets that fix the mined batch equally, and only one
-of them transfers. This is the open "a gain that credits transfer" item, not something specific to rivals; salt 2's cold loops do
-not lose (451 to 450).
+z))` (+11 in-sample; without it the base set gives 24). In the rivals run the rival's larger round gain (+14 against +10) won
+round 2, the general rule never led a later round, and specific `lt` rules took the rest. Adding the general
+rule to the rivals set gives 17, not 6, since the specific rules fire first. The rivals set is worse on the mined batch too, not
+only on the next one: its mine covers 38 of the 43 stragglers against the base mine's 42, and serving the mined batch gives M 5
+against 1 (14 with the general rule added). So the larger one-round gain led to a worse finished set: greedy myopia, not
+overfitting. Salt 2's cold loops do not lose (451 to 450).
+
+*Held-out scoring (negative, reverted).* Rank each round's candidates by the smaller of their gains on the even- and odd-indexed
+stragglers (guard laws in both), then by the full gain. On this loop it changes nothing (69 both ways): most gains are +1, so the
+smaller half is 0 for nearly every candidate and the ranking falls back to the full gain; it only swapped the order of the first
+two `sub` rules. It targets overfitting, which this loss is not.
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in
