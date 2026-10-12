@@ -1032,31 +1032,42 @@ which `add_tree_law` cannot do with `shr1`. Rivals are now scored with `SCORE_ON
 depend on the proofs), and `score_laws` keeps a caller's `SCORE_ONLY` instead of resetting it. Full sweeps reproduce HEAD's mines,
 own, cold and pooled rows on both salts (23/74/451/58, 21/102/450/99).
 
-### Proposed: promotion as an iterated sweep (2026-10-12, not run)
+### Promotion as an iterated sweep: one iteration pays a little, the second does not (2026-10-12)
 Aim: move the promoted rules from "learned once" to "learned in the run" (learned-vs-fixed.md). Three framings:
 - *Re-run the section-60 procedure inside the sweep* (rejected as a first step): bookkeeping only. Under `show()` it reproduces
   HEAD's rows exactly ("Operand order"), so it moves no number; worth doing only once the iteration below pays.
 - *Promote from the sweep families' union* (rejected): already measured as the union mine (`mines:u3`) and as down-weighted
   foreign stragglers, both mixed, with pooling better ("Scoring on other families' laws", "Down-weighted foreign stragglers").
-- *Iterate the sweep* (proposed): a sweep's output is the next sweep's starting base, the cycle's "proved laws compiled into rules
+- *Iterate the sweep* (run): a sweep's output is the next sweep's starting base, the cycle's "proved laws compiled into rules
   that make later work cheaper". Today every ref mine starts from the built-in and promoted rules alone. In iteration k+1 the ref
   mine of family F starts from iteration k's pooled library for F (`pooled_<F>/rules.txt`: the three libraries with F's learned
   preferences and drops) and mines its phase-0 stream on top of it.
 
-Prototype, the cheapest falsifier (about 10 lines in `driver::sweep`): `MINES_WARM=<sweep dir>` seeds each ref mine with
-`<dir>/pooled_<fam>/rules.txt` through `LoopCfg.warm`, as the pooled loops are seeded today; a family with no pooled library
-(mix3) mines cold as now. Iteration 0 is a HEAD sweep (`mines pooled`, salts 1-2; its libraries were not kept); iteration 1 runs
-`mines own` with `MINES_WARM` on it. The comparison is iteration 1's own loops against iteration 0's pooled loops (58 / 99): both
-serve phases 1-3 from F's pooled base and mine each batch on top, so the only difference is what F's ref mine adds on phase 0.
-No leakage: every base is mined on phase 0, the loops serve phases 1-3. Expected: little room on add3 and sbo3, whose phase 0
-the pooled base already nearly covers (the pooled preference mines' M: add3 1 / 5, sbo3 2 / 1), and some on cmp3d (13 / 11), so
-any gain should show there. Stop if iteration 1 is not lower on both salts: the step each iteration repeats then adds nothing. About 15 min wall for both salts after iteration 0's 15.
+**Mechanism (kept):** `MINES_WARM=<sweep dir>` seeds each ref mine with `<dir>/pooled_<fam>/rules.txt` through `LoopCfg.warm`,
+as the pooled loops are seeded; a family with no pooled library (mix3) mines cold. Iteration 0 is a HEAD sweep (`mines pooled`);
+iteration k+1 runs `mines own` with `MINES_WARM` on iteration k, then the existing pooled stage on its libraries. Iteration 1's own
+loops against iteration 0's pooled loops isolate what the ref mine adds on phase 0: both serve phases 1-3 from F's pooled base and
+mine each batch on top. No leakage: every base is mined on phase 0, the loops serve phases 1-3. Total M (salt 1 / salt 2):
 
-If it pays: (1) the pooled stage of iteration k+1 must not pool three libraries that each repeat a base (the drop units come from
-critical pairs between sections), so sections hold only each family's added rules, over F's base, which makes the pooled text
-per family; (2) iterate from `ABLATE=promoted` and see whether the iterations reach the PROMOTED rows, which would let PROMOTED
-go; (3) add pooled loops on mix3 (`pooled:mix3`), which is in no library, as the held-out family. Not tested by any of this: the
-promoted rules' precedence (they are tried before the run-time rules, which a warm base is).
+| | ref mines | own | pooled | pooled text lines (with repeats) |
+|---|---|---|---|---|
+| iteration 0 (= HEAD) | 23 / 21 | 74 / 102 | 58 / 99 | 60 / 47 |
+| iteration 1 | 16 / 15 | **55** / 90 | 57 / **85** | 176 / 105 |
+| iteration 2 | 14 / 15 | 58 / 85 | 65 / 85 | 529 / 267 |
+
+(Ref mines' M is in-sample, on the phase 0 the base was fitted to.) The falsifier passes: iteration 1's own loops are lower on
+both salts (58 to 55, 99 to 90). Best loops: 157 (iteration 0 pooled) to 142 (iteration 1 pooled; 145 own). By family, salt 1
+own: cmp3d 31 to 24, add3 13 to 10, sbo3 14 to 21; salt 2 every family at or below. Iteration 2 adds nothing: own 58 / 85, and
+its pooled loops lose on salt 1 (65; add3 10 to 16) while the libraries keep growing (salt 1 cmp3d 31, 48, 61 rules). The pooled
+text repeats each base once per library (60 to 529 lines), the duplication the per-family pooled text was meant to remove; it
+starts to cost at iteration 2 (pooled 65 against own 58, pooled stage 284 to 922 s), but since own loops also stop improving
+there, removing it would at best reach iteration 1's rows, so it was not built. The pooled preference mines' phase-0 M (cmp3d
+13 / 11 at iteration 0, 7 / 9 after) shows where the room was: cmp3d. Cost of an iteration: about 220-240 s of ref mines and own
+loops, plus 260-280 s of pooled stage, two sweeps at a time.
+
+Not run: iterating from `ABLATE=promoted` (whether the iterations recover PROMOTED, which would let it go); pooled loops on the
+held-out mix3 across iterations (`pooled:mix3`). Not tested by any of this: the promoted rules' precedence (they are tried before
+the run-time rules, which a warm base is).
 
 ### Learned and fixed parts
 Which parts are learned and which are fixed by hand, with the measured evidence per part, is kept in

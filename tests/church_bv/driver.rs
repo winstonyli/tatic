@@ -238,6 +238,9 @@ fn sweep() {
         env: env.clone(),
     };
     let library = |fam: &str| lib.join(format!("lib_{fam}")).join("rules.txt");
+    // `MINES_WARM=<sweep dir>`: each ref mine starts from that sweep's pooled library for its family, where there is one
+    // (docs/tier-cycle.md, "Promotion as an iterated sweep": one iteration lowers the best loops 157 to 142, a second adds nothing)
+    let mines_warm = |fam: &str| std::env::var("MINES_WARM").ok().map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
     machine_state("start");
     for stage in stages.split_whitespace() {
         let (name, fams) = stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
@@ -246,7 +249,7 @@ fn sweep() {
         if name == "mines" {
             for fam in fams.split(',') {
                 let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
-                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, check_fast: false, ..base("ref", out.join(format!("lib_{fam}")), fam) };
+                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) };
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg);
                 append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
