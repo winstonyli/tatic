@@ -1364,6 +1364,34 @@ while any is alive, and they cannot be moved. Dropping the table took 270 ms of 
 it on another thread (`Rc` is not `Send`) and keeping it across scopes (under 1%, above). Fewer nodes interned is the
 only way left to shrink it.
 
+**Who looks up what, and how much a one-entry slot per node would catch (probes, reverted, no patch kept,
+2026-10-13).** Same run at 35efc0f.
+- The builders (`app`, `pi`, `lam` and the rest) interned 7.67 M terms, all with the table on, and 7.09 M (92%) were
+  already there (0.74 M of those leaves). They take `Expr` by value, so a term the caller already holds as a node is
+  rebuilt and found again. That is 41% of all node-table lookups, though only 7% of busy samples, since a found node
+  was usually built moments before and is cached.
+- `inst_get`: 0.86 M of its 5.91 M lookups (15%) use an argument-list id with no entry yet and so cannot hit. Skipping
+  them would save at most about 1.4% of busy samples (parked: too small for the per-id flag it needs).
+- A one-entry memo slot per node (the key of that node's previous lookup in the same table):
+
+  | Table | Lookups | Hits | Hits the slot would also give |
+  |---|---|---|---|
+  | `inst` | 5.91 M | 2.63 M | 0.61 M (23%) |
+  | `shifts` | 1.67 M | 1.03 M | 0.67 M (66%) |
+  | `uses` | 8.52 M | 7.93 M | 7.03 M (89%) |
+  | `InferCache.types` | 3.61 M | 1.91 M | 1.47 M (77%) |
+
+Two unifying mechanisms follow (open leads, not built):
+- **Pure per-node facts in the node.** `loose` and `free` already live in the node header; `uses(x, d, m)` is a finer
+  fact of the same kind and never changes. A slot for it fits the header's 4 padding bytes (no larger nodes), needs
+  no generation tag, no keep-alive and no pointer-keyed table, and would answer 7.0 M of the 8.5 M lookups from a node
+  the walk is already reading. It does not fit facts that are nodes themselves: a `shifts` or `infer` slot holding a
+  result `Rc` makes reference cycles possible (a shift by +1 and back), and the infer cache also lives per call.
+- **Canonical handles end to end.** Builders and their callers keep terms as interned nodes rather than `Expr`
+  values, so a term already built is passed on, not rebuilt. It would remove most of the builders' 7.1 M re-finds,
+  `canonical_inputs`' interning on entry and `args_id`'s interning of non-canonical arguments, but it changes the
+  builder interface across `tests/church_bv`.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
