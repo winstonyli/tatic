@@ -22,13 +22,15 @@ pub fn bop_fn(op: usize) -> Expr {
 /// The closed lemmas the diagram's steps instantiate (each `Pi bits. GoodBool bits -> Id(Bool0, l, r)`), over bits in
 /// the order given: `same[op]`: `op (mux v a b) (mux v c d) = mux v (op a c) (op b d)` (`v a b c d`); `skipl[op]`:
 /// `op (mux v a b) y = mux v (op a y) (op b y)` (`v a b y`); `skipr[op]`: `op x (mux v c d) = mux v (op x c) (op x d)`
-/// (`v x c d`); `red`: `mux v x x = x` (`v x`); `var`: `v = mux v true false` (`v`).
+/// (`v x c d`); `red`: `mux v x x = x` (`v x`); `var`: `v = mux v true false` (`v`); `gates`:
+/// `mux c x y = or (and c x) (and (xor c true) y)` (`c x y`).
 pub struct DdLemmas {
     pub same: Vec<Expr>,
     pub skipl: Vec<Expr>,
     pub skipr: Vec<Expr>,
     pub red: Expr,
     pub var: Expr,
+    pub gates: Expr,
 }
 
 thread_local! {
@@ -66,7 +68,10 @@ pub fn dd_lemmas() -> std::rc::Rc<DdLemmas> {
     }
     let red = eq_lemma(2, &|v| mux(v[0].clone(), v[1].clone(), v[1].clone()), &|v| v[1].clone());
     let var = eq_lemma(1, &|v| v[0].clone(), &|v| mux(v[0].clone(), t(), f()));
-    let l = std::rc::Rc::new(DdLemmas { same, skipl, skipr, red, var });
+    let gates = eq_lemma(3, &|v| mux(v[0].clone(), v[1].clone(), v[2].clone()), &|v| {
+        or(and(v[0].clone(), v[1].clone()), and(xor(v[0].clone(), t()), v[2].clone()))
+    });
+    let l = std::rc::Rc::new(DdLemmas { same, skipl, skipr, red, var, gates });
     DD_LEMMAS.with(|c| *c.borrow_mut() = Some(l.clone()));
     l
 }
@@ -120,11 +125,7 @@ impl Dd {
         let (ch, gh) = self.canon(hi);
         let (cl, gl) = self.canon(lo);
         let c = Gb { e: self.vars[v].clone(), g: self.goods[v].clone() };
-        let one = Gb { e: t(), g: good_bit(true) };
-        let not_c = self.gops.xor(&c, &one);
-        let a1 = self.gops.and(&c, &Gb { e: ch, g: gh });
-        let a2 = self.gops.and(&not_c, &Gb { e: cl, g: gl });
-        let r = self.gops.or(&a1, &a2);
+        let r = self.gops.mux(&c, &Gb { e: ch, g: gh }, &Gb { e: cl, g: gl });
         self.canon.insert(n, (r.e.clone(), r.g.clone()));
         (r.e, r.g)
     }
@@ -269,6 +270,26 @@ impl DdGates {
         let p = trans_proof(&bool0(), &bop(op, x.e.clone(), y.e.clone()), &bop(op, cx, cy), &cr, congp, pr);
         Sig { e: bop(op, x.e.clone(), y.e.clone()), n: r, p }
     }
+    /// `mux c x y`, through the gates on the arguments' canonical terms and the `gates` lemma.
+    pub fn mux(&self, c: &Sig, x: &Sig, y: &Sig) -> Sig {
+        let (lem, (cc, gc), (cx, gx), (cy, gy)) = {
+            let mut dd = self.dd.borrow_mut();
+            (dd.lem.clone(), dd.canon(c.n), dd.canon(x.n), dd.canon(y.n))
+        };
+        let at = |e: &Expr, n: usize| Sig { e: e.clone(), n, p: refl(e.clone()) };
+        let (sc, sx, sy) = (at(&cc, c.n), at(&cx, x.n), at(&cy, y.n));
+        let not_c = self.xor(&sc, &self.konst(true));
+        let (a1, a2) = (self.and(&sc, &sx), self.and(&not_c, &sy));
+        let s = self.or(&a1, &a2);
+        let cr = self.dd.borrow_mut().canon(s.n).0;
+        let m = mux(cc.clone(), cx.clone(), cy.clone());
+        let def = apps(lem.gates.clone(), vec![cc.clone(), cx.clone(), cy.clone(), gc, gx, gy]);
+        let fm = lam(bool0(), lam(bool0(), lam(bool0(), mux(var(2), var(1), var(0)))));
+        let e = mux(c.e.clone(), x.e.clone(), y.e.clone());
+        let congp = cong_n(&bool0(), &bool0(), &fm, &[c.e.clone(), x.e.clone(), y.e.clone()], &[cc, cx, cy], vec![c.p.clone(), x.p.clone(), y.p.clone()]);
+        let p = trans_proof(&bool0(), &e, &m, &cr, congp, trans_proof(&bool0(), &m, &s.e, &cr, def, s.p));
+        Sig { e, n: s.n, p }
+    }
     /// `Id(Bool0, a.e, b.e)` when both signals are the same function.
     pub fn equate(&self, a: &Sig, b: &Sig) -> Option<Expr> {
         if a.n != b.n {
@@ -300,10 +321,7 @@ impl Gates for DdGates {
         let one = self.konst(true);
         let mut sigs: Vec<Sig> = vec![self.konst(false), one.clone()];
         for &(level, hi, lo) in &d.nodes {
-            let c = &vars[level];
-            let not_c = self.xor(c, &one);
-            let (a1, a2) = (self.and(c, &sigs[hi]), self.and(&not_c, &sigs[lo]));
-            let s = self.or(&a1, &a2);
+            let s = self.mux(&vars[level], &sigs[hi], &sigs[lo]);
             sigs.push(s);
         }
         let mut s = sigs[d.root].clone();

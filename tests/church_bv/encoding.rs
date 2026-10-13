@@ -5,7 +5,7 @@ use super::*;
 /// term stays canonical in the scope that uses it.
 fn constant(slot: usize, build: fn() -> Expr) -> Expr {
     thread_local! {
-        static CONSTANTS: std::cell::RefCell<(u32, [Option<Expr>; 6])> = Default::default();
+        static CONSTANTS: std::cell::RefCell<(u32, [Option<Expr>; 9])> = Default::default();
     }
     let g = tatic::kernel::intern_generation();
     let hit = CONSTANTS.with(|c| {
@@ -296,7 +296,7 @@ pub fn skeleton_probe() {
 
 /// GoodBool a := Pi P:(Bool -> Sort1). P true -> P false -> P a   (ctx [a])
 pub fn good_bool() -> Expr {
-    lam(bool0(), pi(arrow(bool0(), sort(1)), pi(app(var(0), t()), pi(app(var(1), f()), app(var(2), var(3))))))
+    constant(8, || lam(bool0(), pi(arrow(bool0(), sort(1)), pi(app(var(0), t()), pi(app(var(1), f()), app(var(2), var(3)))))))
 }
 /// `\a g. g motive at_true at_false`, with its type; `motive_body` is written at ctx [b].
 pub fn bit_lemma(motive_body: Expr, at_true: Expr, at_false: Expr) -> (Expr, Expr) {
@@ -1113,11 +1113,15 @@ pub fn table_lookup_cost_by_size() {
 // variable with a `GoodBv` witness (a Church Bool0 cannot select between Bv values, so the
 // wrapper muxes bitwise with and/or/not).
 
+/// `\a C t f. a C f t`: one gate, not `xor a true`.
 pub fn not_(x: Expr) -> Expr {
-    xor(x, t())
+    app(constant(6, || lam(bool0(), lam(sort(0), lam(var(0), lam(var(1), app3(var(3), var(2), var(0), var(1))))))), x)
 }
+/// `\c x y C t f. c C (x C t f) (y C t f)`: one gate, not `or (and c x) (and (not c) y)`.
 pub fn mux(c: Expr, x: Expr, y: Expr) -> Expr {
-    or(and(c.clone(), x), and(not_(c), y))
+    // ctx [c, x, y, C, t, f]: f=0 t=1 C=2 y=3 x=4 c=5
+    let gate = || lam(bool0(), bool2(app3(var(5), var(2), app3(var(4), var(2), var(1), var(0)), app3(var(3), var(2), var(1), var(0)))));
+    app3(constant(7, gate), c, x, y)
 }
 /// `\a b. a Bool0 (\a_i. b Bool0 (\b_i. and_i xnor(a_i, b_i)))`, closed, of type `Bv_n -> Bv_n -> Bool0`.
 pub fn eq_bv(n: usize) -> Expr {
@@ -1983,6 +1987,22 @@ pub fn assoc_g(which: usize, v: &[Expr]) -> Expr {
     table_expr(v, &|bits| assoc_table(which, bits))
 }
 
+/// `Pi c x y. GoodBool c -> GoodBool x -> GoodBool y -> GoodBool (mux c x y)`: on `c`, then on the branch it picks
+/// (eliminating at `P`, as `good2` does: `GoodBool` itself is too large for a motive).
+pub fn good_mux() -> Expr {
+    // ctx [c, x, y, gc, gx, gy, P, h1, h0]; under a motive binder P = var 3, c = var 9, x = var 8, y = var 7
+    let motive_c = lam(bool0(), app(var(3), mux(var(0), var(8), var(7))));
+    let on_t = app3(var(4), lam(bool0(), app(var(3), mux(t(), var(0), var(7)))), var(1), var(0));
+    let on_f = app3(var(3), lam(bool0(), app(var(3), mux(f(), var(8), var(0)))), var(1), var(0));
+    let mut proof = lam(arrow(bool0(), sort(1)), lam(app(var(0), t()), lam(app(var(1), f()), app3(var(5), motive_c, on_t, on_f))));
+    for _ in 0..3 {
+        proof = lam(app(good_bool(), var(2)), proof);
+    }
+    for _ in 0..3 {
+        proof = lam(bool0(), proof);
+    }
+    proof
+}
 /// A `Bool0` expression with its `GoodBool` witness.
 #[derive(Clone)]
 pub struct Gb {
@@ -1993,6 +2013,7 @@ pub struct GoodOps {
     pub and: Expr,
     pub or: Expr,
     pub xor: Expr,
+    pub mux: Expr,
 }
 impl GoodOps {
     pub fn new() -> GoodOps {
@@ -2000,7 +2021,12 @@ impl GoodOps {
             and: good2(&|a, b| and(a, b), &OP_INFO[1].truth).0,
             or: good2(&|a, b| or(a, b), &OP_INFO[2].truth).0,
             xor: good2(&|a, b| xor(a, b), &OP_INFO[3].truth).0,
+            mux: good_mux(),
         }
+    }
+    pub fn mux(&self, c: &Gb, x: &Gb, y: &Gb) -> Gb {
+        let e = mux(c.e.clone(), x.e.clone(), y.e.clone());
+        Gb { g: apps(self.mux.clone(), vec![c.e.clone(), x.e.clone(), y.e.clone(), c.g.clone(), x.g.clone(), y.g.clone()]), e }
     }
     pub fn go(&self, w: &Expr, e: Expr, x: &Gb, y: &Gb) -> Gb {
         Gb { g: apps(w.clone(), vec![x.e.clone(), y.e.clone(), x.g.clone(), y.g.clone()]), e }

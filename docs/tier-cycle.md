@@ -682,6 +682,17 @@ lemmas 8%. Of serving's 29.5 s of lemmas:
 - built earlier by another serving process (what one serving process per loop would save): 8.0 s (27%);
 - built earlier by the mine or another serving process (what a trusted cross-process cache would save): 20.6 s (70%).
 
+**`mux` and `not` as one gate each (2026-10-12).** `mux c x y` was `or (and c x) (and (not c) y)` with `not c = xor c true`,
+four gate applications per node of every truth table (`table_app`, the case lemmas' statements); it is now one cached gate,
+`\c x y C t f. c C (x C t f) (y C t f)`, and `not` is `\a C t f. a C f t` (`encoding::constant` slots 6 and 7; `good_bool`
+cached too, slot 8). The decision-diagram prover had relied on the old `mux` being its gates by definition: its canonical
+nodes are now `mux`es with a `GoodBool` witness from `good_mux` (eliminating at the motive's `P`, as `good2` does; `GoodBool`
+itself is too large for a motive), and a table node built from arbitrary signals goes through the gates and the new
+`DdLemmas::gates` (`mux c x y = or (and c x) (and (xor c true) y)`, by case analysis). Pair sweep against 9f1d23e, same load
+(CPU 44% at launch from other sessions, RTP off), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/mx_*`): rows,
+preferences and all 27 rule and unit files identical on both salts; wall 194 against 245 s (salt 1) and 163 against 210 s
+(salt 2), 21-22% less; cmp3d's mine 58 against 92 s and 35 against 62 s.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
