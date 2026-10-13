@@ -301,7 +301,8 @@ of visits with lemma counts in parentheses):
   counted visits (after the `bool0` fix) and checking them costs 2.6M less, so the total falls 55.1M to 41.4M with M unchanged (31).
   But `proof_cost_split` (normal build, own library, pinned to two cores, five alternating runs each, machine load 7-66% from another
   program, so best-of) takes 52.2 s CPU with case trees against 47.1 s with diagrams: building 2^nv-leaf trees costs time the
-  visit count does not see. Diagrams stay (`DDMIN=9`).
+  visit count does not see. Diagrams stay (`DDMIN=9`). Reversed on 2026-10-13: case trees are now faster at nv = 9 ("Case
+  trees at nv = 9").
 - **Shift visits are cheap.** The `bool0` fix removed 2-3x of the build visits but did not change time (same runs: sbo3 5.7-6.8 s old,
   5.5-6.3 s new; cmp3d 47.5-49.0 s old, 47.1-51.9 s new). So the visit count overweights `shift` and misses term construction; as
   a cost for the miner's objective it needs weights (or construction counts, `take_hc_built`) checked against time first.
@@ -918,6 +919,47 @@ preferences and all 27 rule and unit files identical on both salts; no proof fai
   by the rule alone. That is sound, since a proved rule is a true law, but it could change a choice where a rule is provable
   under one base and not another. No such case has been seen (no winner proof has failed in a sweep), but a pair sweep would
   have to show identical output.
+
+**Winner verdicts kept across the sweep (negative, reverted, 2026-10-13).** A prototype (reverted, no patch kept) keyed each
+winner's verdict by the rule alone. `prove_any` looked up `rule_proved_<l>_<r>_<n>_<k>` in the sweep's lemma file and took a hit
+as provable; a built proof recorded its statement under that key. In the sequential pair against 84242e0 (`scripts/vc_seq.sh`,
+rows `vcs_*`; CPU 23% at launch, RTP off), rows, preferences and all 27 rule and unit files were identical on both salts. But
+nothing got faster. Wall was 44 against 42 s (salt 1) and 22 against 30 s (salt 2). Summed `own` mine time was 14.6 against
+12.0 s and 3.3 against 3.6 s; `pooled` was 3.3 against 2.7 s and 3.3 against 3.6 s. The reason is where the wait sits. Almost
+all of `own`'s time on salt 1 is one mine, `own_cmp3d_1`'s second (9-12 s), whose rounds take about 0 s; every other
+own/pooled mine takes 0.2-1.2 s. Its time is three lazy proofs. One of them is a rule no earlier process had proved, so no
+verdict cache can hit it. The repeated proofs the cache does skip are the cheap ones. The 9.45 s that the miners spent in
+`settle` in the profile above (salt 1 too) is most likely that one proof (next section).
+
+**Case trees at nv = 9 (2026-10-13).** A timing probe (reverted, no patch kept) did three things. It timed each winner proof in
+`prove_any`, summed the check time in `holds` by the kind of check, and timed each case lemma that `tree_proof` built (build
+plus check) by nv and by whether a diagram proved it (`lemma_dd`, used at `nv >= DDMIN`, then 9).
+- One proof is half of all proof time. A salt-1 sweep's winner proofs took 16.1 s, and 7.9 s of it was `own_cmp3d_1`'s
+  `lt(sub(x, y), add(sub(x, add(shl1(x, 0), y)), z)) -> lt(add(-1, add(sub(y, z), x)), sub(x, sub(z, x)))`. Of that, 5.8 s
+  was checking its 14 case lemmas at nv = 9, 3 operand bits plus 6 carries, proved as diagrams. Every other proof took at
+  most 0.35 s.
+- At nv = 9 the diagrams cost more than case trees, in time as well as visits. Every lemma the probe built, across whole
+  sweeps (`mines own pooled`, one at a time, CPU 20% at launch, RTP off), compared `DDMIN=9` against `DDMIN=99` (case trees
+  only):
+
+| lemmas | salt 1, diagrams | salt 1, case trees | salt 2, both |
+|---|---|---|---|
+| nv = 9 | 12, 0.87 s each (10.4 s) | 12, 0.32 s each (3.8 s) | none |
+| nv = 7 (case trees in both) | 220, 0.039 s each (8.6 s) | 219, 0.033 s each (7.2 s) | 169, 0.036-0.039 s each |
+| all | 23.4 s | 15.0 s | 10.4 / 9.3 s |
+| sweep wall | 44 s | 34 s | 33 / 32 s |
+
+- `proof_cost_split` agrees. It ran on cmp3d with a 37-rule own library (salt 1's `own_cmp3d_3`) and 300 laws, ABBA. The
+  same 12 lemmas at nv = 9 took 2.52 and 0.95 s each as diagrams against 0.39 and 0.47 s as case trees. The rule proofs took
+  37.3 and 18.1 s to build against 14.6 and 12.9 s. Laws, node counts and occurrences were identical.
+- That reverses the 2026-10-10 measurement above (diagrams 47.1 s CPU against 52.2 s for case trees), which kept `DDMIN=9`.
+  Since then the case trees got cheaper relative to the diagrams; why was not traced. No lemma wider than nv = 9 occurred in
+  these sweeps or in `proof_cost_split`, so the threshold is now `DDMIN=10`. At that setting the diagrams prove nothing seen
+  so far. They stay for wider lemmas, where a case tree has 2^nv leaves, but at those sizes they are unmeasured.
+- Sequential pair against 84242e0 (`scripts/dd_seq.sh`, rows `dds_*`; CPU 33% at launch from other sessions, RTP off):
+  rows, preferences and all 27 rule and unit files identical on both salts. Wall 45 against 51 s (salt 1) and 27 against
+  36 s (salt 2); summed `own` mine time 7.7 against 15.8 s and 3.8 against 4.1 s.
+- The case lemmas at nv = 7 are now the largest proof cost: 7-8.6 s per sweep, about 0.035 s each.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

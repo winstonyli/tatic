@@ -428,8 +428,9 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
     let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
-    // diagrams pay off only once the case tree is big (2^nv leaves); below that their per-node proofs cost more
-    let dd_min: usize = env_or("DDMIN", 9);
+    // diagrams pay off only once the case tree is big (2^nv leaves); below that their per-node proofs cost more. At nv = 9 a
+    // diagram lemma costs 2-5x its case tree (docs/tier-cycle.md, "Case trees at nv = 9"); no lemma seen so far is wider
+    let dd_min: usize = env_or("DDMIN", 10);
     let use_dd = |nv: usize| inv.is_none() && std::env::var("NOBDD").is_err() && nv >= dd_min;
     let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: DdBuild| -> Expr {
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
