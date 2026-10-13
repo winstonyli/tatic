@@ -194,6 +194,28 @@ pub trait Gates {
     }
 }
 
+/// Plain Booleans: decides what the other two build (`raw_table`), with no kernel terms.
+pub struct Bools;
+
+impl Gates for Bools {
+    type S = bool;
+    fn and(&self, x: &bool, y: &bool) -> bool {
+        *x && *y
+    }
+    fn or(&self, x: &bool, y: &bool) -> bool {
+        *x || *y
+    }
+    fn xor(&self, x: &bool, y: &bool) -> bool {
+        x != y
+    }
+    fn konst(&self, b: bool) -> bool {
+        b
+    }
+    fn table(&self, vars: &[bool], tab: &dyn Fn(&[bool]) -> bool) -> bool {
+        tab(vars)
+    }
+}
+
 impl Gates for GoodOps {
     type S = Gb;
     fn and(&self, x: &Gb, y: &Gb) -> Gb {

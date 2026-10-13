@@ -125,17 +125,14 @@ pub fn index_of(bits: &[bool]) -> usize {
     bits.iter().fold(0, |a, b| a * 2 + *b as usize)
 }
 
-/// Each machine's (out, next carries) on all assignments of (operand bits, carries), computed once by the kernel.
-pub fn raw_table(mach: &Machine, k: usize, gops: &GoodOps) -> Vec<Vec<bool>> {
+/// Each machine's (out, next carries) on all assignments of (operand bits, carries), in plain Booleans.
+pub fn raw_table(mach: &Machine, k: usize) -> Vec<Vec<bool>> {
     let c = mach.carries();
     (0..1usize << (k + c))
         .map(|r| {
-            let bitgb = |pos: usize| Gb { e: bit(r >> (k + c - 1 - pos) & 1 == 1), g: f() };
-            let u: Vec<Gb> = (0..k).map(bitgb).collect();
-            let s: Vec<Gb> = (k..k + c).map(bitgb).collect();
-            let (o, next) = mach.step(gops, &u, &s);
-            let out = !mach.last() && normalize(&o.e) == t();
-            std::iter::once(out).chain(next.iter().map(|g| normalize(&g.e) == t())).collect()
+            let bits: Vec<bool> = (0..k + c).map(|pos| r >> (k + c - 1 - pos) & 1 == 1).collect();
+            let (o, next) = mach.step(&Bools, &bits[..k], &bits[k..]);
+            std::iter::once(!mach.last() && o).chain(next).collect()
         })
         .collect()
 }
@@ -188,8 +185,8 @@ pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 
 /// them, or only the `reach`able ones): two vectors share a class iff no input sequence tells them apart (the same
 /// outputs, and with a root `lt` the same final bit). The class number, in binary, is the phi value. `None` when the
 /// two start states (all-false) differ, i.e. the terms differ at some width.
-pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize, gops: &GoodOps, reach: Option<&Reach>) -> Option<Encoding> {
-    let raw = [raw_table(m1, k, gops), raw_table(m2, k, gops)];
+pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize, reach: Option<&Reach>) -> Option<Encoding> {
+    let raw = [raw_table(m1, k), raw_table(m2, k)];
     let cs = [m1.carries(), m2.carries()];
     let last = m1.last();
     let live = |side: usize, s: usize| reach.is_none_or(|rc| rc[side][s]);
@@ -361,10 +358,7 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
     if cs[0] + cs[1] == 0 {
         return None;
     }
-    let gops = GoodOps::new();
-    let attempt = |reach: Option<&Reach>| {
-        moore_encoding(&m1, &m2, k, &gops, reach)
-    };
+    let attempt = |reach: Option<&Reach>| moore_encoding(&m1, &m2, k, reach);
     // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
     let t_all = Instant::now();
     let first = attempt(None);
@@ -377,7 +371,7 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
                 return None;
             }
             let t_reach = Instant::now();
-            let r = [reachable(&raw_table(&m1, k, &gops)), reachable(&raw_table(&m2, k, &gops))];
+            let r = [reachable(&raw_table(&m1, k)), reachable(&raw_table(&m2, k))];
             if r.iter().all(|v| v.iter().all(|x| *x)) {
                 return None;
             }
@@ -386,6 +380,7 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
             (second?, Some(r))
         }
     };
+    let gops = GoodOps::new();
     let m = enc.phi[0].len();
     // with a root `lt`: the final result as a function `dec` of the phi values
     let mut dec = vec![false; 1 << m];
@@ -604,7 +599,7 @@ pub fn state_encoding_search_proves_three_leaf_sum_laws() {
             ("add (add x -1) -1 = add x (add -1 -1)", op(op(v(0), Term::Ones), Term::Ones), op(v(0), op(Term::Ones, Term::Ones))),
         ] {
             if n == 1 {
-                let e = moore_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, &GoodOps::new(), None).unwrap();
+                let e = moore_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, None).unwrap();
                 println!("ENCODING {name}: {} phi bits, phi1 {:?}", e.phi[0].len(), e.phi[0]);
             }
             let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
@@ -725,19 +720,39 @@ pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
     }
 }
 
-/// Time of the kernel evaluation of one machine on every (operand bits, carries) assignment.
+/// The decisions are made in plain Booleans (`Bools`); the kernel's gates (`GoodOps`, normalized) must give the same machine
+/// steps, so the plain decisions match what the proofs then state.
+#[test]
+pub fn plain_steps_match_the_kernel_gates() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let (v, op) = (|i: usize| Term::V(i), |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b)));
+    let gops = GoodOps::new();
+    for term in [op(ADD, op(XOR, v(0), Term::Ones), v(1)), op(SUB, v(0), op(AND, v(0), v(1))), op(5, op(ADD, v(0), v(1)), op(OR, v(1), v(0))), op(ADD, op(ADD, v(0), v(1)), op(SUB, v(1), v(0)))] {
+        let m = Machine::parse(&term).unwrap();
+        let (k, c) = (2, m.carries());
+        for r in 0..1usize << (k + c) {
+            let bits: Vec<bool> = (0..k + c).map(|p| r >> p & 1 == 1).collect();
+            let gbs: Vec<Gb> = bits.iter().map(|b| Gb { e: bit(*b), g: f() }).collect();
+            let (o, next) = m.step(&Bools, &bits[..k], &bits[k..]);
+            let (oe, nexte) = m.step(&gops, &gbs[..k], &gbs[k..]);
+            let kernel: Vec<bool> = std::iter::once(&oe).chain(&nexte).map(|g| normalize(&g.e) == t()).collect();
+            assert_eq!(std::iter::once(o).chain(next).collect::<Vec<_>>(), kernel, "{} at {bits:?}", term.show());
+        }
+    }
+}
+
+/// Time of the evaluation of one machine on every (operand bits, carries) assignment.
 #[test]
 #[ignore]
 pub fn raw_table_probe() {
     let v = |i: usize| Term::V(i);
     let add = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
     let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
-    let gops = GoodOps::new();
     for c in 2..=5usize {
         let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
         let m = Machine::parse(&left).unwrap();
         let t0 = Instant::now();
-        let raw = raw_table(&m, 3, &gops);
+        let raw = raw_table(&m, 3);
         println!("PROBE raw_table carries={c}: {} rows in {:?}", raw.len(), t0.elapsed());
     }
 }
@@ -791,11 +806,10 @@ pub fn lemma_overhead_probe() {
 pub fn conjecture_miner() {
     let _scope = tatic::kernel::InternScope::enter();
     let (n, nvars, deep) = (env_or("MINER_N", 4), env_or("MINER_VARS", 2), env_or("MINER_DEEP", 0) == 1);
-    let ops = ops_for(n);
     let ts = terms(nvars, deep);
     let t0 = Instant::now();
-    let mut classes: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
-    let mut cache = NfCache::default();
+    // classes by the values on the tuples (variable `i` is bits `n*i..` of a tuple)
+    let mut classes: std::collections::BTreeMap<Vec<u128>, Vec<usize>> = Default::default();
     // all input tuples, or `MINER_SAMPLE` of them (a fixed pseudo-random subset plus the all-zero and all-one
     // tuples): a class may then hold a false equality, which no proof builder or kernel check will accept
     let total = 1u128 << (n * nvars);
@@ -814,7 +828,8 @@ pub fn conjecture_miner() {
         v
     };
     for (i, t) in ts.iter().enumerate() {
-        classes.entry(fingerprint(t, &ops, n, &tuples, &mut cache)).or_default().push(i);
+        let values = tuples.iter().map(|&tu| t.interp(n, &(0..nvars).map(|v| tu >> (n * v) & low_bits(n)).collect::<Vec<_>>())).collect();
+        classes.entry(values).or_default().push(i);
     }
     let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
     println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
@@ -1459,7 +1474,6 @@ pub fn ablation_audit() {
     let _scope = tatic::kernel::InternScope::enter();
     let _banner = MachineBanner::start("AUDIT");
     let max = env_or("MULMINER_MAX", 7);
-    let gops = GoodOps::new();
     let (mut n_laws, mut moore_ns, mut total_ns) = (0, 0u128, 0u128);
     for (name, t1, t2) in mul_laws(max) {
         let (Some(m1), Some(m2)) = (Machine::parse(&t1), Machine::parse(&t2)) else { continue };
@@ -1467,7 +1481,7 @@ pub fn ablation_audit() {
             continue;
         }
         let t = Instant::now();
-        let Some(enc) = moore_encoding(&m1, &m2, 2, &gops, None) else { continue };
+        let Some(enc) = moore_encoding(&m1, &m2, 2, None) else { continue };
         let moore = t.elapsed();
         let t = Instant::now();
         let proved = add_tree_law(4, 2, &t1, &t2).is_some();

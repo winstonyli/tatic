@@ -269,37 +269,6 @@ pub fn terms(nvars: usize, deep: bool) -> Vec<Term> {
     all
 }
 
-pub type NfCache = std::collections::HashMap<(Term, u128), Expr>;
-
-/// The normal form of `t` on the input `tuple`, from the normal forms of its operands: each subterm is
-/// normalized once per tuple across all terms, and the operands enter already normal.
-pub fn nf_cached(t: &Term, ops: &[Expr], n: usize, tuple: u128, cache: &mut NfCache) -> Expr {
-    let mask = low_bits(n);
-    let Term::Op(o, a, b) = t else {
-        return match t {
-            Term::V(i) => lit(n, (tuple >> (n * i)) & mask),
-            Term::Zero => lit(n, 0),
-            _ => lit(n, mask),
-        };
-    };
-    let key = (t.clone(), tuple);
-    if let Some(e) = cache.get(&key) {
-        return e.clone();
-    }
-    let (x, y) = (nf_cached(a, ops, n, tuple, cache), nf_cached(b, ops, n, tuple, cache));
-    let e = normalize(&app2(ops[*o].clone(), x, y));
-    cache.insert(key, e.clone());
-    e
-}
-
-pub fn fingerprint(t: &Term, ops: &[Expr], n: usize, tuples: &[u128], cache: &mut NfCache) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for &tuple in tuples {
-        format!("{:?}", nf_cached(t, ops, n, tuple, cache)).hash(&mut h);
-    }
-    h.finish()
-}
 
 /// Generic proof of `t1(x, y) = t2(x, y)` for bitwise terms over two good vectors, with no lemma-specific
 /// template: per bit, case analysis on the two `GoodBool` witnesses with `refl` leaves (the kernel decides
@@ -1497,7 +1466,7 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
         // a bitwise node equal to 0, -1 or one of its atoms collapses to it (truth table, then `bitwise_law`)
         let (mut atoms, k) = (vec![], goods.len());
         if let (false, Some(abs)) = (ablated("collapse"), abstract_atoms(&t1, &mut atoms, k)) {
-            let truth = |t: &Term| (0..1usize << k).map(|m| normalize(&t.bit(&(0..k).map(|v| bit(m >> v & 1 == 1)).collect::<Vec<_>>()))).collect::<Vec<_>>();
+            let truth = |t: &Term| (0..1usize << k).map(|m| term_gb(&Bools, t, &(0..k).map(|v| m >> v & 1 == 1).collect::<Vec<_>>())).collect::<Vec<_>>();
             let want = truth(&abs);
             let cands: Vec<Term> = [Term::Zero, Term::Ones].into_iter().chain((0..k).map(Term::V)).collect();
             if let Some(c) = cands.iter().find(|c| c.max_var() < atoms.len().max(1) && truth(c) == want) {
@@ -1628,9 +1597,8 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
     let (mut atoms, k) = (vec![], goods.len());
     if let (false, Some(a1), Some(a2)) = (ablated("eq_truth"), abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
         let holds = (0..1usize << k).all(|m| {
-            let bits: Vec<Expr> = (0..k).map(|v| bit(m >> v & 1 == 1)).collect();
-            let truth = |t: &Term| normalize(&t.bit(&bits));
-            truth(&a1) == truth(&a2)
+            let bits: Vec<bool> = (0..k).map(|v| m >> v & 1 == 1).collect();
+            term_gb(&Bools, &a1, &bits) == term_gb(&Bools, &a2, &bits)
         });
         if holds {
             let w: Vec<(Expr, Expr)> = (0..k).map(|i| atoms.get(i).map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
@@ -1868,13 +1836,12 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
 
 /// The constant carry value (as a literal bit) that works for `add a b = t`, if any.
 pub fn find_constant_carry(a: &Term, b: &Term, t: &Term) -> Option<bool> {
-    let carry = |x: Expr, y: Expr, c: Expr| or(and(x.clone(), y.clone()), and(c, xor(x, y)));
     [false, true].into_iter().find(|&r| {
         // the initial carry is `false`, so only `false` can be maintained from the start
         !r && (0..4).all(|m| {
-            let bits = [bit(m & 1 == 1), bit(m & 2 == 2)];
-            let (ab, bb, tb) = (a.bit(&bits), b.bit(&bits), t.bit(&bits));
-            normalize(&carry(ab.clone(), bb.clone(), bit(r))) == bit(r) && normalize(&sum3(ab, bb, bit(r))) == normalize(&tb)
+            let bits = [m & 1 == 1, m & 2 == 2];
+            let [ab, bb, tb] = [a, b, t].map(|x| term_gb(&Bools, x, &bits));
+            Bools.maj(&ab, &bb, &r) == r && Bools.sum3(&ab, &bb, &r) == tb
         })
     })
 }
