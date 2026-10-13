@@ -51,6 +51,7 @@ and libraries (43 MB) were not kept.
 | `ais_head_*`, `ais_new_*` | 01018d6 against `args_id` taking canonical arguments' own addresses, one run at a time | `aid_seq.sh` | "Canonical arguments are not interned again" |
 | `bss_head_*`, `bss_new_*` | a1ad219 against `beta_spine` reducing the spine's own head plus `args_id`'s stack buffer, one run at a time | `bsp_seq.sh` | "The spine's head reduced as its own node" |
 | `lws_head_*`, `lws_new_*` | 8cd8dfa against the instantiation memo skipping nodes of height ≤ 2, one run at a time | `low_seq.sh` | "Small nodes skip the instantiation memo" |
+| `pss_head_*`, `pss_new_*` | 6cd8948 against the node table as a set of node pointers with their hashes, one run at a time | `pset_seq.sh` | "The node table holds node pointers with their hashes" |
 | `cap/*.txt` | `mul_conjecture_miner` (`MULMINER_MAX=7`) on 5f65267 (old) against 0cb4e6c (head), one run at a time | `cap_ab.sh` | "Decision diagrams deleted" |
 | (no rows) | samply profile of `proof_cost_split` at af20655 (profile not kept), scopes `tree_proof` and `lemma_n` | `prof_cases.py` | "The builder side is about 8%" |
 | (no rows) | samply profile of `proof_cost_split` at 1f4db8b (profile not kept), key `hc::intern(` and `reserve_rehash` (`raw`) | `prof_callers.py` | "Where the node table's time goes" |

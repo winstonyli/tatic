@@ -459,6 +459,26 @@ fn args_id_is_the_same_for_a_canonical_argument_and_its_twin() {
     assert_eq!(hc::args_id(&[&a, &twin]), hc::args_id(&[&twin, &a]));
 }
 
+/// The node table returns the same node for an equal key, also after it has grown, and distinct nodes
+/// for keys that differ only in the leaf value or the constructor.
+#[test]
+fn intern_finds_equal_nodes_after_growth() {
+    let _scope = hc::Scope::enter();
+    hc::activate();
+    let mut chain = vec![hc::intern(var(0), None)];
+    for i in 1..10_000 {
+        let next = hc::intern(Expr::App(chain[i - 1].clone(), hc::intern(var(i as u32 % 7), None)), None);
+        chain.push(next);
+    }
+    for n in &chain {
+        assert!(Rc::ptr_eq(n, &hc::intern((**n).clone(), None)));
+    }
+    let (a, b) = (hc::intern(var(1), None), hc::intern(Expr::Sort(1), None));
+    assert!(!Rc::ptr_eq(&a, &b) && !Rc::ptr_eq(&a, &hc::intern(var(2), None)));
+    let (f, x) = (chain[5].clone(), chain[6].clone());
+    assert!(!Rc::ptr_eq(&hc::intern(Expr::App(f.clone(), x.clone()), None), &hc::intern(Expr::Pi(f, x), None)));
+}
+
 /// The instantiation memo skips nodes at most two levels above their leaves.
 #[test]
 fn low_is_height_at_most_two() {

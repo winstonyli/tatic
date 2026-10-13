@@ -849,7 +849,9 @@ mod hc {
 
     #[derive(Default)]
     struct Table {
-        nodes: PtrMap<NodeKey, Rc<Expr>>,
+        /// Interned nodes with their key's hash, found by comparing the candidate node's own key: 16
+        /// bytes an entry instead of a stored 48-byte key (doc section "Where the node table's time goes").
+        nodes: hashbrown::HashTable<(u64, Rc<Expr>)>,
         /// (source node, argument-set id, depth) -> (the source, kept alive; its instantiation).
         inst: PtrMap<(usize, u64, u32), RcPair>,
         shifts: PtrMap<ShiftKey, RcPair>,
@@ -967,7 +969,32 @@ mod hc {
         if generation == 0 {
             return build(e);
         }
-        let (tag, leaf) = match &e {
+        let key = key_of(&e);
+        let h = {
+            use std::hash::{Hash, Hasher};
+            let mut s = PtrHasher::default();
+            key.hash(&mut s);
+            s.finish()
+        };
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            if let Some((_, n)) = t.nodes.find(h, |(g, n)| *g == h && key_of(n) == key) {
+                return n.clone();
+            }
+            let mut canonical = true;
+            for_kids(&e, |p| canonical &= p.canonical());
+            let n = build(e);
+            if canonical {
+                n.0.generation.set(generation);
+            }
+            t.nodes.insert_unique(h, (h, n.clone()), |(g, _)| *g);
+            n
+        })
+    }
+
+    /// The table's key for `e`: constructor, leaf value, child pointers.
+    fn key_of(e: &Expr) -> NodeKey {
+        let (tag, leaf) = match e {
             Expr::Var(k) => (0, *k),
             Expr::Sort(k) => (1, *k),
             Expr::Const(k) => (2, *k),
@@ -987,23 +1014,11 @@ mod hc {
         };
         let mut kids = [0usize; 5];
         let mut i = 0;
-        let mut canonical = true;
-        for_kids(&e, |p| {
+        for_kids(e, |p| {
             kids[i] = Rc::as_ptr(p) as usize;
             i += 1;
-            canonical &= p.canonical();
         });
-        TABLE.with(|t| match t.borrow_mut().nodes.entry(NodeKey { tag, leaf, kids }) {
-            hashbrown::hash_map::Entry::Occupied(o) => o.get().clone(),
-            hashbrown::hash_map::Entry::Vacant(v) => {
-                let n = build(e);
-                if canonical {
-                    n.0.generation.set(generation);
-                }
-                v.insert(n.clone());
-                n
-            }
-        })
+        NodeKey { tag, leaf, kids }
     }
 
     /// Terms larger than this many nodes (counted once per allocation) are interned on entry to a

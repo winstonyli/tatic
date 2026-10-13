@@ -1295,8 +1295,22 @@ entry, counted when its cache drops, same run:
 | other, closed / open | 0.03 / 0.07 M | 4% / 8% | 0.003 / 0.02 M |
 | all | 1.70 M | 21% | 1.91 M |
 
-79% of entries are never read. Open non-leaf nodes are 1.24 M entries (73%) for 0.30 M hits (16%). Lead: skip the memo
-for open non-leaf nodes. That drops 1.24 M inserts and their context windows, but each lost hit re-infers a subtree.
+79% of entries are never read. Open non-leaf nodes are 1.24 M entries (73%) for 0.30 M hits (16%). Skipping the memo
+for them (knob `INFERSKIP`, reverted, no patch kept) is far worse: 12 alternating pairs, won 0, summed CPU 203.1 against
+66.4 s, the check stage about 10 s against 1 s. Each lost hit re-infers a whole subtree, so the unread entries are the
+price of the few hits that matter (negative).
+
+**The node table holds node pointers with their hashes (2026-10-13).** This is the lead from the profile above.
+- `hc::Table::nodes` is a hashbrown `HashTable<(u64, Rc<Expr>)>`. A lookup hashes the new node's key as before, then
+  compares the stored hash and, only when it matches, the candidate node's own key (`hc::key_of`). An entry is 16 bytes
+  instead of 56, and growth rehashes from the stored hash without reading any node.
+- Check: `intern_finds_equal_nodes_after_growth`.
+- Against 6cd8948, two rounds of 12 alternating pairs of `proof_cost_split` cmp3d own: won 8 (80.0 against 82.0 s, load
+  9-23%) and 12 (67.7 against 73.2 s, load 11-15%). Together won 20 of 24, summed CPU 147.7 against 155.2 s (5% less);
+  best 4.81 against 5.11 s. Defender RTP was off.
+- Sequential pair (`scripts/pset_seq.sh`, rows `pss_*`): every file is identical on both salts (rows, preferences,
+  mines, the 26 rule and unit files), apart from the elapsed-seconds columns. The sweeps took 22 and 19 s wall on both
+  builds, too short for the difference to show.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
