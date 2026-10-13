@@ -839,7 +839,6 @@ mod hc {
         }
     }
 
-    #[derive(Default)]
     struct Table {
         /// Interned nodes with their key's hash, found by comparing the candidate node's own key: 16
         /// bytes an entry instead of a stored 48-byte key (doc section "Where the node table's time goes").
@@ -851,10 +850,25 @@ mod hc {
         /// whole scope, across `def_eq` calls (doc section "Why the table lookups stay").
         whnf: PtrMap<usize, Rc<Expr>>,
         /// Argument sets of two or more nodes, by their node pointers.
-        arg_sets: HashMap<Vec<usize>, u64>,
+        arg_sets: PtrMap<Vec<usize>, u64>,
         /// The memos' non-canonical source nodes, kept alive to the scope's end (canonical ones live
         /// in `nodes`), so no other node takes the address a memo key holds.
         keep: Vec<Rc<Expr>>,
+    }
+
+    impl Table {
+        /// Empty, and `const` so the thread-local needs no lazy initialization on each access.
+        const fn new() -> Table {
+            const H: std::hash::BuildHasherDefault<PtrHasher> = std::hash::BuildHasherDefault::new();
+            Table {
+                nodes: hashbrown::HashTable::new(),
+                inst: PtrMap::with_hasher(H),
+                shifts: PtrMap::with_hasher(H),
+                whnf: PtrMap::with_hasher(H),
+                arg_sets: PtrMap::with_hasher(H),
+                keep: Vec::new(),
+            }
+        }
     }
 
     /// Keeps a memo's source node alive while the table holds its address.
@@ -872,7 +886,7 @@ mod hc {
     const WARM_UP: u32 = 3000;
 
     thread_local! {
-        static TABLE: RefCell<Table> = RefCell::new(Table::default());
+        static TABLE: RefCell<Table> = const { RefCell::new(Table::new()) };
         static DEPTH: Cell<u32> = const { Cell::new(0) };
         static CALLS: Cell<u32> = const { Cell::new(0) };
         /// 0 until the table is on in this scope, then the scope's generation (never 0, never reused).
@@ -909,7 +923,7 @@ mod hc {
             }) {
                 GENERATION.with(|g| g.set(0));
                 CALLS.with(|c| c.set(0));
-                let old = TABLE.with(|t| std::mem::take(&mut *t.borrow_mut()));
+                let old = TABLE.with(|t| std::mem::replace(&mut *t.borrow_mut(), Table::new()));
                 drop(old);
             }
         }
@@ -978,20 +992,21 @@ mod hc {
             key.hash(&mut s);
             s.finish()
         };
+        // The lookup borrows only the key; `e` moves once, into `build`, on a miss.
+        let hit = TABLE.with(|t| t.borrow().nodes.find(h, |(g, n)| *g == h && key_of(n) == key).map(|(_, n)| n.clone()));
+        if let Some(n) = hit {
+            return n;
+        }
+        let mut canonical = true;
+        for_kids(&e, |p| canonical &= p.canonical());
+        let n = build(e);
+        if canonical {
+            n.0.generation.set(generation);
+        }
         TABLE.with(|t| {
-            let mut t = t.borrow_mut();
-            if let Some((_, n)) = t.nodes.find(h, |(g, n)| *g == h && key_of(n) == key) {
-                return n.clone();
-            }
-            let mut canonical = true;
-            for_kids(&e, |p| canonical &= p.canonical());
-            let n = build(e);
-            if canonical {
-                n.0.generation.set(generation);
-            }
-            t.nodes.insert_unique(h, (h, n.clone()), |(g, _)| *g);
-            n
-        })
+            t.borrow_mut().nodes.insert_unique(h, (h, n.clone()), |(g, _)| *g);
+        });
+        n
     }
 
     /// The table's key for `e`: constructor, leaf value, child pointers.

@@ -1535,9 +1535,28 @@ the instruction after the one that waited): 29% just after the indirect call tha
 hash and 12% on the group of control bytes (cache misses on the table itself); 8% writing a new entry; 4% building a
 new node. Comparing a candidate's key (reading the candidate node) is not among the hot spots: the stored hash filters
 almost every mismatch. So about a third of the lookup is memory latency inherent in a table this size, and about a
-third is call overhead around it. Leads, not built: a `const`-initialized `TABLE` (no lazy accessor; hashbrown's tables
-and the default hasher can be made in a `const`), and interning without moving the `Expr` through the closure. At most
-about 5% of busy samples between them.
+third is call overhead around it. Leads: a `const`-initialized `TABLE` (no lazy accessor; hashbrown's tables and the
+default hasher can be made in a `const`), and interning without moving the `Expr` through the closure. At most about 5%
+of busy samples between them.
+
+**Both built (2026-10-13): `TABLE` is `const`-initialized (`Table::new`; `arg_sets` moved to the pointer hasher, whose
+ids come from insertion order, not the hash), and `intern_as` looks up under a shared borrow that captures only the key,
+moving `e` once into `build` on a miss and inserting under a second borrow.** `proof_cost_split` cmp3d own CPU against
+8334948, two runs of 24 alternating pairs, Defender RTP off, about 12% other CPU load at the start: won 14 (median pair
+-0.06 s, best 4.61 against 4.61 s) and 16 (median -0.12 s, best 4.81 against 4.98 s). A small win, about 1-2.5%, less
+than the 5% ceiling. Sequential sweep pair (rows `cts_*`, script `ctab_seq.sh`): identical outputs on both salts.
+
+**Fewer substitutions: what was tried before (survey, no code, 2026-10-13).** `beta_spine` -> `instantiate_n` is 44% of
+busy samples. Doing fewer substitutions rather than cheaper ones was explored on 2026-09-30 (the git-ignored
+`docs/superpowers/specs/2026-09-30-bitvector-interface-design.md` §25-§35, and `src/kernel_lazy.rs`): a closure-based
+(call-by-need, Rocq-style) `def_eq` was 13-25x slower without sharing, 8-18x with a pointer-keyed memo, and level with
+the kernel from n = 32 once it memoized closed nodes only; it took 467x the kernel's beta steps (each one cheap), so a
+step-certificate kernel was dropped. That comparison predates hash-consing, the per-scope instantiation and `whnf`
+memos and n-ary `beta_spine`, each of which made the substituting kernel faster, so the lazy evaluator likely trails it
+now (not re-measured). What has not been measured is how much of what `instantiate_n` builds is ever read: `conv` reduces only where the
+sides differ, so a built subterm that no later `whnf`, `conv` or `infer` visits is pure cost, and only that share is
+what laziness (building on demand) could save. Open: a probe counting the nodes `inst_rec` interns new and how many of
+them are later passed to `whnf_rc`, `conv_rc`, `eq_noting` or `infer_rc`.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
