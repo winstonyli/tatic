@@ -1236,6 +1236,26 @@ temporary knobs (removed), 12 alternating pairs each on `proof_cost_split` cmp3d
 - `shifts`: won 3, 133.2 against 131.5 s, with other sessions' load at 54% during the round. Rebuilding a shifted node
   interns it, which costs a probe per node instead of one hit.
 
+**How many lookups are keyed by a leaf (probe, reverted, no patch kept, 2026-10-13).** This is the ceiling for one shared
+node id: an immediate tagged value for a leaf (`Var`, `Sort`, `Const`, `Free`), the address otherwise, plus per-table
+height cutoffs in place of `hc::low` and the scattered shape checks. Counters on 1b7dad9, one `proof_cost_split` cmp3d own:
+
+| Structure | Lookups | Keyed by a leaf | Other |
+|---|---|---|---|
+| `nodes` (by the interned node's height) | 18.77 M | 2.27 M (12%), 99.98% hit | height 1: 0.06 M; taller: 16.44 M, 81% hit |
+| `args_id` arguments | 9.43 M | 2.56 M (27%), none non-canonical | |
+| `shifts` | 1.67 M | 0.48 M (29%), 99.7% hit | |
+| `ShiftMemo` (local) | 1.37 M | 0.26 M (19%) | |
+| `whnf_rc` cache | 2.75 M | 0.04 M (1.5%) | 60% hit |
+| `InferCache.types` (memo path) | 3.61 M | 0.98 M (27%) | 53% hit |
+| `InferCache::enter` binder types | 0.62 M | 0.37 M (59%) | |
+
+- Height-1 nodes are 0.3% of node lookups, so inlining them in the id would save nothing.
+- Leaves in `args_id` are already canonical, so immediate ids would only remove the address-reuse risk there, not work.
+- Probes an immediate id could drop: about 4.0 M of the 28.8 M across the hash tables (14%; `nodes` 2.27, `infer` 0.98,
+  `shifts` 0.48, `ShiftMemo` 0.26, `whnf` 0.04). Most are hits on hot entries, cheaper than the instantiation misses the
+  height-2 skip removed (5.1 M lookups and 3.5 M inserts for 11%), so the expected gain is a few percent at most.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
