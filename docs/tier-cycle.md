@@ -708,6 +708,24 @@ all 27 rule and unit files identical on both salts; wall 323 against 351 s (salt
 7-8% less, because the gain is confined to the `mines` stage (106 against 156 s and 42 against 61 s; cmp3d 71 against 113 s
 and 18 against 32 s): the `own` and `pooled` loops serve with `CHECK_FAST=1` and build no lemmas, and their mines few.
 
+**Where the time goes after the lemma cache (samply, 2026-10-12).** The same cmp3d ref loop with `RULEMINER_FAST=1` as the
+last profile above (2 threads, salt 1; that one predates the gate constants, `mux` and the cache), at e720392 (CPU 20% at
+launch, RTP off): 33.6 s under the profiler against 104 s, 33k samples against 106k. About 12 s of the 33.6 is the driver's two machine-state checks (PowerShell, before the mine and
+after the last batch), not loop work. The mine took 15.0 s and the four serving processes 3.3, 1.3, 1.0 and 0.5 s.
+- Serving is 18% of all samples (6.1k, against 55.7k: 9 times fewer). The mine is 72% (23.7k against 47.2k).
+- The mine's proving fell 6 times (`prove_rule` 2.9k samples against 17.6k; the mine starts with an empty cache, so this is
+  the gate constants and the one-gate `mux`). Proving is now 12% of the mine (`prove_rule`, `add_tree_law`; `shared_lemma` 12%, kernel checks
+  11%). 16% of the mine's samples are its threads waiting.
+- The rewriter is now the mine's largest part: `rewrite` 41% of the mine, almost all of it in `rule_step` (32%). Two thirds
+  of `rule_step` is overhead that does no matching. `rules()` rebuilds and clones the whole rule list on every call (the
+  built-ins, the promoted rules, the rule set, the mined rules): 10.5% of the mine inclusive, much of it `Term::clone`.
+  `ablated` reads and splits the `ABLATE` variable for every rule tried: 11% of the mine (`RtlQueryEnvironmentVariable`
+  alone 3% self).
+- Next target: build the fixed part of the rule list once (built-ins, promoted, rule set, with `ABLATE` parsed once and
+  applied when the list is built), try it and then the mined rules (`EXTRA_RULES`) by reference, and clone only the rule that
+  fires. `ablated`'s other callers (`prove_eq`, `tree`, `chain`, `collapse`, `assoc`, `comm`) read the same parsed set. The one
+  runtime `set_var` (`rule_miner`'s `<exe>.env`) runs before anything reads the environment.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
