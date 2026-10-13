@@ -1133,7 +1133,8 @@ mod hc {
 
     /// An id for the argument list: the interned node's address for one argument (even), an
     /// odd table id for several; 0 while the table is off (which it leaves after `WARM_UP` calls).
-    pub fn args_id(args: &[&Expr]) -> u64 {
+    /// A canonical argument is its own interned node, so only the others are looked up.
+    pub fn args_id(args: &[&Rc<Expr>]) -> u64 {
         if !active() {
             if DEPTH.with(|d| d.get()) == 0 {
                 return 0;
@@ -1149,7 +1150,8 @@ mod hc {
             let g = NEXT_GENERATION.with(|g| g.replace(g.get() + 1));
             GENERATION.with(|c| c.set(g));
         }
-        let ptrs: Vec<usize> = args.iter().map(|a| Rc::as_ptr(&intern((*a).clone(), None)) as usize).collect();
+        let ptrs: Vec<usize> =
+            args.iter().map(|a| if a.canonical() { Rc::as_ptr(a) as usize } else { Rc::as_ptr(&intern((***a).clone(), None)) as usize }).collect();
         if let [p] = ptrs[..] {
             return p as u64;
         }
@@ -1193,7 +1195,7 @@ mod hc {
 /// `infer`'s `App` rule substitutes every argument into its function's
 /// codomain, usually `Int`, and shifting the argument there cost a walk of
 /// it per application (`RELATED_WORK.md` §50, §58).
-fn subst_top(body: &Expr, s: &Expr) -> Expr {
+fn subst_top(body: &Expr, s: &Rc<Expr>) -> Expr {
     instantiate(body, s, 0)
 }
 
@@ -1206,7 +1208,7 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
 ///
 /// A subterm with no loose variable at or above its depth is kept by
 /// pointer.
-fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
+fn instantiate(e: &Expr, s: &Rc<Expr>, d: u32) -> Expr {
     instantiate_n(e, &[s], d)
 }
 
@@ -1215,7 +1217,7 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
 /// discharged. Equal to calling `subst_top` once per argument, outermost first, without building the
 /// intermediate terms: each argument is shifted past the `d` binders it ends up under, and `e`'s own
 /// free variables above the discharged ones drop by `args.len()`.
-fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
+fn instantiate_n(e: &Expr, args: &[&Rc<Expr>], d: u32) -> Expr {
     if loose_of(e) <= d {
         return e.clone();
     }
@@ -1223,7 +1225,7 @@ fn instantiate_n(e: &Expr, args: &[&Expr], d: u32) -> Expr {
 }
 
 /// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo (0: none).
-fn inst_rec(e: &Expr, args: &[&Expr], aid: u64, d: u32) -> Expr {
+fn inst_rec(e: &Expr, args: &[&Rc<Expr>], aid: u64, d: u32) -> Expr {
     #[cfg(feature = "record-defeq")]
     let _hc_guard = hc_probe::inst_enter(e, args, d);
     walk_count(0);
@@ -1247,7 +1249,7 @@ fn inst_rec(e: &Expr, args: &[&Expr], aid: u64, d: u32) -> Expr {
             if *k >= d + m {
                 Expr::Var(*k - m)
             } else if *k >= d {
-                let arg = args[(m - 1 - (*k - d)) as usize];
+                let arg: &Expr = args[(m - 1 - (*k - d)) as usize];
                 // Probe slots: 5 uses, 6 at depth 0, 7 deeper with a closed argument, 8 deeper with
                 // loose variables, 9 `shift` visits those last uses cost.
                 walk_count(5);
@@ -1666,8 +1668,7 @@ fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     }
     #[cfg(feature = "record-defeq")]
     BETAS.with(|c| c.set(c.get() + taken as u64));
-    let subst: Vec<&Expr> = args[..taken].iter().map(|a| &***a).collect();
-    let mut r = instantiate_n(body, &subst, 0);
+    let mut r = instantiate_n(body, &args[..taken], 0);
     for a in &args[taken..] {
         r = Expr::App(Rc::new(r), (*a).clone());
     }
@@ -2508,8 +2509,8 @@ pub fn take_walk_counts() -> [u64; 26] {
 /// `Free`, so a comparison afterwards works on closed terms.
 #[cfg(feature = "record-defeq")]
 pub fn rename_context_to_frees(e: &Expr, depth: u32) -> Expr {
-    let frees: Vec<Expr> = (0..depth).map(Expr::Free).collect();
-    let refs: Vec<&Expr> = frees.iter().collect();
+    let frees: Vec<Rc<Expr>> = (0..depth).map(|l| Rc::new(Expr::Free(l))).collect();
+    let refs: Vec<&Rc<Expr>> = frees.iter().collect();
     instantiate_n(e, &refs, 0)
 }
 

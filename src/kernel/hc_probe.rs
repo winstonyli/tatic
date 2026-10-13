@@ -130,7 +130,7 @@ impl Drop for Guard {
     }
 }
 
-pub fn inst_enter(e: &Expr, args: &[&Expr], d: u32) -> Guard {
+pub fn inst_enter(e: &Expr, args: &[&Rc<Expr>], d: u32) -> Guard {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     id_of(e, false).hash(&mut h);
     for a in args {

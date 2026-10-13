@@ -1049,7 +1049,8 @@ hash-cons table (`mod hc`, `src/kernel.rs` near 828) already uses a pointer hash
 pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Open options, most promising first:
 1. `args_id` (near 1136) re-interns every argument of every `instantiate_n` (`intern((*a).clone(), None)`, a clone and a
    probe) although `beta_spine`/`whnf_step` hold canonical `Rc`s; taking `&Rc<Expr>` and skipping canonical ones removes
-   that. `args_id` was 11-14% inclusive of lemma time; "Hash-consing cost" estimated at most about 7%.
+   that. `args_id` was 11-14% inclusive of lemma time; "Hash-consing cost" estimated at most about 7%. Done: "Canonical
+   arguments are not interned again", below.
 2. `inst_rec`'s per-child work makes up to four separate `TABLE.with` borrows (`uses`, `inst_get`, `intern`, `inst_put`);
    fusing them saves TLS and `RefCell` traffic. Inside `hc` only; gain unmeasured.
 3. Pre-reserve `nodes`, `inst`, `uses` when the table switches on: `reserve_rehash` was 5-9%. One line per map.
@@ -1091,6 +1092,20 @@ So a cross-call cache of closed normal forms could save at most about 70 ms of 6
 kernel. Not built. A limit of the count: nodes are matched by pointer, so a closed redex rebuilt outside the hash-cons table
 (e.g. `beta_spine`'s fresh head `Rc`) is never a repeat. Those heads are mostly gate lambdas, already in weak head normal
 form. The kernel's time is in the reductions that do run and in interning (items 1-3 of the survey above), not in repeats.
+
+**Canonical arguments are not interned again (2026-10-13).** `subst_top`, `instantiate` and `instantiate_n` now take their
+arguments as `&Rc<Expr>` (every kernel caller already held them so; `beta_spine` passes its spine's `Rc`s through, and the
+unit tests wrap theirs). `hc::args_id` uses a canonical argument's own address, which is its table node by definition, and
+interns only the others; before, it cloned every argument and probed the node table for it on each substitution. Check:
+`args_id_is_the_same_for_a_canonical_argument_and_its_twin` (the id of a canonical node and of a twin built outside the
+table agree). The kernel's results are unchanged: the id is the same either way.
+- `proof_cost_split` (cmp3d own, 300 laws), CPU time, `scripts/cpu_ab.ps1` in its two-build mode, HEAD 01018d6 against the
+  change, RTP off. Other sessions' builds made the load swing (13-57%), and one round at 100% was dropped. Over the four
+  other rounds (24 pairs) the change won 17, with 1 tie: summed 252.0 against 280.4 s, best 7.58 against 8.44 s, about 10%
+  either way. In the quietest round it won 5 of 6, 8.03-11.11 s against 9.09-15.28 s.
+- Sequential pair against 01018d6 (`scripts/aid_seq.sh`, rows `ais_*`): rows, preferences and all 27 rule and unit files
+  identical on both salts. Wall 46/46 s against 39/30 s, with 57% load from other sessions' builds at the end; the
+  sweeps' proof share is too small for a 10% gain on it to show, and the walls are not evidence either way.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

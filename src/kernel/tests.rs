@@ -236,7 +236,7 @@ fn shift_and_instantiate_match_a_reference() {
                 assert_eq!(shift(&e, c, -1), shift_ref(&e, c, -1), "shift({e:?}, {c}, -1)");
             }
             assert_eq!(shift(&shift(&e, c, 1), c, -1), e, "shift back ({e:?}, {c})");
-            assert_eq!(instantiate(&e, &s, c), instantiate_ref(&e, &s, c), "instantiate({e:?}, {s:?}, {c})");
+            assert_eq!(instantiate(&e, &Rc::new(s.clone()), c), instantiate_ref(&e, &s, c), "instantiate({e:?}, {s:?}, {c})");
         }
         for i in 0..6 {
             assert_eq!(is_var_free(&e, i), is_var_free_ref(&e, i), "is_var_free({e:?}, {i})");
@@ -285,7 +285,8 @@ fn instantiate_n_matches_sequential_substitution() {
                 next_body
             };
         }
-        let refs: Vec<&Expr> = args.iter().collect();
+        let rcs: Vec<Rc<Expr>> = args.iter().map(|a| Rc::new(a.clone())).collect();
+        let refs: Vec<&Rc<Expr>> = rcs.iter().collect();
         assert_eq!(instantiate_n(&e, &refs, 0), cur, "e {e:?}, args {args:?}");
     }
 }
@@ -303,7 +304,7 @@ fn shift_keeps_closed_children_by_pointer() {
     let Expr::App(f, a) = &shifted else { panic!() };
     assert!(Rc::ptr_eq(f, &closed), "shift copied a closed child");
     assert_eq!(**a, var(1));
-    let instantiated = instantiate(&e, &sort(1), 0);
+    let instantiated = instantiate(&e, &Rc::new(sort(1)), 0);
     let Expr::App(f, a) = &instantiated else { panic!() };
     assert!(Rc::ptr_eq(f, &closed), "instantiate copied a closed child");
     assert_eq!(**a, sort(1));
@@ -316,7 +317,7 @@ fn shift_keeps_closed_children_by_pointer() {
     let Expr::App(f, a) = &shifted else { panic!() };
     assert!(Rc::ptr_eq(f, &low), "shift copied a child below the cutoff");
     assert_eq!(**a, var(3));
-    let instantiated = instantiate(&e, &sort(1), 1);
+    let instantiated = instantiate(&e, &Rc::new(sort(1)), 1);
     let Expr::App(f, a) = &instantiated else { panic!() };
     assert!(Rc::ptr_eq(f, &low), "instantiate copied a child below the depth");
     assert_eq!(**a, var(1));
@@ -437,10 +438,25 @@ fn subst_top_is_substituting_then_shifting() {
         let body = random_expr(&mut seed, 5);
         let s = random_expr(&mut seed, 3);
         let reference = shift(&subst(&body, 0, &shift(&s, 0, 1)), 0, -1);
-        assert_eq!(subst_top(&body, &s), reference, "body {body:?}, s {s:?}");
+        assert_eq!(subst_top(&body, &Rc::new(s.clone())), reference,"body {body:?}, s {s:?}");
         if is_var_free(&body, 0) { used += 1 } else { unused += 1 }
     }
     assert!(used > 2_000 && unused > 2_000, "used {used}, unused {unused}");
+}
+
+/// `args_id` takes a canonical argument's own address and looks up only the others, so a twin built
+/// outside the table gets the same id.
+#[test]
+fn args_id_is_the_same_for_a_canonical_argument_and_its_twin() {
+    let _scope = hc::Scope::enter();
+    let warm = Rc::new(var(0));
+    hc::args_id(&[&warm]); // switches the table on (no warm-up under test)
+    let a = hc::intern(app(var(0), var(1)), None);
+    let twin = Rc::new((*a).clone());
+    assert!(a.canonical() && !twin.canonical());
+    assert_eq!(hc::args_id(&[&a]), Rc::as_ptr(&a) as u64);
+    assert_eq!(hc::args_id(&[&twin]), Rc::as_ptr(&a) as u64);
+    assert_eq!(hc::args_id(&[&a, &twin]), hc::args_id(&[&twin, &a]));
 }
 
 #[test]
@@ -452,6 +468,7 @@ fn subst_top_leaves_an_unused_argument_alone() {
         s = app(s.clone(), s);
     }
     let body = pi(var(3), var(4));
+    let s = Rc::new(s);
     let t = std::time::Instant::now();
     assert_eq!(subst_top(&body, &s), pi(var(2), var(3)));
     assert!(t.elapsed() < std::time::Duration::from_millis(50), "took {:?}", t.elapsed());
@@ -477,6 +494,7 @@ fn subst_top_shifts_a_used_argument_once() {
         body = lam(sort(0), body);
         expected = lam(sort(0), expected);
     }
+    let s = Rc::new(s);
     let t = std::time::Instant::now();
     let got = subst_top(&body, &s);
     let took = t.elapsed();
@@ -1023,7 +1041,7 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     // since `pred_pos` was pushed -- the same "recompute, don't reshift
     // a snapshot" benefit as `zero_here` above.
     let f_zero_here = nat.zero_child_fn(&p);
-    let honest_domain = subst_top(&wb_here2, &p.get(nat.false_pos));
+    let honest_domain = subst_top(&wb_here2, &Rc::new(p.get(nat.false_pos)));
     let rec_step = lam(
         honest_domain.clone(),
         wrec(shift(&is_zero_motive_const, 0, 1), shift(&wb_here2, 1, 1), shift(&is_zero_step, 0, 1), app(shift(&f_zero_here, 0, 1), var(0))),
@@ -1184,13 +1202,13 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     let clo1_ty = nat.unit_ty(&p);
     let clo2_ty = nat_ty.clone();
 
-    let case_true_ty_expected = subst_top(&type_per_tag_d1, &true_val);
+    let case_true_ty_expected = subst_top(&type_per_tag_d1, &Rc::new(true_val.clone()));
     let Expr::Pi(f_dom_true, rest_true) = &case_true_ty_expected else { panic!("expected Pi") };
     let Expr::Pi(ih_dom_true, _) = &**rest_true else { panic!("expected Pi") };
     let case_true_ty = lam((**f_dom_true).clone(), lam((**ih_dom_true).clone(), shift(&clo1_ty, 0, 2)));
     p.check(&case_true_ty, &case_true_ty_expected).expect("case_true_ty : type_motive_c(true)");
 
-    let case_false_ty_expected = subst_top(&type_per_tag_d1, &false_val);
+    let case_false_ty_expected = subst_top(&type_per_tag_d1, &Rc::new(false_val.clone()));
     let Expr::Pi(f_dom_false, rest_false) = &case_false_ty_expected else { panic!("expected Pi") };
     let Expr::Pi(ih_dom_false, _) = &**rest_false else { panic!("expected Pi") };
     let case_false_ty = lam((**f_dom_false).clone(), lam((**ih_dom_false).clone(), shift(&clo2_ty, 0, 2)));
@@ -1221,11 +1239,11 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     let (value_per_tag_d1, value_expected_step_ty) = wrec_step_type(&bool_ty, &wb, &nat_ty, &value_motive);
     let value_motive_c = lam(bool_ty.clone(), value_per_tag_d1.clone());
 
-    let value_case_true_expected = subst_top(&value_per_tag_d1, &true_val);
+    let value_case_true_expected = subst_top(&value_per_tag_d1, &Rc::new(true_val.clone()));
     let Expr::Pi(vf_dom_true, vrest_true) = &value_case_true_expected else { panic!("expected Pi") };
     let Expr::Pi(vih_dom_true, _) = &**vrest_true else { panic!("expected Pi") };
 
-    let value_case_false_expected = subst_top(&value_per_tag_d1, &false_val);
+    let value_case_false_expected = subst_top(&value_per_tag_d1, &Rc::new(false_val.clone()));
     let Expr::Pi(vf_dom_false, vrest_false) = &value_case_false_expected else { panic!("expected Pi") };
     let Expr::Pi(vih_dom_false, _) = &**vrest_false else { panic!("expected Pi") };
 
@@ -1241,7 +1259,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
         let ts2 = shift(type_step, 0, 2);
         let tag2 = shift(tag, 0, 2);
         lam(
-            subst_top(&wb2, &tag2),
+            subst_top(&wb2, &Rc::new(tag2)),
             wrec(shift(&tm2, 0, 1), shift(&wb2, 1, 1), shift(&ts2, 0, 1), app(shift(f_ref, 0, 1), var(0))),
         )
     }
@@ -1339,7 +1357,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // standalone, at the SAME (ambient) depth as `a` itself, no extra
     // binder (unlike `fam`, this isn't going *inside* anything).
     let b_val = wrec(value_motive.clone(), wb.clone(), value_step, a.clone());
-    let expected_b_ty = subst_top(&fam, &a);
+    let expected_b_ty = subst_top(&fam, &Rc::new(a.clone()));
     p.check(&b_val, &expected_b_ty).expect("b_val : subst_top(fam, a) -- the core claim, isolated");
 
     // Sanity: `a` is genuinely symbolic, not secretly concrete -- whnf
