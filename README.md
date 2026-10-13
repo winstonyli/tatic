@@ -61,9 +61,9 @@ commits and `RELATED_WORK.md` refer to (`docs/superpowers/`,
 An experiment on whether rule mining can run alongside execution: laws are
 served in batches, rules are mined from each served batch, and the next batch
 is served under the rules mined so far. The metric M is the number of laws that
-still need a whole-term machine proof. The measured results are not in this
-repository (they live in local notes), so treat the code below as the
-reproducible part.
+still need a whole-term machine proof. The measured results are in
+`docs/loop-result.md` and `docs/tier-cycle.md`, with raw rows and the scripts
+that produced them under `docs/runs/`.
 
 - The driver is the ignored test `driver::loop_stream` (`tests/church_bv/driver.rs`):
   `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> <church_bv test exe> driver::loop_stream --exact --ignored --nocapture`.
