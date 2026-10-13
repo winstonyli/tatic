@@ -558,8 +558,8 @@ makes canonical keys. Parked:
 - Cached `show()` text on terms: not needed while `show_cmp` does not allocate.
 - `machine.rs` orders candidate terms by `show().len()` as a size proxy.
 
-**Where the time goes after it (samply, 2026-10-12).** Profiled cmp3d's ref loop (`driver::loop_stream`, `RULEMINER_FAST=1`,
-2 threads, salt 1; 320 s under the profiler, load 46%, RTP off; 384k samples over the loop's processes). Text work is gone from
+**Where the time goes after it (samply, 2026-10-12).** Profiled cmp3d's ref loop (`driver::loop_stream`, 2 threads, salt 1;
+`RULEMINER_FAST` was in fact not set, see the correction under "Where the time goes after proof plans"; 320 s under the profiler, load 46%, RTP off; 384k samples over the loop's processes). Text work is gone from
 the profile: `show`, `show_cmp`, formatting, `parse_term` and `Machine::key` each round to 0.0%, and `Term` hashing and cloning
 are 1.7% and 5.3% of the mine. The cost is kernel term construction:
 - The mine process is 70% of the samples. 63% of it is under `rewrite_law` and 58% under the kernel's hash-consing
@@ -630,15 +630,29 @@ less. The mines gain most (cmp3d 141 against 216 s and 75 against 119 s; add3 18
 cleanliness item, since counting formats no keys); caching `ops_for` per width (proof mode only; measured below: dropped).
 
 **Where the time goes after proof plans (samply, 2026-10-12).** The same cmp3d ref loop as before (`driver::loop_stream`,
-`RULEMINER_FAST=1`, 2 threads, salt 1; load 43-49%, RTP off) ran 160 s under the profiler, against 320 s; 235k samples.
-Counting is now small: the whole rewriter (`rewrite`, `rewrite_plan`) is under 5% of all samples. The cost is machine proofs:
-- `add_tree_law`'s proof half (`tree_proof`) is 59% of all samples, in winner proofs (`prove_rule`, 59% of the mine process,
-  which is 73% of all samples) and in serving (`law_proof`, 61-66% of each serving process). Inside it, the case lemmas
+2 threads, salt 1; load 43-49%, RTP off) ran 160 s under the profiler, against 320 s; 235k samples. Correction: neither
+profile set `RULEMINER_FAST` (`loop_stream` only passes it through; the sweeps set it), so both mines ran the eager filter
+that proves every candidate and scored in proof mode. Here the filter was 76 s of the mine's 87 s (all 170 candidates
+provable), the rounds 10 s, winner proofs 0.4 s; serving took 60 s. The earlier profile's "the rewriter still builds every
+step's proof term although scoring runs counting-only" was proof-mode scoring by configuration; the sweep pair (which does
+set it) is the measure of proof plans. In this profile:
+- Counting is small: the whole rewriter (`rewrite`, `rewrite_plan`) is under 5% of all samples.
+- `add_tree_law`'s proof half (`tree_proof`) is 59% of all samples: in the eager filter (`prove_rule`, 59% of the mine
+  process, which is 73% of all samples) and in serving (`law_proof`, 61-66% of each serving process, of which `prove_rule`
+  for rule lemmas is 40-63%: each serving process re-proves the rules in force). Inside it, the case lemmas
   (`lemma_n`'s elimination, 47%), their table lookups (`table_app`/`mux`, 34-39%), and the kernel check (34%).
 - `hc::intern` is still 58% of all samples, now almost all under `tree_proof`. The constant gate terms are rebuilt and
   re-interned on every use: `and_` 15%, `bool0` 11%, `xor_` 11%, `or_` 7.5%, `bool2` (their wrapper) 20%, all inclusive.
 - Text is gone (formatting, `Machine::key`, `show` all 0.0%), so typed lemma keys have no speed value; `ops_for` is 0.3%, so
   caching it per width is dropped.
+- Winner proofs are not repeated: `proofs` holds each candidate's result for the whole mine, and under `RULEMINER_FAST` only
+  winners are proved (0.4 s here). Rule lemmas are repeated across processes instead: the mine and every serving process
+  prove the rules in force from scratch (`CLOSED` is per thread and per process).
+- Caching the gate constants is safe: `hc` stamps each node with its scope's generation, and a node from an older
+  generation is only non-canonical (its parents compare structurally, and `check_in`'s `canonical_inputs` re-interns large
+  inputs), never wrong. A cache keyed on the current generation keeps the pointer-equality fast path; the miner's and
+  serving's scopes are long (one per worker, per law or per rule set), so it would hit. `hc::generation` is private to the
+  kernel, so the key needs a public accessor.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
