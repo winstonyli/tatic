@@ -847,6 +847,9 @@ mod hc {
         /// (source node, argument-set id, depth) -> its instantiation.
         inst: PtrMap<(usize, u64, u32), Rc<Expr>>,
         shifts: PtrMap<ShiftKey, Rc<Expr>>,
+        /// Node -> its weak head normal form. `whnf` reads no context, so its answer holds for the
+        /// whole scope, across `def_eq` calls (doc section "Why the table lookups stay").
+        whnf: PtrMap<usize, Rc<Expr>>,
         /// Argument sets of two or more nodes, by their node pointers.
         arg_sets: HashMap<Vec<usize>, u64>,
         /// The memos' non-canonical source nodes, kept alive to the scope's end (canonical ones live
@@ -1218,6 +1221,19 @@ mod hc {
                 t.inst.insert((Rc::as_ptr(x) as usize, aid, d), r.clone());
             });
         }
+    }
+
+    /// `x`'s weak head normal form if the scope has one; `None` also while the table is off.
+    pub fn whnf_get(x: &Rc<Expr>) -> Option<Rc<Expr>> {
+        TABLE.with(|t| t.borrow().whnf.get(&(Rc::as_ptr(x) as usize)).cloned())
+    }
+
+    pub fn whnf_put(x: &Rc<Expr>, r: &Rc<Expr>) {
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            pin(&mut t, x);
+            t.whnf.insert(Rc::as_ptr(x) as usize, r.clone());
+        });
     }
 
     pub fn shift_get(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Option<Rc<Expr>> {
@@ -1850,6 +1866,15 @@ fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mu
 /// result again, as `nf` and `def_eq` do with a stuck head, keeps its
 /// pointer and hits the cache from then on.
 fn whnf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Rc<Expr> {
+    // While the table is on, its memo serves the whole scope; `cache.whnf` only this call.
+    if hc::generation() != 0 {
+        if let Some(hit) = hc::whnf_get(e) {
+            return hit;
+        }
+        let result = whnf_step(e, cache).map_or_else(|| e.clone(), Rc::new);
+        hc::whnf_put(e, &result);
+        return result;
+    }
     let key = PtrKey(e.clone());
     if let Some(hit) = cache.whnf.get(&key) {
         return hit.clone();

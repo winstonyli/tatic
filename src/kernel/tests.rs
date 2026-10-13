@@ -244,6 +244,20 @@ fn shift_and_instantiate_match_a_reference() {
     }
 }
 
+/// Inside an interning scope a `whnf` found by one `def_eq` stays in the table for the next; outside
+/// one nothing is kept.
+#[test]
+fn whnf_memo_outlives_one_def_eq_in_a_scope() {
+    let redex = || app(lam(sort(0), var(0)), var(7));
+    assert!(def_eq(&app(var(5), redex()), &app(var(5), var(7))));
+    assert_eq!(hc::whnf_get(&hc::intern_new(redex())), None);
+    let _scope = InternScope::enter();
+    let x = hc::intern_new(redex());
+    assert_eq!(hc::whnf_get(&x), None);
+    assert!(def_eq(&Expr::App(hc::intern_new(var(5)), x.clone()), &app(var(5), var(7))));
+    assert_eq!(hc::whnf_get(&x).as_deref(), Some(&var(7)));
+}
+
 /// `cong_n` outside an interning scope still shares its shifted copies of `f`: with `f` a DAG of
 /// `d(k+1) = v1 d(k) d(k)` over a loose variable, a copy shifted as a tree would have 2^20 nodes.
 #[test]

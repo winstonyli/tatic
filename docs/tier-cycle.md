@@ -1474,10 +1474,33 @@ outermost. Most repeats are cheap, stuck terms. The repeats that reduce carry th
 time, so at most about 10% of busy samples. A per-scope `whnf` memo would catch them, kept like `inst` and `shifts`:
 keyed by node in hc's table, results kept alive by `pin`. The result is a node, so it can't go in the header (cycles,
 above). Following "one shift memo", `ReductionCache.whnf` could then be deleted for the table, with `def_eq`, `whnf`
-and `nf` opening a scope of their own. Open: lead, not built. The other sources of lookups were sized above: the
+and `nf` opening a scope of their own. (Built in the next section.) The other sources of lookups were sized above: the
 builders' held inputs (at most about 3.5%) and `inst_get`'s argument lists with no entries yet (at most about 1.4%).
 The `apps` prefixes (1.28 M finds, "How many builder inputs the caller
 already holds") have no memo to share: the same spine is rebuilt from held arguments, which only canonical handles or a memo keyed by the caller would avoid.
+
+**Weak head normal forms kept for the scope (2026-10-13).** While the table is on, `whnf_rc` reads and writes hc's
+new `whnf` map (node -> its weak head normal form, sources kept alive by `pin`) instead of `ReductionCache.whnf`,
+which now serves only calls with the table off. Check: `whnf_memo_outlives_one_def_eq_in_a_scope`, which fails with
+the table path disabled. `proof_cost_split` cmp3d own CPU against 3892f3d, 24 alternating pairs, load 15%: won 17,
+median pair -0.20 s, best 4.39 against 4.66 s. Summed 122.5 against 136.7 s, but one pair alone accounts for 6.2 s
+of that. Sequential sweep pair (rows `whs_*`, script `whnf_seq.sh`): identical outputs on both salts.
+
+**`conv` repeats pairs across `def_eq` calls (probe, reverted, no patch kept, 2026-10-13).** `conv_rc(a, b)` is pure
+too: its result is whether `nf(a) == nf(b)`. Same run at 3892f3d, interning on:
+
+| | Count | Time |
+|---|---|---|
+| `def_eq` calls | 1.88 M | 3.58 s in all |
+| `conv_rc` comparisons (pointer-unequal) | 215 K | |
+| pairs already compared earlier in the scope | 112 K (52%) | 1.88 s, counted where not nested in another repeat |
+| `eq_noting`'s `unequal` notes | 193 K | |
+| notes on a pair already met in the scope | 60 K (31%) | |
+| `nf_rc` misses | 0 | |
+
+A per-scope memo from pair to result (with `unequal` folded in) would answer those repeats without reducing either
+side: at most about half of `def_eq` time. It would also cover much of what the `whnf` memo saves, so measure it
+against the `whnf` build. `nf` does not run in this workload; its cache stays per call. Open: lead, not built.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
