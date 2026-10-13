@@ -57,6 +57,7 @@ and libraries (43 MB) were not kept.
 | `sms_head_*`, `sms_new_*` | ff3eb86 against one shift memo (`ShiftMemo` deleted; the `cong` builders open their own scope), one run at a time | `smemo_seq.sh` | "One shift memo" |
 | `whs_head_*`, `whs_new_*` | 3892f3d against weak head normal forms kept per interning scope in hc's table, one run at a time | `whnf_seq.sh` | "Weak head normal forms kept for the scope" |
 | (no rows) | `proof_cost_split` CPU-time A/B of f77238e against a per-scope `conv` pair memo, and against `conv_rc` skipping `==` on canonical pairs (both reverted, no patch kept) | `cpu_ab.ps1` | "`conv` repeats pairs across `def_eq` calls" |
+| (no rows) | samply profile of `proof_cost_split` at 8334948 (profile not kept), self times, key `instantiate_n(`, `hc::intern(`, `whnf_rc(`, and the node-table lookup's sampled instructions | `prof_self.py`, `prof_callers.py`, `prof_addr.py` | "Profile at 8334948" |
 | (no rows) | samply profile of `proof_cost_split` at 0fdd223 (profile not kept), key `hc::intern(`, and self times | `prof_callers.py`, `prof_self.py` | "Profile after the two table changes" |
 | (no rows) | `proof_cost_split` at ec49e4c with node-table interns and hits counted per builder call site (`#[track_caller]`, reverted, no patch kept) | `cpu_ab.ps1`'s environment, `HCPROBE_FILE` | "How many builder inputs the caller already holds" |
 | `cap/*.txt` | `mul_conjecture_miner` (`MULMINER_MAX=7`) on 5f65267 (old) against 0cb4e6c (head), one run at a time | `cap_ab.sh` | "Decision diagrams deleted" |

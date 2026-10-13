@@ -1516,6 +1516,29 @@ repeated pair costs only its walk over memoized weak head normal forms. Folding 
 the table is on, canonicity already answers `==` for the pairs it would hold, and skipping it saved nothing measurable.
 Closed.
 
+**Profile at 8334948 (= f77238e's code; samply of `proof_cost_split` cmp3d own, profile not kept, 2026-10-13).** 9656
+busy samples; about 11% other CPU load, Defender RTP off. Little moved after the `whnf` memo:
+
+| Share of busy samples | 0fdd223 | 8334948 |
+|---|---|---|
+| `instantiate_n` inclusive | 55% | 54.4% |
+| ... under `beta_spine` (from `whnf_step`) | 46.8% | 44.3% |
+| ... under `infer_node` | | 8.4% |
+| `whnf_rc` inclusive, all from `conv_rc` | | 35.0% |
+| node-table lookup (`intern_as`'s closure), self | 17.4% | 16.4% |
+| `inst_get`, self | 9.0% | 7.1% |
+| `hc::intern` callers: `inst_rec` / `app` / `app2` / `shift_child` | | 19.7 / 4.6 / 2.5 / 2.1% |
+
+Where the lookup's self time goes, by sampled instruction (`prof_addr.py` plus `llvm-objdump`; samples land on
+the instruction after the one that waited): 29% just after the indirect call that fetches the thread-local `TABLE`
+(its lazy-initialization accessor) and the copy of the moved `Expr` out of the closure; 18% on the probed slot's stored
+hash and 12% on the group of control bytes (cache misses on the table itself); 8% writing a new entry; 4% building a
+new node. Comparing a candidate's key (reading the candidate node) is not among the hot spots: the stored hash filters
+almost every mismatch. So about a third of the lookup is memory latency inherent in a table this size, and about a
+third is call overhead around it. Leads, not built: a `const`-initialized `TABLE` (no lazy accessor; hashbrown's tables
+and the default hasher can be made in a `const`), and interning without moving the `Expr` through the closure. At most
+about 5% of busy samples between them.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
