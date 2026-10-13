@@ -1039,7 +1039,8 @@ a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same
   `nf` call (`src/kernel.rs` near 1424), so every leaf renormalizes the same closed gate applications (`and` of two literal
   bits, say). A cache keyed by canonical pointer, per interning generation, for closed terms would collapse them. Reduction
   is context-free for closed terms, so it is sound, but it touches the trusted kernel. Gain unmeasured: first count distinct
-  canonical closed `App` nodes normalized per lemma.
+  canonical closed `App` nodes normalized per lemma. Counted: at most about 1%, not worth it ("A closed-term normal-form
+  cache would save about 1%", below).
 - Smaller: `GoodOps::new` per `tree_proof` (rebuilds three `good2` proofs; not visible in the profile); the guarded leaves'
   `hty` and `inv_expr` (now hit the table memo).
 
@@ -1052,7 +1053,7 @@ pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Ope
 2. `inst_rec`'s per-child work makes up to four separate `TABLE.with` borrows (`uses`, `inst_get`, `intern`, `inst_put`);
    fusing them saves TLS and `RefCell` traffic. Inside `hc` only; gain unmeasured.
 3. Pre-reserve `nodes`, `inst`, `uses` when the table switches on: `reserve_rehash` was 5-9%. One line per map.
-4. The closed-term normal-form cache above.
+4. The closed-term normal-form cache above (measured below: about 1%; dropped).
 5. A separate, non-interning normalizer for closed Bool terms: largest change, adds to the trusted base; last.
 Minor: `arg_sets` still uses SipHash (`Vec<usize>` keys).
 
@@ -1075,6 +1076,21 @@ CPU over 4 alternating pairs of `proof_cost_split` (cmp3d own, against 4da7e02).
   summed 161.1 against 180.4 s, about 11%; rule-proof build 6.6-8.3 s against 8.5-10.1 s in the last round.
 - Sequential pair against 4da7e02 (`scripts/step_seq.sh`, rows `sts_*`; covers the helper and the step memo; RTP off): rows,
   preferences and all 27 rule and unit files identical on both salts. Wall 29 against 28 s (salt 1), 27 against 28 s (salt 2).
+
+**A closed-term normal-form cache would save about 1% (negative, 2026-10-13).** A temporary probe at 464e24f (reverted, no
+patch kept) recorded, in the kernel's `whnf_rc` on a cache miss, every closed node (`loose_of == 0`) by pointer for the
+interning generation. It counted the nodes reduced again, whether in the same public `check`/`infer` call or an earlier one,
+and timed the outermost such repeats. `proof_cost_split` (cmp3d own, 300 laws, one run, 8.6 s CPU):
+- Inside `check`/`infer`: 6.76 s over 1134 top-level calls, so the kernel is about 78% of the run (lemma checks fall in
+  "build").
+- Closed `whnf_rc` misses: 2.22 M, of which only 72.8 k reduced anything; the rest were already in weak head normal form.
+- Repeats: 34.5 k within the same call (a later `def_eq` with a fresh `ReductionCache`) and 86.1 k from earlier calls, of which
+  0.7 k and 23.5 k reduced anything. All repeats together took 70 ms.
+
+So a cross-call cache of closed normal forms could save at most about 70 ms of 6.76 s (1%), and it would add to the trusted
+kernel. Not built. A limit of the count: nodes are matched by pointer, so a closed redex rebuilt outside the hash-cons table
+(e.g. `beta_spine`'s fresh head `Rc`) is never a repeat. Those heads are mostly gate lambdas, already in weak head normal
+form. The kernel's time is in the reductions that do run and in interning (items 1-3 of the survey above), not in repeats.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
