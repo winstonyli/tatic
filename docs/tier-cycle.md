@@ -1256,6 +1256,19 @@ height cutoffs in place of `hc::low` and the scattered shape checks. Counters on
   `shifts` 0.48, `ShiftMemo` 0.26, `whnf` 0.04). Most are hits on hot entries, cheaper than the instantiation misses the
   height-2 skip removed (5.1 M lookups and 3.5 M inserts for 11%), so the expected gain is a few percent at most.
 
+**Leaves skip the infer and shift memos (negative, 2026-10-13).** The cheapest test of that ceiling: a temporary knob
+(`LEAFSKIP`, reverted, no patch kept) skipping the memo for leaf keys in `infer_rc`, `shift_child` and `shift_memo_child`,
+12 alternating pairs each on `proof_cost_split` cmp3d own (`scripts/cpu_ab.ps1` with a value), Defender RTP off:
+
+| Memo skipped for leaves | New won | Summed CPU, new against old | Best, new against old | CPU load |
+|---|---|---|---|---|
+| `InferCache.types` | 8 | 110.1 against 112.1 s | 8.95 against 9.02 s | 59% |
+| `shifts` | 6 | 94.2 against 91.0 s | 5.63 against 5.45 s | 31% |
+| `ShiftMemo` | 4 | 82.2 against 81.6 s | 5.52 against 5.83 s | 12% |
+
+All three are within noise: a leaf's memo hit costs about what inferring or re-interning the leaf does. So the shared
+node id with an immediate leaf value and per-table height cutoffs is not worth building for speed (parked).
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
