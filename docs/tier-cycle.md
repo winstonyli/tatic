@@ -622,12 +622,23 @@ compiles and checks every law. Supporting changes:
 
 Test `plans_compile_to_checked_proofs`: seven laws (comm+assoc, `shl1` over `and`, `x + (x ^ -1) = -1`, `-1 - y = y ^ -1`,
 a collapse, an `lt` root, the shr mask) have a plan with and without `SCORE_ONLY`, the compiled sides are the law's, and the
-proof checks. Pair sweep against e49535f, same load (CPU 39-43% at launch, RTP off), `SWEEP="mines own pooled"`
+proof checks. (Profile after it: see "Where the time goes after proof plans".) Pair sweep against e49535f, same load (CPU 39-43% at launch, RTP off), `SWEEP="mines own pooled"`
 (`docs/runs/2026-10-12/rows/pp_*`): rows, preferences and all 27 rule and unit files identical on both salts, so the
 proof-mode context change did not move serving M; wall 333 against 535 s (salt 1) and 236 against 429 s (salt 2), 38-45%
 less. The mines gain most (cmp3d 141 against 216 s and 75 against 119 s; add3 18 against 53 s). Parked: typed lemma keys
 (`CLOSED` keyed by kind and terms, `guarded`'s tree key, `Machine::key`; now a
-cleanliness item, since counting formats no keys); caching `ops_for` per width (proof mode only; measure first).
+cleanliness item, since counting formats no keys); caching `ops_for` per width (proof mode only; measured below: dropped).
+
+**Where the time goes after proof plans (samply, 2026-10-12).** The same cmp3d ref loop as before (`driver::loop_stream`,
+`RULEMINER_FAST=1`, 2 threads, salt 1; load 43-49%, RTP off) ran 160 s under the profiler, against 320 s; 235k samples.
+Counting is now small: the whole rewriter (`rewrite`, `rewrite_plan`) is under 5% of all samples. The cost is machine proofs:
+- `add_tree_law`'s proof half (`tree_proof`) is 59% of all samples, in winner proofs (`prove_rule`, 59% of the mine process,
+  which is 73% of all samples) and in serving (`law_proof`, 61-66% of each serving process). Inside it, the case lemmas
+  (`lemma_n`'s elimination, 47%), their table lookups (`table_app`/`mux`, 34-39%), and the kernel check (34%).
+- `hc::intern` is still 58% of all samples, now almost all under `tree_proof`. The constant gate terms are rebuilt and
+  re-interned on every use: `and_` 15%, `bool0` 11%, `xor_` 11%, `or_` 7.5%, `bool2` (their wrapper) 20%, all inclusive.
+- Text is gone (formatting, `Machine::key`, `show` all 0.0%), so typed lemma keys have no speed value; `ops_for` is 0.3%, so
+  caching it per width is dropped.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
