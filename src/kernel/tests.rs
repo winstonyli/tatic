@@ -496,6 +496,26 @@ fn memo_sources_outlive_their_callers() {
     }
 }
 
+/// The `uses` slot fills the node header's padding, and answers as the walk does: a repeated query
+/// is answered from the slot, a different one replaces it, and queries too wide for it still work.
+#[test]
+#[cfg(not(feature = "record-defeq"))]
+fn uses_slot_is_free_and_agrees_with_the_walk() {
+    assert_eq!(std::mem::size_of::<Node<Expr>>(), std::mem::size_of::<Expr>() + 16);
+    let _scope = hc::Scope::enter();
+    hc::activate();
+    let x = hc::intern(lam(var(0), app(var(1), var(3))), None);
+    assert_eq!(x.uses_slot(0, 2), None);
+    // Outside the binder `x` mentions loose variables 0 and 2.
+    for (d, m, want) in [(0, 2, true), (0, 2, true), (1, 1, false), (2, 1, true), (3, 1, false), (1, 1 << 15, true)] {
+        assert_eq!(hc::uses(&x, d, m), want, "d={d} m={m}");
+        // `uses` answers from `loose` alone, without the slot, when nothing is loose at or above `d`.
+        if m < 1 << 15 && x.loose() > d {
+            assert_eq!(x.uses_slot(d, m), Some(want), "d={d} m={m}");
+        }
+    }
+}
+
 /// The instantiation memo skips nodes at most two levels above their leaves.
 #[test]
 fn low_is_height_at_most_two() {

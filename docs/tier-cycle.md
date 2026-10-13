@@ -1381,7 +1381,7 @@ only way left to shrink it.
   | `uses` | 8.52 M | 7.93 M | 7.03 M (89%) |
   | `InferCache.types` | 3.61 M | 1.91 M | 1.47 M (77%) |
 
-Two unifying mechanisms follow (open leads, not built):
+Two unifying mechanisms follow (the first is built in the next section, the second is open):
 - **Pure per-node facts in the node.** `loose` and `free` already live in the node header; `uses(x, d, m)` is a finer
   fact of the same kind and never changes. A slot for it fits the header's 4 padding bytes (no larger nodes), needs
   no generation tag, no keep-alive and no pointer-keyed table, and would answer 7.0 M of the 8.5 M lookups from a node
@@ -1391,6 +1391,19 @@ Two unifying mechanisms follow (open leads, not built):
   values, so a term already built is passed on, not rebuilt. It would remove most of the builders' 7.1 M re-finds,
   `canonical_inputs`' interning on entry and `args_id`'s interning of non-canonical arguments, but it changes the
   builder interface across `tests/church_bv`.
+
+**Per-node facts in the node header (2026-10-13).** Each node keeps its last `hc::uses(x, d, m)` answer in a `Cell<u32>`
+that fills the header's former padding (`Node<Expr>` stays `Expr` + 16 bytes): the query (d and m below 2^15) and the
+bit, packed by `Rc::uses_slot`. `uses` answers from the slot before walking and writes the slot after. Check:
+`uses_slot_is_free_and_agrees_with_the_walk`. `proof_cost_split` cmp3d own CPU, alternating pairs, Defender off:
+- Slot plus the per-scope `uses` table behind it, against 7fe880f: 24 pairs, won 16, summed 122.6 against 127.2 s, best
+  4.38 against 4.53 s.
+- Slot alone (the table switched off by a temporary `USESNOTABLE` knob) against slot plus table: 12 pairs, won 8,
+  summed 54.2 against 55.2 s, best 4.27 against 4.44 s.
+
+So the `uses` table, its `pin` and the knob are deleted; a slot miss walks. Sequential sweep pair (rows `uss_*`, script
+`uslot_seq.sh`): identical outputs on both salts. The slot can't hold `shifts` or `infer` results, which are nodes
+(above).
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

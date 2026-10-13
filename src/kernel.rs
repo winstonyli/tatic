@@ -60,6 +60,10 @@ struct Node<T> {
     canon: u64,
     /// The `hc` table generation this node is canonical in (0: not).
     generation: std::cell::Cell<u32>,
+    /// The last [`hc::uses`] answer for this node, packed by [`Rc::uses_slot`] (0: none). A fact
+    /// about the node alone, like `loose` and `free`, so it never goes stale. Fills the header's
+    /// padding.
+    uses: std::cell::Cell<u32>,
     val: T,
 }
 
@@ -71,6 +75,7 @@ impl Rc<Expr> {
             #[cfg(feature = "record-defeq")]
             canon: hc_probe::intern(&e),
             generation: std::cell::Cell::new(0),
+            uses: std::cell::Cell::new(0),
             val: e,
         }))
     }
@@ -85,8 +90,24 @@ impl Rc<Expr> {
             #[cfg(feature = "record-defeq")]
             canon: hc_probe::intern(&e),
             generation: std::cell::Cell::new(0),
+            uses: std::cell::Cell::new(0),
             val: e,
         }))
+    }
+
+    /// The node's remembered `uses(self, d, m)`, if the slot holds that query. The slot packs a set
+    /// bit, `d` and `m` in 15 bits each, and the answer; queries that don't fit are never stored.
+    #[inline(always)]
+    pub(crate) fn uses_slot(&self, d: u32, m: u32) -> Option<bool> {
+        let s = self.0.uses.get();
+        (d < 1 << 15 && m < 1 << 15 && s >> 1 == (1 << 30 | d << 15 | m)).then_some(s & 1 == 1)
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_uses_slot(&self, d: u32, m: u32, r: bool) {
+        if d < 1 << 15 && m < 1 << 15 {
+            self.0.uses.set((1 << 30 | d << 15 | m) << 1 | r as u32);
+        }
     }
 
     /// Whether this node and everything under it came from the current `hc` table, so that two
@@ -855,8 +876,6 @@ mod hc {
         /// (source node, argument-set id, depth) -> its instantiation.
         inst: PtrMap<(usize, u64, u32), Rc<Expr>>,
         shifts: PtrMap<ShiftKey, Rc<Expr>>,
-        /// (node, depth, argument count) -> whether it has a loose `Var` in `[depth, depth + count)`.
-        uses: PtrMap<(usize, u32, u32), bool>,
         /// Argument sets of two or more nodes, by their node pointers.
         arg_sets: HashMap<Vec<usize>, u64>,
         /// The memos' non-canonical source nodes, kept alive to the scope's end (canonical ones live
@@ -1122,8 +1141,9 @@ mod hc {
 
     /// Whether `x` mentions a loose `Var` in `[d, d + m)`, i.e. whether instantiating `m` arguments
     /// at depth `d` can put any of them in. When it cannot, the result is `x` shifted down by `m`
-    /// above `d + m`, whatever the arguments are. Memoised per (node, depth, count): at n=256 99% of
-    /// the memo entries keyed by argument list were for such nodes (doc section 64).
+    /// above `d + m`, whatever the arguments are. The node's header remembers its last answer
+    /// ([`Rc::uses_slot`]); a per-scope table behind it caught too few of the slot's misses to pay
+    /// (doc section "Per-node facts in the node header").
     pub fn uses(x: &Rc<Expr>, d: u32, m: u32) -> bool {
         if x.loose() <= d {
             return false;
@@ -1131,8 +1151,7 @@ mod hc {
         if let Expr::Var(k) = &**x {
             return *k < d + m;
         }
-        let key = (Rc::as_ptr(x) as usize, d, m);
-        if let Some(r) = TABLE.with(|t| t.borrow().uses.get(&key).copied()) {
+        if let Some(r) = x.uses_slot(d, m) {
             return r;
         }
         let r = grow(|| {
@@ -1151,11 +1170,7 @@ mod hc {
             });
             found
         });
-        TABLE.with(|t| {
-            let mut t = t.borrow_mut();
-            pin(&mut t, x);
-            t.uses.insert(key, r);
-        });
+        x.set_uses_slot(d, m, r);
         r
     }
 
