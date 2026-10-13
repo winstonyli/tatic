@@ -754,6 +754,7 @@ pub fn rule_miner() {
         println!("RULEMINER time {label}: {:.1}s", last.replace(Instant::now()).elapsed().as_secs_f64());
     };
     let _banner = MachineBanner::start("RULEMINER");
+    let _save = lemma_cache::Save;
     let cfg = MinerConfig::from_env();
     let (max, trials) = (cfg.max, cfg.trials);
     // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70), 2: no order check; the step budget
@@ -2144,6 +2145,7 @@ fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
 #[test]
 #[ignore]
 pub fn rule_set_kernel_check() {
+    let _save = lemma_cache::Save;
     let _scope = tatic::kernel::InternScope::enter();
     let (_, kv, laws) = check_laws();
     // CHECK_FAST=1: count only (machine fallbacks are counted without building their proofs, nothing is kernel-checked, no NFSAME pass);

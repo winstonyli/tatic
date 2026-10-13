@@ -405,17 +405,29 @@ pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
 }
 
 thread_local! {
-    /// The lemma parameters: one nested scope per bound lemma, outermost first, with the lemma's proof. A proof may use
-    /// the lemmas bound before it (a mined rule proved through a machine proof uses its case lemmas).
-    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Vec<(Scope, Expr)>)>> = const { std::cell::RefCell::new(None) };
+    /// The lemma parameters: one nested scope per bound lemma, outermost first, with the lemma's proof (none for one
+    /// loaded from `LEMMA_CACHE`). A proof may use the lemmas bound before it (a mined rule proved through a machine proof
+    /// uses its case lemmas).
+    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Vec<(Scope, Option<Expr>)>)>> = const { std::cell::RefCell::new(None) };
 }
 /// `memo` for a closed lemma `(proof, statement)`: the proof is checked once (`ck`, against the lemmas bound before it)
 /// and the lemma is returned as a parameter of that statement, so a law using it is checked against the parameter, not
-/// the proof. `discharge` turns a term over parameters back into a closed one.
+/// the proof. `discharge` turns a term over parameters back into a closed one. A statement an earlier process of the loop
+/// checked is bound without building its proof (`lemma_cache`).
 pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
     memo(key.clone(), || {
-        let (p, s) = build();
-        ck(&format!("lemma {key}"), &p, &s);
+        let (p, s) = match lemma_cache::lookup(&key) {
+            Some(s) if !lemma_cache::recheck() => (None, s),
+            cached => {
+                let (p, s) = build();
+                ck(&format!("lemma {key}"), &p, &s);
+                match cached {
+                    Some(c) => assert!(c == s, "LEMMA_RECHECK: the cached statement of {key} is not the one built"),
+                    None => lemma_cache::record(&key, &s),
+                }
+                (Some(p), s)
+            }
+        };
         PARAMS.with(|c| {
             let mut c = c.borrow_mut();
             let (ps, scopes) = c.get_or_insert_with(|| (Postulates::new(), Vec::new()));
@@ -431,7 +443,7 @@ pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr,
 /// call it last.
 pub fn discharge(body: Expr) -> Expr {
     let Some((mut ps, scopes)) = PARAMS.with(|c| c.borrow_mut().take()) else { return body };
-    scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p))
+    scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p.expect("discharge needs every lemma's proof: run without LEMMA_CACHE")))
 }
 
 /// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: comm, assoc, chain, tree, collapse,
@@ -585,7 +597,7 @@ impl Compiler {
                 let k = args.len();
                 let law = match kind {
                     LawKind::Rule(name) => {
-                        shared_lemma(format!("rule_{name}_{}_{}_{n}", l.show(), r.show()), || prove_rule(n, k, l, r).unwrap_or_else(|| panic!("rule {name} is not provable"))).0
+                        shared_lemma(format!("rule_{name}_{}_{}_{n}_{k}", l.show(), r.show()), || prove_rule(n, k, l, r).unwrap_or_else(|| panic!("rule {name} is not provable"))).0
                     }
                     LawKind::Assoc => shared_lemma(format!("assoc{n}"), || add_assoc_proof(n, false)).0,
                     LawKind::Comm => shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0,

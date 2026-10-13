@@ -15,6 +15,8 @@
 //! line at start and end, about 6 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
+//! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
+//! the loop starts and ends); LEMMA_RECHECK=1 audits it.
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules), mine_<name>.log and serve_<skip>.log. The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=..`.
@@ -107,8 +109,9 @@ fn machine_state(when: &str) {
 }
 
 fn run_loop(cfg: &LoopCfg) -> Summary {
-    let (out, rules) = (&cfg.out, cfg.out.join("rules.txt"));
+    let (out, rules, lemmas) = (&cfg.out, cfg.out.join("rules.txt"), cfg.out.join("lemmas.bin"));
     std::fs::create_dir_all(out).unwrap();
+    let _ = std::fs::remove_file(&lemmas);
     let s = |v: usize| v.to_string();
     let mut common: Vec<(String, String)> = [
         ("RULEMINER_FAMILY", cfg.family.clone()),
@@ -119,6 +122,7 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
         ("RULEMINER_SHAPE", s(cfg.split)),
         // one machine-state line per loop or sweep instead of one per child
         ("MACHINE_BANNER", "0".to_string()),
+        ("LEMMA_CACHE", lemmas.display().to_string()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -186,6 +190,7 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
             mine(&r.to_string(), skip, cfg.b);
         }
     }
+    let _ = std::fs::remove_file(&lemmas);
     let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted };
     println!("mode={} B={} K={} offset={} total_M={} rules={} exhausted={}", cfg.mode, cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted);
     sum

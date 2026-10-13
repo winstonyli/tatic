@@ -5,6 +5,7 @@ use tatic::kernel::*;
 
 mod driver;
 mod encoding;
+mod lemma_cache;
 mod rewrite;
 mod machine;
 mod search;

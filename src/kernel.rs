@@ -2576,5 +2576,7 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
 mod postulates;
 pub use postulates::*;
 
+pub mod bin;
+
 #[cfg(test)]
 mod tests;

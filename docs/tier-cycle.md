@@ -673,7 +673,7 @@ timers around `shared_lemma` (outermost calls, and the `ck` inside) on the cmp3d
 1, 68 s): in the four serving processes the lemmas are 95% of the serving time (11.3 of 11.8 s, 9.1/9.6, 6.3/6.6, 1.2/1.5) and
 their kernel checks 73-77% (8.7, 6.9, 4.8, 0.8 s; 347, 364, 260, 168 lemmas). Building is only 22-24% of serving. A cache that
 re-checks loaded lemmas would save about that (about 6 s of the loop's 68); one that trusts them, about 95% of serving (about
-28 s). Undecided: trust loaded lemmas, re-check them, or avoid the repeat without a file (fewer processes).
+28 s). Decided: trust them (below, "A trusted lemma cache per loop").
 
 Which lemmas repeat (probe, reverted; one `LKEY hash build-ns check-ns kind` line per lemma built, rows in
 `docs/runs/2026-10-12/lemma_keys/`, same loop): the mine builds 268 lemmas (2.8 s build, 9.9 s check), the four serving
@@ -692,6 +692,21 @@ itself is too large for a motive), and a table node built from arbitrary signals
 (CPU 44% at launch from other sessions, RTP off), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/mx_*`): rows,
 preferences and all 27 rule and unit files identical on both salts; wall 194 against 245 s (salt 1) and 163 against 210 s
 (salt 2), 21-22% less; cmp3d's mine 58 against 92 s and 35 against 62 s.
+
+**A trusted lemma cache per loop (2026-10-12).** A lemma is only ever used as a parameter of its statement, so a loop's
+processes share statements, not proofs: each statement a process checks goes to `LOOP_OUT/lemmas.bin` (`LEMMA_CACHE`, set by
+`driver::run_loop`, deleted when the loop starts and ends; `tests/church_bv/lemma_cache.rs`), and a later process binds it
+with no build and no check. Sound as long as every statement in the file was checked by this build: the header holds a
+hash of the exe, and a wrong key can only make a later check fail. Statements are stored in a new binary `Expr` format
+(`kernel::bin`, a node table, closed terms only). `LEMMA_RECHECK=1` builds and checks every lemma anyway and asserts the
+file's statement is the one built. The rule lemmas' key gained `k`. Audit, the cmp3d ref loop (`RULEMINER_FAST=1`, salt 1):
+no mismatch; the mine saves 286 statements (475 KB) and the four serving processes hit 142, 121, 128 and 143 of them and
+build 204, 52, 29 and 23 (729 KB at the end); serving takes 4, 3, 3, 3 s per batch against 12, 12, 13, 14 s audited, and
+the loop 67 against 111 s, run side by side; M and rules identical. Pair sweep against 639cdcd, same load (CPU 58% at
+launch from other sessions, RTP off), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/lcp_*`): rows, preferences and
+all 27 rule and unit files identical on both salts; wall 323 against 351 s (salt 1) and 149 against 161 s (salt 2), only
+7-8% less, because the gain is confined to the `mines` stage (106 against 156 s and 42 against 61 s; cmp3d 71 against 113 s
+and 18 against 32 s): the `own` and `pooled` loops serve with `CHECK_FAST=1` and build no lemmas, and their mines few.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
