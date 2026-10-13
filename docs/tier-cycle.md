@@ -1452,8 +1452,32 @@ cmp3d own CPU against ff3eb86, two runs of 24 alternating pairs, both under othe
 - Run 2: won 12, median -0.005 s, summed 141.8 against 153.9 s.
 
 Neutral in speed; kept as one memo instead of two. Sequential sweep pair (rows `sms_*`, script `smemo_seq.sh`):
-identical outputs on both salts. The `apps` prefixes (1.28 M finds) have no such shortcut: the
-same spine is rebuilt from held arguments, which only canonical handles or a memo keyed by the caller would avoid.
+identical outputs on both salts.
+
+**Why the table lookups stay at a quarter of the profile: `whnf` repeats across `def_eq` calls (survey and probe,
+reverted, no patch kept, 2026-10-13).** The node-table and `inst` lookups (17.4% and 9.0% self at 0fdd223) cost one
+cache miss per hit (above), so only fewer lookups would shrink them. `instantiate_n` is 55% of busy samples, and
+46.8% of it is `beta_spine` under `whnf_step`. `whnf` is a pure function of the node: it unfolds no constants and
+reads no context. Yet its memo, `ReductionCache.whnf`, lives for one `def_eq` (or `whnf`, `nf`) call. Probe of
+`whnf_rc` in the same run at 0064aa7:
+
+| | Count | Time |
+|---|---|---|
+| `whnf_rc` cache misses (work done) | 1.09 M | |
+| misses on a node already reduced earlier in the same interning scope | 0.86 M (79%) | |
+| outermost misses (all time under `whnf_rc`) | | 3.95 s |
+| repeats not nested in another repeat | | 0.83 s (21%) |
+| outermost misses that reduce, and the repeats among them | 189 K, 93 K | |
+
+The probe's timers ran about 1 M times and add overhead; an earlier run without the nested-repeat count gave 2.08 s
+outermost. Most repeats are cheap, stuck terms. The repeats that reduce carry the time: about a fifth of `whnf`'s
+time, so at most about 10% of busy samples. A per-scope `whnf` memo would catch them, kept like `inst` and `shifts`:
+keyed by node in hc's table, results kept alive by `pin`. The result is a node, so it can't go in the header (cycles,
+above). Following "one shift memo", `ReductionCache.whnf` could then be deleted for the table, with `def_eq`, `whnf`
+and `nf` opening a scope of their own. Open: lead, not built. The other sources of lookups were sized above: the
+builders' held inputs (at most about 3.5%) and `inst_get`'s argument lists with no entries yet (at most about 1.4%).
+The `apps` prefixes (1.28 M finds, "How many builder inputs the caller
+already holds") have no memo to share: the same spine is rebuilt from held arguments, which only canonical handles or a memo keyed by the caller would avoid.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
