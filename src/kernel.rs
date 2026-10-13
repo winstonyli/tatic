@@ -618,6 +618,13 @@ impl InternScope {
     }
 }
 
+/// The current interning generation: 0 while the table is off, else a number never reused. A term kept across a change
+/// of generation stays correct but is no longer canonical (it loses the pointer-equality fast path), so a cache of built
+/// terms that wants to stay canonical keys on this.
+pub fn intern_generation() -> u32 {
+    hc::generation()
+}
+
 /// The constructors below make each child through `hc::intern_new`: inside an [`InternScope`] equal
 /// children are one node, outside it is `Rc::new`.
 pub fn pi(a: Expr, b: Expr) -> Expr {

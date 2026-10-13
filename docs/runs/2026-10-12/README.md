@@ -31,3 +31,4 @@ and libraries (43 MB) were not kept.
 | `sq_head_*`, `sq_streq_*` | 22b9280 against structural term equality (before the drop-matching fix), same load | `streq_pair.sh` | "Structural term equality" |
 | `pl_head_*`, `pl_plain_*` | 2bf9c7a against e49535f (decisions by plain Booleans), same load | `plain_pair.sh` | "Decisions that read kernel terms" |
 | `pp_plain_*`, `pp_plans_*` | e49535f against proof plans, same load | `plans_pair.sh` | "Proof plans" |
+| `gc_head_*`, `gc_gates_*` | e1d28d9 against the gate constants built once per interning generation, same load | `gates_pair.sh` | "Gate constants built once per generation" |

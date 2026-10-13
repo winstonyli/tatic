@@ -1,15 +1,38 @@
 use super::*;
 
+/// The closed constant `slot`, built once per interning generation (`intern_generation`) and thread: the machine proofs
+/// use the gates millions of times, and rebuilding one re-interns every node of it. Keyed on the generation so a cached
+/// term stays canonical in the scope that uses it.
+fn constant(slot: usize, build: fn() -> Expr) -> Expr {
+    thread_local! {
+        static CONSTANTS: std::cell::RefCell<(u32, [Option<Expr>; 6])> = Default::default();
+    }
+    let g = tatic::kernel::intern_generation();
+    let hit = CONSTANTS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != g {
+            *c = (g, Default::default());
+        }
+        c.1[slot].clone()
+    });
+    // built outside the borrow: a constant's builder uses other constants
+    hit.unwrap_or_else(|| {
+        let e = build();
+        CONSTANTS.with(|c| c.borrow_mut().1[slot] = Some(e.clone()));
+        e
+    })
+}
+
 /// `Pi C. C -> C -> C`, written without `arrow`: its codomain shift ran at every call, and building the motives of the
 /// case-tree lemmas calls this millions of times.
 pub fn bool0() -> Expr {
-    pi(sort(0), pi(var(0), pi(var(1), var(2))))
+    constant(0, || pi(sort(0), pi(var(0), pi(var(1), var(2)))))
 }
 pub fn t() -> Expr {
-    lam(sort(0), lam(var(0), lam(var(1), var(1))))
+    constant(1, || lam(sort(0), lam(var(0), lam(var(1), var(1)))))
 }
 pub fn f() -> Expr {
-    lam(sort(0), lam(var(0), lam(var(1), var(0))))
+    constant(2, || lam(sort(0), lam(var(0), lam(var(1), var(0)))))
 }
 pub fn bit(b: bool) -> Expr {
     if b { t() } else { f() }
@@ -19,13 +42,13 @@ pub fn bool2(body: Expr) -> Expr {
     lam(bool0(), lam(bool0(), lam(sort(0), lam(var(0), lam(var(1), body)))))
 }
 pub fn and_() -> Expr {
-    bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0)))
+    constant(3, || bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0))))
 }
 pub fn or_() -> Expr {
-    bool2(app3(var(4), var(2), var(1), app3(var(3), var(2), var(1), var(0))))
+    constant(4, || bool2(app3(var(4), var(2), var(1), app3(var(3), var(2), var(1), var(0)))))
 }
 pub fn xor_() -> Expr {
-    bool2(app3(var(4), var(2), app3(var(3), var(2), var(0), var(1)), app3(var(3), var(2), var(1), var(0))))
+    constant(5, || bool2(app3(var(4), var(2), app3(var(3), var(2), var(0), var(1)), app3(var(3), var(2), var(1), var(0)))))
 }
 pub fn and(a: Expr, b: Expr) -> Expr { app2(and_(), a, b) }
 pub fn or(a: Expr, b: Expr) -> Expr { app2(or_(), a, b) }
@@ -202,6 +225,27 @@ pub fn run(n: usize) {
         }
         println!("church bv n={n}: typecheck + 4 adds in {:?}", t0.elapsed());
     }
+}
+
+/// A cached gate is the table's node in its scope (a fresh build interns to the same children), shared between uses, and
+/// rebuilt in a new scope.
+#[test]
+fn constants_are_built_once_per_generation() {
+    let kids = |e: &Expr| match e {
+        Expr::Lam(a, b) => (a.clone(), b.clone()),
+        _ => panic!("and_ is a lambda"),
+    };
+    let fresh = || bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0)));
+    let first = {
+        let _s = tatic::kernel::InternScope::enter();
+        let (a, b, c) = (kids(&and_()), kids(&and_()), kids(&fresh()));
+        assert!(tatic::kernel::Rc::ptr_eq(&a.1, &b.1) && tatic::kernel::Rc::ptr_eq(&a.1, &c.1));
+        a
+    };
+    let _s = tatic::kernel::InternScope::enter();
+    let (a, c) = (kids(&and_()), kids(&fresh()));
+    assert!(!tatic::kernel::Rc::ptr_eq(&a.1, &first.1), "rebuilt in a new generation");
+    assert!(tatic::kernel::Rc::ptr_eq(&a.1, &c.1) && *a.1 == *first.1);
 }
 
 #[test]

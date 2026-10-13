@@ -645,6 +645,11 @@ set it) is the measure of proof plans. In this profile:
   re-interned on every use: `and_` 15%, `bool0` 11%, `xor_` 11%, `or_` 7.5%, `bool2` (their wrapper) 20%, all inclusive.
 - Text is gone (formatting, `Machine::key`, `show` all 0.0%), so typed lemma keys have no speed value; `ops_for` is 0.3%, so
   caching it per width is dropped.
+- With `RULEMINER_FAST=1`, as the sweeps run (same loop, load 25-35%, 104 s under the profiler, 106k samples, same M): the
+  mine is 44% of all samples, its rounds 35 s. Half of it (22% of all) is `prove_rule` on the mine's main thread: lazy
+  winner proving, which proves each round's best candidate and, when that fails, the next. The scoring workers are 16%
+  (`rewrite_plan` 8%). Serving is the other 52%, as above (61-66% `tree_proof`, 40-64% `prove_rule`). `tree_proof` is 50% of
+  all samples; the gate constants `and_`/`bool0`/`xor_`/`or_` are 12/9/9/6% inclusive.
 - Winner proofs are not repeated: `proofs` holds each candidate's result for the whole mine, and under `RULEMINER_FAST` only
   winners are proved (0.4 s here). Rule lemmas are repeated across processes instead: the mine and every serving process
   prove the rules in force from scratch (`CLOSED` is per thread and per process).
@@ -653,6 +658,14 @@ set it) is the measure of proof plans. In this profile:
   inputs), never wrong. A cache keyed on the current generation keeps the pointer-equality fast path; the miner's and
   serving's scopes are long (one per worker, per law or per rule set), so it would hit. `hc::generation` is private to the
   kernel, so the key needs a public accessor.
+
+**Gate constants built once per generation (2026-10-12).** `bool0`, `t`, `f`, `and_`, `or_` and `xor_` go through
+`encoding::constant`, a per-thread cache keyed on `kernel::intern_generation()` (new: the current `hc` generation, 0 while
+the table is off). Test `constants_are_built_once_per_generation`: inside a scope the cached gate is the table's node (a
+fresh build interns to the same children) and shared between uses; a new scope rebuilds it. Pair sweep against e1d28d9, same
+load (CPU 27% and 39-42% at launch, RTP off), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/gc_*`): rows,
+preferences and all 27 rule and unit files identical on both salts; wall 201 against 276 s (salt 1) and 207 against 270 s
+(salt 2), 23-27% less; the mines about 35% less (cmp3d 71 against 114 s and 68 against 103 s).
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
