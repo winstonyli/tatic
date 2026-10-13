@@ -1437,9 +1437,22 @@ inputs come through a few places: `apps` (callers pass `Vec<Expr>`), the `and`/`
 for one call. It never reads or writes hc's per-scope `shifts` table, which `shift_child` uses. Same run at 0fdd223:
 `ShiftMemo` hit 0.34 M times and missed 1.03 M times, every miss inside an interning scope. hc's table already held
 the answer for 0.40 M of the misses (39%), the same node each time, although `ShiftMemo`'s own results are never
-added to it. One shift memo, hc's table with `ShiftMemo` deleted, would take all of these. Open question: whether
+added to it. One shift memo, hc's table with `ShiftMemo` deleted, would take all of these. The question was whether
 anything shifts large shared terms through `cong_n` outside a scope, where hc's table is off. There a shift without
-`ShiftMemo` would walk every path of the shared term. The `apps` prefixes (1.28 M finds) have no such shortcut: the
+`ShiftMemo` would walk every path of the shared term. It does: `src/proof` builds its `cong_n` and `trans_proof`
+chains with no scope open, and that is where `ShiftMemo` made the proof DAG 5x smaller (7f78291).
+
+**One shift memo (2026-10-13).** `cong1`, `trans_proof` and `cong_n` now each open an `InternScope` and shift through
+hc's `shifts` table. Inside a scope this costs a depth count. Outside one it gives the call its own table, the same
+per-call sharing `ShiftMemo` gave. `ShiftMemo`, `shift_memo`, `shift_memo_child`, `cong1_in`, `trans_proof_in` and
+the test `shift_memo_matches_shift` are deleted. New check: `cong_n_shares_shifted_copies_outside_a_scope`, which
+builds `cong_n` over a 2^20-leaf DAG outside a scope; with the scopes removed it fails after 12 s. `proof_cost_split`
+cmp3d own CPU against ff3eb86, two runs of 24 alternating pairs, both under other load:
+- Run 1: won 16, median pair -0.06 s; summed 125.7 against 120.1 s, from four pairs inflated by load, one at 10.1 s.
+- Run 2: won 12, median -0.005 s, summed 141.8 against 153.9 s.
+
+Neutral in speed; kept as one memo instead of two. Sequential sweep pair (rows `sms_*`, script `smemo_seq.sh`):
+identical outputs on both salts. The `apps` prefixes (1.28 M finds) have no such shortcut: the
 same spine is rebuilt from held arguments, which only canonical handles or a memo keyed by the caller would avoid.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)

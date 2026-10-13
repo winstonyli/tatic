@@ -244,20 +244,20 @@ fn shift_and_instantiate_match_a_reference() {
     }
 }
 
-/// `shift_memo` equals `shift` on random terms, with one memo shared across terms, cutoffs and
-/// amounts (so entries are reused and must be keyed by all three).
+/// `cong_n` outside an interning scope still shares its shifted copies of `f`: with `f` a DAG of
+/// `d(k+1) = v1 d(k) d(k)` over a loose variable, a copy shifted as a tree would have 2^20 nodes.
 #[test]
-fn shift_memo_matches_shift() {
-    let mut next = splitmix(57);
-    let memo = ShiftMemo::default();
-    for _ in 0..20_000 {
-        let e = random_term(&mut next);
-        for c in 0..4 {
-            for n in [1, 2, 3] {
-                assert_eq!(shift_memo(&e, c, n, &memo), shift(&e, c, n), "shift_memo({e:?}, {c}, {n})");
-            }
-        }
+fn cong_n_shares_shifted_copies_outside_a_scope() {
+    const DEPTH: usize = 20;
+    assert_eq!(hc::generation(), 0);
+    let mut d = Rc::new(var(0));
+    for _ in 0..DEPTH {
+        d = Rc::new(Expr::App(Rc::new(Expr::App(Rc::new(var(1)), d.clone())), d));
     }
+    let xs = [var(2), var(3)];
+    let ps = vec![refl(var(2)), refl(var(3))];
+    let proof = cong_n(&sort(0), &sort(0), &d, &xs, &xs, ps);
+    assert!(dag_size(&proof) < 30 * DEPTH, "{}", dag_size(&proof));
 }
 
 /// `instantiate_n` equals one `subst_top` per argument, outermost first, on random terms.

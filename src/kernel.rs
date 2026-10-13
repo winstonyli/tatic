@@ -808,37 +808,8 @@ fn shift_sigma_family(e: &Expr, cutoff: u32, go: &impl Fn(&Rc<Expr>, u32) -> Rc<
     }
 }
 
-/// A source node and its copy.
-type RcPair = (Rc<Expr>, Rc<Expr>);
 /// (node address, cutoff, amount).
 type ShiftKey = (usize, u32, i32);
-
-/// Shifted copies already built, by (node, cutoff, amount), for builders that shift the same large
-/// terms many times (`cong_n`): each node is then shifted once per (cutoff, amount) and the copies are
-/// shared. Keeps the source nodes alive so a pointer is not reused for another node.
-#[derive(Default)]
-pub struct ShiftMemo(std::cell::RefCell<PtrMap<ShiftKey, RcPair>>);
-
-/// [`shift`] through `memo`.
-pub fn shift_memo(e: &Expr, cutoff: u32, amount: i32, memo: &ShiftMemo) -> Expr {
-    if amount == 0 || loose_of(e) <= cutoff {
-        return e.clone();
-    }
-    shift_via(e, cutoff, amount, &|x, c| shift_memo_child(x, c, amount, memo))
-}
-
-fn shift_memo_child(x: &Rc<Expr>, cutoff: u32, amount: i32, memo: &ShiftMemo) -> Rc<Expr> {
-    if x.loose() <= cutoff {
-        return x.clone();
-    }
-    let key = (Rc::as_ptr(x) as usize, cutoff, amount);
-    if let Some((_, r)) = memo.0.borrow().get(&key) {
-        return r.clone();
-    }
-    let r = hc::intern_new(shift_memo(x, cutoff, amount, memo));
-    memo.0.borrow_mut().insert(key, (x.clone(), r.clone()));
-    r
-}
 
 /// The hash-consing layer (bit-vector design doc sections 60 and 62). While a
 /// [`hc::Scope`] is open, `instantiate_n` and `shift_child` intern the nodes they build and

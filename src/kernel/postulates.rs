@@ -306,11 +306,9 @@ pub fn transport(sort_k: u32, a_ty: Expr, b_ty: Expr, p: Expr, x: Expr) -> Expr 
 /// computes. `b_ty` is `f`'s codomain, independent of `a_ty` (its domain);
 /// callers where `f : A -> A` may pass the same `Expr` for both.
 pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
-    cong1_in(&ShiftMemo::default(), a_ty, b_ty, f, a, b, p)
-}
-
-fn cong1_in(memo: &ShiftMemo, a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
-    let shift = |e: &Expr, c: u32, n: i32| shift_memo(e, c, n, memo);
+    // Shifted copies are shared through the interning table's shift memo (a scope of their own
+    // outside one).
+    let _scope = InternScope::enter();
     // motive(a', b', _) := Id(B, f a', f b')
     let motive = lam(
         a_ty.clone(),
@@ -334,14 +332,8 @@ fn cong1_in(memo: &ShiftMemo, a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Ex
 /// `p2 : Id(A,y,z)`. `a_ty`/`x` must be valid in the same context as
 /// `p1`/`p2` (they are held fixed while eliminating on `p2`).
 pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr) -> Expr {
-    trans_proof_in(&ShiftMemo::default(), a_ty, x, y, z, p1, p2)
-}
-
-fn trans_proof_in(memo: &ShiftMemo, a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr) -> Expr {
-    let shift = |e: &Expr, c: u32, n: i32| shift_memo(e, c, n, memo);
-    // `arrow`, with its codomain shifted through the memo (a plain `shift` copies the shifted `x`
-    // afresh at every call).
-    let arrow = |a: Expr, b: Expr| pi(a, shift(&b, 0, 1));
+    // As in `cong1`.
+    let _scope = InternScope::enter();
     // motive(y', z', _) := Id(A, x, y') -> Id(A, x, z')
     let motive = lam(
         a_ty.clone(),
@@ -373,8 +365,8 @@ fn trans_proof_in(memo: &ShiftMemo, a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p
 pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: Vec<Expr>) -> Expr {
     assert_eq!(xs.len(), ys.len());
     assert_eq!(xs.len(), ps.len());
-    let memo = ShiftMemo::default();
-    let shift = |e: &Expr, c: u32, n: i32| shift_memo(e, c, n, &memo);
+    // As in `cong1`; one scope for all the steps, so they share each other's shifted copies.
+    let _scope = InternScope::enter();
     let apply = |args: &[Expr]| -> Expr { args.iter().cloned().fold(f.clone(), app) };
     let lhs_all = apply(xs);
     if xs.is_empty() {
@@ -395,12 +387,12 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
         // *full* application under one open binder, not a curried partial
         // one, so its codomain is `f`'s own full result type `b_ty`
         // regardless of `i`.
-        let step = cong1_in(&memo, a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
+        let step = cong1(a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
         cur_args[i] = ys[i].clone();
         let after = apply(&cur_args);
         acc = Some(match acc {
             None => (step, after),
-            Some((prev, mid)) => (trans_proof_in(&memo, b_ty, &lhs_all, &mid, &after, prev, step), after),
+            Some((prev, mid)) => (trans_proof(b_ty, &lhs_all, &mid, &after, prev, step), after),
         });
     }
     acc.unwrap().0
