@@ -459,6 +459,14 @@ fn args_id_is_the_same_for_a_canonical_argument_and_its_twin() {
     assert_eq!(hc::args_id(&[&a, &twin]), hc::args_id(&[&twin, &a]));
 }
 
+/// The instantiation memo skips nodes at most two levels above their leaves.
+#[test]
+fn low_is_height_at_most_two() {
+    let two = app(app(var(0), var(1)), var(2));
+    assert!(hc::low(&var(0)) && hc::low(&app(var(0), var(1))) && hc::low(&two));
+    assert!(!hc::low(&app(two, var(3))));
+}
+
 /// Lists that fit `args_id`'s stack buffer and lists that don't get stable ids, distinct per list.
 #[test]
 fn args_id_is_stable_for_short_and_long_lists() {

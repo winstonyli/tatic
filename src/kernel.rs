@@ -1175,6 +1175,20 @@ mod hc {
         })
     }
 
+    fn height_at_most(x: &Expr, h: u32) -> bool {
+        let mut ok = true;
+        for_kids(x, |c| ok = ok && h > 0 && height_at_most(c, h - 1));
+        ok
+    }
+
+    /// Whether `x` is too small for the instantiation memo to pay: at most two levels above its
+    /// leaves. Rebuilding such a node is a few node-table probes; its memo entry cost a probe and an
+    /// insert for a 36% hit rate (one level), and the cutoff at two beat one, three and four (doc
+    /// section "Small nodes skip the instantiation memo").
+    pub fn low(x: &Expr) -> bool {
+        height_at_most(x, 2)
+    }
+
     pub fn inst_get(x: &Rc<Expr>, aid: u64, d: u32) -> Option<Rc<Expr>> {
         if aid == 0 {
             return None;
@@ -1250,11 +1264,14 @@ fn inst_rec(e: &Expr, args: &[&Rc<Expr>], aid: u64, d: u32) -> Expr {
         if aid != 0 && x.loose() != u32::MAX && !hc::uses(x, d, m) {
             return shift_child(x, d + m, -(m as i32));
         }
-        if let Some(r) = hc::inst_get(x, aid, d) {
+        let memo = !hc::low(x);
+        if memo && let Some(r) = hc::inst_get(x, aid, d) {
             return r;
         }
         let r = if aid == 0 { Rc::new(inst_rec(x, args, aid, d)) } else { hc::intern(inst_rec(x, args, aid, d), None) };
-        hc::inst_put(x, aid, d, &r);
+        if memo {
+            hc::inst_put(x, aid, d, &r);
+        }
         r
     };
     grow(|| match e {

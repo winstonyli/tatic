@@ -50,6 +50,7 @@ and libraries (43 MB) were not kept.
 | `sts_head_*`, `sts_new_*` | 4da7e02 against the `gen_memo` helper plus each step once per leaf, one run at a time | `step_seq.sh` | "One builder memo, and each step once per leaf" |
 | `ais_head_*`, `ais_new_*` | 01018d6 against `args_id` taking canonical arguments' own addresses, one run at a time | `aid_seq.sh` | "Canonical arguments are not interned again" |
 | `bss_head_*`, `bss_new_*` | a1ad219 against `beta_spine` reducing the spine's own head plus `args_id`'s stack buffer, one run at a time | `bsp_seq.sh` | "The spine's head reduced as its own node" |
+| `lws_head_*`, `lws_new_*` | 8cd8dfa against the instantiation memo skipping nodes of height ≤ 2, one run at a time | `low_seq.sh` | "Small nodes skip the instantiation memo" |
 | `cap/*.txt` | `mul_conjecture_miner` (`MULMINER_MAX=7`) on 5f65267 (old) against 0cb4e6c (head), one run at a time | `cap_ab.sh` | "Decision diagrams deleted" |
 | (no rows) | samply profile of `proof_cost_split` at af20655 (profile not kept), scopes `tree_proof` and `lemma_n` | `prof_cases.py` | "The builder side is about 8%" |
 | (no rows) | samply profile of `proof_cost_split` at 0cb4e6c (profile not kept) | `prof_cases.py` | "Where the case lemmas' time goes" |

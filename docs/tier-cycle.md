@@ -1200,6 +1200,25 @@ scope's end. Run on aba7d83, `proof_cost_split` cmp3d own. The counts were ident
     which is memoised.
   - The outputs cannot change: the memo only shares results that are built the same way anyway.
 
+**Small nodes skip the instantiation memo (2026-10-13).** This is the lead above, with the cutoff measured.
+- `inst_rec` now neither looks up nor stores a node at most two levels above its leaves (`hc::low`); it rebuilds it.
+  Check: `low_is_height_at_most_two`.
+- The cutoff was chosen with a temporary knob over heights 1-4 in one build (removed). Each step is 12 alternating pairs
+  of `proof_cost_split` cmp3d own:
+
+  | Step | New won | Summed CPU, new against old | Best, new against old |
+  |---|---|---|---|
+  | height ≤ 1 against no skip | 10 | 74.9 against 82.0 s | 6.00 against 6.53 s |
+  | ≤ 2 against ≤ 1 | 11 | 76.6 against 81.4 s | 5.84 against 6.09 s |
+  | ≤ 3 against ≤ 2 | 2 | 81.9 against 80.5 s | 6.66 against 6.41 s |
+  | ≤ 4 against ≤ 3 | 0 | 76.8 against 67.4 s | 6.00 against 5.80 s |
+
+  Beyond height 2 a node's rebuild costs more than its probe and insert.
+- The final build against 8cd8dfa, 12 alternating pairs: won 11, summed CPU 76.9 against 86.6 s (11% less), best 5.70
+  against 6.28 s. CPU load was 5-27%; Defender RTP was off.
+- Sequential pair (`scripts/low_seq.sh`, rows `lws_*`): every file is identical on both salts (rows, preferences,
+  pooled rules and units, the rule and unit files), apart from the elapsed-seconds column of `pooled_prefs.tsv`.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
