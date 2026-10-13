@@ -54,6 +54,7 @@ and libraries (43 MB) were not kept.
 | `pss_head_*`, `pss_new_*` | 6cd8948 against the node table as a set of node pointers with their hashes, one run at a time | `pset_seq.sh` | "The node table holds node pointers with their hashes" |
 | `sls_head_*`, `sls_new_*` | 9fab09a against the memos storing only their results, one run at a time | `slim_seq.sh` | "The memos store only their results" |
 | `uss_head_*`, `uss_new_*` | 7fe880f against the last `uses` answer kept in the node header (the per-scope `uses` table deleted), one run at a time | `uslot_seq.sh` | "Per-node facts in the node header" |
+| (no rows) | `proof_cost_split` at ec49e4c with node-table interns and hits counted per builder call site (`#[track_caller]`, reverted, no patch kept) | `cpu_ab.ps1`'s environment, `HCPROBE_FILE` | "How many builder inputs the caller already holds" |
 | `cap/*.txt` | `mul_conjecture_miner` (`MULMINER_MAX=7`) on 5f65267 (old) against 0cb4e6c (head), one run at a time | `cap_ab.sh` | "Decision diagrams deleted" |
 | (no rows) | samply profile of `proof_cost_split` at af20655 (profile not kept), scopes `tree_proof` and `lemma_n` | `prof_cases.py` | "The builder side is about 8%" |
 | (no rows) | samply profile of `proof_cost_split` at 1f4db8b (profile not kept), key `hc::intern(` and `reserve_rehash` (`raw`) | `prof_callers.py` | "Where the node table's time goes" |

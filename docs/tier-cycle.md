@@ -1381,7 +1381,7 @@ only way left to shrink it.
   | `uses` | 8.52 M | 7.93 M | 7.03 M (89%) |
   | `InferCache.types` | 3.61 M | 1.91 M | 1.47 M (77%) |
 
-Two unifying mechanisms follow (the first is built in the next section, the second is open):
+Two unifying mechanisms follow (the first is built in the next section; the second is sized and parked two sections down):
 - **Pure per-node facts in the node.** `loose` and `free` already live in the node header; `uses(x, d, m)` is a finer
   fact of the same kind and never changes. A slot for it fits the header's 4 padding bytes (no larger nodes), needs
   no generation tag, no keep-alive and no pointer-keyed table, and would answer 7.0 M of the 8.5 M lookups from a node
@@ -1404,6 +1404,27 @@ bit, packed by `Rc::uses_slot`. `uses` answers from the slot before walking and 
 So the `uses` table, its `pin` and the knob are deleted; a slot miss walks. Sequential sweep pair (rows `uss_*`, script
 `uslot_seq.sh`): identical outputs on both salts. The slot can't hold `shifts` or `infer` results, which are nodes
 (above).
+
+**How many builder inputs the caller already holds (probe, reverted, no patch kept, 2026-10-13).** Sizes "canonical
+handles end to end". `#[track_caller]` on the builders and `hc::intern_new`, counting node-table interns and hits per
+call site, and `apps` tagging its first application, later ones, and the argument side. Same run at ec49e4c:
+`intern_new` interned 9.36 M terms with the table on, 8.63 M of them found.
+
+| Where | Hits | What is found again |
+|---|---|---|
+| `apps`: its head and every argument | 2.34 M (of 2.36 M) | held: `Expr` values the caller keeps (`Gb::go`'s `x.g`, `x.e`, the lemma heads) |
+| `apps`: each later prefix `f a1 .. ai` | 1.28 M (of 1.52 M) | rebuilt: the same spine built again |
+| `and`/`or`/`xor` (`app2` of a constant) | 1.23 M | about 3/4 held (the constant and the two operands), 1/4 the rebuilt prefix |
+| `shift_memo_child`'s result | 0.98 M | rebuilt: a shift that equals an existing node |
+| `arrow` | 0.47 M | about half held (the domain), half the shifted codomain |
+| `infer_rc`'s `Pi`, `Refl` and `J` types | 0.71 M | mostly held: `(**a).clone()` of the term's own children |
+| other sites | about 1.6 M | not classified |
+
+So about 4 M of the 8.6 M hits (45-50%) are inputs the caller already held as a term; about 2.8 M are rebuilt terms,
+which handles would not remove. The builders were about 7% of busy samples for 7.1 M finds (above), and a held input's
+find lands on a node just read, so canonical handles would save at most about 3.5%, less in practice. Most of the held
+inputs come through a few places: `apps` (callers pass `Vec<Expr>`), the `and`/`or`/`xor` wrappers, `arrow`, and
+`infer_rc`. Parked: at most about 3.5% for a builder-interface change across `tests/church_bv`.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
