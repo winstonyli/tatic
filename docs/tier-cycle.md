@@ -868,7 +868,24 @@ both salts; no proof failed. Wall 35 against 37 s (salt 1) and 25 against 28 s (
   1.2 s and sbo3 0.1 against 0.7 s on salt 1, where the in-turn lookahead proofs had sat.
 - Three times the workers gave cmp3d only about 1.2× faster scoring. The bigger chunks (24 candidates against 8) scored only
   3-8% more candidates, so the chunking is not why. Two other likely causes, neither measured: each worker's `RewriteMemo`
-  starts empty every round, so six workers reuse less than two did; and the pair's two runs shared 12 cores. Not profiled.
+  starts empty every round, so six workers reuse less than two did; and the pair's two runs shared 12 cores. Both are
+  refuted in the next section.
+
+**Why six threads gave little (2026-10-13).** Neither guess above holds.
+- Not shared cores. Running the same two builds one at a time (`scripts/la_seq.sh`, rows `las_*`; CPU 8% at launch, RTP off)
+  gave identical outputs again. Walls were 31 against 34 s (salt 1) and 20 against 24 s (salt 2). cmp3d's summed rounds took
+  4.4 against 5.0 s and 2.5 against 2.8 s, still only about 1.12× faster.
+- Not lost memo reuse. A samply profile of cmp3d's mine alone at a045cfb (`SWEEP=mines:cmp3d`, salt 1, CPU 4% at launch, RTP
+  off) took 4.1 s. Scoring was busy 6.1 s in all, against 14.4 s at 2 threads in the previous profile, though that one ran
+  under 44% load. `RewriteMemo::filtered` and the hash-map work around it fell from about 6.4 s to 1.2 s. Each worker now
+  scores fewer candidates a round, so its memo stays smaller and is cheaper to filter: the memo's reuse was partly a cost.
+- The proofs are back on the critical path. The main thread waits 1.85 s for scoring and 1.39 s for winners' proofs
+  (`resolve`). The winners' proofs take 2.7 s over 31 rounds, about 87 ms each, while a round's scoring now takes about
+  60 ms. A round settles the round before it (`settle(&mut open, 1)`), so each proof has only one round's scoring to hide in.
+  Keeping more rounds open would give each proof several rounds to hide in; a failed proof already voids every later round.
+  Not tried.
+- The summed `round over` times include that wait: `settle` runs after the `rule-set evaluation` phase, so the next round's
+  phase time absorbs it.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
