@@ -1330,13 +1330,19 @@ count.
 **Profile after the two table changes (samply, 2026-10-13).** Same run as "Where the node table's time goes", at 849bf22
 (profile not kept; `scripts/prof_callers.py`): 5221 busy samples against 5870, load 4%.
 
-| | 1f4db8b | 849bf22 |
-|---|---|---|
-| `hc::intern` (from `inst_rec`) | 34.4% (22.3%) | 30.9% (18.8%) |
-| its own lookup (`intern_as` closure, self) | 18.0% | 18.1% |
-| growth, all tables (node table) | 9.6% (3.2%) | 7.1% (1.1%) |
-| `inst_get` | 8.6% | 9.8% |
-| freeing the table at the scope's end | 5.9% | 6.3% |
+| | 1f4db8b | 849bf22 | 0fdd223 (after the `uses` slot) |
+|---|---|---|---|
+| `hc::intern` (from `inst_rec`) | 34.4% (22.3%) | 30.9% (18.8%) | 33.2% (20.4%) |
+| its own lookup (`intern_as` closure, self) | 18.0% | 18.1% | 17.4% |
+| growth, all tables (node table) | 9.6% (3.2%) | 7.1% (1.1%) | 5.7% (1.0%) |
+| `inst_get` (self) | 8.6% | 9.8% | 10.2% (9.0%) |
+| freeing the table at the scope's end | 5.9% | 6.3% | 6.7% |
+| `hc::uses` | | | 2.1% |
+
+The 0fdd223 column (`scripts/prof_callers.py` and `scripts/prof_self.py`) has 6372 busy samples at 28% machine load,
+so compare its shares, not its counts. The `uses` walk is down to 2.1%, and the two table probes are now 26% of busy
+samples on their own (node table 17.4%, `inst` 9.0%). The next largest self times are `drop_glue` 5.7%, `intern`'s
+own body 5.3%, `height_at_most` 2.8% (the instantiation memo's small-node test), `args_id` 2.7% and `key_of` 2.3%.
 
 The lookup's own time did not shrink: a hit still reads the candidate node, at a random address, to compare it and
 bump its count, so the cost is that one miss per hit rather than the table's size. Growth fell by a quarter, most of it
@@ -1425,6 +1431,16 @@ which handles would not remove. The builders were about 7% of busy samples for 7
 find lands on a node just read, so canonical handles would save at most about 3.5%, less in practice. Most of the held
 inputs come through a few places: `apps` (callers pass `Vec<Expr>`), the `and`/`or`/`xor` wrappers, `arrow`, and
 `infer_rc`. Parked: at most about 3.5% for a builder-interface change across `tests/church_bv`.
+
+**Two shift memos (probe, reverted, no patch kept, 2026-10-13).** Of the 2.8 M rebuilt terms, 0.98 M are
+`shift_memo_child` results. `postulates`' `cong1`, `trans_proof` and `cong_n` shift through a `ShiftMemo` that lives
+for one call. It never reads or writes hc's per-scope `shifts` table, which `shift_child` uses. Same run at 0fdd223:
+`ShiftMemo` hit 0.34 M times and missed 1.03 M times, every miss inside an interning scope. hc's table already held
+the answer for 0.40 M of the misses (39%), the same node each time, although `ShiftMemo`'s own results are never
+added to it. One shift memo, hc's table with `ShiftMemo` deleted, would take all of these. Open question: whether
+anything shifts large shared terms through `cong_n` outside a scope, where hc's table is off. There a shift without
+`ShiftMemo` would walk every path of the shared term. The `apps` prefixes (1.28 M finds) have no such shortcut: the
+same spine is rebuilt from held arguments, which only canonical handles or a memo keyed by the caller would avoid.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
