@@ -1034,6 +1034,7 @@ a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same
   each next phi bit) over the same k + c bits, and each leaf of each recomputes `Machine::step` over `GoodOps` at its literal
   bits, then the phi tables of the next carries. One `(side, bits) -> (out, next)` memo per `tree_proof` would build each
   step once instead of m + 1 times. Building leaves was 32% of lemma time, `table_app` included; open what is left now.
+  Done: "One builder memo, and each step once per leaf", below.
 - *Normal forms of closed terms across `def_eq` calls (kernel).* `ReductionCache` lives for one top-level `def_eq`/`whnf`/
   `nf` call (`src/kernel.rs` near 1424), so every leaf renormalizes the same closed gate applications (`and` of two literal
   bits, say). A cache keyed by canonical pointer, per interning generation, for closed terms would collapse them. Reduction
@@ -1054,6 +1055,26 @@ pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Ope
 4. The closed-term normal-form cache above.
 5. A separate, non-interning normalizer for closed Bool terms: largest change, adds to the trusted base; last.
 Minor: `arg_sets` still uses SipHash (`Vec<usize>` keys).
+
+**One builder memo, and each step once per leaf (2026-10-13).** `constant` and `table_app` now share one helper, `gen_memo`
+(`encoding.rs`): a thread's values by key for the current interning generation, emptied when the generation changes, with the
+kernel's multiply-rotate hasher (`Fx`). Moving the two onto it changed nothing measurable: 8.02-8.34 s against 8.05-8.41 s
+CPU over 4 alternating pairs of `proof_cost_split` (cmp3d own, against 4da7e02).
+- Left off it on purpose: `CLOSED`/`shared_lemma` (rewrite.rs) and `TREE_LAWS`/`TREE_ENCS` (machine.rs) live for the whole
+  thread. The generation changes mid-run (the table switches on after `WARM_UP` calls, and every outermost `InternScope`, one
+  per scoring worker and per `prove` call in the miner, starts a new one), and
+  `CLOSED` binds each key to a lemma parameter in `PARAMS`; emptying it per generation would rebind lemmas and could change
+  outputs. `TREE_*` cache decisions and closed proofs that stay valid across generations.
+- The step memo is local to `tree_proof`, not a `gen_memo`: its key would have to name the machine and the encoding tables,
+  while within one `tree_proof` `(side, bits)` suffices. `guarded` now hands its case function the leaf's bits (`None` in the
+  statement), and the F and P lemmas take a side's `(output, next carries, phi of the carries)` from the memo, so each leaf's
+  step and its m phi values of the carries are built once instead of once per lemma (m + 1 F lemmas plus P). The `core`
+  proof keeps the direct path (symbolic bits, built once per position).
+- `proof_cost_split` (cmp3d own, 300 laws), CPU time over 16 alternating pairs with a temporary `NOSTEPMEMO` switch (removed;
+  `scripts/cpu_ab.ps1`; CPU 17-35% from other sessions, RTP off): the memo won 13 of 16 (2 of 4, 5 of 6, 6 of 6 per round);
+  summed 161.1 against 180.4 s, about 11%; rule-proof build 6.6-8.3 s against 8.5-10.1 s in the last round.
+- Sequential pair against 4da7e02 (`scripts/step_seq.sh`, rows `sts_*`; covers the helper and the step memo; RTP off): rows,
+  preferences and all 27 rule and unit files identical on both salts. Wall 29 against 28 s (salt 1), 27 against 28 s (salt 2).
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

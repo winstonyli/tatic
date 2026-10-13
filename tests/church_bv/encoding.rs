@@ -1,26 +1,50 @@
 use super::*;
 
-/// The closed constant `slot`, built once per interning generation (`intern_generation`) and thread: the machine proofs
-/// use the gates millions of times, and rebuilding one re-interns every node of it. Keyed on the generation so a cached
-/// term stays canonical in the scope that uses it.
-fn constant(slot: usize, build: fn() -> Expr) -> Expr {
-    thread_local! {
-        static CONSTANTS: std::cell::RefCell<(u32, [Option<Expr>; 9])> = Default::default();
+/// A multiply-rotate hasher (the kernel's `PtrHasher` scheme) for the memos' small keys.
+#[derive(Default)]
+pub struct Fx(u64);
+impl std::hash::Hasher for Fx {
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
     }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_usize(*b as usize);
+        }
+    }
+    fn write_usize(&mut self, x: usize) {
+        self.0 = (self.0.rotate_left(5) ^ x as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+/// A builder memo: one thread's values by key, for the current interning generation (`intern_generation`).
+pub type GenMemo<K, V> = std::cell::RefCell<(u32, std::collections::HashMap<K, V, std::hash::BuildHasherDefault<Fx>>)>;
+
+/// `build()` once per key, interning generation and thread. A term built in one generation is not canonical in the
+/// next, so the memo empties when the generation changes; rebuilding re-interns every node, which is what it saves.
+pub fn gen_memo<K: std::hash::Hash + Eq, V: Clone>(memo: &'static std::thread::LocalKey<GenMemo<K, V>>, key: K, build: impl FnOnce(&K) -> V) -> V {
     let g = tatic::kernel::intern_generation();
-    let hit = CONSTANTS.with(|c| {
+    let hit = memo.with(|c| {
         let mut c = c.borrow_mut();
         if c.0 != g {
             *c = (g, Default::default());
         }
-        c.1[slot].clone()
+        c.1.get(&key).cloned()
     });
-    // built outside the borrow: a constant's builder uses other constants
+    // built outside the borrow: a builder may use the same memo (a gate constant uses other constants)
     hit.unwrap_or_else(|| {
-        let e = build();
-        CONSTANTS.with(|c| c.borrow_mut().1[slot] = Some(e.clone()));
-        e
+        let v = build(&key);
+        memo.with(|c| c.borrow_mut().1.insert(key, v.clone()));
+        v
     })
+}
+
+/// The closed constant `slot`: the machine proofs use the gates millions of times.
+fn constant(slot: usize, build: fn() -> Expr) -> Expr {
+    thread_local! {
+        static CONSTANTS: GenMemo<usize, Expr> = Default::default();
+    }
+    gen_memo(&CONSTANTS, slot, |_| build())
 }
 
 /// `Pi C. C -> C -> C`, written without `arrow`: its codomain shift ran at every call, and building the motives of the
@@ -1054,20 +1078,7 @@ pub fn a_large_check_does_not_churn_stack_segments() {
 #[ignore]
 pub fn intern_lookup_vs_rc_new() {
     use std::collections::HashMap;
-    use std::hash::{BuildHasherDefault, Hasher};
-    #[derive(Default)]
-    struct Fx(u64);
-    impl Hasher for Fx {
-        fn finish(&self) -> u64 {
-            self.0.rotate_left(26)
-        }
-        fn write(&mut self, _: &[u8]) {
-            unreachable!()
-        }
-        fn write_usize(&mut self, x: usize) {
-            self.0 = (self.0.rotate_left(5) ^ x as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
-        }
-    }
+    use std::hash::BuildHasherDefault;
     use tatic::kernel::Rc;
     let leaves: Vec<Rc<Expr>> = (0..16384u32).map(|i| Rc::new(Expr::Var(i))).collect();
     let mut state = 12345u64;
@@ -1940,10 +1951,10 @@ pub fn tab_bdd(nv: usize, tab: &dyn Fn(&[bool]) -> bool) -> TabBdd {
 
 /// A truth table over `vars` as a closed lambda applied to them (so large argument expressions are not duplicated
 /// once per row), whose body is the table's reduced decision diagram as nested `mux`es. The closed lambda is built once per
-/// truth table, interning generation and thread (as `constant` is): a case tree states the same tables at every leaf.
+/// truth table (`gen_memo`): a case tree states the same tables at every leaf.
 pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
     thread_local! {
-        static BODIES: std::cell::RefCell<(u32, std::collections::HashMap<Vec<bool>, Expr>)> = Default::default();
+        static BODIES: GenMemo<Vec<bool>, Expr> = Default::default();
     }
     let k = vars.len();
     // rows in `index_of` order (first variable most significant)
@@ -1956,15 +1967,7 @@ pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
             tab(&b)
         })
         .collect();
-    let g = tatic::kernel::intern_generation();
-    let hit = BODIES.with(|c| {
-        let mut c = c.borrow_mut();
-        if c.0 != g {
-            *c = (g, Default::default());
-        }
-        c.1.get(&rows).cloned()
-    });
-    let body = hit.unwrap_or_else(|| {
+    let body = gen_memo(&BODIES, rows, |rows| {
         let d = tab_bdd(k, &|b| rows[b.iter().fold(0, |a, x| a * 2 + *x as usize)]);
         let bv: Vec<Expr> = (0..k).map(|i| var((k - 1 - i) as u32)).collect();
         let mut exprs: Vec<Expr> = vec![f(), t()];
@@ -1975,7 +1978,6 @@ pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
         for _ in 0..k {
             body = lam(bool0(), body);
         }
-        BODIES.with(|c| c.borrow_mut().1.insert(rows, body.clone()));
         body
     });
     apps(body, vars.to_vec())

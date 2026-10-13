@@ -407,20 +407,43 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
     let machines = [m1, m2];
     let phi_expr = |side: usize, j: usize, s: &[Expr]| table_app(s, &|b| enc.phi[side][j][index_of(b)]);
     let g_expr = |j: usize, v: &[Expr]| table_app(v, &|b| enc.g[j][index_of(b)]);
-    // F_j of a side at symbolic (operand bits, carries): j = 0 output, 1..=m the next phi values
-    let side_f = |side: usize, j: usize, v: &[Expr]| -> Expr {
+    // a side's step at (operand bits, carries): (output, next carries)
+    let step_of = |side: usize, v: &[Expr]| -> (Expr, Vec<Expr>) {
         let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
         let (o, next) = machines[side].step(&gops, &dummy[..k], &dummy[k..]);
+        (o.e, next.into_iter().map(|g| g.e).collect())
+    };
+    // F_j of a side at symbolic (operand bits, carries): j = 0 output, 1..=m the next phi values
+    let side_f = |side: usize, j: usize, v: &[Expr]| -> Expr {
+        let (o, next) = step_of(side, v);
         match j {
-            0 => o.e,
-            _ => phi_expr(side, j - 1, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()),
+            0 => o,
+            _ => phi_expr(side, j - 1, &next),
         }
+    };
+    // at a leaf's literal bits, once for the side's m + 1 F lemmas and its P lemma: (output, next carries, phi of the carries)
+    type Step = std::rc::Rc<(Expr, Vec<Expr>, Vec<Expr>)>;
+    let steps: std::cell::RefCell<std::collections::HashMap<(usize, Vec<bool>), Step>> = Default::default();
+    let step_at = |side: usize, v: &[Expr], bits: Option<&[bool]>| -> Step {
+        let build = || {
+            let (o, next) = step_of(side, v);
+            std::rc::Rc::new((o, next, (0..m).map(|q| phi_expr(side, q, &v[k..])).collect()))
+        };
+        let Some(bits) = bits else { return build() };
+        if let Some(hit) = steps.borrow().get(&(side, bits.to_vec())) {
+            return hit.clone();
+        }
+        let s = build();
+        steps.borrow_mut().insert((side, bits.to_vec()), s.clone());
+        s
     };
     let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
     // decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle.md, "Decision diagrams deleted")
-    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr)| -> Expr {
+    // `ab` gets the bits too at a leaf (`Some`), the symbolic ones in the statement (`None`)
+    type CaseFn<'a> = dyn Fn(&[Expr], Option<&[bool]>) -> (Expr, Expr) + 'a;
+    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
         let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
         if CLOSED.with(|c| c.borrow().contains_key(&key)) {
@@ -429,7 +452,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
         shared_lemma(key, || {
             let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
             let body = |v: &[Expr]| {
-                let (a, b) = ab(v);
+                let (a, b) = ab(v, None);
                 let inner = id(bool0(), a, b);
                 if inv.is_some() { pi(hty(v), shift(&inner, 0, 1)) } else { inner }
             };
@@ -439,7 +462,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
             }
             let leaf = |bits: &[bool]| {
                 let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
-                let (a, b) = ab(&lits);
+                let (a, b) = ab(&lits, Some(bits));
                 match &inv {
                     None => refl(a),
                     Some(r) => lam(hty(&lits), if r[side][index_of(&bits[off..])] { refl(a) } else { absurd_id(var(0), &a, &b) }),
@@ -457,9 +480,10 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
                     if last && j == 0 {
                         return t();
                     }
-                    guarded(side, k + cs[side], k, &format!("F{j}|{:?}", enc.g[j]), &|v| {
-                        let key: Vec<Expr> = v[..k].iter().cloned().chain((0..m).map(|q| phi_expr(side, q, &v[k..]))).collect();
-                        (side_f(side, j, v), g_expr(j, &key))
+                    guarded(side, k + cs[side], k, &format!("F{j}|{:?}", enc.g[j]), &|v, bits| {
+                        let s = step_at(side, v, bits);
+                        let key: Vec<Expr> = v[..k].iter().chain(&s.2).cloned().collect();
+                        (if j == 0 { s.0.clone() } else { phi_expr(side, j - 1, &s.1) }, g_expr(j, &key))
                     })
                 })
                 .collect()
@@ -471,11 +495,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
             if inv.is_none() {
                 return t();
             }
-            guarded(side, k + cs[side], k, "P", &|v| {
-                let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
-                let next = machines[side].step(&gops, &dummy[..k], &dummy[k..]).1;
-                (inv_expr(side, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()), t())
-            })
+            guarded(side, k + cs[side], k, "P", &|v, bits| (inv_expr(side, &step_at(side, v, bits).1), t()))
         })
         .collect();
     let dec_expr = |v: &[Expr]| table_app(v, &|b| dec[index_of(b)]);
@@ -485,7 +505,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
             if !last {
                 return t();
             }
-            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
+            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v, _| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
