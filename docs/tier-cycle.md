@@ -591,6 +591,13 @@ first decide at these sites by plain evaluation (a `bool` `Term::bit`, a `bool` 
 proof plans. Also left: `add_tree_law`'s `guarded` formats its lemma key eagerly (for `LEMMA_HITS`), so counting still builds
 that string (under 0.05% of the profile; part of the typed-key item).
 
+Done (e49535f): the five sites evaluate plain Booleans (`search::Bools`, a third `Gates` implementation beside `GoodOps` and
+`DdGates`; `term_gb(&Bools, ..)` for the truth tables), `conjecture_miner` groups by `Term::interp`, and `NfCache`/`nf_cached`/
+`fingerprint` are deleted. `plain_steps_match_the_kernel_gates` checks `Machine::step` over `Bools` against the normalized Church
+gates on four machines. Pair sweep against 2bf9c7a, same load (CPU 36% at launch, RTP off), `SWEEP="mines own pooled"`
+(`docs/runs/2026-10-12/rows/pl_*`): rows, preferences and all 27 rule and unit files identical on both salts; wall 519 against
+573 s (salt 1) and 616 against 659 s (salt 2), 7-9% less.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's

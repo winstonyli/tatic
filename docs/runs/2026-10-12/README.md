@@ -29,3 +29,4 @@ and libraries (43 MB) were not kept.
 | `it0_*`, `it1_*`, `it2_*` | the commit adding `MINES_WARM` (iteration 0 = HEAD; k+1 seeded from k's pooled libraries) | `iterate.sh`, `iterate2.sh` | "Promotion as an iterated sweep" |
 | `npit0_*`-`npit3_*` | the same, `ABLATE=promoted` | `iterate_np.sh` | "From `ABLATE=promoted`" |
 | `sq_head_*`, `sq_streq_*` | 22b9280 against structural term equality (before the drop-matching fix), same load | `streq_pair.sh` | "Structural term equality" |
+| `pl_head_*`, `pl_plain_*` | 2bf9c7a against e49535f (decisions by plain Booleans), same load | `plain_pair.sh` | "Decisions that read kernel terms" |
