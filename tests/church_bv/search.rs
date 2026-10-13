@@ -1261,22 +1261,23 @@ pub fn rule_miner() {
         let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
         let mut next = 0;
         let winner = std::thread::scope(|sc| {
+            // one queue for all workers: each takes the next candidate when it is free, so a chunk ends when its last
+            // candidate is scored rather than when the slowest worker's fixed share is
             let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let work: Vec<std::sync::mpsc::Sender<Vec<usize>>> = (0..threads)
-                .map(|_| {
-                    let (tx, rx) = std::sync::mpsc::channel::<Vec<usize>>();
-                    let (done_tx, score_one) = (done_tx.clone(), &score_one);
-                    let worker = move || {
-                        let _scope = tatic::kernel::InternScope::enter();
-                        let mut memo = RewriteMemo::new(kv);
-                        for i in rx.iter().flatten() {
-                            done_tx.send((i, score_one(i, &mut memo))).unwrap();
-                        }
-                    };
-                    std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
-                    tx
-                })
-                .collect();
+            let (work, queue) = std::sync::mpsc::channel::<usize>();
+            let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
+            for _ in 0..threads {
+                let (done_tx, score_one, queue) = (done_tx.clone(), &score_one, queue.clone());
+                let worker = move || {
+                    let _scope = tatic::kernel::InternScope::enter();
+                    let mut memo = RewriteMemo::new(kv);
+                    loop {
+                        let Ok(i) = queue.lock().unwrap().recv() else { break };
+                        done_tx.send((i, score_one(i, &mut memo))).unwrap();
+                    }
+                };
+                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
+            }
             loop {
                 let best = (0..provable.len()).filter(|&i| proofs.borrow()[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
                 let floor = best.map_or(1, |b| b.0);
@@ -1304,8 +1305,8 @@ pub fn rule_miner() {
                     continue;
                 }
                 next += chunk.len();
-                for (t, tx) in work.iter().enumerate() {
-                    tx.send(chunk.iter().copied().skip(t).step_by(threads).collect()).unwrap();
+                for &i in &chunk {
+                    work.send(i).unwrap();
                 }
                 for (i, r) in done_rx.iter().take(chunk.len()) {
                     results[i] = Some(r);
