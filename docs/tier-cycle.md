@@ -1107,6 +1107,27 @@ table agree). The kernel's results are unchanged: the id is the same either way.
   identical on both salts. Wall 46/46 s against 39/30 s, with 57% load from other sessions' builds at the end; the
   sweeps' proof share is too small for a 10% gain on it to show, and the walls are not evidence either way.
 
+**Where the time goes after the memos (samply, 2026-10-13).** Run on be98b3e, `proof_cost_split` (cmp3d own, 300 laws), built
+with debug info, analysed by `scripts/prof_cases.py` with its directory pointed at the new profile (profile not kept; 9227
+busy samples; CPU 21% at launch). Against the 0cb4e6c profile ("Where the case lemmas' time goes"):
+- Case lemmas (`shared_lemma`): 41.6% of busy samples (was 52%). Inside them, the kernel check `ck` is now 81% (was 63%) and
+  building (`lemma_n`) 17% (was 36%): the builder memos removed most of the build side.
+- The kernel dominates the whole run: `infer` 74.5% inclusive, `def_eq` 59%, `beta_spine` 57%, `instantiate_n` 60%. Of the
+  substitution, hash-consing is most: `hc::intern` 32% inclusive overall, `args_id` now 6.3% of lemma time (was 11-14%).
+- Self time is table probes, not reduction logic. Under the case lemmas: the node table probe (`intern_as`'s `TABLE.with`)
+  17.4%, the instantiation memo probe (`inst_get`) 11.7%, `reserve_rehash` 6.4%, `intern` 5.8%, the `uses` memo 3.9%,
+  `RawTable::insert` 2.8%, `args_id`'s set lookup 2.6%, `inst_put` 2.3%. `beta_spine` itself is 3.1%.
+- Dropping the table at the end of each outermost scope (`hc::Scope::drop`, mostly `drop_inner_table`) is 5.6% of all.
+
+Open leads from this, cheapest first (none tried yet):
+1. Growth and teardown: `reserve_rehash` (6.4% self, 9.2% inclusive overall) and the per-scope drop (5.6%) together
+   are about 15%. The table could keep its allocations across scopes (`clear()` keeps the capacity) or reserve on switch-on.
+   Either one is a few lines inside `hc`.
+2. The probes themselves (`intern_as` 17.4%, `inst_get` 11.7% self) are hash lookups in large tables, likely bound by
+   cache misses. Fusing the `TABLE.with` borrows (survey item 2) saves thread-local and `RefCell` traffic, not misses.
+   Fewer or smaller entries would, but no candidate has been identified or measured.
+3. `hc::uses` (6.8% inclusive in the lemmas) recomputes per (node, depth, count); smaller.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
