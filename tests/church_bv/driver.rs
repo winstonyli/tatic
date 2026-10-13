@@ -24,7 +24,7 @@
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=..`.
 //!
 //! **A sweep** (the experiments of docs/loop-result.md): `SWEEP_OUT=<dir> [SALT=1] [LIB=<dir>] [SWEEP="mines own cold"] <exe>
-//! driver::sweep --exact --ignored --nocapture`. Every stage uses `RULEMINER_FAST=1` and `RULEMINER_SHUFFLE=$SALT`. Stages, in order:
+//! driver::sweep --exact --ignored --nocapture` (`MACHINE_STATE=0` skips its two machine-state lines too). Every stage uses `RULEMINER_FAST=1` and `RULEMINER_SHUFFLE=$SALT`. Stages, in order:
 //! - `mines`, optionally `:<family>,..` (default sbo3,add3,mix3,cmp3d; u3 only when named): one ref mine per family on its phase-0
 //!   stream (`MINES`) -> `lib_<family>/`, summary rows in `<stage>.tsv` (family, seconds, total M, rules, exhausted).
 //! - `own`, `cold`, `cross`, `pooled`, `mixed`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on
@@ -104,7 +104,11 @@ fn append(path: &Path, text: &str) {
     std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
 }
 
+/// A machine-state line on stderr (about 6 s); `MACHINE_STATE=0` skips it, in a loop or a sweep.
 fn machine_state(when: &str) {
+    if env_or("MACHINE_STATE", 1usize) == 0 {
+        return;
+    }
     let o = Command::new(std::env::current_exe().unwrap()).args(["machine::machine_state_line", "--exact", "--ignored", "--nocapture"]).output().unwrap();
     let text = String::from_utf8_lossy(&o.stdout);
     eprintln!("machine at {when}: {}", text.lines().find(|l| l.contains("machine state:")).unwrap_or(""));
@@ -213,17 +217,12 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
 #[ignore]
 fn loop_stream() {
     let cfg = LoopCfg::from_env();
-    let states = env_or("MACHINE_STATE", 1usize) == 1;
-    if states {
-        machine_state("start");
-    }
+    machine_state("start");
     let lemmas = cfg.out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);
     run_loop(&cfg, &lemmas);
     let _ = std::fs::remove_file(&lemmas);
-    if states {
-        machine_state("end");
-    }
+    machine_state("end");
 }
 
 /// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (2 threads, no round cap, full serving check).
