@@ -1174,6 +1174,32 @@ busy samples; CPU 11% at launch). It answers whether the case-tree builder has a
   builder change was made. The kernel's table probes (`intern_as` 27% inclusive, `inst_get` 14%) and growth
   (`reserve_rehash` 9.4%) remain where the time is.
 
+**Reducing a built term without copying it when stuck is neutral (negative, 2026-10-13).** Five `whnf_step` sites pass a
+term built for the call to `whnf_impl`, which copies it when it is stuck. A `whnf_owned(e: Expr)` returning `e` itself
+(reverted, no patch kept) changed nothing measurable. `proof_cost_split` cmp3d own against aba7d83, 16 alternating
+pairs: it won 8, summed CPU 115.1 against 115.7 s, best 6.27 against 6.08 s.
+
+**Hit rates of the hc tables (2026-10-13).** Probe: counters in `hc` (reverted, no patch kept), written at the outermost
+scope's end. Run on aba7d83, `proof_cost_split` cmp3d own. The counts were identical on two runs.
+
+| Table | Lookups | Hits | Entries at the end |
+|---|---|---|---|
+| `nodes` (`intern_as`) | 16.77 M | 81% | 3.17 M |
+| `inst` (`inst_get`) | 11.05 M | 39% | 6.77 M |
+| `uses` | 8.48 M | 93% | 0.60 M |
+| `arg_sets` (two or more arguments) | 2.09 M | 70% | 0.63 M |
+| `shifts` | 1.66 M | 61% | 0.64 M |
+
+- The instantiation memo is the largest table and has the lowest hit rate. Each miss costs a probe and an insert.
+  68% of its misses (4.61 M) rebuild a node the node table already holds.
+- Nodes whose children are all leaves (`Var`, `Sort`, `Const`, `Free`) are 40% of `inst_get`s (4.47 M), and only 36%
+  of those hit. `App` nodes are 65% of `inst_get`s (7.16 M), and 36% of those hit.
+- Lead, not tried: skip the instantiation memo for nodes whose children are all leaves.
+  - That saves 4.47 M gets and 2.85 M inserts, and makes the table 42% smaller, which cuts growth and teardown too.
+  - It costs 1.62 M rebuilds. Each is a node-table probe, plus a `shift` of the argument when it lands under binders,
+    which is memoised.
+  - The outputs cannot change: the memo only shares results that are built the same way anyway.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
