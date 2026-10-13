@@ -799,6 +799,25 @@ and all 27 rule and unit files identical on both salts. Wall 82 against 91 s (sa
 in-test times were 67 against 83 s and 55 against 80 s. Summed over their rows, `own` took 15/6 against 22/18 s and `pooled`
 2/3 against 12/14 s. The two fixes were measured together, and the heavier load makes these walls longer than the earlier pairs'.
 
+**Where the ref mines' time goes: winners proved one at a time (samply, 2026-10-13).** The `mines` stage of a salt-1 sweep at
+fcb0985 (`MACHINE_STATE=0`, debug-info build; CPU 27% at launch, RTP off): 28 s under the profiler, cmp3d's mine 13.0 s of it.
+Times below use samply's sample weights. A blocked thread's samples carry its whole wait, so counting samples (as the sections
+above do for CPU shares) undercounts waiting. With `RULEMINER_FAST=1` (every sweep stage) a mine scores candidates on
+`RULEMINER_THREADS` = 2 workers and proves only each round's winner (`proved_lazily`). That proof runs on the main thread,
+inside the scoring scope, while both workers wait for the next chunk.
+- cmp3d's mine (32 rounds, each scoring 12-15 of 176 candidates): the main thread is busy 6.2 s and waits 6.8 s, which is
+  the scoring. About 5.0 s of its busy time is the winners' proofs: `prove_rule` inside the scope, plus kernel checks on
+  stacker's segment, whose caller frames are cut off but which always sit between proof samples. The rest is serial set-up,
+  1.2 s. The workers are busy 10.1 s of their 23.7 s: they wait about 10 s while the winners are proved and about 3.6 s at
+  chunk ends. Each chunk (`threads * 4` candidates) is split by a fixed stride, and the main thread waits for all of it.
+- add3's mine (2.6 s) has the same shape: 0.56 s of its 1.09 s busy main thread is winners' proofs.
+- So the "14% of the mines' samples waiting" in the whole-sweep profile is not load imbalance. It is mostly the main thread
+  waiting for scoring (by design) and the workers waiting for the serial proof. A chunk's imbalance costs about 1.8 s of
+  cmp3d's 13 s at most. Ways to recover the proof time: prove the winner while the next round is scored, assuming it is
+  provable (redo the round when it is not), which would hide up to 5 s of the 13 s; or have the workers take candidates
+  from a shared queue within a chunk, which would hide up to 1.8 s and keep the bound-ordered chunks that make the choice
+  independent of the thread count.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
