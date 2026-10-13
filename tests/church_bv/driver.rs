@@ -225,7 +225,7 @@ fn loop_stream() {
     machine_state("end");
 }
 
-/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (2 threads, no round cap, full serving check).
+/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (6 threads, no round cap, full serving check).
 /// u3 (the union of add3, sbo3 and cmp3d) is mined only when named (`mines:u3`).
 const MINES: [(&str, usize, usize, usize); 5] =
     [("sbo3", 11, 2, 50), ("add3", 7, 2, 50), ("mix3", 1, 1, 50), ("cmp3d", 15, 2, 100), ("u3", 11, 2, 100)];
@@ -273,7 +273,7 @@ fn sweep() {
         if name == "mines" {
             for fam in fams.split(',') {
                 let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
-                let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) };
+                let cfg = LoopCfg { stride, split, b, k: 4, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) };
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg, &lemmas);
                 append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
@@ -294,7 +294,7 @@ fn sweep() {
             // rounds, only preferences (`RULEMINER_PREFS`), on the pooled library
             for fam in fams.split(',') {
                 let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
-                let mut cfg = LoopCfg { stride, split, b, k: 4, threads: 2, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };
+                let mut cfg = LoopCfg { stride, split, b, k: 4, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };
                 cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
                 cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
                 let t0 = std::time::Instant::now();

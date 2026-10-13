@@ -1168,11 +1168,12 @@ pub fn rule_miner() {
         ok
     };
     // a round's winner is proved on a thread of its own while the next round is scored (`speculate`, set for the main path's
-    // rounds only): the round takes it as provable and is committed when its proof is in, and a failed proof rolls the rounds
-    // back to it (below). Any other proof of a pending candidate waits for its result
+    // rounds and lookahead's greedy paths): the round takes it as provable (`assumed`) and is committed when its proof is in,
+    // and a failed proof rolls the rounds back to it (below). Any other proof of a pending candidate waits for its result
     let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, bool)>();
     let pending: std::cell::RefCell<std::collections::HashSet<usize>> = Default::default();
     let (speculate, spawn_req) = (std::cell::Cell::new(false), std::cell::Cell::new(None::<usize>));
+    let assumed: std::cell::RefCell<Vec<usize>> = Default::default();
     let resolve = |i: usize| -> bool {
         loop {
             if let Some(b) = proofs.borrow()[i] {
@@ -1288,6 +1289,7 @@ pub fn rule_miner() {
                     let ok = match known {
                         Some(ok) => ok,
                         None if speculate.get() => {
+                            assumed.borrow_mut().push(i);
                             if pending.borrow_mut().insert(i) {
                                 spawn_req.set(Some(i));
                             }
@@ -1353,8 +1355,9 @@ pub fn rule_miner() {
     };
     // a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
     let finished: std::cell::RefCell<std::collections::HashMap<Vec<(Term, Term)>, (i64, usize)>> = Default::default();
-    // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds
-    let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize| -> i64 {
+    // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds; while
+    // speculating, each pick's assumed winner is proved on a thread of its own (`spawn`)
+    let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)| -> i64 {
         let (mut path, mut left) = (vec![], rounds);
         let (v, mut d) = loop {
             let kk = key(&chosen);
@@ -1365,7 +1368,11 @@ pub fn rule_miner() {
             if left == 0 {
                 return value(&s); // cut by the round cap: not kept
             }
-            let Some((rule, _)) = pick_kept(&s).into_iter().next() else {
+            let alts = pick_kept(&s);
+            if let Some(j) = spawn_req.take() {
+                spawn(j);
+            }
+            let Some((rule, _)) = alts.into_iter().next() else {
                 let v = value(&s);
                 finished.borrow_mut().insert(kk, (v, 0));
                 break (v, 0);
@@ -1418,6 +1425,8 @@ pub fn rule_miner() {
             speculate.set(true);
             let alts = if round < cfg.rounds { pick_kept(&s) } else { vec![] };
             speculate.set(false);
+            // the main path's assumption is the round's own pending proof (`proof`)
+            assumed.borrow_mut().clear();
             let proof = spawn_req.take();
             proof.map(spawn);
             let Some(mut rule) = alts.first().map(|a| a.0.clone()) else {
@@ -1428,7 +1437,9 @@ pub fn rule_miner() {
                 continue;
             };
             if alts.len() > 1 {
-                // lookahead plays whole greedy paths; it starts from settled rounds and proves as it goes
+                // lookahead plays whole greedy paths from settled rounds, taking each pick's winner as provable while it is proved
+                // in the background; a path that took an unprovable winner voids the picks that offered it and the finished values
+                // (any may rest on it), and the paths are played again
                 if let Some(o) = settle(&mut open, 0) {
                     (s, round) = (o.before, o.round);
                     continue;
@@ -1439,7 +1450,18 @@ pub fn rule_miner() {
                     continue;
                 }
                 let rest = cfg.rounds - round - 1;
-                let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest)).collect();
+                let values = loop {
+                    speculate.set(true);
+                    let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn)).collect();
+                    speculate.set(false);
+                    let failed: Vec<usize> = assumed.take().into_iter().filter(|&i| !resolve(i)).collect();
+                    if failed.is_empty() {
+                        break values;
+                    }
+                    println!("RULEMINER lookahead played again: {} is not provable", failed.iter().map(|&i| rule_show(provable[i])).collect::<Vec<_>>().join(", "));
+                    picks.borrow_mut().retain(|_, v| !v.iter().any(|(r, _)| failed.iter().any(|&i| provable[i] == r)));
+                    finished.borrow_mut().clear();
+                };
                 let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
                 for (a, ((l, r), g)) in alts.iter().enumerate() {
                     println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);

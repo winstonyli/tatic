@@ -846,13 +846,29 @@ mine 16 against 20 s and 10 against 12 s. The heavier load makes these walls lon
   around it), so each is busy about 7 s of the 10 s. The winners' proofs (`prove_rule` inside `prove_any`, 4.8 s) all run on
   their own threads, overlapping the scoring. The mine is now bound by scoring on 2 workers.
 - add3's mine (3.6 s) has the same shape: the main thread is busy 1.8 s, 0.8 s of it winner proofs that its lookahead
-  rounds prove in turn: lookahead's greedy paths still pick without speculating, and add3 has three lookahead rounds.
+  rounds prove in turn: lookahead's greedy paths still pick without speculating, and add3 has three lookahead rounds (since moved to the background, next section).
 - Negative result: proving the rivals in the background would save nothing here. No `prove_any` sample sits on a main
   thread in cmp3d's mine, so no rival was proved on the main thread; the main thread's busy time is set-up and `then`.
 - The ref mines run with `threads: 2` (`driver::sweep`, `RULEMINER_THREADS`), while the loops use 6. A chunk holds `threads * 4`
   candidates in bound order, and a candidate is skipped only when its bound is below the best gain found, so it can neither
   beat nor tie the winner. The choice therefore does not depend on the thread count, and more scoring workers are the next
-  lever. Not yet tried.
+  lever (next section).
+
+**Six scoring threads, and lookahead's proofs in the background (2026-10-13).** The ref mines and the pooled preference mines
+now take the sweep's default of 6 scoring threads (`driver::sweep`; they had 2). Lookahead's greedy paths (`finish`) now pick
+speculatively too: each pick's winner is taken as provable and proved on a thread of its own. Once the paths are played, the
+lookahead waits for every proof they assumed (`assumed`). If one failed, it prints `RULEMINER lookahead played again`, drops
+the picks that offered the failed rule and every finished value, and plays the paths again; the failed rule is then known
+unprovable and never picked. Rollback check (`scripts/spec_rollback.sh`, now with four more false rules that win only on
+greedy paths): one main-path rollback at round 0 and one lookahead replay, and the chosen rules equal 8f348b9's. Pair sweep
+against 8f348b9, same load (CPU 13% at launch, RTP off, `MACHINE_STATE=0`), `SWEEP="mines own pooled"`
+(`docs/runs/2026-10-12/rows/lap_*`, `scripts/la_pair.sh`): rows, preferences and all 27 rule and unit files identical on
+both salts; no proof failed. Wall 35 against 37 s (salt 1) and 25 against 28 s (salt 2).
+- The mines' scoring rounds (summed `round over` times): cmp3d 4.5 against 5.6 s and 2.7 against 3.2 s; add3 0.2 against
+  1.2 s and sbo3 0.1 against 0.7 s on salt 1, where the in-turn lookahead proofs had sat.
+- Three times the workers gave cmp3d only about 1.2× faster scoring. The bigger chunks (24 candidates against 8) scored only
+  3-8% more candidates, so the chunking is not why. Two other likely causes, neither measured: each worker's `RewriteMemo`
+  starts empty every round, so six workers reuse less than two did; and the pair's two runs shared 12 cores. Not profiled.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

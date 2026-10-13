@@ -39,6 +39,7 @@ and libraries (43 MB) were not kept.
 | `slp_head_*`, `slp_sl_*` | ed00b7a against one lemma file per sweep, same load | `sl_pair.sh` | "One lemma file per sweep" |
 | `bpp_head_*`, `bpp_bp_*` | 514b7a2 against winners proved in the background, same load (rollback check: `spec_rollback.sh`, rows not kept) | `bp_pair.sh` | "Winners proved in the background" |
 | `qp_head_*`, `qp_q_*` | 5c4618f against one shared queue for the scoring workers, same load | `q_pair.sh` | "One queue for the scoring workers" |
+| `lap_head_*`, `lap_la_*` | 8f348b9 against the ref mines on 6 scoring threads plus lookahead's winners proved in the background, same load | `la_pair.sh` | "Six scoring threads, and lookahead's proofs in the background" |
 | `lsp_A`, `lsp_B` | 84072cd + a temporary `LEMMA_SWEEP` switch (reverted, no patch kept), with (A) and without (B) it; `own pooled` on one set of salt-1 libraries | `lemma_sweep_probe.sh` | "A lemma file shared by a whole sweep" |
 | `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |
