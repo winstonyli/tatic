@@ -894,6 +894,24 @@ e9a8be1's. Sequential pair against e9a8be1 (`scripts/o3_seq.sh`, rows `o3s_*`; C
 preferences and all 27 rule and unit files identical on both salts; no proof failed. cmp3d's summed rounds took 3.0 against
 4.3 s and 1.8 against 2.6 s, about 1.43× faster. Wall 29 against 32 s (salt 1) and 21 against 21 s (salt 2).
 
+**Where `own` and `pooled` spend their time: the winners' proofs (samply, 2026-10-13).** A whole salt-1 sweep at 9d86b24
+(`MACHINE_STATE=0`, debug-info build; CPU 7% at launch, RTP off) took 31 s in-test under the profiler: `mines` about 14 s,
+`own` 12 s, `pooled` 5 s. With weights, over the 39 miner processes started after `mines.tsv` was written:
+- Their test threads spend 9.45 s waiting in `settle` for winners' proofs, 0.73 s waiting for scoring and 3.4 s busy. These
+  mines are short (106 rounds over 39 mines, so about 3 each), so there are few later rounds for a proof to hide behind.
+- Their other threads: proofs 3.6 s inside `prove_rule` (`tree_proof` 3.6 s, `Dd::apply` 1.7 s) plus 6.3 s of kernel
+  checks (`check_rc`) whose callers are cut off. As in the ref mines' profile, those sit on the proof threads. Scoring
+  takes 1.35 s. Lemma-cache lookups are 0.15 s.
+- Half the proofs repeat work done in another process: the 39 mines chose 67 rules, only 34 of them distinct, and proved 65
+  winners (none failed). The lemma cache (`shared_lemma`) holds only the case lemmas inside machine proofs. A rule's own
+  proof (`prove_any` → `prove_rule`, then its kernel check) is rebuilt and rechecked in every process that picks it.
+- A profile of `own pooled` alone, on the same libraries (so starting with an empty lemma file), looked the same: 10.3 s in
+  `settle` of the miners' 15.3 s.
+- What would recover it: keep each winner's verdict across the sweep's processes, as the lemma file keeps lemmas. The
+  verdict depends on what the proof may use (the base rules and preferences, the step budget), so the key must hold
+  those, or the choice could change. Whether the repeats share those inputs (pooled loops share a base; an `own` loop's
+  batches grow theirs) is not yet counted. Not tried.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
