@@ -1269,6 +1269,35 @@ height cutoffs in place of `hc::low` and the scattered shape checks. Counters on
 All three are within noise: a leaf's memo hit costs about what inferring or re-interning the leaf does. So the shared
 node id with an immediate leaf value and per-table height cutoffs is not worth building for speed (parked).
 
+**Where the node table's time goes (samply, 2026-10-13).** Profile of `proof_cost_split` cmp3d own at 1f4db8b (profile not
+kept; `scripts/prof_callers.py`), 5870 busy samples:
+- `hc::intern` is 34% of busy samples. Its callers: `inst_rec` 22%, the builders' `app`/`app2`/`app3` 7%, `shift_child`
+  and `shift_memo_child` 3%, the rest under 2%.
+- Inside it, the probe itself (the `intern_as` closure's own samples) is 18%, `RawTable::insert` 7% and growth
+  (`reserve_rehash`) 3%; allocation is the rest. With 3.2 M entries of 56 bytes (a 48-byte `NodeKey` and the `Rc`), the
+  table is at least 180 MB, so most probes miss the cache.
+- Growth across all tables is 10%: the node table 3.2%, `inst` 2.2%, `InferCache.types` 1.2%, `args_id` 0.9%, `whnf` 0.6%.
+  Freeing the tables at the outermost scope's end is another 6%.
+- Lead: keep the node table as a set of node pointers with their stored hashes (hashbrown's `HashTable`, comparing
+  against the candidate node itself), 16 bytes per entry instead of 56. A hit already touches the node to bump its count,
+  so comparing there costs no extra miss, and the smaller table caches better and grows more cheaply.
+
+**Most infer-memo entries are never read (probe, reverted, no patch kept, 2026-10-13).** Hits per `InferCache.types`
+entry, counted when its cache drops, same run:
+
+| Node | Entries | Read at least once | Hits |
+|---|---|---|---|
+| `App`, closed | 0.25 M | 42% | 0.27 M |
+| `App`, open | 1.02 M | 15% | 0.26 M |
+| `Lam`, closed / open | 0.02 / 0.11 M | 70% / 10% | 0.29 / 0.01 M |
+| `Pi`, closed / open | 0.004 / 0.03 M | 57% / 3% | 0.22 / 0.007 M |
+| leaf, closed / open | 0.003 / 0.15 M | 57% / 45% | 0.13 / 0.70 M |
+| other, closed / open | 0.03 / 0.07 M | 4% / 8% | 0.003 / 0.02 M |
+| all | 1.70 M | 21% | 1.91 M |
+
+79% of entries are never read. Open non-leaf nodes are 1.24 M entries (73%) for 0.30 M hits (16%). Lead: skip the memo
+for open non-leaf nodes. That drops 1.24 M inserts and their context windows, but each lost hit re-infers a subtree.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
