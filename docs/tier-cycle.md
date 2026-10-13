@@ -556,6 +556,21 @@ makes canonical keys. Parked:
 - Cached `show()` text on terms: not needed while `show_cmp` does not allocate.
 - `machine.rs` orders candidate terms by `show().len()` as a size proxy.
 
+**Where the time goes after it (samply, 2026-10-12).** Profiled cmp3d's ref loop (`driver::loop_stream`, `RULEMINER_FAST=1`,
+2 threads, salt 1; 320 s under the profiler, load 46%, RTP off; 384k samples over the loop's processes). Text work is gone from
+the profile: `show`, `show_cmp`, formatting, `parse_term` and `Machine::key` each round to 0.0%, and `Term` hashing and cloning
+are 1.7% and 5.3% of the mine. The cost is kernel term construction:
+- The mine process is 70% of the samples. 63% of it is under `rewrite_law` and 58% under the kernel's hash-consing
+  (`hc::intern`), although scoring runs counting-only: the rewriter still builds every step's proof term (interning under
+  `witnessed` 13% of the mine, under `rewrite_uncached`'s own steps 10%, `find_constant_carry` 3%, `k_var_law_to` 3%; `ops_for`,
+  which rebuilds the eight operator circuits per call, is 10.7% inclusive), and `SCORE_ONLY` only short-circuits lemmas and machine fallbacks. Winner proofs (`prove_rule`) are 10.5%.
+- The four serving processes (`rule_set_kernel_check`, 29%) build and check real proofs: 57% under `hc::intern`, 40% in the
+  kernel check, 10-13% each rebuilding the constant gate encodings (`bool0`, `xor_`, `and_`).
+- `hc::intern`'s own frames are 45% of all samples (the table lookup inside `intern_as`, plus 2-5% table growth).
+
+Not yet tried: a counting mode that builds no proof terms at all (the rewriter returns only the term), per-thread caches of the
+constant encodings and `ops_for(n)`, and a look at `hc::intern`'s table (hash, presizing).
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
