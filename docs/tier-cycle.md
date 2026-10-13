@@ -1219,6 +1219,23 @@ scope's end. Run on aba7d83, `proof_cost_split` cmp3d own. The counts were ident
 - Sequential pair (`scripts/low_seq.sh`, rows `lws_*`): every file is identical on both salts (rows, preferences,
   pooled rules and units, the rule and unit files), apart from the elapsed-seconds column of `pooled_prefs.tsv`.
 
+**After the skip; the same cutoff for `uses` and `shifts` does not pay (negative, 2026-10-13).** Probe as before
+(counters, reverted, no patch kept) on 0fb9cad:
+
+| Table | Lookups | Hits | Entries | Small nodes (height ≤ 2): lookups, hits |
+|---|---|---|---|---|
+| `nodes` | 18.77 M (was 16.77 M) | 83% | 3.17 M | |
+| `inst` | 5.91 M (was 11.05 M) | 44% | 3.28 M (was 6.77 M) | skipped |
+| `uses` | 8.52 M | 93% | 0.60 M | 1.70 M, 99.99% |
+| `shifts` | 1.67 M | 61% | 0.64 M | 0.48 M, 99.7% |
+
+The skip halved the instantiation memo's lookups and entries, for 2.0 M more node-table probes. Unlike the
+instantiation memo, `uses` and `shifts` almost always hit on small nodes. Skipping their memo there was tried with
+temporary knobs (removed), 12 alternating pairs each on `proof_cost_split` cmp3d own:
+- `uses`: won 5, 85.6 against 86.5 s. Neutral. The memo hit costs about as much as walking a small node.
+- `shifts`: won 3, 133.2 against 131.5 s, with other sessions' load at 54% during the round. Rebuilding a shifted node
+  interns it, which costs a probe per node instead of one hit.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
