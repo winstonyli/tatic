@@ -839,6 +839,21 @@ which worker scored what. Pair sweep against 5c4618f, same load (CPU 61% at laun
 and all 27 rule and unit files identical on both salts. Wall 62 against 67 s (salt 1) and 48 against 52 s (salt 2); cmp3d's
 mine 16 against 20 s and 10 against 12 s. The heavier load makes these walls longer than the previous pair's.
 
+**Where the ref mines' time goes after both (samply, 2026-10-13).** The `mines` stage of a salt-1 sweep at a77c027
+(`MACHINE_STATE=0`, debug-info build; CPU 44% at launch, RTP off; 30 s in-test under the profiler), with sample weights:
+- cmp3d's mine took 10.2 s. Its main thread is busy 1.3 s and waits 8.9 s, 8.0 s of that inside `pick`'s scoring scope. The
+  two scoring workers are busy 14.4 s together (`score_rule` 7.2 s; the rest is `RewriteMemo::filtered` and hash-map work
+  around it), so each is busy about 7 s of the 10 s. The winners' proofs (`prove_rule` inside `prove_any`, 4.8 s) all run on
+  their own threads, overlapping the scoring. The mine is now bound by scoring on 2 workers.
+- add3's mine (3.6 s) has the same shape: the main thread is busy 1.8 s, 0.8 s of it winner proofs that its lookahead
+  rounds prove in turn: lookahead's greedy paths still pick without speculating, and add3 has three lookahead rounds.
+- Negative result: proving the rivals in the background would save nothing here. No `prove_any` sample sits on a main
+  thread in cmp3d's mine, so no rival was proved on the main thread; the main thread's busy time is set-up and `then`.
+- The ref mines run with `threads: 2` (`driver::sweep`, `RULEMINER_THREADS`), while the loops use 6. A chunk holds `threads * 4`
+  candidates in bound order, and a candidate is skipped only when its bound is below the best gain found, so it can neither
+  beat nor tie the winner. The choice therefore does not depend on the thread count, and more scoring workers are the next
+  lever. Not yet tried.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
