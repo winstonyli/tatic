@@ -31,4 +31,5 @@ and libraries (43 MB) were not kept.
 | `sq_head_*`, `sq_streq_*` | 22b9280 against structural term equality (before the drop-matching fix), same load | `streq_pair.sh` | "Structural term equality" |
 | `pl_head_*`, `pl_plain_*` | 2bf9c7a against e49535f (decisions by plain Booleans), same load | `plain_pair.sh` | "Decisions that read kernel terms" |
 | `pp_plain_*`, `pp_plans_*` | e49535f against proof plans, same load | `plans_pair.sh` | "Proof plans" |
+| `lemma_keys/*.tsv` | 374299b + a temporary `LKEY` line per lemma built (reverted): key hash, exclusive build ns, check ns, kind; cmp3d ref loop, `RULEMINER_FAST=1`, salt 1 | `loop_stream` as in the profile | "Which lemmas repeat" |
 | `gc_head_*`, `gc_gates_*` | e1d28d9 against the gate constants built once per interning generation, same load | `gates_pair.sh` | "Gate constants built once per generation" |
