@@ -459,6 +459,21 @@ fn args_id_is_the_same_for_a_canonical_argument_and_its_twin() {
     assert_eq!(hc::args_id(&[&a, &twin]), hc::args_id(&[&twin, &a]));
 }
 
+/// Lists that fit `args_id`'s stack buffer and lists that don't get stable ids, distinct per list.
+#[test]
+fn args_id_is_stable_for_short_and_long_lists() {
+    let _scope = hc::Scope::enter();
+    let vs: Vec<Rc<Expr>> = (0..12).map(|i| hc::intern(var(i), None)).collect();
+    hc::args_id(&[&vs[0]]); // switches the table on (no warm-up under test)
+    let refs: Vec<&Rc<Expr>> = vs.iter().collect();
+    let (short, long) = (&refs[..3], &refs[..12]);
+    let (s, l) = (hc::args_id(short), hc::args_id(long));
+    assert_eq!((s % 2, l % 2), (1, 1));
+    assert_ne!(s, l);
+    assert_eq!((hc::args_id(short), hc::args_id(long)), (s, l));
+    assert_ne!(hc::args_id(&refs[1..4]), s);
+}
+
 #[test]
 fn subst_top_leaves_an_unused_argument_alone() {
     // 21 distinct nodes, a million as a tree: copying it takes about a

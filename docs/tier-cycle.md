@@ -1140,6 +1140,26 @@ line in `hc::Scope::drop` (reverted, no patch kept) logged each outermost table 
   exit. Retaining capacity helps only on a second scope in the same thread, and sweeps have few. Pre-sizing would need a
   size hint, and sizes vary 3× between processes. Neither was built.
 
+**The spine's head reduced as its own node; `args_id` without a Vec per call (2026-10-13).** Two items from an
+allocation scan of the hot paths. Allocator work (malloc, Vec growth, drop glue) was about 5% of the samply profile above;
+the table probes are the bulk.
+- `beta_spine` used to reduce a fresh `Rc` copy of the spine's head. That was one allocation per spine, and its
+  `ReductionCache` entry could never hit again, because the cache is keyed by pointer. When the head was stuck, every
+  level of the spine reduced the head again. It now reduces the head node the spine holds, and collects the arguments
+  only once the head is a lambda.
+- `hc::args_id` built a `Vec<usize>` of ids on every call, including the one-argument case, which returns at once. It
+  then moved the Vec into the set, which freed it on a hit. Now one argument returns its id directly. Up to 8 ids go in a
+  stack buffer, the set is probed with `get`, and the Vec is allocated only for a new list. Check:
+  `args_id_is_stable_for_short_and_long_lists`.
+- `proof_cost_split` cmp3d own, against a1ad219, two rounds of 12 alternating pairs. CPU load was 16-24% at the round
+  boundaries; Defender RTP was off.
+  - Round 1: new won 10 pairs, summed CPU 123.2 against 128.7 s.
+  - Round 2: new won 7 pairs, 106.6 against 112.5 s.
+  - Together: won 17 of 24, about 5% less CPU. The best single runs don't confirm it: 9.61 against 9.41 s in round 1,
+    and 7.03 against 8.17 s in round 2.
+- Sequential pair (`scripts/bsp_seq.sh`, rows `bss_*`): rows, preferences, pooled rules and units, and the 26 rule and
+  unit files are identical on both salts. Only `own.tsv`'s elapsed-seconds column differs. Wall 36/21 s against 32/24 s.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's

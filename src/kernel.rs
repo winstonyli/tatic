@@ -1150,15 +1150,28 @@ mod hc {
             let g = NEXT_GENERATION.with(|g| g.replace(g.get() + 1));
             GENERATION.with(|c| c.set(g));
         }
-        let ptrs: Vec<usize> =
-            args.iter().map(|a| if a.canonical() { Rc::as_ptr(a) as usize } else { Rc::as_ptr(&intern((***a).clone(), None)) as usize }).collect();
-        if let [p] = ptrs[..] {
-            return p as u64;
+        let id = |a: &&Rc<Expr>| if a.canonical() { Rc::as_ptr(a) as usize } else { Rc::as_ptr(&intern((***a).clone(), None)) as usize };
+        if let [a] = args {
+            return id(a) as u64;
         }
+        // The ids go in a stack buffer when they fit; the set is only allocated for a new list.
+        let mut buf = [0usize; 8];
+        let heap: Vec<usize>;
+        let ptrs: &[usize] = if args.len() <= buf.len() {
+            buf.iter_mut().zip(args).for_each(|(s, a)| *s = id(a));
+            &buf[..args.len()]
+        } else {
+            heap = args.iter().map(id).collect();
+            &heap
+        };
         TABLE.with(|t| {
             let mut t = t.borrow_mut();
+            if let Some(&n) = t.arg_sets.get(ptrs) {
+                return n;
+            }
             let next = 2 * t.arg_sets.len() as u64 + 1;
-            *t.arg_sets.entry(ptrs).or_insert(next)
+            t.arg_sets.insert(ptrs.to_vec(), next);
+            next
         })
     }
 
@@ -1649,15 +1662,24 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
 /// lambda, so the caller's one-argument path runs unchanged (and keeps a stuck spine's per-prefix
 /// cache entries).
 fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
-    let mut args: Vec<&Rc<Expr>> = Vec::new();
-    let mut head = e;
-    while let Expr::App(g, b) = head {
-        args.push(b);
+    // The head is reduced as the node the spine holds, so its cache entry is shared by every level
+    // of the spine; the arguments are collected only once it is a lambda.
+    let Expr::App(f, _) = e else { return None };
+    let mut head: &Rc<Expr> = f;
+    let mut k = 1;
+    while let Expr::App(g, _) = &**head {
         head = g;
+        k += 1;
+    }
+    let wh = whnf_rc(head, cache);
+    let Expr::Lam(_, first) = &*wh else { return None };
+    let mut args: Vec<&Rc<Expr>> = Vec::with_capacity(k);
+    let mut spine = e;
+    while let Expr::App(g, b) = spine {
+        args.push(b);
+        spine = g;
     }
     args.reverse();
-    let wh = whnf_rc(&Rc::new(head.clone()), cache);
-    let Expr::Lam(_, first) = &*wh else { return None };
     let mut body: &Expr = first;
     let mut taken = 1;
     while taken < args.len()
