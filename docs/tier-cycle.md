@@ -882,10 +882,17 @@ both salts; no proof failed. Wall 35 against 37 s (salt 1) and 25 against 28 s (
 - The proofs are back on the critical path. The main thread waits 1.85 s for scoring and 1.39 s for winners' proofs
   (`resolve`). The winners' proofs take 2.7 s over 31 rounds, about 87 ms each, while a round's scoring now takes about
   60 ms. A round settles the round before it (`settle(&mut open, 1)`), so each proof has only one round's scoring to hide in.
-  Keeping more rounds open would give each proof several rounds to hide in; a failed proof already voids every later round.
-  Not tried.
+  Keeping more rounds open would give each proof several rounds to hide in; a failed proof already voids every later round
+  (next section).
 - The summed `round over` times include that wait: `settle` runs after the `rule-set evaluation` phase, so the next round's
   phase time absorbs it.
+
+**Three rounds kept open (2026-10-13).** The main path now settles a round only once three newer rounds are open
+(`settle(&mut open, 3)`), so each winner's proof has three rounds of scoring to hide in. The rollback check
+(`scripts/spec_rollback.sh`) still gives one rollback at round 0 and one lookahead replay, and the chosen rules equal
+e9a8be1's. Sequential pair against e9a8be1 (`scripts/o3_seq.sh`, rows `o3s_*`; CPU 8% at launch, RTP off): rows,
+preferences and all 27 rule and unit files identical on both salts; no proof failed. cmp3d's summed rounds took 3.0 against
+4.3 s and 1.8 against 2.6 s, about 1.43× faster. Wall 29 against 32 s (salt 1) and 21 against 21 s (salt 2).
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

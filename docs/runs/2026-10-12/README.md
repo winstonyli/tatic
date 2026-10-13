@@ -41,6 +41,7 @@ and libraries (43 MB) were not kept.
 | `qp_head_*`, `qp_q_*` | 5c4618f against one shared queue for the scoring workers, same load | `q_pair.sh` | "One queue for the scoring workers" |
 | `lap_head_*`, `lap_la_*` | 8f348b9 against the ref mines on 6 scoring threads plus lookahead's winners proved in the background, same load | `la_pair.sh` | "Six scoring threads, and lookahead's proofs in the background" |
 | `las_head_*`, `las_la_*` | the same two builds one run at a time (la, head on salt 1; head, la on salt 2) | `la_seq.sh` | "Why six threads gave little" |
+| `o3s_head_*`, `o3s_o3_*` | e9a8be1 against three rounds kept open, one run at a time (o3, head on salt 1; head, o3 on salt 2) | `o3_seq.sh` | "Three rounds kept open" |
 | `lsp_A`, `lsp_B` | 84072cd + a temporary `LEMMA_SWEEP` switch (reverted, no patch kept), with (A) and without (B) it; `own pooled` on one set of salt-1 libraries | `lemma_sweep_probe.sh` | "A lemma file shared by a whole sweep" |
 | `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |

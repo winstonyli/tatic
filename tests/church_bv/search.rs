@@ -1473,8 +1473,9 @@ pub fn rule_miner() {
             phase("rule-set evaluation");
             open.push(Open { before: s, round, proof, line });
             (s, round) = (next, round + 1);
-            // the newest round stays open: its winner's proof runs while the next round is scored
-            if let Some(o) = settle(&mut open, 1) {
+            // the newest three rounds stay open: a winner's proof (about 87 ms on cmp3d) runs while the next three rounds are
+            // scored (about 60 ms each at 6 threads); docs/tier-cycle.md, "Why six threads gave little"
+            if let Some(o) = settle(&mut open, 3) {
                 (s, round) = (o.before, o.round);
             }
         }
