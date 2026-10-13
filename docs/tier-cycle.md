@@ -1327,6 +1327,21 @@ count.
 - `ShiftMemo` (the builders' local shift memo) still keeps source and result pairs; it is outside the table and its
   scope.
 
+**Profile after the two table changes (samply, 2026-10-13).** Same run as "Where the node table's time goes", at 849bf22
+(profile not kept; `scripts/prof_callers.py`): 5221 busy samples against 5870, load 4%.
+
+| | 1f4db8b | 849bf22 |
+|---|---|---|
+| `hc::intern` (from `inst_rec`) | 34.4% (22.3%) | 30.9% (18.8%) |
+| its own lookup (`intern_as` closure, self) | 18.0% | 18.1% |
+| growth, all tables (node table) | 9.6% (3.2%) | 7.1% (1.1%) |
+| `inst_get` | 8.6% | 9.8% |
+| freeing the table at the scope's end | 5.9% | 6.3% |
+
+The lookup's own time did not shrink: a hit still reads the candidate node, at a random address, to compare it and
+bump its count, so the cost is that one miss per hit rather than the table's size. Growth fell by a quarter, most of it
+the node table's. Freeing the table is now mostly dropping its nodes (`Rc::drop_slow` 4.3%), not its arrays.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
