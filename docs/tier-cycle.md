@@ -1555,8 +1555,34 @@ step-certificate kernel was dropped. That comparison predates hash-consing, the 
 memos and n-ary `beta_spine`, each of which made the substituting kernel faster, so the lazy evaluator likely trails it
 now (not re-measured). What has not been measured is how much of what `instantiate_n` builds is ever read: `conv` reduces only where the
 sides differ, so a built subterm that no later `whnf`, `conv` or `infer` visits is pure cost, and only that share is
-what laziness (building on demand) could save. Open: a probe counting the nodes `inst_rec` interns new and how many of
-them are later passed to `whnf_rc`, `conv_rc`, `eq_noting` or `infer_rc`.
+what laziness (building on demand) could save.
+
+**How much of what `instantiate_n` builds is read (probe, reverted, no patch kept, 2026-10-13).** At 7643319, one
+`proof_cost_split` cmp3d own run with a flag byte in the node header: set when `inst_rec` interns a new node, when the
+checker reads a node (`whnf_rc`, `conv_rc` on a pointer-unequal pair, `eq_noting` recursing into a non-canonical pair,
+`nf_rc`, `infer_rc`, `beta_spine`'s spine walk), and when `inst_rec` or `shift_child` recurses into it. Tallied over
+every node in the table at each outermost scope drop:
+
+| | Count |
+|---|---|
+| nodes in the tables at their drops | 3.17 M |
+| `inst_rec` interns | 8.56 M: 2.16 M new nodes, 6.40 M (75%) already in the table |
+| new nodes later read by the checker | 0.95 M (44%) |
+| ... read only by a later instantiation or shift | 0.27 M (12%) |
+| ... never read | 0.94 M (44%) |
+| instantiation memo (`inst_get`) lookups | 5.23 M, 1.95 M hits (37%) |
+| children skipped by the `uses` shortcut (shifted instead) | 0.44 M |
+| children below the memo's height cutoff (not memoized) | 5.28 M |
+
+So more than half of the new nodes instantiation builds are never looked at by the checker, and three quarters of
+what it rebuilds already existed. A delayed substitution (a node holding body, argument set and depth, forced when
+`whnf`, `conv` or `infer` first reads it) could skip the unread half, but it is a new trusted constructor that every
+reader must force, and new nodes are only a quarter of the interns; the saving is bounded by about half of
+instantiation's 44% of busy samples, less the forcing overhead. Open: lead, not built.
+
+**The instantiation memo still pays after the `whnf` memo (2026-10-13).** `go` with `memo` forced to false (reverted, no
+patch kept) against 7643319, 24 alternating pairs, Defender RTP off: lost all 24, median pair +0.44 s, best 4.89 against
+4.45 s (about 9% slower). Kept.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
