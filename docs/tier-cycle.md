@@ -734,6 +734,25 @@ files identical on both salts; wall 144 against 156 s (salt 1) and 104 against 1
 against 43/26 s, `pooled` 22/20 against 25/26 s, cmp3d's mine 29/12 against 30/16 s). Less than the profile's 21% of the
 mine suggested; why is not yet profiled (the sweep's loops have other mixes of mining and serving than the cmp3d ref loop).
 
+**Where the time goes in the sweep's loops: every process rebuilds its family's law pool (samply, 2026-10-12).** The `own` and
+`pooled` stages of a salt-1 sweep at 84072cd (libraries from its `mines` stage; CPU 32% at launch, RTP off): 129 s under the
+profiler, 102k samples, 39 mine and 66 serving processes (serving with `CHECK_FAST`). Mines are 67% of the samples and serving
+26%.
+- `family_laws` is 86% of serving and 19% of the mines, about 35% of all samples. Every child process rebuilds its family's
+  whole conjecture pool (`pool3`, `pool_conjectures`: a 4096-byte behaviour signature per distinct pool term, `SigMemo::id`
+  56% of serving) only to take its 100-law window. The pool depends only on the family and `RULEMINER_DEEP3`; the order on
+  the salt; the window on the shape, phase, stride and skip. So one computation per family serves every child of a sweep.
+- Rewriting is small in these loops (4.5% of serving, 6% of the mines, after the rule-list fix), which is likely why that fix
+  gained 8-11% of a sweep rather than the 21% of the cmp3d ref mine.
+- In the mines, kernel checks are 36% (`shared_lemma` 16%, `prove_rule` 17%), interning 18%, rewriting 6%.
+
+**A lemma file shared by a whole sweep (probe, reverted).** A temporary `LEMMA_SWEEP=<file>` in `run_loop` (no deletes; one
+file for every loop) at 84072cd; the `own` and `pooled` stages with and without it, side by side on the same libraries (CPU
+30% at launch, RTP off; `docs/runs/2026-10-12/rows/lsp_*`, `scripts/lemma_sweep_probe.sh`): rows identical; the loops' mines
+hit 252 of their 1002 lemmas (without it: 0, so within a loop the second mine uses none of the first's lemmas); wall 85
+against 95 s, `own` 31 against 40 s, `pooled` 20 against 19 s; the file ends at 316 KB. One pair, so the 10 s is a rough
+size. Smaller than removing the law-pool rebuild (35% of the samples above).
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
