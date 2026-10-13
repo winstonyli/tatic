@@ -1312,6 +1312,21 @@ price of the few hits that matter (negative).
   mines, the 26 rule and unit files), apart from the elapsed-seconds columns. The sweeps took 22 and 19 s wall on both
   builds, too short for the difference to show.
 
+**The memos store only their results (2026-10-13).** `inst`, `shifts` and `uses` no longer hold a copy of each entry's
+source node. A source the node table does not already keep (one that is not canonical) goes once per insert into one
+list, `Table::keep`, which lives to the scope's end, so no node built later takes an address a memo key holds. Entries
+shrink from 40 to 32 bytes (`inst`, `shifts`) and 32 to 24 (`uses`), and a hit or insert no longer touches the source's
+count.
+- Check: `memo_sources_outlive_their_callers`, which fails when `pin` keeps nothing (a node built after the caller drops
+  its source takes the address and inherits the entry).
+- Against 9fab09a, 24 alternating pairs of `proof_cost_split` cmp3d own: won 16, summed CPU 138.8 against 141.0 s (2%
+  less), best 4.97 against 5.05 s; load 7-12%, Defender RTP off. Small, but the entries are smaller and the code no
+  simpler or more complex, so it stays.
+- Sequential pair (`scripts/slim_seq.sh`, rows `sls_*`): every file identical on both salts, apart from the
+  elapsed-seconds columns.
+- `ShiftMemo` (the builders' local shift memo) still keeps source and result pairs; it is outside the table and its
+  scope.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's

@@ -852,14 +852,23 @@ mod hc {
         /// Interned nodes with their key's hash, found by comparing the candidate node's own key: 16
         /// bytes an entry instead of a stored 48-byte key (doc section "Where the node table's time goes").
         nodes: hashbrown::HashTable<(u64, Rc<Expr>)>,
-        /// (source node, argument-set id, depth) -> (the source, kept alive; its instantiation).
-        inst: PtrMap<(usize, u64, u32), RcPair>,
-        shifts: PtrMap<ShiftKey, RcPair>,
-        /// (node, depth, argument count) -> (the node, kept alive; whether it has a loose `Var` in
-        /// `[depth, depth + count)`).
-        uses: PtrMap<(usize, u32, u32), (Rc<Expr>, bool)>,
+        /// (source node, argument-set id, depth) -> its instantiation.
+        inst: PtrMap<(usize, u64, u32), Rc<Expr>>,
+        shifts: PtrMap<ShiftKey, Rc<Expr>>,
+        /// (node, depth, argument count) -> whether it has a loose `Var` in `[depth, depth + count)`.
+        uses: PtrMap<(usize, u32, u32), bool>,
         /// Argument sets of two or more nodes, by their node pointers.
         arg_sets: HashMap<Vec<usize>, u64>,
+        /// The memos' non-canonical source nodes, kept alive to the scope's end (canonical ones live
+        /// in `nodes`), so no other node takes the address a memo key holds.
+        keep: Vec<Rc<Expr>>,
+    }
+
+    /// Keeps a memo's source node alive while the table holds its address.
+    fn pin(t: &mut Table, x: &Rc<Expr>) {
+        if !x.canonical() {
+            t.keep.push(x.clone());
+        }
     }
 
     /// Non-trivial `instantiate_n` calls in a scope before the table switches on: a small check
@@ -1123,7 +1132,7 @@ mod hc {
             return *k < d + m;
         }
         let key = (Rc::as_ptr(x) as usize, d, m);
-        if let Some(r) = TABLE.with(|t| t.borrow().uses.get(&key).map(|(_, r)| *r)) {
+        if let Some(r) = TABLE.with(|t| t.borrow().uses.get(&key).copied()) {
             return r;
         }
         let r = grow(|| {
@@ -1142,7 +1151,11 @@ mod hc {
             });
             found
         });
-        TABLE.with(|t| t.borrow_mut().uses.insert(key, (x.clone(), r)));
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            pin(&mut t, x);
+            t.uses.insert(key, r);
+        });
         r
     }
 
@@ -1208,12 +1221,16 @@ mod hc {
         if aid == 0 {
             return None;
         }
-        TABLE.with(|t| t.borrow().inst.get(&(Rc::as_ptr(x) as usize, aid, d)).map(|(_, r)| r.clone()))
+        TABLE.with(|t| t.borrow().inst.get(&(Rc::as_ptr(x) as usize, aid, d)).cloned())
     }
 
     pub fn inst_put(x: &Rc<Expr>, aid: u64, d: u32, r: &Rc<Expr>) {
         if aid != 0 {
-            TABLE.with(|t| t.borrow_mut().inst.insert((Rc::as_ptr(x) as usize, aid, d), (x.clone(), r.clone())));
+            TABLE.with(|t| {
+                let mut t = t.borrow_mut();
+                pin(&mut t, x);
+                t.inst.insert((Rc::as_ptr(x) as usize, aid, d), r.clone());
+            });
         }
     }
 
@@ -1221,12 +1238,16 @@ mod hc {
         if !active() {
             return None;
         }
-        TABLE.with(|t| t.borrow().shifts.get(&(Rc::as_ptr(x) as usize, cutoff, amount)).map(|(_, r)| r.clone()))
+        TABLE.with(|t| t.borrow().shifts.get(&(Rc::as_ptr(x) as usize, cutoff, amount)).cloned())
     }
 
     pub fn shift_put(x: &Rc<Expr>, cutoff: u32, amount: i32, r: &Rc<Expr>) {
         if active() {
-            TABLE.with(|t| t.borrow_mut().shifts.insert((Rc::as_ptr(x) as usize, cutoff, amount), (x.clone(), r.clone())));
+            TABLE.with(|t| {
+                let mut t = t.borrow_mut();
+                pin(&mut t, x);
+                t.shifts.insert((Rc::as_ptr(x) as usize, cutoff, amount), r.clone());
+            });
         }
     }
 }

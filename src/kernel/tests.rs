@@ -479,6 +479,23 @@ fn intern_finds_equal_nodes_after_growth() {
     assert!(!Rc::ptr_eq(&hc::intern(Expr::App(f.clone(), x.clone()), None), &hc::intern(Expr::Pi(f, x), None)));
 }
 
+/// A memo keyed by a non-canonical node's address keeps that node alive, so a node built after the
+/// caller drops it never takes the address and inherits its entry.
+#[test]
+fn memo_sources_outlive_their_callers() {
+    let _scope = hc::Scope::enter();
+    hc::activate();
+    for i in 0..64 {
+        let x = Rc::new(app(var(i + 5), var(i + 6)));
+        assert!(!x.canonical());
+        let r = hc::intern(app(var(i + 6), var(i + 7)), None);
+        hc::shift_put(&x, 0, 1, &r);
+        drop(x);
+        let y = Rc::new(app(var(i + 5), var(i + 9)));
+        assert!(hc::shift_get(&y, 0, 1).is_none());
+    }
+}
+
 /// The instantiation memo skips nodes at most two levels above their leaves.
 #[test]
 fn low_is_height_at_most_two() {
