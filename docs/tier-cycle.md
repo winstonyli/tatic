@@ -1128,6 +1128,18 @@ Open leads from this, cheapest first (none tried yet):
    Fewer or smaller entries would, but no candidate has been identified or measured.
 3. `hc::uses` (6.8% inclusive in the lemmas) recomputes per (node, depth, count); smaller.
 
+**Keeping the table across scopes would save under 1% of a sweep (negative, 2026-10-13).** Lead 1 above. Probe: a temporary
+line in `hc::Scope::drop` (reverted, no patch kept) logged each outermost table drop's sizes and drop time. Result from one
+`mines own pooled` sweep on be98b3e, salt 1, 58 s wall:
+- The sweep makes 160 outermost drops across 54 processes. A miner, server or pooled process drops 1-4 times; only the
+  three `mine_ref` processes drop often (19-31 times each, 76 in all).
+- Tables reach 0.4-1.2 M nodes and up to 3.5 M instantiation entries.
+- All 160 drops together take 1.35 s, against up to 58 s × 12 threads of CPU (CPU time not measured). Growth reinserts about one final table's
+  worth of entries per scope, which is the same order.
+- So the 15% in `proof_cost_split` is that benchmark's shape: one scope that grows a large table and tears it down at
+  exit. Retaining capacity helps only on a second scope in the same thread, and sweeps have few. Pre-sizing would need a
+  size hint, and sizes vary 3× between processes. Neither was built.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
