@@ -17,18 +17,19 @@ step (`spec_check.rs`), and when the checker accepts and the reduced `h'`
 compiles, the fragment is built from `h'`, so for it `h' ≡ h` is
 certificate-checked rather than kernel-checked (§37 of `RELATED_WORK.md`).
 "Found to be equivalent" is not just
-asserted — it's checked, with two complementary layers of assurance: sample
-verification against a reference interpreter (always), and, where the term
-falls in a covered fragment, an actual **kernel-checked proof** that the
-compiled and interpreted readings agree.
+asserted — it's checked, in two layers: sample verification against a
+reference interpreter, then an actual **kernel-checked proof**, covering
+every input, that the compiled and interpreted readings agree. Compiled code
+is installed only when both pass; a term without such a proof stays
+interpreted.
 
 ## Scope
 
 tatic is a research prototype, not a production compiler. The compilable
 fragment is small (simply typed `Int -> ... -> Int` terms with closures);
 anything else is served by the interpreter. Kernel-checked equivalence proofs
-cover only the terms in the proof fragment; elsewhere the compiled code is
-checked against the interpreter on sample inputs only. Alongside the JIT, the
+cover only the terms in the proof fragment, and a term runs compiled only
+with a proof covering every input (the installation gate, below). Alongside the JIT, the
 repository holds a Church-encoded bit-vector library and a rewrite-rule miner
 (`tests/church_bv/`), which are research experiments and are
 not needed to use the JIT.
