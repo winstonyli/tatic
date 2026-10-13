@@ -1160,6 +1160,20 @@ the table probes are the bulk.
 - Sequential pair (`scripts/bsp_seq.sh`, rows `bss_*`): rows, preferences, pooled rules and units, and the 26 rule and
   unit files are identical on both salts. Only `own.tsv`'s elapsed-seconds column differs. Wall 36/21 s against 32/24 s.
 
+**The builder side is about 8% (samply, 2026-10-13).** Run on af20655, `proof_cost_split` as above (profile not kept; 7206
+busy samples; CPU 11% at launch). It answers whether the case-tree builder has allocations worth removing.
+- Building (`lemma_n`) is 8.5% of busy samples. Of that:
+  - Interning the built nodes is 65% (`intern_as`'s table probe alone is 33% self).
+  - The machine step at the leaves (`Machine::step`, the gates) is 31%.
+  - `table_app` is 29%.
+  - Vec collects are 14%, and the `gen_memo` lookups 5%.
+- `table_app`'s row evaluation, which the allocation scan suspected, is small: `table_app`'s own self time plus
+  `tree_proof::closure$3::closure$0`, which is probably the row closure, come to 3.4% of building, about 0.3% of the run. Keying its memo by the caller instead of the rows would save
+  about that much. The rest of `table_app` is applying the memoised body to the leaf's variables, which is interning.
+- Each builder slice is at most about 2.5% of the run, and most of that is node interning that a build has to do. No
+  builder change was made. The kernel's table probes (`intern_as` 27% inclusive, `inst_get` 14%) and growth
+  (`reserve_rehash` 9.4%) remain where the time is.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's

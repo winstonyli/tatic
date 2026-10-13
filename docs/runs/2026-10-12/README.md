@@ -51,6 +51,7 @@ and libraries (43 MB) were not kept.
 | `ais_head_*`, `ais_new_*` | 01018d6 against `args_id` taking canonical arguments' own addresses, one run at a time | `aid_seq.sh` | "Canonical arguments are not interned again" |
 | `bss_head_*`, `bss_new_*` | a1ad219 against `beta_spine` reducing the spine's own head plus `args_id`'s stack buffer, one run at a time | `bsp_seq.sh` | "The spine's head reduced as its own node" |
 | `cap/*.txt` | `mul_conjecture_miner` (`MULMINER_MAX=7`) on 5f65267 (old) against 0cb4e6c (head), one run at a time | `cap_ab.sh` | "Decision diagrams deleted" |
+| (no rows) | samply profile of `proof_cost_split` at af20655 (profile not kept), scopes `tree_proof` and `lemma_n` | `prof_cases.py` | "The builder side is about 8%" |
 | (no rows) | samply profile of `proof_cost_split` at 0cb4e6c (profile not kept) | `prof_cases.py` | "Where the case lemmas' time goes" |
 | (no rows) | `proof_cost_split` CPU-time A/B with the `LEAFV` leaf prototype (reverted, no patch kept) | `cpu_ab.ps1` | "Leaves that state the computed bit" |
 | `lsp_A`, `lsp_B` | 84072cd + a temporary `LEMMA_SWEEP` switch (reverted, no patch kept), with (A) and without (B) it; `own pooled` on one set of salt-1 libraries | `lemma_sweep_probe.sh` | "A lemma file shared by a whole sweep" |
