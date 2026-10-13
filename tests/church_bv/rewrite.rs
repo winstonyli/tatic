@@ -411,13 +411,8 @@ thread_local! {
 }
 /// `memo` for a closed lemma `(proof, statement)`: the proof is checked once (`ck`, against the lemmas bound before it)
 /// and the lemma is returned as a parameter of that statement, so a law using it is checked against the parameter, not
-/// the proof. `discharge` turns a term over parameters back into a closed one. The key is built only when the lemma is used.
-pub fn shared_lemma(key: impl FnOnce() -> String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
-    // counting only (`SCORE_ONLY`): the rewritten terms do not depend on the lemma, so it is neither built nor checked
-    if SCORE_ONLY.with(|s| s.get()) {
-        return (var(0), var(0));
-    }
-    let key = key();
+/// the proof. `discharge` turns a term over parameters back into a closed one.
+pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
     memo(key.clone(), || {
         let (p, s) = build();
         ck(&format!("lemma {key}"), &p, &s);
@@ -455,10 +450,10 @@ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
         Term::Op(o, a, b) => {
             let ((av, aw), (bv, bw)) = (witnessed(a, n, goods), witnessed(b, n, goods));
             let (op, good_op) = match o {
-                0 => (add(n), shared_lemma(|| format!("good_add{n}"), || good_add(n)).0),
-                4 => (sub(n), shared_lemma(|| format!("good_sub{n}"), || good_sub(n)).0),
-                6 => (shl1_op(n), shared_lemma(|| format!("good_shl1{n}"), || good_shl1(n)).0),
-                7 => (shr1_op(n), shared_lemma(|| format!("good_shr1{n}"), || good_shr1(n)).0),
+                0 => (add(n), shared_lemma(format!("good_add{n}"), || good_add(n)).0),
+                4 => (sub(n), shared_lemma(format!("good_sub{n}"), || good_sub(n)).0),
+                6 => (shl1_op(n), shared_lemma(format!("good_shl1{n}"), || good_shl1(n)).0),
+                7 => (shr1_op(n), shared_lemma(format!("good_shr1{n}"), || good_shr1(n)).0),
                 _ => memo(format!("gbit{n}_{o}"), || {
                     let o = *o;
                     let opf = move |p: Expr, q: Expr| match o {
@@ -485,46 +480,161 @@ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
     }
 }
 
+/// How a rewrite `lhs = rhs` is justified. The rewriter makes plans and builds no kernel terms; `Compiler` turns a plan into a
+/// proof when one is wanted, so counting (`RULEMINER_FAST`) never builds one.
+pub enum Plan {
+    /// `t = t`
+    Refl(Term),
+    /// `o(a, b) = o(a', b')` from `a = a'` and `b = b'`
+    Cong(usize, PlanRc, PlanRc),
+    /// `a = c` from `a = b` and `b = c`
+    Trans(PlanRc, PlanRc),
+    /// `b = a` from `a = b`
+    Sym(PlanRc),
+    /// the closed law `lhs = rhs` over the pattern variables `V(0..)`, at the terms `args` (one per variable)
+    Law(LawKind, Term, Term, Vec<Term>),
+}
+pub type PlanRc = std::rc::Rc<Plan>;
+
+/// The prover of a `Plan::Law`.
+#[derive(Clone, Copy)]
+pub enum LawKind {
+    /// a library rule, by name (`prove_rule`)
+    Rule(&'static str),
+    /// `(x + y) + z = x + (y + z)`
+    Assoc,
+    /// `x + y = y + x`
+    Comm,
+    /// `bitwise_law_k`
+    Bitwise,
+    /// `carry_chain_law`
+    Chain,
+    /// `add_tree_law`
+    Tree,
+}
+
+impl Plan {
+    pub fn refl(t: &Term) -> PlanRc {
+        PlanRc::new(Plan::Refl(t.clone()))
+    }
+    pub fn cong(o: usize, a: PlanRc, b: PlanRc) -> PlanRc {
+        PlanRc::new(Plan::Cong(o, a, b))
+    }
+    pub fn trans(a: PlanRc, b: PlanRc) -> PlanRc {
+        PlanRc::new(Plan::Trans(a, b))
+    }
+    pub fn sym(a: PlanRc) -> PlanRc {
+        PlanRc::new(Plan::Sym(a))
+    }
+    pub fn law(kind: LawKind, lhs: Term, rhs: Term, args: Vec<Term>) -> PlanRc {
+        PlanRc::new(Plan::Law(kind, lhs, rhs, args))
+    }
+}
+
+/// The variables `V(0..k)`: a law's arguments when it is stated over the conjecture's own variables.
+fn vars(k: usize) -> Vec<Term> {
+    (0..k).map(Term::V).collect()
+}
+
+/// Compiles plans into kernel proofs at width `n`, in context `[x.., gx..]` over `k` good vectors.
+pub struct Compiler {
+    n: usize,
+    ops: [Expr; 8],
+    goods: Vec<(Expr, Expr)>,
+    vals: Vec<Expr>,
+}
+
+impl Compiler {
+    pub fn new(n: usize, k: usize) -> Compiler {
+        let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
+        Compiler { n, ops: ops_for(n), vals: goods.iter().map(|g| g.0.clone()).collect(), goods }
+    }
+
+    pub fn ev(&self, t: &Term) -> Expr {
+        t.eval(&self.ops, self.n, &self.vals)
+    }
+
+    /// The type of `t`'s value: one bit under an `lt` root, else `n` bits.
+    fn ty(&self, t: &Term) -> Expr {
+        bv_ty(if matches!(t, Term::Op(LT, ..)) { 1 } else { self.n })
+    }
+
+    /// The plan's two sides and the proof of `Id(lhs, rhs)`.
+    pub fn proof(&self, plan: &Plan) -> (Term, Term, Expr) {
+        let n = self.n;
+        match plan {
+            Plan::Refl(t) => (t.clone(), t.clone(), refl(self.ev(t))),
+            Plan::Cong(o, a, b) => {
+                let ((a1, a2, pa), (b1, b2, pb)) = (self.proof(a), self.proof(b));
+                let (xs, ys) = ([self.ev(&a1), self.ev(&b1)], [self.ev(&a2), self.ev(&b2)]);
+                let (l, r) = (Term::Op(*o, Box::new(a1), Box::new(b1)), Term::Op(*o, Box::new(a2), Box::new(b2)));
+                let p = cong_n(&bv_ty(n), &self.ty(&l), &self.ops[*o], &xs, &ys, vec![pa, pb]);
+                (l, r, p)
+            }
+            Plan::Trans(a, b) => {
+                let ((x, y, p), (_, z, q)) = (self.proof(a), self.proof(b));
+                let p = trans_proof(&self.ty(&x), &self.ev(&x), &self.ev(&y), &self.ev(&z), p, q);
+                (x, z, p)
+            }
+            Plan::Sym(a) => {
+                let (x, y, p) = self.proof(a);
+                let p = sym(&self.ty(&x), &self.ev(&x), &self.ev(&y), p);
+                (y, x, p)
+            }
+            Plan::Law(kind, l, r, args) => {
+                let k = args.len();
+                let law = match kind {
+                    LawKind::Rule(name) => {
+                        shared_lemma(format!("rule_{name}_{}_{}_{n}", l.show(), r.show()), || prove_rule(n, k, l, r).unwrap_or_else(|| panic!("rule {name} is not provable"))).0
+                    }
+                    LawKind::Assoc => shared_lemma(format!("assoc{n}"), || add_assoc_proof(n, false)).0,
+                    LawKind::Comm => shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0,
+                    LawKind::Bitwise => bitwise_law_k(n, k, l, r).0,
+                    LawKind::Chain => carry_chain_law(n, l, r).expect("a constant carry").0,
+                    LawKind::Tree => add_tree_law(n, k, l, r).expect("a carry encoding").0,
+                };
+                let w: Vec<(Expr, Expr)> = args.iter().map(|t| witnessed(t, n, &self.goods)).collect();
+                let p = apps(law, w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect());
+                let sub: Vec<Option<Term>> = args.iter().cloned().map(Some).collect();
+                (subst_pat(l, &sub), subst_pat(r, &sub), p)
+            }
+        }
+    }
+}
+
 /// A sum of two (atom-abstracted) bitwise operands that a constant carry reduces to 0, -1 or one of its atoms (`x + 0`,
-/// `x + ~x`, ...): the rewritten term and the proof from `carry_chain_law` instantiated at the atoms' values and witnesses.
-/// Ablation name `chain`; it and a step for `x + 0` alone covered each other (docs/tier-cycle.md, "Ablating the fixed rewriter
-/// and prover parts").
-pub fn chain_step(n: usize, a: &Term, b: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
+/// `x + ~x`, ...): the rewritten term and the plan, `carry_chain_law` at the atoms. Ablation name `chain`; it and a step for
+/// `x + 0` alone covered each other (docs/tier-cycle.md, "Ablating the fixed rewriter and prover parts").
+pub fn chain_step(a: &Term, b: &Term) -> Option<(Term, PlanRc)> {
     if ablated("chain") {
         return None;
     }
     let mut atoms = vec![];
     let (a1, b1) = (abstract_atoms(a, &mut atoms, 2)?, abstract_atoms(b, &mut atoms, 2)?);
-    for cand in [Term::Zero, Term::Ones, Term::V(0), Term::V(1)] {
-        if matches!(cand, Term::V(i) if i >= atoms.len()) || find_constant_carry(&a1, &b1, &cand).is_none() {
-            continue;
-        }
-        let law = carry_chain_law(n, &Term::Op(ADD, Box::new(a1.clone()), Box::new(b1.clone())), &cand)?;
-        let w: Vec<(Expr, Expr)> = (0..2).map(|i| atoms.get(i).map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
-        let proof = apps(law.0, vec![w[0].0.clone(), w[1].0.clone(), w[0].1.clone(), w[1].1.clone()]);
-        let target = if let Term::V(i) = cand { atoms[i].clone() } else { cand };
-        return Some((target, proof));
-    }
-    None
+    // `carry_chain_law` proves every pair this finds: the atoms are add-free and at most two
+    let cand = [Term::Zero, Term::Ones, Term::V(0), Term::V(1)]
+        .into_iter()
+        .find(|cand| !matches!(cand, Term::V(i) if *i >= atoms.len()) && find_constant_carry(&a1, &b1, cand).is_some())?;
+    let target = if let Term::V(i) = cand { atoms[i].clone() } else { cand.clone() };
+    let args = (0..2).map(|i| atoms.get(i).cloned().unwrap_or(Term::V(0))).collect();
+    Some((target, Plan::law(LawKind::Chain, Term::Op(ADD, Box::new(a1), Box::new(b1)), cand, args)))
 }
 
 /// A sum tree of add-free leaves that the carry-encoding search shows equal to a constant, a variable or one
 /// bitwise operation on two of them (so `-1 - x` becomes `x ^ -1`): that value and
-/// the proof (`add_tree_law` at the variables' values and witnesses). Ablation name `tree`.
-pub fn tree_step(n: usize, t1: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
+/// the plan (`add_tree_law` over the `k` variables). Ablation name `tree`.
+pub fn tree_step(n: usize, t1: &Term, k: usize) -> Option<(Term, PlanRc)> {
     if ablated("tree") {
         return None;
     }
-    let k = goods.len();
     // the constants, the variables, then every operator applied to two of them (a plain-integer screen in
-    // `add_tree_law` discards the false candidates cheaply)
-    for cand in [Term::Zero, Term::Ones].into_iter().chain((0..k).map(Term::V)).chain(terms(k, false).into_iter().filter(|c| matches!(c, Term::Op(o, ..) if (1..=3).contains(o)))) {
-        if let Some(law) = add_tree_law(n, k, t1, &cand) {
-            let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
-            return Some((cand, apps(law.0, args)));
-        }
-    }
-    None
+    // `tree_encoding` discards the false candidates cheaply)
+    let cand = [Term::Zero, Term::Ones]
+        .into_iter()
+        .chain((0..k).map(Term::V))
+        .chain(terms(k, false).into_iter().filter(|c| matches!(c, Term::Op(o, ..) if (1..=3).contains(o))))
+        .find(|cand| tree_encoding(n, k, t1, cand).is_some())?;
+    Some((cand.clone(), Plan::law(LawKind::Tree, t1.clone(), cand, vars(k))))
 }
 
 /// A library law used as a left-to-right rewrite rule: `lhs = rhs` over the pattern variables `V(0)..`, each instance
@@ -536,8 +646,8 @@ pub struct Rule {
 }
 
 thread_local! {
-    /// Set by the rule miner while scoring (`RULEMINER_FAST=1`): `prove_eq` counts a machine fallback without building its proof
-    /// (the returned proof is a placeholder, never checked).
+    /// Set by the rule miner while scoring (`RULEMINER_FAST=1`): `prove_eq` takes a machine fallback when a few tuples agree,
+    /// without searching for its carry encoding, so a plan made under it may not compile.
     pub static SCORE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Rules added at run time (by the rule miner), after the built-in ones, in `set_extra_rules` order. Write it only through
     /// `set_extra_rules` (or clear it).
@@ -583,12 +693,10 @@ fn preferences_choose_between_rules_that_both_match() {
                 sub(x, sub(y, z)) -> add(sub(x, y), z)  OVER  sub(sub(x, y), z) -> sub(x, add(y, z))\n";
     assert_eq!(parse_rules(text).len(), 2, "a preference line is not a rule");
     let t = parse_term("sub(sub(x, y), sub(z, u))");
-    let goods: Vec<(Expr, Expr)> = (0..4u32).map(|i| (var(7 - i), var(3 - i))).collect();
     let step = |prefs: Vec<Pref>| {
-        let _scope = tatic::kernel::InternScope::enter();
         set_extra_rules(parse_rules(text));
         set_rule_prefs(prefs);
-        let out = rule_step(4, &t, &goods).unwrap().0.show();
+        let out = rule_step(&t).unwrap().0.show();
         set_extra_rules(vec![]);
         set_rule_prefs(vec![]);
         out
@@ -830,16 +938,13 @@ pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)], meet: &dyn Fn(&(Term
 /// join: rewritten (over `n` bits, `steps` per side) under all the file's rules and preferences, its two sides reach different
 /// normal forms. They depend only on the file, so `driver::sweep` builds them once (`units_text`) for every family's mine.
 pub fn joinability_units(text: &str, n: usize, steps: i64) -> Vec<Vec<(Term, Term)>> {
-    let _scope = tatic::kernel::InternScope::enter();
     set_extra_rules(parse_rules(text));
     set_rule_prefs(parse_prefs(text));
-    let ops = ops_for(n);
     let joins = |a: &Term, b: &Term| {
         let k = a.max_var().max(b.max_var()) + 1;
-        let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
         let side = |t: &Term| {
             RULE_BUDGET.with(|c| c.set(steps));
-            rewrite(t, n, &ops, &goods).0.show()
+            rewrite(t, n, k).0
         };
         side(a) == side(b)
     };
@@ -967,13 +1072,7 @@ pub fn shr_not_law(n: usize) -> Option<(Expr, Expr)> {
     let m = b(SHR1, b(XOR, Term::V(0), Term::Ones), Term::Zero);
     let own = (l.clone(), r.clone());
     let notsub = rules().into_iter().find(|x| x.name == "notsub").map(|x| (x.lhs, x.rhs))?;
-    let prove = |blocked: &[RuleKey], t1: &Term, t2: &Term| {
-        let outer = PROVING.with(|p| p.borrow().len());
-        PROVING.with(|p| p.borrow_mut().extend(blocked.iter().cloned()));
-        let out = rewrite_law(n, 1, t1, t2);
-        PROVING.with(|p| p.borrow_mut().truncate(outer));
-        out
-    };
+    let prove = |blocked: &[RuleKey], t1: &Term, t2: &Term| proving(blocked, || rewrite_law(n, 1, t1, t2));
     let to_left = prove(std::slice::from_ref(&own), &m, &l)?;
     let to_right = prove(&[own, notsub], &m, &r)?;
     let (ops, bv) = (ops_for(n), bv_ty(n));
@@ -997,15 +1096,32 @@ pub fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)
     } else if matches!(l, Term::Op(SHR1, ..)) && matches!(r, Term::Op(SHR1, ..) | Term::Zero) || matches!(r, Term::Op(SHR1, ..)) && matches!(l, Term::Zero) {
         // laws with a `shr1` root are not machines: prove them with the rewriter (which falls back on the bit-0 mask
         // reduction), without the rule being proved, so that it cannot be used in its own proof
-        PROVING.with(|p| p.borrow_mut().push((l.clone(), r.clone())));
-        let saved = RULE_BUDGET.with(|b| b.replace(10_000));
-        let out = rewrite_law(n, k, l, r);
-        RULE_BUDGET.with(|b| b.set(saved));
-        PROVING.with(|p| p.borrow_mut().pop());
-        out
+        proving(&[(l.clone(), r.clone())], || rewrite_law(n, k, l, r))
     } else {
         add_tree_law(n, k, l, r)
     }
+}
+
+/// `f` (a proof of a rule by rewriting, with the rules `blocked`) run as a rewriting job of its own: its own cycle path and
+/// step budget, no memo (`REWRITE_MEMO` holds results under all the rules), no trace, and its machine fallbacks not counted
+/// for the caller, whose rewriting it does not change.
+fn proving<T>(blocked: &[RuleKey], f: impl FnOnce() -> T) -> T {
+    let outer = PROVING.with(|p| p.borrow().len());
+    PROVING.with(|p| p.borrow_mut().extend(blocked.iter().cloned()));
+    let path = REWRITE_PATH.with(|p| p.take());
+    let memo = REWRITE_MEMO.with(|m| m.take());
+    let trace = RULE_TRACE.with(|t| t.take());
+    let budget = RULE_BUDGET.with(|b| b.replace(10_000));
+    let (fallbacks, cuts) = (MACHINE_FALLBACKS.with(|c| c.get()), CYCLE_CUTS.with(|c| c.get()));
+    let out = f();
+    PROVING.with(|p| p.borrow_mut().truncate(outer));
+    REWRITE_PATH.with(|p| p.replace(path));
+    REWRITE_MEMO.with(|m| m.replace(memo));
+    RULE_TRACE.with(|t| t.replace(trace));
+    RULE_BUDGET.with(|b| b.set(budget));
+    MACHINE_FALLBACKS.with(|c| c.set(fallbacks));
+    CYCLE_CUTS.with(|c| c.set(cuts));
+    out
 }
 
 /// The rule order's weight of a term, a polynomial interpretation `c + sum_v a_v * x_v` (`x_v >= 1` is the weight of
@@ -1241,8 +1357,8 @@ pub fn print_rule_conflicts() {
     }
 }
 
-/// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the proof.
-pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Expr)> {
+/// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the plan.
+pub fn rule_step(t: &Term) -> Option<(Term, PlanRc)> {
     RULE_TRACE.with(|tr| {
         if let Some(v) = tr.borrow_mut().as_mut() {
             v.push(t.clone());
@@ -1294,28 +1410,25 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
         }
     }
     let r = &all[i];
-    let k = sub.len();
     if TRACE_RULES.load(std::sync::atomic::Ordering::Relaxed) {
         println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
     }
     if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
         return None;
     }
-    let law = shared_lemma(|| format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
     // a pattern variable the left side does not mention is free in the law: any value serves
-    let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
-    let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
+    let args = sub.iter().map(|s| s.clone().unwrap_or(Term::V(0))).collect();
     let mut hits = RULE_HITS.lock().unwrap();
     match hits.iter_mut().find(|h| h.0 == r.name) {
         Some(h) => h.1 += 1,
         None => hits.push((r.name, 1)),
     }
-    Some((subst_pat(&r.rhs, &sub), apps(law.0, args)))
+    Some((subst_pat(&r.rhs, &sub), Plan::law(LawKind::Rule(r.name), r.lhs.clone(), r.rhs.clone(), args)))
 }
 
 /// A cached `rewrite`: the result and what the call did besides returning it, so that a hit can replay it.
 struct Rewritten {
-    out: (Term, Expr),
+    out: (Term, PlanRc),
     /// rule steps used (`RULE_BUDGET`): a hit needs at least this many left
     steps: i64,
     fallbacks: u64,
@@ -1324,24 +1437,24 @@ struct Rewritten {
     traced: bool,
 }
 
-/// While `Some`, `rewrite` calls with `goods.len()` goods are cached by (width, term). The rule miner sets it for one rule set
+/// While `Some`, `rewrite` calls over `k` variables are cached by (width, term). The rule miner sets it for one rule set
 /// (one `score_laws` call): the result of `rewrite` is a function of the term, the rules in force and the budget left, so a repeat
-/// under the same rules is a hit. Calls with other goods (the generalization path adds witnesses) are not cached.
+/// under the same rules is a hit. Calls over other variable counts (the generalization path adds witnesses) are not cached.
 pub struct RewriteMemo {
-    goods_len: usize,
+    k: usize,
     map: std::collections::HashMap<(usize, Term), std::rc::Rc<Rewritten>>,
 }
 
 impl RewriteMemo {
-    pub fn new(goods_len: usize) -> RewriteMemo {
-        RewriteMemo { goods_len, map: Default::default() }
+    pub fn new(k: usize) -> RewriteMemo {
+        RewriteMemo { k, map: Default::default() }
     }
 
     /// The traced entries whose traces `keep` accepts. A rule tried after the others changes no entry whose trace it matches
     /// nowhere, so the rule miner seeds each candidate's scoring with the entries of the rules chosen so far that the candidate
     /// cannot change.
     pub fn filtered(&self, keep: impl Fn(&[Term]) -> bool) -> RewriteMemo {
-        RewriteMemo { goods_len: self.goods_len, map: self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (k.clone(), e.clone())).collect() }
+        RewriteMemo { k: self.k, map: self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (k.clone(), e.clone())).collect() }
     }
 
     pub fn absorb(&mut self, other: RewriteMemo) {
@@ -1367,31 +1480,30 @@ fn embeds(s: &Term, t: &Term) -> bool {
     couple || matches!(t, Term::Op(_, t1, t2) if embeds(s, t1) || embeds(s, t2))
 }
 
-/// `t` rewritten bottom-up, with a proof of `Id(Bv_n, t, t')` in context `[x, y, gx, gy]`. Rewriting is deterministic apart from
+/// `t` (over `k` variables) rewritten bottom-up, with the plan of `t = t'` (`Compiler` proves it). Rewriting is deterministic apart from
 /// the step budget, so a call `rewrite(t)` made while `t` itself is being rewritten further out can only repeat that work until the
 /// budget runs out: a rewrite cycle. A chain that returns to a larger copy of a term it is rewriting (one that term embeds in) is
 /// taken to grow without end. The cut returns `t` unchanged in both cases, so the chain ends one lap round instead of at the budget
 /// (docs/tier-cycle.md, "Cycle cut").
-pub fn rewrite(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
+pub fn rewrite(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     if !matches!(t, Term::Op(..)) {
-        return rewrite_memo(t, n, ops, goods);
+        return rewrite_memo(t, n, k);
     }
     let size = t.size();
     if REWRITE_PATH.with(|p| p.borrow().iter().any(|s| s.size() <= size && embeds(s, t))) {
         CYCLE_CUTS.with(|c| c.set(c.get() + 1));
-        let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
-        return (t.clone(), refl(t.eval(ops, n, &vals)));
+        return (t.clone(), Plan::refl(t));
     }
     REWRITE_PATH.with(|p| p.borrow_mut().push(t.clone()));
-    let out = rewrite_memo(t, n, ops, goods);
+    let out = rewrite_memo(t, n, k);
     REWRITE_PATH.with(|p| p.borrow_mut().pop());
     out
 }
 
-fn rewrite_memo(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
-    let on = matches!(t, Term::Op(..)) && REWRITE_MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.goods_len == goods.len()));
+fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
+    let on = matches!(t, Term::Op(..)) && REWRITE_MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.k == k));
     if !on {
-        return rewrite_uncached(t, n, ops, goods);
+        return rewrite_uncached(t, n, k);
     }
     let key = (n, t.clone());
     let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
@@ -1407,7 +1519,7 @@ fn rewrite_memo(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Te
     }
     let (budget0, fallbacks0, trace0) = (RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()), RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v.len())));
     let cuts0 = CYCLE_CUTS.with(|c| c.get());
-    let out = rewrite_uncached(t, n, ops, goods);
+    let out = rewrite_uncached(t, n, k);
     let budget1 = RULE_BUDGET.with(|b| b.get());
     // a call that ran the budget out was cut short by it: its result depends on the budget it started with; one with a cycle cut
     // depends on the terms being rewritten further out
@@ -1423,27 +1535,22 @@ fn rewrite_memo(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Te
     out
 }
 
-fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Term, Expr) {
-    let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
-    let ev = |t: &Term| t.eval(ops, n, &vals);
-    let Term::Op(o, a, b) = t else { return (t.clone(), refl(ev(t))) };
-    // an `lt` root gives one bit, every other operator a vector
-    let rt = bv_ty(if *o == LT { 1 } else { n });
+fn rewrite_uncached(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
+    let Term::Op(o, a, b) = t else { return (t.clone(), Plan::refl(t)) };
     // children first: trying the library rules on a node before its children are normalized raised M 3x (docs/tier-cycle.md, "Rule order")
-    let ((a2, pa), (b2, pb)) = (rewrite(a, n, ops, goods), rewrite(b, n, ops, goods));
-    let cong = cong_n(&bv_ty(n), &rt, &ops[*o], &[ev(a), ev(b)], &[ev(&a2), ev(&b2)], vec![pa, pb]);
+    let ((a2, pa), (b2, pb)) = (rewrite(a, n, k), rewrite(b, n, k));
+    let cong = Plan::cong(*o, pa, pb);
     let t1 = Term::Op(*o, Box::new(a2.clone()), Box::new(b2.clone()));
     if *o != ADD {
         // the library rules first (`shldist`, ...)
-        if let Some((target, step)) = rule_step(n, &t1, goods) {
-            let (t3, p3) = rewrite(&target, n, ops, goods);
-            let first = trans_proof(&rt, &ev(t), &ev(&t1), &ev(&target), cong, step);
-            return (t3.clone(), trans_proof(&rt, &ev(t), &ev(&target), &ev(&t3), first, p3));
+        if let Some((target, step)) = rule_step(&t1) {
+            let (t3, p3) = rewrite(&target, n, k);
+            return (t3, Plan::trans(Plan::trans(cong, step), p3));
         }
         if *o == SUB {
             // a difference: then the carry-encoding search
-            return match tree_step(n, &t1, goods) {
-                Some((target, law)) => (target.clone(), trans_proof(&rt, &ev(t), &ev(&t1), &ev(&target), cong, law)),
+            return match tree_step(n, &t1, k) {
+                Some((target, law)) => (target, Plan::trans(cong, law)),
                 None => (t1, cong),
             };
         }
@@ -1453,18 +1560,15 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
         // bitwise and shift terms only: a node equal to 0, -1 or one of its own subterms collapses to it, by the
         // per-position prover (the truth-table collapse below treats a shift as an atom)
         if let (false, true, true) = (ablated("collapse"), t1.add_free(), t1.has_shift()) {
-            let k = goods.len();
             let mut subs = vec![];
             t1.subterms(&mut subs);
             let cands = [Term::Zero, Term::Ones].into_iter().chain(subs.into_iter().skip(1).filter(|c| c.size() < t1.size()));
             if let Some(c) = cands.into_iter().find(|c| c.add_free() && t1.is_law(c, k)) {
-                let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
-                let law = apps(bitwise_law_k(n, k, &t1, &c).0, args);
-                return (c.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&c), cong, law));
+                return (c.clone(), Plan::trans(cong, Plan::law(LawKind::Bitwise, t1.clone(), c, vars(k))));
             }
         }
         // a bitwise node equal to 0, -1 or one of its atoms collapses to it (truth table, then `bitwise_law`)
-        let (mut atoms, k) = (vec![], goods.len());
+        let mut atoms = vec![];
         if let (false, Some(abs)) = (ablated("collapse"), abstract_atoms(&t1, &mut atoms, k)) {
             let truth = |t: &Term| (0..1usize << k).map(|m| term_gb(&Bools, t, &(0..k).map(|v| m >> v & 1 == 1).collect::<Vec<_>>())).collect::<Vec<_>>();
             let want = truth(&abs);
@@ -1472,10 +1576,8 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
             if let Some(c) = cands.iter().find(|c| c.max_var() < atoms.len().max(1) && truth(c) == want) {
                 let target = if let Term::V(i) = c { atoms[*i].clone() } else { c.clone() };
                 if target != t1 {
-                    let w: Vec<(Expr, Expr)> = (0..k).map(|i| atoms.get(i).map_or(goods[0].clone(), |a| witnessed(a, n, goods))).collect();
-                    let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
-                    let law = apps(bitwise_law_k(n, k, &abs, c).0, args);
-                    return (target.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&target), cong, law));
+                    let args = (0..k).map(|i| atoms.get(i).cloned().unwrap_or(Term::V(0))).collect();
+                    return (target, Plan::trans(cong, Plan::law(LawKind::Bitwise, abs, c.clone(), args)));
                 }
             }
         }
@@ -1492,27 +1594,22 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
             (Some(cb), Some(ca)) => cb < ca,
         };
         if before {
-            let t2 = Term::Op(*o, Box::new(b2.clone()), Box::new(a2.clone()));
-            let ((av, aw), (bv, bw)) = (witnessed(&a2, n, goods), witnessed(&b2, n, goods));
             let swap = |x: Term, y: Term| Term::Op(*o, Box::new(x), Box::new(y));
-            let law = apps(bitwise_law(n, &swap(Term::V(0), Term::V(1)), &swap(Term::V(1), Term::V(0))).0, vec![av, bv, aw, bw]);
-            return (t2.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&t2), cong, law));
+            let law = Plan::law(LawKind::Bitwise, swap(Term::V(0), Term::V(1)), swap(Term::V(1), Term::V(0)), vec![a2.clone(), b2.clone()]);
+            return (swap(b2, a2), Plan::trans(cong, law));
         }
         return (t1, cong);
     }
-    let (av, aw) = witnessed(&a2, n, goods);
-    let (bv, bw) = witnessed(&b2, n, goods);
-    let assoc = |p: &Term, q: &Term, r: &Term| {
-        let ((pv, pw), (qv, qw), (rv, rw)) = (witnessed(p, n, goods), witnessed(q, n, goods), witnessed(r, n, goods));
-        apps(shared_lemma(|| format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
-    };
     let sum = |p: &Term, q: &Term| Term::Op(ADD, Box::new(p.clone()), Box::new(q.clone()));
+    let (x, y, z) = (Term::V(0), Term::V(1), Term::V(2));
+    let assoc = |p: &Term, q: &Term, r: &Term| Plan::law(LawKind::Assoc, sum(&sum(&x, &y), &z), sum(&x, &sum(&y, &z)), vec![p.clone(), q.clone(), r.clone()]);
+    let comm = |p: &Term, q: &Term| Plan::law(LawKind::Comm, sum(&x, &y), sum(&y, &x), vec![p.clone(), q.clone()]);
     // `x + 0` and `x + ~x` are constant-carry sums (`chain_step`); steps of their own were removed as redundant
-    let step = if let Some(r) = rule_step(n, &t1, goods) {
+    let step = if let Some(r) = rule_step(&t1) {
         Some(r)
-    } else if let Some(r) = chain_step(n, &a2, &b2, goods) {
+    } else if let Some(r) = chain_step(&a2, &b2) {
         Some(r)
-    } else if let Some(r) = tree_step(n, &t1, goods) {
+    } else if let Some(r) = tree_step(n, &t1, k) {
         Some(r)
     } else if let (false, Term::Op(ADD, p, q)) = (ablated("assoc"), &a2) {
         // (p + q) + r = p + (q + r)
@@ -1521,30 +1618,21 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
         if bp.show_cmp(&a2).is_lt() {
             // a + (b + c) = (a + b) + c = (b + a) + c = b + (a + c)
             let (a_, b_, c_) = (&a2, &**bp, &**bq);
-            let ((av2, aw2), (bv2, bw2), (cv2, _)) = (witnessed(a_, n, goods), witnessed(b_, n, goods), witnessed(c_, n, goods));
-            let (ab, ba) = (witnessed(&sum(a_, b_), n, goods).0, witnessed(&sum(b_, a_), n, goods).0);
-            let comm = apps(shared_lemma(|| format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av2, bv2, aw2, bw2]);
-            let swap = cong_n(&bv_ty(n), &bv_ty(n), &ops[0], &[ab.clone(), cv2.clone()], &[ba.clone(), cv2.clone()], vec![comm, refl(cv2)]);
-            let (acc, bc, a_bc) = (witnessed(&sum(&sum(a_, b_), c_), n, goods).0, witnessed(&sum(&sum(b_, a_), c_), n, goods).0, witnessed(&t1, n, goods).0);
-            let target = sum(b_, &sum(a_, c_));
-            let (to_ab_c, ab_c_to_ba_c, ba_c_to_target) = (sym(&bv_ty(n), &acc, &a_bc, assoc(a_, b_, c_)), swap, assoc(b_, a_, c_));
-            let tv = witnessed(&target, n, goods).0;
-            let first = trans_proof(&bv_ty(n), &witnessed(&t1, n, goods).0, &acc, &bc, to_ab_c, ab_c_to_ba_c);
-            Some((target, trans_proof(&bv_ty(n), &witnessed(&t1, n, goods).0, &bc, &tv, first, ba_c_to_target)))
+            let swapped = Plan::cong(ADD, comm(a_, b_), Plan::refl(c_));
+            Some((sum(b_, &sum(a_, c_)), Plan::trans(Plan::trans(Plan::sym(assoc(a_, b_, c_)), swapped), assoc(b_, a_, c_))))
         } else {
             None
         }
     } else if !ablated("comm") && b2.show_cmp(&a2).is_lt() {
-        Some((sum(&b2, &a2), apps(shared_lemma(|| format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv, aw, bw])))
+        Some((sum(&b2, &a2), comm(&a2, &b2)))
     } else {
         None
     };
     match step {
         None => (t1, cong),
         Some((t2, p)) => {
-            let (t3, p3) = rewrite(&t2, n, ops, goods);
-            let first = trans_proof(&bv_ty(n), &ev(t), &ev(&t1), &ev(&t2), cong, p);
-            (t3.clone(), trans_proof(&bv_ty(n), &ev(t), &ev(&t2), &ev(&t3), first, p3))
+            let (t3, p3) = rewrite(&t2, n, k);
+            (t3, Plan::trans(Plan::trans(cong, p), p3))
         }
     }
 }
@@ -1584,26 +1672,23 @@ pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
     }
 }
 
-/// Proof of `Id(Bv_n, a, b)` in context `[x, y, gx, gy]` for rewritten terms: `refl`; the bitwise law over atoms
-/// (when it holds on all four bit values, so the kernel check cannot fail); or, for two sums, `cong_n` on
-/// proofs for their operands. `None` otherwise.
-pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
-    let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
-    let ev = |t: &Term| t.eval(ops, n, &vals);
+/// The plan of `a = b` (over `k` variables) for rewritten terms: `refl`; the bitwise law over atoms (when it holds on all
+/// bit values, so the kernel check cannot fail); the per-position law; the bit-0 mask reduction; or the whole-term machine
+/// proof. `None` otherwise.
+pub fn prove_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     if a == b {
-        return Some(refl(ev(a)));
+        return Some(Plan::refl(a));
     }
     // each step below can be switched off: `ABLATE=eq_truth,eq_pos,shrmask`
-    let (mut atoms, k) = (vec![], goods.len());
+    let mut atoms = vec![];
     if let (false, Some(a1), Some(a2)) = (ablated("eq_truth"), abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
         let holds = (0..1usize << k).all(|m| {
             let bits: Vec<bool> = (0..k).map(|v| m >> v & 1 == 1).collect();
             term_gb(&Bools, &a1, &bits) == term_gb(&Bools, &a2, &bits)
         });
         if holds {
-            let w: Vec<(Expr, Expr)> = (0..k).map(|i| atoms.get(i).map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
-            let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
-            return Some(apps(bitwise_law_k(n, k, &a1, &a2).0, args));
+            let args = (0..k).map(|i| atoms.get(i).cloned().unwrap_or(Term::V(0))).collect();
+            return Some(Plan::law(LawKind::Bitwise, a1, a2, args));
         }
     }
     // add-free terms with shifts: the per-position prover, when the law holds exhaustively at widths 1..=5 (a position
@@ -1614,45 +1699,36 @@ pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Te
             a.interp(w, &vals) == b.interp(w, &vals)
         }));
         if holds {
-            let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
-            return Some(apps(bitwise_law_k(n, k, a, b).0, args));
+            return Some(Plan::law(LawKind::Bitwise, a.clone(), b.clone(), vars(k)));
         }
     }
     // congruence on equal operators and generalizing a shared subterm into a variable were removed: neither decided a law
     // (docs/tier-cycle.md, "Ablating the fixed rewriter and prover parts")
-    if let Some(p) = shr_mask_eq(n, ops, goods, a, b) {
+    if let Some(p) = shr_mask_eq(n, k, a, b) {
         return Some(p);
     }
-    machine_fallback(n, goods, a, b)
+    machine_fallback(n, k, a, b)
 }
 
-/// The whole-term machine proof of `a = b` (the carry-encoding proof for the two terms as bit-serial machines, at the variables'
-/// values), counted in `MACHINE_FALLBACKS`; `None` when there is none.
-fn machine_fallback(n: usize, goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
-    let k = goods.len();
+/// The whole-term machine proof of `a = b` (the carry-encoding proof for the two terms as bit-serial machines), counted in
+/// `MACHINE_FALLBACKS`; `None` when there is none.
+fn machine_fallback(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     let cost = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
-    // scoring mode: only whether the rewriting needed this fallback matters, so count it without building the machine proof; a pair
-    // that is not equal fails here as it would in `add_tree_law` (else congruence on unequal operands would count two proofs); a
-    // few tuples suffice to tell, since unequal pairs differ almost everywhere
-    if SCORE_ONLY.with(|s| s.get()) && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap() {
-        if a.counterexample_in(b, n, k, 16).is_some() {
-            return None;
-        }
-        MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
-        return Some(var(0));
+    // scoring mode: only whether the rewriting needed this fallback matters, so count it without searching for the encoding (the
+    // plan may then not compile); a pair that is not equal fails here as it would in `tree_encoding` (else congruence on unequal
+    // operands would count two proofs); a few tuples suffice to tell, since unequal pairs differ almost everywhere
+    let screened = SCORE_ONLY.with(|s| s.get()) && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap();
+    if screened && a.counterexample_in(b, n, k, 16).is_some() || !screened && tree_encoding(n, k, a, b).is_none() {
+        return None;
     }
-    let law = add_tree_law(n, k, a, b)?;
     MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
-    let args = goods.iter().map(|g| g.0.clone()).chain(goods.iter().map(|g| g.1.clone())).collect();
-    Some(apps(law.0, args))
+    Some(Plan::law(LawKind::Tree, a.clone(), b.clone(), vars(k)))
 }
 
 /// `shr1 A = shr1 B` (or `0 = shr1 B`, as `shr1 0`) for machine-expressible `A`, `B`, without a lookahead machine: the
 /// bit-0 mask law `shr1 t = shr1 (t & M)`, `M = shl1 -1`, turns the pair into the shift-free law `A & M = B & M`
 /// (search note section 47).
-pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
-    let (vals, bv) = (goods.iter().map(|g| g.0.clone()).collect::<Vec<_>>(), bv_ty(n));
-    let ev = |t: &Term| t.eval(ops, n, &vals);
+pub fn shr_mask_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     let shr = |t: &Term| Term::Op(SHR1, Box::new(t.clone()), Box::new(Term::Zero));
     let (mask, one_arg) = (Term::Op(SHL1, Box::new(Term::Ones), Box::new(Term::Zero)), |t: &Term| match t {
         Term::Op(SHR1, x, _) if Machine::parse(x).is_some() => Some((**x).clone()),
@@ -1665,92 +1741,83 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
     let (x, y) = (one_arg(a)?, one_arg(b)?);
     // the pair `A & M`, `B & M`: rewrite both, close with `prove_eq` (a machine law when they stay arithmetic)
     let (ta, tb) = (Term::Op(AND, Box::new(x.clone()), Box::new(mask.clone())), Term::Op(AND, Box::new(y.clone()), Box::new(mask.clone())));
-    let ((r1, p1), (r2, p2)) = (rewrite(&ta, n, ops, goods), rewrite(&tb, n, ops, goods));
-    let mid = prove_eq(n, ops, goods, &r1, &r2)?;
-    let mid = trans_proof(&bv, &ev(&ta), &ev(&r1), &ev(&tb), p1, trans_proof(&bv, &ev(&r1), &ev(&r2), &ev(&tb), mid, sym(&bv, &ev(&tb), &ev(&r2), p2)));
-    let cong = cong_n(&bv, &bv, &ops[7], &[ev(&ta), ev(&Term::Zero)], &[ev(&tb), ev(&Term::Zero)], vec![mid, refl(ev(&Term::Zero))]);
+    let ((r1, p1), (r2, p2)) = (rewrite(&ta, n, k), rewrite(&tb, n, k));
+    let mid = prove_eq(n, k, &r1, &r2)?;
+    let cong = Plan::cong(SHR1, Plan::trans(p1, Plan::trans(mid, Plan::sym(p2))), Plan::refl(&Term::Zero));
     // `a = shr1 (A & M)` and `b = shr1 (B & M)`
-    let side_proof = |orig: &Term, arg: &Term| -> Option<Expr> {
+    let side_proof = |orig: &Term, arg: &Term| -> Option<PlanRc> {
         if matches!(orig, Term::Zero) {
             // `0 = shr1 0 = shr1 (0 & M)`: the second step is a congruence on `0 = 0 & M` by the rewriter
-            let (r, pr) = rewrite(&Term::Op(AND, Box::new(Term::Zero), Box::new(mask.clone())), n, ops, goods);
+            let (r, pr) = rewrite(&Term::Op(AND, Box::new(Term::Zero), Box::new(mask.clone())), n, k);
             if r != Term::Zero {
                 return None;
             }
-            let (target, step) = rule_step(n, &shr(&Term::Zero), goods)?;
+            let (target, step) = rule_step(&shr(&Term::Zero))?;
             if target != Term::Zero {
                 return None;
             }
-            let z = ev(&Term::Zero);
-            let and0 = Term::Op(AND, Box::new(Term::Zero), Box::new(mask.clone()));
-            let shr_and0 = shr(&and0);
-            // shr1 0 = shr1 (0 & M) by congruence on `0 = 0 & M` (sym of the rewrite proof)
-            let c = cong_n(&bv, &bv, &ops[7], &[z.clone(), z.clone()], &[ev(&and0), z.clone()], vec![sym(&bv, &ev(&and0), &z, pr), refl(z.clone())]);
-            let zero_to_shr0 = sym(&bv, &ev(&shr(&Term::Zero)), &z, step);
-            Some(trans_proof(&bv, &z, &ev(&shr(&Term::Zero)), &ev(&shr_and0), zero_to_shr0, c))
+            Some(Plan::trans(Plan::sym(step), Plan::cong(SHR1, Plan::sym(pr), Plan::refl(&Term::Zero))))
         } else {
-            let law = shared_lemma(|| format!("shrmask{n}"), || {
-                let (l, r) = (shr(&Term::V(0)), shr(&Term::Op(AND, Box::new(Term::V(0)), Box::new(Term::Op(SHL1, Box::new(Term::Ones), Box::new(Term::Zero))))));
-                prove_rule(n, 1, &l, &r).expect("shrmask law")
-            });
-            let w = witnessed(arg, n, goods);
-            Some(apps(law.0, vec![w.0, w.1]))
+            Some(Plan::law(LawKind::Rule("shrmask"), shr(&Term::V(0)), shr(&Term::Op(AND, Box::new(Term::V(0)), Box::new(mask.clone()))), vec![arg.clone()]))
         }
     };
     let (pa, pb) = (side_proof(a, &x)?, side_proof(b, &y)?);
-    let (sa, sb) = (shr(&ta), shr(&tb));
-    let first = trans_proof(&bv, &ev(a), &ev(&sa), &ev(&sb), pa, cong);
-    Some(trans_proof(&bv, &ev(a), &ev(&sb), &ev(b), first, sym(&bv, &ev(b), &ev(&sb), pb)))
+    Some(Plan::trans(Plan::trans(pa, cong), Plan::sym(pb)))
 }
 
-/// Proof of `t1 = t2` over two good vectors by rewriting both sides and closing with `prove_eq`; `None` when
-/// that cannot.
-pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
-    let ops = ops_for(n);
-    let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
-    let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
-    let ev = |t: &Term| t.eval(&ops, n, &vals);
-    let bv = bv_ty(n);
+/// The plan of `t1 = t2` over `k` variables: both sides rewritten, then closed with `prove_eq`; `None` when that cannot.
+pub fn rewrite_plan(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<PlanRc> {
     // an `lt` root (a one-bit result) is rewritten under its operands, then closed by congruence or, failing that,
     // by the `lt` machine proof for the rewritten pair; `lt` occurs only at the root
     let lt_roots = matches!((t1, t2), (Term::Op(LT, ..), Term::Op(LT, ..)));
-    let root = if lt_roots { bv_ty(1) } else { bv.clone() };
     // each side gets the whole `RULE_BUDGET`, so a side that cycles cannot leave the other half-normalized; afterwards the
     // budget is what the hungrier side left, so `RULE_BUDGET <= 0` still says some side used it up
     let budget0 = RULE_BUDGET.with(|b| b.get());
-    let ((r1, p1), left1) = (rewrite(t1, n, &ops, &goods), RULE_BUDGET.with(|b| b.replace(budget0)));
-    let (r2, p2) = rewrite(t2, n, &ops, &goods);
+    let ((r1, p1), left1) = (rewrite(t1, n, k), RULE_BUDGET.with(|b| b.replace(budget0)));
+    let (r2, p2) = rewrite(t2, n, k);
     RULE_BUDGET.with(|b| b.set(b.get().min(left1)));
-    let (r1, p1, r2, p2, mid) = if lt_roots {
+    let (p1, p2, mid) = if lt_roots {
         // `rewrite` normalizes the operands and applies the root rules; equal results close by `refl`, `lt` roots with
         // provable operands by congruence, the rest by the `lt` machine proof of the rewritten pair
         let mid = if r1 == r2 {
-            refl(ev(&r1))
+            Plan::refl(&r1)
         } else {
             let by_operands = if let (Term::Op(LT, a2, b2), Term::Op(LT, c2, d2)) = (&r1, &r2) {
-                match (prove_eq(n, &ops, &goods, a2, c2), prove_eq(n, &ops, &goods, b2, d2)) {
-                    (Some(pa), Some(pb)) => Some(cong_n(&bv, &root, &ops[5], &[ev(a2), ev(b2)], &[ev(c2), ev(d2)], vec![pa, pb])),
+                match (prove_eq(n, k, a2, c2), prove_eq(n, k, b2, d2)) {
+                    (Some(pa), Some(pb)) => Some(Plan::cong(LT, pa, pb)),
                     _ => None,
                 }
             } else {
                 None
             };
             match by_operands {
-                Some(proof) => proof,
-                None => machine_fallback(n, &goods, &r1, &r2)?,
+                Some(plan) => plan,
+                None => machine_fallback(n, k, &r1, &r2)?,
             }
         };
-        (r1, p1, r2, p2, mid)
+        (p1, p2, mid)
     } else {
-        match prove_eq(n, &ops, &goods, &r1, &r2) {
-            Some(mid) => (r1, p1, r2, p2, mid),
+        match prove_eq(n, k, &r1, &r2) {
+            Some(mid) => (p1, p2, mid),
             // the rewriter may have pushed the shifts down to atoms; the mask reduction applies to the original sides
-            None => (t1.clone(), refl(ev(t1)), t2.clone(), refl(ev(t2)), shr_mask_eq(n, &ops, &goods, t1, t2)?),
+            None => (Plan::refl(t1), Plan::refl(t2), shr_mask_eq(n, k, t1, t2)?),
         }
     };
-    let to_r2 = trans_proof(&root, &ev(t1), &ev(&r1), &ev(&r2), p1, mid);
-    let body = trans_proof(&root, &ev(t1), &ev(&r2), &ev(t2), to_r2, sym(&root, &ev(t2), &ev(&r2), p2));
-    let (mut proof, mut stmt) = (body, id(root.clone(), ev(t1), ev(t2)));
+    Some(Plan::trans(Plan::trans(p1, mid), Plan::sym(p2)))
+}
+
+/// Proof of `t1 = t2` over `k` good vectors: `rewrite_plan`, compiled. `None` when there is no plan.
+pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
+    let plan = rewrite_plan(n, k, t1, t2)?;
+    Some(law_proof(n, k, t1, t2, &plan))
+}
+
+/// The closed law `forall x.. gx... t1 = t2` proved by `plan`.
+pub fn law_proof(n: usize, k: usize, t1: &Term, t2: &Term, plan: &Plan) -> (Expr, Expr) {
+    let c = Compiler::new(n, k);
+    let bv = bv_ty(n);
+    let root = if matches!((t1, t2), (Term::Op(LT, ..), Term::Op(LT, ..))) { bv_ty(1) } else { bv.clone() };
+    let (mut proof, mut stmt) = (c.proof(plan).2, id(root, c.ev(t1), c.ev(t2)));
     for _ in 0..k {
         let g = app(good_bv(n), var(k as u32 - 1));
         (proof, stmt) = (lam(g.clone(), proof), pi(g, stmt));
@@ -1758,7 +1825,42 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
     for _ in 0..k {
         (proof, stmt) = (lam(bv.clone(), proof), pi(bv.clone(), stmt));
     }
-    Some((proof, stmt))
+    (proof, stmt)
+}
+
+/// One law per kind of step (assoc and comm, a rule, a constant carry, the carry-encoding search, a collapse, an `lt` root, the
+/// bit-0 mask): the plan is the same while counting (`SCORE_ONLY`) as while proving, its sides are the law's, and it compiles to
+/// a proof the kernel accepts.
+#[test]
+fn plans_compile_to_checked_proofs() {
+    let _scope = tatic::kernel::InternScope::enter();
+    let (v, z, ones) = (Term::V, Term::Zero, Term::Ones);
+    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+    let shr = |a: Term| op(SHR1, a, Term::Zero);
+    let laws = [
+        (op(ADD, op(ADD, v(2), v(0)), v(1)), op(ADD, v(1), op(ADD, v(0), v(2)))),
+        (op(SHL1, op(AND, v(0), v(1)), z.clone()), op(AND, op(SHL1, v(0), z.clone()), op(SHL1, v(1), z.clone()))),
+        (op(ADD, v(0), op(XOR, v(0), ones.clone())), ones.clone()),
+        (op(SUB, ones.clone(), v(1)), op(XOR, v(1), ones.clone())),
+        (op(OR, v(0), op(AND, v(0), v(1))), v(0)),
+        (op(LT, v(0), op(ADD, v(1), z.clone())), op(LT, v(0), v(1))),
+        (shr(op(ADD, v(0), v(0))), shr(op(SUB, op(ADD, v(0), v(0)), ones.clone()))),
+    ];
+    for (l, r) in &laws {
+        let k = l.max_var().max(r.max_var()) + 1;
+        let plans = [false, true].map(|counting| {
+            SCORE_ONLY.with(|s| s.set(counting));
+            rewrite_plan(4, k, l, r).unwrap_or_else(|| panic!("no plan for {} = {} (counting: {counting})", l.show(), r.show()))
+        });
+        SCORE_ONLY.with(|s| s.set(false));
+        let sides = plans.each_ref().map(|p| {
+            let (a, b, _) = Compiler::new(4, k).proof(p);
+            (a, b)
+        });
+        assert!(sides[0] == sides[1] && sides[0] == (l.clone(), r.clone()), "{} = {}", l.show(), r.show());
+        let (p, s) = law_proof(4, k, l, r, &plans[0]);
+        ck(&format!("{} = {}", l.show(), r.show()), &p, &s);
+    }
 }
 
 #[test]
@@ -1823,7 +1925,7 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
     let scopes = || PARAMS.with(|c| c.borrow().as_ref().map_or(0, |(_, b)| b.len()));
     let before = scopes();
     let (l, r) = (add(op(4, v(0), v(1)), v(2)), add(op(4, v(2), v(1)), v(0)));
-    let (pr, sr) = shared_lemma(|| "nested".into(), || prove_rule(2, 3, &l, &r).expect("rule"));
+    let (pr, sr) = shared_lemma("nested".into(),|| prove_rule(2, 3, &l, &r).expect("rule"));
     assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
     let all = apps(lam(sm.clone(), lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
     ck("discharged", &discharge(all), &sm);
@@ -1980,10 +2082,7 @@ fn growing_rewrite_chains_are_cut() {
 /// results the extra rule changes.
 #[test]
 fn filtered_memo_entries_hold_under_an_extra_rule() {
-    let _scope = tatic::kernel::InternScope::enter();
     let (n, kv) = (4, 3);
-    let ops = ops_for(n);
-    let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
     let terms: Vec<Term> =
         ["sub(sub(z, x), sub(y, z))", "add(sub(x, y), sub(add(y, z), x))", "sub(add(x, y), sub(z, x))", "or(sub(x, y), and(sub(x, y), z))"].iter().map(|s| parse_term(s)).collect();
     let base = parse_rules("sub(add(x, y), z) -> add(sub(x, z), y)\n");
@@ -1996,7 +2095,7 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
             .iter()
             .map(|t| {
                 RULE_BUDGET.with(|b| b.set(200));
-                (rewrite(t, n, &ops, &goods).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
+                (rewrite(t, n, kv).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
             })
             .collect();
         RULE_TRACE.with(|t| *t.borrow_mut() = None);

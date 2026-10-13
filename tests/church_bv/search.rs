@@ -754,8 +754,6 @@ pub fn rule_miner() {
     set_rule_prefs(base_prefs.clone());
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family_vars(&family) == 3 { 3usize } else { 2 });
-    let ops = ops_for(n);
-    let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
     let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
     // stragglers under the built-in rules
     let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
@@ -778,7 +776,7 @@ pub fn rule_miner() {
         let t = Instant::now();
         // base rules may loop; the step budget bounds them (the built-in rules never reach it)
         RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { cfg.steps as i64 }));
-        let r = rewrite_law(n, kv, &t1, &t2);
+        let r = rewrite_plan(n, kv, &t1, &t2);
         let took = t.elapsed();
         let fell = fallbacks() - before;
         // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
@@ -786,7 +784,7 @@ pub fn rule_miner() {
         let fell = if r.is_none() { fell.max(1) } else { fell };
         if r.is_none() || fell > 0 {
             RULE_BUDGET.with(|b| b.set(if base.is_empty() { i64::MAX / 2 } else { cfg.steps as i64 }));
-            let normal = [rewrite(&t1, n, &ops, &goods).0, rewrite(&t2, n, &ops, &goods).0];
+            let normal = [rewrite(&t1, n, kv).0, rewrite(&t2, n, kv).0];
             println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
             stragglers.push((name, t1, t2, normal, fell, took));
         } else {
@@ -1052,9 +1050,6 @@ pub fn rule_miner() {
     // preference phase drops some
     let base_now = std::sync::Mutex::new(base.clone());
     let score_laws = |extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
-        // built here so that worker threads (each with its own intern scope) do not share expressions
-        let ops = ops_for(n);
-        let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         set_extra_rules(base_now.lock().unwrap().iter().chain(extra).cloned().collect());
         set_rule_prefs(prefs.to_vec());
@@ -1072,7 +1067,7 @@ pub fn rule_miner() {
                     RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
                 }
                 let before = fallbacks();
-                let ok = rewrite_law(n, kv, &s.1, &s.2).is_some();
+                let ok = rewrite_plan(n, kv, &s.1, &s.2).is_some();
                 let fixed = ok && fallbacks() - before < s.4;
                 budget();
                 // the rule order's own measure: operator nodes first, then variable occurrences
@@ -1082,7 +1077,7 @@ pub fn rule_miner() {
                     let (c, a) = rule_weight(t);
                     (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
                 };
-                let size = if si < stragglers.len() { measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0) } else { 0 };
+                let size = if si < stragglers.len() { measure(&rewrite(&s.1, n, kv).0) + measure(&rewrite(&s.2, n, kv).0) } else { 0 };
                 let mut seen: std::collections::HashSet<Term> = Default::default();
                 let trace: Vec<Term> = RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(t.clone())).collect();
                 (fixed, size, trace)
@@ -1227,9 +1222,8 @@ pub fn rule_miner() {
         let Some(i) = winner else { return vec![] };
         let g = results[i].as_ref().unwrap().0;
         // the winner's left side with another right side: same affected laws, proved only if it would win
-        // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`; the rewritten terms do not
-        // depend on the proofs): building an unprovable rival's proof as it fired panicked (`sub(x, shl1(x, 0)) -> sub(shr1(0,
-        // 0), x)` once the promoted rules are out)
+        // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`); scoring compiles no plans, so an
+        // unprovable rival (`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)` once the promoted rules are out) is never proved
         let mut memo = RewriteMemo::new(kv);
         let mut rival: Option<((Term, Term), i64)> = None;
         for rv in rivals.get(&provable[i].0).into_iter().flatten() {
@@ -1723,11 +1717,11 @@ pub fn lt_borrow_bit_probe() {
         let (l, r) = (parse_term(l), parse_term(r));
         let fall = || MACHINE_FALLBACKS.with(|c| c.get());
         let before = fall();
-        let direct = rewrite_law(4, 2, &l, &r).is_some();
+        let direct = rewrite_plan(4, 2, &l, &r).is_some();
         let direct_fell = fall() - before;
         let (bl, br) = (b(1, borrow(&l), top.clone()), b(1, borrow(&r), top.clone()));
         let before = fall();
-        let via = rewrite_law(4, 2, &bl, &br).is_some();
+        let via = rewrite_plan(4, 2, &bl, &br).is_some();
         println!("BORROW {} = {}: lt form proved={direct} machine proofs {direct_fell}; borrow form proved={via} machine proofs {}", l.show(), r.show(), fall() - before);
     }
 }
@@ -2027,7 +2021,7 @@ pub fn three_var_probe() {
             continue;
         }
         let before = MACHINE_FALLBACKS.with(|c| c.get());
-        match rewrite_law(4, 3, a, b) {
+        match rewrite_plan(4, 3, a, b) {
             Some(_) => {
                 let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
                 ok += 1;
@@ -2077,15 +2071,13 @@ pub fn normal_forms() {
     TRACE_RULES.store(std::env::var("NF_TRACE").is_ok(), std::sync::atomic::Ordering::Relaxed);
     RULE_BUDGET.with(|b| b.set(200));
     let (n, k) = (4, 3);
-    let ops = ops_for(n);
-    let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
     for line in std::fs::read_to_string(std::env::var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
         let (a, b) = line.split_once(" = ").unwrap();
         let (a, b) = (parse_term(a), parse_term(b));
         // each side with its own budget, as in `rewrite_law`; `steps` is what each used (200 or more: it used the budget up)
         let side = |t: &Term| {
             RULE_BUDGET.with(|c| c.set(200));
-            (rewrite(t, n, &ops, &goods).0, 200 - RULE_BUDGET.with(|c| c.get()))
+            (rewrite(t, n, k).0, 200 - RULE_BUDGET.with(|c| c.get()))
         };
         let ((na, sa), (nb, sb)) = (side(&a), side(&b));
         let carries = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
@@ -2147,15 +2139,16 @@ pub fn rule_set_kernel_check() {
     for (name, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
         let before = MACHINE_FALLBACKS.with(|c| c.get());
-        let r = rewrite_law(4, kv, t1, t2);
+        let r = rewrite_plan(4, kv, t1, t2);
         // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
         if RULE_BUDGET.with(|b| b.get()) <= 0 {
             exhausted += 1;
             println!("EXHAUSTED {name}");
         }
         match r {
-            Some((p, s)) => {
+            Some(plan) => {
                 if !fast {
+                    let (p, s) = law_proof(4, kv, t1, t2, &plan);
                     ck(name, &p, &s);
                 }
                 proved += 1;
@@ -2174,13 +2167,12 @@ pub fn rule_set_kernel_check() {
         return;
     }
     // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
-    let (ops, goods): (_, Vec<(Expr, Expr)>) = (ops_for(4), (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect());
     let (mut same, mut total) = (0, 0);
     for (_, t1, t2) in &laws {
         RULE_BUDGET.with(|b| b.set(200));
-        let n1 = rewrite(t1, 4, &ops, &goods).0.show();
+        let n1 = rewrite(t1, 4, kv).0;
         RULE_BUDGET.with(|b| b.set(200));
-        let n2 = rewrite(t2, 4, &ops, &goods).0.show();
+        let n2 = rewrite(t2, 4, kv).0;
         total += 1;
         same += (n1 == n2) as u32;
     }
@@ -2362,7 +2354,7 @@ impl Cost {
 pub fn law_cost(kv: usize, t1: &Term, t2: &Term) -> Cost {
     RULE_BUDGET.with(|b| b.set(200));
     let before = MACHINE_FALLBACKS.with(|c| c.get());
-    let proved = rewrite_law(4, kv, t1, t2).is_some();
+    let proved = rewrite_plan(4, kv, t1, t2).is_some();
     Cost { fallbacks: MACHINE_FALLBACKS.with(|c| c.get()) - before, steps: 200 - RULE_BUDGET.with(|b| b.get()), proved }
 }
 

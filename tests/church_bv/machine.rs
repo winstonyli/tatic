@@ -325,61 +325,74 @@ thread_local! {
     /// `add_tree_law` results (a closed proof, or none) by width, variable count and the two terms: the rewriter asks for the same
     /// pair again for every law and every mined candidate that reaches the same subterm.
     static TREE_LAWS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<(Expr, Expr)>>> = Default::default();
+    /// `tree_encoding` results past its cheap screens, by the same key.
+    static TREE_ENCS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<std::rc::Rc<TreeEnc>>>> = Default::default();
 }
 
-/// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
-/// `moore_encoding` (first over all carry states, then over the reachable ones); `None` when there is none.
-pub fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
-    let key = (n, k, t1.clone(), t2.clone());
-    if let Some(hit) = TREE_LAWS.with(|c| c.borrow().get(&key).cloned()) {
-        return hit;
-    }
-    let law = add_tree_law_uncached(n, k, t1, t2);
-    // counting only (`SCORE_ONLY`), the law's case lemmas are placeholders (`shared_lemma`): not a proof to reuse
-    if !SCORE_ONLY.with(|s| s.get()) {
-        TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.clone()));
-    }
-    law
+/// What `tree_encoding` found for a pair: the carry encoding, and the reachable carry states it holds over (`None`: all of them).
+pub struct TreeEnc {
+    enc: Encoding,
+    inv: Option<Reach>,
 }
 
-fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
+/// Whether `t1 = t2` (two sum trees of add-free leaves over `k` good vectors) has a carry encoding, and which: found by
+/// `moore_encoding`, first over all carry states, then over the reachable ones; `None` when there is none. Builds no kernel terms.
+pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::rc::Rc<TreeEnc>> {
+    // the cheap screens are not cached: most of `tree_step`'s candidates stop here
     if !t1.plausibly_equals(t2, n, k) {
         return None;
     }
     let (m1, m2) = (Machine::parse(t1)?, Machine::parse(t2)?);
-    let last = m1.last();
-    if last != m2.last() {
+    if m1.last() != m2.last() {
         return None;
     }
     let cs = [m1.carries(), m2.carries()];
-    if cs[0].max(cs[1]) > carry_cap() {
+    if cs[0].max(cs[1]) > carry_cap() || cs[0] + cs[1] == 0 {
         return None;
     }
-    if cs[0] + cs[1] == 0 {
-        return None;
+    let key = (n, k, t1.clone(), t2.clone());
+    if let Some(hit) = TREE_ENCS.with(|c| c.borrow().get(&key).cloned()) {
+        return hit;
     }
     let attempt = |reach: Option<&Reach>| moore_encoding(&m1, &m2, k, reach);
     // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
     let t_all = Instant::now();
     let first = attempt(None);
     PROF[if first.is_some() { 0 } else { 1 }].fetch_add(t_all.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-    let (enc, inv): (Encoding, Option<Reach>) = match first {
-        Some(e) => (e, None),
+    let found = match first {
+        Some(enc) => Some(TreeEnc { enc, inv: None }),
+        // guarded lemmas are still case trees over k + c bits, so they keep the old cap
+        None if cs[0].max(cs[1]) > 6 => None,
         None => {
-            // guarded lemmas are still case trees over k + c bits, so they keep the old cap
-            if cs[0].max(cs[1]) > 6 {
-                return None;
-            }
             let t_reach = Instant::now();
             let r = [reachable(&raw_table(&m1, k)), reachable(&raw_table(&m2, k))];
-            if r.iter().all(|v| v.iter().all(|x| *x)) {
-                return None;
-            }
-            let second = attempt(Some(&r));
+            let second = if r.iter().all(|v| v.iter().all(|x| *x)) { None } else { attempt(Some(&r)) };
             PROF[2].fetch_add(t_reach.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-            (second?, Some(r))
+            second.map(|enc| TreeEnc { enc, inv: Some(r) })
         }
-    };
+    }
+    .map(std::rc::Rc::new);
+    TREE_ENCS.with(|c| c.borrow_mut().insert(key, found.clone()));
+    found
+}
+
+/// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, from their carry encoding (`tree_encoding`);
+/// `None` when there is none.
+pub fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
+    let key = (n, k, t1.clone(), t2.clone());
+    if let Some(hit) = TREE_LAWS.with(|c| c.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let law = tree_encoding(n, k, t1, t2).map(|found| tree_proof(n, k, t1, t2, &found));
+    TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.clone()));
+    law
+}
+
+fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Expr, Expr) {
+    let (m1, m2) = (Machine::parse(t1).expect("a machine"), Machine::parse(t2).expect("a machine"));
+    let last = m1.last();
+    let cs = [m1.carries(), m2.carries()];
+    let (enc, inv) = (&found.enc, &found.inv);
     let gops = GoodOps::new();
     let m = enc.phi[0].len();
     // with a root `lt`: the final result as a function `dec` of the phi values
@@ -424,7 +437,7 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
         if CLOSED.with(|c| c.borrow().contains_key(&key)) {
             LEMMA_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        shared_lemma(|| key, || {
+        shared_lemma(key, || {
             let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
             let body = |v: &[Expr]| {
                 let (a, b) = ab(v);
@@ -554,12 +567,12 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
         (s1, s2, e, st, ip, hy)
     };
     if !last {
-        return Some(k_var_law(n, k, t1, t2, &|bits, goods| {
+        return k_var_law(n, k, t1, t2, &|bits, goods| {
             let (s1, s2, e, ..) = core(bits, goods);
             (s1, s2, e)
-        }));
+        });
     }
-    Some(k_var_law_to(n, k, &bv_ty(1), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
+    k_var_law_to(n, k, &bv_ty(1), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
         let (.., st, ip, hy) = core(bits, goods);
         let bl = bool0();
         let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e.clone()).collect() };
@@ -584,7 +597,7 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
         let whole = trans_proof(&bl, &end(0), &dl, &end(1), inst(0), mid);
         let fbody = lam(bl.clone(), lam(sort(1), lam(karrow(1), app(var(0), var(2)))));
         cong_n(&bl, &bv_ty(1), &fbody, &[end(0)], &[end(1)], vec![whole])
-    }))
+    })
 }
 
 #[test]

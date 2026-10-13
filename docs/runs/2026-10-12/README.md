@@ -30,3 +30,4 @@ and libraries (43 MB) were not kept.
 | `npit0_*`-`npit3_*` | the same, `ABLATE=promoted` | `iterate_np.sh` | "From `ABLATE=promoted`" |
 | `sq_head_*`, `sq_streq_*` | 22b9280 against structural term equality (before the drop-matching fix), same load | `streq_pair.sh` | "Structural term equality" |
 | `pl_head_*`, `pl_plain_*` | 2bf9c7a against e49535f (decisions by plain Booleans), same load | `plain_pair.sh` | "Decisions that read kernel terms" |
+| `pp_plain_*`, `pp_plans_*` | e49535f against proof plans, same load | `plans_pair.sh` | "Proof plans" |
