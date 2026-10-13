@@ -910,7 +910,14 @@ preferences and all 27 rule and unit files identical on both salts; no proof fai
 - What would recover it: keep each winner's verdict across the sweep's processes, as the lemma file keeps lemmas. The
   verdict depends on what the proof may use (the base rules and preferences, the step budget), so the key must hold
   those, or the choice could change. Whether the repeats share those inputs (pooled loops share a base; an `own` loop's
-  batches grow theirs) is not yet counted. Not tried.
+  batches grow theirs) is not yet counted (next item).
+- Negative result: they almost never do. A temporary probe (reverted, no patch kept) printed a hash of each own/pooled mine's
+  proof inputs: its base rules, preferences and step budget. A salt-1 sweep at a8259d0 gave 67 chosen rules: 34 distinct
+  rules, but 64 distinct (inputs, rule) pairs across 32 distinct inputs. Only 3 proofs repeat with the same inputs, so a
+  verdict cache keyed exactly would save about 3 of the 65 proofs. Not built. Getting the rest would mean keying a verdict
+  by the rule alone. That is sound, since a proved rule is a true law, but it could change a choice where a rule is provable
+  under one base and not another. No such case has been seen (no winner proof has failed in a sweep), but a pair sweep would
+  have to show identical output.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
