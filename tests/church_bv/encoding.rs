@@ -227,6 +227,25 @@ pub fn run(n: usize) {
     }
 }
 
+/// `table_app`'s memo (keyed on the truth table) gives one closed lambda for one truth table however the table is given, a
+/// different one for another table, and the right values. (Hash-consing makes a rebuilt lambda pointer-equal too, so this
+/// checks the key, not that the memo is hit; the speed is in docs/tier-cycle.md, "Truth tables built once".)
+#[test]
+fn table_bodies_are_shared_per_truth_table() {
+    let _s = tatic::kernel::InternScope::enter();
+    let head = |e: &Expr| match e {
+        Expr::App(h, _) => h.clone(),
+        _ => panic!("table_app is an application"),
+    };
+    let (a, b) = (table_app(&[t(), f()], &|v| v[0] != v[1]), table_app(&[f(), f()], &|v| v.iter().filter(|x| **x).count() == 1));
+    assert!(tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&b))));
+    let c = table_app(&[t(), f()], &|v| v[0] && !v[1]);
+    assert!(!tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&c))));
+    for (e, want) in [(&a, true), (&b, false), (&c, true)] {
+        assert_eq!(tatic::kernel::normalize(e), bit(want));
+    }
+}
+
 /// A cached gate is the table's node in its scope (a fresh build interns to the same children), shared between uses, and
 /// rebuilt in a new scope.
 #[test]
@@ -1920,19 +1939,45 @@ pub fn tab_bdd(nv: usize, tab: &dyn Fn(&[bool]) -> bool) -> TabBdd {
 }
 
 /// A truth table over `vars` as a closed lambda applied to them (so large argument expressions are not duplicated
-/// once per row), whose body is the table's reduced decision diagram as nested `mux`es.
+/// once per row), whose body is the table's reduced decision diagram as nested `mux`es. The closed lambda is built once per
+/// truth table, interning generation and thread (as `constant` is): a case tree states the same tables at every leaf.
 pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
+    thread_local! {
+        static BODIES: std::cell::RefCell<(u32, std::collections::HashMap<Vec<bool>, Expr>)> = Default::default();
+    }
     let k = vars.len();
-    let d = tab_bdd(k, tab);
-    let bv: Vec<Expr> = (0..k).map(|i| var((k - 1 - i) as u32)).collect();
-    let mut exprs: Vec<Expr> = vec![f(), t()];
-    for &(level, hi, lo) in &d.nodes {
-        exprs.push(mux(bv[level].clone(), exprs[hi].clone(), exprs[lo].clone()));
-    }
-    let mut body = exprs[d.root].clone();
-    for _ in 0..k {
-        body = lam(bool0(), body);
-    }
+    // rows in `index_of` order (first variable most significant)
+    let mut b = vec![false; k];
+    let rows: Vec<bool> = (0..1usize << k)
+        .map(|i| {
+            for (j, x) in b.iter_mut().enumerate() {
+                *x = i >> (k - 1 - j) & 1 == 1;
+            }
+            tab(&b)
+        })
+        .collect();
+    let g = tatic::kernel::intern_generation();
+    let hit = BODIES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != g {
+            *c = (g, Default::default());
+        }
+        c.1.get(&rows).cloned()
+    });
+    let body = hit.unwrap_or_else(|| {
+        let d = tab_bdd(k, &|b| rows[b.iter().fold(0, |a, x| a * 2 + *x as usize)]);
+        let bv: Vec<Expr> = (0..k).map(|i| var((k - 1 - i) as u32)).collect();
+        let mut exprs: Vec<Expr> = vec![f(), t()];
+        for &(level, hi, lo) in &d.nodes {
+            exprs.push(mux(bv[level].clone(), exprs[hi].clone(), exprs[lo].clone()));
+        }
+        let mut body = exprs[d.root].clone();
+        for _ in 0..k {
+            body = lam(bool0(), body);
+        }
+        BODIES.with(|c| c.borrow_mut().1.insert(rows, body.clone()));
+        body
+    });
     apps(body, vars.to_vec())
 }
 

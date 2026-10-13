@@ -46,6 +46,7 @@ and libraries (43 MB) were not kept.
 | `dds_head_*`, `dds_dd_*` | 84242e0 against case trees at nv = 9 (`DDMIN` default 10), one run at a time | `dd_seq.sh` | "Case trees at nv = 9" |
 | `mos_head_*`, `mos_new_*` | 50ba04f (as the prototype with `OLDMOTIVE=1`) against one shared motive per case tree, one run at a time | `mot_seq.sh` | "One motive for a case tree" |
 | `nds_head_*`, `nds_new_*` | 5f65267 (as `bv_wide.exe`: HEAD plus an appended ignored probe test) against the decision-diagram path deleted, one run at a time | `nodd_seq.sh` | "Decision diagrams deleted" |
+| `tbs_head_*`, `tbs_new_*` | 51cd960 (as the prototype with `NOTABMEMO=1`) against truth tables built once per generation, one run at a time | `tab_seq.sh` | "Truth tables built once" |
 | `cap/*.txt` | `mul_conjecture_miner` (`MULMINER_MAX=7`) on 5f65267 (old) against 0cb4e6c (head), one run at a time | `cap_ab.sh` | "Decision diagrams deleted" |
 | (no rows) | samply profile of `proof_cost_split` at 0cb4e6c (profile not kept) | `prof_cases.py` | "Where the case lemmas' time goes" |
 | (no rows) | `proof_cost_split` CPU-time A/B with the `LEAFV` leaf prototype (reverted, no patch kept) | `cpu_ab.ps1` | "Leaves that state the computed bit" |

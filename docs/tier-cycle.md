@@ -1018,6 +1018,43 @@ profile itself is not kept).
 - Not yet tried: building each table's diagram once per lemma rather than once per leaf; building the leaves from a cheaper
   statement. Leaves stating a precomputed bit did not help (above), because the kernel still normalizes both sides.
 
+**Truth tables built once (2026-10-13).** `table_app` now builds its closed lambda once per truth table, interning generation
+and thread, as `constant` does for the gates; the key is the table's rows, so `tab_bdd` and the `mux` nodes are built only on
+a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same node). Check:
+`table_bodies_are_shared_per_truth_table`.
+- `proof_cost_split` (cmp3d, 37-rule own library, 300 laws), process CPU time over 6 alternating pairs with a temporary
+  `NOTABMEMO` switch (removed; `scripts/cpu_ab.ps1`, CPU 20% at launch, RTP off): the memo won all 6, 8.61-9.64 s (best 8.61)
+  against 9.53-10.70 s (best 9.53), about 10%; rule-proof build 6.3-7.2 s against 7.2-8.0 s.
+- Sequential pair against 51cd960 (`scripts/tab_seq.sh`, rows `tbs_*`; the head side is the prototype with `NOTABMEMO=1`;
+  CPU 17% at launch, RTP off): rows, preferences and all 27 rule and unit files identical on both salts. Wall 31 against 30 s
+  (salt 1) and 32 against 30 s (salt 2): the sweeps' proof work is too small a share for 10% of it to show.
+
+**What else could be memoized (survey, 2026-10-13).** From the profile above and the code:
+- *The side machines' step at each leaf, across a tree's lemmas.* `tree_proof` states m + 1 F lemmas per side (output and
+  each next phi bit) over the same k + c bits, and each leaf of each recomputes `Machine::step` over `GoodOps` at its literal
+  bits, then the phi tables of the next carries. One `(side, bits) -> (out, next)` memo per `tree_proof` would build each
+  step once instead of m + 1 times. Building leaves was 32% of lemma time, `table_app` included; open what is left now.
+- *Normal forms of closed terms across `def_eq` calls (kernel).* `ReductionCache` lives for one top-level `def_eq`/`whnf`/
+  `nf` call (`src/kernel.rs` near 1424), so every leaf renormalizes the same closed gate applications (`and` of two literal
+  bits, say). A cache keyed by canonical pointer, per interning generation, for closed terms would collapse them. Reduction
+  is context-free for closed terms, so it is sound, but it touches the trusted kernel. Gain unmeasured: first count distinct
+  canonical closed `App` nodes normalized per lemma.
+- Smaller: `GoodOps::new` per `tree_proof` (rebuilds three `good2` proofs; not visible in the profile); the guarded leaves'
+  `hty` and `inv_expr` (now hit the table memo).
+
+**Interning in the kernel's reduction (survey, 2026-10-13; read-only, a subagent's report checked at the cited lines).** The
+hash-cons table (`mod hc`, `src/kernel.rs` near 828) already uses a pointer hash (`PtrHasher`) and shallow keys (child
+pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Open options, most promising first:
+1. `args_id` (near 1136) re-interns every argument of every `instantiate_n` (`intern((*a).clone(), None)`, a clone and a
+   probe) although `beta_spine`/`whnf_step` hold canonical `Rc`s; taking `&Rc<Expr>` and skipping canonical ones removes
+   that. `args_id` was 11-14% inclusive of lemma time; "Hash-consing cost" estimated at most about 7%.
+2. `inst_rec`'s per-child work makes up to four separate `TABLE.with` borrows (`uses`, `inst_get`, `intern`, `inst_put`);
+   fusing them saves TLS and `RefCell` traffic. Inside `hc` only; gain unmeasured.
+3. Pre-reserve `nodes`, `inst`, `uses` when the table switches on: `reserve_rehash` was 5-9%. One line per map.
+4. The closed-term normal-form cache above.
+5. A separate, non-interning normalizer for closed Bool terms: largest change, adds to the trusted base; last.
+Minor: `arg_sets` still uses SipHash (`Vec<usize>` keys).
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
