@@ -23,7 +23,6 @@ type BitTriple = (Vec<Expr>, Vec<Expr>, Vec<Expr>);
 /// Output bits of a circuit from the two operands' bits.
 type BitsDyn = dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
 type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
-type DdBuild<'a> = &'a dyn Fn(&DdGates, &[Sig]) -> (Sig, Sig);
 
 // The allocator `main.rs` ships with: the lib's own `#[global_allocator]` is
 // `#[cfg(test)]`, so without this these timings ran on the system heap.

@@ -316,7 +316,7 @@ pub fn prove_checked(n: usize, nv: usize, name: &str, t1: &Term, t2: &Term) -> T
     Tried { verdict, law: law_time, check: std::time::Duration::ZERO }
 }
 
-/// The most carries per side `add_tree_law` takes on (unguarded lemmas are decision diagrams, guarded ones case trees over `k + carries` bits); env `CARRY_CAP`.
+/// The most carries per side `add_tree_law` takes on (its lemmas are case trees over `k + carries` bits); env `CARRY_CAP`.
 pub fn carry_cap() -> usize {
     env_or("CARRY_CAP", 10)
 }
@@ -416,23 +416,11 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
             _ => phi_expr(side, j - 1, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()),
         }
     };
-    // the same functions over diagram signals (F_j of a side, and G_j at the operand bits and the phi values)
-    let phi_sig = |g: &DdGates, side: usize, j: usize, s: &[Sig]| g.table(s, &|b| enc.phi[side][j][index_of(b)]);
-    let side_sig = |g: &DdGates, side: usize, j: usize, v: &[Sig]| -> Sig {
-        let (o, next) = machines[side].step(g, &v[..k], &v[k..]);
-        match j {
-            0 => o,
-            _ => phi_sig(g, side, j - 1, &next),
-        }
-    };
     let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
-    // diagrams pay off only once the case tree is big (2^nv leaves); below that their per-node proofs cost more. At nv = 9 a
-    // diagram lemma costs 2-5x its case tree (docs/tier-cycle.md, "Case trees at nv = 9"); no lemma seen so far is wider
-    let dd_min: usize = env_or("DDMIN", 10);
-    let use_dd = |nv: usize| inv.is_none() && std::env::var("NOBDD").is_err() && nv >= dd_min;
-    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr), dd: DdBuild| -> Expr {
+    // decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle.md, "Decision diagrams deleted")
+    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &dyn Fn(&[Expr]) -> (Expr, Expr)| -> Expr {
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
         let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
         if CLOSED.with(|c| c.borrow().contains_key(&key)) {
@@ -449,10 +437,6 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
             if inv.is_some() && std::env::var("GUARDTRACE").is_ok() {
                 eprintln!("GUARDED lemma nv={nv} tag={tag}");
             }
-            if use_dd(nv)
-                && let Some(e) = lemma_dd(nv, dd) {
-                    return (e, ty);
-                }
             let leaf = |bits: &[bool]| {
                 let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
                 let (a, b) = ab(&lits);
@@ -476,9 +460,6 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
                     guarded(side, k + cs[side], k, &format!("F{j}|{:?}", enc.g[j]), &|v| {
                         let key: Vec<Expr> = v[..k].iter().cloned().chain((0..m).map(|q| phi_expr(side, q, &v[k..]))).collect();
                         (side_f(side, j, v), g_expr(j, &key))
-                    }, &|g, v| {
-                        let key: Vec<Sig> = v[..k].iter().cloned().chain((0..m).map(|q| phi_sig(g, side, q, &v[k..]))).collect();
-                        (side_sig(g, side, j, v), g.table(&key, &|b| enc.g[j][index_of(b)]))
                     })
                 })
                 .collect()
@@ -494,7 +475,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
                 let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
                 let next = machines[side].step(&gops, &dummy[..k], &dummy[k..]).1;
                 (inv_expr(side, &next.iter().map(|g| g.e.clone()).collect::<Vec<_>>()), t())
-            }, &|_, v| (v[0].clone(), v[0].clone()))
+            })
         })
         .collect();
     let dec_expr = |v: &[Expr]| table_app(v, &|b| dec[index_of(b)]);
@@ -504,9 +485,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
             if !last {
                 return t();
             }
-            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())), &|g, v| {
-                (v[cs[side] - 1].clone(), g.table(&(0..m).map(|q| phi_sig(g, side, q, v)).collect::<Vec<_>>(), &|b| dec[index_of(b)]))
-            })
+            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
@@ -1479,7 +1458,7 @@ pub fn mul_conjecture_miner() {
 }
 
 /// Ablation audit (search note section 32): for each mul law, what a lemma-finding search would have to invent. The
-/// proof's lemmas `Id(F_j, G_j(bits, phi(carries)))` are decided by the diagram prover once the midpoint (the phi
+/// proof's lemmas `Id(F_j, G_j(bits, phi(carries)))` are decided by case analysis once the midpoint (the phi
 /// encodings and the tables `g`) is given, and the midpoint is the coarsest bisimulation, found by `moore_encoding`.
 /// Prints per law: carries per side, states, classes, phi bits, table bits of `g`, the Moore time, the total time.
 #[test]
@@ -1510,10 +1489,3 @@ pub fn ablation_audit() {
     }
     println!("AUDIT {n_laws} laws, Moore {:.1}s of {:.1}s proof time", moore_ns as f64 / 1e9, total_ns as f64 / 1e9);
 }
-
-// ---- Proof-producing decision diagrams (search note section 29). Each lemma over `nv` bits used to be a full case
-// tree (2^nv leaves). Here every signal carries a reduced ordered decision diagram node `n` and a kernel proof
-// `Id(e, C(n))` that its gate expression equals the node's canonical term `C(n)` (nested `mux` over the bit variables),
-// built gate by gate: `op(C(a), C(b)) = C(apply(op, a, b))` is proved by recursion on the diagrams (Harrison's BDD rule
-// for HOL, 1995), each step an instance of a closed lemma, memoized per node pair. Two signals have the same node iff
-// they are the same Boolean function, so an equality lemma is `trans` of one proof with the `sym` of the other.

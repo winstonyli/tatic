@@ -267,7 +267,8 @@ fell from 8.6M to 2.0M (sbo3) and from 69M to 17.3M (cmp3d).
 
 The rest of cmp3d's builder cost is mostly `lemma_dd` (11.0M): `cong_n` and `trans_proof` shift the J motive at every node of a
 decision diagram. Parked: removing it needs a different proof shape (for example a closed `cong_mux` lemma used as a parameter), and
-these shifts are cheap in time (below), so it would change the visit count more than the run time.
+these shifts are cheap in time (below), so it would change the visit count more than the run time. Moot since 2026-10-13: the
+diagram path is deleted ("Decision diagrams deleted").
 
 Kernel work with parameters as the only path and the new `bool0` (same 300-law windows; M and law-check visits identical to the
 "on" columns above):
@@ -302,7 +303,7 @@ of visits with lemma counts in parentheses):
   But `proof_cost_split` (normal build, own library, pinned to two cores, five alternating runs each, machine load 7-66% from another
   program, so best-of) takes 52.2 s CPU with case trees against 47.1 s with diagrams: building 2^nv-leaf trees costs time the
   visit count does not see. Diagrams stay (`DDMIN=9`). Reversed on 2026-10-13: case trees are now faster at nv = 9 ("Case
-  trees at nv = 9").
+  trees at nv = 9"), and at nv = 11 no slower; the diagrams are deleted ("Decision diagrams deleted").
 - **Shift visits are cheap.** The `bool0` fix removed 2-3x of the build visits but did not change time (same runs: sbo3 5.7-6.8 s old,
   5.5-6.3 s new; cmp3d 47.5-49.0 s old, 47.1-51.9 s new). So the visit count overweights `shift` and misses term construction; as
   a cost for the miner's objective it needs weights (or construction counts, `take_hc_built`) checked against time first.
@@ -955,7 +956,7 @@ plus check) by nv and by whether a diagram proved it (`lemma_dd`, used at `nv >=
 - That reverses the 2026-10-10 measurement above (diagrams 47.1 s CPU against 52.2 s for case trees), which kept `DDMIN=9`.
   Since then the case trees got cheaper relative to the diagrams; why was not traced. No lemma wider than nv = 9 occurred in
   these sweeps or in `proof_cost_split`, so the threshold is now `DDMIN=10`. At that setting the diagrams prove nothing seen
-  so far. They stay for wider lemmas, where a case tree has 2^nv leaves, but at those sizes they are unmeasured.
+  so far. They stayed for wider lemmas until measured there and deleted ("Decision diagrams deleted").
 - Sequential pair against 84242e0 (`scripts/dd_seq.sh`, rows `dds_*`; CPU 33% at launch from other sessions, RTP off):
   rows, preferences and all 27 rule and unit files identical on both salts. Wall 45 against 51 s (salt 1) and 27 against
   36 s (salt 2); summed `own` mine time 7.7 against 15.8 s and 3.8 against 4.1 s.
@@ -974,6 +975,27 @@ kernel: a node's branch types are `P` applied to literals, which beta-reduce to 
   `OLDMOTIVE=1`, which runs HEAD's motives; CPU 22% at launch, RTP off): rows, preferences and all 27 rule and unit files
   identical on both salts. Wall 25 against 31 s (salt 1) and 23 against 24 s (salt 2); summed `own` mine time 4.9 against
   8.1 s and 2.9 against 3.2 s.
+
+**Leaves that state the computed bit (negative, reverted, no patch kept, 2026-10-13).** A case-tree leaf proves `Id(a, b)`
+at fixed bits with `refl(a)`, so the kernel normalizes the gate terms `a` and `b` and compares them. A prototype (`LEAFV=1`)
+gave the leaf `refl(bit(v))`, with `v` the value computed outside the kernel, hoping the conversion would be cheaper.
+- Computing `v` with the kernel's `normalize` was slower: `normalize` alone took about 3.2 s over about 36k leaves.
+- Computing `v` in plain Booleans (`Bools` through the side machine, F lemmas only), `proof_cost_split` (cmp3d, the 37-rule
+  own library, 300 laws): wall won 7 of 10 alternating pairs, best 7.23 against 8.48 s, medians about 8.8 against 9.5 s, CPU
+  about 22% from other sessions. Process CPU time over 6 alternating pairs (`scripts/cpu_ab.ps1`) was mixed, best 9.41 against
+  9.52 s. The kernel still normalizes both `a` and `b` against the literal, so the leaf's work barely changes. Not kept.
+
+**Decision diagrams deleted (2026-10-13).** After "Case trees at nv = 9" the diagram path (`lemma_dd`, `DdGates`, `Dd`, `Sig`,
+the `DdLemmas` and `good_mux`; `DDMIN`, `NOBDD`) ran only at nv >= 10, which no workload reaches. To measure it there, a probe
+(reverted, no patch kept) proved three 4-variable laws with `add_tree_law(4, 4, ..)`, each substituting into the nv = 9 law
+above (`lt(sub(x, y), add(sub(x, add(shl1(x, 0), y)), add(z, u)))`, the same with `sub(z, u)`, and
+`lt(sub(x, add(y, u)), ..)`): 7 carries on each side, so lemmas at nv = 11, unguarded. Three runs each, same load:
+diagrams 18.9-31.2 s per law, case trees 18.0-29.0 s. No gain at nv = 11 either, so the path is deleted; every case lemma is
+now a `lemma_n` case tree. Also gone: the `Gates::table` method (only the diagram used it) and the diagram test (74 tests
+remain). `CARRY_CAP` (10) still bounds the trees at 2^(k + 10) leaves.
+- Sequential pair against 5f65267 (`scripts/nodd_seq.sh`, rows `nds_*`; CPU 40% at launch from other sessions, RTP off):
+  rows, preferences and all 27 rule and unit files identical on both salts, as expected, since no lemma reached nv = 10.
+  Wall 29 against 31 s (salt 1) and 34 against 29 s (salt 2): no change beyond noise.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

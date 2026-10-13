@@ -1992,22 +1992,6 @@ pub fn assoc_g(which: usize, v: &[Expr]) -> Expr {
     table_expr(v, &|bits| assoc_table(which, bits))
 }
 
-/// `Pi c x y. GoodBool c -> GoodBool x -> GoodBool y -> GoodBool (mux c x y)`: on `c`, then on the branch it picks
-/// (eliminating at `P`, as `good2` does: `GoodBool` itself is too large for a motive).
-pub fn good_mux() -> Expr {
-    // ctx [c, x, y, gc, gx, gy, P, h1, h0]; under a motive binder P = var 3, c = var 9, x = var 8, y = var 7
-    let motive_c = lam(bool0(), app(var(3), mux(var(0), var(8), var(7))));
-    let on_t = app3(var(4), lam(bool0(), app(var(3), mux(t(), var(0), var(7)))), var(1), var(0));
-    let on_f = app3(var(3), lam(bool0(), app(var(3), mux(f(), var(8), var(0)))), var(1), var(0));
-    let mut proof = lam(arrow(bool0(), sort(1)), lam(app(var(0), t()), lam(app(var(1), f()), app3(var(5), motive_c, on_t, on_f))));
-    for _ in 0..3 {
-        proof = lam(app(good_bool(), var(2)), proof);
-    }
-    for _ in 0..3 {
-        proof = lam(bool0(), proof);
-    }
-    proof
-}
 /// A `Bool0` expression with its `GoodBool` witness.
 #[derive(Clone)]
 pub struct Gb {
@@ -2018,7 +2002,6 @@ pub struct GoodOps {
     pub and: Expr,
     pub or: Expr,
     pub xor: Expr,
-    pub mux: Expr,
 }
 impl GoodOps {
     pub fn new() -> GoodOps {
@@ -2026,12 +2009,7 @@ impl GoodOps {
             and: good2(&|a, b| and(a, b), &OP_INFO[1].truth).0,
             or: good2(&|a, b| or(a, b), &OP_INFO[2].truth).0,
             xor: good2(&|a, b| xor(a, b), &OP_INFO[3].truth).0,
-            mux: good_mux(),
         }
-    }
-    pub fn mux(&self, c: &Gb, x: &Gb, y: &Gb) -> Gb {
-        let e = mux(c.e.clone(), x.e.clone(), y.e.clone());
-        Gb { g: apps(self.mux.clone(), vec![c.e.clone(), x.e.clone(), y.e.clone(), c.g.clone(), x.g.clone(), y.g.clone()]), e }
     }
     pub fn go(&self, w: &Expr, e: Expr, x: &Gb, y: &Gb) -> Gb {
         Gb { g: apps(w.clone(), vec![x.e.clone(), y.e.clone(), x.g.clone(), y.g.clone()]), e }
