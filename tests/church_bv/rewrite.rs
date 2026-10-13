@@ -447,9 +447,11 @@ pub fn discharge(body: Expr) -> Expr {
 }
 
 /// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: comm, assoc, chain, tree, collapse,
-/// promoted, ruleset, a built-in rule's name, and `prove_eq`'s eq_truth, eq_pos, shrmask).
+/// promoted, ruleset, a built-in rule's name, and `prove_eq`'s eq_truth, eq_pos, shrmask). Read once per process: `rule_step`
+/// asks for every rule it tries, and reading the environment each time was 11% of a mine (docs/tier-cycle.md).
 pub fn ablated(name: &str) -> bool {
-    std::env::var("ABLATE").is_ok_and(|v| v.split(',').any(|x| x == name))
+    static SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| std::env::var("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default()).iter().any(|x| x == name)
 }
 
 /// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
@@ -772,7 +774,14 @@ pub fn rule_set() -> &'static Vec<(Term, Term)> {
     })
 }
 
-pub fn rules() -> Vec<Rule> {
+/// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins, the promoted rules, the
+/// `RULESET` rules; the mined ones (`EXTRA_RULES`) come after them. Built once per process.
+pub fn fixed_rules() -> &'static [Rule] {
+    static RULES: std::sync::OnceLock<Vec<Rule>> = std::sync::OnceLock::new();
+    RULES.get_or_init(build_fixed_rules)
+}
+
+fn build_fixed_rules() -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let v = Term::V;
     let shl = |a: Term| Term::Op(SHL1, Box::new(a), Box::new(Term::Zero));
@@ -805,7 +814,6 @@ pub fn rules() -> Vec<Rule> {
     ];
     all.extend(promoted_rules().iter().map(|(l, r)| Rule { name: "promoted", lhs: l.clone(), rhs: r.clone() }));
     all.extend(rule_set().iter().map(|(l, r)| Rule { name: "ruleset", lhs: l.clone(), rhs: r.clone() }));
-    EXTRA_RULES.with(|e| all.extend(e.borrow().iter().map(|(l, r)| Rule { name: "mined", lhs: l.clone(), rhs: r.clone() })));
     all
 }
 
@@ -1083,7 +1091,7 @@ pub fn shr_not_law(n: usize) -> Option<(Expr, Expr)> {
     let (l, r) = shrnot_rule();
     let m = b(SHR1, b(XOR, Term::V(0), Term::Ones), Term::Zero);
     let own = (l.clone(), r.clone());
-    let notsub = rules().into_iter().find(|x| x.name == "notsub").map(|x| (x.lhs, x.rhs))?;
+    let notsub = fixed_rules().iter().find(|x| x.name == "notsub").map(|x| (x.lhs.clone(), x.rhs.clone()))?;
     let prove = |blocked: &[RuleKey], t1: &Term, t2: &Term| proving(blocked, || rewrite_law(n, 1, t1, t2));
     let to_left = prove(std::slice::from_ref(&own), &m, &l)?;
     let to_right = prove(&[own, notsub], &m, &r)?;
@@ -1346,9 +1354,18 @@ pub static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// Instances of `rule_step` by rule name, for the audit.
 pub static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
 
-impl Rule {
+/// A rule as `rule_step` tries it, borrowed from `fixed_rules` or from `EXTRA_RULES` (rebuilding and cloning the rule list
+/// on every step was 10% of a mine).
+#[derive(Clone, Copy)]
+struct RuleRef<'a> {
+    name: &'static str,
+    lhs: &'a Term,
+    rhs: &'a Term,
+}
+
+impl RuleRef<'_> {
     fn is(&self, (l, r): &RuleKey) -> bool {
-        self.lhs == *l && self.rhs == *r
+        self.lhs == l && self.rhs == r
     }
     fn key(&self) -> RuleKey {
         (self.lhs.clone(), self.rhs.clone())
@@ -1376,24 +1393,29 @@ pub fn rule_step(t: &Term) -> Option<(Term, PlanRc)> {
             v.push(t.clone());
         }
     });
-    let all: Vec<Rule> = rules();
-    let fires = |r: &Rule| -> Option<Vec<Option<Term>>> {
+    EXTRA_RULES.with(|mined| rule_step_in(t, &mined.borrow()))
+}
+
+fn rule_step_in(t: &Term, mined: &[(Term, Term)]) -> Option<(Term, PlanRc)> {
+    let fixed = fixed_rules().iter().map(|r| RuleRef { name: r.name, lhs: &r.lhs, rhs: &r.rhs });
+    let all: Vec<RuleRef> = fixed.chain(mined.iter().map(|(l, r)| RuleRef { name: "mined", lhs: l, rhs: r })).collect();
+    let fires = |r: &RuleRef| -> Option<Vec<Option<Term>>> {
         let mut sub = vec![None; r.lhs.max_var().max(r.rhs.max_var()) + 1];
-        if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
+        if ablated(r.name) || !match_pat(r.lhs, t, &mut sub) {
             return None;
         }
         if PROVING.with(|p| p.borrow().iter().any(|k| r.is(k))) {
             return None;
         }
         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
-        let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
+        let inst = subst_pat(r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
         if inst == *t {
             return None;
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
         // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
         // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
-        if rule_permutative(&r.lhs, &r.rhs) && inst.show_cmp(t).is_ge() {
+        if rule_permutative(r.lhs, r.rhs) && inst.show_cmp(t).is_ge() {
             return None;
         }
         Some(sub)
@@ -1435,7 +1457,7 @@ pub fn rule_step(t: &Term) -> Option<(Term, PlanRc)> {
         Some(h) => h.1 += 1,
         None => hits.push((r.name, 1)),
     }
-    Some((subst_pat(&r.rhs, &sub), Plan::law(LawKind::Rule(r.name), r.lhs.clone(), r.rhs.clone(), args)))
+    Some((subst_pat(r.rhs, &sub), Plan::law(LawKind::Rule(r.name), r.lhs.clone(), r.rhs.clone(), args)))
 }
 
 /// A cached `rewrite`: the result and what the call did besides returning it, so that a hit can replay it.

@@ -34,4 +34,5 @@ and libraries (43 MB) were not kept.
 | `lemma_keys/*.tsv` | 374299b + a temporary `LKEY` line per lemma built (reverted): key hash, exclusive build ns, check ns, kind; cmp3d ref loop, `RULEMINER_FAST=1`, salt 1 | `loop_stream` as in the profile | "Which lemmas repeat" |
 | `gc_head_*`, `gc_gates_*` | e1d28d9 against the gate constants built once per interning generation, same load | `gates_pair.sh` | "Gate constants built once per generation" |
 | `lcp_head_*`, `lcp_cache_*` | 639cdcd against the trusted lemma cache, same load | `lc_pair.sh` | "A trusted lemma cache per loop" |
+| `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |

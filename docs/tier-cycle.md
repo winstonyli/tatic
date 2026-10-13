@@ -726,6 +726,14 @@ after the last batch), not loop work. The mine took 15.0 s and the four serving 
   fires. `ablated`'s other callers (`prove_eq`, `tree`, `chain`, `collapse`, `assoc`, `comm`) read the same parsed set. The one
   runtime `set_var` (`rule_miner`'s `<exe>.env`) runs before anything reads the environment.
 
+**The rule list built once (2026-10-12).** `rules()` is gone: `fixed_rules()` builds the built-ins, the promoted rules and the
+`RULESET` rules once per process, and `rule_step` tries them and then `EXTRA_RULES` through borrowed `RuleRef`s, cloning only
+the sides of the rule that fires. `ablated` parses `ABLATE` once per process. Pair sweep against 34ea646, same load (CPU 38% at
+launch, RTP off), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/rsp_*`): rows, preferences and all 27 rule and unit
+files identical on both salts; wall 144 against 156 s (salt 1) and 104 against 117 s (salt 2), 8-11% less (`own` 40/22
+against 43/26 s, `pooled` 22/20 against 25/26 s, cmp3d's mine 29/12 against 30/16 s). Less than the profile's 21% of the
+mine suggested; why is not yet profiled (the sweep's loops have other mixes of mining and serving than the cmp3d ref loop).
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
