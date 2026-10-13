@@ -1156,16 +1156,34 @@ pub fn rule_miner() {
     let summarize = |ev: &[(bool, i64, Vec<Term>)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
     // under `RULEMINER_FAST` the candidates are proved here, once each, against the base rules as the eager filter would
     let proofs = std::cell::RefCell::new(vec![if cfg.fast { None } else { Some(true) }; provable.len()]);
+    // also on a thread of its own (below): the base preferences, which every evaluation on this thread leaves installed
     let prove_any = |(l, r): &(Term, Term)| -> bool {
         let _scope = tatic::kernel::InternScope::enter();
         set_extra_rules(rules.clone());
+        set_rule_prefs(base_prefs.clone());
         RULE_BUDGET.with(|b| b.set(budget));
         let ok = prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some();
         EXTRA_RULES.with(|e| e.borrow_mut().clear());
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         ok
     };
-    let prove_one = |i: usize| prove_any(provable[i]);
+    // a round's winner is proved on a thread of its own while the next round is scored (`speculate`, set for the main path's
+    // rounds only): the round takes it as provable and is committed when its proof is in, and a failed proof rolls the rounds
+    // back to it (below). Any other proof of a pending candidate waits for its result
+    let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, bool)>();
+    let pending: std::cell::RefCell<std::collections::HashSet<usize>> = Default::default();
+    let (speculate, spawn_req) = (std::cell::Cell::new(false), std::cell::Cell::new(None::<usize>));
+    let resolve = |i: usize| -> bool {
+        loop {
+            if let Some(b) = proofs.borrow()[i] {
+                return b;
+            }
+            let (j, b) = proof_rx.recv().unwrap();
+            pending.borrow_mut().remove(&j);
+            proofs.borrow_mut()[j] = Some(b);
+        }
+    };
+    let prove_one = |i: usize| if pending.borrow().contains(&i) { resolve(i) } else { prove_any(provable[i]) };
     // the rules chosen so far and, under them, each law's evaluation, the stragglers and guard laws they cover and the total size
     struct Chosen {
         chosen: Vec<(Term, Term)>,
@@ -1265,7 +1283,22 @@ pub fn rule_miner() {
                 let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
                 if chunk.is_empty() {
                     let Some((_, i)) = best else { break None };
-                    if *proofs.borrow_mut()[i].get_or_insert_with(|| prove_one(i)) {
+                    let known = proofs.borrow()[i];
+                    let ok = match known {
+                        Some(ok) => ok,
+                        None if speculate.get() => {
+                            if pending.borrow_mut().insert(i) {
+                                spawn_req.set(Some(i));
+                            }
+                            true
+                        }
+                        None => {
+                            let ok = prove_one(i);
+                            proofs.borrow_mut()[i] = Some(ok);
+                            ok
+                        }
+                    };
+                    if ok {
                         break Some(i);
                     }
                     continue;
@@ -1347,24 +1380,82 @@ pub fn rule_miner() {
         }
         v
     };
-    let mut s = state(vec![]);
-    for round in 0..cfg.rounds {
-        let alts = pick_kept(&s);
-        let Some(mut rule) = alts.first().map(|a| a.0.clone()) else { break };
-        if alts.len() > 1 {
-            let rest = cfg.rounds - round - 1;
-            let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest)).collect();
-            let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
-            for (a, ((l, r), g)) in alts.iter().enumerate() {
-                println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);
-            }
-            rule = alts[best].0.clone();
-        }
-        let next = then(&s, &rule);
-        println!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&next.covered) - count(&s.covered), s.size - next.size, rule.0.show(), rule.1.show());
-        phase("winner proof");
-        s = next;
+    // rounds not yet committed, oldest first: the state before each, its round, its winner's pending proof and its `chosen` line
+    struct Open {
+        before: Chosen,
+        round: usize,
+        proof: Option<usize>,
+        line: String,
     }
+    // commits the open rounds whose proofs hold, oldest first, until `keep` are left; at a failed proof, voids the rounds built
+    // on it (their picks too, as the failed winner is never picked again) and returns it, to be played again
+    let settle = |open: &mut Vec<Open>, keep: usize| -> Option<Open> {
+        while open.len() > keep {
+            let o = open.remove(0);
+            if o.proof.is_none_or(&resolve) {
+                println!("{}", o.line);
+                continue;
+            }
+            println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(provable[i])));
+            for v in std::iter::once(&o).chain(open.iter()) {
+                picks.borrow_mut().remove(&key(&v.before.chosen));
+            }
+            for v in open.drain(..) {
+                v.proof.map(resolve);
+            }
+            return Some(o);
+        }
+        None
+    };
+    let s = std::thread::scope(|sc| {
+        let spawn = |i: usize| {
+            let (tx, rule, prove_any) = (proof_tx.clone(), provable[i], &prove_any);
+            std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prove_any(rule))).unwrap()).unwrap();
+        };
+        let (mut s, mut round, mut open) = (state(vec![]), 0, Vec::<Open>::new());
+        loop {
+            speculate.set(true);
+            let alts = if round < cfg.rounds { pick_kept(&s) } else { vec![] };
+            speculate.set(false);
+            let proof = spawn_req.take();
+            proof.map(spawn);
+            let Some(mut rule) = alts.first().map(|a| a.0.clone()) else {
+                match settle(&mut open, 0) {
+                    Some(o) => (s, round) = (o.before, o.round),
+                    None => break s,
+                }
+                continue;
+            };
+            if alts.len() > 1 {
+                // lookahead plays whole greedy paths; it starts from settled rounds and proves as it goes
+                if let Some(o) = settle(&mut open, 0) {
+                    (s, round) = (o.before, o.round);
+                    continue;
+                }
+                if !proof.is_none_or(resolve) {
+                    println!("RULEMINER rolled back to round {round}: its winner {} is not provable", proof.map_or(String::new(), |i| rule_show(provable[i])));
+                    picks.borrow_mut().remove(&key(&s.chosen));
+                    continue;
+                }
+                let rest = cfg.rounds - round - 1;
+                let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest)).collect();
+                let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
+                for (a, ((l, r), g)) in alts.iter().enumerate() {
+                    println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);
+                }
+                rule = alts[best].0.clone();
+            }
+            let next = then(&s, &rule);
+            let line = format!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&next.covered) - count(&s.covered), s.size - next.size, rule.0.show(), rule.1.show());
+            phase("rule-set evaluation");
+            open.push(Open { before: s, round, proof, line });
+            (s, round) = (next, round + 1);
+            // the newest round stays open: its winner's proof runs while the next round is scored
+            if let Some(o) = settle(&mut open, 1) {
+                (s, round) = (o.before, o.round);
+            }
+        }
+    });
     let Chosen { chosen, covered, .. } = s;
     let (scorings, skipped) = (scorings.get(), skipped.get());
     // learned preferences (docs/tier-cycle.md, "Rule order"): where two rules in force both rewrite a term of the scored laws, the
@@ -1424,6 +1515,10 @@ pub fn rule_miner() {
     }
     println!("RULEMINER scoring reused {} of {} law evaluations", law_reuses.load(std::sync::atomic::Ordering::Relaxed), law_evals.load(std::sync::atomic::Ordering::Relaxed));
     println!("RULEMINER the gain bound skipped {skipped} of {} candidate scorings", scorings + skipped);
+    if cfg.fast {
+        let p = proofs.borrow();
+        println!("RULEMINER lazy proofs: {} proved, {} failed", p.iter().filter(|x| **x == Some(true)).count(), p.iter().filter(|x| **x == Some(false)).count());
+    }
     println!("RULEMINER time in rule-set evaluations: {:.1}s", state_time.get().as_secs_f64());
     println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
     for (st, c) in stragglers.iter().zip(&covered) {

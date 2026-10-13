@@ -818,6 +818,19 @@ inside the scoring scope, while both workers wait for the next chunk.
   from a shared queue within a chunk, which would hide up to 1.8 s and keep the bound-ordered chunks that make the choice
   independent of the thread count.
 
+**Winners proved in the background (2026-10-13).** With `RULEMINER_FAST=1`, `pick` no longer proves a round's winner before
+the next round is scored. It assumes the proof holds, sends it to a thread of its own (`prove_any`, against the fixed base
+rules and preferences, so it does not depend on the round), and moves on. Each round stays open, holding its state before the
+choice, its pending proof and its `RULEMINER chosen` line. A round is settled once its proof is in: the line is printed then,
+in order. When a proof fails, the miner prints `RULEMINER rolled back to round N`, drops the `picks` cache entries of that
+round and every later one, and resumes from the failed round's state with the winner marked unprovable. That reproduces what
+proving in turn would have chosen. Lookahead rounds and the last round settle every open round first. `RULEMINER lazy proofs:
+P proved, F failed` closes each fast mine. Rollback check (`scripts/spec_rollback.sh`: add3 ref mine offered three false,
+attractive rules through `RULEMINER_EXTRA`): it rolls back at round 0, and its chosen rules equal 514b7a2's. Pair sweep against
+514b7a2, same load (CPU 22% at launch, RTP off, `MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/bpp_*`,
+`scripts/bp_pair.sh`): rows, preferences and all 27 rule and unit files identical on both salts; no proof failed. Wall 42 against
+46 s (salt 1) and 31 against 37 s (salt 2); cmp3d's mine 12 against 17 s and 7 against 11 s.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
