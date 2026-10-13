@@ -996,6 +996,27 @@ remain). `CARRY_CAP` (10) still bounds the trees at 2^(k + 10) leaves.
 - Sequential pair against 5f65267 (`scripts/nodd_seq.sh`, rows `nds_*`; CPU 40% at launch from other sessions, RTP off):
   rows, preferences and all 27 rule and unit files identical on both salts, as expected, since no lemma reached nv = 10.
   Wall 29 against 31 s (salt 1) and 34 against 29 s (salt 2): no change beyond noise.
+- The mul laws, where the carry cap matters (`mul_conjecture_miner`, `MULMINER_MAX=7`, all 91 laws, `CARRY_CAP` 10; their
+  widest machines have 9 carries, so unguarded lemmas at nv = 11), one run at a time, 5f65267 against 0cb4e6c
+  (`scripts/cap_ab.sh`, order old head head old; CPU 41% at launch from other sessions, RTP off): both prove 90 laws, none
+  over the cap, and leave `(1*1)x = 1(1x)` unproved. Totals 43.3 and 42.7 s with diagrams against 45.7 and 38.5 s without;
+  the widest law, `7(x-y) = 7x - 7y` (carries 5 and 9), took 7.1 and 9.2 s against 13.4 and 8.0 s. Within noise, so the cap
+  stays at 10.
+
+**Where the case lemmas' time goes (samply, 2026-10-13).** `proof_cost_split` (cmp3d, the 37-rule own library, 300 laws) at
+0cb4e6c, debug-info build, CPU 19% at launch, RTP off; 10.4 s in-test, 10.4k busy samples (idle leaves dropped). Analysis:
+`docs/runs/2026-10-12/scripts/prof_cases.py` (reads `prof11/pcs.json.gz` and the symbol table samply writes beside it; the
+profile itself is not kept).
+- `tree_proof`'s case lemmas (`shared_lemma`) are 52% of all busy samples. Of that, the kernel check (`ck`) is 63% and building
+  the tree (`lemma_n`) 36%.
+- Building is mostly the leaves. Each leaf rebuilds both sides at its literal bits (`Machine::step` over `GoodOps`, then
+  `table_app`): 32% of the lemma time. `table_app` alone is 19%, and 4% is `tab_bdd` recomputing the same table's diagram
+  at every leaf.
+- Checking is beta reduction. `def_eq` 54%, `beta_spine`/`instantiate_n` 52%; under them hash-cons interning (`hc::intern`)
+  takes 46%, with 26% self time in `intern_as`'s table probe and 11% in `inst_get`. The kernel instantiates `P` at each
+  leaf's literals and normalizes both sides; every intermediate term is interned.
+- Not yet tried: building each table's diagram once per lemma rather than once per leaf; building the leaves from a cheaper
+  statement. Leaves stating a precomputed bit did not help (above), because the kernel still normalizes both sides.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
