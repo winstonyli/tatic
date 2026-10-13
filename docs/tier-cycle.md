@@ -769,6 +769,26 @@ writer at a time. Pair sweep against ed00b7a, same load (CPU 15% at launch, RTP 
 (`docs/runs/2026-10-12/rows/slp_*`, `scripts/sl_pair.sh`): rows, preferences and all 27 rule and unit files identical on both
 salts; wall 63 against 76 s (salt 1) and 58 against 64 s (salt 2), 9-17% less (`own` 11/10 against 20/11 s summed over its
 rows; `pooled` loops now each take under a second). About 12 s of each sweep's wall is the driver's two machine-state checks.
+`MACHINE_STATE=0` now skips them in a sweep as well as in `loop_stream` (`machine_state` reads it).
+
+**Where the time goes in a whole sweep (samply, 2026-10-12).** A salt-1 sweep, `SWEEP="mines own pooled"`, `MACHINE_STATE=0`,
+at c00cf8b plus that switch (debug-info build; CPU 36% at launch from other sessions, RTP off; rows identical to `slp_sl_1`): 85 s
+under the profiler, 82.6k samples. Processes are split by stage by their start time against the stage files' times.
+- The `mines` stage is 64% of the samples: its mines 53% (6 processes, 2-4 threads each) and their full-check serving 10%. In
+  those mines kernel checks are 26%, `prove_rule` 20%, `shared_lemma` 19%, interning 17% and rewriting 17%; 14% of their
+  samples are threads waiting. This is proof work with no single overhead in it.
+- The `own` and `pooled` mines are 24% (37 processes). `SigMemo::id`, called from `rule_miner` itself, is 35% of the `own` mines
+  and 42% of the `pooled` mines, about 9% of all samples and single-threaded. It is the miner's goal-directed candidate pool
+  (`rule_miner`, "a pool of all terms up to 5 nodes"): 5804 terms indexed by behaviour signature, rebuilt in every mine. Its
+  terms and the patterns looked up in it have at most two variables (`V(0)`, `V(1)`; `abstractions(sub, 2)`), but the memo is
+  `SigMemo::new(n, kv)` with `kv` = 3 for the three-variable families, so every signature is 4096 bytes where 256 give the same
+  equalities. Untested: `SigMemo::new(n, 2)` should give identical candidates at a sixteenth of the cost.
+- The driver is 9% of the samples, and its work is on the critical path (children wait for it). `write_laws` is 69% of it;
+  the pool itself (`pool3_conjectures`) only 17%. The rest is each child's window taken from the whole pool again: the
+  conjecture list cloned (17%) and shuffled again (`shuffled` hashes every law's `show()` text: `show_into` 14%), then
+  shape-filtered. Keeping the shuffled sequence per family and salt, as `pool3_conjectures` keeps the pool, would remove most of
+  it. `joinability_units` is 7%.
+- `CHECK_FAST` serving in `own` and `pooled` is 3%.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
