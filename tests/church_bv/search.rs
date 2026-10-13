@@ -542,18 +542,14 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
-    } else if let Some(conj) = pool3_conjectures(family, env, n) {
-        // `RULEMINER_SHUFFLE=<salt>` (0 = off): the sorted sequence is reordered by a hash of each law, so a window of it (a batch, a
-        // stride phase) samples the whole family instead of one lexicographic range
-        shuffled((*conj).clone(), env("RULEMINER_SHUFFLE", 0))
-            .into_iter()
-            .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+    } else if let Some(seq) = pool3_sequence(family, env, n) {
+        seq.iter()
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
             .skip(env("RULEMINER_PHASE", 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
             .step_by(env("RULEMINER_STRIDE", 1))
             .skip(env("RULEMINER_SKIP", 0))
             .take(env("RULEMINER_LAWS", 250))
-            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
+            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a.clone(), b.clone()))
             .collect()
     } else if family == "lt" {
         let pool = lt_pool(2);
@@ -564,20 +560,24 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
     }
 }
 
-/// The conjectures of a three-variable family's pool (`pool3`), built once per process for each family, `RULEMINER_DEEP3` and
-/// width: the driver takes every child's law window from it (`driver::write_laws`), where each child used to rebuild it (35%
-/// of a sweep's loops, docs/tier-cycle.md).
-fn pool3_conjectures(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
-    type Memo = Vec<((String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>)>;
+/// A three-variable family's law sequence: its pool's (`pool3`) conjectures that use all three variables, shuffled by
+/// `RULEMINER_SHUFFLE=<salt>` (0 = off; a hash of each law, so a window of it, a batch or a stride phase, samples the whole family
+/// instead of one lexicographic range). Built once per process for each family, `RULEMINER_DEEP3`, width and salt: the driver
+/// takes every child's law window from it (`driver::write_laws`), where each child used to rebuild the pool (35% of a sweep's
+/// loops) and the driver to clone and reshuffle it per child (6% of a sweep, docs/tier-cycle.md).
+fn pool3_sequence(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
+    type Memo = Vec<((String, usize, usize, usize), std::sync::Arc<Vec<(Term, Term)>>)>;
     static MEMO: std::sync::Mutex<Memo> = std::sync::Mutex::new(Vec::new());
-    let key = (family.to_string(), env("RULEMINER_DEEP3", 0), n);
+    let key = (family.to_string(), env("RULEMINER_DEEP3", 0), n, env("RULEMINER_SHUFFLE", 0));
     let mut memo = MEMO.lock().unwrap();
     if let Some((_, c)) = memo.iter().find(|(k, _)| *k == key) {
         return Some(c.clone());
     }
-    let conj = std::sync::Arc::new(pool_conjectures(pool3(family, env)?, n, 3, 0));
-    memo.push((key, conj.clone()));
-    Some(conj)
+    let mut seq = shuffled(pool_conjectures(pool3(family, env)?, n, 3, 0), key.3);
+    seq.retain(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)));
+    let seq = std::sync::Arc::new(seq);
+    memo.push((key, seq.clone()));
+    Some(seq)
 }
 
 /// A law window written as a law file (`driver::write_laws`) and read back (`read_laws`) gives the same laws, names included.
@@ -892,7 +892,9 @@ pub fn rule_miner() {
         }
         by_size[sz] = level;
     }
-    let mut memo = SigMemo::new(n, kv);
+    // the pool's terms and the patterns looked up in it use at most two variables (`abstractions(sub, 2)`), so signatures over
+    // two give the same equalities as over `kv`, at 256 bytes instead of 4096 for the three-variable families
+    let mut memo = SigMemo::new(n, 2);
     let mut index: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for t in by_size.iter().flatten() {
         index.entry(memo.sig(t).to_vec()).or_default().push(t.clone());

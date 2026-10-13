@@ -790,6 +790,15 @@ under the profiler, 82.6k samples. Processes are split by stage by their start t
   it. `joinability_units` is 7%.
 - `CHECK_FAST` serving in `own` and `pooled` is 3%.
 
+**The candidate index over two variables, and the law sequence kept per salt (2026-10-12).** Both fixes from the profile above.
+`rule_miner`'s candidate index uses `SigMemo::new(n, 2)`. `pool3_conjectures` became `pool3_sequence`, which keeps the
+shuffled sequence of laws that use all three variables, keyed also by the salt. Each window is then taken by reference,
+cloning only the laws it takes. Pair sweep against 99475ac, same load (CPU 40% at launch from other sessions, RTP off,
+`MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/spp_*`, `scripts/sp_pair.sh`): rows, preferences
+and all 27 rule and unit files identical on both salts. Wall 82 against 91 s (salt 1) and 64 against 85 s (salt 2); the
+in-test times were 67 against 83 s and 55 against 80 s. Summed over their rows, `own` took 15/6 against 22/18 s and `pooled`
+2/3 against 12/14 s. The two fixes were measured together, and the heavier load makes these walls longer than the earlier pairs'.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
