@@ -1500,7 +1500,21 @@ too: its result is whether `nf(a) == nf(b)`. Same run at 3892f3d, interning on:
 
 A per-scope memo from pair to result (with `unequal` folded in) would answer those repeats without reducing either
 side: at most about half of `def_eq` time. It would also cover much of what the `whnf` memo saves, so measure it
-against the `whnf` build. `nf` does not run in this workload; its cache stays per call. Open: lead, not built.
+against the `whnf` build. `nf` does not run in this workload; its cache stays per call.
+
+**Built and measured against f77238e (both reverted, no patch kept, 2026-10-13): neutral.** `proof_cost_split` cmp3d
+own CPU, 24 alternating pairs each, Defender RTP off, about 12-16% other CPU load at the start:
+
+| Variant | Won | Median pair | Best new / old |
+|---|---|---|---|
+| unordered node pair -> result in hc's table, read and written by `conv_rc` while the table is on | 10 of 23 | +0.08 s | 4.61 / 4.66 s |
+| no memo; `conv_rc` skips `==` and the `unequal` note when both sides are canonical (distinct canonical nodes are structurally unequal) | 10 of 24 | +0.01 s | 4.80 / 4.80 s |
+
+The first variant passed a check that a `def_eq` answer stays in the table for the scope and is gone without the memo;
+the probe's 1.88 s was timed with its own timers on (inflated, as in the `whnf` probe), and after the `whnf` memo a
+repeated pair costs only its walk over memoized weak head normal forms. Folding `unequal` into the table is moot: while
+the table is on, canonicity already answers `==` for the pairs it would hold, and skipping it saved nothing measurable.
+Closed.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
