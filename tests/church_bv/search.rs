@@ -402,7 +402,7 @@ pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
         };
         let parsed = std::panic::catch_unwind(|| (parse_term(l.trim()), parse_term(r.trim())));
         match parsed {
-            Ok((l, r)) if matches!(l, Term::Op(..)) && l.show() != r.show() && seen.insert(format!("{} => {}", l.show(), r.show())) => out.push((l, r)),
+            Ok((l, r)) if matches!(l, Term::Op(..)) && l != r && seen.insert((l.clone(), r.clone())) => out.push((l, r)),
             Ok(_) => {}
             Err(_) => println!("RULEMINER extra file: skipped (unparsable): {line}"),
         }
@@ -840,7 +840,7 @@ pub fn rule_miner() {
                     let mut cuts = ca.clone();
                     let mut map = vec![];
                     for c in &cb {
-                        let at = cuts.iter().position(|x| x.show() == c.show()).unwrap_or_else(|| {
+                        let at = cuts.iter().position(|x| x == c).unwrap_or_else(|| {
                             cuts.push(c.clone());
                             cuts.len() - 1
                         });
@@ -865,7 +865,8 @@ pub fn rule_miner() {
     }
     // RULEMINER_ANY=1: also abstract subterms without add/sub (constant folding inside shifts and bitwise nodes)
     let any_op = cfg.any_op;
-    let mut seen_pat: std::collections::HashSet<String> = Default::default();
+    // patterns seen (`None`), and cross-side rules seen (`Some(rhs)`)
+    let mut seen_pat: std::collections::HashSet<(Term, Option<Term>)> = Default::default();
     let mut cands: Vec<(Term, Term)> = vec![];
     for st in &stragglers {
         let mut subs = vec![];
@@ -874,7 +875,7 @@ pub fn rule_miner() {
         for sub in subs.iter().filter(|t| matches!(t, Term::Op(LT, ..)) || (any_op || t.uses_add()) && t.size() >= if any_op { 2 } else { 3 }) {
             for (pat, _) in abstractions(sub, 2) {
                 let Term::Op(..) = pat else { continue };
-                if !seen_pat.insert(pat.show()) || pat.size() > 9 {
+                if !seen_pat.insert((pat.clone(), None)) || pat.size() > 9 {
                     continue;
                 }
                 let is_lt = matches!(pat, Term::Op(LT, ..));
@@ -896,7 +897,7 @@ pub fn rule_miner() {
         st.3[1].subterms(&mut sr);
         for (xs, ys) in [(&sl, &sr), (&sr, &sl)] {
             for x in xs.iter().filter(|t| t.uses_add() && t.size() >= 3 && t.size() <= 13) {
-                for y in ys.iter().filter(|t| t.size() <= 13 && t.show() != x.show()) {
+                for y in ys.iter().filter(|t| t.size() <= 13 && *t != x) {
                     if !(1..=4).all(|w| x.plausibly_equals(y, w, kv)) {
                         continue;
                     }
@@ -927,7 +928,7 @@ pub fn rule_miner() {
                         // `x = y` holds for the straggler's variables, but the cuts become free variables, so the rule itself is checked:
                         // one that only held through a relation between the cuts would be scored every round and then fail its proof
                         let rhs = renum(&yy);
-                        if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert(format!("{} => {}", pat.show(), rhs.show())) && (1..=4).all(|w| pat.plausibly_equals(&rhs, w, cuts.len())) {
+                        if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert((pat.clone(), Some(rhs.clone()))) && (1..=4).all(|w| pat.plausibly_equals(&rhs, w, cuts.len())) {
                             // not ordered: orienting cross-side rules by the rule order raised M in every family (docs/tier-cycle.md,
                             // "A rewrite cycle"); a growing one can cycle with the built-in rules until the step budget runs out
                             cands.push((pat.clone(), rhs));
@@ -947,26 +948,26 @@ pub fn rule_miner() {
     // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
     if std::env::var("RULEMINER_NODUPLHS").map_or(true, |v| v != "0") {
         let before = cands.len();
-        let in_force: std::collections::HashSet<String> = base.iter().map(|(l, _)| l.show()).collect();
-        cands.retain(|(l, _)| !in_force.contains(&l.show()));
+        let in_force: std::collections::HashSet<&Term> = base.iter().map(|(l, _)| l).collect();
+        cands.retain(|(l, _)| !in_force.contains(l));
         println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
     }
     // per left side, the smallest right side only, ties by `show()`. Scoring every right side instead (each left side's rival
     // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle.md)
     // an identity (a pattern's pool group holds the pattern itself) never gains, and as the smallest right side it would displace
     // its left side's real candidates
-    cands.retain(|(l, r)| l.show() != r.show());
-    cands.sort_by_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
-    cands.dedup_by_key(|(l, r)| (l.show(), r.show()));
+    cands.retain(|(l, r)| l != r);
+    cands.sort_by_cached_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
+    cands.dedup();
     // rivals: the other right sides of each left side; a round's winner gives way to a rival that gains more on the same laws,
     // unless the mine finished with the winner is worth more (the lookahead after the rounds' `pick`)
     // (docs/tier-cycle.md, "Preferences and rival orientations in the miner")
-    let mut rivals: std::collections::HashMap<String, Vec<(Term, Term)>> = Default::default();
+    let mut rivals: std::collections::HashMap<Term, Vec<(Term, Term)>> = Default::default();
     for (l, r) in &cands {
-        rivals.entry(l.show()).or_default().push((l.clone(), r.clone()));
+        rivals.entry(l.clone()).or_default().push((l.clone(), r.clone()));
     }
     rivals.values_mut().for_each(|v| drop(v.remove(0)));
-    cands.dedup_by_key(|(l, _)| l.show());
+    cands.dedup_by(|a, b| a.0 == b.0);
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
     phase("candidate generation");
     // keep candidates whose left side matches a subterm of some straggler's normalized terms
@@ -1028,7 +1029,7 @@ pub fn rule_miner() {
     // `prefs`: the rule preferences in force (`set_rule_prefs`). `base_now`: the base rules in force, all of them until the
     // preference phase drops some
     let base_now = std::sync::Mutex::new(base.clone());
-    let score_laws = |extra: &[(Term, Term)], prefs: &[(String, String)], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
+    let score_laws = |extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<Term>)>, RewriteMemo) {
         // built here so that worker threads (each with its own intern scope) do not share expressions
         let ops = ops_for(n);
         let goods: Vec<(Expr, Expr)> = (0..kv).map(|i| (var((2 * kv - 1 - i) as u32), var((kv - 1 - i) as u32))).collect();
@@ -1060,8 +1061,8 @@ pub fn rule_miner() {
                     (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
                 };
                 let size = if si < stragglers.len() { measure(&rewrite(&s.1, n, &ops, &goods).0) + measure(&rewrite(&s.2, n, &ops, &goods).0) } else { 0 };
-                let mut seen: std::collections::HashSet<String> = Default::default();
-                let trace: Vec<Term> = RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(t.show())).collect();
+                let mut seen: std::collections::HashSet<Term> = Default::default();
+                let trace: Vec<Term> = RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(t.clone())).collect();
                 (fixed, size, trace)
             })
             .collect();
@@ -1095,7 +1096,7 @@ pub fn rule_miner() {
     // the last evaluation's memo, under its rules: an entry holds under other rules when no rule in or out matches a term of its
     // trace (`RewriteMemo::filtered`), so each evaluation is seeded with what the rules that changed cannot touch
     let key = |c: &[(Term, Term)]| {
-        let mut v: Vec<String> = c.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect();
+        let mut v = c.to_vec();
         v.sort();
         v
     };
@@ -1104,11 +1105,7 @@ pub fn rule_miner() {
     let state = |chosen: Vec<(Term, Term)>| {
         let t0 = Instant::now();
         let seed = state_memo.borrow_mut().take().map(|(was, memo)| {
-            let (a, b) = (key(&was), key(&chosen));
-            let changed: Vec<&Term> = was.iter().chain(&chosen).filter(|(l, r)| {
-                let s = format!("{} -> {}", l.show(), r.show());
-                a.contains(&s) != b.contains(&s)
-            }).map(|(l, _)| l).collect();
+            let changed: Vec<&Term> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).map(|(l, _)| l).collect();
             memo.filtered(|tr| !tr.iter().any(|t| changed.iter().any(|l| match_pat(l, t, &mut vec![None; 8]))))
         });
         let (eval, grown) = score_laws(&chosen, &base_prefs, &all_laws, true, seed);
@@ -1213,7 +1210,7 @@ pub fn rule_miner() {
         // 0), x)` once the promoted rules are out)
         let mut memo = RewriteMemo::new(kv);
         let mut rival: Option<((Term, Term), i64)> = None;
-        for rv in rivals.get(&provable[i].0.show()).into_iter().flatten() {
+        for rv in rivals.get(&provable[i].0).into_iter().flatten() {
             let fast = SCORE_ONLY.with(|s| s.replace(true));
             let rg = score_rule(rv, &affected[i], &mut memo).0;
             SCORE_ONLY.with(|s| s.set(fast));
@@ -1231,7 +1228,7 @@ pub fn rule_miner() {
     // reach the same set in another order, so picks and finished values are kept by set; the kept alternative's path is also the
     // next rounds' own (`key`, above)
     #[allow(clippy::type_complexity)]
-    let picks: std::cell::RefCell<std::collections::HashMap<Vec<String>, Vec<((Term, Term), i64)>>> = Default::default();
+    let picks: std::cell::RefCell<std::collections::HashMap<Vec<(Term, Term)>, Vec<((Term, Term), i64)>>> = Default::default();
     let pick_kept = |s: &Chosen| {
         let kk = key(&s.chosen);
         if let Some(v) = picks.borrow().get(&kk) {
@@ -1242,7 +1239,7 @@ pub fn rule_miner() {
         v
     };
     // a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
-    let finished: std::cell::RefCell<std::collections::HashMap<Vec<String>, (i64, usize)>> = Default::default();
+    let finished: std::cell::RefCell<std::collections::HashMap<Vec<(Term, Term)>, (i64, usize)>> = Default::default();
     // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds
     let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize| -> i64 {
         let (mut path, mut left) = (vec![], rounds);
@@ -1310,28 +1307,31 @@ pub fn rule_miner() {
     while env_or("RULEMINER_PREFS", 0u8) != 0 {
         *RULE_CONFLICTS.lock().unwrap() = Some(Default::default());
         let (now, _) = score_laws(&chosen, &prefs, &all_laws, false, None);
-        let mut conflicts: Vec<(String, String)> = RULE_CONFLICTS.lock().unwrap().take().unwrap().into_keys().collect();
-        conflicts.sort();
+        let mut conflicts: Vec<Pref> = RULE_CONFLICTS.lock().unwrap().take().unwrap().into_keys().collect();
+        let shown = |(w, l): &Pref| (rule_show(w), rule_show(l));
+        conflicts.sort_by_cached_key(shown);
         let (f0, size0) = summarize(&now);
-        let gain = |prefs: &[(String, String)]| {
+        let gain = |prefs: &[Pref]| {
             let (f, sz) = summarize(&score_laws(&chosen, prefs, &all_laws, false, None).0);
             (count(&f) - count(&f0)) * 1000 + (guarded(&f) - guarded(&f0)) * guard_w + (size0 - sz)
         };
         // a flip's move key is the pair it makes (winner, loser); a drop's is its unit's index
-        let flipped = |(w, l): &(String, String)| prefs.iter().filter(|p| **p != (l.clone(), w.clone())).cloned().chain([(w.clone(), l.clone())]).collect::<Vec<_>>();
-        let mut moves: Vec<(i64, Result<(String, String), usize>)> = conflicts.iter().map(|(w, l)| (l.clone(), w.clone())).map(|f| (gain(&flipped(&f)), Ok(f))).collect();
+        let flipped = |(w, l): &Pref| prefs.iter().filter(|p| (&p.0, &p.1) != (l, w)).cloned().chain([(w.clone(), l.clone())]).collect::<Vec<_>>();
+        let mut moves: Vec<(i64, Result<Pref, usize>)> = conflicts.iter().map(|(w, l)| (l.clone(), w.clone())).map(|f| (gain(&flipped(&f)), Ok(f))).collect();
         for u in (0..units.len()).filter(|u| !dropped.contains(u)) {
             set_base(&[&dropped[..], &[u]].concat());
             moves.push((gain(&prefs), Err(u)));
         }
         set_base(&dropped);
         // a drop removes many rules at once, so it needs two laws' worth of gain: on one law it overfit (salt 1's sbo3)
-        let best = moves.into_iter().filter(|(g, m)| *g > if m.is_err() { 1999 } else { 0 }).max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        // ties to the first move in text order
+        let text = |m: &Result<Pref, usize>| m.as_ref().map(shown).map_err(|u| *u);
+        let best = moves.into_iter().filter(|(g, m)| *g > if m.is_err() { 1999 } else { 0 }).max_by(|a, b| a.0.cmp(&b.0).then_with(|| text(&b.1).cmp(&text(&a.1))));
         phase(&format!("preference round over {} conflicts and {} drop units", conflicts.len(), units.len() - dropped.len()));
         match best {
             None => break,
             Some((g, Ok((w, l)))) => {
-                println!("RULEMINER prefer (+{g} gain): {w}  OVER  {l}");
+                println!("RULEMINER prefer (+{g} gain): {}  OVER  {}", rule_show(&w), rule_show(&l));
                 prefs = flipped(&(w, l));
             }
             Some((g, Err(u))) => {
@@ -1874,7 +1874,19 @@ pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Ter
     // each term once: the builders make some small terms at more than one depth, and a repeat pairs a term with its own copy (a
     // trivial law) or repeats a law (docs/tier-cycle.md, pool duplicates; law sequences before this dedup differ)
     let mut seen = std::collections::HashSet::new();
-    Some(pool.into_iter().filter(|t| seen.insert(t.show())).collect())
+    Some(pool.into_iter().filter(|t| seen.insert(t.clone())).collect())
+}
+
+/// `show_cmp` is the order of the `show()` text, on every pair of a pool's first 300 terms (which include constants and variables).
+#[test]
+pub fn show_cmp_is_the_text_order() {
+    let pool = pool3("cmp3d", &|k, d| if k == "RULEMINER_DEEP3" { 1 } else { d }).unwrap();
+    let ts: Vec<&Term> = pool.iter().take(300).chain([&Term::Zero, &Term::Ones]).collect();
+    for a in &ts {
+        for b in &ts {
+            assert_eq!(a.show_cmp(b), a.show().cmp(&b.show()), "{} vs {}", a.show(), b.show());
+        }
+    }
 }
 
 /// No three-variable pool repeats a term (a repeat makes trivial and repeated laws).
@@ -1882,7 +1894,7 @@ pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Ter
 pub fn pools_have_no_repeated_terms() {
     for f in ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3"] {
         let pool = pool3(f, &|k, d| if k == "RULEMINER_DEEP3" { 1 } else { d }).unwrap();
-        let distinct: HashSet<String> = pool.iter().map(Term::show).collect();
+        let distinct: HashSet<&Term> = pool.iter().collect();
         assert_eq!(distinct.len(), pool.len(), "{f}");
     }
 }
@@ -2055,7 +2067,7 @@ pub fn normal_forms() {
         };
         let ((na, sa), (nb, sb)) = (side(&a), side(&b));
         let carries = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
-        println!("NF {} | {} {} carries {}/{} steps {sa}/{sb}", na.show(), nb.show(), if na.show() == nb.show() { "SAME" } else { "DIFF" }, carries(&na), carries(&nb));
+        println!("NF {} | {} {} carries {}/{} steps {sa}/{sb}", na.show(), nb.show(), if na == nb { "SAME" } else { "DIFF" }, carries(&na), carries(&nb));
     }
 }
 
@@ -2405,20 +2417,25 @@ pub fn proposal_credit_goes_to_rule_users() {
     assert_eq!(credit[0], if users[0] == 1 { gains[0] as f64 } else { 0.0 });
 }
 
-/// Classify proposed lines (`lhs = rhs`). `train` holds the laws the proposer was shown, `known` every law of the family (both as
-/// `lhs = rhs` strings, either orientation); the other classes follow from parsing, the width 1-6 screen and `rewrite_law` under the
+/// A law line `lhs = rhs` over `kv` variables, `None` when it does not parse.
+pub fn parse_law(line: &str, kv: usize) -> Option<(Term, Term)> {
+    let (a, b) = line.split_once(" = ")?;
+    Some((try_parse(a, kv)?, try_parse(b, kv)?))
+}
+
+/// Classify proposed lines (`lhs = rhs`). `train` holds the laws the proposer was shown, `known` every law of the family (either
+/// orientation); the other classes follow from parsing, the width 1-6 screen and `rewrite_law` under the
 /// installed rules, which also gives each true, unmemorised law its `Cost`.
-pub fn classify_proposals(lines: &[String], kv: usize, train: &HashSet<String>, known: &HashSet<String>) -> Vec<(Verdict, Option<Cost>)> {
-    let mut seen: HashSet<String> = HashSet::new();
+pub fn classify_proposals(lines: &[String], kv: usize, train: &HashSet<(Term, Term)>, known: &HashSet<(Term, Term)>) -> Vec<(Verdict, Option<Cost>)> {
+    let mut seen: HashSet<(Term, Term)> = HashSet::new();
     lines
         .iter()
         .map(|line| {
-            let Some((a, b)) = line.split_once(" = ") else { return (Verdict::Unparsed, None) };
-            let (Some(t1), Some(t2)) = (try_parse(a, kv), try_parse(b, kv)) else { return (Verdict::Unparsed, None) };
-            let (fwd, rev) = (format!("{} = {}", t1.show(), t2.show()), format!("{} = {}", t2.show(), t1.show()));
-            if fwd == rev {
+            let Some((t1, t2)) = parse_law(line, kv) else { return (Verdict::Unparsed, None) };
+            if t1 == t2 {
                 return (Verdict::Trivial, None);
             }
+            let (fwd, rev) = ((t1.clone(), t2.clone()), (t2.clone(), t1.clone()));
             if !t1.is_law(&t2, kv) {
                 return (Verdict::Refuted, None);
             }
@@ -2660,7 +2677,8 @@ pub fn proposal_yield() {
     if let Ok(out) = std::env::var("YIELD_OUT") {
         std::fs::write(out, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
     }
-    let (train, known): (HashSet<String>, HashSet<String>) = (train_lines.into_iter().collect(), known_lines.into_iter().collect());
+    let laws = |lines: Vec<String>| lines.iter().filter_map(|l| parse_law(l, kv)).collect::<HashSet<_>>();
+    let (train, known) = (laws(train_lines), laws(known_lines));
     let verdicts = classify_proposals(&lines, kv, &train, &known);
     let mut count: std::collections::BTreeMap<Verdict, usize> = Default::default();
     for (v, _) in &verdicts {
@@ -2697,8 +2715,8 @@ pub fn classify_proposals_separates_cases() {
         line("add(x, add(y, z)) = add(add(x, y), z)"), // known to the family
         line("add(x, w) = add(w, x)"),                 // a variable outside the family
     ];
-    let train: HashSet<String> = ["add(x, z) = add(z, x)".to_string()].into();
-    let known: HashSet<String> = ["add(x, add(y, z)) = add(add(x, y), z)".to_string()].into();
+    let train: HashSet<(Term, Term)> = parse_law("add(x, z) = add(z, x)", 3).into_iter().collect();
+    let known: HashSet<(Term, Term)> = parse_law("add(x, add(y, z)) = add(add(x, y), z)", 3).into_iter().collect();
     let scored = classify_proposals(&lines, 3, &train, &known);
     // a cost exactly for the laws that reach the kernel, and it agrees with the verdict
     for (v, c) in &scored {

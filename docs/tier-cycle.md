@@ -533,6 +533,29 @@ scripts, while serving uses 200. With both cuts, mining at 200 gives the identic
 cold loop. No chain gets near 40 steps any more, so the two budgets no longer disagree. The override is gone, so the miner's default
 of 200 applies.
 
+**Structural term equality (kept, 2026-10-12).** Terms had been compared, hashed and keyed by their `show()` text at about 40
+sites: rewrite and normal-form memo keys, rule identity (`rule_text`), preference and conflict keys, `PROVING`, the miner's
+candidate dedups and rivals, file dedups, and `classify_proposals`. `Term` now derives `Eq`/`Hash`/`Ord`; rules are keyed by
+`RuleKey = (Term, Term)` and preferences by `Pref = (RuleKey, RuleKey)`, parsed once when read. Rule files are deduped on parsed
+pairs (`parse_rules`, `read_rule_file`), and the driver matches the miner's `RULEMINER drop` lines against the rule file by parsed
+pair, not by trimmed text. `show()` is injective, so the switch is exact. Two string costs left on hot paths were cut too:
+`shared_lemma` takes its key as a closure, so counting mode (`SCORE_ONLY`) never formats it, and the text orders compare through
+`show_cmp`, which writes both sides into reused thread-local buffers instead of allocating (test `show_cmp_is_the_text_order`).
+Both salts' sweeps (mines, own, pooled), run in parallel with HEAD on the same load, give identical rows and identical rule, unit
+and preference files. Wall 690 s against 695 s (salt 1) and 502 s against 512 s (salt 2): the gain is small (the preference stage
+about 10%, the ref mines within 3% either way). The A1/A2 dedup and drop matching, checked separately on salt 1's
+pooled stage, reproduce the rows and all pooled libraries through 9 real drops.
+
+Text stays where it is the data or the order: files, logs, lemma names, and the rewriter's orders (operand sort, comm/assoc,
+permutative rules, candidate sort, `shuffled`'s hash), which the mined rules assume (see "Operand order"); the derived `Ord` only
+makes canonical keys. Parked:
+- Typed lemma keys: `shared_lemma` and `Machine::key` (a `Debug` string) still key the lemma caches by formatted text. A typed key
+  is the structural fix; it matters only outside counting mode (proofs of chosen rules, serving).
+- The miner writing its chosen rules, preferences and drops to an output file, so the driver no longer parses its log.
+- A structural operand order in place of `show_cmp`: rejected, since it would change every mined library.
+- Cached `show()` text on terms: not needed while `show_cmp` does not allocate.
+- `machine.rs` orders candidate terms by `show().len()` as a size proxy.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
@@ -1065,8 +1088,26 @@ there, removing it would at best reach iteration 1's rows, so it was not built. 
 13 / 11 at iteration 0, 7 / 9 after) shows where the room was: cmp3d. Cost of an iteration: about 220-240 s of ref mines and own
 loops, plus 260-280 s of pooled stage, two sweeps at a time.
 
-Not run: iterating from `ABLATE=promoted` (whether the iterations recover PROMOTED, which would let it go); pooled loops on the
-held-out mix3 across iterations (`pooled:mix3`). Not tested by any of this: the promoted rules' precedence (they are tried before
+**From `ABLATE=promoted`: the iterations do not recover PROMOTED (negative, 2026-10-12).** The same procedure (`mines own
+pooled` per iteration, `MINES_WARM` on the previous one) with the promoted rules out, iterations 0-3, both salts in parallel
+(`docs/runs/2026-10-12/scripts/iterate_np.sh`, rows `npit<k>_<salt>`). Total M (salt 1 / salt 2):
+
+| | ref mines | own | pooled | pooled cmp3d text lines | sweep s |
+|---|---|---|---|---|---|
+| iteration 0 (no promoted) | 33 / 29 | 139 / 164 | 125 / 160 | 60 / 48 | 640 / 916 |
+| iteration 1 | 24 / 18 | 115 / 144 | 120 / 140 | 181 / 138 | 389 / 466 |
+| iteration 2 | 24 / 18 | 119 / 140 | 108 / 140 | 495 / 387 | 850 / 923 |
+| iteration 3 | 23 / 18 | 107 / 140 | 107 / 140 | 1393 / 1102 | 5040 / 2808 |
+| HEAD (promoted, iteration 0) | 23 / 21 | 74 / 102 | 58 / 99 | 60 / 47 | |
+
+Salt 2 stops at 140 from iteration 2; salt 1 creeps down (125 to 107) while the sweep slows 8x, the text roughly tripling each
+iteration (each warm base is repeated in every library the next pooling concatenates). By family, iteration 3's pooled loops
+against HEAD's: salt 1 sbo3 58 against 14, cmp3d 37 against 31, add3 12 against 13; salt 2 add3 47 against 22, cmp3d 54 against
+37, sbo3 39 against 40. So PROMOTED stays "learned once": it was mined on the older mul, shl, lt and shr families (above, "Where
+PROMOTED came from"), whose patterns these sweep families' phase-0 streams do not supply, and the iterated sweep (which helps on
+top of PROMOTED, 157 to 142) is not a substitute for it.
+
+Not run: pooled loops on the held-out mix3 across iterations (`pooled:mix3`). Not tested by any of this: the promoted rules' precedence (they are tried before
 the run-time rules, which a warm base is).
 
 ### Learned and fixed parts

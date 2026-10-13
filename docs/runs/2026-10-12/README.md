@@ -27,3 +27,5 @@ and libraries (43 MB) were not kept.
 | `ps_*` | 87a2e8e + `probe_promo.patch`, `PROMOTED_FILE=promo/<order>.rules ORDER=<order>` | `repromote.sh`, `promosweep.sh` | "Operand order" |
 | `ho_*` | 87a2e8e + `heldout_lookahead.patch` | `hosweep.sh` | "Runners-up chosen held out" |
 | `it0_*`, `it1_*`, `it2_*` | the commit adding `MINES_WARM` (iteration 0 = HEAD; k+1 seeded from k's pooled libraries) | `iterate.sh`, `iterate2.sh` | "Promotion as an iterated sweep" |
+| `npit0_*`-`npit3_*` | the same, `ABLATE=promoted` | `iterate_np.sh` | "From `ABLATE=promoted`" |
+| `sq_head_*`, `sq_streq_*` | 22b9280 against structural term equality (before the drop-matching fix), same load | `streq_pair.sh` | "Structural term equality" |

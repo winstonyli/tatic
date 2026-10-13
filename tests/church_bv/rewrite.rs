@@ -1,6 +1,8 @@
 use super::*;
 
-#[derive(Clone, PartialEq)]
+/// Compared and hashed structurally; `show()` is for text (files, logs, lemma names) and the text orders, never for equality.
+/// The derived `Ord` only makes canonical keys (a sorted rule set); the rewriter's orders are on `show()`.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Term {
     V(usize),
     Zero,
@@ -96,12 +98,38 @@ pub fn ops_for(n: usize) -> [Expr; 8] {
 pub const VARS: [&str; 8] = ["x", "y", "z", "u", "v", "w", "p", "q"];
 impl Term {
     pub fn show(&self) -> String {
+        let mut s = String::new();
+        self.show_into(&mut s);
+        s
+    }
+    fn show_into(&self, out: &mut String) {
         match self {
-            Term::V(i) => VARS[*i].into(),
-            Term::Zero => "0".into(),
-            Term::Ones => "-1".into(),
-            Term::Op(o, a, b) => format!("{}({}, {})", OP_INFO[*o].name, a.show(), b.show()),
+            Term::V(i) => out.push_str(VARS[*i]),
+            Term::Zero => out.push('0'),
+            Term::Ones => out.push_str("-1"),
+            Term::Op(o, a, b) => {
+                out.push_str(OP_INFO[*o].name);
+                out.push('(');
+                a.show_into(out);
+                out.push_str(", ");
+                b.show_into(out);
+                out.push(')');
+            }
         }
+    }
+    /// `self.show().cmp(&other.show())` without allocating (two reused buffers): the text order the rewriter sorts operands by.
+    pub fn show_cmp(&self, other: &Term) -> std::cmp::Ordering {
+        thread_local! {
+            static BUFS: std::cell::RefCell<(String, String)> = Default::default();
+        }
+        BUFS.with(|b| {
+            let (x, y) = &mut *b.borrow_mut();
+            x.clear();
+            y.clear();
+            self.show_into(x);
+            other.show_into(y);
+            x.as_str().cmp(y.as_str())
+        })
     }
     /// The term as an expression, with `vals[i]` for variable `i`.
     pub fn eval(&self, ops: &[Expr], n: usize, vals: &[Expr]) -> Expr {
@@ -241,7 +269,7 @@ pub fn terms(nvars: usize, deep: bool) -> Vec<Term> {
     all
 }
 
-pub type NfCache = std::collections::HashMap<(String, u128), Expr>;
+pub type NfCache = std::collections::HashMap<(Term, u128), Expr>;
 
 /// The normal form of `t` on the input `tuple`, from the normal forms of its operands: each subterm is
 /// normalized once per tuple across all terms, and the operands enter already normal.
@@ -254,7 +282,7 @@ pub fn nf_cached(t: &Term, ops: &[Expr], n: usize, tuple: u128, cache: &mut NfCa
             _ => lit(n, mask),
         };
     };
-    let key = (t.show(), tuple);
+    let key = (t.clone(), tuple);
     if let Some(e) = cache.get(&key) {
         return e.clone();
     }
@@ -414,12 +442,13 @@ thread_local! {
 }
 /// `memo` for a closed lemma `(proof, statement)`: the proof is checked once (`ck`, against the lemmas bound before it)
 /// and the lemma is returned as a parameter of that statement, so a law using it is checked against the parameter, not
-/// the proof. `discharge` turns a term over parameters back into a closed one.
-pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
+/// the proof. `discharge` turns a term over parameters back into a closed one. The key is built only when the lemma is used.
+pub fn shared_lemma(key: impl FnOnce() -> String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
     // counting only (`SCORE_ONLY`): the rewritten terms do not depend on the lemma, so it is neither built nor checked
     if SCORE_ONLY.with(|s| s.get()) {
         return (var(0), var(0));
     }
+    let key = key();
     memo(key.clone(), || {
         let (p, s) = build();
         ck(&format!("lemma {key}"), &p, &s);
@@ -457,10 +486,10 @@ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
         Term::Op(o, a, b) => {
             let ((av, aw), (bv, bw)) = (witnessed(a, n, goods), witnessed(b, n, goods));
             let (op, good_op) = match o {
-                0 => (add(n), shared_lemma(format!("good_add{n}"), || good_add(n)).0),
-                4 => (sub(n), shared_lemma(format!("good_sub{n}"), || good_sub(n)).0),
-                6 => (shl1_op(n), shared_lemma(format!("good_shl1{n}"), || good_shl1(n)).0),
-                7 => (shr1_op(n), shared_lemma(format!("good_shr1{n}"), || good_shr1(n)).0),
+                0 => (add(n), shared_lemma(|| format!("good_add{n}"), || good_add(n)).0),
+                4 => (sub(n), shared_lemma(|| format!("good_sub{n}"), || good_sub(n)).0),
+                6 => (shl1_op(n), shared_lemma(|| format!("good_shl1{n}"), || good_shl1(n)).0),
+                7 => (shr1_op(n), shared_lemma(|| format!("good_shr1{n}"), || good_shr1(n)).0),
                 _ => memo(format!("gbit{n}_{o}"), || {
                     let o = *o;
                     let opf = move |p: Expr, q: Expr| match o {
@@ -547,20 +576,28 @@ thread_local! {
     /// While `Some`, `rule_step` records every term it is asked to rewrite: a rule added anywhere in the rule list can change a
     /// rewriting only if its left side matches one of them.
     pub static RULE_TRACE: std::cell::RefCell<Option<Vec<Term>>> = const { std::cell::RefCell::new(None) };
-    /// Learned rule preferences, (winner, loser) as `lhs -> rhs` text: where both rules would rewrite a term, the winner does,
-    /// whatever the order (docs/tier-cycle.md, "Rule order"). Set with the rules they belong to (`set_rule_prefs`).
-    pub static RULE_PREFS: std::cell::RefCell<std::collections::HashSet<(String, String)>> = Default::default();
+    /// Learned rule preferences, (winner, loser): where both rules would rewrite a term, the winner does, whatever the order
+    /// (docs/tier-cycle.md, "Rule order"). Set with the rules they belong to (`set_rule_prefs`).
+    pub static RULE_PREFS: std::cell::RefCell<std::collections::HashSet<Pref>> = Default::default();
 }
 
-/// The preference lines of a rules file, `winner  OVER  loser` with each side a rule `lhs -> rhs` (`parse_rules` skips them),
-/// in the rules' `show()` spelling.
-pub fn parse_prefs(text: &str) -> Vec<(String, String)> {
-    let norm = |r: &str| r.split_once(" -> ").map(|(l, r)| format!("{} -> {}", parse_term(l.trim()).show(), parse_term(r.trim()).show()));
-    text.lines().filter_map(|l| l.split_once("  OVER  ")).filter_map(|(w, l)| Some((norm(w)?, norm(l)?))).collect()
+/// A rule as its two sides, and a preference (winner, loser) between two rules.
+pub type RuleKey = (Term, Term);
+pub type Pref = (RuleKey, RuleKey);
+
+/// `lhs -> rhs`, the spelling of rule files and logs.
+pub fn rule_show((l, r): &RuleKey) -> String {
+    format!("{} -> {}", l.show(), r.show())
+}
+
+/// The preference lines of a rules file, `winner  OVER  loser` with each side a rule `lhs -> rhs` (`parse_rules` skips them).
+pub fn parse_prefs(text: &str) -> Vec<Pref> {
+    let rule = |r: &str| r.split_once(" -> ").map(|(l, r)| (parse_term(l.trim()), parse_term(r.trim())));
+    text.lines().filter_map(|l| l.split_once("  OVER  ")).filter_map(|(w, l)| Some((rule(w)?, rule(l)?))).collect()
 }
 
 /// Installs `prefs` in order: a later preference replaces an earlier one for the same pair the other way round.
-pub fn set_rule_prefs(prefs: Vec<(String, String)>) {
+pub fn set_rule_prefs(prefs: Vec<Pref>) {
     RULE_PREFS.with(|p| {
         let mut p = p.borrow_mut();
         p.clear();
@@ -578,7 +615,7 @@ fn preferences_choose_between_rules_that_both_match() {
     assert_eq!(parse_rules(text).len(), 2, "a preference line is not a rule");
     let t = parse_term("sub(sub(x, y), sub(z, u))");
     let goods: Vec<(Expr, Expr)> = (0..4u32).map(|i| (var(7 - i), var(3 - i))).collect();
-    let step = |prefs: Vec<(String, String)>| {
+    let step = |prefs: Vec<Pref>| {
         let _scope = tatic::kernel::InternScope::enter();
         set_extra_rules(parse_rules(text));
         set_rule_prefs(prefs);
@@ -624,8 +661,8 @@ fn rule_order_does_not_change_rewriting() {
 // undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.
 thread_local! {
     pub static RULE_BUDGET: std::cell::Cell<i64> = const { std::cell::Cell::new(i64::MAX / 2) };
-    /// Rules (`lhs -> rhs`) being proved by `prove_rule` through the rewriter; `rule_step` skips them.
-    pub static PROVING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Rules being proved by `prove_rule` through the rewriter; `rule_step` skips them.
+    pub static PROVING: std::cell::RefCell<Vec<RuleKey>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The mined rule set selected by `RULESET` (`add3_mm`, `mix3_mm`, `add3_nl`, `mix3_nl`, the files in `scripts/data`; sections 84 and 87), in force
@@ -727,7 +764,7 @@ pub const PROMOTED: &[(&str, &str)] = &[
 /// The rules of a rule file: one `lhs -> rhs` per line, repeats once, other lines (and preference lines, `parse_prefs`) ignored.
 pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
     let mut seen = std::collections::HashSet::new();
-    text.lines().filter(|l| !l.contains("  OVER  ") && seen.insert(l.trim())).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+    text.lines().filter(|l| !l.contains("  OVER  ")).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).filter(|r| seen.insert(r.clone())).collect()
 }
 
 /// A pooled rules file has a section per library (a `# library <name>` line, then its rules; `driver::sweep`); a rule two
@@ -959,10 +996,9 @@ pub fn shr_not_law(n: usize) -> Option<(Expr, Expr)> {
     let b = |o: usize, x: Term, y: Term| Term::Op(o, Box::new(x), Box::new(y));
     let (l, r) = shrnot_rule();
     let m = b(SHR1, b(XOR, Term::V(0), Term::Ones), Term::Zero);
-    let key = |(lhs, rhs): (&Term, &Term)| format!("{} -> {}", lhs.show(), rhs.show());
-    let own = key((&l, &r));
-    let notsub = rules().into_iter().find(|x| x.name == "notsub").map(|x| key((&x.lhs, &x.rhs)))?;
-    let prove = |blocked: &[String], t1: &Term, t2: &Term| {
+    let own = (l.clone(), r.clone());
+    let notsub = rules().into_iter().find(|x| x.name == "notsub").map(|x| (x.lhs, x.rhs))?;
+    let prove = |blocked: &[RuleKey], t1: &Term, t2: &Term| {
         let outer = PROVING.with(|p| p.borrow().len());
         PROVING.with(|p| p.borrow_mut().extend(blocked.iter().cloned()));
         let out = rewrite_law(n, 1, t1, t2);
@@ -984,7 +1020,7 @@ pub fn shr_not_law(n: usize) -> Option<(Expr, Expr)> {
 
 /// The law behind a rule: bitwise/shift rules by the per-position prover, the rest by the carry machines.
 pub fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
-    if (l.show(), r.show()) == (shrnot_rule().0.show(), shrnot_rule().1.show()) {
+    if (l, r) == (&shrnot_rule().0, &shrnot_rule().1) {
         shr_not_law(n)
     } else if l.add_free() && r.add_free() {
         let law = bitwise_law_k(n, k, l, r);
@@ -992,8 +1028,7 @@ pub fn prove_rule(n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)
     } else if matches!(l, Term::Op(SHR1, ..)) && matches!(r, Term::Op(SHR1, ..) | Term::Zero) || matches!(r, Term::Op(SHR1, ..)) && matches!(l, Term::Zero) {
         // laws with a `shr1` root are not machines: prove them with the rewriter (which falls back on the bit-0 mask
         // reduction), without the rule being proved, so that it cannot be used in its own proof
-        let key = format!("{} -> {}", l.show(), r.show());
-        PROVING.with(|p| p.borrow_mut().push(key));
+        PROVING.with(|p| p.borrow_mut().push((l.clone(), r.clone())));
         let saved = RULE_BUDGET.with(|b| b.replace(10_000));
         let out = rewrite_law(n, k, l, r);
         RULE_BUDGET.with(|b| b.set(saved));
@@ -1054,7 +1089,7 @@ pub fn tie_greater(l: &Term, r: &Term) -> bool {
                 return OP_INFO[*lo].prec > OP_INFO[*ro].prec;
             }
             for (a, b) in [(la, ra), (lb, rb)] {
-                if a.show() != b.show() {
+                if a != b {
                     return a.size() > b.size() || (a.size() == b.size() && tie_greater(a, b));
                 }
             }
@@ -1089,7 +1124,7 @@ pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
 pub fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
     match (p, t) {
         (Term::V(i), _) => match &sub[*i] {
-            Some(b) => b.show() == t.show(),
+            Some(b) => b == t,
             None => {
                 sub[*i] = Some(t.clone());
                 true
@@ -1214,21 +1249,26 @@ pub static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// Instances of `rule_step` by rule name, for the audit.
 pub static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
 
-fn rule_text(r: &Rule) -> String {
-    format!("{} -> {}", r.lhs.show(), r.rhs.show())
+impl Rule {
+    fn is(&self, (l, r): &RuleKey) -> bool {
+        self.lhs == *l && self.rhs == *r
+    }
+    fn key(&self) -> RuleKey {
+        (self.lhs.clone(), self.rhs.clone())
+    }
 }
 
 /// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms; `print_rule_conflicts` lists them.
-pub static RULE_CONFLICTS: std::sync::Mutex<Option<std::collections::HashMap<(String, String), u64>>> = std::sync::Mutex::new(None);
+pub static RULE_CONFLICTS: std::sync::Mutex<Option<std::collections::HashMap<Pref, u64>>> = std::sync::Mutex::new(None);
 
 pub fn print_rule_conflicts() {
     if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_ref() {
-        let mut v: Vec<_> = m.iter().collect();
-        v.sort_by_key(|(k, c)| (std::cmp::Reverse(**c), (*k).clone()));
-        for ((w, l), c) in &v {
+        let mut v: Vec<_> = m.iter().map(|((w, l), c)| (rule_show(w), rule_show(l), *c)).collect();
+        v.sort_by_key(|(w, l, c)| (std::cmp::Reverse(*c), w.clone(), l.clone()));
+        for (w, l, c) in &v {
             println!("CONFLICT {c} {w}  OVER  {l}");
         }
-        println!("CONFLICTS {} pairs, {} terms", v.len(), v.iter().map(|x| *x.1).sum::<u64>());
+        println!("CONFLICTS {} pairs, {} terms", v.len(), v.iter().map(|x| x.2).sum::<u64>());
     }
 }
 
@@ -1245,18 +1285,18 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
         if ablated(r.name) || !match_pat(&r.lhs, t, &mut sub) {
             return None;
         }
-        if PROVING.with(|p| !p.borrow().is_empty() && p.borrow().contains(&rule_text(r))) {
+        if PROVING.with(|p| p.borrow().iter().any(|k| r.is(k))) {
             return None;
         }
         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
-        let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>()).show();
-        if inst == t.show() {
+        let inst = subst_pat(&r.rhs, &sub.iter().map(|s| s.clone().or(Some(Term::Zero))).collect::<Vec<_>>());
+        if inst == *t {
             return None;
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
         // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
         // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
-        if rule_permutative(&r.lhs, &r.rhs) && inst >= t.show() {
+        if rule_permutative(&r.lhs, &r.rhs) && inst.show_cmp(t).is_ge() {
             return None;
         }
         Some(sub)
@@ -1269,8 +1309,11 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
         }
         // follow preferences from the first rule that fires; at most one hop per rule, so a preference cycle stops
         for _ in 0..all.len() {
-            let me = rule_text(&all[i]);
-            match all.iter().enumerate().find_map(|(j, r)| if j != i && prefer.contains(&(rule_text(r), me.clone())) { fires(r).map(|s| (j, s)) } else { None }) {
+            let winners: Vec<&RuleKey> = prefer.iter().filter(|(_, l)| all[i].is(l)).map(|(w, _)| w).collect();
+            if winners.is_empty() {
+                break;
+            }
+            match all.iter().enumerate().find_map(|(j, r)| if j != i && winners.iter().any(|w| r.is(w)) { fires(r).map(|s| (j, s)) } else { None }) {
                 Some(next) => (i, sub) = next,
                 None => break,
             }
@@ -1278,7 +1321,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
     });
     if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_mut() {
         for r in all.iter().skip(i + 1).filter(|r| fires(r).is_some()) {
-            *m.entry((rule_text(&all[i]), rule_text(r))).or_default() += 1;
+            *m.entry((all[i].key(), r.key())).or_default() += 1;
         }
     }
     let r = &all[i];
@@ -1289,7 +1332,7 @@ pub fn rule_step(n: usize, t: &Term, goods: &[(Expr, Expr)]) -> Option<(Term, Ex
     if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
         return None;
     }
-    let law = shared_lemma(format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
+    let law = shared_lemma(|| format!("rule_{}_{}_{}_{n}", r.name, r.lhs.show(), r.rhs.show()), || prove_rule(n, k, &r.lhs, &r.rhs).unwrap_or_else(|| panic!("rule {} is not provable", r.name)));
     // a pattern variable the left side does not mention is free in the law: any value serves
     let w: Vec<(Expr, Expr)> = sub.iter().map(|s| s.as_ref().map_or(goods[0].clone(), |t| witnessed(t, n, goods))).collect();
     let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
@@ -1317,7 +1360,7 @@ struct Rewritten {
 /// under the same rules is a hit. Calls with other goods (the generalization path adds witnesses) are not cached.
 pub struct RewriteMemo {
     goods_len: usize,
-    map: std::collections::HashMap<(usize, String), std::rc::Rc<Rewritten>>,
+    map: std::collections::HashMap<(usize, Term), std::rc::Rc<Rewritten>>,
 }
 
 impl RewriteMemo {
@@ -1381,7 +1424,7 @@ fn rewrite_memo(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) -> (Te
     if !on {
         return rewrite_uncached(t, n, ops, goods);
     }
-    let key = (n, t.show());
+    let key = (n, t.clone());
     let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
     if let Some(c) = hit.filter(|c| RULE_BUDGET.with(|b| b.get()) >= c.steps) {
         RULE_BUDGET.with(|b| b.set(b.get() - c.steps));
@@ -1459,7 +1502,7 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
             let cands: Vec<Term> = [Term::Zero, Term::Ones].into_iter().chain((0..k).map(Term::V)).collect();
             if let Some(c) = cands.iter().find(|c| c.max_var() < atoms.len().max(1) && truth(c) == want) {
                 let target = if let Term::V(i) = c { atoms[*i].clone() } else { c.clone() };
-                if target.show() != t1.show() {
+                if target != t1 {
                     let w: Vec<(Expr, Expr)> = (0..k).map(|i| atoms.get(i).map_or(goods[0].clone(), |a| witnessed(a, n, goods))).collect();
                     let args = w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect();
                     let law = apps(bitwise_law_k(n, k, &abs, c).0, args);
@@ -1467,13 +1510,19 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
                 }
             }
         }
-        // commutative operands in a fixed order (constants last), by the generic bitwise law
-        let key = |t: &Term| match t {
-            Term::Zero => "~0".to_string(),
-            Term::Ones => "~1".to_string(),
-            _ => t.show(),
+        // commutative operands in a fixed order (text order, constants last: 0 before -1), by the generic bitwise law
+        let constant = |t: &Term| match t {
+            Term::Zero => Some(0),
+            Term::Ones => Some(1),
+            _ => None,
         };
-        if key(&b2) < key(&a2) {
+        let before = match (constant(&b2), constant(&a2)) {
+            (None, None) => b2.show_cmp(&a2).is_lt(),
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (Some(cb), Some(ca)) => cb < ca,
+        };
+        if before {
             let t2 = Term::Op(*o, Box::new(b2.clone()), Box::new(a2.clone()));
             let ((av, aw), (bv, bw)) = (witnessed(&a2, n, goods), witnessed(&b2, n, goods));
             let swap = |x: Term, y: Term| Term::Op(*o, Box::new(x), Box::new(y));
@@ -1486,7 +1535,7 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
     let (bv, bw) = witnessed(&b2, n, goods);
     let assoc = |p: &Term, q: &Term, r: &Term| {
         let ((pv, pw), (qv, qw), (rv, rw)) = (witnessed(p, n, goods), witnessed(q, n, goods), witnessed(r, n, goods));
-        apps(shared_lemma(format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
+        apps(shared_lemma(|| format!("assoc{n}"), || add_assoc_proof(n, false)).0, vec![pv, qv, rv, pw, qw, rw])
     };
     let sum = |p: &Term, q: &Term| Term::Op(ADD, Box::new(p.clone()), Box::new(q.clone()));
     // `x + 0` and `x + ~x` are constant-carry sums (`chain_step`); steps of their own were removed as redundant
@@ -1500,12 +1549,12 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
         // (p + q) + r = p + (q + r)
         Some((sum(p, &sum(q, &b2)), assoc(p, q, &b2)))
     } else if let (false, Term::Op(ADD, bp, bq)) = (ablated("assoc") || ablated("comm"), &b2) {
-        if bp.show() < a2.show() {
+        if bp.show_cmp(&a2).is_lt() {
             // a + (b + c) = (a + b) + c = (b + a) + c = b + (a + c)
             let (a_, b_, c_) = (&a2, &**bp, &**bq);
             let ((av2, aw2), (bv2, bw2), (cv2, _)) = (witnessed(a_, n, goods), witnessed(b_, n, goods), witnessed(c_, n, goods));
             let (ab, ba) = (witnessed(&sum(a_, b_), n, goods).0, witnessed(&sum(b_, a_), n, goods).0);
-            let comm = apps(shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av2, bv2, aw2, bw2]);
+            let comm = apps(shared_lemma(|| format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av2, bv2, aw2, bw2]);
             let swap = cong_n(&bv_ty(n), &bv_ty(n), &ops[0], &[ab.clone(), cv2.clone()], &[ba.clone(), cv2.clone()], vec![comm, refl(cv2)]);
             let (acc, bc, a_bc) = (witnessed(&sum(&sum(a_, b_), c_), n, goods).0, witnessed(&sum(&sum(b_, a_), c_), n, goods).0, witnessed(&t1, n, goods).0);
             let target = sum(b_, &sum(a_, c_));
@@ -1516,8 +1565,8 @@ fn rewrite_uncached(t: &Term, n: usize, ops: &[Expr], goods: &[(Expr, Expr)]) ->
         } else {
             None
         }
-    } else if !ablated("comm") && b2.show() < a2.show() {
-        Some((sum(&b2, &a2), apps(shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv, aw, bw])))
+    } else if !ablated("comm") && b2.show_cmp(&a2).is_lt() {
+        Some((sum(&b2, &a2), apps(shared_lemma(|| format!("comm{n}"), || add_comm_proof(n, false)).0, vec![av, bv, aw, bw])))
     } else {
         None
     };
@@ -1536,7 +1585,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
     match t {
         Term::Zero | Term::Ones => Some(t.clone()),
         Term::V(_) | Term::Op(ADD | SUB | SHL1 | SHR1, ..) => {
-            let i = match atoms.iter().position(|a| a.show() == t.show()) {
+            let i = match atoms.iter().position(|a| a == t) {
                 Some(i) => i,
                 None => {
                     atoms.push(t.clone());
@@ -1557,7 +1606,7 @@ thread_local! {
 
 /// `t` with every occurrence of the subterm `x` replaced by `with`.
 pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
-    if t.show() == x.show() {
+    if t == x {
         return with.clone();
     }
     match t {
@@ -1572,7 +1621,7 @@ pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
 pub fn prove_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: &Term) -> Option<Expr> {
     let vals: Vec<Expr> = goods.iter().map(|g| g.0.clone()).collect();
     let ev = |t: &Term| t.eval(ops, n, &vals);
-    if a.show() == b.show() {
+    if a == b {
         return Some(refl(ev(a)));
     }
     // each step below can be switched off: `ABLATE=eq_truth,eq_pos,shrmask`
@@ -1657,11 +1706,11 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
         if matches!(orig, Term::Zero) {
             // `0 = shr1 0 = shr1 (0 & M)`: the second step is a congruence on `0 = 0 & M` by the rewriter
             let (r, pr) = rewrite(&Term::Op(AND, Box::new(Term::Zero), Box::new(mask.clone())), n, ops, goods);
-            if r.show() != "0" {
+            if r != Term::Zero {
                 return None;
             }
             let (target, step) = rule_step(n, &shr(&Term::Zero), goods)?;
-            if target.show() != "0" {
+            if target != Term::Zero {
                 return None;
             }
             let z = ev(&Term::Zero);
@@ -1672,7 +1721,7 @@ pub fn shr_mask_eq(n: usize, ops: &[Expr], goods: &[(Expr, Expr)], a: &Term, b: 
             let zero_to_shr0 = sym(&bv, &ev(&shr(&Term::Zero)), &z, step);
             Some(trans_proof(&bv, &z, &ev(&shr(&Term::Zero)), &ev(&shr_and0), zero_to_shr0, c))
         } else {
-            let law = shared_lemma(format!("shrmask{n}"), || {
+            let law = shared_lemma(|| format!("shrmask{n}"), || {
                 let (l, r) = (shr(&Term::V(0)), shr(&Term::Op(AND, Box::new(Term::V(0)), Box::new(Term::Op(SHL1, Box::new(Term::Ones), Box::new(Term::Zero))))));
                 prove_rule(n, 1, &l, &r).expect("shrmask law")
             });
@@ -1707,7 +1756,7 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
     let (r1, p1, r2, p2, mid) = if lt_roots {
         // `rewrite` normalizes the operands and applies the root rules; equal results close by `refl`, `lt` roots with
         // provable operands by congruence, the rest by the `lt` machine proof of the rewritten pair
-        let mid = if r1.show() == r2.show() {
+        let mid = if r1 == r2 {
             refl(ev(&r1))
         } else {
             let by_operands = if let (Term::Op(LT, a2, b2), Term::Op(LT, c2, d2)) = (&r1, &r2) {
@@ -1806,7 +1855,7 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
     let scopes = || PARAMS.with(|c| c.borrow().as_ref().map_or(0, |(_, b)| b.len()));
     let before = scopes();
     let (l, r) = (add(op(4, v(0), v(1)), v(2)), add(op(4, v(2), v(1)), v(0)));
-    let (pr, sr) = shared_lemma("nested".into(), || prove_rule(2, 3, &l, &r).expect("rule"));
+    let (pr, sr) = shared_lemma(|| "nested".into(), || prove_rule(2, 3, &l, &r).expect("rule"));
     assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
     let all = apps(lam(sm.clone(), lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
     ck("discharged", &discharge(all), &sm);

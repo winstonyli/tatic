@@ -38,13 +38,13 @@ impl Machine {
     /// Any term over variables and constants: the machine computes it one bit position at a time.
     pub fn parse(t: &Term) -> Option<Machine> {
         // equal subterms are one node (so a chain of delay cells serves every shift of the same operand)
-        fn go(t: &Term, m: &mut Machine, seen: &mut std::collections::HashMap<String, Src>) -> Option<Src> {
+        fn go(t: &Term, m: &mut Machine, seen: &mut std::collections::HashMap<Term, Src>) -> Option<Src> {
             match t {
                 Term::Op(o, a, b) => {
                     if *o == SHR1 {
                         return None; // a right shift reads a later position: not a left-to-right machine
                     }
-                    let key = t.show();
+                    let key = t.clone();
                     if let Some(src) = seen.get(&key) {
                         return Some(*src);
                     }
@@ -327,13 +327,13 @@ pub fn carry_cap() -> usize {
 thread_local! {
     /// `add_tree_law` results (a closed proof, or none) by width, variable count and the two terms: the rewriter asks for the same
     /// pair again for every law and every mined candidate that reaches the same subterm.
-    static TREE_LAWS: std::cell::RefCell<std::collections::HashMap<(usize, usize, String, String), Option<(Expr, Expr)>>> = Default::default();
+    static TREE_LAWS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<(Expr, Expr)>>> = Default::default();
 }
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, with a carry encoding: found by
 /// `moore_encoding` (first over all carry states, then over the reachable ones); `None` when there is none.
 pub fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
-    let key = (n, k, t1.show(), t2.show());
+    let key = (n, k, t1.clone(), t2.clone());
     if let Some(hit) = TREE_LAWS.with(|c| c.borrow().get(&key).cloned()) {
         return hit;
     }
@@ -429,7 +429,7 @@ fn add_tree_law_uncached(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Ex
         if CLOSED.with(|c| c.borrow().contains_key(&key)) {
             LEMMA_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        shared_lemma(key, || {
+        shared_lemma(|| key, || {
             let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
             let body = |v: &[Expr]| {
                 let (a, b) = ab(v);
@@ -879,7 +879,7 @@ pub fn conjecture_miner() {
     let v = |i: usize| Term::V(i);
     let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
     let same = |a: &Term, b: &Term| {
-        classes.values().any(|c| c.iter().any(|&i| ts[i].show() == a.show()) && c.iter().any(|&i| ts[i].show() == b.show()))
+        classes.values().any(|c| c.iter().any(|&i| ts[i] == *a) && c.iter().any(|&i| ts[i] == *b))
     };
     let (p0, s0) = add_zero_proof(n, 0);
     let (p1, s1) = add_identity_proof(n, 0, true);
