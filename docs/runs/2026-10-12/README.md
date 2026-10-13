@@ -44,6 +44,7 @@ and libraries (43 MB) were not kept.
 | `o3s_head_*`, `o3s_o3_*` | e9a8be1 against three rounds kept open, one run at a time (o3, head on salt 1; head, o3 on salt 2) | `o3_seq.sh` | "Three rounds kept open" |
 | `vcs_head_*`, `vcs_vc_*` | 84242e0 against winner verdicts kept in the sweep's lemma file (reverted, no patch kept), one run at a time | `vc_seq.sh` | "Winner verdicts kept across the sweep" |
 | `dds_head_*`, `dds_dd_*` | 84242e0 against case trees at nv = 9 (`DDMIN` default 10), one run at a time | `dd_seq.sh` | "Case trees at nv = 9" |
+| `mos_head_*`, `mos_new_*` | 50ba04f (as the prototype with `OLDMOTIVE=1`) against one shared motive per case tree, one run at a time | `mot_seq.sh` | "One motive for a case tree" |
 | `lsp_A`, `lsp_B` | 84072cd + a temporary `LEMMA_SWEEP` switch (reverted, no patch kept), with (A) and without (B) it; `own pooled` on one set of salt-1 libraries | `lemma_sweep_probe.sh` | "A lemma file shared by a whole sweep" |
 | `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |

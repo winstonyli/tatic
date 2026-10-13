@@ -961,6 +961,20 @@ plus check) by nv and by whether a diagram proved it (`lemma_dd`, used at `nv >=
   36 s (salt 2); summed `own` mine time 7.7 against 15.8 s and 3.8 against 4.1 s.
 - The case lemmas at nv = 7 are now the largest proof cost: 7-8.6 s per sweep, about 0.035 s each.
 
+**One motive for a case tree (2026-10-13).** `lemma_n` proves `body` by splitting on every bit, so a tree over k bits has
+2^k - 1 internal nodes. Each node used to carry its own motive, `\y. body(args)`, with the bits fixed so far as literals.
+Checking a node means typing its motive, so the kernel typed `body`, a large `Id` over gate terms, once per node. Now every
+motive applies one closed `P = \v_0..v_(k-1). body(v)` to its arguments (`\y. P args`). The kernel types `P` once, and its
+pointer is shared, so each node's motive is a cheap application. The statement and the leaves are unchanged, and so is the
+kernel: a node's branch types are `P` applied to literals, which beta-reduce to the old motives' bodies.
+- `proof_cost_split` (cmp3d, the 37-rule own library from "Case trees at nv = 9", 300 laws), five alternating runs with an
+  `OLDMOTIVE=1` switch in the prototype (removed). The rule proofs' build, which includes their case-lemma checks, won every
+  pair: 8.3-10.9 s (best 8.27) against 11.2-14.4 s (best 11.25), about 1.36x. Node counts and occurrences were identical.
+- Sequential pair against 50ba04f (`scripts/mot_seq.sh`, rows `mos_*`; the head side is the prototype with
+  `OLDMOTIVE=1`, which runs HEAD's motives; CPU 22% at launch, RTP off): rows, preferences and all 27 rule and unit files
+  identical on both salts. Wall 25 against 31 s (salt 1) and 23 against 24 s (salt 2); summed `own` mine time 4.9 against
+  8.1 s and 2.9 against 3.2 s.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's

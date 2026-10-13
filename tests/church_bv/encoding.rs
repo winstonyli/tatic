@@ -1842,9 +1842,10 @@ pub fn or_disjoint_scaling() {
 // two equalities carried from the previous bit.
 
 /// Closed `Pi v_0..v_(k-1). GoodBool v_0 -> .. -> GoodBool v_(k-1) -> body(v)`, by case analysis on all `k`
-/// bits; `leaf(values)` proves `body(literal bits)`.
+/// bits; `leaf(values)` proves `body(literal bits)`. Every node's motive applies one closed `P = \v. body(v)`, so the
+/// kernel types `body` once rather than at each of the 2^k - 1 nodes (docs/tier-cycle.md, "One motive for a case tree").
 pub fn lemma_n(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) -> Expr) -> (Expr, Expr) {
-    fn elim(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) -> Expr, vals: &mut Vec<Option<bool>>) -> Expr {
+    fn elim(k: usize, p: &Expr, leaf: &dyn Fn(&[bool]) -> Expr, vals: &mut Vec<Option<bool>>) -> Expr {
         let Some(j) = vals.iter().position(|v| v.is_none()) else {
             return leaf(&vals.iter().map(|v| v.unwrap()).collect::<Vec<_>>());
         };
@@ -1852,15 +1853,19 @@ pub fn lemma_n(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) 
         let args: Vec<Expr> = (0..k)
             .map(|m| if m == j { var(0) } else { vals[m].map_or_else(|| var((2 * k - m) as u32), bit) })
             .collect();
-        let motive = lam(bool0(), body(&args));
+        let motive = lam(bool0(), apps(p.clone(), args));
         vals[j] = Some(true);
-        let on_true = elim(k, body, leaf, vals);
+        let on_true = elim(k, p, leaf, vals);
         vals[j] = Some(false);
-        let on_false = elim(k, body, leaf, vals);
+        let on_false = elim(k, p, leaf, vals);
         vals[j] = None;
         app3(var((k - 1 - j) as u32), motive, on_true, on_false)
     }
-    let mut proof = elim(k, body, leaf, &mut vec![None; k]);
+    let mut p = body(&(0..k).map(|m| var((k - 1 - m) as u32)).collect::<Vec<_>>());
+    for _ in 0..k {
+        p = lam(bool0(), p);
+    }
+    let mut proof = elim(k, &p, leaf, &mut vec![None; k]);
     for _ in 0..k {
         proof = lam(app(good_bool(), var(k as u32 - 1)), proof);
     }
