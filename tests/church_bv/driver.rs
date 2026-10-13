@@ -16,7 +16,9 @@
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
-//! the loop starts and ends); LEMMA_RECHECK=1 audits it.
+//! the loop starts and ends); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
+//! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
+//! `CHECK_LAWFILE`).
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules), mine_<name>.log and serve_<skip>.log. The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=..`.
@@ -108,6 +110,16 @@ fn machine_state(when: &str) {
     eprintln!("machine at {when}: {}", text.lines().find(|l| l.contains("machine state:")).unwrap_or(""));
 }
 
+/// Writes to `path` the laws a child with `env` (over this process's environment) would take from `family`'s sequence, as
+/// `lhs = rhs` lines for `RULEMINER_LAWFILE`/`CHECK_LAWFILE`, and returns the variable that passes them. The driver builds a
+/// family's law pool once (`family_laws` keeps it) where every child used to rebuild it: 35% of a sweep's loops
+/// (docs/tier-cycle.md).
+fn write_laws(family: &str, env: &[(String, String)], path: &Path, var: &str) -> (String, String) {
+    let get = |k: &str, d: usize| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| env_or(k, d), |(_, v)| v.parse().unwrap());
+    std::fs::write(path, laws_text(&family_laws(family, &get, 4, family_vars(family), 7))).unwrap();
+    (var.to_string(), path.display().to_string())
+}
+
 fn run_loop(cfg: &LoopCfg) -> Summary {
     let (out, rules, lemmas) = (&cfg.out, cfg.out.join("rules.txt"), cfg.out.join("lemmas.bin"));
     std::fs::create_dir_all(out).unwrap();
@@ -132,7 +144,7 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
     let count = || parse_rules(&std::fs::read_to_string(&rules).unwrap()).len();
     let mine = |name: &str, skip: usize, laws: usize| {
         let log = out.join(format!("mine_{name}.log"));
-        let env = with(&[
+        let mut env = with(&[
             ("RULEMINER_PERM", s(1)),
             ("RULEMINER_THREADS", s(cfg.threads)),
             ("RULEMINER_ROUNDS", s(cfg.rounds)),
@@ -140,6 +152,7 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
             ("RULEMINER_LAWS", s(laws)),
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
+        env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
         assert!(child("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
         // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
         let text = std::fs::read_to_string(&log).unwrap();
@@ -160,7 +173,8 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
     // (M, laws, laws that used up the rule budget) of the batch at `skip`
     let serve = |skip: usize| {
         let log = out.join(format!("serve_{skip}.log"));
-        let env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
+        let mut env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
+        env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_serve_{skip}.txt")), "CHECK_LAWFILE"));
         child("search::rule_set_kernel_check", &env, &log);
         // CHECKED <n> laws kernel-checked (<k> with no whole-term machine proof), <p> not proved, <x> used up the rule budget
         let text = std::fs::read_to_string(&log).unwrap();

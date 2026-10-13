@@ -542,10 +542,10 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
             .take(env("RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
-    } else if let Some(pool) = pool3(family, env) {
+    } else if let Some(conj) = pool3_conjectures(family, env, n) {
         // `RULEMINER_SHUFFLE=<salt>` (0 = off): the sorted sequence is reordered by a hash of each law, so a window of it (a batch, a
         // stride phase) samples the whole family instead of one lexicographic range
-        shuffled(pool_conjectures(pool, n, 3, 0), env("RULEMINER_SHUFFLE", 0))
+        shuffled((*conj).clone(), env("RULEMINER_SHUFFLE", 0))
             .into_iter()
             .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
             .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(a, b) == env("RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
@@ -562,6 +562,48 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
     } else {
         mul_laws(max)
     }
+}
+
+/// The conjectures of a three-variable family's pool (`pool3`), built once per process for each family, `RULEMINER_DEEP3` and
+/// width: the driver takes every child's law window from it (`driver::write_laws`), where each child used to rebuild it (35%
+/// of a sweep's loops, docs/tier-cycle.md).
+fn pool3_conjectures(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
+    type Memo = Vec<((String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>)>;
+    static MEMO: std::sync::Mutex<Memo> = std::sync::Mutex::new(Vec::new());
+    let key = (family.to_string(), env("RULEMINER_DEEP3", 0), n);
+    let mut memo = MEMO.lock().unwrap();
+    if let Some((_, c)) = memo.iter().find(|(k, _)| *k == key) {
+        return Some(c.clone());
+    }
+    let conj = std::sync::Arc::new(pool_conjectures(pool3(family, env)?, n, 3, 0));
+    memo.push((key, conj.clone()));
+    Some(conj)
+}
+
+/// A law window written as a law file (`driver::write_laws`) and read back (`read_laws`) gives the same laws, names included.
+#[test]
+pub fn law_windows_survive_a_law_file() {
+    let env = |k: &str, d: usize| match k {
+        "RULEMINER_SKIP" => 40,
+        "RULEMINER_LAWS" => 60,
+        "RULEMINER_SHUFFLE" => 1,
+        "RULEMINER_DEEP3" => 1,
+        _ => d,
+    };
+    for family in ["add3", "cmp3d"] {
+        let laws = family_laws(family, &env, 4, 3, 7);
+        assert_eq!(laws.len(), 60);
+        let path = std::env::temp_dir().join(format!("law_window_{family}_{}.txt", std::process::id()));
+        std::fs::write(&path, laws_text(&laws)).unwrap();
+        let back = read_named_laws(path.to_str().unwrap());
+        std::fs::remove_file(&path).unwrap();
+        assert!(back == laws, "{family}");
+    }
+}
+
+/// Laws as the `lhs = rhs` lines `read_laws` reads.
+pub fn laws_text(laws: &[(String, Term, Term)]) -> String {
+    laws.iter().map(|(_, a, b)| format!("{} = {}\n", a.show(), b.show())).collect()
 }
 
 /// `RULEMINER_SKIP` windows: consecutive windows tile the law sequence, and a window past the end is empty.
@@ -779,7 +821,7 @@ pub fn rule_miner() {
     // RULEMINER_LAWFILE=<file>: mine from these `lhs = rhs` lines (a proposer's band, docs/tier-cycle.md) instead of the family's
     // window; RULEMINER_FAMILY still sets the variable count
     let laws = match std::env::var("RULEMINER_LAWFILE") {
-        Ok(f) => read_laws(&f).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect(),
+        Ok(f) => read_named_laws(&f),
         Err(_) => family_laws(&family, &env_or::<usize>, n, nv, max),
     };
     phase("law building");
@@ -2126,13 +2168,18 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
 }
 
 /// The setup of the rule-set check tests: the `CHECK_RULES` installed as extra rules (with their preferences), `CHECK_FAMILY`'s
-/// variable count, and the laws of the family (sized by the `RULEMINER_*` vars) that are plausible at widths 1-6.
+/// variable count, and the laws of the family (sized by the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as
+/// the driver passes them) that are plausible at widths 1-6.
 fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
     let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
     let text = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap();
     let rules = parse_rules(&text);
     let kv = family_vars(&family);
-    let laws = family_laws(&family, &env_or::<usize>, 4, kv, 7).into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
+    let laws = match std::env::var("CHECK_LAWFILE") {
+        Ok(f) => read_named_laws(&f),
+        Err(_) => family_laws(&family, &env_or::<usize>, 4, kv, 7),
+    };
+    let laws = laws.into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
     set_extra_rules(rules.clone());
     set_rule_prefs(parse_prefs(&text));
     (rules, kv, laws)
@@ -2527,6 +2574,11 @@ pub fn ngram_lines(text: &str, order: usize, n: usize, seed: u64) -> Vec<String>
 /// The `lhs = rhs` lines of a file as term pairs.
 pub fn read_laws(path: &str) -> Vec<(Term, Term)> {
     std::fs::read_to_string(path).unwrap().lines().filter_map(|l| l.split_once(" = ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
+}
+
+/// `read_laws` with each law named as `family_laws` names it.
+pub fn read_named_laws(path: &str) -> Vec<(String, Term, Term)> {
+    read_laws(path).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
 }
 
 /// `t` with variable `v` replaced by `r`.

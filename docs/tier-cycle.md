@@ -753,6 +753,15 @@ hit 252 of their 1002 lemmas (without it: 0, so within a loop the second mine us
 against 95 s, `own` 31 against 40 s, `pooled` 20 against 19 s; the file ends at 316 KB. One pair, so the 10 s is a rough
 size. Smaller than removing the law-pool rebuild (35% of the samples above).
 
+**Law files from the driver (2026-10-12).** The driver writes each child's laws (its window of the family's sequence) to
+`LOOP_OUT/laws_<mine|serve>_<name>.txt` and passes it as `RULEMINER_LAWFILE` (the miner already read it) or the new
+`CHECK_LAWFILE`; `family_laws` keeps each three-variable family's pool conjectures per process (`pool3_conjectures`, keyed by
+family, `RULEMINER_DEEP3` and width), so the driver builds a family's pool once and every child reads 100 lines. Test
+`law_windows_survive_a_law_file`: a window written and read back gives the same laws and names. Pair sweep against 3ac4e20,
+same load (CPU 11% at launch, RTP off), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/lfp_*`): rows, preferences
+and all 27 rule and unit files identical on both salts; wall 78 against 104 s (salt 1) and 59 against 84 s (salt 2), 25-30%
+less (`own` 20/10 against 32/17 s, `pooled` 8/7 against 15/14 s).
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
