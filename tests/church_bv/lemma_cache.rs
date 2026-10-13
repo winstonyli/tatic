@@ -1,5 +1,5 @@
-//! The lemma statements a loop's processes share (`LEMMA_CACHE=<file>`, set by `driver::run_loop`): a process binds a
-//! statement an earlier process of the loop checked without building or checking its proof again. Sound because a lemma is
+//! The lemma statements a loop's processes share, or a whole sweep's (`LEMMA_CACHE=<file>`, set by `driver::run_loop`): a
+//! process binds a statement an earlier process checked without building or checking its proof again. Sound because a lemma is
 //! only ever used as a parameter of its statement (`rewrite::shared_lemma`) and every statement in the file was checked by
 //! a process of this same build (the header holds a hash of the exe); a wrong key can only make a later check fail.
 //! `LEMMA_RECHECK=1` builds and checks every lemma anyway and asserts the file's statement equals the built one.

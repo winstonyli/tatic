@@ -746,7 +746,7 @@ profiler, 102k samples, 39 mine and 66 serving processes (serving with `CHECK_FA
   gained 8-11% of a sweep rather than the 21% of the cmp3d ref mine.
 - In the mines, kernel checks are 36% (`shared_lemma` 16%, `prove_rule` 17%), interning 18%, rewriting 6%.
 
-**A lemma file shared by a whole sweep (probe, reverted).** A temporary `LEMMA_SWEEP=<file>` in `run_loop` (no deletes; one
+**A lemma file shared by a whole sweep (probe, reverted; built after the law files, see "One lemma file per sweep").** A temporary `LEMMA_SWEEP=<file>` in `run_loop` (no deletes; one
 file for every loop) at 84072cd; the `own` and `pooled` stages with and without it, side by side on the same libraries (CPU
 30% at launch, RTP off; `docs/runs/2026-10-12/rows/lsp_*`, `scripts/lemma_sweep_probe.sh`): rows identical; the loops' mines
 hit 252 of their 1002 lemmas (without it: 0, so within a loop the second mine uses none of the first's lemmas); wall 85
@@ -761,6 +761,14 @@ family, `RULEMINER_DEEP3` and width), so the driver builds a family's pool once 
 same load (CPU 11% at launch, RTP off), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/lfp_*`): rows, preferences
 and all 27 rule and unit files identical on both salts; wall 78 against 104 s (salt 1) and 59 against 84 s (salt 2), 25-30%
 less (`own` 20/10 against 32/17 s, `pooled` 8/7 against 15/14 s).
+
+**One lemma file per sweep (2026-10-12).** `sweep` gives every loop the same `SWEEP_OUT/lemmas.bin` (deleted at the sweep's
+start and end); `loop_stream` keeps one per loop. The trust argument is unchanged: the driver and all its children are one
+exe, so every statement in the file was checked by this build, and the loops run one after another, so there is still one
+writer at a time. Pair sweep against ed00b7a, same load (CPU 15% at launch, RTP off), `SWEEP="mines own pooled"`
+(`docs/runs/2026-10-12/rows/slp_*`, `scripts/sl_pair.sh`): rows, preferences and all 27 rule and unit files identical on both
+salts; wall 63 against 76 s (salt 1) and 58 against 64 s (salt 2), 9-17% less (`own` 11/10 against 20/11 s summed over its
+rows; `pooled` loops now each take under a second). About 12 s of each sweep's wall is the driver's two machine-state checks.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

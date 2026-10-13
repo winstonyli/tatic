@@ -16,7 +16,7 @@
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
-//! the loop starts and ends); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
+//! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas.bin across all its loops instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
 //! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
 //! `CHECK_LAWFILE`).
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
@@ -120,10 +120,10 @@ fn write_laws(family: &str, env: &[(String, String)], path: &Path, var: &str) ->
     (var.to_string(), path.display().to_string())
 }
 
-fn run_loop(cfg: &LoopCfg) -> Summary {
-    let (out, rules, lemmas) = (&cfg.out, cfg.out.join("rules.txt"), cfg.out.join("lemmas.bin"));
+/// One loop; its children share the lemma file `lemmas`, which the caller owns (creates nothing, deletes it when done).
+fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
+    let (out, rules) = (&cfg.out, cfg.out.join("rules.txt"));
     std::fs::create_dir_all(out).unwrap();
-    let _ = std::fs::remove_file(&lemmas);
     let s = |v: usize| v.to_string();
     let mut common: Vec<(String, String)> = [
         ("RULEMINER_FAMILY", cfg.family.clone()),
@@ -204,7 +204,6 @@ fn run_loop(cfg: &LoopCfg) -> Summary {
             mine(&r.to_string(), skip, cfg.b);
         }
     }
-    let _ = std::fs::remove_file(&lemmas);
     let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted };
     println!("mode={} B={} K={} offset={} total_M={} rules={} exhausted={}", cfg.mode, cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted);
     sum
@@ -218,7 +217,10 @@ fn loop_stream() {
     if states {
         machine_state("start");
     }
-    run_loop(&cfg);
+    let lemmas = cfg.out.join("lemmas.bin");
+    let _ = std::fs::remove_file(&lemmas);
+    run_loop(&cfg, &lemmas);
+    let _ = std::fs::remove_file(&lemmas);
     if states {
         machine_state("end");
     }
@@ -261,6 +263,9 @@ fn sweep() {
     // `MINES_WARM=<sweep dir>`: each ref mine starts from that sweep's pooled library for its family, where there is one
     // (docs/tier-cycle.md, "Promotion as an iterated sweep": one iteration lowers the best loops 157 to 142, a second adds nothing)
     let mines_warm = |fam: &str| std::env::var("MINES_WARM").ok().map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
+    // one lemma file for every loop of the sweep: all its processes run this exe, so every statement in it was checked by this build
+    let lemmas = out.join("lemmas.bin");
+    let _ = std::fs::remove_file(&lemmas);
     machine_state("start");
     for stage in stages.split_whitespace() {
         let (name, fams) = stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
@@ -271,7 +276,7 @@ fn sweep() {
                 let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
                 let cfg = LoopCfg { stride, split, b, k: 4, threads: 2, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) };
                 let t0 = std::time::Instant::now();
-                let s = run_loop(&cfg);
+                let s = run_loop(&cfg, &lemmas);
                 append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
             }
             continue;
@@ -294,7 +299,7 @@ fn sweep() {
                 cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
                 cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
                 let t0 = std::time::Instant::now();
-                let s = run_loop(&cfg);
+                let s = run_loop(&cfg, &lemmas);
                 append(&out.join("pooled_prefs.tsv"), &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
             }
         }
@@ -318,12 +323,13 @@ fn sweep() {
                     let dir = out.join(format!("{}_{fam}_{p}_{src}", stage.replace(':', "_")));
                     let cfg = LoopCfg { stride, sphase: p, warm: warm.clone(), ..base("loop", dir, fam) };
                     let t0 = std::time::Instant::now();
-                    let s = run_loop(&cfg);
+                    let s = run_loop(&cfg, &lemmas);
                     let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
                     append(&tsv, &format!("{fam}\t{stride}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\n", s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted));
                 }
             }
         }
     }
+    let _ = std::fs::remove_file(&lemmas);
     machine_state("end");
 }
