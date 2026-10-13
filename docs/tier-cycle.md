@@ -568,8 +568,28 @@ are 1.7% and 5.3% of the mine. The cost is kernel term construction:
   kernel check, 10-13% each rebuilding the constant gate encodings (`bool0`, `xor_`, `and_`).
 - `hc::intern`'s own frames are 45% of all samples (the table lookup inside `intern_as`, plus 2-5% table growth).
 
-Not yet tried: a counting mode that builds no proof terms at all (the rewriter returns only the term), per-thread caches of the
-constant encodings and `ops_for(n)`, and a look at `hc::intern`'s table (hash, presizing).
+One mechanism covers most of this: a rewrite returns its term plus a proof *plan* (the steps as data), and a compiler with a
+per-width context (`ops`, literals, `good_*`, gate encodings, built once) turns the plan into a kernel term only where a proof is
+wanted (serving, winner proofs). Counting then builds no proof terms, the constant caches live in the context instead of in
+scattered per-function caches, the lemma keys there can be typed (the parked typed-key item), and the miner's intern table holds
+only real work. `hc::intern`'s per-lookup cost stays a separate kernel item.
+
+**Decisions that read kernel terms (2026-10-12).** The plan only works if no rewriter decision depends on a proof term. Five sites
+do, all the same shape: Boolean evaluation by building Church terms and kernel-normalizing them.
+- `raw_table` (`machine.rs`): the carry machines' truth tables for `moore_encoding`, through `Machine::step` over `GoodOps`
+  (rebuilt by `GoodOps::new()` on every `add_tree_law` call) and `normalize(..) == t()`. It decides whether `add_tree_law` (so
+  `tree_step` and `prove_eq`'s machine) finds a proof.
+- The collapse step in `rewrite_uncached`: a bitwise node's truth table, `normalize(t.bit(..))`.
+- `prove_eq`'s `eq_truth`: the same check for equality.
+- `find_constant_carry` (`chain_step`): the constant carry, by `normalize`.
+- `nf_cached`/`fingerprint`: only the ignored `conjecture_miner` probe; it also hashes `Debug` text.
+
+Nothing else on the rewrite path reads a term: `rule_step` gets its lemmas through `shared_lemma` (placeholders when counting),
+winner proofs run outside scoring, and the integer screens (`plausibly_equals`, `refute`) already use `Term::interp`. Plan:
+first decide at these sites by plain evaluation (a `bool` `Term::bit`, a `bool` implementation of `Gates` for `raw_table`, so
+`GoodOps` is built only for proofs); rows must stay identical, since the Church gates compute the same Boolean functions. Then the
+proof plans. Also left: `add_tree_law`'s `guarded` formats its lemma key eagerly (for `LEMMA_HITS`), so counting still builds
+that string (under 0.05% of the profile; part of the typed-key item).
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
