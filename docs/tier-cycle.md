@@ -1342,6 +1342,28 @@ The lookup's own time did not shrink: a hit still reads the candidate node, at a
 bump its count, so the cost is that one miss per hit rather than the table's size. Growth fell by a quarter, most of it
 the node table's. Freeing the table is now mostly dropping its nodes (`Rc::drop_slow` 4.3%), not its arrays.
 
+**Rebuilt nodes equal to their source (negative, 2026-10-13).** Probe (reverted, no patch kept) of the node-table
+interns `inst_rec` makes, same run at f73a52e:
+
+| Nodes | Interns | Found in the table | Result is the source node itself |
+|---|---|---|---|
+| small (no memo, height ≤ 2) | 5.49 M | 90% | 1.15 M (21%) |
+| memoized | 3.28 M | 52% | 204 |
+
+`Table::keep` stayed empty: every memo source was canonical. The 1.15 M can be recognized without a probe: when the
+rebuilt node has its source's key and the source is canonical, the table's node is the source. `hc::intern_from`
+(reverted, no patch kept) did that. Against f73a52e, 24 alternating pairs: won 8, summed CPU 134.2 against 126.2 s,
+median pair +0.07 s. The probe it saves lands on the source, which the walk has just read and is cached, so it was cheap;
+the key comparison costs on every intern.
+
+**A per-scope arena for the table's nodes (survey, not viable, 2026-10-13).** Freeing the table is 6% of the profile;
+an arena freed in bulk would skip touching each node. Probe (reverted, no patch kept), same run: the one outermost scope
+interned 3.17 M nodes, and 0.49 M of them (16%) were still alive after its table dropped, held by the proofs, types and
+caches the scope returned. Those are ordinary `Rc`s pointing into the scope's memory, so the arena could not be freed
+while any is alive, and they cannot be moved. Dropping the table took 270 ms of the 6 s run. Also ruled out: dropping
+it on another thread (`Rc` is not `Send`) and keeping it across scopes (under 1%, above). Fewer nodes interned is the
+only way left to shrink it.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
