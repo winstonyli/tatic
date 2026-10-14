@@ -1761,6 +1761,52 @@ run, Defender RTP off; 5031 busy samples (the run at 8334948 had 9656; shares co
 `whnf_rc` 38.9% and `beta_spine` 38.1% inside it; `hc::intern` 30.3% (19.3% from `inst_rec`). Leaves: `intern_as`'s
 lookup 9.7%, `inst_get` 8.8%, rehashing 5.2%, `Rc::drop_slow` 4.4%. The const `TABLE` did not change the picture.
 
+**Kernel speed-up thread: closed (2026-10-13).** Every lead that avoids work has been measured and closed above: the
+head-first `conv` shortcut, interning `whnf`'s reduct, pre-sizing the table, any memo across scopes (no `whnf` miss
+repeats), leaves stated evaluated, one tree per side (at most about 7%, parked), a cheaper table encoding (at most the
+statement side's 46% of the leaf work, only in part), and delayed substitution (parked behind its gate). What remains is
+the proof by computation itself: 72% of the reduction work under `conv` is gate terms evaluated on concrete bits, once
+per case-tree leaf, and every such evaluation is distinct. Reopen only for a new proof shape (fewer leaves, for example
+a symbolic per-gate lemma in place of `lemma_n`'s 2^k trees; "Decision diagrams deleted" and the parked closed
+`cong_mux` lemma are the earlier attempts) or a cheaper evaluator (below).
+
+**Compiled evaluation for conversion, and the wasm JIT (survey, no code, 2026-10-13).** The profile now favors
+evaluating faster rather than less, the case Rocq's `vm_compute` and `native_compute` serve. The repo's JIT
+(`src/jit.rs`, `compile.rs`, `lower_wat.rs`) is not that tool:
+- It compiles `term.rs` programs typed `Int -> ... -> Int` to wasm, not kernel `Expr` (with `J`, `WRec`, `SigRec`).
+  Nothing in `kernel.rs` or `tests/church_bv` calls it; the kernel checks the JIT's proofs, not the reverse.
+- It is not end-to-end sound by its own account: its kernel theorem is stated over `proof.rs`'s `denote`, a model of
+  the compiler, not over the WAT that runs (`src/jit.rs` header). Using it, or anything like it, for conversion would put
+  the compiler, wasmtime and the postulated `Int` in the trusted base.
+- The 2026-09-30 options table (bitvector spec §35, row 7) already rated native/VM reflection "trusted base grows; does
+  not help the symbolic lemma", verdict "different problem".
+- The ceiling is modest (estimate, not measured): `conv_rc` is 39% of busy samples and the leaf evaluation 72% of its
+  reduction work, so even free evaluation would save about 28% of the run.
+- "Self-improving" in these docs is the rule-mining loop (proved laws compiled into rewrite rules), not a kernel
+  compiling its own hot paths; no design for the latter exists.
+
+The cheapest test of the idea is an untrusted evaluator timed on the same conversions: if a closure-based one cannot
+beat the kernel there, a compiled one would have to win on constant factors alone.
+
+**`kernel_lazy` on today's conversions: 64-100x slower (probe, reverted, no patch kept, 2026-10-13).** At a357781,
+`proof_cost_split` cmp3d own's work (the 300 laws, building and checking, then the rule proofs) with each `check_rc`
+query whose sides are not `==` timed in place (the kernel's `def_eq` as it runs, with that check's memos), logged, and
+replayed through `def_eq_lazy_shared` (closed-node memo, reset per query). CPU about 28% at the start, Defender RTP off.
+The run was stopped by a 3 GB memory guard during the 27th rule proof (`kernel_lazy` reached 3.3 GB; an unguarded run
+reached 5.9 GB after 10 CPU-minutes):
+
+| | Batches | Queries | Kernel in place | `kernel_lazy` | Ratio (per batch, kernel over 5 ms) |
+|---|---|---|---|---|---|
+| laws (build and check) | 300 | 36.2 k | 0.22 s | 22.2 s | 100x (19-69x) |
+| rule proofs (26 of them) | 26 | 45.1 k | 1.13 s | 72.8 s | 64x (23-146x) |
+
+Agreement was counted but not printed before the guard stopped the run, so it is not known here. Replaying the kernel after the check instead, while
+the outer scope's tables still held the reductions, took 3 µs a query, which is why the kernel is timed in place. On
+2026-09-30, before hash-consing, the same evaluator was level with the kernel at n = 32; the tables since then put the
+kernel about two orders of magnitude ahead on this workload. So a faster untrusted evaluator is not in reach by changing
+the evaluation strategy, and a compiled one would need a constant-factor gain above 60x over closure evaluation just to
+draw level, before its trusted-base cost. Not pursued; the JIT thread stays separate from conversion.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
