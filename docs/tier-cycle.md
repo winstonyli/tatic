@@ -2503,6 +2503,20 @@ superlinear"). So the `lows` memo can only get cheaper per lookup, not go away.
 - **What is left is mostly size:** probes into the node table (`intern`, `canon`) and the per-check `lows` map, with `shift_child` and `infer_rc` behind them. These are what Stage 2 of the id arena targets.
 - **`lowest_loose` is now the largest single cost at n=8 as well (94 ns per entry).** The `lows` memo needs exact minima, so the bounds memo cannot answer it.
 
+*What `lows` does per call (probe on 77fe8a9, reverted, no patch kept, 2026-10-14).* Counters for one fresh-scope check of rule 33's law, after a warm-up check:
+
+| n | `memo_context` calls | `lowest_loose` calls | gets at d=0 (hit) | gets at d>0 (hit) | `lows` size at the end |
+|---|---|---|---|---|---|
+| 8 | 36,732 | 289,570 | 60,634 (62%) | 143,552 (32%) | 120,475 |
+| 64 | 280,948 | 2,228,402 | 478,898 (64%) | 1,140,324 (34%) | 926,455 |
+
+- **The work per call is flat in n:** 7.9 `lowest_loose` calls and 5.6-5.8 memo gets per `memo_context` call at every width, with 41-43% of gets hitting.
+- **Every miss stays in the map**, so it ends near one entry per new table node (926k against 1.19M at n=64). That is over 20 MB, past the L3, so the rise is the per-probe cost of a growing map, as for the node table.
+- **Skipping the memo for small nodes (`hc::low`, height at most 2, as the instantiation memo does) removes almost nothing:** gets fall 0.4-0.5% and the map 0.7%. The memoised nodes are large, so it was not timed.
+- **Left:** no `lows` lookup can be skipped, so only cheaper probes help.
+  - Under the id arena, the d=0 entries (30% of gets, 64% hit) could live in a dense side array indexed by node id, with no probe at all.
+  - Sharing the `uses` bounds table was the "shared memo" variant above, which did not help.
+
 **Allocation schemes against the size cost (survey, 2026-10-14).** The size cost is about 120 ns per table entry at
 n=64 (profile diff above): node-table and memo probes (a hit reads the candidate node at a random address), the
 `lows` memo, and rehashing. Today a node is one mimalloc block of 80 bytes: `std::rc::Rc`'s two counts (16), the
