@@ -1985,15 +1985,70 @@ only in that scope (in a fresh `Postulates` the check fails with "free parameter
 
 *What this changes in the survey.* The step that option B's first falsifier was to measure, mined rule proofs at the
 target's width, is cheap, and a mined law transfers to compiled code through one congruence, with per-compile spec
-proofs from the template laws costing well under a second. Not shown: the If template with a compiled `lt` as its
-condition (it needs the naturality condition of the first falsifier for `Bv_1` values), signed `lt_s` (the miner's
-`lt` is unsigned), and any op outside the loop's eight. On deep syntax: a `W` type of instructions is costly in this
-kernel, which has no computing finite tag type; `NatPostulates` gets one only through postulated computation axioms
-(`child_ty_true_eq`, `bool_rec_true_eq`, `src/kernel/postulates.rs:472-485`) and a transport per constructor, which
-would grow the trusted base. Two ways around it, neither tested: keep the semantics shallow and trust only the printer
-from the template-built instruction list to WAT text (the proofs are about the same list the printer reads), or
-Church-encode instruction lists, so the interpreter is a fold and `interp(l1 ++ l2)` composes by beta rather than by
-induction. Either keeps B's end state (one bitvector semantics shared with the loop) without a `W` type.
+proofs from the template laws costing well under a second. Not shown here: signed `lt_s` (the miner's `lt` is
+unsigned) and any op outside the loop's eight; the If template is the next paragraph. On deep syntax: a `W` type of
+instructions is costly in this kernel, which has no computing finite tag type; `NatPostulates` gets one only through
+postulated computation axioms (`child_ty_true_eq`, `bool_rec_true_eq`, `src/kernel/postulates.rs:472-485`) and a
+transport per constructor, which would grow the trusted base. Two ways around it: keep the semantics shallow and trust
+only the printer from the template-built instruction list to WAT text, or Church-encode instruction lists; the second
+is tested two paragraphs down and works.
+
+**The If template with a compiled `lt` condition, and instruction lists as Church-encoded data (probes, reverted, no
+patch kept, 2026-10-14).** Both on a fresh cmp3d library: a ref loop at e49847e (`LOOP_MODE=ref FAMILY=cmp3d
+RULEMINER_FAST=1 CHECK_FAST=1`), 27 rules, 24 of them `lt` rules. (The 37-rule list of the paragraphs above was a
+scratch copy of a run directory that no longer exists, and was deleted by mistake, so the two libraries differ.)
+Machine load 21-29% CPU; Defender real-time protection off.
+
+*If.* The first falsifier's If needed its condition at the stack's universe (`b (Sigma(V,S)) ..`, with naturality).
+That route is closed for the loop's words: their bits are Church booleans in Sort0 and stacks live in Sort2, and the
+kernel has no large elimination, so a bit cannot choose between two stacks. What a bit can choose is a bit: a
+word-level `select c x y` built from the existing `mux` gate per bit is definable and checks (on literal words it
+returns the named branch, and not the other). So the If template pops the one-bit condition, runs both branches on
+the rest of the stack and pushes `select w v_t v_e`, which is what wasm `if` computes when both branches are pure;
+control flow proper (only one branch runs, effects) is not modeled. Its law, `Spec(c_c,m_c) -> Spec(c_t,m_t) ->
+Spec(c_e,m_e) -> Spec(if c_c c_t c_e, select m_c m_t m_e)`, is three congruences and checks in about 1-2 ms; against
+the swapped-branch statement it is rejected. For each `lt` rule `l -> r`, `if l then x else y` and `if r then x else y`
+(branches the rule's first two words) were compiled and proved equal from the rule's law:
+
+| n | equivalences proved | spec proofs (s, all) | equivalence check (s, all / slowest) | mean / max proof nodes |
+|---|---|---|---|---|
+| 4 | 24 of 24 | 0.09 | 0.53 / 0.04 | 6625 / 7694 |
+| 64 | 24 of 24 | 0.32 | 29.3 / 1.86 | 78953 / 94034 |
+
+With the rule law replaced by `refl`, all 24 are rejected. Not shown: an If whose branches are themselves compiled
+terms, and `if true then a else b = a` for a symbolic `b` (with Church tuples `select` nests both branches'
+eliminations, so that holds by computation only for literal `b`; it would need `GoodBv`).
+
+*Instruction lists as data.* A naive Church list does not work: `fold (l1 ++ l2)` is `fold l2 . fold l1` only by
+induction on an abstract `l1`. Two choices make it hold by beta. A program is encoded by its end stack type,
+`Prog S T = Pi F:(Sort2 -> Sort2). F T -> (Pi A B. Instr A B -> F B -> F A) -> F S`, so appending puts `p2` where `p1`'s
+nil is (`p1 ++ p2 = \F n c. p1 F (p2 F n c) c`). And a program means its continuation-passing run,
+`M p R k = p (\A. A -> R) k (\A B i rest a. rest (I i a))`. Then `M (p1 ++ p2) R k` is `M p1 R (M p2 R k)` and checks by
+`refl` for abstract `p1`, `p2` (about 1-2 ms). An instruction is an indexed Church sum,
+`Instr A B = Pi G. (Pi A. V -> G A (V,A)) -> (Pi A. (V->V->V) -> G (V,V,A) (V,A)) -> (Pi A. (V->V->V1) -> G (V,V,A) (V1,A)) -> G A B`
+(push a word, a word op, a compare), interpreted by its eliminator at `G A B = A -> B`; all of it lives in Sort3, and
+nothing is postulated. With the spec stated over every continuation, `Spec(c,m) = Pi S R k s. Id(R, M (c S) R k s, k (m,s))`,
+the Bin law for `c1 ++ c2 ++ [bin op]` is two transitivity steps with no congruence; each output type's law checks in
+about 5-12 ms and is rejected against swapped operands. Each rule's two sides, compiled to instruction lists, proved
+equal from its law (`cong` of the continuation-after-push on the law):
+
+| n | equivalences proved | compile + spec + equivalence checks (s, all / slowest) | mean code nodes |
+|---|---|---|---|
+| 4 | 27 of 27 | 0.96 / 0.06 | 1390 |
+| 64 | 27 of 27 | 36.3 / 2.19 | 11603 |
+
+With the rule law replaced by `refl`, all 27 are rejected (n=4). And the code is data: run on free `F nil cons`, the
+weak head normal forms of every compiled side are `cons A B i rest` down to `nil`, and each instruction on free
+`G c0 c1 c2` is `c_k A payload`, so a printer walks the list without unfolding payloads. On all 54 sides at both
+widths it reads back exactly the term's postfix order (rule 0's left side: `push x, push y, add, push z, sub`). A
+printer that fully normalized the program instead stalled at n=64: normalizing the ripple-carry op payloads unshares
+them into a tree.
+
+*What this changes in the survey.* Option B's end state is reachable without a `W` type or new axioms: instructions
+are kernel data a printer reads, template laws over them are cheap, and mined laws transfer to compiled instruction
+lists at width 64. The trusted step that is left is the printer from the instruction list to WAT text (a syntactic
+map), plus wasmtime. Still open: control flow and memory (`if` with effects, `block`/`br`, `i64.load/store`,
+`call_indirect`), the wasm ops the loop lacks, and whether lowering rules can be mined over this encoding.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
