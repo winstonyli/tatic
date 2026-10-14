@@ -2275,8 +2275,23 @@ protection off):
 | rule transfer, 24 rules | 24/24, 0.75 s | | 24/24, 26.5 s, peak 2.2 GB |
 
 Rejecting is now about 45 times cheaper than accepting at n=64. The accepting side's cost is building and
-checking the laws and was not traced. This is likely also the "printer stall" seen earlier with
-full-normalizing printers, but that is unverified: those printers are in test code and were not changed here.
+checking the laws and was not traced.
+
+The "printer stall" seen earlier with full-normalizing printers has the same cause, and it can't be fixed in the
+printer. A probe (reverted, no patch kept) normalized `add`, `sub` and `lt` on two free words and counted unique
+nodes against occurrences:
+
+| n | 8 | 10 | 16 | 32 | 64 |
+|---|---|---|---|---|---|
+| `add` without interning: unique nodes, time | 518k, 0.31 s | 8.4M, 6.7 s | over 6.5 GB at n=12 | | |
+| `add` in an `InternScope`: unique nodes, time | 527, 0.5 ms | 813, 0.7 ms | 2,055, 3.4 ms | 8,183, 11 ms | 32,727, 58 ms |
+| occurrences (both) | 5.2e5 | 8.4e6 | 3.4e10 | 1.5e20 | 3.4e38 |
+
+`sub` behaves like `add` (about 2 times slower in a scope); `lt` has 976 unique nodes at n=64. Without interning,
+`nf` builds the tree: about 16 times larger for every 2 more bits. Interned, the normal form is a DAG of about
+8n² nodes, so `nf` itself is cheap. Any printer that walks the term still visits every occurrence, so printing it in
+full is infeasible either way. Printers have to stop early, as `brief_nf` does, or print the DAG with shared nodes
+named.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
