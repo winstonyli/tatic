@@ -258,6 +258,20 @@ fn whnf_memo_outlives_one_def_eq_in_a_scope() {
     assert_eq!(hc::whnf_get(&x).as_deref(), Some(&var(7)));
 }
 
+/// `brief_nf` prints what `brief(&nf(..))` prints, and reduces only the part it prints: the normal
+/// form of the Church numeral `16 4` has 4^16 nested applications.
+#[test]
+fn brief_nf_normalizes_only_what_it_prints() {
+    // c(k) = \f x. f^k x
+    let num = |k: usize| lam(sort(0), lam(var(0), (0..k).fold(var(0), |x, _| app(var(1), x))));
+    let small = [app(num(2), num(2)), id(sort(1), app(num(3), num(2)), num(1)), pi(app(lam(sort(1), var(0)), sort(0)), var(0))];
+    for e in &small {
+        assert_eq!(brief_nf(e), brief(&nf(e)));
+    }
+    let big = brief_nf(&app(num(16), num(4)));
+    assert!(big.ends_with(" ...") && big.contains(&"(#1 ".repeat(40)), "{big}");
+}
+
 /// A closed function value applied at several places to different arguments is reduced once:
 /// `b(i+1) = \C x y. b(i) C (b(i) C y x) (b(i) C x y)`, with `b(i)` one shared node, calls `b(i)`
 /// twice per level, so reducing `b(30)` as a tree takes 2^30 steps (outside a scope and inside one).

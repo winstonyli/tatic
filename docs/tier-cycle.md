@@ -2228,14 +2228,55 @@ tests (75) pass.
 
 Tried and dropped: keying every prefix, open ones too, behind a throwaway switch. It was slower everywhere:
 countdown at n=64 took 155-194 ms, and rule transfer at n=64 took 51.8 s. The n=64 NEG control still went over
-4 GB. So that wall is not this unsharing; where it lies was not traced. `cpu_ab.ps1` reads
-`cmp3d_own_rules.txt` next to itself, but that file is not committed. Salt 1's
-`own_cmp3d_3_cmp3d/rules.txt` from a `cts_*` sweep (37 rules) was copied in for this run.
+4 GB. So that wall is not this unsharing (it is traced below, "The NEG control's wall was the error message").
+`cpu_ab.ps1` reads `cmp3d_own_rules.txt` next to itself, and that file had never been committed. Salt 1's
+`own_cmp3d_3_cmp3d/rules.txt` from the `cts_*` sweep was used for this run. That is 37 rules with no `winner  OVER
+loser` preference lines, and every 2026-10-13 sweep (`sls`, `uss`, `sms`, `whs`, `cts`) wrote the same file. It is
+now committed as `docs/runs/2026-10-12/scripts/cmp3d_own_rules.txt`. The older file that earlier rows used also
+carried preference lines (the 2026-10-14 width probes above dropped them with `grep -v OVER`). `check_laws` reads
+those preferences, so absolute times before this row may not match runs on the committed file. A/B pairs within
+one run are unaffected.
 
 Related, from memory and not re-checked: this is full laziness (sharing maximal free expressions, as in
 Peyton Jones's "The Implementation of Functional Programming Languages", 1987) applied to the spine prefixes the
 reducer meets, rather than by lambda lifting ahead of time. Rocq's `Zupdate` (section 77 of `RELATED_WORK.md`)
 shares an evaluated closure in a similar way.
+
+**The NEG control's wall was the error message (kernel change, kept, 2026-10-14).** With the law replaced by
+`refl`, `def_eq` rejects the two `lt` circuits quickly. What blew up was `check_rc`'s `type mismatch` message. It
+printed `brief(&nf(inferred))` and `brief(&nf(expected))`, so it built two whole normal forms of 64-bit symbolic
+circuits and then printed 400 characters of each.
+
+How it was found:
+- Rule 21 (`lt(add(x, y), sub(shl1(y, 0), z))`) was the slowest rule alone. It grew about n^3 in time and memory:
+  0.05, 0.29, 1.03, 2.83 and 11.6 s, with peaks of 70, 133, 293, 639 and 2142 MB, at n = 8, 16, 24, 32 and 48.
+  The positive check (the real law) took 0.9 s and 242 MB at n=48.
+- A samply profile at n=32 put 81% of busy samples under `nf_rc`. Most stacks lost their callers past `grow`'s
+  stack segments, and `conv` calls no `nf`. The only `nf` caller on this path is the message.
+- Printing the raw terms instead brought rule 21 to 16 ms (n=32) and 19 ms (n=64), with peaks under 70 MB.
+
+The fix is `brief_nf(e)`, a printer that normalizes as it prints:
+- `Debug for Expr`'s single `match` became `write_expr`, generic over how children are printed.
+- `brief_nf` whnfs each node through one `ReductionCache` when the printer reaches it.
+- `brief`'s character limit stops the writer, so only the printed prefix is ever reduced.
+- The text is the same as `brief(&nf(e))`. The wrec children-type message uses it too. The other `nf` callers
+  are semantic (`infer_sup`'s occurs check, `typecheck`'s returned type, `normalize`) and stay as they were.
+
+Check: `brief_nf_normalizes_only_what_it_prints` (`src/kernel/tests.rs`). It compares the output with
+`brief(&nf(..))` on three small terms, and prints the Church numeral `16 4`, whose normal form has 4^16 nested
+applications. With `brief(&nf(e))` restored, the test went over 4 GB within 8 s.
+
+After the fix, `control_flow_probe` on the 27-rule cmp3d ref library (machine at 14% CPU; Defender real-time
+protection off):
+
+| | n=4 | n=24 | n=64 |
+|---|---|---|---|
+| NEG control, 24 rules | 0/24, 0.32 s | 0/24, 0.42 s (24.6 s before) | 0/24, 0.58 s, peak 585 MB (over 4 GB before) |
+| rule transfer, 24 rules | 24/24, 0.75 s | | 24/24, 26.5 s, peak 2.2 GB |
+
+Rejecting is now about 45 times cheaper than accepting at n=64. The accepting side's cost is building and
+checking the laws and was not traced. This is likely also the "printer stall" seen earlier with
+full-normalizing printers, but that is unverified: those printers are in test code and were not changed here.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

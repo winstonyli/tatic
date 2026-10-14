@@ -586,26 +586,55 @@ pub(crate) fn brief<T: fmt::Debug + ?Sized>(x: &T) -> String {
     out.0
 }
 
+/// `brief(&nf(e))`, normalizing only what gets printed: each node is reduced to whnf as the printer
+/// reaches it, and `brief`'s limit stops the printer, so a type mismatch between two large normal
+/// forms costs the first `LIMIT` characters of each, not both whole normal forms (doc section
+/// "The NEG control's wall was the error message").
+pub(crate) fn brief_nf(e: &Expr) -> String {
+    struct Nf<'a>(Rc<Expr>, &'a std::cell::RefCell<ReductionCache>);
+    impl fmt::Debug for Nf<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let w = whnf_rc(&self.0, &mut self.1.borrow_mut());
+            write_expr(&w, f, &|c, f| fmt::Debug::fmt(&Nf(c.clone(), self.1), f))
+        }
+    }
+    brief(&Nf(Rc::new(e.clone()), &std::cell::RefCell::new(ReductionCache::default())))
+}
+
+/// A child printed by the function it carries (`write_expr`).
+struct Child<'a, F>(&'a Rc<Expr>, &'a F);
+impl<F: Fn(&Rc<Expr>, &mut fmt::Formatter<'_>) -> fmt::Result> fmt::Debug for Child<'_, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (self.1)(self.0, f)
+    }
+}
+
+/// `e`'s outermost constructor, with each child printed by `child`.
+fn write_expr<F: Fn(&Rc<Expr>, &mut fmt::Formatter<'_>) -> fmt::Result>(e: &Expr, f: &mut fmt::Formatter<'_>, child: &F) -> fmt::Result {
+    let c = |x| Child(x, child);
+    grow(|| match e {
+        Expr::Var(k) => write!(f, "#{k}"),
+        Expr::Sort(i) => write!(f, "Type{i}"),
+        Expr::Const(l) => write!(f, "@{l}"),
+        Expr::Free(l) => write!(f, "${l}"),
+        Expr::Pi(a, b) => write!(f, "(Pi {:?}. {:?})", c(a), c(b)),
+        Expr::Lam(a, b) => write!(f, "(\\{:?}. {:?})", c(a), c(b)),
+        Expr::App(g, a) => write!(f, "({:?} {:?})", c(g), c(a)),
+        Expr::Id(a, x, y) => write!(f, "(Id {:?} {:?} {:?})", c(a), c(x), c(y)),
+        Expr::Refl(a) => write!(f, "(refl {:?})", c(a)),
+        Expr::J { a, b, p, .. } => write!(f, "(J .. {:?} {:?} {:?})", c(a), c(b), c(p)),
+        Expr::W(a, b) => write!(f, "(W {:?}. {:?})", c(a), c(b)),
+        Expr::Sup(a, g) => write!(f, "(sup {:?} {:?})", c(a), c(g)),
+        Expr::WRec { target, .. } => write!(f, "(wrec .. {:?})", c(target)),
+        Expr::Sigma(a, b) => write!(f, "(Sigma {:?}. {:?})", c(a), c(b)),
+        Expr::Pair(fam, a, b) => write!(f, "(pair {:?} {:?} {:?})", c(fam), c(a), c(b)),
+        Expr::SigRec { target, .. } => write!(f, "(sigrec .. {:?})", c(target)),
+    })
+}
+
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        grow(|| match self {
-            Expr::Var(k) => write!(f, "#{k}"),
-            Expr::Sort(i) => write!(f, "Type{i}"),
-            Expr::Const(l) => write!(f, "@{l}"),
-            Expr::Free(l) => write!(f, "${l}"),
-            Expr::Pi(a, b) => write!(f, "(Pi {a:?}. {b:?})"),
-            Expr::Lam(a, b) => write!(f, "(\\{a:?}. {b:?})"),
-            Expr::App(g, a) => write!(f, "({g:?} {a:?})"),
-            Expr::Id(a, x, y) => write!(f, "(Id {a:?} {x:?} {y:?})"),
-            Expr::Refl(a) => write!(f, "(refl {a:?})"),
-            Expr::J { a, b, p, .. } => write!(f, "(J .. {a:?} {b:?} {p:?})"),
-            Expr::W(a, b) => write!(f, "(W {a:?}. {b:?})"),
-            Expr::Sup(a, g) => write!(f, "(sup {a:?} {g:?})"),
-            Expr::WRec { target, .. } => write!(f, "(wrec .. {target:?})"),
-            Expr::Sigma(a, b) => write!(f, "(Sigma {a:?}. {b:?})"),
-            Expr::Pair(fam, a, b) => write!(f, "(pair {fam:?} {a:?} {b:?})"),
-            Expr::SigRec { target, .. } => write!(f, "(sigrec .. {target:?})"),
-        })
+        write_expr(self, f, &|c, f| fmt::Debug::fmt(&**c, f))
     }
 }
 
@@ -2356,7 +2385,7 @@ fn infer_sigrec(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, 
 #[cold]
 #[inline(never)]
 fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
-    format!("wrec: children_ty doesn't match target's own real children-type: {} vs {}", brief(&nf(children_ty)), brief(&nf(wb)))
+    format!("wrec: children_ty doesn't match target's own real children-type: {} vs {}", brief_nf(children_ty), brief_nf(wb))
 }
 
 /// `infer`'s own `Sup` arm, out of line: `ta`/`dom`/`cod`/`w_candidate`/
@@ -2775,8 +2804,8 @@ fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
         } else {
             Err(format!(
                 "type mismatch: inferred {}, expected {}",
-                brief(&nf(&inferred)),
-                brief(&nf(expected))
+                brief_nf(&inferred),
+                brief_nf(expected)
             ))
         }
     })
