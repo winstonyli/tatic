@@ -1937,12 +1937,63 @@ B is the only option that removes concepts: the JIT's postulated `Int`, `proof.r
 and the decompiler's role as the trusted check all collapse into one interpreter over bitvectors that the loop already
 uses. Cheapest falsifier, additive: state `i64.add` and `i64.lt_s` over width-64 Church bitvectors, re-prove the
 probe's Add and If templates deep (instruction lists interpreted by `WRec`), and time the proof of one mined cmp3d rule
-at n=64 against n=4. If the n=64 rule proof is out of reach, B needs width-generic proofs first. Not run.
+at n=64 against n=4. If the n=64 rule proof is out of reach, B needs width-generic proofs first. Run in part, with
+the shallow templates rather than deep ones: see the next paragraph.
 Sources: [Crocus](https://cs.wellesley.edu/~avh/veri-isle-preprint.pdf), [WasmCert](https://hal.archives-ouvertes.fr/hal-03353748),
 [SpecTec](https://pldi24.sigplan.org/details/pldi-2024-papers/64/Bringing-the-WebAssembly-Standard-up-to-Speed-with-SpecTec),
 [Iris-Wasm](https://pldi23.sigplan.org/details/pldi-2023-pldi/46/Iris-Wasm-Robust-and-Modular-Verification-of-WebAssembly-Programs)
 (a separation logic over WasmCert-Coq, for programs rather than compilers), [Sail](https://www.cl.cam.ac.uk/~pes20/sail/popl2019.html),
 [sail-riscv Lean script](https://raw.githubusercontent.com/Verified-zkEVM/evm-asm/main/scripts/regen-sail-model.sh).
+
+**Mined rules at width 64, and compiled programs proved equal from them (probes, reverted, no patch kept,
+2026-10-14).** Two probes in `tests/church_bv/rewrite.rs` at e49847e, on the 37 rules of cmp3d's own library
+(`cmp3d_own_rules.txt` without its `OVER` lines). Machine load about 30% CPU at the start of each; Defender real-time
+protection off.
+
+*Width.* Every rule's law (`prove_rule`) builds and checks at n = 4, 8, 16, 32 and 64:
+
+| n | check, all 37 (s) | slowest rule (s) | mean proof nodes |
+|---|---|---|---|
+| 4 | 2.96 | 1.12 (includes warm-up) | 5306 |
+| 8 | 1.18 | 0.08 | 9860 |
+| 16 | 3.32 | 0.23 | 18987 |
+| 32 | 10.89 | 0.74 | 37319 |
+| 64 | 40.36 | 3.59 | 74294 |
+
+Nodes about double per doubling of n (linear); check time grows about 3.7x from 32 to 64. The largest proof at n=64
+has 175544 nodes and checks in 3.5 s. So this library needs no width-generic proofs to reach wasm's i64; the survey's
+question "is the n=64 rule proof out of reach" is answered no, for these rules.
+
+*End to end.* Both sides of each rule compiled with the stack templates (shallow: `Code = Pi S. S -> Sigma(V, S)`, as
+in the first falsifier above, now with `V` the Church words of width n instead of a postulated `Int`), each side's spec
+proved by composing the Lit and Bin template laws, and the goal `Pi S s. Id(c_l S s, c_r S s)` proved by
+`trans(spec_l, cong(push, law), sym(spec_r))` from the rule's own kernel law. The Bin law needs an output value type:
+`lt_u` returns a one-bit word, not an n-bit one (as `i64.lt_s` pushes an i32), so the law is stated once per output type
+(`Bv_n`, `Bv_1`); each checks in about 1-2 ms. Results, 37 rules:
+
+| n | equivalences proved | spec proofs by template laws (s, all) | same spec by `refl` | equivalence check (s, all / slowest) | mean / max proof nodes | mean code nodes |
+|---|---|---|---|---|---|---|
+| 4 | 37 | 0.11 | 37 | 0.85 / 0.07 | 6321 / 13903 | 1155 |
+| 64 | 37 | 0.43 | 37 | 68.2 / 10.2 | 81317 / 183582 | 11569 |
+
+The equivalence check includes checking the embedded rule law, which alone is 40.4 s of the 68.2 at n=64 (width table).
+Controls: with the rule law replaced by `refl`, all 37 equivalences are rejected; each Bin law is rejected against the
+other output type's statement. Two traps met on the way, worth knowing for any code that reuses mined laws: the laws
+refer to shared lemmas bound as parameters of the thread-local `PARAMS` postulates (`shared_lemma`), so they check
+only in that scope (in a fresh `Postulates` the check fails with "free parameter escaped its scope"); and a pushed
+`lt` value has `Bv_1` as its inferred type, so pairs need the output type explicitly.
+
+*What this changes in the survey.* The step that option B's first falsifier was to measure, mined rule proofs at the
+target's width, is cheap, and a mined law transfers to compiled code through one congruence, with per-compile spec
+proofs from the template laws costing well under a second. Not shown: the If template with a compiled `lt` as its
+condition (it needs the naturality condition of the first falsifier for `Bv_1` values), signed `lt_s` (the miner's
+`lt` is unsigned), and any op outside the loop's eight. On deep syntax: a `W` type of instructions is costly in this
+kernel, which has no computing finite tag type; `NatPostulates` gets one only through postulated computation axioms
+(`child_ty_true_eq`, `bool_rec_true_eq`, `src/kernel/postulates.rs:472-485`) and a transport per constructor, which
+would grow the trusted base. Two ways around it, neither tested: keep the semantics shallow and trust only the printer
+from the template-built instruction list to WAT text (the proofs are about the same list the printer reads), or
+Church-encode instruction lists, so the interpreter is a fold and `interp(l1 ++ l2)` composes by beta rather than by
+induction. Either keeps B's end state (one bitvector semantics shared with the loop) without a `W` type.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
