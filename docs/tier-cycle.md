@@ -2299,8 +2299,8 @@ checking each law, a cost per rule rather than per program. The mechanism for pa
 miner uses it: `shared_lemma` checks a law's proof once and returns a parameter whose type is the law's statement.
 A proof that uses the law mentions the parameter, and the checker only looks up its type (`Plan::Law` with
 `LawKind::Rule` goes through it). The probe called `prove_rule` directly and inlined the proof, so it paid for the
-law in every check; its "law as a hypothesis" row is what `shared_lemma` gives. The laws built per use (`Bitwise`,
-`Chain`, `Tree` in `Plan::Law`) are still inlined.
+law in every check; its "law as a hypothesis" row is what `shared_lemma` gives. Every `Plan::Law` kind now goes
+through it (see "Every law by name" below).
 
 *Why checking a law slowed faster than it grew.* `infer_rc`'s memo missed about 20 times per node: rule 0 at n=64
 had 1,036,365 misses for a 51,784-node proof, counted with a probe (reverted, no patch kept). There were two causes:
@@ -2327,8 +2327,33 @@ at about 11% CPU, Defender real-time protection off):
 | rule 33, after | 0.10 s | 0.24 s | 0.54 s | 1.22 s |
 
 Middle values of three. Time still grows 2.2-2.3 times per doubling of n, against linear unique nodes and misses,
-so something outside the memo is still superlinear; it was not profiled. On `proof_cost_split`, whose widths are
+so something outside the memo is still superlinear. On `proof_cost_split`, whose widths are
 small, the change is neutral: 6 alternating `cpu_ab.ps1` pairs, median CPU 4.86 s before and 4.85 s after.
+
+*What is still superlinear.* A samply profile of rule 33's law at n=64 (8 checks in one process, profile not kept;
+machine at about 15% CPU, Defender real-time protection off) puts 18.8% of samples in `hc::lowest_loose`
+(the memo key's `lo`) and 16% in `hc::uses` (called from `inst_rec`), with `hc::intern` at 10.5% and `infer_rc` at 8.1%. The first check
+takes 1.25 s and each repeat about 0.49 s, since the node table's memos persist within the scope. Counted with a probe
+(reverted, no patch kept), over n = 8, 16, 32, 64:
+- `lowest_loose`'s (node, depth) memo entries per check grow linearly: 120k, 234k, 462k, 926k.
+- `uses` walks (slot misses) grow 3.6-3.9 times per doubling from n=16: 1.16M, 1.13M, 4.06M, 15.3M on the first check, and
+  0.16M, 0.59M, 2.28M, 8.95M on a repeat.
+
+`uses(x, d, m)` is `lowest_loose(x, d) < m`, so the two can share one mechanism. A prototype (reverted, no patch kept) did that:
+the node header's slot held (d, lowest loose variable) and replaced both the (d, m) slot and `InferCache`'s `lows` map.
+It made repeats faster (0.43 to 0.25 s at n=64) but the first check slower (1.41 to 1.68 s, 64M walks). The single slot
+thrashes between the memo key's depth-0 queries and `inst_rec`'s other depths, and repeat walks stayed at about 9M. Those
+walks follow `inst_rec`'s own work, which is keyed by (node, depth): instantiating a shared node at each depth it occurs
+under is the quadratic part, not the cache in front of it. A key that doesn't depend on depth (each node's set of loose
+variables, computed once) would answer both queries without walking. It would cost up to about 6n bits per node and
+has not been tried.
+
+*Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
+as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule
+laws are 280 assoc, 272 comm and 163 tree uses, with 6 distinct tree statements and no `Bitwise` or `Chain`. The checked
+proofs shrink: the rewriter's 296 laws go from 327,190 to 200,994 nodes (check 191 to 107 ms), and the machine proofs
+from 23,146 to 4,152 nodes (46 to 3.3 ms). Each law's one check now runs during build, so total CPU is neutral: 6
+alternating `cpu_ab.ps1` pairs, median 5.06 s before and 5.10 s after, machine at about 11% CPU, real-time protection off.
 
 The "printer stall" seen earlier with full-normalizing printers has the same cause as the NEG wall, and it can't be fixed in the
 printer. A probe (reverted, no patch kept) normalized `add`, `sub` and `lt` on two free words and counted unique

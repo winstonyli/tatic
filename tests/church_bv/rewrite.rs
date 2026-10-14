@@ -597,16 +597,24 @@ impl Compiler {
             }
             Plan::Law(kind, l, r, args) => {
                 let k = args.len();
-                let law = match kind {
-                    LawKind::Rule(name) => {
-                        shared_lemma(format!("rule_{name}_{}_{}_{n}_{k}", l.show(), r.show()), || prove_rule(n, k, l, r).unwrap_or_else(|| panic!("rule {name} is not provable"))).0
-                    }
-                    LawKind::Assoc => shared_lemma(format!("assoc{n}"), || add_assoc_proof(n, false)).0,
-                    LawKind::Comm => shared_lemma(format!("comm{n}"), || add_comm_proof(n, false)).0,
-                    LawKind::Bitwise => bitwise_law_k(n, k, l, r).0,
-                    LawKind::Chain => carry_chain_law(n, l, r).expect("a constant carry").0,
-                    LawKind::Tree => add_tree_law(n, k, l, r).expect("a carry encoding").0,
+                // Every law is checked once and used as a parameter of its statement (`shared_lemma`).
+                let prover = match kind {
+                    LawKind::Rule(name) => format!("rule_{name}"),
+                    LawKind::Assoc => "assoc".into(),
+                    LawKind::Comm => "comm".into(),
+                    LawKind::Bitwise => "bitwise".into(),
+                    LawKind::Chain => "chain".into(),
+                    LawKind::Tree => "tree".into(),
                 };
+                let law = shared_lemma(format!("{prover}_{}_{}_{n}_{k}", l.show(), r.show()), || match kind {
+                    LawKind::Rule(name) => prove_rule(n, k, l, r).unwrap_or_else(|| panic!("rule {name} is not provable")),
+                    LawKind::Assoc => add_assoc_proof(n, false),
+                    LawKind::Comm => add_comm_proof(n, false),
+                    LawKind::Bitwise => bitwise_law_k(n, k, l, r),
+                    LawKind::Chain => carry_chain_law(n, l, r).expect("a constant carry"),
+                    LawKind::Tree => add_tree_law(n, k, l, r).expect("a carry encoding"),
+                })
+                .0;
                 let w: Vec<(Expr, Expr)> = args.iter().map(|t| witnessed(t, n, &self.goods)).collect();
                 let p = apps(law, w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect());
                 let sub: Vec<Option<Term>> = args.iter().cloned().map(Some).collect();
