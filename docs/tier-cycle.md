@@ -2608,6 +2608,27 @@ Its shortcomings there, with mitigations:
 - **The rest is lookups in tables that grow:** `lowest_loose` (its visits per call stay at 7.9, but each one probes the `lows` memo), intern, memo gets and puts. Ids remove most of intern's rise (an 8-byte table entry) and little of the memos'.
 - **Tried and rejected: a 64-bit set of loose `Var`s per node,** which would answer `uses` and `lowest_loose` without walking. It is exact only when no node beneath has loose above 64. Most nodes at n≥16 have more (515,113 of 523,216 at n=64; the context is deep), so it covers 81% of `uses` calls and 16% of `lowest_loose` calls at n=64. A fixed-width set does not scale with n. Checked against every traced answer where it applies.
 
+*Why `uses` walks grow, and what table growth costs (the same replay, 2026-10-14; reverted, no patch kept).*
+- **The walks revisit old nodes whose slot holds another query.** At n=64, 0.8% of visits are a node's first. Per call, slot misses with a different query are 14.5 and misses on an empty slot 0.24. Nodes are asked at many depths (d up to 384), so a slot keyed by d alone does no better (30.2 visits per call).
+- **A memo fixes it at every n.** Visits per call:
+  - an unbounded `(node, d, m)` memo: 1.59;
+  - `lowest_loose` with its `(node, d)` memo, answering `uses(x, d, m)` as `lowest_loose(x, d) < m`: 1.57.
+- **Timed in arm (a),** ns per new entry with decoding subtracted: median, then best of 7 in brackets. The reps alternate, at load 23% falling to 13%:
+
+  | n | today (slot) | `(node, d, m)` table behind the slot | `uses` through `lowest_loose`'s per-scope memo, no slot |
+  |---|---|---|---|
+  | 8 | 266 (194) | 242 (217) | 256 (230) |
+  | 64 | 483 (449) | 427 (367) | 388 (376) |
+
+  - At n=64 the shared memo wins 6 of 7 paired reps, and the rise from n=8 to n=64 falls from 217 to 132 ns. An earlier rotation (load 40%) gave 445 → 360 best-of-5 at n=64 with the table.
+  - At n=8 it is within noise: 4 of 7 paired reps.
+  - This does not contradict "Per-node facts in the node header", where slot alone beat slot plus table 8 of 12 on `proof_cost_split`. That workload is small-n; at n=64 the walks are 5.5 times longer.
+  - The shared memo is the one mechanism: it subsumes the slot and the `uses` walk.
+- **Most memo entries are never read:** inst 85%, shift 78%, whnf 62% and types 77%, the same at n=8 and n=64. Hit rates are flat in n (inst 35%, shift 44%, whnf 58%, types 74%).
+- **Pre-sizing the tables to their final size gains nothing** (2 rotations, within noise). The growth cost is probes into tables larger than the caches, not resizing.
+- **Bounded memos keep most hits only for some tables.** A 2-way cache of 2^16 entries at n=64 keeps 97% of inst's hits, 98% of whnf's, 88% of types' and 75% of shift's (2^14: 93, 85, 70, 62). A lost hit means recomputation, which the replay cannot time, so this needs a real prototype.
+- **A one-entry slot per node** would answer all of whnf's hits, 99.9% of hnf's, 86% of types', 66% of shift's and 38% of inst's.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
