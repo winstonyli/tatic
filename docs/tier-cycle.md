@@ -2486,6 +2486,23 @@ second-lowest. A node needs each child's answer at every depth: the (node, depth
 that composes is the whole set of loose variables, which was the bitset prototype (negative, "What is still
 superlinear"). So the `lows` memo can only get cheaper per lookup, not go away.
 
+*The rise after the bounds memo (2026-10-14).* The same two profiles, repeated on ded1a96 plus the probe (reverted, no patch kept; profiles not kept). Load was 33–36% from other work throughout, and both runs ran back to back. Absolute times are inflated: 526 ns busy per entry at n=8 against 240 above, and 83 against about 45 ms per check unprofiled. So only the rise within this pair is compared, still divided by the entry counts above. Busy time per entry was 526 ns at n=8 and 689 ns at n=64, a rise of 163 ns (251 before). By first non-std frame:
+
+| self ns per entry | n=8 | n=64 | rise |
+|---|---|---|---|
+| `hc::intern` (node-table probes) | 77 | 114 | +37 |
+| `hc::lowest_loose` (`InferCache::lows`) | 94 | 126 | +31 |
+| `shift_child` | 47 | 63 | +17 |
+| `infer_rc` | 24 | 40 | +16 |
+| `hc::canon` | 22 | 34 | +12 |
+| `hc::uses` and its closures | 15 | 26 | +11 |
+| `height_at_most` | 9 | 15 | +6 |
+| everything else, each +4 or less | | | +33 |
+
+- **`uses`' share of the rise fell from about 24% (+61 ns) to about 7% (+11 ns).**
+- **What is left is mostly size:** probes into the node table (`intern`, `canon`) and the per-check `lows` map, with `shift_child` and `infer_rc` behind them. These are what Stage 2 of the id arena targets.
+- **`lowest_loose` is now the largest single cost at n=8 as well (94 ns per entry).** The `lows` memo needs exact minima, so the bounds memo cannot answer it.
+
 **Allocation schemes against the size cost (survey, 2026-10-14).** The size cost is about 120 ns per table entry at
 n=64 (profile diff above): node-table and memo probes (a hit reads the candidate node at a random address), the
 `lows` memo, and rehashing. Today a node is one mimalloc block of 80 bytes: `std::rc::Rc`'s two counts (16), the
