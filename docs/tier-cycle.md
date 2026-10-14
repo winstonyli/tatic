@@ -2623,7 +2623,7 @@ Its shortcomings there, with mitigations:
   - At n=64 the shared memo wins 6 of 7 paired reps, and the rise from n=8 to n=64 falls from 217 to 132 ns. An earlier rotation (load 40%) gave 445 → 360 best-of-5 at n=64 with the table.
   - At n=8 it is within noise: 4 of 7 paired reps.
   - This does not contradict "Per-node facts in the node header", where slot alone beat slot plus table 8 of 12 on `proof_cost_split`. That workload is small-n; at n=64 the walks are 5.5 times longer.
-  - In the replay the shared memo is the one mechanism: it subsumes the slot and the `uses` walk. In the real kernel it loses on small work (next paragraph).
+  - In the replay the shared memo is the one mechanism: it subsumes the slot and the `uses` walk. In the real kernel it loses on small work, with or without the slot in front (next paragraph).
 - **Most memo entries are never read:** inst 85%, shift 78%, whnf 62% and types 77%, the same at n=8 and n=64. Hit rates are flat in n (inst 35%, shift 44%, whnf 58%, types 74%).
 - **Pre-sizing the tables to their final size gains nothing** (2 rotations, within noise). The growth cost is probes into tables larger than the caches, not resizing.
 - **Bounded memos keep most hits only for some tables.** A 2-way cache of 2^16 entries at n=64 keeps 97% of inst's hits, 98% of whnf's, 88% of types' and 75% of shift's (2^14: 93, 85, 70, 62). A lost hit means recomputation, which the replay cannot time, so this needs a real prototype.
@@ -2639,7 +2639,11 @@ Its shortcomings there, with mitigations:
 
 - `proof_cost_split`'s check rose 350 → 418 ms and its build (which also runs the kernel) 2.35 → 2.70 s.
 - So the replay's n=64 gain is real (−13% against its −20%), but small checks pay more for a hash probe into the table than the slot's one header read saves. This agrees with "Per-node facts in the node header", where the slot beat slot plus table on `proof_cost_split`.
-- Not tried: the slot first, with the `(node, d)` memo only behind its misses. That keeps the slot's cost on small work and bounds the walks at large n.
+- **The slot first, with the memo only behind its misses, also loses on small work.** Two variants of that hybrid, against today's, with load 8–30% for `proof_cost_split` and rising to 42% by the end of the rule 33 runs:
+  - With `memo_context` also on the table's memo: `proof_cost_split` CPU median 3.83 → 4.11 s (+7%, the hybrid won 1 of 8), check 344 → 406 ms.
+  - With `memo_context` on its own map as today: `proof_cost_split` 3.84 → 4.03 s (+5%, won 2 of 8), check 340 → 373 ms. Rule 33 at n=64, median of medians 635 → 576 ms (−9%, 4 of 6); at n=8 neutral (3 of 6, by best and by median).
+  - So the slot's misses alone carry the loss. A likely cause, not measured: `lowest_loose` must visit every child to find the minimum and hashes each node it visits, while the `uses` walk stops at its first hit and hashes nothing. On small terms that walk is cheaper than the memo.
+  - The memo pays only where walks are long (large n). Choosing between walk and memo by term size would be a size threshold, not a general mechanism; not tried.
 
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
