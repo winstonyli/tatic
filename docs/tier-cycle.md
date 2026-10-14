@@ -1584,6 +1584,44 @@ instantiation's 44% of busy samples, less the forcing overhead. Open: lead, not 
 patch kept) against 7643319, 24 alternating pairs, Defender RTP off: lost all 24, median pair +0.44 s, best 4.89 against
 4.45 s (about 9% slower). Kept.
 
+**The instantiation memo keyed by the arguments a child uses: neutral (reverted, no patch kept, 2026-10-13).** A child
+whose loose variables reach only the last `j < m` arguments instantiates the same under any list ending in those `j`, so
+`inst_rec` keyed it by that suffix's `args_id` (made once per `instantiate_n` call and suffix length, up to 8) instead
+of the whole list's. It did what it was meant to: memo lookups fell from 5.23 M to 4.19 M (hits found higher in the
+tree), hits rose from 37% to 41%, and 1.76 M lookups used a suffix key, hitting 52%. But `proof_cost_split` cmp3d own
+CPU against 136bbe5, two runs of 24 alternating pairs: won 11 (median pair +0.005 s, best 4.70 against 4.69 s; about
+28% other load at the start) and 10 (median +0.035 s, best 4.80 against 4.86 s; about 14%). The rebuilds it avoids
+were cheap ones. Kept from it: `instantiate_n_matches_sequential_substitution_in_a_scope`, which checks
+`instantiate_n` against one `subst_top` per argument inside one scope with arguments from a small pool, so the memo
+answers across lists; it fails when the memo key ignores the argument list.
+
+**Design note: delayed substitution (no code, 2026-10-13).** The question was whether `instantiate_n` could build a
+child only when something reads it (the 44% of new nodes no one reads, above). Two shapes:
+
+| | A: a new constructor `Subst(body, args, d)` | B: a node whose value is computed on first `Deref` |
+|---|---|---|
+| Readers | every `match` on `Expr` gains an arm that forces (238 `Expr::` uses in `kernel.rs`, 204 in its tests, 78 in `kernel_soundness_fuzz.rs`); exhaustive matches make the compiler list them, but any of the 10 `_ =>` arms in `kernel.rs` that match an `Expr` would take `Subst` silently | none change: the kernel's `Rc::deref` forces |
+| Cost on every read | only where `Subst` is matched | a check on every `Deref` of every node, the kernel's hottest path |
+| Missed force | through a `_ =>` arm: a wrong shape, so `same_shape` answers unequal and `infer` errors; incomplete rather than unsound only if each such arm is audited | impossible, but the suspension and its value have different addresses, so address-keyed memos see two nodes |
+| Header (`loose`, `free`) | must be known unforced: an upper bound from the body and the arguments is safe (it only skips less) | the same |
+
+Both lose to hash-consing, which is what the kernel's speed now rests on. A node is canonical only if everything under it
+was interned; a suspension can't be interned (its children are unknown until forced), so every term holding one is
+non-canonical. That turns off the pointer shortcuts for all its ancestors: `==` and `eq_noting` compare canonical
+pairs by address and stop, `conv_rc` and the per-scope memos key by address, and the 75% of instantiation interns that
+find an existing node are the sharing that lets later comparisons stop at an address. Forcing could intern the result
+only by forcing all of its children too, which is eager substitution again. The closure-based evaluator was measured on
+2026-09-30, level with a kernel that had none of today's tables (hash-consing came on 2026-10-01).
+
+The saving is also smaller than the 44% suggests. Unread new nodes are 0.94 M of 8.56 M instantiation interns (11%), and
+each suspension left at the frontier still costs an allocation and a memo lookup, likely close to what building the node
+costs (not measured).
+If unread table hits were as common as unread new nodes, the bound would be about 44% of instantiation's 44% of busy
+samples (about 20%); counting new nodes only, about 5%. That is before the losses above. Parked. Gate to reopen: a
+probe weighting each `inst_rec` result (new or found) by the work below it and counting how much of that work is never
+read by the checker in the same scope; reopen only if it is over about 15% of busy samples, and then prototype B
+behind a feature with `kernel_soundness_fuzz` and the scoped `instantiate_n` test as the checks.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's

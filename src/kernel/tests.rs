@@ -305,6 +305,42 @@ fn instantiate_n_matches_sequential_substitution() {
     }
 }
 
+/// The same inside one interning scope, with arguments drawn from a small pool so that lists share
+/// suffixes and the memo answers across them.
+#[test]
+fn instantiate_n_matches_sequential_substitution_in_a_scope() {
+    let _scope = InternScope::enter();
+    let mut next = splitmix(43);
+    let pool: Vec<Expr> = (0..4).map(|_| random_term(&mut next)).collect();
+    let rcs: Vec<Rc<Expr>> = pool.iter().map(|a| hc::intern_new(a.clone())).collect();
+    // Each term meets several lists, so the memo (keyed by node address) answers across them.
+    let mut e = random_term(&mut next);
+    for i in 0..20_000 {
+        if i % 10 == 0 {
+            e = random_term(&mut next);
+        }
+        let m = 1 + (next() % 3) as usize;
+        let pick: Vec<usize> = (0..m).map(|_| (next() % 4) as usize).collect();
+        let mut cur = e.clone();
+        for _ in 1..m {
+            cur = lam(sort(0), cur);
+        }
+        for (i, &p) in pick.iter().enumerate() {
+            let next_body = instantiate_ref(&cur, &pool[p], 0);
+            cur = if i + 1 < m {
+                match &next_body {
+                    Expr::Lam(_, b) => (**b).clone(),
+                    other => panic!("lost the inner lambda: {other:?}"),
+                }
+            } else {
+                next_body
+            };
+        }
+        let refs: Vec<&Rc<Expr>> = pick.iter().map(|&p| &rcs[p]).collect();
+        assert_eq!(instantiate_n(&e, &refs, 0), cur, "e {e:?}, pick {pick:?}");
+    }
+}
+
 /// A child with nothing to change comes back as the same `Rc`, not a
 /// copy: a closed one always, and an open one when its variables are
 /// all below the cutoff or depth.
