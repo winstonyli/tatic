@@ -758,18 +758,6 @@ pub fn scoped<R: Escape>(f: impl FnOnce() -> R) -> R {
     hc::scoped(true, f)
 }
 
-/// The guard form of [`scoped`], until its last callers move (Task 4 of the Stage 2 plan deletes it).
-#[must_use]
-pub struct InternScope(#[allow(dead_code)] hc::Scope);
-
-impl InternScope {
-    pub fn enter() -> InternScope {
-        let s = hc::Scope::enter();
-        hc::activate();
-        InternScope(s)
-    }
-}
-
 /// The current interning generation: 0 while the table is off, else a number never reused. A term kept across a change
 /// of generation stays correct but is no longer canonical (it loses the pointer-equality fast path), so a cache of built
 /// terms that wants to stay canonical keys on this.

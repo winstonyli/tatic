@@ -347,7 +347,7 @@ pub fn carry_cap() -> usize {
 thread_local! {
     /// `add_tree_law` results (a closed proof, or none) by width, variable count and the two terms: the rewriter asks for the same
     /// pair again for every law and every mined candidate that reaches the same subterm.
-    static TREE_LAWS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<(Expr, Expr)>>> = Default::default();
+    static TREE_LAWS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<(tatic::kernel::PExpr, tatic::kernel::PExpr)>>> = Default::default();
     /// `tree_encoding` results past its cheap screens, by the same key.
     static TREE_ENCS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<std::rc::Rc<TreeEnc>>>> = Default::default();
 }
@@ -403,11 +403,11 @@ pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::rc
 /// `None` when there is none.
 pub fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
     let key = (n, k, t1.clone(), t2.clone());
-    if let Some(hit) = TREE_LAWS.with(|c| c.borrow().get(&key).cloned()) {
+    if let Some(hit) = TREE_LAWS.with(|c| c.borrow().get(&key).map(|l| l.as_ref().map(|(p, s)| (p.get(), s.get())))) {
         return hit;
     }
     let law = tree_encoding(n, k, t1, t2).map(|found| tree_proof(n, k, t1, t2, &found));
-    TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.clone()));
+    TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.clone().map(|(p, s)| (tatic::kernel::persist(p), tatic::kernel::persist(s)))));
     law
 }
 
@@ -625,77 +625,80 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
 
 #[test]
 pub fn state_encoding_search_proves_three_leaf_sum_laws() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let op = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
-    for n in [1usize, 2, 4] {
-        for (name, t1, t2) in [
-            ("add (add x y) y = add x (add y y)", op(op(v(0), v(1)), v(1)), op(v(0), op(v(1), v(1)))),
-            ("add (add y y) -1 = add y (add y -1)", op(op(v(1), v(1)), Term::Ones), op(v(1), op(v(1), Term::Ones))),
-            ("add (add x -1) -1 = add x (add -1 -1)", op(op(v(0), Term::Ones), Term::Ones), op(v(0), op(Term::Ones, Term::Ones))),
-        ] {
-            if n == 1 {
-                let e = moore_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, None).unwrap();
-                println!("ENCODING {name}: {} phi bits, phi1 {:?}", e.phi[0].len(), e.phi[0]);
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let op = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
+        for n in [1usize, 2, 4] {
+            for (name, t1, t2) in [
+                ("add (add x y) y = add x (add y y)", op(op(v(0), v(1)), v(1)), op(v(0), op(v(1), v(1)))),
+                ("add (add y y) -1 = add y (add y -1)", op(op(v(1), v(1)), Term::Ones), op(v(1), op(v(1), Term::Ones))),
+                ("add (add x -1) -1 = add x (add -1 -1)", op(op(v(0), Term::Ones), Term::Ones), op(v(0), op(Term::Ones, Term::Ones))),
+            ] {
+                if n == 1 {
+                    let e = moore_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, None).unwrap();
+                    println!("ENCODING {name}: {} phi bits, phi1 {:?}", e.phi[0].len(), e.phi[0]);
+                }
+                let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
+                ck(&format!("{name} at n={n}"), &p, &s);
             }
-            let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
-            ck(&format!("{name} at n={n}"), &p, &s);
+            // a false law has no encoding
+            assert!(add_tree_law(n, 2, &op(op(v(0), v(1)), v(1)), &op(v(0), op(v(0), v(0)))).is_none());
         }
-        // a false law has no encoding
-        assert!(add_tree_law(n, 2, &op(op(v(0), v(1)), v(1)), &op(v(0), op(v(0), v(0)))).is_none());
-    }
+    })
 }
 
 #[test]
 pub fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leaves() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let add = |a: Term, b: Term| op(0, a, b);
-    for n in [1usize, 2, 4] {
-        // x & y + x | y = x + y: the leaves are bitwise terms
-        let t1 = add(op(1, v(0), v(1)), op(2, v(0), v(1)));
-        let t2 = add(v(0), v(1));
-        let (p, s) = add_tree_law(n, 2, &t1, &t2).expect("and+or");
-        ck(&format!("and+or at n={n}"), &p, &s);
-        // associativity over three vectors, found by search
-        let (p, s) = add_tree_law(n, 3, &add(add(v(0), v(1)), v(2)), &add(v(0), add(v(1), v(2)))).expect("assoc3");
-        ck(&format!("assoc over x y z at n={n}"), &p, &s);
-        // four leaves (three carries, two-bit total carry): (((x+y)+z)+x) = (x+(y+(z+x)))
-        let l = add(add(add(v(0), v(1)), v(2)), v(0));
-        let r = add(v(0), add(v(1), add(v(2), v(0))));
-        let (p, s) = add_tree_law(n, 3, &l, &r).expect("four leaves");
-        ck(&format!("four leaves at n={n}"), &p, &s);
-        // false laws have no encoding
-        assert!(add_tree_law(n, 3, &l, &add(v(0), add(v(1), add(v(2), v(2))))).is_none());
-        assert!(add_tree_law(n, 2, &t1, &add(v(0), v(0))).is_none());
-    }
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        let add = |a: Term, b: Term| op(0, a, b);
+        for n in [1usize, 2, 4] {
+            // x & y + x | y = x + y: the leaves are bitwise terms
+            let t1 = add(op(1, v(0), v(1)), op(2, v(0), v(1)));
+            let t2 = add(v(0), v(1));
+            let (p, s) = add_tree_law(n, 2, &t1, &t2).expect("and+or");
+            ck(&format!("and+or at n={n}"), &p, &s);
+            // associativity over three vectors, found by search
+            let (p, s) = add_tree_law(n, 3, &add(add(v(0), v(1)), v(2)), &add(v(0), add(v(1), v(2)))).expect("assoc3");
+            ck(&format!("assoc over x y z at n={n}"), &p, &s);
+            // four leaves (three carries, two-bit total carry): (((x+y)+z)+x) = (x+(y+(z+x)))
+            let l = add(add(add(v(0), v(1)), v(2)), v(0));
+            let r = add(v(0), add(v(1), add(v(2), v(0))));
+            let (p, s) = add_tree_law(n, 3, &l, &r).expect("four leaves");
+            ck(&format!("four leaves at n={n}"), &p, &s);
+            // false laws have no encoding
+            assert!(add_tree_law(n, 3, &l, &add(v(0), add(v(1), add(v(2), v(2))))).is_none());
+            assert!(add_tree_law(n, 2, &t1, &add(v(0), v(0))).is_none());
+        }
+    })
 }
 
 #[test]
 pub fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leaves() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let add = |a: Term, b: Term| op(0, a, b);
-    for n in [1usize, 2, 4] {
-        // one add against two: the zero leaf adds a carry that never fires
-        let (p, s) = add_tree_law(n, 2, &add(v(1), Term::Ones), &add(Term::Ones, add(v(1), Term::Zero))).expect("unequal counts");
-        ck(&format!("y + -1 = -1 + (y + 0) at n={n}"), &p, &s);
-        // a bare leaf is a sum with no carries
-        let (p, s) = add_tree_law(n, 2, &v(1), &add(v(1), Term::Zero)).expect("bare leaf");
-        ck(&format!("y = y + 0 at n={n}"), &p, &s);
-        let (p, s) = add_tree_law(n, 2, &op(3, v(0), Term::Ones), &add(op(3, v(0), Term::Ones), Term::Zero)).expect("bare bitwise leaf");
-        ck(&format!("x^-1 = (x^-1) + 0 at n={n}"), &p, &s);
-        assert!(add_tree_law(n, 2, &v(1), &add(v(1), Term::Ones)).is_none());
-        // five leaves, four carries
-        let l = add(add(add(add(v(0), v(1)), v(2)), v(0)), v(1));
-        let r = add(v(0), add(v(1), add(v(2), add(v(0), v(1)))));
-        let (p, s) = add_tree_law(n, 3, &l, &r).expect("five leaves");
-        ck(&format!("five leaves at n={n}"), &p, &s);
-        assert!(add_tree_law(n, 3, &l, &add(v(0), add(v(1), add(v(2), add(v(0), v(0)))))).is_none());
-        assert!(add_tree_law(n, 2, &add(v(1), Term::Ones), &add(v(0), add(v(1), Term::Zero))).is_none());
-    }
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        let add = |a: Term, b: Term| op(0, a, b);
+        for n in [1usize, 2, 4] {
+            // one add against two: the zero leaf adds a carry that never fires
+            let (p, s) = add_tree_law(n, 2, &add(v(1), Term::Ones), &add(Term::Ones, add(v(1), Term::Zero))).expect("unequal counts");
+            ck(&format!("y + -1 = -1 + (y + 0) at n={n}"), &p, &s);
+            // a bare leaf is a sum with no carries
+            let (p, s) = add_tree_law(n, 2, &v(1), &add(v(1), Term::Zero)).expect("bare leaf");
+            ck(&format!("y = y + 0 at n={n}"), &p, &s);
+            let (p, s) = add_tree_law(n, 2, &op(3, v(0), Term::Ones), &add(op(3, v(0), Term::Ones), Term::Zero)).expect("bare bitwise leaf");
+            ck(&format!("x^-1 = (x^-1) + 0 at n={n}"), &p, &s);
+            assert!(add_tree_law(n, 2, &v(1), &add(v(1), Term::Ones)).is_none());
+            // five leaves, four carries
+            let l = add(add(add(add(v(0), v(1)), v(2)), v(0)), v(1));
+            let r = add(v(0), add(v(1), add(v(2), add(v(0), v(1)))));
+            let (p, s) = add_tree_law(n, 3, &l, &r).expect("five leaves");
+            ck(&format!("five leaves at n={n}"), &p, &s);
+            assert!(add_tree_law(n, 3, &l, &add(v(0), add(v(1), add(v(2), add(v(0), v(0)))))).is_none());
+            assert!(add_tree_law(n, 2, &add(v(1), Term::Ones), &add(v(0), add(v(1), Term::Zero))).is_none());
+        }
+    })
 }
 
 /// Build and check time of the carry-encoding proof by number of carries (n = 4, three operands).
@@ -709,72 +712,75 @@ pub fn tree_proof_cost_by_carries() {
         for c in 2..=6usize {
             let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
             let right = leaves[..c].iter().rev().fold(leaves[c].clone(), |a, b| add(b.clone(), a));
-            let _scope = tatic::kernel::InternScope::enter();
-            let t0 = Instant::now();
-            let (p, s) = add_tree_law(n, 3, &left, &right).expect("encoding");
-            let built = t0.elapsed();
-            let t1 = Instant::now();
-            let ok = holds(&p, &s).is_ok();
-            println!("TREECOST n={n} carries={c}: build {built:?}, check {:?}, ok {ok}", t1.elapsed());
+            tatic::kernel::scoped(|| {
+                let t0 = Instant::now();
+                let (p, s) = add_tree_law(n, 3, &left, &right).expect("encoding");
+                let built = t0.elapsed();
+                let t1 = Instant::now();
+                let ok = holds(&p, &s).is_ok();
+                println!("TREECOST n={n} carries={c}: build {built:?}, check {:?}, ok {ok}", t1.elapsed());
+            })
         }
     }
 }
 
 #[test]
 pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
-    let _scope = tatic::kernel::InternScope::enter();
-    // computes: a - b mod 2^n on all pairs at n = 3
-    let n = 3;
-    for a in 0..8u128 {
-        for b in 0..8u128 {
-            let e = app2(sub(n), lit(n, a), lit(n, b));
-            assert_eq!(normalize(&e), normalize(&lit(n, a.wrapping_sub(b) & 7)), "{a} - {b}");
+    tatic::kernel::scoped(|| {
+        // computes: a - b mod 2^n on all pairs at n = 3
+        let n = 3;
+        for a in 0..8u128 {
+            for b in 0..8u128 {
+                let e = app2(sub(n), lit(n, a), lit(n, b));
+                assert_eq!(normalize(&e), normalize(&lit(n, a.wrapping_sub(b) & 7)), "{a} - {b}");
+            }
         }
-    }
-    let (p, s) = good_sub(2);
-    ck("good_sub n=2", &p, &s);
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    for n in [1usize, 2, 4] {
-        for (name, k, l, r) in [
-            ("x - x = 0", 2, op(4, v(0), v(0)), Term::Zero),
-            ("x - 0 = x", 2, op(4, v(0), Term::Zero), v(0)),
-            ("(x + y) - y = x", 2, op(4, op(0, v(0), v(1)), v(1)), v(0)),
-            ("(x - y) + y = x", 2, op(0, op(4, v(0), v(1)), v(1)), v(0)),
-            ("(x - y) - z = x - (y + z)", 3, op(4, op(4, v(0), v(1)), v(2)), op(4, v(0), op(0, v(1), v(2)))),
-            ("0 - x = ~(x + -1)", 2, op(4, Term::Zero, v(0)), op(3, op(0, v(0), Term::Ones), Term::Ones)),
-            ("~(x + y) = ~x - y", 2, op(3, op(0, v(0), v(1)), Term::Ones), op(4, op(3, v(0), Term::Ones), v(1))),
-            ("(x & y) + (x | y) = x + y, bitwise nodes inside the machine", 2, op(0, op(1, v(0), v(1)), op(2, v(0), v(1))), op(0, v(0), v(1))),
-            ("x - (y - z) = (x - y) + z", 3, op(4, v(0), op(4, v(1), v(2))), op(0, op(4, v(0), v(1)), v(2))),
-        ] {
-            let (p, s) = add_tree_law(n, k, &l, &r).unwrap_or_else(|| panic!("{name}: no encoding"));
-            ck(&format!("{name} at n={n}"), &p, &s);
+        let (p, s) = good_sub(2);
+        ck("good_sub n=2", &p, &s);
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        for n in [1usize, 2, 4] {
+            for (name, k, l, r) in [
+                ("x - x = 0", 2, op(4, v(0), v(0)), Term::Zero),
+                ("x - 0 = x", 2, op(4, v(0), Term::Zero), v(0)),
+                ("(x + y) - y = x", 2, op(4, op(0, v(0), v(1)), v(1)), v(0)),
+                ("(x - y) + y = x", 2, op(0, op(4, v(0), v(1)), v(1)), v(0)),
+                ("(x - y) - z = x - (y + z)", 3, op(4, op(4, v(0), v(1)), v(2)), op(4, v(0), op(0, v(1), v(2)))),
+                ("0 - x = ~(x + -1)", 2, op(4, Term::Zero, v(0)), op(3, op(0, v(0), Term::Ones), Term::Ones)),
+                ("~(x + y) = ~x - y", 2, op(3, op(0, v(0), v(1)), Term::Ones), op(4, op(3, v(0), Term::Ones), v(1))),
+                ("(x & y) + (x | y) = x + y, bitwise nodes inside the machine", 2, op(0, op(1, v(0), v(1)), op(2, v(0), v(1))), op(0, v(0), v(1))),
+                ("x - (y - z) = (x - y) + z", 3, op(4, v(0), op(4, v(1), v(2))), op(0, op(4, v(0), v(1)), v(2))),
+            ] {
+                let (p, s) = add_tree_law(n, k, &l, &r).unwrap_or_else(|| panic!("{name}: no encoding"));
+                ck(&format!("{name} at n={n}"), &p, &s);
+            }
+            // false laws have none
+            assert!(add_tree_law(n, 2, &op(4, v(0), v(1)), &op(4, v(1), v(0))).is_none());
+            assert!(add_tree_law(n, 2, &op(4, v(0), v(1)), &op(0, v(0), v(1))).is_none() || n == 1);
         }
-        // false laws have none
-        assert!(add_tree_law(n, 2, &op(4, v(0), v(1)), &op(4, v(1), v(0))).is_none());
-        assert!(add_tree_law(n, 2, &op(4, v(0), v(1)), &op(0, v(0), v(1))).is_none() || n == 1);
-    }
+    })
 }
 
 /// The decisions are made in plain Booleans (`Bools`); the kernel's gates (`GoodOps`, normalized) must give the same machine
 /// steps, so the plain decisions match what the proofs then state.
 #[test]
 pub fn plain_steps_match_the_kernel_gates() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let (v, op) = (|i: usize| Term::V(i), |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b)));
-    let gops = GoodOps::new();
-    for term in [op(ADD, op(XOR, v(0), Term::Ones), v(1)), op(SUB, v(0), op(AND, v(0), v(1))), op(5, op(ADD, v(0), v(1)), op(OR, v(1), v(0))), op(ADD, op(ADD, v(0), v(1)), op(SUB, v(1), v(0)))] {
-        let m = Machine::parse(&term).unwrap();
-        let (k, c) = (2, m.carries());
-        for r in 0..1usize << (k + c) {
-            let bits: Vec<bool> = (0..k + c).map(|p| r >> p & 1 == 1).collect();
-            let gbs: Vec<Gb> = bits.iter().map(|b| Gb { e: bit(*b), g: f() }).collect();
-            let (o, next) = m.step(&Bools, &bits[..k], &bits[k..]);
-            let (oe, nexte) = m.step(&gops, &gbs[..k], &gbs[k..]);
-            let kernel: Vec<bool> = std::iter::once(&oe).chain(&nexte).map(|g| normalize(&g.e) == t()).collect();
-            assert_eq!(std::iter::once(o).chain(next).collect::<Vec<_>>(), kernel, "{} at {bits:?}", term.show());
+    tatic::kernel::scoped(|| {
+        let (v, op) = (|i: usize| Term::V(i), |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b)));
+        let gops = GoodOps::new();
+        for term in [op(ADD, op(XOR, v(0), Term::Ones), v(1)), op(SUB, v(0), op(AND, v(0), v(1))), op(5, op(ADD, v(0), v(1)), op(OR, v(1), v(0))), op(ADD, op(ADD, v(0), v(1)), op(SUB, v(1), v(0)))] {
+            let m = Machine::parse(&term).unwrap();
+            let (k, c) = (2, m.carries());
+            for r in 0..1usize << (k + c) {
+                let bits: Vec<bool> = (0..k + c).map(|p| r >> p & 1 == 1).collect();
+                let gbs: Vec<Gb> = bits.iter().map(|b| Gb { e: bit(*b), g: f() }).collect();
+                let (o, next) = m.step(&Bools, &bits[..k], &bits[k..]);
+                let (oe, nexte) = m.step(&gops, &gbs[..k], &gbs[k..]);
+                let kernel: Vec<bool> = std::iter::once(&oe).chain(&nexte).map(|g| normalize(&g.e) == t()).collect();
+                assert_eq!(std::iter::once(o).chain(next).collect::<Vec<_>>(), kernel, "{} at {bits:?}", term.show());
+            }
         }
-    }
+    })
 }
 
 /// Time of the evaluation of one machine on every (operand bits, carries) assignment.
@@ -802,24 +808,26 @@ pub fn machine_lemma_probe() {
     let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
     let gops = GoodOps::new();
     for c in 3..=5usize {
-        let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
-        let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
-        let m = Machine::parse(&left).unwrap();
-        for (what, pick) in [("out", 0usize), ("next carry 0", 1), ("table of next carries", 2)] {
-            let f_of = |vv: &[Expr]| -> Expr {
-                let dummy: Vec<Gb> = vv.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
-                let (o, next) = m.step(&gops, &dummy[..3], &dummy[3..]);
-                match pick {
-                    0 => o.e,
-                    1 => next[0].e.clone(),
-                    _ => table_app(&next.iter().map(|g| g.e.clone()).collect::<Vec<_>>(), &|b| b.iter().filter(|x| **x).count() % 2 == 1),
-                }
-            };
-            let (p, ty) = lemma_n(3 + c, &|vv| id(bool0(), f_of(vv), f_of(vv)), &|b| refl(f_of(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>())));
-            let t0 = Instant::now();
-            let ok = holds(&p, &ty).is_ok();
-            println!("PROBE carries={c} {what}: check {:?} ok {ok}", t0.elapsed());
-        }
+        let body = || {
+            let left = leaves[1..=c].iter().fold(leaves[0].clone(), |a, b| add(a, b.clone()));
+            let m = Machine::parse(&left).unwrap();
+            for (what, pick) in [("out", 0usize), ("next carry 0", 1), ("table of next carries", 2)] {
+                let f_of = |vv: &[Expr]| -> Expr {
+                    let dummy: Vec<Gb> = vv.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
+                    let (o, next) = m.step(&gops, &dummy[..3], &dummy[3..]);
+                    match pick {
+                        0 => o.e,
+                        1 => next[0].e.clone(),
+                        _ => table_app(&next.iter().map(|g| g.e.clone()).collect::<Vec<_>>(), &|b| b.iter().filter(|x| **x).count() % 2 == 1),
+                    }
+                };
+                let (p, ty) = lemma_n(3 + c, &|vv| id(bool0(), f_of(vv), f_of(vv)), &|b| refl(f_of(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>())));
+                let t0 = Instant::now();
+                let ok = holds(&p, &ty).is_ok();
+                println!("PROBE carries={c} {what}: check {:?} ok {ok}", t0.elapsed());
+            }
+        };
+        if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -840,113 +848,114 @@ pub fn lemma_overhead_probe() {
 #[test]
 #[ignore]
 pub fn conjecture_miner() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let (n, nvars, deep) = (env_or("MINER_N", 4), env_or("MINER_VARS", 2), env_or("MINER_DEEP", 0) == 1);
-    let ts = terms(nvars, deep);
-    let t0 = Instant::now();
-    // classes by the values on the tuples (variable `i` is bits `n*i..` of a tuple)
-    let mut classes: std::collections::BTreeMap<Vec<u128>, Vec<usize>> = Default::default();
-    // all input tuples, or `MINER_SAMPLE` of them (a fixed pseudo-random subset plus the all-zero and all-one
-    // tuples): a class may then hold a false equality, which no proof builder or kernel check will accept
-    let total = 1u128 << (n * nvars);
-    let sample = env_or("MINER_SAMPLE", 0) as u128;
-    let tuples: Vec<u128> = if sample == 0 || sample >= total {
-        (0..total).collect()
-    } else {
-        let mut x = 0x9e3779b97f4a7c15u128;
-        let mut v = vec![0, total - 1];
-        for _ in 0..sample {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            v.push((x >> 40) % total);
+    tatic::kernel::scoped(|| {
+        let (n, nvars, deep) = (env_or("MINER_N", 4), env_or("MINER_VARS", 2), env_or("MINER_DEEP", 0) == 1);
+        let ts = terms(nvars, deep);
+        let t0 = Instant::now();
+        // classes by the values on the tuples (variable `i` is bits `n*i..` of a tuple)
+        let mut classes: std::collections::BTreeMap<Vec<u128>, Vec<usize>> = Default::default();
+        // all input tuples, or `MINER_SAMPLE` of them (a fixed pseudo-random subset plus the all-zero and all-one
+        // tuples): a class may then hold a false equality, which no proof builder or kernel check will accept
+        let total = 1u128 << (n * nvars);
+        let sample = env_or("MINER_SAMPLE", 0) as u128;
+        let tuples: Vec<u128> = if sample == 0 || sample >= total {
+            (0..total).collect()
+        } else {
+            let mut x = 0x9e3779b97f4a7c15u128;
+            let mut v = vec![0, total - 1];
+            for _ in 0..sample {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                v.push((x >> 40) % total);
+            }
+            v.sort();
+            v.dedup();
+            v
+        };
+        for (i, t) in ts.iter().enumerate() {
+            let values = tuples.iter().map(|&tu| t.interp(n, &(0..nvars).map(|v| tu >> (n * v) & low_bits(n)).collect::<Vec<_>>())).collect();
+            classes.entry(values).or_default().push(i);
         }
-        v.sort();
-        v.dedup();
-        v
-    };
-    for (i, t) in ts.iter().enumerate() {
-        let values = tuples.iter().map(|&tu| t.interp(n, &(0..nvars).map(|v| tu >> (n * v) & low_bits(n)).collect::<Vec<_>>())).collect();
-        classes.entry(values).or_default().push(i);
-    }
-    let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
-    println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
-    let show = std::env::var("MINER_SHOW").is_ok();
-    // Every conjecture (class representative = shortest term) over x, y, by what can check it.
-    let (mut by_builder, mut rejected, mut needs_add, mut needs_z, mut by_third) = (0, vec![], vec![], 0, (0usize, 0usize));
-    let (mut by_rewrite, mut rewrite_bugs, mut by_chain, mut by_tree) = (0, vec![], 0, 0);
-    let t1 = Instant::now();
-    for c in classes.values().filter(|c| c.len() > 1) {
-        let mut members: Vec<&Term> = c.iter().map(|&i| &ts[i]).collect();
-        members.sort_by_key(|t| t.show().len());
-        for other in &members[1..] {
-            let law = format!("{} = {}", members[0].show(), other.show());
-            if show {
-                println!("  CONJ: {law}");
-            }
-            let k = (members[0].max_var().max(other.max_var()) + 1).max(2);
-            if k > 2 {
-                by_third.0 += 1;
-            }
-            if members[0].uses_add() || other.uses_add() {
-                match rewrite_law(n, k, members[0], other) {
-                    Some((p, s)) if k > 2 && holds(&p, &s).is_ok() => by_third.1 += 1,
-                    _ if k > 2 => match add_tree_law(n, k, members[0], other) {
-                        Some((p, s)) if holds(&p, &s).is_ok() => by_third.1 += 1,
-                        _ => needs_z += 1,
-                    },
-                    Some((p, s)) if holds(&p, &s).is_ok() => by_rewrite += 1,
-                    Some(_) => rewrite_bugs.push(law),
-                    None => {
-                        // the generic carry-chain builder, in either orientation
-                        let chain = carry_chain_law(n, members[0], other).or_else(|| carry_chain_law(n, other, members[0]));
-                        match chain {
-                            Some((p, s)) if holds(&p, &s).is_ok() => by_chain += 1,
-                            _ => match add_tree_law(n, 2, members[0], other) {
-                                Some((p, s)) if holds(&p, &s).is_ok() => by_tree += 1,
-                                _ => needs_add.push(law),
-                            },
+        let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
+        println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
+        let show = std::env::var("MINER_SHOW").is_ok();
+        // Every conjecture (class representative = shortest term) over x, y, by what can check it.
+        let (mut by_builder, mut rejected, mut needs_add, mut needs_z, mut by_third) = (0, vec![], vec![], 0, (0usize, 0usize));
+        let (mut by_rewrite, mut rewrite_bugs, mut by_chain, mut by_tree) = (0, vec![], 0, 0);
+        let t1 = Instant::now();
+        for c in classes.values().filter(|c| c.len() > 1) {
+            let mut members: Vec<&Term> = c.iter().map(|&i| &ts[i]).collect();
+            members.sort_by_key(|t| t.show().len());
+            for other in &members[1..] {
+                let law = format!("{} = {}", members[0].show(), other.show());
+                if show {
+                    println!("  CONJ: {law}");
+                }
+                let k = (members[0].max_var().max(other.max_var()) + 1).max(2);
+                if k > 2 {
+                    by_third.0 += 1;
+                }
+                if members[0].uses_add() || other.uses_add() {
+                    match rewrite_law(n, k, members[0], other) {
+                        Some((p, s)) if k > 2 && holds(&p, &s).is_ok() => by_third.1 += 1,
+                        _ if k > 2 => match add_tree_law(n, k, members[0], other) {
+                            Some((p, s)) if holds(&p, &s).is_ok() => by_third.1 += 1,
+                            _ => needs_z += 1,
+                        },
+                        Some((p, s)) if holds(&p, &s).is_ok() => by_rewrite += 1,
+                        Some(_) => rewrite_bugs.push(law),
+                        None => {
+                            // the generic carry-chain builder, in either orientation
+                            let chain = carry_chain_law(n, members[0], other).or_else(|| carry_chain_law(n, other, members[0]));
+                            match chain {
+                                Some((p, s)) if holds(&p, &s).is_ok() => by_chain += 1,
+                                _ => match add_tree_law(n, 2, members[0], other) {
+                                    Some((p, s)) if holds(&p, &s).is_ok() => by_tree += 1,
+                                    _ => needs_add.push(law),
+                                },
+                            }
                         }
                     }
-                }
-            } else {
-                let (p, s) = bitwise_law_k(n, k, members[0], other);
-                if holds(&p, &s).is_ok() {
-                    by_builder += 1;
-                    by_third.1 += (k > 2) as usize;
                 } else {
-                    rejected.push(law);
+                    let (p, s) = bitwise_law_k(n, k, members[0], other);
+                    if holds(&p, &s).is_ok() {
+                        by_builder += 1;
+                        by_third.1 += (k > 2) as usize;
+                    } else {
+                        rejected.push(law);
+                    }
                 }
             }
         }
-    }
-    println!("MINER generic builder: {by_builder} proved, {} rejected {rejected:?}, in {:?}", rejected.len(), t1.elapsed());
-    println!("MINER carry-chain builder: {by_chain} proved, state-encoding search: {by_tree} proved");
-    println!("MINER rewrite: {by_rewrite} proved, {} failed to check {:?}", rewrite_bugs.len(), &rewrite_bugs[..rewrite_bugs.len().min(5)]);
-    println!("MINER third variable: {} conjectures, {} proved, {needs_z} unproved", by_third.0, by_third.1);
-    println!("MINER no builder: {} still need `add`", needs_add.len());
-    for law in needs_add.iter().take(12) {
-        println!("  needs add: {law}");
-    }
-    // Known library lemmas: does the miner conjecture them, and does the template proof check?
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let same = |a: &Term, b: &Term| {
-        classes.values().any(|c| c.iter().any(|&i| ts[i] == *a) && c.iter().any(|&i| ts[i] == *b))
-    };
-    let (p0, s0) = add_zero_proof(n, 0);
-    let (p1, s1) = add_identity_proof(n, 0, true);
-    let (p2, s2) = add_comm_proof(n, false);
-    for (name, mined, proved) in [
-        ("add x 0 = x", same(&op(0, v(0), Term::Zero), &v(0)), holds(&p0, &s0).is_ok()),
-        ("add 0 x = x", same(&op(0, Term::Zero, v(0)), &v(0)), holds(&p1, &s1).is_ok()),
-        ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), holds(&p2, &s2).is_ok()),
-    ] {
-        println!("MINER known lemma {name}: conjectured {mined}, template proof checks {proved}");
-        assert!(mined && proved, "{name}");
-    }
-    if deep && nvars >= 3 {
-        let assoc = same(&op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2))));
-        println!("MINER add associativity conjectured: {assoc}");
-    }
+        println!("MINER generic builder: {by_builder} proved, {} rejected {rejected:?}, in {:?}", rejected.len(), t1.elapsed());
+        println!("MINER carry-chain builder: {by_chain} proved, state-encoding search: {by_tree} proved");
+        println!("MINER rewrite: {by_rewrite} proved, {} failed to check {:?}", rewrite_bugs.len(), &rewrite_bugs[..rewrite_bugs.len().min(5)]);
+        println!("MINER third variable: {} conjectures, {} proved, {needs_z} unproved", by_third.0, by_third.1);
+        println!("MINER no builder: {} still need `add`", needs_add.len());
+        for law in needs_add.iter().take(12) {
+            println!("  needs add: {law}");
+        }
+        // Known library lemmas: does the miner conjecture them, and does the template proof check?
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        let same = |a: &Term, b: &Term| {
+            classes.values().any(|c| c.iter().any(|&i| ts[i] == *a) && c.iter().any(|&i| ts[i] == *b))
+        };
+        let (p0, s0) = add_zero_proof(n, 0);
+        let (p1, s1) = add_identity_proof(n, 0, true);
+        let (p2, s2) = add_comm_proof(n, false);
+        for (name, mined, proved) in [
+            ("add x 0 = x", same(&op(0, v(0), Term::Zero), &v(0)), holds(&p0, &s0).is_ok()),
+            ("add 0 x = x", same(&op(0, Term::Zero, v(0)), &v(0)), holds(&p1, &s1).is_ok()),
+            ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), holds(&p2, &s2).is_ok()),
+        ] {
+            println!("MINER known lemma {name}: conjectured {mined}, template proof checks {proved}");
+            assert!(mined && proved, "{name}");
+        }
+        if deep && nvars >= 3 {
+            let assoc = same(&op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2))));
+            println!("MINER add associativity conjectured: {assoc}");
+        }
+    })
 }
 
 // ---- Comparison (search note section 20): `lt a b` is the final borrow of the chain for `a - b`, a `Bool0` result.
@@ -1033,38 +1042,39 @@ pub fn lt_pool(nvars: usize) -> Vec<Term> {
 
 #[test]
 pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let n = 4usize;
-    // `lt_u` computes `a < b`
-    let ops = ops_for(n);
-    for (a, b) in [(0u128, 0u128), (3, 5), (5, 3), (7, 7), (0, 15), (15, 0), (8, 9)] {
-        let e = app2(ops[5].clone(), lit(n, a), lit(n, b));
-        assert_eq!(normalize(&e), normalize(&lit(1, (a < b) as u128)), "lt {a} {b}");
-    }
-    let v = |i: usize| Box::new(Term::V(i));
-    let lt = |a: Term, b: Term| Term::Op(LT, Box::new(a), Box::new(b));
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    // lt x x = lt y y; and an operand-order law with a carry on both sides
-    let laws = [
-        ("lt x x = lt y y", lt(Term::V(0), Term::V(0)), lt(Term::V(1), Term::V(1))),
-        ("lt (and x y) (or x y) = lt (and y x) (or y x)", lt(op(1, *v(0), *v(1)), op(2, *v(0), *v(1))), lt(op(1, *v(1), *v(0)), op(2, *v(1), *v(0)))),
-    ];
-    for (name, t1, t2) in &laws {
-        let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
-        ck(name, &p, &s);
-    }
-    // these hold only on the reachable carry states (the borrow of `x - 0` never becomes 1, the borrow of `x + y < x`
-    // equals the add's carry): proved with lemmas conditional on a reachability invariant
-    for (name, t1, t2) in [
-        ("lt x 0 = lt y 0", lt(Term::V(0), Term::Zero), lt(Term::V(1), Term::Zero)),
-        ("lt (x+y) x = lt (x+y) y", lt(op(0, *v(0), *v(1)), Term::V(0)), lt(op(0, *v(0), *v(1)), Term::V(1))),
-    ] {
-        let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("no proof: {name}"));
-        ck(name, &p, &s);
-    }
-    // false laws are not proved: by the plausibility screen, and a wrong proof would not check
-    assert!(add_tree_law(n, 2, &lt(Term::V(0), Term::V(1)), &lt(Term::V(1), Term::V(0))).is_none());
-    assert!(add_tree_law(n, 2, &lt(Term::V(0), Term::V(1)), &lt(Term::V(0), op(0, *v(1), Term::Ones))).is_none());
+    tatic::kernel::scoped(|| {
+        let n = 4usize;
+        // `lt_u` computes `a < b`
+        let ops = ops_for(n);
+        for (a, b) in [(0u128, 0u128), (3, 5), (5, 3), (7, 7), (0, 15), (15, 0), (8, 9)] {
+            let e = app2(ops[5].clone(), lit(n, a), lit(n, b));
+            assert_eq!(normalize(&e), normalize(&lit(1, (a < b) as u128)), "lt {a} {b}");
+        }
+        let v = |i: usize| Box::new(Term::V(i));
+        let lt = |a: Term, b: Term| Term::Op(LT, Box::new(a), Box::new(b));
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        // lt x x = lt y y; and an operand-order law with a carry on both sides
+        let laws = [
+            ("lt x x = lt y y", lt(Term::V(0), Term::V(0)), lt(Term::V(1), Term::V(1))),
+            ("lt (and x y) (or x y) = lt (and y x) (or y x)", lt(op(1, *v(0), *v(1)), op(2, *v(0), *v(1))), lt(op(1, *v(1), *v(0)), op(2, *v(1), *v(0)))),
+        ];
+        for (name, t1, t2) in &laws {
+            let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
+            ck(name, &p, &s);
+        }
+        // these hold only on the reachable carry states (the borrow of `x - 0` never becomes 1, the borrow of `x + y < x`
+        // equals the add's carry): proved with lemmas conditional on a reachability invariant
+        for (name, t1, t2) in [
+            ("lt x 0 = lt y 0", lt(Term::V(0), Term::Zero), lt(Term::V(1), Term::Zero)),
+            ("lt (x+y) x = lt (x+y) y", lt(op(0, *v(0), *v(1)), Term::V(0)), lt(op(0, *v(0), *v(1)), Term::V(1))),
+        ] {
+            let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("no proof: {name}"));
+            ck(name, &p, &s);
+        }
+        // false laws are not proved: by the plausibility screen, and a wrong proof would not check
+        assert!(add_tree_law(n, 2, &lt(Term::V(0), Term::V(1)), &lt(Term::V(1), Term::V(0))).is_none());
+        assert!(add_tree_law(n, 2, &lt(Term::V(0), Term::V(1)), &lt(Term::V(0), op(0, *v(1), Term::Ones))).is_none());
+    })
 }
 
 /// All `lt` pairs over the pool that agree on every width-4 input, grouped by behaviour; each conjecture is
@@ -1072,40 +1082,41 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
 #[test]
 #[ignore]
 pub fn lt_conjecture_miner() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let _banner = MachineBanner::start("LTMINER");
-    let n = 4usize;
-    let nv = env_or("LTMINER_VARS", 2);
-    let cap = env_or("LTMINER_MAX", 0);
-    let pool = lt_pool(nv);
-    let (mut total, mut proved, mut none) = (0, 0, 0);
-    let t0 = Instant::now();
-    let (mut t_law, mut t_ck) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
-    let conj = pool_conjectures(pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(LT, Box::new(a.clone()), Box::new(b.clone())))), n, nv, cap);
-    {
-        for (g0, t2) in &conj {
-            let g = [g0.clone()];
-            total += 1;
-            let tried = prove_checked(n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2);
-            t_law += tried.law;
-            t_ck += tried.check;
-            match tried.verdict {
-                Verdict::Proved => proved += 1,
-                _ => {
-                    none += 1;
-                    // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
-                    let why = match g[0].refute(t2, nv) {
-                        None => "holds at widths 1..6".to_string(),
-                        Some((w, vals)) => format!("width-specific, differs at width {w} on {vals:?}"),
-                    };
-                    println!("LTMINER no proof ({why}): {} = {}", g[0].show(), t2.show());
+    tatic::kernel::scoped(|| {
+        let _banner = MachineBanner::start("LTMINER");
+        let n = 4usize;
+        let nv = env_or("LTMINER_VARS", 2);
+        let cap = env_or("LTMINER_MAX", 0);
+        let pool = lt_pool(nv);
+        let (mut total, mut proved, mut none) = (0, 0, 0);
+        let t0 = Instant::now();
+        let (mut t_law, mut t_ck) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let conj = pool_conjectures(pool.iter().flat_map(|a| pool.iter().map(move |b| Term::Op(LT, Box::new(a.clone()), Box::new(b.clone())))), n, nv, cap);
+        {
+            for (g0, t2) in &conj {
+                let g = [g0.clone()];
+                total += 1;
+                let tried = prove_checked(n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2);
+                t_law += tried.law;
+                t_ck += tried.check;
+                match tried.verdict {
+                    Verdict::Proved => proved += 1,
+                    _ => {
+                        none += 1;
+                        // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
+                        let why = match g[0].refute(t2, nv) {
+                            None => "holds at widths 1..6".to_string(),
+                            Some((w, vals)) => format!("width-specific, differs at width {w} on {vals:?}"),
+                        };
+                        println!("LTMINER no proof ({why}): {} = {}", g[0].show(), t2.show());
+                    }
                 }
             }
         }
-    }
-    let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
-    println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.load(std::sync::atomic::Ordering::Relaxed));
-    println!("LTMINER {total} conjectures, {proved} proved, {none} without a proof, {:?}", t0.elapsed());
+        let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
+        println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.load(std::sync::atomic::Ordering::Relaxed));
+        println!("LTMINER {total} conjectures, {proved} proved, {none} without a proof, {:?}", t0.elapsed());
+    })
 }
 
 // ---- Constant shifts (search note section 20). A shift reads another position, so it is not a carry machine; it
@@ -1220,40 +1231,41 @@ pub fn shift_k(k: usize, left: bool, a: Term) -> Term {
 
 #[test]
 pub fn shift_ops_compute_and_shift_laws_check_and_false_ones_fail() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let sh = shift_k;
-    let bw = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    for n in [1usize, 2, 4] {
-        // the Church shifts compute
-        for x in 0..1u128 << n {
-            for (k, left) in [(0usize, true), (1, true), (2, false), (3, true)] {
-                let want = if left { (x << k) & ((1 << n) - 1) } else { x >> k };
-                assert_eq!(normalize(&app(shift_bv(n, k, left), lit(n, x))), normalize(&lit(n, want)), "n={n} x={x} k={k} left={left}");
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let sh = shift_k;
+        let bw = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        for n in [1usize, 2, 4] {
+            // the Church shifts compute
+            for x in 0..1u128 << n {
+                for (k, left) in [(0usize, true), (1, true), (2, false), (3, true)] {
+                    let want = if left { (x << k) & ((1 << n) - 1) } else { x >> k };
+                    assert_eq!(normalize(&app(shift_bv(n, k, left), lit(n, x))), normalize(&lit(n, want)), "n={n} x={x} k={k} left={left}");
+                }
+            }
+            let laws = [
+                ("shl1 (and x y) = and (shl1 x) (shl1 y)", sh(1, true, bw(1, v(0), v(1))), bw(1, sh(1, true, v(0)), sh(1, true, v(1)))),
+                ("shr1 (or x y) = or (shr1 x) (shr1 y)", sh(1, false, bw(2, v(0), v(1))), bw(2, sh(1, false, v(0)), sh(1, false, v(1)))),
+                ("shr1 (shl1 x) = and x (shr1 (shl1 -1))", sh(1, false, sh(1, true, v(0))), bw(1, v(0), sh(1, false, sh(1, true, Term::Ones)))),
+                ("xor (shl1 x) (shl1 x) = 0", bw(3, sh(1, true, v(0)), sh(1, true, v(0))), Term::Zero),
+                ("shl0 x = x", sh(0, true, v(0)), v(0)),
+                ("shl n x = 0", sh(n, true, v(0)), Term::Zero),
+                ("shr n x = 0", sh(n, false, v(0)), Term::Zero),
+            ];
+            for (name, t1, t2) in &laws {
+                let (p, s) = bitwise_law_k(n, 2, t1, t2);
+                ck(&format!("{name}, n={n}"), &p, &s);
+            }
+            // false laws do not check (skipped when the two sides happen to agree at this width)
+            for (t1, t2) in [(sh(1, true, v(0)), v(0)), (sh(1, true, v(0)), sh(1, false, v(0))), (sh(1, false, sh(1, true, v(0))), v(0))] {
+                if (0..1u128 << n).all(|x| t1.interp(n, &[x, 0]) == t2.interp(n, &[x, 0])) {
+                    continue;
+                }
+                let (p, s) = bitwise_law_k(n, 2, &t1, &t2);
+                assert!(holds(&p, &s).is_err(), "false law checked: {} = {}, n={n}", t1.show(), t2.show());
             }
         }
-        let laws = [
-            ("shl1 (and x y) = and (shl1 x) (shl1 y)", sh(1, true, bw(1, v(0), v(1))), bw(1, sh(1, true, v(0)), sh(1, true, v(1)))),
-            ("shr1 (or x y) = or (shr1 x) (shr1 y)", sh(1, false, bw(2, v(0), v(1))), bw(2, sh(1, false, v(0)), sh(1, false, v(1)))),
-            ("shr1 (shl1 x) = and x (shr1 (shl1 -1))", sh(1, false, sh(1, true, v(0))), bw(1, v(0), sh(1, false, sh(1, true, Term::Ones)))),
-            ("xor (shl1 x) (shl1 x) = 0", bw(3, sh(1, true, v(0)), sh(1, true, v(0))), Term::Zero),
-            ("shl0 x = x", sh(0, true, v(0)), v(0)),
-            ("shl n x = 0", sh(n, true, v(0)), Term::Zero),
-            ("shr n x = 0", sh(n, false, v(0)), Term::Zero),
-        ];
-        for (name, t1, t2) in &laws {
-            let (p, s) = bitwise_law_k(n, 2, t1, t2);
-            ck(&format!("{name}, n={n}"), &p, &s);
-        }
-        // false laws do not check (skipped when the two sides happen to agree at this width)
-        for (t1, t2) in [(sh(1, true, v(0)), v(0)), (sh(1, true, v(0)), sh(1, false, v(0))), (sh(1, false, sh(1, true, v(0))), v(0))] {
-            if (0..1u128 << n).all(|x| t1.interp(n, &[x, 0]) == t2.interp(n, &[x, 0])) {
-                continue;
-            }
-            let (p, s) = bitwise_law_k(n, 2, &t1, &t2);
-            assert!(holds(&p, &s).is_err(), "false law checked: {} = {}, n={n}", t1.show(), t2.show());
-        }
-    }
+    })
 }
 
 /// Every pair of bitwise and shift terms over the pool that agree on all width-4 inputs, grouped by behaviour; each
@@ -1261,51 +1273,53 @@ pub fn shift_ops_compute_and_shift_laws_check_and_false_ones_fail() {
 #[test]
 #[ignore]
 pub fn shift_conjecture_miner() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let n = 4usize;
-    let leaves = [Term::V(0), Term::V(1), Term::Zero, Term::Ones];
-    let mut base: Vec<Term> = leaves.to_vec();
-    for a in &leaves {
-        for (k, left) in [(1, true), (2, true), (1, false), (2, false)] {
-            base.push(shift_k(k, left, a.clone()));
-        }
-    }
-    let mut pool = base.clone();
-    for o in 1..=3 {
-        for a in &base {
-            for b in &base {
-                pool.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+    tatic::kernel::scoped(|| {
+        let n = 4usize;
+        let leaves = [Term::V(0), Term::V(1), Term::Zero, Term::Ones];
+        let mut base: Vec<Term> = leaves.to_vec();
+        for a in &leaves {
+            for (k, left) in [(1, true), (2, true), (1, false), (2, false)] {
+                base.push(shift_k(k, left, a.clone()));
             }
         }
-    }
-    let level1: Vec<Term> = pool[base.len()..].to_vec();
-    for a in &level1 {
-        for (k, left) in [(1, true), (1, false), (2, true)] {
-            pool.push(shift_k(k, left, a.clone()));
+        let mut pool = base.clone();
+        for o in 1..=3 {
+            for a in &base {
+                for b in &base {
+                    pool.push(Term::Op(o, Box::new(a.clone()), Box::new(b.clone())));
+                }
+            }
         }
-    }
-    let t0 = Instant::now();
-    let conj = pool_conjectures(pool.iter().cloned(), n, 2, 0);
-    for (a, b) in &conj {
-        let (p, s) = bitwise_law_k(n, 2, a, b);
-        ck(&format!("{} = {}", a.show(), b.show()), &p, &s);
-    }
-    println!("SHIFTMINER {} terms, {} conjectures proved and checked, 0 rejected, {:?}", pool.len(), conj.len(), t0.elapsed());
+        let level1: Vec<Term> = pool[base.len()..].to_vec();
+        for a in &level1 {
+            for (k, left) in [(1, true), (1, false), (2, true)] {
+                pool.push(shift_k(k, left, a.clone()));
+            }
+        }
+        let t0 = Instant::now();
+        let conj = pool_conjectures(pool.iter().cloned(), n, 2, 0);
+        for (a, b) in &conj {
+            let (p, s) = bitwise_law_k(n, 2, a, b);
+            ck(&format!("{} = {}", a.show(), b.show()), &p, &s);
+        }
+        println!("SHIFTMINER {} terms, {} conjectures proved and checked, 0 rejected, {:?}", pool.len(), conj.len(), t0.elapsed());
+    })
 }
 
 #[test]
 pub fn large_sums_with_shared_subterms_stay_provable() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let add = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
-    let s = add(add(v(0), v(1)), v(2)); // two carries
-    // 8 carries on each side, under `CARRY_CAP` (a step generalizing S to a variable was removed as redundant)
-    let t1 = add(s.clone(), add(s.clone(), s.clone()));
-    let t2 = add(add(s.clone(), s.clone()), s.clone());
-    let (p, st) = rewrite_law(2, 3, &t1, &t2).expect("proved");
-    ck("add S (add S S) = add (add S S) S", &p, &st);
-    // not equal: no proof
-    assert!(rewrite_law(2, 3, &t1, &add(add(s.clone(), s.clone()), v(0))).is_none());
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let add = |a: Term, b: Term| Term::Op(ADD, Box::new(a), Box::new(b));
+        let s = add(add(v(0), v(1)), v(2)); // two carries
+        // 8 carries on each side, under `CARRY_CAP` (a step generalizing S to a variable was removed as redundant)
+        let t1 = add(s.clone(), add(s.clone(), s.clone()));
+        let t2 = add(add(s.clone(), s.clone()), s.clone());
+        let (p, st) = rewrite_law(2, 3, &t1, &t2).expect("proved");
+        ck("add S (add S S) = add (add S S) S", &p, &st);
+        // not equal: no proof
+        assert!(rewrite_law(2, 3, &t1, &add(add(s.clone(), s.clone()), v(0))).is_none());
+    })
 }
 
 // ---- Left shifts inside machines (search note section 21): `shl1 a` is a delay cell, a carry whose next value is
@@ -1313,27 +1327,28 @@ pub fn large_sums_with_shared_subterms_stay_provable() {
 
 #[test]
 pub fn shifts_inside_sums_are_machines_and_their_laws_check() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let shl = |a: Term| op(6, a, Term::Zero);
-    let n = 4usize;
-    let laws = [
-        ("shl1 x = add x x", shl(v(0)), op(0, v(0), v(0))),
-        ("shl1 (add x y) = add (shl1 x) (shl1 y)", shl(op(0, v(0), v(1))), op(0, shl(v(0)), shl(v(1)))),
-        ("shl1 (sub x y) = sub (shl1 x) (shl1 y)", shl(op(4, v(0), v(1))), op(4, shl(v(0)), shl(v(1)))),
-        ("shl1 (shl1 x) = add (add x x) (add x x)", shl(shl(v(0))), op(0, op(0, v(0), v(0)), op(0, v(0), v(0)))),
-        ("add x (shl1 x) = add (shl1 x) x", op(0, v(0), shl(v(0))), op(0, shl(v(0)), v(0))),
-        ("add (shl1 x) y = add y (shl1 x)", op(0, shl(v(0)), v(1)), op(0, v(1), shl(v(0)))),
-        ("shl1 (xor x y) = xor (shl1 x) (shl1 y)", shl(op(3, v(0), v(1))), op(3, shl(v(0)), shl(v(1)))),
-    ];
-    for (name, t1, t2) in &laws {
-        let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
-        ck(name, &p, &s);
-    }
-    // false laws get no proof
-    assert!(add_tree_law(n, 2, &shl(v(0)), &v(0)).is_none());
-    assert!(add_tree_law(n, 2, &shl(v(0)), &op(0, v(0), v(1))).is_none());
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        let shl = |a: Term| op(6, a, Term::Zero);
+        let n = 4usize;
+        let laws = [
+            ("shl1 x = add x x", shl(v(0)), op(0, v(0), v(0))),
+            ("shl1 (add x y) = add (shl1 x) (shl1 y)", shl(op(0, v(0), v(1))), op(0, shl(v(0)), shl(v(1)))),
+            ("shl1 (sub x y) = sub (shl1 x) (shl1 y)", shl(op(4, v(0), v(1))), op(4, shl(v(0)), shl(v(1)))),
+            ("shl1 (shl1 x) = add (add x x) (add x x)", shl(shl(v(0))), op(0, op(0, v(0), v(0)), op(0, v(0), v(0)))),
+            ("add x (shl1 x) = add (shl1 x) x", op(0, v(0), shl(v(0))), op(0, shl(v(0)), v(0))),
+            ("add (shl1 x) y = add y (shl1 x)", op(0, shl(v(0)), v(1)), op(0, v(1), shl(v(0)))),
+            ("shl1 (xor x y) = xor (shl1 x) (shl1 y)", shl(op(3, v(0), v(1))), op(3, shl(v(0)), shl(v(1)))),
+        ];
+        for (name, t1, t2) in &laws {
+            let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
+            ck(name, &p, &s);
+        }
+        // false laws get no proof
+        assert!(add_tree_law(n, 2, &shl(v(0)), &v(0)).is_none());
+        assert!(add_tree_law(n, 2, &shl(v(0)), &op(0, v(0), v(1))).is_none());
+    })
 }
 
 /// The equal pairs of the `shl1` pool over `nv` variables at width 4 (leaves, shifted leaves, every operator on two of
@@ -1365,43 +1380,44 @@ pub fn shl_conjectures(nv: usize) -> Vec<(Term, Term)> {
 #[test]
 #[ignore]
 pub fn shl_conjecture_miner() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let _banner = MachineBanner::start("SHLMINER");
-    let n = 4usize;
-    let (nv, cap) = (env_or("SHLMINER_VARS", 2), env_or("SHLMINER_MAX", 0));
-    let mut conj = shl_conjectures(nv);
-    if cap > 0 && conj.len() > cap {
-        let stride = conj.len() / cap;
-        conj = conj.into_iter().step_by(stride).take(cap).collect();
-    }
-    let (mut total, mut proved, mut generic_none, mut t_none, mut carry_free, mut skipped, t0) = (0, 0, 0, 0, 0, 0, Instant::now());
-    for (g0, t2) in &conj {
-        let g = [g0.clone()];
-        {
-            let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap()));
-            if big {
-                skipped += 1; // beyond the carry cap of add_tree_law
-                continue;
-            }
-            total += 1;
-            match prove_checked(n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2).verdict {
-                Verdict::Proved => proved += 1,
-                Verdict::CarryFree => carry_free += 1, // `bitwise_law` territory
-                Verdict::OverCap => unreachable!("bigger laws are skipped above"),
-                Verdict::NoProof { generic } => {
-                    // a law that fails at another width cannot have a proof for all widths
-                    t_none += 1;
-                    if generic {
-                        generic_none += 1;
-                        if generic_none <= 12 {
-                            println!("SHLMINER no proof, holds at widths 1..6: {} = {}", g[0].show(), t2.show());
+    tatic::kernel::scoped(|| {
+        let _banner = MachineBanner::start("SHLMINER");
+        let n = 4usize;
+        let (nv, cap) = (env_or("SHLMINER_VARS", 2), env_or("SHLMINER_MAX", 0));
+        let mut conj = shl_conjectures(nv);
+        if cap > 0 && conj.len() > cap {
+            let stride = conj.len() / cap;
+            conj = conj.into_iter().step_by(stride).take(cap).collect();
+        }
+        let (mut total, mut proved, mut generic_none, mut t_none, mut carry_free, mut skipped, t0) = (0, 0, 0, 0, 0, 0, Instant::now());
+        for (g0, t2) in &conj {
+            let g = [g0.clone()];
+            {
+                let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap()));
+                if big {
+                    skipped += 1; // beyond the carry cap of add_tree_law
+                    continue;
+                }
+                total += 1;
+                match prove_checked(n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2).verdict {
+                    Verdict::Proved => proved += 1,
+                    Verdict::CarryFree => carry_free += 1, // `bitwise_law` territory
+                    Verdict::OverCap => unreachable!("bigger laws are skipped above"),
+                    Verdict::NoProof { generic } => {
+                        // a law that fails at another width cannot have a proof for all widths
+                        t_none += 1;
+                        if generic {
+                            generic_none += 1;
+                            if generic_none <= 12 {
+                                println!("SHLMINER no proof, holds at widths 1..6: {} = {}", g[0].show(), t2.show());
+                            }
                         }
                     }
                 }
             }
         }
-    }
-    println!("SHLMINER {} listed conjectures ({} after the cap), {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", conj.len(), conj.len(), t0.elapsed());
+        println!("SHLMINER {} listed conjectures ({} after the cap), {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", conj.len(), conj.len(), t0.elapsed());
+    })
 }
 
 /// `c * t` (mod 2^n) as shift-and-add: the sum of `shl1^i t` over the set bits `i` of `c`.
@@ -1414,31 +1430,32 @@ pub fn mul_const(c: u32, t: &Term) -> Term {
 
 #[test]
 pub fn multiplication_by_constants_as_shift_and_add_machines() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let shl = |a: Term| op(6, a, Term::Zero);
-    let n = 4usize;
-    let laws = [
-        ("3x = x + 2x, written both ways", mul_const(3, &v(0)), op(0, shl(v(0)), v(0))),
-        ("2x = x + x", mul_const(2, &v(0)), op(0, v(0), v(0))),
-        ("6x = 2 * 3x", mul_const(6, &v(0)), shl(mul_const(3, &v(0)))),
-        ("5x = 4x + x", mul_const(5, &v(0)), op(0, v(0), shl(shl(v(0))))),
-        ("7x = 8x - x", mul_const(7, &v(0)), op(4, shl(shl(shl(v(0)))), v(0))),
-        ("3 (x + y) = 3x + 3y", mul_const(3, &op(0, v(0), v(1))), op(0, mul_const(3, &v(0)), mul_const(3, &v(1)))),
-        ("3 (x - y) = 3x - 3y", mul_const(3, &op(4, v(0), v(1))), op(4, mul_const(3, &v(0)), mul_const(3, &v(1)))),
-        ("(x + y) + 2 (x + y) = 3x + 3y", op(0, op(0, v(0), v(1)), shl(op(0, v(0), v(1)))), op(0, mul_const(3, &v(0)), mul_const(3, &v(1)))),
-    ];
-    for (name, t1, t2) in &laws {
-        assert!(t1.is_law(t2, 2), "{name} is not a law");
-        let t0 = Instant::now();
-        let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
-        let built = t0.elapsed();
-        ck(name, &p, &s);
-        println!("MUL {name}: build {built:?}, total {:?}", t0.elapsed());
-    }
-    // false: 3x is not 4x - 2
-    assert!(add_tree_law(n, 2, &mul_const(3, &v(0)), &mul_const(5, &v(0))).is_none());
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        let shl = |a: Term| op(6, a, Term::Zero);
+        let n = 4usize;
+        let laws = [
+            ("3x = x + 2x, written both ways", mul_const(3, &v(0)), op(0, shl(v(0)), v(0))),
+            ("2x = x + x", mul_const(2, &v(0)), op(0, v(0), v(0))),
+            ("6x = 2 * 3x", mul_const(6, &v(0)), shl(mul_const(3, &v(0)))),
+            ("5x = 4x + x", mul_const(5, &v(0)), op(0, v(0), shl(shl(v(0))))),
+            ("7x = 8x - x", mul_const(7, &v(0)), op(4, shl(shl(shl(v(0)))), v(0))),
+            ("3 (x + y) = 3x + 3y", mul_const(3, &op(0, v(0), v(1))), op(0, mul_const(3, &v(0)), mul_const(3, &v(1)))),
+            ("3 (x - y) = 3x - 3y", mul_const(3, &op(4, v(0), v(1))), op(4, mul_const(3, &v(0)), mul_const(3, &v(1)))),
+            ("(x + y) + 2 (x + y) = 3x + 3y", op(0, op(0, v(0), v(1)), shl(op(0, v(0), v(1)))), op(0, mul_const(3, &v(0)), mul_const(3, &v(1)))),
+        ];
+        for (name, t1, t2) in &laws {
+            assert!(t1.is_law(t2, 2), "{name} is not a law");
+            let t0 = Instant::now();
+            let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
+            let built = t0.elapsed();
+            ck(name, &p, &s);
+            println!("MUL {name}: build {built:?}, total {:?}", t0.elapsed());
+        }
+        // false: 3x is not 4x - 2
+        assert!(add_tree_law(n, 2, &mul_const(3, &v(0)), &mul_const(5, &v(0))).is_none());
+    })
 }
 
 /// Constant-multiplication laws (`(a + b) x`, `(a b) x`, `a (x + y)`, `(2^j - 1) x`) for constants up to `MULMINER_MAX`
@@ -1468,36 +1485,37 @@ pub fn mul_laws(max: u32) -> Vec<(String, Term, Term)> {
 #[test]
 #[ignore]
 pub fn mul_conjecture_miner() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let _banner = MachineBanner::start("MULMINER");
-    let max = env_or("MULMINER_MAX", 7);
-    let n = 4usize;
-    let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
-    let mut laws = mul_laws(max);
-    laws.retain(|l| l.0.contains(&only));
-    let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());
-    for (name, t1, t2) in &laws {
-        let cs = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
-        if !t1.is_law(t2, 2) {
-            continue;
+    tatic::kernel::scoped(|| {
+        let _banner = MachineBanner::start("MULMINER");
+        let max = env_or("MULMINER_MAX", 7);
+        let n = 4usize;
+        let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
+        let mut laws = mul_laws(max);
+        laws.retain(|l| l.0.contains(&only));
+        let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());
+        for (name, t1, t2) in &laws {
+            let cs = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
+            if !t1.is_law(t2, 2) {
+                continue;
+            }
+            let tried = prove_checked(n, 2, name, t1, t2);
+            match tried.verdict {
+                Verdict::Proved => {
+                    proved += 1;
+                    println!("MULMINER {name}: carries {cs:?}, build {:?}, total {:?}", tried.law, tried.law + tried.check);
+                }
+                Verdict::OverCap => {
+                    capped += 1;
+                    println!("MULMINER {name}: carries {cs:?} over the cap");
+                }
+                _ => {
+                    none += 1;
+                    println!("MULMINER {name}: carries {cs:?}, NO PROOF though it holds at widths 1..6");
+                }
+            }
         }
-        let tried = prove_checked(n, 2, name, t1, t2);
-        match tried.verdict {
-            Verdict::Proved => {
-                proved += 1;
-                println!("MULMINER {name}: carries {cs:?}, build {:?}, total {:?}", tried.law, tried.law + tried.check);
-            }
-            Verdict::OverCap => {
-                capped += 1;
-                println!("MULMINER {name}: carries {cs:?} over the cap");
-            }
-            _ => {
-                none += 1;
-                println!("MULMINER {name}: carries {cs:?}, NO PROOF though it holds at widths 1..6");
-            }
-        }
-    }
-    println!("MULMINER {} laws, {proved} proved and checked, {capped} over the carry cap, {none} unproved within it, {:?}", laws.len(), t0.elapsed());
+        println!("MULMINER {} laws, {proved} proved and checked, {capped} over the carry cap, {none} unproved within it, {:?}", laws.len(), t0.elapsed());
+    })
 }
 
 /// Ablation audit (search note section 32): for each mul law, what a lemma-finding search would have to invent. The
@@ -1507,28 +1525,29 @@ pub fn mul_conjecture_miner() {
 #[test]
 #[ignore]
 pub fn ablation_audit() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let _banner = MachineBanner::start("AUDIT");
-    let max = env_or("MULMINER_MAX", 7);
-    let (mut n_laws, mut moore_ns, mut total_ns) = (0, 0u128, 0u128);
-    for (name, t1, t2) in mul_laws(max) {
-        let (Some(m1), Some(m2)) = (Machine::parse(&t1), Machine::parse(&t2)) else { continue };
-        if !t1.is_law(&t2, 2) || m1.carries().max(m2.carries()) > carry_cap() {
-            continue;
+    tatic::kernel::scoped(|| {
+        let _banner = MachineBanner::start("AUDIT");
+        let max = env_or("MULMINER_MAX", 7);
+        let (mut n_laws, mut moore_ns, mut total_ns) = (0, 0u128, 0u128);
+        for (name, t1, t2) in mul_laws(max) {
+            let (Some(m1), Some(m2)) = (Machine::parse(&t1), Machine::parse(&t2)) else { continue };
+            if !t1.is_law(&t2, 2) || m1.carries().max(m2.carries()) > carry_cap() {
+                continue;
+            }
+            let t = Instant::now();
+            let Some(enc) = moore_encoding(&m1, &m2, 2, None) else { continue };
+            let moore = t.elapsed();
+            let t = Instant::now();
+            let proved = add_tree_law(4, 2, &t1, &t2).is_some();
+            let total = t.elapsed();
+            let m = enc.phi[0].len();
+            let classes = (0..2).map(|s| enc.phi[s][0].len()).collect::<Vec<_>>();
+            let gbits = (1 + m) << (2 + m);
+            n_laws += 1;
+            moore_ns += moore.as_nanos();
+            total_ns += total.as_nanos();
+            println!("AUDIT {name}: carries [{}, {}], states {classes:?}, phi bits {m}, g bits {gbits}, moore {moore:?}, proof {total:?}, proved {proved}", m1.carries(), m2.carries());
         }
-        let t = Instant::now();
-        let Some(enc) = moore_encoding(&m1, &m2, 2, None) else { continue };
-        let moore = t.elapsed();
-        let t = Instant::now();
-        let proved = add_tree_law(4, 2, &t1, &t2).is_some();
-        let total = t.elapsed();
-        let m = enc.phi[0].len();
-        let classes = (0..2).map(|s| enc.phi[s][0].len()).collect::<Vec<_>>();
-        let gbits = (1 + m) << (2 + m);
-        n_laws += 1;
-        moore_ns += moore.as_nanos();
-        total_ns += total.as_nanos();
-        println!("AUDIT {name}: carries [{}, {}], states {classes:?}, phi bits {m}, g bits {gbits}, moore {moore:?}, proof {total:?}, proved {proved}", m1.carries(), m2.carries());
-    }
-    println!("AUDIT {n_laws} laws, Moore {:.1}s of {:.1}s proof time", moore_ns as f64 / 1e9, total_ns as f64 / 1e9);
+        println!("AUDIT {n_laws} laws, Moore {:.1}s of {:.1}s proof time", moore_ns as f64 / 1e9, total_ns as f64 / 1e9);
+    })
 }

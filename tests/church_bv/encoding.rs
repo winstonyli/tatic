@@ -256,18 +256,19 @@ pub fn run(n: usize) {
 /// checks the key, not that the memo is hit; the speed is in docs/tier-cycle.md, "Truth tables built once".)
 #[test]
 fn table_bodies_are_shared_per_truth_table() {
-    let _s = tatic::kernel::InternScope::enter();
-    let head = |e: &Expr| match e {
-        Expr::App(h, _) => h.clone(),
-        _ => panic!("table_app is an application"),
-    };
-    let (a, b) = (table_app(&[t(), f()], &|v| v[0] != v[1]), table_app(&[f(), f()], &|v| v.iter().filter(|x| **x).count() == 1));
-    assert!(tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&b))));
-    let c = table_app(&[t(), f()], &|v| v[0] && !v[1]);
-    assert!(!tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&c))));
-    for (e, want) in [(&a, true), (&b, false), (&c, true)] {
-        assert_eq!(tatic::kernel::normalize(e), bit(want));
-    }
+    tatic::kernel::scoped(|| {
+        let head = |e: &Expr| match e {
+            Expr::App(h, _) => h.clone(),
+            _ => panic!("table_app is an application"),
+        };
+        let (a, b) = (table_app(&[t(), f()], &|v| v[0] != v[1]), table_app(&[f(), f()], &|v| v.iter().filter(|x| **x).count() == 1));
+        assert!(tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&b))));
+        let c = table_app(&[t(), f()], &|v| v[0] && !v[1]);
+        assert!(!tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&c))));
+        for (e, want) in [(&a, true), (&b, false), (&c, true)] {
+            assert_eq!(tatic::kernel::normalize(e), bit(want));
+        }
+    })
 }
 
 /// A cached gate is the table's node in its scope (a fresh build interns to the same children), shared between uses, and
@@ -279,16 +280,17 @@ fn constants_are_built_once_per_generation() {
         _ => panic!("and_ is a lambda"),
     };
     let fresh = || bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0)));
-    let first = {
-        let _s = tatic::kernel::InternScope::enter();
+    let first = tatic::kernel::scoped(|| {
         let (a, b, c) = (kids(&and_()), kids(&and_()), kids(&fresh()));
         assert!(tatic::kernel::Rc::ptr_eq(&a.1, &b.1) && tatic::kernel::Rc::ptr_eq(&a.1, &c.1));
-        a
-    };
-    let _s = tatic::kernel::InternScope::enter();
-    let (a, c) = (kids(&and_()), kids(&fresh()));
-    assert!(!tatic::kernel::Rc::ptr_eq(&a.1, &first.1), "rebuilt in a new generation");
-    assert!(tatic::kernel::Rc::ptr_eq(&a.1, &c.1) && *a.1 == *first.1);
+        and_()
+    });
+    let first = kids(&first);
+    tatic::kernel::scoped(|| {
+        let (a, c) = (kids(&and_()), kids(&fresh()));
+        assert!(!tatic::kernel::Rc::ptr_eq(&a.1, &first.1), "rebuilt in a new generation");
+        assert!(tatic::kernel::Rc::ptr_eq(&a.1, &c.1) && *a.1 == *first.1);
+    })
 }
 
 #[test]
@@ -634,23 +636,25 @@ pub fn add_zero_lemma_scaling() {
     }
 }
 
-/// As `add_zero_lemma_scaling`, but building and checking inside one `InternScope`, so the proof is
+/// As `add_zero_lemma_scaling`, but building and checking inside one `scoped` call, so the proof is
 /// interned as it is built (design doc section 69). Prints build and check time separately.
 #[test]
 #[ignore]
 pub fn add_zero_lemma_scaling_scoped() {
     for n in [8usize, 16, 32, 64, 128, 256, 512] {
-        let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
-        let t0 = Instant::now();
-        let (proof, stmt) = add_zero_proof(n, 0);
-        let built = t0.elapsed();
-        let t1 = Instant::now();
-        ck(&format!("n={n}"), &proof, &stmt);
-        println!(
-            "SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
-            t1.elapsed(),
-            tatic::kernel::term_sizes(&proof).0
-        );
+        let body = || {
+            let t0 = Instant::now();
+            let (proof, stmt) = add_zero_proof(n, 0);
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            ck(&format!("n={n}"), &proof, &stmt);
+            println!(
+                "SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
+                t1.elapsed(),
+                tatic::kernel::term_sizes(&proof).0
+            );
+        };
+        if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -783,15 +787,17 @@ pub fn add_comm_scaling() {
 pub fn add_comm_rejection_probe() {
     let n: usize = std::env::var("COMM_N").unwrap().parse().unwrap();
     let case = std::env::var("COMM_CASE").unwrap();
-    let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
-    let (proof, _) = add_comm_proof(n, false);
-    let (wp, ws) = add_comm_proof(n, true);
-    let t0 = Instant::now();
-    let r = if case == "own" { holds(&wp, &ws) } else { holds(&proof, &ws) };
-    println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
+    let body = || {
+        let (proof, _) = add_comm_proof(n, false);
+        let (wp, ws) = add_comm_proof(n, true);
+        let t0 = Instant::now();
+        let r = if case == "own" { holds(&wp, &ws) } else { holds(&proof, &ws) };
+        println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
+    };
+    if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
 }
 
-/// As `add_comm_scaling`, built and checked inside one `InternScope`, up to the widths in the
+/// As `add_comm_scaling`, built and checked inside one `scoped` call, up to the widths in the
 /// environment variable `COMM_NS` (comma separated; default 8,16,32,64). Prints build and check time
 /// separately and the proof DAG (design doc section 81).
 #[test]
@@ -803,17 +809,19 @@ pub fn add_comm_scaling_scoped() {
         .map(|v| v.trim().parse().unwrap())
         .collect();
     for n in ns {
-        let _scope = std::env::var("NO_SCOPE").is_err().then(tatic::kernel::InternScope::enter);
-        let t0 = Instant::now();
-        let (proof, stmt) = add_comm_proof(n, false);
-        let built = t0.elapsed();
-        let t1 = Instant::now();
-        ck(&format!("n={n}"), &proof, &stmt);
-        println!(
-            "COMM-SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
-            t1.elapsed(),
-            tatic::kernel::term_sizes(&proof).0
-        );
+        let body = || {
+            let t0 = Instant::now();
+            let (proof, stmt) = add_comm_proof(n, false);
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            ck(&format!("n={n}"), &proof, &stmt);
+            println!(
+                "COMM-SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
+                t1.elapsed(),
+                tatic::kernel::term_sizes(&proof).0
+            );
+        };
+        if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -1030,12 +1038,13 @@ pub fn profile_add_zero_n512() {
     ck("profile n=512", &proof, &stmt);
 }
 
-/// Build and check the n=256 / n=512 lemma inside one `InternScope`, for profiling the scoped check
+/// Build and check the n=256 / n=512 lemma inside one `scoped` call, for profiling the scoped check
 /// alone per width (`SAMPLY.md`; the profiling task passes no environment, so one test per width).
 pub fn profile_scoped(n: usize) {
-    let _scope = tatic::kernel::InternScope::enter();
-    let (proof, stmt) = add_zero_proof(n, 0);
-    ck("profile scoped", &proof, &stmt);
+    tatic::kernel::scoped(|| {
+        let (proof, stmt) = add_zero_proof(n, 0);
+        ck("profile scoped", &proof, &stmt);
+    })
 }
 
 /// As `profile_scoped_n512`, on a thread with a 1 GiB stack, so `grow` never needs a new segment.
@@ -1218,21 +1227,22 @@ pub fn eq_bv_computes_on_literals() {
 #[test]
 pub fn wrapping_div_min_by_minus_one_is_min() {
     for n in [1usize, 2, 4, 8, 32, 64] {
-        let _scope = tatic::kernel::InternScope::enter();
-        let (min, all) = (1u128 << (n - 1), if n == 128 { u128::MAX } else { (1u128 << n) - 1 });
-        let (p, s) = wrap_div_min_proof(n, min, all);
-        let t0 = Instant::now();
-        ck(&format!("D3 at n={n}"), &p, &s);
-        println!("D3 n={n}: checked in {:?}", t0.elapsed());
-        // The guard must bite: other operands leave `r` alone, so the same proof is rejected.
-        for (a, b) in [(min, all - 1), (min + 1, all), (0, all), (min, 0)] {
-            if n >= 2 || (a, b) != (min, 0) {
-                let (p2, s2) = wrap_div_min_proof(n, a & all, b & all);
-                if (a & all, b & all) != (min, all) {
-                    assert!(holds(&p2, &s2).is_err(), "D3 must fail for a={a:#x} b={b:#x} at n={n}");
+        tatic::kernel::scoped(|| {
+            let (min, all) = (1u128 << (n - 1), if n == 128 { u128::MAX } else { (1u128 << n) - 1 });
+            let (p, s) = wrap_div_min_proof(n, min, all);
+            let t0 = Instant::now();
+            ck(&format!("D3 at n={n}"), &p, &s);
+            println!("D3 n={n}: checked in {:?}", t0.elapsed());
+            // The guard must bite: other operands leave `r` alone, so the same proof is rejected.
+            for (a, b) in [(min, all - 1), (min + 1, all), (0, all), (min, 0)] {
+                if n >= 2 || (a, b) != (min, 0) {
+                    let (p2, s2) = wrap_div_min_proof(n, a & all, b & all);
+                    if (a & all, b & all) != (min, all) {
+                        assert!(holds(&p2, &s2).is_err(), "D3 must fail for a={a:#x} b={b:#x} at n={n}");
+                    }
                 }
             }
-        }
+        })
     }
 }
 
@@ -1331,18 +1341,19 @@ pub fn sdiv_some(n: usize, a: Expr, b: Expr) -> Expr {
 #[test]
 pub fn sdiv_flag_matches_the_spec_on_literals() {
     for n in [4usize, 8, 32, 64] {
-        let _scope = tatic::kernel::InternScope::enter();
-        let all = if n == 64 { u64::MAX as u128 } else { (1u128 << n) - 1 };
-        let min = 1u128 << (n - 1);
-        let samples = [0u128, 1, 2, min - 1, min, min + 1, all - 1, all];
-        for &a in &samples {
-            for &b in &samples {
-                let some = b != 0 && !(a == min && b == all);
-                let got = sdiv_some(n, lit(n, a), lit(n, b));
-                assert!(def_eq(&got, &bit(some)), "sdiv flag a={a:#x} b={b:#x} n={n}");
-                assert!(!def_eq(&got, &bit(!some)), "flag must not be both, a={a:#x} b={b:#x} n={n}");
+        tatic::kernel::scoped(|| {
+            let all = if n == 64 { u64::MAX as u128 } else { (1u128 << n) - 1 };
+            let min = 1u128 << (n - 1);
+            let samples = [0u128, 1, 2, min - 1, min, min + 1, all - 1, all];
+            for &a in &samples {
+                for &b in &samples {
+                    let some = b != 0 && !(a == min && b == all);
+                    let got = sdiv_some(n, lit(n, a), lit(n, b));
+                    assert!(def_eq(&got, &bit(some)), "sdiv flag a={a:#x} b={b:#x} n={n}");
+                    assert!(!def_eq(&got, &bit(!some)), "flag must not be both, a={a:#x} b={b:#x} n={n}");
+                }
             }
-        }
+        })
     }
 }
 
@@ -1496,19 +1507,20 @@ pub fn eq_with_a_literal_implies_equality_on_good_vectors() {
         ck(name, &p, &ty);
     }
     for n in [1usize, 2, 4, 8, 32] {
-        let _scope = tatic::kernel::InternScope::enter();
-        let mask = low_bits(n);
-        for l in [0u128, 1, 0b1010 & mask, mask, 1u128 << (n - 1)] {
-            let (p, s) = eq_lit_sound(n, l, l);
-            let t0 = Instant::now();
-            ck(&format!("H3 n={n} l={l:#x}"), &p, &s);
-            if l == mask {
-                println!("H3 n={n}: checked in {:?}", t0.elapsed());
+        tatic::kernel::scoped(|| {
+            let mask = low_bits(n);
+            for l in [0u128, 1, 0b1010 & mask, mask, 1u128 << (n - 1)] {
+                let (p, s) = eq_lit_sound(n, l, l);
+                let t0 = Instant::now();
+                ck(&format!("H3 n={n} l={l:#x}"), &p, &s);
+                if l == mask {
+                    println!("H3 n={n}: checked in {:?}", t0.elapsed());
+                }
+                // Mutation: the conclusion `x = L'` for another literal must be rejected.
+                let (p2, s2) = eq_lit_sound(n, l, l ^ 1);
+                assert!(holds(&p2, &s2).is_err(), "x = L xor 1 must be rejected, n={n} l={l:#x}");
             }
-            // Mutation: the conclusion `x = L'` for another literal must be rejected.
-            let (p2, s2) = eq_lit_sound(n, l, l ^ 1);
-            assert!(holds(&p2, &s2).is_err(), "x = L xor 1 must be rejected, n={n} l={l:#x}");
-        }
+        })
     }
 }
 
@@ -1601,22 +1613,23 @@ pub fn wrap_div_keeps_r(n: usize, claimed: bool) -> (Expr, Expr) {
 #[test]
 pub fn sdiv_is_none_on_the_guard_and_wrapper_keeps_r_otherwise() {
     for n in [1usize, 2, 4, 8, 32] {
-        let _scope = tatic::kernel::InternScope::enter();
-        let (_, all) = min_all(n);
-        let (p, s) = sdiv_none_if_zero(n, 0);
-        ck(&format!("D1 b=0, n={n}"), &p, &s);
-        let (p1, s1) = sdiv_none_if_zero(n, 1);
-        assert!(holds(&p1, &s1).is_err(), "b=1 must not give None, n={n}");
-        let (p, s) = sdiv_none_on_overflow(n, all);
-        ck(&format!("D1 overflow, n={n}"), &p, &s);
-        let (p1, s1) = sdiv_none_on_overflow(n, all ^ 1);
-        assert!(holds(&p1, &s1).is_err(), "b=-2 must not give None, n={n}");
-        let t0 = Instant::now();
-        let (p, s) = wrap_div_keeps_r(n, true);
-        ck(&format!("D2 payload, n={n}"), &p, &s);
-        println!("D2 payload n={n}: checked in {:?}", t0.elapsed());
-        let (p1, s1) = wrap_div_keeps_r(n, false);
-        assert!(holds(&p1, &s1).is_err(), "payload is not 0, n={n}");
+        tatic::kernel::scoped(|| {
+            let (_, all) = min_all(n);
+            let (p, s) = sdiv_none_if_zero(n, 0);
+            ck(&format!("D1 b=0, n={n}"), &p, &s);
+            let (p1, s1) = sdiv_none_if_zero(n, 1);
+            assert!(holds(&p1, &s1).is_err(), "b=1 must not give None, n={n}");
+            let (p, s) = sdiv_none_on_overflow(n, all);
+            ck(&format!("D1 overflow, n={n}"), &p, &s);
+            let (p1, s1) = sdiv_none_on_overflow(n, all ^ 1);
+            assert!(holds(&p1, &s1).is_err(), "b=-2 must not give None, n={n}");
+            let t0 = Instant::now();
+            let (p, s) = wrap_div_keeps_r(n, true);
+            ck(&format!("D2 payload, n={n}"), &p, &s);
+            println!("D2 payload n={n}: checked in {:?}", t0.elapsed());
+            let (p1, s1) = wrap_div_keeps_r(n, false);
+            assert!(holds(&p1, &s1).is_err(), "payload is not 0, n={n}");
+        })
     }
 }
 
@@ -1732,11 +1745,12 @@ pub fn add_preserves_goodness() {
     let (p, ty) = good2(&|a, b| and(a, b), &|a, b| a || b);
     assert!(holds(&p, &ty).is_err(), "and with the or table must be rejected");
     for n in [1usize, 2, 4, 8, 32] {
-        let _scope = tatic::kernel::InternScope::enter();
-        let (p, ty) = good_add(n);
-        let t0 = Instant::now();
-        ck(&format!("good_add n={n}"), &p, &ty);
-        println!("GOOD-ADD n={n}: checked in {:?}", t0.elapsed());
+        tatic::kernel::scoped(|| {
+            let (p, ty) = good_add(n);
+            let t0 = Instant::now();
+            ck(&format!("good_add n={n}"), &p, &ty);
+            println!("GOOD-ADD n={n}: checked in {:?}", t0.elapsed());
+        })
     }
 }
 
@@ -1745,27 +1759,28 @@ pub fn add_preserves_goodness() {
 #[ignore]
 pub fn bv_lemma_scaling_h3_d2_good_add() {
     for n in [32usize, 64, 128] {
-        let _scope = tatic::kernel::InternScope::enter();
-        let l = (1u128 << (n - 1)) | 1;
-        let l = if n >= 128 { l } else { l & ((1u128 << n) - 1) };
-        let t0 = Instant::now();
-        let (p, s) = eq_lit_sound(n, l, l);
-        let built = t0.elapsed();
-        let t1 = Instant::now();
-        ck("H3", &p, &s);
-        println!("SCALE-H3 n={n}: build {built:?}, check {:?}", t1.elapsed());
-        let t0 = Instant::now();
-        let (p, s) = wrap_div_keeps_r(n, true);
-        let built = t0.elapsed();
-        let t1 = Instant::now();
-        ck("D2", &p, &s);
-        println!("SCALE-D2 n={n}: build {built:?}, check {:?}", t1.elapsed());
-        let t0 = Instant::now();
-        let (p, s) = good_add(n);
-        let built = t0.elapsed();
-        let t1 = Instant::now();
-        ck("good_add", &p, &s);
-        println!("SCALE-GOODADD n={n}: build {built:?}, check {:?}", t1.elapsed());
+        tatic::kernel::scoped(|| {
+            let l = (1u128 << (n - 1)) | 1;
+            let l = if n >= 128 { l } else { l & ((1u128 << n) - 1) };
+            let t0 = Instant::now();
+            let (p, s) = eq_lit_sound(n, l, l);
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            ck("H3", &p, &s);
+            println!("SCALE-H3 n={n}: build {built:?}, check {:?}", t1.elapsed());
+            let t0 = Instant::now();
+            let (p, s) = wrap_div_keeps_r(n, true);
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            ck("D2", &p, &s);
+            println!("SCALE-D2 n={n}: build {built:?}, check {:?}", t1.elapsed());
+            let t0 = Instant::now();
+            let (p, s) = good_add(n);
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            ck("good_add", &p, &s);
+            println!("SCALE-GOODADD n={n}: build {built:?}, check {:?}", t1.elapsed());
+        })
     }
 }
 
@@ -1839,13 +1854,14 @@ pub fn or_disjoint_proof(n: usize, k: usize, stated_sum_with_a_twice: bool) -> (
 #[test]
 pub fn or_of_disjoint_vectors_adds_in_to_n() {
     for n in [2usize, 4, 8] {
-        let _scope = tatic::kernel::InternScope::enter();
-        for k in 1..n {
-            let (p, s) = or_disjoint_proof(n, k, false);
-            ck(&format!("H4 n={n} k={k}"), &p, &s);
-            let (p2, s2) = or_disjoint_proof(n, k, true);
-            assert!(holds(&p2, &s2).is_err(), "toN a + toN a must be rejected, n={n} k={k}");
-        }
+        tatic::kernel::scoped(|| {
+            for k in 1..n {
+                let (p, s) = or_disjoint_proof(n, k, false);
+                ck(&format!("H4 n={n} k={k}"), &p, &s);
+                let (p2, s2) = or_disjoint_proof(n, k, true);
+                assert!(holds(&p2, &s2).is_err(), "toN a + toN a must be rejected, n={n} k={k}");
+            }
+        })
     }
 }
 
@@ -1855,13 +1871,14 @@ pub fn or_of_disjoint_vectors_adds_in_to_n() {
 #[ignore]
 pub fn or_disjoint_scaling() {
     for n in [6usize, 8, 10, 12, 14] {
-        let _scope = tatic::kernel::InternScope::enter();
-        let t0 = Instant::now();
-        let (p, s) = or_disjoint_proof(n, n / 2, false);
-        let built = t0.elapsed();
-        let t1 = Instant::now();
-        ck("H4", &p, &s);
-        println!("SCALE-H4 n={n}: build {built:?}, check {:?}", t1.elapsed());
+        tatic::kernel::scoped(|| {
+            let t0 = Instant::now();
+            let (p, s) = or_disjoint_proof(n, n / 2, false);
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            ck("H4", &p, &s);
+            println!("SCALE-H4 n={n}: build {built:?}, check {:?}", t1.elapsed());
+        })
     }
 }
 
@@ -2188,13 +2205,14 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
 pub fn add_assoc_scaling_scoped() {
     let ns: Vec<usize> = std::env::var("ASSOC_NS").unwrap_or_else(|_| "8,16,32,64".into()).split(',').map(|v| v.trim().parse().unwrap()).collect();
     for n in ns {
-        let _scope = tatic::kernel::InternScope::enter();
-        let t0 = Instant::now();
-        let (proof, stmt) = add_assoc_proof(n, false);
-        let built = t0.elapsed();
-        let t1 = Instant::now();
-        ck(&format!("n={n}"), &proof, &stmt);
-        println!("ASSOC-SCOPED n={n}: build {built:?}, check {:?}", t1.elapsed());
+        tatic::kernel::scoped(|| {
+            let t0 = Instant::now();
+            let (proof, stmt) = add_assoc_proof(n, false);
+            let built = t0.elapsed();
+            let t1 = Instant::now();
+            ck(&format!("n={n}"), &proof, &stmt);
+            println!("ASSOC-SCOPED n={n}: build {built:?}, check {:?}", t1.elapsed());
+        })
     }
 }
 

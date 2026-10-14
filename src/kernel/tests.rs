@@ -590,7 +590,7 @@ fn memo_sources_outlive_their_callers() {
 /// The `uses` slot fills the node header's padding, and answers as the walk does: a repeated query
 /// is answered from the slot, a different one replaces it, and queries too wide for it still work.
 #[test]
-#[cfg(not(feature = "record-defeq"))]
+#[cfg(not(any(feature = "record-defeq", feature = "copy-volume")))]
 fn uses_slot_is_free_and_agrees_with_the_walk() {
     assert_eq!(std::mem::size_of::<Node<Expr>>(), std::mem::size_of::<Expr>() + 16);
     let _scope = hc::Scope::enter();

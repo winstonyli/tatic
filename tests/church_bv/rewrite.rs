@@ -392,23 +392,23 @@ pub fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
 // results are then equal, or both add-free, `bitwise_law` closes the gap.
 
 thread_local! {
-    pub static CLOSED: std::cell::RefCell<std::collections::HashMap<String, (Expr, Expr)>> = Default::default();
+    pub static CLOSED: std::cell::RefCell<std::collections::HashMap<String, (tatic::kernel::PExpr, tatic::kernel::PExpr)>> = Default::default();
 }
 /// A closed library term built once per key (the proofs and witnesses the rewriter reuses at every step).
 pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
-    if let Some(v) = CLOSED.with(|c| c.borrow().get(&key).cloned()) {
+    if let Some(v) = CLOSED.with(|c| c.borrow().get(&key).map(|(p, s)| (p.get(), s.get()))) {
         return v;
     }
-    let v = build();
-    CLOSED.with(|c| c.borrow_mut().insert(key, v.clone()));
-    v
+    let (p, s) = build();
+    CLOSED.with(|c| c.borrow_mut().insert(key, (tatic::kernel::persist(p.clone()), tatic::kernel::persist(s.clone()))));
+    (p, s)
 }
 
 thread_local! {
     /// The lemma parameters: one nested scope per bound lemma, outermost first, with the lemma's proof (none for one
     /// loaded from `LEMMA_CACHE`). A proof may use the lemmas bound before it (a mined rule proved through a machine proof
     /// uses its case lemmas).
-    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Vec<(Scope, Option<Expr>)>)>> = const { std::cell::RefCell::new(None) };
+    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Vec<(Scope, Option<tatic::kernel::PExpr>)>)>> = const { std::cell::RefCell::new(None) };
 }
 /// `memo` for a closed lemma `(proof, statement)`: the proof is checked once (`ck`, against the lemmas bound before it)
 /// and the lemma is returned as a parameter of that statement, so a law using it is checked against the parameter, not
@@ -433,7 +433,7 @@ pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr,
             let (ps, scopes) = c.get_or_insert_with(|| (Postulates::new(), Vec::new()));
             let sc = ps.open();
             let r = ps.bind(s.clone());
-            scopes.push((sc, p));
+            scopes.push((sc, p.map(tatic::kernel::persist)));
             (r, s)
         })
     })
@@ -443,7 +443,7 @@ pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr,
 /// call it last.
 pub fn discharge(body: Expr) -> Expr {
     let Some((mut ps, scopes)) = PARAMS.with(|c| c.borrow_mut().take()) else { return body };
-    scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p.expect("discharge needs every lemma's proof: run without LEMMA_CACHE")))
+    scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p.expect("discharge needs every lemma's proof: run without LEMMA_CACHE").get()))
 }
 
 /// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: comm, assoc, chain, tree, collapse,
@@ -1875,53 +1875,55 @@ pub fn law_proof(n: usize, k: usize, t1: &Term, t2: &Term, plan: &Plan) -> (Expr
 /// a proof the kernel accepts.
 #[test]
 fn plans_compile_to_checked_proofs() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let (v, z, ones) = (Term::V, Term::Zero, Term::Ones);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let shr = |a: Term| op(SHR1, a, Term::Zero);
-    let laws = [
-        (op(ADD, op(ADD, v(2), v(0)), v(1)), op(ADD, v(1), op(ADD, v(0), v(2)))),
-        (op(SHL1, op(AND, v(0), v(1)), z.clone()), op(AND, op(SHL1, v(0), z.clone()), op(SHL1, v(1), z.clone()))),
-        (op(ADD, v(0), op(XOR, v(0), ones.clone())), ones.clone()),
-        (op(SUB, ones.clone(), v(1)), op(XOR, v(1), ones.clone())),
-        (op(OR, v(0), op(AND, v(0), v(1))), v(0)),
-        (op(LT, v(0), op(ADD, v(1), z.clone())), op(LT, v(0), v(1))),
-        (shr(op(ADD, v(0), v(0))), shr(op(SUB, op(ADD, v(0), v(0)), ones.clone()))),
-    ];
-    for (l, r) in &laws {
-        let k = l.max_var().max(r.max_var()) + 1;
-        let plans = [false, true].map(|counting| {
-            SCORE_ONLY.with(|s| s.set(counting));
-            rewrite_plan(4, k, l, r).unwrap_or_else(|| panic!("no plan for {} = {} (counting: {counting})", l.show(), r.show()))
-        });
-        SCORE_ONLY.with(|s| s.set(false));
-        let sides = plans.each_ref().map(|p| {
-            let (a, b, _) = Compiler::new(4, k).proof(p);
-            (a, b)
-        });
-        assert!(sides[0] == sides[1] && sides[0] == (l.clone(), r.clone()), "{} = {}", l.show(), r.show());
-        let (p, s) = law_proof(4, k, l, r, &plans[0]);
-        ck(&format!("{} = {}", l.show(), r.show()), &p, &s);
-    }
+    tatic::kernel::scoped(|| {
+        let (v, z, ones) = (Term::V, Term::Zero, Term::Ones);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        let shr = |a: Term| op(SHR1, a, Term::Zero);
+        let laws = [
+            (op(ADD, op(ADD, v(2), v(0)), v(1)), op(ADD, v(1), op(ADD, v(0), v(2)))),
+            (op(SHL1, op(AND, v(0), v(1)), z.clone()), op(AND, op(SHL1, v(0), z.clone()), op(SHL1, v(1), z.clone()))),
+            (op(ADD, v(0), op(XOR, v(0), ones.clone())), ones.clone()),
+            (op(SUB, ones.clone(), v(1)), op(XOR, v(1), ones.clone())),
+            (op(OR, v(0), op(AND, v(0), v(1))), v(0)),
+            (op(LT, v(0), op(ADD, v(1), z.clone())), op(LT, v(0), v(1))),
+            (shr(op(ADD, v(0), v(0))), shr(op(SUB, op(ADD, v(0), v(0)), ones.clone()))),
+        ];
+        for (l, r) in &laws {
+            let k = l.max_var().max(r.max_var()) + 1;
+            let plans = [false, true].map(|counting| {
+                SCORE_ONLY.with(|s| s.set(counting));
+                rewrite_plan(4, k, l, r).unwrap_or_else(|| panic!("no plan for {} = {} (counting: {counting})", l.show(), r.show()))
+            });
+            SCORE_ONLY.with(|s| s.set(false));
+            let sides = plans.each_ref().map(|p| {
+                let (a, b, _) = Compiler::new(4, k).proof(p);
+                (a, b)
+            });
+            assert!(sides[0] == sides[1] && sides[0] == (l.clone(), r.clone()), "{} = {}", l.show(), r.show());
+            let (p, s) = law_proof(4, k, l, r, &plans[0]);
+            ck(&format!("{} = {}", l.show(), r.show()), &p, &s);
+        }
+    })
 }
 
 #[test]
 pub fn laws_over_three_vectors_check_and_false_ones_fail() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    for n in [1usize, 3] {
-        // bitwise (x ^ y) ^ z = x ^ (y ^ z)
-        let (p, s) = bitwise_law_k(n, 3, &op(3, op(3, v(0), v(1)), v(2)), &op(3, v(0), op(3, v(1), v(2))));
-        ck(&format!("xor assoc at n={n}"), &p, &s);
-        assert!(holds(&bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).0, &bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).1).is_err());
-        // add associativity over three vectors, and a non-law
-        let (p, s) = rewrite_law(n, 3, &op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2)))).expect("assoc");
-        ck(&format!("add assoc at n={n}"), &p, &s);
-        let (p, s) = rewrite_law(n, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
-        ck(&format!("add comm assoc at n={n}"), &p, &s);
-        assert!(rewrite_law(n, 3, &op(0, v(0), v(2)), &op(0, v(0), v(1))).is_none());
-    }
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        for n in [1usize, 3] {
+            // bitwise (x ^ y) ^ z = x ^ (y ^ z)
+            let (p, s) = bitwise_law_k(n, 3, &op(3, op(3, v(0), v(1)), v(2)), &op(3, v(0), op(3, v(1), v(2))));
+            ck(&format!("xor assoc at n={n}"), &p, &s);
+            assert!(holds(&bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).0, &bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).1).is_err());
+            // add associativity over three vectors, and a non-law
+            let (p, s) = rewrite_law(n, 3, &op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2)))).expect("assoc");
+            ck(&format!("add assoc at n={n}"), &p, &s);
+            let (p, s) = rewrite_law(n, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
+            ck(&format!("add comm assoc at n={n}"), &p, &s);
+            assert!(rewrite_law(n, 3, &op(0, v(0), v(2)), &op(0, v(0), v(1))).is_none());
+        }
+    })
 }
 
 #[test]
@@ -1951,26 +1953,27 @@ pub fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
 
 #[test]
 pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let v = |i: usize| Term::V(i);
-    let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
-    let (p, s) = rewrite_law(2, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
-    assert!(PARAMS.with(|c| c.borrow().as_ref().is_some_and(|(.., b)| !b.is_empty())), "no lemma was bound");
-    assert!(check(&Ctx::new(), &p, &s).is_err(), "a proof over lemma parameters is not closed");
-    ck("over parameters", &p, &s);
-    // a machine proof's case lemmas are parameters too
-    let add = |a: Term, b: Term| op(0, a, b);
-    let (pm, sm) = add_tree_law(2, 3, &add(add(v(0), v(1)), v(2)), &add(v(0), add(v(1), v(2)))).expect("assoc3");
-    assert!(check(&Ctx::new(), &pm, &sm).is_err(), "the machine proof's lemmas are not parameters");
-    ck("machine over parameters", &pm, &sm);
-    // a lemma whose proof uses lemmas bound before it: a rule proved through a machine proof
-    let scopes = || PARAMS.with(|c| c.borrow().as_ref().map_or(0, |(_, b)| b.len()));
-    let before = scopes();
-    let (l, r) = (add(op(4, v(0), v(1)), v(2)), add(op(4, v(2), v(1)), v(0)));
-    let (pr, sr) = shared_lemma("nested".into(),|| prove_rule(2, 3, &l, &r).expect("rule"));
-    assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
-    let all = apps(lam(sm.clone(), lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
-    ck("discharged", &discharge(all), &sm);
+    tatic::kernel::scoped(|| {
+        let v = |i: usize| Term::V(i);
+        let op = |o: usize, a: Term, b: Term| Term::Op(o, Box::new(a), Box::new(b));
+        let (p, s) = rewrite_law(2, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
+        assert!(PARAMS.with(|c| c.borrow().as_ref().is_some_and(|(.., b)| !b.is_empty())), "no lemma was bound");
+        assert!(check(&Ctx::new(), &p, &s).is_err(), "a proof over lemma parameters is not closed");
+        ck("over parameters", &p, &s);
+        // a machine proof's case lemmas are parameters too
+        let add = |a: Term, b: Term| op(0, a, b);
+        let (pm, sm) = add_tree_law(2, 3, &add(add(v(0), v(1)), v(2)), &add(v(0), add(v(1), v(2)))).expect("assoc3");
+        assert!(check(&Ctx::new(), &pm, &sm).is_err(), "the machine proof's lemmas are not parameters");
+        ck("machine over parameters", &pm, &sm);
+        // a lemma whose proof uses lemmas bound before it: a rule proved through a machine proof
+        let scopes = || PARAMS.with(|c| c.borrow().as_ref().map_or(0, |(_, b)| b.len()));
+        let before = scopes();
+        let (l, r) = (add(op(4, v(0), v(1)), v(2)), add(op(4, v(2), v(1)), v(0)));
+        let (pr, sr) = shared_lemma("nested".into(),|| prove_rule(2, 3, &l, &r).expect("rule"));
+        assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
+        let all = apps(lam(sm.clone(), lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
+        ck("discharged", &discharge(all), &sm);
+    })
 }
 
 // ---- Carry-chain builder (search note section 13): `add A B = T` for bitwise A, B, T over x, y, with no
@@ -2079,21 +2082,22 @@ pub fn carry_chain_builder_finds_the_constant_carry() {
 /// proof checks.
 #[test]
 fn rewrite_cycles_are_cut() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
-    set_extra_rules(parse_rules(rules));
-    RULE_BUDGET.with(|b| b.set(200));
-    let cuts0 = CYCLE_CUTS.with(|c| c.get());
-    let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
-    let out = rewrite_law(4, 3, &t1, &t2);
-    let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
-    EXTRA_RULES.with(|e| e.borrow_mut().clear());
-    RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
-    println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
-    assert!(cuts > 0, "no cycle cut");
-    assert!(left > 0, "the step budget ran out");
-    let (p, s) = out.expect("proved");
-    ck("cycle law", &p, &s);
+    tatic::kernel::scoped(|| {
+        let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
+        set_extra_rules(parse_rules(rules));
+        RULE_BUDGET.with(|b| b.set(200));
+        let cuts0 = CYCLE_CUTS.with(|c| c.get());
+        let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
+        let out = rewrite_law(4, 3, &t1, &t2);
+        let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
+        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+        println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
+        assert!(cuts > 0, "no cycle cut");
+        assert!(left > 0, "the step budget ran out");
+        let (p, s) = out.expect("proved");
+        ck("cycle law", &p, &s);
+    })
 }
 
 /// cmp3d's growing chain (docs/tier-cycle.md, "Growth cut"): the two rules rewrite into each other and each lap copies the first
@@ -2101,22 +2105,23 @@ fn rewrite_cycles_are_cut() {
 /// the budget (which it runs out with only the repeat cut).
 #[test]
 fn growing_rewrite_chains_are_cut() {
-    let _scope = tatic::kernel::InternScope::enter();
-    let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
-    set_extra_rules(parse_rules(rules));
-    RULE_BUDGET.with(|b| b.set(200));
-    let cuts0 = CYCLE_CUTS.with(|c| c.get());
-    let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
-    let out = rewrite_law(4, 3, &t1, &t2);
-    let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
-    EXTRA_RULES.with(|e| e.borrow_mut().clear());
-    RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
-    println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
-    assert!(cuts > 0, "no growth cut");
-    assert!(left > 0, "the step budget ran out");
-    if let Some((p, s)) = out {
-        ck("growth law", &p, &s);
-    }
+    tatic::kernel::scoped(|| {
+        let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
+        set_extra_rules(parse_rules(rules));
+        RULE_BUDGET.with(|b| b.set(200));
+        let cuts0 = CYCLE_CUTS.with(|c| c.get());
+        let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
+        let out = rewrite_law(4, 3, &t1, &t2);
+        let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
+        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+        println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
+        assert!(cuts > 0, "no growth cut");
+        assert!(left > 0, "the step budget ran out");
+        if let Some((p, s)) = out {
+            ck("growth law", &p, &s);
+        }
+    })
 }
 
 /// `RewriteMemo::filtered`: a memo built under some rules keeps its results under one more rule, tried last, for the entries whose

@@ -1,7 +1,7 @@
-// Does an `InternScope` held across building and re-checking a real `proof.rs` proof help? Timing only
+// Does a `scoped` call around building and re-checking a real `proof.rs` proof help? Timing only
 // (design doc section 71): the proofs are small, so this is about overhead, not scale.
 use std::time::Instant;
-use tatic::kernel::{self, Ctx, InternScope};
+use tatic::kernel::{self, Ctx};
 use tatic::proof::prove_tail_recursive_universal;
 use tatic::term::TermStore;
 
@@ -17,13 +17,15 @@ fn run(scoped: bool, two_base: bool, reps: u32) -> (std::time::Duration, std::ti
     let h = if two_base { common::gcd_with_two_base_cases(&mut s) } else { common::gcd(&mut s) };
     let (mut build, mut check) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     for _ in 0..reps {
-        let _scope = scoped.then(InternScope::enter);
-        let t0 = Instant::now();
-        let proof = prove_tail_recursive_universal(&s, h).expect("universal proof");
-        build += t0.elapsed();
-        let t1 = Instant::now();
-        kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty).expect("re-check");
-        check += t1.elapsed();
+        let mut body = || {
+            let t0 = Instant::now();
+            let proof = prove_tail_recursive_universal(&s, h).expect("universal proof");
+            build += t0.elapsed();
+            let t1 = Instant::now();
+            kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty).expect("re-check");
+            check += t1.elapsed();
+        };
+        if scoped { tatic::kernel::scoped(body) } else { body() }
     }
     (build, check)
 }
@@ -47,7 +49,7 @@ fn universal_proof_with_and_without_a_scope() {
 }
 
 /// How much a real proof repeats itself: distinct allocations against occurrences, unscoped and
-/// built inside an `InternScope` (design doc section 80). A large ratio is what makes the scope pay.
+/// built inside `scoped` (design doc section 80). A large ratio is what makes the scope pay.
 #[test]
 #[ignore]
 fn real_proofs_dag_against_tree_size() {
@@ -62,8 +64,10 @@ fn real_proofs_dag_against_tree_size() {
         let mut s = TermStore::new();
         let h = build(&mut s);
         let sizes = |scoped: bool| {
-            let _scope = scoped.then(InternScope::enter);
-            prove_tail_recursive_universal(&s, h).map(|p| kernel::term_sizes(&p.theorem_proof))
+            let body = || {
+                prove_tail_recursive_universal(&s, h).map(|p| kernel::term_sizes(&p.theorem_proof))
+            };
+            if scoped { tatic::kernel::scoped(body) } else { body() }
         };
         match (sizes(false), sizes(true)) {
             (Some((d0, t0)), Some((d1, _))) => {
