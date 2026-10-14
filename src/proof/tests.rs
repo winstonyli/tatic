@@ -11,7 +11,8 @@ fn every_arith_postulates_starts_from_one_checked_prelude() {
     let a = ArithPostulates::new();
     let mut b = ArithPostulates::new();
     assert_eq!(a.p.globals.len(), 10);
-    let (Expr::Pi(x, _), Expr::Pi(y, _)) = (&a.p.globals[1], &b.p.globals[1]) else { panic!("a binop's type is an arrow") };
+    let (ga, gb) = (a.p.globals[1].get(), b.p.globals[1].get());
+    let (Expr::Pi(x, _), Expr::Pi(y, _)) = (&ga, &gb) else { panic!("a binop's type is an arrow") };
     assert!(kernel::Rc::ptr_eq(x, y), "the prelude was rebuilt");
     // A proof's own pushes stay its own.
     b.lit(7);

@@ -2583,7 +2583,7 @@ pub type Ctx = im::Vector<Expr>;
 ///
 /// Trusted like `Ctx`: nothing checks that an entry is a type, and a
 /// constant is an axiom.
-pub type Globals = im::Vector<Expr>;
+pub type Globals = im::Vector<PExpr>;
 
 /// The checker's working context: the caller's `base` plus the binders
 /// entered since, in a plain `Vec` pushed and truncated in place. Cloning
@@ -2635,9 +2635,9 @@ fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
 /// variable to shift. An error when `l` is past the environment, or when
 /// the type isn't closed.
 fn const_type(g: &Globals, l: u32) -> Result<Expr, String> {
-    match g.get(l as usize) {
-        Some(ty) if loose_of(ty) == 0 && free_of(ty) == 0 => Ok(ty.clone()),
-        Some(ty) => Err(format!("constant @{l}'s type isn't closed: {}", brief(ty))),
+    match g.get(l as usize).map(PExpr::get) {
+        Some(ty) if loose_of(&ty) == 0 && free_of(&ty) == 0 => Ok(ty),
+        Some(ty) => Err(format!("constant @{l}'s type isn't closed: {}", brief(&ty))),
         None => Err(format!("unknown constant @{l}")),
     }
 }

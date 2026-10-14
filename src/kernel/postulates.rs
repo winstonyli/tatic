@@ -37,7 +37,7 @@ pub struct Postulates {
     pub globals: Globals,
     /// The live parameters' `Free` levels and types, in increasing level
     /// order. A type may mention earlier parameters as `Free`s.
-    pub(super) params: Vec<(u32, Expr)>,
+    pub(super) params: Vec<(u32, PExpr)>,
     /// The next `Free` level `bind` hands out. Never lowered.
     pub(super) next_free: u32,
     /// How many scopes are open.
@@ -162,7 +162,7 @@ impl Postulates {
         if let Err(err) = self.infer(&ty).and_then(|t| expect_sort(&t).map(|_| ())) {
             panic!("a postulate's type isn't a type: {err}\n  type: {ty:?}");
         }
-        self.globals.push_back(ty);
+        self.globals.push_back(persist(ty));
         pos
     }
     pub fn get(&self, pos: usize) -> Expr {
@@ -185,7 +185,7 @@ impl Postulates {
         }
         let l = self.next_free;
         self.next_free = l.checked_add(1).expect("Free levels ran out");
-        self.params.push((l, ty));
+        self.params.push((l, persist(ty)));
         Expr::Free(l)
     }
     /// Wraps a binder around `body` for each parameter bound since `s` was
@@ -199,7 +199,7 @@ impl Postulates {
         let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
         let mut acc = abstract_frees(&body, s.first, &levels, 0);
         for i in (0..levels.len()).rev() {
-            let dom = abstract_frees(&self.params[s.params_len + i].1, s.first, &levels[..i], 0);
+            let dom = abstract_frees(&self.params[s.params_len + i].1.get(), s.first, &levels[..i], 0);
             acc = match binder {
                 Binder::Pi => pi(dom, acc),
                 Binder::Lam => lam(dom, acc),
@@ -227,7 +227,7 @@ impl Postulates {
     /// parameter becomes the `Var` for its entry.
     fn open_ctx(&self) -> (Globals, Ctx, Vec<u32>) {
         let levels: Vec<u32> = self.params.iter().map(|(l, _)| *l).collect();
-        let locals = self.params.iter().enumerate().map(|(i, (_, ty))| abstract_frees(ty, 0, &levels[..i], 0)).collect();
+        let locals = self.params.iter().enumerate().map(|(i, (_, ty))| abstract_frees(&ty.get(), 0, &levels[..i], 0)).collect();
         (self.globals.clone(), locals, levels)
     }
     /// `check` for a term and type that may mention the live parameters.

@@ -1691,8 +1691,8 @@ fn refl_typechecks_for_a_postulated_element() {
 /// type constants in.
 fn two_globals() -> Globals {
     let mut g = Globals::new();
-    g.push_back(sort(0));
-    g.push_back(Expr::Const(0));
+    g.push_back(persist(sort(0)));
+    g.push_back(persist(Expr::Const(0)));
     g
 }
 
@@ -1719,7 +1719,7 @@ fn a_const_past_the_environment_is_rejected() {
 #[test]
 fn a_const_at_a_binders_position_is_rejected() {
     let mut g = Globals::new();
-    g.push_back(sort(0));
+    g.push_back(persist(sort(0)));
     assert!(infer_in(&g, &Ctx::new(), &lam(Expr::Const(0), Expr::Const(1))).is_err());
     let mut ctx = Ctx::new();
     ctx.push_back(Expr::Const(0));
@@ -1732,7 +1732,7 @@ fn a_const_at_a_binders_position_is_rejected() {
 fn a_global_whose_type_is_open_is_rejected() {
     for bad in [var(0), Expr::Free(0), pi(sort(0), var(1))] {
         let mut g = Globals::new();
-        g.push_back(bad.clone());
+        g.push_back(persist(bad.clone()));
         assert!(infer_in(&g, &Ctx::new(), &Expr::Const(0)).is_err(), "{bad:?}");
     }
 }
@@ -1786,10 +1786,10 @@ fn a_free_is_rejected_everywhere() {
     let a_ty = Expr::Const(0); // A : Type0 (g[0])
     let bc_ty = Expr::Const(1); // Bc : Type0 (g[1])
     let mut gw = Globals::new();
-    gw.push_back(sort(0)); // 0: A : Type0
-    gw.push_back(sort(0)); // 1: Bc : Type0
-    gw.push_back(a_ty.clone()); // 2: a0 : A
-    gw.push_back(arrow(bc_ty.clone(), wty(a_ty.clone(), bc_ty.clone()))); // 3: f0 : Bc -> W(A,Bc)
+    gw.push_back(persist(sort(0))); // 0: A : Type0
+    gw.push_back(persist(sort(0))); // 1: Bc : Type0
+    gw.push_back(persist(a_ty.clone())); // 2: a0 : A
+    gw.push_back(persist(arrow(bc_ty.clone(), wty(a_ty.clone(), bc_ty.clone())))); // 3: f0 : Bc -> W(A,Bc)
     let a0 = Expr::Const(2);
     let f0 = Expr::Const(3);
     let w_ty = wty(a_ty.clone(), bc_ty.clone());

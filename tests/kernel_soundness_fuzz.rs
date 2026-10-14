@@ -351,8 +351,8 @@ fn to_consts(e: &Expr, n: u32, d: u32) -> Expr {
 /// (`push` bakes it in through the new `get`), so this conversion is now
 /// the identity on every caller here; kept as a guard in case that ever
 /// changes back.
-fn to_globals(ctx: &kernel::Ctx) -> kernel::Globals {
-    ctx.iter().enumerate().map(|(i, ty)| to_consts(ty, i as u32, 0)).collect()
+fn to_globals(globals: &kernel::Globals) -> kernel::Globals {
+    globals.iter().enumerate().map(|(i, ty)| kernel::persist(to_consts(&ty.get(), i as u32, 0))).collect()
 }
 
 /// The inverse of `to_consts`: `e` with references to the `n`-entry

@@ -56,10 +56,10 @@ const GLOBALS: u32 = 4;
 /// must reject when a `Const` uses it.
 fn globals() -> kernel::Globals {
     let mut g = kernel::Globals::new();
-    g.push_back(kernel::sort(0));
-    g.push_back(Expr::Const(0));
-    g.push_back(kernel::arrow(Expr::Const(0), Expr::Const(0)));
-    g.push_back(Expr::Var(0));
+    g.push_back(kernel::persist(kernel::sort(0)));
+    g.push_back(kernel::persist(Expr::Const(0)));
+    g.push_back(kernel::persist(kernel::arrow(Expr::Const(0), Expr::Const(0))));
+    g.push_back(kernel::persist(Expr::Var(0)));
     g
 }
 
