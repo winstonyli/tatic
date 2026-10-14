@@ -2560,8 +2560,21 @@ n), then 2 and 3. Only 1 is measured; it is additive and leaves no rework.
 
 Its shortcomings there, with mitigations:
 - **The persistent space only grows** (nanoda never reclaims it), and a cycle keeps what it learns: rules, lemmas, statements. Mitigation: a major collection at quiescent points, between rounds. The roots are explicit and few (the rule library, the lemma statements, whatever caches are kept), so copying the live set into a fresh space costs what is live, not what was built. Rebuildable memos are dropped, not copied. The cheapest form exists already: the driver runs each loop's work in separate processes, with long-term memory in files (`LEMMA_CACHE`, rule files), so a process boundary is a major collection.
-- **An id used with the wrong space names another term.** Mitigation: two id types, region and persistent, so returning a region id from a scope does not compile. The one way out is a copy-out function, which also makes the 16% that escape explicit roots. A space tag bit, as nanoda has, plus a generation check in debug builds, would catch the rest at run time. Branded lifetimes would also do it, but were rejected for spreading (§64).
-- **Every constructor and pattern through a context** (§64's main cost). Mitigation: the current space is thread-local, as `hc::TABLE` is now, so constructors take no context parameter. A node of id children (about 24 bytes) is `Copy`, so a pattern matches a copy (`match id.node()`) and needs no borrow from the arena.
+- **An id used with the wrong space names another term.** Mitigation: two id types, a generation-checked handle (`Expr`) and a persistent id (`PExpr`), with a copy-out function (`persist`) the only way from one to the other. Two ids alone do not make returning a region id fail to compile, since neither carries a lifetime. What does: `scoped(|| ..)`, whose result must implement an `Escape` trait, and which copies the result out when it opened the region. A dead handle panics on every read, in release builds too; it never names another term. Branded lifetimes would also catch stores, but were rejected for spreading (§64). Specified in the id-arena spec (`docs/superpowers/specs/2026-10-14-id-arena-spec.md`, local).
+- **Every constructor and pattern through a context** (§64's main cost). Mitigation: the current space is thread-local, as `hc::TABLE` is now, so constructors take no context parameter. A node of id children (24 bytes as an enum, plus 12 in side arrays) is `Copy`, so a pattern matches a copy (`match id.node()`) and needs no borrow from the arena.
+
+*The id-arena spec (draft 3, 2026-10-14, 5 review rounds).* Its decisions:
+- **Copy-out is eager**, with a twin map. A persisted node reads as its region twin until the region closes, so equality stays an id compare and a `PExpr`'s hash never changes.
+- **One interning rule:** a node over persistent children looks in the persistent space first.
+- **The checking entries are `scoped`**, so a check outside a region frees its transients.
+- **Stage 1 is a trace replay** of rule 33's table and memo traffic in three layouts: today's; ids; and a hybrid of `Rc` nodes with dense u32 memo keys, which shrinks the maps without the port.
+  - It is a one-sided filter: a loss stops the port.
+  - Its gate is re-profiled on large pages first.
+
+*Measured for it* (probe reverted, no patch kept):
+- The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
+- 19-21% of the nodes built are not in the table when it drops.
+- 17% (`proof_cost_split`) to 22% (largest sweep child, 0.42 M) of interned nodes are still alive after it. This is the live set, not the copy-out volume, which is unmeasured.
 - **Small checks gain little.** Mitigation: share one region across a batch of checks, as `proof_cost_split` shares one scope, and reset a region by its pointer, keeping its pages mapped.
 - **The compiled hot path should not allocate at all.** When it must produce terms (proof witnesses), it bump-allocates into the region through linear memory. Not a shortcoming of the arena; the arena fixes the format at the boundary.
 
