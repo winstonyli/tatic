@@ -2397,6 +2397,33 @@ mostly instantiation:
 2.9% from `infer_node`. What is left is conversion evaluating the law's Church-encoded circuits (the closed-function
 head normal forms of e7d4347), and freeing what that allocates.
 
+*The work is linear; each operation slows.* A probe (reverted, no patch kept) counted, for one law check in a fresh scope, the node table's new entries and its lookups:
+
+| rule 33 | n=8 | n=16 | n=32 | n=64 |
+|---|---|---|---|---|
+| check | 56 ms | 132 ms | 351 ms | 807 ms |
+| new interned nodes | 41,761 | 90,191 | 178,111 | 353,951 |
+| new instantiation / shift / whnf / hnf entries (thousands) | 40 / 38 / 5.8 / 0.13 | 78 / 76 / 12 / 0.15 | 155 / 151 / 24 / 0.15 | 308 / 300 / 47 / 0.15 |
+| `intern` calls | 113,370 | 225,114 | 446,314 | 888,714 |
+| `inst_rec` calls | 61,104 | 120,930 | 239,138 | 475,554 |
+| `instantiate_n` memo lookups | 60,792 | 120,057 | 238,041 | 474,009 |
+
+Rule 0 is the same: everything doubles per doubling of n. Head normal forms are a fixed 153 (rule 33) and 52 (rule 0).
+So the distinct reduction results and the lookups grow linearly, and what grows faster is the time per operation:
+about 0.5 µs per `intern` call at n=8 and 0.9 µs at n=64, for both rules. Part of that is the `uses` walks, which grow
+3.6-3.9 times per doubling (measured before the spine change) and are 5% of samples at n=64 (13% with `lowest_loose`). The rest is presumably
+memory: at n=64 the tables hold over a million entries, well past the 16 MB L3. That part was not measured
+separately (for example, with hardware cache-miss counters).
+
+*The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
+32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
+the 1.19M nodes `prove_rule` built first. Rule 0 takes 2-14 ms. It is a linear cost, so it does not explain the growth. Options, none tried:
+- *Keep the table across checks.* No drop per check, and repeats hit its memos: a repeat check of rule 33 at n=64 takes 0.40 s against 0.88 s for the first. Memory grows with every check, so it needs a bound and an eviction rule.
+- *Allocate a scope's nodes in an arena and free them in bulk.* This needs every node that outlives the scope to be copied out, a larger change to `Rc`.
+- *Free on another thread.* Not possible as is: the kernel's `Rc` is not `Send`.
+
+Whether the miner's checks (`proof_cost_split`) already share one scope, and so what the drop costs there, was not checked.
+
 *Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
 as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule
 laws are 280 assoc, 272 comm and 163 tree uses, with 6 distinct tree statements and no `Bitwise` or `Chain`. The checked
