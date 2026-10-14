@@ -2485,6 +2485,51 @@ second-lowest. A node needs each child's answer at every depth: the (node, depth
 that composes is the whole set of loose variables, which was the bitset prototype (negative, "What is still
 superlinear"). So the `lows` memo can only get cheaper per lookup, not go away.
 
+**Allocation schemes against the size cost (survey, 2026-10-14).** The size cost is about 120 ns per table entry at
+n=64 (profile diff above): node-table and memo probes (a hit reads the candidate node at a random address), the
+`lows` memo, and rehashing. Today a node is one mimalloc block of 80 bytes: `std::rc::Rc`'s two counts (16), the
+header (`loose`, `free`, `generation`, `uses`: 16) and `Expr` (48; `size_of` checks in `kernel/tests.rs`). mimalloc is
+v3 (`libmimalloc-sys` 0.1.49), the global allocator of every binary. `RELATED_WORK.md` §64 surveyed node
+representations for linearity ("Allocation"), and "A per-scope arena for the table's nodes" above ruled out a
+bulk-freed arena of `Rc` nodes, because 16% of a scope's nodes outlive it. The schemes:
+
+1. *Large OS pages (measured, positive).* mimalloc maps its arenas in 2 MB pages when `MIMALLOC_ALLOW_LARGE_OS_PAGES=1`,
+   which needs the account's "Lock pages in memory" privilege. This account holds it (disabled until a process enables
+   it, which mimalloc does). With it set, mimalloc reserved 1 GiB of large pages at start (`MIMALLOC_VERBOSE=1`). Fewer TLB
+   misses on the same random accesses, presumably (no counters measured it). A probe (reverted, no patch kept) timed rule 33's law in fresh scopes, three
+   alternating pairs. At n=64 large pages won 3 of 3, median 483-489 → 433-436 ms (-10%, about 42 ns per entry). At
+   n=8: no change (medians 32-36 ms). On `proof_cost_split` (`scripts/cpu_ab.ps1`, 6 pairs) they won 6 of 6: CPU 3.02-3.20
+   → 2.69-2.75 s (-12%), build 1.80-1.92 → 1.56-1.62 s, check 256-283 → 227-240 ms. Defender RTP off, load 2-8%.
+   No code: an environment variable, or `mi_option_set` before the first allocation.
+   - Risks: large pages are locked, never paged out. Each process locks its reservation (1 GiB here, tunable with
+     `MIMALLOC_ARENA_RESERVE`), so parallel sweeps lock one each, out of the machine's 62 GB. Without the privilege mimalloc falls
+     back to normal pages, so a machine without it times differently. Every earlier timing in this file is on normal pages.
+2. *A node in 64 bytes (unmeasured).* mimalloc's size classes step 64 → 80, so dropping only the unused weak count
+   (an own `Rc`, as `triomphe`) leaves 72 bytes in the 80-byte class and saves nothing. Reaching 64 also needs 8 bytes
+   off the header, e.g. 16-bit `loose`/`free` (saturating; rule laws nest about 6n binders, 384 at n=64). 20% less node
+   memory, so fewer misses on node reads, at the cost of hand-written `unsafe` refcounting in the trusted kernel.
+3. *A per-scope mimalloc heap for interned nodes (unmeasured).* `mi_heap_new` gives the scope's nodes their own pages,
+   not interleaved with `Vec` buffers and memo arrays. The toolchain is nightly, so `Rc::new_in` with a zero-sized
+   allocator that reads a thread-local heap is possible. Only locality is gained: `mi_heap_destroy` (free without
+   walking) is unsound while 16% of nodes escape, so the heap would have to be released with `mi_heap_delete`, which
+   keeps live blocks. mimalloc already places same-size blocks contiguously in a page, so the gain may be small.
+4. *A two-space arena of 32-bit ids, hash-consed (nanoda_lib's design, §64).* The end-state design: `Expr` children are
+   4-byte ids (a node about 40 bytes, no counts), equality is an id compare, ids are the memo keys (`lows` entries 12
+   bytes instead of 24, node-table entries 8-12 instead of 16), allocation is sequential, and a scope frees in bulk.
+   The 16% that escape a scope are copied into the persistent space when it ends, remapping their ids. Costs, from §64:
+   every constructor and pattern goes through a context across the kernel and `proof.rs`; garbage stays until the
+   scope ends; an id used with the wrong space names another term. It addresses the whole size cost (smaller maps,
+   smaller nodes, and the scope's drop) and is the only scheme here that does.
+5. *Rejected before, still rejected.* A bump arena with `&'a Expr<'a>` children (lifetimes through every proof record
+   and the JIT, §64). A tracing GC (slower than `Rc` in Rust, no cycles to collect, §64). An `Rc` arena freed in bulk
+   (escaping nodes, above). Freeing on another thread (`Rc` is not `Send`).
+6. *Adjacent, not allocation.* Reserving the maps' capacity ahead (rehashing is about 10 ns per entry at n=64) needs a
+   size estimate per check. Reordering nodes for locality does not apply: hash-consing shares a node among many parents,
+   so there is no one order to put it near.
+
+Ranking by end state: 4, then 1, which presumably stays useful under 4 (its maps and nodes would still exceed the TLB's reach at large
+n), then 2 and 3. Only 1 is measured; it is additive and leaves no rework.
+
 
 *The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
 32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
