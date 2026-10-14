@@ -777,7 +777,7 @@ pub fn intern_generation() -> u32 {
     hc::generation()
 }
 
-/// The constructors below make each child through `hc::intern_new`: inside an [`InternScope`] equal
+/// The constructors below make each child through `hc::intern_new`: inside [`scoped`] equal
 /// children are one node, outside it is `Rc::new`.
 pub fn pi(a: Expr, b: Expr) -> Expr {
     Expr::Pi(hc::intern_new(a), hc::intern_new(b))
@@ -2463,12 +2463,13 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
 /// `a`/`b` reference overlapping subterms, which two sides of a proof
 /// obligation very often do (the same postulates, the same sub-witnesses).
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
-    let _hc = hc::Scope::enter();
-    #[cfg(feature = "record-defeq")]
-    let _g = site(3);
-    #[cfg(feature = "record-defeq")]
-    SEEN.with(|m| m.borrow_mut().clear());
-    conv(a, b, &mut ReductionCache::default())
+    hc::scoped(false, || {
+        #[cfg(feature = "record-defeq")]
+        let _g = site(3);
+        #[cfg(feature = "record-defeq")]
+        SEEN.with(|m| m.borrow_mut().clear());
+        conv(a, b, &mut ReductionCache::default())
+    })
 }
 
 /// `def_eq`'s comparison. Syntactically equal sides are equal without
@@ -2788,8 +2789,7 @@ pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> 
     if free_of(e) > 0 {
         return Err(free_escaped(free_of(e) - 1));
     }
-    let _hc = hc::Scope::enter();
-    infer_node(globals, &mut InferCache::default(), &mut CtxScope::new(ctx), 0, &Rc::new(e.clone()))
+    hc::scoped(false, || infer_node(globals, &mut InferCache::default(), &mut CtxScope::new(ctx), 0, &Rc::new(e.clone())))
 }
 
 /// [`infer_in`] with no globals.
@@ -3019,16 +3019,17 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     // (RELATED_WORK §67): the rules below compare `expected` by `def_eq`
     // and never infer it, so a malformed claim would otherwise be proved.
     // One cache for both, so a claim's subterms the proof shares hit it.
-    let _hc = hc::Scope::enter();
-    let large = hc::large(e, expected);
-    let (e, expected) = hc::canonical_inputs(e, expected);
-    let body = || {
-        let mut ic = InferCache::default();
-        let mut scope = CtxScope::new(ctx);
-        expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &hc::intern(expected.clone(), None))?)?;
-        check_rc(globals, &mut ic, &mut scope, 0, &hc::intern(e, None), &expected)
-    };
-    if large { on_segment(CHECK_SEGMENT, body) } else { body() }
+    hc::scoped(false, || {
+        let large = hc::large(e, expected);
+        let (e, expected) = hc::canonical_inputs(e, expected);
+        let body = || {
+            let mut ic = InferCache::default();
+            let mut scope = CtxScope::new(ctx);
+            expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &hc::intern(expected.clone(), None))?)?;
+            check_rc(globals, &mut ic, &mut scope, 0, &hc::intern(e, None), &expected)
+        };
+        if large { on_segment(CHECK_SEGMENT, body) } else { body() }
+    })
 }
 
 /// [`check_in`] with no globals.

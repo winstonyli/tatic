@@ -251,11 +251,12 @@ fn whnf_memo_outlives_one_def_eq_in_a_scope() {
     let redex = || app(lam(sort(0), var(0)), var(7));
     assert!(def_eq(&app(var(5), redex()), &app(var(5), var(7))));
     assert_eq!(hc::whnf_get(&hc::intern_new(redex())), None);
-    let _scope = InternScope::enter();
-    let x = hc::intern_new(redex());
-    assert_eq!(hc::whnf_get(&x), None);
-    assert!(def_eq(&Expr::App(hc::intern_new(var(5)), x.clone()), &app(var(5), var(7))));
-    assert_eq!(hc::whnf_get(&x).as_deref(), Some(&var(7)));
+    scoped(|| {
+        let x = hc::intern_new(redex());
+        assert_eq!(hc::whnf_get(&x), None);
+        assert!(def_eq(&Expr::App(hc::intern_new(var(5)), x.clone()), &app(var(5), var(7))));
+        assert_eq!(hc::whnf_get(&x).as_deref(), Some(&var(7)));
+    })
 }
 
 /// `brief_nf` prints what `brief(&nf(..))` prints, and reduces only the part it prints: the normal
@@ -292,9 +293,9 @@ fn closed_function_values_are_reduced_once() {
     };
     // b(i) is ff for every i >= 1
     assert!(def_eq(&build(), &ff) && !def_eq(&build(), &tt));
-    let _scope = InternScope::enter();
-    hc::activate();
-    assert!(def_eq(&build(), &ff) && !def_eq(&build(), &tt));
+    scoped(|| {
+        assert!(def_eq(&build(), &ff) && !def_eq(&build(), &tt));
+    })
 }
 
 /// `cong_n` outside an interning scope still shares its shifted copies of `f`: with `f` a DAG of
@@ -348,36 +349,37 @@ fn instantiate_n_matches_sequential_substitution() {
 /// suffixes and the memo answers across them.
 #[test]
 fn instantiate_n_matches_sequential_substitution_in_a_scope() {
-    let _scope = InternScope::enter();
-    let mut next = splitmix(43);
-    let pool: Vec<Expr> = (0..4).map(|_| random_term(&mut next)).collect();
-    let rcs: Vec<Rc<Expr>> = pool.iter().map(|a| hc::intern_new(a.clone())).collect();
-    // Each term meets several lists, so the memo (keyed by node address) answers across them.
-    let mut e = random_term(&mut next);
-    for i in 0..20_000 {
-        if i % 10 == 0 {
-            e = random_term(&mut next);
+    scoped(|| {
+        let mut next = splitmix(43);
+        let pool: Vec<Expr> = (0..4).map(|_| random_term(&mut next)).collect();
+        let rcs: Vec<Rc<Expr>> = pool.iter().map(|a| hc::intern_new(a.clone())).collect();
+        // Each term meets several lists, so the memo (keyed by node address) answers across them.
+        let mut e = random_term(&mut next);
+        for i in 0..20_000 {
+            if i % 10 == 0 {
+                e = random_term(&mut next);
+            }
+            let m = 1 + (next() % 3) as usize;
+            let pick: Vec<usize> = (0..m).map(|_| (next() % 4) as usize).collect();
+            let mut cur = e.clone();
+            for _ in 1..m {
+                cur = lam(sort(0), cur);
+            }
+            for (i, &p) in pick.iter().enumerate() {
+                let next_body = instantiate_ref(&cur, &pool[p], 0);
+                cur = if i + 1 < m {
+                    match &next_body {
+                        Expr::Lam(_, b) => (**b).clone(),
+                        other => panic!("lost the inner lambda: {other:?}"),
+                    }
+                } else {
+                    next_body
+                };
+            }
+            let refs: Vec<&Rc<Expr>> = pick.iter().map(|&p| &rcs[p]).collect();
+            assert_eq!(instantiate_n(&e, &refs, 0), cur, "e {e:?}, pick {pick:?}");
         }
-        let m = 1 + (next() % 3) as usize;
-        let pick: Vec<usize> = (0..m).map(|_| (next() % 4) as usize).collect();
-        let mut cur = e.clone();
-        for _ in 1..m {
-            cur = lam(sort(0), cur);
-        }
-        for (i, &p) in pick.iter().enumerate() {
-            let next_body = instantiate_ref(&cur, &pool[p], 0);
-            cur = if i + 1 < m {
-                match &next_body {
-                    Expr::Lam(_, b) => (**b).clone(),
-                    other => panic!("lost the inner lambda: {other:?}"),
-                }
-            } else {
-                next_body
-            };
-        }
-        let refs: Vec<&Rc<Expr>> = pick.iter().map(|&p| &rcs[p]).collect();
-        assert_eq!(instantiate_n(&e, &refs, 0), cur, "e {e:?}, pick {pick:?}");
-    }
+    })
 }
 
 /// A child with nothing to change comes back as the same `Rc`, not a

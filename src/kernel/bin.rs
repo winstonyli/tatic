@@ -1,7 +1,7 @@
-//! A binary format for closed terms. A term is a DAG (equal subterms built in an `InternScope` are one node), so the format
+//! A binary format for closed terms. A term is a DAG (equal subterms built in a [`scoped`](crate::kernel::scoped) call are one node), so the format
 //! is a node table: the node count, then each distinct node once, children before parents, as a tag byte and LEB128 varints
 //! (the index of a `Var` or level of a `Sort`, or each child as its distance back in the table). The root is the last node.
-//! Reading goes through the public constructors, so a term read inside an `InternScope` is interned.
+//! Reading goes through the public constructors, so a term read inside `scoped` is interned.
 
 use super::*;
 use std::collections::HashMap;
@@ -177,11 +177,12 @@ mod tests {
         let b = write(&e).unwrap();
         assert!(read(&b).unwrap() == e);
         // inside an interning scope equal subterms are one node, so the table is smaller than the tree
-        let _scope = InternScope::enter();
-        let shared = sample();
-        let bs = write(&shared).unwrap();
-        assert!(read(&bs).unwrap() == shared);
-        assert!(bs.len() < b.len(), "interned {} bytes, plain {}", bs.len(), b.len());
+        scoped(|| {
+            let shared = sample();
+            let bs = write(&shared).unwrap();
+            assert!(read(&bs).unwrap() == shared);
+            assert!(bs.len() < b.len(), "interned {} bytes, plain {}", bs.len(), b.len());
+        })
     }
 
     #[test]

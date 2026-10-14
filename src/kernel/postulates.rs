@@ -308,24 +308,25 @@ pub fn transport(sort_k: u32, a_ty: Expr, b_ty: Expr, p: Expr, x: Expr) -> Expr 
 pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> Expr {
     // Shifted copies are shared through the interning table's shift memo (a scope of their own
     // outside one).
-    let _scope = InternScope::enter();
-    // motive(a', b', _) := Id(B, f a', f b')
-    let motive = lam(
-        a_ty.clone(),
-        lam(
-            shift(a_ty, 0, 1),
+    scoped(|| {
+        // motive(a', b', _) := Id(B, f a', f b')
+        let motive = lam(
+            a_ty.clone(),
             lam(
-                id(shift(a_ty, 0, 2), var(1), var(0)),
-                id(
-                    shift(b_ty, 0, 3),
-                    app(shift(f, 0, 3), var(2)),
-                    app(shift(f, 0, 3), var(1)),
+                shift(a_ty, 0, 1),
+                lam(
+                    id(shift(a_ty, 0, 2), var(1), var(0)),
+                    id(
+                        shift(b_ty, 0, 3),
+                        app(shift(f, 0, 3), var(2)),
+                        app(shift(f, 0, 3), var(1)),
+                    ),
                 ),
             ),
-        ),
-    );
-    let base = lam(a_ty.clone(), refl(app(shift(f, 0, 1), var(0))));
-    jelim(motive, base, a, b, p)
+        );
+        let base = lam(a_ty.clone(), refl(app(shift(f, 0, 1), var(0))));
+        jelim(motive, base, a, b, p)
+    })
 }
 
 /// `trans a_ty x y z p1 p2 : Id(A, x, z)`, given `p1 : Id(A,x,y)` and
@@ -333,26 +334,27 @@ pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> E
 /// `p1`/`p2` (they are held fixed while eliminating on `p2`).
 pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr) -> Expr {
     // As in `cong1`.
-    let _scope = InternScope::enter();
-    // motive(y', z', _) := Id(A, x, y') -> Id(A, x, z')
-    let motive = lam(
-        a_ty.clone(),
-        lam(
-            shift(a_ty, 0, 1),
+    scoped(|| {
+        // motive(y', z', _) := Id(A, x, y') -> Id(A, x, z')
+        let motive = lam(
+            a_ty.clone(),
             lam(
-                id(shift(a_ty, 0, 2), shift(x, 0, 2), var(1)),
-                arrow(
-                    id(shift(a_ty, 0, 3), shift(x, 0, 3), var(2)),
-                    id(shift(a_ty, 0, 3), shift(x, 0, 3), var(1)),
+                shift(a_ty, 0, 1),
+                lam(
+                    id(shift(a_ty, 0, 2), shift(x, 0, 2), var(1)),
+                    arrow(
+                        id(shift(a_ty, 0, 3), shift(x, 0, 3), var(2)),
+                        id(shift(a_ty, 0, 3), shift(x, 0, 3), var(1)),
+                    ),
                 ),
             ),
-        ),
-    );
-    let base = lam(
-        a_ty.clone(),
-        lam(id(shift(a_ty, 0, 1), shift(x, 0, 1), var(0)), var(0)),
-    );
-    app(jelim(motive, base, y.clone(), z.clone(), p2), p1)
+        );
+        let base = lam(
+            a_ty.clone(),
+            lam(id(shift(a_ty, 0, 1), shift(x, 0, 1), var(0)), var(0)),
+        );
+        app(jelim(motive, base, y.clone(), z.clone(), p2), p1)
+    })
 }
 
 /// `cong_n a_ty b_ty f xs ys ps : Id(B, f x_0 .. x_{n-1}, f y_0 .. y_{n-1})`,
@@ -366,36 +368,37 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
     assert_eq!(xs.len(), ys.len());
     assert_eq!(xs.len(), ps.len());
     // As in `cong1`; one scope for all the steps, so they share each other's shifted copies.
-    let _scope = InternScope::enter();
-    let apply = |args: &[Expr]| -> Expr { args.iter().cloned().fold(f.clone(), app) };
-    let lhs_all = apply(xs);
-    if xs.is_empty() {
-        return refl(lhs_all);
-    }
+    scoped(|| {
+        let apply = |args: &[Expr]| -> Expr { args.iter().cloned().fold(f.clone(), app) };
+        let lhs_all = apply(xs);
+        if xs.is_empty() {
+            return refl(lhs_all);
+        }
 
-    let mut cur_args: Vec<Expr> = xs.to_vec();
-    let mut acc: Option<(Expr, Expr)> = None; // (running proof, its right-hand value)
-    for i in 0..xs.len() {
-        // g := \z. f cur_args[0] .. cur_args[i-1] z cur_args[i+1] ..,
-        // built fresh under one new binder, so every other (already-fixed)
-        // argument needs reindexing by the binder `g` itself introduces.
-        let g_body = cur_args.iter().enumerate().fold(shift(f, 0, 1), |acc, (j, a)| {
-            app(acc, if j == i { var(0) } else { shift(a, 0, 1) })
-        });
-        let g = lam(a_ty.clone(), g_body);
-        // `g` is `f` with every position but `i` already filled in -- a
-        // *full* application under one open binder, not a curried partial
-        // one, so its codomain is `f`'s own full result type `b_ty`
-        // regardless of `i`.
-        let step = cong1(a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
-        cur_args[i] = ys[i].clone();
-        let after = apply(&cur_args);
-        acc = Some(match acc {
-            None => (step, after),
-            Some((prev, mid)) => (trans_proof(b_ty, &lhs_all, &mid, &after, prev, step), after),
-        });
-    }
-    acc.unwrap().0
+        let mut cur_args: Vec<Expr> = xs.to_vec();
+        let mut acc: Option<(Expr, Expr)> = None; // (running proof, its right-hand value)
+        for i in 0..xs.len() {
+            // g := \z. f cur_args[0] .. cur_args[i-1] z cur_args[i+1] ..,
+            // built fresh under one new binder, so every other (already-fixed)
+            // argument needs reindexing by the binder `g` itself introduces.
+            let g_body = cur_args.iter().enumerate().fold(shift(f, 0, 1), |acc, (j, a)| {
+                app(acc, if j == i { var(0) } else { shift(a, 0, 1) })
+            });
+            let g = lam(a_ty.clone(), g_body);
+            // `g` is `f` with every position but `i` already filled in -- a
+            // *full* application under one open binder, not a curried partial
+            // one, so its codomain is `f`'s own full result type `b_ty`
+            // regardless of `i`.
+            let step = cong1(a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
+            cur_args[i] = ys[i].clone();
+            let after = apply(&cur_args);
+            acc = Some(match acc {
+                None => (step, after),
+                Some((prev, mid)) => (trans_proof(b_ty, &lhs_all, &mid, &after, prev, step), after),
+            });
+        }
+        acc.unwrap().0
+    })
 }
 
 /// `Pi C:(Bool->Sort0). Pi ct:C(true). Pi cf:C(false). <body_d3>`, where
