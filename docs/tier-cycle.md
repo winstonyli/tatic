@@ -1667,10 +1667,10 @@ only pairs where `whnf` changed both sides, in `conv` and `conv_rc`:
 So the bulk of the reduction work goes into showing that two applications of different lambdas, `(\x. s) a` against
 `(\y. t) b`, are equal, and in 73% of the pairs both reduce to the same term. The results are never pointer-equal
 because `whnf_rc` wraps the reduct's top node in `Rc::new` rather than interning it (its children are interned). Where these redexes come
-from is answered below (`bit_lemma`'s cases), and interning the reduct is measured below (neutral).
+from is answered below (`lemma_n`'s case-tree leaves), and interning the reduct is measured below (neutral).
 
-**Where those redexes come from: `bit_lemma`'s cases, each a different computation (probe, reverted, no patch kept,
-2026-10-13).** The same run at 3e7e019, with each pair where both sides reduce charged to the `App` rule whose argument
+**Where those redexes come from: `lemma_n`'s case-tree leaves, each a different computation (probe, reverted, no patch
+kept, 2026-10-13).** The same run at 3e7e019, with each pair where both sides reduce charged to the `App` rule whose argument
 check it fell under (keyed by the spine heads of the function and the argument), and counted again by structure (a
 hash over each side's tree) across the whole run:
 
@@ -1681,14 +1681,41 @@ hash over each side's tree) across the whole run:
 | `Var` with 1 or 2 arguments <- `Var` with 3 (top-level pairs) | 34.9 k | 0.95 M | 33.1 k |
 | `J` <- `J` | 20.7 k | 0.16 M | 6.1 k (all the visits) |
 
-The first two rows are `bit_lemma` (`tests/church_bv/encoding.rs`): its proof is `\b. \g. g motive at_true at_false`,
-where `g : GoodBool b` eliminates the bit. Checking `at_true = refl(t)` against `motive true` reduces both sides: the
-motive `(\b. body) true` on the expected side, and on the inferred side `t`, a gate term written as Church-encoded
-lambdas applied to bits. Every such pair is structurally new across the run, and repeats within a scope already cost
-nothing (the memos answer them). So 72% of the reduction work under `conv` is the kernel evaluating gate terms on
-concrete bits, once per distinct case. It is the proof by computation itself, not a redundancy. A kernel or memo change
-cannot remove it. Only fewer or smaller cases (a builder that splits on fewer bits, or states each case's sides already
-evaluated where the builder knows the value) or a cheaper evaluation per visit can.
+The first two rows are the leaves of case trees: at each split, `g motive on_true on_false` with `g : GoodBool b`
+eliminating a bit, and `refl` at a leaf. Checking a leaf `refl(a)` against the motive at that leaf's bits reduces both
+sides: the motive `(\b. body) bit` on the expected side, and on the inferred side `a`, a gate term written as
+Church-encoded lambdas applied to bits. A first reading charged them to `bit_lemma`, which has the same shape, but a
+count of builder calls in the same run (temporary prints, reverted) found `bit_lemma` called 0 times and `lemma_n` (`tests/church_bv/encoding.rs`) 392 times:
+
+| Case bits `k` | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 |
+|---|---|---|---|---|---|---|---|---|---|
+| trees | 4 | 2 | 14 | 19 | 83 | 46 | 30 | 182 | 12 |
+| leaves (`2^k` each) | 4 | 4 | 56 | 152 | 1328 | 1472 | 1920 | 23296 | 6144 |
+
+34.4 k leaves in all, matching the 32.8 k leaf checks per row above. Most are `machine.rs`'s `guarded` trees over the
+`k + c` operand and carry bits, one per side, tag (`F0..Fm`, `P`, `D`) and encoding, each memoized by `shared_lemma`
+and checked once per process. Every pair is structurally new across the run, and repeats within a scope already cost
+nothing (the memos answer them).
+
+A memo spanning scopes would find nothing either. A count of every `whnf_rc` miss with the table on (a structural hash
+of the term, kept for the whole run) found 227 k misses, 7.74 M `inst_rec` visits under the outermost ones, and none
+structurally repeated, closed or not. The trees for `F0..Fm` of one side evaluate the same step at the same bits, but
+`beta_spine` instantiates each leaf's body whole, so no reduction is shared at `whnf`'s granularity.
+
+So 72% of the reduction work under `conv` is the kernel evaluating gate terms on concrete bits, once per leaf. It is
+the proof by computation itself, not a redundancy, and a kernel memo cannot remove it. Only fewer or smaller leaves
+(fewer case bits; decision diagrams lost to the case tree at `nv` = 9 and 11, "Decision diagrams deleted"), leaves
+whose sides the builder states already evaluated, or a cheaper evaluation per visit can.
+
+**The table sized for the last scope: neutral (reverted, no patch kept, 2026-10-13).** Rehashing is 8.4% of busy
+samples in the profile at 4bad241 counting callers (5.5% under `inst_rec` and `instantiate_n`, 1.1% under `infer_rc`'s
+cache). The prototype merged the table's three switch-on sites into one that reserved the node, instantiation, shift
+and `whnf` maps for the sizes the last scope with the table on ended with. `proof_cost_split` cmp3d own CPU against
+3e7e019, Defender RTP off, three runs of 24 alternating pairs: won 16 (median pair -0.21 s, best 4.81 against 4.88 s),
+6 (median +0.05 s, best 5.28 against 5.09 s; about 74% other load at the end) and 14 (median -0.015 s, best 4.97 against
+5.05 s; about 37%). 36 of 72 in all. A likely reason (not measured): scopes differ too much in size for the last one to
+predict the next, so a small scope pays to clear a large reservation, and a large one after a small one rehashes as
+before.
 
 **Interning the reduct's top node in `whnf_rc`: neutral (reverted, no patch kept, 2026-10-13).** With the table on,
 `whnf_rc` interned the reduced term (`hc::intern(r, None)` in place of `Rc::new`), so equal reducts are one node.
