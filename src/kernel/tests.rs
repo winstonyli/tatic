@@ -476,8 +476,8 @@ fn beta_leaves_const_and_free_alone() {
 
 /// Both ranges fit the padding stage 1 left (`RELATED_WORK.md` §64):
 /// a node is a 48-byte `Expr`, two `u32`s and the hash-consing generation (the name predates it; `record-defeq`
-/// adds the probe's `canon` word, so it is checked without that feature).
-#[cfg(not(feature = "record-defeq"))]
+/// adds the probe's `canon` word and `copy-volume` its `region` and `pid`, so it is checked without those features).
+#[cfg(not(any(feature = "record-defeq", feature = "copy-volume")))]
 #[test]
 fn a_node_is_64_bytes() {
     assert_eq!(std::mem::size_of::<Expr>(), 48);
@@ -2675,4 +2675,58 @@ fn close_is_linear_in_the_dag_of_a_shared_body() {
     // The Lam, its domain, the base `Var`, and 3 nodes per level.
     assert_eq!(dag_size(&closed), 3 * DEPTH + 3);
     assert!(p.check(&closed, &arrow(p.get(a), p.get(a))).is_ok());
+}
+
+/// `scoped` escapes its result only in the call that opened the scope, and a panic inside it still closes the scope.
+#[test]
+fn scoped_escapes_only_when_outermost() {
+    struct Count(std::rc::Rc<std::cell::Cell<u32>>);
+    impl Escape for Count {
+        fn escape(self) -> Self {
+            self.0.set(self.0.get() + 1);
+            self
+        }
+    }
+    let n = std::rc::Rc::new(std::cell::Cell::new(0));
+    let _c = scoped(|| {
+        assert_ne!(intern_generation(), 0, "scoped switches the table on");
+        let inner = scoped(|| Count(n.clone()));
+        assert_eq!(n.get(), 0, "a nested scoped escapes nothing");
+        inner
+    });
+    assert_eq!((n.get(), intern_generation()), (1, 0));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scoped(|| -> () { panic!("inside scoped") })));
+    assert!(r.is_err());
+    assert_eq!(intern_generation(), 0, "a panic closes the scope");
+    let _d = scoped(|| Count(n.clone()));
+    assert_eq!(n.get(), 2, "after a panic, the next scoped opens the scope again");
+}
+
+/// `persist` counts what the arena would copy out of a region: each region node once, nodes built outside any region
+/// apart, nothing for a nested `scoped`, and a node kept past its region without `persist` as stale.
+#[cfg(feature = "copy-volume")]
+#[test]
+fn copy_volume_counts_each_region_node_once() {
+    // Leaves no other test builds, so `unique` counts only these even if the harness reuses this thread.
+    let v0 = copy_volume_thread();
+    let outside = app(var(900), var(901));
+    let e = scoped(|| {
+        let x = app(outside.clone(), var(902));
+        let inner = scoped(|| app(x.clone(), var(903)));
+        app(app(x.clone(), x), inner)
+    });
+    let v1 = copy_volume_thread();
+    // Region nodes: App(x, x), x, the node for `outside`, var 902, `inner`, var 903. Outside: var 900, var 901.
+    // Distinct: those eight and the root.
+    assert_eq!(
+        (v1.calls - v0.calls, v1.copied - v0.copied, v1.outside - v0.outside, v1.stale - v0.stale, v1.unique - v0.unique),
+        (1, 6, 2, 0, 9)
+    );
+    let _ = persist(e);
+    let v2 = copy_volume_thread();
+    assert_eq!((v2.calls - v1.calls, v2.copied - v1.copied, v2.unique - v1.unique), (1, 0, 0), "persisted nodes are not copied again");
+    let kept = std::cell::RefCell::new(None);
+    scoped(|| *kept.borrow_mut() = Some(app(var(904), var(905))));
+    let _ = persist(kept.into_inner().unwrap());
+    assert_eq!(copy_volume_thread().stale - v2.stale, 2, "a term kept past its region without persist");
 }

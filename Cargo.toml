@@ -24,6 +24,9 @@ wat = "1.245.1"
 # Records every `def_eq(inferred, expected)` that `check_rc` makes (see `take_defeq_log`), so a test can
 # replay them through another evaluator. Off by default; adds nothing to the default build.
 record-defeq = []
+# Counts what the id arena's copy-out would copy (`kernel::copy_volume_thread`/`_process`; spec
+# docs/superpowers/specs/2026-10-14-id-arena-spec.md, Stage 2). Off by default; adds nothing to the default build.
+copy-volume = []
 
 [dev-dependencies]
 criterion = "0.5"

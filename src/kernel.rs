@@ -64,6 +64,12 @@ struct Node<T> {
     /// about the node alone, like `loose` and `free`, so it never goes stale. Fills the header's
     /// padding.
     uses: std::cell::Cell<u32>,
+    /// `copy_volume`: the region (outermost scope, numbered per thread) this node was built in, 0 outside any.
+    #[cfg(feature = "copy-volume")]
+    region: u32,
+    /// `copy_volume`: this node's id in the simulated persistent table, `u32::MAX` until `persist` reaches it.
+    #[cfg(feature = "copy-volume")]
+    pid: std::cell::Cell<u32>,
     val: T,
 }
 
@@ -76,6 +82,10 @@ impl Rc<Expr> {
             canon: hc_probe::intern(&e),
             generation: std::cell::Cell::new(0),
             uses: std::cell::Cell::new(0),
+            #[cfg(feature = "copy-volume")]
+            region: copy_volume::region(),
+            #[cfg(feature = "copy-volume")]
+            pid: std::cell::Cell::new(u32::MAX),
             val: e,
         }))
     }
@@ -91,6 +101,10 @@ impl Rc<Expr> {
             canon: hc_probe::intern(&e),
             generation: std::cell::Cell::new(0),
             uses: std::cell::Cell::new(0),
+            #[cfg(feature = "copy-volume")]
+            region: copy_volume::region(),
+            #[cfg(feature = "copy-volume")]
+            pid: std::cell::Cell::new(u32::MAX),
             val: e,
         }))
     }
@@ -646,17 +660,105 @@ pub fn var(k: u32) -> Expr {
 pub fn sort(i: u32) -> Expr {
     Expr::Sort(i)
 }
-/// While one is alive, terms built with this module's constructors (`app`, `lam`, `pi`, ...) and
-/// the nodes `shift`/`instantiate` make are interned: structurally equal children are one node, so
-/// a proof that repeats itself is a small DAG, and the checks run inside it (`check_in`, `infer_in`,
-/// `def_eq`) find the terms already canonical. Hold one across building a proof and checking it.
-/// Tables and memos live until the outermost one drops. Per thread.
+/// A term kept past the scope it was built in: what long-lived stores hold. Made only by [`persist`]. Today it is the
+/// term itself; in the id arena it is a persistent id that stays valid after the region closes (spec
+/// `docs/superpowers/specs/2026-10-14-id-arena-spec.md`). So it lends no `&Expr`: [`PExpr::get`] hands out the term.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PExpr(Expr);
+
+impl PExpr {
+    /// The term, for building and checking.
+    pub fn get(&self) -> Expr {
+        self.0.clone()
+    }
+}
+
+impl From<PExpr> for Expr {
+    fn from(p: PExpr) -> Expr {
+        p.0
+    }
+}
+
+impl fmt::Debug for PExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+/// `e` as a term that outlives the open scope. A move today; with the feature `copy-volume` it also counts what the
+/// arena would copy ([`copy_volume_thread`]).
+pub fn persist(e: Expr) -> PExpr {
+    #[cfg(feature = "copy-volume")]
+    copy_volume::persist(&e);
+    PExpr(e)
+}
+
+/// What [`scoped`] applies to its result when it closes the scope: [`persist`] on every term in it. A type that holds
+/// terms and is returned from `scoped` needs an impl, so returning one without it fails to compile.
+pub trait Escape {
+    fn escape(self) -> Self;
+}
+
+impl Escape for Expr {
+    fn escape(self) -> Self {
+        persist(self).into()
+    }
+}
+
+macro_rules! escape_as_is {
+    ($($t:ty),*) => { $(impl Escape for $t { fn escape(self) -> Self { self } })* };
+}
+escape_as_is!(PExpr, (), bool, char, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, String, std::time::Duration);
+
+impl<T: Escape> Escape for Option<T> {
+    fn escape(self) -> Self {
+        self.map(T::escape)
+    }
+}
+impl<T: Escape, E: Escape> Escape for Result<T, E> {
+    fn escape(self) -> Self {
+        self.map(T::escape).map_err(E::escape)
+    }
+}
+impl<T: Escape> Escape for Vec<T> {
+    fn escape(self) -> Self {
+        self.into_iter().map(T::escape).collect()
+    }
+}
+impl<T: Escape> Escape for Box<T> {
+    fn escape(self) -> Self {
+        Box::new((*self).escape())
+    }
+}
+macro_rules! escape_tuple {
+    ($($n:tt $t:ident),+) => {
+        impl<$($t: Escape),+> Escape for ($($t,)+) {
+            fn escape(self) -> Self { ($(self.$n.escape(),)+) }
+        }
+    };
+}
+escape_tuple!(0 A);
+escape_tuple!(0 A, 1 B);
+escape_tuple!(0 A, 1 B, 2 C);
+escape_tuple!(0 A, 1 B, 2 C, 3 D);
+escape_tuple!(0 A, 1 B, 2 C, 3 D, 4 E);
+escape_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F);
+
+/// Runs `f` in the open scope, or in a new one. While a scope is open, terms built with this module's constructors
+/// (`app`, `lam`, `pi`, ...) and the nodes `shift`/`instantiate` make are interned: structurally equal children are one
+/// node, so a proof that repeats itself is a small DAG, and the checks run inside it (`check_in`, `infer_in`, `def_eq`)
+/// find the terms already canonical. Build a proof and check it in one call. Tables and memos live until the call that
+/// opened the scope returns; that call passes `f`'s result through [`Escape`] first. Per thread.
 ///
-/// Worth it for large proofs and a loss for small ones: it halves the check and, at n=512, saves
-/// half the time and memory of the whole build-and-check, but building inside it costs more per
-/// node, so a proof that checks in well under a millisecond (the gcd proofs) is about 20% slower
-/// overall (doc sections 69 and 71). `check_in` already interns large inputs by itself; this scope
-/// is for proofs big enough that the builder's own sharing matters.
+/// Worth it for large proofs and a loss for small ones: it halves the check and, at n=512, saves half the time and
+/// memory of the whole build-and-check, but building inside it costs more per node, so a proof that checks in well
+/// under a millisecond (the gcd proofs) is about 20% slower overall (doc sections 69 and 71). `check_in` already
+/// interns large inputs by itself; this scope is for proofs big enough that the builder's own sharing matters.
+pub fn scoped<R: Escape>(f: impl FnOnce() -> R) -> R {
+    hc::scoped(true, f)
+}
+
+/// The guard form of [`scoped`], until its last callers move (Task 4 of the Stage 2 plan deletes it).
 #[must_use]
 pub struct InternScope(#[allow(dead_code)] hc::Scope);
 
@@ -934,9 +1036,28 @@ mod hc {
 
     impl Scope {
         pub fn enter() -> Scope {
-            DEPTH.with(|d| d.set(d.get() + 1));
+            DEPTH.with(|d| {
+                #[cfg(feature = "copy-volume")]
+                if d.get() == 0 {
+                    super::copy_volume::open();
+                }
+                d.set(d.get() + 1)
+            });
             Scope
         }
+    }
+
+    /// `f` in the open scope, or in a new one, with the table switched on now when `activate` (else after `WARM_UP`
+    /// calls, as the kernel's own entries want). The call that opens the scope escapes `f`'s result before closing it.
+    /// A panic closes it through `Scope`'s `Drop`, without escaping.
+    pub fn scoped<R: Escape>(activate: bool, f: impl FnOnce() -> R) -> R {
+        let outermost = DEPTH.with(|d| d.get()) == 0;
+        let _s = Scope::enter();
+        if activate {
+            self::activate();
+        }
+        let r = f();
+        if outermost { r.escape() } else { r }
     }
 
     /// Switches the table on now (inside a scope), instead of after `WARM_UP` calls.
@@ -957,6 +1078,8 @@ mod hc {
                 d.set(d.get() - 1);
                 d.get() == 0
             }) {
+                #[cfg(feature = "copy-volume")]
+                super::copy_volume::close();
                 GENERATION.with(|g| g.set(0));
                 CALLS.with(|c| c.set(0));
                 let old = TABLE.with(|t| std::mem::replace(&mut *t.borrow_mut(), Table::new()));
@@ -977,7 +1100,7 @@ mod hc {
 
     /// Calls `f` on each child, in a fixed order per constructor.
     #[inline(always)]
-    fn for_kids<'a>(e: &'a Expr, mut f: impl FnMut(&'a Rc<Expr>)) {
+    pub(super) fn for_kids<'a>(e: &'a Expr, mut f: impl FnMut(&'a Rc<Expr>)) {
         match e {
             Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => {}
             Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
@@ -1047,7 +1170,19 @@ mod hc {
 
     /// The table's key for `e`: constructor, leaf value, child pointers.
     fn key_of(e: &Expr) -> NodeKey {
-        let (tag, leaf) = match e {
+        let (tag, leaf) = tag_leaf(e);
+        let mut kids = [0usize; 5];
+        let mut i = 0;
+        for_kids(e, |p| {
+            kids[i] = Rc::as_ptr(p) as usize;
+            i += 1;
+        });
+        NodeKey { tag, leaf, kids }
+    }
+
+    /// A node's constructor tag and leaf value, as the table keys them.
+    pub(super) fn tag_leaf(e: &Expr) -> (u8, u32) {
+        match e {
             Expr::Var(k) => (0, *k),
             Expr::Sort(k) => (1, *k),
             Expr::Const(k) => (2, *k),
@@ -1064,14 +1199,7 @@ mod hc {
             Expr::Sigma(..) => (13, 0),
             Expr::Pair(..) => (14, 0),
             Expr::SigRec { .. } => (15, 0),
-        };
-        let mut kids = [0usize; 5];
-        let mut i = 0;
-        for_kids(e, |p| {
-            kids[i] = Rc::as_ptr(p) as usize;
-            i += 1;
-        });
-        NodeKey { tag, leaf, kids }
+        }
     }
 
     /// Terms larger than this many nodes (counted once per allocation) are interned on entry to a
@@ -1366,6 +1494,139 @@ mod hc {
             });
         }
     }
+}
+
+/// Feature `copy-volume`: what the id arena's `persist` would copy out of a region (id-arena spec, Stage 2, and its
+/// plan's "Departures"). Each node records the region it was built in. `persist` gives every node it reaches an id in a
+/// simulated per-thread persistent table, once per node, and counts the node by where it came from.
+#[cfg(feature = "copy-volume")]
+mod copy_volume {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// `persist` calls; nodes copied out of the open region; nodes built outside any region (persistent already in the
+    /// arena); nodes from an earlier region that were never persisted (dead handles in the arena); distinct nodes in the
+    /// simulated persistent table. A root `Expr` has no header, so it is looked up on every call and never counted as
+    /// copied.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct CopyVolume {
+        pub calls: u64,
+        pub copied: u64,
+        pub outside: u64,
+        pub stale: u64,
+        pub unique: u64,
+    }
+
+    impl fmt::Display for CopyVolume {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "calls={} copied={} outside={} stale={} unique={}", self.calls, self.copied, self.outside, self.stale, self.unique)
+        }
+    }
+
+    const CALLS: usize = 0;
+    const COPIED: usize = 1;
+    const OUTSIDE: usize = 2;
+    const STALE: usize = 3;
+    const UNIQUE: usize = 4;
+
+    static PROCESS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+    thread_local! {
+        static THREAD: Cell<[u64; 5]> = const { Cell::new([0; 5]) };
+        /// The open region's number, 0 while none is open; never reused within the thread.
+        static REGION: Cell<u32> = const { Cell::new(0) };
+        static NEXT: Cell<u32> = const { Cell::new(1) };
+        /// (tag, leaf, children's ids) -> id.
+        static TABLE: RefCell<HashMap<(u8, u32, [u32; 5]), u32>> = RefCell::new(HashMap::new());
+    }
+
+    fn bump(i: usize) {
+        PROCESS[i].fetch_add(1, Relaxed);
+        THREAD.with(|t| {
+            let mut c = t.get();
+            c[i] += 1;
+            t.set(c);
+        });
+    }
+
+    fn of(c: [u64; 5]) -> CopyVolume {
+        CopyVolume { calls: c[CALLS], copied: c[COPIED], outside: c[OUTSIDE], stale: c[STALE], unique: c[UNIQUE] }
+    }
+
+    pub fn thread() -> CopyVolume {
+        of(THREAD.with(Cell::get))
+    }
+
+    pub fn process() -> CopyVolume {
+        of(std::array::from_fn(|i| PROCESS[i].load(Relaxed)))
+    }
+
+    pub fn region() -> u32 {
+        REGION.with(Cell::get)
+    }
+
+    pub fn open() {
+        let n = NEXT.with(|c| c.replace(c.get().checked_add(1).expect("regions ran out")));
+        REGION.with(|r| r.set(n));
+    }
+
+    pub fn close() {
+        REGION.with(|r| r.set(0));
+    }
+
+    pub fn persist(e: &Expr) {
+        bump(CALLS);
+        intern(e);
+    }
+
+    fn intern(e: &Expr) -> u32 {
+        let (tag, leaf) = hc::tag_leaf(e);
+        let mut kids = [u32::MAX; 5];
+        let mut i = 0;
+        hc::for_kids(e, |c| {
+            kids[i] = id(c);
+            i += 1;
+        });
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            let n = t.len() as u32;
+            *t.entry((tag, leaf, kids)).or_insert_with(|| {
+                bump(UNIQUE);
+                n
+            })
+        })
+    }
+
+    fn id(x: &Rc<Expr>) -> u32 {
+        let p = x.0.pid.get();
+        if p != u32::MAX {
+            return p;
+        }
+        bump(match x.0.region {
+            0 => OUTSIDE,
+            r if r == region() => COPIED,
+            _ => STALE,
+        });
+        let p = grow(|| intern(x));
+        x.0.pid.set(p);
+        p
+    }
+}
+
+#[cfg(feature = "copy-volume")]
+pub use copy_volume::CopyVolume;
+
+/// What `persist` has counted on this thread (feature `copy-volume`).
+#[cfg(feature = "copy-volume")]
+pub fn copy_volume_thread() -> CopyVolume {
+    copy_volume::thread()
+}
+
+/// What `persist` has counted on every thread of the process (feature `copy-volume`).
+#[cfg(feature = "copy-volume")]
+pub fn copy_volume_process() -> CopyVolume {
+    copy_volume::process()
 }
 
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
