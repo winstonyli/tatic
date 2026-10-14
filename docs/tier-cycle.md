@@ -1852,6 +1852,48 @@ cheapest falsifier is additive and leaves no rework: on the JIT's own corpus (`s
 that the mined `add`/`sub` rules would rewrite (ring identities, which hold at every width) and the change in compiled
 instruction count. If the mined rules never fire on the JIT's programs, A's cycle has nothing to run on. Not run.
 
+**Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
+2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.
+Of three ways to trust compiled code (trust the compiler, as `native_compute` does; a certificate per output; prove each
+compilation step once against a small fixed target semantics), the third gives one object kind and one fixed trusted
+piece: optimisations are term-to-term rules, lowerings are term-to-IR rules proved against an IR semantics stated in the
+kernel, a hot transformation is compiled by lowering its rule's matcher and builder, and learning a compilation is mining
+lowering rules by target cost, with hotness from rule-use counts (not built; precedents from memory, not re-checked:
+Alive, STOKE, Souper). Two cheap tests of its base:
+
+1. *Can lowering templates be stated and proved as kernel laws?* Yes. `tests/lowering_law_probe.rs` (deleted) stated a
+   typed-stack IR as a shallow kernel semantics: `Code = Pi S:Sort0. S -> Sigma(Int, S)` (runs on any stack, pushes one
+   Int) and `Spec(c, m) = Pi S. Pi s:S. Id(Sigma(Int,S), c S s, pair(m, s))`, with `Int`, `add` and `sub` postulated as
+   `proof.rs` does. Checked by the kernel: Lit (`Spec(lit n, n)`, by `refl`); Add (`Spec(c1,m1) -> Spec(c2,m2) ->
+   Spec(add_template c1 c2, add m1 m2)` for arbitrary code `c1`, `c2`, by `cong1` and `trans_proof`); and If (a
+   bool-pushing `cc`, then `ct` or `ce`, by `cong1`, `cong_n`, `sym` and `trans_proof`). Negative controls were
+   rejected: the Add template lowering to `sub` under the same statement, and If with its branches swapped. A concrete
+   term's compiled code (`add(lit k1, lit k2)`) was proved by applying the two template laws, with no per-term search.
+   One obligation surfaced: If needs its condition to be *natural* (`f (b x y) = b (f x) (f y)` for every `f`), which a
+   Church boolean does not give for free; `tt` and `ff` are natural by `refl`, so each instruction that pushes a
+   condition (`lt`, `eq`) must prove it in its own spec. Limits: the IR semantics is a model in the kernel, as `denote` is,
+   so the step from it to wasm stays trusted; that is the fixed piece this design keeps. All checks took under 0.01 s.
+2. *Does scoring by compiled cost pick different rules than scoring by M?* Yes, mostly, and the two objectives conflict
+   on cmp3d. A `RULEMINER_LAWW` weight (default 1000, the weight of a fixed law and of the guard laws) was set to 0, so a
+   rule scores only by the cut in the stragglers' normal-form size (`measure`: operator weight times 16 plus variable
+   occurrences, a proxy for a stack IR's instruction count, one instruction per node; not counted from `lower_wat`). Ref
+   loops on phase 0 (`LOOP_MODE=ref`, B=150, K=4, `RULEMINER_FAST=1`, `CHECK_FAST=1`, 2 threads; each loop 2-5 s):
+
+   | | rules | shared | stragglers fixed | serve M | size cut |
+   |---|---|---|---|---|---|
+   | add3, scored by M | 14 | 2 | 87 of 87 | 1 | 1075 |
+   | add3, size only | 8 | | 34 of 87 | 83 | 1075 |
+   | cmp3d, scored by M | 27 | 5 | 250 of 264 | 16 | 457 |
+   | cmp3d, size only | 24 | | 171 of 264 | 120 | 4205 |
+
+   On add3 both reach the same total size, and the M-scored library also fixes every straggler: size-only stops when no
+   rule cuts size, before the zero-cut rules that close proofs. On cmp3d, seven of the M-scored rounds grow normal forms
+   (1803 in total) to fix 41 laws, so the M-scored library cuts 9x less size; the size-only library leaves 7.5x more
+   machine proofs. Learning by compiled cost is therefore not subsumed by today's miner, and one miner can serve both
+   with one objective of two weighted terms (proof cost and compiled cost) rather than two miners. The mul and shl
+   families gave no test: under today's built-in rules mul (`MULMINER_MAX=5`) has 0 stragglers of 50 laws, and shl
+   (`RULEMINER_LAWS=300`) has 5 stragglers of 305 laws and 0 oriented candidates.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
