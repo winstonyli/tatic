@@ -1807,6 +1807,25 @@ kernel about two orders of magnitude ahead on this workload. So a faster untrust
 the evaluation strategy, and a compiled one would need a constant-factor gain above 60x over closure evaluation just to
 draw level, before its trusted-base cost. Not pursued; the JIT thread stays separate from conversion.
 
+**A general symbolic mechanism in place of the case trees? (survey, no code, 2026-10-13).** Ranked by end-state design,
+not effort. `lemma_n` is already one general mechanism: any Boolean equality over `k` good bits, proved by splitting
+every bit with `refl` leaves. Its callers are the machine proofs' `F`, `P` and `D` lemmas (`guarded`, `machine.rs`),
+`bitwise_law_k` (`rewrite.rs`), `pos_law`'s per-bit lemmas (`machine.rs`), and a few tests. No caller special-cases a
+gate. Candidates:
+
+| Candidate | End state | Verdict |
+|---|---|---|
+| Per-gate symbolic lemmas (`and`, `xor`, mux laws), composed by congruence | One lemma per gate, plus a canonical form to meet the table side `G_j`, which is a mux tree, not a gate circuit | More special cases than now; rejected |
+| Proof-producing canonical forms (decision diagrams with a proof per node) | One mechanism, as general as `lemma_n` | Built and measured: lost at nv = 9 and 11, deleted ("Decision diagrams deleted") |
+| Reflection: a Boolean-expression syntax (a `W` type), its denotation, a checker, and one kernel-checked soundness theorem; each lemma is the theorem applied to syntax with `refl(true)` | One mechanism, as general as `lemma_n`, with four new concepts in place of a 40-line builder (`lemma_n`, `lemma_n_ty`); trusted base unchanged | Not cleaner. Faster only if the kernel's evaluation of the checker beats the leaves. A truth-table checker repeats the same 2^k evaluations with interpretation on top. A diagram checker means the kernel runs diagram operations on Church-encoded data, at k <= 9 (mostly 7), where the proof-producing diagrams already lost (estimate, not measured) |
+| One tree per side for all its `F_j` | Same mechanism, fewer trees | Parked above (at most about 7%) |
+
+So no candidate is a cleaner end state than `lemma_n`: the case tree is the general mechanism, and the alternatives are
+either special cases or the same generality with more parts. The thread stays closed. One by-product of the
+`kernel_lazy` probe: the 26 rule proofs carry 1.13 of the 1.35 s of conversion `proof_cost_split` timed (84%). The
+loop checks each rule proof once per library (`shared_lemma`), so `proof_cost_split` weights them more than serving
+does.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
