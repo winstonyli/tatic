@@ -2592,6 +2592,22 @@ Its shortcomings there, with mitigations:
 - **Not in the replay:** the `ReductionCache` (no traffic while the table is on), `context_of`, the reducer's own node reads (which understate (b)), and the port's own costs (which overstate it).
 - **Next, per the spec:** the narrower real prototype (`shift`, `instantiate`, `uses` and `lowest_loose` on ids, on a branch, timed against `main`). Not started.
 
+*Where the rise comes from (the same replay, 2026-10-14; reverted, no patch kept).* Cycles were charged to each trace op, one run at n=8 and n=64 per arm, with 3 reps and the quietest kept (the profiler adds its own cost, about equally per op). Top-level op counts per entry hardly change with n: memo gets 0.97 against 1.00, `uses` calls 0.52 against 0.53. So the rise is in what each op costs. ns per entry, n=8 → n=64:
+
+| op | (a) today | (b) ids |
+|---|---|---|
+| `uses` | 18 → 68 (+50) | 21 → 79 (+57) |
+| `lowest_loose` | 55 → 94 (+39) | 42 → 74 (+32) |
+| intern | 50 → 92 (+42) | 33 → 44 (+11) |
+| memo get | 34 → 66 (+32) | 25 → 51 (+26) |
+| memo put | 25 → 31 (+6) | 31 → 57 (+26) |
+| node build | 26 → 37 (+12) | 14 → 27 (+13) |
+| all ops | 277 → 478 (+201) | |
+
+- **`uses` (a quarter of the rise) is algorithmic.** Nodes visited per call grow linearly with n: 5.5, 9.1, 16.3 and 30.5 at n=8, 16, 32 and 64. The cost per visit falls (6.3 to 4.2 ns), so this is more walking, not slower walking, and no layout changes it.
+- **The rest is lookups in tables that grow:** `lowest_loose` (its visits per call stay at 7.9, but each one probes the `lows` memo), intern, memo gets and puts. Ids remove most of intern's rise (an 8-byte table entry) and little of the memos'.
+- **Tried and rejected: a 64-bit set of loose `Var`s per node,** which would answer `uses` and `lowest_loose` without walking. It is exact only when no node beneath has loose above 64. Most nodes at n≥16 have more (515,113 of 523,216 at n=64; the context is deep), so it covers 81% of `uses` calls and 16% of `lowest_loose` calls at n=64. A fixed-width set does not scale with n. Checked against every traced answer where it applies.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
