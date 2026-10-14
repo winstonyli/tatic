@@ -1650,6 +1650,32 @@ has loose variables but not `Var(0)`, so it is only shifted (0.28 M shift visits
 (69%) are on an `App` spine, but substituting a spine's arguments at once could only save the repeated walks of the
 non-closed codomains, a small part of the 8.4%. Not built.
 
+**The pairs where both sides reduce are equal redexes with different lambdas (probe, reverted, no patch kept,
+2026-10-13).** The same run at 4bad241 without the argument checks (which had added pairs of their own above), counting
+only pairs where `whnf` changed both sides, in `conv` and `conv_rc`:
+
+| Both sides reduce | Pairs | `inst_rec` visits in their `whnf` |
+|---|---|---|
+| all (of 10.29 M in the run) | 124 k | 8.52 M |
+| results `==` (never the same pointer) | 90 k | 7.13 M |
+| results with the same constructor, not `==` | 33 k | 1.39 M |
+| results with different constructors | 0 | 0 |
+| `conv` answers equal | 124 k (all) | 8.52 M |
+| both heads are a literal `Lam` | 124 k (all) | |
+| heads `==` | 5 k | |
+
+So the bulk of the reduction work goes into showing that two applications of different lambdas, `(\x. s) a` against
+`(\y. t) b`, are equal, and in 73% of the pairs both reduce to the same term. The results are never pointer-equal
+because `whnf_rc` wraps the reduct's top node in `Rc::new` rather than interning it (its children are interned). Where these literal redexes come from (which typing rule builds the inferred side, and whether the
+expected side is written unreduced by the proof builder) is the open question; a builder that emits reduced types, or
+a typing rule that does not leave a redex, would remove the work rather than speed it up.
+
+**Profile at 4bad241 (samply, profile not kept, 2026-10-13).** `proof_cost_split` cmp3d own, CPU about 9% before the
+run, Defender RTP off; 5031 busy samples (the run at 8334948 had 9656; shares compared, not counts). `instantiate_n`
+55.4% (46.8% under `beta_spine`, 7.3% under `infer_node`); `conv_rc` 39.3%, all from `check_rc` -> `def_eq`, with
+`whnf_rc` 38.9% and `beta_spine` 38.1% inside it; `hc::intern` 30.3% (19.3% from `inst_rec`). Leaves: `intern_as`'s
+lookup 9.7%, `inst_get` 8.8%, rehashing 5.2%, `Rc::drop_slow` 4.4%. The const `TABLE` did not change the picture.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
