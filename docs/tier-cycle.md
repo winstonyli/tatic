@@ -2047,8 +2047,68 @@ them into a tree.
 *What this changes in the survey.* Option B's end state is reachable without a `W` type or new axioms: instructions
 are kernel data a printer reads, template laws over them are cheap, and mined laws transfer to compiled instruction
 lists at width 64. The trusted step that is left is the printer from the instruction list to WAT text (a syntactic
-map), plus wasmtime. Still open: control flow and memory (`if` with effects, `block`/`br`, `i64.load/store`,
+map), plus wasmtime. Still open: control flow and memory (control flow is tried in the next paragraph; `if` with effects, `block`/`br`, `i64.load/store`,
 `call_indirect`), the wasm ops the loop lacks, and whether lowering rules can be mined over this encoding.
+
+**Control flow over Church instruction lists, with answers in Sort0 (probe, reverted, no patch kept, 2026-10-14).**
+The `select` If above runs both branches, which is wrong once a branch can loop. Real `if` needs a bit to choose
+between two runs, and a bit eliminates only into Sort0. Without a primitive Bool or sum type, the option tried here
+moves the answer instead: the meaning `M p N R k z` takes the answer type `R : Sort0`. One gap remains: a one-bit
+word `Pi X:Sort1. (Bool0 -> X) -> X` opens only at Sort1, and the kernel has no cumulativity. It is closed by
+opening the word at `Lift R = Pi Y:Sort0. (R -> Y) -> Y` (in Sort1) and projecting at `Y := R`. So
+`choose w x y = w (Lift R) (\c Y g. g (c R x y)) R id`, and no kernel change is needed. Programs gain two
+constructors:
+- `if : Pi A. F A -> F A -> F (V1,A)`, taking a then-rest and an else-rest;
+- `loop : Pi A. (F A -> F A) -> F A`, a body over its own label, where `br L` is the label used as the rest.
+
+Instructions gain `dup`. `if` means "pop the bit, `choose` a rest". `loop` unrolls its body `N` times (`N` a
+Church numeral, the fuel) and answers `z` when the fuel runs out. Specs quantify over `N` and `z`.
+
+Results, on the same 27-rule cmp3d library:
+- **Append** still composes by `refl` for abstract programs.
+- **Bin laws** check in about 10-25 ms at n=4 and n=64, and are rejected against swapped operands.
+- **The If law,** `Spec(c_c,m_c) -> Spec(c_t,m_t) -> Spec(c_e,m_e) -> M (c_c ++ if c_t c_e) N R k z s = choose m_c (k (m_t,s)) (k (m_e,s))`,
+  checks in 14-28 ms (two transitivity steps and two congruences). It is rejected against swapped branches.
+  Its right side is a case split rather than one pushed word: an If is not an operand of a later Bin law. Code after
+  the If lands in `k`, so it is duplicated into both arms, as in symbolic execution.
+- **Rule transfer.** For each `lt` rule, `if l then x else y` was proved equal to `if r then x else y` from the
+  rule's law:
+  - 24 of 24 at n=4, 1.13 s for all;
+  - 24 of 24 at n=64, 27.7 s for all.
+
+  With the law replaced by `refl`, all 24 are rejected at n=4. The same control at n=64 hit the 4 GB guard on its
+  first rule, so it was not measured: rejecting the false conversion normalizes two 64-bit words.
+
+Concrete runs were checked by `refl` against both answers:
+- `loop L { dup; push 1; lt; if (exit) (push 1; sub; br L) }` from 3 gives `k(0, rest)` with fuel 4 and 50, and
+  times out (`z`) with fuel 3. From 0 with fuel 1 it gives `k(0, rest)`.
+- `if lt(a,b) then loop L {br L} else push 7`, with fuel 1000, gives `k(7, rest)` for `lt(1,0)` and `z` for
+  `lt(0,1)`. Only the taken branch runs.
+- All programs typecheck.
+
+These concrete checks hit a reduction wall below n=48:
+
+| n | 8 | 12 | 16 | 24 | 32 | 40 | 48, 64 |
+|---|---|---|---|---|---|---|---|
+| countdown from 3, fuel 4 (s) | 0.02 | 0.08 | 0.24 | 1.14 | 3.5 | 7.6 | over 4 GB within ~10 s |
+
+The time grows about n^3.5-4 up to n=40, then memory blows up. This is the same unsharing of ripple-carry terms
+that stalled the full-normalize printer. It is a limit of evaluating concrete words by kernel reduction. It is not a
+limit of the laws: the laws and the rule transfer stay at n=64.
+
+Machine load: 51% CPU before the rule runs and 24% after them; Defender real-time protection off.
+
+Not tried:
+- memory (`i64.load/store` as a store threaded on the stack, with load-after-store needing `eq_bv a a = true`);
+- a loop law (an invariant over fuel);
+- nested Ifs as operands.
+
+*What this changes.* Control flow where only the taken branch runs, plus fuelled loops, is expressible and provable
+with no kernel change and no postulate. The costs:
+- answers are confined to Sort0;
+- specs are observational (`k` and `z` are quantified);
+- an If composes only through the continuation;
+- concrete evaluation at wide widths needs sharing in reduction (or the JIT itself) rather than raw beta.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
