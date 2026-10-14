@@ -1407,7 +1407,8 @@ bit, packed by `Rc::uses_slot`. `uses` answers from the slot before walking and 
 - Slot alone (the table switched off by a temporary `USESNOTABLE` knob) against slot plus table: 12 pairs, won 8,
   summed 54.2 against 55.2 s, best 4.27 against 4.44 s.
 
-So the `uses` table, its `pin` and the knob are deleted; a slot miss walks. Sequential sweep pair (rows `uss_*`, script
+So the `uses` table, its `pin` and the knob are deleted; a slot miss walks. (Since 2026-10-14 a miss goes to a per-scope
+table of bounds instead, keyed by (node, d) rather than (node, d, m): "The slot in front of bounds".) Sequential sweep pair (rows `uss_*`, script
 `uslot_seq.sh`): identical outputs on both salts. The slot can't hold `shifts` or `infer` results, which are nodes
 (above).
 
@@ -2644,6 +2645,21 @@ Its shortcomings there, with mitigations:
   - With `memo_context` on its own map as today: `proof_cost_split` 3.84 → 4.03 s (+5%, won 2 of 8), check 340 → 373 ms. Rule 33 at n=64, median of medians 635 → 576 ms (−9%, 4 of 6); at n=8 neutral (3 of 6, by best and by median).
   - So the slot's misses alone carry the loss. A likely cause, not measured: `lowest_loose` must visit every child to find the minimum and hashes each node it visits, while the `uses` walk stops at its first hit and hashes nothing. On small terms that walk is cheaper than the memo.
   - The memo pays only where walks are long (large n). Choosing between walk and memo by term size would be a size threshold, not a general mechanism; not tried.
+
+**The slot in front of bounds (2026-10-14, adopted).** `uses(x, d, m)` keeps the node's slot and today's walk, which stops at its first hit. A slot miss looks up the `hc` table's `bounds[(x, d)] = (lo, hi)`, bounds on `lowest_loose(x, d)` that start at `(0, loose − 1 − d)`. A query with `m > hi` is true and one with `m <= lo` is false, without a walk. Otherwise the walk runs, and its answer narrows the entry to `(lo, m − 1)` if true or `(m, hi)` if false. So one (node, d) entry answers every `m` its bounds decide, as `lowest_loose`'s memo does, without visiting every child for an exact minimum. Check: `uses_bounds_agree_with_lowest_loose`, which asks every (d, m) in three orders. Against main's kernel (012e4c5, unchanged to 981540b), alternating pairs, BelowNormal on 12 cores, real-time protection off:
+
+| workload | today (slot) | slot, then bounds | pairs won by bounds |
+|---|---|---|---|
+| `proof_cost_split`, CPU median, rotation 1 (load 12–20%) | 3.73 s | 3.69 s | 6 of 8 (1 tie) |
+| `proof_cost_split`, CPU median, rotation 2 (load ~25%) | 3.63 s | 3.68 s | 6 of 10 |
+| `proof_cost_split` check, median, rotations 1 and 2 | 348, 335 ms | 345, 348 ms | 5 of 8, 4 of 10 |
+| rule 33's law, n=64, 5 checks per process: median of medians | 644 ms | 541 ms (−16%) | 5 of 6 |
+| rule 33's law, n=8, 61 checks per process: median of bests, of medians | 41.0, 50.7 ms | 41.2, 50.6 ms | 2 of 6, 2 of 6 |
+
+- Neutral on small work and −16% at n=64, so it is adopted.
+- Bounds without the slot lose on small work: `proof_cost_split` check 343 → 369 ms (won 1 of 8), CPU median 3.78 → 3.77 s (won 2 of 8). The slot's one header read still beats a hash probe when it hits.
+- This supports the cause guessed above: the `lowest_loose` hybrid lost on small work while this one, with the same slot in front, does not. The difference is the walk that stops at its first hit.
+- `InferCache`'s `lows` stays as it is: it needs the exact minimum.
 
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).

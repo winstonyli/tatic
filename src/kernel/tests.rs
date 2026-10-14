@@ -605,6 +605,28 @@ fn uses_slot_is_free_and_agrees_with_the_walk() {
     }
 }
 
+/// `uses`'s bounds memo answers as `lowest_loose` does, whatever order the queries come in: wide
+/// then narrow queries narrow `hi`, narrow then wide ones raise `lo`.
+#[test]
+fn uses_bounds_agree_with_lowest_loose() {
+    let _scope = hc::Scope::enter();
+    hc::activate();
+    let x = hc::intern(lam(var(0), app(app(var(3), var(7)), lam(var(0), var(6)))), None);
+    let mut memo = PtrMap::with_hasher(Default::default());
+    let mut qs: Vec<(u32, u32)> = (0..8).flat_map(|d| (0..10).map(move |m| (d, m))).collect();
+    for round in 0..3 {
+        if round == 1 {
+            qs.reverse();
+        } else if round == 2 {
+            qs.sort_by_key(|&(d, m)| (m * 7 + d * 3) % 11);
+        }
+        for &(d, m) in &qs {
+            let want = hc::lowest_loose(&x, d, &mut memo) < m;
+            assert_eq!(hc::uses(&x, d, m), want, "round {round} d={d} m={m}");
+        }
+    }
+}
+
 /// The instantiation memo skips nodes at most two levels above their leaves.
 #[test]
 fn low_is_height_at_most_two() {

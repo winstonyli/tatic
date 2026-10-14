@@ -882,6 +882,9 @@ mod hc {
         hnf: PtrMap<(usize, u32), Rc<Expr>>,
         /// Argument sets of two or more nodes, by their node pointers.
         arg_sets: PtrMap<Vec<usize>, u64>,
+        /// (node, depth) -> bounds `(lo, hi)` on its lowest loose variable from that depth, which
+        /// [`uses`] narrows: every `uses(x, d, m)` with `m <= lo` is false and with `m > hi` true.
+        bounds: PtrMap<(usize, u32), (u32, u32)>,
         /// The memos' non-canonical source nodes, kept alive to the scope's end (canonical ones live
         /// in `nodes`), so no other node takes the address a memo key holds.
         keep: Vec<Rc<Expr>>,
@@ -898,6 +901,7 @@ mod hc {
                 whnf: PtrMap::with_hasher(H),
                 hnf: PtrMap::with_hasher(H),
                 arg_sets: PtrMap::with_hasher(H),
+                bounds: PtrMap::with_hasher(H),
                 keep: Vec::new(),
             }
         }
@@ -1163,8 +1167,10 @@ mod hc {
     /// Whether `x` mentions a loose `Var` in `[d, d + m)`, i.e. whether instantiating `m` arguments
     /// at depth `d` can put any of them in. When it cannot, the result is `x` shifted down by `m`
     /// above `d + m`, whatever the arguments are. The node's header remembers its last answer
-    /// ([`Rc::uses_slot`]); a per-scope table behind it caught too few of the slot's misses to pay
-    /// (doc section "Per-node facts in the node header").
+    /// ([`Rc::uses_slot`]). Its misses go to the table's `bounds` on the node's lowest loose
+    /// variable from `d`, which one (node, depth) entry answers for every `m` outside them; a walk
+    /// that still stops at its first hit narrows them (doc section "The slot in front of bounds").
+    /// Only while the table is on.
     pub fn uses(x: &Rc<Expr>, d: u32, m: u32) -> bool {
         if x.loose() <= d {
             return false;
@@ -1175,15 +1181,34 @@ mod hc {
         if let Some(r) = x.uses_slot(d, m) {
             return r;
         }
-        let r = grow(|| {
-            let mut found = false;
-            let mut i = 0;
-            for_kids(x, |c| {
-                found = found || uses(c, d + under_binder(x, i) as u32, m);
-                i += 1;
+        // `lo <= the lowest loose variable from d <= hi`. `loose` bounds it from above unless it
+        // saturated.
+        let key = (Rc::as_ptr(x) as usize, d);
+        let (lo, hi) = TABLE
+            .with(|t| t.borrow().bounds.get(&key).copied())
+            .unwrap_or((0, if x.loose() == u32::MAX { u32::MAX } else { x.loose() - 1 - d }));
+        let r = if hi < m {
+            true
+        } else if lo >= m {
+            false
+        } else {
+            let r = grow(|| {
+                let mut found = false;
+                let mut i = 0;
+                for_kids(x, |c| {
+                    found = found || uses(c, d + under_binder(x, i) as u32, m);
+                    i += 1;
+                });
+                found
             });
-            found
-        });
+            let b = if r { (lo, m - 1) } else { (m, hi) };
+            TABLE.with(|t| {
+                let mut t = t.borrow_mut();
+                pin(&mut t, x);
+                t.bounds.insert(key, b);
+            });
+            r
+        };
         x.set_uses_slot(d, m, r);
         r
     }
