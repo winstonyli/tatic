@@ -2431,8 +2431,30 @@ The large table alone makes each entry 1.3-1.5 times slower. That accounts for a
 n=8 to n=64, and most of rule 0's. Rule 0's times are small and noisy, and its fill (127k nodes) is a quarter of rule 33's.
 It is an upper bound: the filled n=8 check runs against the table at the size the n=64 check reaches only at its end.
 This shows that size slows each entry. It does not show which mechanism does it: cache misses on the table and the nodes,
-longer probe sequences, or a scattered heap all fit. The rest of rule 33's rise grows with n itself, not with the
-table, presumably larger nodes to hash and compare (wider spines and argument sets) and the `uses` walks above; not measured.
+longer probe sequences, or a scattered heap all fit.
+
+*What else grows per entry.* The node table's key is fixed in size (constructor, leaf, up to five child pointers), and so
+are the instantiation, shift, whnf and hnf keys. Hashing and comparing a node therefore cost the same at every n; wider
+terms do not make them dearer. A second probe (reverted, no patch kept) counted the per-entry work of one law check in a
+fresh scope (same machine state: Defender real-time protection off, 4-5% CPU, pinned, below normal):
+
+| per new table entry, rule 33 | n=8 | n=16 | n=32 | n=64 |
+|---|---|---|---|---|
+| µs | 0.38 | 0.55 | 0.65 | 0.61 |
+| `intern` calls | 0.92 | 0.88 | 0.88 | 0.92 |
+| `inst_rec` calls (mean depth) | 0.40 (2) | 0.47 (2) | 0.47 (2) | 0.40 (3) |
+| argument-set lookups (mean length) | 0.038 (6.1) | 0.044 (6.2) | 0.044 (6.2) | 0.038 (6.2) |
+| `lowest_loose` nodes walked | 0.78 | 0.91 | 0.91 | 0.78 |
+| `uses` calls past the cheap exits | 1.95 | 3.85 | 6.81 | 10.75 |
+| `uses` nodes walked (header-slot misses) | 1.14 | 2.50 | 4.71 | 7.73 |
+
+Rule 0 is the same: everything is flat except `uses`, at 0.63 nodes walked per entry at n=8 and 4.14 at n=64. Stack-segment
+switches are 1 per check at every n. So the only work per entry that grows with n is the `uses` walks: they grow about
+linearly per entry, and so quadratically in total. Each node's header slot keeps one (d, m) answer, and a node gets asked
+at more (d, m) pairs as n grows. Pricing them: `uses` was 5% of samples at n=64 in the earlier profile (before the spine change), about 0.03 µs per
+entry, against a rise of about 0.23 µs. Table size is at most about 0.12 µs of it (above), which leaves about 0.08 µs not
+accounted for by any count here. Both earlier fixes for `uses` were negative: a one-slot (d, lowest loose) header cache
+and per-node loose-variable bitsets (see "What is still superlinear").
 
 *The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
 32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
