@@ -11,8 +11,11 @@ foreach ($i in 1..$pairs) {
         if ($newexe) { if ($tag -eq 'new') { $x = $newexe } }
         elseif ($tag -eq 'new') { Set-Item "env:$var" $val } else { Remove-Item "env:$var" -EA 0 }
         $p = Start-Process -FilePath $x -ArgumentList 'search::proof_cost_split', '--exact', '--ignored', '--nocapture' -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+        # Holding the handle keeps the exited process's CPU time readable; without it TotalProcessorTime can come back empty.
+        $null = $p.Handle
         $p.PriorityClass = 'BelowNormal'; $p.ProcessorAffinity = 0xFFF
         $p.WaitForExit()
+        if ($null -eq $p.TotalProcessorTime) { throw "$i $tag`: CPU time unreadable" }
         $cost = (Select-String -Path $out -Pattern 'COST rule-proofs' | Select-Object -First 1).Line -replace '.*(build=\S+ check=\S+).*', '$1'
         "{0} {1} cpu={2:0.00}s {3}" -f $i, $tag, $p.TotalProcessorTime.TotalSeconds, $cost
     }
