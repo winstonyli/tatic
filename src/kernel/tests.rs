@@ -882,6 +882,31 @@ fn infer_memo_skips_unused_inner_binders() {
     assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
 }
 
+/// `f a ... a` with 1,000 arguments, `f : Π x_1 .. x_1000 : A. Id(A, s, s)`, `s = g x_1 .. x_1000`.
+/// The codomain mentions every binder, so typing one argument at a time copied the rest of the
+/// telescope and of `s` at each, about a million nodes (0.64 s in release, 4.6 s in debug); the
+/// spine at once copies them once (under 5 ms).
+#[test]
+fn infer_types_an_application_spine_at_once() {
+    let k = 1000;
+    let mut p = Postulates::new();
+    let a_ty = p.push(sort(0));
+    let a = p.push(p.get(a_ty));
+    let g = p.push((0..k).fold(p.get(a_ty), |t, _| pi(p.get(a_ty), t)));
+    let s = (0..k).fold(p.get(g), |s, j| app(s, var(k - 1 - j)));
+    let mut f_ty = id(p.get(a_ty), s.clone(), s);
+    for _ in 0..k {
+        f_ty = pi(p.get(a_ty), f_ty);
+    }
+    let f = p.push(f_ty);
+    let e = (0..k).fold(p.get(f), |e, _| app(e, p.get(a)));
+    let s_a = (0..k).fold(p.get(g), |s, _| app(s, p.get(a)));
+    let t = std::time::Instant::now();
+    assert_eq!(p.infer(&e), Ok(id(p.get(a_ty), s_a.clone(), s_a)));
+    let took = t.elapsed();
+    assert!(took < std::time::Duration::from_millis(100), "took {took:?}");
+}
+
 /// One node shared under two different binder types has two types.
 /// `Pi(Type0, Pi(x, Type0))` is well-typed, `Pi(Type0 -> Type0,
 /// Pi(x, Type0))` isn't (`x` is then a function, not a type), and

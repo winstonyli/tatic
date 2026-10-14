@@ -2580,12 +2580,34 @@ fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e:
             let tbody = tbody?;
             Ok(pi((**a).clone(), tbody))
         }
-        Expr::App(f, a) => {
-            let (dom, cod) = expect_pi(&infer_rc(g, ic, ctx, cid, f)?)?;
-            check_rc(g, ic, ctx, cid, a, &dom)?;
+        Expr::App(..) => {
+            // The whole spine `h a1 ... ak` at once, as `beta_spine` does for reduction: each domain
+            // is instantiated with the arguments before it and the last codomain once with all of
+            // them, instead of one `subst_top` per argument, each copying the rest of the telescope.
+            // A codomain that is not syntactically a Pi takes the pending arguments first, then whnf.
+            let mut args = vec![];
+            let mut head = e;
+            while let Expr::App(f, a) = &**head {
+                args.push(a);
+                head = f;
+            }
+            args.reverse();
+            let mut ty = infer_rc(g, ic, ctx, cid, head)?;
+            let mut pending: Vec<&Rc<Expr>> = vec![];
+            for a in args {
+                if !matches!(ty, Expr::Pi(..)) && !pending.is_empty() {
+                    ty = instantiate_n(&ty, &pending, 0);
+                    pending.clear();
+                }
+                let (dom, cod) = expect_pi(&ty)?;
+                let dom = if pending.is_empty() { dom } else { instantiate_n(&dom, &pending, 0) };
+                check_rc(g, ic, ctx, cid, a, &dom)?;
+                pending.push(a);
+                ty = cod;
+            }
             #[cfg(feature = "record-defeq")]
             let _g = site(2);
-            Ok(subst_top(&cod, a))
+            Ok(instantiate_n(&ty, &pending, 0))
         }
         Expr::Id(a, x, y) => {
             let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;

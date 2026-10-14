@@ -2347,7 +2347,7 @@ walks follow `inst_rec`'s own work, which is keyed by (node, depth): instantiati
 under is the quadratic part, not the cache in front of it. A key that doesn't depend on depth (each node's set of loose
 variables, computed once) would answer both queries without walking.
 
-Two prototypes followed (both in a throwaway worktree, reverted; the second is kept as a patch to land). Both were
+Two prototypes followed, both in a throwaway worktree; the second has since landed (below). Both were
 timed with the probe above against 75e9ece, alternating runs, machine at 12-14% CPU, Defender real-time protection off.
 - *Loose-variable bitsets, negative.* The node table mapped each node to a bitset of its loose variables, built once
   from its children. `uses` and `lowest_loose` became bit scans while the table is on. Repeat checks got faster (rule 33
@@ -2366,6 +2366,10 @@ timed with the probe above against 75e9ece, alternating runs, machine at 12-14% 
   - Kernel (368) and church_bv (75) tests pass.
 
   Rule 33's first check still grows about 2.3 times from n=32 to 64.
+
+  Landed as the prototype was, in `infer_node`'s `App` case; the per-argument path is gone. Check:
+  `infer_types_an_application_spine_at_once`, `f a .. a` with 1,000 arguments against a telescope whose codomain
+  mentions every binder. It takes under 5 ms, against 0.64 s in release and 4.6 s in debug with the per-argument path.
 
 *Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
 as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule
