@@ -2345,8 +2345,27 @@ It made repeats faster (0.43 to 0.25 s at n=64) but the first check slower (1.41
 thrashes between the memo key's depth-0 queries and `inst_rec`'s other depths, and repeat walks stayed at about 9M. Those
 walks follow `inst_rec`'s own work, which is keyed by (node, depth): instantiating a shared node at each depth it occurs
 under is the quadratic part, not the cache in front of it. A key that doesn't depend on depth (each node's set of loose
-variables, computed once) would answer both queries without walking. It would cost up to about 6n bits per node and
-has not been tried.
+variables, computed once) would answer both queries without walking.
+
+Two prototypes followed (both in a throwaway worktree, reverted; the second is kept as a patch to land). Both were
+timed with the probe above against 75e9ece, alternating runs, machine at 12-14% CPU, Defender real-time protection off.
+- *Loose-variable bitsets, negative.* The node table mapped each node to a bitset of its loose variables, built once
+  from its children. `uses` and `lowest_loose` became bit scans while the table is on. Repeat checks got faster (rule 33
+  at n=64: 0.40 to 0.30 s) but first checks did not (1.17-1.27 to 1.30-1.34 s), and the process's CPU rose from 5.0 to
+  5.3 s. The `uses` walks were not what made the first check slow.
+- *Inferring an application spine at once, positive.* A samply profile of the first check alone (rule 33, n=64) has
+  `hc::intern` at 17.4%, `inst_rec` at 17.2%, `uses` at 10.4%, the scope's drop at 10.3% and `shift_child` at 8.1%,
+  with `infer_rc` at about 3%: instantiation, not inference. (Stacks are cut at `stacker::grow`, so callers above it
+  can't be attributed.) `infer` typed `App(f, a)` as `subst_top(cod, a)`, so a spine `f a1 .. ak` copied the rest of
+  `f`'s telescope once per argument. The prototype walks the spine, instantiates each domain with the arguments before
+  it, and instantiates the codomain once with all of them (`instantiate_n`). If a codomain is not syntactically a Pi,
+  it first instantiates the pending arguments and takes its weak head normal form. Results:
+  - Rule 33 at n=64, first check: 1.39-1.41 to 0.78-0.87 s; rule 0 at n=64: 0.25-0.28 to 0.14-0.17 s.
+  - The probe process's CPU: 5.7 to 4.1-4.3 s.
+  - `proof_cost_split`: 6 of 6 alternating pairs won, check 500-570 to 339-385 ms, median CPU 4.16 to 3.95 s.
+  - Kernel (368) and church_bv (75) tests pass.
+
+  Rule 33's first check still grows about 2.3 times from n=32 to 64.
 
 *Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
 as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule

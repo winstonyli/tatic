@@ -89,6 +89,7 @@ and libraries (43 MB) were not kept.
 | (no rows) | rule laws 0 and 33 checked alone at n=8-64 (probe, reverted, no patch kept) and `proof_cost_split` CPU, b97a4de against the memo keyed from the lowest loose variable | `cpu_ab.ps1` | "Why checking a law slowed faster than it grew" |
 | (no rows) | samply profile of rule 33's law at n=64 on 1b1e664 (profile not kept), counts of `lowest_loose` entries and `uses` walks, and the one-slot prototype (all reverted, no patch kept) | `prof_self.py`, `prof_callers.py` | "What is still superlinear" |
 | (no rows) | `proof_cost_split` CPU and COST lines, 1b1e664 against every law through `shared_lemma` | `cpu_ab.ps1` | "Every law by name" |
+| (no rows) | rule laws 0 and 33 and `proof_cost_split` at 75e9ece against two kernel prototypes (loose-variable bitsets; spine-at-once `App` inference), and a samply profile of rule 33's first check (profile not kept), all reverted | `cpu_ab.ps1`, `prof_self.py`, `prof_callers.py` | "What is still superlinear" |
 | `lsp_A`, `lsp_B` | 84072cd + a temporary `LEMMA_SWEEP` switch (reverted, no patch kept), with (A) and without (B) it; `own pooled` on one set of salt-1 libraries | `lemma_sweep_probe.sh` | "A lemma file shared by a whole sweep" |
 | `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |
