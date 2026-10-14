@@ -1622,6 +1622,34 @@ probe weighting each `inst_rec` result (new or found) by the work below it and c
 read by the checker in the same scope; reopen only if it is over about 15% of busy samples, and then prototype B
 behind a feature with `kernel_soundness_fuzz` and the scoped `instantiate_n` test as the checks.
 
+**What `conv` reduces, and the type checker's own substitution (probe, reverted, no patch kept, 2026-10-13).** The
+profile at 8334948, by caller: `whnf_rc`'s 35.0% of busy samples is all `check_rc` -> `def_eq` -> `conv_rc` (34.0%
+through `def_eq` from `check_rc`, 1.5% through `same_shape`), and 34.1 of `beta_spine`'s 44.3 points are inside it, so
+the two leads above are mostly one cost. The other `instantiate_n` caller is `infer_node`'s `App` rule (`subst_top(cod,
+a)`, 8.4%). One `proof_cost_split` cmp3d own run at a73c6a1 with thread-local counters (`inst_rec` and `shift_via`
+visits; each pair `conv` or `conv_rc` reduces, classed by which side `whnf` changed; the `App` rule's calls):
+
+| Pairs reaching `whnf` | Pairs | `inst_rec` visits in their `whnf` |
+|---|---|---|
+| all (`conv` at the top: inferred against expected) | 113 k | 1.81 M |
+| all (`conv_rc`, below the top) | 327 k | 8.16 M |
+| only the first side reduces | 52 k | 0.16 M |
+| only the second side reduces | 83 k | 0.95 M |
+| both sides reduce | 148 k | 8.86 M (89%) |
+| neither reduces | 157 k | 0 |
+| same head (pointer or `==`) and arity | 20 k | 0.68 M (7%) |
+| ... arguments pairwise convertible | 8 k | 0.20 M (2%) |
+
+Comparing heads before reducing does not pay: same-head pairs carry 7% of the reduction work, the argument check
+succeeds for under half of them, saving 0.20 M visits, and the argument checks themselves cost 1.17 M visits. Not built.
+The work is in pairs where both sides are redexes with different heads.
+
+The `App` rule: 1.27 M calls, all with the table on. In 1.05 M (83%) `cod` is closed and comes back as is; in 142 k it
+has loose variables but not `Var(0)`, so it is only shifted (0.28 M shift visits); the rest use the argument. In all,
+0.65 M `inst_rec` visits and 0.44 M shift visits, against about 10 M under `conv`'s reductions. 0.87 M of the calls
+(69%) are on an `App` spine, but substituting a spine's arguments at once could only save the repeated walks of the
+non-closed codomains, a small part of the 8.4%. Not built.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
