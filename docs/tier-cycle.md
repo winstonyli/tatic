@@ -2451,10 +2451,33 @@ fresh scope (same machine state: Defender real-time protection off, 4-5% CPU, pi
 Rule 0 is the same: everything is flat except `uses`, at 0.63 nodes walked per entry at n=8 and 4.14 at n=64. Stack-segment
 switches are 1 per check at every n. So the only work per entry that grows with n is the `uses` walks: they grow about
 linearly per entry, and so quadratically in total. Each node's header slot keeps one (d, m) answer, and a node gets asked
-at more (d, m) pairs as n grows. Pricing them: `uses` was 5% of samples at n=64 in the earlier profile (before the spine change), about 0.03 µs per
-entry, against a rise of about 0.23 µs. Table size is at most about 0.12 µs of it (above), which leaves about 0.08 µs not
-accounted for by any count here. Both earlier fixes for `uses` were negative: a one-slot (d, lowest loose) header cache
+at more (d, m) pairs as n grows. Both earlier fixes for `uses` were negative: a one-slot (d, lowest loose) header cache
 and per-node loose-variable bitsets (see "What is still superlinear").
+
+*The rise, priced by a profile diff.* Two samply profiles on c19808a (profiles not kept) recorded the same law check
+repeated in fresh scopes: 120 checks at n=8 and 10 at n=64, each after one warm-up check. Each run printed wall-clock
+marks around its repeated checks; `scripts/prof_diff.py` keeps only the samples between the marks and divides each
+function's self time by the new table entries (154,275 and 1,185,460 per check). Busy time per entry was 240 ns at n=8
+and 491 ns at n=64. The rise of 251 ns:
+
+| self ns per entry | n=8 | n=64 | rise |
+|---|---|---|---|
+| `TABLE.with` bodies (the inlined node-table and memo probes) | 57 | 123 | +66 |
+| `hc::uses` and its closure | 15 | 75 | +61 |
+| `hc::lowest_loose` | 29 | 72 | +43 |
+| `reserve_rehash` (table growth) | 19 | 29 | +10 |
+| `infer_rc` | 11 | 21 | +10 |
+| everything else, each +5 or less | | | +61 |
+
+The earlier guess priced `uses` at about 0.03 µs from a profile taken before the spine change; it is 0.06 µs now.
+`lowest_loose` rises without doing more: a third probe (reverted, no patch kept) counted 1.32 memo lookups per entry
+at n=8 and 1.37 at n=64, and the walks are flat (above). What grows is its memo (`InferCache::lows`, one per check):
+66k entries on average at a lookup at n=8, 515k at n=64. That is the table-size effect again, in a map the fill
+probe above did not fill (its memo is per check). So the rise splits about evenly:
+- **Size:** larger maps, with the same lookups per entry, cost about 120 ns: the node table and memos, `lows`, and rehashing.
+- **More work:** the `uses` walks cost about 60 ns.
+- **Spread out:** about 60 ns is spread thinly across the rest.
+
 
 *The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
 32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held

@@ -94,6 +94,7 @@ and libraries (43 MB) were not kept.
 | (no rows) | node-table entries, lookups and scope-drop time per law check, rules 0 and 33 at n=8-64 on 305a95f (probe reverted, no patch kept) | | "The work is linear; each operation slows", "The scope's drop" |
 | (no rows) | rules 0 and 33: the n=8 law check in a fresh scope against one after the n=64 build and check, 3 rounds, on 67c1301 (probe reverted, no patch kept) | | "Table size alone" |
 | (no rows) | rules 0 and 33: per-entry counts of `intern`, `inst_rec`, argument sets, `lowest_loose` and `uses` work in one law check at n=8-64, on c9cdd44 (probe reverted, no patch kept) | | "What else grows per entry" |
+| (no rows) | samply profiles of rule 33's law check, 120 at n=8 and 10 at n=64 in fresh scopes, on c19808a (profiles not kept), and counts of `lowest_loose` memo lookups (probe reverted, no patch kept) | `prof_diff.py` | "The rise, priced by a profile diff" |
 | `lsp_A`, `lsp_B` | 84072cd + a temporary `LEMMA_SWEEP` switch (reverted, no patch kept), with (A) and without (B) it; `own pooled` on one set of salt-1 libraries | `lemma_sweep_probe.sh` | "A lemma file shared by a whole sweep" |
 | `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |
