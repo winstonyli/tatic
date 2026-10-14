@@ -2422,7 +2422,19 @@ the 1.19M nodes `prove_rule` built first. Rule 0 takes 2-14 ms. It is a linear c
 - *Allocate a scope's nodes in an arena and free them in bulk.* This needs every node that outlives the scope to be copied out, a larger change to `Rc`.
 - *Free on another thread.* Not possible as is: the kernel's `Rc` is not `Send`.
 
-Whether the miner's checks (`proof_cost_split`) already share one scope, and so what the drop costs there, was not checked.
+*Where the miner's drops fall* (read from `search.rs`, not timed). The table and its depth are thread-local
+(`hc::TABLE`, `hc::DEPTH`), so a scope on the main thread does not cover a worker thread: each worker's first scope
+is outermost there, and dropping it frees that worker's table.
+- `proof_cost_split` is single-threaded under one `InternScope`, so its checks already share one table and it drops once per run. It is the "keep the table" option already, without a bound.
+- `rule_miner`'s main-thread scope covers only main-thread work. Its proofs and scores run on workers, each with its own table:
+  - eager proving: one scope per worker per batch of candidates;
+  - scoring: one per worker per round;
+  - each round's winner (`prove_any`): one thread and one scope per rule, so one table and one drop per rule proof.
+
+  The winner's proof runs beside the main thread's search, so its drop is off the main path but still uses a core.
+- Separately, under the driver (`LEMMA_CACHE=<file>`, set by `driver::run_loop`), `shared_lemma` reads statements that an earlier process of the same build recorded, so a loop's later processes skip those checks (unless `LEMMA_RECHECK=1`).
+
+So keeping a table across checks would change only `rule_miner`'s per-rule threads, and those would need a long-lived prover thread to hold it.
 
 *Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
 as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule
