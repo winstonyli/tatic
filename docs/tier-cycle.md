@@ -2412,8 +2412,27 @@ Rule 0 is the same: everything doubles per doubling of n. Head normal forms are 
 So the distinct reduction results and the lookups grow linearly, and what grows faster is the time per operation:
 about 0.5 µs per `intern` call at n=8 and 0.9 µs at n=64, for both rules. Part of that is the `uses` walks, which grow
 3.6-3.9 times per doubling (measured before the spine change) and are 5% of samples at n=64 (13% with `lowest_loose`). The rest is presumably
-memory: at n=64 the tables hold over a million entries, well past the 16 MB L3. That part was not measured
-separately (for example, with hardware cache-miss counters).
+memory: at n=64 the tables hold over a million entries, well past the 16 MB L3.
+
+*Table size alone.* Hardware cache-miss counters are not available to a session here: AMD uProf is not installed, and
+xperf's PMC sources need an elevated kernel trace. Instead, a probe (reverted, no patch kept) checked a law at
+n=8 twice: in a fresh scope, and in a scope that had just built and checked the n=64 law. For rule 33 the n=64 work left 507k
+nodes, 306k instantiations and 327k shifts in the table. The n=8 check makes about 154k new entries in a fresh scope, counting
+the input that `check_in` interns, and 147k after n=64, which shares a few nodes with it. The filled check does slightly less
+work, so its extra time comes from the size of the table and heap. Three
+rounds per rule, Defender real-time protection off, machine at 4-6% CPU, pinned to 12 cores at below-normal priority:
+
+| µs per new table entry | n=8, fresh scope | n=8, after n=64 | n=64, fresh scope |
+|---|---|---|---|
+| rule 33 | 0.33-0.39 (51-61 ms) | 0.45-0.54 (66-79 ms) | 0.57-0.71 |
+| rule 0 | 0.20-0.42 (8-17 ms) | 0.36-0.46 (14-17 ms) | 0.44-0.59 |
+
+The large table alone makes each entry 1.3-1.5 times slower. That accounts for about 40% of rule 33's rise from
+n=8 to n=64, and most of rule 0's. Rule 0's times are small and noisy, and its fill (127k nodes) is a quarter of rule 33's.
+It is an upper bound: the filled n=8 check runs against the table at the size the n=64 check reaches only at its end.
+This shows that size slows each entry. It does not show which mechanism does it: cache misses on the table and the nodes,
+longer probe sequences, or a scattered heap all fit. The rest of rule 33's rise grows with n itself, not with the
+table, presumably larger nodes to hash and compare (wider spines and argument sets) and the `uses` walks above; not measured.
 
 *The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
 32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
