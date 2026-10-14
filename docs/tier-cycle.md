@@ -2567,7 +2567,7 @@ Its shortcomings there, with mitigations:
 - **Copy-out is eager**, with a twin map. A persisted node reads as its region twin until the region closes, so equality stays an id compare and a `PExpr`'s hash never changes.
 - **One interning rule:** a node over persistent children looks in the persistent space first.
 - **The checking entries are `scoped`**, so a check outside a region frees its transients.
-- **Stage 1 is a trace replay** of rule 33's table and memo traffic in three layouts: today's; ids; and a hybrid of `Rc` nodes with dense u32 memo keys, which shrinks the maps without the port.
+- **Stage 1, built first (decided 2026-10-14), is a trace replay** of rule 33's table and memo traffic in three layouts: today's; ids; and a hybrid of `Rc` nodes with dense u32 memo keys, which shrinks the maps without the port.
   - It is a one-sided filter: a loss stops the port.
   - Its gate is re-profiled on large pages first.
 
