@@ -258,6 +258,31 @@ fn whnf_memo_outlives_one_def_eq_in_a_scope() {
     assert_eq!(hc::whnf_get(&x).as_deref(), Some(&var(7)));
 }
 
+/// A closed function value applied at several places to different arguments is reduced once:
+/// `b(i+1) = \C x y. b(i) C (b(i) C y x) (b(i) C x y)`, with `b(i)` one shared node, calls `b(i)`
+/// twice per level, so reducing `b(30)` as a tree takes 2^30 steps (outside a scope and inside one).
+#[test]
+fn closed_function_values_are_reduced_once() {
+    const DEPTH: usize = 30;
+    let tt = lam(sort(0), lam(var(0), lam(var(1), var(1))));
+    let ff = lam(sort(0), lam(var(0), lam(var(1), var(0))));
+    let build = || {
+        let mut b = Rc::new(tt.clone());
+        for _ in 0..DEPTH {
+            // `b C p q`, keeping `b` the shared node
+            let call = |p: Expr, q: Expr| Expr::App(Rc::new(Expr::App(Rc::new(Expr::App(b.clone(), Rc::new(var(2)))), Rc::new(p))), Rc::new(q));
+            let body = call(call(var(0), var(1)), call(var(1), var(0)));
+            b = Rc::new(lam(sort(0), lam(var(0), lam(var(1), body))));
+        }
+        b
+    };
+    // b(i) is ff for every i >= 1
+    assert!(def_eq(&build(), &ff) && !def_eq(&build(), &tt));
+    let _scope = InternScope::enter();
+    hc::activate();
+    assert!(def_eq(&build(), &ff) && !def_eq(&build(), &tt));
+}
+
 /// `cong_n` outside an interning scope still shares its shifted copies of `f`: with `f` a DAG of
 /// `d(k+1) = v1 d(k) d(k)` over a loose variable, a copy shifted as a tree would have 2^20 nodes.
 #[test]

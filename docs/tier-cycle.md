@@ -2094,7 +2094,8 @@ These concrete checks hit a reduction wall below n=48:
 
 The time grows about n^3.5-4 up to n=40, then memory blows up. This is the same unsharing of ripple-carry terms
 that stalled the full-normalize printer. It is a limit of evaluating concrete words by kernel reduction. It is not a
-limit of the laws: the laws and the rule transfer stay at n=64.
+limit of the laws: the laws and the rule transfer stay at n=64. (Lifted by a kernel change the same day; see
+"Closed function values are reduced once" below. Countdown at n=64 now takes 15 ms.)
 
 Machine load: 51% CPU before the rule runs and 24% after them; Defender real-time protection off.
 
@@ -2168,6 +2169,73 @@ Not shown: an invariant across an `if`. With `Q` in Sort0, the step must case-sp
 That should be derivable, but this is unverified: for any bit with a `GoodBool` witness, eliminate at the motive
 `\b. GoodBool0 b`, which is a Sort1 type, as `lift_good` does. The witness for a compare's output bit is not built
 here.
+
+**Closed function values are reduced once (kernel change, kept, 2026-10-14).** The n=48 wall above was unsharing
+in `whnf`. A word's bit is a shared node such as `s = xor_ a b`, and each use applies it to its own continuations
+(`s C X Y`). The whnf memos are keyed by node, and every application is a new node, so they never hit. `beta_spine`
+also peeled past `s` to the gate constant at the bottom of the spine, so `s` was never a key either. Each bit was
+evaluated again once per path that reached it. `sub` chains grew about 0.7n-fold per level (n=16: 1.5, 9.9, 69 and
+407 ms at depth 1-4).
+
+The mechanism is in `src/kernel.rs`:
+- `closed_prefix_spine` runs first for every `App` in `whnf_step`. It finds the longest proper prefix `P` of the
+  spine with no loose variable, with `d` arguments left over.
+- `hnf_rc(P, d)` is `P`'s head normal form to depth `d`: its whnf, then the body's whnf under each of up to `d`
+  lambdas.
+- The result is instantiated with the `d` arguments by `instantiate_n` and reduced on.
+- `hnf_rc` is memoised by `(P, d)`, in the scope's `hc` table while it is on, else in the per-call
+  `ReductionCache`. An application recurses on its function at depth `d + 1`, so `s` gets an entry at depth 3
+  whichever prefix of `s C X Y` was asked for.
+- Head reduction commutes with substitution, so this does no more reduction than the application would have done.
+
+Check: `closed_function_values_are_reduced_once` (`src/kernel/tests.rs`). It builds
+`b(i+1) = \C x y. b(i) C (b(i) C y x) (b(i) C x y)` to depth 30, both outside a scope and inside one. With
+`closed_prefix_spine` disabled, depth 20 took 9.6 s for one `def_eq`, doubling per level. With it, the whole test
+reports 0.00 s.
+
+Results (machine at 15-46% CPU from other sessions, about 60% for the n=16 "before" row; Defender real-time
+protection off):
+
+| `sub^d(7) = 7-d` (`reduction_probe`, reverted) | before | after |
+|---|---|---|
+| n=16, d = 1, 2, 3, 4 | 1.5, 9.9, 69, 407 ms | 0.57, 0.27, 0.31, 0.38 ms |
+| n=64, d = 1, 2, 3 | 17.5, 818 ms, over 4 GB | 1.7, 1.5, 1.6 ms (d = 4-6: 1.8-2.2 ms) |
+
+| countdown from 3, fuel 4 (`control_flow_probe`, reverted) | n=16 | 32 | 48 | 64 |
+|---|---|---|---|---|
+| before (table above) | 0.24 s | 3.5 s | over 4 GB | over 4 GB |
+| after | 2.7 ms | 8.0 ms | 9.2 ms | 14.8 ms |
+
+Every concrete answer and every control in that probe came out as expected at n = 16, 32, 48 and 64. Rule transfer
+on a regenerated 27-rule cmp3d ref library came out as before:
+- 24 of 24 at n=4 in 0.84 s;
+- 24 of 24 at n=64 in 30.6 s (27.7 s before, under other load; not an A/B);
+- the NEG control 0 of 24 at n=4.
+
+The NEG control at n=64 still went over 4 GB. Its words are symbolic: the bits are variables bound under the
+probe's binders, so no prefix is closed.
+
+`proof_cost_split` (cmp3d, 37-rule own library, 300 laws, `cpu_ab.ps1`, own CPU, 10 alternating pairs against
+85daf95):
+- new won all 10 pairs; best 4.19 against 5.16 s; median pair -1.15 s;
+- summed rule-proof build time 27.9 against 40.6 s, and kernel check 6.5 against 6.0 s;
+- an earlier build without the stuck-spine shortcut won 8 of 8 pairs;
+- law counts, node counts and occurrences identical;
+- peak working set about 654 against 607 MB.
+
+`loop_stream` (ref, cmp3d) wrote identical rules, laws and `m.tsv`. The kernel lib tests (366) and church_bv's
+tests (75) pass.
+
+Tried and dropped: keying every prefix, open ones too, behind a throwaway switch. It was slower everywhere:
+countdown at n=64 took 155-194 ms, and rule transfer at n=64 took 51.8 s. The n=64 NEG control still went over
+4 GB. So that wall is not this unsharing; where it lies was not traced. `cpu_ab.ps1` reads
+`cmp3d_own_rules.txt` next to itself, but that file is not committed. Salt 1's
+`own_cmp3d_3_cmp3d/rules.txt` from a `cts_*` sweep (37 rules) was copied in for this run.
+
+Related, from memory and not re-checked: this is full laziness (sharing maximal free expressions, as in
+Peyton Jones's "The Implementation of Functional Programming Languages", 1987) applied to the spine prefixes the
+reducer meets, rather than by lambda lifting ahead of time. Rocq's `Zupdate` (section 77 of `RELATED_WORK.md`)
+shares an evaluated closure in a similar way.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's

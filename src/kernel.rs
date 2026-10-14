@@ -849,6 +849,8 @@ mod hc {
         /// Node -> its weak head normal form. `whnf` reads no context, so its answer holds for the
         /// whole scope, across `def_eq` calls (doc section "Why the table lookups stay").
         whnf: PtrMap<usize, Rc<Expr>>,
+        /// (closed node, depth) -> its head normal form to that depth; see `hnf_rc`.
+        hnf: PtrMap<(usize, u32), Rc<Expr>>,
         /// Argument sets of two or more nodes, by their node pointers.
         arg_sets: PtrMap<Vec<usize>, u64>,
         /// The memos' non-canonical source nodes, kept alive to the scope's end (canonical ones live
@@ -865,6 +867,7 @@ mod hc {
                 inst: PtrMap::with_hasher(H),
                 shifts: PtrMap::with_hasher(H),
                 whnf: PtrMap::with_hasher(H),
+                hnf: PtrMap::with_hasher(H),
                 arg_sets: PtrMap::with_hasher(H),
                 keep: Vec::new(),
             }
@@ -1251,6 +1254,18 @@ mod hc {
         });
     }
 
+    pub fn hnf_get(x: &Rc<Expr>, d: u32) -> Option<Rc<Expr>> {
+        TABLE.with(|t| t.borrow().hnf.get(&(Rc::as_ptr(x) as usize, d)).cloned())
+    }
+
+    pub fn hnf_put(x: &Rc<Expr>, d: u32, r: &Rc<Expr>) {
+        TABLE.with(|t| {
+            let mut t = t.borrow_mut();
+            pin(&mut t, x);
+            t.hnf.insert((Rc::as_ptr(x) as usize, d), r.clone());
+        });
+    }
+
     pub fn shift_get(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Option<Rc<Expr>> {
         if !active() {
             return None;
@@ -1530,6 +1545,7 @@ fn free_escaped(l: u32) -> String {
 struct ReductionCache {
     whnf: PtrMap<PtrKey, Rc<Expr>>,
     nf: PtrMap<PtrKey, Expr>,
+    hnf: PtrMap<(PtrKey, u32), Rc<Expr>>,
     /// Pairs `def_eq` found syntactically unequal; see [`eq_noting`].
     unequal: PtrSet<(PtrKey, PtrKey)>,
 }
@@ -1767,6 +1783,99 @@ fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     Some(whnf_impl(&r, cache))
 }
 
+/// `whnf_step` for a spine `P a1 ... ad` whose longest proper prefix `P` with no loose variable
+/// reduces to a lambda: `P`'s head normal form to depth `d` (`hnf_rc`) is instantiated with the
+/// arguments. A closed function value used at several places with different arguments -- a Church
+/// boolean `xor_ a b` applied to each use's own continuations -- is then reduced once, not once per
+/// use, since the memo is keyed by `P`, not by the whole application. `None` when there is no such
+/// prefix or it does not reduce to a lambda.
+fn closed_prefix_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
+    let mut args: Vec<&Rc<Expr>> = Vec::new();
+    let mut spine = e;
+    let p = loop {
+        let Expr::App(g, b) = spine else { return None };
+        args.push(b);
+        if g.loose() == 0 {
+            break g;
+        }
+        spine = g;
+    };
+    args.reverse();
+    let h = hnf_rc(p, args.len() as u32, cache);
+    let mut body: &Expr = &h;
+    let mut taken = 0;
+    while taken < args.len()
+        && let Expr::Lam(_, inner) = body
+    {
+        body = inner;
+        taken += 1;
+    }
+    if taken == 0 {
+        return None;
+    }
+    #[cfg(feature = "record-defeq")]
+    BETAS.with(|c| c.set(c.get() + taken as u64));
+    let mut r = instantiate_n(body, &args[..taken], 0);
+    for a in &args[taken..] {
+        r = Expr::App(Rc::new(r), (*a).clone());
+    }
+    Some(whnf_impl(&r, cache))
+}
+
+/// Head normal form of `p` to depth `d`: its whnf, and while that is a lambda (at most `d` deep),
+/// the body's whnf under it. Applying the result to `d` arguments and reducing does no more work
+/// than reducing `p a1 ... ad` would (head reduction commutes with substitution), and the work done
+/// here is shared by every application of `p`. Memoised by `(p, d)`: in the scope's table while it
+/// is on, else in `cache`. An application recurses on its function at depth `d + 1`, so the memo
+/// also covers each shorter prefix of a spine.
+fn hnf_rc(p: &Rc<Expr>, d: u32, cache: &mut ReductionCache) -> Rc<Expr> {
+    let table = hc::generation() != 0;
+    if table {
+        if let Some(hit) = hc::hnf_get(p, d) {
+            return hit;
+        }
+    } else if let Some(hit) = cache.hnf.get(&(PtrKey(p.clone()), d)) {
+        return hit.clone();
+    }
+    let r = match &**p {
+        Expr::App(f, a) => {
+            let hf = hnf_rc(f, d + 1, cache);
+            match &*hf {
+                Expr::Lam(_, body) => {
+                    let x = subst_top(body, a);
+                    let w = whnf_step(&x, cache).map_or_else(|| Rc::new(x), Rc::new);
+                    under_lams(w, d, cache)
+                }
+                // `hf` is `f`'s whnf and not a lambda, so `hf a` is stuck.
+                _ if Rc::ptr_eq(&hf, f) => p.clone(),
+                _ => Rc::new(Expr::App(hf, a.clone())),
+            }
+        }
+        _ => under_lams(whnf_rc(p, cache), d, cache),
+    };
+    if table {
+        hc::hnf_put(p, d, &r);
+    } else {
+        cache.hnf.insert((PtrKey(p.clone()), d), r.clone());
+    }
+    r
+}
+
+/// `w` (in whnf) with the bodies of its first `d` nested lambdas reduced to whnf in turn.
+fn under_lams(w: Rc<Expr>, d: u32, cache: &mut ReductionCache) -> Rc<Expr> {
+    let Expr::Lam(a, b) = &*w else { return w };
+    if d == 0 {
+        return w;
+    }
+    let wb = whnf_step(b, cache).map_or_else(|| b.clone(), Rc::new);
+    let nb = under_lams(wb, d - 1, cache);
+    if Rc::ptr_eq(&nb, b) {
+        w
+    } else {
+        Rc::new(Expr::Lam(a.clone(), nb))
+    }
+}
+
 /// `whnf`, or `None` when `e` is already in weak head normal form. A stuck
 /// term keeps its allocations: its arguments' and also its stuck head's or
 /// target's. `ReductionCache` is keyed by pointer, so a copy misses it,
@@ -1777,6 +1886,9 @@ fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     let _hc_guard = hc_probe::whnf_enter(e);
     grow(|| match e {
         Expr::App(f, a) => {
+            if let Some(r) = closed_prefix_spine(e, cache) {
+                return Some(r);
+            }
             if matches!(&**f, Expr::App(..))
                 && let Some(r) = beta_spine(e, cache)
             {
