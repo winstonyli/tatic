@@ -53,6 +53,8 @@ and libraries (43 MB) were not kept.
 | `lws_head_*`, `lws_new_*` | 8cd8dfa against the instantiation memo skipping nodes of height ≤ 2, one run at a time | `low_seq.sh` | "Small nodes skip the instantiation memo" |
 | `pss_head_*`, `pss_new_*` | 6cd8948 against the node table as a set of node pointers with their hashes, one run at a time | `pset_seq.sh` | "The node table holds node pointers with their hashes" |
 | `sls_head_*`, `sls_new_*` | 9fab09a against the memos storing only their results, one run at a time | `slim_seq.sh` | "The memos store only their results" |
+| `s2_old_*`, `s2_new_*`, `s2_cv_1` | 4769775 against the branch `id-arena-stage2` (`PExpr`, `persist`, `scoped` and `Escape` on today's nodes), one run at a time; then the branch built with `--features copy-volume`, salt 1, whose children print `COPYVOL` | `stage2_seq.sh` | "Id arena Stage 2" |
+| (no rows) | `proof_cost_split`, 4769775 against `id-arena-stage2`, 8 alternating pairs; and once on the `copy-volume` build for its `COPYVOL` line | `cpu_ab.ps1` | "Id arena Stage 2" |
 | (no rows) | `lowest_loose` counters (calls, gets and hits by depth, `lows` size) for one check of rule 33's law at n=8-64, with and without skipping the memo for `hc::low` nodes, on 77fe8a9 (probe reverted, no patch kept) | | "What `lows` does per call" |
 | (no rows) | samply profiles of rule 33's law check, 120 at n=8 and 10 at n=64 in fresh scopes, on ded1a96 at load 33–36% (probe reverted, profiles not kept) | `prof_diff.py` | "The rise after the bounds memo" |
 | `bnd_old_*`, `bnd_new_*` | 981540b against 1bb3a5c (`uses`' slot in front of per-scope (node, d) bounds), one run at a time | `bounds_seq.sh` | "The slot in front of bounds" |

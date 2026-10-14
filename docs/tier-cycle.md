@@ -2622,7 +2622,7 @@ Its shortcomings there, with mitigations:
 - **The hybrid is not the cheaper end:** (c) is 7% (11%) below (a), about a third of (b)'s gain.
 - **The rise is unchanged.** (b) rises 173 ns from n=8 to n=64, as (a) does. In the replay, ids take a near-constant ~75 ns off each entry; the growth with n does not come from node or entry size.
 - **Not in the replay:** the `ReductionCache` (no traffic while the table is on), `context_of`, the reducer's own node reads (which understate (b)), and the port's own costs (which overstate it).
-- **Next, per the spec:** the narrower real prototype (`shift`, `instantiate`, `uses` and `lowest_loose` on ids, on a branch, timed against `main`). Not started.
+- **Next, per the spec:** the narrower real prototype (`shift`, `instantiate`, `uses` and `lowest_loose` on ids, on a branch, timed against `main`). **Dropped before it was built (2026-10-14):** callers use its results as `Rc` at once, so its boundary would build every new node twice. That cancels the intern and node-build gains, and the per-op costs below leave about zero net at n=64 (`lowest_loose` +20, memo get +15, memo put −26, `uses` −11 ns per entry). Stage 2 went first instead ("Id arena Stage 2" below).
 
 *Where the rise comes from (the same replay, 2026-10-14; reverted, no patch kept).* Cycles were charged to each trace op, one run at n=8 and n=64 per arm, with 3 reps and the quietest kept (the profiler adds its own cost, about equally per op). Top-level op counts per entry hardly change with n: memo gets 0.97 against 1.00, `uses` calls 0.52 against 0.53. So the rise is in what each op costs. ns per entry, n=8 → n=64:
 
@@ -2693,6 +2693,40 @@ Its shortcomings there, with mitigations:
 - `InferCache`'s `lows` stays as it is: it needs the exact minimum.
 - Sequential sweep pair (rows `bnd_*`, script `bounds_seq.sh`; CPU 24% at launch, RTP off): identical outputs on both salts (181 files each, lemma caches included; logs differ only in timings and their own paths). Walls 18 against 20 s (salt 1) and 19 against 18 s (salt 2).
 
+**Id arena Stage 2 (2026-10-14, adopted on branch `id-arena-stage2`).** The types the arena needs, on today's `Rc` nodes:
+- **`PExpr`** is a term kept past its scope. Only `persist` makes one, and it lends no `&Expr` (`get` hands out a clone), because an id cannot lend one.
+- **`kernel::scoped(f)` replaces `InternScope`** at its 79 sites. The call that opens the scope passes `f`'s result through `Escape`, which is `persist` on every term, before closing it. So returning a type that holds terms without an `Escape` impl fails to compile.
+- **The checking entries open their scope the same way,** without switching the table on: `def_eq`, `infer_in` and `check_in` use `hc::scoped(false, ..)`.
+- **Long-lived stores hold `PExpr`:** `Globals`, `Postulates`' parameters (`PARAMS` and `PRELUDE` keep a `Postulates`), `CLOSED`, `TREE_LAWS` and `PARAMS`' lemma proofs. `CONSTANTS` and `BODIES` stay `Expr`, since they are rebuilt per generation.
+- **Behaviour unchanged:** every suite passes with the base's counts (lib 371 = 370 + the new `scoped` test, church_bv 76).
+- **Sequential sweep pair** (rows `s2_*`, script `stage2_seq.sh`; CPU 24% at launch, RTP off): identical outputs on both salts. Logs differ only in timings and their own paths, and `mines.tsv`/`pooled_prefs.tsv` only in their seconds column. Walls are 22 against 21 s (salt 1) and 18 against 21 s (salt 2).
+- **Timing:** `proof_cost_split`, 8 alternating pairs against 4769775 (load 23%, RTP off). CPU median 3.98 → 3.94 s (new won 5 of 8), check median 370 → 363 ms. Within noise.
+- **What the copy-out would copy.** A feature `copy-volume` records each node's region (outermost scope) and gives every node `persist` reaches an id in a simulated persistent table, once per node. The counts:
+  - `copied`: nodes from the open region;
+  - `outside`: nodes built outside any region, persistent already in the arena;
+  - `stale`: nodes from an earlier region that were never persisted, which would be dead handles;
+  - `unique`: the table's size.
+
+  | workload | `persist` calls | copied | outside | stale | unique | interned (spec probe) |
+  |---|---|---|---|---|---|---|
+  | `proof_cost_split` | 1,712 | 493,753 | 0 | 0 | 494,561 | 2.98 M (0.49 M alive after) |
+  | salt-1 sweep, 125 children | 9,620 | 1,554,721 | 0 | 0 | 1,559,422 | 10.8 M (2.61 M alive after) |
+
+  - The copy-out is 17% of `proof_cost_split`'s interned nodes, and matches the 0.49 M the spec's probe found alive after the table drops.
+  - For the sweep it is 14%, below the 2.61 M alive after. So that live set also holds nodes no `persist` reaches, such as memo entries and terms dropped later.
+  - `stale` = 0: no converted store and no return keeps a region node unpersisted.
+  - Each of the 125 children printed one `COPYVOL` line, and the `copy-volume` build's sweep totals equal the default build's.
+- **The port's risk "an outermost `scoped` copies out large results"** is small on this workload. Copying 0.49 M nodes at about an intern's cost (50-90 ns per entry in Stage 1's replay) would be about 25-45 ms of `proof_cost_split`'s 3.9 s, about 1%. That is an estimate, not timed.
+- **Departures from the spec:**
+  - The counter counts by region, not generation: 19-21% of a scope's nodes never enter the table, but every node built in a region is a region node.
+  - `Postulates` holds `PExpr`, which the spec did not list.
+  - `NO_SCOPE` and the other A/B toggles stay as `if c { scoped(body) } else { body() }`; the port deletes them.
+  - An outermost `infer_in` (as in every `Postulates::push` outside a scope) persists the type it returns, since the arena copies it out too.
+- **Two plan misses fixed on the way:**
+  - `uses_slot_is_free_and_agrees_with_the_walk` asserts the 64-byte node as well, so it is off under `copy-volume`, like `a_node_is_64_bytes`.
+  - `kernel_soundness_fuzz`'s `to_globals` now takes the `Globals` its callers pass.
+- **Next:** the Stage 3 decision (the port). It rests on Stage 1's replay (ids 20% below today at n=64, 33% at n=8, the rise with n unchanged) and on this copy-out volume.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
@@ -2715,7 +2749,7 @@ the 1.19M nodes `prove_rule` built first. Rule 0 takes 2-14 ms. It is a linear c
 *Where the miner's drops fall* (read from `search.rs`, not timed). The table and its depth are thread-local
 (`hc::TABLE`, `hc::DEPTH`), so a scope on the main thread does not cover a worker thread: each worker's first scope
 is outermost there, and dropping it frees that worker's table.
-- `proof_cost_split` is single-threaded under one `InternScope`, so its checks already share one table and it drops once per run. It is the "keep the table" option already, without a bound.
+- `proof_cost_split` is single-threaded inside one `scoped` call, so its checks already share one table and it drops once per run. It is the "keep the table" option already, without a bound.
 - `rule_miner`'s main-thread scope covers only main-thread work. Its proofs and scores run on workers, each with its own table:
   - eager proving: one scope per worker per batch of candidates;
   - scoring: one per worker per round;
