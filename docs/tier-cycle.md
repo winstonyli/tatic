@@ -2371,6 +2371,32 @@ timed with the probe above against 75e9ece, alternating runs, machine at 12-14% 
   `infer_types_an_application_spine_at_once`, `f a .. a` with 1,000 arguments against a telescope whose codomain
   mentions every binder. It takes under 5 ms, against 0.64 s in release and 4.6 s in debug with the per-argument path.
 
+*After the spine change.* The laws checked alone (one run, machine at about 5% CPU, real-time protection off), first check / repeat:
+
+| | n=8 | n=16 | n=32 | n=64 |
+|---|---|---|---|---|
+| rule 0 | 20 / 11 ms | 24 / 15 ms | 60 / 35 ms | 187 / 101 ms |
+| rule 33 | 76 / 33 ms | 169 / 77 ms | 408 / 191 ms | 875 / 400 ms |
+
+Rule 33 still grows 2.1-2.4 times per doubling. A samply profile of its first check at n=64 (profile not kept) is still
+mostly instantiation:
+
+| self time | |
+|---|---|
+| `inst_rec` | 19.3% |
+| `hc::intern` | 15.3% |
+| the scope's drop | 12.7% |
+| `lowest_loose` | 7.9% |
+| `uses` | 4.9% |
+| `shift_child` | 4.8% |
+| `infer_rc` | 2.2% |
+| `prove_rule` (building the law, inclusive) | 11.8% |
+
+46% of samples are under `instantiate_n`, and the callers above it are attributable this time. Nearly all of it is reduction, not typing:
+`hnf_rc` 21.5% (15.5% from itself), `closed_prefix_spine` 13.6% and `beta_spine` 6.6%, all under `whnf_step`, against
+2.9% from `infer_node`. What is left is conversion evaluating the law's Church-encoded circuits (the closed-function
+head normal forms of e7d4347), and freeing what that allocates.
+
 *Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
 as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule
 laws are 280 assoc, 272 comm and 163 tree uses, with 6 distinct tree statements and no `Bitwise` or `Chain`. The checked
