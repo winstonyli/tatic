@@ -2530,6 +2530,23 @@ bulk-freed arena of `Rc` nodes, because 16% of a scope's nodes outlive it. The s
 Ranking by end state: 4, then 1, which presumably stays useful under 4 (its maps and nodes would still exceed the TLB's reach at large
 n), then 2 and 3. Only 1 is measured; it is additive and leaves no rework.
 
+*Against the directions in this file (reasoned, not measured).* Scheme 4 gains under most of them:
+- **Proofs about the target at n=64** (option B of "Formalizing the target machine") run where the size cost dominates.
+- **Compiled transformations** can read ids, as indices into linear memory, where they cannot read `Rc` pointers.
+- **The two spaces match the tiers:** the per-check region is working memory, the persistent space long-term memory, and ids are stable keys for proved statements (today `lemma_cache` keys by printed strings).
+- **Parallel checking** could share a frozen persistent space read-only across threads, which `Rc` (not `Send`) cannot.
+
+Its shortcomings there, with mitigations:
+- **The persistent space only grows** (nanoda never reclaims it), and a cycle keeps what it learns: rules, lemmas, statements. Mitigation: a major collection at quiescent points, between rounds. The roots are explicit and few (the rule library, the lemma statements, whatever caches are kept), so copying the live set into a fresh space costs what is live, not what was built. Rebuildable memos are dropped, not copied. The cheapest form exists already: the driver runs each loop's work in separate processes, with long-term memory in files (`LEMMA_CACHE`, rule files), so a process boundary is a major collection.
+- **An id used with the wrong space names another term.** Mitigation: two id types, region and persistent, so returning a region id from a scope does not compile. The one way out is a copy-out function, which also makes the 16% that escape explicit roots. A space tag bit, as nanoda has, plus a generation check in debug builds, would catch the rest at run time. Branded lifetimes would also do it, but were rejected for spreading (§64).
+- **Every constructor and pattern through a context** (§64's main cost). Mitigation: the current space is thread-local, as `hc::TABLE` is now, so constructors take no context parameter. A node of id children (about 24 bytes) is `Copy`, so a pattern matches a copy (`match id.node()`) and needs no borrow from the arena.
+- **Small checks gain little.** Mitigation: share one region across a batch of checks, as `proof_cost_split` shares one scope, and reset a region by its pointer, keeping its pages mapped.
+- **The compiled hot path should not allocate at all.** When it must produce terms (proof witnesses), it bump-allocates into the region through linear memory. Not a shortcoming of the arena; the arena fixes the format at the boundary.
+
+Scheme 1's caveats, with mitigations:
+- **Each process locks its reservation for its whole life.** Mitigation: set `arena_reserve` small and enable large pages only in processes expected to grow large.
+- **A machine without the privilege falls back to normal pages.** Mitigation: log whether large pages are on with every timing, as Defender's state is, so baselines compare.
+
 
 *The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
 32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
