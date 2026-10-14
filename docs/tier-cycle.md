@@ -2110,6 +2110,65 @@ with no kernel change and no postulate. The costs:
 - an If composes only through the continuation;
 - concrete evaluation at wide widths needs sharing in reduction (or the JIT itself) rather than raw beta.
 
+**Memory and a loop law over the same encoding (probe, reverted, no patch kept, 2026-10-14).** Memory sits outside the
+operand stack, as wasm's linear memory does. It is the CPS machine's state, `Mem = V -> (V -> R) -> R` (Sort2), and
+`F A = A -> Mem -> R`. Two more program constructors:
+- `store : Pi A. F A -> F (V,(V,A))` pops the value, then the address, and continues with
+  `upd a v mu = \b k. (eq a b) R (k v) (mu b k)`. `eq_bv` gives a Bool0, which eliminates at `R : Sort0`.
+- `load : Pi A. F (V,A) -> F (V,A)` pops an address and runs `mu a (\w. rest (w,s) mu)`.
+
+Specs now quantify over the memory: `Spec(c,m) = Pi S N R k z s mu. Id(R, M (c S) N R k z s mu, k (m,s) mu)`.
+
+Store-to-load forwarding at a symbolic address needs only `eq a a = true`.
+- **That lemma** is `Pi a. GoodBv a -> Id(Bool0, eq_bv a a, true)`. The motive is in Sort1, since `Id` lives in its
+  type's universe, so it goes through `lift_good`. Per bit, `GoodBool a_i` gives `not(xor a_i a_i) = true`, and two
+  congruences per bit fold the `and` chain down to `true`, so the proof is linear in n. The kernel has no eta, but
+  `and(true, true)` computes to `true`.
+- **The law** is `Spec(c_a,a) -> Spec(c_v,v) -> eq a a = true -> M (c_a ++ c_a ++ c_v ++ store ++ load) s mu = k (v,s) (upd a v mu)`:
+  three Spec steps, a reduction, and one congruence on the `eq` premise.
+- **A use:** `push a; push a; push v; store; load` for symbolic `a`, `v` with `GoodBv a`, proved from the law, the
+  push specs and the lemma.
+- **Concrete:** after `store 5@3; store 9@4`, a load from 3, 4 and 6 gives `k(5)`, `k(9)` and the untouched
+  `mu 6 ...` by `refl`. Literal `eq` computes.
+
+**The loop law** is fixpoint induction over fuel. Church numerals have no induction, so fuel carries a
+`GoodNat N = Pi P:(Nat -> Sort2). P 0 -> (Pi j. P j -> P (S j)) -> P N` hypothesis: parametricity as a hypothesis,
+the same idiom as `GoodBv`. A loop body is `Pi F. F A (label) -> F B (after) -> handlers -> F A`. With
+`Good f = Pi s mu. I s -> Q (f s mu)`, for an invariant `I : A -> Sort0` and a postcondition `Q : R -> Sort0`, the law is:
+
+`GoodNat N -> (Pi s mu. I s -> Q z) -> (Pi f. Good f -> Good (B f)) -> Good (M (loop body) N R k z)`
+
+Its proof is one line: `gn (\m. Good (m _ B out)) hz (\j ih. hs _ ih)`. The base and step types match by conversion.
+- **Instance:** `loop L { push 1; sub; br L }` times out (`= z`) for every fuel with `GoodNat`. The step discharges
+  `Good (B f)` by applying `Good f` to the decremented stack.
+- **At fuel 50,** the theorem with the canonical `GoodNat 50` agrees with `refl`.
+
+Controls, all rejected:
+
+| what | how |
+|---|---|
+| `eq a a = true` lemma | stated `= false` |
+| forwarding law | claims the address is loaded back |
+| forwarding law | `eq` premise replaced by `refl` |
+| loop instance | same proof stated as "answers `k(x, mu)`" |
+| concrete loads | `= k(7)` |
+
+Check times (s), on a machine at 60% CPU from other jobs; Defender real-time protection off:
+
+| n | eq refl | forwarding law | forwarding use | loop law | loop instance |
+|---|---|---|---|---|---|
+| 4 | 0.0009 | 0.020 | 0.004 | 0.013 | 0.004 |
+| 16 | 0.003 | 0.022 | 0.004 | 0.013 | 0.003 |
+| 32 | 0.010 | 0.025 | 0.013 | 0.015 | 0.005 |
+| 64 | 0.049 | 0.083 | 0.021 | 0.020 | 0.008 |
+
+Only the `eq` lemma grows with n; the rest stays near flat.
+
+Not shown: an invariant across an `if`. With `Q` in Sort0, the step must case-split the condition bit at Sort0.
+That should be derivable, but this is unverified: for any bit with a `GoodBool` witness, eliminate at the motive
+`\b. GoodBool0 b`, which is a Sort1 type, as `lift_good` does. The witness for a compare's output bit is not built
+here.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
