@@ -2500,10 +2500,32 @@ bulk-freed arena of `Rc` nodes, because 16% of a scope's nodes outlive it. The s
    alternating pairs. At n=64 large pages won 3 of 3, median 483-489 → 433-436 ms (-10%, about 42 ns per entry). At
    n=8: no change (medians 32-36 ms). On `proof_cost_split` (`scripts/cpu_ab.ps1`, 6 pairs) they won 6 of 6: CPU 3.02-3.20
    → 2.69-2.75 s (-12%), build 1.80-1.92 → 1.56-1.62 s, check 256-283 → 227-240 ms. Defender RTP off, load 2-8%.
-   No code: an environment variable, or `mi_option_set` before the first allocation.
-   - Risks: large pages are locked, never paged out. Each process locks its reservation (1 GiB here, tunable with
-     `MIMALLOC_ARENA_RESERVE`), so parallel sweeps lock one each, out of the machine's 62 GB. Without the privilege mimalloc falls
-     back to normal pages, so a machine without it times differently. Every earlier timing in this file is on normal pages.
+   **Adopted (2026-10-14).** `.cargo/config.toml` compiles mimalloc's defaults in: large pages and a 64 MiB
+   `arena_reserve`. `mi_option_set` from `main` would be too late, because mimalloc reads its options and enables the
+   privilege when the process loads. `MIMALLOC_ALLOW_LARGE_OS_PAGES=0` turns them off for one run. The test
+   `machine::mimalloc_defaults_to_large_pages` fails if the define stops reaching mimalloc (checked by building
+   without the config). Every timing's machine-state line now ends `lockpriv=… pages=large|normal`. **Every timing in
+   this file before this entry is on normal pages; later ones are on large pages unless they say otherwise.**
+   - *The reservation's size* (`scripts/cpu_arms.ps1`, `proof_cost_split`, 6 rotating rounds, load 7-18%, RTP off).
+
+     | Arm | CPU (s) | Peak private (MB) |
+     |---|---|---|
+     | normal pages | 3.66-4.80 | about 700 |
+     | 1 GiB | 3.30-3.92 | 1090 |
+     | 256 MiB | 3.22-3.72 | 1090 |
+     | 64 MiB | 3.22-4.14 | 898 |
+
+     The size makes no measurable difference to CPU, so the smallest was kept, since it locks the least.
+   - *A full sweep* (`SALT=1`, `mines own cold pooled`, 178 processes, measured as one job object: the job's CPU and
+     its largest process's peak commit). Five rotating rounds; the outputs are identical apart from the seconds columns.
+     - At load 10-36% (rounds 3-5), large pages won 3 of 3: job CPU 53.1-56.2 s against 55.0-58.6 s, about 4%.
+     - At load 20-69% (rounds 1-2), they lost 2 of 2: 61.0-61.7 s against 55.3-61.3 s.
+     - The gain is smaller than `proof_cost_split`'s 12% because most of the sweep's processes are short.
+     - Memory: the largest process peaks at 578 MB against 413-419 MB (+40%), and the whole job at 769-834 MB against 498-506 MB.
+       Presumably because Windows commits large pages when they are reserved and cannot decommit them.
+   - Risks: large pages are locked, never paged out. Each process locks what it reserves, so parallel sweeps each lock
+     their own, out of the machine's 62 GB. Without the privilege mimalloc falls back to normal pages, so a machine
+     without it times differently.
 2. *A node in 64 bytes (unmeasured).* mimalloc's size classes step 64 → 80, so dropping only the unused weak count
    (an own `Rc`, as `triomphe`) leaves 72 bytes in the 80-byte class and saves nothing. Reaching 64 also needs 8 bytes
    off the header, e.g. 16-bit `loose`/`free` (saturating; rule laws nest about 6n binders, 384 at n=64). 20% less node
@@ -2544,8 +2566,8 @@ Its shortcomings there, with mitigations:
 - **The compiled hot path should not allocate at all.** When it must produce terms (proof witnesses), it bump-allocates into the region through linear memory. Not a shortcoming of the arena; the arena fixes the format at the boundary.
 
 Scheme 1's caveats, with mitigations:
-- **Each process locks its reservation for its whole life.** Mitigation: set `arena_reserve` small and enable large pages only in processes expected to grow large.
-- **A machine without the privilege falls back to normal pages.** Mitigation: log whether large pages are on with every timing, as Defender's state is, so baselines compare.
+- **Each process locks its reservation for its whole life.** Mitigation (done): `arena_reserve` is 64 MiB. Large pages are on in every process, not only those expected to grow large, because the sweep of short processes still gained a little; that was measured only at low load.
+- **A machine without the privilege falls back to normal pages.** Mitigation (done): the machine-state line logs `pages=`, as it logs Defender's state, so baselines compare.
 
 
 *The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,

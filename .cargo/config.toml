@@ -1,0 +1,8 @@
+[env]
+# mimalloc's defaults for this target, compiled in (mimalloc builds as C++ under MSVC, so `cc` reads CXXFLAGS): large OS
+# pages, reserved 64 MiB at a time instead of 1 GiB. mimalloc reads the option and enables the "Lock pages in memory"
+# privilege when the process loads, before any Rust code runs, so it cannot be set from `main`. Large pages are locked,
+# so the small reservation keeps a short process from locking a full GiB. MIMALLOC_ALLOW_LARGE_OS_PAGES=0 turns them
+# off for a run. Without the privilege mimalloc falls back to normal pages. Measured in docs/tier-cycle.md
+# ("Allocation schemes against the size cost"); timings log the state (`machine::machine_state`).
+CXXFLAGS_x86_64_pc_windows_msvc = "-DMI_DEFAULT_ALLOW_LARGE_OS_PAGES=1 -DMI_DEFAULT_ARENA_RESERVE=65536"

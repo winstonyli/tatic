@@ -235,16 +235,39 @@ pub fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
 pub static LEMMA_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static PROF: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
 
-/// One line of machine state to print with every timing (LONG_RUNS.md): Defender real-time protection and total CPU
-/// load over two seconds, read through PowerShell; "unavailable" off Windows.
+/// One line of machine state to print with every timing (LONG_RUNS.md): Defender real-time protection, total CPU load
+/// over two seconds, and whether this process allocates from large OS pages, read through PowerShell; "unavailable" off
+/// Windows.
 pub fn machine_state() -> String {
-    let script = r"'RTP=' + (Get-MpComputerStatus).RealTimeProtectionEnabled + ' CPU=' + [int](Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 -MaxSamples 2).CounterSamples[-1].CookedValue + '%'";
-    std::process::Command::new("powershell")
+    let script = r"'RTP=' + (Get-MpComputerStatus).RealTimeProtectionEnabled + ' CPU=' + [int](Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 -MaxSamples 2).CounterSamples[-1].CookedValue + '% lockpriv=' + [bool](whoami /priv | Select-String SeLockMemoryPrivilege)";
+    let state = std::process::Command::new("powershell")
         .args(["-NoProfile", "-Command", script])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "machine state unavailable".to_string(), |t| t.trim().to_string())
+        .map_or_else(|| "machine state unavailable".to_string(), |t| t.trim().to_string());
+    // mimalloc enables the privilege itself when the option is on, so both together mean large pages
+    let pages = if large_pages_option() && state.ends_with("lockpriv=True") { "large" } else { "normal" };
+    format!("{state} pages={pages}")
+}
+
+/// mimalloc's `allow_large_os_pages` option in this process: the build's default (`.cargo/config.toml`) unless
+/// `MIMALLOC_ALLOW_LARGE_OS_PAGES` overrides it.
+pub fn large_pages_option() -> bool {
+    unsafe extern "C" {
+        fn mi_option_get(option: std::ffi::c_int) -> std::ffi::c_long;
+    }
+    // `mi_option_allow_large_os_pages` in mimalloc v3's option list
+    unsafe { mi_option_get(6) != 0 }
+}
+
+/// The build turns large pages on: fails if `.cargo/config.toml`'s define stops reaching mimalloc.
+#[test]
+#[cfg(all(windows, target_env = "msvc"))]
+pub fn mimalloc_defaults_to_large_pages() {
+    if std::env::var_os("MIMALLOC_ALLOW_LARGE_OS_PAGES").is_none() {
+        assert!(large_pages_option());
+    }
 }
 
 /// Prints the machine state (Defender, CPU load) when created and again when dropped, so a timing run records both ends.
