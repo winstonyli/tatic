@@ -53,6 +53,7 @@ and libraries (43 MB) were not kept.
 | `lws_head_*`, `lws_new_*` | 8cd8dfa against the instantiation memo skipping nodes of height ≤ 2, one run at a time | `low_seq.sh` | "Small nodes skip the instantiation memo" |
 | `pss_head_*`, `pss_new_*` | 6cd8948 against the node table as a set of node pointers with their hashes, one run at a time | `pset_seq.sh` | "The node table holds node pointers with their hashes" |
 | `sls_head_*`, `sls_new_*` | 9fab09a against the memos storing only their results, one run at a time | `slim_seq.sh` | "The memos store only their results" |
+| `bnd_old_*`, `bnd_new_*` | 981540b against 1bb3a5c (`uses`' slot in front of per-scope (node, d) bounds), one run at a time | `bounds_seq.sh` | "The slot in front of bounds" |
 | `uss_head_*`, `uss_new_*` | 7fe880f against the last `uses` answer kept in the node header (the per-scope `uses` table deleted), one run at a time | `uslot_seq.sh` | "Per-node facts in the node header" |
 | `sms_head_*`, `sms_new_*` | ff3eb86 against one shift memo (`ShiftMemo` deleted; the `cong` builders open their own scope), one run at a time | `smemo_seq.sh` | "One shift memo" |
 | `whs_head_*`, `whs_new_*` | 3892f3d against weak head normal forms kept per interning scope in hc's table, one run at a time | `whnf_seq.sh` | "Weak head normal forms kept for the scope" |

@@ -2660,6 +2660,7 @@ Its shortcomings there, with mitigations:
 - Bounds without the slot lose on small work: `proof_cost_split` check 343 → 369 ms (won 1 of 8), CPU median 3.78 → 3.77 s (won 2 of 8). The slot's one header read still beats a hash probe when it hits.
 - This supports the cause guessed above: the `lowest_loose` hybrid lost on small work while this one, with the same slot in front, does not. The difference is the walk that stops at its first hit.
 - `InferCache`'s `lows` stays as it is: it needs the exact minimum.
+- Sequential sweep pair (rows `bnd_*`, script `bounds_seq.sh`; CPU 24% at launch, RTP off): identical outputs on both salts (181 files each, lemma caches included; logs differ only in timings and their own paths). Walls 18 against 20 s (salt 1) and 19 against 18 s (salt 2).
 
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
