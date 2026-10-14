@@ -2478,6 +2478,13 @@ probe above did not fill (its memo is per check). So the rise splits about evenl
 - **More work:** the `uses` walks cost about 60 ns.
 - **Spread out:** about 60 ns is spread thinly across the rest.
 
+*Why `lowest_loose` cannot move into the node header* (reasoned, not prototyped). A node's lowest loose variable is
+not a function of its children's. Take `Lam(A, body)` where `body` mentions `Var 0` and `Var 5`. The body's lowest
+loose variable is 0, the one the `Lam` binds, and the `Lam`'s own lowest loose variable, 4, comes from the body's
+second-lowest. A node needs each child's answer at every depth: the (node, depth) key of `lows`. The smallest summary
+that composes is the whole set of loose variables, which was the bitset prototype (negative, "What is still
+superlinear"). So the `lows` memo can only get cheaper per lookup, not go away.
+
 
 *The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
 32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
