@@ -1707,6 +1707,31 @@ the proof by computation itself, not a redundancy, and a kernel memo cannot remo
 (fewer case bits; decision diagrams lost to the case tree at `nv` = 9 and 11, "Decision diagrams deleted"), leaves
 whose sides the builder states already evaluated, or a cheaper evaluation per visit can.
 
+**Leaves stated evaluated, or one tree per side: neither pays (probes, reverted, no patch kept, 2026-10-13).** Two
+builder changes were surveyed against the leaf work above, at cacb94b.
+
+*A leaf whose sides are already evaluated.* A leaf proves `refl(a) : Id(a, a)` against the statement at its bits,
+`Id(a', b')`. A counter in `check_rc` after each successful check of a `Refl` (about 50 k, sampled every 5000) found `a`
+pointer-equal to `a'` in all of them, and `a` structurally equal to `b'` in 32%. So `conv` evaluates `a` and `b'`, and
+nothing in that 32%. A leaf `refl(v)` with the value `v` written by the builder would need `a'` and `b'` evaluated against
+`v`: the same two evaluations, and more work in the 32%. No gain.
+
+*One tree per side for all its `F_j`.* Temporary prints in `guarded` (`machine.rs`) for the same run:
+
+| Tag | Trees | Leaves |
+|---|---|---|
+| `F1..Fm` | 291 | 32 662 (96%) |
+| `D` | 66 | 968 |
+| `F0` | 25 | 550 |
+| `P` (no invariant here) | 0 | 0 |
+
+Mostly four `F_j` trees of 7 bits per side (47, 47, 47 and 40 of them). One tree proving the four equalities at once
+would keep every leaf evaluation (each `F_j` is a different function of the step, and no `whnf` repeats structurally
+across the run, above) and save only the splits: the pairs charged to `Var` <- `Var` with 3 arguments above, 0.95 M of
+10.29 M visits, about three quarters of which would go. That is at most about 7% of the reduction work, for leaves that
+are conjunctions (a `Sigma` of four `Id`s and its pairs, with their own checking cost). Parked: not worth the change to
+the proof format unless the split cost grows.
+
 **The table sized for the last scope: neutral (reverted, no patch kept, 2026-10-13).** Rehashing is 8.4% of busy
 samples in the profile at 4bad241 counting callers (5.5% under `inst_rec` and `instantiate_n`, 1.1% under `infer_rc`'s
 cache). The prototype merged the table's three switch-on sites into one that reserved the node, instantiation, shift
