@@ -2274,10 +2274,31 @@ protection off):
 | NEG control, 24 rules | 0/24, 0.32 s | 0/24, 0.42 s (24.6 s before) | 0/24, 0.58 s, peak 585 MB (over 4 GB before) |
 | rule transfer, 24 rules | 24/24, 0.75 s | | 24/24, 26.5 s, peak 2.2 GB |
 
-Rejecting is now about 45 times cheaper than accepting at n=64. The accepting side's cost is building and
-checking the laws and was not traced.
+Rejecting is now about 45 times cheaper than accepting at n=64.
 
-The "printer stall" seen earlier with full-normalizing printers has the same cause, and it can't be fixed in the
+*The accepting side is the rule laws, not the transfer.* A probe (reverted, no patch kept) timed each rule's
+phases. It used the committed 37-rule `cmp3d_own_rules.txt` (32 `lt` rules) rather than the ref library above,
+with the machine at about 20% CPU and Defender real-time protection off. At n=64:
+
+| | 32 rules, sum of checks |
+|---|---|
+| program proof with the rule law inlined (as above) | 46.9 s |
+| the same proof with the law as a hypothesis of its type | 0.38 s |
+| the laws checked alone | 43.8 s (32 of 32 hold) |
+
+Proving the law (`prove_rule`) takes 0.03-1.6 s per rule, and building the program proof takes about 0.02 s. The
+inlined law is 86-95% of each proof's unique nodes (rule 0 at n=64: 51,784 of 60,292). Unique nodes grow about
+linearly in n (rule 0: 9,958 at n=8, 31,531 at n=32), but checking the inlined proof slows faster (rule 0: 33 ms at n=8,
+0.24 s at n=32, 0.64 s at n=64). A samply profile of the inlined run at n=64 (profile not kept) puts it in type
+inference: `check_rc` and `infer_rc` cover nearly all samples, `expect_pi` 13%, and `InferCache` rehashing 11%.
+Freeing hash tables of per-call `ReductionCache`s (under `whnf` and `def_eq`) and `InferCache`s costs about 8%; which maps fill them was not checked.
+
+So the transfer to compiled programs costs about as much as rejecting it: 0.86 s for 32 rules with the law as a
+hypothesis (0.38 s of it checking), against the NEG control's 0.58 s for 24. The remaining cost is
+checking each law, a cost per rule rather than per program. A law checked once and referenced by name, instead of inlined
+into every proof that uses it, would make a transfer cost only its program. This is not built.
+
+The "printer stall" seen earlier with full-normalizing printers has the same cause as the NEG wall, and it can't be fixed in the
 printer. A probe (reverted, no patch kept) normalized `add`, `sub` and `lt` on two free words and counted unique
 nodes against occurrences:
 
