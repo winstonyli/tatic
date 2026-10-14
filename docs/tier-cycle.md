@@ -1732,6 +1732,11 @@ across the run, above) and save only the splits: the pairs charged to `Var` <- `
 are conjunctions (a `Sigma` of four `Id`s and its pairs, with their own checking cost). Parked: not worth the change to
 the proof format unless the split cost grows.
 
+*Which side the evaluation is on.* `conv_rc`'s two `whnf_rc` calls counted apart (probe, reverted, no patch kept): of
+7.74 M `inst_rec` visits, 4.22 M (54%) under the first side's (the inferred one: a leaf's step term) and 3.52 M (46%)
+under the second's (the statement: `G_j` as a table over the bits). Neither dominates, so a cheaper table encoding
+could save at most the second side's share, and only the part of it that is the table rather than the shared shape.
+
 **The table sized for the last scope: neutral (reverted, no patch kept, 2026-10-13).** Rehashing is 8.4% of busy
 samples in the profile at 4bad241 counting callers (5.5% under `inst_rec` and `instantiate_n`, 1.1% under `infer_rc`'s
 cache). The prototype merged the table's three switch-on sites into one that reserved the node, instantiation, shift
