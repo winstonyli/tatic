@@ -1666,9 +1666,37 @@ only pairs where `whnf` changed both sides, in `conv` and `conv_rc`:
 
 So the bulk of the reduction work goes into showing that two applications of different lambdas, `(\x. s) a` against
 `(\y. t) b`, are equal, and in 73% of the pairs both reduce to the same term. The results are never pointer-equal
-because `whnf_rc` wraps the reduct's top node in `Rc::new` rather than interning it (its children are interned). Where these literal redexes come from (which typing rule builds the inferred side, and whether the
-expected side is written unreduced by the proof builder) is the open question; a builder that emits reduced types, or
-a typing rule that does not leave a redex, would remove the work rather than speed it up.
+because `whnf_rc` wraps the reduct's top node in `Rc::new` rather than interning it (its children are interned). Where these redexes come
+from is answered below (`bit_lemma`'s cases), and interning the reduct is measured below (neutral).
+
+**Where those redexes come from: `bit_lemma`'s cases, each a different computation (probe, reverted, no patch kept,
+2026-10-13).** The same run at 3e7e019, with each pair where both sides reduce charged to the `App` rule whose argument
+check it fell under (keyed by the spine heads of the function and the argument), and counted again by structure (a
+hash over each side's tree) across the whole run:
+
+| Function <- argument | Pairs | Visits | Structurally new pairs |
+|---|---|---|---|
+| `Var` with 1 argument <- `Refl` | 32.8 k | 4.13 M | 30.3 k (all the visits) |
+| `Var` with 2 arguments <- `Refl` | 32.8 k | 3.28 M | 30.3 k (all the visits) |
+| `Var` with 1 or 2 arguments <- `Var` with 3 (top-level pairs) | 34.9 k | 0.95 M | 33.1 k |
+| `J` <- `J` | 20.7 k | 0.16 M | 6.1 k (all the visits) |
+
+The first two rows are `bit_lemma` (`tests/church_bv/encoding.rs`): its proof is `\b. \g. g motive at_true at_false`,
+where `g : GoodBool b` eliminates the bit. Checking `at_true = refl(t)` against `motive true` reduces both sides: the
+motive `(\b. body) true` on the expected side, and on the inferred side `t`, a gate term written as Church-encoded
+lambdas applied to bits. Every such pair is structurally new across the run, and repeats within a scope already cost
+nothing (the memos answer them). So 72% of the reduction work under `conv` is the kernel evaluating gate terms on
+concrete bits, once per distinct case. It is the proof by computation itself, not a redundancy. A kernel or memo change
+cannot remove it. Only fewer or smaller cases (a builder that splits on fewer bits, or states each case's sides already
+evaluated where the builder knows the value) or a cheaper evaluation per visit can.
+
+**Interning the reduct's top node in `whnf_rc`: neutral (reverted, no patch kept, 2026-10-13).** With the table on,
+`whnf_rc` interned the reduced term (`hc::intern(r, None)` in place of `Rc::new`), so equal reducts are one node.
+`proof_cost_split` cmp3d own CPU against 3e7e019, Defender RTP off, two runs of 24 alternating pairs: won 9 (median
+pair +0.015 s, best 4.80 against 4.80 s; three new runs took 10.7-11.3 s, both phases about 2.4x slower) and 10
+(median +0.11 s, best 4.89 against 4.80 s; runs over 8 s in both builds, about 13% other load after). The slow runs
+were load, not the change. The reducts are compared child by child at canonical pointers already, so making them one
+node saves nothing.
 
 **Profile at 4bad241 (samply, profile not kept, 2026-10-13).** `proof_cost_split` cmp3d own, CPU about 9% before the
 run, Defender RTP off; 5031 busy samples (the run at 8334948 had 9656; shares compared, not counts). `instantiate_n`
