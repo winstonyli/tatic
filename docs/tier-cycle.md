@@ -2567,9 +2567,30 @@ Its shortcomings there, with mitigations:
 - **Copy-out is eager**, with a twin map. A persisted node reads as its region twin until the region closes, so equality stays an id compare and a `PExpr`'s hash never changes.
 - **One interning rule:** a node over persistent children looks in the persistent space first.
 - **The checking entries are `scoped`**, so a check outside a region frees its transients.
+- **Returns are checked by `scoped` with `Escape`** at compile time (D1, decided 2026-10-14); stores by the generation check on handle reads.
 - **Stage 1, built first (decided 2026-10-14), is a trace replay** of rule 33's table and memo traffic in three layouts: today's; ids; and a hybrid of `Rc` nodes with dense u32 memo keys, which shrinks the maps without the port.
   - It is a one-sided filter: a loss stops the port.
   - Its gate is re-profiled on large pages first.
+
+*Stage 1 result (2026-10-14; tracer and replay throwaway, reverted, no patch kept): continue.*
+- **The trace:** one law check of rule 33 after a warm-up, at n=8, 16, 32 and 64 (5.4 to 44 MB). Its new entries (intern misses plus memo puts) are 154,427, 301,740, 596,364 and 1,185,612, against the 154,275 and 1,185,460 above. Every arm reproduces every lookup's hit or miss and every `uses` and `lowest_loose` answer.
+- **The arms:** (a) 80-byte `Rc` blocks, pointer-keyed maps, `keep`; (b) 24-byte nodes in a vector with side arrays, u32-keyed maps, a bulk clear at scope end; (c) (a)'s nodes in 96-byte blocks with a u32 id, memos keyed and valued by ids.
+- **ns per new entry,** decoding subtracted, work plus the scope's drop, median of 5 alternating processes (load 25% at the start, Defender RTP off, large pages):
+
+  | n | (a) today | (b) ids | (c) hybrid |
+  |---|---|---|---|
+  | 8 | 229 | 153 | 183 |
+  | 16 | 286 | 186 | 255 |
+  | 32 | 342 | 253 | 314 |
+  | 64 | 406 | 326 | 378 |
+
+  A second rotation (load 70% falling to 16%) gave, best of 5 at n=64: (a) 411, (b) 314, (c) 367.
+- **Gate passes:** (a) rises 177 ns from n=8 to n=64, against the ~206 ns re-profiled on large pages for the maps, `uses` and `lowest_loose` (at 23-26% load): a ratio of 0.86.
+- **Stop rule not met:** (b) is 20% below (a) at n=64 (24% in the second rotation). Without the drop phase it is 13.5% (17.6%), so the scope drop carries part of the gain.
+- **The hybrid is not the cheaper end:** (c) is 7% (11%) below (a), about a third of (b)'s gain.
+- **The rise is unchanged.** (b) rises 173 ns from n=8 to n=64, as (a) does. In the replay, ids take a near-constant ~75 ns off each entry; the growth with n does not come from node or entry size.
+- **Not in the replay:** the `ReductionCache` (no traffic while the table is on), `context_of`, the reducer's own node reads (which understate (b)), and the port's own costs (which overstate it).
+- **Next, per the spec:** the narrower real prototype (`shift`, `instantiate`, `uses` and `lowest_loose` on ids, on a branch, timed against `main`). Not started.
 
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
