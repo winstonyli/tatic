@@ -86,6 +86,7 @@ and libraries (43 MB) were not kept.
 | (no rows) | the same at 849bf22, also key `Scope*)` | `prof_callers.py` | "Profile after the two table changes" |
 | (no rows) | samply profile of `proof_cost_split` at 0cb4e6c (profile not kept) | `prof_cases.py` | "Where the case lemmas' time goes" |
 | (no rows) | `proof_cost_split` CPU-time A/B with the `LEAFV` leaf prototype (reverted, no patch kept) | `cpu_ab.ps1` | "Leaves that state the computed bit" |
+| (no rows) | rule laws 0 and 33 checked alone at n=8-64 (probe, reverted, no patch kept) and `proof_cost_split` CPU, b97a4de against the memo keyed from the lowest loose variable | `cpu_ab.ps1` | "Why checking a law slowed faster than it grew" |
 | `lsp_A`, `lsp_B` | 84072cd + a temporary `LEMMA_SWEEP` switch (reverted, no patch kept), with (A) and without (B) it; `own pooled` on one set of salt-1 libraries | `lemma_sweep_probe.sh` | "A lemma file shared by a whole sweep" |
 | `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |

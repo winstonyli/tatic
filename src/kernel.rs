@@ -1179,19 +1179,49 @@ mod hc {
             let mut found = false;
             let mut i = 0;
             for_kids(x, |c| {
-                // Index of the child among its parent's, and whether that child sits under a binder.
-                let under = match &**x {
-                    Expr::Pi(..) | Expr::Lam(..) | Expr::W(..) | Expr::Sigma(..) => i == 1,
-                    Expr::WRec { .. } => i == 1,
-                    Expr::Pair(..) => i == 0,
-                    _ => false,
-                };
+                found = found || uses(c, d + under_binder(x, i) as u32, m);
                 i += 1;
-                found = found || uses(c, d + under as u32, m);
             });
             found
         });
         x.set_uses_slot(d, m, r);
+        r
+    }
+
+    /// Whether child `i` of `x`, in [`for_kids`] order, sits under a binder of `x`.
+    fn under_binder(x: &Expr, i: usize) -> bool {
+        match x {
+            Expr::Pi(..) | Expr::Lam(..) | Expr::W(..) | Expr::Sigma(..) => i == 1,
+            Expr::WRec { .. } => i == 1,
+            Expr::Pair(..) => i == 0,
+            _ => false,
+        }
+    }
+
+    /// The smallest loose `Var` index of `x` seen from `d` binders inside it, i.e. among `x`'s loose
+    /// variables `k >= d`, the least `k - d`; `u32::MAX` when there is none. Memoised in `memo` by
+    /// (node, `d`).
+    pub(super) fn lowest_loose(x: &Rc<Expr>, d: u32, memo: &mut PtrMap<(PtrKey, u32), u32>) -> u32 {
+        if x.loose() <= d {
+            return u32::MAX;
+        }
+        if let Expr::Var(k) = &**x {
+            return k - d;
+        }
+        let key = (PtrKey(x.clone()), d);
+        if let Some(&r) = memo.get(&key) {
+            return r;
+        }
+        let r = grow(|| {
+            let (mut low, mut i) = (u32::MAX, 0);
+            for_kids(x, |c| {
+                let under = under_binder(x, i) as u32;
+                low = low.min(lowest_loose(c, d + under, memo));
+                i += 1;
+            });
+            low
+        });
+        memo.insert(key, r);
         r
     }
 
@@ -1620,7 +1650,7 @@ type PtrSet<K> = HashSet<K, std::hash::BuildHasherDefault<PtrHasher>>;
 /// address is reused within the call.
 #[derive(Default)]
 struct InferCache {
-    types: PtrMap<(PtrKey, u32), Expr>,
+    types: PtrMap<(PtrKey, (u32, u32)), Expr>,
     contexts: PtrMap<(u32, PtrKey), u32>,
     next: u32,
     /// For each context id, (parent id, binder type pointer, that type's loose range); a binder with
@@ -1629,6 +1659,14 @@ struct InferCache {
     /// Interned windows of binder types, outermost first: (window id of the outer part, pointer of
     /// the next binder type inward) to the window's id. 0 is the empty window.
     windows: PtrMap<(u32, usize), u32>,
+    /// (context id, binders needed) to its window, `None` for a fallback; see [`InferCache::window`].
+    window_of: PtrMap<(u32, u32), Option<u32>>,
+    /// Scratch for [`InferCache::window`]'s walk.
+    path: Vec<(u32, u32)>,
+    /// [`hc::lowest_loose`]'s memo.
+    lows: PtrMap<(PtrKey, u32), u32>,
+    /// (context id, lowest loose variable, loose range) to [`InferCache::memo_context`]'s answer.
+    context_of: PtrMap<(u32, u32, u32), (u32, u32)>,
     /// Probe: (node pointer, signature of the bindings it can depend on) seen so far.
     #[cfg(feature = "record-defeq")]
     relaxed: std::collections::HashSet<(usize, u64)>,
@@ -1661,48 +1699,77 @@ impl InferCache {
         self.next
     }
 
-    /// The id `infer_rc` keys its memo by for node `e` in context `cid`: the interned window of
-    /// the innermost binder types `e` can depend on, instead of the whole context. `e`'s loose range
+    /// What `infer_rc` keys its memo by for node `e` in context `cid`, besides `e`: `(lo, window)`,
+    /// the interned window of the binder types `e` can depend on, instead of the whole context.
+    /// `lo` is `e`'s lowest loose variable: the `lo` innermost binders are never looked up, so
+    /// contexts that differ only there share the entry (a `J` motive's own binders around a shared
+    /// term, as in `trans_proof`). Nor is the numbering affected: the answer mentions only binders
+    /// from `lo` out, at the same positions. From there, `e`'s loose range
     /// says how many binders it mentions; each of those binders' types may mention outer binders in
     /// turn, so the window grows to cover them (a type with loose range `m` at position `p`, counted
     /// from the innermost, reaches binder `p + m`). Inside that window nothing else is consulted:
     /// `infer` looks up only variables of `e`, and a lookup's answer is that binder's type shifted,
     /// whose own variables are in the window by construction. So two contexts with the same window
     /// give `e` the same answer, in the same variable numbering (indices count from the innermost
-    /// binder either way). Window ids have the top bit set, so they never meet a whole-context id.
-    /// Falls back to `cid` when the window would pass a binder the term doesn't name (`fresh`), run
-    /// past the call's own binders into the caller's context, or exceed `MAX_WINDOW`.
-    fn memo_context(&mut self, cid: u32, e: &Expr) -> u32 {
+    /// binder either way). Window ids have the top bit set, so they never meet a whole-context id (whose
+    /// `lo` is 0).
+    /// Falls back to `cid` when the window would pass a binder the term doesn't name (`fresh`), or
+    /// run past the call's own binders into the caller's context.
+    fn memo_context(&mut self, cid: u32, e: &Rc<Expr>) -> (u32, u32) {
         const WINDOW_BIT: u32 = 1 << 31;
-        const MAX_WINDOW: usize = 8;
-        let mut need = loose_of(e) as usize;
+        let need = e.loose();
         if need == 0 {
-            return WINDOW_BIT;
+            return (0, WINDOW_BIT);
         }
-        let mut ptrs = [0usize; MAX_WINDOW];
-        let mut c = cid;
-        let mut p = 0;
-        while p < need {
-            if c == 0 || p >= MAX_WINDOW {
-                return cid;
+        let lo = hc::lowest_loose(e, 0, &mut self.lows);
+        if let Some(&r) = self.context_of.get(&(cid, lo, need)) {
+            return r;
+        }
+        // The `lo` innermost binders, which `e` never names, are skipped; a skipped `fresh` binder
+        // has no parent recorded, so the walk falls back there as it does inside a window.
+        let mut c = Some(cid);
+        for _ in 0..lo {
+            c = c.filter(|&c| c != 0 && self.info[c as usize].2 != u32::MAX).map(|c| self.info[c as usize].0);
+        }
+        let r = c.and_then(|c| self.window(c, need - lo)).map_or((0, cid), |w| (lo, WINDOW_BIT | w));
+        self.context_of.insert((cid, lo, need), r);
+        r
+    }
+
+    /// The interned window of the innermost `need` binders of context `cid`, grown over their
+    /// types' loose ranges, or `None` for a fallback. The window of `(c, k)` is the window of
+    /// `(parent, max(k - 1, loose of c's type))` extended inward by `c`'s binder type, so each
+    /// `(c, k)` is computed once (`window_of`) and a lookup costs one probe, however deep the window.
+    fn window(&mut self, cid: u32, need: u32) -> Option<u32> {
+        let mut path = std::mem::take(&mut self.path);
+        path.clear();
+        let (mut c, mut k) = (cid, need);
+        let mut w = loop {
+            if k == 0 {
+                break Some(0);
             }
-            let (parent, ptr, loose) = self.info[c as usize];
+            if let Some(&w) = self.window_of.get(&(c, k)) {
+                break w;
+            }
+            if c == 0 {
+                break None;
+            }
+            let (parent, _, loose) = self.info[c as usize];
             if loose == u32::MAX {
-                return cid;
+                break None;
             }
-            ptrs[p] = ptr;
-            if loose > 0 {
-                need = need.max(p + 1 + loose as usize);
+            path.push((c, k));
+            (c, k) = (parent, (k - 1).max(loose));
+        };
+        for &(c, k) in path.iter().rev() {
+            if let Some(outer) = w {
+                let next = self.windows.len() as u32 + 1;
+                w = Some(*self.windows.entry((outer, self.info[c as usize].1)).or_insert(next));
             }
-            c = parent;
-            p += 1;
+            self.window_of.insert((c, k), w);
         }
-        let mut wid = 0;
-        for &ptr in ptrs[..need].iter().rev() {
-            let next = self.windows.len() as u32 + 1;
-            wid = *self.windows.entry((wid, ptr)).or_insert(next);
-        }
-        WINDOW_BIT | wid
+        self.path = path;
+        w
     }
 
     /// Probe: a signature of the innermost bindings `e` can depend on in context `cid` (the loose

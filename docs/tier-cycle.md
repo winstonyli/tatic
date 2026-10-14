@@ -2295,8 +2295,40 @@ Freeing hash tables of per-call `ReductionCache`s (under `whnf` and `def_eq`) an
 
 So the transfer to compiled programs costs about as much as rejecting it: 0.86 s for 32 rules with the law as a
 hypothesis (0.38 s of it checking), against the NEG control's 0.58 s for 24. The remaining cost is
-checking each law, a cost per rule rather than per program. A law checked once and referenced by name, instead of inlined
-into every proof that uses it, would make a transfer cost only its program. This is not built.
+checking each law, a cost per rule rather than per program. The mechanism for paying it once already exists and the
+miner uses it: `shared_lemma` checks a law's proof once and returns a parameter whose type is the law's statement.
+A proof that uses the law mentions the parameter, and the checker only looks up its type (`Plan::Law` with
+`LawKind::Rule` goes through it). The probe called `prove_rule` directly and inlined the proof, so it paid for the
+law in every check; its "law as a hypothesis" row is what `shared_lemma` gives. The laws built per use (`Bitwise`,
+`Chain`, `Tree` in `Plan::Law`) are still inlined.
+
+*Why checking a law slowed faster than it grew.* `infer_rc`'s memo missed about 20 times per node: rule 0 at n=64
+had 1,036,365 misses for a 51,784-node proof, counted with a probe (reverted, no patch kept). There were two causes:
+- The key (node, window of the innermost binders down to the node's highest loose variable) fell back to the whole
+  context past `MAX_WINDOW` = 8 binders. A rule law nests about 6n per-bit binders (`k_var_law`), so 99.96% of
+  misses were fallbacks. Removing the cap alone left 1,035,100 misses.
+- `trans_proof`, `sym` and `cong1` (`postulates.rs`) build a J motive per use. Shared subterms of its endpoints then
+  sit under that use's binders, which they never mention, so the window differs per use. The most-missed nodes were
+  missed about 18n times each.
+
+Fix: the window now starts at the node's lowest loose variable `lo`. The `lo` innermost binders are never looked up,
+and the type mentions only positions at or above `lo`, so the answer is the same in any context that agrees above
+`lo`. The key is (node, `lo`, window from the `lo`-th binder up), with no cap. Rule 0 at n=64 now has 59,195 misses
+(about 1.1 per node), and every counter grows linearly in n. Check: `infer_memo_skips_unused_inner_binders`, where a shared
+node sits under 30 nested binders, each with two types it never mentions. It passes in 0.29 s; before the fix it ran for
+over a minute and then aborted on a 35 GB allocation. The laws checked alone (the probe above, three alternating pairs, machine
+at about 11% CPU, Defender real-time protection off):
+
+| | n=8 | n=16 | n=32 | n=64 |
+|---|---|---|---|---|
+| rule 0, before | 25 ms | 57 ms | 0.21 s | 0.71 s |
+| rule 0, after | 23 ms | 54 ms | 0.11 s | 0.24 s |
+| rule 33, before | 0.13 s | 0.37 s | 1.13 s | 3.9 s |
+| rule 33, after | 0.10 s | 0.24 s | 0.54 s | 1.22 s |
+
+Middle values of three. Time still grows 2.2-2.3 times per doubling of n, against linear unique nodes and misses,
+so something outside the memo is still superlinear; it was not profiled. On `proof_cost_split`, whose widths are
+small, the change is neutral: 6 alternating `cpu_ab.ps1` pairs, median CPU 4.86 s before and 4.85 s after.
 
 The "printer stall" seen earlier with full-normalizing printers has the same cause as the NEG wall, and it can't be fixed in the
 printer. A probe (reverted, no patch kept) normalized `add`, `sub` and `lt` on two free words and counted unique

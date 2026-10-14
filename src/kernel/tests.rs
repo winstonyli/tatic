@@ -854,6 +854,34 @@ fn infer_is_linear_in_the_dag_of_a_shared_term() {
     assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
 }
 
+/// `b(i) = k ((λh:A. b(i+1)) a) ((λh:A→A. b(i+1)) f)`, 30 deep under
+/// `λx:A`, with `b(30) = x`. Each shared `b(i+1)` mentions only `x`,
+/// but sits under one more binder `h` per level, two types each. A memo
+/// key covering every binder down to `x` sees 2^i contexts at level i;
+/// skipping the binders below the lowest loose variable sees one. The
+/// J motives in `postulates.rs` put shared subterms under unused
+/// binders the same way.
+#[test]
+fn infer_memo_skips_unused_inner_binders() {
+    let mut p = Postulates::new();
+    let a_ty = p.push(sort(0));
+    let a = p.push(p.get(a_ty));
+    let f = p.push(arrow(p.get(a_ty), p.get(a_ty)));
+    let k = p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
+    let depth = 30;
+    let mut b = Rc::new(var(depth));
+    for _ in 0..depth {
+        let under = |ty: Expr, arg: usize| Rc::new(Expr::App(Rc::new(Expr::Lam(Rc::new(ty), b.clone())), Rc::new(p.get(arg))));
+        let (l, r) = (under(p.get(a_ty), a), under(arrow(p.get(a_ty), p.get(a_ty)), f));
+        b = Rc::new(Expr::App(Rc::new(Expr::App(Rc::new(p.get(k)), l)), r));
+    }
+    let e = lam(p.get(a_ty), (*b).clone());
+    let t = std::time::Instant::now();
+    assert_eq!(p.infer(&e), Ok(arrow(p.get(a_ty), p.get(a_ty))));
+    let took = t.elapsed();
+    assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+}
+
 /// One node shared under two different binder types has two types.
 /// `Pi(Type0, Pi(x, Type0))` is well-typed, `Pi(Type0 -> Type0,
 /// Pi(x, Type0))` isn't (`x` is then a function, not a type), and
