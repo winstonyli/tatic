@@ -3184,13 +3184,18 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   
   By phase: the rule miner is 71% inclusive (its `closure$32` 39.8%), `rewrite_uncached` 40.7%, `add_tree_law` 17.1%, `prove_rule` 15.2%, `pool_conjectures` 2.8%. mimalloc is about 11% self, SipHash 1.6%. `ValueMemo` under the rule miner and `pool_conjectures` is 4.3%.
 - **`ValueMemo` arena and `differs_in` (2026-10-15, branch `screen-tune`): -7% CPU, but +35% peak job memory.** `ValueMemo` keeps every vector end to end in one `Vec`, with a `Term` to index map: a new term allocates nothing of its own, and a known one costs one lookup instead of up to four. `differs_in` answers the screen without building the failing tuple; `plausibly_equals`, `is_law` and `machine_fallback`'s scoring screen use it. The `u64` idea was dropped: the arena already takes the screen off per-term 16-byte-aligned allocation, and `u64` would need a branch on the width. Salt-1 and salt-2 sweeps give identical outputs. Twelve alternating salt-1 sweeps against 891e9a9 (load 14-43%, RTP off): job CPU median 29.65 s old against 27.6 s new (-7%), new won 5 of 6 pairs and tied the sixth; wall 26.15 s against 25.45 s (-3%). Peak job memory rose from 374-449 MB to 577-602 MB, and page faults from about 1.53 M to 1.94 M per sweep. The likely cause is the arena `Vec` doubling: its capacity can be twice what is in use, and each grow briefly holds both copies. The exhaustive memos are the big ones: `pool_conjectures` over three variables stores 2^(3n) bytes per term.
+- **`ValueMemo` in fixed 64 KB blocks (2026-10-15, branch `screen-tune`, adopted): -9.5% CPU against 037813f, memory back to before.** The vectors sit end to end in blocks that are never grown or copied. Four timings of twelve alternating salt-1 sweeps each (RTP off):
+  - Blocks with the op loop indexing `blocks[b][i]` per element (607e6f7) against 037813f (load 0-8%): job CPU median 19.1 s against 19.35 s, 3 pairs each. Memory was back (peak job 397-455 MB against 393-449 MB), but the gain was gone.
+  - The flat arena (bc080e7) against those blocks (load 0-5%): 17.55 s against 18.55 s, flat won 5 of 6. So the layout cost about 5%, not the load.
+  - The op loop over slices instead (`split_at_mut`, one zipped loop) against the flat arena (load 6-10%): 21.95 s against 21.15 s (-3.6%), blocks won 5 of 6; peak job 394-459 MB against 541-603 MB, faults 1.50 M against 1.93 M.
+  - That build against 037813f (load 6-13%): job CPU median 23.1 s against 20.9 s (-9.5%), new won all 6 pairs; wall 22.1 s against 21.3 s; peak job 428-454 MB against 404-456 MB. Salt-1 and salt-2 sweeps give identical outputs.
+  - The machine's speed drifted between timings (the same build ran 18-23 s), so only the within-timing comparisons count.
 - **Profile at bc080e7 (samply of a salt-1 sweep, 26,836 busy samples, load 28%, profile not kept):**
   - The rule miner's `closure$32` (35.2% inclusive) is `score_laws` (search.rs): `rewrite_plan` for every law under each candidate's rule set, 29.5% of it.
     - Inside that: `rule_step_in` 14.7%, `tree_step` 11.3% (its screen 9.6%).
     - `ValueMemo::fill` is 18.2% inclusive overall: screens 10.6%, `pool_conjectures` 4.2%, the miner's pool index 3.4%. It includes 2.4% in `Vec` growth (`finish_grow`, aligned realloc).
   - `add_tree_law` 18.3% and `prove_rule` 16.4% sit outside the scoring. They are mostly `tree_proof`'s `shared_lemma`, about 11% of it in kernel checking (`ck`, `check_in`, `conv`, `whnf`).
 - **Open:**
-  - A chunked arena (fixed-size blocks, no doubling or copying) to take back the memory, before merging `screen-tune`.
   - `score_laws` re-rewrites every law per candidate; the rewrite memo it is seeded with is the lever there.
   - The other exhaustive `interp` loops (`eq_pos` in `prove_eq`, `conjecture_miner`, the shift check in machine.rs) are cold and still evaluate per tuple.
 

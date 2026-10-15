@@ -357,7 +357,8 @@ impl Word for u128 {
 /// Terms' width-`n` values on a fixed list of inputs, one vector per interned term, each made from its children's vectors:
 /// pools and repeated screens share subterms, so each distinct term is evaluated once per input list. The vectors sit end
 /// to end in fixed blocks of about 64 KB (never grown or copied), so a new term rarely allocates and a known one costs a
-/// single lookup.
+/// single lookup. One doubling `Vec` was a little slower and held up to 1.4x the memory (docs/tier-cycle.md, "`ValueMemo` in fixed
+/// 64 KB blocks").
 pub struct ValueMemo<W: Word> {
     mask: u128,
     len: usize,
@@ -423,11 +424,18 @@ impl<W: Word> ValueMemo<W> {
             Node::Ones => self.blocks[last].extend(std::iter::repeat_n(W::of(self.mask), len)),
             Node::Op(o, ..) => {
                 let (a, b) = children.unwrap();
-                let ((ba, oa), (bb, ob)) = ((a / per, a % per * len), (b / per, b % per * len));
                 let (word, mask) = (OP_INFO[o].word, self.mask);
-                for i in 0..len {
-                    let v = W::of(word(self.blocks[ba][oa + i].get(), self.blocks[bb][ob + i].get(), mask));
-                    self.blocks[last].push(v);
+                let off = self.blocks[last].len();
+                self.blocks[last].resize(off + len, W::of(0));
+                // the children's vectors sit in earlier blocks or earlier in the last one
+                let (done, tail) = self.blocks.split_at_mut(last);
+                let (before, out) = tail[0].split_at_mut(off);
+                let at = |id: usize| -> &[W] {
+                    let block: &[W] = if id / per == last { before } else { &done[id / per] };
+                    &block[id % per * len..][..len]
+                };
+                for ((o, x), y) in out.iter_mut().zip(at(a)).zip(at(b)) {
+                    *o = W::of(word(x.get(), y.get(), mask));
                 }
             }
         }
