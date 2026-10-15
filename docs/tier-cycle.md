@@ -3080,6 +3080,15 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - A pure user-mode loop is charged 3% kernel time (0.16 of 5.0 s), so the accounting isn't simply biased. Sampling the machine's privileged-time counter during a sweep was swamped by other sessions' 14.6% baseline.
   - **Parked:** the accounted kernel time and the samples disagree, and resolving it needs a kernel-level trace (xperf with CSwitch and page-fault events) rather than samply.
 
+**Prefetching the region table's control group: neutral, not adopted (2026-10-14; reverted, no patch kept).** `Spaces::build` issued a `_mm_prefetch` (T0) of the region table's first control group as soon as the node's hash was known. That is before the persistent lookup and the region lookup, which "Where `proof_cost_split` spends its time on B" found to be a cache miss worth 13.4% of busy samples.
+- **Reaching the control bytes:** hashbrown 0.16.1 has no prefetch hook. But an `OccupiedEntry` from `insert_unique` gives its entry's address and bucket index, and the entries lie downwards from the control bytes. So the control array starts at the entry's address plus (index + 1) × 8 B, refreshed on every insert since a resize moves it. The group is at that start plus (`spread(h)` & bucket mask).
+  - This depends on hashbrown's undocumented layout. A debug check (the inserted bucket's control byte equals the hash's top 7 bits) held across all 126 kernel unit tests.
+- **`proof_cost_split`, prefetch on against `NO_PREFETCH=1`, same binary** (`cpu_ab.ps1`, 8 alternating pairs, load 58% at the start and 24% at the end, RTP off):
+  - CPU median 2.59 s on against 2.61 s off; prefetch won 3 of 8 pairs.
+  - Build median 1,762 against 1,764 ms.
+- **Why nothing:** the prefetch issues no earlier than the out-of-order core already issues the load. The lookup's address depends only on the hash, which is ready at the same point. When a node has persistent children, the region lookup sits behind a branch on the persistent lookup that is almost always predicted, so it already runs speculatively in parallel. The two misses after the control group (the entry, then the node to compare) depend on the first one and cannot be prefetched from the hash.
+- What would help is having the hash earlier: knowing a parent's hash before its last child is built. Instantiation builds a node's children one after another and hashes the parent only at the end. Unexplored.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
