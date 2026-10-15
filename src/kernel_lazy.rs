@@ -21,7 +21,7 @@
 //! `SigRec` on `Pair(_, a, b)` gives `step a b`. `Const` and `Free` are
 //! inert atoms.
 
-use crate::kernel::{Expr, Rc as KRc, grow};
+use crate::kernel::{Expr, Node, grow, node_key};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -35,8 +35,8 @@ type CellKey = (usize, Vec<usize>);
 /// the addresses in the key stay unique.
 #[derive(Default)]
 struct Memo {
-    cells: HashMap<CellKey, (KRc<Expr>, Env, Thunk)>,
-    vals: HashMap<CellKey, (KRc<Expr>, Env, V)>,
+    cells: HashMap<CellKey, (Expr, Env, Thunk)>,
+    vals: HashMap<CellKey, (Expr, Env, V)>,
     /// Pairs of values already found convertible (at any level: a value's meaning does not
     /// depend on the level it is compared at, only on the levels inside it).
     equal: HashMap<(usize, usize), (V, V)>,
@@ -60,7 +60,7 @@ pub struct Stats {
     pub vals_len: usize,
     pub equal_len: usize,
     /// Memo lookups and hits, split by `[eval, cell]` and bucketed by key length, by the node's
-    /// strong count, and by its `Expr` variant (see `record`).
+    /// sharing (`shared`), and by its `Expr` variant (see `record`).
     pub by_klen: [[Hist; 2]; 1],
     pub by_count: [[Hist; 2]; 1],
     pub by_kind: [[Hist; 2]; 1],
@@ -70,7 +70,7 @@ pub struct Hist {
     pub lookups: [u64; 10],
     pub hits: [u64; 10],
 }
-fn record(cell: usize, e: &KRc<Expr>, klen: usize, hit: bool) {
+fn record(cell: usize, e: &Expr, klen: usize, hit: bool) {
     let kl = match klen {
         0..=4 => klen,
         5..=6 => 5,
@@ -79,22 +79,14 @@ fn record(cell: usize, e: &KRc<Expr>, klen: usize, hit: bool) {
         13..=20 => 8,
         _ => 9,
     };
-    let cnt = match KRc::strong_count(e) {
-        0..=2 => 0,
-        3 => 1,
-        4 => 2,
-        5..=8 => 3,
-        9..=16 => 4,
-        17..=64 => 5,
-        _ => 6,
-    };
-    let kind = match &**e {
-        Expr::Var(_) => 0,
-        Expr::App(..) => 1,
-        Expr::Lam(..) => 2,
-        Expr::Pi(..) => 3,
-        Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => 4,
-        Expr::Id(..) | Expr::Refl(_) | Expr::J { .. } => 5,
+    let cnt = e.shared() as usize;
+    let kind = match e.node() {
+        Node::Var(_) => 0,
+        Node::App(..) => 1,
+        Node::Lam(..) => 2,
+        Node::Pi(..) => 3,
+        Node::Sort(_) | Node::Const(_) | Node::Free(_) => 4,
+        Node::Id(..) | Node::Refl(_) | Node::J { .. } => 5,
         _ => 6,
     };
     bump(|s| {
@@ -121,7 +113,7 @@ thread_local! {
     static MEMO: RefCell<Option<Memo>> = const { RefCell::new(None) };
 }
 
-fn memo_key(e: &KRc<Expr>, env: &Env) -> (usize, Vec<usize>) {
+fn memo_key(e: &Expr, env: &Env) -> (usize, Vec<usize>) {
     let mut cells = Vec::new();
     let mut node = env.as_ref();
     for _ in 0..e.loose() {
@@ -134,7 +126,7 @@ fn memo_key(e: &KRc<Expr>, env: &Env) -> (usize, Vec<usize>) {
         }
     }
     bump(|s| s.key_slots += cells.len() as u64);
-    (KRc::as_ptr(e) as *const u8 as usize, cells)
+    (node_key(e) as usize, cells)
 }
 
 thread_local! {
@@ -146,8 +138,8 @@ pub fn set_memo_max_loose(n: u32) {
     MAX_LOOSE.with(|c| c.set(n));
 }
 
-fn memo_on(e: &KRc<Expr>) -> bool {
-    KRc::strong_count(e) > 1 && e.loose() <= MAX_LOOSE.with(|c| c.get()) && MEMO.with(|m| m.borrow().is_some())
+fn memo_on(e: &Expr) -> bool {
+    e.shared() && e.loose() <= MAX_LOOSE.with(|c| c.get()) && MEMO.with(|m| m.borrow().is_some())
 }
 
 type V = Rc<Val>;
@@ -157,14 +149,14 @@ type V = Rc<Val>;
 struct Thunk(Rc<RefCell<Cell>>);
 
 enum Cell {
-    Delayed(KRc<Expr>, Env),
+    Delayed(Expr, Env),
     Lazy(Box<dyn FnOnce() -> V>),
     Running,
     Done(V),
 }
 
 impl Thunk {
-    fn delay(e: &KRc<Expr>, env: &Env) -> Thunk {
+    fn delay(e: &Expr, env: &Env) -> Thunk {
         let fresh = || Thunk(Rc::new(RefCell::new(Cell::Delayed(e.clone(), env.clone()))));
         bump(|s| s.cell_calls += 1);
         if !memo_on(e) {
@@ -227,7 +219,7 @@ fn lookup(env: &Env, i: u32) -> Thunk {
 /// function `WRec` hands its step (`\y. wrec motive cty step (f y)`).
 #[derive(Clone)]
 enum Clo {
-    Term(Env, KRc<Expr>),
+    Term(Env, Expr),
     Ih { motive: Thunk, cty: Box<Clo>, step: Thunk, f: Thunk },
 }
 
@@ -291,7 +283,7 @@ fn wrec(motive: &Thunk, cty: &Clo, step: &Thunk, target: V) -> V {
     })
 }
 
-fn eval(env: &Env, e: &KRc<Expr>) -> V {
+fn eval(env: &Env, e: &Expr) -> V {
     bump(|s| s.eval_calls += 1);
     if !memo_on(e) {
         return eval_node(env, e);
@@ -309,33 +301,33 @@ fn eval(env: &Env, e: &KRc<Expr>) -> V {
     v
 }
 
-fn eval_node(env: &Env, e: &KRc<Expr>) -> V {
+fn eval_node(env: &Env, e: &Expr) -> V {
     grow(|| {
-        let d = |x: &KRc<Expr>| Thunk::delay(x, env);
-        let c = |x: &KRc<Expr>| Clo::Term(env.clone(), x.clone());
-        match &**e {
-            Expr::Var(i) => lookup(env, *i).force(),
-            Expr::Sort(i) => Rc::new(Val::Sort(*i)),
-            Expr::Const(l) => Rc::new(Val::Const(*l)),
-            Expr::Free(l) => Rc::new(Val::Free(*l)),
-            Expr::Pi(a, b) => Rc::new(Val::Pi(d(a), c(b))),
-            Expr::Lam(a, b) => Rc::new(Val::Lam(d(a), c(b))),
-            Expr::App(f, a) => apply(&eval(env, f), d(a)),
-            Expr::Id(a, x, y) => Rc::new(Val::Id(d(a), d(x), d(y))),
-            Expr::Refl(a) => Rc::new(Val::Refl(d(a))),
-            Expr::J { motive, base, a, b, p } => {
+        let d = |x: &Expr| Thunk::delay(x, env);
+        let c = |x: &Expr| Clo::Term(env.clone(), x.clone());
+        match &e.node() {
+            Node::Var(i) => lookup(env, *i).force(),
+            Node::Sort(i) => Rc::new(Val::Sort(*i)),
+            Node::Const(l) => Rc::new(Val::Const(*l)),
+            Node::Free(l) => Rc::new(Val::Free(*l)),
+            Node::Pi(a, b) => Rc::new(Val::Pi(d(a), c(b))),
+            Node::Lam(a, b) => Rc::new(Val::Lam(d(a), c(b))),
+            Node::App(f, a) => apply(&eval(env, f), d(a)),
+            Node::Id(a, x, y) => Rc::new(Val::Id(d(a), d(x), d(y))),
+            Node::Refl(a) => Rc::new(Val::Refl(d(a))),
+            Node::J { motive, base, a, b, p } => {
                 let wp = eval(env, p);
                 match &*wp {
                     Val::Refl(_) => apply(&eval(env, base), d(a)),
                     _ => Rc::new(Val::J { motive: d(motive), base: d(base), a: d(a), b: d(b), p: wp }),
                 }
             }
-            Expr::W(a, b) => Rc::new(Val::W(d(a), c(b))),
-            Expr::Sup(a, f) => Rc::new(Val::Sup(d(a), d(f))),
-            Expr::WRec { motive, children_ty, step, target } => wrec(&d(motive), &c(children_ty), &d(step), eval(env, target)),
-            Expr::Sigma(a, b) => Rc::new(Val::Sigma(d(a), c(b))),
-            Expr::Pair(fam, a, b) => Rc::new(Val::Pair(c(fam), d(a), d(b))),
-            Expr::SigRec { motive, step, target } => {
+            Node::W(a, b) => Rc::new(Val::W(d(a), c(b))),
+            Node::Sup(a, f) => Rc::new(Val::Sup(d(a), d(f))),
+            Node::WRec { motive, children_ty, step, target } => wrec(&d(motive), &c(children_ty), &d(step), eval(env, target)),
+            Node::Sigma(a, b) => Rc::new(Val::Sigma(d(a), c(b))),
+            Node::Pair(fam, a, b) => Rc::new(Val::Pair(c(fam), d(a), d(b))),
+            Node::SigRec { motive, step, target } => {
                 let wt = eval(env, target);
                 match &*wt {
                     Val::Pair(_, a, b) => apply(&apply(&eval(env, step), a.clone()), b.clone()),
@@ -409,8 +401,7 @@ pub fn def_eq_lazy(a: &Expr, b: &Expr, depth: u32) -> bool {
     for level in 0..depth {
         env = push(&env, Thunk::done(Rc::new(Val::Level(level))));
     }
-    let (a, b) = (KRc::new(a.clone()), KRc::new(b.clone()));
-    conv(depth, &eval(&env, &a), &eval(&env, &b))
+    conv(depth, &eval(&env, a), &eval(&env, b))
 }
 
 /// `def_eq_lazy` with the pointer-keyed sharing above, for the same inputs.
@@ -447,21 +438,21 @@ mod tests {
     #[test]
     fn shared_mode_keeps_a_doubling_dag_linear() {
         fn dag(k: u32) -> Expr {
-            let mut n = KRc::new(sort(0));
+            let mut n = sort(0);
             for _ in 0..k {
-                n = KRc::new(Expr::Sup(n.clone(), n.clone()));
+                n = sup(n.clone(), n.clone());
             }
-            (*n).clone()
+            n
         }
         let k = 40;
         let (a, b) = (dag(k), dag(k));
         assert!(def_eq_lazy_shared(&a, &b, 0));
         // a differing leaf is still found
-        let mut c = KRc::new(sort(1));
+        let mut c = sort(1);
         for _ in 0..k {
-            c = KRc::new(Expr::Sup(c.clone(), c.clone()));
+            c = sup(c.clone(), c.clone());
         }
-        assert!(!def_eq_lazy_shared(&a, &(*c).clone(), 0));
+        assert!(!def_eq_lazy_shared(&a, &c, 0));
     }
 
     #[test]
@@ -569,15 +560,15 @@ mod tests {
     fn with_redexes(e: &Expr, seed: &mut u64) -> Expr {
         *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let wrap = (*seed >> 33).is_multiple_of(4);
-        let mut go = |x: &KRc<Expr>| with_redexes(x, seed);
-        let rebuilt = match e {
-            Expr::Pi(a, b) => pi(go(a), go(b)),
-            Expr::Lam(a, b) => lam(go(a), go(b)),
-            Expr::App(f, a) => app(go(f), go(a)),
-            Expr::Id(a, x, y) => id(go(a), go(x), go(y)),
-            Expr::Sigma(a, b) => sigma(go(a), go(b)),
-            Expr::Pair(fam, a, b) => pair(go(fam), go(a), go(b)),
-            other => other.clone(),
+        let mut go = |x: &Expr| with_redexes(x, seed);
+        let rebuilt = match &e.node() {
+            Node::Pi(a, b) => pi(go(a), go(b)),
+            Node::Lam(a, b) => lam(go(a), go(b)),
+            Node::App(f, a) => app(go(f), go(a)),
+            Node::Id(a, x, y) => id(go(a), go(x), go(y)),
+            Node::Sigma(a, b) => sigma(go(a), go(b)),
+            Node::Pair(fam, a, b) => pair(go(fam), go(a), go(b)),
+            _ => e.clone(),
         };
         if wrap { app(lam(sort(0), shift(&rebuilt, 0, 1)), sort(0)) } else { rebuilt }
     }

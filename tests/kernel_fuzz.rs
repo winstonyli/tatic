@@ -57,9 +57,9 @@ const GLOBALS: u32 = 4;
 fn globals() -> kernel::Globals {
     let mut g = kernel::Globals::new();
     g.push_back(kernel::persist(kernel::sort(0)));
-    g.push_back(kernel::persist(Expr::Const(0)));
-    g.push_back(kernel::persist(kernel::arrow(Expr::Const(0), Expr::Const(0))));
-    g.push_back(kernel::persist(Expr::Var(0)));
+    g.push_back(kernel::persist(kernel::mk(kernel::Node::Const(0))));
+    g.push_back(kernel::persist(kernel::arrow(kernel::mk(kernel::Node::Const(0)), kernel::mk(kernel::Node::Const(0)))));
+    g.push_back(kernel::persist(kernel::var(0)));
     g
 }
 
@@ -72,20 +72,20 @@ fn globals() -> kernel::Globals {
 /// open last entry), or a `Free` (never accepted; sets `rng.made_free`).
 fn gen_leaf(rng: &mut Rng, scope: u32) -> Expr {
     match rng.below(6) {
-        0 if scope > 0 => Expr::Var(rng.below(scope)),
-        0 | 1 => Expr::Var(rng.below(scope.max(1) + 3)), // in range, or just past it
-        2 => Expr::Var(rng.below(1000)), // almost always wildly unbound
+        0 if scope > 0 => kernel::var(rng.below(scope)),
+        0 | 1 => kernel::var(rng.below(scope.max(1) + 3)), // in range, or just past it
+        2 => kernel::var(rng.below(1000)), // almost always wildly unbound
         3 => {
             if rng.below(20) == 0 {
-                Expr::Sort(u32::MAX)
+                kernel::sort(u32::MAX)
             } else {
-                Expr::Sort(rng.below(4))
+                kernel::sort(rng.below(4))
             }
         }
-        4 => Expr::Const(rng.below(GLOBALS + 2)), // in range, or just past it
+        4 => kernel::mk(kernel::Node::Const(rng.below(GLOBALS + 2))), // in range, or just past it
         _ => {
             rng.made_free = true;
-            Expr::Free(rng.below(3))
+            kernel::mk(kernel::Node::Free(rng.below(3)))
         }
     }
 }

@@ -1217,8 +1217,6 @@ pub fn rule_miner() {
             }
         }
     });
-    #[cfg(feature = "copy-volume")]
-    println!("COPYVOL {}", tatic::kernel::copy_volume_process());
 }
 
 /// `bitwise_law_k` dispatches to the per-position prover when a shift occurs: shl1 distributes over the bitwise
@@ -2055,8 +2053,6 @@ pub fn rule_set_kernel_check() {
         }
         println!("NFSAME {same} of {total} laws have equal normal forms on both sides");
     });
-    #[cfg(feature = "copy-volume")]
-    println!("COPYVOL {}", tatic::kernel::copy_volume_process());
 }
 
 /// Where the kernel's work goes under a rule set: like `rule_set_kernel_check` (same `CHECK_FAMILY`, `CHECK_RULES`, `RULEMINER_*` vars), but
@@ -2103,8 +2099,6 @@ pub fn proof_cost_split() {
         }
         println!("COST not-proved={none}");
     });
-    #[cfg(feature = "copy-volume")]
-    println!("COPYVOL {}", tatic::kernel::copy_volume_process());
 }
 
 /// Deterministic work per law (needs `--features record-defeq`): like `proof_cost_split` (same `CHECK_FAMILY`, `CHECK_RULES`,
@@ -2118,9 +2112,9 @@ pub fn proof_cost_split() {
 pub fn law_work_report() {
     use std::{io::Write, time::Instant};
     #[cfg(feature = "record-defeq")]
-    use tatic::kernel::{take_beta_count, take_hc_built, take_walk_counts};
+    use tatic::kernel::{take_beta_count, take_built, take_walk_counts};
     #[cfg(not(feature = "record-defeq"))]
-    let (take_beta_count, take_hc_built, take_walk_counts) = (|| 0u64, || (0u64, 0u64), || [0u64; 26]);
+    let (take_beta_count, take_built, take_walk_counts) = (|| 0u64, || (0u64, 0u64), || [0u64; 26]);
     tatic::kernel::scoped(|| {
         let (_, kv, laws) = check_laws();
         let mut out = std::fs::File::create(std::env::var("WORK_OUT").unwrap()).unwrap();
@@ -2135,18 +2129,18 @@ pub fn law_work_report() {
         for (name, t1, t2) in &laws {
             RULE_BUDGET.with(|b| b.set(200));
             let before = MACHINE_FALLBACKS.with(|c| c.get());
-            take_hc_built();
+            take_built();
             let t = Instant::now();
             let Some((p, s)) = rewrite_law(4, kv, t1, t2) else { continue };
             let build = t.elapsed();
-            let (fallbacks, steps, built) = (MACHINE_FALLBACKS.with(|c| c.get()) - before, 200 - RULE_BUDGET.with(|b| b.get()), take_hc_built().0);
+            let (fallbacks, steps, built) = (MACHINE_FALLBACKS.with(|c| c.get()) - before, 200 - RULE_BUDGET.with(|b| b.get()), take_built().0);
             // counted work while building: the one-time lemma checks and the builders' own shifts
             let bw = take_walk_counts();
             take_beta_count();
             let t = Instant::now();
             ck(name, &p, &s);
             let check = t.elapsed();
-            let (cw, check_built) = (take_walk_counts(), take_hc_built().0);
+            let (cw, check_built) = (take_walk_counts(), take_built().0);
             let nodes = tatic::kernel::term_sizes(&p).0;
             writeln!(
                 out,

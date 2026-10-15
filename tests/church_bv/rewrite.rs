@@ -336,7 +336,7 @@ pub fn k_var_law_to(n: usize, k: usize, ty: &Expr, sides: &dyn Fn(&[Expr]) -> (E
         let args = (0..k)
             .map(|v| {
                 if v < j {
-                    mk(&(0..n).map(|i| shift(&at(d, level(v) + i), 0, 1)).collect::<Vec<_>>())
+                    church_tuple(&(0..n).map(|i| shift(&at(d, level(v) + i), 0, 1)).collect::<Vec<_>>())
                 } else if v == j {
                     var(0)
                 } else {

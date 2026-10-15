@@ -257,14 +257,14 @@ pub fn run(n: usize) {
 #[test]
 fn table_bodies_are_shared_per_truth_table() {
     tatic::kernel::scoped(|| {
-        let head = |e: &Expr| match e {
-            Expr::App(h, _) => h.clone(),
+        let head = |e: &Expr| match e.node() {
+            tatic::kernel::Node::App(h, _) => h,
             _ => panic!("table_app is an application"),
         };
         let (a, b) = (table_app(&[t(), f()], &|v| v[0] != v[1]), table_app(&[f(), f()], &|v| v.iter().filter(|x| **x).count() == 1));
-        assert!(tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&b))));
+        assert!(tatic::kernel::node_key(&head(&head(&a))) == tatic::kernel::node_key(&head(&head(&b))));
         let c = table_app(&[t(), f()], &|v| v[0] && !v[1]);
-        assert!(!tatic::kernel::Rc::ptr_eq(&head(&head(&a)), &head(&head(&c))));
+        assert!(tatic::kernel::node_key(&head(&head(&a))) != tatic::kernel::node_key(&head(&head(&c))));
         for (e, want) in [(&a, true), (&b, false), (&c, true)] {
             assert_eq!(tatic::kernel::normalize(e), bit(want));
         }
@@ -275,21 +275,21 @@ fn table_bodies_are_shared_per_truth_table() {
 /// rebuilt in a new scope.
 #[test]
 fn constants_are_built_once_per_generation() {
-    let kids = |e: &Expr| match e {
-        Expr::Lam(a, b) => (a.clone(), b.clone()),
+    let kids = |e: &Expr| match e.node() {
+        tatic::kernel::Node::Lam(a, b) => (a, b),
         _ => panic!("and_ is a lambda"),
     };
     let fresh = || bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0)));
     let first = tatic::kernel::scoped(|| {
         let (a, b, c) = (kids(&and_()), kids(&and_()), kids(&fresh()));
-        assert!(tatic::kernel::Rc::ptr_eq(&a.1, &b.1) && tatic::kernel::Rc::ptr_eq(&a.1, &c.1));
+        assert!(tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&b.1) && tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&c.1));
         and_()
     });
     let first = kids(&first);
     tatic::kernel::scoped(|| {
         let (a, c) = (kids(&and_()), kids(&fresh()));
-        assert!(!tatic::kernel::Rc::ptr_eq(&a.1, &first.1), "rebuilt in a new generation");
-        assert!(tatic::kernel::Rc::ptr_eq(&a.1, &c.1) && *a.1 == *first.1);
+        assert!(tatic::kernel::node_key(&a.1) != tatic::kernel::node_key(&first.1), "rebuilt in a new generation");
+        assert!(tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&c.1) && a.1 == first.1);
     })
 }
 
@@ -350,7 +350,7 @@ pub fn bit_lemma(motive_body: Expr, at_true: Expr, at_false: Expr) -> (Expr, Exp
     let ty = pi(bool0(), arrow(app(good_bool(), var(0)), motive_body));
     (proof, ty)
 }
-pub fn mk(args: &[Expr]) -> Expr {
+pub fn church_tuple(args: &[Expr]) -> Expr {
     let n = args.len();
     lam(sort(1), lam(karrow(n), apps(var(0), args.iter().map(|a| shift(a, 0, 2)).collect())))
 }
@@ -359,7 +359,7 @@ pub fn mk(args: &[Expr]) -> Expr {
 pub fn good_bv_step(n: usize) -> Expr {
     // at ctx [.. P a_0..a_(n-1) ga_0..ga_(n-1)]: P = var(2n), a_i = var(2n-1-i)
     let args: Vec<Expr> = (0..n).map(|i| var((2 * n - 1 - i) as u32)).collect();
-    let mut body = app(var(2 * n as u32), mk(&args));
+    let mut body = app(var(2 * n as u32), church_tuple(&args));
     for _ in 0..n {
         body = pi(app(good_bool(), var(n as u32 - 1)), body);
     }
@@ -577,7 +577,7 @@ pub fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
         lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n),
             app(app(app(app(var(0), var(5)), var(4)), var(3)), var(2))))))));
     let good_mk_ty = pi(bool0(), pi(bool0(), pi(app(good_bool(), var(1)), pi(app(good_bool(), var(1)),
-        app(good_bv(n), mk(&[var(3), var(2)]))))));
+        app(good_bv(n), church_tuple(&[var(3), var(2)]))))));
     ck("good_mk", &good_mk, &good_mk_ty);
 
     for n in [1usize, 2, 3, 4, 8] {
@@ -737,7 +737,7 @@ pub fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     let step_y = binders(n, cong_n(&bool0(), &bv_ty(n), &fbody, &s, &s2, e));
     // inside the a-step (depth d1): eliminate y
     let a1 = |i: usize| var((d1 - 1 - (4 + i)) as u32);
-    let mka = mk(&(0..n).map(|i| shift(&a1(i), 0, 1)).collect::<Vec<_>>());
+    let mka = church_tuple(&(0..n).map(|i| shift(&a1(i), 0, 1)).collect::<Vec<_>>());
     let motive_y = lam(bv_ty(n), id(bv_ty(n), app2(add(n), mka.clone(), var(0)), app2(add(n), var(0), mka)));
     let gy = var((d1 - 1 - 3) as u32);
     let step_x = binders(n, app2(gy, motive_y, step_y));
@@ -904,17 +904,12 @@ pub fn walk_counts_on_hard_queries() {
         let _ = take_defeq_log();
         let _ = take_site_counts();
         let _ = take_walk_counts();
-        let _ = (tatic::kernel::take_hc_built(), tatic::kernel::take_hc_inst());
+        let _ = tatic::kernel::take_built();
         let tck = Instant::now();
         ck(&format!("n={n}"), &proof, &stmt);
         {
-            let (built, new) = tatic::kernel::take_hc_built();
-            let i = tatic::kernel::take_hc_inst();
-            println!("HC n={n}: nodes built in the check={built}, of which structurally new={new} ({:.1}% would be intern hits)", 100.0 * (built - new) as f64 / built.max(1) as f64);
-            for (k, name) in ["instantiate", "shift", "whnf_step", "conv_whnf"].iter().enumerate() {
-                let c = i[k];
-                println!("REPEAT n={n} {name}: calls={} maximal repeated calls={} work skipped by a global memo={} of {} ({:.1}%)", c[0], c[1], c[2], c[3], 100.0 * c[2] as f64 / c[3].max(1) as f64);
-            }
+            let (calls, new) = tatic::kernel::take_built();
+            println!("HC n={n}: mk calls in the check={calls}, new nodes={new} ({:.1}% were intern hits)", 100.0 * calls.saturating_sub(new) as f64 / calls.max(1) as f64);
         }
         println!("CHECK n={n}: whole check {:?}", tck.elapsed());
         { let (pd, pt) = tatic::kernel::term_sizes(&proof); let (sd, st) = tatic::kernel::term_sizes(&stmt); println!("SIZE n={n}: proof dag={pd} tree={pt}; statement dag={sd} tree={st}"); }
@@ -952,27 +947,6 @@ pub fn walk_counts_on_hard_queries() {
             t0.elapsed(),
             take_beta_count(),
             w[0], w[1], w[2], w[3], w[4]
-        );
-        // Option C probe: rename the context to Frees, then compare.
-        let _ = take_walk_counts();
-        let t1 = Instant::now();
-        let mut rename_visits = 0;
-        let mut renamed = Vec::new();
-        for (a, b, c) in &hard {
-            let (ra, rb) = rename_pair_memo(a, b, *c);
-            renamed.push((ra, rb));
-        }
-        let rw = take_walk_counts();
-        rename_visits += rw[0];
-        let t_rename = t1.elapsed();
-        let t2 = Instant::now();
-        for (ra, rb) in &renamed {
-            assert!(def_eq(ra, rb));
-        }
-        let cw = take_walk_counts();
-        println!(
-            "RENAME n={n}: rename {t_rename:?} ({rename_visits} visits); then def_eq {:?} instantiate={} shift={} eq={} conv_whnf={} (plain: instantiate={} shift={} eq={})",
-            t2.elapsed(), cw[0], cw[1], cw[2], cw[3], w[0], w[1], w[2]
         );
         println!(
             "PROBE n={n}: uses={} depth0={} deeper-closed={} deeper-loose={} shift visits from deeper-loose={} of {}",
@@ -1078,43 +1052,6 @@ pub fn a_large_check_does_not_churn_stack_segments() {
     let switches = tatic::kernel::segment_switches() - before;
     println!("segment switches in the n=256 check: {switches}");
     assert!(switches < 100, "{switches} stack segment switches in one check");
-}
-
-/// Cost of an intern-table hit against building a node, for the hash-consing design (doc section 59):
-/// 16 million App nodes over a pool of 16k leaves and 64k distinct (child, child) pairs, built fresh
-/// with `Rc::new` against looked up in a pointer-keyed map.
-#[test]
-#[ignore]
-pub fn intern_lookup_vs_rc_new() {
-    use std::collections::HashMap;
-    use std::hash::BuildHasherDefault;
-    use tatic::kernel::Rc;
-    let leaves: Vec<Rc<Expr>> = (0..16384u32).map(|i| Rc::new(Expr::Var(i))).collect();
-    let mut state = 12345u64;
-    let mut next = move || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (state >> 33) as usize
-    };
-    let pairs: Vec<(usize, usize)> = (0..65536).map(|_| (next() % 16384, next() % 16384)).collect();
-    const N: usize = 16_000_000;
-    let mut sink = 0usize;
-    let t = Instant::now();
-    for k in 0..N {
-        let (a, b) = pairs[k & 65535];
-        let node = Rc::new(Expr::App(leaves[a].clone(), leaves[b].clone()));
-        sink += node.loose() as usize;
-    }
-    let build = t.elapsed();
-    let mut table: HashMap<(usize, usize), Rc<Expr>, BuildHasherDefault<Fx>> = HashMap::default();
-    let t = Instant::now();
-    for k in 0..N {
-        let (a, b) = pairs[k & 65535];
-        let key = (Rc::as_ptr(&leaves[a]) as usize, Rc::as_ptr(&leaves[b]) as usize);
-        let node = table.entry(key).or_insert_with(|| Rc::new(Expr::App(leaves[a].clone(), leaves[b].clone()))).clone();
-        sink += node.loose() as usize;
-    }
-    let intern = t.elapsed();
-    println!("INTERN-BENCH (sink {sink}): {N} builds: Rc::new {:?} ({:.0} ns each), intern lookup {:?} ({:.0} ns each); table entries {}", build, build.as_nanos() as f64 / N as f64, intern, intern.as_nanos() as f64 / N as f64, table.len());
 }
 
 /// Cost of a lookup in a pointer-keyed table against the table's size (design doc section 72):
@@ -1588,7 +1525,7 @@ pub fn wrap_div_keeps_r(n: usize, claimed: bool) -> (Expr, Expr) {
     }
     let to_r = cong_n(&bool0(), &bv_ty(n), &tuple, &etas, &rs, ps);
     let f_false = app(ff.clone(), f());
-    let mk_r = mk(&rs);
+    let mk_r = church_tuple(&rs);
     let step_body = trans_proof(&bv_ty(n), &app(ff.clone(), guard_ab), &f_false, &mk_r, to_f, to_r);
     let mut step = step_body;
     for _ in 0..n {
@@ -1716,7 +1653,7 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
     let st_b = var((db - 1 - 5) as u32);
     let step_y = binders(n, apps(st_b, s.into_iter().chain(gs).collect()));
     let a_da = |i: usize| var((da - 1 - (6 + i)) as u32);
-    let mka = mk(&(0..n).map(|i| shift(&a_da(i), 0, 1)).collect::<Vec<_>>());
+    let mka = church_tuple(&(0..n).map(|i| shift(&a_da(i), 0, 1)).collect::<Vec<_>>());
     // under the `y'` binder at depth da + 1: P = var(da - 1 - 4 + 1)
     let motive_y = lam(bv_ty(n), app(var((da - 4) as u32), app2(vec.clone(), mka, var(0))));
     let gy = var((da - 1 - 3) as u32);
@@ -1832,7 +1769,7 @@ pub fn or_disjoint_proof(n: usize, k: usize, stated_sum_with_a_twice: bool) -> (
     let b_bits: Vec<Expr> = (0..n).map(|i| if i >= k { bit_v(i) } else { f() }).collect();
     let b_good: Vec<Expr> = (0..n).map(|i| if i >= k { good_v(i) } else { good_bit(false) }).collect();
     // `mk` shifts its arguments by 2; `good_tuple` does too, so both take the operands at depth d
-    let (x, y) = (mk(&a_bits), mk(&b_bits));
+    let (x, y) = (church_tuple(&a_bits), church_tuple(&b_bits));
     let (gx, gy) = (good_tuple(&a_bits, &a_good), good_tuple(&b_bits, &b_good));
     let gor = apps(g_or_bv, vec![x.clone(), y.clone(), gx.clone(), gy.clone()]);
     let lhs = app2(to_n(n), app2(or_bv(n), x.clone(), y.clone()), gor);
@@ -2184,7 +2121,7 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
         let rhs_z = if wrong { y.clone() } else { zz.clone() };
         id(bv_ty(n), app2(ad.clone(), app2(ad.clone(), x.clone(), y.clone()), zz), app2(ad.clone(), x, app2(ad.clone(), y, rhs_z)))
     };
-    let mk_at = |d: usize, first: usize, extra: i32| mk(&(0..n).map(|i| shift(&at(d, first + i), 0, extra)).collect::<Vec<_>>());
+    let mk_at = |d: usize, first: usize, extra: i32| church_tuple(&(0..n).map(|i| shift(&at(d, first + i), 0, extra)).collect::<Vec<_>>());
     // at depth d2: eliminate gz into a motive over z'
     let motive_z = lam(bv_ty(n), claim(mk_at(d2, 6, 1), mk_at(d2, 6 + 2 * n, 1), var(0)));
     let step_y = binders(n, app2(at(d2, 5), motive_z, step_z));

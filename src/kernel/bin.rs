@@ -6,36 +6,30 @@
 use super::*;
 use std::collections::HashMap;
 
-/// The children of `e` in field order.
-fn children(e: &Expr) -> Vec<&Expr> {
-    let cs: Vec<&Rc<Expr>> = match e {
-        Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => vec![],
-        Expr::Refl(a) => vec![a],
-        Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => vec![a, b],
-        Expr::Id(a, b, c) | Expr::Pair(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => vec![a, b, c],
-        Expr::WRec { motive, children_ty, step, target } => vec![motive, children_ty, step, target],
-        Expr::J { motive, base, a, b, p } => vec![motive, base, a, b, p],
-    };
-    cs.into_iter().map(|c| &**c).collect()
+/// The children of `n` in field order.
+fn children(n: &Node<Expr>) -> Vec<Expr> {
+    let mut cs = Vec::new();
+    n.for_kids(|c, _| cs.push(c.clone()));
+    cs
 }
 
-fn tag(e: &Expr) -> u8 {
-    match e {
-        Expr::Var(_) => 0,
-        Expr::Sort(_) => 1,
-        Expr::Pi(..) => 2,
-        Expr::Lam(..) => 3,
-        Expr::App(..) => 4,
-        Expr::Id(..) => 5,
-        Expr::Refl(_) => 6,
-        Expr::J { .. } => 7,
-        Expr::W(..) => 8,
-        Expr::Sup(..) => 9,
-        Expr::WRec { .. } => 10,
-        Expr::Sigma(..) => 11,
-        Expr::Pair(..) => 12,
-        Expr::SigRec { .. } => 13,
-        Expr::Const(_) | Expr::Free(_) => u8::MAX,
+fn tag(n: &Node<Expr>) -> u8 {
+    match n {
+        Node::Var(_) => 0,
+        Node::Sort(_) => 1,
+        Node::Pi(..) => 2,
+        Node::Lam(..) => 3,
+        Node::App(..) => 4,
+        Node::Id(..) => 5,
+        Node::Refl(_) => 6,
+        Node::J { .. } => 7,
+        Node::W(..) => 8,
+        Node::Sup(..) => 9,
+        Node::WRec { .. } => 10,
+        Node::Sigma(..) => 11,
+        Node::Pair(..) => 12,
+        Node::SigRec { .. } => 13,
+        Node::Const(_) | Node::Free(_) => u8::MAX,
     }
 }
 
@@ -62,31 +56,32 @@ fn get(b: &[u8], pos: &mut usize) -> Result<u64, String> {
 
 /// The bytes of `e`; `Err` on a `Const` or `Free` (the format is for closed terms).
 pub fn write(e: &Expr) -> Result<Vec<u8>, String> {
-    let mut index: HashMap<*const Expr, u64> = HashMap::new();
+    let mut index: HashMap<u64, u64> = HashMap::new();
     let mut body = Vec::new();
     // post-order without recursion: (node, children already pushed)
-    let mut stack: Vec<(&Expr, bool)> = vec![(e, false)];
-    while let Some((n, expanded)) = stack.pop() {
-        let key = n as *const Expr;
+    let mut stack: Vec<(Expr, bool)> = vec![(e.clone(), false)];
+    while let Some((x, expanded)) = stack.pop() {
+        let key = node_key(&x);
         if index.contains_key(&key) {
             continue;
         }
+        let n = x.node();
         if !expanded {
-            stack.push((n, true));
-            stack.extend(children(n).into_iter().rev().map(|c| (c, false)));
+            stack.push((x, true));
+            stack.extend(children(&n).into_iter().rev().map(|c| (c, false)));
             continue;
         }
         let at = index.len() as u64;
         match n {
-            Expr::Const(_) | Expr::Free(_) => return Err(format!("not a closed term: {n:?}")),
-            Expr::Var(k) | Expr::Sort(k) => {
-                body.push(tag(n));
-                put(&mut body, *k as u64);
+            Node::Const(_) | Node::Free(_) => return Err(format!("not a closed term: {x:?}")),
+            Node::Var(k) | Node::Sort(k) => {
+                body.push(tag(&n));
+                put(&mut body, k as u64);
             }
             _ => {
-                body.push(tag(n));
-                for c in children(n) {
-                    put(&mut body, at - index[&(c as *const Expr)]);
+                body.push(tag(&n));
+                for c in children(&n) {
+                    put(&mut body, at - index[&node_key(&c)]);
                 }
             }
         }
@@ -195,6 +190,6 @@ mod tests {
         assert!(read(&[1, 99]).is_err(), "bad tag");
         assert!(read(&[1, 6, 1]).is_err(), "child before the first node");
         assert!(read(&[]).is_err(), "empty");
-        assert!(write(&app(Expr::Free(0), sort(0))).is_err(), "a Free is not closed");
+        assert!(write(&app(mk(Node::Free(0)), sort(0))).is_err(), "a Free is not closed");
     }
 }

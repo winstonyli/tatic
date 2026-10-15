@@ -34,7 +34,7 @@
 //! Deterministic (the same splitmix64 PRNG the other fuzz files use),
 //! seed-scanned, bounded generation depth.
 
-use tatic::kernel::{self, Expr, Postulates};
+use tatic::kernel::{self, Expr, Node, Postulates};
 
 struct Rng {
     state: u64,
@@ -68,17 +68,17 @@ const GLOBALS: u32 = 7;
 /// when `consts` is false, so the existing tests' streams are untouched.
 fn gen_leaf(rng: &mut Rng, scope: u32) -> Expr {
     if rng.consts && rng.below(3) == 0 {
-        return Expr::Const(rng.below(GLOBALS + 2));
+        return kernel::mk(Node::Const(rng.below(GLOBALS + 2)));
     }
     match rng.below(4) {
-        0 if scope > 0 => Expr::Var(rng.below(scope)),
-        0 | 1 => Expr::Var(rng.below(scope.max(1) + 3)),
-        2 => Expr::Var(rng.below(1000)),
+        0 if scope > 0 => kernel::var(rng.below(scope)),
+        0 | 1 => kernel::var(rng.below(scope.max(1) + 3)),
+        2 => kernel::var(rng.below(1000)),
         _ => {
             if rng.below(20) == 0 {
-                Expr::Sort(u32::MAX)
+                kernel::sort(u32::MAX)
             } else {
-                Expr::Sort(rng.below(4))
+                kernel::sort(rng.below(4))
             }
         }
     }
@@ -117,17 +117,9 @@ fn gen_expr(rng: &mut Rng, scope: u32, depth: u32) -> Expr {
 
 /// Total node count of `e` (itself included), pre-order.
 fn count_nodes(e: &Expr) -> u32 {
-    1 + match e {
-        Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => 0,
-        Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) => count_nodes(a) + count_nodes(b),
-        Expr::Id(a, x, y) => count_nodes(a) + count_nodes(x) + count_nodes(y),
-        Expr::Refl(a) => count_nodes(a),
-        Expr::J { motive, base, a, b, p } => count_nodes(motive) + count_nodes(base) + count_nodes(a) + count_nodes(b) + count_nodes(p),
-        Expr::WRec { motive, children_ty, step, target } => count_nodes(motive) + count_nodes(children_ty) + count_nodes(step) + count_nodes(target),
-        Expr::Sigma(a, b) => count_nodes(a) + count_nodes(b),
-        Expr::Pair(fam, a, b) => count_nodes(fam) + count_nodes(a) + count_nodes(b),
-        Expr::SigRec { motive, step, target } => count_nodes(motive) + count_nodes(step) + count_nodes(target),
-    }
+    let mut n = 1;
+    e.node().for_kids(|c, _| n += count_nodes(c));
+    n
 }
 
 /// The subterm at pre-order position `target` (same numbering
@@ -138,79 +130,16 @@ fn nth_subterm(e: &Expr, target: u32, counter: &mut u32) -> Expr {
     if my_idx == target {
         return e.clone();
     }
-    match e {
-        Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => unreachable!("target out of range"),
-        Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) => {
-            let na = count_nodes(a);
-            if target < *counter + na {
-                nth_subterm(a, target, counter)
-            } else {
-                *counter += na;
-                nth_subterm(b, target, counter)
-            }
+    let mut kids = Vec::new();
+    e.node().for_kids(|c, _| kids.push(c.clone()));
+    for child in &kids {
+        let nc = count_nodes(child);
+        if target < *counter + nc {
+            return nth_subterm(child, target, counter);
         }
-        Expr::Id(a, x, y) => {
-            for child in [a.as_ref(), x.as_ref(), y.as_ref()] {
-                let nc = count_nodes(child);
-                if target < *counter + nc {
-                    return nth_subterm(child, target, counter);
-                }
-                *counter += nc;
-            }
-            unreachable!("target out of range")
-        }
-        Expr::Refl(a) => nth_subterm(a, target, counter),
-        Expr::J { motive, base, a, b, p } => {
-            for child in [motive.as_ref(), base.as_ref(), a.as_ref(), b.as_ref(), p.as_ref()] {
-                let nc = count_nodes(child);
-                if target < *counter + nc {
-                    return nth_subterm(child, target, counter);
-                }
-                *counter += nc;
-            }
-            unreachable!("target out of range")
-        }
-        Expr::WRec { motive, children_ty, step, target: tgt } => {
-            for child in [motive.as_ref(), children_ty.as_ref(), step.as_ref(), tgt.as_ref()] {
-                let nc = count_nodes(child);
-                if target < *counter + nc {
-                    return nth_subterm(child, target, counter);
-                }
-                *counter += nc;
-            }
-            unreachable!("target out of range")
-        }
-        Expr::Sigma(a, b) => {
-            for child in [a.as_ref(), b.as_ref()] {
-                let nc = count_nodes(child);
-                if target < *counter + nc {
-                    return nth_subterm(child, target, counter);
-                }
-                *counter += nc;
-            }
-            unreachable!("target out of range")
-        }
-        Expr::Pair(fam, a, b) => {
-            for child in [fam.as_ref(), a.as_ref(), b.as_ref()] {
-                let nc = count_nodes(child);
-                if target < *counter + nc {
-                    return nth_subterm(child, target, counter);
-                }
-                *counter += nc;
-            }
-            unreachable!("target out of range")
-        }
-        Expr::SigRec { motive, step, target: tgt } => {
-            for child in [motive.as_ref(), step.as_ref(), tgt.as_ref()] {
-                let nc = count_nodes(child);
-                if target < *counter + nc {
-                    return nth_subterm(child, target, counter);
-                }
-                *counter += nc;
-            }
-            unreachable!("target out of range")
-        }
+        *counter += nc;
     }
+    unreachable!("target out of range")
 }
 
 /// Rebuilds `e`, replacing the subterm at pre-order position `target`
@@ -222,78 +151,9 @@ fn replace_nth(e: &Expr, target: u32, counter: &mut u32, replacement: &Expr) -> 
     if my_idx == target {
         return replacement.clone();
     }
-    match e {
-        Expr::Var(k) => Expr::Var(*k),
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Free(l) => Expr::Free(*l),
-        Expr::Pi(a, b) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            let b2 = replace_nth(b, target, counter, replacement);
-            kernel::pi(a2, b2)
-        }
-        Expr::Lam(a, b) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            let b2 = replace_nth(b, target, counter, replacement);
-            kernel::lam(a2, b2)
-        }
-        Expr::App(a, b) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            let b2 = replace_nth(b, target, counter, replacement);
-            kernel::app(a2, b2)
-        }
-        Expr::Id(a, x, y) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            let x2 = replace_nth(x, target, counter, replacement);
-            let y2 = replace_nth(y, target, counter, replacement);
-            kernel::id(a2, x2, y2)
-        }
-        Expr::Refl(a) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            kernel::refl(a2)
-        }
-        Expr::J { motive, base, a, b, p } => {
-            let m2 = replace_nth(motive, target, counter, replacement);
-            let base2 = replace_nth(base, target, counter, replacement);
-            let a2 = replace_nth(a, target, counter, replacement);
-            let b2 = replace_nth(b, target, counter, replacement);
-            let p2 = replace_nth(p, target, counter, replacement);
-            kernel::jelim(m2, base2, a2, b2, p2)
-        }
-        Expr::W(a, b) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            let b2 = replace_nth(b, target, counter, replacement);
-            kernel::wty(a2, b2)
-        }
-        Expr::Sup(a, f) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            let f2 = replace_nth(f, target, counter, replacement);
-            kernel::sup(a2, f2)
-        }
-        Expr::WRec { motive, children_ty, step, target: tgt } => {
-            let m2 = replace_nth(motive, target, counter, replacement);
-            let c2 = replace_nth(children_ty, target, counter, replacement);
-            let s2 = replace_nth(step, target, counter, replacement);
-            let t2 = replace_nth(tgt, target, counter, replacement);
-            kernel::wrec(m2, c2, s2, t2)
-        }
-        Expr::Sigma(a, b) => {
-            let a2 = replace_nth(a, target, counter, replacement);
-            let b2 = replace_nth(b, target, counter, replacement);
-            kernel::sigma(a2, b2)
-        }
-        Expr::Pair(fam, a, b) => {
-            let fam2 = replace_nth(fam, target, counter, replacement);
-            let a2 = replace_nth(a, target, counter, replacement);
-            let b2 = replace_nth(b, target, counter, replacement);
-            kernel::pair(fam2, a2, b2)
-        }
-        Expr::SigRec { motive, step, target: tgt } => {
-            let m2 = replace_nth(motive, target, counter, replacement);
-            let s2 = replace_nth(step, target, counter, replacement);
-            let t2 = replace_nth(tgt, target, counter, replacement);
-            kernel::sigrec(m2, s2, t2)
-        }
+    match e.node() {
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        n => kernel::mk(n.map_kids(|c, _| replace_nth(&c, target, counter, replacement))),
     }
 }
 
@@ -311,8 +171,8 @@ fn mutate_once(rng: &mut Rng, e: &Expr, scope: u32) -> Expr {
             let mut c = 0;
             nth_subterm(e, other, &mut c)
         }
-        1 => Expr::Var(rng.below(scope.max(1) + 5)),
-        _ => Expr::Sort(rng.below(5)),
+        1 => kernel::var(rng.below(scope.max(1) + 5)),
+        _ => kernel::sort(rng.below(5)),
     };
     let mut c = 0;
     replace_nth(e, target, &mut c, &replacement)
@@ -323,26 +183,12 @@ fn mutate_once(rng: &mut Rng, e: &Expr, scope: u32) -> Expr {
 /// becomes `Const(n - 1 - i)`. A `Var` past the context drops by `n`,
 /// still unbound. Bound variables stay.
 fn to_consts(e: &Expr, n: u32, d: u32) -> Expr {
-    let go = |x: &Expr, d: u32| to_consts(x, n, d);
-    match e {
-        Expr::Var(k) if *k < d => Expr::Var(*k),
-        Expr::Var(k) if *k - d < n => Expr::Const(n - 1 - (*k - d)),
-        Expr::Var(k) => Expr::Var(*k - n),
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Free(l) => Expr::Free(*l),
-        Expr::Pi(a, b) => kernel::pi(go(a, d), go(b, d + 1)),
-        Expr::Lam(a, b) => kernel::lam(go(a, d), go(b, d + 1)),
-        Expr::App(f, a) => kernel::app(go(f, d), go(a, d)),
-        Expr::Id(a, x, y) => kernel::id(go(a, d), go(x, d), go(y, d)),
-        Expr::Refl(a) => kernel::refl(go(a, d)),
-        Expr::J { motive, base, a, b, p } => kernel::jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
-        Expr::W(a, b) => kernel::wty(go(a, d), go(b, d + 1)),
-        Expr::Sup(a, f) => kernel::sup(go(a, d), go(f, d)),
-        Expr::WRec { motive, children_ty, step, target } => kernel::wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
-        Expr::Sigma(a, b) => kernel::sigma(go(a, d), go(b, d + 1)),
-        Expr::Pair(fam, a, b) => kernel::pair(go(fam, d + 1), go(a, d), go(b, d)),
-        Expr::SigRec { motive, step, target } => kernel::sigrec(go(motive, d), go(step, d), go(target, d)),
+    match e.node() {
+        Node::Var(k) if k < d => e.clone(),
+        Node::Var(k) if k - d < n => kernel::mk(Node::Const(n - 1 - (k - d))),
+        Node::Var(k) => kernel::var(k - n),
+        Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        m => kernel::mk(m.map_kids(|c, under| to_consts(&c, n, d + under as u32))),
     }
 }
 
@@ -359,25 +205,10 @@ fn to_globals(globals: &kernel::Globals) -> kernel::Globals {
 /// constant environment turned back into references to an `n`-entry local
 /// context, as if `d` binders were already pushed on top of it.
 fn to_vars(e: &Expr, n: u32, d: u32) -> Expr {
-    let go = |x: &Expr, d: u32| to_vars(x, n, d);
-    match e {
-        Expr::Var(k) => Expr::Var(*k),
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) if *l < n => Expr::Var(d + (n - 1 - l)),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Free(l) => Expr::Free(*l),
-        Expr::Pi(a, b) => kernel::pi(go(a, d), go(b, d + 1)),
-        Expr::Lam(a, b) => kernel::lam(go(a, d), go(b, d + 1)),
-        Expr::App(f, a) => kernel::app(go(f, d), go(a, d)),
-        Expr::Id(a, x, y) => kernel::id(go(a, d), go(x, d), go(y, d)),
-        Expr::Refl(a) => kernel::refl(go(a, d)),
-        Expr::J { motive, base, a, b, p } => kernel::jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
-        Expr::W(a, b) => kernel::wty(go(a, d), go(b, d + 1)),
-        Expr::Sup(a, f) => kernel::sup(go(a, d), go(f, d)),
-        Expr::WRec { motive, children_ty, step, target } => kernel::wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
-        Expr::Sigma(a, b) => kernel::sigma(go(a, d), go(b, d + 1)),
-        Expr::Pair(fam, a, b) => kernel::pair(go(fam, d + 1), go(a, d), go(b, d)),
-        Expr::SigRec { motive, step, target } => kernel::sigrec(go(motive, d), go(step, d), go(target, d)),
+    match e.node() {
+        Node::Const(l) if l < n => kernel::var(d + (n - 1 - l)),
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        m => kernel::mk(m.map_kids(|c, under| to_vars(&c, n, d + under as u32))),
     }
 }
 
@@ -620,7 +451,7 @@ fn a_term_with_a_free_never_checks() {
         let claim = to_consts(&claims[i], n, 0);
         let total = count_nodes(&proof);
         let mut c = 0;
-        let mutant = replace_nth(&proof, rng.below(total), &mut c, &Expr::Free(rng.below(3)));
+        let mutant = replace_nth(&proof, rng.below(total), &mut c, &kernel::mk(Node::Free(rng.below(3))));
         let result = kernel::check_in(&g, &kernel::Ctx::new(), &mutant, &claim);
         assert!(result.is_err(), "seed={seed}: {mutant:?} with a Free checked against {claim:?}");
     }

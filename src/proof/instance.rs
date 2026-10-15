@@ -1335,8 +1335,8 @@ pub(super) fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalS
     let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.combinators.lit_ref(c)).collect();
     let applied = apply_n(scaffold.theorem_proof.clone(), params.into_iter().chain([v, e]));
     let ty = scaffold.combinators.cp.arith.p.infer(&applied).ok()?;
-    let (lhs, rhs) = match kernel::whnf(&ty) {
-        Expr::Id(_, ref lhs, ref rhs) => ((**lhs).clone(), (**rhs).clone()),
+    let (lhs, rhs) = match kernel::whnf(&ty).node() {
+        kernel::Node::Id(_, lhs, rhs) => (lhs, rhs),
         _ => return None,
     };
 

@@ -145,7 +145,7 @@ pub fn record(key: &str, stmt: &Expr) {
         return;
     }
     BUILT.fetch_add(1, Relaxed);
-    match (loose_of(stmt) == 0 && free_of(stmt) == 0).then(|| tatic::kernel::bin::write(stmt)) {
+    match (stmt.loose() == 0 && stmt.free() == 0).then(|| tatic::kernel::bin::write(stmt)) {
         Some(Ok(b)) => RECORDED.lock().unwrap_or_else(|e| e.into_inner()).push((key.to_string(), b)),
         _ => {
             SKIPPED.fetch_add(1, Relaxed);

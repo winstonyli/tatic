@@ -28,216 +28,393 @@
 //! choosing `W` over an impredicative/Church encoding), and a `SigRec`
 //! projection that computes the same way.
 //!
-//! Besides those formers an `Expr` has `Var` (de Bruijn index), `Free` (a level, for builder parameters) and `Const`
+//! Besides those formers a term has `Var` (de Bruijn index), `Free` (a level, for builder parameters) and `Const`
 //! (a postulate or definition in `Globals`).
 //!
 //! This is the trusted core: the proof pipeline (`proof`, `jit`) builds terms and has this module check them; nothing
-//! else decides equality or typing. Layout: this file holds `Expr`, `shift`/`instantiate`, the hash-consing layer
-//! (`hc`), `whnf`/`def_eq`/`normalize` and `infer`/`check`. Child modules: `postulates` (builders over `Globals`, not
-//! read by the checker), `tests`, and `hc_probe` (measurement only, behind the `record-defeq` feature). The
-//! closure-based `kernel_lazy::def_eq` is an untrusted second evaluator used to test `def_eq` differentially.
+//! else decides equality or typing. Layout: this file holds `Node`/`Expr`, `shift`/`instantiate`, the hash-consing
+//! layer (`hc`), `whnf`/`def_eq`/`normalize` and `infer`/`check`. Child modules: `postulates` (builders over `Globals`,
+//! not read by the checker) and `tests`. The closure-based `kernel_lazy::def_eq` is an untrusted second evaluator used
+//! to test `def_eq` differentially.
 
 use hashbrown::{HashMap, HashSet};
 use std::fmt;
 
-// --- shared nodes ----------------------------------------------------------
+// --- nodes -----------------------------------------------------------------
 //
-// Every child of an `Expr` is a kernel `Rc`: `std::rc::Rc` with the
-// child's loose-variable and free-level ranges cached beside it, computed
-// once when the node is built. `shift`, `instantiate` and `is_var_free`
-// read it to skip the subterms they would leave unchanged, and keep those
-// by pointer (`RELATED_WORK.md` §64).
+// A term is a handle (`Expr`) to its outermost node, and the node holds its children as handles, so every subterm is
+// a node and a term is a DAG. Each node caches its loose-variable and free-level ranges, computed from its children
+// when it is built: `shift`, `instantiate` and `is_var_free` read them to skip the subterms they would leave
+// unchanged, and keep those as they are (`RELATED_WORK.md` §64).
 
-/// A shared node, and its [`loose_of`] and [`free_of`] computed when it
-/// was built.
-pub struct Rc<T>(std::rc::Rc<Node<T>>);
-
-struct Node<T> {
-    loose: u32,
-    free: u32,
-    /// Probe: id of this node's structure in a simulated hash-cons table (`hc_probe`).
-    #[cfg(feature = "record-defeq")]
-    canon: u64,
-    /// The `hc` table generation this node is canonical in (0: not).
-    generation: std::cell::Cell<u32>,
-    /// The last [`hc::uses`] answer for this node, packed by [`Rc::uses_slot`] (0: none). A fact
-    /// about the node alone, like `loose` and `free`, so it never goes stale. Fills the header's
-    /// padding.
-    uses: std::cell::Cell<u32>,
-    /// `copy_volume`: the region (outermost scope, numbered per thread) this node was built in, 0 outside any.
-    #[cfg(feature = "copy-volume")]
-    region: u32,
-    /// `copy_volume`: this node's id in the simulated persistent table, `u32::MAX` until `persist` reaches it.
-    #[cfg(feature = "copy-volume")]
-    pid: std::cell::Cell<u32>,
-    val: T,
+/// A term's outermost constructor over children of type `C`. `Node<Expr>` is what [`Expr::node`] hands out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Node<C> {
+    /// De Bruijn index; `Var(0)` is the innermost binder.
+    Var(u32),
+    /// `Type_i`.
+    Sort(u32),
+    /// A postulate: entry `l` of the global environment (`Globals`),
+    /// numbered from the first, so neither a binder nor a later global
+    /// renumbers it. Typed by `globals[l]`, which must be closed.
+    Const(u32),
+    /// A builder scope's parameter, by a level no other parameter reuses.
+    /// Never typed: `infer` and `check` reject any term, expected type or
+    /// context entry with one in it, so a parameter that escapes its
+    /// scope fails the check instead of acting as an axiom.
+    Free(u32),
+    /// `Pi(A, B)`: `B` is checked one binder deeper than `A` (i.e. `B` may
+    /// mention the newly-bound variable of type `A` as `Var(0)`).
+    Pi(C, C),
+    /// `Lam(A, body)`: `A` is the domain annotation; `body` one binder deeper.
+    Lam(C, C),
+    App(C, C),
+    /// `Id(A, a, b)`: the type of proofs that `a` and `b` (both `: A`) are equal.
+    Id(C, C, C),
+    /// `Refl(a) : Id(A, a, a)`, the only primitive way to construct an equality.
+    Refl(C),
+    /// Eliminator for `Id`. `motive` is `C : Pi x y : A. Id(A,x,y) -> Sort(k)`,
+    /// `base` is `c : Pi x : A. C x x (refl x)`, `p : Id(A, a, b)`.
+    /// Result type: `C a b p`. Reduces to `base a` when `p` reduces to a `Refl`.
+    J { motive: C, base: C, a: C, b: C, p: C },
+    /// `W(A, B)`: `B` one binder deeper than `A`, i.e. `B` is the family
+    /// `B(x)` for `x : A` giving the arity/shape of the children at tag `x`.
+    W(C, C),
+    /// `Sup(a, f) : W(A,B)` where `a : A` and `f : B(a) -> W(A,B)`.
+    Sup(C, C),
+    /// Eliminator (recursor) for `W`. `motive : W(A,B) -> Sort(k)`,
+    /// `step : Pi a:A. Pi f:(B a -> W). (Pi y:B a. motive (f y)) -> motive (sup a f)`.
+    /// Reduces on a `Sup` target by recursing into every child.
+    ///
+    /// `children_ty` is `B` itself, in the *same* representation `W(A,B)`'s
+    /// own second field already uses (written one binder deeper than `A`,
+    /// i.e. `B(x)` with the ambient `x:A` as `Var(0)`) -- carried here,
+    /// redundantly with `target`'s own real type `W(A,B)`, purely so
+    /// `whnf_in`'s own automatic reduction (which has no typing context
+    /// at all, by design) can give its induction-hypothesis closure an
+    /// honest domain (`subst_top(children_ty, a)`, i.e. `B(a)`) instead of
+    /// an inert placeholder. `infer` independently re-derives `B` from
+    /// `target`'s own real inferred type and checks it against this field
+    /// via `def_eq` -- a term built with a *wrong* `children_ty` (whether
+    /// by mistake or by a hostile caller) is rejected outright, never
+    /// silently trusted, so this redundancy can't become a soundness hole.
+    WRec { motive: C, children_ty: C, step: C, target: C },
+    /// `Sigma(A, B)`: `B` one binder deeper than `A`, i.e. `B` is the
+    /// family `B(x)` for `x : A` -- the type of dependent pairs `(a, b)`
+    /// with `a : A` and `b : B(a)`. See this module's own top-level docs
+    /// for why this is a genuinely separate primitive, not derivable from
+    /// `W` here.
+    Sigma(C, C),
+    /// `Pair(fam, a, b) : Sigma(A, B)` where `a : A`, `b : B(a)`. `fam` is
+    /// `B` itself, in the *same* representation `Sigma`'s own second field
+    /// already uses (one binder deeper than the ambient context) --
+    /// carried explicitly because, unlike `Sup`'s own second argument
+    /// (whose `Pi`-type already reveals the whole `W(A,B)` it targets), a
+    /// pair's own two components alone don't determine which family `B`
+    /// was intended (many different families agree at one concrete `a`)
+    /// -- the same reason `Lam` carries its own domain annotation.
+    Pair(C, C, C),
+    /// Eliminator (recursor) for `Sigma`. `motive : Sigma(A,B) -> Sort(k)`,
+    /// `step : Pi a:A. Pi b:B(a). motive (pair(fam,a,b))`. Reduces on a
+    /// `Pair` target to `step a b`. Unlike `WRec`, needs no extra
+    /// `children_ty`-style redundant field: a pair isn't recursive, so
+    /// there's no induction-hypothesis closure to give an honest domain to
+    /// -- `target`'s own real type alone is enough context for both
+    /// `infer` and `whnf_in`.
+    SigRec { motive: C, step: C, target: C },
 }
 
-impl Rc<Expr> {
-    pub fn new(e: Expr) -> Self {
-        Rc(std::rc::Rc::new(Node {
-            loose: loose_of(&e),
-            free: free_of(&e),
-            #[cfg(feature = "record-defeq")]
-            canon: hc_probe::intern(&e),
-            generation: std::cell::Cell::new(0),
-            uses: std::cell::Cell::new(0),
-            #[cfg(feature = "copy-volume")]
-            region: copy_volume::region(),
-            #[cfg(feature = "copy-volume")]
-            pid: std::cell::Cell::new(u32::MAX),
-            val: e,
-        }))
-    }
-
-    /// As [`Rc::new`] with the ranges supplied by the caller, who must
-    /// know them to equal `loose_of(&e)` and `free_of(&e)`.
-    fn with_ranges(e: Expr, loose: u32, free: u32) -> Self {
-        debug_assert!(loose == loose_of(&e) && free == free_of(&e));
-        Rc(std::rc::Rc::new(Node {
-            loose,
-            free,
-            #[cfg(feature = "record-defeq")]
-            canon: hc_probe::intern(&e),
-            generation: std::cell::Cell::new(0),
-            uses: std::cell::Cell::new(0),
-            #[cfg(feature = "copy-volume")]
-            region: copy_volume::region(),
-            #[cfg(feature = "copy-volume")]
-            pid: std::cell::Cell::new(u32::MAX),
-            val: e,
-        }))
-    }
-
-    /// The node's remembered `uses(self, d, m)`, if the slot holds that query. The slot packs a set
-    /// bit, `d` and `m` in 15 bits each, and the answer; queries that don't fit are never stored.
+impl<C> Node<C> {
+    /// Calls `f` on each child in field order, with whether the child sits under a binder of this node (the second
+    /// field of `Pi`/`Lam`/`W`/`Sigma`, `WRec`'s `children_ty`, `Pair`'s `fam`).
     #[inline(always)]
-    pub(crate) fn uses_slot(&self, d: u32, m: u32) -> Option<bool> {
-        let s = self.0.uses.get();
-        (d < 1 << 15 && m < 1 << 15 && s >> 1 == (1 << 30 | d << 15 | m)).then_some(s & 1 == 1)
-    }
-
-    #[inline(always)]
-    pub(crate) fn set_uses_slot(&self, d: u32, m: u32, r: bool) {
-        if d < 1 << 15 && m < 1 << 15 {
-            self.0.uses.set((1 << 30 | d << 15 | m) << 1 | r as u32);
+    pub fn for_kids<'a>(&'a self, mut f: impl FnMut(&'a C, bool)) {
+        use Node::*;
+        match self {
+            Var(_) | Sort(_) | Const(_) | Free(_) => {}
+            Refl(a) => f(a, false),
+            Pi(a, b) | Lam(a, b) | W(a, b) | Sigma(a, b) => {
+                f(a, false);
+                f(b, true);
+            }
+            App(a, b) | Sup(a, b) => {
+                f(a, false);
+                f(b, false);
+            }
+            Id(a, b, c) | SigRec { motive: a, step: b, target: c } => {
+                f(a, false);
+                f(b, false);
+                f(c, false);
+            }
+            Pair(fam, a, b) => {
+                f(fam, true);
+                f(a, false);
+                f(b, false);
+            }
+            J { motive, base, a, b, p } => {
+                for c in [motive, base, a, b, p] {
+                    f(c, false);
+                }
+            }
+            WRec { motive, children_ty, step, target } => {
+                f(motive, false);
+                f(children_ty, true);
+                f(step, false);
+                f(target, false);
+            }
         }
     }
 
-    /// Whether this node and everything under it came from the current `hc` table, so that two
-    /// canonical nodes are structurally equal exactly when they are the same node. False outside
-    /// a scope.
+    /// The same constructor with each child replaced by `f(child, under_binder)`, called in field order.
+    #[inline(always)]
+    pub fn map_kids<D>(self, mut f: impl FnMut(C, bool) -> D) -> Node<D> {
+        use Node::*;
+        match self {
+            Var(k) => Var(k),
+            Sort(k) => Sort(k),
+            Const(k) => Const(k),
+            Free(k) => Free(k),
+            Pi(a, b) => Pi(f(a, false), f(b, true)),
+            Lam(a, b) => Lam(f(a, false), f(b, true)),
+            App(a, b) => App(f(a, false), f(b, false)),
+            Id(a, b, c) => Id(f(a, false), f(b, false), f(c, false)),
+            Refl(a) => Refl(f(a, false)),
+            J { motive, base, a, b, p } => J { motive: f(motive, false), base: f(base, false), a: f(a, false), b: f(b, false), p: f(p, false) },
+            W(a, b) => W(f(a, false), f(b, true)),
+            Sup(a, b) => Sup(f(a, false), f(b, false)),
+            WRec { motive, children_ty, step, target } => {
+                WRec { motive: f(motive, false), children_ty: f(children_ty, true), step: f(step, false), target: f(target, false) }
+            }
+            Sigma(a, b) => Sigma(f(a, false), f(b, true)),
+            Pair(fam, a, b) => Pair(f(fam, true), f(a, false), f(b, false)),
+            SigRec { motive, step, target } => SigRec { motive: f(motive, false), step: f(step, false), target: f(target, false) },
+        }
+    }
+
+    /// The constructor's tag and leaf value, as the node tables key them.
+    pub fn tag_leaf(&self) -> (u8, u32) {
+        use Node::*;
+        match self {
+            Var(k) => (0, *k),
+            Sort(k) => (1, *k),
+            Const(k) => (2, *k),
+            Free(k) => (3, *k),
+            Pi(..) => (4, 0),
+            Lam(..) => (5, 0),
+            App(..) => (6, 0),
+            Id(..) => (7, 0),
+            Refl(..) => (8, 0),
+            J { .. } => (9, 0),
+            W(..) => (10, 0),
+            Sup(..) => (11, 0),
+            WRec { .. } => (12, 0),
+            Sigma(..) => (13, 0),
+            Pair(..) => (14, 0),
+            SigRec { .. } => (15, 0),
+        }
+    }
+
+    /// Whether `self` and `other` have the same outermost constructor (and index, for `Var`/`Sort`/`Const`/`Free`)
+    /// and `c` holds of each pair of children, in field order, stopping at the first that fails. Syntactic equality
+    /// and `conv_whnf` are both this with a different `c`.
+    pub fn same_shape(&self, other: &Node<C>, mut c: impl FnMut(&C, &C) -> bool) -> bool {
+        if self.tag_leaf() != other.tag_leaf() {
+            return false;
+        }
+        let mut kids: [Option<&C>; 5] = [None; 5];
+        let mut i = 0;
+        other.for_kids(|k, _| {
+            kids[i] = Some(k);
+            i += 1;
+        });
+        let (mut ok, mut j) = (true, 0);
+        self.for_kids(|k, _| {
+            ok = ok && c(k, kids[j].unwrap());
+            j += 1;
+        });
+        ok
+    }
+
+    /// One more than the largest loose `Var` index and one more than the largest `Free` level, from the children's
+    /// (`loose`, `free`): a binder child has one loose variable fewer out here, and a binder doesn't change `free` (a
+    /// `Free` is a level, not an index). Saturating, so `Var(u32::MAX)` doesn't wrap to "closed" (the range is exact
+    /// only below `u32::MAX`, which no real term reaches).
+    pub fn ranges(&self, loose: impl Fn(&C) -> u32, free: impl Fn(&C) -> u32) -> (u32, u32) {
+        match self {
+            Node::Var(k) => (k.saturating_add(1), 0),
+            Node::Free(l) => (0, l.saturating_add(1)),
+            _ => {
+                let (mut l, mut f) = (0, 0);
+                self.for_kids(|c, under| {
+                    l = l.max(if under { loose(c).saturating_sub(1) } else { loose(c) });
+                    f = f.max(free(c));
+                });
+                (l, f)
+            }
+        }
+    }
+}
+
+/// A term: a handle to its outermost node. Cloning is a refcount bump, not a copy: a term is built and re-threaded
+/// through deeply nested proof terms (the Ev-witness builder's per-call-site composition, ...) almost entirely by
+/// `.clone()`, so cloning any term, however large, is O(1) and its children are shared. The id arena (spec
+/// docs/superpowers/specs/2026-10-14-id-arena-spec.md) replaces the `Rc` with an id behind the same API.
+#[derive(Clone)]
+pub struct Expr(std::rc::Rc<Header>);
+
+struct Header {
+    loose: u32,
+    free: u32,
+    /// The `hc` table generation this node is canonical in (0: not).
+    generation: std::cell::Cell<u32>,
+    /// The last [`hc::uses`] answer for this node, packed by [`Spaces::uses_slot`] (0: none). A fact about the node
+    /// alone, like `loose` and `free`, so it never goes stale.
+    uses: std::cell::Cell<u32>,
+    /// Nodes built over this one, saturating at 2 ([`Spaces::shared`]).
+    parents: std::cell::Cell<u8>,
+    node: Node<Expr>,
+}
+
+impl Expr {
+    /// A new node over `n`, outside any table ([`hc::intern`] decides whether to share one instead).
+    fn build(n: Node<Expr>) -> Expr {
+        #[cfg(feature = "record-defeq")]
+        BUILT.with(|b| b[1].set(b[1].get() + 1));
+        let (loose, free) = n.ranges(|c| c.0.loose, |c| c.0.free);
+        n.for_kids(|c, _| c.0.parents.set(c.0.parents.get().saturating_add(1).min(2)));
+        Expr(std::rc::Rc::new(Header {
+            loose,
+            free,
+            generation: std::cell::Cell::new(0),
+            uses: std::cell::Cell::new(0),
+            parents: std::cell::Cell::new(0),
+            node: n,
+        }))
+    }
+
+    /// Whether this node and everything under it came from the current `hc` table, so that two canonical nodes are
+    /// structurally equal exactly when they are the same node. False outside a scope.
     #[inline(always)]
     pub(crate) fn canonical(&self) -> bool {
         let g = self.0.generation.get();
         g != 0 && g == hc::generation()
     }
 
-    /// Probe: this node's id in the simulated hash-cons table.
-    #[cfg(feature = "record-defeq")]
-    pub fn canon(&self) -> u64 {
-        self.0.canon
+    /// The outermost constructor, over the children.
+    pub fn node(&self) -> Node<Expr> {
+        with_spaces(|s| s.node(self))
     }
 
-    /// One more than the largest loose `Var` index in this node, 0 when
-    /// it's closed (saturating at `u32::MAX`, as [`loose_of`]).
+    /// One more than the largest loose `Var` index, 0 when closed (saturating at `u32::MAX`).
     pub fn loose(&self) -> u32 {
-        self.0.loose
+        with_spaces(|s| s.loose(self))
     }
 
-    /// One more than the largest `Free` level in this node, 0 when it has
-    /// none (saturating, as [`free_of`]).
+    /// One more than the largest `Free` level, 0 when there is none (saturating).
     pub fn free(&self) -> u32 {
-        self.0.free
+        with_spaces(|s| s.free(self))
+    }
+
+    /// Whether two or more nodes are built over this one (the memos' "worth remembering" test).
+    pub fn shared(&self) -> bool {
+        with_spaces(|s| s.shared(self))
     }
 }
 
-impl<T> Rc<T> {
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+/// The node `n`, interned while a scope's table is on.
+pub fn mk(n: Node<Expr>) -> Expr {
+    with_spaces(|s| s.mk(n))
+}
+
+/// An id for `e`'s node: two handles have the same key exactly when they name the same node. For tests, and for maps
+/// that live only while a root keeps the nodes they key alive (`bin::write`, `term_sizes`, `kernel_lazy`).
+pub fn node_key(e: &Expr) -> u64 {
+    std::rc::Rc::as_ptr(&e.0) as u64
+}
+
+/// The kernel's view of term storage. A stub over `Rc` nodes until the id arena gives it state; internals take it as
+/// `s` so the arena changes only this type.
+pub(crate) struct Spaces;
+
+/// Runs `f` with this thread's spaces.
+#[inline(always)]
+pub(crate) fn with_spaces<R>(f: impl FnOnce(&Spaces) -> R) -> R {
+    f(&Spaces)
+}
+
+/// A map key naming a node. It holds the node, so no address is reused while the map lives.
+pub(crate) type Key = PtrKey;
+/// An argument list's id in the instantiation memo ([`hc::args_id`]).
+pub(crate) type Aid = u64;
+
+impl Spaces {
+    #[inline(always)]
+    pub(crate) fn node(&self, e: &Expr) -> Node<Expr> {
+        e.0.node.clone()
+    }
+
+    #[inline(always)]
+    pub(crate) fn mk(&self, n: Node<Expr>) -> Expr {
+        hc::intern(n)
+    }
+
+    #[inline(always)]
+    pub(crate) fn loose(&self, e: &Expr) -> u32 {
+        e.0.loose
+    }
+
+    #[inline(always)]
+    pub(crate) fn free(&self, e: &Expr) -> u32 {
+        e.0.free
+    }
+
+    #[inline(always)]
+    pub(crate) fn shared(&self, e: &Expr) -> bool {
+        e.0.parents.get() > 1
+    }
+
+    #[inline(always)]
+    pub(crate) fn same(&self, a: &Expr, b: &Expr) -> bool {
         std::rc::Rc::ptr_eq(&a.0, &b.0)
     }
-    pub fn strong_count(a: &Self) -> usize {
-        std::rc::Rc::strong_count(&a.0)
+
+    #[inline(always)]
+    pub(crate) fn key(&self, e: &Expr) -> Key {
+        PtrKey(e.clone())
     }
-    pub fn as_ptr(a: &Self) -> *const T {
-        &a.0.val
+
+    #[inline(always)]
+    #[allow(clippy::wrong_self_convention)] // reads through `self` once nodes live in the arena
+    pub(crate) fn from_key(&self, k: &Key) -> Expr {
+        k.0.clone()
+    }
+
+    /// The node's remembered `uses(e, d, m)`, if the slot holds that query. The slot packs a set bit, `d` and `m` in 15
+    /// bits each, and the answer; queries that don't fit are never stored.
+    #[inline(always)]
+    pub(crate) fn uses_slot(&self, e: &Expr, d: u32, m: u32) -> Option<bool> {
+        let s = e.0.uses.get();
+        (d < 1 << 15 && m < 1 << 15 && s >> 1 == (1 << 30 | d << 15 | m)).then_some(s & 1 == 1)
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_uses_slot(&self, e: &Expr, d: u32, m: u32, r: bool) {
+        if d < 1 << 15 && m < 1 << 15 {
+            e.0.uses.set((1 << 30 | d << 15 | m) << 1 | r as u32);
+        }
     }
 }
 
-impl<T> Clone for Rc<T> {
-    fn clone(&self) -> Self {
-        Rc(self.0.clone())
-    }
-}
-impl<T> std::ops::Deref for Rc<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0.val
-    }
-}
-impl<T> AsRef<T> for Rc<T> {
-    fn as_ref(&self) -> &T {
-        &self.0.val
-    }
-}
-/// As `std::rc::Rc`'s for an `Eq` type: the same node is equal without a
-/// walk.
-impl<T: Eq> PartialEq for Rc<T> {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(self, other) || self.0.val == other.0.val
-    }
-}
-impl<T: Eq> Eq for Rc<T> {}
-impl<T: fmt::Debug> fmt::Debug for Rc<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.val.fmt(f)
-    }
+#[cfg(feature = "record-defeq")]
+thread_local! {
+    /// `mk` calls and new nodes since the last [`take_built`].
+    static BUILT: [std::cell::Cell<u64>; 2] = const { [std::cell::Cell::new(0), std::cell::Cell::new(0)] };
 }
 
-
+/// Probe: the number of `mk` calls and of new nodes built since the last call, on this thread.
 #[cfg(feature = "record-defeq")]
-mod hc_probe;
-
-#[cfg(feature = "record-defeq")]
-pub use hc_probe::{take_built as take_hc_built, take_inst as take_hc_inst};
-
-/// One more than the largest loose `Var` index in `e`, 0 when it's
-/// closed, from its children's cached ranges. A child one binder deeper
-/// (the second field of `Pi`/`Lam`/`W`/`Sigma`, `WRec`'s `children_ty`,
-/// `Pair`'s `fam`) has one loose variable fewer out here. Saturating, so a
-/// `Var(u32::MAX)` doesn't wrap to "closed"; the range is exact only below
-/// `u32::MAX` (`Var(u32::MAX - 1)` and `Var(u32::MAX)` both give
-/// `u32::MAX`, which no real term reaches).
-pub fn loose_of(e: &Expr) -> u32 {
-    let l = |c: &Rc<Expr>| c.loose();
-    let u = |c: &Rc<Expr>| c.loose().saturating_sub(1);
-    match e {
-        Expr::Var(k) => k.saturating_add(1),
-        Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => 0,
-        Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::W(a, b) | Expr::Sigma(a, b) => l(a).max(u(b)),
-        Expr::App(a, b) | Expr::Sup(a, b) => l(a).max(l(b)),
-        Expr::Id(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => l(a).max(l(b)).max(l(c)),
-        Expr::Pair(fam, a, b) => u(fam).max(l(a)).max(l(b)),
-        Expr::Refl(a) => l(a),
-        Expr::J { motive, base, a, b, p } => l(motive).max(l(base)).max(l(a)).max(l(b)).max(l(p)),
-        Expr::WRec { motive, children_ty, step, target } => l(motive).max(u(children_ty)).max(l(step)).max(l(target)),
-    }
-}
-
-/// One more than the largest `Free` level in `e`, 0 when it has none, from
-/// its children's cached ranges. Binders don't change it: a `Free` is a
-/// level, not an index. Saturating, as [`loose_of`].
-pub fn free_of(e: &Expr) -> u32 {
-    let f = |c: &Rc<Expr>| c.free();
-    match e {
-        Expr::Free(l) => l.saturating_add(1),
-        Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) => 0,
-        Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => f(a).max(f(b)),
-        Expr::Id(a, b, c) | Expr::Pair(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => f(a).max(f(b)).max(f(c)),
-        Expr::Refl(a) => f(a),
-        Expr::J { motive, base, a, b, p } => f(motive).max(f(base)).max(f(a)).max(f(b)).max(f(p)),
-        Expr::WRec { motive, children_ty, step, target } => f(motive).max(f(children_ty)).max(f(step)).max(f(target)),
-    }
+pub fn take_built() -> (u64, u64) {
+    BUILT.with(|b| (b[0].replace(0), b[1].replace(0)))
 }
 
 // --- stack growth ----------------------------------------------------------
@@ -297,7 +474,7 @@ fn stack_ok() -> bool {
 
 /// Runs `f`, first moving onto a fresh stack segment if fewer than
 /// [`RED_ZONE`] bytes remain. Wraps the body of every recursive function
-/// in this module -- and `PartialEq` and `Debug` for `Expr`; `Drop` uses
+/// in this module -- and `PartialEq` and `Debug` for `Expr`; `Drop` for `Header` uses
 /// [`stack_ok`] directly -- so their depth is bounded by heap, not native
 /// stack.
 #[inline(always)]
@@ -360,214 +537,32 @@ fn on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
     })
 }
 
-/// Recursive fields are `Rc`, not `Box`: `Expr` is built and re-threaded
-/// through deeply nested proof terms (the Ev-witness builder's
-/// per-call-site composition, ...) almost entirely by `.clone()`,
-/// and a `Box`-tree clone is a full deep copy -- cost that scales with the
-/// *entire* accumulated proof term, not with what actually changed. With
-/// `Rc`, `#[derive(Clone)]` on `Expr` clones each field by bumping a
-/// refcount, so cloning any `Expr` (regardless of how large the subtree it
-/// roots is) is O(1) and its children are genuinely shared, not copied. This
-/// is not full hash-consing (two independently-built-but-equal subtrees
-/// still get distinct allocations -- there's no intern table), but it
-/// removes the actual cost this crate was paying: repeated deep copies of
-/// one proof term as it's threaded through several composition steps.
-#[derive(Clone)]
-pub enum Expr {
-    /// De Bruijn index; `Var(0)` is the innermost binder.
-    Var(u32),
-    /// `Type_i`.
-    Sort(u32),
-    /// A postulate: entry `l` of the global environment (`Globals`),
-    /// numbered from the first, so neither a binder nor a later global
-    /// renumbers it. Typed by `globals[l]`, which must be closed.
-    Const(u32),
-    /// A builder scope's parameter, by a level no other parameter reuses.
-    /// Never typed: `infer` and `check` reject any term, expected type or
-    /// context entry with one in it, so a parameter that escapes its
-    /// scope fails the check instead of acting as an axiom.
-    Free(u32),
-    /// `Pi(A, B)`: `B` is checked one binder deeper than `A` (i.e. `B` may
-    /// mention the newly-bound variable of type `A` as `Var(0)`).
-    Pi(Rc<Expr>, Rc<Expr>),
-    /// `Lam(A, body)`: `A` is the domain annotation; `body` one binder deeper.
-    Lam(Rc<Expr>, Rc<Expr>),
-    App(Rc<Expr>, Rc<Expr>),
-    /// `Id(A, a, b)`: the type of proofs that `a` and `b` (both `: A`) are equal.
-    Id(Rc<Expr>, Rc<Expr>, Rc<Expr>),
-    /// `Refl(a) : Id(A, a, a)`, the only primitive way to construct an equality.
-    Refl(Rc<Expr>),
-    /// Eliminator for `Id`. `motive` is `C : Pi x y : A. Id(A,x,y) -> Sort(k)`,
-    /// `base` is `c : Pi x : A. C x x (refl x)`, `p : Id(A, a, b)`.
-    /// Result type: `C a b p`. Reduces to `base a` when `p` reduces to a `Refl`.
-    J {
-        motive: Rc<Expr>,
-        base: Rc<Expr>,
-        a: Rc<Expr>,
-        b: Rc<Expr>,
-        p: Rc<Expr>,
-    },
-    /// `W(A, B)`: `B` one binder deeper than `A`, i.e. `B` is the family
-    /// `B(x)` for `x : A` giving the arity/shape of the children at tag `x`.
-    W(Rc<Expr>, Rc<Expr>),
-    /// `Sup(a, f) : W(A,B)` where `a : A` and `f : B(a) -> W(A,B)`.
-    Sup(Rc<Expr>, Rc<Expr>),
-    /// Eliminator (recursor) for `W`. `motive : W(A,B) -> Sort(k)`,
-    /// `step : Pi a:A. Pi f:(B a -> W). (Pi y:B a. motive (f y)) -> motive (sup a f)`.
-    /// Reduces on a `Sup` target by recursing into every child.
-    ///
-    /// `children_ty` is `B` itself, in the *same* representation `W(A,B)`'s
-    /// own second field already uses (written one binder deeper than `A`,
-    /// i.e. `B(x)` with the ambient `x:A` as `Var(0)`) -- carried here,
-    /// redundantly with `target`'s own real type `W(A,B)`, purely so
-    /// `whnf_impl`'s own automatic reduction (which has no typing context
-    /// at all, by design) can give its induction-hypothesis closure an
-    /// honest domain (`subst_top(children_ty, a)`, i.e. `B(a)`) instead of
-    /// an inert placeholder. `infer` independently re-derives `B` from
-    /// `target`'s own real inferred type and checks it against this field
-    /// via `def_eq` -- a term built with a *wrong* `children_ty` (whether
-    /// by mistake or by a hostile caller) is rejected outright, never
-    /// silently trusted, so this redundancy can't become a soundness hole.
-    WRec {
-        motive: Rc<Expr>,
-        children_ty: Rc<Expr>,
-        step: Rc<Expr>,
-        target: Rc<Expr>,
-    },
-    /// `Sigma(A, B)`: `B` one binder deeper than `A`, i.e. `B` is the
-    /// family `B(x)` for `x : A` -- the type of dependent pairs `(a, b)`
-    /// with `a : A` and `b : B(a)`. See this module's own top-level docs
-    /// for why this is a genuinely separate primitive, not derivable from
-    /// `W` here.
-    Sigma(Rc<Expr>, Rc<Expr>),
-    /// `Pair(fam, a, b) : Sigma(A, B)` where `a : A`, `b : B(a)`. `fam` is
-    /// `B` itself, in the *same* representation `Sigma`'s own second field
-    /// already uses (one binder deeper than the ambient context) --
-    /// carried explicitly because, unlike `Sup`'s own second argument
-    /// (whose `Pi`-type already reveals the whole `W(A,B)` it targets), a
-    /// pair's own two components alone don't determine which family `B`
-    /// was intended (many different families agree at one concrete `a`)
-    /// -- the same reason `Lam` carries its own domain annotation.
-    Pair(Rc<Expr>, Rc<Expr>, Rc<Expr>),
-    /// Eliminator (recursor) for `Sigma`. `motive : Sigma(A,B) -> Sort(k)`,
-    /// `step : Pi a:A. Pi b:B(a). motive (pair(fam,a,b))`. Reduces on a
-    /// `Pair` target to `step a b`. Unlike `WRec`, needs no extra
-    /// `children_ty`-style redundant field: a pair isn't recursive, so
-    /// there's no induction-hypothesis closure to give an honest domain to
-    /// -- `target`'s own real type alone is enough context for both
-    /// `infer` and `whnf_impl`.
-    SigRec {
-        motive: Rc<Expr>,
-        step: Rc<Expr>,
-        target: Rc<Expr>,
-    },
-}
-
-/// Structural equality, written out rather than derived so it recurses
-/// through [`grow`] -- `def_eq` compares two large terms with it.
-/// Same semantics as the derive: fields compared in declaration order,
-/// and `Rc`'s own `==` still short-circuits on pointer identity (it does
-/// so for any `T: Eq`).
+/// Structural equality, written out rather than derived so it recurses through [`grow`] -- `def_eq` compares two
+/// large terms with it. The same node is equal without a walk, and two canonical nodes are equal only when they are
+/// the same node.
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
-        grow(|| same_shape(self, other, |p, q| Rc::ptr_eq(p, q) || (!(p.canonical() && q.canonical()) && **p == **q)))
-    }
-}
-
-/// Whether `x` and `y` have the same outermost constructor (and index, for
-/// `Var`/`Sort`/`Const`/`Free`) and `c` holds of each pair of children, in
-/// field order, stopping at the first that fails. Syntactic equality and
-/// `conv_whnf` are both this with a different `c`.
-pub(crate) fn same_shape(x: &Expr, y: &Expr, mut c: impl FnMut(&Rc<Expr>, &Rc<Expr>) -> bool) -> bool {
-    use Expr::*;
-    match (x, y) {
-        (Var(i), Var(j)) | (Sort(i), Sort(j)) | (Const(i), Const(j)) | (Free(i), Free(j)) => i == j,
-        (Refl(a), Refl(b)) => c(a, b),
-        (Pi(a1, b1), Pi(a2, b2))
-        | (Lam(a1, b1), Lam(a2, b2))
-        | (App(a1, b1), App(a2, b2))
-        | (W(a1, b1), W(a2, b2))
-        | (Sup(a1, b1), Sup(a2, b2))
-        | (Sigma(a1, b1), Sigma(a2, b2)) => c(a1, a2) && c(b1, b2),
-        (Id(a1, b1, c1), Id(a2, b2, c2)) | (Pair(a1, b1, c1), Pair(a2, b2, c2)) => c(a1, a2) && c(b1, b2) && c(c1, c2),
-        (
-            J { motive: m1, base: s1, a: a1, b: b1, p: p1 },
-            J { motive: m2, base: s2, a: a2, b: b2, p: p2 },
-        ) => c(m1, m2) && c(s1, s2) && c(a1, a2) && c(b1, b2) && c(p1, p2),
-        (
-            WRec { motive: m1, children_ty: c1, step: s1, target: t1 },
-            WRec { motive: m2, children_ty: c2, step: s2, target: t2 },
-        ) => c(m1, m2) && c(c1, c2) && c(s1, s2) && c(t1, t2),
-        (SigRec { motive: m1, step: s1, target: t1 }, SigRec { motive: m2, step: s2, target: t2 }) => {
-            c(m1, m2) && c(s1, s2) && c(t1, t2)
-        }
-        _ => false,
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+            || (!(self.canonical() && other.canonical()) && grow(|| self.0.node.same_shape(&other.0.node, |p, q| p == q)))
     }
 }
 
 impl Eq for Expr {}
 
-thread_local! {
-    /// What `Drop for Expr` swaps into a child slot it is about to free,
-    /// so the child can be dropped inside `grow` rather than by the
-    /// compiler-generated glue afterwards. Shared, so a swap is a refcount
-    /// bump, not an allocation.
-    static LEAF: Rc<Expr> = Rc::new(Expr::Sort(0));
-}
-
-/// Keeps dropping an `Expr` stack-safe. The compiler-generated drop glue
-/// is recursive, and it runs wherever a term is discarded -- `whnf` throws
-/// away a full intermediate term at every beta step -- so on whatever
-/// stack segment is current, with only [`RED_ZONE`] guaranteed. Unguarded,
-/// a 1,000-deep term reliably overflowed there.
+/// Keeps dropping a term stack-safe. The compiler-generated drop glue is recursive, and it runs wherever a term is
+/// discarded -- `whnf` throws away a full intermediate term at every beta step -- so on whatever stack segment is
+/// current, with only [`RED_ZONE`] guaranteed. Unguarded, a 1,000-deep term reliably overflowed there.
 ///
-/// The glue calls this at every level before recursing into that level's
-/// fields, so a cheap [`stack_ok`] check is all most drops pay. Only when
-/// the stack runs low does it move the children it would free
-/// (`strong_count == 1`; a shared one just loses a reference, which
-/// cannot recurse) out of their slots and drop them on a fresh segment.
-/// During thread teardown, once `LEAF` is gone, this falls back to the
-/// plain recursive glue.
-impl Drop for Expr {
+/// The glue calls this at every node before recursing into its children, so a cheap [`stack_ok`] check is all most
+/// drops pay. Only when the stack runs low does it move the node out (leaving a leaf) and drop its children on a fresh
+/// segment. A shared child just loses a reference, which cannot recurse.
+impl Drop for Header {
     fn drop(&mut self) {
         if stack_ok() {
             return;
         }
-        let free = |c: &mut Rc<Expr>| {
-            if Rc::strong_count(c) == 1
-                && let Ok(leaf) = LEAF.try_with(Rc::clone)
-            {
-                drop(std::mem::replace(c, leaf));
-            }
-        };
-        grow_slow(|| match self {
-            Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => {}
-            Expr::Refl(a) => free(a),
-            Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
-                free(a);
-                free(b);
-            }
-            Expr::Id(a, b, c) | Expr::Pair(a, b, c) => {
-                free(a);
-                free(b);
-                free(c);
-            }
-            Expr::J { motive, base, a, b, p } => {
-                for c in [motive, base, a, b, p] {
-                    free(c);
-                }
-            }
-            Expr::WRec { motive, children_ty, step, target } => {
-                for c in [motive, children_ty, step, target] {
-                    free(c);
-                }
-            }
-            Expr::SigRec { motive, step, target } => {
-                for c in [motive, step, target] {
-                    free(c);
-                }
-            }
-        })
+        let n = std::mem::replace(&mut self.node, Node::Sort(0));
+        grow_slow(|| drop(n))
     }
 }
 
@@ -605,60 +600,63 @@ pub(crate) fn brief<T: fmt::Debug + ?Sized>(x: &T) -> String {
 /// forms costs the first `LIMIT` characters of each, not both whole normal forms (doc section
 /// "The NEG control's wall was the error message").
 pub(crate) fn brief_nf(e: &Expr) -> String {
-    struct Nf<'a>(Rc<Expr>, &'a std::cell::RefCell<ReductionCache>);
+    struct Nf<'a>(Expr, &'a std::cell::RefCell<ReductionCache>);
     impl fmt::Debug for Nf<'_> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            let w = whnf_rc(&self.0, &mut self.1.borrow_mut());
-            write_expr(&w, f, &|c, f| fmt::Debug::fmt(&Nf(c.clone(), self.1), f))
+            let w = with_spaces(|s| whnf_in(s, &self.0, &mut self.1.borrow_mut()));
+            write_expr(&w.node(), f, &|c, f| fmt::Debug::fmt(&Nf(c.clone(), self.1), f))
         }
     }
-    brief(&Nf(Rc::new(e.clone()), &std::cell::RefCell::new(ReductionCache::default())))
+    brief(&Nf(e.clone(), &std::cell::RefCell::new(ReductionCache::default())))
 }
 
 /// A child printed by the function it carries (`write_expr`).
-struct Child<'a, F>(&'a Rc<Expr>, &'a F);
-impl<F: Fn(&Rc<Expr>, &mut fmt::Formatter<'_>) -> fmt::Result> fmt::Debug for Child<'_, F> {
+struct Child<'a, F>(&'a Expr, &'a F);
+impl<F: Fn(&Expr, &mut fmt::Formatter<'_>) -> fmt::Result> fmt::Debug for Child<'_, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (self.1)(self.0, f)
     }
 }
 
-/// `e`'s outermost constructor, with each child printed by `child`.
-fn write_expr<F: Fn(&Rc<Expr>, &mut fmt::Formatter<'_>) -> fmt::Result>(e: &Expr, f: &mut fmt::Formatter<'_>, child: &F) -> fmt::Result {
+/// The node `n`, with each child printed by `child`.
+fn write_expr<F: Fn(&Expr, &mut fmt::Formatter<'_>) -> fmt::Result>(n: &Node<Expr>, f: &mut fmt::Formatter<'_>, child: &F) -> fmt::Result {
     let c = |x| Child(x, child);
-    grow(|| match e {
-        Expr::Var(k) => write!(f, "#{k}"),
-        Expr::Sort(i) => write!(f, "Type{i}"),
-        Expr::Const(l) => write!(f, "@{l}"),
-        Expr::Free(l) => write!(f, "${l}"),
-        Expr::Pi(a, b) => write!(f, "(Pi {:?}. {:?})", c(a), c(b)),
-        Expr::Lam(a, b) => write!(f, "(\\{:?}. {:?})", c(a), c(b)),
-        Expr::App(g, a) => write!(f, "({:?} {:?})", c(g), c(a)),
-        Expr::Id(a, x, y) => write!(f, "(Id {:?} {:?} {:?})", c(a), c(x), c(y)),
-        Expr::Refl(a) => write!(f, "(refl {:?})", c(a)),
-        Expr::J { a, b, p, .. } => write!(f, "(J .. {:?} {:?} {:?})", c(a), c(b), c(p)),
-        Expr::W(a, b) => write!(f, "(W {:?}. {:?})", c(a), c(b)),
-        Expr::Sup(a, g) => write!(f, "(sup {:?} {:?})", c(a), c(g)),
-        Expr::WRec { target, .. } => write!(f, "(wrec .. {:?})", c(target)),
-        Expr::Sigma(a, b) => write!(f, "(Sigma {:?}. {:?})", c(a), c(b)),
-        Expr::Pair(fam, a, b) => write!(f, "(pair {:?} {:?} {:?})", c(fam), c(a), c(b)),
-        Expr::SigRec { target, .. } => write!(f, "(sigrec .. {:?})", c(target)),
+    grow(|| match n {
+        Node::Var(k) => write!(f, "#{k}"),
+        Node::Sort(i) => write!(f, "Type{i}"),
+        Node::Const(l) => write!(f, "@{l}"),
+        Node::Free(l) => write!(f, "${l}"),
+        Node::Pi(a, b) => write!(f, "(Pi {:?}. {:?})", c(a), c(b)),
+        Node::Lam(a, b) => write!(f, "(\\{:?}. {:?})", c(a), c(b)),
+        Node::App(g, a) => write!(f, "({:?} {:?})", c(g), c(a)),
+        Node::Id(a, x, y) => write!(f, "(Id {:?} {:?} {:?})", c(a), c(x), c(y)),
+        Node::Refl(a) => write!(f, "(refl {:?})", c(a)),
+        Node::J { a, b, p, .. } => write!(f, "(J .. {:?} {:?} {:?})", c(a), c(b), c(p)),
+        Node::W(a, b) => write!(f, "(W {:?}. {:?})", c(a), c(b)),
+        Node::Sup(a, g) => write!(f, "(sup {:?} {:?})", c(a), c(g)),
+        Node::WRec { target, .. } => write!(f, "(wrec .. {:?})", c(target)),
+        Node::Sigma(a, b) => write!(f, "(Sigma {:?}. {:?})", c(a), c(b)),
+        Node::Pair(fam, a, b) => write!(f, "(pair {:?} {:?} {:?})", c(fam), c(a), c(b)),
+        Node::SigRec { target, .. } => write!(f, "(sigrec .. {:?})", c(target)),
     })
 }
 
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_expr(self, f, &|c, f| fmt::Debug::fmt(&**c, f))
+        write_expr(&self.0.node, f, &|c, f| fmt::Debug::fmt(c, f))
     }
 }
 
 // --- convenience constructors -------------------------------------------
+//
+// Each builds its node through `mk`: inside [`scoped`] structurally equal nodes are one node, outside it each call
+// makes a new one.
 
 pub fn var(k: u32) -> Expr {
-    Expr::Var(k)
+    mk(Node::Var(k))
 }
 pub fn sort(i: u32) -> Expr {
-    Expr::Sort(i)
+    mk(Node::Sort(i))
 }
 /// A term kept past the scope it was built in: what long-lived stores hold. Made only by [`persist`]. Today it is the
 /// term itself; in the id arena it is a persistent id that stays valid after the region closes (spec
@@ -685,11 +683,8 @@ impl fmt::Debug for PExpr {
     }
 }
 
-/// `e` as a term that outlives the open scope. A move today; with the feature `copy-volume` it also counts what the
-/// arena would copy ([`copy_volume_thread`]).
+/// `e` as a term that outlives the open scope. A move today; the id arena copies it out of the region.
 pub fn persist(e: Expr) -> PExpr {
-    #[cfg(feature = "copy-volume")]
-    copy_volume::persist(&e);
     PExpr(e)
 }
 
@@ -765,16 +760,14 @@ pub fn intern_generation() -> u32 {
     hc::generation()
 }
 
-/// The constructors below make each child through `hc::intern_new`: inside [`scoped`] equal
-/// children are one node, outside it is `Rc::new`.
 pub fn pi(a: Expr, b: Expr) -> Expr {
-    Expr::Pi(hc::intern_new(a), hc::intern_new(b))
+    mk(Node::Pi(a, b))
 }
 pub fn lam(a: Expr, body: Expr) -> Expr {
-    Expr::Lam(hc::intern_new(a), hc::intern_new(body))
+    mk(Node::Lam(a, body))
 }
 pub fn app(f: Expr, a: Expr) -> Expr {
-    Expr::App(hc::intern_new(f), hc::intern_new(a))
+    mk(Node::App(f, a))
 }
 pub fn app2(f: Expr, a: Expr, b: Expr) -> Expr {
     app(app(f, a), b)
@@ -783,46 +776,31 @@ pub fn app3(f: Expr, a: Expr, b: Expr, c: Expr) -> Expr {
     app(app2(f, a, b), c)
 }
 pub fn id(a: Expr, x: Expr, y: Expr) -> Expr {
-    Expr::Id(hc::intern_new(a), hc::intern_new(x), hc::intern_new(y))
+    mk(Node::Id(a, x, y))
 }
 pub fn refl(a: Expr) -> Expr {
-    Expr::Refl(hc::intern_new(a))
+    mk(Node::Refl(a))
 }
 pub fn jelim(motive: Expr, base: Expr, a: Expr, b: Expr, p: Expr) -> Expr {
-    Expr::J {
-        motive: hc::intern_new(motive),
-        base: hc::intern_new(base),
-        a: hc::intern_new(a),
-        b: hc::intern_new(b),
-        p: hc::intern_new(p),
-    }
+    mk(Node::J { motive, base, a, b, p })
 }
 pub fn wty(a: Expr, b: Expr) -> Expr {
-    Expr::W(hc::intern_new(a), hc::intern_new(b))
+    mk(Node::W(a, b))
 }
 pub fn sup(a: Expr, f: Expr) -> Expr {
-    Expr::Sup(hc::intern_new(a), hc::intern_new(f))
+    mk(Node::Sup(a, f))
 }
 pub fn wrec(motive: Expr, children_ty: Expr, step: Expr, target: Expr) -> Expr {
-    Expr::WRec {
-        motive: hc::intern_new(motive),
-        children_ty: hc::intern_new(children_ty),
-        step: hc::intern_new(step),
-        target: hc::intern_new(target),
-    }
+    mk(Node::WRec { motive, children_ty, step, target })
 }
 pub fn sigma(a: Expr, b: Expr) -> Expr {
-    Expr::Sigma(hc::intern_new(a), hc::intern_new(b))
+    mk(Node::Sigma(a, b))
 }
 pub fn pair(fam: Expr, a: Expr, b: Expr) -> Expr {
-    Expr::Pair(hc::intern_new(fam), hc::intern_new(a), hc::intern_new(b))
+    mk(Node::Pair(fam, a, b))
 }
 pub fn sigrec(motive: Expr, step: Expr, target: Expr) -> Expr {
-    Expr::SigRec {
-        motive: hc::intern_new(motive),
-        step: hc::intern_new(step),
-        target: hc::intern_new(target),
-    }
+    mk(Node::SigRec { motive, step, target })
 }
 /// A non-dependent function type `a -> b`.
 pub fn arrow(a: Expr, b: Expr) -> Expr {
@@ -835,107 +813,52 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
 /// (beyond this module's own substitution machinery) for moving a term
 /// under a new binder, e.g. the `cong` motives in `proof.rs`.
 pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+    with_spaces(|s| shift_in(s, e, cutoff, amount))
+}
+
+/// [`shift`] inside the kernel.
+fn shift_in(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
     // Adding 0 changes no index, and a term whose loose variables all sit
     // below `cutoff` has none to change: either way `e` comes back as is.
-    if amount == 0 || loose_of(e) <= cutoff {
+    if amount == 0 || s.loose(e) <= cutoff {
         return e.clone();
     }
-    shift_unchecked(e, cutoff, amount)
+    shift_unchecked(s, e, cutoff, amount)
 }
 
 /// `shift` for an `e` already known to have a loose variable at or above
 /// `cutoff` (and `amount != 0`).
-fn shift_unchecked(e: &Expr, cutoff: u32, amount: i32) -> Expr {
-    shift_via(e, cutoff, amount, &|x, c| shift_child(x, c, amount))
-}
-
-/// `shift_unchecked` with the shifting of each child done by `go`, which gets the child and the
-/// cutoff for it.
-fn shift_via(e: &Expr, cutoff: u32, amount: i32, go: &impl Fn(&Rc<Expr>, u32) -> Rc<Expr>) -> Expr {
-    #[cfg(feature = "record-defeq")]
-    let _hc_guard = hc_probe::shift_enter(e, cutoff, amount);
+fn shift_unchecked(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
     walk_count(1);
-    grow(|| match e {
-        Expr::Var(k) => {
-            if *k >= cutoff {
-                Expr::Var((*k as i32 + amount) as u32)
-            } else {
-                Expr::Var(*k)
-            }
-        }
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Free(l) => Expr::Free(*l),
-        Expr::Pi(a, b) => Expr::Pi(go(a, cutoff), go(b, cutoff + 1)),
-        Expr::Lam(a, b) => Expr::Lam(go(a, cutoff), go(b, cutoff + 1)),
-        Expr::App(f, a) => Expr::App(go(f, cutoff), go(a, cutoff)),
-        Expr::Id(a, x, y) => Expr::Id(go(a, cutoff), go(x, cutoff), go(y, cutoff)),
-        Expr::Refl(a) => Expr::Refl(go(a, cutoff)),
-        Expr::J { motive, base, a, b, p } => Expr::J {
-            motive: go(motive, cutoff),
-            base: go(base, cutoff),
-            a: go(a, cutoff),
-            b: go(b, cutoff),
-            p: go(p, cutoff),
-        },
-        Expr::W(a, b) => Expr::W(go(a, cutoff), go(b, cutoff + 1)),
-        Expr::Sup(a, f) => Expr::Sup(go(a, cutoff), go(f, cutoff)),
-        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
-            motive: go(motive, cutoff),
-            children_ty: go(children_ty, cutoff + 1),
-            step: go(step, cutoff),
-            target: go(target, cutoff),
-        },
-        Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => shift_sigma_family(e, cutoff, go),
+    grow(|| match s.node(e) {
+        Node::Var(k) if k >= cutoff => var((k as i32 + amount) as u32),
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        n => s.mk(n.map_kids(|x, under| shift_child(s, &x, cutoff + under as u32, amount))),
     })
 }
 
-/// `shift` of one child: the same `Rc` when it has nothing to shift.
-fn shift_child(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Rc<Expr> {
-    if x.loose() <= cutoff {
+/// `shift` of one child: the child itself when it has nothing to shift, else memoised while the table is on.
+fn shift_child(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Expr {
+    if s.loose(x) <= cutoff {
         return x.clone();
     }
     if let Some(r) = hc::shift_get(x, cutoff, amount) {
         return r;
     }
-    let e = shift_unchecked(x, cutoff, amount);
-    // The largest loose variable sat at or above `cutoff`, so it moves by
-    // exactly `amount`; `Free` levels don't change. (Saturated ranges
-    // are recomputed.)
-    let r = match x.loose() {
-        u32::MAX => hc::intern(e, None),
-        l => hc::intern(e, Some(((l as i64 + amount as i64) as u32, x.free()))),
-    };
+    let r = shift_unchecked(s, x, cutoff, amount);
     hc::shift_put(x, cutoff, amount, &r);
     r
-}
-
-/// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
-/// `infer_sigma`'s docs for why these extractions exist and why they
-/// are kept.
-#[inline(never)]
-fn shift_sigma_family(e: &Expr, cutoff: u32, go: &impl Fn(&Rc<Expr>, u32) -> Rc<Expr>) -> Expr {
-    match e {
-        Expr::Sigma(a, b) => Expr::Sigma(go(a, cutoff), go(b, cutoff + 1)),
-        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, cutoff + 1), go(a, cutoff), go(b, cutoff)),
-        Expr::SigRec { motive, step, target } => Expr::SigRec {
-            motive: go(motive, cutoff),
-            step: go(step, cutoff),
-            target: go(target, cutoff),
-        },
-        _ => unreachable!("shift_sigma_family called on a non-Sigma-family Expr"),
-    }
 }
 
 /// (node address, cutoff, amount).
 type ShiftKey = (usize, u32, i32);
 
 /// The hash-consing layer (bit-vector design doc sections 60 and 62). While a
-/// [`hc::Scope`] is open, `instantiate_n` and `shift_child` intern the nodes they build and
+/// [`hc::Scope`] is open, `mk` interns the nodes it builds and `instantiate_n` and `shift_child`
 /// memoise their results; the table and memos are dropped with the outermost scope. A node is
-/// interned under an exact key (constructor, leaf value, child pointers), so two nodes merge only
-/// if structurally equal; ones built elsewhere simply stay distinct. With the feature off every
-/// function here is a no-op that makes the callers behave as before.
+/// interned under an exact key (constructor, leaf value, child nodes), so two nodes merge only
+/// if structurally equal; ones built elsewhere simply stay distinct. While the table is off every
+/// function here is a no-op that makes the callers behave as without it.
 mod hc {
     use super::*;
     use std::cell::{Cell, RefCell};
@@ -961,23 +884,23 @@ mod hc {
     struct Table {
         /// Interned nodes with their key's hash, found by comparing the candidate node's own key: 16
         /// bytes an entry instead of a stored 48-byte key (doc section "Where the node table's time goes").
-        nodes: hashbrown::HashTable<(u64, Rc<Expr>)>,
+        nodes: hashbrown::HashTable<(u64, Expr)>,
         /// (source node, argument-set id, depth) -> its instantiation.
-        inst: PtrMap<(usize, u64, u32), Rc<Expr>>,
-        shifts: PtrMap<ShiftKey, Rc<Expr>>,
+        inst: PtrMap<(usize, Aid, u32), Expr>,
+        shifts: PtrMap<ShiftKey, Expr>,
         /// Node -> its weak head normal form. `whnf` reads no context, so its answer holds for the
         /// whole scope, across `def_eq` calls (doc section "Why the table lookups stay").
-        whnf: PtrMap<usize, Rc<Expr>>,
+        whnf: PtrMap<usize, Expr>,
         /// (closed node, depth) -> its head normal form to that depth; see `hnf_rc`.
-        hnf: PtrMap<(usize, u32), Rc<Expr>>,
-        /// Argument sets of two or more nodes, by their node pointers.
+        hnf: PtrMap<(usize, u32), Expr>,
+        /// Argument sets of two or more nodes, by their node addresses.
         arg_sets: PtrMap<Vec<usize>, u64>,
         /// (node, depth) -> bounds `(lo, hi)` on its lowest loose variable from that depth, which
         /// [`uses`] narrows: every `uses(x, d, m)` with `m <= lo` is false and with `m > hi` true.
         bounds: PtrMap<(usize, u32), (u32, u32)>,
         /// The memos' non-canonical source nodes, kept alive to the scope's end (canonical ones live
         /// in `nodes`), so no other node takes the address a memo key holds.
-        keep: Vec<Rc<Expr>>,
+        keep: Vec<Expr>,
     }
 
     impl Table {
@@ -997,8 +920,14 @@ mod hc {
         }
     }
 
+    /// A node's address, as the memos key it.
+    #[inline(always)]
+    fn addr(x: &Expr) -> usize {
+        node_key(x) as usize
+    }
+
     /// Keeps a memo's source node alive while the table holds its address.
-    fn pin(t: &mut Table, x: &Rc<Expr>) {
+    fn pin(t: &mut Table, x: &Expr) {
         if !x.canonical() {
             t.keep.push(x.clone());
         }
@@ -1024,13 +953,7 @@ mod hc {
 
     impl Scope {
         pub fn enter() -> Scope {
-            DEPTH.with(|d| {
-                #[cfg(feature = "copy-volume")]
-                if d.get() == 0 {
-                    super::copy_volume::open();
-                }
-                d.set(d.get() + 1)
-            });
+            DEPTH.with(|d| d.set(d.get() + 1));
             Scope
         }
     }
@@ -1056,18 +979,12 @@ mod hc {
         }
     }
 
-    pub fn intern_new(e: Expr) -> Rc<Expr> {
-        intern(e, None)
-    }
-
     impl Drop for Scope {
         fn drop(&mut self) {
             if DEPTH.with(|d| {
                 d.set(d.get() - 1);
                 d.get() == 0
             }) {
-                #[cfg(feature = "copy-volume")]
-                super::copy_volume::close();
                 GENERATION.with(|g| g.set(0));
                 CALLS.with(|c| c.set(0));
                 let old = TABLE.with(|t| std::mem::replace(&mut *t.borrow_mut(), Table::new()));
@@ -1086,223 +1003,142 @@ mod hc {
         generation() != 0
     }
 
-    /// Calls `f` on each child, in a fixed order per constructor.
-    #[inline(always)]
-    pub(super) fn for_kids<'a>(e: &'a Expr, mut f: impl FnMut(&'a Rc<Expr>)) {
-        match e {
-            Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => {}
-            Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
-                f(a);
-                f(b);
-            }
-            Expr::Refl(a) => f(a),
-            Expr::Id(a, b, c) | Expr::Pair(a, b, c) | Expr::SigRec { motive: a, step: b, target: c } => {
-                f(a);
-                f(b);
-                f(c);
-            }
-            Expr::J { motive, base, a, b, p } => {
-                f(motive);
-                f(base);
-                f(a);
-                f(b);
-                f(p);
-            }
-            Expr::WRec { motive, children_ty, step, target } => {
-                f(motive);
-                f(children_ty);
-                f(step);
-                f(target);
-            }
-        }
+    /// The table's node for `n`, or a fresh one while the table is off.
+    pub fn intern(n: Node<Expr>) -> Expr {
+        #[cfg(feature = "record-defeq")]
+        BUILT.with(|b| b[0].set(b[0].get() + 1));
+        intern_as(n, Expr::build)
     }
 
-    /// The table's node for `e` (built with `ranges` when it is new and they are known), or a fresh
-    /// one while the table is off.
-    pub fn intern(e: Expr, ranges: Option<(u32, u32)>) -> Rc<Expr> {
-        intern_as(e, |e| match ranges {
-            Some((l, f)) => Rc::with_ranges(e, l, f),
-            None => Rc::new(e),
-        })
-    }
-
-    /// `intern`, with `build` making the node when the table has none for `e` (and while it is off).
-    fn intern_as(e: Expr, build: impl FnOnce(Expr) -> Rc<Expr>) -> Rc<Expr> {
+    /// `intern`, with `build` making the node when the table has none for `n` (and while it is off).
+    fn intern_as(n: Node<Expr>, build: impl FnOnce(Node<Expr>) -> Expr) -> Expr {
         let generation = generation();
         if generation == 0 {
-            return build(e);
+            return build(n);
         }
-        let key = key_of(&e);
+        let key = key_of(&n);
         let h = {
             use std::hash::{Hash, Hasher};
             let mut s = PtrHasher::default();
             key.hash(&mut s);
             s.finish()
         };
-        // The lookup borrows only the key; `e` moves once, into `build`, on a miss.
-        let hit = TABLE.with(|t| t.borrow().nodes.find(h, |(g, n)| *g == h && key_of(n) == key).map(|(_, n)| n.clone()));
-        if let Some(n) = hit {
-            return n;
+        // The lookup borrows only the key; `n` moves once, into `build`, on a miss.
+        let hit = TABLE.with(|t| t.borrow().nodes.find(h, |(g, m)| *g == h && key_of(&m.0.node) == key).map(|(_, m)| m.clone()));
+        if let Some(m) = hit {
+            return m;
         }
         let mut canonical = true;
-        for_kids(&e, |p| canonical &= p.canonical());
-        let n = build(e);
+        n.for_kids(|p, _| canonical &= p.canonical());
+        let m = build(n);
         if canonical {
-            n.0.generation.set(generation);
+            m.0.generation.set(generation);
         }
         TABLE.with(|t| {
-            t.borrow_mut().nodes.insert_unique(h, (h, n.clone()), |(g, _)| *g);
+            t.borrow_mut().nodes.insert_unique(h, (h, m.clone()), |(g, _)| *g);
         });
-        n
+        m
     }
 
-    /// The table's key for `e`: constructor, leaf value, child pointers.
-    fn key_of(e: &Expr) -> NodeKey {
-        let (tag, leaf) = tag_leaf(e);
+    /// The table's key for `n`: constructor, leaf value, child nodes.
+    fn key_of(n: &Node<Expr>) -> NodeKey {
+        let (tag, leaf) = n.tag_leaf();
         let mut kids = [0usize; 5];
         let mut i = 0;
-        for_kids(e, |p| {
-            kids[i] = Rc::as_ptr(p) as usize;
+        n.for_kids(|p, _| {
+            kids[i] = addr(p);
             i += 1;
         });
         NodeKey { tag, leaf, kids }
     }
 
-    /// A node's constructor tag and leaf value, as the table keys them.
-    pub(super) fn tag_leaf(e: &Expr) -> (u8, u32) {
-        match e {
-            Expr::Var(k) => (0, *k),
-            Expr::Sort(k) => (1, *k),
-            Expr::Const(k) => (2, *k),
-            Expr::Free(k) => (3, *k),
-            Expr::Pi(..) => (4, 0),
-            Expr::Lam(..) => (5, 0),
-            Expr::App(..) => (6, 0),
-            Expr::Id(..) => (7, 0),
-            Expr::Refl(..) => (8, 0),
-            Expr::J { .. } => (9, 0),
-            Expr::W(..) => (10, 0),
-            Expr::Sup(..) => (11, 0),
-            Expr::WRec { .. } => (12, 0),
-            Expr::Sigma(..) => (13, 0),
-            Expr::Pair(..) => (14, 0),
-            Expr::SigRec { .. } => (15, 0),
-        }
-    }
-
-    /// Terms larger than this many nodes (counted once per allocation) are interned on entry to a
-    /// scope; smaller ones are left to the lazy switch-on. Unit tests intern every input.
+    /// Terms larger than this many nodes (counted once per node below the roots) are interned on
+    /// entry to a scope; smaller ones are left to the lazy switch-on. Unit tests intern every input.
     const LARGE: usize = if cfg!(test) { 0 } else { 3000 };
 
-    /// Whether the terms reachable from `roots` have more than `limit` distinct nodes.
-    fn exceeds(roots: &[&Expr], limit: usize) -> bool {
+    /// Whether the terms reachable from `roots` have more than `limit` distinct nodes below them.
+    fn exceeds(s: &Spaces, roots: &[&Expr], limit: usize) -> bool {
         let mut seen: PtrSet<usize> = PtrSet::default();
-        let mut stack: Vec<&Expr> = roots.to_vec();
+        let mut stack: Vec<Expr> = roots.iter().map(|&e| e.clone()).collect();
         while let Some(e) = stack.pop() {
-            let mut kids: Vec<&Rc<Expr>> = Vec::new();
-            for_kids(e, |p| kids.push(p));
-            for p in kids {
-                if seen.insert(Rc::as_ptr(p) as usize) {
-                    if seen.len() > limit {
-                        return true;
-                    }
-                    stack.push(p);
+            let mut over = false;
+            s.node(&e).for_kids(|p, _| {
+                if !over && seen.insert(addr(p)) {
+                    over = seen.len() > limit;
+                    stack.push(p.clone());
                 }
+            });
+            if over {
+                return true;
             }
         }
         limit == 0 && !roots.is_empty()
     }
 
-    /// `e` with each child replaced by `f` of it.
-    fn map_kids(e: &Expr, f: &mut impl FnMut(&Rc<Expr>) -> Rc<Expr>) -> Expr {
-        match e {
-            Expr::Var(k) => Expr::Var(*k),
-            Expr::Sort(k) => Expr::Sort(*k),
-            Expr::Const(k) => Expr::Const(*k),
-            Expr::Free(k) => Expr::Free(*k),
-            Expr::Pi(a, b) => Expr::Pi(f(a), f(b)),
-            Expr::Lam(a, b) => Expr::Lam(f(a), f(b)),
-            Expr::App(a, b) => Expr::App(f(a), f(b)),
-            Expr::W(a, b) => Expr::W(f(a), f(b)),
-            Expr::Sup(a, b) => Expr::Sup(f(a), f(b)),
-            Expr::Sigma(a, b) => Expr::Sigma(f(a), f(b)),
-            Expr::Refl(a) => Expr::Refl(f(a)),
-            Expr::Id(a, b, c) => Expr::Id(f(a), f(b), f(c)),
-            Expr::Pair(a, b, c) => Expr::Pair(f(a), f(b), f(c)),
-            Expr::SigRec { motive, step, target } => Expr::SigRec { motive: f(motive), step: f(step), target: f(target) },
-            Expr::J { motive, base, a, b, p } => Expr::J { motive: f(motive), base: f(base), a: f(a), b: f(b), p: f(p) },
-            Expr::WRec { motive, children_ty, step, target } => {
-                Expr::WRec { motive: f(motive), children_ty: f(children_ty), step: f(step), target: f(target) }
-            }
+    fn canon(s: &Spaces, x: &Expr, memo: &mut HashMap<usize, Expr>) -> Expr {
+        if x.canonical() {
+            return x.clone();
         }
-    }
-
-    fn canon(rc: &Rc<Expr>, memo: &mut HashMap<usize, Rc<Expr>>) -> Rc<Expr> {
-        if rc.canonical() {
-            return rc.clone();
-        }
-        let key = Rc::as_ptr(rc) as usize;
+        let key = addr(x);
         if let Some(r) = memo.get(&key) {
             return r.clone();
         }
-        let e = grow(|| map_kids(rc, &mut |c| canon(c, memo)));
+        let n = grow(|| s.node(x).map_kids(|c, _| canon(s, &c, memo)));
         // Children all unchanged (leaves, or nodes whose children were already the table's): put this
         // node itself in the table instead of allocating its twin.
-        let r = if same_shape(&e, rc, Rc::ptr_eq) {
-            intern_as(e, |_| rc.clone())
-        } else {
-            intern(e, Some((rc.loose(), rc.free())))
-        };
+        let r = if n.same_shape(&x.0.node, |p, q| s.same(p, q)) { intern_as(n, |_| x.clone()) } else { intern(n) };
         memo.insert(key, r.clone());
         r
     }
 
     /// Whether `check_in`'s term and claim are large (the same bound that makes `canonical_inputs`
     /// intern them), so that it runs them on one big stack segment (`on_segment`).
-    pub fn large(e: &Expr, expected: &Expr) -> bool {
-        exceeds(&[e, expected], LARGE)
+    pub fn large(s: &Spaces, e: &Expr, expected: &Expr) -> bool {
+        exceeds(s, &[e, expected], LARGE)
     }
 
-    /// `check_in`'s term and claim, with every node under them interned when they are large, so the
+    /// `check_in`'s term and claim, with every node in them interned when they are large, so the
     /// comparisons against types the checker builds (which are interned) meet canonical nodes on
     /// both sides. Small inputs are returned as they are.
-    pub fn canonical_inputs(e: &Expr, expected: &Expr) -> (Expr, Expr) {
+    pub fn canonical_inputs(s: &Spaces, e: &Expr, expected: &Expr) -> (Expr, Expr) {
         if !active() {
-            if DEPTH.with(|d| d.get()) == 0 || !exceeds(&[e, expected], LARGE) {
+            if DEPTH.with(|d| d.get()) == 0 || !exceeds(s, &[e, expected], LARGE) {
                 return (e.clone(), expected.clone());
             }
             let g = NEXT_GENERATION.with(|g| g.replace(g.get() + 1));
             GENERATION.with(|c| c.set(g));
         }
         let mut memo = HashMap::new();
-        let a = map_kids(e, &mut |c| canon(c, &mut memo));
-        let b = map_kids(expected, &mut |c| canon(c, &mut memo));
+        let a = canon(s, e, &mut memo);
+        let b = canon(s, expected, &mut memo);
         (a, b)
     }
 
     /// Whether `x` mentions a loose `Var` in `[d, d + m)`, i.e. whether instantiating `m` arguments
     /// at depth `d` can put any of them in. When it cannot, the result is `x` shifted down by `m`
     /// above `d + m`, whatever the arguments are. The node's header remembers its last answer
-    /// ([`Rc::uses_slot`]). Its misses go to the table's `bounds` on the node's lowest loose
+    /// ([`Spaces::uses_slot`]). Its misses go to the table's `bounds` on the node's lowest loose
     /// variable from `d`, which one (node, depth) entry answers for every `m` outside them; a walk
     /// that still stops at its first hit narrows them (doc section "The slot in front of bounds").
     /// Only while the table is on.
-    pub fn uses(x: &Rc<Expr>, d: u32, m: u32) -> bool {
-        if x.loose() <= d {
+    pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
+        let loose = s.loose(x);
+        if loose <= d {
             return false;
         }
-        if let Expr::Var(k) = &**x {
-            return *k < d + m;
+        let n = s.node(x);
+        if let Node::Var(k) = n {
+            return k < d + m;
         }
-        if let Some(r) = x.uses_slot(d, m) {
+        if let Some(r) = s.uses_slot(x, d, m) {
             return r;
         }
         // `lo <= the lowest loose variable from d <= hi`. `loose` bounds it from above unless it
         // saturated.
-        let key = (Rc::as_ptr(x) as usize, d);
+        let key = (addr(x), d);
         let (lo, hi) = TABLE
             .with(|t| t.borrow().bounds.get(&key).copied())
-            .unwrap_or((0, if x.loose() == u32::MAX { u32::MAX } else { x.loose() - 1 - d }));
+            .unwrap_or((0, if loose == u32::MAX { u32::MAX } else { loose - 1 - d }));
         let r = if hi < m {
             true
         } else if lo >= m {
@@ -1310,11 +1146,7 @@ mod hc {
         } else {
             let r = grow(|| {
                 let mut found = false;
-                let mut i = 0;
-                for_kids(x, |c| {
-                    found = found || uses(c, d + under_binder(x, i) as u32, m);
-                    i += 1;
-                });
+                n.for_kids(|c, under| found = found || uses(s, c, d + under as u32, m));
                 found
             });
             let b = if r { (lo, m - 1) } else { (m, hi) };
@@ -1325,41 +1157,28 @@ mod hc {
             });
             r
         };
-        x.set_uses_slot(d, m, r);
+        s.set_uses_slot(x, d, m, r);
         r
-    }
-
-    /// Whether child `i` of `x`, in [`for_kids`] order, sits under a binder of `x`.
-    fn under_binder(x: &Expr, i: usize) -> bool {
-        match x {
-            Expr::Pi(..) | Expr::Lam(..) | Expr::W(..) | Expr::Sigma(..) => i == 1,
-            Expr::WRec { .. } => i == 1,
-            Expr::Pair(..) => i == 0,
-            _ => false,
-        }
     }
 
     /// The smallest loose `Var` index of `x` seen from `d` binders inside it, i.e. among `x`'s loose
     /// variables `k >= d`, the least `k - d`; `u32::MAX` when there is none. Memoised in `memo` by
     /// (node, `d`).
-    pub(super) fn lowest_loose(x: &Rc<Expr>, d: u32, memo: &mut PtrMap<(PtrKey, u32), u32>) -> u32 {
-        if x.loose() <= d {
+    pub(super) fn lowest_loose(s: &Spaces, x: &Expr, d: u32, memo: &mut PtrMap<(Key, u32), u32>) -> u32 {
+        if s.loose(x) <= d {
             return u32::MAX;
         }
-        if let Expr::Var(k) = &**x {
+        let n = s.node(x);
+        if let Node::Var(k) = n {
             return k - d;
         }
-        let key = (PtrKey(x.clone()), d);
+        let key = (s.key(x), d);
         if let Some(&r) = memo.get(&key) {
             return r;
         }
         let r = grow(|| {
-            let (mut low, mut i) = (u32::MAX, 0);
-            for_kids(x, |c| {
-                let under = under_binder(x, i) as u32;
-                low = low.min(lowest_loose(c, d + under, memo));
-                i += 1;
-            });
+            let mut low = u32::MAX;
+            n.for_kids(|c, under| low = low.min(lowest_loose(s, c, d + under as u32, memo)));
             low
         });
         memo.insert(key, r);
@@ -1367,12 +1186,12 @@ mod hc {
     }
 
     /// An id for the argument list: the interned node's address for one argument (even), an
-    /// odd table id for several; 0 while the table is off (which it leaves after `WARM_UP` calls).
-    /// A canonical argument is its own interned node, so only the others are looked up.
-    pub fn args_id(args: &[&Rc<Expr>]) -> u64 {
+    /// odd table id for several; `None` while the table is off (which it leaves after `WARM_UP`
+    /// calls). A canonical argument is its own interned node, so only the others are looked up.
+    pub fn args_id(s: &Spaces, args: &[&Expr]) -> Option<Aid> {
         if !active() {
             if DEPTH.with(|d| d.get()) == 0 {
-                return 0;
+                return None;
             }
             let n = CALLS.with(|c| {
                 c.set(c.get() + 1);
@@ -1380,14 +1199,14 @@ mod hc {
             });
             #[allow(clippy::absurd_extreme_comparisons)] // `WARM_UP` is 0 under test
             if n < WARM_UP {
-                return 0;
+                return None;
             }
             let g = NEXT_GENERATION.with(|g| g.replace(g.get() + 1));
             GENERATION.with(|c| c.set(g));
         }
-        let id = |a: &&Rc<Expr>| if a.canonical() { Rc::as_ptr(a) as usize } else { Rc::as_ptr(&intern((***a).clone(), None)) as usize };
+        let id = |a: &&Expr| if a.canonical() { addr(a) } else { addr(&intern(s.node(a))) };
         if let [a] = args {
-            return id(a) as u64;
+            return Some(id(a) as Aid);
         }
         // The ids go in a stack buffer when they fit; the set is only allocated for a new list.
         let mut buf = [0usize; 8];
@@ -1399,7 +1218,7 @@ mod hc {
             heap = args.iter().map(id).collect();
             &heap
         };
-        TABLE.with(|t| {
+        Some(TABLE.with(|t| {
             let mut t = t.borrow_mut();
             if let Some(&n) = t.arg_sets.get(ptrs) {
                 return n;
@@ -1407,12 +1226,12 @@ mod hc {
             let next = 2 * t.arg_sets.len() as u64 + 1;
             t.arg_sets.insert(ptrs.to_vec(), next);
             next
-        })
+        }))
     }
 
-    fn height_at_most(x: &Expr, h: u32) -> bool {
+    fn height_at_most(s: &Spaces, x: &Expr, h: u32) -> bool {
         let mut ok = true;
-        for_kids(x, |c| ok = ok && h > 0 && height_at_most(c, h - 1));
+        s.node(x).for_kids(|c, _| ok = ok && h > 0 && height_at_most(s, c, h - 1));
         ok
     }
 
@@ -1420,224 +1239,88 @@ mod hc {
     /// leaves. Rebuilding such a node is a few node-table probes; its memo entry cost a probe and an
     /// insert for a 36% hit rate (one level), and the cutoff at two beat one, three and four (doc
     /// section "Small nodes skip the instantiation memo").
-    pub fn low(x: &Expr) -> bool {
-        height_at_most(x, 2)
+    pub fn low(s: &Spaces, x: &Expr) -> bool {
+        height_at_most(s, x, 2)
     }
 
-    pub fn inst_get(x: &Rc<Expr>, aid: u64, d: u32) -> Option<Rc<Expr>> {
-        if aid == 0 {
-            return None;
-        }
-        TABLE.with(|t| t.borrow().inst.get(&(Rc::as_ptr(x) as usize, aid, d)).cloned())
+    pub fn inst_get(x: &Expr, aid: Option<Aid>, d: u32) -> Option<Expr> {
+        let aid = aid?;
+        TABLE.with(|t| t.borrow().inst.get(&(addr(x), aid, d)).cloned())
     }
 
-    pub fn inst_put(x: &Rc<Expr>, aid: u64, d: u32, r: &Rc<Expr>) {
-        if aid != 0 {
+    pub fn inst_put(x: &Expr, aid: Option<Aid>, d: u32, r: &Expr) {
+        if let Some(aid) = aid {
             TABLE.with(|t| {
                 let mut t = t.borrow_mut();
                 pin(&mut t, x);
-                t.inst.insert((Rc::as_ptr(x) as usize, aid, d), r.clone());
+                t.inst.insert((addr(x), aid, d), r.clone());
             });
         }
     }
 
     /// `x`'s weak head normal form if the scope has one; `None` also while the table is off.
-    pub fn whnf_get(x: &Rc<Expr>) -> Option<Rc<Expr>> {
-        TABLE.with(|t| t.borrow().whnf.get(&(Rc::as_ptr(x) as usize)).cloned())
+    pub fn whnf_get(x: &Expr) -> Option<Expr> {
+        TABLE.with(|t| t.borrow().whnf.get(&addr(x)).cloned())
     }
 
-    pub fn whnf_put(x: &Rc<Expr>, r: &Rc<Expr>) {
+    pub fn whnf_put(x: &Expr, r: &Expr) {
         TABLE.with(|t| {
             let mut t = t.borrow_mut();
             pin(&mut t, x);
-            t.whnf.insert(Rc::as_ptr(x) as usize, r.clone());
+            t.whnf.insert(addr(x), r.clone());
         });
     }
 
-    pub fn hnf_get(x: &Rc<Expr>, d: u32) -> Option<Rc<Expr>> {
-        TABLE.with(|t| t.borrow().hnf.get(&(Rc::as_ptr(x) as usize, d)).cloned())
+    pub fn hnf_get(x: &Expr, d: u32) -> Option<Expr> {
+        TABLE.with(|t| t.borrow().hnf.get(&(addr(x), d)).cloned())
     }
 
-    pub fn hnf_put(x: &Rc<Expr>, d: u32, r: &Rc<Expr>) {
+    pub fn hnf_put(x: &Expr, d: u32, r: &Expr) {
         TABLE.with(|t| {
             let mut t = t.borrow_mut();
             pin(&mut t, x);
-            t.hnf.insert((Rc::as_ptr(x) as usize, d), r.clone());
+            t.hnf.insert((addr(x), d), r.clone());
         });
     }
 
-    pub fn shift_get(x: &Rc<Expr>, cutoff: u32, amount: i32) -> Option<Rc<Expr>> {
+    pub fn shift_get(x: &Expr, cutoff: u32, amount: i32) -> Option<Expr> {
         if !active() {
             return None;
         }
-        TABLE.with(|t| t.borrow().shifts.get(&(Rc::as_ptr(x) as usize, cutoff, amount)).cloned())
+        TABLE.with(|t| t.borrow().shifts.get(&(addr(x), cutoff, amount)).cloned())
     }
 
-    pub fn shift_put(x: &Rc<Expr>, cutoff: u32, amount: i32, r: &Rc<Expr>) {
+    pub fn shift_put(x: &Expr, cutoff: u32, amount: i32, r: &Expr) {
         if active() {
             TABLE.with(|t| {
                 let mut t = t.borrow_mut();
                 pin(&mut t, x);
-                t.shifts.insert((Rc::as_ptr(x) as usize, cutoff, amount), r.clone());
+                t.shifts.insert((addr(x), cutoff, amount), r.clone());
             });
         }
     }
 }
 
-/// Feature `copy-volume`: what the id arena's `persist` would copy out of a region (id-arena spec, Stage 2, and its
-/// plan's "Departures"). Each node records the region it was built in. `persist` gives every node it reaches an id in a
-/// simulated per-thread persistent table, once per node, and counts the node by where it came from.
-#[cfg(feature = "copy-volume")]
-mod copy_volume {
-    use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    /// `persist` calls; nodes copied out of the open region; nodes built outside any region (persistent already in the
-    /// arena); nodes from an earlier region that were never persisted (dead handles in the arena); distinct nodes in the
-    /// simulated persistent table. A root `Expr` has no header, so it is looked up on every call and never counted as
-    /// copied.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct CopyVolume {
-        pub calls: u64,
-        pub copied: u64,
-        pub outside: u64,
-        pub stale: u64,
-        pub unique: u64,
-    }
-
-    impl fmt::Display for CopyVolume {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "calls={} copied={} outside={} stale={} unique={}", self.calls, self.copied, self.outside, self.stale, self.unique)
-        }
-    }
-
-    const CALLS: usize = 0;
-    const COPIED: usize = 1;
-    const OUTSIDE: usize = 2;
-    const STALE: usize = 3;
-    const UNIQUE: usize = 4;
-
-    static PROCESS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-
-    thread_local! {
-        static THREAD: Cell<[u64; 5]> = const { Cell::new([0; 5]) };
-        /// The open region's number, 0 while none is open; never reused within the thread.
-        static REGION: Cell<u32> = const { Cell::new(0) };
-        static NEXT: Cell<u32> = const { Cell::new(1) };
-        /// (tag, leaf, children's ids) -> id.
-        static TABLE: RefCell<HashMap<(u8, u32, [u32; 5]), u32>> = RefCell::new(HashMap::new());
-    }
-
-    fn bump(i: usize) {
-        PROCESS[i].fetch_add(1, Relaxed);
-        THREAD.with(|t| {
-            let mut c = t.get();
-            c[i] += 1;
-            t.set(c);
-        });
-    }
-
-    fn of(c: [u64; 5]) -> CopyVolume {
-        CopyVolume { calls: c[CALLS], copied: c[COPIED], outside: c[OUTSIDE], stale: c[STALE], unique: c[UNIQUE] }
-    }
-
-    pub fn thread() -> CopyVolume {
-        of(THREAD.with(Cell::get))
-    }
-
-    pub fn process() -> CopyVolume {
-        of(std::array::from_fn(|i| PROCESS[i].load(Relaxed)))
-    }
-
-    pub fn region() -> u32 {
-        REGION.with(Cell::get)
-    }
-
-    pub fn open() {
-        let n = NEXT.with(|c| c.replace(c.get().checked_add(1).expect("regions ran out")));
-        REGION.with(|r| r.set(n));
-    }
-
-    pub fn close() {
-        REGION.with(|r| r.set(0));
-    }
-
-    pub fn persist(e: &Expr) {
-        bump(CALLS);
-        intern(e);
-    }
-
-    fn intern(e: &Expr) -> u32 {
-        let (tag, leaf) = hc::tag_leaf(e);
-        let mut kids = [u32::MAX; 5];
-        let mut i = 0;
-        hc::for_kids(e, |c| {
-            kids[i] = id(c);
-            i += 1;
-        });
-        TABLE.with(|t| {
-            let mut t = t.borrow_mut();
-            let n = t.len() as u32;
-            *t.entry((tag, leaf, kids)).or_insert_with(|| {
-                bump(UNIQUE);
-                n
-            })
-        })
-    }
-
-    fn id(x: &Rc<Expr>) -> u32 {
-        let p = x.0.pid.get();
-        if p != u32::MAX {
-            return p;
-        }
-        bump(match x.0.region {
-            0 => OUTSIDE,
-            r if r == region() => COPIED,
-            _ => STALE,
-        });
-        let p = grow(|| intern(x));
-        x.0.pid.set(p);
-        p
-    }
-}
-
-#[cfg(feature = "copy-volume")]
-pub use copy_volume::CopyVolume;
-
-/// What `persist` has counted on this thread (feature `copy-volume`).
-#[cfg(feature = "copy-volume")]
-pub fn copy_volume_thread() -> CopyVolume {
-    copy_volume::thread()
-}
-
-/// What `persist` has counted on every thread of the process (feature `copy-volume`).
-#[cfg(feature = "copy-volume")]
-pub fn copy_volume_process() -> CopyVolume {
-    copy_volume::process()
-}
-
 /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
-/// deeper) with `s`, then discharge that binder. `s` is walked only where
+/// deeper) with `a`, then discharge that binder. `a` is walked only where
 /// `body` uses it, so not at all when `body` doesn't mention `Var(0)`:
 /// `infer`'s `App` rule substitutes every argument into its function's
 /// codomain, usually `Int`, and shifting the argument there cost a walk of
 /// it per application (`RELATED_WORK.md` §50, §58).
-fn subst_top(body: &Expr, s: &Rc<Expr>) -> Expr {
-    instantiate(body, s, 0)
+fn subst_top(s: &Spaces, body: &Expr, a: &Expr) -> Expr {
+    instantiate(s, body, a, 0)
 }
 
 /// `subst_top`'s substitution in one pass: under `d` binders of `e`,
-/// `Var(d)` becomes `s` shifted past them, and `e`'s own free variables
+/// `Var(d)` becomes `a` shifted past them, and `e`'s own free variables
 /// above it drop by one for the discharged binder. Equal to substituting
-/// `shift(s, 0, 1)` and then shifting the result by -1, but `s` is shifted
+/// `shift(a, 0, 1)` and then shifting the result by -1, but `a` is shifted
 /// only where it's used, not at every binder crossed and again in the
 /// result (`RELATED_WORK.md` §52).
 ///
-/// A subterm with no loose variable at or above its depth is kept by
-/// pointer.
-fn instantiate(e: &Expr, s: &Rc<Expr>, d: u32) -> Expr {
-    instantiate_n(e, &[s], d)
+/// A subterm with no loose variable at or above its depth is kept as it is.
+fn instantiate(s: &Spaces, e: &Expr, a: &Expr, d: u32) -> Expr {
+    instantiate_n(s, e, &[a], d)
 }
 
 /// `instantiate` for `args.len()` binders at once: `e` lives under that many binders, `args` are in
@@ -1645,153 +1328,77 @@ fn instantiate(e: &Expr, s: &Rc<Expr>, d: u32) -> Expr {
 /// discharged. Equal to calling `subst_top` once per argument, outermost first, without building the
 /// intermediate terms: each argument is shifted past the `d` binders it ends up under, and `e`'s own
 /// free variables above the discharged ones drop by `args.len()`.
-fn instantiate_n(e: &Expr, args: &[&Rc<Expr>], d: u32) -> Expr {
-    if loose_of(e) <= d {
+fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
+    if s.loose(e) <= d {
         return e.clone();
     }
-    inst_rec(e, args, hc::args_id(args), d)
+    inst_rec(s, e, args, hc::args_id(s, args), d)
 }
 
-/// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo (0: none).
-fn inst_rec(e: &Expr, args: &[&Rc<Expr>], aid: u64, d: u32) -> Expr {
-    #[cfg(feature = "record-defeq")]
-    let _hc_guard = hc_probe::inst_enter(e, args, d);
+/// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo (`None`: none).
+fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Option<Aid>, d: u32) -> Expr {
     walk_count(0);
     let m = args.len() as u32;
-    let go = |x: &Rc<Expr>, d: u32| {
-        if x.loose() <= d {
-            return x.clone();
+    let go = |x: Expr, under: bool| {
+        let d = d + under as u32;
+        if s.loose(&x) <= d {
+            return x;
         }
-        if aid != 0 && x.loose() != u32::MAX && !hc::uses(x, d, m) {
-            return shift_child(x, d + m, -(m as i32));
+        if aid.is_some() && s.loose(&x) != u32::MAX && !hc::uses(s, &x, d, m) {
+            return shift_child(s, &x, d + m, -(m as i32));
         }
-        let memo = !hc::low(x);
-        if memo && let Some(r) = hc::inst_get(x, aid, d) {
+        let memo = !hc::low(s, &x);
+        if memo && let Some(r) = hc::inst_get(&x, aid, d) {
             return r;
         }
-        let r = if aid == 0 { Rc::new(inst_rec(x, args, aid, d)) } else { hc::intern(inst_rec(x, args, aid, d), None) };
+        let r = inst_rec(s, &x, args, aid, d);
         if memo {
-            hc::inst_put(x, aid, d, &r);
+            hc::inst_put(&x, aid, d, &r);
         }
         r
     };
-    grow(|| match e {
-        Expr::Var(k) => {
-            if *k >= d + m {
-                Expr::Var(*k - m)
-            } else if *k >= d {
-                let arg: &Expr = args[(m - 1 - (*k - d)) as usize];
-                // Probe slots: 5 uses, 6 at depth 0, 7 deeper with a closed argument, 8 deeper with
-                // loose variables, 9 `shift` visits those last uses cost.
-                walk_count(5);
-                if d == 0 {
-                    walk_count(6);
-                } else if loose_of(arg) == 0 {
-                    walk_count(7);
-                } else {
-                    walk_count(8);
-                }
-                #[cfg(feature = "record-defeq")]
-                let v0 = WALKS.with(|w| w[1].get());
-                let r = shift(arg, 0, d as i32);
-                #[cfg(feature = "record-defeq")]
-                if d > 0 && loose_of(arg) > 0 {
-                    // Slots 10/11: uses whose argument mentions a binder `conv` opened (internal) or
-                    // only the checker's context; 12/13 the shift visits each class cost.
-                    let k = INTERNAL.with(|c| c.get());
-                    let internal = (0..k).any(|i| is_var_free(arg, i));
-                    let cost = WALKS.with(|w| w[1].get()) - v0;
-                    // Slots 15/16: distinct (argument, depth) pairs within one `def_eq` and the shift
-                    // visits they cost, i.e. what a per-query shift memo would still pay.
-                    let fresh = SEEN.with(|m| m.borrow_mut().insert((arg as *const Expr, d)));
-                    WALKS.with(|w| {
-                        if fresh {
-                            w[15].set(w[15].get() + 1);
-                            w[16].set(w[16].get() + cost);
-                        }
-                        w[9].set(w[9].get() + cost);
-                        let (n, c) = if internal { (10, 12) } else { (11, 13) };
-                        w[n].set(w[n].get() + 1);
-                        w[c].set(w[c].get() + cost);
-                    });
-                }
-                r
+    grow(|| match s.node(e) {
+        Node::Var(k) if k >= d + m => var(k - m),
+        Node::Var(k) if k >= d => {
+            let arg = args[(m - 1 - (k - d)) as usize];
+            // Probe slots: 5 uses, 6 at depth 0, 7 deeper with a closed argument, 8 deeper with
+            // loose variables, 9 `shift` visits those last uses cost.
+            walk_count(5);
+            if d == 0 {
+                walk_count(6);
+            } else if s.loose(arg) == 0 {
+                walk_count(7);
             } else {
-                Expr::Var(*k)
+                walk_count(8);
             }
-        }
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Free(l) => Expr::Free(*l),
-        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
-        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
-        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
-        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
-        Expr::Refl(a) => Expr::Refl(go(a, d)),
-        Expr::J { motive, base, a, b, p } => Expr::J { motive: go(motive, d), base: go(base, d), a: go(a, d), b: go(b, d), p: go(p, d) },
-        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
-        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
-        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
-            motive: go(motive, d),
-            children_ty: go(children_ty, d + 1),
-            step: go(step, d),
-            target: go(target, d),
-        },
-        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
-        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
-        Expr::SigRec { motive, step, target } => Expr::SigRec { motive: go(motive, d), step: go(step, d), target: go(target, d) },
-    })
-}
-
-#[cfg(feature = "record-defeq")]
-fn instantiate_memo(e: &Expr, args: &[&Expr], d: u32, memo: &std::cell::RefCell<HashMap<(*const Expr, u32), Rc<Expr>>>) -> Expr {
-    if loose_of(e) <= d {
-        return e.clone();
-    }
-    walk_count(0);
-    let m = args.len() as u32;
-    let go = |x: &Rc<Expr>, d: u32| {
-        if x.loose() <= d {
-            return x.clone();
-        }
-        let key = (Rc::as_ptr(x), d);
-        if let Some(r) = memo.borrow().get(&key) {
-            return r.clone();
-        }
-        let r = Rc::new(instantiate_memo(x, args, d, memo));
-        memo.borrow_mut().insert(key, r.clone());
-        r
-    };
-    grow(|| match e {
-        Expr::Var(k) => {
-            if *k >= d + m {
-                Expr::Var(*k - m)
-            } else if *k >= d {
-                shift(args[(m - 1 - (*k - d)) as usize], 0, d as i32)
-            } else {
-                Expr::Var(*k)
+            #[cfg(feature = "record-defeq")]
+            let v0 = WALKS.with(|w| w[1].get());
+            let r = shift_in(s, arg, 0, d as i32);
+            #[cfg(feature = "record-defeq")]
+            if d > 0 && s.loose(arg) > 0 {
+                // Slots 10/11: uses whose argument mentions a binder `conv` opened (internal) or
+                // only the checker's context; 12/13 the shift visits each class cost.
+                let k = INTERNAL.with(|c| c.get());
+                let internal = (0..k).any(|i| is_var_free(s, arg, i));
+                let cost = WALKS.with(|w| w[1].get()) - v0;
+                // Slots 15/16: distinct (argument, depth) pairs within one `def_eq` and the shift
+                // visits they cost, i.e. what a per-query shift memo would still pay.
+                let fresh = SEEN.with(|m| m.borrow_mut().insert((node_key(arg), d)));
+                WALKS.with(|w| {
+                    if fresh {
+                        w[15].set(w[15].get() + 1);
+                        w[16].set(w[16].get() + cost);
+                    }
+                    w[9].set(w[9].get() + cost);
+                    let (n, c) = if internal { (10, 12) } else { (11, 13) };
+                    w[n].set(w[n].get() + 1);
+                    w[c].set(w[c].get() + cost);
+                });
             }
+            r
         }
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Free(l) => Expr::Free(*l),
-        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
-        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
-        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
-        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
-        Expr::Refl(a) => Expr::Refl(go(a, d)),
-        Expr::J { motive, base, a, b, p } => Expr::J { motive: go(motive, d), base: go(base, d), a: go(a, d), b: go(b, d), p: go(p, d) },
-        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
-        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
-        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
-            motive: go(motive, d),
-            children_ty: go(children_ty, d + 1),
-            step: go(step, d),
-            target: go(target, d),
-        },
-        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
-        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
-        Expr::SigRec { motive, step, target } => Expr::SigRec { motive: go(motive, d), step: go(step, d), target: go(target, d) },
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        n => s.mk(n.map_kids(&go)),
     })
 }
 
@@ -1809,29 +1416,17 @@ fn instantiate_memo(e: &Expr, args: &[&Expr], d: u32, memo: &std::cell::RefCell<
 ///
 /// A subterm whose cached range shows no variable at or above idx isn't
 /// walked.
-fn is_var_free(e: &Expr, idx: u32) -> bool {
-    if loose_of(e) <= idx {
+fn is_var_free(s: &Spaces, e: &Expr, idx: u32) -> bool {
+    if s.loose(e) <= idx {
         return false;
     }
-    grow(|| match e {
-        Expr::Var(k) => *k == idx,
-        Expr::Sort(_) | Expr::Const(_) | Expr::Free(_) => false,
-        Expr::Pi(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
-        Expr::Lam(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
-        Expr::App(f, a) => is_var_free(f, idx) || is_var_free(a, idx),
-        Expr::Id(a, x, y) => is_var_free(a, idx) || is_var_free(x, idx) || is_var_free(y, idx),
-        Expr::Refl(a) => is_var_free(a, idx),
-        Expr::J { motive, base, a, b, p } => {
-            is_var_free(motive, idx) || is_var_free(base, idx) || is_var_free(a, idx) || is_var_free(b, idx) || is_var_free(p, idx)
+    grow(|| match s.node(e) {
+        Node::Var(k) => k == idx,
+        n => {
+            let mut f = false;
+            n.for_kids(|c, under| f = f || is_var_free(s, c, idx + under as u32));
+            f
         }
-        Expr::W(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
-        Expr::Sup(a, f) => is_var_free(a, idx) || is_var_free(f, idx),
-        Expr::WRec { motive, children_ty, step, target } => {
-            is_var_free(motive, idx) || is_var_free(children_ty, idx + 1) || is_var_free(step, idx) || is_var_free(target, idx)
-        }
-        Expr::Sigma(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
-        Expr::Pair(fam, a, b) => is_var_free(fam, idx + 1) || is_var_free(a, idx) || is_var_free(b, idx),
-        Expr::SigRec { motive, step, target } => is_var_free(motive, idx) || is_var_free(step, idx) || is_var_free(target, idx),
     })
 }
 
@@ -1859,15 +1454,15 @@ fn free_escaped(l: u32) -> String {
 // this deliberately leaves on the table). This is always sound regardless
 // of typing context, since reduction never consults one -- unlike a
 // hypothetical cache for `infer`/`check` themselves, which would need to
-// be keyed on more than just `Expr` identity to stay correct (the same
+// be keyed on more than just node identity to stay correct (the same
 // subterm can mean different things under different contexts), memoizing
 // pure reduction has no such caveat.
 
-/// Caches `whnf`/`nf` results for one top-level call, keyed by the `Rc`
-/// pointer identity of the subterm being reduced (see [`PtrKey`]). Two
-/// *equal but independently-allocated* subterms are still cache-distinct
-/// (this is sharing, not hash-consing) -- but a subterm that's genuinely
-/// the same `Rc` allocation, reached from several places while reducing one
+/// Caches `whnf`/`nf` results for one top-level call, keyed by the node
+/// identity of the subterm being reduced (see [`PtrKey`]). Two
+/// *equal but independently-built* subterms are still cache-distinct
+/// outside a scope's table -- but a subterm that's genuinely
+/// the same node, reached from several places while reducing one
 /// larger term (exactly what happens once a proof term embeds the same
 /// subterm or `cong_n` argument in multiple positions), is
 /// normalized once and reused everywhere else it's referenced, instead of
@@ -1876,11 +1471,11 @@ fn free_escaped(l: u32) -> String {
 /// lives -- from scratch at every occurrence.
 #[derive(Default)]
 struct ReductionCache {
-    whnf: PtrMap<PtrKey, Rc<Expr>>,
-    nf: PtrMap<PtrKey, Expr>,
-    hnf: PtrMap<(PtrKey, u32), Rc<Expr>>,
+    whnf: PtrMap<Key, Expr>,
+    nf: PtrMap<Key, Expr>,
+    hnf: PtrMap<(Key, u32), Expr>,
     /// Pairs `def_eq` found syntactically unequal; see [`eq_noting`].
-    unequal: PtrSet<(PtrKey, PtrKey)>,
+    unequal: PtrSet<(Key, Key)>,
 }
 
 /// Hashes the integers a [`PtrKey`] key is made of (a pointer, a context id) by multiply and
@@ -1915,61 +1510,61 @@ type PtrSet<K> = HashSet<K, std::hash::BuildHasherDefault<PtrHasher>>;
 
 /// `infer`'s memo for one public `infer` or `check` call (`RELATED_WORK.md`
 /// §63). A context is named by an id: 0 is the caller's, and entering a
-/// binder whose type is the `Rc` `a` from context `cid` gives the id
+/// binder whose type is the node `a` from context `cid` gives the id
 /// interned for `(cid, a)`. Equal ids then mean the same sequence of binder
 /// types, which, with the node, is all `infer`'s answer depends on within
 /// one call -- it also depends on `g`, but that's sound because a cache
 /// lives only for the one `infer_in`/`check_in` call that made it, and `g`
-/// is fixed for that whole call. Keys hold their `Rc`s (`PtrKey`), so no
+/// is fixed for that whole call. Keys hold their nodes (`Key`), so no
 /// address is reused within the call.
 #[derive(Default)]
 struct InferCache {
-    types: PtrMap<(PtrKey, (u32, u32)), Expr>,
-    contexts: PtrMap<(u32, PtrKey), u32>,
+    types: PtrMap<(Key, (u32, u32)), Key>,
+    contexts: PtrMap<(u32, Key), u32>,
     next: u32,
-    /// For each context id, (parent id, binder type pointer, that type's loose range); a binder with
-    /// no type of the term (`fresh`) has loose range `u32::MAX`.
-    info: Vec<(u32, usize, u32)>,
-    /// Interned windows of binder types, outermost first: (window id of the outer part, pointer of
-    /// the next binder type inward) to the window's id. 0 is the empty window.
-    windows: PtrMap<(u32, usize), u32>,
+    /// For each context id, (parent id, binder type, that type's loose range); a binder with no type of
+    /// the term (`fresh`) has no type recorded and loose range `u32::MAX`.
+    info: Vec<(u32, Option<Key>, u32)>,
+    /// Interned windows of binder types, outermost first: (window id of the outer part, the next binder
+    /// type inward) to the window's id. 0 is the empty window.
+    windows: PtrMap<(u32, Key), u32>,
     /// (context id, binders needed) to its window, `None` for a fallback; see [`InferCache::window`].
     window_of: PtrMap<(u32, u32), Option<u32>>,
     /// Scratch for [`InferCache::window`]'s walk.
     path: Vec<(u32, u32)>,
     /// [`hc::lowest_loose`]'s memo.
-    lows: PtrMap<(PtrKey, u32), u32>,
+    lows: PtrMap<(Key, u32), u32>,
     /// (context id, lowest loose variable, loose range) to [`InferCache::memo_context`]'s answer.
     context_of: PtrMap<(u32, u32, u32), (u32, u32)>,
-    /// Probe: (node pointer, signature of the bindings it can depend on) seen so far.
+    /// Probe: (node key, signature of the bindings it can depend on) seen so far.
     #[cfg(feature = "record-defeq")]
-    relaxed: std::collections::HashSet<(usize, u64)>,
+    relaxed: std::collections::HashSet<(u64, u64)>,
 }
 
 impl InferCache {
     /// The id of context `cid` extended by a binder of type `a`.
-    fn enter(&mut self, cid: u32, a: &Rc<Expr>) -> u32 {
+    fn enter(&mut self, s: &Spaces, cid: u32, a: &Expr) -> u32 {
         walk_count(21);
         let next = &mut self.next;
         let info = &mut self.info;
-        *self.contexts.entry((cid, PtrKey(a.clone()))).or_insert_with(|| {
+        *self.contexts.entry((cid, s.key(a))).or_insert_with(|| {
             *next += 1;
             if info.len() <= *next as usize {
-                info.resize(*next as usize + 1, (0, 0, 0));
+                info.resize(*next as usize + 1, (0, None, 0));
             }
-            info[*next as usize] = (cid, Rc::as_ptr(a) as usize, a.loose());
+            info[*next as usize] = (cid, Some(s.key(a)), s.loose(a));
             *next
         })
     }
 
-    /// An id no other context has: for a binder type that isn't an `Rc`
+    /// An id no other context has: for a binder type that isn't a node
     /// of the term, like a `Pair`'s inferred first component.
     fn fresh(&mut self) -> u32 {
         self.next += 1;
         if self.info.len() <= self.next as usize {
-            self.info.resize(self.next as usize + 1, (0, 0, 0));
+            self.info.resize(self.next as usize + 1, (0, None, 0));
         }
-        self.info[self.next as usize] = (0, 0, u32::MAX);
+        self.info[self.next as usize] = (0, None, u32::MAX);
         self.next
     }
 
@@ -1989,13 +1584,13 @@ impl InferCache {
     /// `lo` is 0).
     /// Falls back to `cid` when the window would pass a binder the term doesn't name (`fresh`), or
     /// run past the call's own binders into the caller's context.
-    fn memo_context(&mut self, cid: u32, e: &Rc<Expr>) -> (u32, u32) {
+    fn memo_context(&mut self, s: &Spaces, cid: u32, e: &Expr) -> (u32, u32) {
         const WINDOW_BIT: u32 = 1 << 31;
-        let need = e.loose();
+        let need = s.loose(e);
         if need == 0 {
             return (0, WINDOW_BIT);
         }
-        let lo = hc::lowest_loose(e, 0, &mut self.lows);
+        let lo = hc::lowest_loose(s, e, 0, &mut self.lows);
         if let Some(&r) = self.context_of.get(&(cid, lo, need)) {
             return r;
         }
@@ -2028,7 +1623,7 @@ impl InferCache {
             if c == 0 {
                 break None;
             }
-            let (parent, _, loose) = self.info[c as usize];
+            let (parent, loose) = (self.info[c as usize].0, self.info[c as usize].2);
             if loose == u32::MAX {
                 break None;
             }
@@ -2038,7 +1633,8 @@ impl InferCache {
         for &(c, k) in path.iter().rev() {
             if let Some(outer) = w {
                 let next = self.windows.len() as u32 + 1;
-                w = Some(*self.windows.entry((outer, self.info[c as usize].1)).or_insert(next));
+                let ty = self.info[c as usize].1.clone().expect("a window binder has a type");
+                w = Some(*self.windows.entry((outer, ty)).or_insert(next));
             }
             self.window_of.insert((c, k), w);
         }
@@ -2051,14 +1647,14 @@ impl InferCache {
     /// is.
     #[cfg(feature = "record-defeq")]
     fn relevant_signature(&self, cid: u32, e: &Expr) -> (u64, u32) {
-        let mut chain: Vec<(usize, u32)> = Vec::new();
+        let mut chain: Vec<(u64, u32)> = Vec::new();
         let mut c = cid;
         while c != 0 {
-            let (parent, ptr, loose) = self.info[c as usize];
-            chain.push((ptr, loose));
-            c = parent;
+            let (parent, ty, loose) = &self.info[c as usize];
+            chain.push((ty.as_ref().map_or(0, |k| node_key(&k.0)), *loose));
+            c = *parent;
         }
-        let mut need = loose_of(e) as usize;
+        let mut need = e.loose() as usize;
         let mut p = 0;
         while p < need && p < chain.len() {
             let m = chain[p].1;
@@ -2072,43 +1668,38 @@ impl InferCache {
         let take = need.min(chain.len());
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for &(ptr, _) in &chain[..take] {
-            h = (h ^ ptr as u64).wrapping_mul(0x100_0000_01b3);
+            h = (h ^ ptr).wrapping_mul(0x100_0000_01b3);
         }
         h ^= (need > chain.len()) as u64;
         (h, take as u32)
     }
 }
 
-/// Wraps an `Rc<Expr>` for use as a `HashMap` key by *pointer* identity
-/// (`Rc::ptr_eq`/`Rc::as_ptr`), not `Expr`'s own structural `PartialEq`/
-/// `Hash` (which aren't even derived for `Rc` fields the way you'd get "two
-/// equal trees hash equal" -- pointer identity is deliberately what we
-/// want here: a cache hit should mean "the literal same allocation was
-/// already reduced," not "an equal one was"). Holds the `Rc` itself, not
-/// just its address, so the entry keeps that allocation alive for as long
-/// as it's in the cache -- without that, a freed node's address could be
-/// reused by an unrelated later allocation within the same top-level call,
-/// turning a cache lookup into a false hit against the wrong `Expr`.
-struct PtrKey(Rc<Expr>);
+/// Wraps a node for use as a `HashMap` key by *node* identity (`node_key`),
+/// not `Expr`'s own structural `PartialEq` -- pointer identity is
+/// deliberately what we want here: a cache hit should mean "the literal
+/// same node was already reduced," not "an equal one was". Holds the node
+/// itself, not just its address, so the entry keeps that node alive for as
+/// long as it's in the cache -- without that, a freed node's address could
+/// be reused by an unrelated later node within the same top-level call,
+/// turning a cache lookup into a false hit against the wrong term.
+#[derive(Clone)]
+pub(crate) struct PtrKey(Expr);
 impl PartialEq for PtrKey {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        std::rc::Rc::ptr_eq(&self.0.0, &other.0.0)
     }
 }
 impl Eq for PtrKey {}
 impl std::hash::Hash for PtrKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        (Rc::as_ptr(&self.0) as usize).hash(state);
+        (node_key(&self.0) as usize).hash(state);
     }
 }
 
 /// Weak head normal form: reduce only the outermost redex chain.
 pub fn whnf(e: &Expr) -> Expr {
-    whnf_impl(e, &mut ReductionCache::default())
-}
-
-fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
-    whnf_step(e, cache).unwrap_or_else(|| e.clone())
+    with_spaces(|s| whnf_in(s, e, &mut ReductionCache::default()))
 }
 
 /// `whnf_step` for an application spine `h a1 ... ak` (`k >= 2`) whose head reduces to a lambda:
@@ -2117,40 +1708,41 @@ fn whnf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
 /// one rebuilds again. Arguments left over are applied to the result. `None` when the head is not a
 /// lambda, so the caller's one-argument path runs unchanged (and keeps a stuck spine's per-prefix
 /// cache entries).
-fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
+fn beta_spine(s: &Spaces, e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     // The head is reduced as the node the spine holds, so its cache entry is shared by every level
     // of the spine; the arguments are collected only once it is a lambda.
-    let Expr::App(f, _) = e else { return None };
-    let mut head: &Rc<Expr> = f;
+    let Node::App(f, _) = s.node(e) else { return None };
+    let mut head = f;
     let mut k = 1;
-    while let Expr::App(g, _) = &**head {
+    while let Node::App(g, _) = s.node(&head) {
         head = g;
         k += 1;
     }
-    let wh = whnf_rc(head, cache);
-    let Expr::Lam(_, first) = &*wh else { return None };
-    let mut args: Vec<&Rc<Expr>> = Vec::with_capacity(k);
-    let mut spine = e;
-    while let Expr::App(g, b) = spine {
+    let wh = whnf_in(s, &head, cache);
+    let Node::Lam(_, first) = s.node(&wh) else { return None };
+    let mut args: Vec<Expr> = Vec::with_capacity(k);
+    let mut spine = e.clone();
+    while let Node::App(g, b) = s.node(&spine) {
         args.push(b);
         spine = g;
     }
     args.reverse();
-    let mut body: &Expr = first;
+    let mut body = first;
     let mut taken = 1;
     while taken < args.len()
-        && let Expr::Lam(_, inner) = body
+        && let Node::Lam(_, inner) = s.node(&body)
     {
         body = inner;
         taken += 1;
     }
     #[cfg(feature = "record-defeq")]
     BETAS.with(|c| c.set(c.get() + taken as u64));
-    let mut r = instantiate_n(body, &args[..taken], 0);
+    let used: Vec<&Expr> = args[..taken].iter().collect();
+    let mut r = instantiate_n(s, &body, &used, 0);
     for a in &args[taken..] {
-        r = Expr::App(Rc::new(r), (*a).clone());
+        r = app(r, a.clone());
     }
-    Some(whnf_impl(&r, cache))
+    Some(whnf_in(s, &r, cache))
 }
 
 /// `whnf_step` for a spine `P a1 ... ad` whose longest proper prefix `P` with no loose variable
@@ -2159,23 +1751,22 @@ fn beta_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
 /// boolean `xor_ a b` applied to each use's own continuations -- is then reduced once, not once per
 /// use, since the memo is keyed by `P`, not by the whole application. `None` when there is no such
 /// prefix or it does not reduce to a lambda.
-fn closed_prefix_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
-    let mut args: Vec<&Rc<Expr>> = Vec::new();
-    let mut spine = e;
+fn closed_prefix_spine(s: &Spaces, e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
+    let mut args: Vec<Expr> = Vec::new();
+    let mut spine = e.clone();
     let p = loop {
-        let Expr::App(g, b) = spine else { return None };
+        let Node::App(g, b) = s.node(&spine) else { return None };
         args.push(b);
-        if g.loose() == 0 {
+        if s.loose(&g) == 0 {
             break g;
         }
         spine = g;
     };
     args.reverse();
-    let h = hnf_rc(p, args.len() as u32, cache);
-    let mut body: &Expr = &h;
+    let mut body = hnf_rc(s, &p, args.len() as u32, cache);
     let mut taken = 0;
     while taken < args.len()
-        && let Expr::Lam(_, inner) = body
+        && let Node::Lam(_, inner) = s.node(&body)
     {
         body = inner;
         taken += 1;
@@ -2185,11 +1776,12 @@ fn closed_prefix_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
     }
     #[cfg(feature = "record-defeq")]
     BETAS.with(|c| c.set(c.get() + taken as u64));
-    let mut r = instantiate_n(body, &args[..taken], 0);
+    let used: Vec<&Expr> = args[..taken].iter().collect();
+    let mut r = instantiate_n(s, &body, &used, 0);
     for a in &args[taken..] {
-        r = Expr::App(Rc::new(r), (*a).clone());
+        r = app(r, a.clone());
     }
-    Some(whnf_impl(&r, cache))
+    Some(whnf_in(s, &r, cache))
 }
 
 /// Head normal form of `p` to depth `d`: its whnf, and while that is a lambda (at most `d` deep),
@@ -2198,252 +1790,172 @@ fn closed_prefix_spine(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
 /// here is shared by every application of `p`. Memoised by `(p, d)`: in the scope's table while it
 /// is on, else in `cache`. An application recurses on its function at depth `d + 1`, so the memo
 /// also covers each shorter prefix of a spine.
-fn hnf_rc(p: &Rc<Expr>, d: u32, cache: &mut ReductionCache) -> Rc<Expr> {
+fn hnf_rc(s: &Spaces, p: &Expr, d: u32, cache: &mut ReductionCache) -> Expr {
     let table = hc::generation() != 0;
     if table {
         if let Some(hit) = hc::hnf_get(p, d) {
             return hit;
         }
-    } else if let Some(hit) = cache.hnf.get(&(PtrKey(p.clone()), d)) {
+    } else if let Some(hit) = cache.hnf.get(&(s.key(p), d)) {
         return hit.clone();
     }
-    let r = match &**p {
-        Expr::App(f, a) => {
-            let hf = hnf_rc(f, d + 1, cache);
-            match &*hf {
-                Expr::Lam(_, body) => {
-                    let x = subst_top(body, a);
-                    let w = whnf_step(&x, cache).map_or_else(|| Rc::new(x), Rc::new);
-                    under_lams(w, d, cache)
+    let r = match s.node(p) {
+        Node::App(f, a) => {
+            let hf = hnf_rc(s, &f, d + 1, cache);
+            match s.node(&hf) {
+                Node::Lam(_, body) => {
+                    let x = subst_top(s, &body, &a);
+                    let w = whnf_step(s, &x, cache).unwrap_or(x);
+                    under_lams(s, w, d, cache)
                 }
                 // `hf` is `f`'s whnf and not a lambda, so `hf a` is stuck.
-                _ if Rc::ptr_eq(&hf, f) => p.clone(),
-                _ => Rc::new(Expr::App(hf, a.clone())),
+                _ if s.same(&hf, &f) => p.clone(),
+                _ => app(hf, a),
             }
         }
-        _ => under_lams(whnf_rc(p, cache), d, cache),
+        _ => under_lams(s, whnf_in(s, p, cache), d, cache),
     };
     if table {
         hc::hnf_put(p, d, &r);
     } else {
-        cache.hnf.insert((PtrKey(p.clone()), d), r.clone());
+        cache.hnf.insert((s.key(p), d), r.clone());
     }
     r
 }
 
 /// `w` (in whnf) with the bodies of its first `d` nested lambdas reduced to whnf in turn.
-fn under_lams(w: Rc<Expr>, d: u32, cache: &mut ReductionCache) -> Rc<Expr> {
-    let Expr::Lam(a, b) = &*w else { return w };
+fn under_lams(s: &Spaces, w: Expr, d: u32, cache: &mut ReductionCache) -> Expr {
+    let Node::Lam(a, b) = s.node(&w) else { return w };
     if d == 0 {
         return w;
     }
-    let wb = whnf_step(b, cache).map_or_else(|| b.clone(), Rc::new);
-    let nb = under_lams(wb, d - 1, cache);
-    if Rc::ptr_eq(&nb, b) {
-        w
-    } else {
-        Rc::new(Expr::Lam(a.clone(), nb))
-    }
+    let wb = whnf_step(s, &b, cache).unwrap_or_else(|| b.clone());
+    let nb = under_lams(s, wb, d - 1, cache);
+    if s.same(&nb, &b) { w } else { lam(a, nb) }
 }
 
 /// `whnf`, or `None` when `e` is already in weak head normal form. A stuck
-/// term keeps its allocations: its arguments' and also its stuck head's or
-/// target's. `ReductionCache` is keyed by pointer, so a copy misses it,
+/// term keeps its nodes: its arguments' and also its stuck head's or
+/// target's. `ReductionCache` is keyed by node, so a copy misses it,
 /// and each level of a stuck spine then reduced the whole spine below it
 /// again (`RELATED_WORK.md` §48, §59).
-fn whnf_step(e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
-    #[cfg(feature = "record-defeq")]
-    let _hc_guard = hc_probe::whnf_enter(e);
-    grow(|| match e {
-        Expr::App(f, a) => {
-            if let Some(r) = closed_prefix_spine(e, cache) {
+fn whnf_step(s: &Spaces, e: &Expr, cache: &mut ReductionCache) -> Option<Expr> {
+    grow(|| match s.node(e) {
+        Node::App(f, a) => {
+            if let Some(r) = closed_prefix_spine(s, e, cache) {
                 return Some(r);
             }
-            if matches!(&**f, Expr::App(..))
-                && let Some(r) = beta_spine(e, cache)
+            if matches!(s.node(&f), Node::App(..))
+                && let Some(r) = beta_spine(s, e, cache)
             {
                 return Some(r);
             }
-            let wf = whnf_rc(f, cache);
-            match &*wf {
-                Expr::Lam(_, body) => {
+            let wf = whnf_in(s, &f, cache);
+            match s.node(&wf) {
+                Node::Lam(_, body) => {
                     #[cfg(feature = "record-defeq")]
                     BETAS.with(|c| c.set(c.get() + 1));
-                    let r = subst_top(body, a);
-                    Some(whnf_impl(&r, cache))
+                    let r = subst_top(s, &body, &a);
+                    Some(whnf_in(s, &r, cache))
                 }
-                _ => (!Rc::ptr_eq(&wf, f)).then(|| Expr::App(wf, a.clone())),
+                _ => (!s.same(&wf, &f)).then(|| app(wf, a)),
             }
         }
-        Expr::J {
-            motive,
-            base,
-            a,
-            b,
-            p,
-        } => {
-            let wp = whnf_rc(p, cache);
-            match &*wp {
-                Expr::Refl(_) => Some(whnf_impl(&Expr::App(base.clone(), a.clone()), cache)),
-                _ => (!Rc::ptr_eq(&wp, p)).then(|| Expr::J {
-                    motive: motive.clone(),
-                    base: base.clone(),
-                    a: a.clone(),
-                    b: b.clone(),
-                    p: wp,
-                }),
+        Node::J { motive, base, a, b, p } => {
+            let wp = whnf_in(s, &p, cache);
+            match s.node(&wp) {
+                Node::Refl(_) => Some(whnf_in(s, &app(base, a), cache)),
+                _ => (!s.same(&wp, &p)).then(|| jelim(motive, base, a, b, wp)),
             }
         }
-        Expr::WRec {
-            motive,
-            children_ty,
-            step,
-            target,
-        } => {
-            let wt = whnf_rc(target, cache);
-            match &*wt {
-                Expr::Sup(a, f) => {
+        Node::WRec { motive, children_ty, step, target } => {
+            let wt = whnf_in(s, &target, cache);
+            match s.node(&wt) {
+                Node::Sup(a, f) => {
                     // step a f (\y:B(a). wrec(motive, children_ty, step, f y))
                     // -- `subst_top(children_ty, a)` gives the induction-
                     // hypothesis closure its *honest* domain (`B(a)`, the same
                     // `Sup`'s own typing rule requires of `f`'s domain), not
-                    // an inert placeholder -- see `Expr::WRec`'s own doc for
+                    // an inert placeholder -- see `Node::WRec`'s own doc for
                     // why this field exists at all.
                     let rec_step = lam(
-                        subst_top(children_ty, a),
+                        subst_top(s, &children_ty, &a),
                         wrec(
-                            shift(motive, 0, 1),
+                            shift_in(s, &motive, 0, 1),
                             // `children_ty` is already "one binder deeper" than
                             // `motive`/`step`/`target` (`W`'s own convention for
                             // its second field) -- inserting the new `y` binder
                             // below that existing one needs `cutoff + 1`, the
-                            // same bump `Expr::W`'s own `shift`/`subst` arms use
+                            // same bump `Node::W`'s own `shift`/`subst` arms use
                             // for their own second field.
-                            shift(children_ty, 1, 1),
-                            shift(step, 0, 1),
-                            app(shift(f, 0, 1), var(0)),
+                            shift_in(s, &children_ty, 1, 1),
+                            shift_in(s, &step, 0, 1),
+                            app(shift_in(s, &f, 0, 1), var(0)),
                         ),
                     );
-                    Some(whnf_impl(
-                        &Expr::App(Rc::new(Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), f.clone())), Rc::new(rec_step)),
-                        cache,
-                    ))
+                    Some(whnf_in(s, &app(app(app(step, a), f), rec_step), cache))
                 }
-                _ => (!Rc::ptr_eq(&wt, target)).then(|| Expr::WRec {
-                    motive: motive.clone(),
-                    children_ty: children_ty.clone(),
-                    step: step.clone(),
-                    target: wt,
-                }),
+                _ => (!s.same(&wt, &target)).then(|| wrec(motive, children_ty, step, wt)),
             }
         }
-        Expr::SigRec { motive, step, target } => whnf_sigrec(motive, step, target, cache),
+        Node::SigRec { motive, step, target } => whnf_sigrec(s, motive, step, target, cache),
         _ => None,
     })
 }
 
 /// `whnf_step`'s own `SigRec` case, out of line -- see `infer_sigma`.
 #[inline(never)]
-fn whnf_sigrec(motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>, cache: &mut ReductionCache) -> Option<Expr> {
-    let wt = whnf_rc(target, cache);
-    match &*wt {
-        Expr::Pair(_, a, b) => Some(whnf_impl(&Expr::App(Rc::new(Expr::App(step.clone(), a.clone())), b.clone()), cache)),
-        _ => (!Rc::ptr_eq(&wt, target)).then(|| Expr::SigRec {
-            motive: motive.clone(),
-            step: step.clone(),
-            target: wt,
-        }),
+fn whnf_sigrec(s: &Spaces, motive: Expr, step: Expr, target: Expr, cache: &mut ReductionCache) -> Option<Expr> {
+    let wt = whnf_in(s, &target, cache);
+    match s.node(&wt) {
+        Node::Pair(_, a, b) => Some(whnf_in(s, &app(app(step, a), b), cache)),
+        _ => (!s.same(&wt, &target)).then(|| sigrec(motive, step, wt)),
     }
 }
 
-/// `whnf`, cached, for a child already held as `Rc<Expr>` (a struct field)
-/// -- exactly the position where the same subterm recurs many times within
-/// one top-level call once a proof term shares structure. Returns `e`
-/// itself when it is already in weak head normal form, so reducing a
-/// result again, as `nf` and `def_eq` do with a stuck head, keeps its
-/// pointer and hits the cache from then on.
-fn whnf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Rc<Expr> {
+/// `whnf`, cached -- the same subterm recurs many times within one top-level call once a proof term
+/// shares structure. Returns `e` itself when it is already in weak head normal form, so reducing a
+/// result again, as `nf` and `def_eq` do with a stuck head, keeps its node and hits the cache from
+/// then on.
+fn whnf_in(s: &Spaces, e: &Expr, cache: &mut ReductionCache) -> Expr {
     // While the table is on, its memo serves the whole scope; `cache.whnf` only this call.
     if hc::generation() != 0 {
         if let Some(hit) = hc::whnf_get(e) {
             return hit;
         }
-        let result = whnf_step(e, cache).map_or_else(|| e.clone(), Rc::new);
+        let result = whnf_step(s, e, cache).unwrap_or_else(|| e.clone());
         hc::whnf_put(e, &result);
         return result;
     }
-    let key = PtrKey(e.clone());
+    let key = s.key(e);
     if let Some(hit) = cache.whnf.get(&key) {
         return hit.clone();
     }
-    let result = whnf_step(e, cache).map_or_else(|| e.clone(), Rc::new);
+    let result = whnf_step(s, e, cache).unwrap_or_else(|| e.clone());
     cache.whnf.insert(key, result.clone());
     result
 }
 
-/// Full normal form: `whnf`, then recurse structurally into subterms.
-fn nf(e: &Expr) -> Expr {
-    nf_impl(e, &mut ReductionCache::default())
-}
-
-fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
-    nf_whnf(&whnf_impl(e, cache), cache)
+/// Full normal form: `whnf`, then recurse structurally into subterms, cached per node.
+fn nf_in(s: &Spaces, e: &Expr, cache: &mut ReductionCache) -> Expr {
+    let key = s.key(e);
+    if let Some(hit) = cache.nf.get(&key) {
+        return hit.clone();
+    }
+    let w = whnf_in(s, e, cache);
+    let result = nf_whnf(s, &w, cache);
+    cache.nf.insert(key, result.clone());
+    result
 }
 
 /// `nf` of a term already in weak head normal form: its constructor over
 /// the `nf` of each child.
-fn nf_whnf(w: &Expr, cache: &mut ReductionCache) -> Expr {
+fn nf_whnf(s: &Spaces, w: &Expr, cache: &mut ReductionCache) -> Expr {
     walk_count(4);
-    grow(|| match w {
-        Expr::Var(k) => Expr::Var(*k),
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Free(l) => Expr::Free(*l),
-        Expr::Pi(a, b) => pi(nf_rc(a, cache), nf_rc(b, cache)),
-        Expr::Lam(a, b) => lam(nf_rc(a, cache), nf_rc(b, cache)),
-        Expr::App(f, a) => app(nf_rc(f, cache), nf_rc(a, cache)),
-        Expr::Id(a, x, y) => id(nf_rc(a, cache), nf_rc(x, cache), nf_rc(y, cache)),
-        Expr::Refl(a) => refl(nf_rc(a, cache)),
-        Expr::J {
-            motive,
-            base,
-            a,
-            b,
-            p,
-        } => jelim(nf_rc(motive, cache), nf_rc(base, cache), nf_rc(a, cache), nf_rc(b, cache), nf_rc(p, cache)),
-        Expr::W(a, b) => wty(nf_rc(a, cache), nf_rc(b, cache)),
-        Expr::Sup(a, f) => sup(nf_rc(a, cache), nf_rc(f, cache)),
-        Expr::WRec {
-            motive,
-            children_ty,
-            step,
-            target,
-        } => wrec(nf_rc(motive, cache), nf_rc(children_ty, cache), nf_rc(step, cache), nf_rc(target, cache)),
-        other @ (Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. }) => nf_sigma_family(other, cache),
+    grow(|| match s.node(w) {
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => w.clone(),
+        n => s.mk(n.map_kids(|c, _| nf_in(s, &c, cache))),
     })
-}
-
-/// `nf_impl`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
-/// `shift_sigma_family`'s own docs for why.
-#[inline(never)]
-fn nf_sigma_family(e: &Expr, cache: &mut ReductionCache) -> Expr {
-    match e {
-        Expr::Sigma(a, b) => sigma(nf_rc(a, cache), nf_rc(b, cache)),
-        Expr::Pair(fam, a, b) => pair(nf_rc(fam, cache), nf_rc(a, cache), nf_rc(b, cache)),
-        Expr::SigRec { motive, step, target } => sigrec(nf_rc(motive, cache), nf_rc(step, cache), nf_rc(target, cache)),
-        _ => unreachable!("nf_sigma_family called on a non-Sigma-family Expr"),
-    }
-}
-
-fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
-    let key = PtrKey(e.clone());
-    if let Some(hit) = cache.nf.get(&key) {
-        return hit.clone();
-    }
-    let w = whnf_rc(e, cache);
-    let result = nf_whnf(&w, cache);
-    cache.nf.insert(key, result.clone());
-    result
 }
 
 /// `nf(a) == nf(b)`, decided without computing either normal form, and
@@ -2451,13 +1963,16 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
 /// `a`/`b` reference overlapping subterms, which two sides of a proof
 /// obligation very often do (the same postulates, the same sub-witnesses).
 pub fn def_eq(a: &Expr, b: &Expr) -> bool {
-    hc::scoped(false, || {
-        #[cfg(feature = "record-defeq")]
-        let _g = site(3);
-        #[cfg(feature = "record-defeq")]
-        SEEN.with(|m| m.borrow_mut().clear());
-        conv(a, b, &mut ReductionCache::default())
-    })
+    hc::scoped(false, || with_spaces(|s| def_eq_in(s, a, b)))
+}
+
+/// [`def_eq`] inside the kernel.
+fn def_eq_in(s: &Spaces, a: &Expr, b: &Expr) -> bool {
+    #[cfg(feature = "record-defeq")]
+    let _g = site(3);
+    #[cfg(feature = "record-defeq")]
+    SEEN.with(|m| m.borrow_mut().clear());
+    conv(s, a, b, &mut ReductionCache::default())
 }
 
 /// `def_eq`'s comparison. Syntactically equal sides are equal without
@@ -2467,54 +1982,45 @@ pub fn def_eq(a: &Expr, b: &Expr) -> bool {
 /// `nf` of each child, so the normal forms are equal exactly when the two
 /// weak head normal forms have the same constructor and pairwise equal
 /// children's normal forms. Recursing on that reduces only where the
-/// sides differ (`RELATED_WORK.md` §57).
-fn conv(a: &Expr, b: &Expr, cache: &mut ReductionCache) -> bool {
-    if std::ptr::eq(a, b) || eq_noting(a, b, &mut cache.unequal) {
+/// sides differ (`RELATED_WORK.md` §57). A pair an earlier `==` found
+/// unequal skips `==`.
+fn conv(s: &Spaces, a: &Expr, b: &Expr, cache: &mut ReductionCache) -> bool {
+    if s.same(a, b) {
         return true;
     }
-    conv_whnf(&whnf_impl(a, cache), &whnf_impl(b, cache), cache)
-}
-
-/// `conv` for children held as `Rc<Expr>`, so `whnf` is cached. A pair
-/// an earlier `==` found unequal skips `==`.
-fn conv_rc(a: &Rc<Expr>, b: &Rc<Expr>, cache: &mut ReductionCache) -> bool {
-    if Rc::ptr_eq(a, b) {
+    let noted = cache.unequal.contains(&(s.key(a), s.key(b)));
+    if !noted && eq_noting(s, a, b, &mut cache.unequal) {
         return true;
     }
-    let noted = cache.unequal.contains(&(PtrKey(a.clone()), PtrKey(b.clone())));
-    if !noted && eq_noting(a, b, &mut cache.unequal) {
-        return true;
-    }
-    conv_whnf(&whnf_rc(a, cache), &whnf_rc(b, cache), cache)
+    conv_whnf(s, &whnf_in(s, a, cache), &whnf_in(s, b, cache), cache)
 }
 
 /// Compares two weak head normal forms: same constructor, then `conv` on
-/// each pair of children, in the order `nf_impl` visits them.
-fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
-    #[cfg(feature = "record-defeq")]
-    let _hc_guard = hc_probe::conv_enter(x, y);
+/// each pair of children, in the order `nf_in` visits them.
+fn conv_whnf(s: &Spaces, x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
     walk_count(3);
+    let (nx, ny) = (s.node(x), s.node(y));
     #[cfg(feature = "record-defeq")]
     {
         // Probe: track how many binders `conv` has opened (by comparing bodies without
         // instantiating them), so a loose variable in a substituted argument can be told apart as
         // internal or a reference to the checker's context.
         let mut idx = 0;
-        let under = match x {
-            Expr::Pi(..) | Expr::Lam(..) | Expr::W(..) | Expr::Sigma(..) => 1,
-            Expr::Pair(..) | Expr::WRec { .. } => 1,
+        let under = match nx {
+            Node::Pi(..) | Node::Lam(..) | Node::W(..) | Node::Sigma(..) => 1,
+            Node::Pair(..) | Node::WRec { .. } => 1,
             _ => usize::MAX,
         };
-        let x_pair = matches!(x, Expr::Pair(..));
+        let x_pair = matches!(nx, Node::Pair(..));
         return grow(|| {
-            same_shape(x, y, |p, q| {
+            nx.same_shape(&ny, |p, q| {
                 let opens = if x_pair { idx == 0 } else { idx == under };
                 idx += 1;
                 if opens {
                     walk_count(14);
                     INTERNAL.with(|c| c.set(c.get() + 1));
                 }
-                let r = conv_rc(p, q, cache);
+                let r = conv(s, p, q, cache);
                 if opens {
                     INTERNAL.with(|c| c.set(c.get() - 1));
                 }
@@ -2523,19 +2029,19 @@ fn conv_whnf(x: &Expr, y: &Expr, cache: &mut ReductionCache) -> bool {
         });
     }
     #[cfg(not(feature = "record-defeq"))]
-    grow(|| same_shape(x, y, |p, q| conv_rc(p, q, cache)))
+    grow(|| nx.same_shape(&ny, |p, q| conv(s, p, q, cache)))
 }
 
 /// `a == b`, noting in `unequal` each pair of children found unequal on
 /// the way. `conv` recurses into exactly those pairs next, and without the
 /// note each would repeat the walk below it: quadratic on a chain that
 /// differs only at the bottom (`RELATED_WORK.md` §61).
-fn eq_noting(a: &Expr, b: &Expr, unequal: &mut PtrSet<(PtrKey, PtrKey)>) -> bool {
+fn eq_noting(s: &Spaces, a: &Expr, b: &Expr, unequal: &mut PtrSet<(Key, Key)>) -> bool {
     walk_count(2);
     grow(|| {
-        same_shape(a, b, |p, q| {
-            Rc::ptr_eq(p, q) || (!(p.canonical() && q.canonical()) && eq_noting(p, q, unequal)) || {
-                unequal.insert((PtrKey(p.clone()), PtrKey(q.clone())));
+        s.node(a).same_shape(&s.node(b), |p, q| {
+            s.same(p, q) || (!(p.canonical() && q.canonical()) && eq_noting(s, p, q, unequal)) || {
+                unequal.insert((s.key(p), s.key(q)));
                 false
             }
         })
@@ -2543,7 +2049,7 @@ fn eq_noting(a: &Expr, b: &Expr, unequal: &mut PtrSet<(PtrKey, PtrKey)>) -> bool
 }
 
 pub fn normalize(e: &Expr) -> Expr {
-    nf(e)
+    with_spaces(|s| nf_in(s, e, &mut ReductionCache::default()))
 }
 
 // --- typechecking -----------------------------------------------------
@@ -2589,7 +2095,7 @@ impl CtxScope {
     }
 }
 
-fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
+fn ctx_lookup(s: &Spaces, ctx: &CtxScope, k: u32) -> Result<Expr, String> {
     let k_usize = k as usize;
     let len = ctx.base.len() + ctx.local.len();
     if k_usize >= len {
@@ -2597,8 +2103,8 @@ fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
     }
     let idx = len - 1 - k_usize;
     let ty = if idx < ctx.base.len() { &ctx.base[idx] } else { &ctx.local[idx - ctx.base.len()] };
-    if free_of(ty) > 0 {
-        return Err(free_escaped(free_of(ty) - 1));
+    if s.free(ty) > 0 {
+        return Err(free_escaped(s.free(ty) - 1));
     }
     // `ctx[idx]` was checked when the context had length `idx` (that many
     // entries existed before it was pushed); reinterpreting it at the
@@ -2611,50 +2117,59 @@ fn ctx_lookup(ctx: &CtxScope, k: u32) -> Result<Expr, String> {
     {
         // Probe slot 17: `shift` visits spent in this lookup.
         let v0 = WALKS.with(|w| w[1].get());
-        let r = shift(ty, 0, k as i32 + 1);
+        let r = shift_in(s, ty, 0, k as i32 + 1);
         WALKS.with(|w| w[17].set(w[17].get() + w[1].get() - v0));
         return Ok(r);
     }
     #[cfg(not(feature = "record-defeq"))]
-    Ok(shift(ty, 0, k as i32 + 1))
+    Ok(shift_in(s, ty, 0, k as i32 + 1))
 }
 
 /// Constant `l`'s type: `globals[l]` as is, since a closed type has no
 /// variable to shift. An error when `l` is past the environment, or when
 /// the type isn't closed.
-fn const_type(g: &Globals, l: u32) -> Result<Expr, String> {
+fn const_type(s: &Spaces, g: &Globals, l: u32) -> Result<Expr, String> {
     match g.get(l as usize).map(PExpr::get) {
-        Some(ty) if loose_of(&ty) == 0 && free_of(&ty) == 0 => Ok(ty),
+        Some(ty) if s.loose(&ty) == 0 && s.free(&ty) == 0 => Ok(ty),
         Some(ty) => Err(format!("constant @{l}'s type isn't closed: {}", brief(&ty))),
         None => Err(format!("unknown constant @{l}")),
     }
 }
 
-fn expect_sort(e: &Expr) -> Result<u32, String> {
-    match whnf(e) {
-        Expr::Sort(i) => Ok(i),
-        other => Err(format!("expected a Sort, got {}", brief(&other))),
+/// `e`'s weak head normal form, reduced with a cache of its own.
+fn whnf_fresh(s: &Spaces, e: &Expr) -> Expr {
+    whnf_in(s, e, &mut ReductionCache::default())
+}
+
+fn expect_sort(s: &Spaces, e: &Expr) -> Result<u32, String> {
+    let w = whnf_fresh(s, e);
+    match s.node(&w) {
+        Node::Sort(i) => Ok(i),
+        _ => Err(format!("expected a Sort, got {}", brief(&w))),
     }
 }
 
-fn expect_pi(e: &Expr) -> Result<(Expr, Expr), String> {
-    match whnf(e) {
-        Expr::Pi(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
-        other => Err(format!("expected a Pi type, got {}", brief(&other))),
+fn expect_pi(s: &Spaces, e: &Expr) -> Result<(Expr, Expr), String> {
+    let w = whnf_fresh(s, e);
+    match s.node(&w) {
+        Node::Pi(a, b) => Ok((a, b)),
+        _ => Err(format!("expected a Pi type, got {}", brief(&w))),
     }
 }
 
-fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
-    match whnf(e) {
-        Expr::W(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
-        other => Err(format!("expected a W type, got {}", brief(&other))),
+fn expect_w(s: &Spaces, e: &Expr) -> Result<(Expr, Expr), String> {
+    let w = whnf_fresh(s, e);
+    match s.node(&w) {
+        Node::W(a, b) => Ok((a, b)),
+        _ => Err(format!("expected a W type, got {}", brief(&w))),
     }
 }
 
-fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
-    match whnf(e) {
-        Expr::Sigma(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
-        other => Err(format!("expected a Sigma type, got {}", brief(&other))),
+fn expect_sigma(s: &Spaces, e: &Expr) -> Result<(Expr, Expr), String> {
+    let w = whnf_fresh(s, e);
+    match s.node(&w) {
+        Node::Sigma(a, b) => Ok((a, b)),
+        _ => Err(format!("expected a Sigma type, got {}", brief(&w))),
     }
 }
 
@@ -2671,35 +2186,37 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
 /// segment. They are kept because smaller hot frames cost nothing, not
 /// because anything depends on them.
 #[inline(never)]
-fn infer_sigma(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
-    let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
+fn infer_sigma(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Expr, b: &Expr) -> Result<Expr, String> {
+    let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, a)?)?;
     let depth = ctx.local.len();
-    ctx.local.push((**a).clone());
-    let cid2 = ic.enter(cid, a);
-    let j = infer_rc(g, ic, ctx, cid2, b);
+    ctx.local.push(a.clone());
+    let cid2 = ic.enter(s, cid, a);
+    let j = infer_rc(s, g, ic, ctx, cid2, b);
     ctx.local.truncate(depth);
-    let j = expect_sort(&j?)?;
-    Ok(Expr::Sort(i.max(j)))
+    let j = expect_sort(s, &j?)?;
+    Ok(sort(i.max(j)))
 }
 
 #[inline(never)]
-fn infer_pair(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, fam: &Rc<Expr>, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
-    let ta = infer_rc(g, ic, ctx, cid, a)?;
+#[allow(clippy::too_many_arguments)]
+fn infer_pair(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, fam: &Expr, a: &Expr, b: &Expr) -> Result<Expr, String> {
+    let ta = infer_rc(s, g, ic, ctx, cid, a)?;
     let depth = ctx.local.len();
     ctx.local.push(ta.clone());
     let cid2 = ic.fresh();
-    let tf = infer_rc(g, ic, ctx, cid2, fam);
+    let tf = infer_rc(s, g, ic, ctx, cid2, fam);
     ctx.local.truncate(depth);
-    expect_sort(&tf?)?;
-    let expected_b_ty = subst_top(fam, a);
-    check_rc(g, ic, ctx, cid, b, &expected_b_ty)?;
-    Ok(sigma(ta, (**fam).clone()))
+    expect_sort(s, &tf?)?;
+    let expected_b_ty = subst_top(s, fam, a);
+    check_rc(s, g, ic, ctx, cid, b, &expected_b_ty)?;
+    Ok(sigma(ta, fam.clone()))
 }
 
 #[inline(never)]
-fn infer_sigrec(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
-    let (sa, sb) = expect_sigma(&infer_rc(g, ic, ctx, cid, target)?)?;
-    infer_rc(g, ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
+#[allow(clippy::too_many_arguments)]
+fn infer_sigrec(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, motive: &Expr, step: &Expr, target: &Expr) -> Result<Expr, String> {
+    let (sa, sb) = expect_sigma(s, &infer_rc(s, g, ic, ctx, cid, target)?)?;
+    infer_rc(s, g, ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
 
     // step : Pi a:A. Pi b:B(a). motive (pair(B,a,b))
     // `sb` already assumes exactly one binder (`Sigma`'s own convention)
@@ -2707,18 +2224,18 @@ fn infer_sigrec(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, 
     // same way `WRec`'s own `f_dom_d1` reuses `wb` unchanged.
     let b_dom_d1 = sb.clone();
     // under binders a(Var1), b(Var0) -- depth2:
-    let motive_d2 = shift(motive, 0, 2);
+    let motive_d2 = shift_in(s, motive, 0, 2);
     // `sb`'s own bound tag (Var0) must stay untouched (`Pair`'s own `fam`
     // field needs a *fresh* tag binder of its own, one level below
     // wherever the `Pair` itself sits) -- only whatever `sb` references
     // *above* that (the 2 extra binders `a`/`b` now sitting between it
     // and the ambient context) shifts, cutoff 1.
-    let fam_d2 = shift(&sb, 1, 2);
+    let fam_d2 = shift_in(s, &sb, 1, 2);
     let concl_d2 = app(motive_d2, pair(fam_d2, var(1), var(0)));
     let expected_step_ty = pi(sa.clone(), pi(b_dom_d1, concl_d2));
-    check_rc(g, ic, ctx, cid, step, &expected_step_ty)?;
+    check_rc(s, g, ic, ctx, cid, step, &expected_step_ty)?;
 
-    Ok(app((**motive).clone(), (**target).clone()))
+    Ok(app(motive.clone(), target.clone()))
 }
 
 /// `infer`'s own `WRec` mismatch error, out of line and `#[cold]` so its
@@ -2734,26 +2251,26 @@ fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
 /// `wa`/`wb` would otherwise sit in `infer`'s frame on every call (see
 /// `infer_sigma`).
 #[inline(never)]
-fn infer_sup(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
-    let ta = infer_rc(g, ic, ctx, cid, a)?;
-    let (dom, cod) = expect_pi(&infer_rc(g, ic, ctx, cid, f)?)?;
+fn infer_sup(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Expr, f: &Expr) -> Result<Expr, String> {
+    let ta = infer_rc(s, g, ic, ctx, cid, a)?;
+    let (dom, cod) = expect_pi(s, &infer_rc(s, g, ic, ctx, cid, f)?)?;
     // `cod` is written one binder deeper than `f`'s own domain binder; a
     // `Sup`'s codomain must not actually depend on it -- enforced here
     // (not just documented), by an occurs-check on `cod`'s own normal
     // form, since `subst_top` just below would otherwise only ever be
     // validated at this one concrete `a`, silently trusting every other
     // point of `f`'s domain agrees.
-    let cod_nf = nf(&cod);
-    if is_var_free(&cod_nf, 0) {
+    let cod_nf = nf_in(s, &cod, &mut ReductionCache::default());
+    if is_var_free(s, &cod_nf, 0) {
         return Err(sup_codomain_depends_on_own_argument(&cod_nf));
     }
-    let w_candidate = subst_top(&cod, a);
-    let (wa, wb) = expect_w(&w_candidate)?;
-    if !def_eq(&wa, &ta) {
+    let w_candidate = subst_top(s, &cod, a);
+    let (wa, wb) = expect_w(s, &w_candidate)?;
+    if !def_eq_in(s, &wa, &ta) {
         return Err(format!("sup: element type mismatch: {} vs {}", brief(&wa), brief(&ta)));
     }
-    let expected_dom = subst_top(&wb, a);
-    if !def_eq(&dom, &expected_dom) {
+    let expected_dom = subst_top(s, &wb, a);
+    if !def_eq_in(s, &dom, &expected_dom) {
         return Err(format!(
             "sup: children-function domain mismatch: {} vs {}",
             brief(&dom),
@@ -2771,13 +2288,13 @@ fn infer_sup(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: 
 /// `check_rc` (an `App`'s argument, `Id`'s sides, `J`'s fields), whose
 /// `Lam` rule against a `Pi` compares the domain by `def_eq` and never
 /// infers it, and `WRec`'s `children_ty` is only compared, so a `Free`
-/// under a redex in any of them would reduce away unseen. `free_of` is
+/// under a redex in any of them would reduce away unseen. `free` is
 /// O(1).
 pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
-    if free_of(e) > 0 {
-        return Err(free_escaped(free_of(e) - 1));
+    if e.free() > 0 {
+        return Err(free_escaped(e.free() - 1));
     }
-    hc::scoped(false, || infer_node(globals, &mut InferCache::default(), &mut CtxScope::new(ctx), 0, &Rc::new(e.clone())))
+    hc::scoped(false, || with_spaces(|s| infer_node(s, globals, &mut InferCache::default(), &mut CtxScope::new(ctx), 0, e)))
 }
 
 /// [`infer_in`] with no globals.
@@ -2785,24 +2302,24 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
     infer_in(&Globals::new(), ctx, e)
 }
 
-/// `infer` on a child. A node referenced from more than one place is
-/// memoised by pointer and context id, so a shared subterm is inferred
-/// once per context rather than once per occurrence (`RELATED_WORK.md`
-/// §63). A node referenced once can only be reached twice through a shared
-/// ancestor, which is memoised instead, so skipping it keeps the walk
-/// linear in the DAG and costs unshared terms no hashing. Only successes
-/// are stored: an error ends the whole check.
-fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
-    // Probe slots 18 single-reference calls, 19 memo hits, 20 memo misses (inserts), 21 binder
-    // entries (`InferCache::enter`).
-    if Rc::strong_count(e) == 1 {
+/// `infer` on a child. A node with two or more parents is memoised by
+/// node and context id, so a shared subterm is inferred once per context
+/// rather than once per occurrence (`RELATED_WORK.md` §63). A node with one
+/// parent can only be reached twice through a shared ancestor, which is
+/// memoised instead, so skipping it keeps the walk linear in the DAG and
+/// costs unshared terms no hashing. Only successes are stored: an error
+/// ends the whole check.
+fn infer_rc(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr) -> Result<Expr, String> {
+    // Probe slots 18 unshared calls, 19 memo hits, 20 memo misses (inserts), 21 binder entries
+    // (`InferCache::enter`).
+    if !s.shared(e) {
         walk_count(18);
-        return infer_node(g, ic, ctx, cid, e);
+        return infer_node(s, g, ic, ctx, cid, e);
     }
     // Keyed by the window of binders the node can depend on, not the whole context, so one
     // inference serves every binder stack that agrees on that window (bit-vector design doc §50:
     // 96 to 99.5% of the whole-context misses were such repeats).
-    let key = (PtrKey(e.clone()), ic.memo_context(cid, e));
+    let key = (s.key(e), ic.memo_context(s, cid, e));
     #[cfg(feature = "record-defeq")]
     {
         // Probe slots 22 relaxed-key lookups, 23 strict misses a relaxed key would have hit, 24 sum
@@ -2810,137 +2327,113 @@ fn infer_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
         let (sig, take) = ic.relevant_signature(cid, e);
         walk_count(22);
         WALKS.with(|w| w[24].set(w[24].get() + take as u64));
-        let seen = !ic.relaxed.insert((Rc::as_ptr(e) as usize, sig));
+        let seen = !ic.relaxed.insert((node_key(e), sig));
         if seen && !ic.types.contains_key(&key) {
             walk_count(23);
-            if loose_of(e) == 0 {
+            if s.loose(e) == 0 {
                 walk_count(25);
             }
         }
     }
     if let Some(ty) = ic.types.get(&key) {
         walk_count(19);
-        return Ok(ty.clone());
+        return Ok(s.from_key(ty));
     }
     walk_count(20);
-    let ty = infer_node(g, ic, ctx, cid, e)?;
-    ic.types.insert(key, ty.clone());
+    let ty = infer_node(s, g, ic, ctx, cid, e)?;
+    ic.types.insert(key, s.key(&ty));
     Ok(ty)
 }
 
-fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
-    grow(|| match &**e {
-        Expr::Var(k) => ctx_lookup(ctx, *k),
-        Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
-        Expr::Const(l) => const_type(g, *l),
-        Expr::Free(l) => Err(free_escaped(*l)),
-        Expr::Pi(a, b) => {
-            let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
+fn infer_node(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr) -> Result<Expr, String> {
+    grow(|| match s.node(e) {
+        Node::Var(k) => ctx_lookup(s, ctx, k),
+        Node::Sort(i) => i.checked_add(1).map(sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
+        Node::Const(l) => const_type(s, g, l),
+        Node::Free(l) => Err(free_escaped(l)),
+        Node::Pi(a, b) => {
+            let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
             let depth = ctx.local.len();
-            ctx.local.push((**a).clone());
-            let cid2 = ic.enter(cid, a);
-            let j = infer_rc(g, ic, ctx, cid2, b);
-    ctx.local.truncate(depth);
-    let j = expect_sort(&j?)?;
-            Ok(Expr::Sort(i.max(j)))
+            ctx.local.push(a.clone());
+            let cid2 = ic.enter(s, cid, &a);
+            let j = infer_rc(s, g, ic, ctx, cid2, &b);
+            ctx.local.truncate(depth);
+            let j = expect_sort(s, &j?)?;
+            Ok(sort(i.max(j)))
         }
-        Expr::Lam(a, body) => {
-            expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
+        Node::Lam(a, body) => {
+            expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
             let depth = ctx.local.len();
-            ctx.local.push((**a).clone());
-            let cid2 = ic.enter(cid, a);
-            let tbody = infer_rc(g, ic, ctx, cid2, body);
+            ctx.local.push(a.clone());
+            let cid2 = ic.enter(s, cid, &a);
+            let tbody = infer_rc(s, g, ic, ctx, cid2, &body);
             ctx.local.truncate(depth);
             let tbody = tbody?;
-            Ok(pi((**a).clone(), tbody))
+            Ok(pi(a, tbody))
         }
-        Expr::App(..) => {
+        Node::App(..) => {
             // The whole spine `h a1 ... ak` at once, as `beta_spine` does for reduction: each domain
             // is instantiated with the arguments before it and the last codomain once with all of
             // them, instead of one `subst_top` per argument, each copying the rest of the telescope.
             // A codomain that is not syntactically a Pi takes the pending arguments first, then whnf.
             let mut args = vec![];
-            let mut head = e;
-            while let Expr::App(f, a) = &**head {
+            let mut head = e.clone();
+            while let Node::App(f, a) = s.node(&head) {
                 args.push(a);
                 head = f;
             }
             args.reverse();
-            let mut ty = infer_rc(g, ic, ctx, cid, head)?;
-            let mut pending: Vec<&Rc<Expr>> = vec![];
-            for a in args {
-                if !matches!(ty, Expr::Pi(..)) && !pending.is_empty() {
-                    ty = instantiate_n(&ty, &pending, 0);
+            let mut ty = infer_rc(s, g, ic, ctx, cid, &head)?;
+            let mut pending: Vec<&Expr> = vec![];
+            for a in &args {
+                if !matches!(s.node(&ty), Node::Pi(..)) && !pending.is_empty() {
+                    ty = instantiate_n(s, &ty, &pending, 0);
                     pending.clear();
                 }
-                let (dom, cod) = expect_pi(&ty)?;
-                let dom = if pending.is_empty() { dom } else { instantiate_n(&dom, &pending, 0) };
-                check_rc(g, ic, ctx, cid, a, &dom)?;
+                let (dom, cod) = expect_pi(s, &ty)?;
+                let dom = if pending.is_empty() { dom } else { instantiate_n(s, &dom, &pending, 0) };
+                check_rc(s, g, ic, ctx, cid, a, &dom)?;
                 pending.push(a);
                 ty = cod;
             }
             #[cfg(feature = "record-defeq")]
             let _g = site(2);
-            Ok(instantiate_n(&ty, &pending, 0))
+            Ok(instantiate_n(s, &ty, &pending, 0))
         }
-        Expr::Id(a, x, y) => {
-            let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
-            check_rc(g, ic, ctx, cid, x, a)?;
-            check_rc(g, ic, ctx, cid, y, a)?;
-            Ok(Expr::Sort(i))
+        Node::Id(a, x, y) => {
+            let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
+            check_rc(s, g, ic, ctx, cid, &x, &a)?;
+            check_rc(s, g, ic, ctx, cid, &y, &a)?;
+            Ok(sort(i))
         }
-        Expr::Refl(a) => {
-            let ta = infer_rc(g, ic, ctx, cid, a)?;
-            Ok(id(ta, (**a).clone(), (**a).clone()))
+        Node::Refl(a) => {
+            let ta = infer_rc(s, g, ic, ctx, cid, &a)?;
+            Ok(id(ta, a.clone(), a))
         }
-        Expr::J {
-            motive,
-            base,
-            a,
-            b,
-            p,
-        } => {
-            let ta = infer_rc(g, ic, ctx, cid, a)?;
-            check_rc(g, ic, ctx, cid, b, &ta)?;
-            check_rc(g, ic, ctx, cid, p, &id(ta.clone(), (**a).clone(), (**b).clone()))?;
-            infer_rc(g, ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
-            let expected_base_ty = pi(
-                ta.clone(),
-                app3(
-                    shift(motive, 0, 1),
-                    var(0),
-                    var(0),
-                    refl(var(0)),
-                ),
-            );
-            check_rc(g, ic, ctx, cid, base, &expected_base_ty)?;
-            Ok(app3(
-                (**motive).clone(),
-                (**a).clone(),
-                (**b).clone(),
-                (**p).clone(),
-            ))
+        Node::J { motive, base, a, b, p } => {
+            let ta = infer_rc(s, g, ic, ctx, cid, &a)?;
+            check_rc(s, g, ic, ctx, cid, &b, &ta)?;
+            check_rc(s, g, ic, ctx, cid, &p, &id(ta.clone(), a.clone(), b.clone()))?;
+            infer_rc(s, g, ic, ctx, cid, &motive)?; // sanity: motive must itself be well-typed
+            let expected_base_ty = pi(ta.clone(), app3(shift_in(s, &motive, 0, 1), var(0), var(0), refl(var(0))));
+            check_rc(s, g, ic, ctx, cid, &base, &expected_base_ty)?;
+            Ok(app3(motive, a, b, p))
         }
-        Expr::W(a, b) => {
-            let i = expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
+        Node::W(a, b) => {
+            let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
             let depth = ctx.local.len();
-            ctx.local.push((**a).clone());
-            let cid2 = ic.enter(cid, a);
-            let j = infer_rc(g, ic, ctx, cid2, b);
-    ctx.local.truncate(depth);
-    let j = expect_sort(&j?)?;
-            Ok(Expr::Sort(i.max(j)))
+            ctx.local.push(a.clone());
+            let cid2 = ic.enter(s, cid, &a);
+            let j = infer_rc(s, g, ic, ctx, cid2, &b);
+            ctx.local.truncate(depth);
+            let j = expect_sort(s, &j?)?;
+            Ok(sort(i.max(j)))
         }
-        Expr::Sup(a, f) => infer_sup(g, ic, ctx, cid, a, f),
-        Expr::WRec {
-            motive,
-            children_ty,
-            step,
-            target,
-        } => {
-            let (wa, wb) = expect_w(&infer_rc(g, ic, ctx, cid, target)?)?;
-            // Soundness gate for `whnf_impl`'s own use of `children_ty`
-            // (see `Expr::WRec`'s own doc): `target`'s *real* children-type
+        Node::Sup(a, f) => infer_sup(s, g, ic, ctx, cid, &a, &f),
+        Node::WRec { motive, children_ty, step, target } => {
+            let (wa, wb) = expect_w(s, &infer_rc(s, g, ic, ctx, cid, &target)?)?;
+            // Soundness gate for `whnf_in`'s own use of `children_ty`
+            // (see `Node::WRec`'s own doc): `target`'s *real* children-type
             // family, independently re-derived here from its own inferred
             // type, must match the field a `WRec` term carries exactly --
             // otherwise a term built with a wrong `children_ty` would
@@ -2948,39 +2441,39 @@ fn infer_node(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e:
             // lies about what's actually being recursed into, letting an
             // otherwise-untyped step function's body get away with
             // anything at that domain.
-            if !def_eq(children_ty, &wb) {
-                return Err(wrec_children_ty_mismatch(children_ty, &wb));
+            if !def_eq_in(s, &children_ty, &wb) {
+                return Err(wrec_children_ty_mismatch(&children_ty, &wb));
             }
-            infer_rc(g, ic, ctx, cid, motive)?;
+            infer_rc(s, g, ic, ctx, cid, &motive)?;
             let w_ty0 = wty(wa.clone(), wb.clone());
 
             // f : B(a) -> W(A,B), formed under binder `a` (depth 1).
             let f_dom_d1 = wb.clone(); // wb already assumes exactly one binder
-            let f_ty_d1 = pi(f_dom_d1, shift(&w_ty0, 0, 2));
+            let f_ty_d1 = pi(f_dom_d1, shift_in(s, &w_ty0, 0, 2));
 
             // under binders a (Var1), f (Var0) — depth 2:
             // ih_ty : Pi y : B(a). motive (f y)      [formed at depth2, body at depth3]
-            let ih_dom_d2 = shift(&wb, 0, 1); // B(a) reindexed for depth-2 frame
-            let motive_d3 = shift(motive, 0, 3);
+            let ih_dom_d2 = shift_in(s, &wb, 0, 1); // B(a) reindexed for depth-2 frame
+            let motive_d3 = shift_in(s, &motive, 0, 3);
             let f_at_d3 = var(1); // f, seen from depth3 (a=2,f=1,y=0)
             let y_at_d3 = var(0);
             let ih_body_d3 = app(motive_d3, app(f_at_d3, y_at_d3));
             let ih_ty_d2 = pi(ih_dom_d2, ih_body_d3);
 
             // concl_ty : motive (sup a f), at depth2 (a=1, f=0)
-            let motive_d2 = shift(motive, 0, 2);
+            let motive_d2 = shift_in(s, &motive, 0, 2);
             let concl_ty_d2 = app(motive_d2, sup(var(1), var(0)));
 
-            let arrow_ty_d2 = pi(ih_ty_d2, shift(&concl_ty_d2, 0, 1));
+            let arrow_ty_d2 = pi(ih_ty_d2, shift_in(s, &concl_ty_d2, 0, 1));
 
             let expected_step_ty = pi(wa.clone(), pi(f_ty_d1, arrow_ty_d2));
-            check_rc(g, ic, ctx, cid, step, &expected_step_ty)?;
+            check_rc(s, g, ic, ctx, cid, &step, &expected_step_ty)?;
 
-            Ok(app((**motive).clone(), (**target).clone()))
+            Ok(app(motive, target))
         }
-        Expr::Sigma(a, b) => infer_sigma(g, ic, ctx, cid, a, b),
-        Expr::Pair(fam, a, b) => infer_pair(g, ic, ctx, cid, fam, a, b),
-        Expr::SigRec { motive, step, target } => infer_sigrec(g, ic, ctx, cid, motive, step, target),
+        Node::Sigma(a, b) => infer_sigma(s, g, ic, ctx, cid, &a, &b),
+        Node::Pair(fam, a, b) => infer_pair(s, g, ic, ctx, cid, &fam, &a, &b),
+        Node::SigRec { motive, step, target } => infer_sigrec(s, g, ic, ctx, cid, &motive, &step, &target),
     })
 }
 
@@ -2996,10 +2489,10 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     // Checked here, not only at the leaf: `check`'s `Lam` rule never
     // infers the lambda's domain, `WRec`'s `children_ty` is only compared,
     // and nothing infers `expected`, so a `Free` under a redex in any of
-    // them would reduce away unseen. `free_of` is O(1).
+    // them would reduce away unseen. `free` is O(1).
     for t in [e, expected] {
-        if free_of(t) > 0 {
-            return Err(free_escaped(free_of(t) - 1));
+        if t.free() > 0 {
+            return Err(free_escaped(t.free() - 1));
         }
     }
     // The claim must be a type before anything is checked against it, as
@@ -3008,15 +2501,17 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     // and never infer it, so a malformed claim would otherwise be proved.
     // One cache for both, so a claim's subterms the proof shares hit it.
     hc::scoped(false, || {
-        let large = hc::large(e, expected);
-        let (e, expected) = hc::canonical_inputs(e, expected);
-        let body = || {
-            let mut ic = InferCache::default();
-            let mut scope = CtxScope::new(ctx);
-            expect_sort(&infer_rc(globals, &mut ic, &mut scope, 0, &hc::intern(expected.clone(), None))?)?;
-            check_rc(globals, &mut ic, &mut scope, 0, &hc::intern(e, None), &expected)
-        };
-        if large { on_segment(CHECK_SEGMENT, body) } else { body() }
+        with_spaces(|s| {
+            let large = hc::large(s, e, expected);
+            let (e, expected) = hc::canonical_inputs(s, e, expected);
+            let body = || {
+                let mut ic = InferCache::default();
+                let mut scope = CtxScope::new(ctx);
+                expect_sort(s, &infer_rc(s, globals, &mut ic, &mut scope, 0, &expected)?)?;
+                check_rc(s, globals, &mut ic, &mut scope, 0, &e, &expected)
+            };
+            if large { on_segment(CHECK_SEGMENT, body) } else { body() }
+        })
     })
 }
 
@@ -3027,7 +2522,8 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
 
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static DEFEQ_LOG: std::cell::RefCell<Vec<(Expr, Expr, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// `check_rc`'s comparisons, persisted so their readers can use them after the check's region closes.
+    static DEFEQ_LOG: std::cell::RefCell<Vec<(PExpr, PExpr, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(feature = "record-defeq")]
@@ -3043,7 +2539,7 @@ thread_local! {
 }
 #[cfg(feature = "record-defeq")]
 thread_local! {
-    static SEEN: std::cell::RefCell<HashSet<(*const Expr, u32)>> = std::cell::RefCell::new(HashSet::new());
+    static SEEN: std::cell::RefCell<HashSet<(u64, u32)>> = std::cell::RefCell::new(HashSet::new());
 }
 #[cfg(feature = "record-defeq")]
 thread_local! {
@@ -3068,21 +2564,20 @@ impl Drop for SiteGuard {
 fn site(i: usize) -> SiteGuard {
     SiteGuard(SITE.with(|c| c.replace(i)))
 }
-/// (nodes counted once per allocation, nodes counted once per occurrence) in `e`.
+/// (distinct nodes, nodes counted once per occurrence) in `e`.
 pub fn term_sizes(e: &Expr) -> (usize, u128) {
-    fn go(e: &Expr, seen: &mut HashMap<*const Expr, u128>) -> u128 {
+    fn go(e: &Expr, seen: &mut HashMap<u64, u128>) -> u128 {
         let mut n = 1u128;
-        same_shape(e, e, |p, _| {
-            let k = Rc::as_ptr(p);
+        e.0.node.for_kids(|p, _| {
+            let k = node_key(p);
             n += match seen.get(&k) {
                 Some(&t) => t,
                 None => {
-                    let t = go(p, seen);
+                    let t = grow(|| go(p, seen));
                     seen.insert(k, t);
                     t
                 }
             };
-            true
         });
         n
     }
@@ -3111,25 +2606,6 @@ pub fn take_walk_counts() -> [u64; 26] {
     WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
 }
 
-/// Probe for option C: `e` with each of its first `depth` free variables replaced by a distinct
-/// `Free`, so a comparison afterwards works on closed terms.
-#[cfg(feature = "record-defeq")]
-pub fn rename_context_to_frees(e: &Expr, depth: u32) -> Expr {
-    let frees: Vec<Rc<Expr>> = (0..depth).map(|l| Rc::new(Expr::Free(l))).collect();
-    let refs: Vec<&Rc<Expr>> = frees.iter().collect();
-    instantiate_n(e, &refs, 0)
-}
-
-/// `rename_context_to_frees` for a pair of sides sharing one pointer-keyed memo, so a node reached
-/// twice is renamed once.
-#[cfg(feature = "record-defeq")]
-pub fn rename_pair_memo(a: &Expr, b: &Expr, depth: u32) -> (Expr, Expr) {
-    let frees: Vec<Expr> = (0..depth).map(Expr::Free).collect();
-    let refs: Vec<&Expr> = frees.iter().collect();
-    let memo = std::cell::RefCell::new(HashMap::new());
-    (instantiate_memo(a, &refs, 0, &memo), instantiate_memo(b, &refs, 0, &memo))
-}
-
 /// Beta steps `whnf_step` took since the last call.
 #[cfg(feature = "record-defeq")]
 pub fn take_beta_count() -> u64 {
@@ -3139,31 +2615,31 @@ pub fn take_beta_count() -> u64 {
 /// Drains the `(inferred, expected, context depth)` triples `check_rc` compared since the last call.
 #[cfg(feature = "record-defeq")]
 pub fn take_defeq_log() -> Vec<(Expr, Expr, u32)> {
-    DEFEQ_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+    DEFEQ_LOG.with(|l| std::mem::take(&mut *l.borrow_mut())).into_iter().map(|(a, b, d)| (a.get(), b.get(), d)).collect()
 }
 
-fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
+fn check_rc(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr, expected: &Expr) -> Result<(), String> {
     grow(|| {
-        if let Expr::Lam(a, body) = &**e
-            && let Expr::Pi(ref dom, ref cod) = whnf(expected)
+        if let Node::Lam(a, body) = s.node(e)
+            && let Node::Pi(dom, cod) = s.node(&whnf_fresh(s, expected))
         {
             // As `infer`'s `Lam` rule does: `def_eq` alone would accept an
             // ill-typed annotation that reduces to `dom`.
-            expect_sort(&infer_rc(g, ic, ctx, cid, a)?)?;
-            if !def_eq(a, dom) {
-                return Err(format!("lambda domain mismatch: {} vs {}", brief(a), brief(dom)));
+            expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
+            if !def_eq_in(s, &a, &dom) {
+                return Err(format!("lambda domain mismatch: {} vs {}", brief(&a), brief(&dom)));
             }
             let depth = ctx.local.len();
-            ctx.local.push((**a).clone());
-            let cid2 = ic.enter(cid, a);
-            let r = check_rc(g, ic, ctx, cid2, body, cod);
+            ctx.local.push(a.clone());
+            let cid2 = ic.enter(s, cid, &a);
+            let r = check_rc(s, g, ic, ctx, cid2, &body, &cod);
             ctx.local.truncate(depth);
             return r;
         }
-        let inferred = infer_rc(g, ic, ctx, cid, e)?;
+        let inferred = infer_rc(s, g, ic, ctx, cid, e)?;
         #[cfg(feature = "record-defeq")]
-        DEFEQ_LOG.with(|l| l.borrow_mut().push((inferred.clone(), expected.clone(), (ctx.base.len() + ctx.local.len()) as u32)));
-        if def_eq(&inferred, expected) {
+        DEFEQ_LOG.with(|l| l.borrow_mut().push((persist(inferred.clone()), persist(expected.clone()), (ctx.base.len() + ctx.local.len()) as u32)));
+        if def_eq_in(s, &inferred, expected) {
             Ok(())
         } else {
             Err(format!(
@@ -3177,7 +2653,7 @@ fn check_rc(g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &
 
 /// Typecheck a closed term and return its normalized type.
 pub fn typecheck(e: &Expr) -> Result<Expr, String> {
-    infer(&Ctx::new(), e).map(|t| nf(&t))
+    infer(&Ctx::new(), e).map(|t| normalize(&t))
 }
 
 mod postulates;
@@ -3187,3 +2663,4 @@ pub mod bin;
 
 #[cfg(test)]
 mod tests;
+

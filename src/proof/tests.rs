@@ -12,8 +12,8 @@ fn every_arith_postulates_starts_from_one_checked_prelude() {
     let mut b = ArithPostulates::new();
     assert_eq!(a.p.globals.len(), 10);
     let (ga, gb) = (a.p.globals[1].get(), b.p.globals[1].get());
-    let (Expr::Pi(x, _), Expr::Pi(y, _)) = (&ga, &gb) else { panic!("a binop's type is an arrow") };
-    assert!(kernel::Rc::ptr_eq(x, y), "the prelude was rebuilt");
+    let (kernel::Node::Pi(x, _), kernel::Node::Pi(y, _)) = (ga.node(), gb.node()) else { panic!("a binop's type is an arrow") };
+    assert!(kernel::node_key(&x) == kernel::node_key(&y), "the prelude was rebuilt");
     // A proof's own pushes stay its own.
     b.lit(7);
     assert_eq!((a.p.globals.len(), b.p.globals.len()), (10, 11));
@@ -32,10 +32,10 @@ fn a_shared_subterm_is_denoted_once() {
     let (arith, params) = setup(&s, body, 1, None).unwrap();
     let d = denote(&s, body, &arith, &params).unwrap();
     // `d` is `App(App(+, da), da')`; `da`, `da'` are `App(App(*, x), x)`.
-    let Expr::App(plus_da, da2) = &d else { panic!() };
-    let Expr::App(_, da1) = &**plus_da else { panic!() };
-    let (Expr::App(f1, _), Expr::App(f2, _)) = (&**da1, &**da2) else { panic!() };
-    assert!(kernel::Rc::ptr_eq(f1, f2), "the two operands were denoted separately");
+    let kernel::Node::App(plus_da, da2) = d.node() else { panic!() };
+    let kernel::Node::App(_, da1) = plus_da.node() else { panic!() };
+    let (kernel::Node::App(f1, _), kernel::Node::App(f2, _)) = (da1.node(), da2.node()) else { panic!() };
+    assert!(kernel::node_key(&f1) == kernel::node_key(&f2), "the two operands were denoted separately");
 }
 
 #[test]
@@ -1677,7 +1677,7 @@ fn non_tail_recursion_is_out_of_scope_for_the_relational_proof() {
 ///
 /// `prove_tail_recursive_call` accumulates an expression that deepens
 /// a couple of levels per trace step, and both the kernel's recursive
-/// traversals and the recursive `Drop` of the resulting `Rc<Expr>`
+/// traversals and the recursive `Drop` of the resulting `Expr`
 /// chain have finite stack. With the old 10,000-step budget a loop
 /// like this built a ~40,000-level expression and died with
 /// `STATUS_STACK_OVERFLOW` -- not a failed proof, a crashed process,
@@ -1843,22 +1843,6 @@ fn fibonacci_branching_leaves_get_kernel_checked_instances() {
     }
 }
 
-/// Nodes in `e` counted once per allocation, the size `infer` would
-/// walk if it memoised by node.
-fn dag_size(e: &Expr) -> usize {
-    fn go(e: &Expr, seen: &mut std::collections::HashSet<*const Expr>) -> usize {
-        let mut n = 1;
-        kernel::same_shape(e, e, |p, _| {
-            if seen.insert(kernel::Rc::as_ptr(p)) {
-                n += go(p, seen);
-            }
-            true
-        });
-        n
-    }
-    go(e, &mut Default::default())
-}
-
 /// `fib(n)`'s witness reuses each smaller call's witness from
 /// `build_ev_witness`'s memo. With postulates as constants (rather than
 /// `Var`s that shift under a growing context) the DAG grows linearly:
@@ -1881,7 +1865,7 @@ fn a_fibonacci_instance_proof_shares_its_repeated_witnesses() {
     let abs = s.abs(body);
     let fib = s.rec(abs);
 
-    let size = |n: i64| dag_size(&prove_tail_recursive_instance(&s, fib, &[n]).unwrap().proof);
+    let size = |n: i64| kernel::term_sizes(&prove_tail_recursive_instance(&s, fib, &[n]).unwrap().proof).0;
     let (small, large) = (size(8), size(16));
     assert!(2 * large < 5 * small, "fib(8): {small} nodes, fib(16): {large}");
 }
@@ -1943,7 +1927,7 @@ fn fib16_instance_proof_cost() {
     let t = std::time::Instant::now();
     kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone()))
         .expect("fib(16)'s instance proof re-checks");
-    println!("fib16 dag={} build={build:?} check={:?}", dag_size(&proof.proof), t.elapsed());
+    println!("fib16 dag={} build={build:?} check={:?}", kernel::term_sizes(&proof.proof).0, t.elapsed());
 }
 
 #[test]

@@ -61,8 +61,8 @@ pub struct Scope {
 }
 
 /// `abstract_frees`' memo for one set of `levels`: a shared node's result
-/// by pointer and depth.
-type FreesMemo = HashMap<(PtrKey, u32), Rc<Expr>>;
+/// by node and depth.
+type FreesMemo = HashMap<(Key, u32), Expr>;
 
 /// Under `d` binders of `e`, `Free(levels[j])` becomes the `Var` for the
 /// `j`-th of `levels.len()` binders wrapped outside `e`, outermost
@@ -73,69 +73,41 @@ type FreesMemo = HashMap<(PtrKey, u32), Rc<Expr>>;
 /// mirrors `shift`, with `free` in place of `loose` for the skip test,
 /// since every level in `levels` is at least `first`.
 fn abstract_frees(e: &Expr, first: u32, levels: &[u32], d: u32) -> Expr {
-    abstract_frees_in(e, first, levels, d, &mut FreesMemo::new())
+    with_spaces(|s| abstract_frees_in(s, e, first, levels, d, &mut FreesMemo::new()))
 }
 
 /// `abstract_frees` with a memo shared across calls for the same
-/// `levels`. A node referenced from more than one place is memoised by
-/// pointer and depth, as `infer_rc` does, so a shared subterm is walked
-/// once and its result stays shared. Unmemoised, a doubling DAG is walked
-/// as the tree it unfolds to, and the copy loses the sharing `infer`'s
-/// memo relies on (`RELATED_WORK.md` §63).
-fn abstract_frees_in(e: &Expr, first: u32, levels: &[u32], d: u32, memo: &mut FreesMemo) -> Expr {
-    if free_of(e) <= first {
+/// `levels`. A node with two or more parents is memoised by node and
+/// depth, as `infer_rc` does, so a shared subterm is walked once and its
+/// result stays shared. Unmemoised, a doubling DAG is walked as the tree
+/// it unfolds to, and the copy loses the sharing `infer`'s memo relies on
+/// (`RELATED_WORK.md` §63).
+fn abstract_frees_in(s: &Spaces, e: &Expr, first: u32, levels: &[u32], d: u32, memo: &mut FreesMemo) -> Expr {
+    if s.free(e) <= first {
         return e.clone();
     }
-    let mut go = |x: &Rc<Expr>, d: u32| {
-        if x.free() <= first {
-            return x.clone();
+    let mut go = |x: Expr, d: u32| {
+        if s.free(&x) <= first {
+            return x;
         }
-        if Rc::strong_count(x) == 1 {
-            return hc::intern_new(abstract_frees_in(x, first, levels, d, memo));
+        if !s.shared(&x) {
+            return abstract_frees_in(s, &x, first, levels, d, memo);
         }
-        let key = (PtrKey(x.clone()), d);
+        let key = (s.key(&x), d);
         if let Some(r) = memo.get(&key) {
             return r.clone();
         }
-        let r = hc::intern_new(abstract_frees_in(x, first, levels, d, memo));
+        let r = abstract_frees_in(s, &x, first, levels, d, memo);
         memo.insert(key, r.clone());
         r
     };
-    grow(|| match e {
-        Expr::Free(l) => match levels.binary_search(l) {
-            Ok(j) => Expr::Var(d + (levels.len() - 1 - j) as u32),
-            Err(_) => Expr::Free(*l),
+    grow(|| match s.node(e) {
+        Node::Free(l) => match levels.binary_search(&l) {
+            Ok(j) => var(d + (levels.len() - 1 - j) as u32),
+            Err(_) => e.clone(),
         },
-        Expr::Var(k) => Expr::Var(*k),
-        Expr::Sort(i) => Expr::Sort(*i),
-        Expr::Const(l) => Expr::Const(*l),
-        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
-        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
-        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
-        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
-        Expr::Refl(a) => Expr::Refl(go(a, d)),
-        Expr::J { motive, base, a, b, p } => Expr::J {
-            motive: go(motive, d),
-            base: go(base, d),
-            a: go(a, d),
-            b: go(b, d),
-            p: go(p, d),
-        },
-        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
-        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
-        Expr::WRec { motive, children_ty, step, target } => Expr::WRec {
-            motive: go(motive, d),
-            children_ty: go(children_ty, d + 1),
-            step: go(step, d),
-            target: go(target, d),
-        },
-        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
-        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
-        Expr::SigRec { motive, step, target } => Expr::SigRec {
-            motive: go(motive, d),
-            step: go(step, d),
-            target: go(target, d),
-        },
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) => e.clone(),
+        n => s.mk(n.map_kids(|x, under| go(x, d + under as u32))),
     })
 }
 
@@ -153,20 +125,20 @@ impl Postulates {
     }
     pub fn push(&mut self, ty: Expr) -> usize {
         let pos = self.globals.len();
-        assert!(loose_of(&ty) == 0 && free_of(&ty) == 0, "a postulate's type must be closed: {ty:?}");
+        assert!(ty.loose() == 0 && ty.free() == 0, "a postulate's type must be closed: {ty:?}");
         // RELATED_WORK §68: an ill-formed entry sat in the context unchecked
         // until a claim that used it failed. This also catches a postulate
         // referencing itself or a later one: `infer` checks it against
         // `self.globals` as it stands before this push, so a forward
         // `Const` fails in `const_type` with "unknown constant".
-        if let Err(err) = self.infer(&ty).and_then(|t| expect_sort(&t).map(|_| ())) {
+        if let Err(err) = self.infer(&ty).and_then(|t| with_spaces(|s| expect_sort(s, &t)).map(|_| ())) {
             panic!("a postulate's type isn't a type: {err}\n  type: {ty:?}");
         }
         self.globals.push_back(persist(ty));
         pos
     }
     pub fn get(&self, pos: usize) -> Expr {
-        Expr::Const(pos as u32)
+        mk(Node::Const(pos as u32))
     }
     /// Opens a builder scope: parameters bound after this point (`bind`)
     /// belong to it until `close` or `abandon`.
@@ -180,13 +152,13 @@ impl Postulates {
     /// parameters, and is checked to be a type. Panics outside a scope.
     pub fn bind(&mut self, ty: Expr) -> Expr {
         assert!(self.scopes > 0, "bind outside a scope");
-        if let Err(err) = self.infer_open(&ty).and_then(|t| expect_sort(&t).map(|_| ())) {
+        if let Err(err) = self.infer_open(&ty).and_then(|t| with_spaces(|s| expect_sort(s, &t)).map(|_| ())) {
             panic!("a parameter's type isn't a type: {err}\n  type: {ty:?}");
         }
         let l = self.next_free;
         self.next_free = l.checked_add(1).expect("Free levels ran out");
         self.params.push((l, persist(ty)));
-        Expr::Free(l)
+        mk(Node::Free(l))
     }
     /// Wraps a binder around `body` for each parameter bound since `s` was
     /// opened, outermost first, then rolls them back. A scope that bound
@@ -195,7 +167,7 @@ impl Postulates {
         assert!(self.scopes == s.depth + 1, "scopes must close innermost-first");
         // A loose `Var` here would be captured by the new binders: it's a
         // sign a scope local escaped `bind`.
-        assert!(loose_of(&body) == 0, "close's body has a loose Var: a scope local escaped bind (RELATED_WORK §70)");
+        assert!(body.loose() == 0, "close's body has a loose Var: a scope local escaped bind (RELATED_WORK §70)");
         let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
         let mut acc = abstract_frees(&body, s.first, &levels, 0);
         for i in (0..levels.len()).rev() {
@@ -233,18 +205,17 @@ impl Postulates {
     /// `check` for a term and type that may mention the live parameters.
     pub fn check_open(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
         // A loose `Var` would be read as one of the parameters.
-        assert!(loose_of(e) == 0 && loose_of(ty) == 0, "check_open on a term or type with a loose Var: {e:?} : {ty:?}");
+        assert!(e.loose() == 0 && ty.loose() == 0, "check_open on a term or type with a loose Var: {e:?} : {ty:?}");
         let (g, l, levels) = self.open_ctx();
         let mut memo = FreesMemo::new();
-        let e = abstract_frees_in(e, 0, &levels, 0, &mut memo);
-        let ty = abstract_frees_in(ty, 0, &levels, 0, &mut memo);
+        let (e, ty) = with_spaces(|s| (abstract_frees_in(s, e, 0, &levels, 0, &mut memo), abstract_frees_in(s, ty, 0, &levels, 0, &mut memo)));
         check_in(&g, &l, &e, &ty)
     }
     /// `infer` for a term that may mention the live parameters. The type
     /// it returns mentions them as `Var`s, not `Free`s, so it's only for
     /// uses like `expect_sort` that don't put it back into a term.
     pub fn infer_open(&self, e: &Expr) -> Result<Expr, String> {
-        assert!(loose_of(e) == 0, "infer_open on a term with a loose Var: {e:?}");
+        assert!(e.loose() == 0, "infer_open on a term with a loose Var: {e:?}");
         let (g, l, levels) = self.open_ctx();
         infer_in(&g, &l, &abstract_frees(e, 0, &levels, 0))
     }
