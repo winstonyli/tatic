@@ -3101,7 +3101,18 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - **Most of mimalloc's value is outside the kernel.** The sweep, which also mines, scores and builds proofs, gains far more than `proof_cost_split`'s check. Those parts allocate many small, short-lived objects, which is what mimalloc is fast at. Replacing it means writing a general allocator, so dropping it is ruled out.
 - The two `proof_cost_split` runs are not comparable with each other (they ran one after the other, not interleaved), so they say nothing new about large pages.
 - The system heap faults more (1.79 M against 1.25 M per sweep) but peaks lower. mimalloc keeps freed memory for reuse instead of returning it.
-- **Still open:** moving the id arena's own arrays and table onto reserved address space, committed as they grow, so they never move and can use large pages on their own (option 1 of the allocator question). mimalloc stays the global allocator either way.
+- **Still open:** moving the id arena's own arrays and table onto reserved address space, committed as they grow, so they never move and can use large pages on their own (option 1 of the allocator question). mimalloc stays the global allocator either way. Its upper bound was then measured and found to be zero; see the next entry.
+
+**Arrays that never grow: no measurable gain, so reserved storage for the id arena is parked (2026-10-14; probe reverted, no patch kept).** This spike bounds what storage that never moves could buy. A probe on ef75b36 reserved the region's five arrays and its table for `PRESIZE` nodes when `Spaces::open` runs, so nothing grew or was copied. `proof_cost_split` has one region, which ends at 3,448,841 nodes; it grows to capacity 4,194,304 and 4,194,304 table buckets. `PRESIZE=3500000` was compared against the same binary without it (`cpu_ab.ps1`, two rounds of 8 alternating pairs, RTP off).
+
+| round | load | CPU median, growing / presized | build median | presized won |
+|---|---|---|---|---|
+| 1 | 20% at the start, 53% at the end | 2.57 / 2.47 s (−3.7%) | 1,799 / 1,641 ms | 6 of 8 |
+| 2 | 10% at the start, 36% at the end | 2.36 / 2.55 s (+8%) | 1,602 / 1,732 ms | 2 of 8 |
+
+- Over the 16 pairs presizing won 8, and the two rounds disagree in sign by more than either effect. The cost of growth (about 22 doublings, each copying the arrays and rehashing the table once) is below this benchmark's noise, about ±5% here.
+- Reserved storage could also give the arena large pages of its own. That is not measured by this probe, but mimalloc already serves these arrays from large pages in `proof_cost_split`, so there is little left to gain.
+- **Parked:** option 1 of the allocator question. Revisit only if a profile shows growth (`reserve_rehash`, `memcpy` from `Vec` growth) as a visible share of the build.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
