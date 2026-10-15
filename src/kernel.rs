@@ -1010,13 +1010,13 @@ mod hc {
         s.memos.borrow_mut().nf.insert(s.key(x), s.key(r));
     }
 
-    /// (closed node, depth) -> its head normal form to that depth; see `hnf_rc`.
-    pub fn hnf_get(s: &Spaces, x: &Expr, d: u32) -> Option<Expr> {
-        s.memos.borrow().hnf.get(&(s.key(x), d)).map(|r| s.expr_of(r))
+    /// Closed node -> its head normal form; see `hnf_rc`.
+    pub fn hnf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+        s.memos.borrow().hnf.get(&s.key(x)).map(|r| s.expr_of(r))
     }
 
-    pub fn hnf_put(s: &Spaces, x: &Expr, d: u32, r: &Expr) {
-        s.memos.borrow_mut().hnf.insert((s.key(x), d), s.key(r));
+    pub fn hnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+        s.memos.borrow_mut().hnf.insert(s.key(x), s.key(r));
     }
 
     pub fn shift_get(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Option<Expr> {
@@ -1397,8 +1397,7 @@ fn beta_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
 }
 
 /// `whnf_step` for a spine `P a1 ... ad` whose longest proper prefix `P` with no loose variable
-/// reduces to a lambda: `P`'s head normal form to depth `d` (`hnf_rc`) is instantiated with the
-/// arguments. A closed function value used at several places with different arguments -- a Church
+/// reduces to a lambda: `P`'s head normal form (`hnf_rc`) is instantiated with the arguments. A closed function value used at several places with different arguments -- a Church
 /// boolean `xor_ a b` applied to each use's own continuations -- is then reduced once, not once per
 /// use, since the memo is keyed by `P`, not by the whole application. `None` when there is no such
 /// prefix or it does not reduce to a lambda.
@@ -1414,7 +1413,7 @@ fn closed_prefix_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
         spine = g;
     };
     args.reverse();
-    let mut body = hnf_rc(s, &p, args.len() as u32);
+    let mut body = hnf_rc(s, &p);
     let mut taken = 0;
     while taken < args.len()
         && let Node::Lam(_, inner) = s.node(&body)
@@ -1435,43 +1434,41 @@ fn closed_prefix_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
     Some(whnf_in(s, &r))
 }
 
-/// Head normal form of `p` to depth `d`: its whnf, and while that is a lambda (at most `d` deep),
-/// the body's whnf under it. Applying the result to `d` arguments and reducing does no more work
-/// than reducing `p a1 ... ad` would (head reduction commutes with substitution), and the work done
-/// here is shared by every application of `p`. Memoised by `(p, d)`. An application recurses on its
-/// function at depth `d + 1`, so the memo also covers each shorter prefix of a spine.
-fn hnf_rc(s: &Spaces, p: &Expr, d: u32) -> Expr {
-    if let Some(hit) = hc::hnf_get(s, p, d) {
+/// Head normal form of `p`: its whnf, and while that is a lambda, the body's whnf under it. The
+/// work is shared by every application of `p`, memoised by `p`; an application recurses on its
+/// function, so the memo also covers each shorter prefix of a spine. It goes under every lambda,
+/// not only those the spine's arguments fill: a Church boolean selects under its own `\C t f`, so a
+/// table of `mux` gates applied to its first arguments drops the branches they rule out, and each
+/// longer prefix holds only its sub-diagram (docs/tier-cycle.md, "Full head normal form").
+fn hnf_rc(s: &Spaces, p: &Expr) -> Expr {
+    if let Some(hit) = hc::hnf_get(s, p) {
         return hit;
     }
     let r = match s.node(p) {
         Node::App(f, a) => {
-            let hf = hnf_rc(s, &f, d + 1);
+            let hf = hnf_rc(s, &f);
             match s.node(&hf) {
                 Node::Lam(_, body) => {
                     let x = subst_top(s, &body, &a);
                     let w = whnf_step(s, &x).unwrap_or(x);
-                    under_lams(s, w, d)
+                    under_lams(s, w)
                 }
-                // `hf` is `f`'s whnf and not a lambda, so `hf a` is stuck.
+                // `hf` is `f`'s head normal form and not a lambda, so `hf a` is stuck.
                 _ if s.same(&hf, &f) => *p,
                 _ => app(hf, a),
             }
         }
-        _ => under_lams(s, whnf_in(s, p), d),
+        _ => under_lams(s, whnf_in(s, p)),
     };
-    hc::hnf_put(s, p, d, &r);
+    hc::hnf_put(s, p, &r);
     r
 }
 
-/// `w` (in whnf) with the bodies of its first `d` nested lambdas reduced to whnf in turn.
-fn under_lams(s: &Spaces, w: Expr, d: u32) -> Expr {
+/// `w` (in whnf) with the body of each nested lambda reduced to whnf in turn.
+fn under_lams(s: &Spaces, w: Expr) -> Expr {
     let Node::Lam(a, b) = s.node(&w) else { return w };
-    if d == 0 {
-        return w;
-    }
     let wb = whnf_step(s, &b).unwrap_or(b);
-    let nb = under_lams(s, wb, d - 1);
+    let nb = under_lams(s, wb);
     if s.same(&nb, &b) { w } else { lam(a, nb) }
 }
 

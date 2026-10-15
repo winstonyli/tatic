@@ -155,8 +155,8 @@ pub(crate) struct Memos {
     pub(crate) shifts: IdMap<(u32, u32, i32), u32>,
     /// Node -> its weak head normal form.
     pub(crate) whnf: IdMap<u32, u32>,
-    /// (closed node, depth) -> its head normal form to that depth.
-    pub(crate) hnf: IdMap<(u32, u32), u32>,
+    /// Closed node -> its head normal form.
+    pub(crate) hnf: IdMap<u32, u32>,
     /// Node -> its normal form.
     pub(crate) nf: IdMap<u32, u32>,
     /// Argument lists of two or more nodes -> their id (`LIST_BIT | n`).
