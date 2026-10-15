@@ -2829,6 +2829,25 @@ Its shortcomings there, with mitigations:
 - **Why it doesn't pay:** 8 B off about 155 B allocated per node is 5% of the footprint, too little to move n=64 measurably. Meanwhile, encoding on every push and decoding on every read and table compare (a `from_parts` match where a 24 B enum copy was) costs about 7% of proof building.
 - **Conclusion:** node size is not the lever. A footprint change has to come from the hash-map half (about 100 B of the 155 B allocated per node).
 
+**Memo census of rule 33's check (2026-10-14; probe reverted, no patch kept).** For each memo the probe counted lookups and hits during one law check, and at the end the entries per node and how many sit on `hc::low` nodes (height at most 2). Values are n=8 / n=64.
+
+| memo | lookups | hit rate | entries | nodes with entries (of 50,487 / 385,032) | share of those nodes with one entry | entries on low nodes |
+|---|---|---|---|---|---|---|
+| `shifts` | 72,892 / 584,060 | 0.43 / 0.44 | 41,729 / 329,094 | 21,491 / 165,271 | 53% / 54% | 3.0% / 2.7% |
+| `inst` | 58,591 / 454,455 | 0.32 / 0.33 | 39,792 / 306,408 | 5,979 / 34,046 | 60% / 61% | 0 (gated) |
+| `ic.lows` | 68,446 / 567,070 | 0.51 / 0.53 | 33,398 / 267,870 | 21,621 / 171,869 | 66% / 66% | 0.5% / 0.6% |
+| `bounds` | 26,946 / 198,637 | 0.09 / 0.11 | 22,049 / 171,849 | 18,531 / 143,355 | 83% / 83% | 0.2% / 0.03% |
+| `whnf` | 56,184 / 408,872 | 0.80 / 0.79 | 11,539 / 86,747 | 11,539 / 86,747 | 100% | 0.2% / 0.02% |
+
+- **A low-node cutoff for the other memos is falsified, not built.** It would remove 3% of `shifts` entries and under 1% of the others. Those entries are among the best: `shifts` lookups on low nodes hit 81% / 83%, against 43% overall. (The 2026-10-13 leaf-only skip was neutral for the same reason.)
+- **Per-node side arrays don't pay either.** Holding each node's first entry in a per-node array costs a slot for every node, but only 43% of nodes have a `shifts` entry.
+  - For `shifts`, the array would be 12 B × every node (606 KB at n=8). It would take 21,491 entries out of the map, at about 27 B allocated each (about 580 KB). That is break-even.
+  - For `whnf` (one entry on 23% of nodes) it loses. For `ic.lows` it saves about 1.6 B per node.
+- **What stands out instead:**
+  - `inst` has 6.7 / 9.0 entries per memoized node (many argument lists and depths per node), rising with n, and a 32% hit rate.
+  - `bounds` has 0.11 / 0.13 hits per entry: 16 B entries, about 11 B per node allocated, almost never read back. But a hit can save a deep `uses` walk, so its value isn't its hit rate.
+  - Neither is a footprint fix by itself.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
