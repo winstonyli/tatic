@@ -3073,12 +3073,21 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - **Decided: `driver::sweep` turns large pages off for its children** (`MIMALLOC_ALLOW_LARGE_OS_PAGES=0` in the environment it passes them). Its machine-state line now runs with that environment, so `pages=` reports the children's pages. Single long runs (`proof_cost_split`, the law checks, loops) keep them.
   - A sweep on the change: `pages=normal`, 1.26 M faults and a 270 MB peak process (the normal arm's), and outputs identical to round 1 apart from the seconds column.
   - Its timing is void: load 78-99%.
-- **Kernel time is 37-40% of the sweep's CPU in both arms,** about 112 ms per process; most of it is unexplained.
+- **Kernel time is 37-40% of the sweep's CPU in both arms,** about 112 ms per process, as Windows accounts it. That accounting turned out to be unreliable (last bullet).
   - Not the launch: an empty launch takes 2.3-5.5 ms.
   - Not page faults alone: normal pages took 1.33 M faults and large 0.56 M, at the same 22 s of kernel time.
   - samply doesn't see it. A profile of the sweep (a throwaway wrapper test setting its environment, reverted) has only 8.0% of busy samples with a kernel-mode leaf, about 4.4 s of 54 s. The single-process `proof_cost_split` profile shows the same gap: 2.1% kernel-mode leaves against 10-22% of its accounted CPU.
   - A pure user-mode loop is charged 3% kernel time (0.16 of 5.0 s), so the accounting isn't simply biased. Sampling the machine's privileged-time counter during a sweep was swamped by other sessions' 14.6% baseline.
-  - **Parked:** the accounted kernel time and the samples disagree, and resolving it needs a kernel-level trace (xperf with CSwitch and page-fault events) rather than samply.
+  - **Resolved (2026-10-14): the accounted kernel/user split is unreliable on this machine; the sweep doesn't spend 40% in the kernel.**
+    - **xperf trace of a salt-1 sweep on 10b68ad** (`sweep_xperf.ps1`, run elevated by the user: sampled profile with stacks, context switches, all page faults, virtual allocations; no lost events).
+      - The job reported 50.8 s CPU, 20.6 s of it kernel, and 1.37 M faults.
+      - The profile saw 48.3 s in the sweep's 166 processes, so the totals agree.
+      - Only about 4.5 s of that was in kernel modules (`ntoskrnl.exe` 3.9 s, `Ntfs.sys`, `ahcache.sys`, `vgk.sys`, `FLTMGR.SYS` and the GPU driver the rest). The rest was in the test binary, which agrees with samply.
+    - **Not page faults:** touching fresh committed memory costs about 0.5 µs per demand-zero fault, so 1.37 M faults are under 1 s.
+    - **The split moves between identical runs:** eight `proof_cost_split` runs were charged 0.11-0.61 s of kernel time, while kernel plus user stayed at 2.70-2.91 s.
+      - Turning mimalloc's purging off (`MIMALLOC_PURGE_DELAY=-1`) changed nothing (old 0.11-0.47 s, new 0.16-0.61 s), so decommits and the TLB flushes they cause aren't it.
+      - Windows charges whole timer ticks of time to a thread's kernel or user mode, and the machine runs under the hypervisor (virtualization-based security is on, no services under it). What misattributes the ticks is not known.
+    - **Consequence:** compare total CPU (kernel plus user), never kernel time alone, as `cpu_ab.ps1` and `sweep_job.ps1`'s `jobcpu` already do. Where the time actually goes, use samply or xperf samples.
 
 **Prefetching the region table's control group: neutral, not adopted (2026-10-14; reverted, no patch kept).** `Spaces::build` issued a `_mm_prefetch` (T0) of the region table's first control group as soon as the node's hash was known. That is before the persistent lookup and the region lookup, which "Where `proof_cost_split` spends its time on B" found to be a cache miss worth 13.4% of busy samples.
 - **Reaching the control bytes:** hashbrown 0.16.1 has no prefetch hook. But an `OccupiedEntry` from `insert_unique` gives its entry's address and bucket index, and the entries lie downwards from the control bytes. So the control array starts at the entry's address plus (index + 1) × 8 B, refreshed on every insert since a resize moves it. The group is at that start plus (`spread(h)` & bucket mask).

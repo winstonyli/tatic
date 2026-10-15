@@ -1,7 +1,8 @@
 # sweep_job.ps1 <exe> <large|normal> <round>: one full salt-1 sweep inside a job object holding this PowerShell, so every
 # child the sweep spawns is counted; 'normal' sets MIMALLOC_ALLOW_LARGE_OS_PAGES=0. Prints the job's CPU, the largest
 # single process's peak commit and the job's peak commit (which includes this PowerShell). Run one fresh PowerShell per
-# sweep (`powershell -NoProfile -File sweep_job.ps1 ...`), since the job keeps counting until its last process exits.
+# sweep (`powershell -NoProfile -File sweep_job.ps1 ...`), since the job keeps counting until its last process exits. `kernel=` is Windows' kernel/user
+# split, which is unreliable on this machine (docs/tier-cycle.md, "How often the large-page stall hits a sweep"); compare jobcpu.
 param([string]$exe, [string]$arm, [int]$r)
 Add-Type -Namespace K -Name Job -MemberDefinition @"
 [StructLayout(LayoutKind.Sequential)] public struct BASIC { public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime; public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses; }
