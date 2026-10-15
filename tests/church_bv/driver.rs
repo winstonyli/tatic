@@ -163,7 +163,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
         let text = std::fs::read_to_string(&log).unwrap();
         // the base rules a preference phase dropped leave the file
         let rule = |l: &str| (!l.contains("  OVER  ")).then(|| l.trim().split_once(" -> ")).flatten().map(|(a, b)| (parse_term(a.trim()), parse_term(b.trim())));
-        let dropped: std::collections::HashSet<RuleKey> = text.lines().filter_map(|l| l.strip_prefix("RULEMINER drop (")).filter_map(|l| l.split_once("): ")).filter_map(|(_, r)| rule(r)).collect();
+        let dropped: hashbrown::HashSet<RuleKey> = text.lines().filter_map(|l| l.strip_prefix("RULEMINER drop (")).filter_map(|l| l.split_once("): ")).filter_map(|(_, r)| rule(r)).collect();
         if !dropped.is_empty() {
             let kept: String = std::fs::read_to_string(&rules).unwrap().lines().filter(|l| !rule(l).is_some_and(|r| dropped.contains(&r))).map(|l| format!("{l}\n")).collect();
             std::fs::write(&rules, kept).unwrap();

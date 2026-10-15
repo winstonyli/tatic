@@ -933,7 +933,7 @@ thread_local! {
     pub static RULE_TRACE: std::cell::RefCell<Option<Vec<(Term, Fired)>>> = const { std::cell::RefCell::new(None) };
     /// Learned rule preferences, (winner, loser): where both rules would rewrite a term, the winner does, whatever the order
     /// (docs/tier-cycle.md, "Rule order"). Set with the rules they belong to (`set_rule_prefs`).
-    pub static RULE_PREFS: std::cell::RefCell<std::collections::HashSet<Pref>> = Default::default();
+    pub static RULE_PREFS: std::cell::RefCell<hashbrown::HashSet<Pref>> = Default::default();
 }
 
 /// A rule as its two sides, and a preference (winner, loser) between two rules.
@@ -1212,7 +1212,7 @@ pub const PROMOTED: &[(&str, &str)] = &[
 
 /// The rules of a rule file: one `lhs -> rhs` per line, repeats once, other lines (and preference lines, `parse_prefs`) ignored.
 pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = hashbrown::HashSet::new();
     text.lines().filter(|l| !l.contains("  OVER  ")).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).filter(|r| seen.insert(*r)).collect()
 }
 
@@ -1702,7 +1702,7 @@ pub static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
 
 /// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms; `print_rule_conflicts` lists them.
-pub static RULE_CONFLICTS: std::sync::Mutex<Option<std::collections::HashMap<Pref, u64>>> = std::sync::Mutex::new(None);
+pub static RULE_CONFLICTS: std::sync::Mutex<Option<hashbrown::HashMap<Pref, u64>>> = std::sync::Mutex::new(None);
 
 pub fn print_rule_conflicts() {
     if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_ref() {
@@ -1814,7 +1814,7 @@ struct Rewritten {
 /// under the same rules is a hit. Calls over other variable counts (the generalization path adds witnesses) are not cached.
 pub struct RewriteMemo {
     k: usize,
-    map: std::collections::HashMap<(usize, Term), std::rc::Rc<Rewritten>>,
+    map: hashbrown::HashMap<(usize, Term), std::rc::Rc<Rewritten>>,
 }
 
 impl RewriteMemo {
@@ -1912,7 +1912,7 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     // depends on the terms being rewritten further out
     if budget1 > 0 && CYCLE_CUTS.with(|c| c.get()) == cuts0 {
         let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = hashbrown::HashSet::new();
         let rewrote = REWROTE.with(|r| r.borrow()[rewrote0..].iter().copied().filter(|t| seen.insert(*t)).collect());
         let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace, traced: trace0.is_some(), rewrote };
         REWRITE_MEMO.with(|m| {

@@ -98,7 +98,7 @@ pub fn rewrite_rules_over_the_mul_laws() {
 pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mut out = vec![];
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = hashbrown::HashSet::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
         let Some((l, r)) = line.split_once(" -> ") else {
             println!("RULEMINER extra file: skipped (no ' -> '): {line}");
@@ -613,7 +613,7 @@ pub fn rule_miner() {
         // RULEMINER_ANY=1: also abstract subterms without add/sub (constant folding inside shifts and bitwise nodes)
         let any_op = cfg.any_op;
         // patterns seen (`None`), and cross-side rules seen (`Some(rhs)`)
-        let mut seen_pat: std::collections::HashSet<(Term, Option<Term>)> = Default::default();
+        let mut seen_pat: hashbrown::HashSet<(Term, Option<Term>)> = Default::default();
         let mut cands: Vec<(Term, Term)> = vec![];
         for st in &stragglers {
             let mut subs = vec![];
@@ -699,7 +699,7 @@ pub fn rule_miner() {
         // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
         if std::env::var("RULEMINER_NODUPLHS").map_or(true, |v| v != "0") {
             let before = cands.len();
-            let in_force: std::collections::HashSet<&Term> = base.iter().map(|(l, _)| l).collect();
+            let in_force: hashbrown::HashSet<&Term> = base.iter().map(|(l, _)| l).collect();
             cands.retain(|(l, _)| !in_force.contains(l));
             println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
         }
@@ -713,7 +713,7 @@ pub fn rule_miner() {
         // rivals: the other right sides of each left side; a round's winner gives way to a rival that gains more on the same laws,
         // unless the mine finished with the winner is worth more (the lookahead after the rounds' `pick`)
         // (docs/tier-cycle.md, "Preferences and rival orientations in the miner")
-        let mut rivals: std::collections::HashMap<Term, Vec<(Term, Term)>> = Default::default();
+        let mut rivals: hashbrown::HashMap<Term, Vec<(Term, Term)>> = Default::default();
         for (l, r) in &cands {
             rivals.entry(*l).or_default().push((*l, *r));
         }
@@ -813,7 +813,7 @@ pub fn rule_miner() {
                         (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
                     };
                     let size = if si < stragglers.len() { measure(&rewrite(&s.1, n, kv).0) + measure(&rewrite(&s.2, n, kv).0) } else { 0 };
-                    let mut seen: std::collections::HashSet<(Term, Fired)> = Default::default();
+                    let mut seen: hashbrown::HashSet<(Term, Fired)> = Default::default();
                     let trace: Vec<(Term, Fired)> = RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect();
                     (fixed, size, trace)
                 })
@@ -903,7 +903,7 @@ pub fn rule_miner() {
             // the run-time order of every rule in play, ranked once (`run_order` builds strings)
             let mut ranked: Vec<(Term, Term)> = base_now.lock().unwrap().iter().chain(chosen).chain(provable.iter().copied()).cloned().collect();
             ranked.sort_by_cached_key(|(l, r)| run_order(l, r));
-            let rank: std::collections::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
+            let rank: hashbrown::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
             let touches = |rule: &(Term, Term), tr: &[(Term, Fired)]| {
                 let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
                 let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
@@ -1028,7 +1028,7 @@ pub fn rule_miner() {
         // reach the same set in another order, so picks and finished values are kept by set; the kept alternative's path is also the
         // next rounds' own (`key`, above)
         #[allow(clippy::type_complexity)]
-        let picks: std::cell::RefCell<std::collections::HashMap<Vec<(Term, Term)>, Vec<((Term, Term), i64)>>> = Default::default();
+        let picks: std::cell::RefCell<hashbrown::HashMap<Vec<(Term, Term)>, Vec<((Term, Term), i64)>>> = Default::default();
         let pick_kept = |s: &Chosen| {
             let kk = key(&s.chosen);
             if let Some(v) = picks.borrow().get(&kk) {
@@ -1039,7 +1039,7 @@ pub fn rule_miner() {
             v
         };
         // a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
-        let finished: std::cell::RefCell<std::collections::HashMap<Vec<(Term, Term)>, (i64, usize)>> = Default::default();
+        let finished: std::cell::RefCell<hashbrown::HashMap<Vec<(Term, Term)>, (i64, usize)>> = Default::default();
         // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds; while
         // speculating, each pick's assumed winner is proved on a thread of its own (`spawn`)
         let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)| -> i64 {
@@ -1773,7 +1773,7 @@ pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Ter
     };
     // each term once: the builders make some small terms at more than one depth, and a repeat pairs a term with its own copy (a
     // trivial law) or repeats a law (docs/tier-cycle.md, pool duplicates; law sequences before this dedup differ)
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = hashbrown::HashSet::new();
     Some(pool.into_iter().filter(|t| seen.insert(*t)).collect())
 }
 
@@ -2371,7 +2371,7 @@ pub fn classify_proposals(lines: &[String], kv: usize, train: &HashSet<(Term, Te
         .collect()
 }
 
-use std::collections::HashSet;
+use hashbrown::HashSet;
 
 fn lcg(s: &mut u64) -> u64 {
     *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);

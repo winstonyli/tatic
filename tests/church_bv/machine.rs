@@ -39,7 +39,7 @@ impl Machine {
     /// Any term over variables and constants: the machine computes it one bit position at a time.
     pub fn parse(t: &Term) -> Option<Machine> {
         // equal subterms are one node (so a chain of delay cells serves every shift of the same operand)
-        fn go(t: &Term, m: &mut Machine, seen: &mut std::collections::HashMap<Term, Src>) -> Option<Src> {
+        fn go(t: &Term, m: &mut Machine, seen: &mut hashbrown::HashMap<Term, Src>) -> Option<Src> {
             match *t.node() {
                 Node::Op(o, a, b) => {
                     if o == SHR1 {
@@ -348,9 +348,9 @@ pub fn carry_cap() -> usize {
 thread_local! {
     /// `add_tree_law` results (a closed proof, or none) by width, variable count and the two terms: the rewriter asks for the same
     /// pair again for every law and every mined candidate that reaches the same subterm.
-    static TREE_LAWS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<(tatic::kernel::PExpr, tatic::kernel::PExpr)>>> = Default::default();
+    static TREE_LAWS: std::cell::RefCell<hashbrown::HashMap<(usize, usize, Term, Term), Option<(tatic::kernel::PExpr, tatic::kernel::PExpr)>>> = Default::default();
     /// `tree_encoding` results past its cheap screens, by the same key.
-    static TREE_ENCS: std::cell::RefCell<std::collections::HashMap<(usize, usize, Term, Term), Option<std::rc::Rc<TreeEnc>>>> = Default::default();
+    static TREE_ENCS: std::cell::RefCell<hashbrown::HashMap<(usize, usize, Term, Term), Option<std::rc::Rc<TreeEnc>>>> = Default::default();
 }
 
 /// What `tree_encoding` found for a pair: the carry encoding, and the reachable carry states it holds over (`None`: all of them).
