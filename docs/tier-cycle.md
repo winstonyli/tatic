@@ -2761,7 +2761,31 @@ Its shortcomings there, with mitigations:
   - departure 2's raw-`Ref` walks (`inst_rec`, `uses`, `conv_whnf`), if a profile shows `resolve`;
   - departure 12's bitset for `hc::exceeds`, if its walk shows;
   - the spec's own parked list.
-- **Next:** profile B on rule 33 at n=8 and n=64, to see what the rise with n is made of now (the per-entry costs in "The rise after the bounds memo" were measured on `Rc` nodes).
+- **Next:** profile B on rule 33 at n=8 and n=64, to see what the rise with n is made of now (the per-entry costs in "The rise after the bounds memo" were measured on `Rc` nodes). Done below.
+
+**What rule 33's rise with n is made of on B (2026-10-14; probe reverted, no patch kept).** The probe proves the law once outside a region, then checks it in fresh regions, counting the nodes each check adds to the region. It ran 300 checks at n=8 and 25 at n=64 under samply (RTP off, load 4%), and compared them with `prof_diff.py` per new node. The checks add 50,487 and 385,032 nodes. These units are not the old table's entries: the proof is persistent and hash-consed, so only the check's own nodes count, and the numbers compare only within this pair.
+- **Busy time per new node:** 322 ns at n=8, 604 ns at n=64. Self time per new node, by first non-std frame:
+
+  | | n=8 | n=64 | rise | calls per node, n=8 / n=64 | ns per call, n=8 / n=64 |
+  |---|---|---|---|---|---|
+  | `Spaces::mk` (with its hashbrown probe) | 62 | 130 | +68 | 2.15 / 2.19 | 29 / 60 |
+  | `hc::lowest_loose` | 33 | 66 | +34 | 2.16 / 2.24 | 15 / 30 |
+  | `infer_rc` | 18 | 43 | +25 | 0.95 / 0.91 | 19 / 47 |
+  | `hc::shift_get` | 18 | 41 | +23 | 1.44 / 1.52 | 12 / 27 |
+  | `hc::uses` | 23 | 43 | +20 | 2.16 / 2.23 | 11 / 19 |
+  | `hc::inst_get` | 11 | 28 | +18 | 1.16 / 1.18 | 9 / 24 |
+  | `spaces::hash` | 12 | 25 | +13 | one per `mk` | 6 / 11 |
+  | `shift_child` | 8 | 19 | +12 | 1.86 / 1.92 | 4 / 10 |
+  | `hc::whnf_get` | 7 | 17 | +10 | 1.11 / 1.06 | 6 / 16 |
+  | `hc::height_at_most` | 19 | 28 | +9 | 3.90 / 3.95 | 5 / 7 |
+
+- **The calls per new node stay flat** (a second probe counted the calls of these nine functions; each count moves by about 5% or less between n=8 and n=64). So the rise is the cost per call. It is broad: hash probes, memo lookups and walks each take about twice as long per call.
+- **The rise looks like memory, not work.** `spaces::hash` is register arithmetic over a node's tag and child ids, yet its time per call doubles too. That is most likely samples landing on it while the loads around it stall.
+  - ns per node climbs smoothly with region size: about 460-540 at n=2-4 and 990-1070 at n=128 (two sweeps), with no sharp knee. These runs were contended (another session's `tier_eval_nn` and one other job, about one core each); idle n=8 reads about 340.
+  - The same contention, at a total load of only 17-18%, slowed n=8 by about 1.6×. That fits a shared L3 between jobs.
+  - **Ballast test:** before each n=8 check, 335,000 unrelated leaves were interned into the region, bringing it to n=64's size. They grow the node table and the per-node vectors but not the memos. ns per node rose 5-27% over three alternating rounds; n=64's own figure stood 39-54% above n=8's in the same rounds. With 1,000,000 leaves the rise was 6-49% (noisy).
+  - So the node table's size explains part of the rise. The rest is plausibly the memos' size and the check's nodes being spread over a larger region; this was not measured.
+- **What it points at:** the region's footprint per node, not its algorithms. Each node has an entry in `nodes`, `loose`, `free`, `uses`, `parents` and the table, plus its memo entries. Candidates, unmeasured: a footprint count of bytes per node at n=64; smaller memo entries; and denser layouts for the walks (departure 2's raw-`Ref` walks, still parked).
 
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
