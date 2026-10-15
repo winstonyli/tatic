@@ -81,6 +81,8 @@ and libraries (43 MB) were not kept.
 | (no rows) | samply of one salt-1 sweep on f447a57 through a throwaway wrapper test (`SWEEP="mines own cold pooled"`, reverted; profile not kept) | samply `profile.ps1` | "Where a sweep spends its time" (profile at f447a57) |
 | (no rows) | Rule table (branch `rule-table`) against 883f50d: the output gate on salts 1 and 2 (`rt_{old,new}_{1,2}`) and twelve alternating salt-1 sweeps | `hc_seq.sh`, `hc_rounds.ps1` | "Where a sweep spends its time" (rule table) |
 | (no rows) | Address hasher (branch `rule-table`) against the rule table: the output gate on salts 1 and 2 (`ah_{old,new}_{1,2}`) and twelve alternating salt-1 sweeps | `hc_seq.sh`, `hc_rounds.ps1` | "Where a sweep spends its time" (address hasher) |
+| (no rows) | samply of one salt-1 sweep on a7b0719 (`SWEEP="mines own cold pooled"`, through an env-setting launcher; profile not kept) | samply `profile.ps1` | "Where a sweep spends its time" (profile at a7b0719) |
+| (no rows) | The rest of the maps off SipHash (branch `hash-rest`) against a7b0719: the output gate on salts 1 and 2 (`hr_{old,new}_{1,2}`) and twelve alternating salt-1 sweeps | `hc_seq.sh`, `hc_rounds.ps1` | "Where a sweep spends its time" (the rest of the maps) |
 | (no rows) | `proof_cost_split`, 6833fb9 against 3be0e79 and against ff173a6, 8 alternating pairs each | `cpu_ab.ps1` | "Id arena Stage 3" |
 | (no rows) | rule 33's law check time (`rewrite::law_time`), 6833fb9 against 3be0e79 (n = 8, 64) and against ff173a6 (n = 8, 16, 32, 64), 3 alternating pairs | `law_ab.sh` | "Id arena Stage 3" |
 | (no rows) | salt-1 sweep in a job object (job CPU, peak commit), 6833fb9 against ff173a6, 3 alternating rounds | `sweep_job.ps1` | "Id arena Stage 3" |
