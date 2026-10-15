@@ -2976,9 +2976,26 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 | **total** | **92.5 / 94.4** | **67.1 / 68.4** | **151.7 / 160.9** | **106.0 / 112.9** | |
 
 - **The rule saved 46-48 B allocated per node (−30%),** as the census predicted (about 45 B). A check's working set is now 5.4 MB at n=8 and 43 MB at n=64, against 7.7 and 62 MB.
-- **n=64 is still about 2.7× the 16 MB L3.** At about 110 B per node, L3 fills near 150,000 nodes, about n=25 (it was near n=16). Rule 33's law still rises with n after the change: 20.1 ms at n=8 against 317 ms at n=64, 15.8× for 7.6× the nodes.
 - **The region's own arrays are now the largest part:** 67-71 B of the 106-113 allocated. These are `nodes` (36-38 B at 24 B used), `loose`/`free`/`uses` (18-19 B), and the table (12 B). `bounds` is now the largest memo, at 11-12 B.
-- **Candidates left** (from the first footprint entry): a struct-of-arrays region row, and the region vectors' growth slack (allocation is 1.5-1.6× use). The 16-byte node, the other candidate for the region arrays, was rejected above.
+- **The vectors' growth slack is not a cache cost** (read from `spaces.rs`, not timed). The vectors' allocation is 1.5-1.6× their use, but capacity past `len` is never touched. `Space::clear` (`reset_vec`) keeps capacity unless the region used under a quarter of it, so repeated checks of one size never reallocate after the first. The hash maps are different: a probe can land anywhere in them, so their slack is touched.
+- **What the cache sees** is therefore the vectors' used bytes plus the maps' allocated bytes:
+  - now: about 38 + 50-54 ≈ 88-92 B per node, so 4.4 MB at n=8 and 35 MB at n=64, about 2.1× the 16 MB L3, which fills near 185,000 nodes (about n=32);
+  - before the rule: about 38 + 95-102 ≈ 133-140 B per node, so 54 MB at n=64, with L3 full near 120,000 nodes (about n=20).
+  - The "about n=16" in the first footprint entry used allocated bytes, so it overstated the working set.
+- **Rule 33's law still rises with n:** 20.1 ms at n=8 against 317 ms at n=64, 15.8× for 7.6× the nodes.
+- **Candidates left:** a struct-of-arrays region row (fewer cache lines per node visit), and the hash maps' load factor and entry size (they now hold most of the touched bytes). The 16-byte node was rejected above.
+
+**ns per node against n after shared-only walk memos (2026-10-14; probe reverted, no patch kept).** This is the Stage 3 B sweep (rule 33's law proved once, then checked in fresh regions; 1,500 reps at n=2 down to 6 at n=128). b0404ef and cb36ad2 alternated per n, over 4 rounds. Load was 43-63%: `manifold`, two `renno` processes and `tier_eval_nn` were resident, so the figures are best-of-4 and the gaps within an arm are noise-sized. RTP was off.
+
+| n | 2 | 4 | 8 | 12 | 16 | 24 | 32 | 48 | 64 | 96 | 128 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| region nodes (both) | 14,579 | 26,588 | 50,487 | 74,384 | 98,280 | 146,072 | 193,864 | 289,448 | 385,032 | 576,200 | 767,368 |
+| b0404ef, ns per node | 510 | 560 | 720 | 748 | 718 | 916 | 931 | 1099 | 1219 | 1039 | 1146 |
+| shared only, ns per node | 459 | 491 | 509 | 589 | 611 | 621 | 683 | 863 | 805 | 901 | 808 |
+| ratio | 0.90 | 0.88 | 0.71 | 0.79 | 0.85 | 0.68 | 0.73 | 0.79 | 0.66 | 0.87 | 0.70 |
+
+- **Shared-only is 10-34% cheaper per node at every n,** and its rise is smaller: from about 460-510 at n=2-8 to 800-900 at n≥48 (about 1.7×), against old's 510-720 to 1,040-1,220 (about 2×).
+- **The knee is not resolved.** The footprint above predicts L3 filling near n=20 before and n=32 now. Under this load, best-of-4 still has non-monotone steps (old at n=96 reads below n=64; new at n=128 reads below n=96), which are larger than any knee to be read. A quiet-machine rerun is parked until the other sessions' jobs are gone.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
