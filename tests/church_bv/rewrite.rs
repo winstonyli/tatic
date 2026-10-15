@@ -97,7 +97,7 @@ impl PartialOrd for Term {
         Some(self.cmp(other))
     }
 }
-/// `Term::Op` indices (the position in `OP_INFO`).
+/// `Node::Op` indices (the position in `OP_INFO`).
 pub const ADD: usize = 0;
 pub const AND: usize = 1;
 pub const OR: usize = 2;
@@ -133,7 +133,7 @@ const fn info(
 ) -> OpInfo {
     OpInfo { name, carries, bitwise, shift, prec, truth, word }
 }
-/// Every fact about an operator, indexed as `Term::Op` (the one place that says which ops carry, are bitwise or shift).
+/// Every fact about an operator, indexed as `Node::Op` (the one place that says which ops carry, are bitwise or shift).
 fn no_truth(_: bool, _: bool) -> bool {
     panic!("not a bitwise operator")
 }
@@ -179,7 +179,7 @@ pub fn good_shl1(n: usize) -> (Expr, Expr) {
         (s, gs)
     })
 }
-/// The Church operators, indexed as `Term::Op`.
+/// The Church operators, indexed as `Node::Op`.
 pub fn ops_for(n: usize) -> [Expr; 8] {
     [add(n), bitwise(n, &|a, b| and(a, b)), bitwise(n, &|a, b| or(a, b)), bitwise(n, &|a, b| xor(a, b)), sub(n), lt_u(n), shl1_op(n), shr1_op(n)]
 }

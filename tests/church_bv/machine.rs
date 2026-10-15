@@ -24,7 +24,7 @@ pub enum Src {
 /// a bare add-free term (no carries).
 pub struct Machine {
     pub leaves: Vec<Term>,
-    /// `(left, right, op)`, `op` as in `Term::Op`: add (0) and sub (4) nodes carry a bit between positions, the
+    /// `(left, right, op)`, `op` as in `Node::Op`: add (0) and sub (4) nodes carry a bit between positions, the
     /// bitwise ones (1..=3) combine their operands' bits at the same position.
     pub nodes: Vec<(Src, Src, usize)>,
     pub root: Src,
@@ -1051,13 +1051,13 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
             let e = app2(ops[5], lit(n, a), lit(n, b));
             assert_eq!(normalize(&e), normalize(&lit(1, (a < b) as u128)), "lt {a} {b}");
         }
-        let v = |i: usize| Box::new(Term::v(i));
+        let v = Term::v;
         let lt = |a: Term, b: Term| Term::op(LT, a, b);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         // lt x x = lt y y; and an operand-order law with a carry on both sides
         let laws = [
             ("lt x x = lt y y", lt(Term::v(0), Term::v(0)), lt(Term::v(1), Term::v(1))),
-            ("lt (and x y) (or x y) = lt (and y x) (or y x)", lt(op(1, *v(0), *v(1)), op(2, *v(0), *v(1))), lt(op(1, *v(1), *v(0)), op(2, *v(1), *v(0)))),
+            ("lt (and x y) (or x y) = lt (and y x) (or y x)", lt(op(1, v(0), v(1)), op(2, v(0), v(1))), lt(op(1, v(1), v(0)), op(2, v(1), v(0)))),
         ];
         for (name, t1, t2) in &laws {
             let (p, s) = add_tree_law(n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
@@ -1067,14 +1067,14 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
         // equals the add's carry): proved with lemmas conditional on a reachability invariant
         for (name, t1, t2) in [
             ("lt x 0 = lt y 0", lt(Term::v(0), Term::ZERO), lt(Term::v(1), Term::ZERO)),
-            ("lt (x+y) x = lt (x+y) y", lt(op(0, *v(0), *v(1)), Term::v(0)), lt(op(0, *v(0), *v(1)), Term::v(1))),
+            ("lt (x+y) x = lt (x+y) y", lt(op(0, v(0), v(1)), Term::v(0)), lt(op(0, v(0), v(1)), Term::v(1))),
         ] {
             let (p, s) = add_tree_law(n, 2, &t1, &t2).unwrap_or_else(|| panic!("no proof: {name}"));
             ck(name, &p, &s);
         }
         // false laws are not proved: by the plausibility screen, and a wrong proof would not check
         assert!(add_tree_law(n, 2, &lt(Term::v(0), Term::v(1)), &lt(Term::v(1), Term::v(0))).is_none());
-        assert!(add_tree_law(n, 2, &lt(Term::v(0), Term::v(1)), &lt(Term::v(0), op(0, *v(1), Term::ONES))).is_none());
+        assert!(add_tree_law(n, 2, &lt(Term::v(0), Term::v(1)), &lt(Term::v(0), op(0, v(1), Term::ONES))).is_none());
     })
 }
 
