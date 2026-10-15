@@ -300,12 +300,15 @@ impl Spaces {
 
     /// The node `n` over resolved children. If all its children are persistent, it is looked up in the persistent space
     /// first, taking only a hit below `w` (one at or above is a copy, whose twin the region lookup finds). Then it is found
-    /// in the region or built there. With no region open, it is found or built in the persistent space.
+    /// in the region or built there, without the search when a region child has no parent yet. With no region open, it is found or built in the persistent space.
     pub(crate) fn build(&self, n: Node<Ref>) -> Ref {
         let h = hash(&n);
         let i = self.inner();
-        let mut persistent_kids = true;
-        n.for_kids(|c, _| persistent_kids &= !c.in_region());
+        let (mut persistent_kids, mut fresh_kid) = (true, false);
+        n.for_kids(|c, _| {
+            persistent_kids &= !c.in_region();
+            fresh_kid |= c.in_region() && i.region.parents[c.index()] == 0;
+        });
         if persistent_kids
             && let Some(r) = i.persistent.find(h, &n)
             && r.0 < i.w
@@ -314,7 +317,11 @@ impl Spaces {
         }
         let in_region = i.epoch != 0;
         debug_assert!(in_region || persistent_kids, "a region child with no region open");
-        if in_region && let Some(r) = i.region.find(h, &n) {
+        // A region child with no parent yet means no node over it exists: `parents` rises only when a node is pushed, and
+        // persistent nodes have no region children. So the lookup, a cache miss, is skipped (a quarter of all builds;
+        // docs/tier-cycle.md, "Skipping the lookup that must miss").
+        debug_assert!(!fresh_kid || i.region.find(h, &n).is_none(), "a node over a parentless child already exists");
+        if in_region && !fresh_kid && let Some(r) = i.region.find(h, &n) {
             return r;
         }
         let ranges = {

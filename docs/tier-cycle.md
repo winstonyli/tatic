@@ -3102,7 +3102,13 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 
   - The new nodes total 3,448,841, the region's size; no build hit the persistent space.
   - Hits are mostly over old children (3.2 M over 64K builds ago), so recency gives them no locality. Recent children are mostly new nodes, which the next point handles without the table. Dropped.
-- **A lookup that must miss (open).** A node whose region child has no parent yet cannot already exist. `parents` is raised only when a node is pushed, and persistent nodes have no region children. 2,591,264 builds (26% of all, 75% of the new nodes) fall in the "1 build ago" row, where that holds by construction; more may fall in other rows. Skipping `region.find` for them is safe for Invariant I. Whether it saves time is not measured: the insert still touches the same control group, but nothing waits on it, since the new `Ref` is the array length.
+- **Skipping the lookup that must miss: adopted (2026-10-14).** A node whose region child has no parent yet cannot already exist. `parents` is raised only when a node is pushed, and persistent nodes have no region children. 2,591,264 builds (26% of all, 75% of the new nodes) fall in the "1 build ago" row, where that holds by construction; more may fall in other rows. So `Spaces::build` skips `region.find` for them, which is safe for Invariant I. A debug assertion that such a node really is absent holds in all kernel unit tests. The insert still touches the same control group, but nothing waits on it, since the new `Ref` is the array length.
+  - `proof_cost_split`, skip on against off in the same binary (`cpu_ab.ps1`, two rounds of 8 alternating pairs, RTP off):
+
+    | round | load | CPU median, off / on | build median | skip won |
+    |---|---|---|---|---|
+    | 1 | 33% at the start, 45% at the end | 2.84 / 2.64 s (−7%) | 1,954 / 1,797 ms (−8%) | 6 of 8 |
+    | 2 | 28% at the start, 33% at the end | 2.84 / 2.65 s (−7%) | 1,935 / 1,830 ms (−5%) | 7 of 8 |
 
 **mimalloc against the system heap, after the id-arena port (2026-10-14; probe reverted, no patch kept).** The question was whether to drop mimalloc and do its useful parts directly, now that the kernel keeps its nodes in a few large arrays instead of one block each. Two test binaries were built from 193a1a5. One is as committed. The other has the test crate's `#[global_allocator]` removed, and `machine::large_pages_option` made to return false, since it calls into mimalloc. `MIMALLOC_VERBOSE=1` printed 50 lines from the first and none from the second. RTP off.
 
