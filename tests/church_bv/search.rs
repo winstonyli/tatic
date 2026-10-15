@@ -196,7 +196,7 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
     } else if family == "shr" {
         // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
         // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
-        let pool = if env("RULEMINER_DEEP", 0) == 1 { terms(2, true) } else { lt_pool(2) };
+        let pool = if env("RULEMINER_DEEP", 0) == 1 { terms(2, true).to_vec() } else { lt_pool(2) };
         let shr = |a: &Term| Term::op(SHR1, *a, Term::ZERO);
         let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
         pool_conjectures(all, n, nv, 0)
@@ -558,17 +558,17 @@ pub fn rule_miner() {
         }
         // the pool's terms and the patterns looked up in it use at most two variables (`abstractions(sub, 2)`), so signatures over
         // two give the same equalities as over `kv`, at 256 bytes instead of 4096 for the three-variable families
-        let mut memo = SigMemo::new(n, 2);
+        let mut memo = ValueMemo::exhaustive(n, 2);
         let mut index: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
         for t in by_size.iter().flatten() {
-            index.entry(memo.sig(t).to_vec()).or_default().push(*t);
+            index.entry(memo.values(t).to_vec()).or_default().push(*t);
         }
         // `lt` terms (one-bit values) only as roots, indexed apart: their 0/1 values must not meet the n-bit constants
         let mut index_lt: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
         for a in by_size.iter().take(4).flatten() {
             for b in by_size.iter().take(4).flatten() {
                 let t = Term::op(LT, *a, *b);
-                index_lt.entry(memo.sig(&t).to_vec()).or_default().push(t);
+                index_lt.entry(memo.values(&t).to_vec()).or_default().push(t);
             }
         }
         println!("RULEMINER pool of {} terms, {} distinct functions", by_size.iter().map(|v| v.len()).sum::<usize>(), index.len());
@@ -626,7 +626,7 @@ pub fn rule_miner() {
                         continue;
                     }
                     let is_lt = matches!(*pat.node(), Node::Op(LT, ..));
-                    let Some(group) = (if is_lt { &index_lt } else { &index }).get(memo.sig(&pat)) else { continue };
+                    let Some(group) = (if is_lt { &index_lt } else { &index }).get(memo.values(&pat)) else { continue };
                     let uses = |t: &Term, v: usize| t.has_var(v);
                     let _ = is_lt;
                     for r in group.iter().filter(|r| ok_order(&pat, r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {

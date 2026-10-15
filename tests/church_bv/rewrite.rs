@@ -276,29 +276,19 @@ impl Term {
     pub fn refute(&self, other: &Term, k: usize) -> Option<(usize, Vec<u128>)> {
         (1..=6).find_map(|w| self.counterexample(other, w, k).map(|vals| (w, vals)))
     }
-    /// The first of the corners and 200 pseudo-random width-`n` tuples over `k` variables on which the two sides differ.
+    /// The first of the corners and 202 pseudo-random width-`n` tuples over `k` variables on which the two sides differ.
     pub fn counterexample(&self, other: &Term, n: usize, k: usize) -> Option<Vec<u128>> {
-        self.counterexample_in(other, n, k, 204)
+        self.counterexample_in(other, n, k, SCREEN_INPUTS)
     }
-    /// `counterexample` over the first `tries` tuples only.
+    /// `counterexample` over the first `tries` tuples only (values memoized per term, `ValueMemo`).
     pub fn counterexample_in(&self, other: &Term, n: usize, k: usize, tries: usize) -> Option<Vec<u128>> {
-        let mask = low_bits(n);
-        let mut seed = 0x9e37_79b9_7f4a_7c15u128;
-        (0..tries).find_map(|i| {
-            let vals: Vec<u128> = (0..k)
-                .map(|_| {
-                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                    match i {
-                        0 => 0,
-                        1 => mask,
-                        _ => (seed >> 40) & mask,
-                    }
-                })
-                .collect();
-            (self.interp(n, &vals) != other.interp(n, &vals)).then_some(vals)
+        SCREENS.with(|s| {
+            let mut s = s.borrow_mut();
+            let m = s.entry((n, k)).or_insert_with(|| ValueMemo::screen(n, k));
+            m.first_difference(self, other, tries).map(|i| m.input(i))
         })
     }
-    /// Whether `self` and `other` agree on the corners and 200 pseudo-random width-`n` tuples over `k` variables.
+    /// Whether `self` and `other` agree on the corners and 202 pseudo-random width-`n` tuples over `k` variables.
     pub fn plausibly_equals(&self, other: &Term, n: usize, k: usize) -> bool {
         self.counterexample(other, n, k).is_none()
     }
@@ -340,9 +330,132 @@ impl Term {
     }
 }
 
+/// How `ValueMemo` stores a value: one byte for exhaustive signatures (width at most 8), `u128` for the screen.
+pub trait Word: Copy {
+    fn of(x: u128) -> Self;
+    fn get(self) -> u128;
+}
+
+impl Word for u8 {
+    fn of(x: u128) -> u8 {
+        x as u8
+    }
+    fn get(self) -> u128 {
+        self as u128
+    }
+}
+
+impl Word for u128 {
+    fn of(x: u128) -> u128 {
+        x
+    }
+    fn get(self) -> u128 {
+        self
+    }
+}
+
+/// Terms' width-`n` values on a fixed list of inputs, one vector per interned term, each made from its children's vectors:
+/// pools and repeated screens share subterms, so each distinct term is evaluated once per input list.
+pub struct ValueMemo<W: Word> {
+    mask: u128,
+    len: usize,
+    /// `vars[v][i]`: variable `v` on input `i`.
+    vars: Vec<Box<[W]>>,
+    values: hashbrown::HashMap<Term, Box<[W]>>,
+}
+
+/// The screen's input count: all zeros, all ones, then 202 pseudo-random tuples.
+const SCREEN_INPUTS: usize = 204;
+
+thread_local! {
+    /// The plausibility screen's value memos, by width and variable count.
+    static SCREENS: std::cell::RefCell<hashbrown::HashMap<(usize, usize), ValueMemo<u128>>> = Default::default();
+}
+
+impl<W: Word> ValueMemo<W> {
+    fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
+        ValueMemo { mask: low_bits(n), len, vars, values: Default::default() }
+    }
+
+    /// `t`'s values, one per input.
+    pub fn values(&mut self, t: &Term) -> &[W] {
+        self.fill(*t);
+        &self.values[t]
+    }
+
+    fn fill(&mut self, t: Term) {
+        if self.values.contains_key(&t) {
+            return;
+        }
+        let v: Box<[W]> = match *t.node() {
+            Node::V(v) => self.vars[v].clone(),
+            Node::Zero => vec![W::of(0); self.len].into(),
+            Node::Ones => vec![W::of(self.mask); self.len].into(),
+            Node::Op(o, a, b) => {
+                self.fill(a);
+                self.fill(b);
+                let (x, y, word, mask) = (&self.values[&a], &self.values[&b], OP_INFO[o].word, self.mask);
+                x.iter().zip(y.iter()).map(|(x, y)| W::of(word(x.get(), y.get(), mask))).collect()
+            }
+        };
+        self.values.insert(t, v);
+    }
+
+    /// The first of the first `tries` inputs on which `a` and `b` differ.
+    pub fn first_difference(&mut self, a: &Term, b: &Term, tries: usize) -> Option<usize> {
+        assert!(tries <= self.len, "{tries} tries over {} inputs", self.len);
+        self.fill(*a);
+        self.fill(*b);
+        let (x, y) = (&self.values[a], &self.values[b]);
+        (0..tries).find(|&i| x[i].get() != y[i].get())
+    }
+
+    /// Input `i`, one value per variable.
+    pub fn input(&self, i: usize) -> Vec<u128> {
+        self.vars.iter().map(|c| c[i].get()).collect()
+    }
+}
+
+impl ValueMemo<u8> {
+    /// Every width-`n` input over `nv` variables (variable `v` is bits `n*v..` of the input's index), one byte per value.
+    pub fn exhaustive(n: usize, nv: usize) -> Self {
+        assert!(n <= 8, "exhaustive values hold one byte per input");
+        let len = 1usize << (n * nv);
+        let vars = (0..nv).map(|v| (0..len).map(|i| (i >> (n * v) & low_bits(n) as usize) as u8).collect()).collect();
+        ValueMemo::new(n, len, vars)
+    }
+}
+
+impl ValueMemo<u128> {
+    /// The screen's inputs over `k` variables: all zeros, all ones, then pseudo-random width-`n` tuples.
+    fn screen(n: usize, k: usize) -> Self {
+        let mask = low_bits(n);
+        let mut seed = 0x9e37_79b9_7f4a_7c15u128;
+        let mut vars = vec![vec![0u128; SCREEN_INPUTS]; k];
+        for i in 0..SCREEN_INPUTS {
+            for col in vars.iter_mut() {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                col[i] = match i {
+                    0 => 0,
+                    1 => mask,
+                    _ => (seed >> 40) & mask,
+                };
+            }
+        }
+        ValueMemo::new(n, SCREEN_INPUTS, vars.into_iter().map(Vec::into_boxed_slice).collect())
+    }
+}
+
 /// Leaves, every operator applied to two leaves, and (with `deep`) every operator applied to such a term
-/// and a leaf, in either order.
-pub fn terms(nvars: usize, deep: bool) -> Vec<Term> {
+/// and a leaf, in either order. Built once per thread for each argument pair and operator count.
+pub fn terms(nvars: usize, deep: bool) -> std::rc::Rc<[Term]> {
+    thread_local! {
+        static TERMS: std::cell::RefCell<hashbrown::HashMap<(usize, bool, usize), std::rc::Rc<[Term]>>> = Default::default();
+    }
+    TERMS.with(|c| c.borrow_mut().entry((nvars, deep, nops())).or_insert_with(|| build_terms(nvars, deep).into()).clone())
+}
+
+fn build_terms(nvars: usize, deep: bool) -> Vec<Term> {
     let mut leaves: Vec<Term> = (0..nvars).map(Term::v).collect();
     leaves.push(Term::ZERO);
     leaves.push(Term::ONES);
@@ -753,7 +866,7 @@ pub fn tree_step(n: usize, t1: &Term, k: usize) -> Option<(Term, PlanRc)> {
     let cand = [Term::ZERO, Term::ONES]
         .into_iter()
         .chain((0..k).map(Term::v))
-        .chain(terms(k, false).into_iter().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
+        .chain(terms(k, false).iter().copied().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
         .find(|cand| tree_encoding(n, k, t1, cand).is_some())?;
     Some((cand, Plan::law(LawKind::Tree, *t1, cand, vars(k))))
 }
@@ -2339,6 +2452,44 @@ fn term_attributes_match_a_walk() {
         assert_eq!(t.size(), size, "{}", t.size());
         assert_eq!(t.max_var(), vars.iter().copied().max().unwrap_or(0));
         assert!((0..70).all(|v| t.has_var(v) == vars.contains(&v)));
+    }
+}
+
+#[test]
+fn value_memo_matches_interp() {
+    // the screen as it was before `ValueMemo`: both sides evaluated on each tuple in turn
+    fn old_counterexample(a: &Term, b: &Term, n: usize, k: usize, tries: usize) -> Option<Vec<u128>> {
+        let mask = low_bits(n);
+        let mut seed = 0x9e37_79b9_7f4a_7c15u128;
+        (0..tries).find_map(|i| {
+            let vals: Vec<u128> = (0..k)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    match i {
+                        0 => 0,
+                        1 => mask,
+                        _ => (seed >> 40) & mask,
+                    }
+                })
+                .collect();
+            (a.interp(n, &vals) != b.interp(n, &vals)).then_some(vals)
+        })
+    }
+    let ts: Vec<Term> = PIN_SOURCE.iter().map(|s| parse_term(s)).chain([Term::ZERO, Term::ONES]).collect();
+    let k = ts.iter().map(|t| t.max_var() + 1).max().unwrap();
+    for n in [1, 4, 64, 128] {
+        for a in &ts {
+            for b in &ts {
+                for tries in [16, SCREEN_INPUTS] {
+                    assert_eq!(a.counterexample_in(b, n, k, tries), old_counterexample(a, b, n, k, tries), "{} vs {} at {n}", a.show(), b.show());
+                }
+            }
+        }
+    }
+    let mut memo = ValueMemo::exhaustive(3, 2);
+    for t in ts.iter().filter(|t| t.max_var() < 2) {
+        let want: Vec<u8> = (0..64u128).map(|i| t.interp(3, &[i & 7, i >> 3]) as u8).collect();
+        assert_eq!(memo.values(t), want, "{}", t.show());
     }
 }
 

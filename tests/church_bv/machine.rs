@@ -961,60 +961,14 @@ pub fn conjecture_miner() {
 
 // ---- Comparison (search note section 20): `lt a b` is the final borrow of the chain for `a - b`, a `Bool0` result.
 
-/// The terms `lt` is mined over: the leaves and every operator applied to two leaves.
 /// The conjectures of a term pool: terms with equal values on every width-`n` tuple of `nv` variables are paired with
 /// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
-/// Behaviour signatures: a term's value on every input (n-bit values of nv variables, one byte each). Pool terms share subterms,
-/// so each distinct subterm is evaluated once and its parent combines its children's vectors.
-pub struct SigMemo {
-    n: usize,
-    mask: u128,
-    inputs: usize,
-    ids: std::collections::HashMap<(usize, usize, usize), usize>,
-    sigs: Vec<Vec<u8>>,
-}
-
-impl SigMemo {
-    pub fn new(n: usize, nv: usize) -> SigMemo {
-        assert!(n <= 8, "behaviour signatures hold one byte per input");
-        SigMemo { n, mask: low_bits(n), inputs: 1usize << (n * nv), ids: Default::default(), sigs: vec![] }
-    }
-
-    /// The id of `t`'s signature; equal ids mean equal behaviour on every input.
-    pub fn id(&mut self, t: &Term) -> usize {
-        let key = match *t.node() {
-            Node::V(v) => (usize::MAX, v, 0),
-            Node::Zero => (usize::MAX - 1, 0, 0),
-            Node::Ones => (usize::MAX - 2, 0, 0),
-            Node::Op(o, a, b) => (o, self.id(&a), self.id(&b)),
-        };
-        if let Some(&id) = self.ids.get(&key) {
-            return id;
-        }
-        let (n, mask) = (self.n, self.mask);
-        let sig: Vec<u8> = match *t.node() {
-            Node::V(v) => (0..self.inputs).map(|i| (i >> (n * v) & mask as usize) as u8).collect(),
-            Node::Zero => vec![0; self.inputs],
-            Node::Ones => vec![mask as u8; self.inputs],
-            Node::Op(o, ..) => (0..self.inputs).map(|i| (OP_INFO[o].word)(self.sigs[key.1][i] as u128, self.sigs[key.2][i] as u128, mask) as u8).collect(),
-        };
-        self.sigs.push(sig);
-        self.ids.insert(key, self.sigs.len() - 1);
-        self.sigs.len() - 1
-    }
-
-    pub fn sig(&mut self, t: &Term) -> &[u8] {
-        let id = self.id(t);
-        &self.sigs[id]
-    }
-}
-
 pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
-    let mut memo = SigMemo::new(n, nv);
+    let mut memo = ValueMemo::exhaustive(n, nv);
     let mut groups: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for t in pool {
         // a comparison (one-bit result) never equals an n-bit term, even when their signatures coincide
-        let mut key = memo.sig(&t).to_vec();
+        let mut key = memo.values(&t).to_vec();
         key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
         groups.entry(key).or_default().push(t);
     }
@@ -1027,6 +981,7 @@ pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usiz
     conj
 }
 
+/// The terms `lt` is mined over: the leaves and every operator applied to two leaves.
 pub fn lt_pool(nvars: usize) -> Vec<Term> {
     let mut leaves: Vec<Term> = (0..nvars).map(Term::v).collect();
     leaves.extend([Term::ZERO, Term::ONES]);
