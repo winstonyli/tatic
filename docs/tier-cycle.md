@@ -3183,11 +3183,15 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - About 3%: the failing input vector that `counterexample_in` builds, which `plausibly_equals` (the `tree_encoding` path) then discards.
   
   By phase: the rule miner is 71% inclusive (its `closure$32` 39.8%), `rewrite_uncached` 40.7%, `add_tree_law` 17.1%, `prove_rule` 15.2%, `pool_conjectures` 2.8%. mimalloc is about 11% self, SipHash 1.6%. `ValueMemo` under the rule miner and `pool_conjectures` is 4.3%.
+- **`ValueMemo` arena and `differs_in` (2026-10-15, branch `screen-tune`): -7% CPU, but +35% peak job memory.** `ValueMemo` keeps every vector end to end in one `Vec`, with a `Term` to index map: a new term allocates nothing of its own, and a known one costs one lookup instead of up to four. `differs_in` answers the screen without building the failing tuple; `plausibly_equals`, `is_law` and `machine_fallback`'s scoring screen use it. The `u64` idea was dropped: the arena already takes the screen off per-term 16-byte-aligned allocation, and `u64` would need a branch on the width. Salt-1 and salt-2 sweeps give identical outputs. Twelve alternating salt-1 sweeps against 891e9a9 (load 14-43%, RTP off): job CPU median 29.65 s old against 27.6 s new (-7%), new won 5 of 6 pairs and tied the sixth; wall 26.15 s against 25.45 s (-3%). Peak job memory rose from 374-449 MB to 577-602 MB, and page faults from about 1.53 M to 1.94 M per sweep. The likely cause is the arena `Vec` doubling: its capacity can be twice what is in use, and each grow briefly holds both copies. The exhaustive memos are the big ones: `pool_conjectures` over three variables stores 2^(3n) bytes per term.
+- **Profile at bc080e7 (samply of a salt-1 sweep, 26,836 busy samples, load 28%, profile not kept):**
+  - The rule miner's `closure$32` (35.2% inclusive) is `score_laws` (search.rs): `rewrite_plan` for every law under each candidate's rule set, 29.5% of it.
+    - Inside that: `rule_step_in` 14.7%, `tree_step` 11.3% (its screen 9.6%).
+    - `ValueMemo::fill` is 18.2% inclusive overall: screens 10.6%, `pool_conjectures` 4.2%, the miner's pool index 3.4%. It includes 2.4% in `Vec` growth (`finish_grow`, aligned realloc).
+  - `add_tree_law` 18.3% and `prove_rule` 16.4% sit outside the scoring. They are mostly `tree_proof`'s `shared_lemma`, about 11% of it in kernel checking (`ck`, `check_in`, `conv`, `whnf`).
 - **Open:**
-  - `plausibly_equals` without building the input.
-  - One lookup per term in `ValueMemo`: vectors in a `Vec` arena, the map giving an index.
-  - The screen's values as `u64` when `n <= 64`: half the bytes, and off mimalloc's 16-byte-aligned path.
-  - What the rule miner's `closure$32` spends its 39.8% on.
+  - A chunked arena (fixed-size blocks, no doubling or copying) to take back the memory, before merging `screen-tune`.
+  - `score_laws` re-rewrites every law per candidate; the rewrite memo it is seeded with is the lever there.
   - The other exhaustive `interp` loops (`eq_pos` in `prove_eq`, `conjecture_miner`, the shift check in machine.rs) are cold and still evaluate per tuple.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
