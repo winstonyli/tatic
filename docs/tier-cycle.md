@@ -3039,6 +3039,37 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - instantiation that does not intern intermediate spines (`closed_prefix_spine` is 45% inclusive) where only the head normal form is kept;
   - for the large-page stalls: count how often they hit a sweep's processes before choosing between keeping large pages and a smaller reserve.
 
+**Instantiating only the head would save little (2026-10-14; probe reverted, no patch kept).** `proof_cost_split` on fb5c176, with a probe at each of the four beta sites. Per site, it counted the `mk` calls in the instantiation, the region nodes the instantiation newly built, and how many of those the reduced result still reaches. The reduced result is the whnf, or for `hnf_rc` its head normal form.
+
+| site | frames | `mk` calls | new nodes | reached by the result |
+|---|---|---|---|---|
+| `whnf_step`, one argument | 57,279 | 175,608 | 65,616 | 768 (1%) |
+| `beta_spine` | 15,576 | 174,793 | 33,024 | 23,783 (72%) |
+| `closed_prefix_spine` | 293,670 | 1,272,208 | 639,215 | 633,967 (99%) |
+| `hnf_rc` | 261,280 | 2,403,958 | 1,728,809 | 1,382,575 (80%) |
+| all four | 627,805 | 4,026,567 | 2,466,664 | 2,041,093 (83%) |
+
+- **The run made 10.1 M `mk` calls; 4.27 M of them (42%) are inside `instantiate_n`,** and the four sites account for 4.03 M of those. Instantiation's calls are more often new nodes (61%), which fits their larger share of `mk`'s time in the profile above (23.4 of 36.6 points).
+- **The bound:** only the 425,571 unreached nodes (17%) could be skipped by instantiating just what the head needs. That is 4.2% of all `mk` calls, so at most about 2% of the run, even before paying for the closures a lazy instantiation needs.
+  - "Reached" means kept in the result, not read later. A fully lazy, environment-based machine could skip more. But hash-consed equality compares built nodes, so `conv` would build most of them anyway.
+  - The one-argument beta in `whnf_step` throws away 99% of what it builds: a Church boolean picking a branch. But it is only 2.7% of these nodes.
+- **Verdict: dropped.** `mk`'s cost is the price of each interning, not wasted work. What is left is the price per probe: a software prefetch of the region table's control group, issued as soon as the node's hash is known (unmeasured).
+- The build took 3,561 ms under the probe (its reachability walks), against about 1,900 unprobed; the counts are deterministic.
+
+**How often the large-page stall hits a sweep (2026-10-14).** Six full sweeps (`sweep_job.ps1`, salt 1, `mines own cold pooled`, 178 processes each) on fb5c176, alternating large, normal, normal, large, large, normal pages. RTP off, load 14-22%. `sweep_job.ps1` now also prints the job's kernel time.
+
+| pair | large: job CPU / kernel / wall | normal: job CPU / kernel / wall |
+|---|---|---|
+| 1-2 | 57.3 / 23.02 / 40.5 s | 54.4 / 20.17 / 37.3 s |
+| 3-4 | 53.1 / 22.55 / 38.3 s | 52.8 / 20.13 / 37.2 s |
+| 5-6 | 52.9 / 19.69 / 37.1 s | 51.8 / 19.97 / 36.7 s |
+
+- **Normal pages give a flat 20.0-20.2 s of kernel time.** Two of the three large-page sweeps took 2.4-2.9 s more, the size of one stall; the third took none. So it is about one stall per sweep, not one per process: whatever triggers it is rare per process, and a sweep's 178 processes catch it about once.
+- **Large pages lost all 3 pairs on job CPU** (by 0.3-2.9 s), against winning 3 of 3 by about 4% when adopted. One reading: the adopted gain was within the pairs' spread, and the stall decides who wins. The job's peak memory is 545-609 MB against 380-382 MB.
+- `proof_cost_split`'s 12% gain from large pages is unaffected: it is one long process that pays at most one stall.
+- **Kernel time is 37-40% of the sweep's CPU in both arms,** about 112 ms per process. That is unexplained: process start, page faults on fresh memory, or the per-process lemma loading. Unprofiled.
+- Not decided here: keeping large pages for long runs only (e.g. set by the sweep driver for its children), or dropping them.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
