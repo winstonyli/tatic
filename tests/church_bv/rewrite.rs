@@ -371,6 +371,15 @@ pub struct ValueMemo<W: Word> {
     blocks: Vec<Vec<W>>,
 }
 
+/// `out[i] = op(x[i], y[i])` for operator `O`: its `word` is a constant here, so it inlines into the loop (called through
+/// the pointer per element it was about 4% of a sweep, docs/tier-cycle.md, "Profile at a7b0719").
+fn zip_word<W: Word, const O: usize>(out: &mut [W], x: &[W], y: &[W], mask: u128) {
+    let word = const { OP_INFO[O].word };
+    for ((o, x), y) in out.iter_mut().zip(x).zip(y) {
+        *o = W::of(word(x.get(), y.get(), mask));
+    }
+}
+
 /// A `ValueMemo` block's size in bytes (one vector when a vector is larger).
 const VALUE_BLOCK: usize = 1 << 16;
 
@@ -424,7 +433,7 @@ impl<W: Word> ValueMemo<W> {
             Node::Ones => self.blocks[last].extend(std::iter::repeat_n(W::of(self.mask), len)),
             Node::Op(o, ..) => {
                 let (a, b) = children.unwrap();
-                let (word, mask) = (OP_INFO[o].word, self.mask);
+                let mask = self.mask;
                 let off = self.blocks[last].len();
                 self.blocks[last].resize(off + len, W::of(0));
                 // the children's vectors sit in earlier blocks or earlier in the last one
@@ -434,9 +443,9 @@ impl<W: Word> ValueMemo<W> {
                     let block: &[W] = if id / per == last { before } else { &done[id / per] };
                     &block[id % per * len..][..len]
                 };
-                for ((o, x), y) in out.iter_mut().zip(at(a)).zip(at(b)) {
-                    *o = W::of(word(x.get(), y.get(), mask));
-                }
+                let zips: [fn(&mut [W], &[W], &[W], u128); OP_INFO.len()] =
+                    [zip_word::<W, 0>, zip_word::<W, 1>, zip_word::<W, 2>, zip_word::<W, 3>, zip_word::<W, 4>, zip_word::<W, 5>, zip_word::<W, 6>, zip_word::<W, 7>];
+                zips[o](out, at(a), at(b), mask);
             }
         }
         self.ids.insert(t, id);
