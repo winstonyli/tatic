@@ -2896,6 +2896,18 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 
 - **Sweep pair** (`s3_seq.sh shm`, rows `shm_{old,new}_{1,2}`): every unit file is identical on both salts, and so are the `LEMMA_CACHE` lines with paths masked. Only `own.tsv`'s elapsed-seconds column differs (one row on salt 1, 1 s against 0 s). Wall 19/17 s against 17/18 s.
 
+**`bounds` under the same rule: neutral, not adopted (2026-10-14; reverted, no patch kept).** `uses` read and wrote `bounds` only for shared nodes, keeping its per-node slot. Against 0d50e97 (RTP off, load 23-33%):
+
+| workload | base | shared only | |
+|---|---|---|---|
+| rule 33's law, n=8, 16 alternating pairs × 15 reps: median of the run medians | 21.6 ms | 20.6 ms | −4%, won 8 of 16 |
+| the same at n=64 | 321 ms | 301 ms | −6%, won 11 of 16 |
+| `proof_cost_split`, 8 alternating pairs: CPU median | 2.68 s | 2.64 s | −1%, won 4 of 8 |
+
+- No workload clears the noise: per-pair differences ran from −7.5 to +3.3 ms at n=8 and from −91 to +67 ms at n=64.
+- This fits the census: unshared nodes hold 77% of `bounds`' entries, which the rule no longer stores, but they took 27-29% of its hits, which now walk.
+- `hc`'s module doc keeps `bounds` as the exception. Adopting it only for one uniform rule would need its own sweep pair.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.

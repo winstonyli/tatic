@@ -58,6 +58,7 @@ and libraries (43 MB) were not kept.
 | `s3a_old_*`, `s3a_new_*` | 6833fb9 (Stage 2 plus the `law_time` harness) against 3be0e79 (id arena Stage 3, Phase A: terms as nodes behind a handle, on `Rc`), one run at a time | `s3_seq.sh` | "Id arena Stage 3" |
 | `s3b_old_*`, `s3b_new_*` | 6833fb9 against ff173a6 (Phase B: terms as ids in two hash-consed spaces), one run at a time | `s3_seq.sh` | "Id arena Stage 3" |
 | `shm_old_*`, `shm_new_*` | b0404ef against walk memos that store only shared nodes, one run at a time; with it, rule 33's law at n=8 and n=64 (8 alternating pairs × 15 reps) and `proof_cost_split` (8 pairs) | `s3_seq.sh`, `law_ab.sh`, `cpu_ab.ps1` | "Walk memos store only shared nodes" |
+| (no rows) | rule 33's law at n=8 and n=64 (16 alternating pairs × 15 reps) and `proof_cost_split` (8 pairs), 0d50e97 against `bounds` stored only for shared nodes (reverted, no patch kept) | `law_ab.sh`, `cpu_ab.ps1` | "`bounds` under the same rule" |
 | (no rows) | `proof_cost_split`, 6833fb9 against 3be0e79 and against ff173a6, 8 alternating pairs each | `cpu_ab.ps1` | "Id arena Stage 3" |
 | (no rows) | rule 33's law check time (`rewrite::law_time`), 6833fb9 against 3be0e79 (n = 8, 64) and against ff173a6 (n = 8, 16, 32, 64), 3 alternating pairs | `law_ab.sh` | "Id arena Stage 3" |
 | (no rows) | salt-1 sweep in a job object (job CPU, peak commit), 6833fb9 against ff173a6, 3 alternating rounds | `sweep_job.ps1` | "Id arena Stage 3" |
