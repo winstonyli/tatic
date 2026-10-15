@@ -270,7 +270,7 @@ impl Term {
     }
     /// Agrees on random inputs at every width 1..=6 (the plausibility screen every law passes before a machine tries it).
     pub fn is_law(&self, other: &Term, k: usize) -> bool {
-        self.refute(other, k).is_none()
+        (1..=6).all(|w| self.plausibly_equals(other, w, k))
     }
     /// The smallest width in 1..=6 and an input tuple (over `k` variables) where the two sides differ, if the screen finds one.
     pub fn refute(&self, other: &Term, k: usize) -> Option<(usize, Vec<u128>)> {
@@ -282,15 +282,15 @@ impl Term {
     }
     /// `counterexample` over the first `tries` tuples only (values memoized per term, `ValueMemo`).
     pub fn counterexample_in(&self, other: &Term, n: usize, k: usize, tries: usize) -> Option<Vec<u128>> {
-        SCREENS.with(|s| {
-            let mut s = s.borrow_mut();
-            let m = s.entry((n, k)).or_insert_with(|| ValueMemo::screen(n, k));
-            m.first_difference(self, other, tries).map(|i| m.input(i))
-        })
+        with_screen(n, k, |m| m.first_difference(self, other, tries).map(|i| m.input(i)))
+    }
+    /// Whether the two sides differ on one of the first `tries` tuples (`counterexample_in` without building the tuple).
+    pub fn differs_in(&self, other: &Term, n: usize, k: usize, tries: usize) -> bool {
+        with_screen(n, k, |m| m.first_difference(self, other, tries).is_some())
     }
     /// Whether `self` and `other` agree on the corners and 202 pseudo-random width-`n` tuples over `k` variables.
     pub fn plausibly_equals(&self, other: &Term, n: usize, k: usize) -> bool {
-        self.counterexample(other, n, k).is_none()
+        !self.differs_in(other, n, k, SCREEN_INPUTS)
     }
     pub fn has_shift(&self) -> bool {
         match *self.node() {
@@ -355,13 +355,16 @@ impl Word for u128 {
 }
 
 /// Terms' width-`n` values on a fixed list of inputs, one vector per interned term, each made from its children's vectors:
-/// pools and repeated screens share subterms, so each distinct term is evaluated once per input list.
+/// pools and repeated screens share subterms, so each distinct term is evaluated once per input list. The vectors sit end
+/// to end in one arena, so a new term costs no allocation of its own and a known one a single lookup.
 pub struct ValueMemo<W: Word> {
     mask: u128,
     len: usize,
     /// `vars[v][i]`: variable `v` on input `i`.
     vars: Vec<Box<[W]>>,
-    values: hashbrown::HashMap<Term, Box<[W]>>,
+    /// Each term's vector's index in `values` (the vector is `values[id * len..][..len]`).
+    ids: hashbrown::HashMap<Term, usize>,
+    values: Vec<W>,
 }
 
 /// The screen's input count: all zeros, all ones, then 202 pseudo-random tuples.
@@ -372,41 +375,55 @@ thread_local! {
     static SCREENS: std::cell::RefCell<hashbrown::HashMap<(usize, usize), ValueMemo<u128>>> = Default::default();
 }
 
+/// `f` on the screen's value memo for width `n` and `k` variables.
+fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R) -> R {
+    SCREENS.with(|s| f(s.borrow_mut().entry((n, k)).or_insert_with(|| ValueMemo::screen(n, k))))
+}
+
 impl<W: Word> ValueMemo<W> {
     fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
-        ValueMemo { mask: low_bits(n), len, vars, values: Default::default() }
+        ValueMemo { mask: low_bits(n), len, vars, ids: Default::default(), values: vec![] }
     }
 
     /// `t`'s values, one per input.
     pub fn values(&mut self, t: &Term) -> &[W] {
-        self.fill(*t);
-        &self.values[t]
+        let id = self.fill(*t);
+        self.vector(id)
     }
 
-    fn fill(&mut self, t: Term) {
-        if self.values.contains_key(&t) {
-            return;
+    fn vector(&self, id: usize) -> &[W] {
+        &self.values[id * self.len..][..self.len]
+    }
+
+    /// `t`'s vector's id, made (with its children's) when new.
+    fn fill(&mut self, t: Term) -> usize {
+        if let Some(&id) = self.ids.get(&t) {
+            return id;
         }
-        let v: Box<[W]> = match *t.node() {
-            Node::V(v) => self.vars[v].clone(),
-            Node::Zero => vec![W::of(0); self.len].into(),
-            Node::Ones => vec![W::of(self.mask); self.len].into(),
+        let len = self.len;
+        match *t.node() {
+            Node::V(v) => self.values.extend_from_slice(&self.vars[v]),
+            Node::Zero => self.values.resize(self.values.len() + len, W::of(0)),
+            Node::Ones => self.values.resize(self.values.len() + len, W::of(self.mask)),
             Node::Op(o, a, b) => {
-                self.fill(a);
-                self.fill(b);
-                let (x, y, word, mask) = (&self.values[&a], &self.values[&b], OP_INFO[o].word, self.mask);
-                x.iter().zip(y.iter()).map(|(x, y)| W::of(word(x.get(), y.get(), mask))).collect()
+                let (a, b, word, mask) = (self.fill(a) * len, self.fill(b) * len, OP_INFO[o].word, self.mask);
+                self.values.reserve(len);
+                for i in 0..len {
+                    let v = W::of(word(self.values[a + i].get(), self.values[b + i].get(), mask));
+                    self.values.push(v);
+                }
             }
-        };
-        self.values.insert(t, v);
+        }
+        let id = self.values.len() / len - 1;
+        self.ids.insert(t, id);
+        id
     }
 
     /// The first of the first `tries` inputs on which `a` and `b` differ.
     pub fn first_difference(&mut self, a: &Term, b: &Term, tries: usize) -> Option<usize> {
         assert!(tries <= self.len, "{tries} tries over {} inputs", self.len);
-        self.fill(*a);
-        self.fill(*b);
-        let (x, y) = (&self.values[a], &self.values[b]);
+        let (a, b) = (self.fill(*a), self.fill(*b));
+        let (x, y) = (self.vector(a), self.vector(b));
         (0..tries).find(|&i| x[i].get() != y[i].get())
     }
 
@@ -1967,7 +1984,7 @@ fn machine_fallback(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     // plan may then not compile); a pair that is not equal fails here as it would in `tree_encoding` (else congruence on unequal
     // operands would count two proofs); a few tuples suffice to tell, since unequal pairs differ almost everywhere
     let screened = SCORE_ONLY.with(|s| s.get()) && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap();
-    if screened && a.counterexample_in(b, n, k, 16).is_some() || !screened && tree_encoding(n, k, a, b).is_none() {
+    if screened && a.differs_in(b, n, k, 16) || !screened && tree_encoding(n, k, a, b).is_none() {
         return None;
     }
     MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
@@ -2481,7 +2498,9 @@ fn value_memo_matches_interp() {
         for a in &ts {
             for b in &ts {
                 for tries in [16, SCREEN_INPUTS] {
-                    assert_eq!(a.counterexample_in(b, n, k, tries), old_counterexample(a, b, n, k, tries), "{} vs {} at {n}", a.show(), b.show());
+                    let old = old_counterexample(a, b, n, k, tries);
+                    assert_eq!(a.differs_in(b, n, k, tries), old.is_some());
+                    assert_eq!(a.counterexample_in(b, n, k, tries), old, "{} vs {} at {n}", a.show(), b.show());
                 }
             }
         }
