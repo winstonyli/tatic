@@ -2415,6 +2415,50 @@ about 0.5 µs per `intern` call at n=8 and 0.9 µs at n=64, for both rules. Part
 3.6-3.9 times per doubling (measured before the spine change) and are 5% of samples at n=64 (13% with `lowest_loose`). The rest is presumably
 memory: at n=64 the tables hold over a million entries, well past the 16 MB L3.
 
+*The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
+32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
+the 1.19M nodes `prove_rule` built first. Rule 0 takes 2-14 ms. It is a linear cost, so it does not explain the growth. Options, none tried:
+- *Keep the table across checks.* No drop per check, and repeats hit its memos: a repeat check of rule 33 at n=64 takes 0.40 s against 0.88 s for the first. Memory grows with every check, so it needs a bound and an eviction rule.
+- *Allocate a scope's nodes in an arena and free them in bulk.* This needs every node that outlives the scope to be copied out, a larger change to `Rc`.
+- *Free on another thread.* Not possible as is: the kernel's `Rc` is not `Send`.
+
+*Where the miner's drops fall* (read from `search.rs`, not timed). The table and its depth are thread-local
+(`hc::TABLE`, `hc::DEPTH`), so a scope on the main thread does not cover a worker thread: each worker's first scope
+is outermost there, and dropping it frees that worker's table.
+- `proof_cost_split` is single-threaded inside one `scoped` call, so its checks already share one table and it drops once per run. It is the "keep the table" option already, without a bound.
+- `rule_miner`'s main-thread scope covers only main-thread work. Its proofs and scores run on workers, each with its own table:
+  - eager proving: one scope per worker per batch of candidates;
+  - scoring: one per worker per round;
+  - each round's winner (`prove_any`): one thread and one scope per rule, so one table and one drop per rule proof.
+
+  The winner's proof runs beside the main thread's search, so its drop is off the main path but still uses a core.
+- Separately, under the driver (`LEMMA_CACHE=<file>`, set by `driver::run_loop`), `shared_lemma` reads statements that an earlier process of the same build recorded, so a loop's later processes skip those checks (unless `LEMMA_RECHECK=1`).
+
+So keeping a table across checks would change only `rule_miner`'s per-rule threads, and those would need a long-lived prover thread to hold it.
+
+*Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
+as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule
+laws are 280 assoc, 272 comm and 163 tree uses, with 6 distinct tree statements and no `Bitwise` or `Chain`. The checked
+proofs shrink: the rewriter's 296 laws go from 327,190 to 200,994 nodes (check 191 to 107 ms), and the machine proofs
+from 23,146 to 4,152 nodes (46 to 3.3 ms). Each law's one check now runs during build, so total CPU is neutral: 6
+alternating `cpu_ab.ps1` pairs, median 5.06 s before and 5.10 s after, machine at about 11% CPU, real-time protection off.
+
+The "printer stall" seen earlier with full-normalizing printers has the same cause as the NEG wall, and it can't be fixed in the
+printer. A probe (reverted, no patch kept) normalized `add`, `sub` and `lt` on two free words and counted unique
+nodes against occurrences:
+
+| n | 8 | 10 | 16 | 32 | 64 |
+|---|---|---|---|---|---|
+| `add` without interning: unique nodes, time | 518k, 0.31 s | 8.4M, 6.7 s | over 6.5 GB at n=12 | | |
+| `add` in an `InternScope`: unique nodes, time | 527, 0.5 ms | 813, 0.7 ms | 2,055, 3.4 ms | 8,183, 11 ms | 32,727, 58 ms |
+| occurrences (both) | 5.2e5 | 8.4e6 | 3.4e10 | 1.5e20 | 3.4e38 |
+
+`sub` behaves like `add` (about 2 times slower in a scope); `lt` has 976 unique nodes at n=64. Without interning,
+`nf` builds the tree: about 16 times larger for every 2 more bits. Interned, the normal form is a DAG of about
+8n² nodes, so `nf` itself is cheap. Any printer that walks the term still visits every occurrence, so printing it in
+full is infeasible either way. Printers have to stop early, as `brief_nf` does, or print the DAG with shared nodes
+named.
+
 *Table size alone.* Hardware cache-miss counters are not available to a session here: AMD uProf is not installed, and
 xperf's PMC sources need an elevated kernel trace. Instead, a probe (reverted, no patch kept) checked a law at
 n=8 twice: in a fresh scope, and in a scope that had just built and checked the n=64 law. For rule 33 the n=64 work left 507k
@@ -2603,6 +2647,17 @@ Its shortcomings there, with mitigations:
 - **Stage 1, built first (decided 2026-10-14), is a trace replay** of rule 33's table and memo traffic in three layouts: today's; ids; and a hybrid of `Rc` nodes with dense u32 memo keys, which shrinks the maps without the port.
   - It is a one-sided filter: a loss stops the port.
   - Its gate is re-profiled on large pages first.
+
+*Measured for it* (probe reverted, no patch kept):
+- The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
+- 19-21% of the nodes built are not in the table when it drops.
+- 17% (`proof_cost_split`) to 22% (largest sweep child, 0.42 M) of interned nodes are still alive after it. This is the live set, not the copy-out volume, which is unmeasured.
+- **Small checks gain little.** Mitigation: share one region across a batch of checks, as `proof_cost_split` shares one scope, and reset a region by its pointer, keeping its pages mapped.
+- **The compiled hot path should not allocate at all.** When it must produce terms (proof witnesses), it bump-allocates into the region through linear memory. Not a shortcoming of the arena; the arena fixes the format at the boundary.
+
+Scheme 1's caveats, with mitigations:
+- **Each process locks its reservation for its whole life.** Mitigation (done): `arena_reserve` is 64 MiB. Large pages are on in every process, not only those expected to grow large, because the sweep of short processes still gained a little; that was measured only at low load.
+- **A machine without the privilege falls back to normal pages.** Mitigation (done): the machine-state line logs `pages=`, as it logs Defender's state, so baselines compare.
 
 *Stage 1 result (2026-10-14; tracer and replay throwaway, reverted, no patch kept): continue.*
 - **The trace:** one law check of rule 33 after a warm-up, at n=8, 16, 32 and 64 (5.4 to 44 MB). Its new entries (intern misses plus memo puts) are 154,427, 301,740, 596,364 and 1,185,612, against the 154,275 and 1,185,460 above. Every arm reproduces every lookup's hit or miss and every `uses` and `lowest_loose` answer.
@@ -2907,62 +2962,6 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - No workload clears the noise: per-pair differences ran from −7.5 to +3.3 ms at n=8 and from −91 to +67 ms at n=64.
 - This fits the census: unshared nodes hold 77% of `bounds`' entries, which the rule no longer stores, but they took 27-29% of its hits, which now walk.
 - `hc`'s module doc keeps `bounds` as the exception. Adopting it only for one uniform rule would need its own sweep pair.
-
-*Measured for it* (probe reverted, no patch kept):
-- The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
-- 19-21% of the nodes built are not in the table when it drops.
-- 17% (`proof_cost_split`) to 22% (largest sweep child, 0.42 M) of interned nodes are still alive after it. This is the live set, not the copy-out volume, which is unmeasured.
-- **Small checks gain little.** Mitigation: share one region across a batch of checks, as `proof_cost_split` shares one scope, and reset a region by its pointer, keeping its pages mapped.
-- **The compiled hot path should not allocate at all.** When it must produce terms (proof witnesses), it bump-allocates into the region through linear memory. Not a shortcoming of the arena; the arena fixes the format at the boundary.
-
-Scheme 1's caveats, with mitigations:
-- **Each process locks its reservation for its whole life.** Mitigation (done): `arena_reserve` is 64 MiB. Large pages are on in every process, not only those expected to grow large, because the sweep of short processes still gained a little; that was measured only at low load.
-- **A machine without the privilege falls back to normal pages.** Mitigation (done): the machine-state line logs `pages=`, as it logs Defender's state, so baselines compare.
-
-
-*The scope's drop.* Timed in the same probe: freeing the table after rule 33's check takes 14, 40 and 83 ms at n = 16,
-32, 64 (about 10% of the check, linear, about 80 ns per entry). At n=8 it took 212 ms, because that scope also held
-the 1.19M nodes `prove_rule` built first. Rule 0 takes 2-14 ms. It is a linear cost, so it does not explain the growth. Options, none tried:
-- *Keep the table across checks.* No drop per check, and repeats hit its memos: a repeat check of rule 33 at n=64 takes 0.40 s against 0.88 s for the first. Memory grows with every check, so it needs a bound and an eviction rule.
-- *Allocate a scope's nodes in an arena and free them in bulk.* This needs every node that outlives the scope to be copied out, a larger change to `Rc`.
-- *Free on another thread.* Not possible as is: the kernel's `Rc` is not `Send`.
-
-*Where the miner's drops fall* (read from `search.rs`, not timed). The table and its depth are thread-local
-(`hc::TABLE`, `hc::DEPTH`), so a scope on the main thread does not cover a worker thread: each worker's first scope
-is outermost there, and dropping it frees that worker's table.
-- `proof_cost_split` is single-threaded inside one `scoped` call, so its checks already share one table and it drops once per run. It is the "keep the table" option already, without a bound.
-- `rule_miner`'s main-thread scope covers only main-thread work. Its proofs and scores run on workers, each with its own table:
-  - eager proving: one scope per worker per batch of candidates;
-  - scoring: one per worker per round;
-  - each round's winner (`prove_any`): one thread and one scope per rule, so one table and one drop per rule proof.
-
-  The winner's proof runs beside the main thread's search, so its drop is off the main path but still uses a core.
-- Separately, under the driver (`LEMMA_CACHE=<file>`, set by `driver::run_loop`), `shared_lemma` reads statements that an earlier process of the same build recorded, so a loop's later processes skip those checks (unless `LEMMA_RECHECK=1`).
-
-So keeping a table across checks would change only `rule_miner`'s per-rule threads, and those would need a long-lived prover thread to hold it.
-
-*Every law by name.* `Plan::Law` now checks every kind once through `shared_lemma`: `Bitwise`, `Chain` and `Tree`
-as well as `Rule`, `Assoc` and `Comm`. All use one key, (prover, both sides, n, k). On `proof_cost_split` the non-rule
-laws are 280 assoc, 272 comm and 163 tree uses, with 6 distinct tree statements and no `Bitwise` or `Chain`. The checked
-proofs shrink: the rewriter's 296 laws go from 327,190 to 200,994 nodes (check 191 to 107 ms), and the machine proofs
-from 23,146 to 4,152 nodes (46 to 3.3 ms). Each law's one check now runs during build, so total CPU is neutral: 6
-alternating `cpu_ab.ps1` pairs, median 5.06 s before and 5.10 s after, machine at about 11% CPU, real-time protection off.
-
-The "printer stall" seen earlier with full-normalizing printers has the same cause as the NEG wall, and it can't be fixed in the
-printer. A probe (reverted, no patch kept) normalized `add`, `sub` and `lt` on two free words and counted unique
-nodes against occurrences:
-
-| n | 8 | 10 | 16 | 32 | 64 |
-|---|---|---|---|---|---|
-| `add` without interning: unique nodes, time | 518k, 0.31 s | 8.4M, 6.7 s | over 6.5 GB at n=12 | | |
-| `add` in an `InternScope`: unique nodes, time | 527, 0.5 ms | 813, 0.7 ms | 2,055, 3.4 ms | 8,183, 11 ms | 32,727, 58 ms |
-| occurrences (both) | 5.2e5 | 8.4e6 | 3.4e10 | 1.5e20 | 3.4e38 |
-
-`sub` behaves like `add` (about 2 times slower in a scope); `lt` has 976 unique nodes at n=64. Without interning,
-`nf` builds the tree: about 16 times larger for every 2 more bits. Interned, the normal form is a DAG of about
-8n² nodes, so `nf` itself is cheap. Any printer that walks the term still visits every occurrence, so printing it in
-full is infeasible either way. Printers have to stop early, as `brief_nf` does, or print the DAG with shared nodes
-named.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
