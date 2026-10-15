@@ -362,7 +362,7 @@ pub struct TreeEnc {
 /// Whether `t1 = t2` (two sum trees of add-free leaves over `k` good vectors) has a carry encoding, and which: found by
 /// `moore_encoding`, first over all carry states, then over the reachable ones; `None` when there is none. Builds no kernel terms.
 pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::rc::Rc<TreeEnc>> {
-    // the cheap screens are not cached: most of `tree_step`'s candidates stop here
+    // the cheap screens are not cached (`tree_step` offers only candidates that pass the first)
     if !t1.plausibly_equals(t2, n, k) {
         return None;
     }

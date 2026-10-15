@@ -911,14 +911,35 @@ pub fn tree_step(n: usize, t1: &Term, k: usize) -> Option<(Term, PlanRc)> {
     if ablated("tree") {
         return None;
     }
-    // the constants, the variables, then every operator applied to two of them (a plain-integer screen in
-    // `tree_encoding` discards the false candidates cheaply)
-    let cand = [Term::ZERO, Term::ONES]
-        .into_iter()
-        .chain((0..k).map(Term::v))
-        .chain(terms(k, false).iter().copied().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
-        .find(|cand| tree_encoding(n, k, t1, cand).is_some())?;
+    // `tree_encoding` refuses a candidate whose screen values differ from `t1`'s, so only those with `t1`'s vector are tried
+    let index = TREE_CANDS.with(|c| c.borrow_mut().entry((n, k, nops())).or_insert_with(|| tree_candidates(n, k)).clone());
+    let cand = *with_screen(n, k, |m| index.get(m.values(t1)))?.iter().find(|cand| tree_encoding(n, k, t1, cand).is_some())?;
     Some((cand, Plan::law(LawKind::Tree, *t1, cand, vars(k))))
+}
+
+thread_local! {
+    /// `tree_step`'s candidates by their screen vector, per width, variable count and operator count (`tree_candidates`).
+    static TREE_CANDS: std::cell::RefCell<hashbrown::HashMap<(usize, usize, usize), std::rc::Rc<CandIndex>>> = Default::default();
+}
+
+/// Candidates by screen vector, each list in candidate order.
+type CandIndex = hashbrown::HashMap<Box<[u128]>, Vec<Term>>;
+
+/// `tree_step`'s candidates, the constants, the variables, then every operator applied to two of them, indexed by their
+/// screen vector: one lookup finds those `t1` could equal, where trying each took ~79 screen comparisons a step
+/// (docs/tier-cycle.md, "What the screen does in a sweep").
+fn tree_candidates(n: usize, k: usize) -> std::rc::Rc<CandIndex> {
+    let mut index = CandIndex::default();
+    with_screen(n, k, |m| {
+        for cand in [Term::ZERO, Term::ONES]
+            .into_iter()
+            .chain((0..k).map(Term::v))
+            .chain(terms(k, false).iter().copied().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
+        {
+            index.entry(m.values(&cand).into()).or_insert_with(Vec::new).push(cand);
+        }
+    });
+    index.into()
 }
 
 /// A library law used as a left-to-right rewrite rule: `lhs = rhs` over the pattern variables `V(0)..`, each instance
@@ -2657,6 +2678,26 @@ fn term_attributes_match_a_walk() {
         assert_eq!(t.size(), size, "{}", t.size());
         assert_eq!(t.max_var(), vars.iter().copied().max().unwrap_or(0));
         assert!((0..70).all(|v| t.has_var(v) == vars.contains(&v)));
+    }
+}
+
+#[test]
+fn tree_step_index_matches_scan() {
+    // `tree_step` as it was before `tree_candidates`: every candidate tried in order
+    for (n, k) in [(3, 1), (4, 2), (8, 2), (4, 3)] {
+        let cands: Vec<Term> = [Term::ZERO, Term::ONES]
+            .into_iter()
+            .chain((0..k).map(Term::v))
+            .chain(terms(k, false).iter().copied().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
+            .collect();
+        let (mut found, mut tried) = (0, 0);
+        for t1 in terms(k, true).iter().step_by(5) {
+            let scan = cands.iter().copied().find(|c| crate::machine::tree_encoding(n, k, t1, c).is_some());
+            assert!(tree_step(n, t1, k).map(|r| r.0) == scan, "n={n} {}", t1.show());
+            tried += 1;
+            found += scan.is_some() as usize;
+        }
+        assert!(found > 0 && found < tried, "n={n} k={k}: {found} of {tried}");
     }
 }
 
