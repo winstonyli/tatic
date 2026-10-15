@@ -2880,6 +2880,22 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - At n=64 it would drop about 650,000 of the region's memo entries, 1.7 per node, about 45 B of the 160 B allocated per node (at each memo's allocated bytes per entry). It would also skip their inserts and missed lookups.
   - It loses only `shifts`' unshared hits, on nodes small enough to re-walk cheaply.
 
+**Walk memos store only shared nodes (2026-10-14, adopted).** The candidate above, built.
+- **Change:** `inst_rec` memoizes a child only if it is shared and not `hc::low`. `shift_child` shifts an unshared node without the memo. `lowest_loose` reads and writes `lows` only for shared nodes.
+  - The rule is stated once, in `hc`'s module doc. It is the one `infer_rc` and `abstract_frees_in` already followed, so every walk's memo now follows it.
+  - `whnf`, `hnf`, `nf` and `bounds` keep every node, as the module doc says why.
+- **Check:** `walk_memos_store_only_shared_nodes`. A shared node gets an `inst` and a `lows` entry and an unshared one neither; the test fails with `inst_rec`'s old gate. Every suite passes with the base's counts plus this test (lib 375).
+- **Timing** against b0404ef (RTP off; load 26-28%, other sessions' `tier_eval_nn` and `manifold` resident):
+
+  | workload | base | shared only | |
+  |---|---|---|---|
+  | rule 33's law, n=8, 8 alternating pairs × 15 reps: median of the run medians | 26.6 ms | 20.1 ms | −25%, won 8 of 8 |
+  | the same at n=64 | 426 ms | 317 ms | −26%, won 8 of 8 |
+  | `proof_cost_split`, 8 alternating pairs: CPU median | 2.95 s | 2.74 s | −7%, won 7 of 8 |
+  | the same: build / check median | 2067 / 266 ms | 1891 / 227 ms | |
+
+- **Sweep pair** (`s3_seq.sh shm`, rows `shm_{old,new}_{1,2}`): every unit file is identical on both salts, and so are the `LEMMA_CACHE` lines with paths masked. Only `own.tsv`'s elapsed-seconds column differs (one row on salt 1, 1 s against 0 s). Wall 19/17 s against 17/18 s.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.

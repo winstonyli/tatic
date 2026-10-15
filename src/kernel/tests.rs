@@ -532,6 +532,25 @@ fn uses_bounds_agree_with_lowest_loose() {
     })
 }
 
+/// A walk's memo stores shared nodes only: `t` (two parents) gets an `inst` and a `lows` entry, `u` (one) neither.
+#[test]
+fn walk_memos_store_only_shared_nodes() {
+    scoped(|| {
+        let deep = |a, b| app(app(app(var(0), var(a)), var(b)), var(3));
+        let (t, u) = (deep(1, 2), deep(4, 5));
+        let body = app(app(t, t), u);
+        assert!(t.shared() && !u.shared());
+        instantiate_n(&body, &[&sort(0)], 0);
+        let mut lows = IdMap::default();
+        hc_lowest_loose(&lam(sort(0), body), 0, &mut lows);
+        with_spaces(|s| {
+            let inst = &s.memos.borrow().inst;
+            assert!(inst.keys().any(|k| k.0 == s.key(&t)) && !inst.keys().any(|k| k.0 == s.key(&u)));
+            assert!(lows.keys().any(|k| k.0 == s.key(&t)) && !lows.keys().any(|k| k.0 == s.key(&u)));
+        });
+    })
+}
+
 /// The instantiation memo skips nodes at most two levels above their leaves.
 #[test]
 fn low_is_height_at_most_two() {

@@ -811,10 +811,13 @@ fn shift_unchecked(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
     })
 }
 
-/// `shift` of one child: the child itself when it has nothing to shift, else memoised.
+/// `shift` of one child: the child itself when it has nothing to shift, else memoised if shared (see [`hc`]).
 fn shift_child(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Expr {
     if s.loose(x) <= cutoff {
         return *x;
+    }
+    if !s.shared(x) {
+        return shift_unchecked(s, x, cutoff, amount);
     }
     if let Some(r) = hc::shift_get(s, x, cutoff, amount) {
         return r;
@@ -827,6 +830,12 @@ fn shift_child(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// The memos over the hash-consed spaces (bit-vector design doc sections 60 and 62): `instantiate_n`, `shift_child`,
 /// `whnf`, head normal forms and `nf`, keyed by node (`Spaces::key`) and kept in `Spaces::memos` until the region
 /// closes. A node is one term, so a memo entry serves every place the term occurs.
+///
+/// A walk's memo (`inst`, `shifts`, `InferCache`'s `lows` and `types`, `abstract_frees_in`'s) stores only shared nodes
+/// (`Spaces::shared`, two or more parents). An unshared node is reached only through its one parent, so a repeated walk
+/// stops at the parent's entry first: its own entry would almost never be read (77% of `inst`'s entries took 14 of
+/// 148,047 hits in rule 33's check at n=64; doc section "Why `inst` has many entries per node"). `whnf`, `hnf` and
+/// `nf` serve calls on any term, not one walk, and `uses`' `bounds` is asked again per `m`, so they keep every node.
 mod hc {
     use super::*;
 
@@ -906,7 +915,8 @@ mod hc {
 
     /// The smallest loose `Var` index of `x` seen from `d` binders inside it, i.e. among `x`'s loose
     /// variables `k >= d`, the least `k - d`; `u32::MAX` when there is none. Memoised in `memo` by
-    /// (node, `d`).
+    /// (node, `d`) for shared nodes (see [`hc`](self)); its one caller, `memo_context`, asks only of
+    /// shared ones.
     pub(super) fn lowest_loose(s: &Spaces, x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
         if s.loose(x) <= d {
             return u32::MAX;
@@ -915,8 +925,9 @@ mod hc {
         if let Node::Var(k) = n {
             return k - d;
         }
+        let shared = s.shared(x);
         let key = (s.key(x), d);
-        if let Some(&r) = memo.get(&key) {
+        if shared && let Some(&r) = memo.get(&key) {
             return r;
         }
         let r = grow(|| {
@@ -924,7 +935,9 @@ mod hc {
             n.for_kids(|c, under| low = low.min(lowest_loose(s, c, d + under as u32, memo)));
             low
         });
-        memo.insert(key, r);
+        if shared {
+            memo.insert(key, r);
+        }
         r
     }
 
@@ -1061,7 +1074,7 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Option<Aid>, d: u32) -> E
         if aid.is_some() && s.loose(&x) != u32::MAX && !hc::uses(s, &x, d, m) {
             return shift_child(s, &x, d + m, -(m as i32));
         }
-        let memo = !hc::low(s, &x);
+        let memo = s.shared(&x) && !hc::low(s, &x);
         if memo && let Some(r) = hc::inst_get(s, &x, aid, d) {
             return r;
         }
