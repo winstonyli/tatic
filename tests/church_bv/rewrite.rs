@@ -2174,3 +2174,34 @@ pub fn refute_returns_a_witness_for_false_laws_and_none_for_true_ones() {
         assert_ne!(l.interp(w, &vals), r.interp(w, &vals), "witness for {} = {}", l.show(), r.show());
     }
 }
+
+/// Check time of one rule's law alone: rule `LAW_RULE` (default 33) of the cmp3d own-rules file at `LAW_N` bits
+/// (default 8), `LAW_REPS` times (default 5) after one warm-up. Each rep builds the proof and checks it in its own
+/// `scoped`, one region, and times only the check. Prints `LAWT rule=.. n=.. reps=.. min=.. med=..`. The id arena's
+/// A/B harness (plan docs/superpowers/plans/2026-10-14-id-arena-stage3.md; `scripts/law_ab.sh`).
+#[test]
+#[ignore]
+pub fn law_time() {
+    let env = |k: &str, d: usize| std::env::var(k).map_or(d, |v| v.parse().unwrap());
+    let (i, n, reps) = (env("LAW_RULE", 33), env("LAW_N", 8), env("LAW_REPS", 5).max(1));
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/runs/2026-10-12/scripts/cmp3d_own_rules.txt");
+    let rules = parse_rules(&std::fs::read_to_string(path).unwrap());
+    let (l, r) = &rules[i];
+    let k = l.max_var().max(r.max_var()) + 1;
+    let once = || {
+        tatic::kernel::scoped(|| {
+            let (lp, ls) = prove_rule(n, k, l, r).expect("the rule proves");
+            let (p, lemmas) = PARAMS.with(|c| c.borrow_mut().take()).unwrap_or_else(|| (Postulates::new(), Vec::new()));
+            let t = Instant::now();
+            let ok = p.check_open(&lp, &ls);
+            let took = t.elapsed();
+            PARAMS.with(|c| *c.borrow_mut() = Some((p, lemmas)));
+            ok.expect("the law checks");
+            took
+        })
+    };
+    once();
+    let mut ts: Vec<_> = (0..reps).map(|_| once()).collect();
+    ts.sort();
+    println!("LAWT rule={i} n={n} reps={reps} min={:?} med={:?}", ts[0], ts[reps / 2]);
+}
