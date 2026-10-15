@@ -919,7 +919,7 @@ pub fn rule_miner() {
                     ev[si] = (f.0, f.1);
                 }
                 let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
-                ((count(&f) - count(&covered)) * 1000 + (guarded(&f) - guarded(&covered)) * guard_w + (size - sz), f, sz)
+                ((count(&f) - count(covered)) * 1000 + (guarded(&f) - guarded(covered)) * guard_w + (size - sz), f, sz)
             };
             let score_one = |i: usize, memo: &mut RewriteMemo| score_rule(provable[i], &affected[i], memo);
             // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
@@ -1395,9 +1395,9 @@ pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
     let mut carry = f();
     let mut sums = vec![];
     for i in 0..a.len() {
-        let x = xor(a[i].clone(), b[i].clone());
-        sums.push(xor(x.clone(), carry.clone()));
-        carry = ripple_carry(false, a[i].clone(), b[i].clone(), carry, x);
+        let x = xor(a[i], b[i]);
+        sums.push(xor(x, carry));
+        carry = ripple_carry(false, a[i], b[i], carry, x);
     }
     sums
 }
@@ -1410,7 +1410,7 @@ pub type KBitsFn<'a> = &'a dyn Fn(&[Vec<Expr>]) -> Vec<Expr>;
 /// `refl` leaves, then `cong_n` and the witness eliminations (the skeleton of `bitwise_law_k`).
 pub fn circuit_law(n: usize, l: BitsFn, r: BitsFn) -> (Expr, Expr) {
     let (lc, rc) = (bits_circuit(n, l), bits_circuit(n, r));
-    circuit_law_k(n, 2, &|a| (app2(lc.clone(), a[0].clone(), a[1].clone()), app2(rc.clone(), a[0].clone(), a[1].clone())), &|v| l(&v[0], &v[1]), &|v| r(&v[0], &v[1]))
+    circuit_law_k(n, 2, &|a| (app2(lc, a[0], a[1]), app2(rc, a[0], a[1])), &|v| l(&v[0], &v[1]), &|v| r(&v[0], &v[1]))
 }
 
 /// As `circuit_law` over `k` vectors: `sides(vectors)` builds the two sides from circuits, `l`/`r` give their output
@@ -1421,8 +1421,8 @@ pub fn circuit_law_k(n: usize, k: usize, sides: &dyn Fn(&[Expr]) -> (Expr, Expr)
         .map(|j| {
             lemma_n(
                 k * n,
-                &|v| id(bool0(), l(&split(v))[j].clone(), r(&split(v))[j].clone()),
-                &|b| refl(l(&split(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>()))[j].clone()),
+                &|v| id(bool0(), l(&split(v))[j], r(&split(v))[j]),
+                &|b| refl(l(&split(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>()))[j]),
             )
             .0
         })
@@ -1431,14 +1431,14 @@ pub fn circuit_law_k(n: usize, k: usize, sides: &dyn Fn(&[Expr]) -> (Expr, Expr)
         let vb: Vec<Vec<Expr>> = (0..k).map(|v| (0..n).map(|i| bits(v, i)).collect()).collect();
         let (s1, s2) = (l(&vb), r(&vb));
         let witnesses: Vec<Expr> = (0..k).flat_map(|v| (0..n).map(move |i| (v, i))).map(|(v, i)| goods(v, i)).collect();
-        let e = (0..n).map(|j| apps(lemmas[j].clone(), vb.iter().flatten().cloned().chain(witnesses.iter().cloned()).collect())).collect();
+        let e = (0..n).map(|j| apps(lemmas[j], vb.iter().flatten().cloned().chain(witnesses.iter().cloned()).collect())).collect();
         let fbody = bits_to_bv(n);
         cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e)
     })
 }
 
 pub fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
-    let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i].clone(), x[j - i].clone()) }).collect() };
+    let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i], x[j - i]) }).collect() };
     (1..n).fold(row(0), |acc, i| add_rows(&acc, &row(i)))
 }
 pub fn const_bits(n: usize, c: u128) -> Vec<Expr> {
@@ -1478,7 +1478,7 @@ pub fn mul_circuit_three_vector_laws() {
             let dist = circuit_law_k(
                 n,
                 3,
-                &|a| (app2(mc.clone(), a[0].clone(), app2(ac.clone(), a[1].clone(), a[2].clone())), app2(ac.clone(), app2(mc.clone(), a[0].clone(), a[1].clone()), app2(mc.clone(), a[0].clone(), a[2].clone()))),
+                &|a| (app2(mc, a[0], app2(ac, a[1], a[2])), app2(ac, app2(mc, a[0], a[1]), app2(mc, a[0], a[2]))),
                 &|v| mul_bits(n, &v[0], &add_rows(&v[1], &v[2])),
                 &|v| add_rows(&mul_bits(n, &v[0], &v[1]), &mul_bits(n, &v[0], &v[2])),
             );
@@ -1486,7 +1486,7 @@ pub fn mul_circuit_three_vector_laws() {
             let assoc = circuit_law_k(
                 n,
                 3,
-                &|a| (app2(mc.clone(), app2(mc.clone(), a[0].clone(), a[1].clone()), a[2].clone()), app2(mc.clone(), a[0].clone(), app2(mc.clone(), a[1].clone(), a[2].clone()))),
+                &|a| (app2(mc, app2(mc, a[0], a[1]), a[2]), app2(mc, a[0], app2(mc, a[1], a[2]))),
                 &|v| mul_bits(n, &mul_bits(n, &v[0], &v[1]), &v[2]),
                 &|v| mul_bits(n, &v[0], &mul_bits(n, &v[1], &v[2])),
             );
@@ -1496,7 +1496,7 @@ pub fn mul_circuit_three_vector_laws() {
             let bad = circuit_law_k(
                 n,
                 3,
-                &|a| (app2(mc.clone(), a[0].clone(), app2(ac.clone(), a[1].clone(), a[2].clone())), app2(ac.clone(), app2(mc.clone(), a[0].clone(), a[1].clone()), a[2].clone())),
+                &|a| (app2(mc, a[0], app2(ac, a[1], a[2])), app2(ac, app2(mc, a[0], a[1]), a[2])),
                 &|v| mul_bits(n, &v[0], &add_rows(&v[1], &v[2])),
                 &|v| add_rows(&mul_bits(n, &v[0], &v[1]), &v[2]),
             );
@@ -2164,7 +2164,7 @@ pub fn law_work_report() {
 pub fn promoted_rule_sets_are_proved() {
     tatic::kernel::scoped(|| {
         for text in [include_str!("../../scripts/data/add3_mm_rules.txt"), include_str!("../../scripts/data/mix3_mm_rules.txt"), include_str!("../../scripts/data/add3_nl_rules.txt"), include_str!("../../scripts/data/mix3_nl_rules.txt")] {
-            let rs: Vec<(Term, Term)> = parse_rules(&text);
+            let rs: Vec<(Term, Term)> = parse_rules(text);
             assert!(rs.len() >= 7);
             for (l, r) in rs {
                 let k = l.max_var().max(r.max_var()) + 1;

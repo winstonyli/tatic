@@ -496,9 +496,9 @@ impl ClosurePostulates {
     /// its own domain/codomain without calling back into `clo_ty` itself.
     pub(super) fn curried_int_ty(&self, arity: usize) -> Expr {
         let int_ty = self.arith.int_ty();
-        let mut ty = int_ty.clone();
+        let mut ty = int_ty;
         for _ in 0..arity {
-            ty = kernel::arrow(int_ty.clone(), ty);
+            ty = kernel::arrow(int_ty, ty);
         }
         ty
     }
@@ -524,7 +524,7 @@ impl ClosurePostulates {
             return self.arith.p.get(pos);
         }
         let clo_ty = self.curried_int_ty(arity);
-        let ite_ty = kernel::arrow(self.arith.int_ty(), kernel::arrow(clo_ty.clone(), kernel::arrow(clo_ty.clone(), clo_ty)));
+        let ite_ty = kernel::arrow(self.arith.int_ty(), kernel::arrow(clo_ty, kernel::arrow(clo_ty, clo_ty)));
         let pos = self.arith.p.push(ite_ty);
         self.ite_clo_pos.insert(arity, pos);
         self.arith.p.get(pos)
@@ -587,13 +587,13 @@ impl ClosurePostulates {
                 None => self.arith.int_ty(),
             })
             .collect();
-        let mut ty = env_ty.clone();
+        let mut ty = env_ty;
         // Fold from the *last* capture outward, so the final iteration
         // (sig[0]) ends up as the outermost/first-applied parameter,
         // matching `apply_n`'s left-to-right application order (the same
         // convention `call_ref`'s own loop documents).
         for dom in doms.iter().rev() {
-            ty = kernel::arrow(dom.clone(), ty);
+            ty = kernel::arrow(*dom, ty);
         }
         let pos = self.arith.p.push(ty);
         self.mk_env_pos.insert(sig.to_vec(), pos);
@@ -619,7 +619,7 @@ impl ClosurePostulates {
         // `clo_ty` is pure and never pushes.
         let env_ty = self.env_ty(sig);
         let clo_ty = self.clo_ty(arity);
-        let ty = kernel::arrow(env_ty.clone(), clo_ty);
+        let ty = kernel::arrow(env_ty, clo_ty);
         let pos = self.arith.p.push(ty);
         self.mk_clo_pos.insert(h, pos);
         self.arith.p.get(pos)
@@ -742,15 +742,15 @@ impl<'a> ClosureCombinators<'a> {
                 None => self.cp.arith.int_ty(),
             })
             .collect();
-        let mut ty = ret.clone();
+        let mut ty = ret;
         // Var(0) is last-applied (innermost -- wrap it first, so the
         // final iteration, Var(arity-1) = first-applied, ends up
         // outermost, matching apply_n's left-to-right application order).
         for dom in &doms {
-            ty = kernel::arrow(dom.clone(), ty);
+            ty = kernel::arrow(*dom, ty);
         }
         if let Some(env_ty) = env_ty {
-            ty = kernel::arrow(env_ty.clone(), ty);
+            ty = kernel::arrow(env_ty, ty);
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.combinator_call_pos.insert(h, pos);
@@ -826,12 +826,12 @@ impl<'a> ClosureCombinators<'a> {
                 None => self.cp.arith.int_ty(),
             })
             .collect();
-        let mut ty = ret.clone();
+        let mut ty = ret;
         for dom in &doms {
-            ty = kernel::arrow(dom.clone(), ty);
+            ty = kernel::arrow(*dom, ty);
         }
         if let Some(env_ty) = env_ty {
-            ty = kernel::arrow(env_ty.clone(), ty);
+            ty = kernel::arrow(env_ty, ty);
         }
         let pos = self.cp.arith.p.push(ty);
         self.cp.pap_pos.insert((h, k), pos);
@@ -924,7 +924,7 @@ impl<'a> ClosureCombinators<'a> {
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let (cs, ps) = pp.split_at(n_captures);
-            let call_fn_here = call_fn.clone();
+            let call_fn_here = call_fn;
 
             // LHS: `call_ref(h)` applied to `(env?, p_{arity-1}, ..,
             // p_0)` -- *descending* `Var` order, matching `call_ref`'s own
@@ -953,9 +953,9 @@ impl<'a> ClosureCombinators<'a> {
             // arbitrary but well-typed filler.
             let mut params_full = ps.to_vec();
             if let Some(&max_rel) = captures.iter().max() {
-                params_full.resize(arity + max_rel as usize + 1, cs[0].clone());
+                params_full.resize(arity + max_rel as usize + 1, cs[0]);
                 for (j, &rel) in captures.iter().enumerate() {
-                    params_full[arity + rel as usize] = cs[j].clone();
+                    params_full[arity + rel as usize] = cs[j];
                 }
             }
             let rhs = denote(store, body, &combinators.cp.arith, &params_full)?;
@@ -1125,7 +1125,7 @@ impl<'a> ClosureCombinators<'a> {
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let (cs, ps) = pp.split_at(n_captures);
-            let call_fn_here = call_fn.clone();
+            let call_fn_here = call_fn;
 
             // LHS: same construction as `call_eq_ref`'s own -- descending
             // `Var` order, matching `call_ref`'s own convention.
@@ -1149,9 +1149,9 @@ impl<'a> ClosureCombinators<'a> {
             // `root`'s own params occupy `0..arity` first).
             let mut params_full = ps.to_vec();
             if let Some(&max_rel) = captures.iter().max() {
-                params_full.resize(arity + max_rel as usize + 1, cs[0].clone());
+                params_full.resize(arity + max_rel as usize + 1, cs[0]);
                 for (j, &rel) in captures.iter().enumerate() {
-                    params_full[arity + rel as usize] = cs[j].clone();
+                    params_full[arity + rel as usize] = cs[j];
                 }
             }
 
@@ -1259,7 +1259,7 @@ impl<'a> ClosureCombinators<'a> {
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let (cs, ps) = pp.split_at(n_captures);
-            let call_fn_here = call_fn.clone();
+            let call_fn_here = call_fn;
 
             // LHS: identical construction to `clo_eq_ref_pap`'s own.
             let mut call_args = Vec::with_capacity(1 + arity);
@@ -1277,22 +1277,22 @@ impl<'a> ClosureCombinators<'a> {
             // absolute index directly.
             let mut params_full = ps.to_vec();
             if let Some(&max_rel) = captures.iter().max() {
-                params_full.resize(arity + max_rel as usize + 1, cs[0].clone());
+                params_full.resize(arity + max_rel as usize + 1, cs[0]);
                 for (j, &rel) in captures.iter().enumerate() {
-                    params_full[arity + rel as usize] = cs[j].clone();
+                    params_full[arity + rel as usize] = cs[j];
                 }
             }
 
             // RHS: `call_ref(g)(g_env?, args...)` -- same argument
             // construction `clo_eq_ref_pap`'s own `pap_ref`-based RHS
             // uses, `call_ref(g)` in place of `pap_ref(g, s)`.
-            let g_call_fn_here = g_call_fn.clone();
+            let g_call_fn_here = g_call_fn;
             let g_env = if g_captures.is_empty() {
                 None
             } else {
                 let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
                 let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-                let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
+                let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize]).collect();
                 Some(apply_n(mk_env_expr, cs2))
             };
             let mut arg_exprs = Vec::with_capacity(args.len());
@@ -1380,7 +1380,7 @@ impl<'a> ClosureCombinators<'a> {
         let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let (cs, ps) = pp.split_at(n_captures);
-            let call_fn_here = call_fn.clone();
+            let call_fn_here = call_fn;
 
             // LHS: identical construction to `clo_eq_ref_if_tree`'s own.
             let mut call_args = Vec::with_capacity(1 + arity);
@@ -1398,9 +1398,9 @@ impl<'a> ClosureCombinators<'a> {
             // absolute index directly.
             let mut params_full = ps.to_vec();
             if let Some(&max_rel) = captures.iter().max() {
-                params_full.resize(arity + max_rel as usize + 1, cs[0].clone());
+                params_full.resize(arity + max_rel as usize + 1, cs[0]);
                 for (j, &rel) in captures.iter().enumerate() {
-                    params_full[arity + rel as usize] = cs[j].clone();
+                    params_full[arity + rel as usize] = cs[j];
                 }
             }
 
@@ -1409,13 +1409,13 @@ impl<'a> ClosureCombinators<'a> {
             // each position) `denote_closure`'s own `LitLambdaPartial` arm
             // uses, over `params_full` (abstract quantified vars) instead
             // of a caller's real frame.
-            let pap_fn_here = pap_fn.clone();
+            let pap_fn_here = pap_fn;
             let g_env = if g_captures.is_empty() {
                 None
             } else {
                 let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
                 let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-                let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
+                let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize]).collect();
                 Some(apply_n(mk_env_expr, cs2))
             };
             let mut arg_exprs = Vec::with_capacity(args.len());
@@ -1477,11 +1477,11 @@ impl<'a> ClosureCombinators<'a> {
         // own `Clo_k`-aware quantification instead.
         let quant_types = vec![Some(arity), Some(arity)];
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |_combinators, pp| {
-            let (dt, de) = (pp[0].clone(), pp[1].clone());
-            let clo_ty_here = clo_ty.clone();
-            let ite_clo_here = ite_clo.clone();
-            let lit_xc_here = lit_xc.clone();
-            let lhs = kernel::app3(ite_clo_here, lit_xc_here, dt.clone(), de.clone());
+            let (dt, de) = (pp[0], pp[1]);
+            let clo_ty_here = clo_ty;
+            let ite_clo_here = ite_clo;
+            let lit_xc_here = lit_xc;
+            let lhs = kernel::app3(ite_clo_here, lit_xc_here, dt, de);
             let rhs = if xc != 0 { dt } else { de };
             Some(kernel::id(clo_ty_here, lhs, rhs))
         })
@@ -1537,13 +1537,13 @@ impl<'a> ClosureCombinators<'a> {
         let quant_types = vec![None; n_captures + arity];
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let (cs, ps) = pp.split_at(n_captures);
-            let value_fn_here = value_fn.clone();
-            let call_fn_here = call_fn.clone();
+            let value_fn_here = value_fn;
+            let call_fn_here = call_fn;
 
             let (closure_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
                 let mk_env_expr = combinators.cp.mk_env_ref(&sig);
                 let env = apply_n(mk_env_expr, cs.iter().cloned());
-                (kernel::app(value_fn_here, env.clone()), Some(env))
+                (kernel::app(value_fn_here, env), Some(env))
             } else {
                 (value_fn_here, None)
             };
@@ -1619,13 +1619,13 @@ impl<'a> ClosureCombinators<'a> {
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let (cs, ps) = pp.split_at(n_captures);
             let (supplied, more) = ps.split_at(s);
-            let pap_fn_here = pap_fn.clone();
-            let call_fn_here = call_fn.clone();
+            let pap_fn_here = pap_fn;
+            let call_fn_here = call_fn;
 
             let (pap_value, env_arg): (Expr, Option<Expr>) = if n_captures > 0 {
                 let mk_env_expr = combinators.cp.mk_env_ref(&sig);
                 let env = apply_n(mk_env_expr, cs.iter().cloned());
-                let v = apply_n(pap_fn_here, std::iter::once(env.clone()).chain(supplied.iter().cloned()));
+                let v = apply_n(pap_fn_here, std::iter::once(env).chain(supplied.iter().cloned()));
                 (v, Some(env))
             } else {
                 (apply_n(pap_fn_here, supplied.iter().cloned()), None)
@@ -1833,7 +1833,7 @@ pub(super) fn closure_leaf_value_expr(combinators: &mut ClosureCombinators<'_>, 
     } else {
         let sig: Vec<Option<usize>> = vec![None; captures.len()];
         let mk_env_expr = combinators.cp.mk_env_ref(&sig);
-        let cs2: Vec<Expr> = captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
+        let cs2: Vec<Expr> = captures.iter().map(|&rel| params_full[rel as usize]).collect();
         Some(kernel::app(sym, apply_n(mk_env_expr, cs2)))
     }
 }
@@ -1854,7 +1854,7 @@ pub(super) fn closure_leaf_pap_value_expr(store: &TermStore, combinators: &mut C
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
         let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-        let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
+        let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize]).collect();
         Some(apply_n(mk_env_expr, cs2))
     };
     let mut arg_exprs = Vec::with_capacity(s);
@@ -1882,7 +1882,7 @@ pub(super) fn closure_leaf_call_value_expr(store: &TermStore, combinators: &mut 
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
         let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-        let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize].clone()).collect();
+        let cs2: Vec<Expr> = g_captures.iter().map(|&rel| params_full[rel as usize]).collect();
         Some(apply_n(mk_env_expr, cs2))
     };
     let mut arg_exprs = Vec::with_capacity(args.len());
@@ -1955,8 +1955,8 @@ pub(super) fn inner_closure_pap_value(
     for &rel in &g_captures {
         let rel = rel as usize;
         let x = *inner_concrete.get(rel)?;
-        let d = inner_params.get(rel)?.clone();
-        let p = inner_facts.get(rel)?.clone();
+        let d = *inner_params.get(rel)?;
+        let p = *inner_facts.get(rel)?;
         g_cap_triples.push((x, d, p));
     }
 
@@ -1973,10 +1973,10 @@ pub(super) fn inner_closure_pap_value(
     } else {
         let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
         let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-        let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
+        let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| *d).collect();
         Some(apply_n(mk_env_expr, cd))
     };
-    let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| d.clone()).collect();
+    let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| *d).collect();
     let mut pap_args = Vec::with_capacity(1 + s);
     pap_args.extend(g_env_denoted);
     pap_args.extend(d_supplied);
@@ -2139,16 +2139,16 @@ pub(super) fn resolve_closure_if_tree(
         DecisionTree::Leaf(h) => match leaf_shapes.get(h)? {
             ClosureIfTreeLeafShape::Abs { .. } => {
                 let (value_lit, cap_triples) = inner_closure_literal_value(combinators, *h, inner_params, inner_concrete, inner_facts)?;
-                let proof = kernel::refl(value_lit.clone());
-                Some((IfTreeLeafResolution::Direct { chosen: *h, cap_triples, arg_prefix: Vec::new() }, value_lit.clone(), value_lit, proof))
+                let proof = kernel::refl(value_lit);
+                Some((IfTreeLeafResolution::Direct { chosen: *h, cap_triples, arg_prefix: Vec::new() }, value_lit, value_lit, proof))
             }
             ClosureIfTreeLeafShape::Pap { g, args } => {
                 let (value_lit, g_cap_triples, supplied_triples) =
                     inner_closure_pap_value(store, combinators, *g, args, inner_params, inner_concrete, inner_facts)?;
-                let proof = kernel::refl(value_lit.clone());
+                let proof = kernel::refl(value_lit);
                 Some((
                     IfTreeLeafResolution::Direct { chosen: *g, cap_triples: g_cap_triples, arg_prefix: supplied_triples },
-                    value_lit.clone(),
+                    value_lit,
                     value_lit,
                     proof,
                 ))
@@ -2194,7 +2194,7 @@ pub(super) fn resolve_closure_if_tree(
                     extra_arg_triples,
                 )?;
 
-                let full_proof = kernel::refl(leaf_value.clone());
+                let full_proof = kernel::refl(leaf_value);
                 let resolution = IfTreeLeafResolution::Indirect {
                     chosen,
                     chosen_cap_triples,
@@ -2203,7 +2203,7 @@ pub(super) fn resolve_closure_if_tree(
                     chosen_value,
                     apply_eq_chosen,
                 };
-                Some((resolution, leaf_value.clone(), leaf_value, full_proof))
+                Some((resolution, leaf_value, leaf_value, full_proof))
             }
         },
         DecisionTree::If { cond, then_branch, else_branch } => {
@@ -2223,9 +2223,9 @@ pub(super) fn resolve_closure_if_tree(
             let clo_ty = combinators.cp.clo_ty(k);
 
             let (dt, de) = if result_c != 0 {
-                (taken_subtree_value.clone(), other_value.clone())
+                (taken_subtree_value, other_value)
             } else {
-                (other_value.clone(), taken_subtree_value.clone())
+                (other_value, taken_subtree_value)
             };
 
             // `ite_clo_eq_ref`'s own bridge: first, `cong1` over
@@ -2235,10 +2235,10 @@ pub(super) fn resolve_closure_if_tree(
             // the two branches' own literal values -- see
             // `ite_clo_eq_ref`'s own docs for why both steps are needed.
             let f_cond_body = kernel::app3(kernel::shift(&ite_clo, 0, 1), kernel::var(0), kernel::shift(&dt, 0, 1), kernel::shift(&de, 0, 1));
-            let f_cond = kernel::lam(int_ty.clone(), f_cond_body);
-            let cong_cond = kernel::cong1(&int_ty, &clo_ty, &f_cond, denote_c.clone(), lit_xc.clone(), proof_c);
-            let this_subtree_value = kernel::app3(ite_clo.clone(), denote_c, dt.clone(), de.clone());
-            let ite_at_lit_xc = kernel::app3(ite_clo, lit_xc, dt.clone(), de.clone());
+            let f_cond = kernel::lam(int_ty, f_cond_body);
+            let cong_cond = kernel::cong1(&int_ty, &clo_ty, &f_cond, denote_c, lit_xc, proof_c);
+            let this_subtree_value = kernel::app3(ite_clo, denote_c, dt, de);
+            let ite_at_lit_xc = kernel::app3(ite_clo, lit_xc, dt, de);
 
             let ite_axiom_at = apply_n(ite_eq_axiom, vec![dt, de]);
             let branch_bridge = kernel::trans_proof(&clo_ty, &this_subtree_value, &ite_at_lit_xc, &taken_subtree_value, cong_cond, ite_axiom_at);
@@ -2284,7 +2284,7 @@ pub(super) fn build_env_expr(combinators: &mut ClosureCombinators, captures: &[u
     let sig = capture_sig(captures, param_types)?;
     let mut values = Vec::with_capacity(captures.len());
     for &rel in captures {
-        let v = params.get(rel as usize)?.clone();
+        let v = *params.get(rel as usize)?;
         values.push(v);
     }
     let mk_env = combinators.cp.mk_env_ref(&sig);
@@ -2417,8 +2417,8 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
             (combinators.cp.clo_ty(k), e)
         }
     };
-    let proof = kernel::refl(denotation.clone());
-    let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
+    let proof = kernel::refl(denotation);
+    let proof_ty = kernel::id(result_ty, denotation, denotation);
     combinators.cp.arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {

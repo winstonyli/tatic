@@ -84,7 +84,7 @@ fn abstract_frees(e: &Expr, first: u32, levels: &[u32], d: u32) -> Expr {
 /// (`RELATED_WORK.md` §63).
 fn abstract_frees_in(s: &Spaces, e: &Expr, first: u32, levels: &[u32], d: u32, memo: &mut FreesMemo) -> Expr {
     if s.free(e) <= first {
-        return e.clone();
+        return *e;
     }
     let mut go = |x: Expr, d: u32| {
         if s.free(&x) <= first {
@@ -95,18 +95,18 @@ fn abstract_frees_in(s: &Spaces, e: &Expr, first: u32, levels: &[u32], d: u32, m
         }
         let key = (s.key(&x), d);
         if let Some(r) = memo.get(&key) {
-            return r.clone();
+            return *r;
         }
         let r = abstract_frees_in(s, &x, first, levels, d, memo);
-        memo.insert(key, r.clone());
+        memo.insert(key, r);
         r
     };
     grow(|| match s.node(e) {
         Node::Free(l) => match levels.binary_search(&l) {
             Ok(j) => var(d + (levels.len() - 1 - j) as u32),
-            Err(_) => e.clone(),
+            Err(_) => *e,
         },
-        Node::Var(_) | Node::Sort(_) | Node::Const(_) => e.clone(),
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) => *e,
         n => s.mk(n.map_kids(|x, under| go(x, d + under as u32))),
     })
 }
@@ -240,7 +240,7 @@ impl Default for Postulates {
 pub fn sym(a_ty: &Expr, x: &Expr, y: &Expr, p: Expr) -> Expr {
     // motive(x', y', _) := Id(A, y', x')
     let motive = lam(
-        a_ty.clone(),
+        *a_ty,
         lam(
             shift(a_ty, 0, 1),
             lam(
@@ -249,8 +249,8 @@ pub fn sym(a_ty: &Expr, x: &Expr, y: &Expr, p: Expr) -> Expr {
             ),
         ),
     );
-    let base = lam(a_ty.clone(), refl(var(0)));
-    jelim(motive, base, x.clone(), y.clone(), p)
+    let base = lam(*a_ty, refl(var(0)));
+    jelim(motive, base, *x, *y, p)
 }
 
 /// `transport sort_k a_ty b_ty p x : b_ty`, given `p : Id(Sort(sort_k),
@@ -282,7 +282,7 @@ pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> E
     scoped(|| {
         // motive(a', b', _) := Id(B, f a', f b')
         let motive = lam(
-            a_ty.clone(),
+            *a_ty,
             lam(
                 shift(a_ty, 0, 1),
                 lam(
@@ -295,7 +295,7 @@ pub fn cong1(a_ty: &Expr, b_ty: &Expr, f: &Expr, a: Expr, b: Expr, p: Expr) -> E
                 ),
             ),
         );
-        let base = lam(a_ty.clone(), refl(app(shift(f, 0, 1), var(0))));
+        let base = lam(*a_ty, refl(app(shift(f, 0, 1), var(0))));
         jelim(motive, base, a, b, p)
     })
 }
@@ -308,7 +308,7 @@ pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr
     scoped(|| {
         // motive(y', z', _) := Id(A, x, y') -> Id(A, x, z')
         let motive = lam(
-            a_ty.clone(),
+            *a_ty,
             lam(
                 shift(a_ty, 0, 1),
                 lam(
@@ -321,10 +321,10 @@ pub fn trans_proof(a_ty: &Expr, x: &Expr, y: &Expr, z: &Expr, p1: Expr, p2: Expr
             ),
         );
         let base = lam(
-            a_ty.clone(),
+            *a_ty,
             lam(id(shift(a_ty, 0, 1), shift(x, 0, 1), var(0)), var(0)),
         );
-        app(jelim(motive, base, y.clone(), z.clone(), p2), p1)
+        app(jelim(motive, base, *y, *z, p2), p1)
     })
 }
 
@@ -340,7 +340,7 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
     assert_eq!(xs.len(), ps.len());
     // As in `cong1`; one scope for all the steps, so they share each other's shifted copies.
     scoped(|| {
-        let apply = |args: &[Expr]| -> Expr { args.iter().cloned().fold(f.clone(), app) };
+        let apply = |args: &[Expr]| -> Expr { args.iter().cloned().fold(*f, app) };
         let lhs_all = apply(xs);
         if xs.is_empty() {
             return refl(lhs_all);
@@ -355,13 +355,13 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
             let g_body = cur_args.iter().enumerate().fold(shift(f, 0, 1), |acc, (j, a)| {
                 app(acc, if j == i { var(0) } else { shift(a, 0, 1) })
             });
-            let g = lam(a_ty.clone(), g_body);
+            let g = lam(*a_ty, g_body);
             // `g` is `f` with every position but `i` already filled in -- a
             // *full* application under one open binder, not a curried partial
             // one, so its codomain is `f`'s own full result type `b_ty`
             // regardless of `i`.
-            let step = cong1(a_ty, b_ty, &g, cur_args[i].clone(), ys[i].clone(), ps[i].clone());
-            cur_args[i] = ys[i].clone();
+            let step = cong1(a_ty, b_ty, &g, cur_args[i], ys[i], ps[i]);
+            cur_args[i] = ys[i];
             let after = apply(&cur_args);
             acc = Some(match acc {
                 None => (step, after),
@@ -379,7 +379,7 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
 /// `bool_rec`'s own type and both its computation-rule axioms all need,
 /// differing only in what comes after the three binders.
 fn wrap_c_ct_cf(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Expr) -> Expr {
-    let c_ty = arrow(bool_ref.clone(), sort(0));
+    let c_ty = arrow(*bool_ref, sort(0));
     let true_d1 = shift(true_ref, 0, 1);
     let false_d2 = shift(false_ref, 0, 2);
     let pi_cf = pi(app(var(1), false_d2), body_d3);
@@ -454,14 +454,14 @@ impl NatPostulates {
         // bool_rec_true_eq : Pi C ct cf. Id(C(true), bool_rec(C,ct,cf)(true), ct)
         let true_d3 = shift(&p.get(true_pos), 0, 3);
         let applied_d3 = app(app(app(shift(&p.get(bool_rec_pos), 0, 3), var(2)), var(1)), var(0));
-        let true_eq_body_d3 = id(app(var(2), true_d3.clone()), app(applied_d3, true_d3), var(1));
+        let true_eq_body_d3 = id(app(var(2), true_d3), app(applied_d3, true_d3), var(1));
         let bool_rec_true_eq_ty = wrap_c_ct_cf(&p.get(bool_pos), &p.get(true_pos), &p.get(false_pos), true_eq_body_d3);
         let bool_rec_true_eq_pos = p.push(bool_rec_true_eq_ty);
 
         // bool_rec_false_eq : Pi C ct cf. Id(C(false), bool_rec(C,ct,cf)(false), cf)
         let false_d3 = shift(&p.get(false_pos), 0, 3);
         let applied_d3b = app(app(app(shift(&p.get(bool_rec_pos), 0, 3), var(2)), var(1)), var(0));
-        let false_eq_body_d3 = id(app(var(2), false_d3.clone()), app(applied_d3b, false_d3), var(0));
+        let false_eq_body_d3 = id(app(var(2), false_d3), app(applied_d3b, false_d3), var(0));
         let bool_rec_false_eq_ty = wrap_c_ct_cf(&p.get(bool_pos), &p.get(true_pos), &p.get(false_pos), false_eq_body_d3);
         let bool_rec_false_eq_pos = p.push(bool_rec_false_eq_ty);
 
@@ -535,7 +535,7 @@ impl NatPostulates {
     /// which uses this to rebuild and typecheck that closure by hand).
     pub fn zero_child_fn(&self, p: &Postulates) -> Expr {
         let nat_ty = self.nat_ty(p);
-        let f_empty_nat = app(p.get(self.empty_elim_pos), nat_ty.clone());
+        let f_empty_nat = app(p.get(self.empty_elim_pos), nat_ty);
         let arrow_nat_fn = lam(sort(0), arrow(var(0), shift(&nat_ty, 0, 1)));
         let cong_false = cong1(
             &sort(0),
@@ -547,14 +547,14 @@ impl NatPostulates {
         );
         let sym_cong_false = sym(
             &sort(0),
-            &arrow(app(p.get(self.child_ty_pos), p.get(self.false_pos)), nat_ty.clone()),
-            &arrow(p.get(self.empty_pos), nat_ty.clone()),
+            &arrow(app(p.get(self.child_ty_pos), p.get(self.false_pos)), nat_ty),
+            &arrow(p.get(self.empty_pos), nat_ty),
             cong_false,
         );
         transport(
             0,
-            arrow(p.get(self.empty_pos), nat_ty.clone()),
-            arrow(app(p.get(self.child_ty_pos), p.get(self.false_pos)), nat_ty.clone()),
+            arrow(p.get(self.empty_pos), nat_ty),
+            arrow(app(p.get(self.child_ty_pos), p.get(self.false_pos)), nat_ty),
             sym_cong_false,
             f_empty_nat,
         )
@@ -579,14 +579,14 @@ impl NatPostulates {
         );
         let sym_cong_true = sym(
             &sort(0),
-            &arrow(app(p.get(self.child_ty_pos), p.get(self.true_pos)), nat_ty.clone()),
-            &arrow(p.get(self.unit_pos), nat_ty.clone()),
+            &arrow(app(p.get(self.child_ty_pos), p.get(self.true_pos)), nat_ty),
+            &arrow(p.get(self.unit_pos), nat_ty),
             cong_true,
         );
         let f_succ = transport(
             0,
-            arrow(p.get(self.unit_pos), nat_ty.clone()),
-            arrow(app(p.get(self.child_ty_pos), p.get(self.true_pos)), nat_ty.clone()),
+            arrow(p.get(self.unit_pos), nat_ty),
+            arrow(app(p.get(self.child_ty_pos), p.get(self.true_pos)), nat_ty),
             sym_cong_true,
             f_unit_nat,
         );

@@ -128,10 +128,10 @@ fn nth_subterm(e: &Expr, target: u32, counter: &mut u32) -> Expr {
     let my_idx = *counter;
     *counter += 1;
     if my_idx == target {
-        return e.clone();
+        return *e;
     }
     let mut kids = Vec::new();
-    e.node().for_kids(|c, _| kids.push(c.clone()));
+    e.node().for_kids(|c, _| kids.push(*c));
     for child in &kids {
         let nc = count_nodes(child);
         if target < *counter + nc {
@@ -149,10 +149,10 @@ fn replace_nth(e: &Expr, target: u32, counter: &mut u32, replacement: &Expr) -> 
     let my_idx = *counter;
     *counter += 1;
     if my_idx == target {
-        return replacement.clone();
+        return *replacement;
     }
     match e.node() {
-        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
         n => kernel::mk(n.map_kids(|c, _| replace_nth(&c, target, counter, replacement))),
     }
 }
@@ -184,10 +184,10 @@ fn mutate_once(rng: &mut Rng, e: &Expr, scope: u32) -> Expr {
 /// still unbound. Bound variables stay.
 fn to_consts(e: &Expr, n: u32, d: u32) -> Expr {
     match e.node() {
-        Node::Var(k) if k < d => e.clone(),
+        Node::Var(k) if k < d => *e,
         Node::Var(k) if k - d < n => kernel::mk(Node::Const(n - 1 - (k - d))),
         Node::Var(k) => kernel::var(k - n),
-        Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
         m => kernel::mk(m.map_kids(|c, under| to_consts(&c, n, d + under as u32))),
     }
 }
@@ -207,7 +207,7 @@ fn to_globals(globals: &kernel::Globals) -> kernel::Globals {
 fn to_vars(e: &Expr, n: u32, d: u32) -> Expr {
     match e.node() {
         Node::Const(l) if l < n => kernel::var(d + (n - 1 - l)),
-        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => e.clone(),
+        Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
         m => kernel::mk(m.map_kids(|c, under| to_vars(&c, n, d + under as u32))),
     }
 }
@@ -278,11 +278,11 @@ fn build_ctx() -> Ctx {
 /// the one pair nothing here relates).
 fn valid_seed_pool(ctx: &Ctx) -> Vec<Expr> {
     vec![
-        kernel::refl(ctx.a.clone()),
-        ctx.pac.clone(),
-        kernel::sym(&ctx.a_ty, &ctx.a, &ctx.c, ctx.pac.clone()),
-        kernel::trans_proof(&ctx.a_ty, &ctx.a, &ctx.c, &ctx.a, ctx.pac.clone(), kernel::sym(&ctx.a_ty, &ctx.a, &ctx.c, ctx.pac.clone())),
-        kernel::cong1(&ctx.a_ty, &ctx.b_ty, &ctx.f, ctx.a.clone(), ctx.c.clone(), ctx.pac.clone()),
+        kernel::refl(ctx.a),
+        ctx.pac,
+        kernel::sym(&ctx.a_ty, &ctx.a, &ctx.c, ctx.pac),
+        kernel::trans_proof(&ctx.a_ty, &ctx.a, &ctx.c, &ctx.a, ctx.pac, kernel::sym(&ctx.a_ty, &ctx.a, &ctx.c, ctx.pac)),
+        kernel::cong1(&ctx.a_ty, &ctx.b_ty, &ctx.f, ctx.a, ctx.c, ctx.pac),
     ]
 }
 
@@ -293,16 +293,16 @@ fn the_seed_pool_itself_is_genuinely_valid() {
     // here vacuous (a fuzzer whose "valid" seeds don't even typecheck
     // proves nothing about mutations of them).
     let ctx = build_ctx();
-    ctx.p.check(&kernel::refl(ctx.a.clone()), &kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone())).expect("refl(a) : Id(A,a,a)");
-    ctx.p.check(&ctx.pac, &kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone())).expect("the postulate itself should check against its own type");
+    ctx.p.check(&kernel::refl(ctx.a), &kernel::id(ctx.a_ty, ctx.a, ctx.a)).expect("refl(a) : Id(A,a,a)");
+    ctx.p.check(&ctx.pac, &kernel::id(ctx.a_ty, ctx.a, ctx.c)).expect("the postulate itself should check against its own type");
     ctx.p.check(
-        &kernel::sym(&ctx.a_ty, &ctx.a, &ctx.c, ctx.pac.clone()),
-        &kernel::id(ctx.a_ty.clone(), ctx.c.clone(), ctx.a.clone()),
+        &kernel::sym(&ctx.a_ty, &ctx.a, &ctx.c, ctx.pac),
+        &kernel::id(ctx.a_ty, ctx.c, ctx.a),
     )
     .expect("sym(pac) : Id(A,c,a)");
     ctx.p.check(
-        &kernel::cong1(&ctx.a_ty, &ctx.b_ty, &ctx.f, ctx.a.clone(), ctx.c.clone(), ctx.pac.clone()),
-        &kernel::id(ctx.b_ty.clone(), kernel::app(ctx.f.clone(), ctx.a.clone()), kernel::app(ctx.f.clone(), ctx.c.clone())),
+        &kernel::cong1(&ctx.a_ty, &ctx.b_ty, &ctx.f, ctx.a, ctx.c, ctx.pac),
+        &kernel::id(ctx.b_ty, kernel::app(ctx.f, ctx.a), kernel::app(ctx.f, ctx.c)),
     )
     .expect("cong1(f, pac) : Id(B, f a, f c)");
 }
@@ -315,7 +315,7 @@ fn the_seed_pool_itself_is_genuinely_valid() {
 fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality() {
     const SEEDS: u64 = 20_000;
     let ctx = build_ctx();
-    let claim = kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.b.clone());
+    let claim = kernel::id(ctx.a_ty, ctx.a, ctx.b);
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xC0FF_EE00_u64 ^ seed);
         let candidate = gen_expr(&mut rng, ctx.p.globals.len() as u32, MAX_DEPTH);
@@ -339,7 +339,7 @@ fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality() {
 fn mutating_a_genuinely_valid_proof_never_fools_the_kernel_into_an_unrelated_equality() {
     const SEEDS: u64 = 20_000;
     let ctx = build_ctx();
-    let claim = kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.b.clone());
+    let claim = kernel::id(ctx.a_ty, ctx.a, ctx.b);
     let pool = valid_seed_pool(&ctx);
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xBAD_C0DE_u64 ^ seed);
@@ -348,7 +348,7 @@ fn mutating_a_genuinely_valid_proof_never_fools_the_kernel_into_an_unrelated_equ
         // single point change, without drifting all the way back to
         // pure random generation (the other test's own job).
         let rounds = 1 + rng.below(2);
-        let mut mutant = base.clone();
+        let mut mutant = *base;
         for _ in 0..rounds {
             mutant = mutate_once(&mut rng, &mutant, ctx.p.globals.len() as u32);
         }
@@ -382,7 +382,7 @@ fn the_global_environment_agrees_with_the_context() {
     let (mut agreed_ok, mut agreed_err) = (0, 0);
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xD1FF_u64 ^ seed);
-        let claim = if seed % 2 == 0 { kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone()) } else { kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone()) };
+        let claim = if seed % 2 == 0 { kernel::id(ctx.a_ty, ctx.a, ctx.c) } else { kernel::id(ctx.a_ty, ctx.a, ctx.a) };
         let candidate = if seed % 3 == 0 {
             gen_expr(&mut rng, n, MAX_DEPTH)
         } else {
@@ -407,7 +407,7 @@ fn kernel_never_accepts_a_random_term_as_proving_an_unrelated_equality_in_consta
     let ctx = build_ctx();
     let n = ctx.p.globals.len() as u32;
     let g = to_globals(&ctx.p.globals);
-    let claim = to_consts(&kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.b.clone()), n, 0);
+    let claim = to_consts(&kernel::id(ctx.a_ty, ctx.a, ctx.b), n, 0);
     for seed in 0..SEEDS {
         let mut rng = Rng::new(0xC0DE_C0DE_u64 ^ seed);
         rng.consts = true;
@@ -431,11 +431,11 @@ fn a_term_with_a_free_never_checks() {
     let n = ctx.p.globals.len() as u32;
     let g = to_globals(&ctx.p.globals);
     let claims = [
-        kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone()),
-        kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.c.clone()),
-        kernel::id(ctx.a_ty.clone(), ctx.c.clone(), ctx.a.clone()),
-        kernel::id(ctx.a_ty.clone(), ctx.a.clone(), ctx.a.clone()),
-        kernel::id(ctx.b_ty.clone(), kernel::app(ctx.f.clone(), ctx.a.clone()), kernel::app(ctx.f.clone(), ctx.c.clone())),
+        kernel::id(ctx.a_ty, ctx.a, ctx.a),
+        kernel::id(ctx.a_ty, ctx.a, ctx.c),
+        kernel::id(ctx.a_ty, ctx.c, ctx.a),
+        kernel::id(ctx.a_ty, ctx.a, ctx.a),
+        kernel::id(ctx.b_ty, kernel::app(ctx.f, ctx.a), kernel::app(ctx.f, ctx.c)),
     ];
     let pool = valid_seed_pool(&ctx);
     assert_eq!(claims.len(), pool.len(), "claims[i] must be the claim pool[i] proves");

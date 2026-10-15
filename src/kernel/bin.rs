@@ -9,7 +9,7 @@ use std::collections::HashMap;
 /// The children of `n` in field order.
 fn children(n: &Node<Expr>) -> Vec<Expr> {
     let mut cs = Vec::new();
-    n.for_kids(|c, _| cs.push(c.clone()));
+    n.for_kids(|c, _| cs.push(*c));
     cs
 }
 
@@ -59,7 +59,7 @@ pub fn write(e: &Expr) -> Result<Vec<u8>, String> {
     let mut index: HashMap<u64, u64> = HashMap::new();
     let mut body = Vec::new();
     // post-order without recursion: (node, children already pushed)
-    let mut stack: Vec<(Expr, bool)> = vec![(e.clone(), false)];
+    let mut stack: Vec<(Expr, bool)> = vec![(*e, false)];
     while let Some((x, expanded)) = stack.pop() {
         let key = node_key(&x);
         if index.contains_key(&key) {
@@ -106,7 +106,7 @@ pub fn read(b: &[u8]) -> Result<Expr, String> {
             if d == 0 || d > at {
                 return Err(format!("child distance {d} out of range at node {at}"));
             }
-            Ok(nodes[(at - d) as usize].clone())
+            Ok(nodes[(at - d) as usize])
         };
         let e = match t {
             0 | 1 => {
@@ -159,8 +159,8 @@ mod tests {
     fn sample() -> Expr {
         let ty = pi(sort(0), pi(var(0), var(1)));
         let x = lam(sort(0), lam(var(0), var(0)));
-        let eq = id(ty.clone(), x.clone(), x.clone());
-        let j = jelim(var(0), var(1), x.clone(), x.clone(), refl(x.clone()));
+        let eq = id(ty, x, x);
+        let j = jelim(var(0), var(1), x, x, refl(x));
         let w = wrec(var(0), var(1), var(2), sup(var(3), var(4)));
         let s = sigrec(var(0), pair(var(1), var(2), var(3)), sigma(sort(1), wty(var(0), var(1))));
         lam(eq, app(app(j, w), s))
@@ -171,12 +171,12 @@ mod tests {
         let e = sample();
         let b = write(&e).unwrap();
         assert!(read(&b).unwrap() == e);
-        // inside an interning scope equal subterms are one node, so the table is smaller than the tree
+        // both spaces are hash-consed, so equal subterms are one node in a region and outside one alike
         scoped(|| {
             let shared = sample();
             let bs = write(&shared).unwrap();
             assert!(read(&bs).unwrap() == shared);
-            assert!(bs.len() < b.len(), "interned {} bytes, plain {}", bs.len(), b.len());
+            assert_eq!(bs.len(), b.len(), "in a region {} bytes, outside {}", bs.len(), b.len());
         })
     }
 

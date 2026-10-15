@@ -78,16 +78,16 @@ pub fn shr1_op(n: usize) -> Expr {
 /// `(proof, type)` of `Pi x y. GoodBv x -> GoodBv y -> GoodBv (shr1 x y)`: output bit `i` is input bit `i + 1`, the top bit false.
 pub fn good_shr1(n: usize) -> (Expr, Expr) {
     good_vec(n, shr1_op(n), &move |a, _b, ga, _gb| {
-        let s = (0..n).map(|i| if i + 1 < n { a[i + 1].clone() } else { f() }).collect();
-        let gs = (0..n).map(|i| if i + 1 < n { ga[i + 1].clone() } else { good_bit(false) }).collect();
+        let s = (0..n).map(|i| if i + 1 < n { a[i + 1] } else { f() }).collect();
+        let gs = (0..n).map(|i| if i + 1 < n { ga[i + 1] } else { good_bit(false) }).collect();
         (s, gs)
     })
 }
 /// `(proof, type)` of `Pi x y. GoodBv x -> GoodBv y -> GoodBv (shl1 x y)`: output bit `i` is input bit `i - 1`, bit 0 false.
 pub fn good_shl1(n: usize) -> (Expr, Expr) {
     good_vec(n, shl1_op(n), &move |a, _b, ga, _gb| {
-        let s = (0..n).map(|i| if i == 0 { f() } else { a[i - 1].clone() }).collect();
-        let gs = (0..n).map(|i| if i == 0 { good_bit(false) } else { ga[i - 1].clone() }).collect();
+        let s = (0..n).map(|i| if i == 0 { f() } else { a[i - 1] }).collect();
+        let gs = (0..n).map(|i| if i == 0 { good_bit(false) } else { ga[i - 1] }).collect();
         (s, gs)
     })
 }
@@ -134,10 +134,10 @@ impl Term {
     /// The term as an expression, with `vals[i]` for variable `i`.
     pub fn eval(&self, ops: &[Expr], n: usize, vals: &[Expr]) -> Expr {
         match self {
-            Term::V(i) => vals[*i].clone(),
+            Term::V(i) => vals[*i],
             Term::Zero => lit(n, 0),
             Term::Ones => lit(n, low_bits(n)),
-            Term::Op(o, a, b) => app2(ops[*o].clone(), a.eval(ops, n, vals), b.eval(ops, n, vals)),
+            Term::Op(o, a, b) => app2(ops[*o], a.eval(ops, n, vals), b.eval(ops, n, vals)),
         }
     }
     /// The value on the width-`n` operands `vals`, in plain integers (a cheap screen for false laws).
@@ -224,7 +224,7 @@ impl Term {
     /// The term's value at one bit position, a `Bool0`, given the variables' bits (`bits[v]`); bitwise ops only.
     pub fn bit(&self, bits: &[Expr]) -> Expr {
         match self {
-            Term::V(i) => bits[*i].clone(),
+            Term::V(i) => bits[*i],
             Term::Zero => f(),
             Term::Ones => t(),
             Term::Op(o, a, b) => {
@@ -293,7 +293,7 @@ pub fn bitwise_law_k(n: usize, k: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
             let vs: Vec<Expr> = (0..k).map(|v| bits(v, i)).collect();
             s1.push(t1.bit(&vs));
             s2.push(t2.bit(&vs));
-            e.push(apps(bit_law.clone(), vs.iter().cloned().chain((0..k).map(|v| goods(v, i))).collect()));
+            e.push(apps(bit_law, vs.iter().cloned().chain((0..k).map(|v| goods(v, i))).collect()));
         }
         (s1, s2, e)
     })
@@ -329,7 +329,7 @@ pub fn k_var_law_to(n: usize, k: usize, ty: &Expr, sides: &dyn Fn(&[Expr]) -> (E
     let done = finish(&|v, i| at(last, level(v) + i), &|v, i| at(last, level(v) + n + i));
     let claim = |args: Vec<Expr>| {
         let (l, r) = sides(&args);
-        id(ty.clone(), l, r)
+        id(*ty, l, r)
     };
     // the motive for eliminating vector `j` at depth `d` (inside the previous level's binders), under its own binder
     let motive = |j: usize, d: usize| {
@@ -400,7 +400,7 @@ pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
         return v;
     }
     let (p, s) = build();
-    CLOSED.with(|c| c.borrow_mut().insert(key, (tatic::kernel::persist(p.clone()), tatic::kernel::persist(s.clone()))));
+    CLOSED.with(|c| c.borrow_mut().insert(key, (tatic::kernel::persist(p), tatic::kernel::persist(s))));
     (p, s)
 }
 
@@ -432,7 +432,7 @@ pub fn shared_lemma(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr,
             let mut c = c.borrow_mut();
             let (ps, scopes) = c.get_or_insert_with(|| (Postulates::new(), Vec::new()));
             let sc = ps.open();
-            let r = ps.bind(s.clone());
+            let r = ps.bind(s);
             scopes.push((sc, p.map(tatic::kernel::persist)));
             (r, s)
         })
@@ -458,7 +458,7 @@ pub fn ablated(name: &str) -> bool {
 pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
     let all = low_bits(n);
     match t {
-        Term::V(i) => goods[*i].clone(),
+        Term::V(i) => goods[*i],
         Term::Zero => (lit(n, 0), good_lit(n, 0)),
         Term::Ones => (lit(n, all), good_lit(n, all)),
         Term::Op(o, a, b) => {
@@ -481,15 +481,15 @@ pub fn witnessed(t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
                         _ => good2(&|p, q| xor(p, q), &OP_INFO[3].truth),
                     };
                     let vec = bitwise(n, &opf);
-                    let (gp, _) = good_vec(n, vec.clone(), &move |a, b, ga, gb| {
-                        let s = (0..n).map(|i| opf(a[i].clone(), b[i].clone())).collect();
-                        let gs = (0..n).map(|i| apps(g.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()])).collect();
+                    let (gp, _) = good_vec(n, vec, &move |a, b, ga, gb| {
+                        let s = (0..n).map(|i| opf(a[i], b[i])).collect();
+                        let gs = (0..n).map(|i| apps(g, vec![a[i], b[i], ga[i], gb[i]])).collect();
                         (s, gs)
                     });
                     (vec, gp)
                 }),
             };
-            (app2(op.clone(), av.clone(), bv.clone()), apps(good_op, vec![av, bv, aw, bw]))
+            (app2(op, av, bv), apps(good_op, vec![av, bv, aw, bw]))
         }
     }
 }
@@ -561,7 +561,7 @@ pub struct Compiler {
 impl Compiler {
     pub fn new(n: usize, k: usize) -> Compiler {
         let goods: Vec<(Expr, Expr)> = (0..k).map(|i| (var((2 * k - 1 - i) as u32), var((k - 1 - i) as u32))).collect();
-        Compiler { n, ops: ops_for(n), vals: goods.iter().map(|g| g.0.clone()).collect(), goods }
+        Compiler { n, ops: ops_for(n), vals: goods.iter().map(|g| g.0).collect(), goods }
     }
 
     pub fn ev(&self, t: &Term) -> Expr {
@@ -616,7 +616,7 @@ impl Compiler {
                 })
                 .0;
                 let w: Vec<(Expr, Expr)> = args.iter().map(|t| witnessed(t, n, &self.goods)).collect();
-                let p = apps(law, w.iter().map(|x| x.0.clone()).chain(w.iter().map(|x| x.1.clone())).collect());
+                let p = apps(law, w.iter().map(|x| x.0).chain(w.iter().map(|x| x.1)).collect());
                 let sub: Vec<Option<Term>> = args.iter().cloned().map(Some).collect();
                 (subst_pat(l, &sub), subst_pat(r, &sub), p)
             }
@@ -778,7 +778,7 @@ pub fn rule_set() -> &'static Vec<(Term, Term)> {
             Ok(other) => panic!("unknown RULESET {other}"),
             Err(_) => "",
         };
-        parse_rules(&text)
+        parse_rules(text)
     })
 }
 
@@ -1110,8 +1110,8 @@ pub fn shr_not_law(n: usize) -> Option<(Expr, Expr)> {
     let (p1, p2) = (apps(to_left.0, args.clone()), apps(to_right.0, args));
     let body = trans_proof(&bv, &ev(&l), &ev(&m), &ev(&r), sym(&bv, &ev(&m), &ev(&l), p1), p2);
     let g = app(good_bv(n), var(0));
-    let stmt = pi(g.clone(), id(bv.clone(), ev(&l), ev(&r)));
-    Some((lam(bv.clone(), lam(g, body)), pi(bv, stmt)))
+    let stmt = pi(g, id(bv, ev(&l), ev(&r)));
+    Some((lam(bv, lam(g, body)), pi(bv, stmt)))
 }
 
 /// The law behind a rule: bitwise/shift rules by the per-position prover, the rest by the carry machines.
@@ -1858,14 +1858,14 @@ pub fn rewrite_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Ex
 pub fn law_proof(n: usize, k: usize, t1: &Term, t2: &Term, plan: &Plan) -> (Expr, Expr) {
     let c = Compiler::new(n, k);
     let bv = bv_ty(n);
-    let root = if matches!((t1, t2), (Term::Op(LT, ..), Term::Op(LT, ..))) { bv_ty(1) } else { bv.clone() };
+    let root = if matches!((t1, t2), (Term::Op(LT, ..), Term::Op(LT, ..))) { bv_ty(1) } else { bv };
     let (mut proof, mut stmt) = (c.proof(plan).2, id(root, c.ev(t1), c.ev(t2)));
     for _ in 0..k {
         let g = app(good_bv(n), var(k as u32 - 1));
-        (proof, stmt) = (lam(g.clone(), proof), pi(g, stmt));
+        (proof, stmt) = (lam(g, proof), pi(g, stmt));
     }
     for _ in 0..k {
-        (proof, stmt) = (lam(bv.clone(), proof), pi(bv.clone(), stmt));
+        (proof, stmt) = (lam(bv, proof), pi(bv, stmt));
     }
     (proof, stmt)
 }
@@ -1971,7 +1971,7 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
         let (l, r) = (add(op(4, v(0), v(1)), v(2)), add(op(4, v(2), v(1)), v(0)));
         let (pr, sr) = shared_lemma("nested".into(),|| prove_rule(2, 3, &l, &r).expect("rule"));
         assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
-        let all = apps(lam(sm.clone(), lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
+        let all = apps(lam(sm, lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
         ck("discharged", &discharge(all), &sm);
     })
 }
@@ -2001,46 +2001,46 @@ pub fn carry_chain_law(n: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
         return None;
     }
     let r = bit(find_constant_carry(a_term, b_term, t2)?);
-    let carry = |x: Expr, y: Expr, c: Expr| or(and(x.clone(), y.clone()), and(c, xor(x, y)));
+    let carry = |x: Expr, y: Expr, c: Expr| or(and(x, y), and(c, xor(x, y)));
     // per-bit lemmas, by case analysis on the two operand bits
     let (p_carry, _) = lemma2(
-        &|x, y| id(bool0(), carry(a_term.bit(&[x.clone(), y.clone()]), b_term.bit(&[x.clone(), y.clone()]), r.clone()), r.clone()),
-        &|_, _| refl(r.clone()),
+        &|x, y| id(bool0(), carry(a_term.bit(&[x, y]), b_term.bit(&[x, y]), r), r),
+        &|_, _| refl(r),
     );
     let (p_sum, _) = lemma2(
-        &|x, y| id(bool0(), sum3(a_term.bit(&[x.clone(), y.clone()]), b_term.bit(&[x.clone(), y.clone()]), r.clone()), t2.bit(&[x, y])),
+        &|x, y| id(bool0(), sum3(a_term.bit(&[x, y]), b_term.bit(&[x, y]), r), t2.bit(&[x, y])),
         &|vx, vy| refl(t2.bit(&[bit(vx), bit(vy)])),
     );
     Some(two_var_law(n, t1, t2, &|a, ga, b, gb| {
         let bl = bool0();
         let (ai, bi) = (|i: usize| a_term.bit(&[a(i), b(i)]), |i: usize| b_term.bit(&[a(i), b(i)]));
-        let mut c = vec![r.clone()];
+        let mut c = vec![r];
         let mut pc: Vec<Option<Expr>> = vec![None];
         let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
         for i in 0..n {
             let args = vec![a(i), b(i), ga(i), gb(i)];
             // sum bit: rewrite the carry to R, then the sum lemma
-            let s_i = sum3(ai(i), bi(i), c[i].clone());
-            let to_target = apps(p_sum.clone(), args.clone());
+            let s_i = sum3(ai(i), bi(i), c[i]);
+            let to_target = apps(p_sum, args.clone());
             e.push(match &pc[i] {
                 None => to_target,
                 Some(pci) => {
-                    let fmap = lam(bl.clone(), sum3(shift(&ai(i), 0, 1), shift(&bi(i), 0, 1), var(0)));
-                    let rewritten = cong1(&bl, &bl, &fmap, c[i].clone(), r.clone(), pci.clone());
-                    trans_proof(&bl, &s_i, &sum3(ai(i), bi(i), r.clone()), &t2.bit(&[a(i), b(i)]), rewritten, to_target)
+                    let fmap = lam(bl, sum3(shift(&ai(i), 0, 1), shift(&bi(i), 0, 1), var(0)));
+                    let rewritten = cong1(&bl, &bl, &fmap, c[i], r, *pci);
+                    trans_proof(&bl, &s_i, &sum3(ai(i), bi(i), r), &t2.bit(&[a(i), b(i)]), rewritten, to_target)
                 }
             });
             s1.push(s_i);
             s2.push(t2.bit(&[a(i), b(i)]));
             // next carry stays R
-            let next = carry(ai(i), bi(i), c[i].clone());
-            let stays = apps(p_carry.clone(), args);
+            let next = carry(ai(i), bi(i), c[i]);
+            let stays = apps(p_carry, args);
             pc.push(Some(match &pc[i] {
                 None => stays,
                 Some(pci) => {
-                    let fmap = lam(bl.clone(), carry(shift(&ai(i), 0, 1), shift(&bi(i), 0, 1), var(0)));
-                    let rewritten = cong1(&bl, &bl, &fmap, c[i].clone(), r.clone(), pci.clone());
-                    trans_proof(&bl, &next, &carry(ai(i), bi(i), r.clone()), &r, rewritten, stays)
+                    let fmap = lam(bl, carry(shift(&ai(i), 0, 1), shift(&bi(i), 0, 1), var(0)));
+                    let rewritten = cong1(&bl, &bl, &fmap, c[i], r, *pci);
+                    trans_proof(&bl, &next, &carry(ai(i), bi(i), r), &r, rewritten, stays)
                 }
             }));
             c.push(next);

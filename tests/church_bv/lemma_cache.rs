@@ -182,7 +182,7 @@ fn lemma_cache_round_trips_and_rejects_other_builds() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("lemmas.bin");
     let _ = std::fs::remove_file(&path);
-    let stmt = |k: usize| lemma_n_ty(k, &|v| id(bool0(), xor(v[0].clone(), v[k - 1].clone()), xor(v[k - 1].clone(), v[0].clone())));
+    let stmt = |k: usize| lemma_n_ty(k, &|v| id(bool0(), xor(v[0], v[k - 1]), xor(v[k - 1], v[0])));
     let enc = |k: usize| tatic::kernel::bin::write(&stmt(k)).unwrap();
     let fresh = Cache::load(&path, 7);
     assert!(fresh.why_empty.is_some() && fresh.len() == 0);

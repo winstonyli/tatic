@@ -103,11 +103,11 @@ pub(super) fn eval_and_prove(
         },
         Shape::Var(i) => {
             let i = i as usize;
-            Some((*concrete.get(i)?, params.get(i)?.clone(), param_facts.get(i)?.clone()))
+            Some((*concrete.get(i)?, *params.get(i)?, *param_facts.get(i)?))
         }
         Shape::Lit(n) => {
             let l = combinators.cp.arith.lit_ref(n);
-            Some((n, l.clone(), kernel::refl(l)))
+            Some((n, l, kernel::refl(l)))
         }
         Shape::Prim(op, a, b) => {
             let (xa, da, pa) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
@@ -121,15 +121,15 @@ pub(super) fn eval_and_prove(
                 &int_ty,
                 &int_ty,
                 &f,
-                &[da.clone(), db.clone()],
+                &[da, db],
                 &[combinators.cp.arith.lit_ref(xa), combinators.cp.arith.lit_ref(xb)],
                 vec![pa, pb],
             );
-            let lhs = kernel::app2(f.clone(), da, db);
+            let lhs = kernel::app2(f, da, db);
             let mid = kernel::app2(f, combinators.cp.arith.lit_ref(xa), combinators.cp.arith.lit_ref(xb));
             let rhs = combinators.cp.arith.lit_ref(result);
             let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
-            debug_assert_has_type(&combinators.cp.arith.p, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: Prim proof");
+            debug_assert_has_type(&combinators.cp.arith.p, &proof, &kernel::id(int_ty, lhs, rhs), "eval_and_prove: Prim proof");
             Some((result, lhs, proof))
         }
         // Mirrors the `Prim` case just above, via `assume_ite_fact`
@@ -152,15 +152,15 @@ pub(super) fn eval_and_prove(
                 &int_ty,
                 &int_ty,
                 &f,
-                &[dc.clone(), dt.clone(), de.clone()],
+                &[dc, dt, de],
                 &[combinators.cp.arith.lit_ref(xc), combinators.cp.arith.lit_ref(xt), combinators.cp.arith.lit_ref(xe)],
                 vec![pc, pt, pe],
             );
-            let lhs = kernel::app3(f.clone(), dc, dt, de);
+            let lhs = kernel::app3(f, dc, dt, de);
             let mid = kernel::app3(f, combinators.cp.arith.lit_ref(xc), combinators.cp.arith.lit_ref(xt), combinators.cp.arith.lit_ref(xe));
             let rhs = combinators.cp.arith.lit_ref(result);
             let proof = kernel::trans_proof(&int_ty, &lhs, &mid, &rhs, cong, fact);
-            debug_assert_has_type(&combinators.cp.arith.p, &proof, &kernel::id(int_ty, lhs.clone(), rhs), "eval_and_prove: If proof");
+            debug_assert_has_type(&combinators.cp.arith.p, &proof, &kernel::id(int_ty, lhs, rhs), "eval_and_prove: If proof");
             Some((result, lhs, proof))
         }
         Shape::SelfCall(_) | Shape::OtherCall | Shape::Combinator { .. } => None,
@@ -217,8 +217,8 @@ pub(super) fn eval_and_prove_call(
     for &rel in &root_captures {
         let rel = rel as usize;
         let x = *concrete.get(rel)?;
-        let d = params.get(rel)?.clone();
-        let p = param_facts.get(rel)?.clone();
+        let d = *params.get(rel)?;
+        let p = *param_facts.get(rel)?;
         cap_triples.push((x, d, p));
     }
 
@@ -270,7 +270,7 @@ pub(super) fn eval_and_prove_direct_call(
     let env_bridge = if n > 0 {
         let mk_env_expr = combinators.cp.mk_env_ref(&sig);
         let env_ty_expr = combinators.cp.env_ty(&sig);
-        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
+        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| *d).collect();
         let lit_c: Vec<Expr> = cap_triples
             .iter()
             .map(|&(x, _, _)| {
@@ -278,9 +278,9 @@ pub(super) fn eval_and_prove_direct_call(
                 combinators.cp.arith.lit_ref(x)
             })
             .collect();
-        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| p.clone()).collect();
+        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| *p).collect();
         let env_eq = kernel::cong_n(&int_ty, &env_ty_expr, &mk_env_expr, &cd, &lit_c, cp);
-        let denoted_env = apply_n(mk_env_expr.clone(), cd);
+        let denoted_env = apply_n(mk_env_expr, cd);
         let lit_env = apply_n(mk_env_expr, lit_c);
         Some((denoted_env, lit_env, env_eq, env_ty_expr))
     } else {
@@ -288,7 +288,7 @@ pub(super) fn eval_and_prove_direct_call(
     };
 
     let call_fn = combinators.call_ref(root, &root_captures, &[])?;
-    let d_args: Vec<Expr> = arg_triples.iter().map(|(_, d, _)| d.clone()).collect();
+    let d_args: Vec<Expr> = arg_triples.iter().map(|(_, d, _)| *d).collect();
     let lit_args: Vec<Expr> = arg_triples
         .iter()
         .map(|&(x, _, _)| {
@@ -296,7 +296,7 @@ pub(super) fn eval_and_prove_direct_call(
             combinators.cp.arith.lit_ref(x)
         })
         .collect();
-    let p_args: Vec<Expr> = arg_triples.iter().map(|(_, _, p)| p.clone()).collect();
+    let p_args: Vec<Expr> = arg_triples.iter().map(|(_, _, p)| *p).collect();
 
     let (call_at_denoted, call_env_to_lit_step) = match &env_bridge {
         Some((denoted_env, lit_env, env_eq, env_ty_expr)) => {
@@ -307,14 +307,14 @@ pub(super) fn eval_and_prove_direct_call(
             for d in &d_args {
                 f_env_body = kernel::app(f_env_body, kernel::shift(d, 0, 1));
             }
-            let f_env = kernel::lam(env_ty_expr.clone(), f_env_body);
-            let step = kernel::cong1(env_ty_expr, &int_ty, &f_env, denoted_env.clone(), lit_env.clone(), env_eq.clone());
-            let call_at_denoted = apply_n(call_fn.clone(), std::iter::once(denoted_env.clone()).chain(d_args.iter().cloned()));
+            let f_env = kernel::lam(*env_ty_expr, f_env_body);
+            let step = kernel::cong1(env_ty_expr, &int_ty, &f_env, *denoted_env, *lit_env, *env_eq);
+            let call_at_denoted = apply_n(call_fn, std::iter::once(*denoted_env).chain(d_args.iter().cloned()));
             (call_at_denoted, step)
         }
         None => {
-            let call_at_denoted = apply_n(call_fn.clone(), d_args.iter().cloned());
-            let step = kernel::refl(call_at_denoted.clone());
+            let call_at_denoted = apply_n(call_fn, d_args.iter().cloned());
+            let step = kernel::refl(call_at_denoted);
             (call_at_denoted, step)
         }
     };
@@ -323,11 +323,11 @@ pub(super) fn eval_and_prove_direct_call(
     // `Env_sig` (if any) held fixed at its *literal* value from the step
     // above.
     let f_ints = match &env_bridge {
-        Some((_, lit_env, _, _)) => apply_n(call_fn.clone(), std::iter::once(lit_env.clone())),
-        None => call_fn.clone(),
+        Some((_, lit_env, _, _)) => apply_n(call_fn, std::iter::once(*lit_env)),
+        None => call_fn,
     };
     let args_eq = kernel::cong_n(&int_ty, &int_ty, &f_ints, &d_args, &lit_args, p_args);
-    let call_at_lit_env_denoted_args = apply_n(f_ints.clone(), d_args);
+    let call_at_lit_env_denoted_args = apply_n(f_ints, d_args);
     let call_at_lit_env_lit_args = apply_n(f_ints, lit_args);
 
     let bridge = kernel::trans_proof(
@@ -349,7 +349,7 @@ pub(super) fn eval_and_prove_direct_call(
         .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)) // already lit()'d building `lit_c` above
         .chain(arg_triples.iter().rev().map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)))
         .collect();
-    let axiom_at_literals = apply_n(axiom.clone(), axiom_args);
+    let axiom_at_literals = apply_n(axiom, axiom_args);
 
     // Concrete value of `root`'s own body, at the literal args/captures --
     // recurses into the *same* `Var`/`Lit`/`Prim`/`If` fragment
@@ -365,7 +365,7 @@ pub(super) fn eval_and_prove_direct_call(
     for &(x, _, _) in arg_triples.iter().rev() {
         combinators.cp.arith.lit(x);
         let l = combinators.cp.arith.lit_ref(x);
-        inner_params.push(l.clone());
+        inner_params.push(l);
         inner_concrete.push(x);
         inner_facts.push(kernel::refl(l));
     }
@@ -376,8 +376,8 @@ pub(super) fn eval_and_prove_direct_call(
         let filler = combinators.cp.arith.lit_ref(fx0);
         while inner_params.len() < pad_len {
             inner_concrete.push(fx0);
-            inner_params.push(filler.clone());
-            inner_facts.push(kernel::refl(filler.clone()));
+            inner_params.push(filler);
+            inner_facts.push(kernel::refl(filler));
         }
         for (j, &rel) in root_captures.iter().enumerate() {
             let (cx, _, _) = cap_triples[j];
@@ -385,7 +385,7 @@ pub(super) fn eval_and_prove_direct_call(
             let l = combinators.cp.arith.lit_ref(cx);
             let idx = root_arity + rel as usize;
             inner_concrete[idx] = cx;
-            inner_params[idx] = l.clone();
+            inner_params[idx] = l;
             inner_facts[idx] = kernel::refl(l);
         }
     }
@@ -406,7 +406,7 @@ pub(super) fn eval_and_prove_direct_call(
     debug_assert_has_type(
         &combinators.cp.arith.p,
         &final_proof,
-        &kernel::id(int_ty2, call_at_denoted.clone(), result_ref),
+        &kernel::id(int_ty2, call_at_denoted, result_ref),
         "eval_and_prove_call: final proof",
     );
     Some((result, call_at_denoted, final_proof))
@@ -460,8 +460,8 @@ pub(super) fn inner_closure_literal_value(
     for &rel in &inner_captures {
         let rel = rel as usize;
         let x = *inner_concrete.get(rel)?;
-        let d = inner_params.get(rel)?.clone();
-        let p = inner_facts.get(rel)?.clone();
+        let d = *inner_params.get(rel)?;
+        let p = *inner_facts.get(rel)?;
         cap_triples.push((x, d, p));
     }
     let inner_dummy: Vec<Option<usize>> = vec![None; inner_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -550,8 +550,8 @@ pub(super) fn build_clo_call_bridge(
     for &rel in &subject_captures {
         let rel = rel as usize;
         let x = *outer_concrete.get(rel)?;
-        let d = outer_params.get(rel)?.clone();
-        let p = outer_facts.get(rel)?.clone();
+        let d = *outer_params.get(rel)?;
+        let p = *outer_facts.get(rel)?;
         cap_triples.push((x, d, p));
     }
     let n = subject_captures.len();
@@ -573,7 +573,7 @@ pub(super) fn build_clo_call_bridge(
     let env_bridge = if n > 0 {
         let mk_env_expr = combinators.cp.mk_env_ref(&sig);
         let env_ty_expr = combinators.cp.env_ty(&sig);
-        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
+        let cd: Vec<Expr> = cap_triples.iter().map(|(_, d, _)| *d).collect();
         let lit_c: Vec<Expr> = cap_triples
             .iter()
             .map(|&(x, _, _)| {
@@ -581,10 +581,10 @@ pub(super) fn build_clo_call_bridge(
                 combinators.cp.arith.lit_ref(x)
             })
             .collect();
-        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| p.clone()).collect();
+        let cp: Vec<Expr> = cap_triples.iter().map(|(_, _, p)| *p).collect();
         let int_ty = combinators.cp.arith.int_ty();
         let env_eq = kernel::cong_n(&int_ty, &env_ty_expr, &mk_env_expr, &cd, &lit_c, cp);
-        let denoted_env = apply_n(mk_env_expr.clone(), cd);
+        let denoted_env = apply_n(mk_env_expr, cd);
         let lit_env = apply_n(mk_env_expr, lit_c);
         Some((denoted_env, lit_env, env_eq, env_ty_expr))
     } else {
@@ -592,7 +592,7 @@ pub(super) fn build_clo_call_bridge(
     };
 
     let call_fn = combinators.call_ref(subject, &subject_captures, &[])?;
-    let d_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, d, _)| d.clone()).collect();
+    let d_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, d, _)| *d).collect();
     let lit_sat_args: Vec<Expr> = sat_arg_triples
         .iter()
         .map(|&(x, _, _)| {
@@ -600,7 +600,7 @@ pub(super) fn build_clo_call_bridge(
             combinators.cp.arith.lit_ref(x)
         })
         .collect();
-    let p_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, _, p)| p.clone()).collect();
+    let p_sat_args: Vec<Expr> = sat_arg_triples.iter().map(|(_, _, p)| *p).collect();
 
     let (call_at_denoted, call_env_to_lit_step) = match &env_bridge {
         Some((denoted_env, lit_env, env_eq, env_ty_expr)) => {
@@ -608,27 +608,27 @@ pub(super) fn build_clo_call_bridge(
             for d in &d_sat_args {
                 f_env_body = kernel::app(f_env_body, kernel::shift(d, 0, 1));
             }
-            let f_env = kernel::lam(env_ty_expr.clone(), f_env_body);
+            let f_env = kernel::lam(*env_ty_expr, f_env_body);
             let clo_ty = combinators.cp.clo_ty(k);
-            let step = kernel::cong1(env_ty_expr, &clo_ty, &f_env, denoted_env.clone(), lit_env.clone(), env_eq.clone());
-            let call_at_denoted = apply_n(call_fn.clone(), std::iter::once(denoted_env.clone()).chain(d_sat_args.iter().cloned()));
+            let step = kernel::cong1(env_ty_expr, &clo_ty, &f_env, *denoted_env, *lit_env, *env_eq);
+            let call_at_denoted = apply_n(call_fn, std::iter::once(*denoted_env).chain(d_sat_args.iter().cloned()));
             (call_at_denoted, step)
         }
         None => {
-            let call_at_denoted = apply_n(call_fn.clone(), d_sat_args.iter().cloned());
-            let step = kernel::refl(call_at_denoted.clone());
+            let call_at_denoted = apply_n(call_fn, d_sat_args.iter().cloned());
+            let step = kernel::refl(call_at_denoted);
             (call_at_denoted, step)
         }
     };
 
     let f_ints = match &env_bridge {
-        Some((_, lit_env, _, _)) => apply_n(call_fn.clone(), std::iter::once(lit_env.clone())),
-        None => call_fn.clone(),
+        Some((_, lit_env, _, _)) => apply_n(call_fn, std::iter::once(*lit_env)),
+        None => call_fn,
     };
     let int_ty = combinators.cp.arith.int_ty();
     let clo_ty = combinators.cp.clo_ty(k);
     let args_eq = kernel::cong_n(&int_ty, &clo_ty, &f_ints, &d_sat_args, &lit_sat_args, p_sat_args);
-    let call_at_lit_env_denoted_args = apply_n(f_ints.clone(), d_sat_args);
+    let call_at_lit_env_denoted_args = apply_n(f_ints, d_sat_args);
     let call_at_lit_env_lit_args = apply_n(f_ints, lit_sat_args);
 
     let bridge = kernel::trans_proof(
@@ -647,7 +647,7 @@ pub(super) fn build_clo_call_bridge(
         .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
         .chain(sat_arg_triples.iter().rev().map(|&(x, _, _)| combinators.cp.arith.lit_ref(x)))
         .collect();
-    let axiom_at_literals = apply_n(axiom.clone(), axiom_args);
+    let axiom_at_literals = apply_n(axiom, axiom_args);
 
     // `subject`'s own inner frame -- same sparse construction
     // `eval_and_prove_direct_call` builds for its own recursive body
@@ -660,7 +660,7 @@ pub(super) fn build_clo_call_bridge(
     for &(x, _, _) in sat_arg_triples.iter().rev() {
         combinators.cp.arith.lit(x);
         let l = combinators.cp.arith.lit_ref(x);
-        inner_params.push(l.clone());
+        inner_params.push(l);
         inner_concrete.push(x);
         inner_facts.push(kernel::refl(l));
     }
@@ -671,8 +671,8 @@ pub(super) fn build_clo_call_bridge(
         let filler = combinators.cp.arith.lit_ref(fx0);
         while inner_params.len() < pad_len {
             inner_concrete.push(fx0);
-            inner_params.push(filler.clone());
-            inner_facts.push(kernel::refl(filler.clone()));
+            inner_params.push(filler);
+            inner_facts.push(kernel::refl(filler));
         }
         for (j, &rel) in subject_captures.iter().enumerate() {
             let (cx, _, _) = cap_triples[j];
@@ -680,7 +680,7 @@ pub(super) fn build_clo_call_bridge(
             let l = combinators.cp.arith.lit_ref(cx);
             let idx = subject_arity + rel as usize;
             inner_concrete[idx] = cx;
-            inner_params[idx] = l.clone();
+            inner_params[idx] = l;
             inner_facts[idx] = kernel::refl(l);
         }
     }
@@ -738,10 +738,10 @@ pub(super) fn resolve_closure_shape_to_leaf(
             let (resolution, tree_value_at_literals, leaf_value, tree_to_leaf_value) =
                 resolve_closure_if_tree(store, combinators, tree, &leaf_shapes, inner_params, inner_concrete, inner_facts, k, extra_arg_triples)?;
 
-            let call_at_denoted_here = call_at_denoted.clone();
-            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.clone();
-            let bridge_here = bridge.clone();
-            let axiom_at_literals_here = axiom_at_literals.clone();
+            let call_at_denoted_here = *call_at_denoted;
+            let call_at_lit_env_lit_args_here = *call_at_lit_env_lit_args;
+            let bridge_here = *bridge;
+            let axiom_at_literals_here = *axiom_at_literals;
             let clo_ty = combinators.cp.clo_ty(k);
 
             // `axiom_at_literals`'s own RHS is exactly the tree's own
@@ -775,8 +775,8 @@ pub(super) fn resolve_closure_shape_to_leaf(
                     let s = chosen_arg_prefix.len();
                     let apply_axiom = if s == 0 { combinators.apply_clo_eq_ref(chosen)? } else { combinators.apply_pap_eq_ref(chosen, s)? };
 
-                    let root_to_chosen = root_to_leaf_value.clone();
-                    let chosen_value_lit = leaf_value.clone();
+                    let root_to_chosen = root_to_leaf_value;
+                    let chosen_value_lit = leaf_value;
 
                     // Instantiate at `chosen`'s own raw literal captures
                     // (ascending, matching `chosen_cap_triples`'s own order),
@@ -796,10 +796,10 @@ pub(super) fn resolve_closure_shape_to_leaf(
                     let apply_axiom_args: Vec<Expr> = chosen_cap_triples
                         .iter()
                         .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
-                        .chain(chosen_arg_prefix.iter().map(|(_, d, _)| d.clone()))
-                        .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.clone()))
+                        .chain(chosen_arg_prefix.iter().map(|(_, d, _)| *d))
+                        .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| *d))
                         .collect();
-                    let apply_eq_chosen = apply_n(apply_axiom.clone(), apply_axiom_args);
+                    let apply_eq_chosen = apply_n(apply_axiom, apply_axiom_args);
 
                     let mut chosen_arg_triples = chosen_arg_prefix;
                     chosen_arg_triples.extend(extra_arg_triples.iter().cloned());
@@ -832,8 +832,8 @@ pub(super) fn resolve_closure_shape_to_leaf(
             for &rel in &g_captures {
                 let rel = rel as usize;
                 let x = *inner_concrete.get(rel)?;
-                let d = inner_params.get(rel)?.clone();
-                let p = inner_facts.get(rel)?.clone();
+                let d = *inner_params.get(rel)?;
+                let p = *inner_facts.get(rel)?;
                 g_cap_triples.push((x, d, p));
             }
 
@@ -855,10 +855,10 @@ pub(super) fn resolve_closure_shape_to_leaf(
             let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
             let pap_fn = combinators.pap_ref(g, s, &g_dummy)?;
 
-            let call_at_denoted_here = call_at_denoted.clone();
-            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.clone();
-            let bridge_here = bridge.clone();
-            let axiom_at_literals_here = axiom_at_literals.clone();
+            let call_at_denoted_here = *call_at_denoted;
+            let call_at_lit_env_lit_args_here = *call_at_lit_env_lit_args;
+            let bridge_here = *bridge;
+            let axiom_at_literals_here = *axiom_at_literals;
             let clo_ty = combinators.cp.clo_ty(k);
 
             let g_env_denoted = if g_cap_triples.is_empty() {
@@ -866,10 +866,10 @@ pub(super) fn resolve_closure_shape_to_leaf(
             } else {
                 let g_sig: Vec<Option<usize>> = vec![None; g_captures.len()];
                 let mk_env_expr = combinators.cp.mk_env_ref(&g_sig);
-                let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| d.clone()).collect();
+                let cd: Vec<Expr> = g_cap_triples.iter().map(|(_, d, _)| *d).collect();
                 Some(apply_n(mk_env_expr, cd))
             };
-            let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| d.clone()).collect();
+            let d_supplied: Vec<Expr> = supplied_triples.iter().map(|(_, d, _)| *d).collect();
             let mut pap_args = Vec::with_capacity(1 + s);
             pap_args.extend(g_env_denoted);
             pap_args.extend(d_supplied);
@@ -896,10 +896,10 @@ pub(super) fn resolve_closure_shape_to_leaf(
             let apply_axiom_args: Vec<Expr> = g_cap_triples
                 .iter()
                 .map(|&(x, _, _)| combinators.cp.arith.lit_ref(x))
-                .chain(supplied_triples.iter().map(|(_, d, _)| d.clone()))
-                .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| d.clone()))
+                .chain(supplied_triples.iter().map(|(_, d, _)| *d))
+                .chain(extra_arg_triples.iter().rev().map(|(_, d, _)| *d))
                 .collect();
-            let apply_eq_chosen = apply_n(apply_axiom.clone(), apply_axiom_args);
+            let apply_eq_chosen = apply_n(apply_axiom, apply_axiom_args);
 
             let mut chosen_arg_triples = supplied_triples;
             chosen_arg_triples.extend(extra_arg_triples.iter().cloned());
@@ -936,10 +936,10 @@ pub(super) fn resolve_closure_shape_to_leaf(
             // expressions and the same concrete values, so they always
             // agree syntactically (the same reliance `clo_eq_ref_pap`'s
             // own `pap_at_denoted` construction above already makes).
-            let call_at_denoted_here = call_at_denoted.clone();
-            let call_at_lit_env_lit_args_here = call_at_lit_env_lit_args.clone();
-            let bridge_here = bridge.clone();
-            let axiom_at_literals_here = axiom_at_literals.clone();
+            let call_at_denoted_here = *call_at_denoted;
+            let call_at_lit_env_lit_args_here = *call_at_lit_env_lit_args;
+            let bridge_here = *bridge;
+            let axiom_at_literals_here = *axiom_at_literals;
             let clo_ty = combinators.cp.clo_ty(k);
             let root_to_g = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &g_call_at_denoted, bridge_here, axiom_at_literals_here);
 
@@ -963,7 +963,7 @@ pub(super) fn resolve_closure_shape_to_leaf(
             debug_assert_has_type(
                 &combinators.cp.arith.p,
                 &root_to_chosen,
-                &kernel::id(clo_ty, call_at_denoted.clone(), chosen_value.clone()),
+                &kernel::id(clo_ty, *call_at_denoted, chosen_value),
                 "resolve_closure_shape_to_leaf: Call arm's own root_to_chosen",
             );
 
@@ -1055,7 +1055,7 @@ pub(super) fn eval_and_prove_call_over(
     // quantified over `Int`-typed values, so it can be instantiated
     // directly at these denoted expressions -- no separate "route through
     // literals first" step is needed at all.
-    let d_extra_args: Vec<Expr> = extra_arg_triples.iter().map(|(_, d, _)| d.clone()).collect();
+    let d_extra_args: Vec<Expr> = extra_arg_triples.iter().map(|(_, d, _)| *d).collect();
 
     // `cong1` over a `Clo_k`-typed value's own use as the callee, the `k`
     // extra args held fixed at their denoted values, using
@@ -1066,8 +1066,8 @@ pub(super) fn eval_and_prove_call_over(
     for d in &d_extra_args {
         f_clo_body = kernel::app(f_clo_body, kernel::shift(d, 0, 1));
     }
-    let f_clo = kernel::lam(clo_ty.clone(), f_clo_body);
-    let clo_step = kernel::cong1(&clo_ty, &int_ty2, &f_clo, call_at_denoted.clone(), chosen_value.clone(), root_to_chosen);
+    let f_clo = kernel::lam(clo_ty, f_clo_body);
+    let clo_step = kernel::cong1(&clo_ty, &int_ty2, &f_clo, call_at_denoted, chosen_value, root_to_chosen);
     let apply_at_denoted = apply_n(call_at_denoted, d_extra_args.iter().cloned());
     let apply_at_chosen_denoted_args = apply_n(chosen_value, d_extra_args.iter().cloned());
 
@@ -1097,7 +1097,7 @@ pub(super) fn eval_and_prove_call_over(
     debug_assert_has_type(
         &combinators.cp.arith.p,
         &final_proof,
-        &kernel::id(int_ty3, apply_at_denoted.clone(), result_ref),
+        &kernel::id(int_ty3, apply_at_denoted, result_ref),
         "eval_and_prove_call_over: final proof",
     );
     Some((result, apply_at_denoted, final_proof))
@@ -1118,7 +1118,7 @@ pub(super) fn trace_leaf(store: &TermStore, leaves: &[Leaf], concrete: &[i64]) -
 pub(super) fn canonical_params(combinators: &ClosureCombinators<'_>, concrete: &[i64]) -> (Vec<Expr>, Vec<Expr>) {
     let arith = &combinators.cp.arith;
     let params: Vec<Expr> = concrete.iter().map(|&c| arith.lit_ref(c)).collect();
-    let param_facts = params.iter().map(|p| kernel::refl(p.clone())).collect();
+    let param_facts = params.iter().map(|p| kernel::refl(*p)).collect();
     (params, param_facts)
 }
 
@@ -1148,7 +1148,7 @@ pub(super) fn build_ev_witness(
     memo: &mut HashMap<Vec<i64>, (Expr, Expr)>,
 ) -> Option<(Expr, Expr)> {
     if let Some((v, e)) = memo.get(concrete) {
-        return Some((v.clone(), e.clone()));
+        return Some((*v, *e));
     }
     *budget = budget.checked_sub(1)?;
 
@@ -1204,19 +1204,19 @@ pub(super) fn build_ev_witness(
             .iter()
             .zip(&denoted_args)
             .zip(&lit_params)
-            .map(|((pf, dp), lp)| kernel::sym(&int_ty, dp, lp, pf.clone()))
+            .map(|((pf, dp), lp)| kernel::sym(&int_ty, dp, lp, *pf))
             .collect();
-        let v_resolved = v.clone();
+        let v_resolved = v;
         let f = params_and_close(&mut combinators.cp.arith, self_call.arity, kernel::Binder::Lam, |arith, pp| {
-            Some(ev_of(arith, ev_pos, pp, v_resolved.clone()))
+            Some(ev_of(arith, ev_pos, pp, v_resolved))
         })?;
         let ev_eq = kernel::cong_n(&int_ty, &kernel::sort(0), &f, &lit_params, &denoted_args, ps);
         let e = kernel::transport(
             0,
-            ev_of(&combinators.cp.arith, ev_pos, &lit_params, v_resolved.clone()),
+            ev_of(&combinators.cp.arith, ev_pos, &lit_params, v_resolved),
             ev_of(&combinators.cp.arith, ev_pos, &denoted_args, v_resolved),
             ev_eq,
-            e_canonical.clone(),
+            e_canonical,
         );
         vs.push(v);
         es.push(e);
@@ -1227,9 +1227,9 @@ pub(super) fn build_ev_witness(
     let v = combine_of(&combines[leaf_idx], &params, &vs);
     let int_ty_check = combinators.cp.arith.int_ty();
     debug_assert_has_type(&combinators.cp.arith.p, &v, &int_ty_check, "build_ev_witness: v");
-    let ev_check = ev_of(&combinators.cp.arith, ev_pos, &params, v.clone());
+    let ev_check = ev_of(&combinators.cp.arith, ev_pos, &params, v);
     debug_assert_has_type(&combinators.cp.arith.p, &e, &ev_check, "build_ev_witness: e");
-    memo.insert(concrete.to_vec(), (v.clone(), e.clone()));
+    memo.insert(concrete.to_vec(), (v, e));
     Some((v, e))
 }
 
@@ -1287,8 +1287,8 @@ pub fn prove_tail_recursive_universal_with_instances(
     let theorem = UniversalTailProof {
         globals: scaffold.combinators.cp.arith.p.globals.clone(),
         arity: scaffold.arity,
-        theorem_ty: scaffold.theorem_ty.clone(),
-        theorem_proof: scaffold.theorem_proof.clone(),
+        theorem_ty: scaffold.theorem_ty,
+        theorem_proof: scaffold.theorem_proof,
     };
     let instances = args_list
         .iter()
@@ -1333,7 +1333,7 @@ pub(super) fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalS
     )?;
 
     let params: Vec<Expr> = concrete.iter().map(|&c| scaffold.combinators.lit_ref(c)).collect();
-    let applied = apply_n(scaffold.theorem_proof.clone(), params.into_iter().chain([v, e]));
+    let applied = apply_n(scaffold.theorem_proof, params.into_iter().chain([v, e]));
     let ty = scaffold.combinators.cp.arith.p.infer(&applied).ok()?;
     let (lhs, rhs) = match kernel::whnf(&ty).node() {
         kernel::Node::Id(_, lhs, rhs) => (lhs, rhs),

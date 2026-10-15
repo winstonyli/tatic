@@ -136,7 +136,7 @@ pub fn lt_u(n: usize) -> Expr {
     let mut carry = f();
     for i in 0..n {
         let (a, b) = (v(4 + i), v(4 + n + i));
-        carry = ripple_carry(true, a.clone(), b.clone(), carry, xor(a, b));
+        carry = ripple_carry(true, a, b, carry, xor(a, b));
     }
     let mut body = app(v(3), carry);
     for _ in 0..n {
@@ -153,7 +153,7 @@ pub fn lt_u(n: usize) -> Expr {
 pub fn ripple_carry(sub: bool, a: Expr, b: Expr, c: Expr, x: Expr) -> Expr {
     if sub {
         let na = xor(a, t());
-        or(and(na.clone(), b.clone()), and(c, xor(na, b)))
+        or(and(na, b), and(c, xor(na, b)))
     } else {
         or(and(a, b), and(c, x))
     }
@@ -168,7 +168,7 @@ pub fn ripple(n: usize, sub: bool) -> Expr {
     let mut sums = Vec::new();
     for i in 0..n {
         let x = xor(ai(i), bi(i));
-        sums.push(xor(x.clone(), carry.clone()));
+        sums.push(xor(x, carry));
         carry = ripple_carry(sub, ai(i), bi(i), carry, x);
     }
     let mut body = apps(k, sums);
@@ -241,7 +241,7 @@ pub fn run(n: usize) {
         let cases: [(u128, u128); 4] = [(0, 0), (1, 1), (0xFF, 1), (0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210)];
         for (x, y) in cases {
             let (x, y) = (x & mask, y & mask);
-            let got = app2(ad.clone(), lit(n, x), lit(n, y));
+            let got = app2(ad, lit(n, x), lit(n, y));
             let e0 = Instant::now();
             assert!(def_eq(&got, &lit(n, (x + y) & mask)), "add n={n} {x:#x}+{y:#x}");
             println!("  def_eq one add: {:?}", e0.elapsed());
@@ -272,7 +272,7 @@ fn table_bodies_are_shared_per_truth_table() {
 }
 
 /// A cached gate is the table's node in its scope (a fresh build interns to the same children), shared between uses, and
-/// rebuilt in a new scope.
+/// rebuilt in a new scope, where the rebuild finds the copy `scoped` persisted from the first one.
 #[test]
 fn constants_are_built_once_per_generation() {
     let kids = |e: &Expr| match e.node() {
@@ -288,7 +288,7 @@ fn constants_are_built_once_per_generation() {
     let first = kids(&first);
     tatic::kernel::scoped(|| {
         let (a, c) = (kids(&and_()), kids(&fresh()));
-        assert!(tatic::kernel::node_key(&a.1) != tatic::kernel::node_key(&first.1), "rebuilt in a new generation");
+        assert!(tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&first.1), "rebuilt onto the persisted copy");
         assert!(tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&c.1) && a.1 == first.1);
     })
 }
@@ -312,7 +312,7 @@ pub fn scaling_probe() {
         let ad = add_shared(n);
         let mask = low_bits(n);
         let (x, y) = (0x0123_4567_89AB_CDEFu128 & mask, 0xFEDC_BA98_7654_3210u128 & mask);
-        let got = app2(ad.clone(), lit(n, x), lit(n, y));
+        let got = app2(ad, lit(n, x), lit(n, y));
         let t0 = Instant::now();
         let w = normalize(&got);
         let tn = t0.elapsed();
@@ -345,7 +345,7 @@ pub fn good_bool() -> Expr {
 }
 /// `\a g. g motive at_true at_false`, with its type; `motive_body` is written at ctx [b].
 pub fn bit_lemma(motive_body: Expr, at_true: Expr, at_false: Expr) -> (Expr, Expr) {
-    let motive = lam(bool0(), motive_body.clone());
+    let motive = lam(bool0(), motive_body);
     let proof = lam(bool0(), lam(app(good_bool(), var(0)), app3(var(0), motive, at_true, at_false)));
     let ty = pi(bool0(), arrow(app(good_bool(), var(0)), motive_body));
     (proof, ty)
@@ -401,7 +401,7 @@ pub fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(us
     // `xor(a, false)` with the operands in the order `add` uses them
     let xf = move |a: Expr| if left { xor(f(), a) } else { xor(a, f()) };
     let carry = move |a: Expr, c: Expr| {
-        if left { or(and(f(), a.clone()), and(c, xor(f(), a))) } else { or(and(a.clone(), f()), and(c, xor(a, f()))) }
+        if left { or(and(f(), a), and(c, xor(f(), a))) } else { or(and(a, f()), and(c, xor(a, f()))) }
     };
     let (p1, _) = bit_lemma(id(bool0(), xor(xf(var(0)), f()), var(0)), refl(t()), refl(f()));
     let (p2, _) = bit_lemma(id(bool0(), carry(var(0), f()), f()), refl(f()), refl(f()));
@@ -414,15 +414,15 @@ pub fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(us
     let mut c = vec![f()];
     let mut pc: Vec<Option<Expr>> = vec![None]; // None = c_0 is literally `false`
     for i in 0..n {
-        let next = carry(a(i), c[i].clone());
+        let next = carry(a(i), c[i]);
         // carry(a_i, c_i) = carry(a_i, false) by c_i = false, then = false by the bit lemma
-        let step_to_false = app2(p2.clone(), a(i), ga(i));
+        let step_to_false = app2(p2, a(i), ga(i));
         let proof = match &pc[i] {
             None => step_to_false,
             Some(pci) => {
                 let ai1 = shift(&a(i), 0, 1);
                 let fmap = lam(bool0(), carry(ai1, var(0)));
-                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i], f(), *pci);
                 trans_proof(&bool0(), &next, &carry(a(i), f()), &f(), rewritten, step_to_false)
             }
         };
@@ -433,14 +433,14 @@ pub fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(us
     let mut s = Vec::new();
     let mut e = Vec::new();
     for i in 0..n {
-        let s_i = xor(xf(a(i)), c[i].clone());
-        let to_a = app2(p1.clone(), a(i), ga(i)); // xor(xf(a_i),f) = a_i
+        let s_i = xor(xf(a(i)), c[i]);
+        let to_a = app2(p1, a(i), ga(i)); // xor(xf(a_i),f) = a_i
         let proof = match &pc[i] {
             None => to_a,
             Some(pci) => {
                 let ai1 = shift(&a(i), 0, 1);
                 let fmap = lam(bool0(), xor(xf(ai1), var(0)));
-                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i], f(), *pci);
                 trans_proof(&bool0(), &s_i, &xor(xf(a(i)), f()), &a(i), rewritten, to_a)
             }
         };
@@ -460,7 +460,7 @@ pub fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(us
     }
     let rhs = lit(n, rhs_lit);
     let sum = |x: Expr, r: Expr| if left { app2(adder(n), r, x) } else { app2(adder(n), x, r) };
-    let motive = lam(bv_ty(n), id(bv_ty(n), sum(var(0), rhs.clone()), var(0)));
+    let motive = lam(bv_ty(n), id(bv_ty(n), sum(var(0), rhs), var(0)));
     let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
     let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), id(bv_ty(n), sum(var(0), rhs), var(0))));
     (proof, stmt)
@@ -473,7 +473,7 @@ pub fn add_identity_proof_over(n: usize, rhs_lit: u128, left: bool, adder: fn(us
 pub fn add_identity_proof_shared(n: usize, rhs_lit: u128, left: bool, adder: fn(usize) -> Expr) -> (Expr, Expr) {
     let xf = move |a: Expr| if left { xor(f(), a) } else { xor(a, f()) };
     let carry = move |a: Expr, c: Expr| {
-        if left { or(and(f(), a.clone()), and(c, xor(f(), a))) } else { or(and(a.clone(), f()), and(c, xor(a, f()))) }
+        if left { or(and(f(), a), and(c, xor(f(), a))) } else { or(and(a, f()), and(c, xor(a, f()))) }
     };
     let (p1, _) = bit_lemma(id(bool0(), xor(xf(var(0)), f()), var(0)), refl(t()), refl(f()));
     let (p2, _) = bit_lemma(id(bool0(), carry(var(0), f()), f()), refl(f()), refl(f()));
@@ -485,13 +485,13 @@ pub fn add_identity_proof_shared(n: usize, rhs_lit: u128, left: bool, adder: fn(
     let pv = move |j: usize, k: usize| var((d + 2 * k - 1 - (d + 2 * (j - 1) + 1)) as u32);
     // proof that c_(j+1) = carry(a_j, c_j) is false, at `k` bound pairs (j <= k)
     let next_false = |j: usize, k: usize| {
-        let step_to_false = app2(p2.clone(), a(j, k), ga(j, k));
+        let step_to_false = app2(p2, a(j, k), ga(j, k));
         if j == 0 {
             return step_to_false;
         }
         let cj = cv(j, k);
         let fmap = lam(bool0(), carry(shift(&a(j, k), 0, 1), var(0)));
-        let rewritten = cong1(&bool0(), &bool0(), &fmap, cj.clone(), f(), pv(j, k));
+        let rewritten = cong1(&bool0(), &bool0(), &fmap, cj, f(), pv(j, k));
         trans_proof(&bool0(), &carry(a(j, k), cj), &carry(a(j, k), f()), &f(), rewritten, step_to_false)
     };
     let kn = n.saturating_sub(1);
@@ -500,13 +500,13 @@ pub fn add_identity_proof_shared(n: usize, rhs_lit: u128, left: bool, adder: fn(
     let mut e = Vec::new();
     for i in 0..n {
         let ci = cv(i, kn);
-        let s_i = xor(xf(a(i, kn)), ci.clone());
-        let to_a = app2(p1.clone(), a(i, kn), ga(i, kn));
+        let s_i = xor(xf(a(i, kn)), ci);
+        let to_a = app2(p1, a(i, kn), ga(i, kn));
         let proof = if i == 0 {
             to_a
         } else {
             let fmap = lam(bool0(), xor(xf(shift(&a(i, kn), 0, 1)), var(0)));
-            let rewritten = cong1(&bool0(), &bool0(), &fmap, ci.clone(), f(), pv(i, kn));
+            let rewritten = cong1(&bool0(), &bool0(), &fmap, ci, f(), pv(i, kn));
             trans_proof(&bool0(), &s_i, &xor(xf(a(i, kn)), f()), &a(i, kn), rewritten, to_a)
         };
         s.push(s_i);
@@ -529,7 +529,7 @@ pub fn add_identity_proof_shared(n: usize, rhs_lit: u128, left: bool, adder: fn(
     }
     let rhs = lit(n, rhs_lit);
     let sum = |x: Expr, r: Expr| if left { app2(adder(n), r, x) } else { app2(adder(n), x, r) };
-    let motive = lam(bv_ty(n), id(bv_ty(n), sum(var(0), rhs.clone()), var(0)));
+    let motive = lam(bv_ty(n), id(bv_ty(n), sum(var(0), rhs), var(0)));
     let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
     let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), id(bv_ty(n), sum(var(0), rhs), var(0))));
     (proof, stmt)
@@ -687,7 +687,7 @@ pub fn comm_lemma(ff: &dyn Fn(Expr, Expr, Expr) -> Expr) -> Expr {
             id(bool0(), var(4), var(3)),
             id(
                 bool0(),
-                shift(&ff(x.clone(), y.clone(), var(4)), 0, 1),
+                shift(&ff(x, y, var(4)), 0, 1),
                 shift(&ff(y, x, var(3)), 0, 1),
             ),
         );
@@ -707,7 +707,7 @@ pub fn comm_lemma(ff: &dyn Fn(Expr, Expr, Expr) -> Expr) -> Expr {
 /// `(proof, statement)` of `Pi x y. GoodBv x -> GoodBv y -> Id(Bv_n, add x y, add y x)`.
 /// `wrong` changes the statement's right-hand side to `add x x`, which the proof must not check against.
 pub fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
-    let carry = |a: Expr, b: Expr, c: Expr| or(and(a.clone(), b.clone()), and(c, xor(a, b)));
+    let carry = |a: Expr, b: Expr, c: Expr| or(and(a, b), and(c, xor(a, b)));
     let sum = |a: Expr, b: Expr, c: Expr| xor(xor(a, b), c);
     let cc = comm_lemma(&carry);
     let sc = comm_lemma(&sum);
@@ -724,11 +724,11 @@ pub fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     let mut pc = vec![refl(f())];
     let (mut s, mut s2, mut e) = (vec![], vec![], vec![]);
     for i in 0..n {
-        s.push(sum(a(i), b(i), c[i].clone()));
-        s2.push(sum(b(i), a(i), c2[i].clone()));
-        e.push(apps(sc.clone(), vec![a(i), b(i), c[i].clone(), c2[i].clone(), ga(i), gb(i), pc[i].clone()]));
-        let (nc, nc2) = (carry(a(i), b(i), c[i].clone()), carry(b(i), a(i), c2[i].clone()));
-        pc.push(apps(cc.clone(), vec![a(i), b(i), c[i].clone(), c2[i].clone(), ga(i), gb(i), pc[i].clone()]));
+        s.push(sum(a(i), b(i), c[i]));
+        s2.push(sum(b(i), a(i), c2[i]));
+        e.push(apps(sc, vec![a(i), b(i), c[i], c2[i], ga(i), gb(i), pc[i]]));
+        let (nc, nc2) = (carry(a(i), b(i), c[i]), carry(b(i), a(i), c2[i]));
+        pc.push(apps(cc, vec![a(i), b(i), c[i], c2[i], ga(i), gb(i), pc[i]]));
         c.push(nc);
         c2.push(nc2);
     }
@@ -738,10 +738,10 @@ pub fn add_comm_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     // inside the a-step (depth d1): eliminate y
     let a1 = |i: usize| var((d1 - 1 - (4 + i)) as u32);
     let mka = church_tuple(&(0..n).map(|i| shift(&a1(i), 0, 1)).collect::<Vec<_>>());
-    let motive_y = lam(bv_ty(n), id(bv_ty(n), app2(add(n), mka.clone(), var(0)), app2(add(n), var(0), mka)));
+    let motive_y = lam(bv_ty(n), id(bv_ty(n), app2(add(n), mka, var(0)), app2(add(n), var(0), mka)));
     let gy = var((d1 - 1 - 3) as u32);
     let step_x = binders(n, app2(gy, motive_y, step_y));
-    let rhs = |x: Expr, y: Expr| if wrong { app2(add(n), x.clone(), x) } else { app2(add(n), y, x) };
+    let rhs = |x: Expr, y: Expr| if wrong { app2(add(n), x, x) } else { app2(add(n), y, x) };
     // depth 5 (inside the motive binder): x' = var 0, y = var 3
     let motive_x = lam(bv_ty(n), id(bv_ty(n), app2(add(n), var(0), var(3)), rhs(var(0), var(3))));
     let body = app2(var(1), motive_x, step_x);
@@ -1123,7 +1123,7 @@ pub fn wrap_div(n: usize, a: Expr, b: Expr, r: Expr) -> Expr {
     // the guard sits under `C k r_0..`, so `a` and `b` move past those n + 2 binders
     let cond = and(app2(eq_bv(n), shift(&a, 0, n as i32 + 2), lit(n, min)), app2(eq_bv(n), shift(&b, 0, n as i32 + 2), lit(n, all)));
     // ctx [.., C, k, r_0..]: k = var(n), r_i = var(n-1-i)
-    let outs = (0..n).map(|i| mux(cond.clone(), bit((min >> i) & 1 == 1), var((n - 1 - i) as u32))).collect();
+    let outs = (0..n).map(|i| mux(cond, bit((min >> i) & 1 == 1), var((n - 1 - i) as u32))).collect();
     let mut body = apps(var(n as u32), outs);
     for _ in 0..n {
         body = lam(bool0(), body);
@@ -1270,7 +1270,7 @@ pub fn to_n_computes_on_good_literals() {
 pub fn sdiv_some(n: usize, a: Expr, b: Expr) -> Expr {
     let min = 1u128 << (n - 1);
     let all = if n == 128 { u128::MAX } else { (1u128 << n) - 1 };
-    let overflow = and(app2(eq_bv(n), a, lit(n, min)), app2(eq_bv(n), b.clone(), lit(n, all)));
+    let overflow = and(app2(eq_bv(n), a, lit(n, min)), app2(eq_bv(n), b, lit(n, all)));
     not_(or(app2(eq_bv(n), b, lit(n, 0)), overflow))
 }
 
@@ -1320,7 +1320,7 @@ pub fn hyp_or_refl(h_ty: Expr, trivial: bool) -> Expr {
 /// `(proof, type)` of `Pi c y. Good c -> Good y -> Id(and c y, true) -> Id(c, true)` (`left`) or `-> Id(y, true)`.
 pub fn and_peel(left: bool) -> (Expr, Expr) {
     lemma2(
-        &move |c, y| arrow(id_t(and(c.clone(), y.clone())), id_t(if left { c } else { y })),
+        &move |c, y| arrow(id_t(and(c, y)), id_t(if left { c } else { y })),
         &move |a, b| hyp_or_refl(id_t(and(bit(a), bit(b))), if left { a } else { b }),
     )
 }
@@ -1344,11 +1344,11 @@ pub fn good_and_lemma() -> (Expr, Expr) {
 pub fn bit_from_xnor(l: bool) -> (Expr, Expr) {
     let xn = move |x: Expr| not_(xor(x, bit(l)));
     bit_lemma_hyp(
-        move |x| arrow(id_t(xn(x.clone())), id(bool0(), x, bit(l))),
+        move |x| arrow(id_t(xn(x)), id(bool0(), x, bit(l))),
         // x = true / x = false: equal to `l` (refl), else the hypothesis is `false = true`
         move |v| {
             let h = id_t(xn(bit(v)));
-            lam(h.clone(), if v == l { refl(bit(l)) } else if v { sym(&bool0(), &f(), &t(), var(0)) } else { var(0) })
+            lam(h, if v == l { refl(bit(l)) } else if v { sym(&bool0(), &f(), &t(), var(0)) } else { var(0) })
         },
     )
 }
@@ -1393,19 +1393,19 @@ pub fn eq_lit_sound(n: usize, l: u128, stated: u128) -> (Expr, Expr) {
     let dh = d + 1;
     // good witnesses of the chain prefixes and of each xnor, at depth dh
     let xn = |i: usize| not_(xor(a_at(dh, i), bit(lb(i))));
-    let gxn = |i: usize| apps(if lb(i) { gx_t.clone() } else { gx_f.clone() }, vec![a_at(dh, i), ga_at(dh, i)]);
+    let gxn = |i: usize| apps(if lb(i) { gx_t } else { gx_f }, vec![a_at(dh, i), ga_at(dh, i)]);
     let mut gc = vec![good_bit(true)];
     for i in 0..n {
-        gc.push(apps(good_and.clone(), vec![chain(dh, i), xn(i), gc[i].clone(), gxn(i)]));
+        gc.push(apps(good_and, vec![chain(dh, i), xn(i), gc[i], gxn(i)]));
     }
     // peel h : Id(chain_n, true) down to Id(xnor_i, true), then to Id(a_i, l_i)
     let mut h = var(0);
     let mut ps = vec![None; n];
     for k in (1..=n).rev() {
-        let args = |gcv: &Expr| vec![chain(dh, k - 1), xn(k - 1), gcv.clone(), gxn(k - 1), h.clone()];
-        let hx = apps(peel_r.clone(), args(&gc[k - 1]));
-        let h_next = apps(peel_l.clone(), args(&gc[k - 1]));
-        let be = if lb(k - 1) { bit_eq_t.clone() } else { bit_eq_f.clone() };
+        let args = |gcv: &Expr| vec![chain(dh, k - 1), xn(k - 1), *gcv, gxn(k - 1), h];
+        let hx = apps(peel_r, args(&gc[k - 1]));
+        let h_next = apps(peel_l, args(&gc[k - 1]));
+        let be = if lb(k - 1) { bit_eq_t } else { bit_eq_f };
         ps[k - 1] = Some(apps(be, vec![a_at(dh, k - 1), ga_at(dh, k - 1), hx]));
         h = h_next;
     }
@@ -1422,7 +1422,7 @@ pub fn eq_lit_sound(n: usize, l: u128, stated: u128) -> (Expr, Expr) {
         step = lam(bool0(), step);
     }
     let big_l = lit(n, stated);
-    let claim = |x: Expr| arrow(id_t(app2(eq_bv(n), x.clone(), lit(n, l))), id(bv_ty(n), x, big_l.clone()));
+    let claim = |x: Expr| arrow(id_t(app2(eq_bv(n), x, lit(n, l))), id(bv_ty(n), x, big_l));
     let motive = lam(bv_ty(n), claim(var(0)));
     let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
     let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), claim(var(0))));
@@ -1507,14 +1507,14 @@ pub fn wrap_div_keeps_r(n: usize, claimed: bool) -> (Expr, Expr) {
     let h = var((d - 1 - 2) as u32);
     let (ga, gb) = (var((d - 1) as u32), var((d - 2) as u32));
     let guard_ab = g_at(ga, gb);
-    let to_f = cong1(&bool0(), &bv_ty(n), &ff, guard_ab.clone(), f(), h);
+    let to_f = cong1(&bool0(), &bv_ty(n), &ff, guard_ab, f(), h);
     // With the guard false each bit is `mux f m r_i`, which computes to the eta-expansion of `r_i` (and
     // conversion has no eta), so close the gap bit by bit: `r_i = eta r_i` by cases on `GoodBool r_i`.
     let eta = |x: Expr| lam(sort(0), lam(var(0), lam(var(1), app3(shift(&x, 0, 3), var(2), var(1), var(0)))));
     let (e_lemma, _) = bit_lemma(id(bool0(), var(0), eta(var(0))), refl(t()), refl(f()));
     let gr_at = |i: usize| var((d - 1 - (5 + n + i)) as u32);
     let ps: Vec<Expr> = (0..n)
-        .map(|i| sym(&bool0(), &r_at(i, d), &eta(r_at(i, d)), app2(e_lemma.clone(), r_at(i, d), gr_at(i))))
+        .map(|i| sym(&bool0(), &r_at(i, d), &eta(r_at(i, d)), app2(e_lemma, r_at(i, d), gr_at(i))))
         .collect();
     let etas: Vec<Expr> = (0..n).map(|i| eta(r_at(i, d))).collect();
     let rs: Vec<Expr> = (0..n).map(|i| r_at(i, d)).collect();
@@ -1524,9 +1524,9 @@ pub fn wrap_div_keeps_r(n: usize, claimed: bool) -> (Expr, Expr) {
         tuple = lam(bool0(), tuple);
     }
     let to_r = cong_n(&bool0(), &bv_ty(n), &tuple, &etas, &rs, ps);
-    let f_false = app(ff.clone(), f());
+    let f_false = app(ff, f());
     let mk_r = church_tuple(&rs);
-    let step_body = trans_proof(&bv_ty(n), &app(ff.clone(), guard_ab), &f_false, &mk_r, to_f, to_r);
+    let step_body = trans_proof(&bv_ty(n), &app(ff, guard_ab), &f_false, &mk_r, to_f, to_r);
     let mut step = step_body;
     for _ in 0..n {
         step = lam(app(good_bool(), var(n as u32 - 1)), step);
@@ -1535,7 +1535,7 @@ pub fn wrap_div_keeps_r(n: usize, claimed: bool) -> (Expr, Expr) {
         step = lam(bool0(), step);
     }
     // statement pieces at ctx [a, b, h, r]
-    let target = |a: Expr, b: Expr, r: Expr| id(bv_ty(n), wrap_div(n, a, b, r.clone()), if claimed { r } else { lit(n, 0) });
+    let target = |a: Expr, b: Expr, r: Expr| id(bv_ty(n), wrap_div(n, a, b, r), if claimed { r } else { lit(n, 0) });
     // motive at ctx [a, b, h, r, gr, r']: a = var 5, b = var 4
     let motive = lam(bv_ty(n), target(var(5), var(4), var(0)));
     let body = app2(var(0), motive, step);
@@ -1608,24 +1608,24 @@ pub fn good_ripple(n: usize, sub: bool) -> (Expr, Expr) {
         let mut gc = good_bit(false);
         let (mut s, mut gs) = (vec![], vec![]);
         for i in 0..n {
-            let x = xor(a[i].clone(), b[i].clone());
-            let gx = apps(g_xor.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()]);
-            s.push(xor(x.clone(), c.clone()));
-            gs.push(apps(g_xor.clone(), vec![x.clone(), c.clone(), gx.clone(), gc.clone()]));
+            let x = xor(a[i], b[i]);
+            let gx = apps(g_xor, vec![a[i], b[i], ga[i], gb[i]]);
+            s.push(xor(x, c));
+            gs.push(apps(g_xor, vec![x, c, gx, gc]));
             // the carry's operands: (a, b, x) for add; (~a, b, ~a ^ b) for the borrow
             let (p, gp) = if sub {
-                (xor(a[i].clone(), t()), apps(g_xor.clone(), vec![a[i].clone(), t(), ga[i].clone(), good_bit(true)]))
+                (xor(a[i], t()), apps(g_xor, vec![a[i], t(), ga[i], good_bit(true)]))
             } else {
-                (a[i].clone(), ga[i].clone())
+                (a[i], ga[i])
             };
-            let (y, gy) = (b[i].clone(), gb[i].clone());
-            let (x2, gx2) = if sub { (xor(p.clone(), y.clone()), apps(g_xor.clone(), vec![p.clone(), y.clone(), gp.clone(), gy.clone()])) } else { (x.clone(), gx) };
-            let ab = and(p.clone(), y.clone());
-            let g_ab = apps(g_and.clone(), vec![p, y, gp, gy]);
-            let cx = and(c.clone(), x2.clone());
-            let g_cx = apps(g_and.clone(), vec![c.clone(), x2, gc.clone(), gx2]);
-            let nc = or(ab.clone(), cx.clone());
-            gc = apps(g_or.clone(), vec![ab, cx, g_ab, g_cx]);
+            let (y, gy) = (b[i], gb[i]);
+            let (x2, gx2) = if sub { (xor(p, y), apps(g_xor, vec![p, y, gp, gy])) } else { (x, gx) };
+            let ab = and(p, y);
+            let g_ab = apps(g_and, vec![p, y, gp, gy]);
+            let cx = and(c, x2);
+            let g_cx = apps(g_and, vec![c, x2, gc, gx2]);
+            let nc = or(ab, cx);
+            gc = apps(g_or, vec![ab, cx, g_ab, g_cx]);
             c = nc;
         }
         (s, gs)
@@ -1655,11 +1655,11 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
     let a_da = |i: usize| var((da - 1 - (6 + i)) as u32);
     let mka = church_tuple(&(0..n).map(|i| shift(&a_da(i), 0, 1)).collect::<Vec<_>>());
     // under the `y'` binder at depth da + 1: P = var(da - 1 - 4 + 1)
-    let motive_y = lam(bv_ty(n), app(var((da - 4) as u32), app2(vec.clone(), mka, var(0))));
+    let motive_y = lam(bv_ty(n), app(var((da - 4) as u32), app2(vec, mka, var(0))));
     let gy = var((da - 1 - 3) as u32);
     let step_x = binders(n, app2(gy, motive_y, step_y));
     // under the `x'` binder at depth 7: P = var 2, y = var 5
-    let motive_x = lam(bv_ty(n), app(var(2), app2(vec.clone(), var(0), var(5))));
+    let motive_x = lam(bv_ty(n), app(var(2), app2(vec, var(0), var(5))));
     let body = app2(var(3), motive_x, step_x);
     let proof = lam(bv_ty(n), lam(bv_ty(n), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)),
         lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n), body))))));
@@ -1744,8 +1744,8 @@ pub fn or_bv(n: usize) -> Expr {
 pub fn good_or_bv(n: usize) -> (Expr, Expr) {
     let (g_or, _) = good2(&|a, b| or(a, b), &OP_INFO[2].truth);
     good_vec(n, or_bv(n), &move |a, b, ga, gb| {
-        let s = (0..n).map(|i| or(a[i].clone(), b[i].clone())).collect();
-        let gs = (0..n).map(|i| apps(g_or.clone(), vec![a[i].clone(), b[i].clone(), ga[i].clone(), gb[i].clone()])).collect();
+        let s = (0..n).map(|i| or(a[i], b[i])).collect();
+        let gs = (0..n).map(|i| apps(g_or, vec![a[i], b[i], ga[i], gb[i]])).collect();
         (s, gs)
     })
 }
@@ -1771,11 +1771,11 @@ pub fn or_disjoint_proof(n: usize, k: usize, stated_sum_with_a_twice: bool) -> (
     // `mk` shifts its arguments by 2; `good_tuple` does too, so both take the operands at depth d
     let (x, y) = (church_tuple(&a_bits), church_tuple(&b_bits));
     let (gx, gy) = (good_tuple(&a_bits, &a_good), good_tuple(&b_bits, &b_good));
-    let gor = apps(g_or_bv, vec![x.clone(), y.clone(), gx.clone(), gy.clone()]);
-    let lhs = app2(to_n(n), app2(or_bv(n), x.clone(), y.clone()), gor);
-    let (tx, ty) = (app2(to_n(n), x.clone(), gx), app2(to_n(n), y, gy));
-    let rhs = if stated_sum_with_a_twice { app2(nat_add(), tx.clone(), tx) } else { app2(nat_add(), tx, ty) };
-    let mut proof = refl(lhs.clone());
+    let gor = apps(g_or_bv, vec![x, y, gx, gy]);
+    let lhs = app2(to_n(n), app2(or_bv(n), x, y), gor);
+    let (tx, ty) = (app2(to_n(n), x, gx), app2(to_n(n), y, gy));
+    let rhs = if stated_sum_with_a_twice { app2(nat_add(), tx, tx) } else { app2(nat_add(), tx, ty) };
+    let mut proof = refl(lhs);
     let mut stmt = id(nat_ty(), lhs, rhs);
     for _ in 0..n {
         proof = lam(app(good_bool(), var(n as u32 - 1)), proof);
@@ -1837,7 +1837,7 @@ pub fn lemma_n(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) 
         let args: Vec<Expr> = (0..k)
             .map(|m| if m == j { var(0) } else { vals[m].map_or_else(|| var((2 * k - m) as u32), bit) })
             .collect();
-        let motive = lam(bool0(), apps(p.clone(), args));
+        let motive = lam(bool0(), apps(*p, args));
         vals[j] = Some(true);
         let on_true = elim(k, p, leaf, vals);
         vals[j] = Some(false);
@@ -1926,9 +1926,9 @@ pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
         let bv: Vec<Expr> = (0..k).map(|i| var((k - 1 - i) as u32)).collect();
         let mut exprs: Vec<Expr> = vec![f(), t()];
         for &(level, hi, lo) in &d.nodes {
-            exprs.push(mux(bv[level].clone(), exprs[hi].clone(), exprs[lo].clone()));
+            exprs.push(mux(bv[level], exprs[hi], exprs[lo]));
         }
-        let mut body = exprs[d.root].clone();
+        let mut body = exprs[d.root];
         for _ in 0..k {
             body = lam(bool0(), body);
         }
@@ -1943,7 +1943,7 @@ pub fn table_expr(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
         if fixed.len() == vars.len() {
             return bit(tab(fixed));
         }
-        let c = vars[fixed.len()].clone();
+        let c = vars[fixed.len()];
         fixed.push(true);
         let hi = go(vars, tab, fixed);
         fixed.pop();
@@ -1959,7 +1959,7 @@ pub fn sum3(a: Expr, b: Expr, c: Expr) -> Expr {
     xor(xor(a, b), c)
 }
 pub fn maj(a: Expr, b: Expr, c: Expr) -> Expr {
-    or(and(a.clone(), b.clone()), and(c, xor(a, b)))
+    or(and(a, b), and(c, xor(a, b)))
 }
 /// Table over `[a, b, z, p, q]` (state total `p + 2q`): the output bit (0), the next `p` (1) or next `q` (2).
 pub fn assoc_table(which: usize, v: &[bool]) -> bool {
@@ -1974,13 +1974,13 @@ pub fn assoc_table(which: usize, v: &[bool]) -> bool {
 /// The left or right side's output bit (0), next `xor` (1) or next `and` (2) of its two carries, from `[a, b, z, c, d]`
 /// (for the right side `c`, `d` are its `e`, `f`).
 pub fn assoc_side(left: bool, which: usize, v: &[Expr]) -> Expr {
-    let (a, b, z, c, d) = (v[0].clone(), v[1].clone(), v[2].clone(), v[3].clone(), v[4].clone());
+    let (a, b, z, c, d) = (v[0], v[1], v[2], v[3], v[4]);
     let (out, c2, d2) = if left {
-        let s = sum3(a.clone(), b.clone(), c.clone());
-        (sum3(s.clone(), z.clone(), d.clone()), maj(a, b, c), maj(s, z, d))
+        let s = sum3(a, b, c);
+        (sum3(s, z, d), maj(a, b, c), maj(s, z, d))
     } else {
-        let t = sum3(b.clone(), z.clone(), c.clone());
-        (sum3(a.clone(), t.clone(), d.clone()), maj(b, z, c), maj(a, t, d))
+        let t = sum3(b, z, c);
+        (sum3(a, t, d), maj(b, z, c), maj(a, t, d))
     };
     match which {
         0 => out,
@@ -2013,16 +2013,16 @@ impl GoodOps {
         }
     }
     pub fn go(&self, w: &Expr, e: Expr, x: &Gb, y: &Gb) -> Gb {
-        Gb { g: apps(w.clone(), vec![x.e.clone(), y.e.clone(), x.g.clone(), y.g.clone()]), e }
+        Gb { g: apps(*w, vec![x.e, y.e, x.g, y.g]), e }
     }
     pub fn and(&self, x: &Gb, y: &Gb) -> Gb {
-        self.go(&self.and, and(x.e.clone(), y.e.clone()), x, y)
+        self.go(&self.and, and(x.e, y.e), x, y)
     }
     pub fn or(&self, x: &Gb, y: &Gb) -> Gb {
-        self.go(&self.or, or(x.e.clone(), y.e.clone()), x, y)
+        self.go(&self.or, or(x.e, y.e), x, y)
     }
     pub fn xor(&self, x: &Gb, y: &Gb) -> Gb {
-        self.go(&self.xor, xor(x.e.clone(), y.e.clone()), x, y)
+        self.go(&self.xor, xor(x.e, y.e), x, y)
     }
     pub fn sum3(&self, a: &Gb, b: &Gb, c: &Gb) -> Gb {
         let ab = self.xor(a, b);
@@ -2043,9 +2043,9 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
         lemma_n(
             5,
             &move |v| {
-                let p = xor(v[3].clone(), v[4].clone());
-                let q = and(v[3].clone(), v[4].clone());
-                id(bool0(), assoc_side(left, which, v), assoc_g(which, &[v[0].clone(), v[1].clone(), v[2].clone(), p, q]))
+                let p = xor(v[3], v[4]);
+                let q = and(v[3], v[4]);
+                id(bool0(), assoc_side(left, which, v), assoc_g(which, &[v[0], v[1], v[2], p, q]))
             },
             &move |bits| refl(assoc_side(left, which, &bits.iter().map(|b| bit(*b)).collect::<Vec<_>>())),
         )
@@ -2073,25 +2073,25 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
     for i in 0..n {
         let (ab, bb, zb) = (Gb { e: a(i), g: ga(i) }, Gb { e: b(i), g: gb(i) }, Gb { e: z(i), g: gz(i) });
-        let (pl, ql) = (xor(cl.e.clone(), dl.e.clone()), and(cl.e.clone(), dl.e.clone()));
-        let (pr, qr) = (xor(er.e.clone(), fr.e.clone()), and(er.e.clone(), fr.e.clone()));
+        let (pl, ql) = (xor(cl.e, dl.e), and(cl.e, dl.e));
+        let (pr, qr) = (xor(er.e, fr.e), and(er.e, fr.e));
         let abz = [a(i), b(i), z(i)];
         let inst = |left: bool, which: usize, c: &Gb, d: &Gb| {
-            apps(lem[if left { 0 } else { 1 }][which].clone(), vec![
-                a(i), b(i), z(i), c.e.clone(), d.e.clone(), ga(i), gb(i), gz(i), c.g.clone(), d.g.clone(),
+            apps(lem[if left { 0 } else { 1 }][which], vec![
+                a(i), b(i), z(i), c.e, d.e, ga(i), gb(i), gz(i), c.g, d.g,
             ])
         };
-        let g_at = |which: usize, p: Expr, q: Expr| assoc_g(which, &[abz[0].clone(), abz[1].clone(), abz[2].clone(), p, q]);
+        let g_at = |which: usize, p: Expr, q: Expr| assoc_g(which, &[abz[0], abz[1], abz[2], p, q]);
         // Id(G(left state), G(right state)) from the two carried equalities
         let link = |which: usize, ip: &Expr, iq: &Expr| {
-            let fmap = lam(bl.clone(), lam(bl.clone(), assoc_g(which, &[shift(&abz[0], 0, 2), shift(&abz[1], 0, 2), shift(&abz[2], 0, 2), var(1), var(0)])));
-            cong_n(&bl, &bl, &fmap, &[pl.clone(), ql.clone()], &[pr.clone(), qr.clone()], vec![ip.clone(), iq.clone()])
+            let fmap = lam(bl, lam(bl, assoc_g(which, &[shift(&abz[0], 0, 2), shift(&abz[1], 0, 2), shift(&abz[2], 0, 2), var(1), var(0)])));
+            cong_n(&bl, &bl, &fmap, &[pl, ql], &[pr, qr], vec![*ip, *iq])
         };
         // (F_left, F_right, proof of Id(F_left, F_right)) for `which`
         let eq = |which: usize| {
-            let fl = assoc_side(true, which, &[abz[0].clone(), abz[1].clone(), abz[2].clone(), cl.e.clone(), dl.e.clone()]);
-            let frr = assoc_side(false, which, &[abz[0].clone(), abz[1].clone(), abz[2].clone(), er.e.clone(), fr.e.clone()]);
-            let (gl, gr) = (g_at(which, pl.clone(), ql.clone()), g_at(which, pr.clone(), qr.clone()));
+            let fl = assoc_side(true, which, &[abz[0], abz[1], abz[2], cl.e, dl.e]);
+            let frr = assoc_side(false, which, &[abz[0], abz[1], abz[2], er.e, fr.e]);
+            let (gl, gr) = (g_at(which, pl, ql), g_at(which, pr, qr));
             let right_back = sym(&bl, &frr, &gr, inst(false, which, &er, &fr));
             let mid = tr(&gl, &gr, &frr, link(which, &ip, &iq), right_back);
             let proof = tr(&fl, &gl, &frr, inst(true, which, &cl, &dl), mid);
@@ -2118,8 +2118,8 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     let step_z = binders(n, cong_n(&bool0(), &bv_ty(n), &fbody, &s1, &s2, e));
     let ad = add(n);
     let claim = |x: Expr, y: Expr, zz: Expr| {
-        let rhs_z = if wrong { y.clone() } else { zz.clone() };
-        id(bv_ty(n), app2(ad.clone(), app2(ad.clone(), x.clone(), y.clone()), zz), app2(ad.clone(), x, app2(ad.clone(), y, rhs_z)))
+        let rhs_z = if wrong { y } else { zz };
+        id(bv_ty(n), app2(ad, app2(ad, x, y), zz), app2(ad, x, app2(ad, y, rhs_z)))
     };
     let mk_at = |d: usize, first: usize, extra: i32| church_tuple(&(0..n).map(|i| shift(&at(d, first + i), 0, extra)).collect::<Vec<_>>());
     // at depth d2: eliminate gz into a motive over z'
@@ -2168,8 +2168,8 @@ pub fn add_is_associative_on_symbolic_good_vectors() {
 /// `(proof, statement)` of `Pi x. GoodBv x -> Id(Bv_n, add x (xor x -1), -1)`; `wrong` states `= 0` instead.
 pub fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     let nb = |a: Expr| xor(a, t());
-    let carry = move |a: Expr, c: Expr| or(and(a.clone(), nb(a.clone())), and(c, xor(a.clone(), nb(a))));
-    let sum = move |a: Expr, c: Expr| xor(xor(a.clone(), nb(a)), c);
+    let carry = move |a: Expr, c: Expr| or(and(a, nb(a)), and(c, xor(a, nb(a))));
+    let sum = move |a: Expr, c: Expr| xor(xor(a, nb(a)), c);
     let (p1, _) = bit_lemma(id(bool0(), sum(var(0), f()), t()), refl(t()), refl(t()));
     let (p2, _) = bit_lemma(id(bool0(), carry(var(0), f()), f()), refl(f()), refl(f()));
     // ctx of the step body: [x, g, a_0..a_(n-1), ga_0..ga_(n-1)]
@@ -2179,13 +2179,13 @@ pub fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     let mut c = vec![f()];
     let mut pc: Vec<Option<Expr>> = vec![None];
     for i in 0..n {
-        let next = carry(a(i), c[i].clone());
-        let to_false = app2(p2.clone(), a(i), ga(i));
+        let next = carry(a(i), c[i]);
+        let to_false = app2(p2, a(i), ga(i));
         let proof = match &pc[i] {
             None => to_false,
             Some(pci) => {
                 let fmap = lam(bool0(), carry(shift(&a(i), 0, 1), var(0)));
-                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i], f(), *pci);
                 trans_proof(&bool0(), &next, &carry(a(i), f()), &f(), rewritten, to_false)
             }
         };
@@ -2194,13 +2194,13 @@ pub fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     }
     let (mut s, mut e) = (vec![], vec![]);
     for i in 0..n {
-        let s_i = sum(a(i), c[i].clone());
-        let to_t = app2(p1.clone(), a(i), ga(i));
+        let s_i = sum(a(i), c[i]);
+        let to_t = app2(p1, a(i), ga(i));
         let proof = match &pc[i] {
             None => to_t,
             Some(pci) => {
                 let fmap = lam(bool0(), sum(shift(&a(i), 0, 1), var(0)));
-                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i].clone(), f(), pci.clone());
+                let rewritten = cong1(&bool0(), &bool0(), &fmap, c[i], f(), *pci);
                 trans_proof(&bool0(), &s_i, &sum(a(i), f()), &t(), rewritten, to_t)
             }
         };
@@ -2217,9 +2217,9 @@ pub fn add_not_proof(n: usize, wrong: bool) -> (Expr, Expr) {
         step = lam(bool0(), step);
     }
     let ones = lit(n, low_bits(n));
-    let rhs = if wrong { lit(n, 0) } else { ones.clone() };
+    let rhs = if wrong { lit(n, 0) } else { ones };
     let xv = bitwise(n, &|p, q| xor(p, q));
-    let claim = |x: Expr| id(bv_ty(n), app2(add(n), x.clone(), app2(xv.clone(), x, ones.clone())), rhs.clone());
+    let claim = |x: Expr| id(bv_ty(n), app2(add(n), x, app2(xv, x, ones)), rhs);
     let motive = lam(bv_ty(n), claim(var(0)));
     let proof = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), motive, step)));
     let stmt = pi(bv_ty(n), arrow(app(good_bv(n), var(0)), claim(var(0))));

@@ -226,9 +226,9 @@ pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize, reach: Option<&Reach
 /// `Id(Bool0, a, b)` from `h : Id(Bool0, false, true)`, for any Boolean `a`, `b`: congruence of `\c. mux c a b`.
 pub fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
     let bl = bool0();
-    let fmap = lam(bl.clone(), mux(var(0), shift(a, 0, 1), shift(b, 0, 1)));
+    let fmap = lam(bl, mux(var(0), shift(a, 0, 1), shift(b, 0, 1)));
     let p = cong1(&bl, &bl, &fmap, f(), t(), h);
-    sym(&bl, &app(fmap.clone(), f()), &app(fmap, t()), p)
+    sym(&bl, &app(fmap, f()), &app(fmap, t()), p)
 }
 
 /// Nanoseconds spent in `add_tree_law`'s encoding searches: [all-states hit, all-states miss, reachable retry].
@@ -407,7 +407,7 @@ pub fn add_tree_law(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, E
         return hit;
     }
     let law = tree_encoding(n, k, t1, t2).map(|found| tree_proof(n, k, t1, t2, &found));
-    TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.clone().map(|(p, s)| (tatic::kernel::persist(p), tatic::kernel::persist(s)))));
+    TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.map(|(p, s)| (tatic::kernel::persist(p), tatic::kernel::persist(s)))));
     law
 }
 
@@ -432,7 +432,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
     let g_expr = |j: usize, v: &[Expr]| table_app(v, &|b| enc.g[j][index_of(b)]);
     // a side's step at (operand bits, carries): (output, next carries)
     let step_of = |side: usize, v: &[Expr]| -> (Expr, Vec<Expr>) {
-        let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
+        let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: *e, g: f() }).collect();
         let (o, next) = machines[side].step(&gops, &dummy[..k], &dummy[k..]);
         (o.e, next.into_iter().map(|g| g.e).collect())
     };
@@ -506,7 +506,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
                     guarded(side, k + cs[side], k, &format!("F{j}|{:?}", enc.g[j]), &|v, bits| {
                         let s = step_at(side, v, bits);
                         let key: Vec<Expr> = v[..k].iter().chain(&s.2).cloned().collect();
-                        (if j == 0 { s.0.clone() } else { phi_expr(side, j - 1, &s.1) }, g_expr(j, &key))
+                        (if j == 0 { s.0 } else { phi_expr(side, j - 1, &s.1) }, g_expr(j, &key))
                     })
                 })
                 .collect()
@@ -528,7 +528,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
             if !last {
                 return t();
             }
-            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v, _| (v[cs[side] - 1].clone(), dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
+            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v, _| (v[cs[side] - 1], dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
@@ -543,8 +543,8 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
         let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
         for i in 0..n {
             let ug: Vec<Gb> = (0..k).map(|v| Gb { e: bits(v, i), g: goods(v, i) }).collect();
-            let ub: Vec<Expr> = ug.iter().map(|g| g.e.clone()).collect();
-            let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e.clone()).collect() };
+            let ub: Vec<Expr> = ug.iter().map(|g| g.e).collect();
+            let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e).collect() };
             let vs = |side: usize| -> Vec<Expr> { ub.iter().cloned().chain(sx(side)).collect() };
             let pq = |side: usize| -> Vec<Expr> { (0..m).map(|j| phi_expr(side, j, &sx(side))).collect() };
             let key = |p: &[Expr]| -> Vec<Expr> { ub.iter().cloned().chain(p.iter().cloned()).collect() };
@@ -553,34 +553,34 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
                 let (pl, pr) = (pq(0), pq(1));
                 let (gl, gr) = (g_expr(j, &key(&pl)), g_expr(j, &key(&pr)));
                 let inst = |side: usize| {
-                    let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g.clone())).chain(st[side].iter().map(|g| g.g.clone()));
+                    let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g)).chain(st[side].iter().map(|g| g.g));
                     let mut args: Vec<Expr> = args.collect();
                     if inv.is_some() {
-                        args.push(hy[side].clone());
+                        args.push(hy[side]);
                     }
-                    apps(lemmas[side][j].clone(), args)
+                    apps(lemmas[side][j], args)
                 };
                 let mut fmap = g_expr(j, &ub.iter().map(|e| shift(e, 0, m as i32)).chain((0..m).map(|q| var((m - 1 - q) as u32))).collect::<Vec<_>>());
                 for _ in 0..m {
-                    fmap = lam(bl.clone(), fmap);
+                    fmap = lam(bl, fmap);
                 }
                 let link = cong_n(&bl, &bl, &fmap, &pl, &pr, ip.clone());
                 let back = sym(&bl, &fr, &gr, inst(1));
                 let mid = tr(&gl, &gr, &fr, link, back);
-                (fl.clone(), fr.clone(), tr(&fl, &gl, &fr, inst(0), mid))
+                (fl, fr, tr(&fl, &gl, &fr, inst(0), mid))
             };
             let first = last as usize;
             let proofs: Vec<(Expr, Expr, Expr)> = (first..=m).map(eq).collect();
             if !last {
-                s1.push(proofs[0].0.clone());
-                s2.push(proofs[0].1.clone());
-                e.push(proofs[0].2.clone());
+                s1.push(proofs[0].0);
+                s2.push(proofs[0].1);
+                e.push(proofs[0].2);
             }
-            ip = proofs[1 - first..].iter().map(|p| p.2.clone()).collect();
+            ip = proofs[1 - first..].iter().map(|p| p.2).collect();
             if inv.is_some() {
                 for side in 0..2 {
-                    let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g.clone())).chain(st[side].iter().map(|g| g.g.clone())).chain([hy[side].clone()]);
-                    hy[side] = apps(pres[side].clone(), args.collect());
+                    let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g)).chain(st[side].iter().map(|g| g.g)).chain([hy[side]]);
+                    hy[side] = apps(pres[side], args.collect());
                 }
             }
             for side in 0..2 {
@@ -598,27 +598,27 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
     k_var_law_to(n, k, &bv_ty(1), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
         let (.., st, ip, hy) = core(bits, goods);
         let bl = bool0();
-        let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e.clone()).collect() };
+        let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e).collect() };
         let pq = |side: usize| -> Vec<Expr> { (0..m).map(|j| phi_expr(side, j, &sx(side))).collect() };
         let (pl, pr) = (pq(0), pq(1));
-        let end = |side: usize| st[side][cs[side] - 1].e.clone();
+        let end = |side: usize| st[side][cs[side] - 1].e;
         let inst = |side: usize| {
-            let mut args: Vec<Expr> = sx(side).into_iter().chain(st[side].iter().map(|g| g.g.clone())).collect();
+            let mut args: Vec<Expr> = sx(side).into_iter().chain(st[side].iter().map(|g| g.g)).collect();
             if inv.is_some() {
-                args.push(hy[side].clone());
+                args.push(hy[side]);
             }
-            apps(dlemmas[side].clone(), args)
+            apps(dlemmas[side], args)
         };
         let (dl, dr) = (dec_expr(&pl), dec_expr(&pr));
         let mut fmap = dec_expr(&(0..m).map(|q| var((m - 1 - q) as u32)).collect::<Vec<_>>());
         for _ in 0..m {
-            fmap = lam(bl.clone(), fmap);
+            fmap = lam(bl, fmap);
         }
         let link = cong_n(&bl, &bl, &fmap, &pl, &pr, ip);
         let back = sym(&bl, &end(1), &dr, inst(1));
         let mid = trans_proof(&bl, &dl, &dr, &end(1), link, back);
         let whole = trans_proof(&bl, &end(0), &dl, &end(1), inst(0), mid);
-        let fbody = lam(bl.clone(), lam(sort(1), lam(karrow(1), app(var(0), var(2)))));
+        let fbody = lam(bl, lam(sort(1), lam(karrow(1), app(var(0), var(2)))));
         cong_n(&bl, &bv_ty(1), &fbody, &[end(0)], &[end(1)], vec![whole])
     })
 }
@@ -813,12 +813,12 @@ pub fn machine_lemma_probe() {
             let m = Machine::parse(&left).unwrap();
             for (what, pick) in [("out", 0usize), ("next carry 0", 1), ("table of next carries", 2)] {
                 let f_of = |vv: &[Expr]| -> Expr {
-                    let dummy: Vec<Gb> = vv.iter().map(|e| Gb { e: e.clone(), g: f() }).collect();
+                    let dummy: Vec<Gb> = vv.iter().map(|e| Gb { e: *e, g: f() }).collect();
                     let (o, next) = m.step(&gops, &dummy[..3], &dummy[3..]);
                     match pick {
                         0 => o.e,
-                        1 => next[0].e.clone(),
-                        _ => table_app(&next.iter().map(|g| g.e.clone()).collect::<Vec<_>>(), &|b| b.iter().filter(|x| **x).count() % 2 == 1),
+                        1 => next[0].e,
+                        _ => table_app(&next.iter().map(|g| g.e).collect::<Vec<_>>(), &|b| b.iter().filter(|x| **x).count() % 2 == 1),
                     }
                 };
                 let (p, ty) = lemma_n(3 + c, &|vv| id(bool0(), f_of(vv), f_of(vv)), &|b| refl(f_of(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>())));
@@ -836,7 +836,7 @@ pub fn machine_lemma_probe() {
 #[ignore]
 pub fn lemma_overhead_probe() {
     for vars in [5usize, 6, 7, 8] {
-        let (p, ty) = lemma_n(vars, &|v| id(bool0(), v[0].clone(), v[0].clone()), &|b| refl(bit(b[0])));
+        let (p, ty) = lemma_n(vars, &|v| id(bool0(), v[0], v[0]), &|b| refl(bit(b[0])));
         let t0 = Instant::now();
         let ok = holds(&p, &ty).is_ok();
         println!("PROBE trivial lemma over {vars} bits: check {:?} ok {ok}", t0.elapsed());
@@ -1047,7 +1047,7 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
         // `lt_u` computes `a < b`
         let ops = ops_for(n);
         for (a, b) in [(0u128, 0u128), (3, 5), (5, 3), (7, 7), (0, 15), (15, 0), (8, 9)] {
-            let e = app2(ops[5].clone(), lit(n, a), lit(n, b));
+            let e = app2(ops[5], lit(n, a), lit(n, b));
             assert_eq!(normalize(&e), normalize(&lit(1, (a < b) as u128)), "lt {a} {b}");
         }
         let v = |i: usize| Box::new(Term::V(i));
@@ -1201,7 +1201,7 @@ pub fn pos_law<T: PosTerm>(n: usize, k: usize, t1: &T, t2: &T) -> (Expr, Expr) {
             atoms.sort();
             atoms.dedup();
             let at = |vals: &[Expr]| {
-                let lookup = |v: usize, j: usize| vals[atoms.iter().position(|a| *a == (v, j)).unwrap()].clone();
+                let lookup = |v: usize, j: usize| vals[atoms.iter().position(|a| *a == (v, j)).unwrap()];
                 (t1.pos_bit(n, i, &lookup), t2.pos_bit(n, i, &lookup))
             };
             let (lemma, _) = lemma_n(

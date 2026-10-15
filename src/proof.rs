@@ -187,7 +187,7 @@ impl ArithPostulates {
 
         let push_binop = |p: &mut Postulates| -> usize {
             let int_ty = p.get(int_pos);
-            let ty = kernel::arrow(int_ty.clone(), kernel::arrow(int_ty.clone(), int_ty));
+            let ty = kernel::arrow(int_ty, kernel::arrow(int_ty, int_ty));
             p.push(ty)
         };
         // Order matches `PrimOp`'s `#[repr(u8)]` discriminants in term.rs.
@@ -204,8 +204,8 @@ impl ArithPostulates {
 
         let int_ty = p.get(int_pos);
         let ite_ty = kernel::arrow(
-            int_ty.clone(),
-            kernel::arrow(int_ty.clone(), kernel::arrow(int_ty.clone(), int_ty)),
+            int_ty,
+            kernel::arrow(int_ty, kernel::arrow(int_ty, int_ty)),
         );
         let ite_pos = p.push(ite_ty);
 
@@ -388,7 +388,7 @@ fn denote_in(
     memo: &mut HashMap<Hash, Expr>,
 ) -> Option<Expr> {
     if let Some(d) = memo.get(&h) {
-        return Some(d.clone());
+        return Some(*d);
     }
     let d = match compile::classify(store, h, params.len(), None) {
         Shape::Var(i) => params.get(i as usize).cloned()?,
@@ -406,7 +406,7 @@ fn denote_in(
         }
         Shape::SelfCall(_) | Shape::VarCall { .. } | Shape::CombinatorCall { .. } | Shape::OtherCall | Shape::Combinator { .. } => return None,
     };
-    memo.insert(h, d.clone());
+    memo.insert(h, d);
     Some(d)
 }
 
@@ -457,8 +457,8 @@ fn setup(store: &TermStore, body: Hash, arity: usize, self_idx: Option<u32>) -> 
 /// `refl` proof, and confirm the kernel actually accepts it.
 fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<EquivalenceProof> {
     let result_ty = arith.int_ty();
-    let proof = kernel::refl(denotation.clone());
-    let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
+    let proof = kernel::refl(denotation);
+    let proof_ty = kernel::id(result_ty, denotation, denotation);
     arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {

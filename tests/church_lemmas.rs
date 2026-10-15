@@ -36,7 +36,7 @@ fn good_bool() -> Expr {
 /// `\a:Bool0. \g:GoodBool a. g (\b. Id(Bool0, lhs(b), rhs(b))) (refl t-case) (refl f-case)`
 /// The motive body is given at ctx [a,g,b]: `b` is var(0).
 fn lemma(motive_body: Expr, at_true: Expr, at_false: Expr) -> (Expr, Expr) {
-    let motive = lam(bool0(), motive_body.clone());
+    let motive = lam(bool0(), motive_body);
     // ctx [a, g]: g = var0
     let proof = lam(bool0(), lam(app(good_bool(), var(0)), app3(var(0), motive, at_true, at_false)));
     // type: Pi a. GoodBool a -> (motive a); motive a at ctx [a,g]: shift a

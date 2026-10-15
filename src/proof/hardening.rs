@@ -40,7 +40,7 @@ pub(super) fn debug_assert_has_type(_p: &Postulates, _e: &Expr, _expected: &Expr
 /// not just a closure local to `prove_tail_recursive_universal` -- so
 /// `build_ev_witness` can reuse it too).
 pub(super) fn combine_of(combine: &Expr, params: &[Expr], ihs: &[Expr]) -> Expr {
-    apply_n(combine.clone(), params.iter().cloned().chain(ihs.iter().cloned()))
+    apply_n(*combine, params.iter().cloned().chain(ihs.iter().cloned()))
 }
 
 /// The shape `prove_tail_recursive_universal`'s `body` must be: an
@@ -254,7 +254,7 @@ pub(super) fn denote_with_placeholders(
                 }
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.clone());
+                    all_args.push(*env_expr);
                 }
                 all_args.extend(arg_exprs.iter().cloned());
                 let applied = apply_n(pap_fn, all_args);
@@ -282,7 +282,7 @@ pub(super) fn denote_with_placeholders(
                 }
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.clone());
+                    all_args.push(*env_expr);
                 }
                 all_args.extend(arg_exprs.iter().cloned());
                 let sat_applied = apply_n(call_fn, all_args);
@@ -316,7 +316,7 @@ pub(super) fn denote_with_placeholders(
         Shape::OtherCall => None,
         Shape::Var(i) => {
             let i = i as usize;
-            let p = params.get(i)?.clone();
+            let p = *params.get(i)?;
             match *param_types.get(i)? {
                 Some(_) => Some(Denoted::Clo(p)),
                 None => Some(Denoted::Int(p)),
@@ -492,7 +492,7 @@ pub(super) fn denote_closure_typed(
                 }
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.clone());
+                    all_args.push(*env_expr);
                 }
                 all_args.extend(arg_exprs.iter().cloned());
                 let applied = apply_n(pap_fn, all_args);
@@ -520,7 +520,7 @@ pub(super) fn denote_closure_typed(
                 }
                 let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
                 if let Some(env_expr) = &env_expr {
-                    all_args.push(env_expr.clone());
+                    all_args.push(*env_expr);
                 }
                 all_args.extend(arg_exprs.iter().cloned());
                 let sat_applied = apply_n(call_fn, all_args);
@@ -554,7 +554,7 @@ pub(super) fn denote_closure_typed(
         Shape::OtherCall => None,
         Shape::Var(i) => {
             let i = i as usize;
-            let p = params.get(i)?.clone();
+            let p = *params.get(i)?;
             match *param_types.get(i)? {
                 Some(_) => Some(Denoted::Clo(p)),
                 None => Some(Denoted::Int(p)),
@@ -853,7 +853,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
         }
         let mut ty = kernel::arrow(arith.int_ty(), kernel::sort(0)); // v : Int
         for dom in doms.iter().rev() {
-            ty = kernel::arrow(dom.clone(), ty);
+            ty = kernel::arrow(*dom, ty);
         }
         ty
     };
@@ -874,7 +874,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
         let mut es = Vec::with_capacity(calls.len());
         for (call, v) in calls.iter().zip(&vs) {
             let np = new_params_for(arith, call, pp)?;
-            let ev_np = ev_of(arith, &np, v.clone());
+            let ev_np = ev_of(arith, &np, *v);
             es.push(arith.p.bind(ev_np));
         }
         Some((vs, es))
@@ -934,7 +934,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
     let p_scope = arith.p.open();
     let p_ref = arith.p.bind(motive_ty);
     let p_of = |_arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
-        apply_n(p_ref.clone(), params.iter().cloned().chain([v, e]))
+        apply_n(p_ref, params.iter().cloned().chain([v, e]))
     };
 
     // leaf_case_ty_i : Pi params. Pi (path premises) v_1..v_{k_i} (e_1..e_{k_i}).
@@ -950,7 +950,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
             let mut ih_tys = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, pp)?;
-                ih_tys.push(p_of(arith, &np, v.clone(), e.clone()));
+                ih_tys.push(p_of(arith, &np, *v, *e));
             }
             let combine_v = combine_of(combine, pp, &vs);
             let ev_leaf_applied = apply_n(
@@ -974,7 +974,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
     }
     let concl_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, pp, v.clone());
+        let ev_pv = ev_of(arith, pp, v);
         let e = arith.p.bind(ev_pv);
         Some(p_of(arith, pp, v, e))
     });
@@ -987,7 +987,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
         }
     };
 
-    let ev_rec_ty_body = leaf_case_tys.iter().rev().fold(concl_ty, |acc, ty| kernel::arrow(ty.clone(), acc));
+    let ev_rec_ty_body = leaf_case_tys.iter().rev().fold(concl_ty, |acc, ty| kernel::arrow(*ty, acc));
     let ev_rec_ty = arith.p.close(p_scope, kernel::Binder::Pi, ev_rec_ty_body);
     let ev_rec_pos = arith.p.push(ev_rec_ty);
     let ev_rec_ref = |arith: &ArithPostulates, motive: Expr, cases: &[Expr], params: &[Expr], v: Expr, e: Expr| -> Expr {
@@ -1027,7 +1027,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
     }
 
     let loop_val = |arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
-        ev_rec_ref(arith, const_int_motive.clone(), &loop_leaves, params, v, e)
+        ev_rec_ref(arith, const_int_motive, &loop_leaves, params, v, e)
     };
 
     // loop_val_leaf_eq_i : Pi params (path premises) v_1..v_{k_i} (e_1..e_{k_i}).
@@ -1048,7 +1048,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
             let mut recursive_vals = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, pp)?;
-                recursive_vals.push(loop_val(arith, &np, v.clone(), e.clone()));
+                recursive_vals.push(loop_val(arith, &np, *v, *e));
             }
             let rhs = combine_of(combine, pp, &recursive_vals);
             Some(kernel::id(arith.int_ty(), lhs, rhs))
@@ -1060,9 +1060,9 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
     // ev_rec with motive `\params v e. Id(Int, loop_val(params,v,e), v)`.
     let id_motive = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, pp, v.clone());
+        let ev_pv = ev_of(arith, pp, v);
         let e = arith.p.bind(ev_pv);
-        Some(kernel::id(arith.int_ty(), loop_val(arith, pp, v.clone(), e), v))
+        Some(kernel::id(arith.int_ty(), loop_val(arith, pp, v, e), v))
     })?;
 
     // Leaf `i`'s theorem case: given `ih_j : loop_val(new_params_j,v_j,e_j)
@@ -1084,14 +1084,14 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
             let mut ihs = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, pp)?;
-                let ih_ty = kernel::id(arith.int_ty(), loop_val(arith, &np, v.clone(), e.clone()), v.clone());
+                let ih_ty = kernel::id(arith.int_ty(), loop_val(arith, &np, *v, *e), *v);
                 ihs.push(arith.p.bind(ih_ty));
             }
 
             let mut recursive_vals = Vec::with_capacity(leaf.calls.len());
             for ((call, v), e) in leaf.calls.iter().zip(&vs).zip(&es) {
                 let np = new_params_for(arith, call, pp)?;
-                recursive_vals.push(loop_val(arith, &np, v.clone(), e.clone()));
+                recursive_vals.push(loop_val(arith, &np, *v, *e));
             }
 
             let eb = apply_n(
@@ -1102,7 +1102,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
                 arith.p.get(loop_val_leaf_eq_pos),
                 pp.iter().cloned().chain(premises).chain(vs.iter().cloned()).chain(es),
             );
-            let f_partial = apply_n(combine.clone(), pp.iter().cloned());
+            let f_partial = apply_n(*combine, pp.iter().cloned());
             let cong_step = kernel::cong_n(&arith.int_ty(), &arith.int_ty(), &f_partial, &recursive_vals, &vs, ihs);
 
             let lhs = loop_val(arith, pp, combine_of(combine, pp, &vs), eb);
@@ -1115,16 +1115,16 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
 
     let theorem_ty = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Pi, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, pp, v.clone());
+        let ev_pv = ev_of(arith, pp, v);
         let e = arith.p.bind(ev_pv);
-        Some(kernel::id(arith.int_ty(), loop_val(arith, pp, v.clone(), e), v))
+        Some(kernel::id(arith.int_ty(), loop_val(arith, pp, v, e), v))
     })?;
 
     let theorem_proof = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
         let v = { let ty = arith.int_ty(); arith.p.bind(ty) };
-        let ev_pv = ev_of(arith, pp, v.clone());
+        let ev_pv = ev_of(arith, pp, v);
         let e = arith.p.bind(ev_pv);
-        Some(ev_rec_ref(arith, id_motive.clone(), &theorem_leaves, pp, v, e))
+        Some(ev_rec_ref(arith, id_motive, &theorem_leaves, pp, v, e))
     })?;
 
     arith.p.check(&theorem_proof, &theorem_ty).ok()?;
@@ -1158,8 +1158,8 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
 /// arithmetic or choosing between two `Clo`-typed values.
 pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
     let scaffold = build_universal(store, h)?;
-    let theorem_ty = scaffold.theorem_ty.clone();
-    let theorem_proof = scaffold.theorem_proof.clone();
+    let theorem_ty = scaffold.theorem_ty;
+    let theorem_proof = scaffold.theorem_proof;
     Some(UniversalTailProof {
         globals: scaffold.combinators.cp.arith.p.globals,
         arity: scaffold.arity,

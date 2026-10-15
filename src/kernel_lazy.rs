@@ -157,7 +157,7 @@ enum Cell {
 
 impl Thunk {
     fn delay(e: &Expr, env: &Env) -> Thunk {
-        let fresh = || Thunk(Rc::new(RefCell::new(Cell::Delayed(e.clone(), env.clone()))));
+        let fresh = || Thunk(Rc::new(RefCell::new(Cell::Delayed(*e, env.clone()))));
         bump(|s| s.cell_calls += 1);
         if !memo_on(e) {
             return fresh();
@@ -171,7 +171,7 @@ impl Thunk {
         }
         let t = fresh();
         record(1, e, key.1.len(), false);
-        MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.cells.insert(key, (e.clone(), env.clone(), t.clone()))));
+        MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.cells.insert(key, (*e, env.clone(), t.clone()))));
         t
     }
     fn lazy(f: impl FnOnce() -> V + 'static) -> Thunk {
@@ -297,14 +297,14 @@ fn eval(env: &Env, e: &Expr) -> V {
     }
     record(0, e, key.1.len(), false);
     let v = eval_node(env, e);
-    MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.vals.insert(key, (e.clone(), env.clone(), v.clone()))));
+    MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.vals.insert(key, (*e, env.clone(), v.clone()))));
     v
 }
 
 fn eval_node(env: &Env, e: &Expr) -> V {
     grow(|| {
         let d = |x: &Expr| Thunk::delay(x, env);
-        let c = |x: &Expr| Clo::Term(env.clone(), x.clone());
+        let c = |x: &Expr| Clo::Term(env.clone(), *x);
         match &e.node() {
             Node::Var(i) => lookup(env, *i).force(),
             Node::Sort(i) => Rc::new(Val::Sort(*i)),
@@ -440,7 +440,7 @@ mod tests {
         fn dag(k: u32) -> Expr {
             let mut n = sort(0);
             for _ in 0..k {
-                n = sup(n.clone(), n.clone());
+                n = sup(n, n);
             }
             n
         }
@@ -450,7 +450,7 @@ mod tests {
         // a differing leaf is still found
         let mut c = sort(1);
         for _ in 0..k {
-            c = sup(c.clone(), c.clone());
+            c = sup(c, c);
         }
         assert!(!def_eq_lazy_shared(&a, &c, 0));
     }
@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn beta_and_stuck_variables() {
         let id_fn = lam(sort(0), var(0));
-        assert!(eq(&app(id_fn.clone(), sort(3)), &sort(3), 0));
+        assert!(eq(&app(id_fn, sort(3)), &sort(3), 0));
         assert!(!eq(&app(id_fn, sort(3)), &sort(4), 0));
         assert!(eq(&var(0), &var(0), 1));
         assert!(!eq(&var(0), &var(1), 2));
@@ -476,9 +476,9 @@ mod tests {
     fn j_on_refl_reduces_but_j_on_a_variable_is_stuck() {
         let motive = lam(sort(0), lam(sort(0), lam(sort(0), sort(0))));
         let base = lam(sort(0), var(0));
-        let j_refl = jelim(motive.clone(), base.clone(), sort(1), sort(1), refl(sort(1)));
+        let j_refl = jelim(motive, base, sort(1), sort(1), refl(sort(1)));
         assert!(eq(&j_refl, &sort(1), 0));
-        let j_var = jelim(motive.clone(), base.clone(), sort(1), sort(1), var(0));
+        let j_var = jelim(motive, base, sort(1), sort(1), var(0));
         assert!(!eq(&j_var, &sort(1), 1));
         assert!(eq(&j_var, &j_var.clone(), 1));
         assert_eq!(eq(&j_var, &sort(1), 1), def_eq(&j_var, &sort(1)));
@@ -488,7 +488,7 @@ mod tests {
     fn wrec_on_sup_and_sigrec_on_pair_reduce() {
         // wrec(motive, B, step, sup(a, f)) = step a f (\y. wrec .. (f y))
         let step = lam(sort(0), lam(sort(0), lam(sort(0), var(2))));
-        let w = wrec(sort(0), sort(0), step.clone(), sup(sort(5), sort(6)));
+        let w = wrec(sort(0), sort(0), step, sup(sort(5), sort(6)));
         assert!(eq(&w, &sort(5), 0));
         assert_eq!(eq(&w, &sort(5), 0), def_eq(&w, &sort(5)));
         let s = sigrec(sort(0), lam(sort(0), lam(sort(0), var(1))), pair(sort(0), sort(7), sort(8)));
@@ -514,8 +514,8 @@ mod tests {
     #[test]
     fn wrec_induction_hypothesis_has_its_domain_and_body() {
         let step = lam(sort(0), lam(sort(0), lam(sort(0), var(0))));
-        let lhs = wrec(sort(0), sort(7), step.clone(), sup(sort(5), sort(6)));
-        let rhs = |dom: u32| lam(sort(dom), wrec(sort(0), sort(7), step.clone(), app(sort(6), var(0))));
+        let lhs = wrec(sort(0), sort(7), step, sup(sort(5), sort(6)));
+        let rhs = |dom: u32| lam(sort(dom), wrec(sort(0), sort(7), step, app(sort(6), var(0))));
         assert!(eq(&lhs, &rhs(7), 0), "kernel says {}", def_eq(&lhs, &rhs(7)));
         assert!(!eq(&lhs, &rhs(8), 0));
         assert_eq!(eq(&lhs, &rhs(7), 0), def_eq(&lhs, &rhs(7)));
@@ -568,7 +568,7 @@ mod tests {
             Node::Id(a, x, y) => id(go(a), go(x), go(y)),
             Node::Sigma(a, b) => sigma(go(a), go(b)),
             Node::Pair(fam, a, b) => pair(go(fam), go(a), go(b)),
-            _ => e.clone(),
+            _ => *e,
         };
         if wrap { app(lam(sort(0), shift(&rebuilt, 0, 1)), sort(0)) } else { rebuilt }
     }
@@ -580,7 +580,7 @@ mod tests {
         let (mut seed, mut equal, mut unequal) = (7u64, 0, 0);
         for i in 0..20_000 {
             let a = random_expr(&mut seed, 4);
-            let b = if i % 2 == 0 { a.clone() } else { random_expr(&mut seed, 4) };
+            let b = if i % 2 == 0 { a } else { random_expr(&mut seed, 4) };
             let (a, b) = (with_redexes(&a, &mut seed), with_redexes(&b, &mut seed));
             let reference = def_eq(&a, &b);
             assert_eq!(def_eq_lazy(&a, &b, 4), reference, "a {a:?}, b {b:?}");

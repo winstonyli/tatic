@@ -25,8 +25,11 @@ fn hc_low(x: &Expr) -> bool {
 fn hc_args_id(args: &[&Expr]) -> Option<Aid> {
     with_spaces(|s| hc::args_id(s, args))
 }
-fn hc_lowest_loose(x: &Expr, d: u32, memo: &mut PtrMap<(Key, u32), u32>) -> u32 {
+fn hc_lowest_loose(x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
     with_spaces(|s| hc::lowest_loose(s, x, d, memo))
+}
+fn hc_whnf_get(x: &Expr) -> Option<Expr> {
+    with_spaces(|s| hc::whnf_get(s, x))
 }
 
 /// Replace `Var(j)` with `s` throughout `e`: the reference `subst_top`
@@ -35,7 +38,7 @@ fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
     grow(|| match e.node() {
         Node::Var(k) => {
             if k == j {
-                s.clone()
+                *s
             } else {
                 var(k)
             }
@@ -68,7 +71,7 @@ fn random_term(next: &mut impl FnMut() -> usize) -> Expr {
         .collect();
     for _ in 0..12 {
         let kind = next() % 14;
-        let mut c = || pool[next() % pool.len()].clone();
+        let mut c = || pool[next() % pool.len()];
         let node = match kind {
             0 => Node::Pi(c(), c()),
             1 => Node::Lam(c(), c()),
@@ -86,7 +89,7 @@ fn random_term(next: &mut impl FnMut() -> usize) -> Expr {
         };
         pool.push(mk(node));
     }
-    pool.last().unwrap().clone()
+    *pool.last().unwrap()
 }
 
 /// The pre-§64 `is_var_free`, kept as the reference for the new one and for
@@ -145,7 +148,7 @@ fn instantiate_ref(e: &Expr, s: &Expr, d: u32) -> Expr {
 fn brief_bounds_the_text_of_an_exponential_tree() {
     let mut e = sort(0);
     for _ in 0..60 {
-        e = app(e.clone(), e);
+        e = app(e, e);
     }
     let t = std::time::Instant::now();
     let text = brief(&e);
@@ -200,12 +203,12 @@ fn shift_and_instantiate_match_a_reference() {
 fn whnf_memo_outlives_one_def_eq_in_a_scope() {
     let redex = || app(lam(sort(0), var(0)), var(7));
     assert!(def_eq(&app(var(5), redex()), &app(var(5), var(7))));
-    assert_eq!(hc::whnf_get(&redex()), None);
+    assert_eq!(hc_whnf_get(&redex()), None);
     scoped(|| {
         let x = redex();
-        assert_eq!(hc::whnf_get(&x), None);
-        assert!(def_eq(&app(var(5), x.clone()), &app(var(5), var(7))));
-        assert_eq!(hc::whnf_get(&x), Some(var(7)));
+        assert_eq!(hc_whnf_get(&x), None);
+        assert!(def_eq(&app(var(5), x), &app(var(5), var(7))));
+        assert_eq!(hc_whnf_get(&x), Some(var(7)));
     })
 }
 
@@ -232,10 +235,10 @@ fn closed_function_values_are_reduced_once() {
     let tt = lam(sort(0), lam(var(0), lam(var(1), var(1))));
     let ff = lam(sort(0), lam(var(0), lam(var(1), var(0))));
     let build = || {
-        let mut b = tt.clone();
+        let mut b = tt;
         for _ in 0..DEPTH {
             // `b C p q`, keeping `b` the shared node
-            let call = |p: Expr, q: Expr| app(app(app(b.clone(), var(2)), p), q);
+            let call = |p: Expr, q: Expr| app(app(app(b, var(2)), p), q);
             let body = call(call(var(0), var(1)), call(var(1), var(0)));
             b = lam(sort(0), lam(var(0), lam(var(1), body)));
         }
@@ -253,10 +256,10 @@ fn closed_function_values_are_reduced_once() {
 #[test]
 fn cong_n_shares_shifted_copies_outside_a_scope() {
     const DEPTH: usize = 20;
-    assert_eq!(hc::generation(), 0);
+    assert_eq!(intern_generation(), 0);
     let mut d = var(0);
     for _ in 0..DEPTH {
-        d = app(app(var(1), d.clone()), d);
+        d = app(app(var(1), d), d);
     }
     let xs = [var(2), var(3)];
     let ps = vec![refl(var(2)), refl(var(3))];
@@ -273,7 +276,7 @@ fn instantiate_n_matches_sequential_substitution() {
         let m = 1 + (next() % 3);
         let args: Vec<Expr> = (0..m).map(|_| random_term(&mut next)).collect();
         // `lam^m(e)` applied to `args`, one beta at a time
-        let mut body = e.clone();
+        let mut body = e;
         for _ in 1..m {
             body = lam(sort(0), body);
         }
@@ -310,7 +313,7 @@ fn instantiate_n_matches_sequential_substitution_in_a_scope() {
             }
             let m = 1 + next() % 3;
             let pick: Vec<usize> = (0..m).map(|_| next() % 4).collect();
-            let mut cur = e.clone();
+            let mut cur = e;
             for _ in 1..m {
                 cur = lam(sort(0), cur);
             }
@@ -337,7 +340,7 @@ fn instantiate_n_matches_sequential_substitution_in_a_scope() {
 #[test]
 fn shift_keeps_closed_children_by_pointer() {
     let closed = pi(sort(0), var(0));
-    let e = app(closed.clone(), var(0));
+    let e = app(closed, var(0));
     let shifted = shift(&e, 0, 1);
     let Node::App(f, a) = shifted.node() else { panic!() };
     assert!(node_key(&f) == node_key(&closed), "shift copied a closed child");
@@ -350,7 +353,7 @@ fn shift_keeps_closed_children_by_pointer() {
     // Under cutoff 1, `Var(0)` is bound, so its child keeps its pointer
     // and only `Var(2)` moves.
     let low = var(0);
-    let e = app(low.clone(), var(2));
+    let e = app(low, var(2));
     let shifted = shift(&e, 1, 1);
     let Node::App(f, a) = shifted.node() else { panic!() };
     assert!(node_key(&f) == node_key(&low), "shift copied a child below the cutoff");
@@ -362,7 +365,7 @@ fn shift_keeps_closed_children_by_pointer() {
 
     // A whole term with nothing to change comes back with its children
     // by pointer; check the domain.
-    let e = pi(closed.clone(), var(0));
+    let e = pi(closed, var(0));
     let shifted = shift(&e, 0, 5);
     let Node::Pi(dom, _) = shifted.node() else { panic!() };
     assert!(node_key(&dom) == node_key(&closed));
@@ -414,10 +417,10 @@ fn const_and_free_are_equal_only_to_themselves() {
 #[test]
 fn beta_leaves_const_and_free_alone() {
     let (c0, f1, f3) = (mk(Node::Const(0)), mk(Node::Free(1)), mk(Node::Free(3)));
-    let body = app(c0.clone(), var(0));
-    assert_eq!(whnf(&app(lam(sort(0), c0.clone()), sort(0))), c0);
-    assert_eq!(whnf(&app(lam(sort(0), body), f3.clone())), app(c0, f3));
-    assert_eq!(nf(&app(lam(sort(0), f1.clone()), var(5))), f1);
+    let body = app(c0, var(0));
+    assert_eq!(whnf(&app(lam(sort(0), c0), sort(0))), c0);
+    assert_eq!(whnf(&app(lam(sort(0), body), f3)), app(c0, f3));
+    assert_eq!(nf(&app(lam(sort(0), f1), var(5))), f1);
 }
 
 /// A random `Expr` of every variant, ill-typed as often as not, with
@@ -469,98 +472,64 @@ fn subst_top_is_substituting_then_shifting() {
     assert!(used > 2_000 && unused > 2_000, "used {used}, unused {unused}");
 }
 
-/// `args_id` takes a canonical argument's own address and looks up only the others, so a twin that
-/// is not the table's node (a separate allocation over the same children) gets the same id.
-#[test]
-fn args_id_is_the_same_for_a_canonical_argument_and_its_twin() {
-    let _scope = hc::Scope::enter();
-    let warm = var(0);
-    hc_args_id(&[&warm]); // switches the table on (no warm-up under test)
-    let a = app(var(0), var(1));
-    // `mk` would hand back `a` itself, so the twin is built past the table.
-    let twin = Expr::build(a.node());
-    assert!(a.canonical() && !twin.canonical() && node_key(&a) != node_key(&twin));
-    assert_eq!(hc_args_id(&[&a]), Some(node_key(&a)));
-    assert_eq!(hc_args_id(&[&twin]), Some(node_key(&a)));
-    assert_eq!(hc_args_id(&[&a, &twin]), hc_args_id(&[&twin, &a]));
-}
-
 /// The node table returns the same node for an equal key, also after it has grown, and distinct nodes
 /// for keys that differ only in the leaf value or the constructor.
 #[test]
 fn intern_finds_equal_nodes_after_growth() {
-    let _scope = hc::Scope::enter();
-    hc::activate();
-    let mut chain = vec![hc::intern(Node::Var(0))];
-    for i in 1..10_000 {
-        let next = hc::intern(Node::App(chain[i - 1].clone(), hc::intern(Node::Var(i as u32 % 7))));
-        chain.push(next);
-    }
-    for n in &chain {
-        assert!(node_key(n) == node_key(&hc::intern(n.node())));
-    }
-    let (a, b) = (hc::intern(Node::Var(1)), hc::intern(Node::Sort(1)));
-    assert!(node_key(&a) != node_key(&b) && node_key(&a) != node_key(&hc::intern(Node::Var(2))));
-    let (f, x) = (chain[5].clone(), chain[6].clone());
-    assert!(node_key(&hc::intern(Node::App(f.clone(), x.clone()))) != node_key(&hc::intern(Node::Pi(f, x))));
+    scoped(|| {
+        let mut chain = vec![mk(Node::Var(0))];
+        for i in 1..10_000 {
+            let next = mk(Node::App(chain[i - 1], mk(Node::Var(i as u32 % 7))));
+            chain.push(next);
+        }
+        for n in &chain {
+            assert!(node_key(n) == node_key(&mk(n.node())));
+        }
+        let (a, b) = (mk(Node::Var(1)), mk(Node::Sort(1)));
+        assert!(node_key(&a) != node_key(&b) && node_key(&a) != node_key(&mk(Node::Var(2))));
+        let (f, x) = (chain[5], chain[6]);
+        assert!(node_key(&mk(Node::App(f, x))) != node_key(&mk(Node::Pi(f, x))));
+    })
 }
 
-/// A memo keyed by a non-canonical node's address keeps that node alive, so a node built after the
-/// caller drops it never takes the address and inherits its entry.
-#[test]
-fn memo_sources_outlive_their_callers() {
-    let _scope = hc::Scope::enter();
-    hc::activate();
-    for i in 0..64 {
-        // Built past the table: `mk` would intern it, and a canonical key is never pinned.
-        let x = Expr::build(Node::App(var(i + 5), var(i + 6)));
-        assert!(!x.canonical());
-        let r = app(var(i + 6), var(i + 7));
-        hc::shift_put(&x, 0, 1, &r);
-        drop(x);
-        let y = Expr::build(Node::App(var(i + 5), var(i + 9)));
-        assert!(hc::shift_get(&y, 0, 1).is_none());
-    }
-}
-
-/// The `uses` slot fills the node header's padding, and answers as the walk does: a repeated query
+/// The `uses` slot fills the node's spare word, and answers as the walk does: a repeated query
 /// is answered from the slot, a different one replaces it, and queries too wide for it still work.
 #[test]
 fn uses_slot_is_free_and_agrees_with_the_walk() {
-    let _scope = hc::Scope::enter();
-    hc::activate();
-    let x = lam(var(0), app(var(1), var(3)));
-    assert_eq!(with_spaces(|s| s.uses_slot(&x, 0, 2)), None);
-    // Outside the binder `x` mentions loose variables 0 and 2.
-    for (d, m, want) in [(0, 2, true), (0, 2, true), (1, 1, false), (2, 1, true), (3, 1, false), (1, 1 << 15, true)] {
-        assert_eq!(hc_uses(&x, d, m), want, "d={d} m={m}");
-        // `uses` answers from `loose` alone, without the slot, when nothing is loose at or above `d`.
-        if m < 1 << 15 && x.loose() > d {
-            assert_eq!(with_spaces(|s| s.uses_slot(&x, d, m)), Some(want), "d={d} m={m}");
+    scoped(|| {
+        let x = lam(var(0), app(var(1), var(3)));
+        assert_eq!(with_spaces(|s| s.uses_slot(&x, 0, 2)), None);
+        // Outside the binder `x` mentions loose variables 0 and 2.
+        for (d, m, want) in [(0, 2, true), (0, 2, true), (1, 1, false), (2, 1, true), (3, 1, false), (1, 1 << 15, true)] {
+            assert_eq!(hc_uses(&x, d, m), want, "d={d} m={m}");
+            // `uses` answers from `loose` alone, without the slot, when nothing is loose at or above `d`.
+            if m < 1 << 15 && x.loose() > d {
+                assert_eq!(with_spaces(|s| s.uses_slot(&x, d, m)), Some(want), "d={d} m={m}");
+            }
         }
-    }
+    })
 }
 
 /// `uses`'s bounds memo answers as `lowest_loose` does, whatever order the queries come in: wide
 /// then narrow queries narrow `hi`, narrow then wide ones raise `lo`.
 #[test]
 fn uses_bounds_agree_with_lowest_loose() {
-    let _scope = hc::Scope::enter();
-    hc::activate();
-    let x = lam(var(0), app(app(var(3), var(7)), lam(var(0), var(6))));
-    let mut memo = PtrMap::with_hasher(Default::default());
-    let mut qs: Vec<(u32, u32)> = (0..8).flat_map(|d| (0..10).map(move |m| (d, m))).collect();
-    for round in 0..3 {
-        if round == 1 {
-            qs.reverse();
-        } else if round == 2 {
-            qs.sort_by_key(|&(d, m)| (m * 7 + d * 3) % 11);
+    scoped(|| {
+        let x = lam(var(0), app(app(var(3), var(7)), lam(var(0), var(6))));
+        let mut memo = IdMap::default();
+        let mut qs: Vec<(u32, u32)> = (0..8).flat_map(|d| (0..10).map(move |m| (d, m))).collect();
+        for round in 0..3 {
+            if round == 1 {
+                qs.reverse();
+            } else if round == 2 {
+                qs.sort_by_key(|&(d, m)| (m * 7 + d * 3) % 11);
+            }
+            for &(d, m) in &qs {
+                let want = hc_lowest_loose(&x, d, &mut memo) < m;
+                assert_eq!(hc_uses(&x, d, m), want, "round {round} d={d} m={m}");
+            }
         }
-        for &(d, m) in &qs {
-            let want = hc_lowest_loose(&x, d, &mut memo) < m;
-            assert_eq!(hc_uses(&x, d, m), want, "round {round} d={d} m={m}");
-        }
-    }
+    })
 }
 
 /// The instantiation memo skips nodes at most two levels above their leaves.
@@ -574,16 +543,16 @@ fn low_is_height_at_most_two() {
 /// Lists that fit `args_id`'s stack buffer and lists that don't get stable ids, distinct per list.
 #[test]
 fn args_id_is_stable_for_short_and_long_lists() {
-    let _scope = hc::Scope::enter();
-    hc_args_id(&[&var(0)]); // switches the table on (no warm-up under test)
-    let vs: Vec<Expr> = (0..12).map(var).collect();
-    let refs: Vec<&Expr> = vs.iter().collect();
-    let (short, long) = (&refs[..3], &refs[..12]);
-    let (s, l) = (hc_args_id(short).unwrap(), hc_args_id(long).unwrap());
-    assert_eq!((s % 2, l % 2), (1, 1));
-    assert_ne!(s, l);
-    assert_eq!((hc_args_id(short), hc_args_id(long)), (Some(s), Some(l)));
-    assert_ne!(hc_args_id(&refs[1..4]), Some(s));
+    scoped(|| {
+        let vs: Vec<Expr> = (0..12).map(var).collect();
+        let refs: Vec<&Expr> = vs.iter().collect();
+        let (short, long) = (&refs[..3], &refs[..12]);
+        let (s, l) = (hc_args_id(short).unwrap(), hc_args_id(long).unwrap());
+        assert!(s & LIST_BIT != 0 && l & LIST_BIT != 0);
+        assert_ne!(s, l);
+        assert_eq!((hc_args_id(short), hc_args_id(long)), (Some(s), Some(l)));
+        assert_ne!(hc_args_id(&refs[1..4]), Some(s));
+    })
 }
 
 #[test]
@@ -592,7 +561,7 @@ fn subst_top_leaves_an_unused_argument_alone() {
     // second in a debug build, and the shortcut doesn't look at it.
     let mut s = var(0);
     for _ in 0..20 {
-        s = app(s.clone(), s);
+        s = app(s, s);
     }
     let body = pi(var(3), var(4));
     let t = std::time::Instant::now();
@@ -607,15 +576,14 @@ fn subst_top_leaves_an_unused_argument_alone() {
 fn subst_top_shifts_a_used_argument_once() {
     let mut s = var(0);
     for _ in 0..14 {
-        s = app(s.clone(), s);
+        s = app(s, s);
     }
     let depth = 30;
     let mut body = var(depth);
     let mut expected = shift(&s, 0, depth as i32);
     let t = std::time::Instant::now();
-    let one_shift = shift(&s, 0, depth as i32);
+    let _ = shift(&s, 0, depth as i32);
     let one_shift_time = t.elapsed();
-    drop(one_shift);
     for _ in 0..depth {
         body = lam(sort(0), body);
         expected = lam(sort(0), expected);
@@ -678,7 +646,7 @@ fn with_redexes(e: &Expr, seed: &mut u64) -> Expr {
         n @ (Node::Pi(..) | Node::Lam(..) | Node::App(..) | Node::Id(..) | Node::Sigma(..) | Node::Pair(..)) => {
             mk(n.map_kids(|c, _| with_redexes(&c, seed)))
         }
-        _ => e.clone(),
+        _ => *e,
     };
     if wrap { app(lam(sort(0), shift(&rebuilt, 0, 1)), sort(0)) } else { rebuilt }
 }
@@ -691,7 +659,7 @@ fn def_eq_agrees_with_comparing_normal_forms() {
     let (mut seed, mut equal, mut unequal) = (7u64, 0, 0);
     for i in 0..20_000 {
         let a = random_expr(&mut seed, 4);
-        let b = if i % 2 == 0 { a.clone() } else { random_expr(&mut seed, 4) };
+        let b = if i % 2 == 0 { a } else { random_expr(&mut seed, 4) };
         let (a, b) = (with_redexes(&a, &mut seed), with_redexes(&b, &mut seed));
         let reference = nf(&a) == nf(&b);
         assert_eq!(def_eq(&a, &b), reference, "a {a:?}, b {b:?}");
@@ -704,7 +672,7 @@ fn def_eq_agrees_with_comparing_normal_forms() {
 /// first.
 fn spine_args(e: &Expr) -> Vec<Expr> {
     let mut out = Vec::new();
-    let mut e = e.clone();
+    let mut e = *e;
     while let Node::App(f, a) = e.node() {
         out.push(a);
         e = f;
@@ -712,28 +680,28 @@ fn spine_args(e: &Expr) -> Vec<Expr> {
     out
 }
 
-/// `whnf` keeps the allocation of a stuck head or target, not only of
-/// the arguments: `ReductionCache` is keyed by pointer, so a copy
-/// misses it, and each level of a stuck spine then reduced the whole
+/// `whnf` keeps the node of a stuck head or target, not only of
+/// the arguments: the memos are keyed by node, and a copy used to
+/// miss them, so each level of a stuck spine then reduced the whole
 /// spine below it again (`RELATED_WORK.md` §59).
 #[test]
 fn whnf_keeps_the_stuck_part_it_was_given() {
     let stuck = app(app(var(0), var(1)), var(2));
-    let r = whnf(&app(stuck.clone(), var(3)));
+    let r = whnf(&app(stuck, var(3)));
     let Node::App(got, _) = r.node() else { panic!("not an application") };
     assert!(node_key(&got) == node_key(&stuck));
 
-    let j = jelim(var(0), var(1), var(2), var(2), stuck.clone());
+    let j = jelim(var(0), var(1), var(2), var(2), stuck);
     let r = whnf(&j);
     let Node::J { p: got, .. } = r.node() else { panic!("not a J") };
     assert!(node_key(&got) == node_key(&stuck));
 
-    let w = wrec(var(0), var(1), var(2), stuck.clone());
+    let w = wrec(var(0), var(1), var(2), stuck);
     let r = whnf(&w);
     let Node::WRec { target: got, .. } = r.node() else { panic!("not a WRec") };
     assert!(node_key(&got) == node_key(&stuck));
 
-    let s = sigrec(var(0), var(1), stuck.clone());
+    let s = sigrec(var(0), var(1), stuck);
     let r = whnf(&s);
     let Node::SigRec { target: got, .. } = r.node() else { panic!("not a SigRec") };
     assert!(node_key(&got) == node_key(&stuck));
@@ -761,20 +729,6 @@ fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
     assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
 }
 
-/// `A : Type0, a : A, f : A -> A -> A, g : A -> A`, the context the
-/// `infer` memo tests below build terms in. Built by hand as `Var`s
-/// (these are exactly the terms `Postulates::get` produced here before
-/// postulates became `Const`s) since those tests key their pool of
-/// nodes on `var(k)`, not on a `Postulates`.
-fn memo_test_ctx() -> Ctx {
-    let mut ctx = Ctx::new();
-    ctx.push_back(sort(0));
-    ctx.push_back(var(0));
-    ctx.push_back(arrow(var(1), arrow(var(1), var(1))));
-    ctx.push_back(arrow(var(2), var(2)));
-    ctx
-}
-
 /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a
 /// tree, 20 shared nodes as a DAG. Without the memo `infer` walked the
 /// tree (`RELATED_WORK.md` §63). Postulates as `Const`s, per stage 3.
@@ -787,7 +741,7 @@ fn infer_is_linear_in_the_dag_of_a_shared_term() {
     p.push(arrow(p.get(a_ty), p.get(a_ty)));
     let mut d = p.get(1);
     for _ in 0..20 {
-        d = app(app(p.get(2), d.clone()), d);
+        d = app(app(p.get(2), d), d);
     }
     let t = std::time::Instant::now();
     assert_eq!(p.infer(&d), Ok(p.get(0)));
@@ -812,7 +766,7 @@ fn infer_memo_skips_unused_inner_binders() {
     let depth = 30;
     let mut b = var(depth);
     for _ in 0..depth {
-        let under = |ty: Expr, arg: usize| app(lam(ty, b.clone()), p.get(arg));
+        let under = |ty: Expr, arg: usize| app(lam(ty, b), p.get(arg));
         let (l, r) = (under(p.get(a_ty), a), under(arrow(p.get(a_ty), p.get(a_ty)), f));
         b = app(app(p.get(k), l), r);
     }
@@ -835,7 +789,7 @@ fn infer_types_an_application_spine_at_once() {
     let a = p.push(p.get(a_ty));
     let g = p.push((0..k).fold(p.get(a_ty), |t, _| pi(p.get(a_ty), t)));
     let s = (0..k).fold(p.get(g), |s, j| app(s, var(k - 1 - j)));
-    let mut f_ty = id(p.get(a_ty), s.clone(), s);
+    let mut f_ty = id(p.get(a_ty), s, s);
     for _ in 0..k {
         f_ty = pi(p.get(a_ty), f_ty);
     }
@@ -843,7 +797,7 @@ fn infer_types_an_application_spine_at_once() {
     let e = (0..k).fold(p.get(f), |e, _| app(e, p.get(a)));
     let s_a = (0..k).fold(p.get(g), |s, _| app(s, p.get(a)));
     let t = std::time::Instant::now();
-    assert_eq!(p.infer(&e), Ok(id(p.get(a_ty), s_a.clone(), s_a)));
+    assert_eq!(p.infer(&e), Ok(id(p.get(a_ty), s_a, s_a)));
     let took = t.elapsed();
     assert!(took < std::time::Duration::from_millis(100), "took {took:?}");
 }
@@ -856,59 +810,16 @@ fn infer_types_an_application_spine_at_once() {
 #[test]
 fn infer_memo_keeps_same_length_contexts_apart() {
     let inner = pi(var(0), sort(0));
-    let good = pi(sort(0), inner.clone());
+    let good = pi(sort(0), inner);
     let bad = pi(pi(sort(0), sort(0)), inner);
     assert_eq!(infer(&Ctx::new(), &good), Ok(sort(1)));
     assert!(infer(&Ctx::new(), &id(sort(1), good, bad)).is_err());
 }
 
-/// No node in `e` is reachable twice or held elsewhere: no child has a
-/// second parent, so `infer`'s memo, which only engages on shared nodes,
-/// never does.
-fn shares_nothing(e: &Expr) -> bool {
-    let mut ok = true;
-    e.node().for_kids(|c, _| ok = ok && !c.shared() && shares_nothing(c));
-    ok
-}
-
-/// Random terms built from a pool of nodes, so children are shared,
-/// give the same `infer` result as a copy with no sharing (a full
-/// rebuild by `shift_ref`, since `shift` now keeps closed subterms),
-/// which the memo never engages on (`RELATED_WORK.md` §63).
-#[test]
-fn infer_memo_changes_no_answer() {
-    let ctx = memo_test_ctx();
-    let mut next = splitmix(7);
-    let mut typed = 0;
-    for _ in 0..100_000 {
-        let mut pool: Vec<Expr> = (0..4).map(var).chain([sort(0)]).collect();
-        for _ in 0..10 {
-            let kind = next() % 8;
-            let mut c = || pool[next() % pool.len()].clone();
-            let node = match kind {
-                0..=2 => app(c(), c()),
-                3 => lam(c(), c()),
-                4 => pi(c(), c()),
-                5 => refl(c()),
-                6 => id(c(), c(), c()),
-                _ => sigma(c(), c()),
-            };
-            pool.push(node);
-        }
-        let e = pool.last().unwrap().clone();
-        let unshared = shift_ref(&shift_ref(&e, 0, 1), 0, -1);
-        assert!(shares_nothing(&unshared), "the copy shares a node: {e:?}");
-        let got = infer(&ctx, &e);
-        typed += got.is_ok() as usize;
-        assert_eq!(got, infer(&ctx, &unshared), "{e:?}");
-    }
-    assert!(typed > 1000, "only {typed} well-typed terms");
-}
-
 /// `def_eq` on two right-nested chains `f (f (... x))`, 8,000 deep,
-/// that differ only at the bottom. `conv` tries `==` at every level,
-/// and each failing `==` walked down to the bottom again: 23 s in a
-/// debug build (`RELATED_WORK.md` §61).
+/// that differ only at the bottom. `conv` used to try a structural `==`
+/// at every level, each walking down to the bottom again: 23 s in a
+/// debug build (`RELATED_WORK.md` §61). `==` is now one id comparison.
 #[test]
 fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
     let chain = |bottom: Expr| {
@@ -926,8 +837,8 @@ fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
 }
 
 /// `whnf` keeps each argument's node rather than copying it into
-/// a new one: `ReductionCache` is keyed by pointer, so a copy misses it,
-/// and `nf` then normalises the whole argument again at every
+/// a new one: the memos are keyed by node, and a copy used to miss them,
+/// so `nf` then normalised the whole argument again at every
 /// application (`RELATED_WORK.md` §48).
 #[test]
 fn whnf_keeps_the_arguments_it_was_given() {
@@ -938,24 +849,24 @@ fn whnf_keeps_the_arguments_it_was_given() {
     };
 
     // A stuck application.
-    let stuck = app(app(var(0), var(1)), x.clone());
+    let stuck = app(app(var(0), var(1)), x);
     assert!(same(&spine_args(&whnf(&stuck))[..1], &[&x]));
 
     // `J` on `refl` reduces to `base a`.
-    let j = jelim(var(0), var(1), x.clone(), x.clone(), refl(var(9)));
+    let j = jelim(var(0), var(1), x, x, refl(var(9)));
     assert!(same(&spine_args(&whnf(&j)), &[&x]));
 
     // `SigRec` on a pair reduces to `step a b`.
-    let s = sigrec(var(0), var(1), pair(var(2), x.clone(), y.clone()));
+    let s = sigrec(var(0), var(1), pair(var(2), x, y));
     assert!(same(&spine_args(&whnf(&s)), &[&y, &x]));
 
     // `WRec` on `sup a f` reduces to `step a f rec`.
-    let w = wrec(var(0), var(1), var(2), sup(x.clone(), y.clone()));
+    let w = wrec(var(0), var(1), var(2), sup(x, y));
     assert!(same(&spine_args(&whnf(&w))[1..], &[&y, &x]));
 }
 
 /// Every recursive traversal `check` reaches -- `infer`, `whnf`
-/// (beta-reducing the whole chain), `def_eq`'s `conv` and `==`, and
+/// (beta-reducing the whole chain), `def_eq`'s `conv`, and
 /// `Debug` in the error message -- must survive a term 1,000 levels
 /// deep on a 1 MB thread: the Windows main thread's size, where a debug
 /// build used to overflow at depth ~90 (`RELATED_WORK.md` 31). Goes
@@ -972,48 +883,19 @@ fn check_survives_a_term_far_deeper_than_the_native_stack_allows() {
             let id_fn = lam(sort(1), var(0));
             let mut chain = sort(0);
             for _ in 0..N {
-                chain = app(id_fn.clone(), chain);
+                chain = app(id_fn, chain);
             }
             assert!(check(&ctx, &chain, &sort(1)).is_ok());
 
-            // refl^N(Type0) against its own type, built independently,
-            // so def_eq's `==` walks two distinct deep trees.
+            // refl^N(Type0) against its own type, and against a wrong one.
             let (mut e, mut ty) = (sort(0), sort(1));
             for _ in 0..N {
-                ty = id(ty, e.clone(), e.clone());
+                ty = id(ty, e, e);
                 e = refl(e);
             }
             assert!(check(&ctx, &e, &ty).is_ok());
             let err = check(&ctx, &e, &sort(0)).unwrap_err();
             assert!(err.contains("type mismatch"), "unexpected error: {}", err.chars().take(80).collect::<String>());
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-}
-
-/// Guards `Drop for Header`'s swap-onto-a-fresh-segment path specifically
-/// (`RELATED_WORK.md` §64 / spec Risks): freeing an unshared child
-/// must move the node out and drop its children on a fresh stack
-/// segment once the current one runs low, or every child is dropped
-/// by plain recursive field-drop glue instead. `check_survives_*` above
-/// can't catch a broken guard here -- 1,000 levels of `Drop`'s
-/// own small per-level frame (a stack check plus the field-drop glue)
-/// fit in a 1 MB stack even with no protection at all, unlike
-/// `infer`/`check`/`whnf`'s much heavier frames. This builds a much
-/// deeper, wholly unshared chain and only drops it, so it fails however
-/// the protection breaks.
-#[test]
-fn dropping_a_deep_term_does_not_overflow_the_stack() {
-    const N: usize = 100_000;
-    std::thread::Builder::new()
-        .stack_size(1 << 20)
-        .spawn(|| {
-            let mut e = sort(0);
-            for _ in 0..N {
-                e = refl(e);
-            }
-            drop(e);
         })
         .unwrap()
         .join()
@@ -1116,19 +998,19 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     let zero_here = nat.zero(&p); // fresh at this (deeper, post-`pred_pos`) depth
     let wa_here = p.get(nat.bool_pos);
     let wb_here = app(shift(&p.get(nat.child_ty_pos), 0, 1), var(0));
-    let motive_const = lam(nat_ty_here.clone(), shift(&nat_ty_here, 0, 1)); // \_:Nat. Nat
+    let motive_const = lam(nat_ty_here, shift(&nat_ty_here, 0, 1)); // \_:Nat. Nat
 
-    let f_ty_d1 = pi(wb_here.clone(), shift(&nat_ty_here, 0, 2));
+    let f_ty_d1 = pi(wb_here, shift(&nat_ty_here, 0, 2));
     let ih_dom_d2 = shift(&wb_here, 0, 1);
     let ih_body_d3 = app(shift(&motive_const, 0, 3), app(var(1), var(0)));
     let ih_ty_d2 = pi(ih_dom_d2, ih_body_d3);
     let step_id = lam(wa_here, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
 
-    let id_on_zero = wrec(motive_const.clone(), wb_here.clone(), step_id.clone(), zero_here.clone());
+    let id_on_zero = wrec(motive_const, wb_here, step_id, zero_here);
     p.check(&id_on_zero, &nat_ty_here).expect("id-recursor applied to Zero should typecheck at Nat");
     assert_eq!(nf(&id_on_zero), nf(&zero_here), "the identity recursor should reduce Zero back to Zero");
 
-    let id_on_succ = wrec(motive_const, wb_here.clone(), step_id, succ_pred.clone());
+    let id_on_succ = wrec(motive_const, wb_here, step_id, succ_pred);
     p.check(&id_on_succ, &nat_ty_here).expect("id-recursor applied to Succ(pred) should typecheck at Nat");
     assert_eq!(nf(&id_on_succ), nf(&succ_pred), "the identity recursor should reduce Succ(pred) back to Succ(pred)");
 
@@ -1141,26 +1023,26 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     // needs one explicit propositional step (`bool_rec_false_eq`)
     // rather than falling straight out of `nf`.
     let wb_here2 = app(shift(&p.get(nat.child_ty_pos), 0, 1), var(0));
-    let f_ty_for_c_d1 = arrow(wb_here2.clone(), shift(&nat_ty_here, 0, 1));
+    let f_ty_for_c_d1 = arrow(wb_here2, shift(&nat_ty_here, 0, 1));
     let ih_dom_d2 = shift(&wb_here2, 0, 1);
     let ih_ty_d2 = arrow(ih_dom_d2, shift(&p.get(nat.bool_pos), 0, 2));
     let c_body_d1 = pi(f_ty_for_c_d1, arrow(ih_ty_d2, shift(&p.get(nat.bool_pos), 0, 2)));
     let is_zero_motive_c = lam(p.get(nat.bool_pos), c_body_d1);
 
-    let f_ty_true = arrow(app(p.get(nat.child_ty_pos), p.get(nat.true_pos)), nat_ty_here.clone());
+    let f_ty_true = arrow(app(p.get(nat.child_ty_pos), p.get(nat.true_pos)), nat_ty_here);
     let ih_ty_true_d1 = arrow(shift(&app(p.get(nat.child_ty_pos), p.get(nat.true_pos)), 0, 1), shift(&p.get(nat.bool_pos), 0, 1));
     let case_true = lam(f_ty_true, lam(ih_ty_true_d1, shift(&p.get(nat.false_pos), 0, 2)));
 
-    let f_ty_false = arrow(app(p.get(nat.child_ty_pos), p.get(nat.false_pos)), nat_ty_here.clone());
+    let f_ty_false = arrow(app(p.get(nat.child_ty_pos), p.get(nat.false_pos)), nat_ty_here);
     let ih_ty_false_d1 = arrow(shift(&app(p.get(nat.child_ty_pos), p.get(nat.false_pos)), 0, 1), shift(&p.get(nat.bool_pos), 0, 1));
     let case_false = lam(f_ty_false, lam(ih_ty_false_d1, shift(&p.get(nat.true_pos), 0, 2)));
 
-    let is_zero_step = app(app(app(nat.bool_rec(&p), is_zero_motive_c.clone()), case_true.clone()), case_false.clone());
+    let is_zero_step = app(app(app(nat.bool_rec(&p), is_zero_motive_c), case_true), case_false);
     p.check(&is_zero_step, &pi(p.get(nat.bool_pos), app(shift(&is_zero_motive_c, 0, 1), var(0))))
         .expect("is_zero_step : Pi b:Bool. C(b)");
 
-    let is_zero_motive_const = lam(nat_ty_here.clone(), shift(&p.get(nat.bool_pos), 0, 1)); // \_:Nat. Bool
-    let is_zero_on_zero = wrec(is_zero_motive_const.clone(), wb_here2.clone(), is_zero_step.clone(), zero_here.clone());
+    let is_zero_motive_const = lam(nat_ty_here, shift(&p.get(nat.bool_pos), 0, 1)); // \_:Nat. Bool
+    let is_zero_on_zero = wrec(is_zero_motive_const, wb_here2, is_zero_step, zero_here);
     p.check(&is_zero_on_zero, &p.get(nat.bool_pos)).expect("is_zero(Zero) : Bool");
 
     // The obstacle this test used to demonstrate (see git history: an
@@ -1188,7 +1070,7 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     let f_zero_here = nat.zero_child_fn(&p);
     let honest_domain = subst_top(&wb_here2, &p.get(nat.false_pos));
     let rec_step = lam(
-        honest_domain.clone(),
+        honest_domain,
         wrec(shift(&is_zero_motive_const, 0, 1), shift(&wb_here2, 1, 1), shift(&is_zero_step, 0, 1), app(shift(&f_zero_here, 0, 1), var(0))),
     );
     let child_ty_false = app(p.get(nat.child_ty_pos), p.get(nat.false_pos));
@@ -1209,7 +1091,7 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     p.check(&stuck_one_step, &p.get(nat.bool_pos)).expect("whnf(is_zero(Zero)) should still typecheck at Bool after the fix");
     assert_eq!(
         stuck_one_step,
-        app(app(app(is_zero_step.clone(), p.get(nat.false_pos)), f_zero_here.clone()), rec_step.clone()),
+        app(app(app(is_zero_step, p.get(nat.false_pos)), f_zero_here), rec_step),
         "whnf_in's own stuck reduction should be exactly is_zero_step(false)(f_zero)(rec_step) -- \
          confirming the hand-rebuilt closure above is the *same* one whnf_in actually produces, \
          not just an independently-typed lookalike"
@@ -1228,19 +1110,19 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     let bool_ty = p.get(nat.bool_pos);
     let true_val = p.get(nat.true_pos);
     let false_val = p.get(nat.false_pos);
-    let is_zero_step_at_false = app(is_zero_step.clone(), false_val.clone());
-    let c_false_ty = app(is_zero_motive_c.clone(), false_val.clone());
+    let is_zero_step_at_false = app(is_zero_step, false_val);
+    let c_false_ty = app(is_zero_motive_c, false_val);
 
-    let bfe_inst = app(app(app(nat.bool_rec_false_eq(&p), is_zero_motive_c.clone()), case_true.clone()), case_false.clone());
+    let bfe_inst = app(app(app(nat.bool_rec_false_eq(&p), is_zero_motive_c), case_true), case_false);
     p.check(
         &bfe_inst,
-        &id(c_false_ty.clone(), is_zero_step_at_false.clone(), case_false.clone()),
+        &id(c_false_ty, is_zero_step_at_false, case_false),
     )
     .expect("bool_rec_false_eq instantiated at (is_zero_motive_c, case_true, case_false) should typecheck");
 
     // f_cong : C(false) -> Bool := \h. h(f_zero_here)(rec_step)
-    let f_cong = lam(c_false_ty.clone(), app(app(var(0), shift(&f_zero_here, 0, 1)), shift(&rec_step, 0, 1)));
-    let cong_step = cong1(&c_false_ty, &bool_ty, &f_cong, is_zero_step_at_false, case_false.clone(), bfe_inst);
+    let f_cong = lam(c_false_ty, app(app(var(0), shift(&f_zero_here, 0, 1)), shift(&rec_step, 0, 1)));
+    let cong_step = cong1(&c_false_ty, &bool_ty, &f_cong, is_zero_step_at_false, case_false, bfe_inst);
 
     // `refl` bridges `is_zero_on_zero` to its own one-step reduction
     // (definitionally equal, `whnf` being one particular strategy for
@@ -1250,7 +1132,7 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     // to `Id(Bool, stuck_one_step, true)` once both sides beta-reduce,
     // `case_false`'s own body reducing all the way to `true`) to land
     // on the final result.
-    let bridge = refl(is_zero_on_zero.clone());
+    let bridge = refl(is_zero_on_zero);
     let final_proof = trans_proof(&bool_ty, &is_zero_on_zero, &stuck_one_step, &true_val, bridge, cong_step);
     p.check(&final_proof, &id(bool_ty, is_zero_on_zero, true_val))
         .expect("is_zero(Zero) = true should now be provable propositionally");
@@ -1282,7 +1164,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // Postulates' own bool_rec hardcodes Sort(0) -- see this file's own
     // is_zero test and RELATED_WORK.md's universe-mismatch finding).
     fn wrap_c_ct_cf_sort1(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Expr) -> Expr {
-        let c_ty = arrow(bool_ref.clone(), sort(1));
+        let c_ty = arrow(*bool_ref, sort(1));
         let true_d1 = shift(true_ref, 0, 1);
         let false_d2 = shift(false_ref, 0, 2);
         let pi_cf = pi(app(var(1), false_d2), body_d3);
@@ -1292,7 +1174,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // Mirrors `infer`'s own `Node::WRec` case exactly: returns
     // (per-tag body, one binder deep; full `Pi a:wa. ...`).
     fn wrec_step_type(wa: &Expr, wb: &Expr, w_ty0: &Expr, motive: &Expr) -> (Expr, Expr) {
-        let f_dom_d1 = wb.clone();
+        let f_dom_d1 = *wb;
         let f_ty_d1 = pi(f_dom_d1, shift(w_ty0, 0, 2));
         let ih_dom_d2 = shift(wb, 0, 1);
         let motive_d3 = shift(motive, 0, 3);
@@ -1302,7 +1184,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
         let concl_ty_d2 = app(motive_d2, sup(var(1), var(0)));
         let arrow_ty_d2 = pi(ih_ty_d2, shift(&concl_ty_d2, 0, 1));
         let per_tag_body_d1 = pi(f_ty_d1, arrow_ty_d2);
-        let full = pi(wa.clone(), per_tag_body_d1.clone());
+        let full = pi(*wa, per_tag_body_d1);
         (per_tag_body_d1, full)
     }
 
@@ -1313,14 +1195,14 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // sort_rec_true_eq : Pi C ct cf. Id(C(true), sort_rec(C,ct,cf)(true), ct)
     let true_d3 = shift(&p.get(nat.true_pos), 0, 3);
     let applied_d3 = app(app(app(shift(&p.get(sort_rec_pos), 0, 3), var(2)), var(1)), var(0));
-    let true_eq_body_d3 = id(app(var(2), true_d3.clone()), app(applied_d3, true_d3), var(1));
+    let true_eq_body_d3 = id(app(var(2), true_d3), app(applied_d3, true_d3), var(1));
     let sort_rec_true_eq_ty = wrap_c_ct_cf_sort1(&p.get(nat.bool_pos), &p.get(nat.true_pos), &p.get(nat.false_pos), true_eq_body_d3);
     let sort_rec_true_eq_pos = p.push(sort_rec_true_eq_ty);
 
     // sort_rec_false_eq : Pi C ct cf. Id(C(false), sort_rec(C,ct,cf)(false), cf)
     let false_d3 = shift(&p.get(nat.false_pos), 0, 3);
     let applied_d3b = app(app(app(shift(&p.get(sort_rec_pos), 0, 3), var(2)), var(1)), var(0));
-    let false_eq_body_d3 = id(app(var(2), false_d3.clone()), app(applied_d3b, false_d3), var(0));
+    let false_eq_body_d3 = id(app(var(2), false_d3), app(applied_d3b, false_d3), var(0));
     let sort_rec_false_eq_ty = wrap_c_ct_cf_sort1(&p.get(nat.bool_pos), &p.get(nat.true_pos), &p.get(nat.false_pos), false_eq_body_d3);
     let sort_rec_false_eq_pos = p.push(sort_rec_false_eq_ty);
 
@@ -1336,16 +1218,16 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // type_motive : Nat -> Sort0, constant -- `fam`'s own overall type
     // doesn't need to vary per branch; what varies per branch is
     // `step`'s own *value*, selected via sort_rec below.
-    let type_motive = lam(nat_ty.clone(), sort(0));
-    p.check(&type_motive, &arrow(nat_ty.clone(), sort(1))).expect("type_motive : Nat -> Sort1");
+    let type_motive = lam(nat_ty, sort(0));
+    p.check(&type_motive, &arrow(nat_ty, sort(1))).expect("type_motive : Nat -> Sort1");
 
     let (type_per_tag_d1, type_expected_step_ty) = wrec_step_type(&bool_ty, &wb, &nat_ty, &type_motive);
-    let type_motive_c = lam(bool_ty.clone(), type_per_tag_d1.clone());
+    let type_motive_c = lam(bool_ty, type_per_tag_d1);
 
     // Two genuinely distinct Sort0 types to select between -- stand-ins
     // for Clo_1/Clo_2.
     let clo1_ty = nat.unit_ty(&p);
-    let clo2_ty = nat_ty.clone();
+    let clo2_ty = nat_ty;
 
     let case_true_ty_expected = subst_top(&type_per_tag_d1, &true_val);
     let Node::Pi(f_dom_true, rest_true) = case_true_ty_expected.node() else { panic!("expected Pi") };
@@ -1359,14 +1241,14 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     let case_false_ty = lam(f_dom_false, lam(ih_dom_false, shift(&clo2_ty, 0, 2)));
     p.check(&case_false_ty, &case_false_ty_expected).expect("case_false_ty : type_motive_c(false)");
 
-    let type_step = app(app(app(sort_rec.clone(), type_motive_c.clone()), case_true_ty.clone()), case_false_ty.clone());
+    let type_step = app(app(app(sort_rec, type_motive_c), case_true_ty), case_false_ty);
     p.check(&type_step, &type_expected_step_ty).expect("type_step : Pi b:Bool. type_motive_c(b)");
 
     // fam := wrec(type_motive, ChildTy(Var0), type_step, Var(0)) --
     // Sigma's own open family body, one binder under the tag.
     let fam = wrec(shift(&type_motive, 0, 1), shift(&wb, 1, 1), shift(&type_step, 0, 1), var(0));
 
-    let sigma_ty = sigma(nat_ty.clone(), fam.clone());
+    let sigma_ty = sigma(nat_ty, fam);
     p.check(&sigma_ty, &sort(0)).expect("Sigma(Nat, fam) : Sort0");
 
     // --- THE KEY CLAIM: Pair(fam, a, b) typechecks for a's tag being a
@@ -1378,11 +1260,11 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // value_motive := \x:Nat. fam -- literally reuses `fam` as the
     // Lam's own body, so `value_motive(a)` beta-reduces (unconditionally,
     // for ANY a, symbolic or not) to exactly `subst_top(fam, a)`.
-    let value_motive = lam(nat_ty.clone(), fam.clone());
-    p.check(&value_motive, &arrow(nat_ty.clone(), sort(0))).expect("value_motive : Nat -> Sort0");
+    let value_motive = lam(nat_ty, fam);
+    p.check(&value_motive, &arrow(nat_ty, sort(0))).expect("value_motive : Nat -> Sort0");
 
     let (value_per_tag_d1, value_expected_step_ty) = wrec_step_type(&bool_ty, &wb, &nat_ty, &value_motive);
-    let value_motive_c = lam(bool_ty.clone(), value_per_tag_d1.clone());
+    let value_motive_c = lam(bool_ty, value_per_tag_d1);
 
     let value_case_true_expected = subst_top(&value_per_tag_d1, &true_val);
     let Node::Pi(vf_dom_true, vrest_true) = value_case_true_expected.node() else { panic!("expected Pi") };
@@ -1431,12 +1313,12 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     ) -> Expr {
         let f_ref = var(1);
         let tag2 = shift(tag, 0, 2);
-        let type_step_at_tag = app(shift(type_step, 0, 2), tag2.clone());
-        let target_ty = app(app(type_step_at_tag.clone(), f_ref.clone()), rec_step.clone());
+        let type_step_at_tag = app(shift(type_step, 0, 2), tag2);
+        let target_ty = app(app(type_step_at_tag, f_ref), *rec_step);
 
-        let c_at_tag = app(shift(type_motive_c, 0, 2), tag2.clone());
+        let c_at_tag = app(shift(type_motive_c, 0, 2), tag2);
         let eq_inst = app(app(app(shift(eq_ref, 0, 2), shift(type_motive_c, 0, 2)), shift(case_true_ty, 0, 2)), shift(case_false_ty, 0, 2));
-        let f_cong = lam(c_at_tag.clone(), app(app(var(0), shift(&f_ref, 0, 1)), shift(rec_step, 0, 1)));
+        let f_cong = lam(c_at_tag, app(app(var(0), shift(&f_ref, 0, 1)), shift(rec_step, 0, 1)));
         let cong_step = cong1(&c_at_tag, &sort(0), &f_cong, type_step_at_tag, shift(case_ty, 0, 2), eq_inst);
 
         // `witness`/`witness_ty` are given at *ambient* (outer-test)
@@ -1447,7 +1329,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
         let witness2 = shift(witness, 0, 2);
         let bridge = sym(&sort(0), &target_ty, &witness_ty2, cong_step);
         let _ = p;
-        lam(f_dom.clone(), lam(ih_dom.clone(), transport(0, witness_ty2, target_ty, bridge, witness2)))
+        lam(*f_dom, lam(*ih_dom, transport(0, witness_ty2, target_ty, bridge, witness2)))
     }
 
     let f_ref_true = var(1);
@@ -1495,13 +1377,13 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // literal `sort(0)` codomain, which is Sort1-typed as a value) --
     // so `value_motive_c : Bool -> Sort0` exactly matches the ordinary,
     // already-built `nat.bool_rec` (no new postulate needed here).
-    let value_step = app(app(app(nat.bool_rec(&p), value_motive_c.clone()), case_true_val), case_false_val);
+    let value_step = app(app(app(nat.bool_rec(&p), value_motive_c), case_true_val), case_false_val);
     p.check(&value_step, &value_expected_step_ty).expect("value_step : Pi b:Bool. value_motive_c(b)");
 
     // b_val := wrec(value_motive, ChildTy(Var0), value_step, a) --
     // standalone, at the SAME (ambient) depth as `a` itself, no extra
     // binder (unlike `fam`, this isn't going *inside* anything).
-    let b_val = wrec(value_motive.clone(), wb.clone(), value_step, a.clone());
+    let b_val = wrec(value_motive, wb, value_step, a);
     let expected_b_ty = subst_top(&fam, &a);
     p.check(&b_val, &expected_b_ty).expect("b_val : subst_top(fam, a) -- the core claim, isolated");
 
@@ -1521,7 +1403,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // earlier tagged-Sigma investigation (RELATED_WORK.md sec 14),
     // which needed `a` concrete before `Pair`'s own definitional-
     // equality check could ever succeed.
-    let pr = pair(fam.clone(), a.clone(), b_val);
+    let pr = pair(fam, a, b_val);
     let pr_ty = p.infer(&pr).expect("Pair(fam, a, b_val) should typecheck for a SYMBOLIC tag");
     assert!(def_eq(&pr_ty, &sigma_ty), "Pair's own inferred type should be Sigma(Nat, fam): got {pr_ty:?}");
 }
@@ -1582,8 +1464,8 @@ fn refl_typechecks_for_a_postulated_element() {
     let a0_pos = p.push(p.get(a_pos)); // a0 : A
 
     let a0 = p.get(a0_pos);
-    let ty = p.infer(&refl(a0.clone())).unwrap();
-    assert!(def_eq(&ty, &id(p.get(a_pos), a0.clone(), a0)));
+    let ty = p.infer(&refl(a0)).unwrap();
+    assert!(def_eq(&ty, &id(p.get(a_pos), a0, a0)));
 }
 
 /// `A : Type0` and `a : A` as globals: the environment the tests below
@@ -1600,7 +1482,7 @@ fn a_const_has_its_globals_type() {
     let g = two_globals();
     let a = mk(Node::Const(1));
     assert_eq!(infer_in(&g, &Ctx::new(), &a), Ok(mk(Node::Const(0))));
-    assert_eq!(check_in(&g, &Ctx::new(), &refl(a.clone()), &id(mk(Node::Const(0)), a.clone(), a)), Ok(()));
+    assert_eq!(check_in(&g, &Ctx::new(), &refl(a), &id(mk(Node::Const(0)), a, a)), Ok(()));
     // No shift: the same `Const` has the same type under a binder.
     assert_eq!(infer_in(&g, &Ctx::new(), &lam(sort(0), mk(Node::Const(1)))), Ok(pi(sort(0), mk(Node::Const(0)))));
 }
@@ -1631,7 +1513,7 @@ fn a_const_at_a_binders_position_is_rejected() {
 fn a_global_whose_type_is_open_is_rejected() {
     for bad in [var(0), mk(Node::Free(0)), pi(sort(0), var(1))] {
         let mut g = Globals::new();
-        g.push_back(persist(bad.clone()));
+        g.push_back(persist(bad));
         assert!(infer_in(&g, &Ctx::new(), &mk(Node::Const(0))).is_err(), "{bad:?}");
     }
 }
@@ -1687,18 +1569,18 @@ fn a_free_is_rejected_everywhere() {
     let mut gw = Globals::new();
     gw.push_back(persist(sort(0))); // 0: A : Type0
     gw.push_back(persist(sort(0))); // 1: Bc : Type0
-    gw.push_back(persist(a_ty.clone())); // 2: a0 : A
-    gw.push_back(persist(arrow(bc_ty.clone(), wty(a_ty.clone(), bc_ty.clone())))); // 3: f0 : Bc -> W(A,Bc)
+    gw.push_back(persist(a_ty)); // 2: a0 : A
+    gw.push_back(persist(arrow(bc_ty, wty(a_ty, bc_ty)))); // 3: f0 : Bc -> W(A,Bc)
     let a0 = mk(Node::Const(2));
     let f0 = mk(Node::Const(3));
-    let w_ty = wty(a_ty.clone(), bc_ty.clone());
-    let motive = lam(w_ty.clone(), w_ty.clone()); // constant motive
-    let f_ty = pi(bc_ty.clone(), w_ty.clone());
-    let ih_ty = pi(bc_ty.clone(), app(motive.clone(), app(var(1), var(0))));
-    let step = lam(a_ty.clone(), lam(f_ty, lam(ih_ty, sup(var(2), var(1)))));
+    let w_ty = wty(a_ty, bc_ty);
+    let motive = lam(w_ty, w_ty); // constant motive
+    let f_ty = pi(bc_ty, w_ty);
+    let ih_ty = pi(bc_ty, app(motive, app(var(1), var(0))));
+    let step = lam(a_ty, lam(f_ty, lam(ih_ty, sup(var(2), var(1)))));
     let target = sup(a0, f0);
-    let wrec_good = wrec(motive.clone(), bc_ty.clone(), step.clone(), target.clone());
-    assert_eq!(infer_in(&gw, &none, &wrec_good), Ok(app(motive.clone(), target.clone())), "unhidden children_ty");
+    let wrec_good = wrec(motive, bc_ty, step, target);
+    assert_eq!(infer_in(&gw, &none, &wrec_good), Ok(app(motive, target)), "unhidden children_ty");
     let wrec_hidden_children_ty = wrec(motive, hide(bc_ty), step, target);
     assert!(infer_in(&gw, &none, &wrec_hidden_children_ty).is_err(), "a Free hidden under a redex in children_ty");
 
@@ -1716,12 +1598,12 @@ fn a_claim_that_isnt_a_type_is_rejected() {
     let g = two_globals();
     let none = Ctx::new();
     let a = mk(Node::Const(1)); // a term of type A, not a type
-    assert!(check_in(&g, &none, &lam(a.clone(), var(0)), &pi(a.clone(), a.clone())).is_err(), "Π(x:a). a");
-    let ghost = app(lam(mk(Node::Const(99)), mk(Node::Const(0))), a.clone()); // reduces to A
+    assert!(check_in(&g, &none, &lam(a, var(0)), &pi(a, a)).is_err(), "Π(x:a). a");
+    let ghost = app(lam(mk(Node::Const(99)), mk(Node::Const(0))), a); // reduces to A
     assert!(check_in(&g, &none, &a, &ghost).is_err(), "a claim naming a constant that doesn't exist");
     // Well-formed claims still check.
     assert_eq!(check_in(&g, &none, &lam(mk(Node::Const(0)), var(0)), &pi(mk(Node::Const(0)), mk(Node::Const(0)))), Ok(()));
-    assert_eq!(check_in(&g, &none, &a, &app(lam(mk(Node::Const(0)), mk(Node::Const(0))), a.clone())), Ok(()));
+    assert_eq!(check_in(&g, &none, &a, &app(lam(mk(Node::Const(0)), mk(Node::Const(0))), a)), Ok(()));
 }
 
 /// Checking a lambda against a Π infers its annotation to a `Sort`,
@@ -1755,12 +1637,12 @@ fn w_recursor_computes_definitionally() {
     // p.globals now has 4 entries; re-fetch references at this depth.
     let a_ref = p.get(a_pos);
     let bc_ref = p.get(bc_pos);
-    let w_ty = wty(a_ref.clone(), shift(&bc_ref, 0, 1));
+    let w_ty = wty(a_ref, shift(&bc_ref, 0, 1));
     let target = sup(p.get(a0_pos), p.get(f0_pos));
     assert!(def_eq(&p.infer(&target).unwrap(), &w_ty));
 
     // motive := \_ : W(A,Bc). W(A,Bc)   (constant motive)
-    let motive = lam(w_ty.clone(), shift(&w_ty, 0, 1));
+    let motive = lam(w_ty, shift(&w_ty, 0, 1));
 
     // step := \a:A. \f:(Bc->W). \ih:(Pi y:Bc. motive (f y)). sup(a, f)
     // i.e. "reconstruct the node, ignoring the induction hypothesis" —
@@ -1776,12 +1658,12 @@ fn w_recursor_computes_definitionally() {
     );
     let step = lam(a_ref, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
 
-    let reduced = wrec(motive, shift(&bc_ref, 0, 1), step, target.clone());
+    let reduced = wrec(motive, shift(&bc_ref, 0, 1), step, target);
     p.check(&reduced, &w_ty).expect("wrec application should typecheck");
     // The payoff of choosing W over an impredicative/Church encoding:
     // this holds by `refl` alone — the recursor genuinely *computes*,
     // it doesn't just make the equation provable with extra work.
-    p.check(&refl(target.clone()), &id(w_ty, reduced, target))
+    p.check(&refl(target), &id(w_ty, reduced, target))
         .expect("wrec(motive, step, sup(a,f)) should reduce definitionally to sup(a,f)");
 }
 
@@ -1859,20 +1741,20 @@ fn sigma_pairing_typechecks_and_projects_by_refl() {
     let b0_ref = p.get(b0_pos);
 
     let fam = shift(&b_ref, 0, 1); // \_:A. B, written one binder deeper
-    let sig_ty = sigma(a_ref.clone(), fam.clone());
-    let target = pair(fam.clone(), a0_ref.clone(), b0_ref.clone());
+    let sig_ty = sigma(a_ref, fam);
+    let target = pair(fam, a0_ref, b0_ref);
     p.check(&target, &sig_ty).expect("pair(fam, a0, b0) : Sigma(A, fam)");
 
     // motive := \_:Sigma(A,fam). A  (constant motive)
-    let motive = lam(sig_ty.clone(), shift(&a_ref, 0, 1));
+    let motive = lam(sig_ty, shift(&a_ref, 0, 1));
     // step := \a:A. \b:B. a  -- i.e. "fst"
-    let step = lam(a_ref.clone(), lam(fam, var(1)));
-    let reduced = sigrec(motive, step, target.clone());
+    let step = lam(a_ref, lam(fam, var(1)));
+    let reduced = sigrec(motive, step, target);
     p.check(&reduced, &a_ref).expect("sigrec application should typecheck");
     // The same payoff `w_recursor_computes_definitionally` already
     // established for `W`: this holds by `refl` alone -- the
     // recursor genuinely *computes*, not just propositionally.
-    p.check(&refl(a0_ref.clone()), &id(a_ref, reduced, a0_ref))
+    p.check(&refl(a0_ref), &id(a_ref, reduced, a0_ref))
         .expect("sigrec(motive, step, pair(fam,a0,b0)) should reduce definitionally to a0");
 }
 
@@ -1893,8 +1775,8 @@ fn sigma_family_genuinely_varies_with_the_tag() {
 
     // fam := Id(A, Var(0), a0), one binder deeper than A (the tag x)
     let fam = id(shift(&a_ref, 0, 1), var(0), shift(&a0_ref, 0, 1));
-    let sig_ty = sigma(a_ref, fam.clone());
-    let target = pair(fam, a0_ref.clone(), refl(a0_ref));
+    let sig_ty = sigma(a_ref, fam);
+    let target = pair(fam, a0_ref, refl(a0_ref));
     p.check(&target, &sig_ty).expect("pair(fam, a0, refl(a0)) : Sigma(A, fam)");
 }
 
@@ -1909,7 +1791,7 @@ fn pair_with_a_mismatched_second_component_is_rejected() {
     let b_ref = p.get(b_pos);
     let fam = shift(&b_ref, 0, 1); // \_:A. B
     // second component should be B-typed, not A-typed
-    let bad = pair(fam, a0_ref.clone(), a0_ref);
+    let bad = pair(fam, a0_ref, a0_ref);
     assert!(p.infer(&bad).is_err(), "pair's own second component must check against fam(a), not anything else");
 }
 
@@ -1933,9 +1815,9 @@ fn wrec_with_a_mismatched_children_ty_is_rejected() {
 
     let a_ref = p.get(a_pos);
     let bc_ref = p.get(bc_pos);
-    let w_ty = wty(a_ref.clone(), shift(&bc_ref, 0, 1));
+    let w_ty = wty(a_ref, shift(&bc_ref, 0, 1));
     let target = sup(p.get(a0_pos), p.get(f0_pos));
-    let motive = lam(w_ty.clone(), shift(&w_ty, 0, 1));
+    let motive = lam(w_ty, shift(&w_ty, 0, 1));
     let f_ty_d1 = pi(shift(&bc_ref, 0, 1), shift(&w_ty, 0, 2));
     let ih_ty_d2 = pi(shift(&bc_ref, 0, 2), app(shift(&motive, 0, 3), app(var(1), var(0))));
     let step = lam(a_ref, lam(f_ty_d1, lam(ih_ty_d2, sup(var(2), var(1)))));
@@ -2008,8 +1890,8 @@ fn j_proves_symmetry_of_id() {
     let a_ty = p.get(a_pos);
     let a0 = p.get(a0_pos);
     let applied = app(
-        app(app(app(sym.clone(), a_ty), a0.clone()), a0.clone()),
-        refl(a0.clone()),
+        app(app(app(sym, a_ty), a0), a0),
+        refl(a0),
     );
     assert_eq!(nf(&applied), nf(&refl(a0)));
 }
@@ -2046,7 +1928,7 @@ fn transport_moves_a_value_across_a_propositional_type_equality() {
     let proof = p.get(p_pos);
     let a = p.get(a_pos);
 
-    let moved = transport(0, a_ty, b_ty.clone(), proof, a);
+    let moved = transport(0, a_ty, b_ty, proof, a);
     p.check(&moved, &b_ty).expect("transport(p,a) : B");
 }
 
@@ -2061,7 +1943,7 @@ fn transport_along_refl_is_the_identity() {
     let a_ty = p.get(a_ty_pos);
     let a = p.get(a_pos);
 
-    let moved = transport(0, a_ty.clone(), a_ty.clone(), refl(a_ty.clone()), a.clone());
+    let moved = transport(0, a_ty, a_ty, refl(a_ty), a);
     assert_eq!(nf(&moved), nf(&a), "transport along refl should compute to the identity");
 }
 
@@ -2088,16 +1970,16 @@ fn cong1_and_trans_typecheck_and_compose() {
     let p2 = p.get(p2_pos);
     let f = p.get(f_pos);
 
-    let c1 = cong1(&a_ty, &a_ty, &f, a.clone(), b.clone(), p1);
-    p.check(&c1, &id(a_ty.clone(), app(f.clone(), a.clone()), app(f.clone(), b.clone())))
+    let c1 = cong1(&a_ty, &a_ty, &f, a, b, p1);
+    p.check(&c1, &id(a_ty, app(f, a), app(f, b)))
         .expect("cong1(f,a,b,p1) : Id(A, f a, f b)");
 
-    let c2 = cong1(&a_ty, &a_ty, &f, b.clone(), c.clone(), p2);
-    p.check(&c2, &id(a_ty.clone(), app(f.clone(), b.clone()), app(f.clone(), c.clone())))
+    let c2 = cong1(&a_ty, &a_ty, &f, b, c, p2);
+    p.check(&c2, &id(a_ty, app(f, b), app(f, c)))
         .expect("cong1(f,b,c,p2) : Id(A, f b, f c)");
 
-    let chained = trans_proof(&a_ty, &app(f.clone(), a.clone()), &app(f.clone(), b.clone()), &app(f.clone(), c.clone()), c1, c2);
-    p.check(&chained, &id(a_ty, app(f.clone(), a), app(f, c)))
+    let chained = trans_proof(&a_ty, &app(f, a), &app(f, b), &app(f, c), c1, c2);
+    p.check(&chained, &id(a_ty, app(f, a), app(f, c)))
         .expect("trans(cong1(..p1), cong1(..p2)) : Id(A, f a, f c)");
 }
 
@@ -2122,8 +2004,8 @@ fn cong1_with_a_different_codomain_than_domain_typechecks() {
     let f = p.get(f_pos);
     let p1 = p.get(p1_pos);
 
-    let c1 = cong1(&a_ty, &b_ty, &f, a.clone(), b.clone(), p1);
-    p.check(&c1, &id(b_ty, app(f.clone(), a), app(f, b))).expect("cong1(f,a,b,p1) : Id(B, f a, f b)");
+    let c1 = cong1(&a_ty, &b_ty, &f, a, b, p1);
+    p.check(&c1, &id(b_ty, app(f, a), app(f, b))).expect("cong1(f,a,b,p1) : Id(B, f a, f b)");
 }
 
 #[test]
@@ -2150,8 +2032,8 @@ fn cong_n_with_a_different_codomain_than_domain_typechecks() {
     let p0 = p.get(p0_pos);
     let p1 = p.get(p1_pos);
 
-    let proof = cong_n(&a_ty, &b_ty, &g, &[x0.clone(), x1.clone()], &[y0.clone(), y1.clone()], vec![p0, p1]);
-    let expected = id(b_ty, app(app(g.clone(), x0), x1), app(app(g, y0), y1));
+    let proof = cong_n(&a_ty, &b_ty, &g, &[x0, x1], &[y0, y1], vec![p0, p1]);
+    let expected = id(b_ty, app(app(g, x0), x1), app(app(g, y0), y1));
     p.check(&proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(B, g x0 x1, g y0 y1)");
 }
 
@@ -2180,8 +2062,8 @@ fn cong_n_typechecks_for_a_binary_function() {
     let p0 = p.get(p0_pos);
     let p1 = p.get(p1_pos);
 
-    let proof = cong_n(&a_ty, &a_ty, &g, &[x0.clone(), x1.clone()], &[y0.clone(), y1.clone()], vec![p0, p1]);
-    let expected = id(a_ty, app(app(g.clone(), x0), x1), app(app(g, y0), y1));
+    let proof = cong_n(&a_ty, &a_ty, &g, &[x0, x1], &[y0, y1], vec![p0, p1]);
+    let expected = id(a_ty, app(app(g, x0), x1), app(app(g, y0), y1));
     p.check(&proof, &expected).expect("cong_n(g,[x0,x1],[y0,y1],[p0,p1]) : Id(A, g x0 x1, g y0 y1)");
 }
 
@@ -2220,11 +2102,11 @@ fn cong_n_with_swapped_proofs_is_rejected() {
         &a_ty,
         &a_ty,
         &g,
-        &[x0.clone(), x1.clone()],
-        &[y0.clone(), y1.clone()],
-        vec![p0.clone(), p1.clone()],
+        &[x0, x1],
+        &[y0, y1],
+        vec![p0, p1],
     );
-    let expected = id(a_ty.clone(), app(app(g.clone(), x0.clone()), x1.clone()), app(app(g.clone(), y0.clone()), y1.clone()));
+    let expected = id(a_ty, app(app(g, x0), x1), app(app(g, y0), y1));
     p.check(&good, &expected).expect("correctly-ordered cong_n should typecheck");
 
     // Adversarial: swap the proof order.
@@ -2243,7 +2125,7 @@ fn a_scope_closes_over_what_it_bound_and_rolls_it_back() {
     let a = p.push(sort(0));
     let s = p.open();
     let x = p.bind(p.get(a));
-    let body = id(p.get(a), x.clone(), x);
+    let body = id(p.get(a), x, x);
     let closed = p.close(s, Binder::Pi, body);
     assert_eq!((p.globals.len(), p.params.len(), p.scopes), (1, 0, 0));
     assert!(p.check(&closed, &sort(0)).is_ok());
@@ -2324,7 +2206,7 @@ fn bind_accepts_a_parameter_typed_by_an_earlier_one() {
     let a = p.push(sort(0));
     let s = p.open();
     let x = p.bind(p.get(a));
-    p.bind(id(p.get(a), x.clone(), x));
+    p.bind(id(p.get(a), x, x));
     p.abandon(s);
 }
 
@@ -2384,7 +2266,7 @@ fn a_push_inside_a_scope_still_rejects_a_parameter_in_its_type() {
     let a = p.push(sort(0));
     let _s = p.open();
     let x = p.bind(p.get(a));
-    p.push(id(p.get(a), x.clone(), x));
+    p.push(id(p.get(a), x, x));
 }
 
 /// Closing over a bound parameter with `Pi` builds a type and with
@@ -2396,7 +2278,7 @@ fn closing_with_lam_builds_a_value_of_the_pi_closed_type() {
 
     let s = p.open();
     let x = p.bind(p.get(a));
-    let ty = p.close(s, Binder::Pi, id(p.get(a), x.clone(), x));
+    let ty = p.close(s, Binder::Pi, id(p.get(a), x, x));
 
     let s = p.open();
     let x = p.bind(p.get(a));
@@ -2430,11 +2312,11 @@ fn close_of_an_empty_scope_returns_the_body_unchanged() {
     let body = p.get(a);
 
     let s = p.open();
-    let closed = p.close(s, Binder::Pi, body.clone());
+    let closed = p.close(s, Binder::Pi, body);
     assert_eq!(closed, body);
 
     let s = p.open();
-    let closed = p.close(s, Binder::Lam, body.clone());
+    let closed = p.close(s, Binder::Lam, body);
     assert_eq!(closed, body);
 }
 
@@ -2446,7 +2328,7 @@ fn close_abstracts_a_parameter_in_a_later_parameters_type() {
     let a = p.push(sort(0));
     let s = p.open();
     let x = p.bind(p.get(a));
-    let e = p.bind(id(p.get(a), x.clone(), x));
+    let e = p.bind(id(p.get(a), x, x));
     let closed = p.close(s, Binder::Lam, e);
     assert_eq!(closed, lam(mk(Node::Const(0)), lam(id(mk(Node::Const(0)), var(0), var(0)), var(0))));
 }
@@ -2460,7 +2342,7 @@ fn a_free_that_escapes_its_scope_is_left_by_a_later_close_and_rejected() {
     let a = p.push(sort(0));
     let s = p.open();
     let leaked = p.bind(p.get(a));
-    let _ = p.close(s, Binder::Lam, leaked.clone());
+    let _ = p.close(s, Binder::Lam, leaked);
     let s = p.open();
     let _y = p.bind(p.get(a));
     let closed = p.close(s, Binder::Lam, leaked);
@@ -2488,7 +2370,7 @@ fn an_inner_close_leaves_outer_parameters_free() {
     let x = p.bind(p.get(a));
     let inner = p.open();
     let y = p.bind(p.get(a));
-    let inner_closed = p.close(inner, Binder::Lam, id(p.get(a), x.clone(), y));
+    let inner_closed = p.close(inner, Binder::Lam, id(p.get(a), x, y));
     assert_eq!(inner_closed, lam(mk(Node::Const(0)), id(mk(Node::Const(0)), x, var(0))));
     let closed = p.close(outer, Binder::Lam, inner_closed);
     assert_eq!(closed, lam(mk(Node::Const(0)), lam(mk(Node::Const(0)), id(mk(Node::Const(0)), var(1), var(0)))));
@@ -2504,7 +2386,7 @@ fn check_open_types_the_live_parameters() {
     let x = p.bind(p.get(a));
     assert!(p.check(&x, &p.get(a)).is_err()); // the kernel rejects Free
     assert!(p.check_open(&x, &p.get(a)).is_ok());
-    assert!(p.check_open(&refl(x.clone()), &id(p.get(a), x.clone(), x)).is_ok());
+    assert!(p.check_open(&refl(x), &id(p.get(a), x, x)).is_ok());
     p.abandon(s);
 }
 
@@ -2534,13 +2416,13 @@ fn check_open_types_a_parameter_in_a_dependent_context() {
     let a = p.push(sort(0));
     let s = p.open();
     let x = p.bind(p.get(a));
-    let e = p.bind(id(p.get(a), x.clone(), x.clone()));
-    assert_eq!(p.check_open(&e, &id(p.get(a), x.clone(), x)), Ok(()));
+    let e = p.bind(id(p.get(a), x, x));
+    assert_eq!(p.check_open(&e, &id(p.get(a), x, x)), Ok(()));
     p.abandon(s);
 }
 
 /// `d(k+1) = f d(k) d(k)` over a parameter, 30 levels deep: a
-/// billion leaves as a tree, 91 nodes as a DAG. Without its memo
+/// billion leaves as a tree, 64 nodes as a DAG. Without its memo
 /// `close` walked and copied the tree.
 #[test]
 fn close_is_linear_in_the_dag_of_a_shared_body() {
@@ -2551,14 +2433,14 @@ fn close_is_linear_in_the_dag_of_a_shared_body() {
     let s = p.open();
     let mut d = p.bind(p.get(a));
     for _ in 0..DEPTH {
-        d = app(app(p.get(f), d.clone()), d);
+        d = app(app(p.get(f), d), d);
     }
     let t = std::time::Instant::now();
     let closed = p.close(s, Binder::Lam, d);
     let took = t.elapsed();
     assert!(took < std::time::Duration::from_millis(50), "took {took:?}");
-    // The Lam, its domain, the base `Var`, and 3 nodes per level.
-    assert_eq!(term_sizes(&closed).0, 3 * DEPTH + 3);
+    // The Lam, its domain, the base `Var`, the one `f` node, and 2 `App`s per level.
+    assert_eq!(term_sizes(&closed).0, 2 * DEPTH + 4);
     assert!(p.check(&closed, &arrow(p.get(a), p.get(a))).is_ok());
 }
 
@@ -2585,4 +2467,22 @@ fn scoped_escapes_only_when_outermost() {
     assert_eq!(intern_generation(), 0, "a panic closes the scope");
     let _d = scoped(|| Count(n.clone()));
     assert_eq!(n.get(), 2, "after a panic, the next scoped opens the scope again");
+}
+
+/// A handle used after the region it was built in closed panics instead of naming another term (spec, "Soundness" 2).
+#[test]
+#[should_panic(expected = "dead handle")]
+fn a_handle_from_a_closed_region_is_dead() {
+    let kept = std::cell::Cell::new(None);
+    scoped(|| kept.set(Some(app(var(0), var(1)))));
+    let e = kept.get().unwrap();
+    let _ = e.node();
+}
+
+/// `Debug` on a dead handle reports it instead of panicking, so an `assert_eq!` that prints one still says what failed.
+#[test]
+fn a_dead_handle_prints_as_dead() {
+    let kept = std::cell::Cell::new(None);
+    scoped(|| kept.set(Some(app(var(0), var(1)))));
+    assert_eq!(format!("{:?}", kept.get().unwrap()), "<dead handle>");
 }

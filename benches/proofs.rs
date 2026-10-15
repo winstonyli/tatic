@@ -24,7 +24,7 @@ fn straight_line_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
     let h = common::straight_line(&mut store);
     c.bench_function("straight_line_refl_proof", |b| {
-        b.iter(|| prove_pure_expr(&store, black_box(h)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_pure_expr(&store, black_box(h)).unwrap()); }))
     });
 }
 
@@ -32,7 +32,7 @@ fn relational_per_call_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
     let h = common::gcd(&mut store);
     c.bench_function("gcd_relational_proof_single_call", |b| {
-        b.iter(|| prove_tail_recursive_call(&store, black_box(h), black_box(&[270, 192])).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_call(&store, black_box(h), black_box(&[270, 192])).unwrap()); }))
     });
 }
 
@@ -42,13 +42,13 @@ fn universal_proof(c: &mut Criterion) {
     let mut store2 = TermStore::new();
     let h2 = common::gcd(&mut store2); // 1 base leaf, 1 tail leaf
     group.bench_function("gcd_2_leaves", |b| {
-        b.iter(|| prove_tail_recursive_universal(&store2, black_box(h2)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_universal(&store2, black_box(h2)).unwrap()); }))
     });
 
     let mut store3 = TermStore::new();
     let h3 = common::gcd_with_two_base_cases(&mut store3); // 2 base leaves, 1 tail leaf (depth 2)
     group.bench_function("gcd_3_leaves", |b| {
-        b.iter(|| prove_tail_recursive_universal(&store3, black_box(h3)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_universal(&store3, black_box(h3)).unwrap()); }))
     });
 
     group.finish();
@@ -76,15 +76,15 @@ fn relational_scaling_vs_universal(c: &mut Criterion) {
 
     for n in [1usize, 5, 10] {
         group.bench_function(format!("relational_x{n}"), |b| {
-            b.iter(|| {
+            b.iter(|| tatic::kernel::scoped(|| {
                 for &(a, bb) in &sample_points[..n] {
                     prove_tail_recursive_call(&store, black_box(h), black_box(&[a, bb])).unwrap();
                 }
-            })
+            }))
         });
     }
     group.bench_function("universal_x1", |b| {
-        b.iter(|| prove_tail_recursive_universal(&store, black_box(h)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_universal(&store, black_box(h)).unwrap()); }))
     });
 
     group.finish();
@@ -104,25 +104,25 @@ fn closures_fragment_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
     let h = common::twice_inc_5(&mut store);
     group.bench_function("non_capturing", |b| {
-        b.iter(|| prove_closure_expr(&store, black_box(h)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store, black_box(h)).unwrap()); }))
     });
 
     let mut store2 = TermStore::new();
     let h2 = common::a_capturing_closure_call(&mut store2);
     group.bench_function("capturing", |b| {
-        b.iter(|| prove_closure_expr(&store2, black_box(h2)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store2, black_box(h2)).unwrap()); }))
     });
 
     let mut store3 = TermStore::new();
     let h3 = common::a_pap_non_capturing(&mut store3);
     group.bench_function("partial_application_non_capturing", |b| {
-        b.iter(|| prove_closure_expr(&store3, black_box(h3)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store3, black_box(h3)).unwrap()); }))
     });
 
     let mut store4 = TermStore::new();
     let h4 = common::a_pap_capturing(&mut store4);
     group.bench_function("partial_application_capturing", |b| {
-        b.iter(|| prove_closure_expr(&store4, black_box(h4)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store4, black_box(h4)).unwrap()); }))
     });
 
     group.finish();
@@ -138,7 +138,7 @@ fn closure_typed_recursion_universal_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
     let h = common::iterate(&mut store);
     c.bench_function("closure_typed_loop_carried_parameter_universal_proof", |b| {
-        b.iter(|| prove_tail_recursive_universal(&store, black_box(h)).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_universal(&store, black_box(h)).unwrap()); }))
     });
 }
 
@@ -160,13 +160,13 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
     let h = common::non_tail_closure_carrying_recursion(&mut store);
     group.bench_function("non_tail_embedded_call", |b| {
-        b.iter(|| prove_closure_expr_instance(&store, black_box(h), &[]).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr_instance(&store, black_box(h), &[]).unwrap()); }))
     });
 
     let mut store2 = TermStore::new();
     let h2 = common::branching_non_tail_closure_carrying_recursion(&mut store2);
     group.bench_function("branching", |b| {
-        b.iter(|| prove_closure_expr_instance(&store2, black_box(h2), &[]).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr_instance(&store2, black_box(h2), &[]).unwrap()); }))
     });
 
     group.finish();
@@ -248,14 +248,14 @@ fn over_application_instance_proof(c: &mut Criterion) {
     let h = common::tail_recursive_loop_with_if_between_closures_self_call_arg(&mut store);
     assert_eq!(eval::apply_term(&store, h, &[4]).unwrap(), 0, "sanity check against the interpreter");
     group.bench_function("if_between_closures_self_call_arg", |b| {
-        b.iter(|| prove_tail_recursive_instance(&store, black_box(h), &[4]).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_instance(&store, black_box(h), &[4]).unwrap()); }))
     });
 
     let mut store2 = TermStore::new();
     let h2 = common::tail_recursive_loop_with_pap_producing_root_self_call_arg(&mut store2);
     assert_eq!(eval::apply_term(&store2, h2, &[4]).unwrap(), 0, "sanity check against the interpreter");
     group.bench_function("pap_producing_root_self_call_arg", |b| {
-        b.iter(|| prove_tail_recursive_instance(&store2, black_box(h2), &[4]).unwrap())
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_instance(&store2, black_box(h2), &[4]).unwrap()); }))
     });
 
     group.finish();

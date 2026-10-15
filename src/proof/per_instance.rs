@@ -213,8 +213,8 @@ pub(super) fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCom
     let mut values = Vec::with_capacity(captures.len());
     for &rel in captures {
         let e = match frame.get(rel as usize)? {
-            DynVal::Int(a, _) => a.clone(),
-            DynVal::Clo(a, _) => a.clone(),
+            DynVal::Int(a, _) => *a,
+            DynVal::Clo(a, _) => *a,
         };
         values.push(e);
     }
@@ -448,7 +448,7 @@ pub(super) fn eval_dyn_direct_call(
     }
     let mut all_args = Vec::with_capacity(1 + arg_exprs.len());
     if let Some(env_expr) = &env_expr {
-        all_args.push(env_expr.clone());
+        all_args.push(*env_expr);
     }
     all_args.extend(arg_exprs.iter().cloned());
     let applied = apply_n(call_fn, all_args);
@@ -457,7 +457,7 @@ pub(super) fn eval_dyn_direct_call(
     // `needs_inline` was false -- always has a plain `Int` result here.
     debug_assert!(return_ty.is_none(), "a Clo-returning root should always have been inlined above");
     let int_ty = combinators.cp.arith.int_ty();
-    let applied_resolved = applied.clone();
+    let applied_resolved = applied;
     debug_assert_has_type(&combinators.cp.arith.p, &applied_resolved, &int_ty, "eval_dyn: direct combinator call");
     Some(DynDenoted::Int(applied))
 }
@@ -722,15 +722,15 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
         eval_dyn(store, body, &mut combinators, None, &mut budget, &frame)?
     };
     let (result_ty, denotation) = match denoted {
-        DynDenoted::Int(e) => (combinators.cp.arith.int_ty(), e.clone()),
+        DynDenoted::Int(e) => (combinators.cp.arith.int_ty(), e),
         DynDenoted::Clo(e, cc) => {
             let (k, _, _) = compile::peel(store, cc.root)?;
             let ty = combinators.cp.clo_ty(k);
-            (ty, e.clone())
+            (ty, e)
         }
     };
-    let proof = kernel::refl(denotation.clone());
-    let proof_ty = kernel::id(result_ty.clone(), denotation.clone(), denotation.clone());
+    let proof = kernel::refl(denotation);
+    let proof_ty = kernel::id(result_ty, denotation, denotation);
     combinators.cp.arith.p.check(&proof, &proof_ty).ok()?;
 
     Some(EquivalenceProof {
