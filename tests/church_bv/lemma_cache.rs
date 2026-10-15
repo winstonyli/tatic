@@ -5,7 +5,7 @@
 //! `LEMMA_RECHECK=1` builds and checks every lemma anyway and asserts the file's statement equals the built one.
 
 use super::*;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, OnceLock};

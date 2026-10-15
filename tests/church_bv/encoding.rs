@@ -1879,7 +1879,7 @@ pub struct TabBdd {
 }
 
 pub fn tab_bdd(nv: usize, tab: &dyn Fn(&[bool]) -> bool) -> TabBdd {
-    fn go(nv: usize, tab: &dyn Fn(&[bool]) -> bool, fixed: &mut Vec<bool>, nodes: &mut Vec<(usize, usize, usize)>, unique: &mut std::collections::HashMap<(usize, usize, usize), usize>) -> usize {
+    fn go(nv: usize, tab: &dyn Fn(&[bool]) -> bool, fixed: &mut Vec<bool>, nodes: &mut Vec<(usize, usize, usize)>, unique: &mut hashbrown::HashMap<(usize, usize, usize), usize>) -> usize {
         if fixed.len() == nv {
             return tab(fixed) as usize;
         }

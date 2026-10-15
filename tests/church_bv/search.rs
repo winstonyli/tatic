@@ -559,12 +559,12 @@ pub fn rule_miner() {
         // the pool's terms and the patterns looked up in it use at most two variables (`abstractions(sub, 2)`), so signatures over
         // two give the same equalities as over `kv`, at 256 bytes instead of 4096 for the three-variable families
         let mut memo = ValueMemo::exhaustive(n, 2);
-        let mut index: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
+        let mut index: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
         for t in by_size.iter().flatten() {
             index.entry(memo.values(t).to_vec()).or_default().push(*t);
         }
         // `lt` terms (one-bit values) only as roots, indexed apart: their 0/1 values must not meet the n-bit constants
-        let mut index_lt: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
+        let mut index_lt: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
         for a in by_size.iter().take(4).flatten() {
             for b in by_size.iter().take(4).flatten() {
                 let t = Term::op(LT, *a, *b);
@@ -844,7 +844,7 @@ pub fn rule_miner() {
         // rounds and lookahead's greedy paths): the round takes it as provable (`assumed`) and is committed when its proof is in,
         // and a failed proof rolls the rounds back to it (below). Any other proof of a pending candidate waits for its result
         let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, bool)>();
-        let pending: std::cell::RefCell<std::collections::HashSet<usize>> = Default::default();
+        let pending: std::cell::RefCell<hashbrown::HashSet<usize>> = Default::default();
         let (speculate, spawn_req) = (std::cell::Cell::new(false), std::cell::Cell::new(None::<usize>));
         let assumed: std::cell::RefCell<Vec<usize>> = Default::default();
         let resolve = |i: usize| -> bool {
@@ -2381,7 +2381,7 @@ fn lcg(s: &mut u64) -> u64 {
 /// A character n-gram model of `text` (context of `order` bytes), sampled into `n` lines: the stand-in proposer a language model replaces.
 pub fn ngram_lines(text: &str, order: usize, n: usize, seed: u64) -> Vec<String> {
     let bytes = text.as_bytes();
-    let mut table: std::collections::HashMap<&[u8], Vec<u8>> = Default::default();
+    let mut table: hashbrown::HashMap<&[u8], Vec<u8>> = Default::default();
     for i in 0..bytes.len() {
         table.entry(&bytes[i.saturating_sub(order)..i]).or_default().push(bytes[i]);
     }

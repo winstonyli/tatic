@@ -646,7 +646,7 @@ pub fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
 // results are then equal, or both add-free, `bitwise_law` closes the gap.
 
 thread_local! {
-    pub static CLOSED: std::cell::RefCell<std::collections::HashMap<String, (tatic::kernel::PExpr, tatic::kernel::PExpr)>> = Default::default();
+    pub static CLOSED: std::cell::RefCell<hashbrown::HashMap<String, (tatic::kernel::PExpr, tatic::kernel::PExpr)>> = Default::default();
 }
 /// A closed library term built once per key (the proofs and witnesses the rewriter reuses at every step).
 pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
@@ -1680,7 +1680,7 @@ fn rule_overlap_report() {
         kinds[kind] += 1;
         println!("OVERLAP {} {} -> {}  WITH  {} -> {}", ["inner", "nested", "cross"][kind], li.show(), rules[i].1.show(), lj.show(), rules[j].1.show());
     }
-    let touched: std::collections::HashSet<usize> = o.iter().flat_map(|&(i, j, _)| [i, j]).collect();
+    let touched: hashbrown::HashSet<usize> = o.iter().flat_map(|&(i, j, _)| [i, j]).collect();
     println!(
         "OVERLAPS {} rules, {} overlapping pairs: {} inner, {} at the root with one left side an instance of the other, {} at the root otherwise; {} rules in some overlap",
         rules.len(), o.len(), kinds[0], kinds[1], kinds[2], touched.len()

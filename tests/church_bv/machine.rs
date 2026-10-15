@@ -195,7 +195,7 @@ pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize, reach: Option<&Reach
     let mut class: [Vec<usize>; 2] = [0, 1].map(|side| (0..1usize << cs[side]).map(|s| if last && live(side, s) { s & 1 } else { 0 }).collect());
     let mut count = 0;
     loop {
-        let mut ids: std::collections::HashMap<Vec<(usize, bool, usize)>, usize> = Default::default();
+        let mut ids: hashbrown::HashMap<Vec<(usize, bool, usize)>, usize> = Default::default();
         let mut next: [Vec<usize>; 2] = [vec![0; class[0].len()], vec![0; class[1].len()]];
         for side in 0..2 {
             for s in (0..1usize << cs[side]).filter(|s| live(side, *s)) {
@@ -447,7 +447,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
     };
     // at a leaf's literal bits, once for the side's m + 1 F lemmas and its P lemma: (output, next carries, phi of the carries)
     type Step = std::rc::Rc<(Expr, Vec<Expr>, Vec<Expr>)>;
-    let steps: std::cell::RefCell<std::collections::HashMap<(usize, Vec<bool>), Step>> = Default::default();
+    let steps: std::cell::RefCell<hashbrown::HashMap<(usize, Vec<bool>), Step>> = Default::default();
     let step_at = |side: usize, v: &[Expr], bits: Option<&[bool]>| -> Step {
         let build = || {
             let (o, next) = step_of(side, v);
@@ -965,7 +965,7 @@ pub fn conjecture_miner() {
 /// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
 pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
     let mut memo = ValueMemo::exhaustive(n, nv);
-    let mut groups: std::collections::HashMap<Vec<u8>, Vec<Term>> = Default::default();
+    let mut groups: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
     for t in pool {
         // a comparison (one-bit result) never equals an n-bit term, even when their signatures coincide
         let mut key = memo.values(&t).to_vec();
