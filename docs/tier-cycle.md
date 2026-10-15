@@ -3166,9 +3166,15 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - **Copying the rewrite memo between candidates.** `RewriteMemo::filtered` clones and rehashes every entry it keeps. `absorb` (search.rs, `score_rule`) re-inserts all of `grown`, seed entries included. About 3.0% of busy samples hash and 2.9% clone there (the `HashMap` collect and extend sites), before drops and frees.
   - **Memo lookups in `rewrite_memo`.** The key's `t.clone()`, the trace copies and the result clone are about 2.4%; hashing 0.9%.
   - `rewrite::terms` (building candidate terms) clones 3.6%; `rewrite`'s path push 0.9%; `match_pat` 0.8%.
-- **Open:** two directions, not yet chosen.
-  - Hash-cons `Term`, as the kernel did with `Expr` (the id arena). Clone, drop, hash and equality would become O(1) everywhere.
-  - Narrower: seed each scoring with a read-through view of the worker's memo instead of a filtered copy, and absorb only the new entries.
+- **Two directions were open:** hash-cons `Term` (as the kernel did with `Expr`), or, narrower, seed each scoring with a read-through view of the worker's memo instead of a filtered copy. Hash-consing covers the memo copying too, so it was built first.
+- **Hash-consed `Term`: adopted (2026-10-15, branch `term-hashcons`).** A sweep cuts its CPU by 30%, and its outputs are unchanged.
+  - **Few distinct terms (probe, reverted).** A fingerprint of every `Op` node dropped, over a salt-1 sweep: at most 57,272 distinct per process (the driver), 32,086 in the largest miner (`lib_cmp3d`) against 64.8 M node drops, 1.26 M over the sweep's 171 processes. So terms are shared about 2,000 times, and never freeing a node costs a couple of MB per process.
+  - **Design.** `Term` is `Copy`, a `&'static Node`. Leaves are statics; `Op` nodes are interned in a 16-shard `Mutex<hashbrown::HashTable>` with an unseeded hash of the operator and the child addresses, and leaked. Equality and `Hash` take the address; `Ord` is structural, the old derived order (pinned by a test). Spec and plan: `docs/superpowers/` (local).
+  - **A latent underflow surfaced.** search.rs's straggler candidates renumbered `V(i)` to `V(i - 4)` before checking that no variable was below 4, so release builds wrapped and then dropped the term. `Term::v` asserts its index, so the check now comes first; the candidates are the same.
+  - **Outputs identical.** Salt-1 and salt-2 sweeps (`SWEEP="mines own cold pooled"`, `hc_seq.sh`): `cold.tsv` and `mines.tsv` equal apart from seconds, every log equal apart from timings and the test harness's filtered count, `LEMMA_CACHE` lines included.
+  - **Twelve full salt-1 sweeps, old and new alternating** (`hc_rounds.ps1`, sweep_job.ps1; load 2-11% except 42% at the first start, RTP off): job CPU median 39.4 s old against 27.7 s new (-30%), wall 30.3 s against 24.6 s (-19%); new won all 6 pairs.
+  - **The new profile** (same method, 26,010 busy samples against 48,478): `Term` clone and drop are gone, SipHash 7.4% (the miner's own maps), mimalloc 17.3%, the kernel 15.6%. The top self functions are now `Term::interp` 15.5% and `Term::max_var` 8.3%, both O(size) walks a node could cache, then `Term::op` (interning) 5.5%. `rewrite_memo` is 44.7% inclusive.
+- **Open:** cache per-node attributes (`max_var`, size, and `interp` results per input set) at interning; the read-through memo view, if memo copying still shows.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
