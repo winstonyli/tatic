@@ -149,3 +149,4 @@ and libraries (43 MB) were not kept.
 | `rsp_head_*`, `rsp_rs_*` | 34ea646 against the rule list built once, same load | `rs_pair.sh` | "The rule list built once" |
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |
 | `scrp` | 36033fa with throwaway screen counters (reverted), one salt-1 sweep | `hc_seq.sh`'s `run`, by hand | "What the screen does in a sweep" |
+| `ci_*`, `hc_rounds.txt`, `tcb` | e2824ea against 0143f7a, then index-build counter (reverted) | `hc_seq.sh`, `hc_rounds.ps1` | "`tree_step`'s candidates looked up by screen vector" |
