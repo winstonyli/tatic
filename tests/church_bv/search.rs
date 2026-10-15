@@ -674,8 +674,12 @@ pub fn rule_miner() {
                             }
                             // `x = y` holds for the straggler's variables, but the cuts become free variables, so the rule itself is checked:
                             // one that only held through a relation between the cuts would be scored every round and then fail its proof
+                            // renumbered only when bare: a cut-free variable below 4 has no index to take
+                            if !bare(&yy) {
+                                continue;
+                            }
                             let rhs = renum(&yy);
-                            if bare(&yy) && yy.size() < pat.size() + 4 && seen_pat.insert((pat, Some(rhs))) && (1..=4).all(|w| pat.plausibly_equals(&rhs, w, cuts.len())) {
+                            if yy.size() < pat.size() + 4 && seen_pat.insert((pat, Some(rhs))) && (1..=4).all(|w| pat.plausibly_equals(&rhs, w, cuts.len())) {
                                 // not ordered: orienting cross-side rules by the rule order raised M in every family (docs/tier-cycle.md,
                                 // "A rewrite cycle"); a growing one can cycle with the built-in rules until the step budget runs out
                                 cands.push((pat, rhs));
