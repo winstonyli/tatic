@@ -1,11 +1,12 @@
 use super::*;
 
 /// A hash-consed term: a pointer to its one node. Leaves are statics, `Op` nodes are interned (`Term::op`) and never
-/// freed, so equal terms are the same pointer: `==` and `Hash` take the address, and clone is a copy.
+/// freed, so equal terms are the same pointer: `==` and `Hash` take the address, and clone is a copy. Each node also
+/// carries what is computed bottom-up once, when it is made: its size and the set of its variables.
 /// `show()` is for text (files, logs, lemma names) and the text orders. `Ord` is structural (`V < Zero < Ones < Op`,
 /// then fields), the order the derived one gave; it only makes canonical keys (a sorted rule set).
 #[derive(Clone, Copy)]
-pub struct Term(&'static Node);
+pub struct Term(&'static Interned);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Node {
     V(usize),
@@ -13,24 +14,35 @@ pub enum Node {
     Ones,
     Op(usize, Term, Term),
 }
-static LEAVES: [Node; 64] = {
-    let mut a = [Node::Zero; 64];
+struct Interned {
+    node: Node,
+    size: usize,
+    /// Bit `i` set when `V(i)` occurs.
+    vars: u64,
+}
+impl Interned {
+    const fn leaf(node: Node, vars: u64) -> Interned {
+        Interned { node, size: 1, vars }
+    }
+}
+static LEAVES: [Interned; 64] = {
+    let mut a = [const { Interned::leaf(Node::Zero, 0) }; 64];
     let mut i = 0;
     while i < 64 {
-        a[i] = Node::V(i);
+        a[i] = Interned::leaf(Node::V(i), 1 << i);
         i += 1;
     }
     a
 };
-// The leaf consts name statics: a promoted `&Node::Zero` need not have one address.
-static ZERO_NODE: Node = Node::Zero;
-static ONES_NODE: Node = Node::Ones;
+// The leaf consts name statics: a promoted `&Interned` need not have one address.
+static ZERO_NODE: Interned = Interned::leaf(Node::Zero, 0);
+static ONES_NODE: Interned = Interned::leaf(Node::Ones, 0);
 const SHARDS: usize = 16;
-static TABLE: [std::sync::Mutex<hashbrown::HashTable<&'static Node>>; SHARDS] =
+static TABLE: [std::sync::Mutex<hashbrown::HashTable<&'static Interned>>; SHARDS] =
     [const { std::sync::Mutex::new(hashbrown::HashTable::new()) }; SHARDS];
 /// The table's hash of `Op(o, a, b)`: unseeded, so every call agrees (a default-built seeded hasher may not).
 fn op_hash(o: usize, a: Term, b: Term) -> u64 {
-    let mut h = o as u64 ^ (a.0 as *const Node as u64).rotate_left(21) ^ (b.0 as *const Node as u64).rotate_left(43);
+    let mut h = o as u64 ^ a.addr().rotate_left(21) ^ b.addr().rotate_left(43);
     h ^= h >> 33;
     h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
     h ^= h >> 33;
@@ -49,18 +61,33 @@ impl Term {
     pub fn op(o: usize, a: Term, b: Term) -> Term {
         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
         let mut t = TABLE[(h >> 40) as usize % SHARDS].lock().unwrap();
-        if let Some(&m) = t.find(h, |m| **m == n) {
+        if let Some(&m) = t.find(h, |m| m.node == n) {
             return Term(m);
         }
-        let m: &'static Node = Box::leak(Box::new(n));
-        t.insert_unique(h, m, |m| match **m {
+        let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars }));
+        t.insert_unique(h, m, |m| match m.node {
             Node::Op(o, a, b) => op_hash(o, a, b),
             _ => unreachable!("only Op nodes are interned"),
         });
         Term(m)
     }
     pub fn node(&self) -> &'static Node {
-        self.0
+        &self.0.node
+    }
+    fn addr(self) -> u64 {
+        self.0 as *const Interned as u64
+    }
+    /// Number of nodes.
+    pub fn size(&self) -> usize {
+        self.0.size
+    }
+    /// Whether variable `v` occurs in the term (`show().contains(..)` would also match `xor` and `sub`).
+    pub fn has_var(&self, v: usize) -> bool {
+        v < 64 && self.0.vars >> v & 1 == 1
+    }
+    /// The largest variable index, 0 when there is none.
+    pub fn max_var(&self) -> usize {
+        63usize.saturating_sub(self.0.vars.leading_zeros() as usize)
     }
 }
 impl PartialEq for Term {
@@ -71,7 +98,7 @@ impl PartialEq for Term {
 impl Eq for Term {}
 impl std::hash::Hash for Term {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
-        (self.0 as *const Node as usize).hash(h)
+        self.addr().hash(h)
     }
 }
 impl Ord for Term {
@@ -292,21 +319,6 @@ impl Term {
         match *self.node() {
             Node::Op(o, a, b) => o == ADD || o == SUB || a.uses_add() || b.uses_add(),
             _ => false,
-        }
-    }
-    /// Whether variable `v` occurs in the term (`show().contains(..)` would also match `xor` and `sub`).
-    pub fn has_var(&self, v: usize) -> bool {
-        match *self.node() {
-            Node::V(i) => i == v,
-            Node::Op(_, a, b) => a.has_var(v) || b.has_var(v),
-            _ => false,
-        }
-    }
-    pub fn max_var(&self) -> usize {
-        match *self.node() {
-            Node::V(i) => i,
-            Node::Op(_, a, b) => a.max_var().max(b.max_var()),
-            _ => 0,
         }
     }
     /// The term's value at one bit position, a `Bool0`, given the variables' bits (`bits[v]`); bitwise ops only.
@@ -1143,13 +1155,6 @@ pub fn promoted_rules() -> &'static Vec<(Term, Term)> {
 
 /// First-order match of the pattern `p` against `t`, binding pattern variables in `sub` (a repeated variable must see equal terms).
 impl Term {
-    /// Number of nodes.
-    pub fn size(&self) -> usize {
-        match *self.node() {
-            Node::Op(_, a, b) => 1 + a.size() + b.size(),
-            _ => 1,
-        }
-    }
     /// Occurrences of each variable (`out[v]`).
     pub fn occurrences(&self, out: &mut [usize; 8]) {
         match *self.node() {
@@ -2312,6 +2317,29 @@ fn term_interning() {
         assert!(w.iter().zip(&built[0]).all(|(p, q)| std::ptr::eq(p.node(), q.node())));
     }
     assert_eq!((std::mem::size_of::<Term>(), std::mem::size_of::<Node>()), (8, 32));
+}
+
+#[test]
+fn term_attributes_match_a_walk() {
+    fn walk(t: &Term) -> (usize, Vec<usize>) {
+        match *t.node() {
+            Node::V(i) => (1, vec![i]),
+            Node::Op(_, a, b) => {
+                let ((sa, mut va), (sb, vb)) = (walk(&a), walk(&b));
+                va.extend(vb);
+                (1 + sa + sb, va)
+            }
+            _ => (1, vec![]),
+        }
+    }
+    let high = Term::op(XOR, Term::op(AND, Term::v(63), Term::v(9)), Term::v(40));
+    let ts: Vec<Term> = PIN_SOURCE.iter().map(|s| parse_term(s)).chain([high, Term::ZERO, Term::ONES, Term::v(0)]).collect();
+    for t in &ts {
+        let (size, vars) = walk(t);
+        assert_eq!(t.size(), size, "{}", t.size());
+        assert_eq!(t.max_var(), vars.iter().copied().max().unwrap_or(0));
+        assert!((0..70).all(|v| t.has_var(v) == vars.contains(&v)));
+    }
 }
 
 #[test]
