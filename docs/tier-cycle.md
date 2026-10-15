@@ -2963,6 +2963,23 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - This fits the census: unshared nodes hold 77% of `bounds`' entries, which the rule no longer stores, but they took 27-29% of its hits, which now walk.
 - `hc`'s module doc keeps `bounds` as the exception. Adopting it only for one uniform rule would need its own sweep pair.
 
+**Footprint per node after shared-only walk memos (2026-10-14; probe reverted, no patch kept).** The probe from "Footprint per node of rule 33's check on B", rebuilt unchanged and run on 4ba3f6c. The checks add the same 50,487 and 385,032 region nodes as before. Values are n=8 / n=64, in B per new node:
+
+| | used before | used now | allocated before | allocated now | entries per node now |
+|---|---|---|---|---|---|
+| `memo.inst` | 12.6 / 12.7 | 2.8 / 2.9 | 22.1 / 23.1 | 5.5 / 5.8 | 0.18 (was 0.79-0.80) |
+| `memo.shifts` | 13.2 / 13.6 | 4.0 / 4.2 | 22.1 / 23.1 | 5.5 / 5.8 | 0.25 / 0.26 (was 0.83-0.85) |
+| `ic.lows` | 9.0 / 9.4 | 2.6 / 2.7 | 16.9 / 17.7 | 4.2 / 4.4 | 0.22 / 0.23 (was 0.75-0.79) |
+| `memo.bounds` (unchanged) | 5.1 / 5.4 | 5.1 / 5.4 | 11.0 / 11.6 | 11.0 / 11.6 | 0.32 / 0.34 |
+| region vectors and table (unchanged) | 45.0 | 45.0 | 67.2 / 70.6 | 67.2 / 70.6 | |
+| the rest | 7.6-8.4 | 7.6 / 8.2 | 12.5-14.9 | 12.6 / 14.7 | |
+| **total** | **92.5 / 94.4** | **67.1 / 68.4** | **151.7 / 160.9** | **106.0 / 112.9** | |
+
+- **The rule saved 46-48 B allocated per node (−30%),** as the census predicted (about 45 B). A check's working set is now 5.4 MB at n=8 and 43 MB at n=64, against 7.7 and 62 MB.
+- **n=64 is still about 2.7× the 16 MB L3.** At about 110 B per node, L3 fills near 150,000 nodes, about n=25 (it was near n=16). Rule 33's law still rises with n after the change: 20.1 ms at n=8 against 317 ms at n=64, 15.8× for 7.6× the nodes.
+- **The region's own arrays are now the largest part:** 67-71 B of the 106-113 allocated. These are `nodes` (36-38 B at 24 B used), `loose`/`free`/`uses` (18-19 B), and the table (12 B). `bounds` is now the largest memo, at 11-12 B.
+- **Candidates left** (from the first footprint entry): a struct-of-arrays region row, and the region vectors' growth slack (allocation is 1.5-1.6× use). The 16-byte node, the other candidate for the region arrays, was rejected above.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
