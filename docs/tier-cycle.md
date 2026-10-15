@@ -3145,6 +3145,31 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - Reserved storage could also give the arena large pages of its own. That is not measured by this probe, but mimalloc already serves these arrays from large pages in `proof_cost_split`, so there is little left to gain.
 - **Parked:** option 1 of the allocator question. Revisit only if a profile shows growth (`reserve_rehash`, `memcpy` from `Vec` growth) as a visible share of the build.
 
+**Where a sweep spends its time: the miner's boxed `Term`s, not the kernel (2026-10-15; probe reverted, profile not kept).** samply recorded one salt-1 sweep on 744b31d, all 178 processes, through a throwaway wrapper test that set the sweep's environment. The binary was built with debug info, and frames were named with `llvm-symbolizer`. The run had 48,478 busy samples (wait leaves dropped); load was 11% at the start.
+
+| inclusive share of busy samples | |
+|---|---|
+| `rewrite::rewrite` (the miner's rewriting, mostly under `rule_miner`'s scoring) | 50.3% |
+| mimalloc (`mi_malloc_aligned`, `mi_free`, ...) | 20.6% |
+| `machine::tree_encoding` | 13.5% |
+| `Term` clone | 13.3% |
+| SipHash (`std` `DefaultHasher`, hashing `Term`s) | 11.9% |
+| the kernel (`tatic::kernel`) | 10.9% |
+| `Term::interp` | 9.3% |
+| `rule_set_kernel_check` | 8.0% |
+| `Term` drop | 6.9% |
+| `inst_rec` (`Spaces::build` is inlined; `Space::push` 1.7%) | 4.1% |
+
+- **This is why kernel changes don't show in a sweep.** The kernel is 11% of it, so the must-miss skip's 7% on `proof_cost_split` is under 1% of a sweep.
+- **`Term` is a tree of `Box`es with derived `Hash`/`Clone`.** Cloning, dropping and SipHashing it are O(size) each time, and their allocations are most of mimalloc's share.
+- **Call sites (the nearest `church_bv` frame, with inlining):**
+  - **Copying the rewrite memo between candidates.** `RewriteMemo::filtered` clones and rehashes every entry it keeps. `absorb` (search.rs, `score_rule`) re-inserts all of `grown`, seed entries included. About 3.0% of busy samples hash and 2.9% clone there (the `HashMap` collect and extend sites), before drops and frees.
+  - **Memo lookups in `rewrite_memo`.** The key's `t.clone()`, the trace copies and the result clone are about 2.4%; hashing 0.9%.
+  - `rewrite::terms` (building candidate terms) clones 3.6%; `rewrite`'s path push 0.9%; `match_pat` 0.8%.
+- **Open:** two directions, not yet chosen.
+  - Hash-cons `Term`, as the kernel did with `Expr` (the id arena). Clone, drop, hash and equality would become O(1) everywhere.
+  - Narrower: seed each scoring with a read-through view of the worker's memo instead of a filtered copy, and absorb only the new entries.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
