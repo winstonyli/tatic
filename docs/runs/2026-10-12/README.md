@@ -55,6 +55,12 @@ and libraries (43 MB) were not kept.
 | `sls_head_*`, `sls_new_*` | 9fab09a against the memos storing only their results, one run at a time | `slim_seq.sh` | "The memos store only their results" |
 | `s2_old_*`, `s2_new_*`, `s2_cv_1` | 4769775 against the branch `id-arena-stage2` (`PExpr`, `persist`, `scoped` and `Escape` on today's nodes), one run at a time; then the branch built with `--features copy-volume`, salt 1, whose children print `COPYVOL` | `stage2_seq.sh` | "Id arena Stage 2" |
 | (no rows) | `proof_cost_split`, 4769775 against `id-arena-stage2`, 8 alternating pairs; and once on the `copy-volume` build for its `COPYVOL` line | `cpu_ab.ps1` | "Id arena Stage 2" |
+| `s3a_old_*`, `s3a_new_*` | 6833fb9 (Stage 2 plus the `law_time` harness) against 3be0e79 (id arena Stage 3, Phase A: terms as nodes behind a handle, on `Rc`), one run at a time | `s3_seq.sh` | "Id arena Stage 3" |
+| `s3b_old_*`, `s3b_new_*` | 6833fb9 against ff173a6 (Phase B: terms as ids in two hash-consed spaces), one run at a time | `s3_seq.sh` | "Id arena Stage 3" |
+| (no rows) | `proof_cost_split`, 6833fb9 against 3be0e79 and against ff173a6, 8 alternating pairs each | `cpu_ab.ps1` | "Id arena Stage 3" |
+| (no rows) | rule 33's law check time (`rewrite::law_time`), 6833fb9 against 3be0e79 (n = 8, 64) and against ff173a6 (n = 8, 16, 32, 64), 3 alternating pairs | `law_ab.sh` | "Id arena Stage 3" |
+| (no rows) | salt-1 sweep in a job object (job CPU, peak commit), 6833fb9 against ff173a6, 3 alternating rounds | `sweep_job.ps1` | "Id arena Stage 3" |
+| (no rows) | `benches/proofs.rs --bench gcd` (criterion), 6833fb9 against ff173a6 (each iteration in its own region), 3 alternating runs, pinned | | "Id arena Stage 3" |
 | (no rows) | `lowest_loose` counters (calls, gets and hits by depth, `lows` size) for one check of rule 33's law at n=8-64, with and without skipping the memo for `hc::low` nodes, on 77fe8a9 (probe reverted, no patch kept) | | "What `lows` does per call" |
 | (no rows) | samply profiles of rule 33's law check, 120 at n=8 and 10 at n=64 in fresh scopes, on ded1a96 at load 33–36% (probe reverted, profiles not kept) | `prof_diff.py` | "The rise after the bounds memo" |
 | `bnd_old_*`, `bnd_new_*` | 981540b against 1bb3a5c (`uses`' slot in front of per-scope (node, d) bounds), one run at a time | `bounds_seq.sh` | "The slot in front of bounds" |

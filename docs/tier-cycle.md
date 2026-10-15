@@ -2727,6 +2727,42 @@ Its shortcomings there, with mitigations:
   - `kernel_soundness_fuzz`'s `to_globals` now takes the `Globals` its callers pass.
 - **Next:** the Stage 3 decision (the port). It rests on Stage 1's replay (ids 20% below today at n=64, 33% at n=8, the rise with n unchanged) and on this copy-out volume.
 
+**Id arena Stage 3 (2026-10-14, adopted on branch `id-arena-stage3`).** Terms are ids into two hash-consed spaces. Plan `docs/superpowers/plans/2026-10-14-id-arena-stage3.md` (main checkout only), in two phases:
+- **Phase A** (3be0e79): the API port on `Rc` storage. `Expr` is a handle over `Node<Expr>`, the old enum's variants with children `C`, read with `e.node()` and built with `mk`. Internals take `s: &Spaces` first. Twin functions merge (`whnf_impl`+`whnf_rc` into `whnf_in`, likewise `nf_in` and `conv`). `copy-volume`, `hc_probe`, `with_ranges` and `LEAF` are deleted. `shared` (two or more parents, counted at build) replaces `strong_count > 1`.
+- **Phase B** (1166b0e `spaces.rs`, ff173a6 the switch): `Expr` is `Copy`, 8 bytes: a node `Ref` and the region epoch it was made in. `Spaces` (thread-local) holds a persistent space and one region, both hash-consed, so equal structure is one resolved `Ref` and `==` is an id compare. A handle from a closed region is dead: reading it panics ("dead handle"), and `Debug` prints `<dead handle>`. `scoped` opens the region and persists its result on close. The memos (instantiation, shifts, `whnf`, `hnf`, `nf`, argument lists, `uses` bounds) live in `Spaces.memos`, keyed by `u32` node ids, and clear on close. Every public entry (`whnf`, `def_eq`, `normalize`, `infer_in`, `check_in`, `typecheck`) runs in a region.
+- **Deleted in B:** `Drop for Header`, `ReductionCache`, `PtrHasher`/`PtrMap`/`PtrSet`/`PtrKey`, `ShiftKey`, `eq_noting` with its `unequal` set, `whnf_fresh`, `canonical_inputs`, and `hc::Scope`/`activate`/`intern`/`generation`. Tests deleted with the mechanism each asserted: `memo_sources_outlive_their_callers`, `args_id_is_the_same_for_a_canonical_argument_and_its_twin`, `dropping_a_deep_term_does_not_overflow_the_stack`, and `infer_memo_changes_no_answer` (under hash-consing its "unshared copy" is the same node).
+- **Behaviour unchanged.** Every suite passes with the base's counts except lib: 371 in the base, 370 in A (`a_node_is_64_bytes` deleted), 374 in B (+6 `spaces` unit tests, −4 deleted, +2 dead-handle tests). church_bv stays at 76, and no dead handle fired in the suite or the four sweeps. Sequential sweep pairs against the base 6833fb9 (Stage 2 plus the `law_time` harness; rows `s3a_*`, `s3b_*`, script `s3_seq.sh`, RTP off) give identical outputs on both salts for both phases. Logs differ only in timings, their own paths and the filtered-out count, and `LEMMA_CACHE` lines match. One log, `lib_sbo3/mine_ref.log`, moves its `LEMMA_CACHE starts empty` line by one: the base exe moves it between its own runs too (stdout and stderr interleave).
+- **Tests whose expectation changed** (hash-consing now holds outside a region too):
+  - `bin_round_trips_and_shares_nodes`: the encoding's size is equal in and out of a region;
+  - `constants_are_built_once_per_generation`: the second region's rebuilt gate is the copy `scoped` persisted from the first;
+  - `close_is_linear_in_the_dag_of_a_shared_body`: 64 nodes, not 93, because the postulate `f` is one node.
+- **Timing, Phase A** (informational; load 30-41%, RTP off): `proof_cost_split` CPU median 3.79 → 3.90 s (A won 2 of 8). Rule 33's law at n=64: median 555-632 → 489-497 ms; n=8 within noise.
+- **Timing, Phase B** (RTP off, load 9-24% at each block's checks; another session's `tier_eval_nn` was resident):
+
+  | workload | base 6833fb9 | B | |
+  |---|---|---|---|
+  | `proof_cost_split`, 8 alternating pairs: CPU median | 3.73 s | 2.54 s | −32%, won 8 of 8 |
+  | the same: build / check median | 2213 / 352 ms | 1737 / 221 ms | |
+  | rule 33's law, n=8, median of each run (3 pairs) | 50-54 ms | 21-25 ms | won 3 of 3 |
+  | n=16 | 89-246 ms | 43-136 ms | won 3 of 3 (noisy) |
+  | n=32 | 215-507 ms | 110-273 ms | won 3 of 3 (noisy) |
+  | n=64 | 478-491 ms | 252-315 ms | won 3 of 3 |
+  | salt-1 sweep in a job object, 3 alternating rounds: job CPU median | 51.5 s | 51.1 s | won 3 of 3 |
+  | the same: peak commit, largest process / job | 578 / 769-833 MB | 514 / 705 MB | |
+  | gcd benches (criterion, 3 alternating runs, pinned): median of the 3 point estimates, 7 benches | 5.5 µs-551 µs | 3.3 µs-275 µs | 0.43-0.59 of base, gate 1.10 |
+
+  The n=16 and n=32 rows swing about 2× between pairs for both arms (contention). Every pair at every n goes to B, at 0.42-0.64 of the base's median.
+- **Decision rule** (plan): keep the port if rule 33 at n=64 is faster and `proof_cost_split` is not slower beyond its spread. Both hold by a wide margin, and the gcd gate passes (plan departure 11 expected small proofs to pay the full interning; they take about half the time instead).
+- **Departures from the spec** are listed in the plan (1-13) and recorded in the spec. Made during execution:
+  - every `benches/proofs.rs` iteration runs in its own region, not only the gcd ones;
+  - `Spaces::from_key` became `expr_of`, since it reads the epoch through `self` (clippy's `wrong_self_convention`).
+- **`docs/learned-vs-fixed.md`:** no row changes; no learned or fixed part moved.
+- **Parked:**
+  - departure 2's raw-`Ref` walks (`inst_rec`, `uses`, `conv_whnf`), if a profile shows `resolve`;
+  - departure 12's bitset for `hc::exceeds`, if its walk shows;
+  - the spec's own parked list.
+- **Next:** profile B on rule 33 at n=8 and n=64, to see what the rise with n is made of now (the per-entry costs in "The rise after the bounds memo" were measured on `Rc` nodes).
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
