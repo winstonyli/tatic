@@ -2656,6 +2656,8 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
     infer(&Ctx::new(), e).map(|t| normalize(&t))
 }
 
+#[allow(dead_code)] // unused until Stage 3 B2
+mod spaces;
 mod postulates;
 pub use postulates::*;
 
