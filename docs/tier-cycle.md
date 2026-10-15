@@ -2997,6 +2997,29 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - **Shared-only is 10-34% cheaper per node at every n,** and its rise is smaller: from about 460-510 at n=2-8 to 800-900 at n≥48 (about 1.7×), against old's 510-720 to 1,040-1,220 (about 2×).
 - **The knee is not resolved.** The footprint above predicts L3 filling near n=20 before and n=32 now. Under this load, best-of-4 still has non-monotone steps (old at n=96 reads below n=64; new at n=128 reads below n=96), which are larger than any knee to be read. A quiet-machine rerun is parked until the other sessions' jobs are gone.
 
+**The hash maps' load and entry size (2026-10-14; analysis, nothing built).** hashbrown allocates buckets × (entry size + 1) + 16 bytes, and that formula reproduces every allocation in the footprint probe above exactly. So each map's bucket count and load follow from it (n=64 on cb36ad2):
+
+| map | entries | entry B | buckets | load | allocated B per node |
+|---|---|---|---|---|---|
+| `region.table` | 385,032 | 8 | 524,288 | 0.73 | 12.3 |
+| `memo.bounds` | 129,123 | 16 | 262,144 | 0.49 | 11.6 |
+| `memo.inst` | 68,673 | 16 | 131,072 | 0.52 | 5.8 |
+| `memo.shifts` | 100,072 | 16 | 131,072 | 0.76 | 5.8 |
+| `ic.lows` | 87,571 | 12 | 131,072 | 0.67 | 4.4 |
+| `memo.whnf` | 86,747 | 8 | 131,072 | 0.66 | 3.1 |
+| `ic.types` | 37,658 | 16 | 65,536 | 0.57 | 2.9 |
+| `ic.window_of` | 31,945 | 16 | 65,536 | 0.49 | 2.9 |
+| `memo.arg_sets` | 15,761 | 32 (plus heap keys) | 32,768 | 0.48 | 2.8 + 0.7 |
+| `ic.context_of` | 20,411 | 20 | 32,768 | 0.62 | 1.8 |
+
+- **No load-factor lever.** Tables are powers of two with a 7/8 maximum load, so load is 0.44-0.875 by where the count lands. `bounds` just doubled, and the size below (131,072 buckets) cannot hold 129,123 entries at 7/8. Pre-sizing cannot help either: tables already keep their capacity between regions.
+- **Little entry-size lever.** Nearly every entry is 8-16 B of `u32`s.
+  - Packing `bounds`' `(lo, hi)` into one `u32` saves about 2.7 B per node (about 3% of the ~90 B the cache sees), and needs a fallback past 65,535.
+  - Packing `shifts`' cutoff and amount saves at most about 1.5 B.
+  - Dropping the table's stored hash halves its 12.3 B, but makes every probe read `nodes`.
+- **Merging the memos into one table** would pool their power-of-two slack, but they clear at different times (`ic` per check, `Memos` per region). It is a large restructure for at most about 15 B per node, unmeasured.
+- **Verdict: parked.** The maps hold about 30 B used and 54 B allocated per node, and the cheap levers left are worth about 3%. Shrinking bytes per node has reached diminishing returns.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
