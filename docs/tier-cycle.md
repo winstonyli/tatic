@@ -3118,6 +3118,7 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     |---|---|---|---|---|
     | 1 | 33% at the start, 45% at the end | 2.84 / 2.64 s (−7%) | 1,954 / 1,797 ms (−8%) | 6 of 8 |
     | 2 | 28% at the start, 33% at the end | 2.84 / 2.65 s (−7%) | 1,935 / 1,830 ms (−5%) | 7 of 8 |
+  - **Full salt-1 sweeps: no detectable effect (2026-10-15).** Twelve sweeps of the same binary in job objects, `SKIP` off and on alternating (two sets of 3 pairs, load 16-39%, RTP off). Job CPU median 51.5 s off against 52.2 s on (+1.5%); the skip won 2 of 6 pairs. Identical sweeps vary about ±10% (46.7-55.7 s off, 49.5-58.8 s on), so the sweep cannot resolve a few percent. It likely spends less of its CPU in large regions than `proof_cost_split`, though that is not measured. Kept: it is sound, and it wins on the kernel-bound benchmark.
 
 **mimalloc against the system heap, after the id-arena port (2026-10-14; probe reverted, no patch kept).** The question was whether to drop mimalloc and do its useful parts directly, now that the kernel keeps its nodes in a few large arrays instead of one block each. Two test binaries were built from 193a1a5. One is as committed. The other has the test crate's `#[global_allocator]` removed, and `machine::large_pages_option` made to return false, since it calls into mimalloc. `MIMALLOC_VERBOSE=1` printed 50 lines from the first and none from the second. RTP off.
 
