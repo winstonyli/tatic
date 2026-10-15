@@ -2848,6 +2848,38 @@ Its shortcomings there, with mitigations:
   - `bounds` has 0.11 / 0.13 hits per entry: 16 B entries, about 11 B per node allocated, almost never read back. But a hit can save a deep `uses` walk, so its value isn't its hit rate.
   - Neither is a footprint fix by itself.
 
+**Removing the `bounds` memo: negative (2026-10-14; reverted, no patch kept).** `uses` kept its per-node slot and its `loose`-based shortcut, and walked on every slot miss. Against 5bab407, rule 33's law over 8 alternating pairs × 15 reps (RTP off, load 25%, two other sessions' jobs on about one core each):
+
+| | with `bounds` | without | |
+|---|---|---|---|
+| n=8, median of run medians | 27.9 ms | 28.7 ms | +3%, removal lost 7 of 8 |
+| n=64 | 425 ms | 524 ms | +23%, removal lost 8 of 8 |
+
+The decision was clear from the law alone, so `proof_cost_split` was not run. `bounds` stays: its rare hits save deep walks, as its adoption measured (−16% at n=64, "The slot in front of bounds").
+
+**Why `inst` has many entries per node, and the unshared nodes (2026-10-14; probe reverted, no patch kept).** A census of rule 33's check (values n=8 / n=64; hits counted during the check only):
+- **Argument lists, not depths, make the entries.** Every (node, argument list) pair has exactly one entry, and no node has more than 2 depths.
+  - There are 1,911 / 14,287 distinct argument lists, and 88% / 91% of entries are for lists of several arguments.
+  - 17% of entries repeat another entry's result on the same node. So a coarser key would merge little; the lists really differ.
+- **87% of entries are never hit** (34,739 of 39,792; 267,251 of 306,408).
+  - Hits concentrate on hub nodes instantiated with many lists: nodes with 16 or more entries (447 / 782) hold 70% / 79% of the entries and get 92% / 98% of the hits.
+- **Entries on unshared nodes** (one parent, `Spaces::shared` false) **get almost no hits**, across every memo that serves one walk:
+
+  | memo | entries on unshared nodes | hits on unshared nodes |
+  |---|---|---|
+  | `inst` | 77% / 77% | 14 / 14 (of 18,799 / 148,047) |
+  | `ic.lows` | 70% / 69% | 0 / 0 |
+  | `shifts` | 69% / 69% | 4.6% / 4.4% |
+  | `bounds` | 77% / 77% | 27% / 29% |
+  | `whnf` (one memo for the whole region, not one walk's) | 88% / 88% | 73% / 76% |
+
+  - The reason is the one `infer_rc` and `abstract_frees_in` already rely on: an unshared node is reached only through its one parent, so a repeat of the walk stops at the parent's entry first.
+  - `shifts` keeps some unshared hits through parents with no entry of their own (call roots, and `inst_rec`'s low nodes, which take the shift path). `bounds` keeps more because `uses` reaches a child again for each new `m`.
+  - `whnf` serves calls on arbitrary terms, not one walk, so the rule doesn't apply to it.
+- **Candidate, not built:** one rule, "a walk's memo stores only shared nodes", for `inst`, `ic.lows` and `shifts` (`bounds` to be measured separately).
+  - At n=64 it would drop about 650,000 of the region's memo entries, 1.7 per node, about 45 B of the 160 B allocated per node (at each memo's allocated bytes per entry). It would also skip their inserts and missed lookups.
+  - It loses only `shifts`' unshared hits, on nodes small enough to re-walk cheaply.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
