@@ -3089,6 +3089,20 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - **Why nothing:** the prefetch issues no earlier than the out-of-order core already issues the load. The lookup's address depends only on the hash, which is ready at the same point. When a node has persistent children, the region lookup sits behind a branch on the persistent lookup that is almost always predicted, so it already runs speculatively in parallel. The two misses after the control group (the entry, then the node to compare) depend on the first one and cannot be prefetched from the hash.
 - What would help is having the hash earlier: knowing a parent's hash before its last child is built. Instantiation builds a node's children one after another and hashes the parent only at the end. Unexplored.
 
+**mimalloc against the system heap, after the id-arena port (2026-10-14; probe reverted, no patch kept).** The question was whether to drop mimalloc and do its useful parts directly, now that the kernel keeps its nodes in a few large arrays instead of one block each. Two test binaries were built from 193a1a5. One is as committed. The other has the test crate's `#[global_allocator]` removed, and `machine::large_pages_option` made to return false, since it calls into mimalloc. `MIMALLOC_VERBOSE=1` printed 50 lines from the first and none from the second. RTP off.
+
+| run | mimalloc | system heap | system's cost |
+|---|---|---|---|
+| `proof_cost_split`, mimalloc on large pages (8 pairs, load 10%) | CPU median 2.26 s, build 1,552 ms | 2.81 s, 1,834 ms | +24% CPU; mimalloc won 8 of 8 |
+| `proof_cost_split`, mimalloc on normal pages (8 pairs, load 11%) | 2.22 s | 2.47 s | +11%; mimalloc won 7 of 8 |
+| full salt-1 sweep (3 pairs, load 3-25%) | job CPU 43.9 / 46.5 / 58.9 s, wall 32.7-41.4 s | 67.9 / 72.6 / 81.0 s, wall 43.7-50.2 s | +38% to +65%; mimalloc won 3 of 3 |
+| sweep memory | peak process 285-295 MB, job 487-550 MB | 208-209 MB, 299-302 MB | mimalloc uses 40% / 70-80% more |
+
+- **Most of mimalloc's value is outside the kernel.** The sweep, which also mines, scores and builds proofs, gains far more than `proof_cost_split`'s check. Those parts allocate many small, short-lived objects, which is what mimalloc is fast at. Replacing it means writing a general allocator, so dropping it is ruled out.
+- The two `proof_cost_split` runs are not comparable with each other (they ran one after the other, not interleaved), so they say nothing new about large pages.
+- The system heap faults more (1.79 M against 1.25 M per sweep) but peaks lower. mimalloc keeps freed memory for reuse instead of returning it.
+- **Still open:** moving the id arena's own arrays and table onto reserved address space, committed as they grow, so they never move and can use large pages on their own (option 1 of the allocator question). mimalloc stays the global allocator either way.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
