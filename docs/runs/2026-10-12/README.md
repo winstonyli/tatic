@@ -61,6 +61,7 @@ and libraries (43 MB) were not kept.
 | (no rows) | rule 33's law at n=8 and n=64 (16 alternating pairs × 15 reps) and `proof_cost_split` (8 pairs), 0d50e97 against `bounds` stored only for shared nodes (reverted, no patch kept) | `law_ab.sh`, `cpu_ab.ps1` | "`bounds` under the same rule" |
 | (no rows) | rule 33's check at n=8 and n=64 on 4ba3f6c: bytes per region node in the region, memos and `InferCache` (probe reverted, no patch kept) | | "Footprint per node after shared-only walk memos" |
 | (no rows) | rule 33's law, ns per region node at n=2-128, b0404ef against cb36ad2 alternating per n, 4 rounds, best-of-4 (probe reverted, no patch kept) | | "ns per node against n after shared-only walk memos" |
+| (no rows) | two samply profiles of `proof_cost_split` on fc68b43 (a throwaway wrapper setting `cpu_ab.ps1`'s environment; reverted, profiles not kept), and 4 alternating pairs of it with large pages on and off, user and kernel CPU per process | `prof_cases.py`, `prof_callers.py`, `prof_self.py`, `prof_addr.py` | "Where `proof_cost_split` spends its time on B" |
 | (no rows) | `proof_cost_split`, 6833fb9 against 3be0e79 and against ff173a6, 8 alternating pairs each | `cpu_ab.ps1` | "Id arena Stage 3" |
 | (no rows) | rule 33's law check time (`rewrite::law_time`), 6833fb9 against 3be0e79 (n = 8, 64) and against ff173a6 (n = 8, 16, 32, 64), 3 alternating pairs | `law_ab.sh` | "Id arena Stage 3" |
 | (no rows) | salt-1 sweep in a job object (job CPU, peak commit), 6833fb9 against ff173a6, 3 alternating rounds | `sweep_job.ps1` | "Id arena Stage 3" |

@@ -3020,6 +3020,25 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - **Merging the memos into one table** would pool their power-of-two slack, but they clear at different times (`ic` per check, `Memos` per region). It is a large restructure for at most about 15 B per node, unmeasured.
 - **Verdict: parked.** The maps hold about 30 B used and 54 B allocated per node, and the cheap levers left are worth about 3%. Shrinking bytes per node has reached diminishing returns.
 
+**Where `proof_cost_split` spends its time on B (2026-10-14; probe reverted, profiles not kept).** Two samply profiles of `proof_cost_split` (cmp3d own, 300 laws) on fc68b43 (kernel code as of 0d50e97) built with debug info. A throwaway wrapper test set `cpu_ab.ps1`'s environment in-process, because samply's task cannot pass one. Analysed with `prof_cases.py` (pointed at each profile), `prof_callers.py`, `prof_self.py` and `prof_addr.py` with `llvm-symbolizer`. RTP off.
+- **The first profile caught a slow large-page state.** Load not recorded; 7,673 busy samples; the rule proofs' build took 5,673 ms against its usual 1.7-2.0 s.
+  - `Space::push` was 43% of busy samples. 29% was `RawVec::grow_one`, reaching mimalloc's realloc and then the kernel's `NtAllocateVirtualMemory`, and 12% was the table's `reserve_rehash`.
+  - An A/B of large pages on against `MIMALLOC_ALLOW_LARGE_OS_PAGES=0` followed (4 alternating pairs, load 19%, user and kernel CPU per process). The first run with large pages took 2.20 s of kernel time and a 3,897 ms build. Every other run, either arm, took 0.23-0.67 s of kernel time and 1,651-1,922 ms.
+  - So committing large pages is sometimes very slow, presumably when the OS must find and zero contiguous memory. One event in 4 runs: how often a sweep's short processes pay it is unmeasured.
+- **The second profile is the steady state** (load 17%, 2,856 busy samples, rule-proofs build 1,980 ms). Inclusive shares of busy samples:
+  - kernel checking (`check_rc`) 66%: `whnf_in` 52%, `conv` 51%, `instantiate_n` 45%, `hnf_rc` 30%;
+  - the 37 rules' own proofs (`prove_rule`) 50%, made of their case lemmas' kernel checks (`ck`, 38.5%) and their building (`lemma_n`, 11%);
+  - the 296 laws (`check_laws`) 7.5%.
+  - `Space::push` is 5.4% here, so growth is not a steady-state cost.
+- **Interning is the largest single cost:** `Spaces::mk` is 37% inclusive and 19% self.
+  - 384 of its 542 self samples (13.4% of all busy samples) sit on one instruction. It follows the load of the region table's first control group in `region.find` (`spaces.rs:317`, `Group::load` in hashbrown's `find_inner`), which is a cache miss on the probe.
+  - hashbrown's find closure, which reads the bucket's stored hash and on a match the node, adds 10.6%.
+  - `mk`'s callers: `inst_rec` 23.4% of busy samples, `app` 4.9%, `shift_unchecked` 2.3%. So instantiation's hash-consing in a large region is about a quarter of the run.
+- **What it points at:** the cost per `mk` is about three random cache lines (control group, bucket, node), not instructions. The census entries above give the volumes on rule 33: 19-21% of built nodes are not in the table when it drops, and 87% of `inst` entries are never hit. So building fewer transient nodes is the lever on `mk`, not cheaper probes. Candidates, unmeasured:
+  - a software prefetch of the control group, issued as soon as `hash(n)` is known;
+  - instantiation that does not intern intermediate spines (`closed_prefix_spine` is 45% inclusive) where only the head normal form is kept;
+  - for the large-page stalls: count how often they hit a sweep's processes before choosing between keeping large pages and a smaller reserve.
+
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
 `sub(sub(x, y), z)` that kept `sub(sub(x, z), y)` (permutative) and dropped `sub(x, add(y, z))`, which sbo3's library has. So add3's
