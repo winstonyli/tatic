@@ -2813,6 +2813,22 @@ Its shortcomings there, with mitigations:
   - make the region's per-node vectors one struct-of-arrays row.
   - Each attacks bytes per node; the test is rule 33 at n=64 against n=8.
 
+**16-byte stored nodes, rejected (2026-10-14; reverted, no patch kept).** The first candidate above, built and timed against 41f48c1.
+- **Change:** `Space.nodes` held a 16 B `Slot` (a tag byte, then three `u32`s) in place of `Node<Ref>`. A leaf kept its value in the first word, and a node with up to three children kept them inline. `J` and `WRec` set a `WIDE` bit in the tag, kept their first two children inline and the rest in a per-space `wide: Vec<[Ref; 3]>`, indexed by the third word.
+  - One generic `Node::from_parts(tag, leaf, kid)`, the inverse of `tag_leaf` with `for_kids`, decoded every variant. `push` encoded and `node_at`/`find`/`persist` decoded; nothing outside `spaces.rs` changed.
+  - Every suite passed (lib 375, the base's 374 plus a round-trip test of all 16 constructors through build, dedup and persist; church_bv 76).
+- **Timing** (RTP off; load 17-42%, another session's `tier_eval_nn` on about one core throughout):
+
+  | workload | base | slot | |
+  |---|---|---|---|
+  | rule 33's law, n=8, 8 alternating pairs × 15 reps: median of the run medians | 27.2 ms | 27.4 ms | +0.7%, within spread |
+  | the same at n=64 | 436 ms | 429 ms | −1.5%, within spread |
+  | `proof_cost_split`, 8 alternating pairs: CPU median | 2.79 s | 2.94 s | +5%, slot lost 6 of 8 |
+  | the same: build median | 1.91 s | 2.05 s | +7% |
+
+- **Why it doesn't pay:** 8 B off about 155 B allocated per node is 5% of the footprint, too little to move n=64 measurably. Meanwhile, encoding on every push and decoding on every read and table compare (a `from_parts` match where a 24 B enum copy was) costs about 7% of proof building.
+- **Conclusion:** node size is not the lever. A footprint change has to come from the hash-map half (about 100 B of the 155 B allocated per node).
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
