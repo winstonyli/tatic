@@ -927,9 +927,10 @@ thread_local! {
     /// Rules added at run time (by the rule miner), after the built-in ones, in `set_extra_rules` order. Write it only through
     /// `set_extra_rules` (or clear it).
     pub static EXTRA_RULES: std::cell::RefCell<Vec<(Term, Term)>> = Default::default();
-    /// While `Some`, `rule_step` records every term it is asked to rewrite: a rule added anywhere in the rule list can change a
-    /// rewriting only if its left side matches one of them.
-    pub static RULE_TRACE: std::cell::RefCell<Option<Vec<Term>>> = const { std::cell::RefCell::new(None) };
+    /// While `Some`, `rule_step` records every term it is asked to rewrite, and whether a rule fired on it: a rule added anywhere
+    /// in the rule list can change a rewriting only if its left side matches one of them, and one added last only if it matches
+    /// one where no rule fired (unless a preference makes it a winner).
+    pub static RULE_TRACE: std::cell::RefCell<Option<Vec<(Term, Fired)>>> = const { std::cell::RefCell::new(None) };
     /// Learned rule preferences, (winner, loser): where both rules would rewrite a term, the winner does, whatever the order
     /// (docs/tier-cycle.md, "Rule order"). Set with the rules they belong to (`set_rule_prefs`).
     pub static RULE_PREFS: std::cell::RefCell<std::collections::HashSet<Pref>> = Default::default();
@@ -990,8 +991,34 @@ fn preferences_choose_between_rules_that_both_match() {
 /// rule that matches, so a library's order would otherwise change its normal forms: the same pooled library served in six orders
 /// gave total M 47-62 on add3 (docs/tier-cycle.md, "Rule order"). Any order of the same rules now serves identically.
 pub fn set_extra_rules(mut rules: Vec<(Term, Term)>) {
-    rules.sort_by_cached_key(|(l, r)| (std::cmp::Reverse(l.size()), l.show(), r.show()));
+    rules.sort_by_cached_key(|(l, r)| run_order(l, r));
     EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+}
+
+/// The run-time rules' order key (`set_extra_rules`).
+pub fn run_order(l: &Term, r: &Term) -> (std::cmp::Reverse<usize>, String, String) {
+    (std::cmp::Reverse(l.size()), l.show(), r.show())
+}
+
+/// The first rule that fired on a term `rule_step` was asked about (`RULE_TRACE`): none, a built-in rule (tried before every
+/// run-time rule) or a run-time rule.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fired {
+    None,
+    Fixed,
+    Mined(Term, Term),
+}
+
+impl Fired {
+    /// A run-time rule added to the rules that made this trace comes first on the term, `before(r)` saying whether it comes
+    /// before run-time rule `r` (`run_order`): it rewrites the term if it matches it (and no preference makes another rule win).
+    pub fn preempted_by(&self, before: impl Fn(&(Term, Term)) -> bool) -> bool {
+        match self {
+            Fired::None => true,
+            Fired::Fixed => false,
+            Fired::Mined(l, r) => before(&(*l, *r)),
+        }
+    }
 }
 
 #[test]
@@ -1644,11 +1671,6 @@ pub fn print_rule_conflicts() {
 
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the plan.
 pub fn rule_step(t: &Term) -> Option<(Term, PlanRc)> {
-    RULE_TRACE.with(|tr| {
-        if let Some(v) = tr.borrow_mut().as_mut() {
-            v.push(*t);
-        }
-    });
     EXTRA_RULES.with(|mined| rule_step_in(t, &mined.borrow()))
 }
 
@@ -1676,7 +1698,20 @@ fn rule_step_in(t: &Term, mined: &[(Term, Term)]) -> Option<(Term, PlanRc)> {
         }
         Some(sub)
     };
-    let (mut i, mut sub) = all.iter().enumerate().find_map(|(i, r)| fires(r).map(|s| (i, s)))?;
+    let first = all.iter().enumerate().find_map(|(i, r)| fires(r).map(|s| (i, s)));
+    RULE_TRACE.with(|tr| {
+        if let Some(v) = tr.borrow_mut().as_mut() {
+            v.push((
+                *t,
+                match first {
+                    None => Fired::None,
+                    Some((i, _)) if all[i].name == "mined" => Fired::Mined(*all[i].lhs, *all[i].rhs),
+                    Some(_) => Fired::Fixed,
+                },
+            ));
+        }
+    });
+    let (mut i, mut sub) = first?;
     RULE_PREFS.with(|prefer| {
         let prefer = prefer.borrow();
         if prefer.is_empty() {
@@ -1722,8 +1757,8 @@ struct Rewritten {
     /// rule steps used (`RULE_BUDGET`): a hit needs at least this many left
     steps: i64,
     fallbacks: u64,
-    /// the terms `rule_step` was asked about (`RULE_TRACE`), when `traced` (the trace was on)
-    trace: Vec<Term>,
+    /// the terms `rule_step` was asked about and whether a rule fired (`RULE_TRACE`), when `traced` (the trace was on)
+    trace: Vec<(Term, Fired)>,
     traced: bool,
 }
 
@@ -1741,9 +1776,9 @@ impl RewriteMemo {
     }
 
     /// The traced entries whose traces `keep` accepts. A rule tried after the others changes no entry whose trace it matches
-    /// nowhere, so the rule miner seeds each candidate's scoring with the entries of the rules chosen so far that the candidate
-    /// cannot change.
-    pub fn filtered(&self, keep: impl Fn(&[Term]) -> bool) -> RewriteMemo {
+    /// nowhere among the terms no rule fired on, so the rule miner seeds each candidate's scoring with the entries of the rules
+    /// chosen so far that the candidate cannot change.
+    pub fn filtered(&self, keep: impl Fn(&[(Term, Fired)]) -> bool) -> RewriteMemo {
         RewriteMemo { k: self.k, map: self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (*k, e.clone())).collect() }
     }
 
@@ -2373,7 +2408,7 @@ fn growing_rewrite_chains_are_cut() {
 }
 
 /// `RewriteMemo::filtered`: a memo built under some rules keeps its results under one more rule, tried last, for the entries whose
-/// traces that rule's left side matches nowhere; the rule miner seeds each candidate's scoring with them. The whole memo would replay
+/// traces that rule's left side matches at no term where no rule fired; the rule miner seeds each candidate's scoring with them. The whole memo would replay
 /// results the extra rule changes.
 #[test]
 fn filtered_memo_entries_hold_under_an_extra_rule() {
@@ -2402,7 +2437,7 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
     for extra in ["sub(sub(x, y), z) -> sub(x, add(y, z))\n", "or(x, and(x, y)) -> x\n"] {
         let rules: Vec<(Term, Term)> = base.iter().cloned().chain(parse_rules(extra)).collect();
         let l = &rules.last().unwrap().0;
-        let seed = memo.filtered(|tr| !tr.iter().any(|t| match_pat(l, t, &mut vec![None; 8])));
+        let seed = memo.filtered(|tr| !tr.iter().any(|(t, fired)| match_pat(l, t, &mut vec![None; 8]) && fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
         assert!(!seed.map.is_empty() && seed.map.len() < memo.map.len(), "{extra}: the filter kept {} of {}", seed.map.len(), memo.map.len());
         let fresh = run(&rules, RewriteMemo::new(kv)).0;
         assert_eq!(run(&rules, seed).0, fresh, "{extra}");
