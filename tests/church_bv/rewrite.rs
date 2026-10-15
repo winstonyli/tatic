@@ -356,16 +356,22 @@ impl Word for u128 {
 
 /// Terms' width-`n` values on a fixed list of inputs, one vector per interned term, each made from its children's vectors:
 /// pools and repeated screens share subterms, so each distinct term is evaluated once per input list. The vectors sit end
-/// to end in one arena, so a new term costs no allocation of its own and a known one a single lookup.
+/// to end in fixed blocks of about 64 KB (never grown or copied), so a new term rarely allocates and a known one costs a
+/// single lookup.
 pub struct ValueMemo<W: Word> {
     mask: u128,
     len: usize,
     /// `vars[v][i]`: variable `v` on input `i`.
     vars: Vec<Box<[W]>>,
-    /// Each term's vector's index in `values` (the vector is `values[id * len..][..len]`).
+    /// Each term's vector's id: vector `id` is the `id % per`-th of block `id / per`.
     ids: hashbrown::HashMap<Term, usize>,
-    values: Vec<W>,
+    /// Vectors per block.
+    per: usize,
+    blocks: Vec<Vec<W>>,
 }
+
+/// A `ValueMemo` block's size in bytes (one vector when a vector is larger).
+const VALUE_BLOCK: usize = 1 << 16;
 
 /// The screen's input count: all zeros, all ones, then 202 pseudo-random tuples.
 const SCREEN_INPUTS: usize = 204;
@@ -382,7 +388,8 @@ fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R)
 
 impl<W: Word> ValueMemo<W> {
     fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
-        ValueMemo { mask: low_bits(n), len, vars, ids: Default::default(), values: vec![] }
+        let per = (VALUE_BLOCK / (len * std::mem::size_of::<W>())).max(1);
+        ValueMemo { mask: low_bits(n), len, vars, ids: Default::default(), per, blocks: vec![] }
     }
 
     /// `t`'s values, one per input.
@@ -392,7 +399,7 @@ impl<W: Word> ValueMemo<W> {
     }
 
     fn vector(&self, id: usize) -> &[W] {
-        &self.values[id * self.len..][..self.len]
+        &self.blocks[id / self.per][id % self.per * self.len..][..self.len]
     }
 
     /// `t`'s vector's id, made (with its children's) when new.
@@ -400,21 +407,30 @@ impl<W: Word> ValueMemo<W> {
         if let Some(&id) = self.ids.get(&t) {
             return id;
         }
-        let len = self.len;
+        let (len, per) = (self.len, self.per);
+        let children = match *t.node() {
+            Node::Op(_, a, b) => Some((self.fill(a), self.fill(b))),
+            _ => None,
+        };
+        if self.blocks.last().is_none_or(|b| b.len() == per * len) {
+            self.blocks.push(Vec::with_capacity(per * len));
+        }
+        let id = (self.blocks.len() - 1) * per + self.blocks[self.blocks.len() - 1].len() / len;
+        let last = self.blocks.len() - 1;
         match *t.node() {
-            Node::V(v) => self.values.extend_from_slice(&self.vars[v]),
-            Node::Zero => self.values.resize(self.values.len() + len, W::of(0)),
-            Node::Ones => self.values.resize(self.values.len() + len, W::of(self.mask)),
-            Node::Op(o, a, b) => {
-                let (a, b, word, mask) = (self.fill(a) * len, self.fill(b) * len, OP_INFO[o].word, self.mask);
-                self.values.reserve(len);
+            Node::V(v) => self.blocks[last].extend_from_slice(&self.vars[v]),
+            Node::Zero => self.blocks[last].extend(std::iter::repeat_n(W::of(0), len)),
+            Node::Ones => self.blocks[last].extend(std::iter::repeat_n(W::of(self.mask), len)),
+            Node::Op(o, ..) => {
+                let (a, b) = children.unwrap();
+                let ((ba, oa), (bb, ob)) = ((a / per, a % per * len), (b / per, b % per * len));
+                let (word, mask) = (OP_INFO[o].word, self.mask);
                 for i in 0..len {
-                    let v = W::of(word(self.values[a + i].get(), self.values[b + i].get(), mask));
-                    self.values.push(v);
+                    let v = W::of(word(self.blocks[ba][oa + i].get(), self.blocks[bb][ob + i].get(), mask));
+                    self.blocks[last].push(v);
                 }
             }
         }
-        let id = self.values.len() / len - 1;
         self.ids.insert(t, id);
         id
     }
