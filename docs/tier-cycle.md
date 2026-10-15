@@ -417,7 +417,8 @@ Three ways to stop the rewrite cycles, each with libraries re-mined under it (sa
 - **Cycle cut (kept, default).** Rewriting is deterministic apart from the step budget, so `rewrite(t)` called while `t` is
   already being rewritten further out can only repeat that work. `rewrite` keeps the path of terms in progress and returns `t`
   unchanged (proof `refl`) on a repeat, so the chain ends after one lap instead of at the budget. The rewrite memo does not cache a
-  result that a cut shaped. Test: `rewrite_cycles_are_cut` (sbo3's five-step cycle; fails with the cut disabled).
+  result that a cut shaped, and replays an entry only where the path in force cuts none of the terms it took up (law 168 under
+  Open). Tests: `rewrite_cycles_are_cut` (sbo3's five-step cycle; fails with the cut disabled), `memo_hits_match_fresh_rewrites_under_cycling_rules`.
 
 Serving time with the cut, on the 300-law calibration batches (pinned to two cores, quiet machine at 5-15% load, RTP off; best of two
 alternating runs):
@@ -3203,6 +3204,8 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - Timing, twelve alternating salt-1 sweeps against a2dca77 (load 0-4%, RTP off): job CPU median 17.7 s against 16.75 s (-5.4%), new won all 6 pairs; wall 18.7 s against 18.6 s. A first version that compared `run_order` keys (two `show()` strings each) per traced term lost all 6 pairs (19.65 s against 20.4 s). Ranking the rules once per round, and matching before comparing, fixed it.
 - **Open:**
   - Law 168 in `lib_cmp3d`'s `mine_ref`: its memo-seeded evaluation under the chosen rules is (fixed) where a fresh one is (not fixed). Some memo entry is replayed where a fresh rewrite would differ (budget, cycle cut or a rule change the state filter misses); check whether main has it too.
+    - Cause, on main 4385c7f (a throwaway probe redid every memo hit without the memo and compared, salt-1 sweep, then reverted): 40 hits differ, all in `cmp3d` mines (`lib_cmp3d/mine_ref` 18, `cold_cmp3d_{1,2,3}` 7, 2, 13), all on `lt` terms, and every one is a cycle cut. An entry is stored only when its own call made no cut, but whether a call cuts depends on `REWRITE_PATH`, the terms being rewritten further out. An entry made where the path was short is replayed inside a call whose own term is now on the path; a fresh rewrite cuts there and stops (fewer steps: 1-6 against 2-11), the replay keeps going. No mismatch came from the budget, fallbacks or the rules. So the memo makes `rewrite` depend on which context first computed a term, and the memo-seeded and fresh evaluations of law 168 differ for that reason.
+    - Fixes: any cut against the path (an exact repeat as well as an embedding) has this dependence, so changing the cut test does not help. A path-free cut needs termination by a term order, which is `PERM_ORDER=lpo` ("Cycle cut; lpo and a cycling penalty are negative results"), so not reopened. The fix taken: entries record the terms their call rewrote, and a hit is replayed only where the current path cuts none of them.
   - The other exhaustive `interp` loops (`eq_pos` in `prove_eq`, `conjecture_miner`, the shift check in machine.rs) are cold and still evaluate per tuple.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)

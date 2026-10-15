@@ -1760,6 +1760,8 @@ struct Rewritten {
     /// the terms `rule_step` was asked about and whether a rule fired (`RULE_TRACE`), when `traced` (the trace was on)
     trace: Vec<(Term, Fired)>,
     traced: bool,
+    /// the terms the call took up below its own (`REWROTE`), once each: a replay is right only where the path cuts none of them
+    rewrote: Vec<Term>,
 }
 
 /// While `Some`, `rewrite` calls over `k` variables are cached by (width, term). The rule miner sets it for one rule set
@@ -1792,6 +1794,8 @@ thread_local! {
     /// the terms `rewrite` is working on, outermost first, and how many calls it cut so far
     static REWRITE_PATH: std::cell::RefCell<Vec<Term>> = const { std::cell::RefCell::new(Vec::new()) };
     pub static CYCLE_CUTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// the terms `rewrite` took up (pushed on the path) since the outermost call began, memo replays included
+    static REWROTE: std::cell::RefCell<Vec<Term>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// `s` homeomorphically embeds in `t`: `t` is `s` with nodes inserted (Kruskal). Between terms of equal size it is equality.
@@ -1814,15 +1818,23 @@ pub fn rewrite(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     if !matches!(*t.node(), Node::Op(..)) {
         return rewrite_memo(t, n, k);
     }
-    let size = t.size();
-    if REWRITE_PATH.with(|p| p.borrow().iter().any(|s| s.size() <= size && embeds(s, t))) {
+    if REWRITE_PATH.with(|p| cut_by(&p.borrow(), t)) {
         CYCLE_CUTS.with(|c| c.set(c.get() + 1));
         return (*t, Plan::refl(t));
     }
     REWRITE_PATH.with(|p| p.borrow_mut().push(*t));
+    REWROTE.with(|r| r.borrow_mut().push(*t));
     let out = rewrite_memo(t, n, k);
-    REWRITE_PATH.with(|p| p.borrow_mut().pop());
+    if REWRITE_PATH.with(|p| p.borrow_mut().pop().is_some() && p.borrow().is_empty()) {
+        REWROTE.with(|r| r.borrow_mut().clear());
+    }
     out
+}
+
+/// The cycle cut's test: `t` repeats, or grows from, a term on `path`.
+fn cut_by(path: &[Term], t: &Term) -> bool {
+    let size = t.size();
+    path.iter().any(|s| s.size() <= size && embeds(s, t))
 }
 
 fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
@@ -1832,7 +1844,9 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     }
     let key = (n, *t);
     let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
-    if let Some(c) = hit.filter(|c| RULE_BUDGET.with(|b| b.get()) >= c.steps) {
+    // the entry was made with no cut, so the path in force now must cut none of the terms it took up either
+    let fits = |c: &Rewritten| RULE_BUDGET.with(|b| b.get()) >= c.steps && REWRITE_PATH.with(|p| !c.rewrote.iter().any(|v| cut_by(&p.borrow(), v)));
+    if let Some(c) = hit.filter(|c| fits(c)) {
         RULE_BUDGET.with(|b| b.set(b.get() - c.steps));
         MACHINE_FALLBACKS.with(|f| f.set(f.get() + c.fallbacks));
         RULE_TRACE.with(|tr| {
@@ -1840,17 +1854,20 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
                 v.extend(c.trace.iter().cloned());
             }
         });
+        REWROTE.with(|r| r.borrow_mut().extend(c.rewrote.iter().copied()));
         return c.out.clone();
     }
     let (budget0, fallbacks0, trace0) = (RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()), RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v.len())));
-    let cuts0 = CYCLE_CUTS.with(|c| c.get());
+    let (cuts0, rewrote0) = (CYCLE_CUTS.with(|c| c.get()), REWROTE.with(|r| r.borrow().len()));
     let out = rewrite_uncached(t, n, k);
     let budget1 = RULE_BUDGET.with(|b| b.get());
     // a call that ran the budget out was cut short by it: its result depends on the budget it started with; one with a cycle cut
     // depends on the terms being rewritten further out
     if budget1 > 0 && CYCLE_CUTS.with(|c| c.get()) == cuts0 {
         let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
-        let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace, traced: trace0.is_some() };
+        let mut seen = std::collections::HashSet::new();
+        let rewrote = REWROTE.with(|r| r.borrow()[rewrote0..].iter().copied().filter(|t| seen.insert(*t)).collect());
+        let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace, traced: trace0.is_some(), rewrote };
         REWRITE_MEMO.with(|m| {
             if let Some(m) = m.borrow_mut().as_mut() {
                 m.map.insert(key, std::rc::Rc::new(entry));
@@ -2443,6 +2460,35 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
         assert_eq!(run(&rules, seed).0, fresh, "{extra}");
         assert_ne!(run(&rules, memo.filtered(|_| true)).0, fresh, "{extra}: the extra rule changes nothing here");
     }
+}
+
+/// A memo hit gives what a fresh rewrite would, also under rules that cycle: an entry made where the path was short is replayed
+/// inside a call that a fresh rewrite would cut (docs/tier-cycle.md, the law 168 entry under Open).
+#[test]
+fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
+    let (n, kv) = (4, 3);
+    // t = lt(x, sub(y, z)) -> u = lt(x, add(y, z)) -> v = lt(x, or(sub(y, z), y)) -> lt(x, and(..)): t embeds in v, so rewriting t
+    // cuts at v, while u on its own (rewritten first, into the memo) does not
+    let terms: Vec<Term> = ["lt(x, add(y, z))", "lt(x, sub(y, z))"].iter().map(|s| parse_term(s)).collect();
+    let rules = "lt(x, sub(y, z)) -> lt(x, add(y, z))\nlt(x, add(y, z)) -> lt(x, or(sub(y, z), y))\nlt(x, or(y, z)) -> lt(x, and(y, z))\n";
+    set_extra_rules(parse_rules(rules));
+    let run = |memo: Option<RewriteMemo>| {
+        REWRITE_MEMO.with(|m| *m.borrow_mut() = memo);
+        let out: Vec<(String, i64)> = terms
+            .iter()
+            .map(|t| {
+                RULE_BUDGET.with(|b| b.set(200));
+                (rewrite(t, n, kv).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
+            })
+            .collect();
+        REWRITE_MEMO.with(|m| m.borrow_mut().take());
+        out
+    };
+    let (fresh, memo) = (run(None), run(Some(RewriteMemo::new(kv))));
+    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+    let differ: Vec<_> = terms.iter().zip(fresh.iter().zip(&memo)).filter(|(_, (f, m))| f != m).map(|(t, (f, m))| format!("{}: fresh {f:?} memo {m:?}", t.show())).collect();
+    assert!(differ.is_empty(), "{} of {} differ:\n{}", differ.len(), terms.len(), differ.join("\n"));
 }
 
 #[test]
