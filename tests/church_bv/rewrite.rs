@@ -1847,6 +1847,8 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     // the entry was made with no cut, so the path in force now must cut none of the terms it took up either
     let fits = |c: &Rewritten| RULE_BUDGET.with(|b| b.get()) >= c.steps && REWRITE_PATH.with(|p| !c.rewrote.iter().any(|v| cut_by(&p.borrow(), v)));
     if let Some(c) = hit.filter(|c| fits(c)) {
+        #[cfg(debug_assertions)]
+        check_replay(t, n, k, &c);
         RULE_BUDGET.with(|b| b.set(b.get() - c.steps));
         MACHINE_FALLBACKS.with(|f| f.set(f.get() + c.fallbacks));
         RULE_TRACE.with(|tr| {
@@ -1875,6 +1877,32 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
         });
     }
     out
+}
+
+/// Debug builds: a memo hit about to be replayed is redone without the memo, under the same path and budget, and must match it
+/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `RULE_HITS` and `RULE_CONFLICTS` keep the redo's counts.
+#[cfg(debug_assertions)]
+fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
+    let memo = REWRITE_MEMO.with(|m| m.take());
+    let trace = RULE_TRACE.with(|t| t.take());
+    let (budget, fallbacks, cuts, rewrote) =
+        (RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()), CYCLE_CUTS.with(|c| c.get()), REWROTE.with(|r| r.borrow().len()));
+    let fresh = rewrite_uncached(t, n, k);
+    let (steps, fresh_fallbacks) = (budget - RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks);
+    REWRITE_MEMO.with(|m| m.replace(memo));
+    RULE_TRACE.with(|t| t.replace(trace));
+    RULE_BUDGET.with(|b| b.set(budget));
+    MACHINE_FALLBACKS.with(|f| f.set(fallbacks));
+    CYCLE_CUTS.with(|c| c.set(cuts));
+    REWROTE.with(|r| r.borrow_mut().truncate(rewrote));
+    let show = |(t, s, f): (Term, i64, u64)| format!("{} in {s} steps, {f} fallbacks", t.show());
+    assert!(
+        (fresh.0, steps, fresh_fallbacks) == (c.out.0, c.steps, c.fallbacks),
+        "memo replay of {}: {} where a fresh rewrite gives {}",
+        t.show(),
+        show((c.out.0, c.steps, c.fallbacks)),
+        show((fresh.0, steps, fresh_fallbacks))
+    );
 }
 
 fn rewrite_uncached(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
@@ -2450,7 +2478,7 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (out, REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap())
     };
-    let (_, memo) = run(&base, RewriteMemo::new(kv));
+    let (before, memo) = run(&base, RewriteMemo::new(kv));
     for extra in ["sub(sub(x, y), z) -> sub(x, add(y, z))\n", "or(x, and(x, y)) -> x\n"] {
         let rules: Vec<(Term, Term)> = base.iter().cloned().chain(parse_rules(extra)).collect();
         let l = &rules.last().unwrap().0;
@@ -2458,7 +2486,8 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
         assert!(!seed.map.is_empty() && seed.map.len() < memo.map.len(), "{extra}: the filter kept {} of {}", seed.map.len(), memo.map.len());
         let fresh = run(&rules, RewriteMemo::new(kv)).0;
         assert_eq!(run(&rules, seed).0, fresh, "{extra}");
-        assert_ne!(run(&rules, memo.filtered(|_| true)).0, fresh, "{extra}: the extra rule changes nothing here");
+        // the unfiltered memo would replay `before` (debug builds reject such a replay, `check_replay`)
+        assert_ne!(before, fresh, "{extra}: the extra rule changes nothing here");
     }
 }
 
