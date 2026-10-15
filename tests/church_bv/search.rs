@@ -742,7 +742,7 @@ pub fn rule_miner() {
         // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and the step
         // budget of this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
         // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
-        let (rules, budget) = (EXTRA_RULES.with(|e| e.borrow().clone()), RULE_BUDGET.with(|b| b.get()));
+        let (rules, budget) = (RULE_TABLE.with(|e| e.borrow().mined.clone()), RULE_BUDGET.with(|b| b.get()));
         let provable: Vec<&(Term, Term)> = if cfg.fast {
             cands.iter().collect()
         } else {
@@ -820,7 +820,7 @@ pub fn rule_miner() {
                 .collect();
             SCORE_ONLY.with(|s| s.set(caller));
             let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
-            EXTRA_RULES.with(|e| e.borrow_mut().clear());
+            set_extra_rules(vec![]);
             RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
             (out, memo)
         };
@@ -835,7 +835,7 @@ pub fn rule_miner() {
                 set_rule_prefs(base_prefs.clone());
                 RULE_BUDGET.with(|b| b.set(budget));
                 let ok = prove_rule(n, l.max_var().max(r.max_var()) + 1, l, r).is_some();
-                EXTRA_RULES.with(|e| e.borrow_mut().clear());
+                set_extra_rules(vec![]);
                 RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
                 ok
             })
@@ -1327,7 +1327,7 @@ pub fn lt_root_rules_close_constant_false_laws() {
         let before = MACHINE_FALLBACKS.with(|c| c.get());
         let r = rewrite_law(4, 2, &lt(x, x), &lt(Term::ONES, add(x, y)));
         let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
-        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        set_extra_rules(vec![]);
         let (p, s) = r.expect("proved");
         ck("lt(x,x) = lt(-1, x+y)", &p, &s);
         assert_eq!(fell, 0, "no whole-term machine proof");
@@ -2248,7 +2248,7 @@ impl Cost {
     }
 }
 
-/// The `Cost` of `t1 = t2` under the rules installed in `EXTRA_RULES` (a 200-step budget, width 4).
+/// The `Cost` of `t1 = t2` under the rules installed by `set_extra_rules` (a 200-step budget, width 4).
 pub fn law_cost(kv: usize, t1: &Term, t2: &Term) -> Cost {
     RULE_BUDGET.with(|b| b.set(200));
     let before = MACHINE_FALLBACKS.with(|c| c.get());
@@ -2277,7 +2277,7 @@ pub fn proposal_credit(rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)],
         gains.push(gain);
         users.push(uses.len());
     }
-    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    set_extra_rules(vec![]);
     (gains, users, credit)
 }
 

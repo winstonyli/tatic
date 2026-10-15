@@ -924,9 +924,9 @@ thread_local! {
     /// Set by the rule miner while scoring (`RULEMINER_FAST=1`): `prove_eq` takes a machine fallback when a few tuples agree,
     /// without searching for its carry encoding, so a plan made under it may not compile.
     pub static SCORE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Rules added at run time (by the rule miner), after the built-in ones, in `set_extra_rules` order. Write it only through
-    /// `set_extra_rules` (or clear it).
-    pub static EXTRA_RULES: std::cell::RefCell<Vec<(Term, Term)>> = Default::default();
+    /// The rules `rule_step` tries: the built-in ones, then those added at run time (by the rule miner) in `set_extra_rules`
+    /// order. Write it only through `set_extra_rules`.
+    pub static RULE_TABLE: std::cell::RefCell<RuleTable> = std::cell::RefCell::new(RuleTable::new(vec![]));
     /// While `Some`, `rule_step` records every term it is asked to rewrite, and whether a rule fired on it: a rule added anywhere
     /// in the rule list can change a rewriting only if its left side matches one of them, and one added last only if it matches
     /// one where no rule fired (unless a preference makes it a winner).
@@ -992,7 +992,71 @@ fn preferences_choose_between_rules_that_both_match() {
 /// gave total M 47-62 on add3 (docs/tier-cycle.md, "Rule order"). Any order of the same rules now serves identically.
 pub fn set_extra_rules(mut rules: Vec<(Term, Term)>) {
     rules.sort_by_cached_key(|(l, r)| run_order(l, r));
-    EXTRA_RULES.with(|e| *e.borrow_mut() = rules);
+    RULE_TABLE.with(|e| *e.borrow_mut() = RuleTable::new(rules));
+}
+
+/// A rule as `rule_step` tries it, with what does not depend on the term decided when the rule set is installed (deciding
+/// it per term, and building the rule list per term, were about 10% of a sweep: docs/tier-cycle.md, "Profile at f447a57").
+#[derive(Clone, Copy)]
+struct TableRule {
+    name: &'static str,
+    lhs: Term,
+    rhs: Term,
+    /// the pattern variables of both sides are `V(0)..V(vars)`
+    vars: usize,
+    permutative: bool,
+}
+
+impl TableRule {
+    fn new(name: &'static str, lhs: Term, rhs: Term) -> TableRule {
+        let vars = lhs.max_var().max(rhs.max_var()) + 1;
+        assert!(vars <= RULE_VARS, "{} -> {}: more than {RULE_VARS} pattern variables", lhs.show(), rhs.show());
+        TableRule { name, lhs, rhs, vars, permutative: rule_permutative(&lhs, &rhs) }
+    }
+    fn is(&self, (l, r): &RuleKey) -> bool {
+        self.lhs == *l && self.rhs == *r
+    }
+    fn key(&self) -> RuleKey {
+        (self.lhs, self.rhs)
+    }
+}
+
+/// Pattern variables a rule may have (`rule_weight` counts them in arrays this long).
+const RULE_VARS: usize = 8;
+
+/// The rules `rule_step` tries, in order: the built-in ones, then the run-time ones (`mined`); and for each root operator, and
+/// for leaves, the rules in that order that are not ablated and whose left side can match such a term.
+pub struct RuleTable {
+    pub mined: Vec<(Term, Term)>,
+    rules: Vec<TableRule>,
+    by_op: [Vec<u32>; OP_INFO.len()],
+    leaf: Vec<u32>,
+}
+
+impl RuleTable {
+    fn new(mined: Vec<(Term, Term)>) -> RuleTable {
+        static FIXED: std::sync::OnceLock<Vec<TableRule>> = std::sync::OnceLock::new();
+        let fixed = FIXED.get_or_init(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
+        let rules: Vec<TableRule> = fixed.iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
+        let (mut by_op, mut leaf): ([Vec<u32>; OP_INFO.len()], Vec<u32>) = Default::default();
+        for (i, r) in rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)) {
+            match *r.lhs.node() {
+                Node::Op(o, ..) => by_op[o].push(i as u32),
+                Node::V(_) => by_op.iter_mut().chain([&mut leaf]).for_each(|b| b.push(i as u32)),
+                Node::Zero | Node::Ones => leaf.push(i as u32),
+            }
+        }
+        RuleTable { mined, rules, by_op, leaf }
+    }
+
+    /// The rules that can match `t`, in order.
+    fn candidates(&self, t: &Term) -> impl Iterator<Item = (usize, &TableRule)> {
+        let ids = match *t.node() {
+            Node::Op(o, ..) => &self.by_op[o],
+            _ => &self.leaf,
+        };
+        ids.iter().map(|&i| (i as usize, &self.rules[i as usize]))
+    }
 }
 
 /// The run-time rules' order key (`set_extra_rules`).
@@ -1028,8 +1092,8 @@ fn rule_order_does_not_change_rewriting() {
     let b = "sub(sub(x, y), z) -> sub(sub(x, z), y)\nsub(x, y) -> add(x, sub(0, y))\nsub(sub(x, y), z) -> sub(x, add(y, z))\n";
     let installed = |text: &str| {
         set_extra_rules(parse_rules(text));
-        let shown: Vec<String> = EXTRA_RULES.with(|e| e.borrow().iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect());
-        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        let shown: Vec<String> = RULE_TABLE.with(|e| e.borrow().mined.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect());
+        set_extra_rules(vec![]);
         shown
     };
     let (ia, ib) = (installed(a), installed(b));
@@ -1063,7 +1127,7 @@ pub fn rule_set() -> &'static Vec<(Term, Term)> {
 }
 
 /// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins, the promoted rules, the
-/// `RULESET` rules; the mined ones (`EXTRA_RULES`) come after them. Built once per process.
+/// `RULESET` rules; the mined ones (`RULE_TABLE`) come after them. Built once per process.
 pub fn fixed_rules() -> &'static [Rule] {
     static RULES: std::sync::OnceLock<Vec<Rule>> = std::sync::OnceLock::new();
     RULES.get_or_init(build_fixed_rules)
@@ -1257,7 +1321,7 @@ pub fn joinability_units(text: &str, n: usize, steps: i64) -> Vec<Vec<(Term, Ter
         side(a) == side(b)
     };
     let units = drop_units(&library_sections(text), &|r, x| critical_pairs(r, x).iter().any(|(a, b)| !joins(a, b)));
-    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    set_extra_rules(vec![]);
     set_rule_prefs(vec![]);
     RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
     units
@@ -1507,7 +1571,7 @@ pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
     rule_order_ok(l, r) || (rule_tied(l, r) && (tie_greater(l, r) || rule_permutative(l, r)))
 }
 
-pub fn match_pat(p: &Term, t: &Term, sub: &mut Vec<Option<Term>>) -> bool {
+pub fn match_pat(p: &Term, t: &Term, sub: &mut [Option<Term>]) -> bool {
     match (*p.node(), *t.node()) {
         (Node::V(i), _) => match &sub[i] {
             Some(b) => b == t,
@@ -1637,24 +1701,6 @@ pub static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// Instances of `rule_step` by rule name, for the audit.
 pub static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
 
-/// A rule as `rule_step` tries it, borrowed from `fixed_rules` or from `EXTRA_RULES` (rebuilding and cloning the rule list
-/// on every step was 10% of a mine).
-#[derive(Clone, Copy)]
-struct RuleRef<'a> {
-    name: &'static str,
-    lhs: &'a Term,
-    rhs: &'a Term,
-}
-
-impl RuleRef<'_> {
-    fn is(&self, (l, r): &RuleKey) -> bool {
-        self.lhs == l && self.rhs == r
-    }
-    fn key(&self) -> RuleKey {
-        (*self.lhs, *self.rhs)
-    }
-}
-
 /// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms; `print_rule_conflicts` lists them.
 pub static RULE_CONFLICTS: std::sync::Mutex<Option<std::collections::HashMap<Pref, u64>>> = std::sync::Mutex::new(None);
 
@@ -1671,41 +1717,40 @@ pub fn print_rule_conflicts() {
 
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the plan.
 pub fn rule_step(t: &Term) -> Option<(Term, PlanRc)> {
-    EXTRA_RULES.with(|mined| rule_step_in(t, &mined.borrow()))
+    RULE_TABLE.with(|table| rule_step_in(t, &table.borrow()))
 }
 
-fn rule_step_in(t: &Term, mined: &[(Term, Term)]) -> Option<(Term, PlanRc)> {
-    let fixed = fixed_rules().iter().map(|r| RuleRef { name: r.name, lhs: &r.lhs, rhs: &r.rhs });
-    let all: Vec<RuleRef> = fixed.chain(mined.iter().map(|(l, r)| RuleRef { name: "mined", lhs: l, rhs: r })).collect();
-    let fires = |r: &RuleRef| -> Option<Vec<Option<Term>>> {
-        let mut sub = vec![None; r.lhs.max_var().max(r.rhs.max_var()) + 1];
-        if ablated(r.name) || !match_pat(r.lhs, t, &mut sub) {
+fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
+    let all = &table.rules;
+    let fires = |r: &TableRule| -> Option<[Option<Term>; RULE_VARS]> {
+        let mut sub = [None; RULE_VARS];
+        if !match_pat(&r.lhs, t, &mut sub) {
             return None;
         }
         if PROVING.with(|p| p.borrow().iter().any(|k| r.is(k))) {
             return None;
         }
         // a rule whose right side is an instance of its own left side (`lt(x,x) -> lt(-1,-1)`) must not rewrite its result
-        let inst = subst_pat(r.rhs, &sub.iter().map(|s| (*s).or(Some(Term::ZERO))).collect::<Vec<_>>());
+        let inst = subst_pat(&r.rhs, &sub.map(|s| s.or(Some(Term::ZERO))));
         if inst == *t {
             return None;
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
         // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
         // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
-        if rule_permutative(r.lhs, r.rhs) && inst.show_cmp(t).is_ge() {
+        if r.permutative && inst.show_cmp(t).is_ge() {
             return None;
         }
         Some(sub)
     };
-    let first = all.iter().enumerate().find_map(|(i, r)| fires(r).map(|s| (i, s)));
+    let first = table.candidates(t).find_map(|(i, r)| fires(r).map(|s| (i, s)));
     RULE_TRACE.with(|tr| {
         if let Some(v) = tr.borrow_mut().as_mut() {
             v.push((
                 *t,
                 match first {
                     None => Fired::None,
-                    Some((i, _)) if all[i].name == "mined" => Fired::Mined(*all[i].lhs, *all[i].rhs),
+                    Some((i, _)) if all[i].name == "mined" => Fired::Mined(all[i].lhs, all[i].rhs),
                     Some(_) => Fired::Fixed,
                 },
             ));
@@ -1723,14 +1768,14 @@ fn rule_step_in(t: &Term, mined: &[(Term, Term)]) -> Option<(Term, PlanRc)> {
             if winners.is_empty() {
                 break;
             }
-            match all.iter().enumerate().find_map(|(j, r)| if j != i && winners.iter().any(|w| r.is(w)) { fires(r).map(|s| (j, s)) } else { None }) {
+            match table.candidates(t).find_map(|(j, r)| if j != i && winners.iter().any(|w| r.is(w)) { fires(r).map(|s| (j, s)) } else { None }) {
                 Some(next) => (i, sub) = next,
                 None => break,
             }
         }
     });
     if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_mut() {
-        for r in all.iter().skip(i + 1).filter(|r| fires(r).is_some()) {
+        for (_, r) in table.candidates(t).filter(|&(j, r)| j > i && fires(r).is_some()) {
             *m.entry((all[i].key(), r.key())).or_default() += 1;
         }
     }
@@ -1742,13 +1787,13 @@ fn rule_step_in(t: &Term, mined: &[(Term, Term)]) -> Option<(Term, PlanRc)> {
         return None;
     }
     // a pattern variable the left side does not mention is free in the law: any value serves
-    let args = sub.iter().map(|s| (*s).unwrap_or(Term::v(0))).collect();
+    let args = sub[..r.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect();
     let mut hits = RULE_HITS.lock().unwrap();
     match hits.iter_mut().find(|h| h.0 == r.name) {
         Some(h) => h.1 += 1,
         None => hits.push((r.name, 1)),
     }
-    Some((subst_pat(r.rhs, &sub), Plan::law(LawKind::Rule(r.name), *r.lhs, *r.rhs, args)))
+    Some((subst_pat(&r.rhs, &sub), Plan::law(LawKind::Rule(r.name), r.lhs, r.rhs, args)))
 }
 
 /// A cached `rewrite`: the result and what the call did besides returning it, so that a hit can replay it.
@@ -2418,7 +2463,7 @@ fn rewrite_cycles_are_cut() {
         let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
         let out = rewrite_law(4, 3, &t1, &t2);
         let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
-        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        set_extra_rules(vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
         assert!(cuts > 0, "no cycle cut");
@@ -2441,7 +2486,7 @@ fn growing_rewrite_chains_are_cut() {
         let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
         let out = rewrite_law(4, 3, &t1, &t2);
         let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
-        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        set_extra_rules(vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
         assert!(cuts > 0, "no growth cut");
@@ -2474,7 +2519,7 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
             })
             .collect();
         RULE_TRACE.with(|t| *t.borrow_mut() = None);
-        EXTRA_RULES.with(|e| e.borrow_mut().clear());
+        set_extra_rules(vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (out, REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap())
     };
@@ -2514,7 +2559,7 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
         out
     };
     let (fresh, memo) = (run(None), run(Some(RewriteMemo::new(kv))));
-    EXTRA_RULES.with(|e| e.borrow_mut().clear());
+    set_extra_rules(vec![]);
     RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
     let differ: Vec<_> = terms.iter().zip(fresh.iter().zip(&memo)).filter(|(_, (f, m))| f != m).map(|(t, (f, m))| format!("{}: fresh {f:?} memo {m:?}", t.show())).collect();
     assert!(differ.is_empty(), "{} of {} differ:\n{}", differ.len(), terms.len(), differ.join("\n"));

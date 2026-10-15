@@ -3321,7 +3321,7 @@ sbo3 43 and 38-52, cmp3d 63 and 63-70. A spread of up to 15 laws from order alon
 above (and explains the pooled cells that moved with a reordered library in the foreign-straggler test).
 
 **Fix (kept):** `set_extra_rules` installs the run-time rules most specific first (larger left side first, ties by text), and every
-write to `EXTRA_RULES` goes through it, so any order of the same rules serves identically (test `rule_order_does_not_change_rewriting`,
+write to the rule table (`RULE_TABLE`) goes through it, so any order of the same rules serves identically (test `rule_order_does_not_change_rewriting`,
 which fails without the sort). Ordering by text alone gave the same totals on this library; specificity was kept because a
 specific rule is usually an exception to a general one. Served in all six orders: cmp3d 63, add3 47, sbo3 45 every time. The miner
 scores candidates in the same order, so mining and serving still agree, and its memo argument holds (a rule that matches no traced
