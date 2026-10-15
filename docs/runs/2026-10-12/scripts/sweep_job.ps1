@@ -25,4 +25,4 @@ $b = New-Object K.Job+BASIC; $null = [K.Job]::QueryInformationJobObject($job, 1,
 $e = New-Object K.Job+EXT; $null = [K.Job]::QueryInformationJobObject($job, 9, [ref]$e, [Runtime.InteropServices.Marshal]::SizeOf($e), [IntPtr]::Zero)
 $mb = 1048576
 $ms = (Select-String -Path "$out\err.txt" -Pattern 'machine at' | select -First 1).Line
-"{0} {1} wall={2:0.0}s jobcpu={3:0.0}s kernel={9:0.00}s procs={4} peakproc={5:0}MB peakjob={6:0}MB exit={7} | {8}" -f $r, $arm, ((Get-Date) - $t).TotalSeconds, (($b.TotalUserTime + $b.TotalKernelTime) / 1e7), $b.TotalProcesses, ($e.PeakProcessMemoryUsed.ToUInt64() / $mb), ($e.PeakJobMemoryUsed.ToUInt64() / $mb), $p.ExitCode, $ms, ($b.TotalKernelTime / 1e7)
+"{0} {1} wall={2:0.0}s jobcpu={3:0.0}s kernel={9:0.00}s faults={10} procs={4} peakproc={5:0}MB peakjob={6:0}MB exit={7} | {8}" -f $r, $arm, ((Get-Date) - $t).TotalSeconds, (($b.TotalUserTime + $b.TotalKernelTime) / 1e7), $b.TotalProcesses, ($e.PeakProcessMemoryUsed.ToUInt64() / $mb), ($e.PeakJobMemoryUsed.ToUInt64() / $mb), $p.ExitCode, $ms, ($b.TotalKernelTime / 1e7), $b.TotalPageFaultCount

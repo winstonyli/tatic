@@ -104,12 +104,13 @@ fn append(path: &Path, text: &str) {
     std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
 }
 
-/// A machine-state line on stderr (about 6 s); `MACHINE_STATE=0` skips it, in a loop or a sweep.
-fn machine_state(when: &str) {
+/// A machine-state line on stderr (about 6 s), taken in a child with the children's `env` so its `pages=` is theirs;
+/// `MACHINE_STATE=0` skips it, in a loop or a sweep.
+fn machine_state(when: &str, env: &[(String, String)]) {
     if env_or("MACHINE_STATE", 1usize) == 0 {
         return;
     }
-    let o = Command::new(std::env::current_exe().unwrap()).args(["machine::machine_state_line", "--exact", "--ignored", "--nocapture"]).output().unwrap();
+    let o = Command::new(std::env::current_exe().unwrap()).args(["machine::machine_state_line", "--exact", "--ignored", "--nocapture"]).envs(env.iter().cloned()).output().unwrap();
     let text = String::from_utf8_lossy(&o.stdout);
     eprintln!("machine at {when}: {}", text.lines().find(|l| l.contains("machine state:")).unwrap_or(""));
 }
@@ -217,12 +218,12 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
 #[ignore]
 fn loop_stream() {
     let cfg = LoopCfg::from_env();
-    machine_state("start");
+    machine_state("start", &cfg.env);
     let lemmas = cfg.out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);
     run_loop(&cfg, &lemmas);
     let _ = std::fs::remove_file(&lemmas);
-    machine_state("end");
+    machine_state("end", &cfg.env);
 }
 
 /// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (6 threads, no round cap, full serving check).
@@ -240,7 +241,12 @@ fn sweep() {
     let salt: usize = env_or("SALT", 1);
     let lib = std::env::var("LIB").map(PathBuf::from).unwrap_or_else(|_| out.clone());
     let stages = std::env::var("SWEEP").unwrap_or_else(|_| "mines own cold".into());
-    let env = vec![("RULEMINER_FAST".to_string(), "1".to_string()), ("RULEMINER_SHUFFLE".to_string(), salt.to_string())];
+    // Large pages off in the children: most are short, each pays the 64 MiB large-page commit up front, and a sweep with them
+    // on cost 0.3-2.9 s more CPU and 60% more peak memory (docs/tier-cycle.md, "How often the large-page stall hits a sweep").
+    let env: Vec<(String, String)> = [("RULEMINER_FAST", "1".to_string()), ("RULEMINER_SHUFFLE", salt.to_string()), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0".to_string())]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
     let base = |mode: &str, out: PathBuf, family: &str| LoopCfg {
         mode: mode.into(),
         out,
@@ -265,7 +271,7 @@ fn sweep() {
     // one lemma file for every loop of the sweep: all its processes run this exe, so every statement in it was checked by this build
     let lemmas = out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);
-    machine_state("start");
+    machine_state("start", &env);
     for stage in stages.split_whitespace() {
         let (name, fams) = stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
         let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
@@ -330,5 +336,5 @@ fn sweep() {
         }
     }
     let _ = std::fs::remove_file(&lemmas);
-    machine_state("end");
+    machine_state("end", &env);
 }

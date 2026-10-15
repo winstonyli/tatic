@@ -2656,7 +2656,7 @@ Its shortcomings there, with mitigations:
 - **The compiled hot path should not allocate at all.** When it must produce terms (proof witnesses), it bump-allocates into the region through linear memory. Not a shortcoming of the arena; the arena fixes the format at the boundary.
 
 Scheme 1's caveats, with mitigations:
-- **Each process locks its reservation for its whole life.** Mitigation (done): `arena_reserve` is 64 MiB. Large pages are on in every process, not only those expected to grow large, because the sweep of short processes still gained a little; that was measured only at low load.
+- **Each process locks its reservation for its whole life.** Mitigation (done): `arena_reserve` is 64 MiB. Large pages were on in every process at first, because the sweep of short processes seemed to gain a little at low load. Rechecked, they lost, so `driver::sweep` now turns them off for its children ("How often the large-page stall hits a sweep").
 - **A machine without the privilege falls back to normal pages.** Mitigation (done): the machine-state line logs `pages=`, as it logs Defender's state, so baselines compare.
 
 *Stage 1 result (2026-10-14; tracer and replay throwaway, reverted, no patch kept): continue.*
@@ -3064,11 +3064,21 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 | 3-4 | 53.1 / 22.55 / 38.3 s | 52.8 / 20.13 / 37.2 s |
 | 5-6 | 52.9 / 19.69 / 37.1 s | 51.8 / 19.97 / 36.7 s |
 
-- **Normal pages give a flat 20.0-20.2 s of kernel time.** Two of the three large-page sweeps took 2.4-2.9 s more, the size of one stall; the third took none. So it is about one stall per sweep, not one per process: whatever triggers it is rare per process, and a sweep's 178 processes catch it about once.
-- **Large pages lost all 3 pairs on job CPU** (by 0.3-2.9 s), against winning 3 of 3 by about 4% when adopted. One reading: the adopted gain was within the pairs' spread, and the stall decides who wins. The job's peak memory is 545-609 MB against 380-382 MB.
-- `proof_cost_split`'s 12% gain from large pages is unaffected: it is one long process that pays at most one stall.
-- **Kernel time is 37-40% of the sweep's CPU in both arms,** about 112 ms per process. That is unexplained: process start, page faults on fresh memory, or the per-process lemma loading. Unprofiled.
-- Not decided here: keeping large pages for long runs only (e.g. set by the sweep driver for its children), or dropping them.
+- **Normal pages give a flat 20.0-20.2 s of kernel time.** Two of the three large-page sweeps took 2.4-2.9 s more; the third took none. That is about one `proof_cost_split`-sized stall per sweep, or the per-process commit below plus noise; these runs cannot tell the two apart.
+- **Large pages lost all 3 pairs on job CPU** (by 0.3-2.9 s), against winning 3 of 3 by about 4% when adopted. One reading: the adopted gain was within the pairs' spread. The job's peak memory is 545-609 MB against 380-382 MB.
+- `proof_cost_split`'s 12% gain from large pages is unaffected: it is one long process.
+- **Large pages cost every process an up-front commit.** An empty launch of the test exe (a test name matching nothing, 20 per arm in a job object, `floor_job.ps1` in the scratchpad, not kept) took 3.9-23.4 ms of kernel time per process with large pages (median 7.8, 14 runs; all reserved 64 MiB, see below) against 2.3-5.5 ms without (median 3.9, 3 runs), at loads up to 94%. About 4 ms more for each of 178 processes is about 0.7 s a sweep.
+  - A smaller reservation can't cut it: `MIMALLOC_ARENA_RESERVE=8MiB` still reserved 65,536 KiB (`MIMALLOC_VERBOSE=1`), so 64 MiB is the floor as built.
+  - A bare number there is read as bytes ("8192" is 8 KiB, rounded up to the same floor).
+- **Decided: `driver::sweep` turns large pages off for its children** (`MIMALLOC_ALLOW_LARGE_OS_PAGES=0` in the environment it passes them). Its machine-state line now runs with that environment, so `pages=` reports the children's pages. Single long runs (`proof_cost_split`, the law checks, loops) keep them.
+  - A sweep on the change: `pages=normal`, 1.26 M faults and a 270 MB peak process (the normal arm's), and outputs identical to round 1 apart from the seconds column.
+  - Its timing is void: load 78-99%.
+- **Kernel time is 37-40% of the sweep's CPU in both arms,** about 112 ms per process; most of it is unexplained.
+  - Not the launch: an empty launch takes 2.3-5.5 ms.
+  - Not page faults alone: normal pages took 1.33 M faults and large 0.56 M, at the same 22 s of kernel time.
+  - samply doesn't see it. A profile of the sweep (a throwaway wrapper test setting its environment, reverted) has only 8.0% of busy samples with a kernel-mode leaf, about 4.4 s of 54 s. The single-process `proof_cost_split` profile shows the same gap: 2.1% kernel-mode leaves against 10-22% of its accounted CPU.
+  - A pure user-mode loop is charged 3% kernel time (0.16 of 5.0 s), so the accounting isn't simply biased. Sampling the machine's privileged-time counter during a sweep was swamped by other sessions' 14.6% baseline.
+  - **Parked:** the accounted kernel time and the samples disagree, and resolving it needs a kernel-level trace (xperf with CSwitch and page-fault events) rather than samply.
 
 ### Why add3 did better with sbo3's library; scoring every orientation is a mixed result (2026-10-11)
 The miner keeps one candidate per left side before scoring: the smallest right side, ties broken by `show()`. For add3's
