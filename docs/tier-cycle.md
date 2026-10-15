@@ -3087,7 +3087,22 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - CPU median 2.59 s on against 2.61 s off; prefetch won 3 of 8 pairs.
   - Build median 1,762 against 1,764 ms.
 - **Why nothing:** the prefetch issues no earlier than the out-of-order core already issues the load. The lookup's address depends only on the hash, which is ready at the same point. When a node has persistent children, the region lookup sits behind a branch on the persistent lookup that is almost always predicted, so it already runs speculatively in parallel. The two misses after the control group (the entry, then the node to compare) depend on the first one and cannot be prefetched from the hash.
-- What would help is having the hash earlier: knowing a parent's hash before its last child is built. Instantiation builds a node's children one after another and hashes the parent only at the end. Unexplored.
+- **Having the hash earlier is not possible (checked 2026-10-14).** A node's hash is computed from its children's `Ref`s, and `inst_rec` calls `mk` as soon as the last child returns, so the hash exists no sooner. The last child's `Ref` comes out of its own lookup, so the misses form a dependent chain: child lookup, then the parent's hash, then the parent's lookup. A hash of content rather than `Ref`s doesn't help either, since computing one for a child not yet built means walking it.
+- **Placing nodes by recency would not help (counting probe on 3e5c74b, reverted, no patch kept).** The idea was to put the bucket of a node near the buckets of nodes built just before it, so lookups touch a warm part of the table. A probe counted `proof_cost_split`'s 10.1 M region builds by how many builds ago the node's newest region child was made:
+
+  | newest region child made | region hit | new node |
+  |---|---|---|
+  | no region child | 786,287 | 510 |
+  | 1 build ago | 0 | 2,591,264 |
+  | 2-16 | 200,877 | 121,482 |
+  | 17-256 | 225,224 | 105,782 |
+  | 257-4K | 641,273 | 201,982 |
+  | 4K-64K | 1,629,312 | 273,976 |
+  | over 64K | 3,167,735 | 153,845 |
+
+  - The new nodes total 3,448,841, the region's size; no build hit the persistent space.
+  - Hits are mostly over old children (3.2 M over 64K builds ago), so recency gives them no locality. Recent children are mostly new nodes, which the next point handles without the table. Dropped.
+- **A lookup that must miss (open).** A node whose region child has no parent yet cannot already exist. `parents` is raised only when a node is pushed, and persistent nodes have no region children. 2,591,264 builds (26% of all, 75% of the new nodes) fall in the "1 build ago" row, where that holds by construction; more may fall in other rows. Skipping `region.find` for them is safe for Invariant I. Whether it saves time is not measured: the insert still touches the same control group, but nothing waits on it, since the new `Ref` is the array length.
 
 **mimalloc against the system heap, after the id-arena port (2026-10-14; probe reverted, no patch kept).** The question was whether to drop mimalloc and do its useful parts directly, now that the kernel keeps its nodes in a few large arrays instead of one block each. Two test binaries were built from 193a1a5. One is as committed. The other has the test crate's `#[global_allocator]` removed, and `machine::large_pages_option` made to return false, since it calls into mimalloc. `MIMALLOC_VERBOSE=1` printed 50 lines from the first and none from the second. RTP off.
 
