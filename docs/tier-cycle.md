@@ -2787,6 +2787,32 @@ Its shortcomings there, with mitigations:
   - So the node table's size explains part of the rise. The rest is plausibly the memos' size and the check's nodes being spread over a larger region; this was not measured.
 - **What it points at:** the region's footprint per node, not its algorithms. Each node has an entry in `nodes`, `loose`, `free`, `uses`, `parents` and the table, plus its memo entries. Candidates, unmeasured: a footprint count of bytes per node at n=64; smaller memo entries; and denser layouts for the walks (departure 2's raw-`Ref` walks, still parked).
 
+**Footprint per node of rule 33's check on B (2026-10-14; probe reverted, no patch kept).** The probe measured a law check in a fresh region, the second of two. It read the region's vectors and table, the `Spaces` memos, and `check_in`'s `InferCache` (read before it drops). It counts bytes in use (entries × entry size) and bytes allocated (capacity, or hashbrown's `allocation_size`), per new node. The probe missed `CtxScope` and `check_open`'s `FreesMemo`.
+
+| per new node | used B | allocated B | entries per node |
+|---|---|---|---|
+| `region.nodes` (`Node<Ref>`, 24 B) | 24.0 | 36.0-37.8 | 1 |
+| `region.loose`, `free`, `uses` (4 B each) | 12.0 | 18.0-18.9 | 1 each |
+| `region.parents` | 1.0 | 1.5-1.6 | 1 |
+| `region.table` | 8.0 | 11.7-12.3 | 1 |
+| `memo.inst` | 12.6-12.7 | 22.1-23.1 | 0.79-0.80 |
+| `memo.shifts` | 13.2-13.6 | 22.1-23.1 | 0.83-0.85 |
+| `ic.lows` (`lowest_loose`'s memo) | 9.0-9.4 | 16.9-17.7 | 0.75-0.79 |
+| `memo.bounds` | 5.1-5.4 | 11.0-11.6 | 0.32-0.34 |
+| the rest (`whnf`, `arg_sets` and its keys, the other `ic` maps, `hnf`) | 7.6-8.4 | 12.5-14.9 | |
+| **total** | **92.5 / 94.4** | **151.7 / 160.9** | |
+
+- **The footprint per node is flat in n**, at about 93 B in use and 150-160 B allocated. So the region and its memos grow linearly: 7.7 MB at n=8 (50,487 nodes) and 62 MB at n=64 (385,032).
+- **That straddles this machine's caches:** 1 MB of L2 per core and 16 MB of L3. n=8's set fits in L3 and n=64's is about 4× it. At about 155 B per node, L3 fills near 100,000 nodes, which is n=16. In the contended sweep above, ns per node is 547-688 up to n=16, 691-749 at n=24-32, and higher beyond. The rise above therefore matches a working set that leaves L3, consistent with the flat call counts and the doubled cost per call.
+- **The hash maps hold about half the bytes, and they are the random-access ones.** The memos plus `region.table` come to about 56 B used and about 100 B allocated per node. Their allocation is 1.5-2.2× their use (load factor and power-of-two growth), and a probe can land anywhere in it.
+  - `memo.inst`, `memo.shifts` and `ic.lows` each have about 0.8 entries per node, at 16 B (shifts, inst) and 12 B (lows) per entry before overhead.
+- **`Node<Ref>` is 24 B because of `J`'s five children** (`WRec` has four). Every other variant fits in 16 B: a tag and three `u32`s.
+- **Candidates, unmeasured:**
+  - make `Node<Ref>` 16 B, by moving the children of `J` and `WRec` out of line;
+  - shrink the memo entries, or hold the common case (one entry per node) in side vectors, as `uses` does;
+  - make the region's per-node vectors one struct-of-arrays row.
+  - Each attacks bytes per node; the test is rule 33 at n=64 against n=8.
+
 *Measured for it* (probe reverted, no patch kept):
 - The miner builds no node outside a scope, and none in a scope before the table switches on (`proof_cost_split` and a full salt-1 sweep).
 - 19-21% of the nodes built are not in the table when it drops.
