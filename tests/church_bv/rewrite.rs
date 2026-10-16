@@ -1053,13 +1053,51 @@ impl TableRule {
 /// Pattern variables a rule may have (`rule_weight` counts them in arrays this long).
 const RULE_VARS: usize = 8;
 
-/// The rules `rule_step` tries, in order: the built-in ones, then the run-time ones (`mined`); and for each root operator, and
-/// for leaves, the rules in that order that are not ablated and whose left side can match such a term.
+/// A term's class as a rule pattern sees it: its operator, `0`, `-1` or a variable.
+const CLASSES: usize = OP_INFO.len() + 3;
+
+fn class(t: &Term) -> usize {
+    match *t.node() {
+        Node::Op(o, ..) => o,
+        Node::Zero => OP_INFO.len(),
+        Node::Ones => OP_INFO.len() + 1,
+        Node::V(_) => OP_INFO.len() + 2,
+    }
+}
+
+/// The rule-table buckets: one per root operator and pair of operand classes, then one for leaves.
+const LEAF_BUCKET: usize = OP_INFO.len() * CLASSES * CLASSES;
+
+fn bucket(t: &Term) -> usize {
+    match *t.node() {
+        Node::Op(o, a, b) => (o * CLASSES + class(&a)) * CLASSES + class(&b),
+        _ => LEAF_BUCKET,
+    }
+}
+
+/// `f` on every bucket holding a term pattern `lhs` can match: a pattern variable matches every class, anything else only its own.
+fn pattern_buckets(lhs: &Term, mut f: impl FnMut(usize)) {
+    let classes = |p: Term| match *p.node() {
+        Node::V(_) => 0..CLASSES,
+        _ => class(&p)..class(&p) + 1,
+    };
+    match *lhs.node() {
+        Node::Op(o, a, b) => classes(a).for_each(|ca| classes(b).for_each(|cb| f((o * CLASSES + ca) * CLASSES + cb))),
+        Node::V(_) => (0..=LEAF_BUCKET).for_each(f),
+        Node::Zero | Node::Ones => f(LEAF_BUCKET),
+    }
+}
+
+/// The rules `rule_step` tries, in order: the built-in ones, then the run-time ones (`mined`); and for each root operator and
+/// pair of operand classes, and for leaves, the rules in that order that are not ablated and whose left side can match such a
+/// term. Keyed by the root operator alone, `rule_step_in` tried 16.7 rules a call, 31M a sweep (docs/tier-cycle.md,
+/// "Per-thread refills and the miner's trace matching").
 pub struct RuleTable {
     pub mined: Vec<(Term, Term)>,
     rules: Vec<TableRule>,
-    by_op: [Vec<u32>; OP_INFO.len()],
-    leaf: Vec<u32>,
+    /// bucket `b`'s rules are `ids[starts[b]..starts[b + 1]]`
+    starts: Vec<u32>,
+    ids: Vec<u32>,
 }
 
 impl RuleTable {
@@ -1067,24 +1105,26 @@ impl RuleTable {
         static FIXED: std::sync::OnceLock<Vec<TableRule>> = std::sync::OnceLock::new();
         let fixed = FIXED.get_or_init(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
         let rules: Vec<TableRule> = fixed.iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
-        let (mut by_op, mut leaf): ([Vec<u32>; OP_INFO.len()], Vec<u32>) = Default::default();
-        for (i, r) in rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)) {
-            match *r.lhs.node() {
-                Node::Op(o, ..) => by_op[o].push(i as u32),
-                Node::V(_) => by_op.iter_mut().chain([&mut leaf]).for_each(|b| b.push(i as u32)),
-                Node::Zero | Node::Ones => leaf.push(i as u32),
-            }
+        let live = || rules.iter().enumerate().filter(|(_, r)| !ablated(r.name));
+        // count each bucket's rules, then place them in rule order
+        let mut starts = vec![0u32; LEAF_BUCKET + 2];
+        live().for_each(|(_, r)| pattern_buckets(&r.lhs, |b| starts[b + 1] += 1));
+        (1..starts.len()).for_each(|b| starts[b] += starts[b - 1]);
+        let mut next = starts.clone();
+        let mut ids = vec![0u32; starts[LEAF_BUCKET + 1] as usize];
+        for (i, r) in live() {
+            pattern_buckets(&r.lhs, |b| {
+                ids[next[b] as usize] = i as u32;
+                next[b] += 1;
+            });
         }
-        RuleTable { mined, rules, by_op, leaf }
+        RuleTable { mined, rules, starts, ids }
     }
 
     /// The rules that can match `t`, in order.
     fn candidates(&self, t: &Term) -> impl Iterator<Item = (usize, &TableRule)> {
-        let ids = match *t.node() {
-            Node::Op(o, ..) => &self.by_op[o],
-            _ => &self.leaf,
-        };
-        ids.iter().map(|&i| (i as usize, &self.rules[i as usize]))
+        let b = bucket(t);
+        self.ids[self.starts[b] as usize..self.starts[b + 1] as usize].iter().map(|&i| (i as usize, &self.rules[i as usize]))
     }
 }
 
@@ -2687,6 +2727,28 @@ fn term_attributes_match_a_walk() {
         assert_eq!(t.max_var(), vars.iter().copied().max().unwrap_or(0));
         assert!((0..70).all(|v| t.has_var(v) == vars.contains(&v)));
     }
+}
+
+#[test]
+fn rule_buckets_hold_every_matching_rule_in_order() {
+    // built-in rules plus run-time ones with a variable, a leaf and a nested operand at the root's operands
+    let mined = parse_rules("x -> and(x, x)\nsub(0, x) -> x\nadd(sub(x, y), z) -> sub(add(x, z), y)\n");
+    let table = RuleTable::new(mined);
+    let mut leaves: Vec<Term> = vec![Term::ZERO, Term::ONES, Term::v(0)];
+    leaves.extend(terms(3, true).iter().copied());
+    let (mut tried, mut skipped) = (0, 0);
+    for t in &leaves {
+        let ids: Vec<usize> = table.candidates(t).map(|(i, _)| i).collect();
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "{}: out of order", t.show());
+        for (i, r) in table.rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)) {
+            if match_pat(&r.lhs, t, &mut [None; RULE_VARS]) {
+                assert!(ids.contains(&i), "{}: {} matches but is not a candidate", t.show(), r.lhs.show());
+            }
+        }
+        tried += ids.len();
+        skipped += table.rules.len() - ids.len();
+    }
+    assert!(skipped > 0 && tried > 0, "{tried} tried, {skipped} skipped");
 }
 
 #[test]
