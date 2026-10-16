@@ -1065,39 +1065,27 @@ fn class(t: &Term) -> usize {
     }
 }
 
-/// The rule-table buckets: one per root operator and pair of operand classes, then one for leaves.
-const LEAF_BUCKET: usize = OP_INFO.len() * CLASSES * CLASSES;
+/// The operand classes a rule pattern's operand can match, one bit each: a pattern variable matches every class, anything else
+/// only its own.
+type Classes = u16;
+const _: () = assert!(CLASSES <= Classes::BITS as usize);
 
-fn bucket(t: &Term) -> usize {
-    match *t.node() {
-        Node::Op(o, a, b) => (o * CLASSES + class(&a)) * CLASSES + class(&b),
-        _ => LEAF_BUCKET,
+fn pattern_classes(p: &Term) -> Classes {
+    match *p.node() {
+        Node::V(_) => Classes::MAX,
+        _ => 1 << class(p),
     }
 }
 
-/// `f` on every bucket holding a term pattern `lhs` can match: a pattern variable matches every class, anything else only its own.
-fn pattern_buckets(lhs: &Term, mut f: impl FnMut(usize)) {
-    let classes = |p: Term| match *p.node() {
-        Node::V(_) => 0..CLASSES,
-        _ => class(&p)..class(&p) + 1,
-    };
-    match *lhs.node() {
-        Node::Op(o, a, b) => classes(a).for_each(|ca| classes(b).for_each(|cb| f((o * CLASSES + ca) * CLASSES + cb))),
-        Node::V(_) => (0..=LEAF_BUCKET).for_each(f),
-        Node::Zero | Node::Ones => f(LEAF_BUCKET),
-    }
-}
-
-/// The rules `rule_step` tries, in order: the built-in ones, then the run-time ones (`mined`); and for each root operator and
-/// pair of operand classes, and for leaves, the rules in that order that are not ablated and whose left side can match such a
-/// term. Keyed by the root operator alone, `rule_step_in` tried 16.7 rules a call, 31M a sweep (docs/tier-cycle.md,
-/// "Per-thread refills and the miner's trace matching").
+/// The rules `rule_step` tries, in order: the built-in ones, then the run-time ones (`mined`); and for each root operator, and
+/// for leaves, the rules in that order that are not ablated and whose left side can match such a term, each with the classes
+/// its two operands can match. Keyed by the root operator alone, `rule_step_in` called `match_pat` on 16.7 rules a call, 31M a
+/// sweep (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
 pub struct RuleTable {
     pub mined: Vec<(Term, Term)>,
     rules: Vec<TableRule>,
-    /// bucket `b`'s rules are `ids[starts[b]..starts[b + 1]]`
-    starts: Vec<u32>,
-    ids: Vec<u32>,
+    by_op: [Vec<(u32, [Classes; 2])>; OP_INFO.len()],
+    leaf: Vec<u32>,
 }
 
 impl RuleTable {
@@ -1105,26 +1093,28 @@ impl RuleTable {
         static FIXED: std::sync::OnceLock<Vec<TableRule>> = std::sync::OnceLock::new();
         let fixed = FIXED.get_or_init(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
         let rules: Vec<TableRule> = fixed.iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
-        let live = || rules.iter().enumerate().filter(|(_, r)| !ablated(r.name));
-        // count each bucket's rules, then place them in rule order
-        let mut starts = vec![0u32; LEAF_BUCKET + 2];
-        live().for_each(|(_, r)| pattern_buckets(&r.lhs, |b| starts[b + 1] += 1));
-        (1..starts.len()).for_each(|b| starts[b] += starts[b - 1]);
-        let mut next = starts.clone();
-        let mut ids = vec![0u32; starts[LEAF_BUCKET + 1] as usize];
-        for (i, r) in live() {
-            pattern_buckets(&r.lhs, |b| {
-                ids[next[b] as usize] = i as u32;
-                next[b] += 1;
-            });
+        let (mut by_op, mut leaf): ([Vec<(u32, [Classes; 2])>; OP_INFO.len()], Vec<u32>) = Default::default();
+        for (i, r) in rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)) {
+            match *r.lhs.node() {
+                Node::Op(o, a, b) => by_op[o].push((i as u32, [pattern_classes(&a), pattern_classes(&b)])),
+                Node::V(_) => {
+                    by_op.iter_mut().for_each(|b| b.push((i as u32, [Classes::MAX; 2])));
+                    leaf.push(i as u32);
+                }
+                Node::Zero | Node::Ones => leaf.push(i as u32),
+            }
         }
-        RuleTable { mined, rules, starts, ids }
+        RuleTable { mined, rules, by_op, leaf }
     }
 
     /// The rules that can match `t`, in order.
     fn candidates(&self, t: &Term) -> impl Iterator<Item = (usize, &TableRule)> {
-        let b = bucket(t);
-        self.ids[self.starts[b] as usize..self.starts[b + 1] as usize].iter().map(|&i| (i as usize, &self.rules[i as usize]))
+        let (ids, [ca, cb], leaf): (&[(u32, [Classes; 2])], _, &[u32]) = match *t.node() {
+            Node::Op(o, a, b) => (&self.by_op[o], [class(&a), class(&b)], &[]),
+            _ => (&[], [0, 0], &self.leaf),
+        };
+        let fits = move |&&(_, [ma, mb]): &&(u32, [Classes; 2])| (ma >> ca) & (mb >> cb) & 1 == 1;
+        ids.iter().filter(fits).map(|&(i, _)| i).chain(leaf.iter().copied()).map(|i| (i as usize, &self.rules[i as usize]))
     }
 }
 
@@ -2730,7 +2720,7 @@ fn term_attributes_match_a_walk() {
 }
 
 #[test]
-fn rule_buckets_hold_every_matching_rule_in_order() {
+fn rule_table_lists_every_matching_rule_in_order() {
     // built-in rules plus run-time ones with a variable, a leaf and a nested operand at the root's operands
     let mined = parse_rules("x -> and(x, x)\nsub(0, x) -> x\nadd(sub(x, y), z) -> sub(add(x, z), y)\n");
     let table = RuleTable::new(mined);
