@@ -6005,6 +6005,31 @@ Searched 2026-09-30. Abstract or search-summary level only (the OTT paper's PDF 
 
 What it means here. No line of work removes normalization while keeping decidable checking of computing terms: they either move it into proofs (explicit conversion, reflection elimination), skip it for proofs (proof irrelevance, OTT), make it cheaper (closures and NbE, from the CwF view where substitution is explicit), or enlarge it (cubical). The bit-vector lemma's cost is conversion over computational terms (`add`), which only the third route touches.
 
+## 79. Stuck spines stayed quadratic after §59: the spine walks (2026-10-16)
+
+`nf_and_def_eq_are_linear_on_a_stuck_spine` gave 2,000-deep stuck spines a 500 ms budget. Under the parallel debug suite it took 1.09 to 1.18 s and failed; alone it passed. Timing several depths showed the cause was not load. Each doubling cost 3.5 to 4 times, in `whnf` alone as much as in `nf` and `def_eq`.
+
+| depth | `whnf` before | after | `nf` before | after | `def_eq` before | after |
+|---|---|---|---|---|---|---|
+| 500 | 12 ms | 1.4 ms | 14 ms | 1.6 ms | 23 ms | 2.9 ms |
+| 1,000 | 49 ms | 3.8 ms | 46 ms | 5.6 ms | 87 ms | 9.9 ms |
+| 2,000 | 184 ms | 10.6 ms | 170 ms | 14.4 ms | 330 ms | 28 ms |
+| 4,000 | 645 ms | 24 ms | 715 ms | 37 ms | 1.30 s | 69 ms |
+
+Debug build, the test's spines: `x0 a1 ... an` with every argument a variable, `nf` on that spine, `def_eq` against the same spine with a redex for its head. Before: one or two runs. After: best of three. After, from 4,000 to 32,000 each doubling costs 2.0 to 2.3x (32,000 deep: 1.6 s for all four calls). Below that the spines stay in cache and the growth looks steeper.
+
+**Cause.** `whnf_step` runs once per level of a stuck spine, since each level's fallback asks for its function part's whnf. At each level, `closed_prefix_spine` walked down looking for a prefix with no loose variable, which here meant walking to the bottom, and `beta_spine` walked down to the head. A throwaway probe that ran `closed_prefix_spine` at every level took about 60% of `whnf`'s time.
+
+**The change.** A region memo, `Memos.spine`, maps an application to its spine's head and its longest proper closed prefix. `spine` answers a one-argument application directly. It memoises a longer one by recursing on the function part, so one walk fills every level. `whnf_step` asks only as needed: the closed prefix of `f a` is `f` when `f` is closed, else `f`'s own, and the head only after the closed-prefix shortcut fails. Both functions collect their arguments only once the prefix or head is a lambda.
+
+**Cost** (`proof_cost_split`, cmp3d own, 300 laws, `cpu_ab.ps1` two-build mode against 1442f73, Defender real-time protection off). The `COST` lines (laws, nodes, occurrences) are identical.
+- The first two versions asked `spine` of `e` itself on every application, so they walked even when `f` was closed. The first kept an explicit path `Vec`. Over 16 pairs at 18 to 53% load, old won 9 and new 6, with 1 tie: summed 22.76 against 21.85 s. The second recursed instead. Over 12 pairs at about 10% load, old won 8 and new 3, with 1 tie: summed 15.23 against 14.87 s, about 2% slower.
+- Walking up to three levels directly before using the memo didn't help (old won 9 of 12) and was removed.
+- The lazy version, run while other sessions loaded the machine 29 to 49%: new won 8 of 12, summed 19.87 against 20.81 s.
+- The lazy version again, at 16 to 19% load, dropping a cold-start first pair: new won 5 of 11, old 4, with 2 ties. Summed 14.70 against 14.72 s, best 1.23 against 1.25 s. A tie.
+
+**The test** now times 8,000 deep against 1,000 deep, best of three each, with fresh variables every run so no memo carries over. It asserts under 30x: about 15x now, 64x if quadratic. Against 1442f73's kernel it fails at 57x (7.3 s against 128 ms). The kernel's walk counters (`record-defeq`) are compiled out by default, so a plain `cargo test` can't count walks instead of timing.
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
