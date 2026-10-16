@@ -1601,7 +1601,7 @@ fn proving<T>(blocked: &[RuleKey], f: impl FnOnce() -> T) -> T {
     let memo = REWRITE_MEMO.with(|m| m.take());
     let trace = RULE_TRACE.with(|t| t.take());
     let budget = RULE_BUDGET.with(|b| b.replace(10_000));
-    let (fallbacks, cuts) = (MACHINE_FALLBACKS.with(|c| c.get()), CYCLE_CUTS.with(|c| c.get()));
+    let (fallbacks, cuts, low) = (MACHINE_FALLBACKS.with(|c| c.get()), CYCLE_CUTS.with(|c| c.get()), CUT_LOW.with(|c| c.get()));
     let out = f();
     PROVING.with(|p| p.borrow_mut().truncate(outer));
     REWRITE_PATH.with(|p| p.replace(path));
@@ -1610,6 +1610,7 @@ fn proving<T>(blocked: &[RuleKey], f: impl FnOnce() -> T) -> T {
     RULE_BUDGET.with(|b| b.set(budget));
     MACHINE_FALLBACKS.with(|c| c.set(fallbacks));
     CYCLE_CUTS.with(|c| c.set(cuts));
+    CUT_LOW.with(|c| c.set(low));
     out
 }
 
@@ -1972,6 +1973,8 @@ thread_local! {
     /// the terms `rewrite` is working on, outermost first, and how many calls it cut so far
     static REWRITE_PATH: std::cell::RefCell<Vec<Term>> = const { std::cell::RefCell::new(Vec::new()) };
     pub static CYCLE_CUTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// the lowest path index a cut matched since the innermost `rewrite_memo` miss began (`usize::MAX`: none)
+    static CUT_LOW: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
     /// the terms `rewrite` took up (pushed on the path) since the outermost call began, memo replays included
     static REWROTE: std::cell::RefCell<Vec<Term>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -1996,7 +1999,8 @@ pub fn rewrite(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     if !matches!(*t.node(), Node::Op(..)) {
         return rewrite_memo(t, n, k);
     }
-    if REWRITE_PATH.with(|p| cut_by(&p.borrow(), t)) {
+    if let Some(i) = REWRITE_PATH.with(|p| cut_at(&p.borrow(), t)) {
+        CUT_LOW.with(|c| c.set(c.get().min(i)));
         CYCLE_CUTS.with(|c| c.set(c.get() + 1));
         return (*t, Plan::refl(t));
     }
@@ -2011,8 +2015,13 @@ pub fn rewrite(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
 
 /// The cycle cut's test: `t` repeats, or grows from, a term on `path`.
 fn cut_by(path: &[Term], t: &Term) -> bool {
+    cut_at(path, t).is_some()
+}
+
+/// The index of the innermost term on `path` that cuts `t`.
+fn cut_at(path: &[Term], t: &Term) -> Option<usize> {
     let size = t.size();
-    path.iter().any(|s| s.size() <= size && embeds(s, t))
+    path.iter().rposition(|s| s.size() <= size && embeds(s, t))
 }
 
 fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
@@ -2022,7 +2031,8 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     }
     let key = (n, *t);
     let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
-    // the entry was made with no cut, so the path in force now must cut none of the terms it took up either; and one made while
+    // the entry was made with no cut against a term further out, so the path in force now must cut none of the terms it took up
+    // either; and one made while
     // counting has no plan to give a caller that is not
     let counting = SCORE_ONLY.with(|s| s.get());
     let fits = |c: &Rewritten| {
@@ -2044,12 +2054,14 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
         return c.out.clone();
     }
     let (budget0, fallbacks0, trace0) = (RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()), RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v.len())));
-    let (cuts0, rewrote0) = (CYCLE_CUTS.with(|c| c.get()), REWROTE.with(|r| r.borrow().len()));
+    let (plen, low0, rewrote0) = (REWRITE_PATH.with(|p| p.borrow().len()), CUT_LOW.with(|c| c.replace(usize::MAX)), REWROTE.with(|r| r.borrow().len()));
     let out = rewrite_uncached(t, n, k);
-    let budget1 = RULE_BUDGET.with(|b| b.get());
-    // a call that ran the budget out was cut short by it: its result depends on the budget it started with; one with a cycle cut
-    // depends on the terms being rewritten further out
-    if budget1 > 0 && CYCLE_CUTS.with(|c| c.get()) == cuts0 {
+    let (budget1, low) = (RULE_BUDGET.with(|b| b.get()), CUT_LOW.with(|c| c.get()));
+    CUT_LOW.with(|c| c.set(low0.min(low)));
+    // a call that ran the budget out was cut short by it: its result depends on the budget it started with. One with a cycle cut
+    // against a term further out than `t` (`rewrite` pushed `t` at `plen - 1`) depends on that term; cuts against `t` or terms
+    // taken up below it come back on any replay, and no new cut can, since a path that cuts a term in `rewrote` is never replayed
+    if budget1 > 0 && low.saturating_add(1) >= plen {
         let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
         let mut seen = hashbrown::HashSet::new();
         let rewrote = REWROTE.with(|r| r.borrow()[rewrote0..].iter().copied().filter(|t| seen.insert(*t)).collect());
@@ -2069,8 +2081,13 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
 fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
     let memo = REWRITE_MEMO.with(|m| m.take());
     let trace = RULE_TRACE.with(|t| t.take());
-    let (budget, fallbacks, cuts, rewrote) =
-        (RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()), CYCLE_CUTS.with(|c| c.get()), REWROTE.with(|r| r.borrow().len()));
+    let (budget, fallbacks, cuts, low, rewrote) = (
+        RULE_BUDGET.with(|b| b.get()),
+        MACHINE_FALLBACKS.with(|f| f.get()),
+        CYCLE_CUTS.with(|c| c.get()),
+        CUT_LOW.with(|c| c.get()),
+        REWROTE.with(|r| r.borrow().len()),
+    );
     let fresh = rewrite_uncached(t, n, k);
     let (steps, fresh_fallbacks) = (budget - RULE_BUDGET.with(|b| b.get()), MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks);
     REWRITE_MEMO.with(|m| m.replace(memo));
@@ -2078,6 +2095,7 @@ fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
     RULE_BUDGET.with(|b| b.set(budget));
     MACHINE_FALLBACKS.with(|f| f.set(fallbacks));
     CYCLE_CUTS.with(|c| c.set(cuts));
+    CUT_LOW.with(|c| c.set(low));
     REWROTE.with(|r| r.borrow_mut().truncate(rewrote));
     let show = |(t, s, f): (Term, i64, u64)| format!("{} in {s} steps, {f} fallbacks", t.show());
     assert!(
@@ -2680,7 +2698,8 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
     let (n, kv) = (4, 3);
     // t = lt(x, sub(y, z)) -> u = lt(x, add(y, z)) -> v = lt(x, or(sub(y, z), y)) -> lt(x, and(..)): t embeds in v, so rewriting t
     // cuts at v, while u on its own (rewritten first, into the memo) does not
-    let terms: Vec<Term> = ["lt(x, add(y, z))", "lt(x, sub(y, z))"].iter().map(|s| parse_term(s)).collect();
+    // and t again, replayed from its own entry (its cut was against itself), then u, whose entry made inside t's call is not kept
+    let terms: Vec<Term> = ["lt(x, add(y, z))", "lt(x, sub(y, z))", "lt(x, sub(y, z))", "lt(x, add(y, z))"].iter().map(|s| parse_term(s)).collect();
     let rules = "lt(x, sub(y, z)) -> lt(x, add(y, z))\nlt(x, add(y, z)) -> lt(x, or(sub(y, z), y))\nlt(x, or(y, z)) -> lt(x, and(y, z))\n";
     set_extra_rules(parse_rules(rules));
     let run = |memo: Option<RewriteMemo>| {
@@ -2700,6 +2719,27 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
     RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
     let differ: Vec<_> = terms.iter().zip(fresh.iter().zip(&memo)).filter(|(_, (f, m))| f != m).map(|(t, (f, m))| format!("{}: fresh {f:?} memo {m:?}", t.show())).collect();
     assert!(differ.is_empty(), "{} of {} differ:\n{}", differ.len(), terms.len(), differ.join("\n"));
+}
+
+/// A rewrite whose cuts were all against terms its own call took up is kept: any replay cuts them again. One cut against a
+/// term further out is not (docs/tier-cycle.md, "Survey: `rewrite_memo`'s 17.4% of CPU").
+#[test]
+fn memo_keeps_rewrites_cut_inside_their_own_call() {
+    let (n, kv) = (4, 3);
+    // rewriting t goes t -> u -> v, where t embeds in v: the cut is against t itself; u's own call, inside t's, is cut by t
+    let (t, u) = (parse_term("lt(x, sub(y, z))"), parse_term("lt(x, add(y, z))"));
+    set_extra_rules(parse_rules("lt(x, sub(y, z)) -> lt(x, add(y, z))\nlt(x, add(y, z)) -> lt(x, or(sub(y, z), y))\nlt(x, or(y, z)) -> lt(x, and(y, z))\n"));
+    REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(kv)));
+    RULE_BUDGET.with(|b| b.set(200));
+    let cuts0 = CYCLE_CUTS.with(|c| c.get());
+    rewrite(&t, n, kv);
+    let cut = CYCLE_CUTS.with(|c| c.get()) > cuts0;
+    let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
+    set_extra_rules(vec![]);
+    RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+    assert!(cut, "rewriting t cuts");
+    assert!(memo.map.contains_key(&(n, t)), "t's rewrite, cut only against itself, is kept");
+    assert!(!memo.map.contains_key(&(n, u)), "u's rewrite inside t's, cut against t, is not");
 }
 
 #[test]
