@@ -156,3 +156,6 @@ and libraries (43 MB) were not kept.
 | `ri_*`, `rm_*`, `rm/hc_rounds.txt`, `rc_*` | `rule-index` against c7e815b: the CSR buckets, the `u128` mask, the per-operand masks kept | `hc_seq.sh`, `hc_rounds.ps1` | "The rule table filters on operand classes" |
 | `ev_*`, `ev/hc_rounds.txt` | `env-cache` against 51ad656 | `hc_seq.sh`, `hc_rounds.ps1` | "The environment read once per process" |
 | `np_*`, `np/hc_rounds.txt` | `score-no-plans` against the `env-cache` build (main's code) | `hc_seq.sh`, `hc_rounds.ps1` | "Scoring builds no plans" |
+| `sk_*`, `sk/hc_rounds.txt` | `screen-key` against 2ff4c44 | `hc_seq.sh`, `hc_rounds.ps1` | "The candidate index hashes eight rows" |
+| `pd/hc_rounds.txt` | `MIMALLOC_PURGE_DELAY=-1` in the children (probe, reverted) against `screen-key` | `hc_rounds.ps1` | "Survey: the OS kernel's 22.8%" |
+| `tp/probe.txt` | `TREEPROBE` lines: each tree lemma's sides by `def_eq`, symbolic and per carry case (probe, reverted) on 2ff4c44 | one salt-1 sweep | "Fewer case bits by conversion" |

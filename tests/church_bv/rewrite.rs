@@ -962,8 +962,30 @@ pub fn tree_step(n: usize, t1: &Term, k: usize) -> Option<(Term, PlanRc)> {
 /// by a process's threads: the rule miner's scoped workers each rebuilt them (docs/tier-cycle.md, "Per-thread refills").
 static TREE_CANDS: std::sync::Mutex<Option<hashbrown::HashMap<(usize, usize, usize), std::sync::Arc<CandIndex>>>> = std::sync::Mutex::new(None);
 
-/// Candidates by screen vector, each list in candidate order.
-type CandIndex = hashbrown::HashMap<Box<[u128]>, Vec<Term>>;
+/// Candidates by screen vector, each list in candidate order. Hashed on eight of the vector's pseudo-random rows, not all
+/// 204: hashing the whole 3.3 KB on every `tree_step` was 1.3% of a sweep (docs/tier-cycle.md, "Profile at 2ff4c44").
+#[derive(Default)]
+struct CandIndex {
+    table: hashbrown::HashTable<(Box<[u128]>, Vec<Term>)>,
+    hasher: hashbrown::DefaultHashBuilder,
+}
+
+impl CandIndex {
+    /// rows 0 and 1 are all zeros and all ones, the same for many candidates
+    fn hash(hasher: &hashbrown::DefaultHashBuilder, v: &[u128]) -> u64 {
+        std::hash::BuildHasher::hash_one(hasher, &v[2..10])
+    }
+
+    fn get(&self, v: &[u128]) -> Option<&Vec<Term>> {
+        self.table.find(Self::hash(&self.hasher, v), |e| *e.0 == *v).map(|e| &e.1)
+    }
+
+    fn push(&mut self, v: &[u128], t: Term) {
+        let Self { table, hasher } = self;
+        let entry = table.entry(Self::hash(hasher, v), |e| *e.0 == *v, |e| Self::hash(hasher, &e.0));
+        entry.or_insert_with(|| (v.into(), vec![])).into_mut().1.push(t);
+    }
+}
 
 /// `tree_step`'s candidates, the constants, the variables, then every operator applied to two of them, indexed by their
 /// screen vector: one lookup finds those `t1` could equal, where trying each took ~79 screen comparisons a step
@@ -976,7 +998,7 @@ fn tree_candidates(n: usize, k: usize) -> std::sync::Arc<CandIndex> {
             .chain((0..k).map(Term::v))
             .chain(terms(k, false).iter().copied().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
         {
-            index.entry(m.values(&cand).into()).or_insert_with(Vec::new).push(cand);
+            index.push(m.values(&cand), cand);
         }
     });
     index.into()
