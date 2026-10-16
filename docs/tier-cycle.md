@@ -3342,7 +3342,7 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     2. Memoize the rewrites that ran the budget out or had a cycle cut (in-process, 35% of misses): needs the cut's dependence on the path recorded with the entry; correctness as subtle as "Cycle cut".
     3. A process-wide `TREE_ENCS` (as `SCREENS` and `TREE_CANDS` already are): about 1%, a few lines, subsumed by nothing above. Done on branch `shared-tree-encs` (38c4e3d; identical outputs but for the known `LEMMA_CACHE starts empty` line move; timing pending, the machine was 95-99% loaded by other sessions).
     4. Static CRT linking to shorten DLL loading per process: a cheap probe, made moot by option 1.
-- **A persistent worker for the sweep's children (2026-10-16, branch `sweep-worker` on `shared-tree-encs`): identical outputs; timing pending.** The driver's 169 children per sweep (108 serves, 61 mines, plus two machine-state lines) run as tasks of one worker process of the test exe instead of one process each.
+- **A persistent worker for the sweep's children (2026-10-16, branch `sweep-worker` on `shared-tree-encs`): identical outputs, job CPU -14.4%, wall -14.0%.** The driver's 169 children per sweep (108 serves, 61 mines, plus two machine-state lines) run as tasks of one worker process of the test exe instead of one process each.
   - **Mechanism.**
     - `driver::worker` is an ignored test that returns at once unless `TATIC_WORKER=1`. It reads `<test>\t<log>\t<KEY>=<VALUE>...` lines on stdin.
     - For each line it calls `task::begin(pairs)` and points stdout and stderr at the log, through one handle (`SetStdHandle` on Windows, `dup2` elsewhere). std looks the handle up on every write; a probe checked this on a fresh thread, with restore.
@@ -3363,8 +3363,13 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     - `gate_cmp.sh` now drops libtest's harness lines, which a task's log no longer has, and normalizes `m.tsv`'s and `pooled_prefs.tsv`'s seconds columns. It labels a difference that sorting removes "(order only)".
     - The libtest lines are matched as whole lines, which assumes the old children ran on more than one core (affinity FFF gives twelve).
   - **Memory.** One `sweep_job.ps1` sweep: `peakproc=279MB` (the worker), `peakjob=412MB`. That is far under the 2 GB that would have called for a cap, so there is none.
-  - **Timing.** Pending: the machine stayed at 89-99% load from other sessions. The survey's ceiling was 15-20% of a sweep's CPU: process start and exit, the repeated fills, and the exe hash per child.
-    - One possible cost to watch: the lemma cache's `PROCESS` takes a mutex and an `Arc` clone per `lookup`/`record`, where it was a lock-free `OnceLock`.
+  - **Timing.** Twelve alternating salt-1 sweeps against 38c4e3d (`hc_rounds.ps1`), with load at sweep start 11-30% except the first old sweep's 55%, and Defender's real-time protection off:
+    - Job CPU median 15.15 s against 17.7 s (-14.4%). Wall median 17.25 s against 20.05 s (-14.0%). The new build won 5 of 6 pairs.
+    - Kernel time fell from about 8.4 s to 6.5 s and page faults from 1.30 M to 0.36 M, with 7 processes against 178.
+    - The new sweeps split into about 14 s and about 17 s, with the slower ones mostly starting at 29-30% load. That is contention, not a regression.
+    - This lands near the survey's 15-20% ceiling (process start and exit, the repeated fills, the exe hash per child).
+    - Peak commit: the worker holds about 320 MB, against about 200 MB for the largest old child.
+    - The lemma cache's `PROCESS` now takes a mutex and an `Arc` clone per `lookup`/`record`, where it was a lock-free `OnceLock`. Its cost is unmeasured; a profile would show it.
   - **Deferred:**
     - `stdio`'s Unix `dup`/`dup2` results are unchecked.
     - `process_start` matches the prefixes case-sensitively, while Windows names ignore case.
