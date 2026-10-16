@@ -1221,9 +1221,10 @@ struct CtxBinder {
 /// binder whose type is the node `a` from context `cid` gives the id
 /// interned for `(cid, a)`. Equal ids then mean the same sequence of binder
 /// types, which, with the node, is all `infer`'s answer depends on within
-/// one call -- it also depends on `g`, but that's sound because a cache
-/// lives only for the one `infer_in`/`check_in` call that made it, and `g`
-/// is fixed for that whole call. Keys are node ids, valid for the region the call runs in.
+/// one call -- it also depends on `g` and the caller's context, but that's
+/// sound because the cache is empty when a call starts and emptied when it
+/// ends ([`with_infer_cache`]), and both are fixed for that whole call. Keys
+/// are node ids, valid for the region the call runs in.
 #[derive(Default)]
 struct InferCache {
     types: IdMap<(Key, (u32, u32)), Key>,
@@ -1301,24 +1302,45 @@ impl InferCache {
     /// "where the growth comes from"). Clearing costs time in the capacity, so a map grown past `KEEP` is let go.
     fn reset(&mut self) {
         const KEEP: usize = 1 << 14;
-        fn reset<K, V>(m: &mut IdMap<K, V>) {
+        fn empty_map<K, V>(m: &mut IdMap<K, V>) {
             if m.capacity() > KEEP {
                 *m = IdMap::default();
             } else {
                 m.clear();
             }
         }
-        reset(&mut self.types);
-        reset(&mut self.contexts);
-        reset(&mut self.windows);
-        reset(&mut self.window_of);
-        reset(&mut self.lows);
-        reset(&mut self.context_of);
-        self.next = 0;
-        self.info.clear();
-        self.path.clear();
+        fn empty_vec<T>(v: &mut Vec<T>) {
+            if v.capacity() > KEEP {
+                *v = Vec::new();
+            } else {
+                v.clear();
+            }
+        }
+        // Every field by name, so a field added later fails to compile here until it is emptied too.
+        let InferCache {
+            types,
+            contexts,
+            next,
+            info,
+            windows,
+            window_of,
+            path,
+            lows,
+            context_of,
+            #[cfg(feature = "record-defeq")]
+            relaxed,
+        } = self;
+        empty_map(types);
+        empty_map(contexts);
+        empty_map(windows);
+        empty_map(window_of);
+        empty_map(lows);
+        empty_map(context_of);
+        empty_vec(info);
+        empty_vec(path);
+        *next = 0;
         #[cfg(feature = "record-defeq")]
-        self.relaxed.clear();
+        relaxed.clear();
     }
 
     /// An id no other context has: for a binder type that isn't a node
