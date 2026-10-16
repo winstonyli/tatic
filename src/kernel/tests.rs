@@ -726,13 +726,14 @@ fn whnf_keeps_the_stuck_part_it_was_given() {
     assert!(node_key(&got) == node_key(&stuck));
 }
 
-/// `nf` and `def_eq` on stuck spines 4,000 applications deep, one of
+/// `nf` and `def_eq` on stuck spines 8,000 applications deep, one of
 /// them with a redex for its head. At 2,000 each took over 10 s in a
 /// debug build when every level re-reduced the spine below it
 /// (`RELATED_WORK.md` §59), and 0.7 s when every level walked it
 /// (§79). Timed against spines an eighth as deep, so it holds under
-/// load: about 11x now, 64x if quadratic. Best of three each, and every
-/// run gets fresh variables so no memo carries over.
+/// load: about 15x now, 64x if quadratic. Below about 1,000 the spines
+/// stay in cache and the ratio overstates the growth. Best of three
+/// each, and every run gets fresh variables so no memo carries over.
 #[test]
 fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
     let mut fresh = 0;
@@ -757,8 +758,8 @@ fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
             .min()
             .unwrap()
     };
-    let (short, long) = (best(500), best(4000));
-    assert!(long < short * 24 + std::time::Duration::from_millis(5), "took {long:?}, an eighth as deep {short:?}");
+    let (short, long) = (best(1000), best(8000));
+    assert!(long < short * 30 + std::time::Duration::from_millis(5), "took {long:?}, an eighth as deep {short:?}");
 }
 
 /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a

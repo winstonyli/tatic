@@ -1363,24 +1363,22 @@ pub fn whnf(e: &Expr) -> Expr {
 }
 
 /// For an application `e`, its spine's head and its longest proper prefix with no loose variable
-/// (`None` for none); `(e, None)` for anything else. Memoised for every application on the way
-/// down, so the levels of a stuck spine, each asking for its own, walk the spine once in all, not
-/// once each: that made `nf` and `def_eq` quadratic in a stuck spine's length.
+/// (`None` for none); `(e, None)` for anything else. Memoised for every application of two or more
+/// arguments on the way down, so the levels of a stuck spine, each asking for its own, walk the
+/// spine once in all, not once each: that made `nf` and `def_eq` quadratic in a stuck spine's
+/// length (`RELATED_WORK.md` §79). One argument is answered directly.
 fn spine(s: &Spaces, e: &Expr) -> (Expr, Option<Expr>) {
-    let mut path = Vec::new();
-    let mut below = *e;
-    let mut info = loop {
-        let Node::App(f, _) = s.node(&below) else { break (below, None) };
-        if let Some(hit) = hc::spine_get(s, &below) {
-            break hit;
-        }
-        path.push((below, f));
-        below = f;
-    };
-    for (x, f) in path.into_iter().rev() {
-        info = (info.0, if s.loose(&f) == 0 { Some(f) } else { info.1 });
-        hc::spine_put(s, &x, info);
+    let Node::App(f, _) = s.node(e) else { return (*e, None) };
+    let closed = (s.loose(&f) == 0).then_some(f);
+    if !matches!(s.node(&f), Node::App(..)) {
+        return (f, closed);
     }
+    if let Some(hit) = hc::spine_get(s, e) {
+        return hit;
+    }
+    let (head, below) = grow(|| spine(s, &f));
+    let info = (head, closed.or(below));
+    hc::spine_put(s, e, info);
     info
 }
 
@@ -1389,12 +1387,11 @@ fn spine(s: &Spaces, e: &Expr) -> (Expr, Option<Expr>) {
 /// `instantiate_n` pass, instead of one `subst_top` per argument, each rebuilding the body the next
 /// one rebuilds again. Arguments left over are applied to the result. `None` when the head is not a
 /// lambda, so the caller's one-argument path runs unchanged (and keeps a stuck spine's per-prefix
-/// cache entries).
-fn beta_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
+/// cache entries). `head` is the spine's, from [`spine`].
+fn beta_spine(s: &Spaces, e: &Expr, head: &Expr) -> Option<Expr> {
     // The head is reduced as the node the spine holds, so its cache entry is shared by every level
     // of the spine; the arguments are collected only once it is a lambda.
-    let (head, _) = spine(s, e);
-    let wh = whnf_in(s, &head);
+    let wh = whnf_in(s, head);
     let Node::Lam(_, first) = s.node(&wh) else { return None };
     let mut args: Vec<Expr> = Vec::new();
     let mut spine = *e;
@@ -1425,10 +1422,10 @@ fn beta_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
 /// reduces to a lambda: `P`'s head normal form (`hnf_rc`) is instantiated with the arguments. A closed function value used at several places with different arguments -- a Church
 /// boolean `xor_ a b` applied to each use's own continuations -- is then reduced once, not once per
 /// use, since the memo is keyed by `P`, not by the whole application. `None` when there is no such
-/// prefix or it does not reduce to a lambda; the arguments are collected only once it does.
-fn closed_prefix_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
-    let p = spine(s, e).1?;
-    let mut body = hnf_rc(s, &p);
+/// prefix (`p`, from [`spine`]) or it does not reduce to a lambda; the arguments are collected only
+/// once it does.
+fn closed_prefix_spine(s: &Spaces, e: &Expr, p: &Expr) -> Option<Expr> {
+    let mut body = hnf_rc(s, p);
     if !matches!(s.node(&body), Node::Lam(..)) {
         return None;
     }
@@ -1436,7 +1433,7 @@ fn closed_prefix_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
     let mut rest = *e;
     while let Node::App(g, b) = s.node(&rest) {
         args.push(b);
-        if s.same(&g, &p) {
+        if s.same(&g, p) {
             break;
         }
         rest = g;
@@ -1508,11 +1505,16 @@ fn under_lams(s: &Spaces, w: Expr) -> Expr {
 fn whnf_step(s: &Spaces, e: &Expr) -> Option<Expr> {
     grow(|| match s.node(e) {
         Node::App(f, a) => {
-            if let Some(r) = closed_prefix_spine(s, e) {
+            // `e`'s spine facts from `f`'s, asked for only as needed: `f` itself is the common
+            // closed prefix, and the head is wanted only once that shortcut fails.
+            let closed = if s.loose(&f) == 0 { Some(f) } else { spine(s, &f).1 };
+            if let Some(p) = closed
+                && let Some(r) = closed_prefix_spine(s, e, &p)
+            {
                 return Some(r);
             }
             if matches!(s.node(&f), Node::App(..))
-                && let Some(r) = beta_spine(s, e)
+                && let Some(r) = beta_spine(s, e, &spine(s, &f).0)
             {
                 return Some(r);
             }
