@@ -1,6 +1,6 @@
 # re-promotion under each operand order (ORDER=show|size), no promoted rules in force while mining; section-60 procedure:
 # round 1 mines mul/shl/lt, round 2 mines mul/shl/lt/shr with round 1's rules in force; every chosen rule is promoted
-k=$(cygpath -u "$TEMP")/kk/promo; rm -rf $k; mkdir -p $k; : > $k/empty.txt   # a Unix path: globs do not expand under $TEMP's backslashes
+k=$(bash "$(dirname "$0")/kk.sh")/promo; rm -rf $k; mkdir -p $k; : > $k/empty.txt   # a Unix path: globs do not expand under $TEMP's backslashes
 mine() { local order=$1 fam=$2 round=$3 base=$4; shift 4; local log=$k/${order}_r${round}_$fam.log t0=$(date +%s)
   env "$@" RULEMINER_FAMILY=$fam RULEMINER_BASE=$base PROMOTED_FILE=$k/empty.txt ORDER=$order RULEMINER_THREADS=2 cmd //c start "" //b //belownormal //affinity FFF //wait "$TEMP/bv_promo.exe" search::rule_miner --exact --ignored --nocapture > $log 2>&1
   echo "$order r$round $fam $(( $(date +%s) - t0 ))s" >> $k/done.txt; }

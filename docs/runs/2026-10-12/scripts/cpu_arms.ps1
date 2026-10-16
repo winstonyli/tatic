@@ -4,7 +4,7 @@
 param([string]$exe, [int]$rounds = 4, [Parameter(ValueFromRemainingArguments)][string[]]$arms)
 $s = Split-Path -Parent $MyInvocation.MyCommand.Path
 $env:CHECK_FAMILY = 'cmp3d'; $env:CHECK_RULES = "$s\cmp3d_own_rules.txt"; $env:RULEMINER_LAWS = '300'
-$out = "$env:TEMP\kk\cpu_arms_out.txt"
+$out = "$(& "$PSScriptRoot\kk.ps1")\cpu_arms_out.txt"
 # The exited process's peaks, read through the handle `Start-Process` keeps (`Process.PeakWorkingSet64` reads 0 after exit).
 Add-Type -Namespace K -Name Mem -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)] public struct PMC { public uint cb; public uint PageFaultCount; public UIntPtr PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage; }

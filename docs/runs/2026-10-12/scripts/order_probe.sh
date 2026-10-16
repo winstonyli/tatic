@@ -1,5 +1,5 @@
 # operand-order probe (ORDER=rev|size, ABLATE=comm, default sanity) and drop-floor salts 4-5; three lanes, 12 cores total
-k=$TEMP/kk; done_f=$k/order_done.txt; : > $done_f
+k=$(bash "$(dirname "$0")/kk.sh"); done_f=$k/order_done.txt; : > $done_f
 run() { exe=$1; tag=$2; salt=$3; sweep=$4; shift 4; out=$k/$tag; rm -rf $out; mkdir -p $out; s=$(date +%s)
   env "$@" SWEEP_OUT=$out SALT=$salt SWEEP="$sweep" cmd //c start "" //b //belownormal //affinity FFF //wait "$TEMP/$exe" driver::sweep --exact --ignored --nocapture > $out/log.txt 2>&1
   echo "$tag $(( $(date +%s) - s ))s" >> $done_f; }

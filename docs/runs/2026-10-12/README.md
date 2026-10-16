@@ -7,7 +7,11 @@ and libraries (43 MB) were not kept.
 - `rows/<run>/*.tsv`: the stage files of `driver::sweep` (`mines.tsv`: family, seconds, M; `own`/`cold`/`pooled.tsv`: column 4
   is M) or `m.tsv` of `driver::loop_stream`. Total a run with `bash scripts/sumrows.sh rows/<run>...`.
 - `scripts/`: as run, from Git Bash. They expect builds at `$TEMP/bv_<name>.exe` (copies of the `church_bv` test binary,
-  `cargo test --release --test church_bv --no-run`) and write to `$TEMP/kk`.
+  `cargo test --release --test church_bv --no-run`) and write to their checkout's run directory, `$TEMP/tatic-runs/<checkout
+  folder>` (`scripts/kk.sh`, `kk.ps1`), so each worktree has its own. Clear only your own run directory, never `tatic-runs`
+  itself. Until 2026-10-16 every checkout shared `$TEMP/kk`. One session's cleanup deleted it whole that day, so the run
+  directories named in the rows below up to then (`ts_*`, `nf_*`, `lhp/`, `wp*` and earlier) are gone; regenerate from the
+  commit.
 - `patches/`: `probe_promo.patch` (the temporary `ORDER=show|rev|size` switch over the three operand-order sites and
   `PROMOTED_FILE`, which replaces `PROMOTED` with a rule file), `heldout_lookahead.patch` (runners-up chosen by held-out
   finished value). Apply to the commit named below; both still apply cleanly to b7fde44.

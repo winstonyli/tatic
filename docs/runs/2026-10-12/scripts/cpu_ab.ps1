@@ -4,7 +4,7 @@
 param([string]$exe, [string]$var, [int]$pairs = 6, [string]$newexe = '', [string]$val = '1')
 $s = Split-Path -Parent $MyInvocation.MyCommand.Path
 $env:CHECK_FAMILY = 'cmp3d'; $env:CHECK_RULES = "$s\cmp3d_own_rules.txt"; $env:RULEMINER_LAWS = '300'
-$out = "$env:TEMP\kk\cpu_ab_out.txt"
+$out = "$(& "$PSScriptRoot\kk.ps1")\cpu_ab_out.txt"
 foreach ($i in 1..$pairs) {
     foreach ($tag in $(if ($i % 2) { 'old', 'new' } else { 'new', 'old' })) {
         $x = $exe
