@@ -163,3 +163,4 @@ and libraries (43 MB) were not kept.
 | `pt_*` | `sweep-worker` Task 2 (process-wide task state as `PerTask`, no worker yet) against 38c4e3d | `hc_seq.sh`, `gate_cmp.sh` | "A persistent worker for the sweep's children" |
 | `wk_*`, `lp_sweep_normal_91`, `wk/hc_rounds.txt` | `sweep-worker` (children as worker tasks) against 38c4e3d: gate; one `sweep_job.ps1` sweep for memory; timing | `hc_seq.sh`, `gate_cmp.sh`, `sweep_job.ps1`, `hc_rounds.ps1` | "A persistent worker for the sweep's children" |
 | `te_*`, `te/hc_rounds.txt` | `shared-tree-encs` (38c4e3d, process-wide `TREE_ENCS`) against 520829b: gate; timing | `hc_seq.sh`, `gate_cmp.sh`, `hc_rounds.ps1` | "Survey: long-lived sweep workers" (option 3) |
+| (no rows) | samply of one salt-1 worker sweep at 437f8f2 (line-table build; `sw15` in the session scratchpad, not kept) | samply `profile.ps1`, through an env-setting launcher | "Profile at 437f8f2, the worker sweep", "Survey: an in-memory lemma cache" |
