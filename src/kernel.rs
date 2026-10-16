@@ -354,6 +354,12 @@ impl Spaces {
         self.parents_at(self.res(e)) > 1
     }
 
+    /// The height of `e` as a tree (a leaf 0), saturating at 255.
+    #[inline(always)]
+    pub(crate) fn height(&self, e: &Expr) -> u8 {
+        self.height_at(self.res(e))
+    }
+
     #[inline(always)]
     pub(crate) fn same(&self, a: &Expr, b: &Expr) -> bool {
         self.res(a) == self.res(b)
@@ -967,18 +973,12 @@ mod hc {
         Some(LIST_BIT | n)
     }
 
-    fn height_at_most(s: &Spaces, x: &Expr, h: u32) -> bool {
-        let mut ok = true;
-        s.node(x).for_kids(|c, _| ok = ok && h > 0 && height_at_most(s, c, h - 1));
-        ok
-    }
-
     /// Whether `x` is too small for the instantiation memo to pay: at most two levels above its
     /// leaves. Rebuilding such a node is a few node-table probes; its memo entry cost a probe and an
     /// insert for a 36% hit rate (one level), and the cutoff at two beat one, three and four (doc
     /// section "Small nodes skip the instantiation memo").
     pub fn low(s: &Spaces, x: &Expr) -> bool {
-        height_at_most(s, x, 2)
+        s.height(x) <= 2
     }
 
     pub fn inst_get(s: &Spaces, x: &Expr, aid: Option<Aid>, d: u32) -> Option<Expr> {
