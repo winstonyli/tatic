@@ -17,7 +17,7 @@ Add-Type -Namespace K -Name Job -MemberDefinition @"
 $job = [K.Job]::CreateJobObject([IntPtr]::Zero, $null)
 if (-not [K.Job]::AssignProcessToJobObject($job, (Get-Process -Id $PID).Handle)) { throw 'assign failed' }
 if ($arm -eq 'normal') { $env:MIMALLOC_ALLOW_LARGE_OS_PAGES = '0' }
-$out = "$env:TEMP\kk\lp_sweep_${arm}_$r"; if (Test-Path $out) { Remove-Item -Recurse -Force $out }; New-Item -ItemType Directory $out | Out-Null
+$out = "$(& "$PSScriptRoot\kk.ps1")\lp_sweep_${arm}_$r"; if (Test-Path $out) { Remove-Item -Recurse -Force $out }; New-Item -ItemType Directory $out | Out-Null
 $env:SWEEP_OUT = $out; $env:SALT = '1'; $env:SWEEP = 'mines own cold pooled'
 $t = Get-Date
 $p = Start-Process -FilePath $exe -ArgumentList 'driver::sweep','--exact','--ignored','--nocapture' -PassThru -NoNewWindow -RedirectStandardOutput "$out\log.txt" -RedirectStandardError "$out\err.txt"

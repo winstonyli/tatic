@@ -7,7 +7,11 @@ and libraries (43 MB) were not kept.
 - `rows/<run>/*.tsv`: the stage files of `driver::sweep` (`mines.tsv`: family, seconds, M; `own`/`cold`/`pooled.tsv`: column 4
   is M) or `m.tsv` of `driver::loop_stream`. Total a run with `bash scripts/sumrows.sh rows/<run>...`.
 - `scripts/`: as run, from Git Bash. They expect builds at `$TEMP/bv_<name>.exe` (copies of the `church_bv` test binary,
-  `cargo test --release --test church_bv --no-run`) and write to `$TEMP/kk`.
+  `cargo test --release --test church_bv --no-run`) and write to their checkout's run directory, `$TEMP/tatic-runs/<checkout
+  folder>` (`scripts/kk.sh`, `kk.ps1`), so each worktree has its own. Clear only your own run directory, never `tatic-runs`
+  itself. Until 2026-10-16 every checkout shared `$TEMP/kk`. One session's cleanup deleted it whole that day, so the run
+  directories named in the rows below up to then (`ts_*`, `nf_*`, `lhp/`, `wp*` and earlier) are gone; regenerate from the
+  commit.
 - `patches/`: `probe_promo.patch` (the temporary `ORDER=show|rev|size` switch over the three operand-order sites and
   `PROMOTED_FILE`, which replaces `PROMOTED` with a rule file), `heldout_lookahead.patch` (runners-up chosen by held-out
   finished value). Apply to the commit named below; both still apply cleanly to b7fde44.
@@ -175,3 +179,4 @@ and libraries (43 MB) were not kept.
 | `nf_*` (the height-only build), `nf/hc_rounds.txt` (the height-and-size build) | `node-facts` against 1442f73 (the `ts_new.exe` build of 8c31ab9; 1442f73 changed docs only): gate; timing; samply profile of the height-and-size build (`sw21` in the session scratchpad, not kept) | `hc_seq.sh`, `gate_cmp.sh`, `hc_rounds.ps1`, samply `profile.ps1`, `sw_where.py` | "Kernel nodes keep their height" |
 | `lhp/` (`lhp.exe`, the probe build) | `large` decided on height: per `check_in`, the walk against height cutoffs 32/64/128/255 (throwaway on 23f46da, reverted) | one salt-1 sweep, `LARGE_PROBE` stderr lines in the serve and mine logs | "Kernel nodes keep their height" (the height probe) |
 | `wp_s{1,2}{cold,warm}_*`, `wpg_{old,new}_{1,2}` (old = cold, new = warm), `wp_keep.bin`, `wp.exe` (the probe build) | Lemma library kept across sweeps (`LEMMA_KEEP`, throwaway on 4c87ca9, reverted): salt 1 cold, salt 1 warm, salt 2 warm on salt 1's file, salt 2 cold | `sweep_job.ps1` (copy with salt and keep parameters), `gate_cmp.sh` | "Survey: keep the lemma library across sweeps of one build?" |
+| (not kept: `$TEMP/perun/kk/pe_*`, `hc_rounds.txt`) | `presize-exceeds` against cd9dbc1: gate; timing | `hc_seq.sh`, `gate_cmp.sh`, `hc_rounds.ps1` (run with `TEMP` pointed at `$TEMP/perun`, before the run-directory change) | "`exceeds` presizes its node set" |

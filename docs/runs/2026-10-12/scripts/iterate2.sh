@@ -1,5 +1,5 @@
 # iterated sweep, continued: the existing pooled stage on iteration k's libraries, then iteration k+1 (`mines own`) seeded from it
-k=$(cygpath -u "$TEMP")/kk; : > $k/it2_done.txt
+k=$(bash "$(dirname "$0")/kk.sh"); : > $k/it2_done.txt
 pooled() { local dir=$1 salt=$2 t0=$(date +%s)
   SWEEP_OUT=$dir SALT=$salt SWEEP=pooled cmd //c start "" //b //belownormal //affinity FFF //wait "$TEMP/bv_it.exe" driver::sweep --exact --ignored --nocapture > $dir/log_pooled.txt 2>&1
   echo "$(basename $dir) pooled $(( $(date +%s) - t0 ))s" >> $k/it2_done.txt; }

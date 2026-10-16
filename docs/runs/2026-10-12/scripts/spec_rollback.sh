@@ -1,7 +1,7 @@
 # usage: spec_rollback.sh <exe> [<baseline exe>]: an add3 ref mine (RULEMINER_FAST=1, salt 1) offered false but attractive
 # candidates (RULEMINER_EXTRA), so winners fail their proofs: main-path rounds roll back and lookahead plays again; prints the failed
 # proofs and the chosen rules, and with a baseline exe (one proving winners in turn) diffs the chosen rules against its own
-k=$(cygpath -u "$TEMP")/kk/spec_rollback; rm -rf $k; mkdir -p $k
+k=$(bash "$(dirname "$0")/kk.sh")/spec_rollback; rm -rf $k; mkdir -p $k
 # the first three win main-path rounds; the last four win only on lookahead's greedy paths, which then play again
 printf 'sub(x, y) -> x\nadd(x, y) -> x\nadd(add(x, y), z) -> add(x, z)\nsub(add(x, y), z) -> add(x, z)\nsub(x, add(y, z)) -> sub(x, y)\nadd(sub(x, y), z) -> sub(z, y)\nsub(sub(x, y), z) -> sub(x, z)\n' > $k/false.rules
 run() { out=$k/$1; mkdir -p $out

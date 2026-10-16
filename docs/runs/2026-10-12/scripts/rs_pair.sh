@@ -1,5 +1,5 @@
 # usage: rs_pair.sh: HEAD (bv_base.exe, 34ea646) and the rule list built once (bv_rs.exe) side by side, same load, salts 1 and 2
-k=$(cygpath -u "$TEMP")/kk; rm -f $k/rsp_done.txt
+k=$(bash "$(dirname "$0")/kk.sh"); rm -f $k/rsp_done.txt
 run() { exe=$1; tag=$2; salt=$3; out=$k/rsp_${tag}_$salt; rm -rf $out; mkdir -p $out; s=$(date +%s)
   SWEEP_OUT=$out SALT=$salt SWEEP="mines own pooled" cmd //c start "" //b //belownormal //affinity FFF //wait "$TEMP/$exe" driver::sweep --exact --ignored --nocapture > $out/log.txt 2>&1
   echo "$tag $salt $(( $(date +%s) - s ))s" >> $k/rsp_done.txt; }

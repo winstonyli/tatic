@@ -764,18 +764,20 @@ fn whnf_keeps_the_stuck_part_it_was_given() {
     assert!(node_key(&got) == node_key(&stuck));
 }
 
-/// `nf` and `def_eq` on stuck spines 8,000 applications deep, one of
+/// `nf` and `def_eq` on stuck spines 16,000 applications deep, one of
 /// them with a redex for its head. At 2,000 each took over 10 s in a
 /// debug build when every level re-reduced the spine below it
 /// (`RELATED_WORK.md` §59), and 0.7 s when every level walked it
-/// (§79). Timed against spines an eighth as deep: about 15x now, 64x if
-/// quadratic. Below about 1,000 the spines stay in cache and the ratio
-/// overstates the growth. Every run gets fresh variables so no memo
+/// (§79). Timed against spines a sixteenth as deep: 17-35x in a debug
+/// build now, 256x if quadratic. Below about 1,000 the spines stay in
+/// cache and the ratio overstates the growth. At an eighth, a quadratic
+/// kernel measured 41-65x against a bound of 30 and passed one run in
+/// six under load. Every run gets fresh variables so no memo
 /// carries over.
 #[test]
 fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
     let fresh = std::cell::Cell::new(0);
-    assert_scales("stuck spine", 1000, 8000, 30, move |depth| {
+    assert_scales("stuck spine", 1000, 16000, 80, move |depth| {
         let v = fresh.get();
         fresh.set(v + 3);
         let spine = |head: Expr| (0..depth).fold(head, |t, i| app(t, var(v + i % 3)));
@@ -876,7 +878,7 @@ fn infer_memo_skips_unused_inner_binders() {
 /// debug); the spine at once copies them once (under 5 ms).
 #[test]
 fn infer_types_an_application_spine_at_once() {
-    assert_scales("infer on a spine", 500, 4000, 30, |k| {
+    assert_scales("infer on a spine", 500, 8000, 80, |k| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         let a = p.push(p.get(a_ty));
@@ -906,13 +908,13 @@ fn infer_memo_keeps_same_length_contexts_apart() {
     assert!(infer(&Ctx::new(), &id(sort(1), good, bad)).is_err());
 }
 
-/// `def_eq` on two right-nested chains `f (f (... x))`, 8,000 deep,
+/// `def_eq` on two right-nested chains `f (f (... x))`, 16,000 deep,
 /// that differ only at the bottom. `conv` used to try a structural `==`
 /// at every level, each walking down to the bottom again: 23 s in a
 /// debug build (`RELATED_WORK.md` §61). `==` is now one id comparison.
 #[test]
 fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
-    assert_scales("def_eq on chains", 1000, 8000, 30, |n| {
+    assert_scales("def_eq on chains", 1000, 16000, 80, |n| {
         let chain = |bottom: Expr| (0..n).fold(bottom, |t, _| app(var(0), t));
         let (a, b) = (chain(var(1)), chain(var(2)));
         let t = std::time::Instant::now();
