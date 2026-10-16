@@ -28,6 +28,50 @@ fn hc_args_id(args: &[&Expr]) -> Option<Aid> {
 fn hc_lowest_loose(x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
     with_spaces(|s| hc::lowest_loose(s, x, d, memo))
 }
+
+/// Asserts `run(large)` takes under `max_ratio` times `run(small)` (plus 5 ms of timer noise),
+/// for one of three small-then-large pairs. `run(n)` builds its size-`n` terms and returns the
+/// time of the work alone. A ratio holds under load where a wall budget fails: both runs of a pair
+/// slow down together. The runs go on a thread of their own: a small one gets 10 s, a large one
+/// ten times its budget plus 2 s, so a regression to quadratic or exponential time fails within
+/// seconds instead of hanging the suite. For runs of microseconds the 5 ms dominates, and the
+/// check reads "the large size stays cheap": pick it so a walk of the tree would take seconds.
+fn assert_scales(what: &str, small: u32, large: u32, max_ratio: u32, run: impl Fn(u32) -> std::time::Duration + Send + 'static) {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
+    use std::time::Duration;
+    struct Stop(Arc<AtomicBool>);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+    let stop = Stop(Arc::new(AtomicBool::new(false)));
+    let (tx, rx) = mpsc::channel();
+    let flag = stop.0.clone();
+    std::thread::spawn(move || {
+        for n in [small, large].repeat(3) {
+            if flag.load(Ordering::Relaxed) || tx.send(run(n)).is_err() {
+                return;
+            }
+        }
+    });
+    let next = |n: u32, wait: Duration, done: &[(Duration, Duration)]| match rx.recv_timeout(wait) {
+        Ok(t) => t,
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("{what}: n = {n} still running after {wait:?}, done {done:?}"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("{what}: a run panicked"),
+    };
+    let mut pairs = vec![];
+    for _ in 0..3 {
+        let short = next(small, Duration::from_secs(10), &pairs);
+        let budget = short * max_ratio + Duration::from_millis(5);
+        let long = next(large, budget * 10 + Duration::from_secs(2), &pairs);
+        if long < budget {
+            return;
+        }
+        pairs.push((short, long));
+    }
+    panic!("{what}: (n = {small}, n = {large}) took {pairs:?}, over {max_ratio}x each");
+}
 fn hc_whnf_get(x: &Expr) -> Option<Expr> {
     with_spaces(|s| hc::whnf_get(s, x))
 }
@@ -146,15 +190,17 @@ fn instantiate_ref(e: &Expr, s: &Expr, d: u32) -> Expr {
 /// A DAG whose tree is 2^60 nodes prints as about 400 characters, at once (doc section 82).
 #[test]
 fn brief_bounds_the_text_of_an_exponential_tree() {
-    let mut e = sort(0);
-    for _ in 0..60 {
-        e = app(e, e);
-    }
-    let t = std::time::Instant::now();
-    let text = brief(&e);
+    let tree = |n| (0..n).fold(sort(0), |e, _| app(e, e));
+    let text = brief(&tree(60));
     assert!(text.len() <= 400 + 4, "{} chars", text.len());
     assert!(text.ends_with(" ..."));
-    assert!(t.elapsed() < std::time::Duration::from_millis(100), "took {:?}", t.elapsed());
+    // 2^10 leaves already overflow the text.
+    assert_scales("brief", 10, 60, 30, move |n| {
+        let e = tree(n);
+        let t = std::time::Instant::now();
+        brief(&e);
+        t.elapsed()
+    });
     assert_eq!(brief(&sort(3)), "Type3");
 }
 
@@ -576,16 +622,15 @@ fn args_id_is_stable_for_short_and_long_lists() {
 
 #[test]
 fn subst_top_leaves_an_unused_argument_alone() {
-    // 21 distinct nodes, a million as a tree: copying it takes about a
+    // n + 1 distinct nodes, 2^n as a tree: copying 2^20 takes about a
     // second in a debug build, and the shortcut doesn't look at it.
-    let mut s = var(0);
-    for _ in 0..20 {
-        s = app(s, s);
-    }
-    let body = pi(var(3), var(4));
-    let t = std::time::Instant::now();
-    assert_eq!(subst_top(&body, &s), pi(var(2), var(3)));
-    assert!(t.elapsed() < std::time::Duration::from_millis(50), "took {:?}", t.elapsed());
+    assert_scales("subst_top", 10, 20, 4, |n| {
+        let s = (0..n).fold(var(0), |s, _| app(s, s));
+        let body = pi(var(3), var(4));
+        let t = std::time::Instant::now();
+        assert_eq!(subst_top(&body, &s), pi(var(2), var(3)));
+        t.elapsed()
+    });
 }
 
 /// Substituting under binders shifts the argument once, where it's used,
@@ -620,18 +665,17 @@ fn subst_top_shifts_a_used_argument_once() {
 /// sides and comparing takes about 0.3 s at n = 14.
 #[test]
 fn def_eq_answers_equal_sides_without_normalising() {
-    let doubling = || {
-        let mut t = var(0);
-        for _ in 0..14 {
-            t = app(lam(sort(0), app(var(0), var(0))), t);
-        }
-        t
-    };
-    let (a, b) = (doubling(), doubling());
-    let t = std::time::Instant::now();
-    assert!(def_eq(&a, &b));
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(5), "took {took:?}");
+    assert_scales("def_eq equal sides", 7, 14, 4, |n| {
+        let (a, b) = (doubling(n), doubling(n));
+        let t = std::time::Instant::now();
+        assert!(def_eq(&a, &b));
+        t.elapsed()
+    });
+}
+
+/// `d (d (... (d x)))`, `n` deep, with `d = \x. x x`: a normal form of 2^n nodes.
+fn doubling(n: u32) -> Expr {
+    (0..n).fold(var(0), |t, _| app(lam(sort(0), app(var(0), var(0))), t))
 }
 
 /// `def_eq` compares weak head normal forms and recurses into the
@@ -640,20 +684,14 @@ fn def_eq_answers_equal_sides_without_normalising() {
 /// doubling term and only the codomains need reducing.
 #[test]
 fn def_eq_normalises_only_where_the_sides_differ() {
-    let doubling = || {
-        let mut t = var(0);
-        for _ in 0..14 {
-            t = app(lam(sort(0), app(var(0), var(0))), t);
-        }
-        t
-    };
-    let a = pi(doubling(), app(lam(sort(1), var(0)), sort(0)));
-    let b = pi(doubling(), sort(0));
-    let t = std::time::Instant::now();
-    assert!(def_eq(&a, &b));
-    assert!(!def_eq(&a, &pi(doubling(), sort(1))));
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(5), "took {took:?}");
+    assert_scales("def_eq shared domains", 7, 14, 4, |n| {
+        let a = pi(doubling(n), app(lam(sort(1), var(0)), sort(0)));
+        let (b, c) = (pi(doubling(n), sort(0)), pi(doubling(n), sort(1)));
+        let t = std::time::Instant::now();
+        assert!(def_eq(&a, &b));
+        assert!(!def_eq(&a, &c));
+        t.elapsed()
+    });
 }
 
 /// Wraps some of `e`'s subterms in a redex that reduces back to them,
@@ -730,36 +768,24 @@ fn whnf_keeps_the_stuck_part_it_was_given() {
 /// them with a redex for its head. At 2,000 each took over 10 s in a
 /// debug build when every level re-reduced the spine below it
 /// (`RELATED_WORK.md` §59), and 0.7 s when every level walked it
-/// (§79). Timed against spines an eighth as deep, so it holds under
-/// load: about 15x now, 64x if quadratic. Below about 1,000 the spines
-/// stay in cache and the ratio overstates the growth. Best of three
-/// each, and every run gets fresh variables so no memo carries over.
+/// (§79). Timed against spines an eighth as deep: about 15x now, 64x if
+/// quadratic. Below about 1,000 the spines stay in cache and the ratio
+/// overstates the growth. Every run gets fresh variables so no memo
+/// carries over.
 #[test]
 fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
-    let mut fresh = 0;
-    let mut best = |depth: u32| {
-        (0..3)
-            .map(|_| {
-                fresh += 3;
-                let spine = |head: Expr| {
-                    let mut t = head;
-                    for i in 0..depth {
-                        t = app(t, var(fresh + i % 3));
-                    }
-                    t
-                };
-                let (a, b) = (spine(var(fresh)), spine(app(lam(sort(0), var(0)), var(fresh + 1))));
-                let t = std::time::Instant::now();
-                assert_eq!(nf(&a), a);
-                assert_eq!(nf(&b), spine(var(fresh + 1)));
-                assert!(!def_eq(&a, &b));
-                t.elapsed()
-            })
-            .min()
-            .unwrap()
-    };
-    let (short, long) = (best(1000), best(8000));
-    assert!(long < short * 30 + std::time::Duration::from_millis(5), "took {long:?}, an eighth as deep {short:?}");
+    let fresh = std::cell::Cell::new(0);
+    assert_scales("stuck spine", 1000, 8000, 30, move |depth| {
+        let v = fresh.get();
+        fresh.set(v + 3);
+        let spine = |head: Expr| (0..depth).fold(head, |t, i| app(t, var(v + i % 3)));
+        let (a, b, nf_b) = (spine(var(v)), spine(app(lam(sort(0), var(0)), var(v + 1))), spine(var(v + 1)));
+        let t = std::time::Instant::now();
+        assert_eq!(nf(&a), a);
+        assert_eq!(nf(&b), nf_b);
+        assert!(!def_eq(&a, &b));
+        t.elapsed()
+    });
 }
 
 /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a
@@ -767,23 +793,21 @@ fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
 /// tree (`RELATED_WORK.md` §63). Postulates as `Const`s, per stage 3.
 #[test]
 fn infer_is_linear_in_the_dag_of_a_shared_term() {
-    let mut p = Postulates::new();
-    let a_ty = p.push(sort(0));
-    p.push(p.get(a_ty));
-    p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
-    p.push(arrow(p.get(a_ty), p.get(a_ty)));
-    let mut d = p.get(1);
-    for _ in 0..20 {
-        d = app(app(p.get(2), d), d);
-    }
-    let t = std::time::Instant::now();
-    assert_eq!(p.infer(&d), Ok(p.get(0)));
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+    assert_scales("infer on a DAG", 10, 20, 8, |n| {
+        let mut p = Postulates::new();
+        let a_ty = p.push(sort(0));
+        p.push(p.get(a_ty));
+        p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
+        p.push(arrow(p.get(a_ty), p.get(a_ty)));
+        let d = (0..n).fold(p.get(1), |d, _| app(app(p.get(2), d), d));
+        let t = std::time::Instant::now();
+        assert_eq!(p.infer(&d), Ok(p.get(0)));
+        t.elapsed()
+    });
 }
 
-/// `b(i) = k ((λh:A. b(i+1)) a) ((λh:A→A. b(i+1)) f)`, 30 deep under
-/// `λx:A`, with `b(30) = x`. Each shared `b(i+1)` mentions only `x`,
+/// `b(i) = k ((λh:A. b(i+1)) a) ((λh:A→A. b(i+1)) f)`, `n` deep under
+/// `λx:A`, with `b(n) = x`. Each shared `b(i+1)` mentions only `x`,
 /// but sits under one more binder `h` per level, two types each. A memo
 /// key covering every binder down to `x` sees 2^i contexts at level i;
 /// skipping the binders below the lowest loose variable sees one. The
@@ -791,48 +815,45 @@ fn infer_is_linear_in_the_dag_of_a_shared_term() {
 /// binders the same way.
 #[test]
 fn infer_memo_skips_unused_inner_binders() {
-    let mut p = Postulates::new();
-    let a_ty = p.push(sort(0));
-    let a = p.push(p.get(a_ty));
-    let f = p.push(arrow(p.get(a_ty), p.get(a_ty)));
-    let k = p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
-    let depth = 30;
-    let mut b = var(depth);
-    for _ in 0..depth {
-        let under = |ty: Expr, arg: usize| app(lam(ty, b), p.get(arg));
-        let (l, r) = (under(p.get(a_ty), a), under(arrow(p.get(a_ty), p.get(a_ty)), f));
-        b = app(app(p.get(k), l), r);
-    }
-    let e = lam(p.get(a_ty), b);
-    let t = std::time::Instant::now();
-    assert_eq!(p.infer(&e), Ok(arrow(p.get(a_ty), p.get(a_ty))));
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+    assert_scales("infer under unused binders", 10, 20, 8, |depth| {
+        let mut p = Postulates::new();
+        let a_ty = p.push(sort(0));
+        let a = p.push(p.get(a_ty));
+        let f = p.push(arrow(p.get(a_ty), p.get(a_ty)));
+        let k = p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
+        let mut b = var(depth);
+        for _ in 0..depth {
+            let under = |ty: Expr, arg: usize| app(lam(ty, b), p.get(arg));
+            let (l, r) = (under(p.get(a_ty), a), under(arrow(p.get(a_ty), p.get(a_ty)), f));
+            b = app(app(p.get(k), l), r);
+        }
+        let e = lam(p.get(a_ty), b);
+        let t = std::time::Instant::now();
+        assert_eq!(p.infer(&e), Ok(arrow(p.get(a_ty), p.get(a_ty))));
+        t.elapsed()
+    });
 }
 
-/// `f a ... a` with 1,000 arguments, `f : Π x_1 .. x_1000 : A. Id(A, s, s)`, `s = g x_1 .. x_1000`.
+/// `f a ... a` with `k` arguments, `f : Π x_1 .. x_k : A. Id(A, s, s)`, `s = g x_1 .. x_k`.
 /// The codomain mentions every binder, so typing one argument at a time copied the rest of the
-/// telescope and of `s` at each, about a million nodes (0.64 s in release, 4.6 s in debug); the
-/// spine at once copies them once (under 5 ms).
+/// telescope and of `s` at each, about a million nodes at k = 1,000 (0.64 s in release, 4.6 s in
+/// debug); the spine at once copies them once (under 5 ms).
 #[test]
 fn infer_types_an_application_spine_at_once() {
-    let k = 1000;
-    let mut p = Postulates::new();
-    let a_ty = p.push(sort(0));
-    let a = p.push(p.get(a_ty));
-    let g = p.push((0..k).fold(p.get(a_ty), |t, _| pi(p.get(a_ty), t)));
-    let s = (0..k).fold(p.get(g), |s, j| app(s, var(k - 1 - j)));
-    let mut f_ty = id(p.get(a_ty), s, s);
-    for _ in 0..k {
-        f_ty = pi(p.get(a_ty), f_ty);
-    }
-    let f = p.push(f_ty);
-    let e = (0..k).fold(p.get(f), |e, _| app(e, p.get(a)));
-    let s_a = (0..k).fold(p.get(g), |s, _| app(s, p.get(a)));
-    let t = std::time::Instant::now();
-    assert_eq!(p.infer(&e), Ok(id(p.get(a_ty), s_a, s_a)));
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(100), "took {took:?}");
+    assert_scales("infer on a spine", 500, 4000, 30, |k| {
+        let mut p = Postulates::new();
+        let a_ty = p.push(sort(0));
+        let a = p.push(p.get(a_ty));
+        let g = p.push((0..k).fold(p.get(a_ty), |t, _| pi(p.get(a_ty), t)));
+        let s = (0..k).fold(p.get(g), |s, j| app(s, var(k - 1 - j)));
+        let f_ty = (0..k).fold(id(p.get(a_ty), s, s), |t, _| pi(p.get(a_ty), t));
+        let f = p.push(f_ty);
+        let e = (0..k).fold(p.get(f), |e, _| app(e, p.get(a)));
+        let s_a = (0..k).fold(p.get(g), |s, _| app(s, p.get(a)));
+        let t = std::time::Instant::now();
+        assert_eq!(p.infer(&e), Ok(id(p.get(a_ty), s_a, s_a)));
+        t.elapsed()
+    });
 }
 
 /// One node shared under two different binder types has two types.
@@ -855,18 +876,13 @@ fn infer_memo_keeps_same_length_contexts_apart() {
 /// debug build (`RELATED_WORK.md` §61). `==` is now one id comparison.
 #[test]
 fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
-    let chain = |bottom: Expr| {
-        let mut t = bottom;
-        for _ in 0..8000 {
-            t = app(var(0), t);
-        }
-        t
-    };
-    let (a, b) = (chain(var(1)), chain(var(2)));
-    let t = std::time::Instant::now();
-    assert!(!def_eq(&a, &b));
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+    assert_scales("def_eq on chains", 1000, 8000, 30, |n| {
+        let chain = |bottom: Expr| (0..n).fold(bottom, |t, _| app(var(0), t));
+        let (a, b) = (chain(var(1)), chain(var(2)));
+        let t = std::time::Instant::now();
+        assert!(!def_eq(&a, &b));
+        t.elapsed()
+    });
 }
 
 /// `whnf` keeps each argument's node rather than copying it into
@@ -2454,27 +2470,25 @@ fn check_open_types_a_parameter_in_a_dependent_context() {
     p.abandon(s);
 }
 
-/// `d(k+1) = f d(k) d(k)` over a parameter, 30 levels deep: a
-/// billion leaves as a tree, 64 nodes as a DAG. Without its memo
-/// `close` walked and copied the tree.
+/// `d(k+1) = f d(k) d(k)` over a parameter, `n` levels deep: 2^n
+/// leaves as a tree, 2n + 4 nodes as a DAG. Without its memo `close`
+/// walked and copied the tree.
 #[test]
 fn close_is_linear_in_the_dag_of_a_shared_body() {
-    const DEPTH: usize = 30;
-    let mut p = Postulates::new();
-    let a = p.push(sort(0));
-    let f = p.push(arrow(p.get(a), arrow(p.get(a), p.get(a))));
-    let s = p.open();
-    let mut d = p.bind(p.get(a));
-    for _ in 0..DEPTH {
-        d = app(app(p.get(f), d), d);
-    }
-    let t = std::time::Instant::now();
-    let closed = p.close(s, Binder::Lam, d);
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(50), "took {took:?}");
-    // The Lam, its domain, the base `Var`, the one `f` node, and 2 `App`s per level.
-    assert_eq!(term_sizes(&closed).0, 2 * DEPTH + 4);
-    assert!(p.check(&closed, &arrow(p.get(a), p.get(a))).is_ok());
+    assert_scales("close", 10, 20, 8, |n| {
+        let mut p = Postulates::new();
+        let a = p.push(sort(0));
+        let f = p.push(arrow(p.get(a), arrow(p.get(a), p.get(a))));
+        let s = p.open();
+        let d = (0..n).fold(p.bind(p.get(a)), |d, _| app(app(p.get(f), d), d));
+        let t = std::time::Instant::now();
+        let closed = p.close(s, Binder::Lam, d);
+        let took = t.elapsed();
+        // The Lam, its domain, the base `Var`, the one `f` node, and 2 `App`s per level.
+        assert_eq!(term_sizes(&closed).0, 2 * n as usize + 4);
+        assert!(p.check(&closed, &arrow(p.get(a), p.get(a))).is_ok());
+        took
+    });
 }
 
 /// `scoped` escapes its result only in the call that opened the scope, and a panic inside it still closes the scope.
