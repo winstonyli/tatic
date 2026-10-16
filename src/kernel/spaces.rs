@@ -111,24 +111,27 @@ struct Space {
     uses: Vec<u32>,
     /// Per node, the nodes built over it, saturating at 2 (`Expr::shared`).
     parents: Vec<u8>,
+    /// Per node, its height (a leaf 0), saturating: what `hc::low` asks without a walk.
+    height: Vec<u8>,
     /// Each node's hash and `Ref`: 8 bytes an entry.
     table: hashbrown::HashTable<(u32, Ref)>,
 }
 
 impl Space {
     const fn new() -> Space {
-        Space { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), parents: Vec::new(), table: hashbrown::HashTable::new() }
+        Space { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), parents: Vec::new(), height: Vec::new(), table: hashbrown::HashTable::new() }
     }
     fn find(&self, h: u32, n: &Node<Ref>) -> Option<Ref> {
         self.table.find(spread(h), |&(g, r)| g == h && self.nodes[r.index()] == *n).map(|&(_, r)| r)
     }
-    fn push(&mut self, region: bool, h: u32, n: Node<Ref>, (loose, free): (u32, u32), parents: u8) -> Ref {
+    fn push(&mut self, region: bool, h: u32, n: Node<Ref>, (loose, free): (u32, u32), parents: u8, height: u8) -> Ref {
         let r = Ref::new(region, self.nodes.len());
         self.nodes.push(n);
         self.loose.push(loose);
         self.free.push(free);
         self.uses.push(0);
         self.parents.push(parents);
+        self.height.push(height);
         self.table.insert_unique(spread(h), (h, r), |&(g, _)| spread(g));
         r
     }
@@ -138,6 +141,7 @@ impl Space {
         reset_vec(&mut self.free);
         reset_vec(&mut self.uses);
         reset_vec(&mut self.parents);
+        reset_vec(&mut self.height);
         let used = self.table.len();
         self.table.clear();
         if used < self.table.capacity() / 4 {
@@ -292,6 +296,10 @@ impl Spaces {
         self.space(r).parents[r.index()]
     }
     #[inline(always)]
+    pub(crate) fn height_at(&self, r: Ref) -> u8 {
+        self.space(r).height[r.index()]
+    }
+    #[inline(always)]
     pub(crate) fn uses_at(&self, r: Ref) -> u32 {
         self.space(r).uses[r.index()]
     }
@@ -333,12 +341,18 @@ impl Spaces {
             let at = |c: &Ref| if c.in_region() { g } else { p };
             n.ranges(|c| at(c).loose[c.index()], |c| at(c).free[c.index()])
         };
+        let height = {
+            let (p, g) = (&i.persistent, &i.region);
+            let mut height = 0u8;
+            n.for_kids(|c, _| height = height.max((if c.in_region() { g } else { p }).height[c.index()].saturating_add(1)));
+            height
+        };
         n.for_kids(|c, _| {
             let s = if c.in_region() { &mut i.region } else { &mut i.persistent };
             let p = &mut s.parents[c.index()];
             *p = p.saturating_add(1).min(2);
         });
-        if in_region { i.region.push(true, h, n, ranges, 0) } else { i.persistent.push(false, h, n, ranges, 0) }
+        if in_region { i.region.push(true, h, n, ranges, 0, height) } else { i.persistent.push(false, h, n, ranges, 0, height) }
     }
 
     /// `r` (resolved) as a persistent `Ref`. The region nodes reachable from it are copied out bottom-up, each once per
@@ -361,7 +375,7 @@ impl Spaces {
         let i = self.inner();
         let h = hash(&m);
         debug_assert!(i.persistent.find(h, &m).is_none(), "persist met a copy it did not make (Invariant I)");
-        let p = i.persistent.push(false, h, m, (i.region.loose[k], i.region.free[k]), i.region.parents[k]);
+        let p = i.persistent.push(false, h, m, (i.region.loose[k], i.region.free[k]), i.region.parents[k], i.region.height[k]);
         i.twins.push(r);
         debug_assert_eq!(i.w as usize + i.twins.len(), i.persistent.nodes.len());
         if i.copies.len() <= k {
@@ -430,6 +444,27 @@ mod tests {
         assert_eq!((s.loose_at(l), s.free_at(l)), (0, 3));
         let z = s.build(Sort(0));
         assert_eq!(s.loose_at(s.build(Pair(v, z, z))), 3, "a pair's family sits under a binder");
+    }
+
+    /// `height_at` is the tree's height (a leaf 0), in both spaces and through `persist`.
+    #[test]
+    fn nodes_keep_their_height() {
+        fn walk(s: &Spaces, r: Ref) -> u8 {
+            let mut h = 0;
+            s.node_at(r).for_kids(|c, _| h = h.max(walk(s, *c) + 1));
+            h
+        }
+        let s = Spaces::new();
+        let v = s.build(Var(0));
+        let a = s.build(App(v, v));
+        let l = s.build(Lam(a, s.build(Pair(a, v, s.build(Sort(0))))));
+        assert!(s.open());
+        let t = s.build(App(l, s.build(Var(5))));
+        for r in [v, a, l, t, s.persist(t)] {
+            assert_eq!(s.height_at(r), walk(&s, r));
+        }
+        assert_eq!(s.height_at(t), 4);
+        s.close();
     }
 
     #[test]
