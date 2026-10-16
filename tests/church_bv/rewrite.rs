@@ -799,6 +799,9 @@ pub enum Plan {
     Sym(PlanRc),
     /// the closed law `lhs = rhs` over the pattern variables `V(0..)`, at the terms `args` (one per variable)
     Law(LawKind, Term, Term, Vec<Term>),
+    /// any step taken while counting (`SCORE_ONLY`), which compiles no plan: the constructors share one, so scoring allocates
+    /// none (they were 1.6% of a sweep's samples; docs/tier-cycle.md, "Survey: the lemmas and the allocator")
+    Counting,
 }
 pub type PlanRc = std::rc::Rc<Plan>;
 
@@ -820,20 +823,27 @@ pub enum LawKind {
 }
 
 impl Plan {
+    /// `make()`, or while counting the shared `Plan::Counting`.
+    fn new(make: impl FnOnce() -> Plan) -> PlanRc {
+        thread_local! {
+            static COUNTING: PlanRc = PlanRc::new(Plan::Counting);
+        }
+        if SCORE_ONLY.with(|s| s.get()) { COUNTING.with(PlanRc::clone) } else { PlanRc::new(make()) }
+    }
     pub fn refl(t: &Term) -> PlanRc {
-        PlanRc::new(Plan::Refl(*t))
+        Plan::new(|| Plan::Refl(*t))
     }
     pub fn cong(o: usize, a: PlanRc, b: PlanRc) -> PlanRc {
-        PlanRc::new(Plan::Cong(o, a, b))
+        Plan::new(|| Plan::Cong(o, a, b))
     }
     pub fn trans(a: PlanRc, b: PlanRc) -> PlanRc {
-        PlanRc::new(Plan::Trans(a, b))
+        Plan::new(|| Plan::Trans(a, b))
     }
     pub fn sym(a: PlanRc) -> PlanRc {
-        PlanRc::new(Plan::Sym(a))
+        Plan::new(|| Plan::Sym(a))
     }
     pub fn law(kind: LawKind, lhs: Term, rhs: Term, args: Vec<Term>) -> PlanRc {
-        PlanRc::new(Plan::Law(kind, lhs, rhs, args))
+        Plan::new(|| Plan::Law(kind, lhs, rhs, args))
     }
 }
 
@@ -869,6 +879,7 @@ impl Compiler {
     pub fn proof(&self, plan: &Plan) -> (Term, Term, Expr) {
         let n = self.n;
         match plan {
+            Plan::Counting => panic!("a plan made while counting (SCORE_ONLY) has nothing to compile"),
             Plan::Refl(t) => (*t, *t, refl(self.ev(t))),
             Plan::Cong(o, a, b) => {
                 let ((a1, a2, pa), (b1, b2, pb)) = (self.proof(a), self.proof(b));
@@ -1987,8 +1998,14 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     }
     let key = (n, *t);
     let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
-    // the entry was made with no cut, so the path in force now must cut none of the terms it took up either
-    let fits = |c: &Rewritten| RULE_BUDGET.with(|b| b.get()) >= c.steps && REWRITE_PATH.with(|p| !c.rewrote.iter().any(|v| cut_by(&p.borrow(), v)));
+    // the entry was made with no cut, so the path in force now must cut none of the terms it took up either; and one made while
+    // counting has no plan to give a caller that is not
+    let counting = SCORE_ONLY.with(|s| s.get());
+    let fits = |c: &Rewritten| {
+        RULE_BUDGET.with(|b| b.get()) >= c.steps
+            && (counting || !matches!(*c.out.1, Plan::Counting))
+            && REWRITE_PATH.with(|p| !c.rewrote.iter().any(|v| cut_by(&p.borrow(), v)))
+    };
     if let Some(c) = hit.filter(|c| fits(c)) {
         #[cfg(debug_assertions)]
         check_replay(t, n, k, &c);
@@ -2342,8 +2359,8 @@ pub fn law_proof(n: usize, k: usize, t1: &Term, t2: &Term, plan: &Plan) -> (Expr
 }
 
 /// One law per kind of step (assoc and comm, a rule, a constant carry, the carry-encoding search, a collapse, an `lt` root, the
-/// bit-0 mask): the plan is the same while counting (`SCORE_ONLY`) as while proving, its sides are the law's, and it compiles to
-/// a proof the kernel accepts.
+/// bit-0 mask): counting (`SCORE_ONLY`) finds it too without building a plan, and the proving plan's sides are the law's and it
+/// compiles to a proof the kernel accepts.
 #[test]
 fn plans_compile_to_checked_proofs() {
     tatic::kernel::scoped(|| {
@@ -2366,11 +2383,9 @@ fn plans_compile_to_checked_proofs() {
                 rewrite_plan(4, k, l, r).unwrap_or_else(|| panic!("no plan for {} = {} (counting: {counting})", l.show(), r.show()))
             });
             SCORE_ONLY.with(|s| s.set(false));
-            let sides = plans.each_ref().map(|p| {
-                let (a, b, _) = Compiler::new(4, k).proof(p);
-                (a, b)
-            });
-            assert!(sides[0] == sides[1] && sides[0] == (*l, *r), "{} = {}", l.show(), r.show());
+            assert!(matches!(*plans[1], Plan::Counting), "counting built a plan for {} = {}", l.show(), r.show());
+            let (a, b, _) = Compiler::new(4, k).proof(&plans[0]);
+            assert!((a, b) == (*l, *r), "{} = {}", l.show(), r.show());
             let (p, s) = law_proof(4, k, l, r, &plans[0]);
             ck(&format!("{} = {}", l.show(), r.show()), &p, &s);
         }
