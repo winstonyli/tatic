@@ -159,3 +159,4 @@ and libraries (43 MB) were not kept.
 | `sk_*`, `sk/hc_rounds.txt` | `screen-key` against 2ff4c44 | `hc_seq.sh`, `hc_rounds.ps1` | "The candidate index hashes eight rows" |
 | `pd/hc_rounds.txt` | `MIMALLOC_PURGE_DELAY=-1` in the children (probe, reverted) against `screen-key` | `hc_rounds.ps1` | "Survey: the OS kernel's 22.8%" |
 | `tp/probe.txt` | `TREEPROBE` lines: each tree lemma's sides by `def_eq`, symbolic and per carry case (probe, reverted) on 2ff4c44 | one salt-1 sweep | "Fewer case bits by conversion" |
+| `rp/` (per-child key files), `rpo/` | repeat-work probe on 520829b (reverted): stable keys of value-memo fills, tree encodings, `rewrite_memo` outcomes and stores, per child and thread | one salt-1 sweep per probe version | "Survey: long-lived sweep workers" |
