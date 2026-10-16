@@ -9,6 +9,7 @@ mod lemma_cache;
 mod rewrite;
 mod machine;
 mod search;
+mod task;
 #[allow(unused_imports)]
 use encoding::*;
 #[allow(unused_imports)]
