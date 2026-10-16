@@ -3425,7 +3425,16 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   4. **`zip_word` under `pool_conjectures`, 2.3%:** the one loop per operator from "`ValueMemo::fill` one loop per operator"; real work.
   5. **The lemma checks, `shared_lemma` 31.6%:** only the warm library is left (open decision).
   - Ranking by size against effort: 2 (largest that is local and output-neutral), then 1 (smallest change), then 3 (largest share, but no design yet). The ceilings are upper bounds: an index or a presized set still costs something.
-  - Lever 2's design (a 64-bit shape per term and its OR per trace, so a scan is skipped when a rule's left side cannot match any term in it, with a probe first): `docs/superpowers/specs/2026-10-16-trace-shape-filter-design.md` (untracked), not started.
+  - Lever 2's design (a 64-bit shape per term and its OR per trace, so a scan is skipped when a rule's left side cannot match any term in it, with a probe first): `docs/superpowers/specs/2026-10-16-trace-shape-filter-design.md` (untracked).
+  - Probe (2026-10-16, throwaway on 8a1cdcd, reverted; one salt-1 sweep; `$TEMP/kk/tsp/probe.txt`). Each scan at the three sites is wrapped: its `matches` calls are counted (a thread-local counter), the mask of its trace is computed on the fly, and an assert checks that a rejected scan found nothing. The spec's bar was half of the calls; the mask removes 75% (38.2M of 50.8M), and none of the 6.2M scans it rejected (of 7.7M) had matched:
+
+    | Site | Scans | Found a match | Mask rejects | `matches` calls | Calls in rejected scans |
+    |---|---|---|---|---|---|
+    | `state`'s filter (rules that changed) | 280k | 5.5% | 88% | 2.12M | 78% |
+    | `touches` (both uses) | 5.21M | 3.7% | 82% | 38.2M | 76% |
+    | `nowhere` | 2.22M | 21.9% | 76% | 10.5M | 71% |
+
+    The counts are a snapshot taken every 20,000 scans per site, so they slightly undercount the sweep's totals. At the profile's 2.7-4.1% for these scans, 75% of the calls is about 2-3% of a sweep, less the mask's own cost.
 - **Lever 1 done: an entry's `rewrote` list deduplicated by sorting addresses (2026-10-16, branch `rewrote-dedup`): identical outputs; the line's cost from 2.2% to about 0.5% of CPU; timing a tie.** `rewrite_memo` copied `REWROTE[rewrote0..]` through a fresh `HashSet` per stored entry. It now copies the slice once at its exact size, sorts by `Term::addr` and calls `dedup`. A replay only asks whether the path cuts any of the list, so its order is free.
   - Outputs: identical to 08173c6 on salts 1 and 2 (416 files each, no difference at all).
   - Profile of the branch (samply, line-table build, one salt-1 sweep, load 19% at the start and 15% at the end, RTP off; `sw19` in the session scratchpad, not kept): the dedup line's own time 0.48% of busy, with no table or Vec growth under it, against 0.96% plus 1.23% at 9b701ec. `rewrite_memo` 12.4% of busy against 16.4%; the kernel 56.0%. Shares only: this profile ran at lower load (7.39 s of sweep CPU against 11.67 s).
