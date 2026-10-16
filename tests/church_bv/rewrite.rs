@@ -2062,8 +2062,11 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     // taken up below it come back on any replay, and no new cut can, since a path that cuts a term in `rewrote` is never replayed
     if budget1 > 0 && low.saturating_add(1) >= plen {
         let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
-        let mut seen = hashbrown::HashSet::new();
-        let rewrote = REWROTE.with(|r| r.borrow()[rewrote0..].iter().copied().filter(|t| seen.insert(*t)).collect());
+        // once each, in address order (a replay only asks whether the path cuts any of them); a fresh set per entry grew and
+        // rehashed for 2.2% of a sweep (docs/tier-cycle.md, "Survey: the next lever")
+        let mut rewrote = REWROTE.with(|r| r.borrow()[rewrote0..].to_vec());
+        rewrote.sort_unstable_by_key(|t| t.addr());
+        rewrote.dedup();
         let entry = Rewritten { out: out.clone(), steps: budget0 - budget1, fallbacks: MACHINE_FALLBACKS.with(|f| f.get()) - fallbacks0, trace, traced: trace0.is_some(), rewrote };
         REWRITE_MEMO.with(|m| {
             if let Some(m) = m.borrow_mut().as_mut() {
