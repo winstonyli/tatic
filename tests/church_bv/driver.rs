@@ -238,6 +238,11 @@ impl Worker {
 
     /// Runs test `name` of this exe with `env` added, output to `log`; returns whether it succeeded.
     fn run(&self, name: &str, env: &[(String, String)], log: &Path) -> bool {
+        // an earlier run's log must not survive a task that fails before creating its own: callers read the log either way
+        match std::fs::remove_file(log) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("cannot clear {}: {e}", log.display()),
+            _ => {}
+        }
         let mut slot = self.proc.lock().unwrap_or_else(|e| e.into_inner());
         let start = process_start(env);
         if slot.as_ref().is_some_and(|p| p.start != start) {
@@ -355,6 +360,24 @@ fn worker_runs_tasks() {
     }
     drop(w);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A task whose log cannot be cleared stops the driver, as the old per-child `File::create(log).unwrap()` did, rather than
+/// leaving an earlier run's log to be read as this one's (`run_loop`'s serve reads it whatever `run` returns). The log is
+/// held open without sharing, so neither the driver nor a worker can remove or recreate it.
+#[cfg(windows)]
+#[test]
+fn worker_never_leaves_a_stale_log() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let log = std::env::temp_dir().join(format!("worker_stale_{}.log", std::process::id()));
+    std::fs::write(&log, "CHECKED 1 laws\n").unwrap();
+    let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&log).unwrap();
+    let w = Worker::new();
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w.run("driver::env_echo", &[], &log)));
+    drop(held);
+    drop(w);
+    std::fs::remove_file(&log).unwrap();
+    assert!(ran.is_err(), "run returned {ran:?} with the earlier log still in place");
 }
 
 /// Writes to `path` the laws a child with `env` (over this process's environment) would take from `family`'s sequence, as
