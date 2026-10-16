@@ -5,7 +5,7 @@ import collections, gzip, json, re, subprocess, sys
 # that ran nothing weigh 0), and wait leaves are dropped. Exe frames (fun_<rva>) are named with llvm-symbolizer against
 # <dir>/sw.exe and its PDB. Prints named inclusive buckets, leaf libraries, top self and inclusive functions, the top
 # leaves with their callers, and with [regex] the inclusive share of each matching function, what runs under it, and
-# the nearest tatic or church_bv caller of the innermost match.
+# the nearest tatic or church_bv caller of the innermost match that does not itself match.
 # Writes <dir>/counts.json for sw_diff.py. docs/tier-cycle.md, "Samples are not CPU".
 D = sys.argv[1]
 p = json.load(gzip.open(f"{D}/sw.json.gz"))
@@ -148,7 +148,7 @@ if len(sys.argv) > 2:
                 break
     for n, cs in under.items():
         print(f"== under {n}"); [print(f"    {pc(v)} {c}") for c, v in cs.most_common(6)]
-    # who calls the matching frames: from the innermost match outward, the nearest tatic or church_bv frame
+    # who calls the matching frames: from the innermost match outward, the nearest tatic or church_bv frame that does not match
     near = collections.Counter()
     for chain, w in samples:
         full = [names[n[1]] if isinstance(n, tuple) else n for _, n in chain]
@@ -156,6 +156,6 @@ if len(sys.argv) > 2:
             continue
         i = next((i for i, n in enumerate(full) if rx.search(short(n))), None)
         if i is not None:
-            near[next((short(n) for n in full[i + 1:] if re.match(r"^<?(tatic|church_bv)::", n)), "(none)")] += w
-    print("== nearest tatic/church_bv caller of the innermost match"); [print(f"    {pc(v)} {c}") for c, v in near.most_common(15)]
+            near[next((short(n) for n in full[i + 1:] if re.match(r"^<?(tatic|church_bv)::", n) and not rx.search(short(n))), "(none)")] += w
+    print("== nearest tatic/church_bv caller outside the matches"); [print(f"    {pc(v)} {c}") for c, v in near.most_common(15)]
 json.dump({"tot": tot, "self": dict(selff), "incl": dict(incl)}, open(f"{D}/counts.json", "w"))
