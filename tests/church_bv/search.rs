@@ -851,7 +851,7 @@ pub fn rule_miner() {
         // the rules chosen so far and, under them, each law's evaluation, the stragglers and guard laws they cover and the total size
         struct Chosen {
             chosen: Vec<(Term, Term)>,
-            eval: Vec<(bool, i64, Trace)>,
+            eval: std::sync::Arc<Vec<(bool, i64, Trace)>>,
             covered: Vec<bool>,
             size: i64,
         }
@@ -874,7 +874,7 @@ pub fn rule_miner() {
             *state_memo.borrow_mut() = Some((chosen.clone(), grown));
             let (covered, size) = summarize(&eval);
             state_time.set(state_time.get() + t0.elapsed());
-            Chosen { chosen, eval, covered, size }
+            Chosen { chosen, eval: eval.into(), covered, size }
         };
         let count = |f: &Vec<bool>| f.iter().take(stragglers.len()).filter(|c| **c).count() as i64;
         let guarded = |f: &Vec<bool>| f.iter().skip(stragglers.len()).filter(|c| **c).count() as i64;
@@ -882,114 +882,106 @@ pub fn rule_miner() {
         let value = |s: &Chosen| count(&s.covered) * 1000 + guarded(&s.covered) * guard_w - s.size;
         let (law_evals, law_reuses) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
         let (scorings, skipped) = (std::cell::Cell::new(0usize), std::cell::Cell::new(0usize));
+        // what scoring a candidate needs from its round: the rules chosen so far and, under them, each law's evaluation, the
+        // stragglers and guard laws covered and the total size; the run-time rank of every rule in play; and each candidate's
+        // affected laws. Shared with the scoring workers, which outlive a round
+        struct Round {
+            chosen: Vec<(Term, Term)>,
+            eval: std::sync::Arc<Vec<(bool, i64, Trace)>>,
+            covered: Vec<bool>,
+            size: i64,
+            rank: hashbrown::HashMap<(Term, Term), usize>,
+            affected: Vec<Vec<usize>>,
+        }
+        // a candidate can only rewrite a term where it comes before the rule that fired (`Fired::preempted_by`), unless a
+        // preference makes it a winner (the trace was made without the candidate)
+        let touches = |rank: &hashbrown::HashMap<(Term, Term), usize>, rule: &(Term, Term), tr: &Trace| {
+            let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
+            let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
+            tr.any_match(&rule.0, |fired| anywhere || fired.preempted_by(before))
+        };
+        // a rule's gain on top of the round's rules; it changes only the laws `aff` its left side can touch
+        let score_rule = |rd: &Round, rule: &(Term, Term), aff: &[usize], memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
+            let mut with = rd.chosen.clone();
+            with.push(*rule);
+            // the entries computed with the candidate in force may have it firing, so only those it matches nowhere join the memo
+            let nowhere = |tr: &Trace| !tr.any_match(&rule.0, |_| true);
+            let (fresh, grown) = score_laws(&with, &base_prefs, aff, true, Some(memo.filtered(|tr| !touches(&rd.rank, rule, tr))));
+            memo.absorb(grown.filtered(nowhere));
+            law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
+            law_reuses.fetch_add(all_laws.len() - aff.len(), std::sync::atomic::Ordering::Relaxed);
+            let mut ev: Vec<(bool, i64)> = rd.eval.iter().map(|e| (e.0, e.1)).collect();
+            for (&si, f) in aff.iter().zip(&fresh) {
+                ev[si] = (f.0, f.1);
+            }
+            let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
+            ((count(&f) - count(&rd.covered)) * 1000 + (guarded(&f) - guarded(&rd.covered)) * guard_w + (rd.size - sz), f, sz)
+        };
+        // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), alive for the whole search
+        // (below), each with its own intern scope per round. One queue for all workers: each takes the next candidate when it is
+        // free, so a chunk ends when its last candidate is scored rather than when the slowest worker's fixed share is
+        let threads = cfg.threads.clamp(1, 12);
+        let (work, queue) = std::sync::mpsc::channel::<Option<(std::sync::Arc<Round>, usize)>>();
+        let queue = std::sync::Mutex::new(queue);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, (i64, Vec<bool>, i64))>();
         // one round on top of `s`: its alternatives with their gains, largest first: a rival orientation of the winner that gains
         // more, if one is proved, then the winner
         let pick = |s: &Chosen| -> Vec<((Term, Term), i64)> {
-            let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
             // a candidate changes only the laws whose rewriting asked about a term its left side matches (`affected`), so its gain is at most
             // 1000 per affected uncovered straggler, `guard_w` per affected uncovered guard law and the affected stragglers' whole size
-            // a candidate can only rewrite a term where it comes before the rule that fired (`Fired::preempted_by`), unless a
-            // preference makes it a winner (the trace was made without the candidate)
             // the run-time order of every rule in play, ranked once (`run_order` builds strings)
-            let mut ranked: Vec<(Term, Term)> = base_now.lock().unwrap().iter().chain(chosen).chain(provable.iter().copied()).cloned().collect();
+            let mut ranked: Vec<(Term, Term)> = base_now.lock().unwrap().iter().chain(&s.chosen).chain(provable.iter().copied()).cloned().collect();
             ranked.sort_by_cached_key(|(l, r)| run_order(l, r));
             let rank: hashbrown::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-            let touches = |rule: &(Term, Term), tr: &Trace| {
-                let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
-                let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
-                tr.any_match(&rule.0, |fired| anywhere || fired.preempted_by(before))
-            };
-            let affected: Vec<Vec<usize>> = provable.iter().map(|r| all_laws.iter().copied().filter(|&si| touches(r, &base_eval[si].2)).collect()).collect();
+            let affected: Vec<Vec<usize>> = provable.iter().map(|r| all_laws.iter().copied().filter(|&si| touches(&rank, r, &s.eval[si].2)).collect()).collect();
+            let rd = std::sync::Arc::new(Round { chosen: s.chosen.clone(), eval: s.eval.clone(), covered: s.covered.clone(), size: s.size, rank, affected });
             let bound = |i: usize| -> i64 {
-                let gain = |si: usize, w: i64| if covered[si] { 0 } else { w };
-                affected[i].iter().map(|&si| if si < stragglers.len() { gain(si, 1000) + base_eval[si].1 } else { gain(si, guard_w) }).sum()
+                let gain = |si: usize, w: i64| if rd.covered[si] { 0 } else { w };
+                rd.affected[i].iter().map(|&si| if si < stragglers.len() { gain(si, 1000) + rd.eval[si].1 } else { gain(si, guard_w) }).sum()
             };
             let mut order: Vec<(i64, usize)> = (0..provable.len()).map(|i| (bound(i), i)).collect();
             order.sort_by_key(|&(b, i)| (std::cmp::Reverse(b), i));
-            // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
-            // scope, a chunk at a time in order of their bound; scoring stops at a bound below the best gain so far, since those
-            // candidates cannot win, so the choice does not depend on the thread count or the chunking. Each worker keeps a memo valid
-            // under the rules chosen so far: a candidate's scoring is seeded with the entries it cannot change (`RewriteMemo::filtered`),
-            // and the entries it computed without its left side matching their traces join the memo. Expressions are per thread, so
-            // each worker grows its own (1.5x faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
-            let threads = cfg.threads.clamp(1, 12);
-            // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` its left side can touch
-            let score_rule = |rule: &(Term, Term), aff: &[usize], memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
-                let mut with = chosen.clone();
-                with.push(*rule);
-                // the entries computed with the candidate in force may have it firing, so only those it matches nowhere join the memo
-                let nowhere = |tr: &Trace| !tr.any_match(&rule.0, |_| true);
-                let (fresh, grown) = score_laws(&with, &base_prefs, aff, true, Some(memo.filtered(|tr| !touches(rule, tr))));
-                memo.absorb(grown.filtered(nowhere));
-                law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
-                law_reuses.fetch_add(all_laws.len() - aff.len(), std::sync::atomic::Ordering::Relaxed);
-                let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
-                for (&si, f) in aff.iter().zip(&fresh) {
-                    ev[si] = (f.0, f.1);
-                }
-                let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
-                ((count(&f) - count(covered)) * 1000 + (guarded(&f) - guarded(covered)) * guard_w + (size - sz), f, sz)
-            };
-            let score_one = |i: usize, memo: &mut RewriteMemo| score_rule(provable[i], &affected[i], memo);
+            // a chunk at a time in order of their bound; scoring stops at a bound below the best gain so far, since those candidates
+            // cannot win, so the choice does not depend on the thread count, the chunking or what the workers' memos hold
             // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
             // candidates whose bound reaches the next best
             let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
             let mut next = 0;
-            let winner = std::thread::scope(|sc| {
-                // one queue for all workers: each takes the next candidate when it is free, so a chunk ends when its last
-                // candidate is scored rather than when the slowest worker's fixed share is
-                let (done_tx, done_rx) = std::sync::mpsc::channel();
-                let (work, queue) = std::sync::mpsc::channel::<usize>();
-                let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
-                for _ in 0..threads {
-                    let (done_tx, score_one, queue) = (done_tx.clone(), &score_one, queue.clone());
-                    let worker = move || {
-                        tatic::kernel::scoped(|| {
-                            let mut memo = RewriteMemo::new(kv);
-                            loop {
-                                let Ok(i) = queue.lock().unwrap().recv() else { break };
-                                done_tx.send((i, score_one(i, &mut memo))).unwrap();
+            let winner = loop {
+                let best = (0..provable.len()).filter(|&i| proofs.borrow()[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
+                let floor = best.map_or(1, |b| b.0);
+                let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
+                if chunk.is_empty() {
+                    let Some((_, i)) = best else { break None };
+                    let known = proofs.borrow()[i];
+                    let ok = match known {
+                        Some(ok) => ok,
+                        None if speculate.get() => {
+                            assumed.borrow_mut().push(i);
+                            if pending.borrow_mut().insert(i) {
+                                spawn_req.set(Some(i));
                             }
-                        })
-                    };
-                    std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
-                }
-                loop {
-                    let best = (0..provable.len()).filter(|&i| proofs.borrow()[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
-                    let floor = best.map_or(1, |b| b.0);
-                    let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
-                    if chunk.is_empty() {
-                        let Some((_, i)) = best else { break None };
-                        let known = proofs.borrow()[i];
-                        let ok = match known {
-                            Some(ok) => ok,
-                            None if speculate.get() => {
-                                assumed.borrow_mut().push(i);
-                                if pending.borrow_mut().insert(i) {
-                                    spawn_req.set(Some(i));
-                                }
-                                true
-                            }
-                            None => {
-                                let ok = prove_one(i);
-                                proofs.borrow_mut()[i] = Some(ok);
-                                ok
-                            }
-                        };
-                        if ok {
-                            break Some(i);
+                            true
                         }
-                        continue;
+                        None => {
+                            let ok = prove_one(i);
+                            proofs.borrow_mut()[i] = Some(ok);
+                            ok
+                        }
+                    };
+                    if ok {
+                        break Some(i);
                     }
-                    next += chunk.len();
-                    for &i in &chunk {
-                        work.send(i).unwrap();
-                    }
-                    for (i, r) in done_rx.iter().take(chunk.len()) {
-                        results[i] = Some(r);
-                    }
+                    continue;
                 }
-            });
+                next += chunk.len();
+                for &i in &chunk {
+                    work.send(Some((rd.clone(), i))).unwrap();
+                }
+                for (i, r) in done_rx.iter().take(chunk.len()) {
+                    results[i] = Some(r);
+                }
+            };
             scorings.set(scorings.get() + next);
             skipped.set(skipped.get() + provable.len() - next);
             phase(&format!("round over {} of {} candidates", next, provable.len()));
@@ -1002,7 +994,7 @@ pub fn rule_miner() {
             let mut rival: Option<((Term, Term), i64)> = None;
             for rv in rivals.get(&provable[i].0).into_iter().flatten() {
                 let fast = SCORE_ONLY.with(|s| s.replace(true));
-                let rg = score_rule(rv, &affected[i], &mut memo).0;
+                let rg = score_rule(&rd, rv, &rd.affected[i], &mut memo).0;
                 SCORE_ONLY.with(|s| s.set(fast));
                 if rg > rival.as_ref().map_or(g, |r| r.1) && prove_any(rv) {
                     rival = Some((*rv, rg));
@@ -1095,6 +1087,43 @@ pub fn rule_miner() {
                 let (tx, rule, prove_any) = (proof_tx.clone(), provable[i], &prove_any);
                 std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prove_any(rule))).unwrap()).unwrap();
             };
+            // the scoring workers (`pick`), alive for the whole search. Each keeps its memo across rounds: at a new round it drops
+            // the entries a rule in or out of the chosen set can change, as `state` does, and opens a new intern scope
+            for _ in 0..threads {
+                let (done_tx, queue, score_rule, provable) = (done_tx.clone(), &queue, &score_rule, &provable);
+                let worker = move || {
+                    let mut memo = RewriteMemo::new(kv);
+                    let (mut job, mut was) = (queue.lock().unwrap().recv().unwrap(), None::<std::sync::Arc<Round>>);
+                    while let Some((rd, i)) = job.take() {
+                        if let Some(w) = was.filter(|w| !std::sync::Arc::ptr_eq(w, &rd)) {
+                            let changed: Vec<&Term> = w.chosen.iter().chain(&rd.chosen).filter(|r| w.chosen.contains(*r) != rd.chosen.contains(*r)).map(|(l, _)| l).collect();
+                            memo = memo.filtered(|tr| !changed.iter().any(|l| tr.any_match(l, |_| true)));
+                        }
+                        was = Some(rd.clone());
+                        tatic::kernel::scoped(|| {
+                            let mut i = i;
+                            loop {
+                                done_tx.send((i, score_rule(&rd, provable[i], &rd.affected[i], &mut memo))).unwrap();
+                                match queue.lock().unwrap().recv().unwrap() {
+                                    Some((next, j)) if std::sync::Arc::ptr_eq(&next, &rd) => i = j,
+                                    other => break job = other,
+                                }
+                            }
+                        });
+                    }
+                };
+                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
+            }
+            // stops the workers when the search ends or unwinds
+            struct Stop<'a, T>(&'a std::sync::mpsc::Sender<Option<T>>, usize);
+            impl<T> Drop for Stop<'_, T> {
+                fn drop(&mut self) {
+                    for _ in 0..self.1 {
+                        let _ = self.0.send(None);
+                    }
+                }
+            }
+            let _stop = Stop(&work, threads);
             let (mut s, mut round, mut open) = (state(vec![]), 0, Vec::<Open>::new());
             loop {
                 speculate.set(true);
