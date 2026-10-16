@@ -851,7 +851,8 @@ mod hc {
 
     /// Whether the terms reachable from `roots` have more than `limit` distinct nodes below them.
     fn exceeds(s: &Spaces, roots: &[&Expr], limit: usize) -> bool {
-        let mut seen: IdSet<Key> = IdSet::default();
+        // The walk stops once `seen` holds `limit + 1` keys, so it never grows past this.
+        let mut seen: IdSet<Key> = IdSet::with_capacity_and_hasher(limit + 1, Default::default());
         let mut stack: Vec<Expr> = roots.iter().map(|&e| *e).collect();
         while let Some(e) = stack.pop() {
             let mut over = false;
