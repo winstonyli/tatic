@@ -3374,6 +3374,7 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     - `stdio`'s Unix `dup`/`dup2` results are unchecked.
     - `process_start` matches the prefixes case-sensitively, while Windows names ignore case.
     - `RULE_CONFLICTS=1` leaks its map once per task (bounded at about 170).
+    - A panic while flushing after a task leaves the std handle pointing at a dropped `File` (the worker is exiting by then).
   - **Parked:**
     - An in-memory lemma cache. Tasks still reread `lemmas.bin`, which the per-task `PROCESS` keeps exactly as before.
     - A worker pool, or running tasks in parallel.
