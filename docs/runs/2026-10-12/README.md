@@ -162,3 +162,4 @@ and libraries (43 MB) were not kept.
 | `rp/` (per-child key files), `rpo/` | repeat-work probe on 520829b (reverted): stable keys of value-memo fills, tree encodings, `rewrite_memo` outcomes and stores, per child and thread | one salt-1 sweep per probe version | "Survey: long-lived sweep workers" |
 | `pt_*` | `sweep-worker` Task 2 (process-wide task state as `PerTask`, no worker yet) against 38c4e3d | `hc_seq.sh`, `gate_cmp.sh` | "A persistent worker for the sweep's children" |
 | `wk_*`, `lp_sweep_normal_91`, `wk/hc_rounds.txt` | `sweep-worker` (children as worker tasks) against 38c4e3d: gate; one `sweep_job.ps1` sweep for memory; timing | `hc_seq.sh`, `gate_cmp.sh`, `sweep_job.ps1`, `hc_rounds.ps1` | "A persistent worker for the sweep's children" |
+| `te_*`, `te/hc_rounds.txt` | `shared-tree-encs` (38c4e3d, process-wide `TREE_ENCS`) against 520829b: gate; timing | `hc_seq.sh`, `gate_cmp.sh`, `hc_rounds.ps1` | "Survey: long-lived sweep workers" (option 3) |
