@@ -2032,8 +2032,7 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     let key = (n, *t);
     let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
     // the entry was made with no cut against a term further out, so the path in force now must cut none of the terms it took up
-    // either; and one made while
-    // counting has no plan to give a caller that is not
+    // either; and one made while counting has no plan to give a caller that is not
     let counting = SCORE_ONLY.with(|s| s.get());
     let fits = |c: &Rewritten| {
         RULE_BUDGET.with(|b| b.get()) >= c.steps
