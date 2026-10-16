@@ -150,3 +150,4 @@ and libraries (43 MB) were not kept.
 | `mx_head_*`, `mx_mux_*` | 9f1d23e against `mux` and `not` as one gate each, same load | `mux_pair.sh` | "`mux` and `not` as one gate each" |
 | `scrp` | 36033fa with throwaway screen counters (reverted), one salt-1 sweep | `hc_seq.sh`'s `run`, by hand | "What the screen does in a sweep" |
 | `ci_*`, `hc_rounds.txt`, `tcb` | e2824ea against 0143f7a, then index-build counter (reverted) | `hc_seq.sh`, `hc_rounds.ps1` | "`tree_step`'s candidates looked up by screen vector" |
+| `shr`, `mpp` | 661a46c with refill and `match_pat` counters (reverted), one salt-1 sweep each | `hc_seq.sh`'s `run`, by hand | "Per-thread refills and the miner's trace matching" |
