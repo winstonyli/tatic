@@ -1601,6 +1601,12 @@ pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
     rule_order_ok(l, r) || (rule_tied(l, r) && (tie_greater(l, r) || rule_permutative(l, r)))
 }
 
+/// Whether rule pattern `p` matches `t`, bindings on the stack: the rule miner asks this tens of millions of times a sweep
+/// (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
+pub fn matches(p: &Term, t: &Term) -> bool {
+    match_pat(p, t, &mut [None; RULE_VARS])
+}
+
 pub fn match_pat(p: &Term, t: &Term, sub: &mut [Option<Term>]) -> bool {
     match (*p.node(), *t.node()) {
         (Node::V(i), _) => match &sub[i] {
@@ -1856,7 +1862,10 @@ impl RewriteMemo {
     /// nowhere among the terms no rule fired on, so the rule miner seeds each candidate's scoring with the entries of the rules
     /// chosen so far that the candidate cannot change.
     pub fn filtered(&self, keep: impl Fn(&[(Term, Fired)]) -> bool) -> RewriteMemo {
-        RewriteMemo { k: self.k, map: self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (*k, e.clone())).collect() }
+        // presized to the whole memo (an upper bound): grown from empty, the map rehashed several times per candidate
+        let mut map = hashbrown::HashMap::with_capacity(self.map.len());
+        map.extend(self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (*k, e.clone())));
+        RewriteMemo { k: self.k, map }
     }
 
     pub fn absorb(&mut self, other: RewriteMemo) {
@@ -2557,7 +2566,7 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
     for extra in ["sub(sub(x, y), z) -> sub(x, add(y, z))\n", "or(x, and(x, y)) -> x\n"] {
         let rules: Vec<(Term, Term)> = base.iter().cloned().chain(parse_rules(extra)).collect();
         let l = &rules.last().unwrap().0;
-        let seed = memo.filtered(|tr| !tr.iter().any(|(t, fired)| match_pat(l, t, &mut vec![None; 8]) && fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
+        let seed = memo.filtered(|tr| !tr.iter().any(|(t, fired)| matches(l, t) && fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
         assert!(!seed.map.is_empty() && seed.map.len() < memo.map.len(), "{extra}: the filter kept {} of {}", seed.map.len(), memo.map.len());
         let fresh = run(&rules, RewriteMemo::new(kv)).0;
         assert_eq!(run(&rules, seed).0, fresh, "{extra}");

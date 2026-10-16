@@ -729,7 +729,7 @@ pub fn rule_miner() {
                 let mut subs = vec![];
                 s.3[0].subterms(&mut subs);
                 s.3[1].subterms(&mut subs);
-                subs.iter().any(|t| match_pat(l, t, &mut vec![None; 8]))
+                subs.iter().any(|t| matches(l, t))
             })
         };
         let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
@@ -878,7 +878,7 @@ pub fn rule_miner() {
             let t0 = Instant::now();
             let seed = state_memo.borrow_mut().take().map(|(was, memo)| {
                 let changed: Vec<&Term> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).map(|(l, _)| l).collect();
-                memo.filtered(|tr| !tr.iter().any(|(t, _)| changed.iter().any(|l| match_pat(l, t, &mut vec![None; 8]))))
+                memo.filtered(|tr| !tr.iter().any(|(t, _)| changed.iter().any(|l| matches(l, t))))
             });
             let (eval, grown) = score_laws(&chosen, &base_prefs, &all_laws, true, seed);
             *state_memo.borrow_mut() = Some((chosen.clone(), grown));
@@ -907,7 +907,7 @@ pub fn rule_miner() {
             let touches = |rule: &(Term, Term), tr: &[(Term, Fired)]| {
                 let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
                 let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
-                tr.iter().any(|(t, fired)| match_pat(&rule.0, t, &mut vec![None; 8]) && (anywhere || fired.preempted_by(before)))
+                tr.iter().any(|(t, fired)| matches(&rule.0, t) && (anywhere || fired.preempted_by(before)))
             };
             let affected: Vec<Vec<usize>> = provable.iter().map(|r| all_laws.iter().copied().filter(|&si| touches(r, &base_eval[si].2)).collect()).collect();
             let bound = |i: usize| -> i64 {
@@ -928,7 +928,7 @@ pub fn rule_miner() {
                 let mut with = chosen.clone();
                 with.push(*rule);
                 // the entries computed with the candidate in force may have it firing, so only those it matches nowhere join the memo
-                let nowhere = |tr: &[(Term, Fired)]| !tr.iter().any(|(t, _)| match_pat(&rule.0, t, &mut vec![None; 8]));
+                let nowhere = |tr: &[(Term, Fired)]| !tr.iter().any(|(t, _)| matches(&rule.0, t));
                 let (fresh, grown) = score_laws(&with, &base_prefs, aff, true, Some(memo.filtered(|tr| !touches(rule, tr))));
                 memo.absorb(grown.filtered(nowhere));
                 law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
