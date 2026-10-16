@@ -806,16 +806,52 @@ fn infer_is_linear_in_the_dag_of_a_shared_term() {
     });
 }
 
+/// `InferCache::skip` by jump pointers agrees with a walk of `lo` parents on a random context tree,
+/// `fresh` binders and the caller's context stopping both.
+#[test]
+fn infer_cache_skip_matches_a_parent_walk() {
+    let mut next = splitmix(37);
+    scoped(|| {
+        with_spaces(|s| {
+            let mut ic = InferCache::default();
+            // Before any binder is entered.
+            assert_eq!((ic.skip(0, 0), ic.skip(0, 1)), (Some(0), None));
+            let mut ids = vec![0];
+            for _ in 0..3000 {
+                // Mostly extend a recent context, so runs get deep.
+                let c = ids[ids.len() - 1 - next() % ids.len().min(4)];
+                ids.push(if next().is_multiple_of(500) { ic.fresh() } else { ic.enter(s, c, &sort((next() % 1_000_000) as u32)) });
+            }
+            // Some runs start at a `fresh` binder, and some are deep.
+            let info = |c: u32| ic.info[c as usize];
+            assert!(ids.iter().any(|&c| info(c).run > 0 && info(info(c).parent).loose == u32::MAX));
+            assert!(ids.iter().any(|&c| info(c).run > 300));
+            for &c in &ids {
+                let run = info(c).run;
+                for lo in [0, 1, run.saturating_sub(1), run, run + 1].into_iter().chain((0..4).map(|_| (next() % (run as usize + 1)) as u32)) {
+                    let mut walk = Some(c);
+                    for _ in 0..lo {
+                        walk = walk.filter(|&c| c != 0 && ic.info[c as usize].loose != u32::MAX).map(|c| ic.info[c as usize].parent);
+                    }
+                    assert_eq!(ic.skip(c, lo), walk, "context {c}, lo {lo}");
+                }
+            }
+        })
+    });
+}
+
 /// `b(i) = k ((λh:A. b(i+1)) a) ((λh:A→A. b(i+1)) f)`, `n` deep under
 /// `λx:A`, with `b(n) = x`. Each shared `b(i+1)` mentions only `x`,
 /// but sits under one more binder `h` per level, two types each. A memo
 /// key covering every binder down to `x` sees 2^i contexts at level i;
 /// skipping the binders below the lowest loose variable sees one. The
 /// J motives in `postulates.rs` put shared subterms under unused
-/// binders the same way.
+/// binders the same way. Finding `b(i+1)`'s lowest loose variable and
+/// skipping the `i + 1` binders below it once cost O(i) each, which made
+/// the whole check quadratic (`RELATED_WORK.md` §80).
 #[test]
 fn infer_memo_skips_unused_inner_binders() {
-    assert_scales("infer under unused binders", 10, 20, 8, |depth| {
+    assert_scales("infer under unused binders", 100, 800, 30, |depth| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         let a = p.push(p.get(a_ty));

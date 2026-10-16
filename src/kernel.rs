@@ -922,7 +922,10 @@ mod hc {
     /// The smallest loose `Var` index of `x` seen from `d` binders inside it, i.e. among `x`'s loose
     /// variables `k >= d`, the least `k - d`; `u32::MAX` when there is none. Memoised in `memo` by
     /// (node, `d`) for shared nodes (see [`hc`](self)); its one caller, `memo_context`, asks only of
-    /// shared ones.
+    /// shared ones. A shared node's answer from 0, `l`, also answers every `d <= l` as `l - d`, so
+    /// a node reached at many depths, like a shared term under a growing stack of binders it
+    /// doesn't use, is walked once rather than once per depth; only depths past `l` get entries
+    /// of their own.
     pub(super) fn lowest_loose(s: &Spaces, x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
         if s.loose(x) <= d {
             return u32::MAX;
@@ -932,6 +935,12 @@ mod hc {
             return k - d;
         }
         let shared = s.shared(x);
+        if shared && d > 0 {
+            let l = lowest_loose(s, x, 0, memo);
+            if l >= d {
+                return l - d;
+            }
+        }
         let key = (s.key(x), d);
         if shared && let Some(&r) = memo.get(&key) {
             return r;
@@ -1191,6 +1200,21 @@ fn free_escaped(l: u32) -> String {
 // more than the node (the same subterm can mean different things under
 // different contexts; see `InferCache`).
 
+/// A context id's innermost binder, for [`InferCache`]. A binder with no type of the term (`fresh`)
+/// has no type recorded and loose range `u32::MAX`; it and the caller's context 0 have `run` 0.
+#[derive(Clone, Copy, Default)]
+struct CtxBinder {
+    parent: u32,
+    ty: Option<Key>,
+    /// The type's loose range.
+    loose: u32,
+    /// How many binders with a type of the term this context ends with, itself included.
+    run: u32,
+    /// An ancestor at most `run` binders out (itself when `run` is 0), from which
+    /// [`InferCache::skip`] climbs a run in O(log) steps: Myers' skew-binary jump pointers.
+    jump: u32,
+}
+
 /// `infer`'s memo for one public `infer` or `check` call (`RELATED_WORK.md`
 /// §63). A context is named by an id: 0 is the caller's, and entering a
 /// binder whose type is the node `a` from context `cid` gives the id
@@ -1204,9 +1228,8 @@ struct InferCache {
     types: IdMap<(Key, (u32, u32)), Key>,
     contexts: IdMap<(u32, Key), u32>,
     next: u32,
-    /// For each context id, (parent id, binder type, that type's loose range); a binder with no type of
-    /// the term (`fresh`) has no type recorded and loose range `u32::MAX`.
-    info: Vec<(u32, Option<Key>, u32)>,
+    /// For each context id, its innermost binder.
+    info: Vec<CtxBinder>,
     /// Interned windows of binder types, outermost first: (window id of the outer part, the next binder
     /// type inward) to the window's id. 0 is the empty window.
     windows: IdMap<(u32, Key), u32>,
@@ -1232,11 +1255,30 @@ impl InferCache {
         *self.contexts.entry((cid, s.key(a))).or_insert_with(|| {
             *next += 1;
             if info.len() <= *next as usize {
-                info.resize(*next as usize + 1, (0, None, 0));
+                info.resize(*next as usize + 1, CtxBinder::default());
             }
-            info[*next as usize] = (cid, Some(s.key(a)), s.loose(a));
+            // Jump twice as far as the parent when the parent's jump and its jump's jump span equal
+            // lengths, else to the parent: every climb then takes O(log run) steps.
+            let p = info[cid as usize];
+            let (j, jj) = (info[p.jump as usize], info[info[p.jump as usize].jump as usize]);
+            let jump = if p.run > 0 && p.run - j.run == j.run - jj.run { j.jump } else { cid };
+            info[*next as usize] = CtxBinder { parent: cid, ty: Some(s.key(a)), loose: s.loose(a), run: p.run + 1, jump };
             *next
         })
+    }
+
+    /// The context `lo` binders out from `cid`, or `None` when one of those binders has no type of
+    /// the term (or is the caller's).
+    fn skip(&self, cid: u32, lo: u32) -> Option<u32> {
+        // Context 0 has no entry until a binder is entered.
+        let run = |c: u32| self.info.get(c as usize).map_or(0, |b| b.run);
+        let target = run(cid).checked_sub(lo)?;
+        let mut c = cid;
+        while run(c) > target {
+            let b = self.info[c as usize];
+            c = if run(b.jump) >= target { b.jump } else { b.parent };
+        }
+        Some(c)
     }
 
     /// An id no other context has: for a binder type that isn't a node
@@ -1244,9 +1286,9 @@ impl InferCache {
     fn fresh(&mut self) -> u32 {
         self.next += 1;
         if self.info.len() <= self.next as usize {
-            self.info.resize(self.next as usize + 1, (0, None, 0));
+            self.info.resize(self.next as usize + 1, CtxBinder::default());
         }
-        self.info[self.next as usize] = (0, None, u32::MAX);
+        self.info[self.next as usize] = CtxBinder { parent: 0, ty: None, loose: u32::MAX, run: 0, jump: self.next };
         self.next
     }
 
@@ -1276,13 +1318,9 @@ impl InferCache {
         if let Some(&r) = self.context_of.get(&(cid, lo, need)) {
             return r;
         }
-        // The `lo` innermost binders, which `e` never names, are skipped; a skipped `fresh` binder
-        // has no parent recorded, so the walk falls back there as it does inside a window.
-        let mut c = Some(cid);
-        for _ in 0..lo {
-            c = c.filter(|&c| c != 0 && self.info[c as usize].2 != u32::MAX).map(|c| self.info[c as usize].0);
-        }
-        let r = c.and_then(|c| self.window(c, need - lo)).map_or((0, cid), |w| (lo, WINDOW_BIT | w));
+        // The `lo` innermost binders, which `e` never names, are skipped; skipping a `fresh` binder
+        // falls back as passing one inside a window does.
+        let r = self.skip(cid, lo).and_then(|c| self.window(c, need - lo)).map_or((0, cid), |w| (lo, WINDOW_BIT | w));
         self.context_of.insert((cid, lo, need), r);
         r
     }
@@ -1305,7 +1343,7 @@ impl InferCache {
             if c == 0 {
                 break None;
             }
-            let (parent, loose) = (self.info[c as usize].0, self.info[c as usize].2);
+            let CtxBinder { parent, loose, .. } = self.info[c as usize];
             if loose == u32::MAX {
                 break None;
             }
@@ -1315,7 +1353,7 @@ impl InferCache {
         for &(c, k) in path.iter().rev() {
             if let Some(outer) = w {
                 let next = self.windows.len() as u32 + 1;
-                let ty = self.info[c as usize].1.expect("a window binder has a type");
+                let ty = self.info[c as usize].ty.expect("a window binder has a type");
                 w = Some(*self.windows.entry((outer, ty)).or_insert(next));
             }
             self.window_of.insert((c, k), w);
@@ -1332,9 +1370,9 @@ impl InferCache {
         let mut chain: Vec<(u64, u32)> = Vec::new();
         let mut c = cid;
         while c != 0 {
-            let (parent, ty, loose) = &self.info[c as usize];
-            chain.push((ty.map_or(0, |k| k as u64), *loose));
-            c = *parent;
+            let CtxBinder { parent, ty, loose, .. } = self.info[c as usize];
+            chain.push((ty.map_or(0, |k| k as u64), loose));
+            c = parent;
         }
         let mut need = e.loose() as usize;
         let mut p = 0;

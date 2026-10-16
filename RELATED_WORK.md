@@ -6032,7 +6032,36 @@ Debug build, the test's spines: `x0 a1 ... an` with every argument a variable, `
 
 **Every fixed-budget test in `src/kernel/tests.rs` now uses that check.** The helper is `assert_scales(what, small, large, max_ratio, run)`. It runs three small-then-large pairs on a thread of its own and passes when any pair's large run is under `max_ratio` times its small run plus 5 ms. The two runs of a pair share the machine's load. The first version took the best of three small runs and then of three large ones, and failed once in 13 full suites (`infer_types_an_application_spine_at_once`, bound 30x, usually 14 to 17x). Pairing passed 12 of 12. Each large run gets ten times its budget plus 2 s. So a regression to exponential time fails in about 2 s; before, it hung the suite (a memo-disabled spine ran past 15 minutes). The abandoned thread keeps running until the test process exits.
 
-There are two kinds of guard. Tests that guard against walking a DAG as a tree use small sizes (10 against 20, say). Their runs take microseconds, so the 5 ms term dominates and the check reads "the large size stays cheap", where walking the tree would take seconds. Tests that guard against quadratic growth on spines and chains time 1,000 or 500 against eight times as many, in the linear range. `subst_top_shifts_a_used_argument_once` already calibrated itself and is unchanged. Two tests keep their old exponential guard but grow faster than linearly, and both are parked. `infer_memo_skips_unused_inner_binders` costs 2.8 to 7x per doubling of depth from 10 to 320 (153 µs to 246 ms, debug). `brief` costs 22 to 63x from 100 to 800 deep.
+There are two kinds of guard. Tests that guard against walking a DAG as a tree use small sizes (10 against 20, say). Their runs take microseconds, so the 5 ms term dominates and the check reads "the large size stays cheap", where walking the tree would take seconds. Tests that guard against quadratic growth on spines and chains time 1,000 or 500 against eight times as many, in the linear range. `subst_top_shifts_a_used_argument_once` already calibrated itself and is unchanged. Two tests kept their old exponential guard but grew faster than linearly, and both were parked. `infer_memo_skips_unused_inner_binders` cost 2.8 to 7x per doubling of depth from 10 to 320 (153 µs to 246 ms, debug); §80 made it linear. `brief` costs 22 to 63x from 100 to 800 deep and is still parked.
+
+## 80. The infer memo's key was quadratic under unused binders (2026-10-16)
+
+`infer_memo_skips_unused_inner_binders` (§79, parked) builds `b(i) = k ((λh:A. b(i+1)) a) ((λh:A→A. b(i+1)) f)`, `n` deep under `λx:A`, with `b(n) = x`. That is O(n) DAG nodes, but `infer` cost 2.8 to 7x per doubling of `n`. Two parts of `InferCache::memo_context` (§63's key, narrowed to a window that starts at the node's lowest loose variable `lo`) cost O(i) at level `i`.
+
+**Cause 1: `hc::lowest_loose` was memoised by (node, depth).** `memo_context` asks for `b(i+1)`'s `lo` at depth 0. The walk goes under each `λh` and reaches `b(j)` at depth `j - i - 1`. Each level asks again from a new depth, so the memo held n²/2 entries: 51,359 at n = 320, where the term has 319 shared nodes. Called alone on every `b(i)`, it took 102 ms of `infer`'s 260 ms. *Fix:* a shared node's answer from depth 0, `l`, also answers every depth `d <= l` as `l - d`, so `lowest_loose` asks the node at depth 0 first and memoises per depth only past `l`. The memo is now one entry per shared node here (319 at n = 320). In general it holds at most one extra entry per shared node visited.
+
+**Cause 2: the skip walked `lo` parents.** `memo_context` stepped `lo` parents out from the context, `lo = i + 1` at level `i`: 1.64M steps at n = 1,280. *Fix:* each context id records `run`, how many binders with a type of the term it ends with, and a jump pointer (Myers' skew-binary scheme: the parent's jump's jump when the parent's two jumps span equal lengths, else the parent). `InferCache::skip` then climbs `lo` binders in O(log run) steps. `run` is 0 at the caller's context and at a `fresh` binder, so a skip past one falls back exactly as the walk did. Steps at n = 1,280 fell to 48k.
+
+**Measured** (debug, best of 7, `infer` alone; other sessions loaded the machine 50 to 85%, Defender real-time protection off):
+
+| n | before (from §79) | cause 1 fixed | both fixed | both fixed, 1 GB stack |
+|---|---|---|---|---|
+| 40 | 1.38 ms | 0.52 ms | | |
+| 80 | 5.8 ms | 1.23 ms | | |
+| 100 | | 1.64 ms | 1.73 ms | 1.56 ms |
+| 160 | 40.6 ms | 4.21 ms | | |
+| 320 | 246 ms | 10.2 ms | | |
+| 400 | | 12.5 ms | 8.9 ms | 7.0 ms |
+| 800 | | 34.5 ms | 18.8 ms | 13.8 ms |
+| 1,600 | | 88.0 ms | 40.8 ms | 32.9 ms |
+
+Both fixed, each doubling costs about 2x. In release, 100 to 400 deep doubles too (60 µs to 261 µs). The rest of the gap to the 1 GB-stack column is `grow`'s segment switches, which grow linearly: 122 at n = 1,600 in debug, 8 in release. `infer_in`, unlike `check_in`, doesn't start on one large segment (§76).
+
+**Cost** (`proof_cost_split`, cmp3d own, 300 laws, `cpu_ab.ps1` two-build mode against cd9dbc1, 8 pairs, load 61 to 85%). The `COST` lines (laws, nodes, occurrences) are identical. New won 5 of 8: summed 19.49 s against 20.49 s, best 1.98 s against 2.30 s. The load was too high to call this a gain, but it shows no loss.
+
+**Tests.**
+- `infer_memo_skips_unused_inner_binders` now times 800 deep against 100 deep and asserts under 30x, like §79's linear-range guards. Now it runs about 11x. With cause 1 restored it fails at about 180x (2.0 s against 11 ms). With only cause 2 restored it runs about 21x and passes: that quadratic's constant (one array read per step) is below this guard's resolution at these sizes.
+- `infer_cache_skip_matches_a_parent_walk` checks `skip` against the walk it replaced. The test builds a random tree of 3,000 contexts with runs over 300 deep and some `fresh` binders, and checks boundary and random `lo` for every context. It fails when `skip` ignores the run (`saturating_sub` for `checked_sub`). It checks answers, not the step count.
 
 ## Sources
 
