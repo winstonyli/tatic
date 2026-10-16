@@ -850,6 +850,17 @@ fn infer_cache_skip_matches_a_parent_walk() {
     });
 }
 
+/// A thread keeps `infer`'s cache between calls but empties it after each: the same shared `Var` under another
+/// caller context gets that context's type, not the last call's.
+#[test]
+fn infer_cache_is_emptied_between_calls() {
+    let v = var(0);
+    let e = id(sort(0), v.clone(), v);
+    assert!(infer(&Ctx::unit(sort(0)), &e).is_ok());
+    assert!(infer(&Ctx::unit(sort(1)), &e).is_err(), "a type of the first call's context leaked");
+    assert!(infer(&Ctx::unit(sort(0)), &e).is_ok());
+}
+
 /// `b(i) = k ((λh:A. b(i+1)) a) ((λh:A→A. b(i+1)) f)`, `n` deep under
 /// `λx:A`, with `b(n) = x`. Each shared `b(i+1)` mentions only `x`,
 /// but sits under one more binder `h` per level, two types each. A memo

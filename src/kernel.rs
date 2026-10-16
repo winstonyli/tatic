@@ -1247,6 +1247,20 @@ struct InferCache {
     relaxed: std::collections::HashSet<(u64, u64)>,
 }
 
+thread_local! {
+    static INFER_CACHE: std::cell::Cell<InferCache> = std::cell::Cell::default();
+}
+
+/// Runs `f` with this thread's [`InferCache`], emptied afterwards ([`InferCache::reset`]). A nested call, or one
+/// after a panic, finds the slot empty and starts from a new cache.
+fn with_infer_cache<R>(f: impl FnOnce(&mut InferCache) -> R) -> R {
+    let mut ic = INFER_CACHE.take();
+    let r = f(&mut ic);
+    ic.reset();
+    INFER_CACHE.set(ic);
+    r
+}
+
 impl InferCache {
     /// The id of context `cid` extended by a binder of type `a`.
     fn enter(&mut self, s: &Spaces, cid: u32, a: &Expr) -> u32 {
@@ -1280,6 +1294,31 @@ impl InferCache {
             c = if run(b.jump) >= target { b.jump } else { b.parent };
         }
         Some(c)
+    }
+
+    /// Empties the cache for the next call, keeping its capacity: a sweep makes thousands of calls, and growing
+    /// each one's maps from empty was most of `infer_rc`'s 0.9% under `reserve_rehash` (`docs/tier-cycle.md`,
+    /// "where the growth comes from"). Clearing costs time in the capacity, so a map grown past `KEEP` is let go.
+    fn reset(&mut self) {
+        const KEEP: usize = 1 << 14;
+        fn reset<K, V>(m: &mut IdMap<K, V>) {
+            if m.capacity() > KEEP {
+                *m = IdMap::default();
+            } else {
+                m.clear();
+            }
+        }
+        reset(&mut self.types);
+        reset(&mut self.contexts);
+        reset(&mut self.windows);
+        reset(&mut self.window_of);
+        reset(&mut self.lows);
+        reset(&mut self.context_of);
+        self.next = 0;
+        self.info.clear();
+        self.path.clear();
+        #[cfg(feature = "record-defeq")]
+        self.relaxed.clear();
     }
 
     /// An id no other context has: for a binder type that isn't a node
@@ -1965,7 +2004,7 @@ pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> 
     if e.free() > 0 {
         return Err(free_escaped(e.free() - 1));
     }
-    scoped(|| with_spaces(|s| infer_node(s, globals, &mut InferCache::default(), &mut CtxScope::new(ctx), 0, e)))
+    scoped(|| with_spaces(|s| with_infer_cache(|ic| infer_node(s, globals, ic, &mut CtxScope::new(ctx), 0, e))))
 }
 
 /// [`infer_in`] with no globals.
@@ -2175,10 +2214,11 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
         with_spaces(|s| {
             let large = hc::large(s, e, expected);
             let body = || {
-                let mut ic = InferCache::default();
-                let mut scope = CtxScope::new(ctx);
-                expect_sort(s, &infer_rc(s, globals, &mut ic, &mut scope, 0, expected)?)?;
-                check_rc(s, globals, &mut ic, &mut scope, 0, e, expected)
+                with_infer_cache(|ic| {
+                    let mut scope = CtxScope::new(ctx);
+                    expect_sort(s, &infer_rc(s, globals, ic, &mut scope, 0, expected)?)?;
+                    check_rc(s, globals, ic, &mut scope, 0, e, expected)
+                })
             };
             if large { on_segment(CHECK_SEGMENT, body) } else { body() }
         })
