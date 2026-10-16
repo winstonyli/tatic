@@ -2,7 +2,7 @@ use super::*;
 
 /// A hash-consed term: a pointer to its one node. Leaves are statics, `Op` nodes are interned (`Term::op`) and never
 /// freed, so equal terms are the same pointer: `==` and `Hash` take the address, and clone is a copy. Each node also
-/// carries what is computed bottom-up once, when it is made: its size and the set of its variables.
+/// carries what is computed bottom-up once, when it is made: its size, the set of its variables and its shape.
 /// `show()` is for text (files, logs, lemma names) and the text orders. `Ord` is structural (`V < Zero < Ones < Op`,
 /// then fields), the order the derived one gave; it only makes canonical keys (a sorted rule set).
 #[derive(Clone, Copy)]
@@ -19,24 +19,35 @@ struct Interned {
     size: usize,
     /// Bit `i` set when `V(i)` occurs.
     vars: u64,
+    /// See `Term::shape`.
+    shape: u64,
 }
 impl Interned {
-    const fn leaf(node: Node, vars: u64) -> Interned {
-        Interned { node, size: 1, vars }
+    const fn leaf(node: Node, vars: u64, shape: u64) -> Interned {
+        Interned { node, size: 1, vars, shape }
     }
 }
+// Shape bits: 0..8 an operator at the root; 8..61 (operator, side, child `class`), the 176 of them folded into 53 bits;
+// 61, 62, 63 a leaf V, Ones, Zero. `RuleTable` keeps exact per-operand class masks instead: it tests one term at a time,
+// where the folding would only admit rules that cannot match.
+const fn side_bit(o: usize, side: usize, c: usize) -> u64 {
+    1 << (8 + ((o * 2 + side) * CLASSES + c) % 53)
+}
+const V_SHAPE: u64 = 1 << 61;
+const ONES_SHAPE: u64 = 1 << 62;
+const ZERO_SHAPE: u64 = 1 << 63;
 static LEAVES: [Interned; 64] = {
-    let mut a = [const { Interned::leaf(Node::Zero, 0) }; 64];
+    let mut a = [const { Interned::leaf(Node::Zero, 0, ZERO_SHAPE) }; 64];
     let mut i = 0;
     while i < 64 {
-        a[i] = Interned::leaf(Node::V(i), 1 << i);
+        a[i] = Interned::leaf(Node::V(i), 1 << i, V_SHAPE);
         i += 1;
     }
     a
 };
 // The leaf consts name statics: a promoted `&Interned` need not have one address.
-static ZERO_NODE: Interned = Interned::leaf(Node::Zero, 0);
-static ONES_NODE: Interned = Interned::leaf(Node::Ones, 0);
+static ZERO_NODE: Interned = Interned::leaf(Node::Zero, 0, ZERO_SHAPE);
+static ONES_NODE: Interned = Interned::leaf(Node::Ones, 0, ONES_SHAPE);
 const SHARDS: usize = 16;
 static TABLE: [std::sync::Mutex<hashbrown::HashTable<&'static Interned>>; SHARDS] =
     [const { std::sync::Mutex::new(hashbrown::HashTable::new()) }; SHARDS];
@@ -64,7 +75,8 @@ impl Term {
         if let Some(&m) = t.find(h, |m| m.node == n) {
             return Term(m);
         }
-        let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars }));
+        let shape = 1 << o | side_bit(o, 0, class(&a)) | side_bit(o, 1, class(&b));
+        let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape }));
         t.insert_unique(h, m, |m| match m.node {
             Node::Op(o, a, b) => op_hash(o, a, b),
             _ => unreachable!("only Op nodes are interned"),
@@ -88,6 +100,22 @@ impl Term {
     /// The largest variable index, 0 when there is none.
     pub fn max_var(&self) -> usize {
         63usize.saturating_sub(self.0.vars.leading_zeros() as usize)
+    }
+    /// The root's operator and the classes of its two children (or the leaf's class), as bits. `match_pat(p, t)` compares
+    /// node kinds before it recurses, so it holds only where `t.shape()` has every bit of `p.needs()`.
+    pub fn shape(&self) -> u64 {
+        self.0.shape
+    }
+    /// The shape bits a term must have for this pattern to match it: none for a variable, and none for a variable child.
+    pub fn needs(&self) -> u64 {
+        match *self.node() {
+            Node::V(_) => 0,
+            Node::Op(o, a, b) => {
+                let child = |side, x: Term| if matches!(*x.node(), Node::V(_)) { 0 } else { side_bit(o, side, class(&x)) };
+                1 << o | child(0, a) | child(1, b)
+            }
+            _ => self.shape(),
+        }
     }
 }
 impl PartialEq for Term {
@@ -1927,6 +1955,31 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
     Some((subst_pat(&r.rhs, &sub), Plan::law(LawKind::Rule(r.name), r.lhs, r.rhs, args)))
 }
 
+/// The terms `rule_step` was asked about while rewriting, with the rule that fired on each (`RULE_TRACE`), and the OR of the
+/// terms' shapes (`Term::shape`): a left side whose `needs` the OR lacks matches none of them, so most scans are skipped
+/// without touching the terms (docs/tier-cycle.md, "Survey: the next lever").
+#[derive(Clone, Default)]
+pub struct Trace {
+    items: Vec<(Term, Fired)>,
+    shapes: u64,
+}
+
+impl Trace {
+    pub fn new(items: Vec<(Term, Fired)>) -> Trace {
+        let shapes = items.iter().fold(0, |m, (t, _)| m | t.shape());
+        Trace { items, shapes }
+    }
+
+    pub fn items(&self) -> &[(Term, Fired)] {
+        &self.items
+    }
+
+    /// Whether `l` matches some term of the trace on which `also` holds of the rule that fired.
+    pub fn any_match(&self, l: &Term, also: impl Fn(&Fired) -> bool) -> bool {
+        self.shapes & l.needs() == l.needs() && self.items.iter().any(|(t, f)| matches(l, t) && also(f))
+    }
+}
+
 /// A cached `rewrite`: the result and what the call did besides returning it, so that a hit can replay it.
 struct Rewritten {
     out: (Term, PlanRc),
@@ -1934,7 +1987,7 @@ struct Rewritten {
     steps: i64,
     fallbacks: u64,
     /// the terms `rule_step` was asked about and whether a rule fired (`RULE_TRACE`), when `traced` (the trace was on)
-    trace: Vec<(Term, Fired)>,
+    trace: Trace,
     traced: bool,
     /// the terms the call took up below its own (`REWROTE`), once each: a replay is right only where the path cuts none of them
     rewrote: Vec<Term>,
@@ -1956,7 +2009,7 @@ impl RewriteMemo {
     /// The traced entries whose traces `keep` accepts. A rule tried after the others changes no entry whose trace it matches
     /// nowhere among the terms no rule fired on, so the rule miner seeds each candidate's scoring with the entries of the rules
     /// chosen so far that the candidate cannot change.
-    pub fn filtered(&self, keep: impl Fn(&[(Term, Fired)]) -> bool) -> RewriteMemo {
+    pub fn filtered(&self, keep: impl Fn(&Trace) -> bool) -> RewriteMemo {
         // presized to the whole memo (an upper bound): grown from empty, the map rehashed several times per candidate
         let mut map = hashbrown::HashMap::with_capacity(self.map.len());
         map.extend(self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (*k, e.clone())));
@@ -2046,7 +2099,7 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
         MACHINE_FALLBACKS.with(|f| f.set(f.get() + c.fallbacks));
         RULE_TRACE.with(|tr| {
             if let Some(v) = tr.borrow_mut().as_mut() {
-                v.extend(c.trace.iter().cloned());
+                v.extend_from_slice(c.trace.items());
             }
         });
         REWROTE.with(|r| r.borrow_mut().extend(c.rewrote.iter().copied()));
@@ -2061,7 +2114,7 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     // against a term further out than `t` (`rewrite` pushed `t` at `plen - 1`) depends on that term; cuts against `t` or terms
     // taken up below it come back on any replay, and no new cut can, since a path that cuts a term in `rewrote` is never replayed
     if budget1 > 0 && low.saturating_add(1) >= plen {
-        let trace = RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
+        let trace = Trace::new(RULE_TRACE.with(|tr| tr.borrow().as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default()));
         // once each, in address order (a replay only asks whether the path cuts any of them); a fresh set per entry grew and
         // rehashed for 2.2% of a sweep (docs/tier-cycle.md, "Survey: the next lever")
         let mut rewrote = REWROTE.with(|r| r.borrow()[rewrote0..].to_vec());
@@ -2657,6 +2710,29 @@ fn growing_rewrite_chains_are_cut() {
 /// `RewriteMemo::filtered`: a memo built under some rules keeps its results under one more rule, tried last, for the entries whose
 /// traces that rule's left side matches at no term where no rule fired; the rule miner seeds each candidate's scoring with them. The whole memo would replay
 /// results the extra rule changes.
+/// A pattern matches a term only where the term's shape has every bit the pattern needs, so a trace whose shapes lack one
+/// can be skipped (docs/tier-cycle.md, "Survey: the next lever"); and the filter does reject.
+#[test]
+fn shapes_hold_every_bit_a_matching_pattern_needs() {
+    let rules = parse_rules("sub(sub(x, y), z) -> sub(x, add(y, z))\nor(x, and(x, y)) -> x\nadd(x, 0) -> x\nxor(x, x) -> 0\nand(-1, x) -> x\nx -> x\n");
+    let mut subs = vec![];
+    for t in ["sub(sub(add(x, y), z), sub(x, 0))", "or(and(x, y), and(x, and(x, y)))", "xor(add(x, 0), add(x, 0))", "and(-1, -1)", "sub(x, add(y, z))"] {
+        parse_term(t).subterms(&mut subs);
+    }
+    let mut matched = 0;
+    for (l, _) in &rules {
+        for t in &subs {
+            if matches(l, t) {
+                matched += 1;
+                assert_eq!(t.shape() & l.needs(), l.needs(), "{} matches {} but its shape lacks a needed bit", l.show(), t.show());
+            }
+        }
+    }
+    assert!(matched > rules.len(), "every rule matches somewhere");
+    let (l, t) = (parse_term("and(x, or(y, z))"), parse_term("and(x, y)"));
+    assert_ne!(t.shape() & l.needs(), l.needs(), "an or child is needed and missing");
+}
+
 #[test]
 fn filtered_memo_entries_hold_under_an_extra_rule() {
     let (n, kv) = (4, 3);
@@ -2684,7 +2760,7 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
     for extra in ["sub(sub(x, y), z) -> sub(x, add(y, z))\n", "or(x, and(x, y)) -> x\n"] {
         let rules: Vec<(Term, Term)> = base.iter().cloned().chain(parse_rules(extra)).collect();
         let l = &rules.last().unwrap().0;
-        let seed = memo.filtered(|tr| !tr.iter().any(|(t, fired)| matches(l, t) && fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
+        let seed = memo.filtered(|tr| !tr.any_match(l, |fired| fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
         assert!(!seed.map.is_empty() && seed.map.len() < memo.map.len(), "{extra}: the filter kept {} of {}", seed.map.len(), memo.map.len());
         let fresh = run(&rules, RewriteMemo::new(kv)).0;
         assert_eq!(run(&rules, seed).0, fresh, "{extra}");

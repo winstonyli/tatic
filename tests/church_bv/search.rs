@@ -774,7 +774,7 @@ pub fn rule_miner() {
         // `prefs`: the rule preferences in force (`set_rule_prefs`). `base_now`: the base rules in force, all of them until the
         // preference phase drops some
         let base_now = std::sync::Mutex::new(base.clone());
-        let score_laws = |extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Vec<(Term, Fired)>)>, RewriteMemo) {
+        let score_laws = |extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
             let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
             set_extra_rules(base_now.lock().unwrap().iter().chain(extra).cloned().collect());
             set_rule_prefs(prefs.to_vec());
@@ -804,7 +804,7 @@ pub fn rule_miner() {
                     };
                     let size = if si < stragglers.len() { measure(&rewrite(&s.1, n, kv).0) + measure(&rewrite(&s.2, n, kv).0) } else { 0 };
                     let mut seen: hashbrown::HashSet<(Term, Fired)> = Default::default();
-                    let trace: Vec<(Term, Fired)> = RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect();
+                    let trace = Trace::new(RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect());
                     (fixed, size, trace)
                 })
                 .collect();
@@ -815,7 +815,7 @@ pub fn rule_miner() {
             (out, memo)
         };
         let all_laws: Vec<usize> = (0..scored.len()).collect();
-        let summarize = |ev: &[(bool, i64, Vec<(Term, Fired)>)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
+        let summarize = |ev: &[(bool, i64, Trace)]| (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
         // under `RULEMINER_FAST` the candidates are proved here, once each, against the base rules as the eager filter would
         let proofs = std::cell::RefCell::new(vec![if cfg.fast { None } else { Some(true) }; provable.len()]);
         // also on a thread of its own (below): the base preferences, which every evaluation on this thread leaves installed
@@ -851,7 +851,7 @@ pub fn rule_miner() {
         // the rules chosen so far and, under them, each law's evaluation, the stragglers and guard laws they cover and the total size
         struct Chosen {
             chosen: Vec<(Term, Term)>,
-            eval: Vec<(bool, i64, Vec<(Term, Fired)>)>,
+            eval: Vec<(bool, i64, Trace)>,
             covered: Vec<bool>,
             size: i64,
         }
@@ -868,7 +868,7 @@ pub fn rule_miner() {
             let t0 = Instant::now();
             let seed = state_memo.borrow_mut().take().map(|(was, memo)| {
                 let changed: Vec<&Term> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).map(|(l, _)| l).collect();
-                memo.filtered(|tr| !tr.iter().any(|(t, _)| changed.iter().any(|l| matches(l, t))))
+                memo.filtered(|tr| !changed.iter().any(|l| tr.any_match(l, |_| true)))
             });
             let (eval, grown) = score_laws(&chosen, &base_prefs, &all_laws, true, seed);
             *state_memo.borrow_mut() = Some((chosen.clone(), grown));
@@ -894,10 +894,10 @@ pub fn rule_miner() {
             let mut ranked: Vec<(Term, Term)> = base_now.lock().unwrap().iter().chain(chosen).chain(provable.iter().copied()).cloned().collect();
             ranked.sort_by_cached_key(|(l, r)| run_order(l, r));
             let rank: hashbrown::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-            let touches = |rule: &(Term, Term), tr: &[(Term, Fired)]| {
+            let touches = |rule: &(Term, Term), tr: &Trace| {
                 let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
                 let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
-                tr.iter().any(|(t, fired)| matches(&rule.0, t) && (anywhere || fired.preempted_by(before)))
+                tr.any_match(&rule.0, |fired| anywhere || fired.preempted_by(before))
             };
             let affected: Vec<Vec<usize>> = provable.iter().map(|r| all_laws.iter().copied().filter(|&si| touches(r, &base_eval[si].2)).collect()).collect();
             let bound = |i: usize| -> i64 {
@@ -918,7 +918,7 @@ pub fn rule_miner() {
                 let mut with = chosen.clone();
                 with.push(*rule);
                 // the entries computed with the candidate in force may have it firing, so only those it matches nowhere join the memo
-                let nowhere = |tr: &[(Term, Fired)]| !tr.iter().any(|(t, _)| matches(&rule.0, t));
+                let nowhere = |tr: &Trace| !tr.any_match(&rule.0, |_| true);
                 let (fresh, grown) = score_laws(&with, &base_prefs, aff, true, Some(memo.filtered(|tr| !touches(rule, tr))));
                 memo.absorb(grown.filtered(nowhere));
                 law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
