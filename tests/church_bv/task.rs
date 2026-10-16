@@ -1,7 +1,7 @@
 //! Per-task state for `driver::worker`, which runs many tasks (a sweep's children) in one process. Every process-wide static
 //! in church_bv is either a pure memo, whose value depends only on its key (configuration included), kept across tasks,
 //! or task state: a `PerTask` or `PerTaskArc`, rebuilt at its first read in each task. `task_state_is_classified` holds
-//! every static to that rule (docs/superpowers/specs/2026-10-15-sweep-worker-design.md).
+//! every static to that rule (docs/tier-cycle.md, "A persistent worker").
 
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
@@ -141,7 +141,7 @@ fn flagged(line: &str) -> Option<&str> {
 /// so a `driver::worker` task never sees another task's configuration or counters.
 #[test]
 fn task_state_is_classified() {
-    const PURE: [(&str, &str, &str); 9] = [
+    const PURE: [(&str, &str, &str); 10] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("rewrite.rs", "SCREENS", "values on fixed pseudo-random inputs, keyed by width and variable count"),
         ("rewrite.rs", "TREE_CANDS", "keyed by width, variable count and nops()"),
@@ -151,6 +151,7 @@ fn task_state_is_classified() {
         ("lemma_cache.rs", "ID", "the running exe's identity"),
         ("task.rs", "TASK", "the task machinery"),
         ("task.rs", "TASK_ENV", "the task machinery"),
+        ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
     ];
     assert_eq!(flagged("    static X: std::sync::OnceLock<u8> = std::sync::OnceLock::new();"), Some("X"));
     assert_eq!(flagged("pub static Y: [std::sync::atomic::AtomicU64; 3] = x;"), Some("Y"));

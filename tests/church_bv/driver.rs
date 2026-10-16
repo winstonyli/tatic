@@ -1,6 +1,7 @@
 //! The mine-and-serve loop and the sweeps over it (formerly `scripts/loop_stream.sh` and local sweep scripts). Serving
-//! (`search::rule_set_kernel_check`) and mining (`search::rule_miner`) run as child processes of this exe, so each keeps its own
-//! thread-locals and env-read config. Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
+//! (`search::rule_set_kernel_check`) and mining (`search::rule_miner`) run as tasks of one worker process of this exe (`worker`,
+//! `Worker`): each task gets fresh thread-locals, its own environment and its own log, while the pure memos carry over
+//! (`task.rs`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
 //! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
@@ -38,6 +39,122 @@ use super::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::io::{BufRead, BufReader};
+
+/// The process's stdout and stderr pointed at one file, for a task's log (`worker`): one handle (one fd) for both, so they
+/// share the file offset as a child's `try_clone`d handles do. std looks the handle up on every write (checked by a probe,
+/// docs/tier-cycle.md, "A persistent worker"), so `println!` follows it.
+#[cfg(windows)]
+mod stdio {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn SetStdHandle(which: u32, handle: *mut c_void) -> i32;
+    }
+    const OUT: u32 = -11i32 as u32;
+    const ERR: u32 = -12i32 as u32;
+    pub struct Saved([*mut c_void; 2]);
+    pub fn redirect(f: &std::fs::File) -> Saved {
+        // SAFETY: plain Win32 calls; `f` outlives the redirection (`restore` runs before it drops)
+        unsafe {
+            let saved = Saved([GetStdHandle(OUT), GetStdHandle(ERR)]);
+            SetStdHandle(OUT, f.as_raw_handle());
+            SetStdHandle(ERR, f.as_raw_handle());
+            saved
+        }
+    }
+    pub fn restore(s: Saved) {
+        // SAFETY: the handles `redirect` saved, still open
+        unsafe {
+            SetStdHandle(OUT, s.0[0]);
+            SetStdHandle(ERR, s.0[1]);
+        }
+    }
+}
+#[cfg(unix)]
+mod stdio {
+    use std::os::fd::AsRawFd;
+    unsafe extern "C" {
+        fn dup(fd: i32) -> i32;
+        fn dup2(from: i32, to: i32) -> i32;
+        fn close(fd: i32) -> i32;
+    }
+    pub struct Saved([i32; 2]);
+    pub fn redirect(f: &std::fs::File) -> Saved {
+        // SAFETY: plain libc calls on fds this process owns
+        unsafe {
+            let saved = Saved([dup(1), dup(2)]);
+            dup2(f.as_raw_fd(), 1);
+            dup2(f.as_raw_fd(), 2);
+            saved
+        }
+    }
+    pub fn restore(s: Saved) {
+        // SAFETY: the fds `redirect` duplicated, closed once here
+        unsafe {
+            dup2(s.0[0], 1);
+            dup2(s.0[1], 2);
+            close(s.0[0]);
+            close(s.0[1]);
+        }
+    }
+}
+
+/// The tests a worker runs as tasks.
+fn task_fn(name: &str) -> Option<fn()> {
+    Some(match name {
+        "search::rule_miner" => crate::search::rule_miner,
+        "search::rule_set_kernel_check" => crate::search::rule_set_kernel_check,
+        "machine::machine_state_line" => crate::machine::machine_state_line,
+        "driver::env_echo" => env_echo,
+        _ => return None,
+    })
+}
+
+/// A sweep's children as tasks of one process (`Worker` starts it, with `TATIC_WORKER=1`; it returns at once otherwise).
+/// Reads `<test>\t<log>\t<KEY>=<VALUE>...` lines; runs each test on a fresh thread (fresh thread-locals) with the task's
+/// pairs over this process's environment (`task::begin`) and its stdout and stderr in the log; answers `WORKER ok` or
+/// `WORKER fail` on a line of its own, and exits after a failure (a panic can leave a lock poisoned) or at EOF. A task that
+/// starts a process must give it a null stdin, as `Command::output` does: this stdin is the task pipe.
+#[test]
+#[ignore]
+fn worker() {
+    if std::env::var_os("TATIC_WORKER").is_none() {
+        return;
+    }
+    for line in std::io::stdin().lines() {
+        let line = line.expect("the task pipe");
+        let mut fields = line.split('\t');
+        let (name, log) = (fields.next().unwrap_or("").to_string(), fields.next().unwrap_or("").to_string());
+        let env = fields.filter_map(|f| f.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        crate::task::begin(env);
+        let ok = match std::fs::File::create(&log) {
+            Ok(f) => {
+                std::io::stdout().flush().unwrap();
+                let saved = stdio::redirect(&f);
+                let ok = match task_fn(&name) {
+                    Some(run) => std::thread::Builder::new().name(name.clone()).spawn(run).unwrap().join().is_ok(),
+                    None => {
+                        eprintln!("worker: no task {name}");
+                        false
+                    }
+                };
+                std::io::stdout().flush().unwrap();
+                stdio::restore(saved);
+                ok
+            }
+            Err(e) => {
+                eprintln!("worker: cannot create {log}: {e}");
+                false
+            }
+        };
+        println!("\nWORKER {}", if ok { "ok" } else { "fail" });
+        if !ok {
+            return;
+        }
+    }
+}
 
 #[derive(Clone)]
 struct LoopCfg {
@@ -92,27 +209,152 @@ struct Summary {
     exhausted: usize,
 }
 
-/// Runs test `name` of this exe with `env` added, output to `log`; returns whether it succeeded.
-fn child(name: &str, env: &[(String, String)], log: &Path) -> bool {
-    let f = std::fs::File::create(log).unwrap();
-    let mut c = Command::new(std::env::current_exe().unwrap());
-    c.args([name, "--exact", "--ignored", "--nocapture"]).stdout(f.try_clone().unwrap()).stderr(f).envs(env.iter().cloned());
-    c.status().unwrap().success()
+/// The child process that runs this driver's children as tasks (`worker`), started at the first task and again after a
+/// failed one, or when a task's process-start variables (`process_start`) differ from its. Dropping it closes the worker's
+/// stdin and waits for it, so no worker outlives its driver.
+struct Worker {
+    proc: std::sync::Mutex<Option<WorkerProc>>,
+}
+
+struct WorkerProc {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+    start: Vec<(String, String)>,
+}
+
+/// The pairs of `env` read when a process starts (mimalloc's options, std's `RUST_MIN_STACK` and `RUST_BACKTRACE`), the last
+/// of each name winning: a worker serves only tasks that agree on them.
+fn process_start(env: &[(String, String)]) -> Vec<(String, String)> {
+    let start: std::collections::BTreeMap<&str, &str> =
+        env.iter().filter(|(k, _)| k.starts_with("MIMALLOC_") || k.starts_with("RUST_")).map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    start.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+impl Worker {
+    fn new() -> Worker {
+        Worker { proc: std::sync::Mutex::new(None) }
+    }
+
+    /// Runs test `name` of this exe with `env` added, output to `log`; returns whether it succeeded.
+    fn run(&self, name: &str, env: &[(String, String)], log: &Path) -> bool {
+        let mut slot = self.proc.lock().unwrap_or_else(|e| e.into_inner());
+        let start = process_start(env);
+        if slot.as_ref().is_some_and(|p| p.start != start) {
+            Self::stop(slot.take().unwrap());
+        }
+        let p = slot.get_or_insert_with(|| Self::spawn(start));
+        let fields: Vec<String> = [name.to_string(), log.display().to_string()].into_iter().chain(env.iter().map(|(k, v)| format!("{k}={v}"))).collect();
+        assert!(fields.iter().all(|f| !f.contains(['\t', '\n', '\r'])), "a task field holds a tab or a newline: {fields:?}");
+        let sent = writeln!(p.stdin, "{}", fields.join("\t")).and_then(|_| p.stdin.flush()).is_ok();
+        // a failed task ends the worker; EOF before a reply means it died (its log is then partial, as a crashed child's)
+        let ok = sent && (&mut p.stdout).lines().map_while(Result::ok).find_map(|l| l.strip_prefix("WORKER ").map(|r| r == "ok")) == Some(true);
+        if !ok {
+            Self::stop(slot.take().unwrap());
+        }
+        ok
+    }
+
+    fn spawn(start: Vec<(String, String)>) -> WorkerProc {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["driver::worker", "--exact", "--ignored", "--nocapture"])
+            .envs(start.iter().cloned())
+            .env("TATIC_WORKER", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("start the worker");
+        let (stdin, stdout) = (child.stdin.take().unwrap(), BufReader::new(child.stdout.take().unwrap()));
+        WorkerProc { child, stdin, stdout, start }
+    }
+
+    /// Closes the worker's stdin, reads its stdout to EOF (libtest's closing lines must not meet a closed pipe) and waits.
+    fn stop(p: WorkerProc) {
+        let WorkerProc { mut child, stdin, mut stdout, .. } = p;
+        drop(stdin);
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+        let _ = child.wait();
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        if let Some(p) = self.proc.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
+            Self::stop(p);
+        }
+    }
 }
 
 fn append(path: &Path, text: &str) {
     std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
 }
 
-/// A machine-state line on stderr (about 6 s), taken in a child with the children's `env` so its `pages=` is theirs;
-/// `MACHINE_STATE=0` skips it, in a loop or a sweep.
-fn machine_state(when: &str, env: &[(String, String)]) {
+/// A machine-state line on stderr (about 6 s), taken by a worker task with the children's `env` so its `pages=` is theirs,
+/// logged to `<out>/machine_state_<when>.log`; `MACHINE_STATE=0` skips it, in a loop or a sweep.
+fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Path) {
     if env_or("MACHINE_STATE", 1usize) == 0 {
         return;
     }
-    let o = Command::new(std::env::current_exe().unwrap()).args(["machine::machine_state_line", "--exact", "--ignored", "--nocapture"]).envs(env.iter().cloned()).output().unwrap();
-    let text = String::from_utf8_lossy(&o.stdout);
+    std::fs::create_dir_all(out).unwrap();
+    let log = out.join(format!("machine_state_{when}.log"));
+    worker.run("machine::machine_state_line", env, &log);
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
     eprintln!("machine at {when}: {}", text.lines().find(|l| l.contains("machine state:")).unwrap_or(""));
+}
+
+/// Prints `env_var(k)` for each name in `ECHO` (a comma list) and a nonce unique to this process; panics when
+/// `ECHO_PANIC=1`. A task for `worker_runs_tasks`.
+#[test]
+#[ignore]
+fn env_echo() {
+    static NONCE: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let nonce = NONCE.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    for k in env_var("ECHO").unwrap_or("").split(',').filter(|k| !k.is_empty()) {
+        println!("ECHO {k}={}", env_var(k).unwrap_or("<unset>"));
+    }
+    println!("ECHO nonce={nonce}");
+    assert!(env_var("ECHO_PANIC") != Some("1"), "env_echo panicked on request");
+}
+
+/// A worker runs each task with its own environment and log, leaks no variable from one task to the next, starts afresh
+/// after a failed task, and is replaced when a task's process-start variables differ. Starts processes:
+/// `cargo test --release --test church_bv driver::worker_runs_tasks -- --exact --ignored --nocapture`.
+#[test]
+#[ignore]
+fn worker_runs_tasks() {
+    let dir = std::env::temp_dir().join(format!("worker_runs_tasks_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
+    let log = |i: usize| dir.join(format!("{i}.log"));
+    let w = Worker::new();
+    let ok = [
+        w.run("driver::env_echo", &[kv("ECHO", "A,B,C"), kv("A", "1"), kv("C", "x=y")], &log(1)),
+        w.run("driver::env_echo", &[kv("ECHO", "A,B"), kv("B", "2")], &log(2)),
+        w.run("driver::env_echo", &[kv("ECHO_PANIC", "1")], &log(3)),
+        w.run("driver::env_echo", &[kv("ECHO", "A")], &log(4)),
+        w.run("driver::no_such_task", &[], &log(5)),
+        w.run("driver::env_echo", &[], &dir.join("missing").join("6.log")),
+        w.run("driver::env_echo", &[kv("RUST_BACKTRACE", "0")], &log(7)),
+        w.run("driver::env_echo", &[kv("RUST_BACKTRACE", "0")], &log(8)),
+        w.run("driver::env_echo", &[], &log(9)),
+    ];
+    assert_eq!(ok, [true, true, false, true, false, false, true, true, true]);
+    let text = |i: usize| std::fs::read_to_string(log(i)).unwrap();
+    let echoes = |i: usize| text(i).lines().filter(|l| !l.starts_with("ECHO nonce=")).map(String::from).collect::<Vec<_>>();
+    let nonce = |i: usize| text(i).lines().find_map(|l| l.strip_prefix("ECHO nonce=").map(String::from)).unwrap();
+    assert_eq!(echoes(1), ["ECHO A=1", "ECHO B=<unset>", "ECHO C=x=y"]);
+    assert_eq!(echoes(2), ["ECHO A=<unset>", "ECHO B=2"], "no variable leaks from task 1");
+    assert!(text(3).contains("env_echo panicked on request"), "3.log: {}", text(3));
+    assert!(text(5).contains("no task driver::no_such_task"), "5.log: {}", text(5));
+    assert_eq!(nonce(1), nonce(2), "tasks 1 and 2 ran in one worker");
+    assert_ne!(nonce(2), nonce(4), "a fresh worker after the panic");
+    assert_eq!(nonce(7), nonce(8), "tasks with the same process-start variables share a worker");
+    assert_ne!(nonce(8), nonce(9), "a different RUST_BACKTRACE gets a fresh worker");
+    for i in [1, 2, 4, 7, 8, 9] {
+        assert!(text(i).lines().all(|l| l.starts_with("ECHO ")), "{i}.log holds only its task's lines: {}", text(i));
+    }
+    drop(w);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// Writes to `path` the laws a child with `env` (over this process's environment) would take from `family`'s sequence, as
@@ -126,7 +368,7 @@ fn write_laws(family: &str, env: &[(String, String)], path: &Path, var: &str) ->
 }
 
 /// One loop; its children share the lemma file `lemmas`, which the caller owns (creates nothing, deletes it when done).
-fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
+fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
     let (out, rules) = (&cfg.out, cfg.out.join("rules.txt"));
     std::fs::create_dir_all(out).unwrap();
     let s = |v: usize| v.to_string();
@@ -158,7 +400,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
         env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
-        assert!(child("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
+        assert!(worker.run("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
         // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
         let text = std::fs::read_to_string(&log).unwrap();
         // the base rules a preference phase dropped leave the file
@@ -180,7 +422,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
         let log = out.join(format!("serve_{skip}.log"));
         let mut env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
         env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_serve_{skip}.txt")), "CHECK_LAWFILE"));
-        child("search::rule_set_kernel_check", &env, &log);
+        worker.run("search::rule_set_kernel_check", &env, &log);
         // CHECKED <n> laws kernel-checked (<k> with no whole-term machine proof), <p> not proved, <x> used up the rule budget
         let text = std::fs::read_to_string(&log).unwrap();
         let line = text.lines().find(|l| l.starts_with("CHECKED ")).unwrap_or_else(|| panic!("no CHECKED line (see {})", log.display()));
@@ -217,13 +459,14 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path) -> Summary {
 #[test]
 #[ignore]
 fn loop_stream() {
+    let worker = Worker::new();
     let cfg = LoopCfg::from_env();
-    machine_state("start", &cfg.env);
+    machine_state("start", &cfg.env, &worker, &cfg.out);
     let lemmas = cfg.out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);
-    run_loop(&cfg, &lemmas);
+    run_loop(&cfg, &lemmas, &worker);
     let _ = std::fs::remove_file(&lemmas);
-    machine_state("end", &cfg.env);
+    machine_state("end", &cfg.env, &worker, &cfg.out);
 }
 
 /// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (6 threads, no round cap, full serving check).
@@ -271,7 +514,8 @@ fn sweep() {
     // one lemma file for every loop of the sweep: all its processes run this exe, so every statement in it was checked by this build
     let lemmas = out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);
-    machine_state("start", &env);
+    let worker = Worker::new();
+    machine_state("start", &env, &worker, &out);
     for stage in stages.split_whitespace() {
         let (name, fams) = stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
         let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
@@ -281,7 +525,7 @@ fn sweep() {
                 let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
                 let cfg = LoopCfg { stride, split, b, k: 4, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) };
                 let t0 = std::time::Instant::now();
-                let s = run_loop(&cfg, &lemmas);
+                let s = run_loop(&cfg, &lemmas, &worker);
                 append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
             }
             continue;
@@ -304,7 +548,7 @@ fn sweep() {
                 cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
                 cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
                 let t0 = std::time::Instant::now();
-                let s = run_loop(&cfg, &lemmas);
+                let s = run_loop(&cfg, &lemmas, &worker);
                 append(&out.join("pooled_prefs.tsv"), &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
             }
         }
@@ -328,7 +572,7 @@ fn sweep() {
                     let dir = out.join(format!("{}_{fam}_{p}_{src}", stage.replace(':', "_")));
                     let cfg = LoopCfg { stride, sphase: p, warm: warm.clone(), ..base("loop", dir, fam) };
                     let t0 = std::time::Instant::now();
-                    let s = run_loop(&cfg, &lemmas);
+                    let s = run_loop(&cfg, &lemmas, &worker);
                     let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
                     append(&tsv, &format!("{fam}\t{stride}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\n", s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted));
                 }
@@ -336,5 +580,5 @@ fn sweep() {
         }
     }
     let _ = std::fs::remove_file(&lemmas);
-    machine_state("end", &env);
+    machine_state("end", &env, &worker, &out);
 }
