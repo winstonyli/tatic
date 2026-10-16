@@ -89,7 +89,7 @@ pub fn rewrite_rules_over_the_mul_laws() {
                 }
             }
         }
-        println!("RULES rule instances: {:?}", RULE_HITS.lock().unwrap());
+        println!("RULES rule instances: {:?}", RULE_HITS.get(Default::default).lock().unwrap());
         println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
     })
 }
@@ -443,7 +443,6 @@ impl MinerConfig {
 #[test]
 #[ignore]
 pub fn rule_miner() {
-    load_exe_env();
     tatic::kernel::scoped(|| {
         // phase clock: `phase(label)` prints the seconds since the previous mark
         let last = std::cell::Cell::new(Instant::now());
@@ -1175,9 +1174,9 @@ pub fn rule_miner() {
         };
         let mut prefs = base_prefs.clone();
         while env_or("RULEMINER_PREFS", 0u8) != 0 {
-            *RULE_CONFLICTS.lock().unwrap() = Some(Default::default());
+            *RULE_CONFLICTS.get(Default::default).lock().unwrap() = Some(Default::default());
             let (now, _) = score_laws(&chosen, &prefs, &all_laws, false, None);
-            let mut conflicts: Vec<Pref> = RULE_CONFLICTS.lock().unwrap().take().unwrap().into_keys().collect();
+            let mut conflicts: Vec<Pref> = RULE_CONFLICTS.get(Default::default).lock().unwrap().take().unwrap().into_keys().collect();
             let shown = |(w, l): &Pref| (rule_show(w), rule_show(l));
             conflicts.sort_by_cached_key(shown);
             let (f0, size0) = summarize(&now);
@@ -1944,7 +1943,7 @@ pub fn normal_forms() {
     tatic::kernel::scoped(|| {
         let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(env_var("NF_RULES").unwrap_or_default()).unwrap_or_default());
         set_extra_rules(rules);
-        TRACE_RULES.store(env_var("NF_TRACE").is_some(), std::sync::atomic::Ordering::Relaxed);
+        TRACE_RULES.get(Default::default).store(env_var("NF_TRACE").is_some(), std::sync::atomic::Ordering::Relaxed);
         RULE_BUDGET.with(|b| b.set(200));
         let (n, k) = (4, 3);
         for line in std::fs::read_to_string(env_var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
@@ -2017,7 +2016,7 @@ pub fn rule_set_kernel_check() {
         let fast = env_or("CHECK_FAST", 0u8) != 0;
         SCORE_ONLY.with(|s| s.set(fast));
         if env_or("RULE_CONFLICTS", 0u8) != 0 {
-            *RULE_CONFLICTS.lock().unwrap() = Some(Default::default());
+            *RULE_CONFLICTS.get(Default::default).lock().unwrap() = Some(Default::default());
         }
         let (mut proved, mut free, mut none, mut exhausted) = (0, 0, 0, 0);
         for (name, t1, t2) in &laws {

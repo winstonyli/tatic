@@ -233,8 +233,8 @@ pub fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
 }
 
 /// Nanoseconds spent in `add_tree_law`'s encoding searches: [all-states hit, all-states miss, reachable retry].
-pub static LEMMA_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static PROF: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+pub static LEMMA_HITS: crate::task::PerTask<std::sync::atomic::AtomicU64> = crate::task::PerTask::new();
+pub static PROF: crate::task::PerTask<[std::sync::atomic::AtomicU64; 3]> = crate::task::PerTask::new();
 
 /// One line of machine state to print with every timing (LONG_RUNS.md): Defender real-time protection, total CPU load
 /// over two seconds, and whether this process allocates from large OS pages, read through PowerShell; "unavailable" off
@@ -387,7 +387,7 @@ pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sy
     // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
     let t_all = Instant::now();
     let first = attempt(None);
-    PROF[if first.is_some() { 0 } else { 1 }].fetch_add(t_all.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+    PROF.get(Default::default)[if first.is_some() { 0 } else { 1 }].fetch_add(t_all.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     let found = match first {
         Some(enc) => Some(TreeEnc { enc, inv: None }),
         // guarded lemmas are still case trees over k + c bits, so they keep the old cap
@@ -396,7 +396,7 @@ pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sy
             let t_reach = Instant::now();
             let r = [reachable(&raw_table(&m1, k)), reachable(&raw_table(&m2, k))];
             let second = if r.iter().all(|v| v.iter().all(|x| *x)) { None } else { attempt(Some(&r)) };
-            PROF[2].fetch_add(t_reach.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+            PROF.get(Default::default)[2].fetch_add(t_reach.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
             second.map(|enc| TreeEnc { enc, inv: Some(r) })
         }
     }
@@ -476,7 +476,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
         let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
         if CLOSED.with(|c| c.borrow().contains_key(&key)) {
-            LEMMA_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            LEMMA_HITS.get(Default::default).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         shared_lemma(key, || {
             let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
@@ -1074,8 +1074,8 @@ pub fn lt_conjecture_miner() {
                 }
             }
         }
-        let pf = |i: usize| std::time::Duration::from_nanos(PROF[i].load(std::sync::atomic::Ordering::Relaxed));
-        println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.load(std::sync::atomic::Ordering::Relaxed));
+        let pf = |i: usize| std::time::Duration::from_nanos(PROF.get(Default::default)[i].load(std::sync::atomic::Ordering::Relaxed));
+        println!("LTMINER time: add_tree_law {t_law:?} (all-states search: hit {:?}, miss {:?}; reachable retry {:?}), kernel check {t_ck:?}, lemma cache hits {}", pf(0), pf(1), pf(2), LEMMA_HITS.get(Default::default).load(std::sync::atomic::Ordering::Relaxed));
         println!("LTMINER {total} conjectures, {proved} proved, {none} without a proof, {:?}", t0.elapsed());
     })
 }

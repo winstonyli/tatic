@@ -120,3 +120,58 @@ fn per_task_rebuilds_per_task() {
     assert_eq!(*a.get_at(2, || "two".into()), "two");
     assert!(first.upgrade().is_none(), "the first epoch's value dropped when the second replaced it");
 }
+
+/// The name of the process-wide mutable static declared on `line`, if any: `static mut`, or a static whose type mentions a
+/// lock, a once-cell or an atomic. Thread-locals in church_bv hold `Cell`s and `RefCell`s, so they are not flagged (a lock in
+/// a thread-local would be, falsely). It cannot see interior mutability behind a struct's name (`static X: Counters`):
+/// no church_bv static is one.
+fn flagged(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let rest = ["pub(crate) static ", "pub static ", "static "].iter().find_map(|p| t.strip_prefix(p))?;
+    let (is_mut, rest) = match rest.strip_prefix("mut ") {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+    let (name, ty) = rest.split_once(':')?;
+    let mutable = is_mut || ["Mutex", "RwLock", "Once", "LazyLock", "Atomic"].iter().any(|m| ty.contains(m));
+    (mutable && !ty.contains("PerTask")).then_some(name.trim())
+}
+
+/// Every process-wide mutable static in church_bv is task state (`PerTask`, `PerTaskArc`) or a pure memo on this list,
+/// so a `driver::worker` task never sees another task's configuration or counters.
+#[test]
+fn task_state_is_classified() {
+    const PURE: [(&str, &str, &str); 9] = [
+        ("rewrite.rs", "TABLE", "the term table: interning is pure"),
+        ("rewrite.rs", "SCREENS", "values on fixed pseudo-random inputs, keyed by width and variable count"),
+        ("rewrite.rs", "TREE_CANDS", "keyed by width, variable count and nops()"),
+        ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
+        ("machine.rs", "TREE_ENCS", "pure in its key; carry_cap() is a screen before the lookup"),
+        ("search.rs", "MEMO", "pool3_sequence, keyed by every variable it reads (the driver's)"),
+        ("lemma_cache.rs", "ID", "the running exe's identity"),
+        ("task.rs", "TASK", "the task machinery"),
+        ("task.rs", "TASK_ENV", "the task machinery"),
+    ];
+    assert_eq!(flagged("    static X: std::sync::OnceLock<u8> = std::sync::OnceLock::new();"), Some("X"));
+    assert_eq!(flagged("pub static Y: [std::sync::atomic::AtomicU64; 3] = x;"), Some("Y"));
+    assert_eq!(flagged("static mut Z: u8 = 0;"), Some("Z"));
+    assert_eq!(flagged("static W: PerTask<std::sync::Mutex<u8>> = PerTask::new();"), None);
+    assert_eq!(flagged("    static T: std::cell::RefCell<u8> = Default::default();"), None);
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/church_bv");
+    let mut bad = vec![];
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let file = path.file_name().unwrap().to_str().unwrap().to_string();
+        for (i, line) in std::fs::read_to_string(&path).unwrap().lines().enumerate() {
+            if let Some(name) = flagged(line) {
+                if !PURE.iter().any(|p| p.0 == file && p.1 == name) {
+                    bad.push(format!("{file}:{} {name}", i + 1));
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "process-wide statics that are neither PerTask nor a listed pure memo: {bad:?}");
+}

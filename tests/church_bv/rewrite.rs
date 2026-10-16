@@ -183,34 +183,36 @@ pub fn env_or<T: std::str::FromStr>(k: &str, d: T) -> T {
     env_var(k).and_then(|v| v.parse().ok()).unwrap_or(d)
 }
 
-/// The process's environment, taken whole at the first `env_var` (names upper-cased on Windows, where they ignore case; values
+/// The task's environment, taken whole at its first `env_var` (names upper-cased on Windows, where they ignore case; values
 /// that are not Unicode left out). Reading a variable per call cost a sweep 4.3% of its samples, mostly `nops` in `tree_step`
-/// (docs/tier-cycle.md, "The environment read once per process").
-static ENV: std::sync::OnceLock<hashbrown::HashMap<String, String>> = std::sync::OnceLock::new();
+/// (docs/tier-cycle.md, "The environment read once per process"). Per task (`task::PerTask`): a `driver::worker` task sees
+/// the worker's environment with the task's pairs over it.
+static ENV: crate::task::PerTask<hashbrown::HashMap<String, String>> = crate::task::PerTask::new();
 
 fn env_name(k: &str) -> std::borrow::Cow<'_, str> {
     if cfg!(windows) && k.bytes().any(|b| b.is_ascii_lowercase()) { k.to_ascii_uppercase().into() } else { k.into() }
 }
 
-/// The environment variable `k`, or `None` when unset: every church_bv read goes through this, so a variable set after the first
-/// read is not seen (`load_exe_env` refuses to run then).
-pub fn env_var(k: &str) -> Option<&'static str> {
-    let env = ENV.get_or_init(|| std::env::vars_os().filter_map(|(k, v)| Some((env_name(k.to_str()?).into_owned(), v.into_string().ok()?))).collect());
-    env.get(&*env_name(k)).map(String::as_str)
-}
-
-/// `<exe>.env` next to the test exe (lines `KEY=VALUE`) sets the variables that are not already set: a profiler launcher that
-/// cannot pass env (the elevated Samply task) runs the same configuration this way. Child processes inherit them.
-pub fn load_exe_env() {
-    assert!(ENV.get().is_none(), "load_exe_env after the environment was read");
+/// The process's environment; then `<exe>.env` (lines `KEY=VALUE`) for the names it does not set, so a profiler launcher that
+/// cannot pass env (the elevated Samply task) runs the same configuration; then the task's pairs (`task::begin`).
+fn env_snapshot() -> hashbrown::HashMap<String, String> {
+    let mut env: hashbrown::HashMap<String, String> =
+        std::env::vars_os().filter_map(|(k, v)| Some((env_name(k.to_str()?).into_owned(), v.into_string().ok()?))).collect();
     if let Ok(text) = std::env::current_exe().map(|mut p| { p.as_mut_os_string().push(".env"); p }).and_then(std::fs::read_to_string) {
         for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
-            if std::env::var_os(k.trim()).is_none() {
-                // main-thread test, before any thread reads the environment
-                unsafe { std::env::set_var(k.trim(), v.trim()) };
-            }
+            env.entry(env_name(k.trim()).into_owned()).or_insert_with(|| v.trim().to_string());
         }
     }
+    for (k, v) in crate::task::task_env() {
+        env.insert(env_name(&k).into_owned(), v);
+    }
+    env
+}
+
+/// The environment variable `k` in this task's snapshot (`ENV`), or `None` when unset: every church_bv read goes through
+/// this, so a variable set after the task's first read is not seen.
+pub fn env_var(k: &str) -> Option<&'static str> {
+    ENV.get(env_snapshot).get(&*env_name(k)).map(String::as_str)
 }
 /// `\a _. a << 1`, the Church operator of `Term` index 6.
 pub fn shl1_op(n: usize) -> Expr {
@@ -740,11 +742,11 @@ pub fn discharge(body: Expr) -> Expr {
 }
 
 /// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: comm, assoc, chain, tree, collapse,
-/// promoted, ruleset, a built-in rule's name, and `prove_eq`'s eq_truth, eq_pos, shrmask). Read once per process: `rule_step`
+/// promoted, ruleset, a built-in rule's name, and `prove_eq`'s eq_truth, eq_pos, shrmask). Read once per task: `rule_step`
 /// asks for every rule it tries, and reading the environment each time was 11% of a mine (docs/tier-cycle.md).
 pub fn ablated(name: &str) -> bool {
-    static SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    SET.get_or_init(|| env_var("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default()).iter().any(|x| x == name)
+    static SET: crate::task::PerTask<Vec<String>> = crate::task::PerTask::new();
+    SET.get(|| env_var("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default()).iter().any(|x| x == name)
 }
 
 /// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
@@ -1153,8 +1155,8 @@ pub struct RuleTable {
 
 impl RuleTable {
     fn new(mined: Vec<(Term, Term)>) -> RuleTable {
-        static FIXED: std::sync::OnceLock<Vec<TableRule>> = std::sync::OnceLock::new();
-        let fixed = FIXED.get_or_init(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
+        static FIXED: crate::task::PerTask<Vec<TableRule>> = crate::task::PerTask::new();
+        let fixed = FIXED.get(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
         let rules: Vec<TableRule> = fixed.iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
         let (mut by_op, mut leaf): ([Vec<(u32, [Classes; 2])>; OP_INFO.len()], Vec<u32>) = Default::default();
         for (i, r) in rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)) {
@@ -1234,8 +1236,8 @@ thread_local! {
 /// after the built-in rules; empty when unset. `ABLATE=ruleset` removes it again. The two sets were mined without
 /// `ABLATE=subdist`.
 pub fn rule_set() -> &'static Vec<(Term, Term)> {
-    static SET: std::sync::OnceLock<Vec<(Term, Term)>> = std::sync::OnceLock::new();
-    SET.get_or_init(|| {
+    static SET: crate::task::PerTask<Vec<(Term, Term)>> = crate::task::PerTask::new();
+    SET.get(|| {
         let text = match env_var("RULESET") {
             Some("add3_mm") => include_str!("../../scripts/data/add3_mm_rules.txt"),
             Some("mix3_mm") => include_str!("../../scripts/data/mix3_mm_rules.txt"),
@@ -1249,10 +1251,10 @@ pub fn rule_set() -> &'static Vec<(Term, Term)> {
 }
 
 /// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins, the promoted rules, the
-/// `RULESET` rules; the mined ones (`RULE_TABLE`) come after them. Built once per process.
+/// `RULESET` rules; the mined ones (`RULE_TABLE`) come after them. Built once per task.
 pub fn fixed_rules() -> &'static [Rule] {
-    static RULES: std::sync::OnceLock<Vec<Rule>> = std::sync::OnceLock::new();
-    RULES.get_or_init(build_fixed_rules)
+    static RULES: crate::task::PerTask<Vec<Rule>> = crate::task::PerTask::new();
+    RULES.get(build_fixed_rules)
 }
 
 fn build_fixed_rules() -> Vec<Rule> {
@@ -1824,16 +1826,16 @@ pub fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
 }
 
 /// Print every rule application (set by the `normal_forms` debug test).
-pub static TRACE_RULES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static TRACE_RULES: crate::task::PerTask<std::sync::atomic::AtomicBool> = crate::task::PerTask::new();
 
 /// Instances of `rule_step` by rule name, for the audit.
-pub static RULE_HITS: std::sync::Mutex<Vec<(&'static str, u64)>> = std::sync::Mutex::new(Vec::new());
+pub static RULE_HITS: crate::task::PerTask<std::sync::Mutex<Vec<(&'static str, u64)>>> = crate::task::PerTask::new();
 
 /// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms; `print_rule_conflicts` lists them.
-pub static RULE_CONFLICTS: std::sync::Mutex<Option<hashbrown::HashMap<Pref, u64>>> = std::sync::Mutex::new(None);
+pub static RULE_CONFLICTS: crate::task::PerTask<std::sync::Mutex<Option<hashbrown::HashMap<Pref, u64>>>> = crate::task::PerTask::new();
 
 pub fn print_rule_conflicts() {
-    if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_ref() {
+    if let Some(m) = RULE_CONFLICTS.get(Default::default).lock().unwrap().as_ref() {
         let mut v: Vec<_> = m.iter().map(|((w, l), c)| (rule_show(w), rule_show(l), *c)).collect();
         v.sort_by_key(|(w, l, c)| (std::cmp::Reverse(*c), w.clone(), l.clone()));
         for (w, l, c) in &v {
@@ -1902,13 +1904,13 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
             }
         }
     });
-    if let Some(m) = RULE_CONFLICTS.lock().unwrap().as_mut() {
+    if let Some(m) = RULE_CONFLICTS.get(Default::default).lock().unwrap().as_mut() {
         for (_, r) in table.candidates(t).filter(|&(j, r)| j > i && fires(r).is_some()) {
             *m.entry((all[i].key(), r.key())).or_default() += 1;
         }
     }
     let r = &all[i];
-    if TRACE_RULES.load(std::sync::atomic::Ordering::Relaxed) {
+    if TRACE_RULES.get(Default::default).load(std::sync::atomic::Ordering::Relaxed) {
         println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
     }
     if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
@@ -1916,7 +1918,7 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
     }
     // a pattern variable the left side does not mention is free in the law: any value serves
     let args = sub[..r.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect();
-    let mut hits = RULE_HITS.lock().unwrap();
+    let mut hits = RULE_HITS.get(Default::default).lock().unwrap();
     match hits.iter_mut().find(|h| h.0 == r.name) {
         Some(h) => h.1 += 1,
         None => hits.push((r.name, 1)),
