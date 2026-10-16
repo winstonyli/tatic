@@ -62,12 +62,12 @@ struct LoopCfg {
 
 impl LoopCfg {
     fn from_env() -> LoopCfg {
-        let mode = std::env::var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop");
+        let mode = env_var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop").to_string();
         assert!(["none", "ref", "loop"].contains(&mode.as_str()), "LOOP_MODE must be none, ref or loop, got {mode}");
         LoopCfg {
             mode,
-            out: PathBuf::from(std::env::var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
-            family: std::env::var("FAMILY").unwrap_or_else(|_| "add3".into()),
+            out: PathBuf::from(env_var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
+            family: env_var("FAMILY").unwrap_or("add3").into(),
             stride: env_or("STRIDE", 7),
             sphase: env_or("SPHASE", 0),
             b: env_or("B", 150),
@@ -77,7 +77,7 @@ impl LoopCfg {
             rounds: env_or("ROUNDS", usize::MAX),
             deep3: env_or("DEEP3", 1),
             split: env_or("SPLIT", 2),
-            warm: std::env::var("WARM_RULES").ok().map(PathBuf::from),
+            warm: env_var("WARM_RULES").map(PathBuf::from),
             check_fast: env_or("CHECK_FAST", 0usize) == 1,
             env: vec![],
         }
@@ -236,11 +236,11 @@ const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("m
 #[test]
 #[ignore]
 fn sweep() {
-    let out = PathBuf::from(std::env::var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
+    let out = PathBuf::from(env_var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
     std::fs::create_dir_all(&out).unwrap();
     let salt: usize = env_or("SALT", 1);
-    let lib = std::env::var("LIB").map(PathBuf::from).unwrap_or_else(|_| out.clone());
-    let stages = std::env::var("SWEEP").unwrap_or_else(|_| "mines own cold".into());
+    let lib = env_var("LIB").map(PathBuf::from).unwrap_or_else(|| out.clone());
+    let stages = env_var("SWEEP").unwrap_or("mines own cold");
     // Large pages off in the children: most are short, each pays the 64 MiB large-page commit up front, and a sweep with them
     // on cost 0.3-2.9 s more CPU and 60% more peak memory (docs/tier-cycle.md, "How often the large-page stall hits a sweep").
     let env: Vec<(String, String)> = [("RULEMINER_FAST", "1".to_string()), ("RULEMINER_SHUFFLE", salt.to_string()), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0".to_string())]
@@ -267,7 +267,7 @@ fn sweep() {
     let library = |fam: &str| lib.join(format!("lib_{fam}")).join("rules.txt");
     // `MINES_WARM=<sweep dir>`: each ref mine starts from that sweep's pooled library for its family, where there is one
     // (docs/tier-cycle.md, "Promotion as an iterated sweep": one iteration lowers the best loops 157 to 142, a second adds nothing)
-    let mines_warm = |fam: &str| std::env::var("MINES_WARM").ok().map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
+    let mines_warm = |fam: &str| env_var("MINES_WARM").map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
     // one lemma file for every loop of the sweep: all its processes run this exe, so every statement in it was checked by this build
     let lemmas = out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);

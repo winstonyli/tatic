@@ -551,7 +551,7 @@ pub fn shared_carry_proof_checks_and_rejects_wrong_statements() {
 #[test]
 #[ignore]
 pub fn shared_carry_scaling() {
-    let ns: Vec<usize> = if std::env::var("SHARED_N64").is_ok() { vec![16, 32, 64] } else { vec![16, 32] };
+    let ns: Vec<usize> = if env_var("SHARED_N64").is_some() { vec![16, 32, 64] } else { vec![16, 32] };
     for n in ns {
         for round in 0..2 {
             let (p, s) = add_identity_proof_shared(n, 0, false, add_shared);
@@ -654,7 +654,7 @@ pub fn add_zero_lemma_scaling_scoped() {
                 tatic::kernel::term_sizes(&proof).0
             );
         };
-        if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
+        if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -785,8 +785,8 @@ pub fn add_comm_scaling() {
 #[test]
 #[ignore]
 pub fn add_comm_rejection_probe() {
-    let n: usize = std::env::var("COMM_N").unwrap().parse().unwrap();
-    let case = std::env::var("COMM_CASE").unwrap();
+    let n: usize = env_var("COMM_N").unwrap().parse().unwrap();
+    let case = env_var("COMM_CASE").unwrap();
     let body = || {
         let (proof, _) = add_comm_proof(n, false);
         let (wp, ws) = add_comm_proof(n, true);
@@ -794,7 +794,7 @@ pub fn add_comm_rejection_probe() {
         let r = if case == "own" { holds(&wp, &ws) } else { holds(&proof, &ws) };
         println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
     };
-    if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
+    if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
 }
 
 /// As `add_comm_scaling`, built and checked inside one `scoped` call, up to the widths in the
@@ -803,8 +803,8 @@ pub fn add_comm_rejection_probe() {
 #[test]
 #[ignore]
 pub fn add_comm_scaling_scoped() {
-    let ns: Vec<usize> = std::env::var("COMM_NS")
-        .unwrap_or_else(|_| "8,16,32,64".into())
+    let ns: Vec<usize> = env_var("COMM_NS")
+        .unwrap_or_else(|| "8,16,32,64".into())
         .split(',')
         .map(|v| v.trim().parse().unwrap())
         .collect();
@@ -821,7 +821,7 @@ pub fn add_comm_scaling_scoped() {
                 tatic::kernel::term_sizes(&proof).0
             );
         };
-        if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
+        if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -2140,7 +2140,7 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
 #[test]
 #[ignore]
 pub fn add_assoc_scaling_scoped() {
-    let ns: Vec<usize> = std::env::var("ASSOC_NS").unwrap_or_else(|_| "8,16,32,64".into()).split(',').map(|v| v.trim().parse().unwrap()).collect();
+    let ns: Vec<usize> = env_var("ASSOC_NS").unwrap_or("8,16,32,64").split(',').map(|v| v.trim().parse().unwrap()).collect();
     for n in ns {
         tatic::kernel::scoped(|| {
             let t0 = Instant::now();

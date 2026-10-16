@@ -107,7 +107,7 @@ static SKIPPED: AtomicU64 = AtomicU64::new(0);
 fn process() -> Option<&'static Process> {
     PROCESS
         .get_or_init(|| {
-            let path = PathBuf::from(std::env::var_os("LEMMA_CACHE")?);
+            let path = PathBuf::from(env_var("LEMMA_CACHE")?);
             let identity = exe_identity();
             let cache = Cache::load(&path, identity);
             if let Some(why) = &cache.why_empty {
@@ -121,7 +121,7 @@ fn process() -> Option<&'static Process> {
 /// Whether `LEMMA_RECHECK=1`: build and check every lemma, comparing the cached statements with the built ones.
 pub fn recheck() -> bool {
     static R: OnceLock<bool> = OnceLock::new();
-    *R.get_or_init(|| std::env::var("LEMMA_RECHECK").is_ok_and(|v| v == "1"))
+    *R.get_or_init(|| env_var("LEMMA_RECHECK").is_some_and(|v| v == "1"))
 }
 
 /// The statement an earlier process checked for `key`, if the cache has one.

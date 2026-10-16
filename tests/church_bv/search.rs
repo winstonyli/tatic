@@ -310,7 +310,7 @@ pub fn guard_plan_samples_and_weights() {
 }
 
 pub fn shape_part(a: &Term, b: &Term) -> usize {
-    shape_part_salted(a, b, &std::env::var("RULEMINER_SHAPE_SALT").unwrap_or_default()) // a different salt gives a different split; unset keeps the original halves
+    shape_part_salted(a, b, &env_var("RULEMINER_SHAPE_SALT").unwrap_or_default()) // a different salt gives a different split; unset keeps the original halves
 }
 
 fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
@@ -443,16 +443,7 @@ impl MinerConfig {
 #[test]
 #[ignore]
 pub fn rule_miner() {
-    // `<exe>.env` next to the test exe (lines `KEY=VALUE`) sets variables that are not already set, before anything reads the
-    // environment: a profiler launcher that cannot pass env (the elevated Samply task) runs the same configuration this way.
-    // Main-thread test, no other thread reads env yet.
-    if let Ok(text) = std::env::current_exe().map(|mut p| { p.as_mut_os_string().push(".env"); p }).and_then(std::fs::read_to_string) {
-        for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
-            if std::env::var_os(k.trim()).is_none() {
-                unsafe { std::env::set_var(k.trim(), v.trim()) };
-            }
-        }
-    }
+    load_exe_env();
     tatic::kernel::scoped(|| {
         // phase clock: `phase(label)` prints the seconds since the previous mark
         let last = std::cell::Cell::new(Instant::now());
@@ -470,10 +461,10 @@ pub fn rule_miner() {
             1 => rule_order_or_tie(l, r),
             _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
         };
-        let family = std::env::var("RULEMINER_FAMILY").unwrap_or_else(|_| "mul".into());
+        let family = env_var("RULEMINER_FAMILY").unwrap_or("mul");
         // RULEMINER_BASE=<file>: rules (`lhs -> rhs` lines) and their preferences in force throughout, the stragglers are those left with
         // them (section 74)
-        let base_text = std::env::var("RULEMINER_BASE").ok().map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
+        let base_text = env_var("RULEMINER_BASE").map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
         let (base, base_prefs) = (parse_rules(&base_text), parse_prefs(&base_text));
         set_extra_rules(base.clone());
         set_rule_prefs(base_prefs.clone());
@@ -484,9 +475,9 @@ pub fn rule_miner() {
         let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
         // RULEMINER_LAWFILE=<file>: mine from these `lhs = rhs` lines (a proposer's band, docs/tier-cycle.md) instead of the family's
         // window; RULEMINER_FAMILY still sets the variable count
-        let laws = match std::env::var("RULEMINER_LAWFILE") {
-            Ok(f) => read_named_laws(&f),
-            Err(_) => family_laws(&family, &env_or::<usize>, n, nv, max),
+        let laws = match env_var("RULEMINER_LAWFILE") {
+            Some(f) => read_named_laws(&f),
+            None => family_laws(&family, &env_or::<usize>, n, nv, max),
         };
         phase("law building");
         let mut unproved = 0usize;
@@ -690,14 +681,14 @@ pub fn rule_miner() {
             }
         }
         // `RULEMINER_EXTRA=<file>`: extra candidates (`lhs -> rhs` lines) joining the miner's own, before the one-per-left-side pass
-        if let Ok(path) = std::env::var("RULEMINER_EXTRA") {
+        if let Some(path) = env_var("RULEMINER_EXTRA") {
             let extra = read_rule_file(&path);
             println!("RULEMINER {} extra candidates from {path}", extra.len());
             cands.extend(extra);
         }
         // `RULEMINER_NODUPLHS` (default on, 0 = off): drop candidates whose left side already has a rule in force (`RULEMINER_BASE`); the one-per-left-side pass
         // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
-        if std::env::var("RULEMINER_NODUPLHS").map_or(true, |v| v != "0") {
+        if env_var("RULEMINER_NODUPLHS").map_or(true, |v| v != "0") {
             let before = cands.len();
             let in_force: hashbrown::HashSet<&Term> = base.iter().map(|(l, _)| l).collect();
             cands.retain(|(l, _)| !in_force.contains(l));
@@ -1174,7 +1165,7 @@ pub fn rule_miner() {
         // off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
         // rival orientations in the miner")
         // `RULEMINER_UNITS=<file>`: the base's drop units (`joinability_units`, built once per pooled library by `driver::sweep`)
-        let units = std::env::var("RULEMINER_UNITS").ok().filter(|_| env_or("RULEMINER_PREFS", 0u8) != 0).map_or(vec![], |f| parse_units(&std::fs::read_to_string(f).unwrap()));
+        let units = env_var("RULEMINER_UNITS").filter(|_| env_or("RULEMINER_PREFS", 0u8) != 0).map_or(vec![], |f| parse_units(&std::fs::read_to_string(f).unwrap()));
         for (u, rules) in units.iter().enumerate() {
             println!("RULEMINER drop unit {u}: {}", rules.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect::<Vec<_>>().join("; "));
         }
@@ -1614,8 +1605,8 @@ pub fn lt_borrow_bit_probe() {
 pub fn soundness_sweep() {
     tatic::kernel::scoped(|| {
         let _banner = MachineBanner::start("SWEEP");
-        let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
-        let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "3,4".into()).split(',').map(|w| w.parse().unwrap()).collect();
+        let family = env_var("SWEEP_FAMILY").unwrap_or("mul");
+        let widths: Vec<usize> = env_var("SWEEP_WIDTHS").unwrap_or("3,4").split(',').map(|w| w.parse().unwrap()).collect();
         let kv = family_vars(&family);
         let laws = family_laws(&family, &env_or::<usize>, 4, kv, env_or("MULMINER_MAX", 7) as u32);
         let capped = |t: &Term, w: usize| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap()) && w > 0;
@@ -1659,13 +1650,13 @@ pub fn soundness_sweep() {
 #[ignore]
 pub fn scaling_sweep() {
     // SWEEP_SCOPE=law: one intern scope per law instead of one for the sweep (separates table size from per-node cost)
-    let per_law = std::env::var("SWEEP_SCOPE").is_ok_and(|v| v == "law");
+    let per_law = env_var("SWEEP_SCOPE").is_some_and(|v| v == "law");
     let body = || {
         let _banner = MachineBanner::start("SCALE");
-        let family = std::env::var("SWEEP_FAMILY").unwrap_or_else(|_| "mul".into());
-        let widths: Vec<usize> = std::env::var("SWEEP_WIDTHS").unwrap_or_else(|_| "4,8,16,32".into()).split(',').map(|w| w.parse().unwrap()).collect();
+        let family = env_var("SWEEP_FAMILY").unwrap_or("mul");
+        let widths: Vec<usize> = env_var("SWEEP_WIDTHS").unwrap_or("4,8,16,32").split(',').map(|w| w.parse().unwrap()).collect();
         let kv = family_vars(&family);
-        if let Ok(f) = std::env::var("SWEEP_RULES") {
+        if let Some(f) = env_var("SWEEP_RULES") {
             let rules = parse_rules(&std::fs::read_to_string(f).unwrap());
             set_extra_rules(rules);
         }
@@ -1712,7 +1703,7 @@ pub fn scaling_sweep() {
             }
         }
         let t = Instant::now();
-        for &w in widths.iter().filter(|_| std::env::var("SWEEP_RULES").is_err()) {
+        for &w in widths.iter().filter(|_| env_var("SWEEP_RULES").is_none()) {
             let t = Instant::now();
             for (l, r) in promoted_rules() {
                 assert!(prove_rule(w, l.max_var().max(r.max_var()) + 1, l, r).is_some(), "promoted rule not provable at width {w}");
@@ -1951,12 +1942,12 @@ pub fn permutative_rules_are_admitted_and_oriented_by_instance() {
 #[ignore]
 pub fn normal_forms() {
     tatic::kernel::scoped(|| {
-        let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(std::env::var("NF_RULES").unwrap_or_default()).unwrap_or_default());
+        let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(env_var("NF_RULES").unwrap_or_default()).unwrap_or_default());
         set_extra_rules(rules);
-        TRACE_RULES.store(std::env::var("NF_TRACE").is_ok(), std::sync::atomic::Ordering::Relaxed);
+        TRACE_RULES.store(env_var("NF_TRACE").is_some(), std::sync::atomic::Ordering::Relaxed);
         RULE_BUDGET.with(|b| b.set(200));
         let (n, k) = (4, 3);
-        for line in std::fs::read_to_string(std::env::var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
+        for line in std::fs::read_to_string(env_var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
             let (a, b) = line.split_once(" = ").unwrap();
             let (a, b) = (parse_term(a), parse_term(b));
             // each side with its own budget, as in `rewrite_law`; `steps` is what each used (200 or more: it used the budget up)
@@ -1997,13 +1988,13 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
 /// variable count, and the laws of the family (sized by the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as
 /// the driver passes them) that are plausible at widths 1-6.
 fn check_laws() -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
-    let family = std::env::var("CHECK_FAMILY").unwrap_or_else(|_| "add3".into());
-    let text = std::fs::read_to_string(std::env::var("CHECK_RULES").unwrap()).unwrap();
+    let family = env_var("CHECK_FAMILY").unwrap_or("add3");
+    let text = std::fs::read_to_string(env_var("CHECK_RULES").unwrap()).unwrap();
     let rules = parse_rules(&text);
     let kv = family_vars(&family);
-    let laws = match std::env::var("CHECK_LAWFILE") {
-        Ok(f) => read_named_laws(&f),
-        Err(_) => family_laws(&family, &env_or::<usize>, 4, kv, 7),
+    let laws = match env_var("CHECK_LAWFILE") {
+        Some(f) => read_named_laws(&f),
+        None => family_laws(&family, &env_or::<usize>, 4, kv, 7),
     };
     let laws = laws.into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
     set_extra_rules(rules.clone());
@@ -2135,7 +2126,7 @@ pub fn law_work_report() {
     let (take_beta_count, take_built, take_walk_counts) = (|| 0u64, || (0u64, 0u64), || [0u64; 26]);
     tatic::kernel::scoped(|| {
         let (_, kv, laws) = check_laws();
-        let mut out = std::fs::File::create(std::env::var("WORK_OUT").unwrap()).unwrap();
+        let mut out = std::fs::File::create(env_var("WORK_OUT").unwrap()).unwrap();
         // per counted slot (instantiate, shift, eq, conv_whnf, nf_whnf, infer miss), building (`b_`) and checking (`c_`), to fit
         // time against counts; `check_built` is the terms interned while checking
         const SLOTS: [(usize, &str); 6] = [(0, "inst"), (1, "shift"), (2, "eq"), (3, "conv"), (4, "nf"), (20, "infer")];
@@ -2291,7 +2282,7 @@ pub fn proposal_credit_report() {
         let (rules, kv, laws) = check_laws();
         SCORE_ONLY.with(|s| s.set(true));
         let held: Vec<(Term, Term)> = laws.into_iter().map(|(_, a, b)| (a, b)).collect();
-        let props = read_laws(&std::env::var("CREDIT_LAWS").unwrap());
+        let props = read_laws(&env_var("CREDIT_LAWS").unwrap());
         let (gains, users, credit) = proposal_credit(&rules, kv, &held, &props);
         for (i, (l, r)) in rules.iter().enumerate() {
             println!("CREDIT rule {} -> {}: held-out gain {}, used by {} proposals", l.show(), r.show(), gains[i], users[i]);
@@ -2308,7 +2299,7 @@ pub fn proposal_credit_report() {
             credit.iter().sum::<f64>(),
             props.len()
         );
-        if let Ok(out) = std::env::var("CREDIT_OUT") {
+        if let Some(out) = env_var("CREDIT_OUT") {
             let text: String = props.iter().zip(&credit).map(|((a, b), c)| format!("{c:.3}\t{} = {}\n", a.show(), b.show())).collect();
             std::fs::write(out, text).unwrap();
         }
@@ -2555,10 +2546,10 @@ pub fn mutants_are_well_formed() {
 pub fn proposal_yield() {
     tatic::kernel::scoped(|| {
         std::panic::set_hook(Box::new(|_| {}));
-        let family = std::env::var("YIELD_FAMILY").unwrap_or_else(|_| "add3".into());
+        let family = env_var("YIELD_FAMILY").unwrap_or("add3");
         let kv = family_vars(&family);
         let n = env_or("YIELD_N", 2000usize);
-        if let Ok(path) = std::env::var("CHECK_RULES") {
+        if let Some(path) = env_var("CHECK_RULES") {
             set_extra_rules(parse_rules(&std::fs::read_to_string(path).unwrap()));
         }
         SCORE_ONLY.with(|s| s.set(true));
@@ -2571,15 +2562,15 @@ pub fn proposal_yield() {
             _ => env_or::<usize>(k, d),
         };
         let known_lines = strings(family_laws(&family, &whole, 4, kv, 7));
-        let lines: Vec<String> = match (std::env::var("YIELD_FILE"), std::env::var("PROPOSER").as_deref()) {
-            (Ok(path), _) => std::fs::read_to_string(path).unwrap().lines().map(String::from).collect(),
-            (_, Ok("ngram")) => ngram_lines(&train_lines.join("\n"), env_or("YIELD_ORDER", 8usize), n, 1),
-            (_, Ok("pool")) => {
+        let lines: Vec<String> = match (env_var("YIELD_FILE"), env_var("PROPOSER")) {
+            (Some(path), _) => std::fs::read_to_string(path).unwrap().lines().map(String::from).collect(),
+            (_, Some("ngram")) => ngram_lines(&train_lines.join("\n"), env_or("YIELD_ORDER", 8usize), n, 1),
+            (_, Some("pool")) => {
                 let pool = pool3(&family, &env_or::<usize>).expect("pool proposer needs a three-variable family");
                 let mut s = 7u64;
                 (0..n).map(|_| format!("{} = {}", pool[lcg(&mut s) as usize % pool.len()].show(), pool[lcg(&mut s) as usize % pool.len()].show())).collect()
             }
-            (_, Ok("stream")) => {
+            (_, Some("stream")) => {
                 let held_out = |k: &str, d: usize| match k {
                     "RULEMINER_SKIP" => env_or("YIELD_SKIP", 1000usize),
                     "RULEMINER_LAWS" => n,
@@ -2587,13 +2578,13 @@ pub fn proposal_yield() {
                 };
                 strings(family_laws(&family, &held_out, 4, kv, 7))
             }
-            (_, Ok("mutate")) => {
-                let seeds = read_laws(&std::env::var("MUTATE_SEEDS").expect("the mutate proposer needs MUTATE_SEEDS (a BAND_OUT file)"));
-                mutate_laws(&seeds, kv, &std::env::var("MUTATE_KIND").unwrap_or_else(|_| "mix".into()), n, 11)
+            (_, Some("mutate")) => {
+                let seeds = read_laws(&env_var("MUTATE_SEEDS").expect("the mutate proposer needs MUTATE_SEEDS (a BAND_OUT file)"));
+                mutate_laws(&seeds, kv, &env_var("MUTATE_KIND").unwrap_or("mix"), n, 11)
             }
             _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool|stream|mutate"),
         };
-        if let Ok(out) = std::env::var("YIELD_OUT") {
+        if let Some(out) = env_var("YIELD_OUT") {
             std::fs::write(out, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         }
         let laws = |lines: Vec<String>| lines.iter().filter_map(|l| parse_law(l, kv)).collect::<HashSet<_>>();
@@ -2615,7 +2606,7 @@ pub fn proposal_yield() {
             band.iter().map(|(_, c)| c.fallbacks).sum::<u64>(),
             steps.get(steps.len() / 2).copied().unwrap_or(0)
         );
-        if let Ok(out) = std::env::var("BAND_OUT") {
+        if let Some(out) = env_var("BAND_OUT") {
             std::fs::write(out, band.iter().map(|(l, _)| format!("{l}\n")).collect::<String>()).unwrap();
         }
     })

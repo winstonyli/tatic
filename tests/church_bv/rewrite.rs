@@ -176,11 +176,41 @@ pub const OP_INFO: [OpInfo; 8] = [
 ];
 /// How many of `OP_INFO` the miner enumerates: `sub` only with `MINER_SUB=1`.
 pub fn nops() -> usize {
-    if std::env::var("MINER_SUB").is_ok() { 5 } else { 4 }
+    if env_var("MINER_SUB").is_some() { 5 } else { 4 }
 }
-/// The environment variable `k` parsed as `T`, or `d` when unset or unparsable (every experiment knob reads through this).
+/// The environment variable `k` parsed as `T`, or `d` when unset or unparsable.
 pub fn env_or<T: std::str::FromStr>(k: &str, d: T) -> T {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    env_var(k).and_then(|v| v.parse().ok()).unwrap_or(d)
+}
+
+/// The process's environment, taken whole at the first `env_var` (names upper-cased on Windows, where they ignore case; values
+/// that are not Unicode left out). Reading a variable per call cost a sweep 4.3% of its samples, mostly `nops` in `tree_step`
+/// (docs/tier-cycle.md, "The environment read once per process").
+static ENV: std::sync::OnceLock<hashbrown::HashMap<String, String>> = std::sync::OnceLock::new();
+
+fn env_name(k: &str) -> std::borrow::Cow<'_, str> {
+    if cfg!(windows) && k.bytes().any(|b| b.is_ascii_lowercase()) { k.to_ascii_uppercase().into() } else { k.into() }
+}
+
+/// The environment variable `k`, or `None` when unset: every church_bv read goes through this, so a variable set after the first
+/// read is not seen (`load_exe_env` refuses to run then).
+pub fn env_var(k: &str) -> Option<&'static str> {
+    let env = ENV.get_or_init(|| std::env::vars_os().filter_map(|(k, v)| Some((env_name(k.to_str()?).into_owned(), v.into_string().ok()?))).collect());
+    env.get(&*env_name(k)).map(String::as_str)
+}
+
+/// `<exe>.env` next to the test exe (lines `KEY=VALUE`) sets the variables that are not already set: a profiler launcher that
+/// cannot pass env (the elevated Samply task) runs the same configuration this way. Child processes inherit them.
+pub fn load_exe_env() {
+    assert!(ENV.get().is_none(), "load_exe_env after the environment was read");
+    if let Ok(text) = std::env::current_exe().map(|mut p| { p.as_mut_os_string().push(".env"); p }).and_then(std::fs::read_to_string) {
+        for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
+            if std::env::var_os(k.trim()).is_none() {
+                // main-thread test, before any thread reads the environment
+                unsafe { std::env::set_var(k.trim(), v.trim()) };
+            }
+        }
+    }
 }
 /// `\a _. a << 1`, the Church operator of `Term` index 6.
 pub fn shl1_op(n: usize) -> Expr {
@@ -714,7 +744,7 @@ pub fn discharge(body: Expr) -> Expr {
 /// asks for every rule it tries, and reading the environment each time was 11% of a mine (docs/tier-cycle.md).
 pub fn ablated(name: &str) -> bool {
     static SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    SET.get_or_init(|| std::env::var("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default()).iter().any(|x| x == name)
+    SET.get_or_init(|| env_var("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default()).iter().any(|x| x == name)
 }
 
 /// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
@@ -1173,13 +1203,13 @@ thread_local! {
 pub fn rule_set() -> &'static Vec<(Term, Term)> {
     static SET: std::sync::OnceLock<Vec<(Term, Term)>> = std::sync::OnceLock::new();
     SET.get_or_init(|| {
-        let text = match std::env::var("RULESET").as_deref() {
-            Ok("add3_mm") => include_str!("../../scripts/data/add3_mm_rules.txt"),
-            Ok("mix3_mm") => include_str!("../../scripts/data/mix3_mm_rules.txt"),
-            Ok("add3_nl") => include_str!("../../scripts/data/add3_nl_rules.txt"),
-            Ok("mix3_nl") => include_str!("../../scripts/data/mix3_nl_rules.txt"),
-            Ok(other) => panic!("unknown RULESET {other}"),
-            Err(_) => "",
+        let text = match env_var("RULESET") {
+            Some("add3_mm") => include_str!("../../scripts/data/add3_mm_rules.txt"),
+            Some("mix3_mm") => include_str!("../../scripts/data/mix3_mm_rules.txt"),
+            Some("add3_nl") => include_str!("../../scripts/data/add3_nl_rules.txt"),
+            Some("mix3_nl") => include_str!("../../scripts/data/mix3_nl_rules.txt"),
+            Some(other) => panic!("unknown RULESET {other}"),
+            None => "",
         };
         parse_rules(text)
     })
@@ -1734,7 +1764,7 @@ fn unification_and_overlaps() {
 #[test]
 #[ignore]
 fn rule_overlap_report() {
-    let rules = parse_rules(&std::fs::read_to_string(std::env::var("OVERLAP_RULES").expect("set OVERLAP_RULES=<file>")).unwrap());
+    let rules = parse_rules(&std::fs::read_to_string(env_var("OVERLAP_RULES").expect("set OVERLAP_RULES=<file>")).unwrap());
     let o = rule_overlaps(&rules);
     // a root overlap where one left side is an instance of the other is settled by specific-first order; the rest are not
     let inst = |a: &Term, b: &Term| match_pat(a, b, &mut vec![None; a.max_var() + 1]);
@@ -2653,7 +2683,7 @@ pub fn refute_returns_a_witness_for_false_laws_and_none_for_true_ones() {
 #[test]
 #[ignore]
 pub fn law_time() {
-    let env = |k: &str, d: usize| std::env::var(k).map_or(d, |v| v.parse().unwrap());
+    let env = |k: &str, d: usize| env_var(k).map_or(d, |v| v.parse().unwrap());
     let (i, n, reps) = (env("LAW_RULE", 33), env("LAW_N", 8), env("LAW_REPS", 5).max(1));
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/runs/2026-10-12/scripts/cmp3d_own_rules.txt");
     let rules = parse_rules(&std::fs::read_to_string(path).unwrap());
@@ -2717,6 +2747,16 @@ fn term_attributes_match_a_walk() {
         assert_eq!(t.max_var(), vars.iter().copied().max().unwrap_or(0));
         assert!((0..70).all(|v| t.has_var(v) == vars.contains(&v)));
     }
+}
+
+#[test]
+fn env_var_reads_the_process_environment() {
+    for k in ["PATH", "Path", "path"] {
+        // names ignore case on Windows only
+        let want = std::env::var(k).ok();
+        assert_eq!(env_var(k), want.as_deref(), "{k}");
+    }
+    assert_eq!(env_var("CHURCH_BV_SURELY_UNSET"), None);
 }
 
 #[test]

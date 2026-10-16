@@ -266,7 +266,7 @@ pub fn large_pages_option() -> bool {
 #[test]
 #[cfg(all(windows, target_env = "msvc"))]
 pub fn mimalloc_defaults_to_large_pages() {
-    if std::env::var_os("MIMALLOC_ALLOW_LARGE_OS_PAGES").is_none() {
+    if env_var("MIMALLOC_ALLOW_LARGE_OS_PAGES").is_none() {
         assert!(large_pages_option());
     }
 }
@@ -276,7 +276,7 @@ pub fn mimalloc_defaults_to_large_pages() {
 pub struct MachineBanner(&'static str);
 impl MachineBanner {
     pub fn start(tag: &'static str) -> Self {
-        if std::env::var("MACHINE_BANNER").is_ok_and(|v| v == "0") {
+        if env_var("MACHINE_BANNER").is_some_and(|v| v == "0") {
             return MachineBanner("");
         }
         println!("{tag} machine at start: {}", machine_state());
@@ -481,7 +481,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
                 if inv.is_some() { pi(hty(v), shift(&inner, 0, 1)) } else { inner }
             };
             let ty = lemma_n_ty(nv, &body);
-            if inv.is_some() && std::env::var("GUARDTRACE").is_ok() {
+            if inv.is_some() && env_var("GUARDTRACE").is_some() {
                 eprintln!("GUARDED lemma nv={nv} tag={tag}");
             }
             let leaf = |bits: &[bool]| {
@@ -828,7 +828,7 @@ pub fn machine_lemma_probe() {
                 println!("PROBE carries={c} {what}: check {:?} ok {ok}", t0.elapsed());
             }
         };
-        if std::env::var("NO_SCOPE").is_err() { tatic::kernel::scoped(body) } else { body() }
+        if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -878,7 +878,7 @@ pub fn conjecture_miner() {
         }
         let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
         println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
-        let show = std::env::var("MINER_SHOW").is_ok();
+        let show = env_var("MINER_SHOW").is_some();
         // Every conjecture (class representative = shortest term) over x, y, by what can check it.
         let (mut by_builder, mut rejected, mut needs_add, mut needs_z, mut by_third) = (0, vec![], vec![], 0, (0usize, 0usize));
         let (mut by_rewrite, mut rewrite_bugs, mut by_chain, mut by_tree) = (0, vec![], 0, 0);
@@ -1445,7 +1445,7 @@ pub fn mul_conjecture_miner() {
         let _banner = MachineBanner::start("MULMINER");
         let max = env_or("MULMINER_MAX", 7);
         let n = 4usize;
-        let only = std::env::var("MULMINER_ONLY").unwrap_or_default();
+        let only = env_var("MULMINER_ONLY").unwrap_or_default();
         let mut laws = mul_laws(max);
         laws.retain(|l| l.0.contains(&only));
         let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());

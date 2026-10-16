@@ -154,3 +154,4 @@ and libraries (43 MB) were not kept.
 | `ma_*`, `ma/hc_rounds_{1,2}.txt` | 91ddcb4 against 661a46c (code as e2824ea) | `hc_seq.sh`, `hc_rounds.ps1` twice | "The miner's pattern matches bind on the stack" |
 | `ss_*`, `ss/hc_rounds.txt` | `shared-screen` against 083a956 | `hc_seq.sh`, `hc_rounds.ps1` | "One screen memo and candidate index per process" |
 | `ri_*`, `rm_*`, `rm/hc_rounds.txt`, `rc_*` | `rule-index` against c7e815b: the CSR buckets, the `u128` mask, the per-operand masks kept | `hc_seq.sh`, `hc_rounds.ps1` | "The rule table filters on operand classes" |
+| `ev_*`, `ev/hc_rounds.txt` | `env-cache` against 51ad656 | `hc_seq.sh`, `hc_rounds.ps1` | "The environment read once per process" |
