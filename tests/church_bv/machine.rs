@@ -349,9 +349,12 @@ thread_local! {
     /// `add_tree_law` results (a closed proof, or none) by width, variable count and the two terms: the rewriter asks for the same
     /// pair again for every law and every mined candidate that reaches the same subterm.
     static TREE_LAWS: std::cell::RefCell<hashbrown::HashMap<(usize, usize, Term, Term), Option<(tatic::kernel::PExpr, tatic::kernel::PExpr)>>> = Default::default();
-    /// `tree_encoding` results past its cheap screens, by the same key.
-    static TREE_ENCS: std::cell::RefCell<hashbrown::HashMap<(usize, usize, Term, Term), Option<std::rc::Rc<TreeEnc>>>> = Default::default();
 }
+
+/// `tree_encoding` results past its cheap screens, by the same key, shared by a process's threads behind one lock: per thread,
+/// 87.6% of a sweep's searches redid another thread's (docs/tier-cycle.md, "Survey: long-lived sweep workers").
+static TREE_ENCS: std::sync::Mutex<Option<hashbrown::HashMap<(usize, usize, Term, Term), Option<std::sync::Arc<TreeEnc>>>>> =
+    std::sync::Mutex::new(None);
 
 /// What `tree_encoding` found for a pair: the carry encoding, and the reachable carry states it holds over (`None`: all of them).
 pub struct TreeEnc {
@@ -361,7 +364,7 @@ pub struct TreeEnc {
 
 /// Whether `t1 = t2` (two sum trees of add-free leaves over `k` good vectors) has a carry encoding, and which: found by
 /// `moore_encoding`, first over all carry states, then over the reachable ones; `None` when there is none. Builds no kernel terms.
-pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::rc::Rc<TreeEnc>> {
+pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sync::Arc<TreeEnc>> {
     // the cheap screens are not cached (`tree_step` offers only candidates that pass the first)
     if !t1.plausibly_equals(t2, n, k) {
         return None;
@@ -375,9 +378,11 @@ pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::rc
         return None;
     }
     let key = (n, k, *t1, *t2);
-    if let Some(hit) = TREE_ENCS.with(|c| c.borrow().get(&key).cloned()) {
+    let encs = || TREE_ENCS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(hit) = encs().get_or_insert_with(Default::default).get(&key).cloned() {
         return hit;
     }
+    // the search runs unlocked: two threads may both search a pair, and find the same encoding
     let attempt = |reach: Option<&Reach>| moore_encoding(&m1, &m2, k, reach);
     // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
     let t_all = Instant::now();
@@ -395,8 +400,8 @@ pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::rc
             second.map(|enc| TreeEnc { enc, inv: Some(r) })
         }
     }
-    .map(std::rc::Rc::new);
-    TREE_ENCS.with(|c| c.borrow_mut().insert(key, found.clone()));
+    .map(std::sync::Arc::new);
+    encs().get_or_insert_with(Default::default).insert(key, found.clone());
     found
 }
 
