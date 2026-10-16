@@ -726,26 +726,39 @@ fn whnf_keeps_the_stuck_part_it_was_given() {
     assert!(node_key(&got) == node_key(&stuck));
 }
 
-/// `nf` and `def_eq` on stuck spines 2,000 applications deep, one of
-/// them with a redex for its head. Each took over 10 s in a debug build
-/// when every level re-reduced the spine below it (`RELATED_WORK.md`
-/// §59).
+/// `nf` and `def_eq` on stuck spines 4,000 applications deep, one of
+/// them with a redex for its head. At 2,000 each took over 10 s in a
+/// debug build when every level re-reduced the spine below it
+/// (`RELATED_WORK.md` §59), and 0.7 s when every level walked it
+/// (§79). Timed against spines an eighth as deep, so it holds under
+/// load: about 11x now, 64x if quadratic. Best of three each, and every
+/// run gets fresh variables so no memo carries over.
 #[test]
 fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
-    let spine = |head: Expr| {
-        let mut t = head;
-        for i in 0..2000 {
-            t = app(t, var(i % 3));
-        }
-        t
+    let mut fresh = 0;
+    let mut best = |depth: u32| {
+        (0..3)
+            .map(|_| {
+                fresh += 3;
+                let spine = |head: Expr| {
+                    let mut t = head;
+                    for i in 0..depth {
+                        t = app(t, var(fresh + i % 3));
+                    }
+                    t
+                };
+                let (a, b) = (spine(var(fresh)), spine(app(lam(sort(0), var(0)), var(fresh + 1))));
+                let t = std::time::Instant::now();
+                assert_eq!(nf(&a), a);
+                assert_eq!(nf(&b), spine(var(fresh + 1)));
+                assert!(!def_eq(&a, &b));
+                t.elapsed()
+            })
+            .min()
+            .unwrap()
     };
-    let (a, b) = (spine(var(0)), spine(app(lam(sort(0), var(0)), var(1))));
-    let t = std::time::Instant::now();
-    assert_eq!(nf(&a), a);
-    assert_eq!(nf(&b), spine(var(1)));
-    assert!(!def_eq(&a, &b));
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_millis(500), "took {took:?}");
+    let (short, long) = (best(500), best(4000));
+    assert!(long < short * 24 + std::time::Duration::from_millis(5), "took {long:?}, an eighth as deep {short:?}");
 }
 
 /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a

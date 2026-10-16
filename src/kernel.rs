@@ -1019,6 +1019,15 @@ mod hc {
         s.memos.borrow_mut().hnf.insert(s.key(x), s.key(r));
     }
 
+    /// Application -> its spine's head and closed prefix; see `spine`.
+    pub fn spine_get(s: &Spaces, x: &Expr) -> Option<(Expr, Option<Expr>)> {
+        s.memos.borrow().spine.get(&s.key(x)).map(|&(h, p)| (s.expr_of(&h), p.map(|p| s.expr_of(&p))))
+    }
+
+    pub fn spine_put(s: &Spaces, x: &Expr, (h, p): (Expr, Option<Expr>)) {
+        s.memos.borrow_mut().spine.insert(s.key(x), (s.key(&h), p.map(|p| s.key(&p))));
+    }
+
     pub fn shift_get(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Option<Expr> {
         s.memos.borrow().shifts.get(&(s.key(x), cutoff, amount)).map(|r| s.expr_of(r))
     }
@@ -1353,6 +1362,28 @@ pub fn whnf(e: &Expr) -> Expr {
     scoped(|| with_spaces(|s| whnf_in(s, e)))
 }
 
+/// For an application `e`, its spine's head and its longest proper prefix with no loose variable
+/// (`None` for none); `(e, None)` for anything else. Memoised for every application on the way
+/// down, so the levels of a stuck spine, each asking for its own, walk the spine once in all, not
+/// once each: that made `nf` and `def_eq` quadratic in a stuck spine's length.
+fn spine(s: &Spaces, e: &Expr) -> (Expr, Option<Expr>) {
+    let mut path = Vec::new();
+    let mut below = *e;
+    let mut info = loop {
+        let Node::App(f, _) = s.node(&below) else { break (below, None) };
+        if let Some(hit) = hc::spine_get(s, &below) {
+            break hit;
+        }
+        path.push((below, f));
+        below = f;
+    };
+    for (x, f) in path.into_iter().rev() {
+        info = (info.0, if s.loose(&f) == 0 { Some(f) } else { info.1 });
+        hc::spine_put(s, &x, info);
+    }
+    info
+}
+
 /// `whnf_step` for an application spine `h a1 ... ak` (`k >= 2`) whose head reduces to a lambda:
 /// peel as many directly nested lambdas as there are arguments and substitute all of them in one
 /// `instantiate_n` pass, instead of one `subst_top` per argument, each rebuilding the body the next
@@ -1362,16 +1393,10 @@ pub fn whnf(e: &Expr) -> Expr {
 fn beta_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
     // The head is reduced as the node the spine holds, so its cache entry is shared by every level
     // of the spine; the arguments are collected only once it is a lambda.
-    let Node::App(f, _) = s.node(e) else { return None };
-    let mut head = f;
-    let mut k = 1;
-    while let Node::App(g, _) = s.node(&head) {
-        head = g;
-        k += 1;
-    }
+    let (head, _) = spine(s, e);
     let wh = whnf_in(s, &head);
     let Node::Lam(_, first) = s.node(&wh) else { return None };
-    let mut args: Vec<Expr> = Vec::with_capacity(k);
+    let mut args: Vec<Expr> = Vec::new();
     let mut spine = *e;
     while let Node::App(g, b) = s.node(&spine) {
         args.push(b);
@@ -1400,20 +1425,23 @@ fn beta_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
 /// reduces to a lambda: `P`'s head normal form (`hnf_rc`) is instantiated with the arguments. A closed function value used at several places with different arguments -- a Church
 /// boolean `xor_ a b` applied to each use's own continuations -- is then reduced once, not once per
 /// use, since the memo is keyed by `P`, not by the whole application. `None` when there is no such
-/// prefix or it does not reduce to a lambda.
+/// prefix or it does not reduce to a lambda; the arguments are collected only once it does.
 fn closed_prefix_spine(s: &Spaces, e: &Expr) -> Option<Expr> {
-    let mut args: Vec<Expr> = Vec::new();
-    let mut spine = *e;
-    let p = loop {
-        let Node::App(g, b) = s.node(&spine) else { return None };
-        args.push(b);
-        if s.loose(&g) == 0 {
-            break g;
-        }
-        spine = g;
-    };
-    args.reverse();
+    let p = spine(s, e).1?;
     let mut body = hnf_rc(s, &p);
+    if !matches!(s.node(&body), Node::Lam(..)) {
+        return None;
+    }
+    let mut args: Vec<Expr> = Vec::new();
+    let mut rest = *e;
+    while let Node::App(g, b) = s.node(&rest) {
+        args.push(b);
+        if s.same(&g, &p) {
+            break;
+        }
+        rest = g;
+    }
+    args.reverse();
     let mut taken = 0;
     while taken < args.len()
         && let Node::Lam(_, inner) = s.node(&body)

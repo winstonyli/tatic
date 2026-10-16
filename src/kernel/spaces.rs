@@ -159,6 +159,8 @@ pub(crate) struct Memos {
     pub(crate) hnf: IdMap<u32, u32>,
     /// Node -> its normal form.
     pub(crate) nf: IdMap<u32, u32>,
+    /// Application -> its spine's head and its longest proper prefix with no loose variable (`kernel::spine`).
+    pub(crate) spine: IdMap<u32, (u32, Option<u32>)>,
     /// Argument lists of two or more nodes -> their id (`LIST_BIT | n`).
     pub(crate) arg_sets: IdMap<Vec<u32>, u32>,
     /// (node, depth) -> bounds `(lo, hi)` on its lowest loose variable from that depth (`hc::uses`).
@@ -173,6 +175,7 @@ impl Memos {
             whnf: IdMap::with_hasher(H),
             hnf: IdMap::with_hasher(H),
             nf: IdMap::with_hasher(H),
+            spine: IdMap::with_hasher(H),
             arg_sets: IdMap::with_hasher(H),
             bounds: IdMap::with_hasher(H),
         }
@@ -183,6 +186,7 @@ impl Memos {
         reset_map(&mut self.whnf);
         reset_map(&mut self.hnf);
         reset_map(&mut self.nf);
+        reset_map(&mut self.spine);
         reset_map(&mut self.arg_sets);
         reset_map(&mut self.bounds);
     }
