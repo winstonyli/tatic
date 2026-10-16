@@ -809,7 +809,7 @@ fn infer_is_linear_in_the_dag_of_a_shared_term() {
 }
 
 /// `InferCache::skip` by jump pointers agrees with a walk of `lo` parents on a random context tree,
-/// `fresh` binders and the caller's context stopping both.
+/// `fresh` binders and the caller's context stopping both, and each jump pointer is the skew-binary one.
 #[test]
 fn infer_cache_skip_matches_a_parent_walk() {
     let mut next = splitmix(37);
@@ -830,6 +830,14 @@ fn infer_cache_skip_matches_a_parent_walk() {
             assert!(ids.iter().any(|&c| info(c).run > 300));
             for &c in &ids {
                 let run = info(c).run;
+                // Myers' skew-binary jumps: write `run` greedily as a sum of 2^k - 1; the jump goes out by the
+                // smallest term. A wrong jump can still give right answers, only slowly, so check it directly.
+                let (mut rest, mut by) = (run, 0);
+                while rest > 0 {
+                    by = (1 << (31 - (rest + 1).leading_zeros())) - 1;
+                    rest -= by;
+                }
+                assert_eq!(info(c).jump, (0..by).fold(c, |c, _| info(c).parent), "context {c}, run {run}");
                 for lo in [0, 1, run.saturating_sub(1), run, run + 1].into_iter().chain((0..4).map(|_| (next() % (run as usize + 1)) as u32)) {
                     let mut walk = Some(c);
                     for _ in 0..lo {
