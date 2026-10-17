@@ -4294,8 +4294,13 @@ it needs a machine proof in the twin-free arm (`T`) and in the twins arm (`D`), 
   test laws.** No proposer can do that for laws from outside it. In the real setting the stream is the proposer's own pool,
   so mining on the pool ahead of serving it is legitimate and reaches about 171: the loop then becomes one offline mine
   per family ("How many extra laws", last bullet). For laws from outside the pool, twin-free (about 400) is the honest
-  floor for more laws. Whether the rewrite-cycle fix above lowers it is untested: the floor analysed there is the twins
-  arm's 171, not the twin-free 405.
+  floor for more laws.
+- **Most of the twin-free 405 is coverage, not floor.** The same in-sample procedure on the twin-free arm's 405
+  (`rows/floor/insample_t.sh`, 90 loops, 60 s): each loop's final library leaves 206, mining on exactly those laws leaves
+  140 (cmp3d 108, add3 19, sbo3 13; `insample_t.tsv`), against 101 for the twins arm. Of the 140, 61 look like
+  permutations (`perm.awk` on `diag_t.tsv`), 102 hit a cycle cut, and for 86 one side's rewriting visits the other side's
+  normal form (`samecycle_t.txt`: add3 15, sbo3 12, cmp3d 59). So a cycle fix would reach the same share of either floor
+  (61% here, 58% there); the remaining 265 of the 405 go once the miner sees the laws, which only laws from the pool give.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
