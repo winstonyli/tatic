@@ -337,6 +337,7 @@ mod tests {
     /// Not a test: the child process the tests below start, doing what `RUNS_HELPER` says.
     #[test]
     #[ignore]
+    #[allow(clippy::zombie_processes)] // the orphan is the point: the job must count a child its parent never waits for
     fn helper() {
         let Ok(mode) = std::env::var("RUNS_HELPER") else { return };
         match mode.as_str() {
