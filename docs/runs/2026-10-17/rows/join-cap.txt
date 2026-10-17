@@ -1,0 +1,8 @@
+salt 1 off: M mines 23 own 74 cold 451 pooled 58, exit+secs 0 9
+salt 1 v300: M mines 0 own 6 cold 163 pooled 6, exit+secs 0 12
+salt 1 v1000: M mines 0 own 1 cold 163 pooled 7, exit+secs 0 14
+salt 1 v5000: M mines 0 own 0 cold 156 pooled 2, exit+secs 0 47
+salt 2 off: M mines 21 own 102 cold 450 pooled 99, exit+secs 0 8
+salt 2 v300: M mines 1 own 2 cold 158 pooled 4, exit+secs 0 8
+salt 2 v1000: M mines 0 own 0 cold 161 pooled 2, exit+secs 0 10
+salt 2 v5000: M mines 0 own 0 cold 152 pooled 0, exit+secs 0 23

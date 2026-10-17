@@ -1,0 +1,4 @@
+salt 1 on: M cold 156 mines 0 own 0 pooled 2, exit+secs 0 76
+salt 1 off: M cold 451 mines 23 own 74 pooled 58, exit+secs 0 7
+salt 2 on: M cold 152 mines 0 own 0 pooled 0, exit+secs 0 33
+salt 2 off: M cold 450 mines 21 own 102 pooled 99, exit+secs 0 7

@@ -1,0 +1,29 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index b8f1fe3..5f7f9bf 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2467,7 +2467,8 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+     };
+     let mut seen: [Seen; 2] = [Seen::from([(*a, None)]), Seen::from([(*b, None)])];
+     let mut front = [vec![*a], vec![*b]];
+-    RULE_TABLE.with(|table| {
++    let t0 = std::time::Instant::now();
++    let res = RULE_TABLE.with(|table| {
+         let table = &table.borrow();
+         let mut out = vec![];
+         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
+@@ -2489,7 +2490,13 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+             }
+         }
+         None
+-    })
++    });
++    if let Some(p) = env_var("JOIN_TRACE") {
++        use std::io::Write;
++        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(format!("{p}.{}", std::process::id())).unwrap();
++        writeln!(f, "{}\t{}\t{}\t{}\t{}", res.is_some() as u8, seen[0].len() + seen[1].len(), t0.elapsed().as_micros(), a.show(), b.show()).unwrap();
++    }
++    res
+ }
+ 
+ /// `shr1 A = shr1 B` (or `0 = shr1 B`, as `shr1 0`) for machine-expressible `A`, `B`, without a lookahead machine: the

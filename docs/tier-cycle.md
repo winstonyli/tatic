@@ -73,6 +73,9 @@ laws beyond 5 nodes and (c) new definitions:
   the two sides already reach one rewrite cycle and the cut stops them at different members ("Completion on the floor").
   A bounded search with the rules in force used as equations, both ways, joins all 241 floor laws of both arms within 5
   steps and 0.01 s each, and no unequal control pair ("Equational reach of the floor"): the floor is a join problem.
+  That search, building proof plans in `prove_eq`, removes the floor: over salts 1-10 own M 865 to 13, pooled 757 to 33,
+  cold 4380 to 1568 (the rest is cold loops' first batch), every law kernel-checked, for 76% more sweep time ("The
+  bounded join removes the floor").
 - **Which new laws pay: other shapes of the same family.** At matched counts, extras with the shapes being mined give
   -17%, shapes the family never serves -19%, any shape not being mined -50%, as good as peeking at the next batches'
   shapes ("What kind of new law pays most"). The twins' extra gain (405 to 171) is mining on the test laws themselves:
@@ -4330,8 +4333,66 @@ associativity, with terms of at most the larger normal form's size plus 2 nodes 
   cut too, which a canonical cycle member would not reach.
 
 Every step the search takes is a proved rule, AC or commutativity, so a join gives a proof plan (`Plan::cong` around
-`Plan::law`, `Plan::sym` for the reversed direction). The probe does not build those plans. Rows: `rows/floor/bound_*.tsv`
-(family, library, steps or `none`, law, seconds, equal on random inputs, the equation of a one-step join).
+`Plan::law`, `Plan::sym` for the reversed direction). The probe does not build those plans (built since: "The bounded
+join removes the floor"). Rows: `rows/floor/bound_*.tsv` (family, library, steps or `none`, law, seconds, equal on random
+inputs, the equation of a one-step join).
+
+*The bounded join removes the floor (2026-10-17, 43c6d8f, cad853e, 8d5b29d).* `join_eq` (`tests/church_bv/rewrite.rs`)
+is the probe's search building plans. Where `prove_eq` or the `lt` path of `rewrite_plan` would fall back to the whole-term
+machine proof, it searches breadth-first from both normal forms at once over these steps:
+- every rule in force (built-in, promoted, mined, not ablated, not being proved), in both directions where a direction
+  introduces no variable and keeps `lt` at the root;
+- associativity and commutativity of add, and, or, xor.
+
+Terms stay within the larger side's size plus 2 nodes, and the search stops after `JOIN_VISIT` (1000) reached terms. A
+path becomes `Plan::cong` around `Plan::law` (with `Plan::sym` for a reversed step), and a meeting at `u` gives
+`trans(a = u, sym(b = u))`. Only pairs equal on 16 random inputs are searched. `ABLATE=join` turns it off. Test:
+`join_eq_closes_an_equal_pair_by_rule_and_comm_steps`.
+
+Full sweeps (`mines own cold pooled`), salts 1-10, with one exe on and off, the two arms of a salt side by side (run
+`2026-10-17-join-final`; CPU 21% at launch, RTP off; rows in `docs/runs/2026-10-17/rows/join-final*`):
+
+| total M, salts 1-10 | join off | join on |
+|---|---|---|
+| ref mines (40) | 160 | 2 |
+| own loops (90) | 865 | 13 |
+| pooled loops (90) | 757 | 33 |
+| cold loops (90) | 4380 | 1568 |
+| wall, 10 sweeps | 50 s | 88 s |
+
+- **The floor is gone.** Own and pooled M fall 98% and 96% on every salt (per salt: own 0-4, pooled 0-9). The 10-salt
+  cold-only run at cap 5000 (`2026-10-17-join-cold`) gave 1530 against 4380, -60% to -68% per salt.
+- **What is left in cold loops is their first batch.** That batch accounts for 1443 of cold's 1568, served before any
+  rule is mined, so the join has only the built-ins, promoted rules and AC (off: 3211). The later batches fall from
+  851 and 318 to 87 and 38.
+- **Sound.** With the join on, the ref mines (full serving check) built and kernel-checked all 10000 laws they served, 9998
+  with no machine proof (join off: 9840). Each step is an instance of a proved rule or of an AC law.
+- **Fewer rules are mined.** Rules at the end of the loops, summed: ref mines 612 to 423, own 2120 to 1278, cold 1554 to
+  709, pooled 3919 to 3512. The miner's gain counts the laws a rule takes off the machine proof, and a joined law is
+  already off it.
+- **Cost: M no longer shows the search.** A joined law is free in M, but the search costs time: the sweeps' wall time
+  went from 50 s to 88 s, and the ref mines' summed seconds from 6 to 29, all in cmp3d (`lt` laws) to the second.
+  - A trace of the cmp3d mine and cold loops (salt 1, cap 5000, run `2026-10-17-join-trace`, patch
+    `docs/runs/2026-10-17/patches/join_trace.patch`) counted about 48000 searches. Of the readable lines (63-70%; the
+    threads' lines interleave), 3.5k searches failed (1.5k at the cap) and cost about as much CPU as the 30k that
+    succeeded (74 s and 63 s).
+  - The searches repeat: 908 distinct failing pairs and 2683 distinct joined pairs, each searched again under later rule
+    sets. A success reaches a median of 28 terms (p90 727, p99 about 5000).
+  - Indexing the steps by root operator, through the same `PatIndex` as `rule_step`'s rules (cad853e), took a reached
+    term from 6.1 to 2.9 µs and the traced run from 69 s to 33 s, with M and rules unchanged.
+- **Cap.** Run `2026-10-17-join-cap`, salts 1/2 (M as mines/own/cold/pooled, wall s):
+
+  | cap | salt 1 | salt 2 |
+  |---|---|---|
+  | off | 23/74/451/58, 9 | 21/102/450/99, 8 |
+  | 300 | 0/6/163/6, 12 | 1/2/158/4, 8 |
+  | 1000 | 0/1/163/7, 14 | 0/0/161/2, 10 |
+  | 5000 | 0/0/156/2, 47 | 0/0/152/0, 23 |
+
+  1000 became the default (8d5b29d): 5000 leaves a few laws fewer for 2-3 times the time. Wall times here are side by
+  side under 60% foreign CPU load, so they compare arms only within a salt.
+- Not measured: the kernel cost of a joined law's proof against a machine proof; whether caching searches per pair and
+  rule set pays (`PARKED.md`).
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the

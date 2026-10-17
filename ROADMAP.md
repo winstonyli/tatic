@@ -9,8 +9,9 @@ in `PARKED.md`.
   Built: the mine-and-serve loop (`driver::loop_stream`, `search::rule_miner`), the proposal verdicts of experiment 1's
   kernel side, and the extra-laws, floor and equational-reach measurements. `Cargo.toml` is at `0.1.0`; not tagged.
 - **v0.2 - Does a bounded join in `prove_eq` remove the floor?** Every floor law joins within 5 steps over the rules in
-  force ("Equational reach of the floor"); the milestone is that join turned into proof plans, measured on cold sweeps
-  over salts 1-10 (`PARKED.md`, "Bounded join step").
+  force ("Equational reach of the floor"); the milestone is that join turned into proof plans, measured on sweeps over
+  salts 1-10. Answered yes, 2026-10-17, not tagged: own M 865 to 13, pooled 757 to 33, cold 4380 to 1568, every law
+  kernel-checked, for 76% more sweep time ("The bounded join removes the floor"; its cost is in `PARKED.md`).
 - **v0.3 - Can the kernel itself propose the laws that pay?** At matched counts, extra laws of shapes not being mined cut
   mined-batch M by 50% ("What kind of new law pays most"); a Ruler/Enumo-style generator would supply them without the
   test stream.
