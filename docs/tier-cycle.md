@@ -61,7 +61,8 @@ laws beyond 5 nodes and (c) new definitions:
 - **More laws beat ranking candidates.** Valuing on 300 unserved laws of the same stream recovers 80% of the oracle's gain.
   Simply mining on those laws as well cuts mined-batch M by 59%, almost three times the oracle's gain (1169 to 479;
   "More laws beat any ranking"). So the proposer's ranking should be over which laws to mine on, not which candidates
-  to keep.
+  to keep. M falls steeply up to about 1000 extra laws (-82%) and levels off by 3000 at a per-family floor ("How
+  many extra laws").
 - **Parked:** (a) until a 6-7 node hash index shows true laws the mined rules can't derive; (c) until conservative
   definitions can be checked.
 
@@ -4090,13 +4091,39 @@ Batch 0, served before any mine, is 3211 in every arm.
   choices; a batch of 100 underdetermines the rules, and ranking among its candidates is the smaller lever.
 - **What this means for the proposer.** The stream's unserved phases stand in for laws the system could generate itself
   (the 5-node enumeration yields every true law of that size). The lever is which, and how many, laws to mine on. That is
-  the "ranking which laws" half of target (b), not ranking candidate rules. Not yet measured: the dose-response (100, 300,
-  all of a phase's laws), whether proxy ranking adds anything on top of the extra laws, and cost on the larger
-  families (each control stage took 6-7 s here).
+  the "ranking which laws" half of target (b), not ranking candidate rules. Not yet measured: whether proxy ranking adds
+  anything on top of the extra laws.
 
-Same machine conditions as above. Patch (now with `ORACLE_PROXY=matched|wide`, `ORACLE_TRUEFILE` logging and the `MINE_EXTRA=1`
-control) as above. Rows: `salts_p_<proxy>_s<salt>.tsv`, `salts_c_extra_s<salt>.tsv`, `features_wide_proxy_s1-10.tsv.gz`
-(column 16 is minus the true next-batch M).
+Same machine conditions as above. Patch (now with `ORACLE_PROXY=matched|wide`, `ORACLE_TRUEFILE` logging and the
+`MINE_EXTRA` control) as above. Rows: `salts_p_<proxy>_s<salt>.tsv`, `salts_c_extra_s<salt>.tsv`,
+`features_wide_proxy_s1-10.tsv.gz` (column 16 is minus the true next-batch M).
+
+*How many extra laws (2026-10-17).* `MINE_EXTRA=<n>`: each cold-loop mine adds the first n laws of the phases no cold loop
+serves. It takes phase p + 3 first, then the next phases in order, skipping 1-3. `all` takes every such law: 813 for add3,
+1913 for sbo3, 4871 for cmp3d. The plain miner otherwise. Mined-batch M over salts 1-10 (batch 0 is 3211 in every arm), and
+the mean time of one cold stage (9 loops, 18 mines, two stages at a time):
+
+| extra laws | M | cmp3d | add3 | sbo3 | per salt | stage |
+|---|---|---|---|---|---|---|
+| 0 | 1169 | 550 | 282 | 337 | 85-137 | 6.3 s |
+| 100 | 699 | 352 | 120 | 227 | 51-90 | 7.0 s |
+| 300 | 427 | 219 | 63 | 145 | 33-48 | 9.1 s |
+| 1000 | 206 | 121 | 40 | 45 | 15-25 | 12.4 s |
+| 3000 | 165 | 111 | 40 | 14 | 10-25 | 19.3 s |
+| all | 171 | 117 | 40 | 14 | 13-22 | 21.7 s (max 30 s, 366 MB peak) |
+
+- **M falls steeply up to about 1000 laws, then levels off.** At 1000, M is 82% lower, for twice the time. Past 3000 the
+  change is noise (cmp3d 111 against 117, the only family with more than 3000 laws). The 300 row (427) is below the
+  earlier control (479) because add3's phase p + 3 has only about 200 laws; here the rest come from the next phase.
+- **The floor is a family's own, not the stream's.** add3 stops at 40 once all 813 of its unserved laws are in, and cmp3d
+  at about 115. What stays unproved on these batches is not reachable by mining more laws of this stream. Laws of more than
+  5 nodes, target (a), are one candidate cause; not yet checked.
+- **At large doses the loops stop being loops.** Every mine then mines the same extra laws, so the library is almost one
+  library per family mined offline, and the batch it mines on matters little. That makes it closer to the own stage
+  (loops warm-started from a ref mine's library) than to a cold loop. Comparing the two on the same served batches has not
+  been done.
+
+Rows: `salts_d_<n>_s<salt>.tsv`, `durations_dose.txt`. Same machine conditions.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
