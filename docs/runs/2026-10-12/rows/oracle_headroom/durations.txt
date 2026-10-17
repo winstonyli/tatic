@@ -1,0 +1,11 @@
+k0 s1 exit 0 6s
+k0 s2 exit 0 6s
+k1 s1 exit 0 6s
+k1 s2 exit 0 7s
+k3 s1 exit 0 9s
+k3 s2 exit 0 9s
+k5 s1 exit 0 12s
+k5 s2 exit 0 13s
+k10 s1 exit 0 17s
+k10 s2 exit 0 18s
+ALL

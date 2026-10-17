@@ -39,15 +39,24 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
 built for this, not scratchtape's LM used directly. Its main job is (b) ranking which laws and candidates to try, ahead of (a)
 laws beyond 5 nodes and (c) new definitions:
 - **Why ranking.** The 5-node enumeration already yields every true law of that size, so the open question is choice.
-  Labels exist: per-proposal credit, `transfer_score.sh`, and the miner's gains. There is a measured defect to beat.
+  Labels exist: per-proposal credit, `transfer_score.sh`, and the miner's gains. There was a measured defect.
   Keeping one candidate per left side dropped add3's general `sub` chain orientation: serving add3 batch 0 gives M 46
   with its own library, 36 with sbo3's, and 27 with the chain rules swapped ("Why add3 did better with sbo3's library").
+  Rival scoring has since fixed that case.
+- **What bounds a ranker already.** Per-round re-ranking has been tried twice without a learned model. Each round's
+  rival, winner and runner-up were finished greedily and the best kept: by in-sample value it lost (all loops M 1266 to
+  1348); by held-out value it tied (1234 both ways), moving M between families ("Runners-up chosen held out"). A
+  ranker over the same few alternatives can do no better than that. So the open question is whether any wider
+  reordering has headroom. The miner logs only its winners (`RULEMINER chosen`), not every candidate's gain.
 - **Literature.** Every learned win found reorders a complete, checked candidate set (premise selection, rewrite
   policies). Enumo shows plain size-5 enumeration already derives 327 of Halide's 725 rules. A survey's figures for
   LLM-proposed rules (28.1% / 69.7%; 36 of 977 unsound) were not found in the sources and are unverified. No learned
   proposer of new operators has a measured win.
-- **Falsifier first.** A small ranker over candidate features, trained on two families' logged candidates and tested on
-  the third. It must beat the miner's own order on held-out M before a model is designed.
+- **Falsifier: oracle headroom (run 2026-10-17; not falsified).** At each round, take the top k candidates by gain,
+  finish each greedily, value each on the batch served next, and keep the best. On the cold loops this lowers the
+  mined batches' M by a quarter (248 to 187 over two salts) and saturates at k = 5 ("Oracle headroom for a ranker").
+  It uses the test batch, so it measures what reordering could gain, not what a ranker would. The headroom sits in
+  about 1 round in 10 (24 of 263 rounds at k = 5), which gives few labels to learn from.
 - **Parked:** (a) until a 6-7 node hash index shows true laws the mined rules can't derive; (c) until conservative
   definitions can be checked.
 
@@ -4000,6 +4009,38 @@ All loops 1234 both ways: the in-sample version's loss is gone (so the guess hol
 nothing is gained. It moves M between families rather than lowering it: cmp3d own 33 to 46 and pooled 31 to 41 on salt 1;
 add3 cold 166 to 150 (salt 1), sbo3 pooled 40 to 32 (salt 2). cmp3d's ref mines were 3.5-4.5x slower (266 to 923 s, 170 to
 763 s) and the sweeps about 2.3x longer (shared machine). Patch kept out of the repo; the greedy choice stays.
+
+*Oracle headroom for a ranker (probe, reverted, 2026-10-17).* The proposer's target is ranking (top of this note), so first:
+how much could any reordering of a round's candidates gain? Each mine of a cold loop (batch r) gets the laws of the batch served
+next (r + 1). On the main path, a round's alternatives are the rival, the winner and the next k - 1 proved candidates by gain
+(scoring goes down to the k-th best gain). Each is finished greedily, and the one whose finished set leaves the fewest laws of
+the next batch without a machine-free proof is kept (its M, counted as `rule_set_kernel_check` with `CHECK_FAST` counts it).
+Ties go to the earlier alternative, so the plain choice stands unless the next batch says otherwise. The predicted M matched
+the served M in all 117 mines with a lookahead. M of the mined batches (1 and 2); batch 0 is served with no rules (331 and
+322 at salts 1 and 2):
+
+| k | salt 1 | salt 2 | both | cmp3d | add3 | sbo3 | cold stage |
+|---|---|---|---|---|---|---|---|
+| plain miner | 120 | 128 | 248 | 116 | 70 | 62 | 6 s |
+| 1 (rival or winner) | 118 | 120 | 238 | 116 | 59 | 63 | 6-7 s |
+| 3 | 93 | 107 | 200 | 111 | 36 | 53 | 9 s |
+| 5 | 87 | 100 | 187 | 104 | 34 | 49 | 12-13 s |
+| 10 | 87 | 101 | 188 | 105 | 34 | 49 | 17-18 s |
+
+The plain rows reproduce the cold totals above (451 and 450). What it shows:
+- **There is headroom, mostly beyond the runner-up.** A quarter of the mined batches' M (248 to 187). Choosing between rival
+  and winner alone gets 10 of the 61. It is largest on add3 (70 to 34) and smallest on cmp3d (116 to 104).
+- **It is concentrated.** At k = 5 the choice differed from the greedy one in 11 of 136 rounds (salt 1) and 13 of 127 (salt 2).
+  The kept alternatives were spread over positions 1-4, and at k = 10 a few came from positions 6-10.
+- **It is not reachable as tried so far.** A narrower move (rival, winner, runner-up) valued on in-sample folds tied
+  ("Runners-up chosen held out"). A
+  ranker has to predict the next batch's value from what it sees now, from about a dozen positive rounds per salt.
+- **It is not a strict bound.** It looks one round ahead with greedy finishes, so a ranker that changes several rounds
+  together could in principle do better. It also uses the batch it is scored on.
+
+Each run is the whole cold stage (`SWEEP=cold`, salts 1 and 2), run two at a time at BelowNormal with affinity FFF. CPU was at
+18% before the runs, and Defender RTP was False. Patch: `docs/runs/2026-10-12/patches/oracle_headroom_probe.patch` (against
+9c601c3; `ORACLE_K=<k>` in the sweep's environment). Rows: `docs/runs/2026-10-12/rows/oracle_headroom/`.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
