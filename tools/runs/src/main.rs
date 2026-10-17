@@ -5,6 +5,7 @@
 compile_error!("tools/runs is Windows-only: it measures runs with job objects and reads Windows' machine state");
 
 mod cmp;
+mod gate;
 mod job;
 mod state;
 #[cfg(test)]
@@ -19,7 +20,8 @@ const USAGE: &str = "usage:
   runs state                  RTP=.. CPU=..% lockpriv=..
   runs run <dir> [--affinity M] [--priority P] -- [VAR=val]... <exe> <args>...
                               one measured run; output in <dir>/out.txt and err.txt
-  runs cmp <tag> [--dir D]     compare <tag>_old_<s> with <tag>_new_<s>, salts 1 and 2 (exit 1 if they differ)";
+  runs cmp <tag> [--dir D]     compare <tag>_old_<s> with <tag>_new_<s>, salts 1 and 2 (exit 1 if they differ)
+  runs gate <tag> <old exe> <new exe>   four sweeps (new 1, old 1, old 2, new 2), then cmp; <run dir>/<tag>_gate.txt";
 
 fn main() {
     // `runs` and its sampler thread stay out of the way of the run they measure (ab.sh lowered itself too)
@@ -49,6 +51,7 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
         }
         "run" => cmd_run(rest),
         "cmp" => cmd_cmp(rest),
+        "gate" => cmd_gate(rest),
         _ => Err(format!("unknown command {cmd}")),
     }
 }
@@ -86,6 +89,20 @@ fn cmd_cmp(words: &[String]) -> Result<i32, String> {
         println!("{l}");
     }
     Ok(if cmp::same(&lines) { 0 } else { 1 })
+}
+/// `runs gate`: exits 0 when the gate passes, 1 when a sweep failed or the outputs differ.
+fn cmd_gate(words: &[String]) -> Result<i32, String> {
+    let p = parse(words);
+    p.check(&[])?;
+    let [tag, old, new] = &p.pos[..] else { return Err("gate takes <tag> <old exe> <new exe>".into()) };
+    Ok(if gate::gate(&run_dir()?, tag, Path::new(old), Path::new(new))? { 0 } else { 1 })
+}
+
+/// Appends `line` and a newline to `path`.
+fn append(path: &Path, line: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    writeln!(f, "{line}").map_err(|e| format!("{}: {e}", path.display()))
 }
 /// `--affinity` and `--priority`, where given.
 fn apply_limits(spec: &mut job::RunSpec, p: &Parsed) -> Result<(), String> {
