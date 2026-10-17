@@ -4,6 +4,7 @@
 #[cfg(not(windows))]
 compile_error!("tools/runs is Windows-only: it measures runs with job objects and reads Windows' machine state");
 
+mod cmp;
 mod job;
 mod state;
 #[cfg(test)]
@@ -17,7 +18,8 @@ const USAGE: &str = "usage:
   runs dir                    this checkout's run directory, %TEMP%\\tatic-runs\\<checkout folder>
   runs state                  RTP=.. CPU=..% lockpriv=..
   runs run <dir> [--affinity M] [--priority P] -- [VAR=val]... <exe> <args>...
-                              one measured run; output in <dir>/out.txt and err.txt";
+                              one measured run; output in <dir>/out.txt and err.txt
+  runs cmp <tag> [--dir D]     compare <tag>_old_<s> with <tag>_new_<s>, salts 1 and 2 (exit 1 if they differ)";
 
 fn main() {
     // `runs` and its sampler thread stay out of the way of the run they measure (ab.sh lowered itself too)
@@ -46,6 +48,7 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
         "run" => cmd_run(rest),
+        "cmp" => cmd_cmp(rest),
         _ => Err(format!("unknown command {cmd}")),
     }
 }
@@ -69,6 +72,21 @@ fn cmd_run(words: &[String]) -> Result<i32, String> {
     Ok(r.exit)
 }
 
+/// `runs cmp`: prints `cmp::cmp`'s lines; exits 1 if the sides differ.
+fn cmd_cmp(words: &[String]) -> Result<i32, String> {
+    let p = parse(words);
+    p.check(&["dir"])?;
+    let [tag] = &p.pos[..] else { return Err("cmp takes one tag".into()) };
+    let dir = match p.one("dir")? {
+        Some(d) => PathBuf::from(d),
+        None => run_dir()?,
+    };
+    let lines = cmp::cmp(&dir, tag);
+    for l in &lines {
+        println!("{l}");
+    }
+    Ok(if cmp::same(&lines) { 0 } else { 1 })
+}
 /// `--affinity` and `--priority`, where given.
 fn apply_limits(spec: &mut job::RunSpec, p: &Parsed) -> Result<(), String> {
     if let Some(m) = p.one("affinity")? {
