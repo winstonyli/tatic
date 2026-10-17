@@ -7,7 +7,7 @@ and libraries (43 MB) were not kept.
 - `rows/<run>/*.tsv`: the stage files of `driver::sweep` (`mines.tsv`: family, seconds, M; `own`/`cold`/`pooled.tsv`: column 4
   is M) or `m.tsv` of `driver::loop_stream`. Total a run with `bash scripts/sumrows.sh rows/<run>...`.
 - `scripts/`: as run, from Git Bash. They expect builds at `$TEMP/bv_<name>.exe` (copies of the `church_bv` test binary,
-  `cargo test --release --test church_bv --no-run`) and write to their checkout's run directory, `$TEMP/tatic-runs/<checkout
+  `cargo test --release --test church_bv --no-run`; from 2026-10-16 timing runs may use `--profile sweep`, fat LTO, about 9% faster, if both arms do) and write to their checkout's run directory, `$TEMP/tatic-runs/<checkout
   folder>` (`scripts/kk.sh`, `kk.ps1`), so each worktree has its own. Clear only your own run directory, never `tatic-runs`
   itself. Until 2026-10-16 every checkout shared `$TEMP/kk`. One session's cleanup deleted it whole that day, so the run
   directories named in the rows below up to then (`ts_*`, `nf_*`, `lhp/`, `wp*` and earlier) are gone; regenerate from the
@@ -192,3 +192,4 @@ and libraries (43 MB) were not kept.
 | `bfl_{old,new}_{1,2}`, `bf_lto.exe`, `bf_rounds_lto.txt` | fat LTO with one codegen unit against `sp2_old.exe`, fcbb794's default release build (the code 09a1711 still has): gate; timing | `hc_seq.sh`, `gate_cmp.sh`, `hc_rounds.ps1` | "Build flags: LTO, target-cpu=native, PGO" |
 | `bfn_{old,new}_{1,2}`, `bf_nat.exe`, `bf_rounds_nat.txt`, `bf_rounds_lto_nat.txt` | LTO plus `-C target-cpu=native`: gate against the default build; timing against the default build (heavy outside load) and against LTO alone | `hc_seq.sh`, `gate_cmp.sh`, `hc_rounds.ps1` | "Build flags: LTO, target-cpu=native, PGO" |
 | `pgo_train_2`, `pgo/raw`, `pgo/merged.profdata`, `bfp_{old,new}_{1,2}`, `bf_pgo.exe`, `bf_rounds_{lto_pgo,base_pgo}.txt` | PGO on top of LTO and native: an instrumented build trained on one salt-2 sweep (53 `.profraw`, merged with scoop's `llvm-profdata` 23.1.3); the profile-use build gated against the default build; timing against LTO alone and the default build | `hc_seq.sh`, `gate_cmp.sh`, `hc_rounds.ps1` | "Build flags: LTO, target-cpu=native, PGO" |
+| `bfs_{old,new}_{1,2}`, `bf_sweep.exe` | `cargo test --profile sweep` (the kept `[profile.sweep]`) against `sp2_old.exe`: gate. The first `gate_cmp.sh` pass reported `DIFF salt 2 ./pooled_add3_2_pooled/laws_serve_200.txt (order only)` although that file is byte-identical in all eight `bf*_2` runs; a second pass was clean, so a false difference under load (likely a failed process substitution) | `hc_seq.sh`, `gate_cmp.sh` | "Build flags: LTO, target-cpu=native, PGO" |

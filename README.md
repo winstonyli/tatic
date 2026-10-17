@@ -198,6 +198,7 @@ cargo run --release             # runs the demo in src/main.rs
 cargo run --release --bin repl  # an interactive REPL (src/bin/repl.rs)
 cargo test                      # unit tests across all modules
 cargo bench                     # criterion benchmarks (benches/) -- see below
+cargo test --profile sweep --test church_bv --no-run  # fat-LTO build for sweeps and timing (Cargo.toml)
 ```
 
 The demo starts by parsing a real source string (`syntax.rs`) into a term,

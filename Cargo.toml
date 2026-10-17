@@ -28,6 +28,14 @@ record-defeq = []
 [dev-dependencies]
 criterion = "0.5"
 
+# Release with fat LTO, for sweeps, timing and other long runs (`cargo test --profile sweep ...`): about 9% less
+# sweep CPU than `release` with identical outputs, but an incremental rebuild of the church_bv test binary takes
+# minutes instead of about 27 s, so everyday `--release` builds stay without it. docs/tier-cycle.md, "Build flags".
+[profile.sweep]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 [[bench]]
 name = "execution"
 harness = false
