@@ -2,6 +2,7 @@
 #[cfg(not(windows))]
 compile_error!("tools/runs is Windows-only: it measures runs with job objects and reads Windows' machine state");
 
+mod job;
 mod state;
 #[cfg(test)]
 mod state_tests;
