@@ -70,8 +70,9 @@ laws beyond 5 nodes and (c) new definitions:
   `lt(~b, a)`), and 61 hit a cycle cut ("What the floor is"). One path order for every rule instance joins more of
   them but makes whole loops 2-10x worse ("Ordered rewriting against the floor"). Adding the floor laws' normal-form
   pairs as rules (in-sample completion) removes up to 42 of cmp3d's 72 and none of add3's or sbo3's: for 59 of the 101
-  the two sides already reach one rewrite cycle and the cut stops them at different members. Proposed, not built: a cut
-  that returns a canonical member of the cycle ("Completion on the floor").
+  the two sides already reach one rewrite cycle and the cut stops them at different members ("Completion on the floor").
+  A bounded search with the rules in force used as equations, both ways, joins all 241 floor laws of both arms within 5
+  steps and 0.01 s each, and no unequal control pair ("Equational reach of the floor"): the floor is a join problem.
 - **Which new laws pay: other shapes of the same family.** At matched counts, extras with the shapes being mined give
   -17%, shapes the family never serves -19%, any shape not being mined -50%, as good as peeking at the next batches'
   shapes ("What kind of new law pays most"). The twins' extra gain (405 to 171) is mining on the test laws themselves:
@@ -4301,6 +4302,36 @@ it needs a machine proof in the twin-free arm (`T`) and in the twins arm (`D`), 
   permutations (`perm.awk` on `diag_t.tsv`), 102 hit a cycle cut, and for 86 one side's rewriting visits the other side's
   normal form (`samecycle_t.txt`: add3 15, sbo3 12, cmp3d 59). So a cycle fix would reach the same share of either floor
   (61% here, 58% there); the remaining 265 of the 405 go once the miner sees the laws, which only laws from the pool give.
+
+*Equational reach of the floor: every floor law joins within 5 steps (2026-10-17).* Neither church_bv nor the kernel has
+a union-find or e-graph over terms (the kernel's `conv` keeps a per-call set of equal pairs; `typing.rs`'s union-find is
+over types), so before choosing between a canonical cycle member and an e-graph, a bound on what any join mechanism could
+reach: `patches/floor_bound_probe.patch` (`floor_equational_reach`) searches breadth-first from both normal forms of each
+floor law at once, one equation step at a time at any position, using every built-in, promoted and library rule in both
+directions (a direction only when it introduces no variable), plus commutativity of add, and, or, xor and their
+associativity, with terms of at most the larger normal form's size plus 2 nodes and 50000 terms reached.
+
+| floor | laws | joined | 1 step | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|---|
+| twins arm, in-sample (`diag.tsv`) | 101 | 101 | 34 | 17 | 17 | 12 | 21 |
+| twin-free arm, in-sample (`diag_t.tsv`) | 140 | 140 | 58 | 22 | 22 | 15 | 23 |
+
+- **All of them join, and fast.** Every search took under 0.01 s (a search that fails takes up to 0.9 s). A control
+  pairing each law's first normal form with the next law's second normal form in the same library (`bound_ctl_*.tsv`, 140
+  pairs) joins exactly the 21 pairs that are equal on random inputs (neighbouring floor laws often share their normal
+  forms, so these are floor pairs again) and none of the 119 unequal ones. Every rule is a proved law, so this checks the
+  probe's code, not the rules.
+- **Many are one rule application away.** 92 of the 241 normal forms differ by one equation step. The commonest is a
+  cmp3d library rule `lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))` (50 laws, either direction): one side is the other's
+  image under it, but rewriting that image cycles back, and the cut stops it. add3's `add(sub(add(x, y), -1), z) ->
+  add(sub(x, -1), add(y, z))` closes 19 (the traced example above).
+- **So the floor is a join problem, not a missing-rules problem.** The rules in force already prove every floor law;
+  directed rewriting with a cycle cut just cannot find the proofs. This covers the 37 cmp3d permutation laws with no cycle
+  cut too, which a canonical cycle member would not reach.
+
+Every step the search takes is a proved rule, AC or commutativity, so a join gives a proof plan (`Plan::cong` around
+`Plan::law`, `Plan::sym` for the reversed direction). The probe does not build those plans. Rows: `rows/floor/bound_*.tsv`
+(family, library, steps or `none`, law, seconds, equal on random inputs, the equation of a one-step join).
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the

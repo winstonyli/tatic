@@ -1,0 +1,128 @@
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index df4f05b..8a20d5f 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1961,6 +1961,123 @@ pub fn normal_forms() {
+     })
+ }
+ 
++/// Probe (docs/tier-cycle.md, "Equational reach of the floor"): `eqs` as equations, each usable either way when the side it
++/// rewrites to has no variable the other lacks.
++fn both_ways(eqs: &[(Term, Term)]) -> Vec<(Term, Term)> {
++    let vars = |t: &Term| (0..8).filter(|&v| t.has_var(v)).collect::<Vec<_>>();
++    let ok = |l: &Term, r: &Term| !matches!(*l.node(), Node::V(_)) && vars(r).iter().all(|v| l.has_var(*v));
++    eqs.iter().flat_map(|&(l, r)| [(l, r), (r, l)]).filter(|(l, r)| ok(l, r)).collect()
++}
++
++/// Every term one equation step from `t` (at any position), no larger than `cap` nodes.
++fn eq_neighbours(t: &Term, eqs: &[(Term, Term)], cap: usize, out: &mut Vec<Term>) {
++    for (l, r) in eqs {
++        let mut sub = [None; 8];
++        if match_pat(l, t, &mut sub) {
++            let u = subst_pat(r, &sub);
++            if u.size() <= cap && u != *t {
++                out.push(u);
++            }
++        }
++    }
++    if let Node::Op(o, a, b) = *t.node() {
++        let mut inner = vec![];
++        eq_neighbours(&a, eqs, cap.saturating_sub(t.size() - a.size()), &mut inner);
++        out.extend(inner.drain(..).map(|a2| Term::op(o, a2, b)));
++        eq_neighbours(&b, eqs, cap.saturating_sub(t.size() - b.size()), &mut inner);
++        out.extend(inner.drain(..).map(|b2| Term::op(o, a, b2)));
++    }
++}
++
++/// Breadth-first from both terms at once, one layer of the smaller frontier at a time: `Some(steps)` when the two sets of
++/// reached terms meet, `None` when a side runs out or more than `visit` terms are reached in all.
++fn eq_join(a: &Term, b: &Term, eqs: &[(Term, Term)], cap: usize, visit: usize) -> Option<usize> {
++    let mut seen: [hashbrown::HashMap<Term, usize>; 2] = Default::default();
++    seen[0].insert(*a, 0);
++    seen[1].insert(*b, 0);
++    let mut front = [vec![*a], vec![*b]];
++    if a == b {
++        return Some(0);
++    }
++    while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
++        let s = if front[0].len() <= front[1].len() { 0 } else { 1 };
++        let mut next = vec![];
++        for t in std::mem::take(&mut front[s]) {
++            let d = seen[s][&t] + 1;
++            let mut out = vec![];
++            eq_neighbours(&t, eqs, cap, &mut out);
++            for u in out {
++                if let Some(e) = seen[1 - s].get(&u) {
++                    return Some(d + e);
++                }
++                if !seen[s].contains_key(&u) {
++                    seen[s].insert(u, d);
++                    next.push(u);
++                }
++            }
++        }
++        front[s] = next;
++    }
++    None
++}
++
++/// The AC and commutativity equations the rewriter applies as built-ins, as equations.
++fn builtin_eqs() -> Vec<(Term, Term)> {
++    let t = parse_term;
++    let mut e = vec![(t("add(add(x, y), z)"), t("add(x, add(y, z))"))];
++    for o in ["add", "and", "or", "xor"] {
++        e.push((t(&format!("{o}(x, y)")), t(&format!("{o}(y, x)"))));
++    }
++    for o in ["and", "or", "xor"] {
++        e.push((t(&format!("{o}({o}(x, y), z)")), t(&format!("{o}(x, {o}(y, z))"))));
++    }
++    e
++}
++
++#[test]
++fn eq_join_reaches_an_ac_permutation_and_not_an_unequal_term() {
++    let eqs = both_ways(&builtin_eqs());
++    let (a, b) = (parse_term("add(x, add(y, z))"), parse_term("add(add(z, y), x)"));
++    assert!(eq_join(&a, &b, &eqs, a.size(), 10_000).is_some());
++    assert_eq!(eq_join(&a, &parse_term("add(x, add(y, y))"), &eqs, a.size(), 10_000), None);
++}
++
++/// `BOUND_ROWS` (floor `diag.tsv` rows: family, library dir, ..., the two normal forms in columns 8 and 9): whether the two
++/// normal forms meet when every built-in, promoted and library rule, plus AC and commutativity, may be used either way, with
++/// terms of at most the larger side's size plus `BOUND_SLACK` (2) nodes and `BOUND_VISIT` (200000) terms reached.
++#[test]
++#[ignore]
++pub fn floor_equational_reach() {
++    tatic::kernel::scoped(|| {
++    let (slack, visit) = (env_or("BOUND_SLACK", 2usize), env_or("BOUND_VISIT", 200_000usize));
++    let root = env_var("BOUND_ROOT").unwrap_or(".");
++    let base: Vec<(Term, Term)> = fixed_rules().iter().map(|r| (r.lhs, r.rhs)).chain(builtin_eqs()).collect();
++    let mut libs: hashbrown::HashMap<String, Vec<(Term, Term)>> = Default::default();
++    for line in std::fs::read_to_string(env_var("BOUND_ROWS").unwrap()).unwrap().lines() {
++        let f: Vec<&str> = line.split('\t').collect();
++        let eqs = libs.entry(f[1].to_string()).or_insert_with(|| {
++            let lib = parse_rules(&std::fs::read_to_string(format!("{root}/{}/rules.txt", f[1])).unwrap());
++            both_ways(&base.iter().copied().chain(lib).collect::<Vec<_>>())
++        });
++        let (a, b) = (parse_term(f[7]), parse_term(f[8]));
++        let cap = a.size().max(b.size()) + slack;
++        let start = std::time::Instant::now();
++        let r = eq_join(&a, &b, eqs, cap, visit);
++        let secs = start.elapsed().as_secs_f64();
++        // a one-step join: the equation, as used (`l -> r` rewrites one side into the other at some position)
++        let one = (r == Some(1)).then(|| {
++            eqs.iter().find(|e| {
++                let mut out = vec![];
++                eq_neighbours(&a, std::slice::from_ref(e), cap, &mut out);
++                out.contains(&b)
++            })
++        });
++        let one = one.flatten().map_or(String::new(), |(l, r)| format!("{} -> {}", l.show(), r.show()));
++        println!("BOUND\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}", f[0], f[1], r.map_or("none".to_string(), |d| d.to_string()), f[3], secs, a.plausibly_equals(&b, 6, 3), one);
++    }
++    })
++}
++
+ /// The `shrnot` rule and the laws it closes: a shift of a bitwise not distributes over xor, so both sides reach the same
+ /// xor of shifted atoms without a whole-term machine proof.
+ #[test]
