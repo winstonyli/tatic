@@ -15,7 +15,7 @@ index 908840f..f309ce9 100644
          // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
          let text = std::fs::read_to_string(&log).unwrap();
 diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
-index df4f05b..958ed26 100644
+index df4f05b..7da748d 100644
 --- a/tests/church_bv/search.rs
 +++ b/tests/church_bv/search.rs
 @@ -774,6 +774,31 @@ pub fn rule_miner() {
@@ -103,11 +103,31 @@ index df4f05b..958ed26 100644
              if let Some(v) = picks.borrow().get(&kk) {
                  return v.clone();
              }
-@@ -1041,14 +1087,14 @@ pub fn rule_miner() {
+@@ -1029,28 +1075,32 @@ pub fn rule_miner() {
+             v
+         };
+         // a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
+-        let finished: std::cell::RefCell<hashbrown::HashMap<Vec<(Term, Term)>, (i64, usize)>> = Default::default();
++        // ORACLE PROBE: (value, rounds, in-sample value); `last_in` is the last finish's in-sample value
++        let finished: std::cell::RefCell<hashbrown::HashMap<Vec<(Term, Term)>, (i64, usize, i64)>> = Default::default();
++        let last_in = std::cell::Cell::new(0i64);
+         // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds; while
+         // speculating, each pick's assumed winner is proved on a thread of its own (`spawn`)
+         let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)| -> i64 {
+             let (mut path, mut left) = (vec![], rounds);
+-            let (v, mut d) = loop {
++            let (v, mut d, vin) = loop {
+                 let kk = key(&chosen);
+-                if let Some(&(v, d)) = finished.borrow().get(&kk).filter(|e| e.1 <= left) {
+-                    break (v, d);
++                if let Some(&(v, d, vin)) = finished.borrow().get(&kk).filter(|e| e.1 <= left) {
++                    last_in.set(vin);
++                    break (v, d, vin);
                  }
                  let s = state(chosen);
                  if left == 0 {
 -                    return value(&s); // cut by the round cap: not kept
++                    last_in.set(value(&s));
 +                    return if oracle_k > 0 { -oracle_m(&s.chosen) } else { value(&s) }; // cut by the round cap: not kept
                  }
                  let alts = pick_kept(&s);
@@ -116,11 +136,26 @@ index df4f05b..958ed26 100644
                  }
                  let Some((rule, _)) = alts.into_iter().next() else {
 -                    let v = value(&s);
+-                    finished.borrow_mut().insert(kk, (v, 0));
+-                    break (v, 0);
 +                    let v = if oracle_k > 0 { -oracle_m(&s.chosen) } else { value(&s) };
-                     finished.borrow_mut().insert(kk, (v, 0));
-                     break (v, 0);
++                    finished.borrow_mut().insert(kk, (v, 0, value(&s)));
++                    break (v, 0, value(&s));
                  };
-@@ -1081,7 +1127,7 @@ pub fn rule_miner() {
+                 path.push(kk);
+                 chosen = s.chosen;
+@@ -1059,8 +1109,9 @@ pub fn rule_miner() {
+             };
+             for kk in path.into_iter().rev() {
+                 d += 1;
+-                finished.borrow_mut().insert(kk, (v, d));
++                finished.borrow_mut().insert(kk, (v, d, vin));
+             }
++            last_in.set(vin);
+             v
+         };
+         // rounds not yet committed, oldest first: the state before each, its round, its winner's pending proof and its `chosen` line
+@@ -1081,7 +1132,7 @@ pub fn rule_miner() {
                  }
                  println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(provable[i])));
                  for v in std::iter::once(&o).chain(open.iter()) {
@@ -129,7 +164,7 @@ index df4f05b..958ed26 100644
                  }
                  for v in open.drain(..) {
                      v.proof.map(resolve);
-@@ -1098,7 +1144,9 @@ pub fn rule_miner() {
+@@ -1098,7 +1149,9 @@ pub fn rule_miner() {
              let (mut s, mut round, mut open) = (state(vec![]), 0, Vec::<Open>::new());
              loop {
                  speculate.set(true);
@@ -139,7 +174,7 @@ index df4f05b..958ed26 100644
                  speculate.set(false);
                  // the main path's assumption is the round's own pending proof (`proof`)
                  assumed.borrow_mut().clear();
-@@ -1121,7 +1169,7 @@ pub fn rule_miner() {
+@@ -1121,13 +1174,13 @@ pub fn rule_miner() {
                      }
                      if !proof.is_none_or(resolve) {
                          println!("RULEMINER rolled back to round {round}: its winner {} is not provable", proof.map_or(String::new(), |i| rule_show(provable[i])));
@@ -148,3 +183,37 @@ index df4f05b..958ed26 100644
                          continue;
                      }
                      let rest = cfg.rounds - round - 1;
+                     let values = loop {
+                         speculate.set(true);
+-                        let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn)).collect();
++                        let values: Vec<(i64, i64)> = alts.iter().map(|(r, _)| (finish(s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn), last_in.get())).collect();
+                         speculate.set(false);
+                         let failed: Vec<usize> = assumed.take().into_iter().filter(|&i| !resolve(i)).collect();
+                         if failed.is_empty() {
+@@ -1137,9 +1190,24 @@ pub fn rule_miner() {
+                         picks.borrow_mut().retain(|_, v| !v.iter().any(|(r, _)| failed.iter().any(|&i| provable[i] == r)));
+                         finished.borrow_mut().clear();
+                     };
+-                    let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
++                    let best = (0..alts.len()).max_by_key(|&a| (values[a].0, std::cmp::Reverse(a))).unwrap();
+                     for (a, ((l, r), g)) in alts.iter().enumerate() {
+-                        println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);
++                        println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a].0);
++                        // ORACLE PROBE: one feature row per alternative (tab-separated after the tag)
++                        let rival = alts.len() > 1 && a == 0 && alts[0].0 .0 == alts[1].0 .0;
++                        println!(
++                            "ORACLEROW\t{round}\t{a}\t{}\t{}\t{g}\t{}\t{}\t{}\t{}\t{}\t{}\t{} -> {}",
++                            alts.len(),
++                            rival as u8,
++                            values[a].1,
++                            values[a].0,
++                            (a == best) as u8,
++                            l.size(),
++                            r.size(),
++                            l.max_var().max(r.max_var()),
++                            l.show(),
++                            r.show()
++                        );
+                     }
+                     rule = alts[best].0;
+                 }

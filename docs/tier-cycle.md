@@ -56,7 +56,8 @@ laws beyond 5 nodes and (c) new definitions:
   finish each greedily, value each on the batch served next, and keep the best. On the cold loops this lowers the
   mined batches' M by a quarter (248 to 187 over two salts) and saturates at k = 5 ("Oracle headroom for a ranker").
   It uses the test batch, so it measures what reordering could gain, not what a ranker would. The headroom sits in
-  about 1 round in 10 (24 of 263 rounds at k = 5), which gives few labels to learn from.
+  about 1 round in 10, and over 10 salts (-21%) nothing the miner sees predicts it: not in-sample lookahead (worse than
+  nothing), gain, sizes or variables ("Can the miner see the headroom?"). The next test: value on a proxy batch.
 - **Parked:** (a) until a 6-7 node hash index shows true laws the mined rules can't derive; (c) until conservative
   definitions can be checked.
 
@@ -4041,6 +4042,28 @@ The plain rows reproduce the cold totals above (451 and 450). What it shows:
 Each run is the whole cold stage (`SWEEP=cold`, salts 1 and 2), run two at a time at BelowNormal with affinity FFF. CPU was at
 18% before the runs, and Defender RTP was False. Patch: `docs/runs/2026-10-12/patches/oracle_headroom_probe.patch` (against
 9c601c3; `ORACLE_K=<k>` in the sweep's environment). Rows: `docs/runs/2026-10-12/rows/oracle_headroom/`.
+
+*Can the miner see the headroom? (negative, 2026-10-17).* The same probe at k = 5 over salts 1-10, logging one row per
+alternative (`ORACLEROW`: round, position, gain, in-sample finished value, next-batch M, sizes, variables, rule). The headroom
+holds on every salt: mined-batch M 1169 to 925 (-21%; per salt 120/87, 128/100, 136/115, 96/86, 98/83, 126/94, 119/90,
+124/97, 85/68, 137/105). The oracle switched in 127 of 1334 rounds, spread over the families (cmp3d 51, sbo3 40, add3 36).
+Nothing the miner sees predicts those rounds (scripts `an1.awk`-`an4.awk` beside the rows):
+- **In-sample finished value is worse than no signal.** Picking by it switches 186 rounds and agrees with the oracle on 38.
+  Summed over rounds, it makes the next batch's M 132 worse (one round ahead each; the oracle's own choices sum to 352 better).
+  This is the in-sample lookahead's loss again ("Lookahead over runners-up too").
+- **Round gain never switches.** The first alternative already has the largest gain.
+- **Given that a round should switch, no feature finds the alternative.** In the 127 switched rounds, a random alternative is
+  a best one 30% of the time. Taking the top by each feature: in-sample value 38%, smaller right side 31%, fewer variables
+  31%, gain 27%, smaller left side 28%; within noise of chance (about ±4 points).
+- **A margin gate does not replicate.** Switching only when the in-sample value beats the greedy choice by 2 or more
+  stragglers looked useful over all salts (net M -40), but it is -44 on salts 1-5 and +4 on salts 6-10.
+
+What the oracle knows that the miner doesn't is the next batch. So a ranker's input has to say something about laws not yet
+seen, not just the mined batch. The cheapest test of that: value the alternatives on a proxy batch from the same family
+stream but outside every served window. If that recovers part of the 21%, ranking needs a generalization estimate, not a
+learned model. If it doesn't, the next batch is too different from any proxy for ranking to help.
+Same runs as above (two at a time, 9-13 s per oracle run). The patch above includes the row logging. Rows:
+`features_k5_s1-10.tsv.gz`, `salts_m_k<k>_s<salt>.tsv`.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
