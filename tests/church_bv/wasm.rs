@@ -928,10 +928,20 @@ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn
 
 #[test]
 pub fn wasm_programs_as_kernel_data() {
-    {
-        let n = 4;
-        tatic::kernel::scoped(|| run_wasm_checks(Wasm { n }, true))
-    }
+    tatic::kernel::scoped(|| run_wasm_checks(Wasm { n: 4 }, true))
+}
+
+/// The countdown invariant at n=24 stays fast. Without `conv`'s pair memo it walked a shared case tree once per path
+/// (docs/tier-cycle.md, "The countdown invariant is exponential"; n=32 took over 600 s).
+#[test]
+pub fn countdown_invariant_is_not_exponential() {
+    let n = 24;
+    tatic::kernel::scoped(|| {
+        let (p, s) = countdown_law(Wasm { n }, sub(n));
+        let t0 = Instant::now();
+        ck("countdown invariant n=24", &p, &s);
+        assert!(t0.elapsed().as_secs_f64() < 2.0, "countdown invariant took {:?}", t0.elapsed());
+    })
 }
 
 /// Every law and run, with controls; prints check times (`WASM` lines).
@@ -976,12 +986,11 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
     }
 }
 
-/// `WASM` check times at n = 4, 16. The countdown invariant is exponential in n under `conv` without a pair memo
-/// (docs/tier-cycle.md, "The countdown invariant is exponential"): n=32 did not finish in 600 s.
+/// `WASM` check times at n = 4, 16, 32, 64, with the controls at 64.
 #[test]
 #[ignore]
 pub fn wasm_scaling() {
-    for n in [4usize, 16] {
-        tatic::kernel::scoped(|| run_wasm_checks(Wasm { n }, n == 16))
+    for n in [4usize, 16, 32, 64] {
+        tatic::kernel::scoped(|| run_wasm_checks(Wasm { n }, n == 64))
     }
 }

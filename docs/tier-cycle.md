@@ -2296,19 +2296,21 @@ Check times (ms), CPU 20% from other jobs, Defender real-time protection off:
 | 16 | 0.05 | 0.19 | 0.39 | 0.78 | 0.07 | **44.9** | 1.13 |
 | 32 | 0.06 | 0.27 | 0.57 | 0.97 | 0.09 | **> 600 s** (stopped) | - |
 
-**The countdown invariant is exponential in n under today's `conv`.** The program's else arm reaches `conv` as an
+**The countdown invariant was exponential in n under `conv` without a pair memo (fixed: kernel change, kept,
+2026-10-17).** The program's else arm reaches `conv` as an
 unreduced `push_i .. s mu` redex, the proof's as the reduced `f (sub x 1, s) mu`: equal, not the same node. Both sit
 under `lt_u`'s borrow chain applied to `choose`'s continuations, and that chain's case tree shares its tail
 (`or ab cx` uses `cx` in both branches), so a walk that doesn't remember pairs visits 2^n leaves, comparing the two arms
-at each. `conv` keeps no pair memo (one was A/B'd for speed and reverted, 2026-10-12 run log). Probe, reverted
-(`docs/runs/2026-10-12/patches/conv_pair_memo_probe.patch`, applies to f980cb2): a per-`def_eq` set of pairs already
-shown equal, checked after the `same` test. With it the countdown invariant takes 0.79 / 1.43 / 3.17 / 6.09 ms at
+at each. `conv` kept no pair memo (a per-scope one was A/B'd for speed and reverted, 2026-10-12 run log). Now it keeps
+`EQUAL`, the pairs one `def_eq` call has shown equal, checked after the `same` test (first as a probe,
+`docs/runs/2026-10-12/patches/conv_pair_memo_probe.patch`). Unequal pairs need no entry: the first ends the call. With it the countdown invariant takes 0.79 / 1.43 / 3.17 / 6.09 ms at
 n = 4 / 16 / 32 / 64, the other checks move within noise, and the controls are still rejected at n=64. On the proof
 corpus it is neutral: `runs time --pcs` (`proof_cost_split`, cmp3d, 24 alternating pairs, d36897f against d36897f plus
 the patch) gives job CPU median 2.070 / 2.016 s and best 1.531 / 1.516 s, the memo winning 15 of 24 pairs (median pair
 -0.03 s). The machine was contended (other load 31-85% per run, the quiet gate off; a gated attempt found no quiet minute
-in 95 min), Defender real-time protection off. Not yet kept: a kernel change waits on a yes. Until then `wasm_scaling`
-stops at n=16.
+in 95 min), Defender real-time protection off. Kept: the test `countdown_invariant_is_not_exponential` (n=24, under
+2 s) took 19.6 s without it and fails; `wasm_scaling` runs to n=64 again (countdown invariant 0.86 / 1.53 / 3.62 /
+8.57 ms at n = 4 / 16 / 32 / 64).
 
 **Closed function values are reduced once (kernel change, kept, 2026-10-14).** The n=48 wall above was unsharing
 in `whnf`. A word's bit is a shared node such as `s = xor_ a b`, and each use applies it to its own continuations

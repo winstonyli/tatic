@@ -1729,7 +1729,13 @@ fn def_eq_in(s: &Spaces, a: &Expr, b: &Expr) -> bool {
     let _g = site(3);
     #[cfg(feature = "record-defeq")]
     SEEN.with(|m| m.borrow_mut().clear());
+    EQUAL.with(|m| m.borrow_mut().clear());
     conv(s, a, b)
+}
+
+thread_local! {
+    /// The pairs one `def_eq` call has shown equal, as `key(a) << 32 | key(b)`.
+    static EQUAL: std::cell::RefCell<hashbrown::HashSet<u64>> = std::cell::RefCell::new(hashbrown::HashSet::new());
 }
 
 /// `def_eq`'s comparison. Syntactically equal sides are equal without
@@ -1740,11 +1746,26 @@ fn def_eq_in(s: &Spaces, a: &Expr, b: &Expr) -> bool {
 /// the two weak head normal forms have the same constructor and pairwise
 /// equal children's normal forms. Recursing on that reduces only where the
 /// sides differ (`RELATED_WORK.md` §57).
+///
+/// A pair already shown equal in this call is answered from `EQUAL`. Without
+/// it the walk is a tree walk over shared nodes: two equal but distinct
+/// subterms under a case tree that shares its tail (a borrow chain applied to
+/// continuations) were compared once per path, 2^n times for n bits
+/// (docs/tier-cycle.md, "The countdown invariant is exponential"). Unequal
+/// pairs need no entry: the first one ends the call.
 fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
     if s.same(a, b) {
         return true;
     }
-    conv_whnf(s, &whnf_in(s, a), &whnf_in(s, b))
+    let pair = (s.key(a) as u64) << 32 | s.key(b) as u64;
+    if EQUAL.with(|m| m.borrow().contains(&pair)) {
+        return true;
+    }
+    let equal = conv_whnf(s, &whnf_in(s, a), &whnf_in(s, b));
+    if equal {
+        EQUAL.with(|m| m.borrow_mut().insert(pair));
+    }
+    equal
 }
 
 /// Compares two weak head normal forms: same constructor, then `conv` on
