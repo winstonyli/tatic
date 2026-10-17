@@ -236,20 +236,36 @@ pub fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
 pub static LEMMA_HITS: crate::task::PerTask<std::sync::atomic::AtomicU64> = crate::task::PerTask::new();
 pub static PROF: crate::task::PerTask<[std::sync::atomic::AtomicU64; 3]> = crate::task::PerTask::new();
 
-/// One line of machine state to print with every timing (LONG_RUNS.md): Defender real-time protection, total CPU load
-/// over two seconds, and whether this process allocates from large OS pages, read through PowerShell; "unavailable" off
-/// Windows.
+/// The machine-state reader shared with `tools/runs` (std only, so the file compiles here as it is).
+#[cfg(windows)]
+#[path = "../../tools/runs/src/state.rs"]
+pub mod state;
+
+/// Defender's real-time protection and the machine's CPU load over 2 s (`RTP=False CPU=18%`), read natively
+/// (`tools/runs/src/state.rs`); "machine state unavailable" off Windows.
+pub fn rtp_cpu() -> String {
+    #[cfg(windows)]
+    return state::rtp_cpu();
+    #[cfg(not(windows))]
+    return "machine state unavailable".to_string();
+}
+
+/// `lockpriv=True pages=large`: whether this process holds the "Lock pages in memory" privilege, and whether it
+/// allocates from large OS pages. mimalloc enables the privilege itself when the option is on, so both together mean
+/// large pages.
+pub fn pages_text() -> String {
+    #[cfg(windows)]
+    let lock = state::lockpriv();
+    #[cfg(not(windows))]
+    let lock = false;
+    let pages = if large_pages_option() && lock { "large" } else { "normal" };
+    format!("lockpriv={} pages={pages}", if lock { "True" } else { "False" })
+}
+
+/// One line of machine state to print with every timing (LONG_RUNS.md): `RTP=.. CPU=..% lockpriv=.. pages=..`, in
+/// about 2 s (the CPU sample).
 pub fn machine_state() -> String {
-    let script = r"'RTP=' + (Get-MpComputerStatus).RealTimeProtectionEnabled + ' CPU=' + [int](Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 2 -MaxSamples 2).CounterSamples[-1].CookedValue + '% lockpriv=' + [bool](whoami /priv | Select-String SeLockMemoryPrivilege)";
-    let state = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "machine state unavailable".to_string(), |t| t.trim().to_string());
-    // mimalloc enables the privilege itself when the option is on, so both together mean large pages
-    let pages = if large_pages_option() && state.ends_with("lockpriv=True") { "large" } else { "normal" };
-    format!("{state} pages={pages}")
+    format!("{} {}", rtp_cpu(), pages_text())
 }
 
 /// mimalloc's `allow_large_os_pages` option in this process: the build's default (`.cargo/config.toml`) unless
@@ -271,8 +287,16 @@ pub fn mimalloc_defaults_to_large_pages() {
     }
 }
 
+/// `pages_text` is what the driver appends to its machine-state line.
+#[test]
+fn pages_text_has_both_fields() {
+    let t = pages_text();
+    assert!(t.starts_with("lockpriv=True pages=") || t.starts_with("lockpriv=False pages="), "{t}");
+    assert!(t.ends_with("pages=large") || t.ends_with("pages=normal"), "{t}");
+}
+
 /// Prints the machine state (Defender, CPU load) when created and again when dropped, so a timing run records both ends.
-/// `MACHINE_BANNER=0` silences it (each state costs about 5 s): `scripts/loop_stream.sh` records the state once per loop instead.
+/// `MACHINE_BANNER=0` silences it (each state costs about 2 s): `driver::loop_stream` records the state once per loop instead.
 pub struct MachineBanner(&'static str);
 impl MachineBanner {
     pub fn start(tag: &'static str) -> Self {
@@ -291,11 +315,19 @@ impl Drop for MachineBanner {
     }
 }
 
-/// Prints one machine-state line; `scripts/loop_stream.sh` calls it at the start and end of a loop.
+/// Prints one machine-state line, for a human: `cargo test --release --test church_bv machine::machine_state_line --
+/// --exact --ignored --nocapture`. The driver composes its own (`driver::machine_state`).
 #[test]
 #[ignore]
 pub fn machine_state_line() {
     println!("machine state: {}", machine_state());
+}
+
+/// The driver's worker task for the part of the state that belongs to the children's process and environment.
+#[test]
+#[ignore]
+pub fn pages_line() {
+    println!("pages: {}", pages_text());
 }
 
 /// What `prove_checked` found for a law.

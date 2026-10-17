@@ -13,7 +13,7 @@
 //! SPHASE [0], B [150], K [4], OFFSET [0], THREADS [2] (miner pool), ROUNDS [no cap], DEEP3 [1] (add3 only), SPLIT [2] (0|1 restricts
 //! everything to one structure-based half of the laws; RULEMINER_SHAPE_SALT picks another split), WARM_RULES=<file> (start with those
 //! rules in force), CHECK_FAST [0] (serve without proof building or kernel checks; M is unchanged), MACHINE_STATE [1] (a machine-state
-//! line at start and end, about 6 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
+//! line at start and end, about 2 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
@@ -106,7 +106,7 @@ fn task_fn(name: &str) -> Option<fn()> {
     Some(match name {
         "search::rule_miner" => crate::search::rule_miner,
         "search::rule_set_kernel_check" => crate::search::rule_set_kernel_check,
-        "machine::machine_state_line" => crate::machine::machine_state_line,
+        "machine::pages_line" => crate::machine::pages_line,
         "driver::env_echo" => env_echo,
         _ => return None,
     })
@@ -294,17 +294,19 @@ fn append(path: &Path, text: &str) {
     std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
 }
 
-/// A machine-state line on stderr (about 6 s), taken by a worker task with the children's `env` so its `pages=` is theirs,
-/// logged to `<out>/machine_state_<when>.log`; `MACHINE_STATE=0` skips it, in a loop or a sweep.
+/// A machine-state line on stderr (about 2 s), logged pieces in `<out>/machine_state_<when>.log`: `RTP` and `CPU` are
+/// machine-wide, so read here; `lockpriv` and `pages` belong to the children's process and environment, so a worker
+/// task (`machine::pages_line`, with the children's `env`) reports them. `MACHINE_STATE=0` skips it, in a loop or a sweep.
 fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Path) {
     if env_or("MACHINE_STATE", 1usize) == 0 {
         return;
     }
     std::fs::create_dir_all(out).unwrap();
     let log = out.join(format!("machine_state_{when}.log"));
-    worker.run("machine::machine_state_line", env, &log);
+    worker.run("machine::pages_line", env, &log);
     let text = std::fs::read_to_string(&log).unwrap_or_default();
-    eprintln!("machine at {when}: {}", text.lines().find(|l| l.contains("machine state:")).unwrap_or(""));
+    let pages = text.lines().find_map(|l| l.strip_prefix("pages: ")).unwrap_or("pages unavailable");
+    eprintln!("machine at {when}: machine state: {} {pages}", crate::machine::rtp_cpu());
 }
 
 /// Prints `env_var(k)` for each name in `ECHO` (a comma list) and a nonce unique to this process; panics when
