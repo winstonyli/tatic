@@ -1,0 +1,61 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index cfdd06e..b89d87b 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -1874,6 +1874,39 @@ pub fn print_rule_conflicts() {
+     }
+ }
+ 
++/// FLOOR PROBE: rank of a leaf or head in the path order (leaves under all operators, operators by precedence then index).
++fn lpo_rank(t: &Term) -> (i32, i64) {
++    match *t.node() {
++        Node::Zero => (-3, 0),
++        Node::Ones => (-2, 0),
++        Node::V(i) => (-1, i as i64),
++        Node::Op(o, ..) => (OP_INFO[o].prec as i32, o as i64),
++    }
++}
++
++/// FLOOR PROBE: `s > t` in the lexicographic path order with `lpo_rank`'s total precedence (the deleted section 89 order).
++pub fn lpo_greater(s: &Term, t: &Term) -> bool {
++    let Node::Op(_, sa, sb) = *s.node() else {
++        return !matches!(*t.node(), Node::Op(..)) && lpo_rank(s) > lpo_rank(t);
++    };
++    if [sa, sb].into_iter().any(|x| x == *t || lpo_greater(&x, t)) {
++        return true;
++    }
++    let Node::Op(_, ta, tb) = *t.node() else { return true };
++    let (rs, rt) = (lpo_rank(s), lpo_rank(t));
++    if rs > rt {
++        return lpo_greater(s, &ta) && lpo_greater(s, &tb);
++    }
++    if rs < rt {
++        return false;
++    }
++    if sa != ta {
++        lpo_greater(&sa, &ta) && lpo_greater(s, &tb)
++    } else {
++        lpo_greater(&sb, &tb)
++    }
++}
++
+ /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the plan.
+ pub fn rule_step(t: &Term) -> Option<(Term, PlanRc)> {
+     RULE_TABLE.with(|table| rule_step_in(t, &table.borrow()))
+@@ -1897,7 +1930,15 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
+         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
+         // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
+         // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
+-        if r.permutative && inst.show_cmp(t).is_ge() {
++        // FLOOR PROBE (throwaway): `FLOOR_LPO=tied` checks every weight-tied mined instance against one path order (the deleted
++        // `PERM_ORDER=lpo`); `FLOOR_LPO=all` checks every mined instance
++        static LPO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
++        let lpo = LPO.get_or_init(|| std::env::var("FLOOR_LPO").unwrap_or_default());
++        if r.name == "mined" && (lpo == "all" || (lpo == "tied" && rule_tied(&r.lhs, &r.rhs) && !rule_order_ok(&r.lhs, &r.rhs))) {
++            if !lpo_greater(t, &inst) {
++                return None;
++            }
++        } else if r.permutative && inst.show_cmp(t).is_ge() {
+             return None;
+         }
+         Some(sub)

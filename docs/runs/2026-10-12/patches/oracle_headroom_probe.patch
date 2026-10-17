@@ -1,273 +1,38 @@
-diff --git a/docs/runs/2026-10-12/patches/oracle_headroom_probe.patch b/docs/runs/2026-10-12/patches/oracle_headroom_probe.patch
-index e765889..e69de29 100644
---- a/docs/runs/2026-10-12/patches/oracle_headroom_probe.patch
-+++ b/docs/runs/2026-10-12/patches/oracle_headroom_probe.patch
-@@ -1,255 +0,0 @@
--diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
--index 908840f..6d37248 100644
----- a/tests/church_bv/driver.rs
--+++ b/tests/church_bv/driver.rs
--@@ -425,6 +425,40 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
--             ("RULEMINER_BASE", rules.display().to_string()),
--         ]);
--         env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
--+        // ORACLE PROBE control: `MINE_EXTRA=<n>` mines on the batch plus the first n laws of the phases no cold loop serves
--+        // (all but 1-3), phase p + 3 first, then on round the stride; `MINE_EXTRA=all` takes them all
--+        if cfg.mode == "loop" && env_var("MINE_EXTRA").is_some() {
--+            let want: usize = env_var("MINE_EXTRA").and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
--+            let extra = out.join(format!("laws_extra_{name}.txt"));
--+            let mut text = String::new();
--+            for q in (0..cfg.stride).map(|i| (cfg.sphase + 3 + i) % cfg.stride).filter(|q| !(1..=3).contains(q)) {
--+                let have = text.lines().count();
--+                if have >= want {
--+                    break;
--+                }
--+                let proxy = env.iter().cloned().chain([("RULEMINER_PHASE", s(q)), ("RULEMINER_SKIP", s(0)), ("RULEMINER_LAWS", s(want - have))].map(|(k, v)| (k.to_string(), v))).collect::<Vec<_>>();
--+                write_laws(&cfg.family, &proxy, &extra, "unused");
--+                text += &std::fs::read_to_string(&extra).unwrap();
--+            }
--+            std::fs::write(&extra, &text).unwrap();
--+            println!("MINE_EXTRA {name}: {} laws", text.lines().count());
--+            let file = PathBuf::from(&env.last().unwrap().1);
--+            let both = std::fs::read_to_string(&file).unwrap() + &text;
--+            std::fs::write(&file, both).unwrap();
--+        }
--+        // ORACLE PROBE (throwaway): a loop's mine is valued on the batch served next
--+        if cfg.mode == "loop" && env_var("ORACLE_K").is_some() {
--+            // `ORACLE_PROXY=matched`: the same window of phase p + 3, which no cold loop serves; `wide`: that phase's first 300 laws
--+            let window = match env_var("ORACLE_PROXY") {
--+                Some("matched") => vec![("RULEMINER_PHASE", s(cfg.sphase + 3)), ("RULEMINER_SKIP", s(skip + laws))],
--+                Some("wide") => vec![("RULEMINER_PHASE", s(cfg.sphase + 3)), ("RULEMINER_SKIP", s(0)), ("RULEMINER_LAWS", s(300))],
--+                _ => vec![("RULEMINER_SKIP", s(skip + laws))],
--+            };
--+            let next = env.iter().cloned().chain(window.into_iter().map(|(k, v)| (k.to_string(), v))).collect::<Vec<_>>();
--+            env.push(write_laws(&cfg.family, &next, &out.join(format!("laws_oracle_{name}.txt")), "ORACLE_LAWFILE"));
--+            let served = env.iter().cloned().chain([("RULEMINER_SKIP".to_string(), s(skip + laws))]).collect::<Vec<_>>();
--+            env.push(write_laws(&cfg.family, &served, &out.join(format!("laws_true_{name}.txt")), "ORACLE_TRUEFILE"));
--+        }
--         assert!(worker.run("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
--         // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
--         let text = std::fs::read_to_string(&log).unwrap();
--diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
--index df4f05b..87c0e1e 100644
----- a/tests/church_bv/search.rs
--+++ b/tests/church_bv/search.rs
--@@ -774,6 +774,36 @@ pub fn rule_miner() {
--         // `prefs`: the rule preferences in force (`set_rule_prefs`). `base_now`: the base rules in force, all of them until the
--         // preference phase drops some
--         let base_now = std::sync::Mutex::new(base.clone());
--+        // ORACLE PROBE (throwaway): `ORACLE_K=<k>` with `ORACLE_LAWFILE=<file>` (the driver writes the loop's next batch): each
--+        // main-path round's alternatives also take the next k-1 proved candidates by gain, and lookahead values a finished set by
--+        // minus its M on those laws, counted as `rule_set_kernel_check` with `CHECK_FAST` counts it
--+        let ockv = family_vars(&family);
--+        let oracle_laws: Vec<(Term, Term)> =
--+            env_var("ORACLE_LAWFILE").map_or(vec![], |f| read_named_laws(f).into_iter().filter(|(_, a, b)| a.is_law(b, ockv)).map(|(_, a, b)| (a, b)).collect());
--+        let oracle_k: usize = if oracle_laws.is_empty() { 0 } else { env_or("ORACLE_K", 0usize) };
--+        // `ORACLE_TRUEFILE`: the batch served next, only logged (when `ORACLE_LAWFILE` is a proxy)
--+        let true_laws: Vec<(Term, Term)> =
--+            env_var("ORACLE_TRUEFILE").map_or(vec![], |f| read_named_laws(f).into_iter().filter(|(_, a, b)| a.is_law(b, ockv)).map(|(_, a, b)| (a, b)).collect());
--+        let m_on = |laws: &[(Term, Term)], chosen: &[(Term, Term)]| -> i64 {
--+            set_extra_rules(base_now.lock().unwrap().iter().chain(chosen).cloned().collect());
--+            set_rule_prefs(base_prefs.clone());
--+            let caller = SCORE_ONLY.with(|s| s.replace(true));
--+            let m = laws
--+                .iter()
--+                .filter(|(a, b)| {
--+                    RULE_BUDGET.with(|x| x.set(200));
--+                    let before = fallbacks();
--+                    rewrite_plan(4, ockv, a, b).is_none() || fallbacks() > before
--+                })
--+                .count() as i64;
--+            SCORE_ONLY.with(|s| s.set(caller));
--+            set_extra_rules(vec![]);
--+            RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
--+            m
--+        };
--+        let oracle_m = |chosen: &[(Term, Term)]| m_on(&oracle_laws, chosen);
--+        let true_m = |chosen: &[(Term, Term)]| m_on(&true_laws, chosen);
--+        let want = std::cell::Cell::new(1usize);
--         let score_laws = |extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>| -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
--             let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
--             set_extra_rules(base_now.lock().unwrap().iter().chain(extra).cloned().collect());
--@@ -955,8 +985,11 @@ pub fn rule_miner() {
--                     std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
--                 }
--                 loop {
---                    let best = (0..provable.len()).filter(|&i| proofs.borrow()[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
---                    let floor = best.map_or(1, |b| b.0);
--+                    let mut gains: Vec<(i64, usize)> = (0..provable.len()).filter(|&i| proofs.borrow()[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).collect();
--+                    gains.sort_by_key(|&(g, i)| (std::cmp::Reverse(g), i));
--+                    let best = gains.first().copied();
--+                    // ORACLE PROBE: score down to the `want`-th best gain
--+                    let floor = gains.get(want.get() - 1).map_or(1, |b| b.0);
--                     let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
--                     if chunk.is_empty() {
--                         let Some((_, i)) = best else { break None };
--@@ -1008,7 +1041,25 @@ pub fn rule_miner() {
--                     rival = Some((*rv, rg));
--                 }
--             }
---            rival.into_iter().chain([(*provable[i], g)]).collect()
--+            // ORACLE PROBE: the next `want - 1` proved candidates by gain, after the winner
--+            let mut runners: Vec<(i64, usize)> = (0..provable.len()).filter(|&j| j != i).filter_map(|j| results[j].as_ref().map(|r| (r.0, j))).filter(|r| r.0 > 0).collect();
--+            runners.sort_by_key(|&(g, j)| (std::cmp::Reverse(g), j));
--+            let mut extra = vec![];
--+            for (rg, j) in runners {
--+                if extra.len() + 1 >= want.get() {
--+                    break;
--+                }
--+                let known = proofs.borrow()[j];
--+                let ok = known.unwrap_or_else(|| {
--+                    let ok = prove_one(j);
--+                    proofs.borrow_mut()[j] = Some(ok);
--+                    ok
--+                });
--+                if ok {
--+                    extra.push((*provable[j], rg));
--+                }
--+            }
--+            rival.into_iter().chain([(*provable[i], g)]).chain(extra).collect()
--         };
--         // a rival's larger round gain can lead to a worse finished set (docs/tier-cycle.md, "The cold loss is a greedy path loss"), so
--         // both are finished greedily (rivals taken, no lookahead) and the better finished set's choice is kept, ties to the rival.
--@@ -1018,9 +1069,9 @@ pub fn rule_miner() {
--         // reach the same set in another order, so picks and finished values are kept by set; the kept alternative's path is also the
--         // next rounds' own (`key`, above)
--         #[allow(clippy::type_complexity)]
---        let picks: std::cell::RefCell<hashbrown::HashMap<Vec<(Term, Term)>, Vec<((Term, Term), i64)>>> = Default::default();
--+        let picks: std::cell::RefCell<hashbrown::HashMap<(usize, Vec<(Term, Term)>), Vec<((Term, Term), i64)>>> = Default::default();
--         let pick_kept = |s: &Chosen| {
---            let kk = key(&s.chosen);
--+            let kk = (want.get(), key(&s.chosen));
--             if let Some(v) = picks.borrow().get(&kk) {
--                 return v.clone();
--             }
--@@ -1029,28 +1080,33 @@ pub fn rule_miner() {
--             v
--         };
--         // a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
---        let finished: std::cell::RefCell<hashbrown::HashMap<Vec<(Term, Term)>, (i64, usize)>> = Default::default();
--+        // ORACLE PROBE: (value, rounds, (in-sample value, minus the M on ORACLE_TRUEFILE)); `last_in` is the last finish's
--+        let finished: std::cell::RefCell<hashbrown::HashMap<Vec<(Term, Term)>, (i64, usize, (i64, i64))>> = Default::default();
--+        let last_in = std::cell::Cell::new((0i64, 0i64));
--         // the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds; while
--         // speculating, each pick's assumed winner is proved on a thread of its own (`spawn`)
--         let finish = |mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)| -> i64 {
--             let (mut path, mut left) = (vec![], rounds);
---            let (v, mut d) = loop {
--+            let (v, mut d, vin) = loop {
--                 let kk = key(&chosen);
---                if let Some(&(v, d)) = finished.borrow().get(&kk).filter(|e| e.1 <= left) {
---                    break (v, d);
--+                if let Some(&(v, d, vin)) = finished.borrow().get(&kk).filter(|e| e.1 <= left) {
--+                    last_in.set(vin);
--+                    break (v, d, vin);
--                 }
--                 let s = state(chosen);
--                 if left == 0 {
---                    return value(&s); // cut by the round cap: not kept
--+                    last_in.set((value(&s), -true_m(&s.chosen)));
--+                    return if oracle_k > 0 { -oracle_m(&s.chosen) } else { value(&s) }; // cut by the round cap: not kept
--                 }
--                 let alts = pick_kept(&s);
--                 if let Some(j) = spawn_req.take() {
--                     spawn(j);
--                 }
--                 let Some((rule, _)) = alts.into_iter().next() else {
---                    let v = value(&s);
---                    finished.borrow_mut().insert(kk, (v, 0));
---                    break (v, 0);
--+                    let v = if oracle_k > 0 { -oracle_m(&s.chosen) } else { value(&s) };
--+                    let vin = (value(&s), -true_m(&s.chosen));
--+                    finished.borrow_mut().insert(kk, (v, 0, vin));
--+                    break (v, 0, vin);
--                 };
--                 path.push(kk);
--                 chosen = s.chosen;
--@@ -1059,8 +1115,9 @@ pub fn rule_miner() {
--             };
--             for kk in path.into_iter().rev() {
--                 d += 1;
---                finished.borrow_mut().insert(kk, (v, d));
--+                finished.borrow_mut().insert(kk, (v, d, vin));
--             }
--+            last_in.set(vin);
--             v
--         };
--         // rounds not yet committed, oldest first: the state before each, its round, its winner's pending proof and its `chosen` line
--@@ -1081,7 +1138,7 @@ pub fn rule_miner() {
--                 }
--                 println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(provable[i])));
--                 for v in std::iter::once(&o).chain(open.iter()) {
---                    picks.borrow_mut().remove(&key(&v.before.chosen));
--+                    { let kk = key(&v.before.chosen); picks.borrow_mut().retain(|k, _| k.1 != kk); }
--                 }
--                 for v in open.drain(..) {
--                     v.proof.map(resolve);
--@@ -1098,7 +1155,9 @@ pub fn rule_miner() {
--             let (mut s, mut round, mut open) = (state(vec![]), 0, Vec::<Open>::new());
--             loop {
--                 speculate.set(true);
--+                want.set(oracle_k.max(1));
--                 let alts = if round < cfg.rounds { pick_kept(&s) } else { vec![] };
--+                want.set(1);
--                 speculate.set(false);
--                 // the main path's assumption is the round's own pending proof (`proof`)
--                 assumed.borrow_mut().clear();
--@@ -1121,13 +1180,13 @@ pub fn rule_miner() {
--                     }
--                     if !proof.is_none_or(resolve) {
--                         println!("RULEMINER rolled back to round {round}: its winner {} is not provable", proof.map_or(String::new(), |i| rule_show(provable[i])));
---                        picks.borrow_mut().remove(&key(&s.chosen));
--+                        { let kk = key(&s.chosen); picks.borrow_mut().retain(|k, _| k.1 != kk); }
--                         continue;
--                     }
--                     let rest = cfg.rounds - round - 1;
--                     let values = loop {
--                         speculate.set(true);
---                        let values: Vec<i64> = alts.iter().map(|(r, _)| finish(s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn)).collect();
--+                        let values: Vec<(i64, (i64, i64))> = alts.iter().map(|(r, _)| (finish(s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn), last_in.get())).collect();
--                         speculate.set(false);
--                         let failed: Vec<usize> = assumed.take().into_iter().filter(|&i| !resolve(i)).collect();
--                         if failed.is_empty() {
--@@ -1137,9 +1196,25 @@ pub fn rule_miner() {
--                         picks.borrow_mut().retain(|_, v| !v.iter().any(|(r, _)| failed.iter().any(|&i| provable[i] == r)));
--                         finished.borrow_mut().clear();
--                     };
---                    let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
--+                    let best = (0..alts.len()).max_by_key(|&a| (values[a].0, std::cmp::Reverse(a))).unwrap();
--                     for (a, ((l, r), g)) in alts.iter().enumerate() {
---                        println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);
--+                        println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a].0);
--+                        // ORACLE PROBE: one feature row per alternative (tab-separated after the tag)
--+                        let rival = alts.len() > 1 && a == 0 && alts[0].0 .0 == alts[1].0 .0;
--+                        println!(
--+                            "ORACLEROW\t{round}\t{a}\t{}\t{}\t{g}\t{}\t{}\t{}\t{}\t{}\t{}\t{} -> {}\t{}",
--+                            alts.len(),
--+                            rival as u8,
--+                            values[a].1 .0,
--+                            values[a].0,
--+                            (a == best) as u8,
--+                            l.size(),
--+                            r.size(),
--+                            l.max_var().max(r.max_var()),
--+                            l.show(),
--+                            r.show(),
--+                            values[a].1 .1
--+                        );
--                     }
--                     rule = alts[best].0;
--                 }
 diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
-index 908840f..222600e 100644
+index 908840f..f3a38f3 100644
 --- a/tests/church_bv/driver.rs
 +++ b/tests/church_bv/driver.rs
-@@ -425,6 +425,66 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
+@@ -425,6 +425,91 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
              ("RULEMINER_BASE", rules.display().to_string()),
          ]);
          env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
 +        // ORACLE PROBE control: `MINE_EXTRA=<n>` mines on the batch plus the first n laws of the phases no cold loop serves
 +        // (all but 1-3), phase p + 3 first, then on round the stride; `MINE_EXTRA=all` takes them all
++        // FLOOR PROBE: `MINE_RENAME=1` adds every renaming of x, y, z of the laws the mine already mines on (served laws only)
++        if cfg.mode == "loop" && env_var("MINE_RENAME").is_some() {
++            let file = PathBuf::from(&env.last().unwrap().1);
++            let text = std::fs::read_to_string(&file).unwrap();
++            let mut seen: hashbrown::HashSet<String> = text.lines().map(String::from).collect();
++            let mut more = String::new();
++            for l in text.lines() {
++                for p in [b"xzy", b"yxz", b"yzx", b"zxy", b"zyx"] {
++                    let b = l.as_bytes();
++                    let r: String = b
++                        .iter()
++                        .enumerate()
++                        .map(|(i, &c)| {
++                            let alone = (i == 0 || !b[i - 1].is_ascii_alphanumeric()) && (i + 1 == b.len() || !b[i + 1].is_ascii_alphanumeric());
++                            if alone && (b'x'..=b'z').contains(&c) { p[(c - b'x') as usize] as char } else { c as char }
++                        })
++                        .collect();
++                    if seen.insert(r.clone()) {
++                        more += &format!("{r}\n");
++                    }
++                }
++            }
++            println!("MINE_RENAME {name}: {} laws plus {} renamings", text.lines().count(), more.lines().count());
++            std::fs::write(&file, text + &more).unwrap();
++        }
 +        if cfg.mode == "loop" && env_var("MINE_EXTRA").is_some() {
 +            let want: usize = env_var("MINE_EXTRA").and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
 +            let extra = out.join(format!("laws_extra_{name}.txt"));

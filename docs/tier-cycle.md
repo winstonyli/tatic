@@ -63,10 +63,12 @@ laws beyond 5 nodes and (c) new definitions:
   "More laws beat any ranking"). So the proposer's ranking should be over which laws to mine on, not which candidates
   to keep. M falls steeply up to about 1000 extra laws (-82%) and levels off by 3000 at a per-family floor ("How
   many extra laws"). Part of that is renamed twins of the served laws among the extras; without them M still falls by
-  two thirds (1169 to 388) and levels off near 400 ("Renamed twins").
+  two thirds (1169 to 388) and levels off near 400 ("Renamed twins"). Renamings of laws already served give only -20%:
+  the proposer's lever is new laws.
 - **The floor is permutations, not size.** Of the 171 laws left at the largest dose, 101 stay even when the miner mines
   on exactly them. 74 of those look like permutations of their other side (+ 1 on a different summand, `lt(~a, b)` against
-  `lt(~b, a)`), and 61 hit a cycle cut ("What the floor is"). Ordered rewriting is the general fix to test.
+  `lt(~b, a)`), and 61 hit a cycle cut ("What the floor is"). One path order for every rule instance joins more of
+  them but makes whole loops 2-10x worse ("Ordered rewriting against the floor"); completion is untried.
 - **Parked:** (a) laws beyond 5 nodes, since the floor turned out not to be about size; (c) until conservative
   definitions can be checked.
 
@@ -4151,10 +4153,13 @@ every extra whose class appears anywhere in phases 1-3. That leaves, at salt 1, 
   extras with twins.
 - **Twin-free M levels off by 1000 too** (405 at `all`, within noise of 388; per salt 30-53). The floor without twins is
   about 400.
-- **For the proposer:** the laws worth mining on are not only new laws but also variants of laws already met; how much
-  of the twins' extra gain a proposer could get without seeing the test laws is open.
+- **Renamings of laws already served give little.** `MINE_RENAME=1` (same probe patch, no extras) adds to each mine
+  every renaming of x, y, z of the laws it mines on, about 490 more laws per mine and none of them unseen. Mined-batch
+  M over salts 1-10 is 933 (cmp3d 466, add3 208, sbo3 259; per salt 77-120) against 1169: -20%, as much as the oracle
+  ranking, without seeing the test batch, but far below twin-free new laws (388). So the twins' extra gain came from
+  covering the next laws' renaming classes, not from renaming as such. For a proposer, new laws are the lever.
 
-Rows: `salts_t_<1000|all>_s<salt>.tsv`; `rows/floor/canon.awk` counts twins.
+Rows: `salts_t_<1000|all>_s<salt>.tsv`, `salts_r_s<salt>.tsv` (renamings); `rows/floor/canon.awk` counts twins.
 
 *What the floor is (2026-10-17).* At dose `all`, the mined batches leave 171 laws that need a whole-term machine proof
 (none unproved): 92 distinct for cmp3d, 37 for add3 and 10 for sbo3. With each loop's final library (after its second
@@ -4179,9 +4184,27 @@ Mining on the laws themselves does not remove them, so no choice of laws to mine
 So the floor is not about rule size, and target (a) as worded (laws beyond 5 nodes) would not lift it. A rule that joins
 two permutations of a term is itself permutative: plain rewriting either cycles on it (the cut) or must leave one
 orientation out. A larger pool would add more such rules, not orient them; that is reasoning, not tested. The general
-mechanism that addresses it is ordered rewriting: apply a rule instance only when it lowers a fixed total order on
-terms, as the built-in commutativity already does by sorting operands. It would cover at most the 74 permutations, not
-the 27; untested.
+mechanism for permutative rules is ordered rewriting. `rule_step` already applies it per permutative rule, by `show()`
+order; one order for every instance was `PERM_ORDER=lpo`, deleted as negative on 2026-10-11 ("Cycle cut; lpo and a
+cycling penalty are negative results"). It was rechecked against the floor below, and is negative again.
+
+*Ordered rewriting against the floor (negative, 2026-10-17).* `patches/floor_lpo_probe.patch` ports the deleted path order
+(`lpo_greater`) to the current `Term`. `FLOOR_LPO=tied` checks every weight-tied mined rule instance against it (the old
+`PERM_ORDER=lpo`); `FLOOR_LPO=all` checks every mined rule instance. M at dose `all` (`rows/floor/lpo.sh`):
+
+| | none | tied | all |
+|---|---|---|---|
+| the 101 floor laws, in-sample libraries | 101 | 108 | 105 |
+| mined batches (1327 laws), each loop's library | 145 | 2925 | 3845 |
+
+- **With libraries mined under the order, more of the floor goes.** Mining in-sample on the floor laws under
+  `FLOOR_LPO=all`, starting from each loop's library, leaves 63 of 107 (`insample_lpo.tsv`), against 101 of 124 without it.
+  The order lets new rules join permutations that otherwise cycle.
+- **The whole loop pays far more than that.** Cold sweeps with every mine and serve under `FLOOR_LPO=all` (salts 1, 2):
+  mined-batch M 264 / 282 plain against 120 / 128 now, and 143 / 167 at dose `all` against 14 / 22 (`lpo_<0|all>_s<salt>.tsv`).
+  Libraries that fire freely and get cut cover far more laws than libraries held to one order. This agrees with
+  2026-10-11. Ordered rewriting is not the lever; joining the permutations without that cost would take completion
+  (adding the critical-pair rules that make the ordered system confluent), which was not tried.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
