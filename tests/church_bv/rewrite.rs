@@ -1170,17 +1170,50 @@ fn pattern_classes(p: &Term) -> Classes {
     }
 }
 
-/// The rules `rule_step` tries, in order: the built-in ones, then the run-time ones (`mined`); and for each root operator, and
-/// for leaves, the rules in that order that are not ablated and whose left side can match such a term, each with the classes
-/// its two operands can match. Keyed by the root operator alone, `rule_step_in` called `match_pat` on 16.7 rules a call, 31M a
-/// sweep (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
-/// `join`: the equation steps `join_eq` takes (`join_eqs`).
+/// Patterns indexed by what they can match: for each root operator, and for leaves, the patterns in order whose root can match
+/// such a term, each with the classes its two operands can match. Keyed by the root operator alone, `rule_step_in` called
+/// `match_pat` on 16.7 rules a call, 31M a sweep (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
+#[derive(Default)]
+struct PatIndex {
+    by_op: [Vec<(u32, [Classes; 2])>; OP_INFO.len()],
+    leaf: Vec<u32>,
+}
+
+impl PatIndex {
+    fn new<'a>(pats: impl Iterator<Item = (usize, &'a Term)>) -> PatIndex {
+        let mut ix = PatIndex::default();
+        for (i, p) in pats {
+            match *p.node() {
+                Node::Op(o, a, b) => ix.by_op[o].push((i as u32, [pattern_classes(&a), pattern_classes(&b)])),
+                Node::V(_) => {
+                    ix.by_op.iter_mut().for_each(|b| b.push((i as u32, [Classes::MAX; 2])));
+                    ix.leaf.push(i as u32);
+                }
+                Node::Zero | Node::Ones => ix.leaf.push(i as u32),
+            }
+        }
+        ix
+    }
+
+    /// The patterns that can match `t`, in order.
+    fn get(&self, t: &Term) -> impl Iterator<Item = usize> + '_ {
+        let (ids, [ca, cb], leaf): (&[(u32, [Classes; 2])], _, &[u32]) = match *t.node() {
+            Node::Op(o, a, b) => (&self.by_op[o], [class(&a), class(&b)], &[]),
+            _ => (&[], [0, 0], &self.leaf),
+        };
+        let fits = move |&&(_, [ma, mb]): &&(u32, [Classes; 2])| (ma >> ca) & (mb >> cb) & 1 == 1;
+        ids.iter().filter(fits).map(|&(i, _)| i).chain(leaf.iter().copied()).map(|i| i as usize)
+    }
+}
+
+/// The rules `rule_step` tries, in order: the built-in ones, then the run-time ones (`mined`), indexed by their left sides
+/// when not ablated; and the steps `join_eq` takes (`join_eqs`), indexed by the side each step rewrites.
 pub struct RuleTable {
     pub mined: Vec<(Term, Term)>,
     rules: Vec<TableRule>,
-    by_op: [Vec<(u32, [Classes; 2])>; OP_INFO.len()],
-    leaf: Vec<u32>,
+    index: PatIndex,
     join: Vec<JoinEq>,
+    join_index: PatIndex,
 }
 
 impl RuleTable {
@@ -1188,29 +1221,15 @@ impl RuleTable {
         static FIXED: crate::task::PerTask<Vec<TableRule>> = crate::task::PerTask::new();
         let fixed = FIXED.get(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
         let rules: Vec<TableRule> = fixed.iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
-        let (mut by_op, mut leaf): ([Vec<(u32, [Classes; 2])>; OP_INFO.len()], Vec<u32>) = Default::default();
-        for (i, r) in rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)) {
-            match *r.lhs.node() {
-                Node::Op(o, a, b) => by_op[o].push((i as u32, [pattern_classes(&a), pattern_classes(&b)])),
-                Node::V(_) => {
-                    by_op.iter_mut().for_each(|b| b.push((i as u32, [Classes::MAX; 2])));
-                    leaf.push(i as u32);
-                }
-                Node::Zero | Node::Ones => leaf.push(i as u32),
-            }
-        }
+        let index = PatIndex::new(rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)).map(|(i, r)| (i, &r.lhs)));
         let join = join_eqs(&rules);
-        RuleTable { mined, rules, by_op, leaf, join }
+        let join_index = PatIndex::new(join.iter().enumerate().map(|(i, e)| (i, &e.from)));
+        RuleTable { mined, rules, index, join, join_index }
     }
 
     /// The rules that can match `t`, in order.
     fn candidates(&self, t: &Term) -> impl Iterator<Item = (usize, &TableRule)> {
-        let (ids, [ca, cb], leaf): (&[(u32, [Classes; 2])], _, &[u32]) = match *t.node() {
-            Node::Op(o, a, b) => (&self.by_op[o], [class(&a), class(&b)], &[]),
-            _ => (&[], [0, 0], &self.leaf),
-        };
-        let fits = move |&&(_, [ma, mb]): &&(u32, [Classes; 2])| (ma >> ca) & (mb >> cb) & 1 == 1;
-        ids.iter().filter(fits).map(|&(i, _)| i).chain(leaf.iter().copied()).map(|i| (i as usize, &self.rules[i as usize]))
+        self.index.get(t).map(|i| (i, &self.rules[i]))
     }
 }
 
@@ -2403,9 +2422,9 @@ fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
     eqs
 }
 
-/// Every term one step of `eqs` from `t`, at any position, of at most `cap` nodes, with the plan of `t = term`.
-fn join_steps(t: &Term, eqs: &[JoinEq], cap: usize, out: &mut Vec<(Term, PlanRc)>) {
-    for e in eqs {
+/// Every term one join step (`RuleTable::join`) from `t`, at any position, of at most `cap` nodes, with the plan of `t = term`.
+fn join_steps(t: &Term, table: &RuleTable, cap: usize, out: &mut Vec<(Term, PlanRc)>) {
+    for e in table.join_index.get(t).map(|i| &table.join[i]) {
         let mut sub = [None; RULE_VARS];
         if !match_pat(&e.from, t, &mut sub) || PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) {
             continue;
@@ -2419,9 +2438,9 @@ fn join_steps(t: &Term, eqs: &[JoinEq], cap: usize, out: &mut Vec<(Term, PlanRc)
     }
     if let Node::Op(o, a, b) = *t.node() {
         let mut inner = vec![];
-        join_steps(&a, eqs, cap - (t.size() - a.size()), &mut inner);
+        join_steps(&a, table, cap - (t.size() - a.size()), &mut inner);
         out.extend(inner.drain(..).map(|(a2, p)| (Term::op(o, a2, b), Plan::cong(o, p, Plan::refl(&b)))));
-        join_steps(&b, eqs, cap - (t.size() - b.size()), &mut inner);
+        join_steps(&b, table, cap - (t.size() - b.size()), &mut inner);
         out.extend(inner.drain(..).map(|(b2, p)| (Term::op(o, a, b2), Plan::cong(o, Plan::refl(&a), p))));
     }
 }
@@ -2448,12 +2467,12 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     let mut seen: [Seen; 2] = [Seen::from([(*a, None)]), Seen::from([(*b, None)])];
     let mut front = [vec![*a], vec![*b]];
     RULE_TABLE.with(|table| {
-        let eqs = &table.borrow().join;
+        let table = &table.borrow();
         let mut out = vec![];
         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
             let s = (front[0].len() > front[1].len()) as usize;
             for t in std::mem::take(&mut front[s]) {
-                join_steps(&t, eqs, cap, &mut out);
+                join_steps(&t, table, cap, &mut out);
                 for (u, step) in out.drain(..) {
                     if seen[1 - s].contains_key(&u) {
                         // `this side = u` and `other side = u`
