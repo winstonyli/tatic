@@ -2210,7 +2210,9 @@ Only the `eq` lemma grows with n; the rest stays near flat.
 An invariant across an `if` needs a case split on the condition bit at Sort0, where `Q` lives. Shown in the next
 paragraph.
 
-**An invariant across an `if` (probe, reverted, 2026-10-17; `docs/runs/2026-10-12/patches/if_invariant_probe.patch`).**
+**An invariant across an `if` (probe 2026-10-17, `docs/runs/2026-10-12/patches/if_invariant_probe.patch`; its pieces
+are kept since: `good_lt`, the lowering and `lowering_and_lt_witnesses_check` in `tests/church_bv/encoding.rs`, `choose`
+and `if_inv` in `tests/church_bv/wasm.rs`, next-but-one paragraph).**
 Derivable, with no kernel change, and cheap. Three pieces, all checked:
 - **A Sort0 split from the Sort1 witness.** `GoodBool0 a = Pi P:(Bool0 -> Sort0). P true -> P false -> P a` is a
   Sort1 type, so `GoodBool a` eliminates at the motive `\b. GoodBool0 b`: `lower_bit : Pi a. GoodBool a -> GoodBool0 a`
@@ -2245,10 +2247,49 @@ Check times, machine at 32% CPU from other jobs, Defender real-time protection o
 
 Concrete: `choose (lt_u 0 1) x y` is `x`, `choose (lt_u 1 0) x y` is `y` and not `x`, by conversion at n=4 and 64.
 
-Not shown: the step through the If law's `Id` (`M (c_c ++ if c_t c_e) .. = choose m_c ..`) to the invariant over
-`M`. It is one transport along that law, but the instruction-list encoding it needs was reverted with its probe
-and was not rebuilt here. Also not shown: a loop whose body contains the `if`, which composes this with the loop law
-when `I` carries `GoodBv` of the compared words.
+**Wasm programs as kernel data, kept (2026-10-17; `tests/church_bv/wasm.rs`, test `wasm_programs_as_kernel_data`).**
+The instruction-list encoding, rebuilt a third time and now in the tree. A program is a Church-encoded instruction tree
+typed by its start and end stacks, `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> dup -> if -> loop
+-> store -> load -> F S`, each constructor taking the rest of the program, so `p1 ++ p2` puts `p2` at `p1`'s nil. Its
+meaning `M p N R k z` reads `F A` as `A -> Mem -> R` (`R : Sort0`, stacks nested `Sigma` pairs,
+`Mem = V -> (V -> R) -> R`, store as `upd a v mu = \b kk. eq a b R (kk v) (mu b kk)`); `if` is `choose` on its bit, and
+`loop` unrolls its body `N` times (`N` a Sort2 numeral) before answering the timeout `z`. Terms are built through a
+small named-binder builder (`Cx`, `At`, telescopes shared by statement and proof), not hand de Bruijn indices.
+Checked, with nothing postulated:
+- **append law** `M (p1 ++ p2) k = M p1 (M p2 k)` over abstract stacks and programs, by `refl`;
+- **If law** `Spec(c, m) -> M (c S ++ if t e) .. s mu = choose m (M t .. s mu) (M e .. s mu)`, `Spec(c, m)` saying
+  code `c` pushes `m` for every continuation, as `Spec` at the continuation `M (if t e)`;
+- **the invariant over `M`**: `Spec(c, m) -> GoodBv m -> Q (M t ..) -> Q (M e ..) -> Q (M (c S ++ if t e) ..)`, one
+  `J` transport of `if_inv` along the If law;
+- **loop law**: fixpoint induction, `GoodNat N -> (I -> Q z) -> (Good f -> Good (B f)) -> Good (N (G A) timeout B)`
+  with `Good f = Pi s mu. I s -> Q (f s mu)`, `GoodNat` the numeral's induction principle as a hypothesis;
+- **an `if` inside a loop**: `loop { dup; push 1; lt_u; if {} {push 1; sub; br 0} }` (count down to 0) satisfies `Q`
+  for every fuel with `GoodNat` and every start word with `GoodBv`, if the timeout and the exit continuation do. `I`
+  carries `GoodBv` of the counter; `good_lt` feeds `if_inv`, `good_sub` re-establishes `I`;
+- **concrete runs by `refl`**: the countdown from 3 exits at 0 with fuel 4 and times out with fuel 3; `push 3; push 5;
+  store; push 3; load` answers 5 with memory `upd 3 5 mu`.
+
+Controls, each with a well-formed statement and a rejected proof: `if_inv`'s three; the If law and the invariant with
+the arms swapped; the countdown with `add` for `sub`; the runs with the wrong answer (1, or exiting at fuel 3).
+
+Check times (ms), CPU 20% from other jobs, Defender real-time protection off:
+
+| n | `if_inv` | append | If law | invariant over `M` | loop law | countdown invariant | run, fuel 4 |
+|---|---|---|---|---|---|---|---|
+| 4 | 0.13 | 0.22 | 0.39 | 0.86 | 0.06 | 0.85 | 0.52 |
+| 16 | 0.05 | 0.19 | 0.39 | 0.78 | 0.07 | **44.9** | 1.13 |
+| 32 | 0.06 | 0.27 | 0.57 | 0.97 | 0.09 | **> 600 s** (stopped) | - |
+
+**The countdown invariant is exponential in n under today's `conv`.** The program's else arm reaches `conv` as an
+unreduced `push_i .. s mu` redex, the proof's as the reduced `f (sub x 1, s) mu`: equal, not the same node. Both sit
+under `lt_u`'s borrow chain applied to `choose`'s continuations, and that chain's case tree shares its tail
+(`or ab cx` uses `cx` in both branches), so a walk that doesn't remember pairs visits 2^n leaves, comparing the two arms
+at each. `conv` keeps no pair memo (one was A/B'd for speed and reverted, 2026-10-12 run log). Probe, reverted
+(`docs/runs/2026-10-12/patches/conv_pair_memo_probe.patch`, applies to f980cb2): a per-`def_eq` set of pairs already
+shown equal, checked after the `same` test. With it the countdown invariant takes 0.79 / 1.43 / 3.17 / 6.09 ms at
+n = 4 / 16 / 32 / 64, the other checks move within noise, and the controls are still rejected at n=64. Not decided: whether
+to keep it, which needs the 2026-10-12 CPU-time A/B rerun against it (its overhead on the proof corpus). Until then
+`wasm_scaling` stops at n=16.
 
 **Closed function values are reduced once (kernel change, kept, 2026-10-14).** The n=48 wall above was unsharing
 in `whnf`. A word's bit is a shared node such as `s = xor_ a b`, and each use applies it to its own continuations

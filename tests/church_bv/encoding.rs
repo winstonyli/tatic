@@ -1650,6 +1650,7 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
         &(0..n).map(ga).collect::<Vec<_>>(),
         &(0..n).map(gb).collect::<Vec<_>>(),
     );
+    let m = s.len(); // the result width
     let st_b = var((db - 1 - 5) as u32);
     let step_y = binders(n, apps(st_b, s.into_iter().chain(gs).collect()));
     let a_da = |i: usize| var((da - 1 - (6 + i)) as u32);
@@ -1662,10 +1663,100 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
     let motive_x = lam(bv_ty(n), app(var(2), app2(vec, var(0), var(5))));
     let body = app2(var(3), motive_x, step_x);
     let proof = lam(bv_ty(n), lam(bv_ty(n), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)),
-        lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n), body))))));
+        lam(arrow(bv_ty(m), sort(2)), lam(good_bv_step(m), body))))));
     let ty = pi(bv_ty(n), pi(bv_ty(n), arrow(app(good_bv(n), var(1)), arrow(app(good_bv(n), var(0)),
-        app(good_bv(n), app2(vec, var(1), var(0)))))));
+        app(good_bv(m), app2(vec, var(1), var(0)))))));
     (proof, ty)
+}
+
+/// `Pi a b. GoodBv a -> GoodBv b -> GoodBv_1 (lt_u a b)`: `good_sub`'s borrow chain, keeping only the last borrow.
+pub fn good_lt(n: usize) -> (Expr, Expr) {
+    let (g_and, _) = good2(&|a, b| and(a, b), &OP_INFO[1].truth);
+    let (g_or, _) = good2(&|a, b| or(a, b), &OP_INFO[2].truth);
+    let (g_xor, _) = good2(&|a, b| xor(a, b), &OP_INFO[3].truth);
+    good_vec(n, lt_u(n), &move |a, b, ga, gb| {
+        let (mut c, mut gc) = (f(), good_bit(false));
+        for i in 0..n {
+            let p = xor(a[i], t());
+            let gp = apps(g_xor, vec![a[i], t(), ga[i], good_bit(true)]);
+            let x2 = xor(p, b[i]);
+            let gx2 = apps(g_xor, vec![p, b[i], gp, gb[i]]);
+            let (ab, g_ab) = (and(p, b[i]), apps(g_and, vec![p, b[i], gp, gb[i]]));
+            let (cx, g_cx) = (and(c, x2), apps(g_and, vec![c, x2, gc, gx2]));
+            gc = apps(g_or, vec![ab, cx, g_ab, g_cx]);
+            c = or(ab, cx);
+        }
+        (vec![c], vec![gc])
+    })
+}
+
+// ---- Case splits at Sort0 (docs/tier-cycle.md, "An invariant across an `if`"). `GoodBool`'s motive is in Sort1 and
+// the kernel has no cumulativity, so a claim in Sort0 (an invariant over Sort0 answers) cannot split a bit through it;
+// `GoodBool0`, a Sort1 type, can, and `GoodBool` eliminates into it.
+
+/// GoodBool0 a := Pi P:(Bool0 -> Sort0). P true -> P false -> P a   (ctx [a])
+pub fn good_bool0() -> Expr {
+    lam(bool0(), pi(arrow(bool0(), sort(0)), pi(app(var(0), t()), pi(app(var(1), f()), app(var(2), var(3))))))
+}
+fn good0_bit(b: bool) -> Expr {
+    lam(arrow(bool0(), sort(0)), lam(app(var(0), t()), lam(app(var(1), f()), var(if b { 1 } else { 0 }))))
+}
+/// `Pi a. GoodBool a -> GoodBool0 a`: eliminate at the motive `\b. GoodBool0 b`.
+pub fn lower_bit() -> (Expr, Expr) {
+    let motive = lam(bool0(), app(good_bool0(), var(0)));
+    let p = lam(bool0(), lam(app(good_bool(), var(0)), app3(var(0), motive, good0_bit(true), good0_bit(false))));
+    (p, pi(bool0(), arrow(app(good_bool(), var(0)), app(good_bool0(), var(0)))))
+}
+/// `good_bv_step` over `GoodBool0` witnesses.
+fn good_bv0_step(n: usize) -> Expr {
+    let args: Vec<Expr> = (0..n).map(|i| var((2 * n - 1 - i) as u32)).collect();
+    let mut body = app(var(2 * n as u32), church_tuple(&args));
+    for _ in 0..n {
+        body = pi(app(good_bool0(), var(n as u32 - 1)), body);
+    }
+    for _ in 0..n {
+        body = pi(bool0(), body);
+    }
+    body
+}
+/// GoodBv0 x := Pi P:(Bv_n -> Sort0). (step over GoodBool0) -> P x, a Sort2 type, so a legal motive for `GoodBv`.
+pub fn good_bv0(n: usize) -> Expr {
+    lam(bv_ty(n), pi(arrow(bv_ty(n), sort(0)), pi(good_bv0_step(n), app(var(1), var(2)))))
+}
+/// `Pi x. GoodBv x -> GoodBv0 x`, shaped as `lift_good`, lowering each bit's witness.
+pub fn lower_bv(n: usize) -> (Expr, Expr) {
+    lower_bv_bits(n, true)
+}
+/// `lower_bv`; with `lower` false the bits' witnesses pass unlowered, which must not check.
+pub fn lower_bv_bits(n: usize, lower: bool) -> (Expr, Expr) {
+    let (lb, _) = lower_bit();
+    // ctx [x, g, a_0.., ga_0.., P, s]: a_i = var(2n+1-i), ga_i = var(n+1-i)
+    let a = |i: usize| var((2 * n + 1 - i) as u32);
+    let ga = |i: usize| var((n + 1 - i) as u32);
+    let args = (0..n).map(a).chain((0..n).map(|i| if lower { app2(lb, a(i), ga(i)) } else { ga(i) })).collect();
+    let mut step = lam(arrow(bv_ty(n), sort(0)), lam(good_bv0_step(n), apps(var(0), args)));
+    for _ in 0..n {
+        step = lam(app(good_bool(), var(n as u32 - 1)), step);
+    }
+    for _ in 0..n {
+        step = lam(bool0(), step);
+    }
+    let p = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), good_bv0(n), step)));
+    (p, pi(bv_ty(n), arrow(app(good_bv(n), var(0)), app(good_bv0(n), var(0)))))
+}
+
+#[test]
+pub fn lowering_and_lt_witnesses_check() {
+    let (p, ty) = lower_bit();
+    ck("lower_bit", &p, &ty);
+    for n in [1usize, 4] {
+        let (p, ty) = lower_bv(n);
+        ck(&format!("lower_bv n={n}"), &p, &ty);
+        let (p, ty) = lower_bv_bits(n, false);
+        assert!(holds(&p, &ty).is_err(), "unlowered bit witnesses must be rejected at n={n}");
+        let (p, ty) = good_lt(n);
+        ck(&format!("good_lt n={n}"), &p, &ty);
+    }
 }
 
 #[test]

@@ -16,7 +16,8 @@ and libraries (43 MB) were not kept.
   `PROMOTED_FILE`, which replaces `PROMOTED` with a rule file), `heldout_lookahead.patch` (runners-up chosen by held-out
   finished value), `option_a_probe.patch` (adds `tests/option_a_probe.rs`, option A's falsifier). Apply to the commit named
   below; the first two still apply cleanly to b7fde44, the third to 11e081d. `if_invariant_probe.patch` (adds
-  `tests/church_bv/if_probe.rs` and widens `good_vec`'s result) applies to c2ebfbf.
+  `tests/church_bv/if_probe.rs` and widens `good_vec`'s result) applies to c2ebfbf. `conv_pair_memo_probe.patch` (a
+  per-`def_eq` pair memo in `src/kernel.rs`'s `conv`) applies to f980cb2.
 - `promo/`: the re-promoted rule sets (round 1, and both rounds) under the `show()` and size-first orders.
 
 | Runs | Build | Script | Result (tier-cycle.md) |
@@ -207,3 +208,5 @@ and libraries (43 MB) were not kept.
 | (not kept: `sweep_xperf/`) | `sweep_xperf.ps1 $TEMP/bv_runs.exe` (release `church_bv` at 15ccec0), unelevated, through the Samply task's new xperf mode (`~/.claude/samply/profile.ps1 -Mode xperf`): sweep exit 0, wall 4.5 s, jobcpu 7.95 s, 16 s in all with the merge; trace 5.5 s, 0 lost events or buffers. A check that the script works, not a measurement: CPU 49% from other sessions, Defender RTP False | `sweep_xperf.ps1`, `tools/runs` (ffda1cc) | "How often the large-page stall hits a sweep" |
 | (none kept; `patches/option_a_probe.patch`) | `cargo test --test option_a_probe -- --nocapture` at 11e081d: the 24 distinct add/sub-only rules among the 203 rule lines of the 11 mined and hand rule files (`scripts/data/*_rules.txt`, `scripts/rules/`, `promo/`, `scripts/cmp3d_own_rules.txt`) against the 19 builders of `tests/rule_match_census.rs` (286 nodes, 32 add/sub, 4 add/sub over add/sub): 2 hits, both on `add(sub(v2, v1), v0)` in `over_application_if_between_closures`, 0 instructions saved | 11e081d | "Compiling hot transformations ..." (option A's falsifier) |
 | (none kept; `patches/if_invariant_probe.patch`) | `cargo test --release --test church_bv if_probe::if_invariant_probe -- --exact --ignored --nocapture` at c2ebfbf plus the patch (separate target dir; another session's cargo was running), BelowNormal, affinity FFF: `if_inv` 0.13 ms; composed `lt_u` If invariant 0.11-1.14 ms for n = 1-64; all five controls rejected; CPU 32%, RTP False | c2ebfbf | "An invariant across an `if`" |
+| `tests/church_bv/wasm.rs` (kept) | `cargo test --release --test church_bv -- --ignored wasm_scaling --nocapture` at f980cb2 plus the uncommitted module, BelowNormal, affinity FFF, then at n = 4, 16, 32, 64: all checks to n=16 (countdown invariant 0.85 / 44.9 ms at n = 4 / 16); n=32's countdown invariant stopped after > 600 s; CPU 20%, RTP False | f980cb2 + module | "Wasm programs as kernel data, kept" |
+| (none kept; `patches/conv_pair_memo_probe.patch`) | the same run with the patch: countdown invariant 0.79 / 1.43 / 3.17 / 6.09 ms at n = 4 / 16 / 32 / 64, every control rejected at n=64, 0.20 s total | f980cb2 + module + patch | "The countdown invariant is exponential" |

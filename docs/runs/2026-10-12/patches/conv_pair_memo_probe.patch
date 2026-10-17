@@ -1,0 +1,34 @@
+--- a/src/kernel.rs
++++ b/src/kernel.rs
+@@ -1729,8 +1729,13 @@
+     let _g = site(3);
+     #[cfg(feature = "record-defeq")]
+     SEEN.with(|m| m.borrow_mut().clear());
+-    conv(s, a, b)
++    CONV_MEMO.with(|m| m.borrow_mut().clear());
++    conv(s, a, b)
+ }
++
++thread_local! {
++    static CONV_MEMO: std::cell::RefCell<std::collections::HashSet<(Key, Key)>> = std::cell::RefCell::new(Default::default());
++}
+ 
+ /// `def_eq`'s comparison. Syntactically equal sides are equal without
+ /// reducing, since `nf` is a function; most calls from `infer` are
+@@ -1744,7 +1749,15 @@
+     if s.same(a, b) {
+         return true;
+     }
+-    conv_whnf(s, &whnf_in(s, a), &whnf_in(s, b))
++    let k = (s.key(a), s.key(b));
++    if CONV_MEMO.with(|m| m.borrow().contains(&k)) {
++        return true;
++    }
++    let r = conv_whnf(s, &whnf_in(s, a), &whnf_in(s, b));
++    if r {
++        CONV_MEMO.with(|m| m.borrow_mut().insert(k));
++    }
++    r
+ }
+ 
+ /// Compares two weak head normal forms: same constructor, then `conv` on
