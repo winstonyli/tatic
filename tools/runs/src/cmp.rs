@@ -137,13 +137,9 @@ pub fn same(lines: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("runs-test-{}-cmp-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(name: &str) -> crate::Scratch {
+        crate::Scratch::new(&format!("cmp-{name}"))
     }
 
     fn write(d: &Path, f: &str, s: &str) {

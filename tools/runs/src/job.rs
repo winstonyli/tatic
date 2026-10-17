@@ -368,11 +368,8 @@ mod tests {
         (std::env::current_exe().unwrap(), ["job::tests::helper", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec())
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("runs-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(name: &str) -> crate::Scratch {
+        crate::Scratch::new(&format!("job-{name}"))
     }
 
     fn helper_spec(mode: &str, d: &Path) -> RunSpec {
@@ -428,7 +425,7 @@ mod tests {
         std::fs::copy(r"C:\Windows\System32\where.exe", rel.join("where.exe")).unwrap();
         let d = scratch("relative");
         let mut s = RunSpec::new(rel.join("where.exe"), vec!["where.exe".into()], Output::Split(d.join("out.txt"), d.join("err.txt")));
-        s.cwd = Some(d.clone());
+        s.cwd = Some(d.to_path_buf());
         let r = run(&s);
         let _ = std::fs::remove_dir_all(rel.parent().unwrap());
         assert_eq!(r.unwrap().exit, 0);

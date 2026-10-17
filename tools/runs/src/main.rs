@@ -25,7 +25,7 @@ const USAGE: &str = "usage:
   runs gate <tag> <old exe> <new exe>   four sweeps (new 1, old 1, old 2, new 2), then cmp; <run dir>/<tag>_gate.txt
   runs time <dir> --rounds N [--max-hours 3] [--others pat,...] [--foreign-max 20] [--quiet-secs 60] [--keep-dirty]
             [--max-rounds 4N] [--grep NAME=REGEX]... [--affinity M] [--priority P] -- <arm> [-- <arm>]...
-            an arm is <name> [VAR=val]... <exe> <args>...; {r}, {arm}, {dir} are substituted
+            an arm is <name> [VAR=val]... <exe> <args>... (name: letters, digits, _ . -); {r}, {arm}, {dir} are substituted
   runs time <dir> --sweep <old exe> <new exe>             hc_rounds.ps1's sweeps (6 clean rounds)
   runs time <dir> --pcs <exe> --arm-env NAME:VAR=val,... --arm-env ...   proof_cost_split arms (or --pcs <old> <new>)";
 
@@ -291,6 +291,47 @@ fn long_path(p: &Path) -> PathBuf {
     if n == 0 || n >= buf.len() { p.to_path_buf() } else { PathBuf::from(OsString::from_wide(&buf[..n])) }
 }
 
+/// A test's scratch directory, `%TEMP%\runs-test-<pid>\<name>`, created empty. It is removed when the test passes and
+/// kept when it fails, to look at.
+#[cfg(test)]
+pub struct Scratch(PathBuf);
+
+#[cfg(test)]
+impl Scratch {
+    pub fn new(name: &str) -> Scratch {
+        let d = std::env::temp_dir().join(format!("runs-test-{}", std::process::id())).join(name);
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        Scratch(d)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl AsRef<Path> for Scratch {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = std::fs::remove_dir_all(&self.0);
+            // the pid folder goes with the last test's directory (it fails while others remain)
+            let _ = self.0.parent().map(std::fs::remove_dir);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +360,16 @@ mod tests {
         assert_eq!(env, [("A".to_string(), "1".to_string()), ("_B".to_string(), String::new())]);
         assert_eq!(rest, ["x.exe", "C=2"]);
         assert!(!is_env("1A=x") && !is_env("A-B=x") && !is_env("plain"));
+    }
+
+    #[test]
+    fn scratch_dirs_go_when_the_test_passes() {
+        let s = Scratch::new("scratch-self");
+        let p = s.to_path_buf();
+        std::fs::write(p.join("f"), "x").unwrap();
+        assert!(p.starts_with(std::env::temp_dir().join(format!("runs-test-{}", std::process::id()))), "{}", p.display());
+        drop(s);
+        assert!(!p.exists());
     }
 
     #[test]

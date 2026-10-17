@@ -61,13 +61,9 @@ pub fn gate(dir: &Path, tag: &str, old: &Path, new: &Path) -> Result<bool, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("runs-test-{}-gate-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(name: &str) -> crate::Scratch {
+        crate::Scratch::new(&format!("gate-{name}"))
     }
 
     /// The test exe stands in for a sweep: its harness finds no `driver::sweep` test, exits 0, and prints the same

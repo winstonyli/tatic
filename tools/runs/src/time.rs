@@ -233,16 +233,30 @@ struct Progress {
     clean_rounds: Vec<usize>,
 }
 
+/// Arm names become file names (`<arm>.<round>.out.txt`), so they are plain name parts, and distinct even ignoring case
+/// (Windows file names ignore it).
+fn check_arm_names(arms: &[Arm]) -> Result<(), String> {
+    for (i, a) in arms.iter().enumerate() {
+        if a.name.is_empty() || !a.name.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c)) {
+            return Err(format!("arm name {:?}: use letters, digits, '_', '.' and '-' (it names the arm's files)", a.name));
+        }
+        if arms[..i].iter().any(|b| b.name.eq_ignore_ascii_case(&a.name)) {
+            return Err(format!("arm {} appears twice; arms need distinct names, case aside", a.name));
+        }
+    }
+    Ok(())
+}
+
 /// Runs the timing; Ok(true) when a run or a write of its records failed (`runs time` then exits 1). Err only when it
 /// refuses to start (nothing written); once the directory exists every ending, failures included, writes `done.txt`
 /// (`done <clean rounds>/<rounds> <why it stopped>`), so a watcher polling for it always sees one.
 pub fn time(t: &Timing) -> Result<bool, String> {
     let dir = &t.dir;
-    for (i, a) in t.arms.iter().enumerate() {
-        if t.arms[..i].iter().any(|b| b.name == a.name) {
-            return Err(format!("arm {} appears twice; arms need distinct names", a.name));
-        }
-    }
+    check_arm_names(&t.arms)?;
+    let deadline = Duration::try_from_secs_f64(t.max_hours * 3600.0)
+        .ok()
+        .and_then(|d| Instant::now().checked_add(d))
+        .ok_or_else(|| format!("--max-hours {}: give a number of hours, 0 or more", t.max_hours))?;
     let tsv = dir.join("runs.tsv");
     if tsv.exists() {
         return Err(format!("{} already holds runs.tsv; use a fresh directory", dir.display()));
@@ -252,7 +266,7 @@ pub fn time(t: &Timing) -> Result<bool, String> {
     let _ = std::fs::remove_file(&stop);
     let _ = std::fs::remove_file(dir.join("done.txt"));
     let mut p = Progress::default();
-    let (mut why, mut failed) = rounds(t, &tsv, &stop, &mut p).unwrap_or_else(|e| (e, true));
+    let (mut why, mut failed) = rounds(t, &tsv, &stop, deadline, &mut p).unwrap_or_else(|e| (e, true));
     if let Err(e) = finish(t, &p) {
         why = format!("{why}; {e}");
         failed = true;
@@ -264,11 +278,10 @@ pub fn time(t: &Timing) -> Result<bool, String> {
 }
 
 /// The rounds: Ok holds why they stopped and whether a run failed.
-fn rounds(t: &Timing, tsv: &Path, stop: &Path, p: &mut Progress) -> Result<(String, bool), String> {
+fn rounds(t: &Timing, tsv: &Path, stop: &Path, deadline: Instant, p: &mut Progress) -> Result<(String, bool), String> {
     let dir = &t.dir;
     append(tsv, &tsv_header(&t.greps))?;
     log_state(dir, "start")?;
-    let deadline = Instant::now() + Duration::from_secs_f64(t.max_hours * 3600.0);
     let mut rtp_seen: Option<Option<bool>> = None;
     Ok('timing: loop {
         let counted = if t.keep_dirty { p.round } else { p.clean_rounds.len() };
@@ -345,10 +358,8 @@ fn finish(t: &Timing, p: &Progress) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("runs-test-{}-time-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn scratch(name: &str) -> crate::Scratch {
+        crate::Scratch::new(&format!("time-{name}"))
     }
 
     fn done_line(d: &Path) -> String {
@@ -430,7 +441,7 @@ mod tests {
     #[test]
     fn dirty_rounds_end_at_max_rounds_and_a_used_dir_is_refused() {
         let d = scratch("maxrounds");
-        let t = timing(d.clone(), vec![where_arm("a", "where.exe"), where_arm("b", "cmd.exe")]);
+        let t = timing(d.to_path_buf(), vec![where_arm("a", "where.exe"), where_arm("b", "cmd.exe")]);
         let failed = time(&t).unwrap();
         let line = done_line(&d);
         assert_eq!((line.as_str(), failed), ("done 0/2 max-rounds 2", false));
@@ -450,7 +461,7 @@ mod tests {
     #[test]
     fn a_failed_run_stops_the_timing() {
         let d = scratch("failed");
-        let mut t = timing(d.clone(), vec![where_arm("a", "where.exe"), where_arm("b", "no_such_file_zz.exe")]);
+        let mut t = timing(d.to_path_buf(), vec![where_arm("a", "where.exe"), where_arm("b", "no_such_file_zz.exe")]);
         t.foreign_max = 100.0;
         let failed = time(&t).unwrap();
         let line = done_line(&d);
@@ -464,7 +475,7 @@ mod tests {
         for (blocker, prefix) in [("summary.txt", "done 0/2 max-rounds 2; "), ("state.txt", "done 0/0 ")] {
             let d = scratch(&format!("io-{blocker}"));
             std::fs::create_dir_all(d.join(blocker)).unwrap();
-            let failed = time(&timing(d.clone(), vec![where_arm("a", "where.exe")])).unwrap();
+            let failed = time(&timing(d.to_path_buf(), vec![where_arm("a", "where.exe")])).unwrap();
             let line = done_line(&d);
             assert!(failed && line.starts_with(prefix) && line.contains(blocker), "{line}");
         }
@@ -475,7 +486,7 @@ mod tests {
         let d = scratch("noexe");
         let mut a = where_arm("a", "x");
         a.exe = d.join("no_such.exe").display().to_string();
-        let failed = time(&timing(d.clone(), vec![a])).unwrap();
+        let failed = time(&timing(d.to_path_buf(), vec![a])).unwrap();
         let line = done_line(&d);
         assert!(line.starts_with("done 0/1 a.1: starting "), "{line}");
         assert!(failed);
@@ -485,7 +496,7 @@ mod tests {
     #[test]
     fn keep_dirty_counts_every_round() {
         let d = scratch("keepdirty");
-        let mut t = timing(d.clone(), vec![where_arm("a", "where.exe")]);
+        let mut t = timing(d.to_path_buf(), vec![where_arm("a", "where.exe")]);
         t.keep_dirty = true;
         t.rounds = 3;
         let failed = time(&t).unwrap();
@@ -498,8 +509,37 @@ mod tests {
     #[test]
     fn duplicate_arm_names_are_refused() {
         let d = scratch("dup");
-        let t = timing(d.clone(), vec![where_arm("a", "where.exe"), where_arm("a", "cmd.exe")]);
+        let t = timing(d.to_path_buf(), vec![where_arm("a", "where.exe"), where_arm("a", "cmd.exe")]);
         assert!(time(&t).unwrap_err().contains("arm a appears twice"));
+        // file names are case-insensitive on Windows: A and a would write the same a.1.out.txt
+        let t = timing(d.to_path_buf(), vec![where_arm("A", "where.exe"), where_arm("a", "cmd.exe")]);
+        assert!(time(&t).unwrap_err().contains("arm a appears twice"));
+    }
+
+    #[test]
+    fn arm_names_must_be_plain_file_name_parts() {
+        let d = scratch("names");
+        for name in ["x/y", r"x\y", "x:y", "MACHINE_STATE=0", "", "a b"] {
+            let t = timing(d.join("t"), vec![where_arm(name, "where.exe")]);
+            let e = time(&t).unwrap_err();
+            assert!(e.contains("letters, digits"), "{name:?}: {e}");
+            assert!(!d.join("t").exists(), "{name:?} wrote before refusing");
+        }
+        for name in ["old", "new-2", "a.b_C"] {
+            assert!(check_arm_names(&[where_arm(name, "where.exe")]).is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_bad_max_hours_is_refused_before_anything_is_written() {
+        let d = scratch("maxhours");
+        for h in [f64::NAN, -1.0, f64::INFINITY, 1e300] {
+            let mut t = timing(d.join("t"), vec![where_arm("a", "where.exe")]);
+            t.max_hours = h;
+            let e = time(&t).unwrap_err();
+            assert!(e.contains("--max-hours"), "{h}: {e}");
+            assert!(!d.join("t").exists(), "{h} wrote before refusing");
+        }
     }
 
     #[test]
@@ -507,7 +547,7 @@ mod tests {
         let d = scratch("stop");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("stop"), "").unwrap();
-        let mut t = timing(d.clone(), vec![]);
+        let mut t = timing(d.to_path_buf(), vec![]);
         t.quiet_secs = 60;
         let far = Instant::now() + Duration::from_secs(3600);
         assert_eq!(wait_quiet(&t, far, &d.join("stop")), Err("stop".to_string()));
