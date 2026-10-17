@@ -225,8 +225,18 @@ fn log_state(dir: &Path, when: &str) -> Result<(), String> {
     append(&dir.join("state.txt"), &line)
 }
 
-/// Runs the timing; Ok holds the line also written to `<dir>/done.txt`: `done <clean rounds>/<rounds> <why it stopped>`.
-pub fn time(t: &Timing) -> Result<String, String> {
+/// What the rounds produced so far, kept when they end on an error.
+#[derive(Default)]
+struct Progress {
+    rows: Vec<Row>,
+    round: usize,
+    clean_rounds: Vec<usize>,
+}
+
+/// Runs the timing; Ok(true) when a run or a write of its records failed (`runs time` then exits 1). Err only when it
+/// refuses to start (nothing written); once the directory exists every ending, failures included, writes `done.txt`
+/// (`done <clean rounds>/<rounds> <why it stopped>`), so a watcher polling for it always sees one.
+pub fn time(t: &Timing) -> Result<bool, String> {
     let dir = &t.dir;
     for (i, a) in t.arms.iter().enumerate() {
         if t.arms[..i].iter().any(|b| b.name == a.name) {
@@ -241,24 +251,38 @@ pub fn time(t: &Timing) -> Result<String, String> {
     let stop = dir.join("stop");
     let _ = std::fs::remove_file(&stop);
     let _ = std::fs::remove_file(dir.join("done.txt"));
-    append(&tsv, &tsv_header(&t.greps))?;
+    let mut p = Progress::default();
+    let (mut why, mut failed) = rounds(t, &tsv, &stop, &mut p).unwrap_or_else(|e| (e, true));
+    if let Err(e) = finish(t, &p) {
+        why = format!("{why}; {e}");
+        failed = true;
+    }
+    let line = format!("done {}/{} {why}", p.clean_rounds.len(), p.round);
+    std::fs::write(dir.join("done.txt"), format!("{line}\n")).map_err(|e| format!("{}: {e}", dir.display()))?;
+    println!("{line}");
+    Ok(failed)
+}
+
+/// The rounds: Ok holds why they stopped and whether a run failed.
+fn rounds(t: &Timing, tsv: &Path, stop: &Path, p: &mut Progress) -> Result<(String, bool), String> {
+    let dir = &t.dir;
+    append(tsv, &tsv_header(&t.greps))?;
     log_state(dir, "start")?;
     let deadline = Instant::now() + Duration::from_secs_f64(t.max_hours * 3600.0);
-    let mut rows: Vec<Row> = Vec::new();
-    let (mut round, mut clean_rounds) = (0, Vec::new());
     let mut rtp_seen: Option<Option<bool>> = None;
-    let why = 'timing: loop {
-        let counted = if t.keep_dirty { round } else { clean_rounds.len() };
+    Ok('timing: loop {
+        let counted = if t.keep_dirty { p.round } else { p.clean_rounds.len() };
         if counted >= t.rounds {
-            break if t.keep_dirty { "all rounds".to_string() } else { "clean rounds".to_string() };
+            break (if t.keep_dirty { "all rounds" } else { "clean rounds" }.to_string(), false);
         }
-        if !t.keep_dirty && round >= t.max_rounds {
-            break format!("max-rounds {}", t.max_rounds);
+        if !t.keep_dirty && p.round >= t.max_rounds {
+            break (format!("max-rounds {}", t.max_rounds), false);
         }
-        if let Err(why) = wait_quiet(t, deadline, &stop) {
-            break why;
+        if let Err(why) = wait_quiet(t, deadline, stop) {
+            break (why, false);
         }
-        round += 1;
+        p.round += 1;
+        let round = p.round;
         let rtp = state::rtp();
         if rtp_seen.is_some_and(|seen| seen != rtp) {
             println!("rtp changed to {}", state::rtp_text(rtp));
@@ -278,41 +302,43 @@ pub fn time(t: &Timing) -> Result<String, String> {
             let start = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
             let r = match job::run(&spec) {
                 Ok(r) => r,
-                Err(e) => break 'timing format!("{label}: {e}"),
+                Err(e) => break 'timing (format!("{label}: {e}"), true),
             };
             let text = String::from_utf8_lossy(&std::fs::read(&out).unwrap_or_default()).into_owned();
             let greps = t.greps.iter().map(|g| grep_last(&g.re, &text)).collect();
             let clean = job::clean(r.exit, r.other_pct, r.others, t.foreign_max);
             println!("{}", crate::result_line(&label, &r, rtp));
             let row = Row { arm: a.name.clone(), round, pos: pos + 1, start, r, rtp, clean, greps };
-            append(&tsv, &tsv_row(&row))?;
+            append(tsv, &tsv_row(&row))?;
             all_clean &= clean;
             let exit = row.r.exit;
-            rows.push(row);
+            p.rows.push(row);
             if exit != 0 {
                 // a failing run would only fail again
-                break 'timing format!("{label} failed (exit {exit}); see {}", out.display());
+                break 'timing (format!("{label} failed (exit {exit}); see {}", out.display()), true);
             }
         }
         if all_clean {
-            clean_rounds.push(round);
+            p.clean_rounds.push(round);
         }
-        println!("round {round} done, clean rounds {}", clean_rounds.len());
-    };
-    log_state(dir, "end")?;
+        println!("round {round} done, clean rounds {}", p.clean_rounds.len());
+    })
+}
+
+/// After the rounds: the end state and `summary.txt`.
+fn finish(t: &Timing, p: &Progress) -> Result<(), String> {
+    log_state(&t.dir, "end")?;
     let names: Vec<String> = t.arms.iter().map(|a| a.name.clone()).collect();
     let gnames: Vec<String> = t.greps.iter().map(|g| g.name.clone()).collect();
-    let mut s = format!("clean {}", summary(&rows, &names, &gnames, &clean_rounds));
+    let mut s = format!("clean {}", summary(&p.rows, &names, &gnames, &p.clean_rounds));
     if t.keep_dirty {
-        let all: Vec<usize> = (1..=round).collect();
-        s += &format!("all {}", summary(&rows, &names, &gnames, &all));
+        let all: Vec<usize> = (1..=p.round).collect();
+        s += &format!("all {}", summary(&p.rows, &names, &gnames, &all));
     }
-    std::fs::write(dir.join("summary.txt"), &s).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = t.dir.join("summary.txt");
+    std::fs::write(&path, &s).map_err(|e| format!("{}: {e}", path.display()))?;
     print!("{s}");
-    let done = format!("done {}/{round} {why}", clean_rounds.len());
-    std::fs::write(dir.join("done.txt"), format!("{done}\n")).map_err(|e| format!("{}: {e}", dir.display()))?;
-    println!("{done}");
-    Ok(done)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -323,6 +349,10 @@ mod tests {
         let d = std::env::temp_dir().join(format!("runs-test-{}-time-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    fn done_line(d: &Path) -> String {
+        std::fs::read_to_string(d.join("done.txt")).unwrap().trim_end().to_string()
     }
 
     fn where_arm(name: &str, arg: &str) -> Arm {
@@ -401,7 +431,9 @@ mod tests {
     fn dirty_rounds_end_at_max_rounds_and_a_used_dir_is_refused() {
         let d = scratch("maxrounds");
         let t = timing(d.clone(), vec![where_arm("a", "where.exe"), where_arm("b", "cmd.exe")]);
-        assert_eq!(time(&t).unwrap(), "done 0/2 max-rounds 2");
+        let failed = time(&t).unwrap();
+        let line = done_line(&d);
+        assert_eq!((line.as_str(), failed), ("done 0/2 max-rounds 2", false));
         let tsv = std::fs::read_to_string(d.join("runs.tsv")).unwrap();
         let rows: Vec<&str> = tsv.lines().collect();
         assert_eq!(rows.len(), 5, "{tsv}");
@@ -420,8 +452,22 @@ mod tests {
         let d = scratch("failed");
         let mut t = timing(d.clone(), vec![where_arm("a", "where.exe"), where_arm("b", "no_such_file_zz.exe")]);
         t.foreign_max = 100.0;
-        let done = time(&t).unwrap();
-        assert!(done.starts_with("done 0/1 b.1 failed (exit 1)"), "{done}");
+        let failed = time(&t).unwrap();
+        let line = done_line(&d);
+        assert!(line.starts_with("done 0/1 b.1 failed (exit 1)"), "{line}");
+        assert!(failed);
+    }
+
+    #[test]
+    fn an_io_error_mid_timing_still_writes_done_and_fails() {
+        // summary.txt and state.txt as directories make their writes fail, after and before the rounds
+        for (blocker, prefix) in [("summary.txt", "done 0/2 max-rounds 2; "), ("state.txt", "done 0/0 ")] {
+            let d = scratch(&format!("io-{blocker}"));
+            std::fs::create_dir_all(d.join(blocker)).unwrap();
+            let failed = time(&timing(d.clone(), vec![where_arm("a", "where.exe")])).unwrap();
+            let line = done_line(&d);
+            assert!(failed && line.starts_with(prefix) && line.contains(blocker), "{line}");
+        }
     }
 
     #[test]
@@ -429,8 +475,10 @@ mod tests {
         let d = scratch("noexe");
         let mut a = where_arm("a", "x");
         a.exe = d.join("no_such.exe").display().to_string();
-        let done = time(&timing(d.clone(), vec![a])).unwrap();
-        assert!(done.starts_with("done 0/1 a.1: starting "), "{done}");
+        let failed = time(&timing(d.clone(), vec![a])).unwrap();
+        let line = done_line(&d);
+        assert!(line.starts_with("done 0/1 a.1: starting "), "{line}");
+        assert!(failed);
         assert!(d.join("done.txt").is_file());
     }
 
@@ -440,7 +488,9 @@ mod tests {
         let mut t = timing(d.clone(), vec![where_arm("a", "where.exe")]);
         t.keep_dirty = true;
         t.rounds = 3;
-        assert_eq!(time(&t).unwrap(), "done 0/3 all rounds");
+        let failed = time(&t).unwrap();
+        let line = done_line(&d);
+        assert_eq!((line.as_str(), failed), ("done 0/3 all rounds", false));
         let s = std::fs::read_to_string(d.join("summary.txt")).unwrap();
         assert!(s.contains("clean 0 rounds") && s.contains("all 3 rounds"), "{s}");
     }

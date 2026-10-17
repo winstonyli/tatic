@@ -111,7 +111,7 @@ fn append(path: &Path, line: &str) -> Result<(), String> {
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     writeln!(f, "{line}").map_err(|e| format!("{}: {e}", path.display()))
 }
-/// `runs time`: exits 0 unless a run failed.
+/// `runs time`: exits 0 unless a run, or a write of its records, failed (`done.txt` says which).
 fn cmd_time(words: &[String]) -> Result<i32, String> {
     let p = parse(words);
     p.check(&["rounds", "max-hours", "others", "foreign-max", "quiet-secs", "keep-dirty", "max-rounds", "grep", "affinity", "priority", "sweep", "pcs", "arm-env"])?;
@@ -154,8 +154,7 @@ fn cmd_time(words: &[String]) -> Result<i32, String> {
         priority: probe.priority,
         arms,
     };
-    let done = time::time(&t)?;
-    Ok(if done.contains(" failed") || done.contains(": starting ") { 1 } else { 0 })
+    Ok(i32::from(time::time(&t)?))
 }
 /// `--affinity` and `--priority`, where given.
 fn apply_limits(spec: &mut job::RunSpec, p: &Parsed) -> Result<(), String> {
