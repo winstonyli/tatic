@@ -1,6 +1,6 @@
 #!/bin/sh
 # per floor law: trace each side alone; "same" if one side's normal form is among the terms the other side's rewriting visited
-cd "/c/Users/Winston Li/AppData/Local/Temp/oracle_probe"
+cd "/c/Users/Winston Li/AppData/Local/claude-runs/tatic/2026-10-17-oracle-probe"
 for w in $(cut -f2 floor/diag.tsv | sort -u); do
   awk -F'\t' -v w=$w '$2==w {split($4,p," = "); print p[1] " = " p[1]; print p[2] " = " p[2]}' floor/diag.tsv > $w/sides.txt
   NF_TRACE=1 NF_RULES="$PWD/$w/rules.txt" NF_LAWS="$PWD/$w/sides.txt" ./dose.exe search::normal_forms --exact --ignored --nocapture --test-threads 1 < /dev/null 2>&1 \

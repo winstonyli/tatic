@@ -1,6 +1,6 @@
 #!/bin/sh
 # $1 = loop dir (d_all_s<salt>/cold_<fam>_<p>_none); in-sample: mine on that loop's floor laws, then serve them again
-cd "/c/Users/Winston Li/AppData/Local/Temp/oracle_probe"
+cd "/c/Users/Winston Li/AppData/Local/claude-runs/tatic/2026-10-17-oracle-probe"
 src=$1; salt=$(echo $src | sed 's/d_all_s\([0-9]*\).*/\1/'); fam=$(echo $src | sed 's/.*cold_\([a-z0-9]*\)_.*/\1/'); p=$(echo $src | sed 's/.*_\([0-9]\)_none/\1/')
 case $fam in cmp3d) st=15;; add3) st=7;; sbo3) st=11;; esac
 w="floor/w_s${salt}_${fam}_$p"; mkdir -p $w

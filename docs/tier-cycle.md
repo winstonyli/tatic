@@ -78,7 +78,7 @@ laws beyond 5 nodes and (c) new definitions:
   shapes ("What kind of new law pays most"). The twins' extra gain (405 to 171) is mining on the test laws themselves:
   legitimate only when the stream is the proposer's own pool ("The twins gap").
 - **Parked:** (a) laws beyond 5 nodes, since the floor turned out not to be about size; (c) until conservative
-  definitions can be checked.
+  definitions can be checked. All parked, deferred and unbuilt work, with triggers, is listed in `PARKED.md`.
 
 ## Risks
 - Degeneration: the proposer repeats what it knows. Needs a novelty and difficulty filter from the kernel's signals.
