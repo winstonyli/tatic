@@ -19,3 +19,35 @@ k5 s9 exit 0 9s
 k0 s10 exit 0 6s
 k5 s10 exit 0 9s
 ALL
+matched s1 exit 0 9s
+wide s1 exit 0 9s
+matched s2 exit 0 10s
+wide s2 exit 0 10s
+matched s3 exit 0 9s
+wide s3 exit 0 10s
+wide s4 exit 0 9s
+matched s4 exit 0 9s
+matched s5 exit 0 9s
+wide s5 exit 0 10s
+matched s6 exit 0 10s
+wide s6 exit 0 10s
+matched s7 exit 0 9s
+wide s7 exit 0 9s
+matched s8 exit 0 10s
+wide s8 exit 0 10s
+matched s9 exit 0 8s
+wide s9 exit 0 8s
+matched s10 exit 0 9s
+wide s10 exit 0 9s
+ALL
+x s2 exit 0 7s
+x s1 exit 0 7s
+x s4 exit 0 7s
+x s3 exit 0 7s
+x s5 exit 0 6s
+x s6 exit 0 7s
+x s8 exit 0 6s
+x s7 exit 0 7s
+x s9 exit 0 6s
+x s10 exit 0 6s
+ALL

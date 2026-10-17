@@ -57,7 +57,11 @@ laws beyond 5 nodes and (c) new definitions:
   mined batches' M by a quarter (248 to 187 over two salts) and saturates at k = 5 ("Oracle headroom for a ranker").
   It uses the test batch, so it measures what reordering could gain, not what a ranker would. The headroom sits in
   about 1 round in 10, and over 10 salts (-21%) nothing the miner sees predicts it: not in-sample lookahead (worse than
-  nothing), gain, sizes or variables ("Can the miner see the headroom?"). The next test: value on a proxy batch.
+  nothing), gain, sizes or variables ("Can the miner see the headroom?").
+- **More laws beat ranking candidates.** Valuing on 300 unserved laws of the same stream recovers 80% of the oracle's gain.
+  Simply mining on those laws as well cuts mined-batch M by 59%, almost three times the oracle's gain (1169 to 479;
+  "More laws beat any ranking"). So the proposer's ranking should be over which laws to mine on, not which candidates
+  to keep.
 - **Parked:** (a) until a 6-7 node hash index shows true laws the mined rules can't derive; (c) until conservative
   definitions can be checked.
 
@@ -4059,11 +4063,40 @@ Nothing the miner sees predicts those rounds (scripts `an1.awk`-`an4.awk` beside
   stragglers looked useful over all salts (net M -40), but it is -44 on salts 1-5 and +4 on salts 6-10.
 
 What the oracle knows that the miner doesn't is the next batch. So a ranker's input has to say something about laws not yet
-seen, not just the mined batch. The cheapest test of that: value the alternatives on a proxy batch from the same family
-stream but outside every served window. If that recovers part of the 21%, ranking needs a generalization estimate, not a
-learned model. If it doesn't, the next batch is too different from any proxy for ranking to help.
-Same runs as above (two at a time, 9-13 s per oracle run). The patch above includes the row logging. Rows:
-`features_k5_s1-10.tsv.gz`, `salts_m_k<k>_s<salt>.tsv`.
+seen, not just the mined batch. Same runs as above (two at a time, 9-13 s per oracle run). The patch above includes the row
+logging. Rows: `features_k5_s1-10.tsv.gz`, `salts_m_k<k>_s<salt>.tsv`.
+
+**More laws beat any ranking (2026-10-17).** The same probe, valuing alternatives on a proxy instead of the next batch. The
+proxy is laws from phase p + 3 of the same stream; cold loops serve only phases 1-3, so no proxy law is ever served.
+`matched` is phase p + 3's window at the next batch's position (100 laws). `wide` is that phase's first 300 laws (fewer
+where the phase is shorter: add3's has about 200). Then a control that does no ranking: the plain miner mining on its batch
+plus the same proxy laws. Mined-batch M over salts 1-10:
+
+| arm | M | cmp3d | add3 | sbo3 |
+|---|---|---|---|---|
+| plain miner | 1169 | 550 | 282 | 337 |
+| proxy-ranked, matched (100 laws) | 1037 | 501 | 232 | 304 |
+| proxy-ranked, wide (300 laws) | 973 | 454 | 223 | 296 |
+| oracle-ranked (the next batch) | 925 | 455 | 194 | 276 |
+| plain miner on batch + 300 proxy laws | **479** | 219 | 84 | 176 |
+
+Batch 0, served before any mine, is 3211 in every arm.
+- **A proxy does most of the oracle's work.** The wide proxy recovers 80% of the oracle's gain (1169 to 973 against 925) and
+  is lower than plain on every salt. When it switches (184 of 1388 rounds), the true next batch is better in 92 rounds,
+  worse in 17 and the same in 75. So the ranking signal is how a set generalizes to unseen laws of the stream, and a
+  sample of the stream measures it. No learned model is needed for that.
+- **Just mining on those laws is far better.** The control more than halves M (1169 to 479, -59%), lower on every salt and
+  in every family's total: almost three times the oracle's gain. A reading: the miner is short of laws, not of good
+  choices; a batch of 100 underdetermines the rules, and ranking among its candidates is the smaller lever.
+- **What this means for the proposer.** The stream's unserved phases stand in for laws the system could generate itself
+  (the 5-node enumeration yields every true law of that size). The lever is which, and how many, laws to mine on. That is
+  the "ranking which laws" half of target (b), not ranking candidate rules. Not yet measured: the dose-response (100, 300,
+  all of a phase's laws), whether proxy ranking adds anything on top of the extra laws, and cost on the larger
+  families (each control stage took 6-7 s here).
+
+Same machine conditions as above. Patch (now with `ORACLE_PROXY=matched|wide`, `ORACLE_TRUEFILE` logging and the `MINE_EXTRA=1`
+control) as above. Rows: `salts_p_<proxy>_s<salt>.tsv`, `salts_c_extra_s<salt>.tsv`, `features_wide_proxy_s1-10.tsv.gz`
+(column 16 is minus the true next-batch M).
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
