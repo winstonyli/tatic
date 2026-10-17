@@ -8,7 +8,8 @@ and libraries (43 MB) were not kept.
   is M) or `m.tsv` of `driver::loop_stream`. Total a run with `bash scripts/sumrows.sh rows/<run>...`.
 - `scripts/`: as run, from Git Bash. They expect builds at `$TEMP/bv_<name>.exe` (copies of the `church_bv` test binary,
   `cargo test --release --test church_bv --no-run`; from 2026-10-16 timing runs may use `--profile sweep`, fat LTO, about 9% faster, if both arms do) and write to their checkout's run directory, `$TEMP/tatic-runs/<checkout
-  folder>` (`scripts/kk.sh`, or `runs dir` from `tools/runs`), so each worktree has its own. From 2026-10-17 gates and timings run through `tools/runs` (`runs gate`, `runs time`, `runs run`); older rows name the scripts they ran with, which are in git history. Clear only your own run directory, never `tatic-runs`
+  folder>` (`scripts/kk.sh`, or `runs dir` from `tools/runs`), so each worktree has its own. From 2026-10-17 a run launched through
+  `~/.claude/runs/run.ps1` writes into its own recorded folder instead (both honour `RUN_DIR`; rows in `docs/runs.md`). From 2026-10-17 gates and timings run through `tools/runs` (`runs gate`, `runs time`, `runs run`); older rows name the scripts they ran with, which are in git history. Clear only your own run directory, never `tatic-runs`
   itself. Until 2026-10-16 every checkout shared `$TEMP/kk`. One session's cleanup deleted it whole that day, so the run
   directories named in the rows below up to then (`ts_*`, `nf_*`, `lhp/`, `wp*` and earlier) are gone; regenerate from the
   commit.

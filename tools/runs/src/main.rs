@@ -17,7 +17,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage:
-  runs dir                    this checkout's run directory, %TEMP%\\tatic-runs\\<checkout folder>
+  runs dir                    the run directory: %RUN_DIR% under run.ps1, else %TEMP%\\tatic-runs\\<checkout folder>
   runs state                  RTP=.. CPU=..% lockpriv=..
   runs run <dir> [--affinity M] [--priority P] -- [VAR=val]... <exe> <args>...
                               one measured run; output in <dir>/out.txt and err.txt
@@ -275,10 +275,17 @@ fn checkout() -> Result<PathBuf, String> {
         .ok_or_else(|| format!("{} is not inside a checkout's tools/runs", exe.display()))
 }
 
-/// This checkout's run directory, `%TEMP%\tatic-runs\<checkout folder>`, created (`kk.sh`'s rule).
+/// The run directory, created (`kk.sh`'s rule): `RUN_DIR` when `~/.claude/runs/run.ps1` launched us, so a recorded
+/// run writes into its own folder; else this checkout's scratch directory, `%TEMP%\tatic-runs\<checkout folder>`.
 fn run_dir() -> Result<PathBuf, String> {
-    let c = checkout()?;
-    let d = long_path(&std::env::temp_dir()).join("tatic-runs").join(c.file_name().ok_or("the checkout has no folder name")?);
+    run_dir_in(std::env::var_os("RUN_DIR"))
+}
+
+fn run_dir_in(recorded: Option<OsString>) -> Result<PathBuf, String> {
+    let d = match recorded.filter(|r| !r.is_empty()) {
+        Some(r) => PathBuf::from(r),
+        None => long_path(&std::env::temp_dir()).join("tatic-runs").join(checkout()?.file_name().ok_or("the checkout has no folder name")?),
+    };
     std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
     Ok(d)
 }
@@ -386,6 +393,15 @@ mod tests {
             result_line("old.1", &r, Some(false)),
             "old.1 wall=12.3s jobcpu=10.41s procs=5 stragglers=0 peakproc=279MB peakjob=413MB other=3% others=0 rtp=False exit=0"
         );
+    }
+
+    #[test]
+    fn run_dir_is_run_ps1s_folder_when_it_set_one() {
+        let s = Scratch::new("run-dir-env");
+        let d = s.join("2026-10-17-x");
+        assert_eq!(run_dir_in(Some(d.clone().into_os_string())).unwrap(), d);
+        assert!(d.is_dir());
+        assert!(run_dir_in(None).unwrap().ends_with(Path::new("tatic-runs").join(checkout().unwrap().file_name().unwrap())));
     }
 
     #[test]
