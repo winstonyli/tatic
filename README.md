@@ -41,8 +41,8 @@ not needed to use the JIT.
   `rust-version`).
 - Development and measurements were done on Windows 11. The Rust code is not
   Windows-specific, but several helper scripts under `scripts/` use bash and
-  PowerShell (for example `scripts/quiet_ab/pin.ps1`), and the recorded
-  timings come from one laptop.
+  PowerShell, the gate and timing tool `tools/runs` uses Windows job objects,
+  and the recorded timings come from one laptop.
 
 ## License and development notes
 
@@ -199,6 +199,7 @@ cargo run --release --bin repl  # an interactive REPL (src/bin/repl.rs)
 cargo test                      # unit tests across all modules
 cargo bench                     # criterion benchmarks (benches/) -- see below
 cargo test --profile sweep --test church_bv --no-run  # fat-LTO build for sweeps and timing (Cargo.toml)
+cargo build --release --manifest-path tools/runs/Cargo.toml  # gates and timings of sweeps (Windows), tools/runs
 ```
 
 The demo starts by parsing a real source string (`syntax.rs`) into a term,
@@ -260,11 +261,14 @@ Re-running unchanged code on this laptop moves benches by up to
 ±100%, so only a change well beyond that noise column means anything.
 For example, `scripts/bench_ab.sh HEAD --bench proofs`.
 
-When other sessions keep the machine busy, `scripts/quiet_ab/ab.sh`
-runs two commands in alternating rounds, samples total CPU throughout,
-and `scripts/quiet_ab/clean.py` keeps only the rounds no other process
-loaded. Its header has the usage; `scripts/quiet_ab/test_clean.sh`
-checks the cleaning rules (RELATED_WORK §66).
+Gates and timings of the church_bv sweeps go through `tools/runs` (its
+`main.rs` header and `runs` with no arguments list the commands).
+`runs gate <tag> <old exe> <new exe>` runs four sweeps and compares their
+outputs. `runs time <dir> --rounds N -- <arm> -- <arm>` runs arms in
+alternating rounds, each in a job object that counts every process it
+starts; it waits for a quiet machine before each round and keeps only the
+rounds no other process loaded (RELATED_WORK §66). `runs state` prints
+Defender's real-time protection, the CPU load and the large-page privilege.
 
 ## Architecture
 

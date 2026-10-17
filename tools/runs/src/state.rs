@@ -136,12 +136,15 @@ fn mpclient_status() -> Option<u32> {
         if module.is_null() {
             return None;
         }
-        let open = GetProcAddress(module, b"MpManagerOpen\0".as_ptr());
-        let query = GetProcAddress(module, b"MpManagerStatusQueryEx\0".as_ptr());
-        let close = GetProcAddress(module, b"MpHandleClose\0".as_ptr());
+        let open = GetProcAddress(module, c"MpManagerOpen".as_ptr().cast());
+        let query = GetProcAddress(module, c"MpManagerStatusQueryEx".as_ptr().cast());
+        let close = GetProcAddress(module, c"MpHandleClose".as_ptr().cast());
         let mut status = None;
         if !open.is_null() && !query.is_null() && !close.is_null() {
-            let (open, query, close): (Open, Query, Close) = (std::mem::transmute(open), std::mem::transmute(query), std::mem::transmute(close));
+            use std::mem::transmute;
+            let open = transmute::<*mut c_void, Open>(open);
+            let query = transmute::<*mut c_void, Query>(query);
+            let close = transmute::<*mut c_void, Close>(close);
             let mut handle = std::ptr::null_mut();
             if open(0, &mut handle) >= 0 {
                 let mut info = vec![0u32; 2048]; // 8 KB, zeroed: the status structure is smaller
