@@ -8,6 +8,7 @@ mod cmp;
 mod gate;
 mod job;
 mod state;
+mod time;
 #[cfg(test)]
 mod state_tests;
 
@@ -21,7 +22,12 @@ const USAGE: &str = "usage:
   runs run <dir> [--affinity M] [--priority P] -- [VAR=val]... <exe> <args>...
                               one measured run; output in <dir>/out.txt and err.txt
   runs cmp <tag> [--dir D]     compare <tag>_old_<s> with <tag>_new_<s>, salts 1 and 2 (exit 1 if they differ)
-  runs gate <tag> <old exe> <new exe>   four sweeps (new 1, old 1, old 2, new 2), then cmp; <run dir>/<tag>_gate.txt";
+  runs gate <tag> <old exe> <new exe>   four sweeps (new 1, old 1, old 2, new 2), then cmp; <run dir>/<tag>_gate.txt
+  runs time <dir> --rounds N [--max-hours 3] [--others pat,...] [--foreign-max 20] [--quiet-secs 60] [--keep-dirty]
+            [--max-rounds 4N] [--grep NAME=REGEX]... [--affinity M] [--priority P] -- <arm> [-- <arm>]...
+            an arm is <name> [VAR=val]... <exe> <args>...; {r}, {arm}, {dir} are substituted
+  runs time <dir> --sweep <old exe> <new exe>             hc_rounds.ps1's sweeps (6 clean rounds)
+  runs time <dir> --pcs <exe> --arm-env NAME:VAR=val,... --arm-env ...   proof_cost_split arms (or --pcs <old> <new>)";
 
 fn main() {
     // `runs` and its sampler thread stay out of the way of the run they measure (ab.sh lowered itself too)
@@ -52,6 +58,7 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
         "run" => cmd_run(rest),
         "cmp" => cmd_cmp(rest),
         "gate" => cmd_gate(rest),
+        "time" => cmd_time(rest),
         _ => Err(format!("unknown command {cmd}")),
     }
 }
@@ -103,6 +110,52 @@ fn append(path: &Path, line: &str) -> Result<(), String> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     writeln!(f, "{line}").map_err(|e| format!("{}: {e}", path.display()))
+}
+/// `runs time`: exits 0 unless a run failed.
+fn cmd_time(words: &[String]) -> Result<i32, String> {
+    let p = parse(words);
+    p.check(&["rounds", "max-hours", "others", "foreign-max", "quiet-secs", "keep-dirty", "max-rounds", "grep", "affinity", "priority", "sweep", "pcs", "arm-env"])?;
+    let [dir] = &p.pos[..] else { return Err("time takes one directory".into()) };
+    let num = |name: &str, default: f64| -> Result<f64, String> {
+        p.one(name)?.map_or(Ok(default), |v| v.parse().map_err(|_| format!("--{name} {v}: not a number")))
+    };
+    let mut greps = p.all("grep").iter().map(|v| match v {
+        [g] => time::parse_grep(g),
+        _ => Err("--grep takes one NAME=REGEX".to_string()),
+    }).collect::<Result<Vec<_>, _>>()?;
+    let arm_envs: Vec<String> = p.all("arm-env").iter().map(|v| v.join(" ")).collect();
+    let (arms, default_rounds) = match (&p.all("sweep")[..], &p.all("pcs")[..]) {
+        ([], []) => (p.rest.split(|w| w == "--").map(time::parse_arm).collect::<Result<Vec<_>, _>>()?, None),
+        ([[old, new]], []) if p.rest.is_empty() => (time::sweep_arms(old, new), Some(6)),
+        ([], [exes]) if p.rest.is_empty() => {
+            greps.extend(time::pcs_greps());
+            (time::pcs_arms(&checkout()?.join(r"docs\runs\2026-10-12\scripts"), exes, &arm_envs)?, None)
+        }
+        _ => return Err("give arms after --, or one of --sweep <old> <new> and --pcs <exe> [<new exe>]".into()),
+    };
+    let rounds = match (p.one("rounds")?, default_rounds) {
+        (Some(v), _) => v.parse().map_err(|_| format!("--rounds {v}: not a number"))?,
+        (None, Some(d)) => d,
+        (None, None) => return Err("--rounds N is needed".into()),
+    };
+    let mut probe = job::RunSpec::new("", vec![], job::Output::Both(PathBuf::new()));
+    apply_limits(&mut probe, &p)?;
+    let t = time::Timing {
+        dir: PathBuf::from(dir),
+        rounds,
+        max_hours: num("max-hours", 3.0)?,
+        others: p.one("others")?.map_or_else(job::default_others, |v| v.split(',').map(String::from).collect()),
+        foreign_max: num("foreign-max", 20.0)?,
+        quiet_secs: num("quiet-secs", 60.0)? as u64,
+        keep_dirty: p.flag("keep-dirty")?,
+        max_rounds: p.one("max-rounds")?.map_or(Ok(4 * rounds), |v| v.parse().map_err(|_| format!("--max-rounds {v}: not a number")))?,
+        greps,
+        affinity: probe.affinity,
+        priority: probe.priority,
+        arms,
+    };
+    let done = time::time(&t)?;
+    Ok(if done.contains(" failed") || done.contains(": starting ") { 1 } else { 0 })
 }
 /// `--affinity` and `--priority`, where given.
 fn apply_limits(spec: &mut job::RunSpec, p: &Parsed) -> Result<(), String> {
