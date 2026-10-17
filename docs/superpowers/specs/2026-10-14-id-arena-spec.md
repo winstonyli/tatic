@@ -4,7 +4,7 @@ status: done
 
 # Terms as 32-bit ids in two spaces: spec (draft 3, 2026-10-14)
 
-Status: built through Stage 3 (branches `id-arena-stage2`, `id-arena-stage3`, merged into main at 14f721f and pushed, 2026-10-14). Local-only (git-excluded); the decisions are summarized in `docs/tier-cycle.md`
+Status: built through Stage 3 (branches `id-arena-stage2`, `id-arena-stage3`, merged into main at 14f721f and pushed, 2026-10-14). The decisions are summarized in `docs/tier-cycle.md`
 ("Allocation schemes against the size cost", scheme 4). (V) = read in the code or measured this session; (U) = unverified.
 
 ## Goal

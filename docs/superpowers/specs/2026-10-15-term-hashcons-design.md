@@ -4,8 +4,8 @@ status: done
 
 # Hash-consed `Term` for church_bv's miner: spec (draft 3, 2026-10-15)
 
-Status: design approved section by section (2026-10-15); not built. Local-only (git-excluded, like every file under
-`docs/superpowers/`); the decision and its measurements go in `docs/tier-cycle.md` ("Where a sweep spends its time").
+Status: design approved section by section (2026-10-15); built in 32510ae and adopted in d61d381. The decision and its
+measurements are in `docs/tier-cycle.md` ("Where a sweep spends its time").
 (V) = read in the code or measured; (U) = unverified.
 
 ## Goal

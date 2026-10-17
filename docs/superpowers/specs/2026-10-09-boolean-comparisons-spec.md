@@ -4,7 +4,7 @@ status: draft
 
 # Boolean combinations of comparisons: design spec (draft 3, 2026-10-09)
 
-Status: proposal only, nothing built. Local-only (git-excluded). Facts marked (V) were read in the code this session; (U) are unverified.
+Status: proposal only, nothing built; parked (`PARKED.md`). Facts marked (V) were read in the code this session; (U) are unverified.
 
 ## Problem
 On cmp3d the laws that still need a machine proof after the library are mostly two clusters (round-0 stragglers of the seeded phase-0 loop, 24 laws):

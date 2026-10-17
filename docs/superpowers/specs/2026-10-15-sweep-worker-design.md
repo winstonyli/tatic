@@ -4,7 +4,7 @@ status: done
 
 # A persistent worker for the sweep's children (design)
 
-Status: design, not implemented. Source: docs/tier-cycle.md, "Survey: long-lived sweep workers, and the work children repeat"
+Status: built in 4e5177e and 309fa77; timed in 0ba80a0 (job CPU -14.4%, wall -14.0%). Source: docs/tier-cycle.md, "Survey: long-lived sweep workers, and the work children repeat"
 (option 1).
 
 ## Goal

@@ -4,7 +4,7 @@ status: done
 
 # `runs`: one Rust tool for gates, timings and machine state
 
-Date: 2026-10-17. Status: draft for review. Survey behind it: docs/tier-cycle.md, "Survey: workflow time outside the sweep".
+Date: 2026-10-17. Status: built (`tools/runs`, 98104e7 and the commits before it, through 6d40f0e). Survey behind it: docs/tier-cycle.md, "Survey: workflow time outside the sweep".
 
 ## Goal
 

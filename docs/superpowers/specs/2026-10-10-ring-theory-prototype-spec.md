@@ -4,7 +4,7 @@ status: done
 
 # Rule mining over an axiomatic theory (commutative ring): prototype spec (draft 3, 2026-10-10)
 
-Status: proposal, nothing built. Local-only (git-excluded). (V) = read in the code this session; (U) = unverified.
+Status: the spikes ran on branch `ring-spikes` (parked, not merged; 11e081d); the port to rings is parked (`PARKED.md`). (V) = read in the code this session; (U) = unverified.
 
 ## Goal
 Test whether the self-improving loop (mine rules batch by batch, serve a law stream, metric M = laws needing a heavy proof) is generic, or only works for Church bit-vectors. Domain: a commutative ring given only by axioms. First targets: `(a+b)(a+b) = a*a + 2ab + b*b`, `(a-b)(a+b) = a*a - b*b`, the identities Pythagoras-by-coordinates needs. Pythagoras itself is out of scope (needs geometry or coordinates, plus an order/field).
