@@ -35,6 +35,22 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
 3. **Close the cycle.** Train on accepted laws, repeat, and track the frontier (hardest law provable within a fixed budget), not just
    M on a fixed stream.
 
+**The proposer model's target: ranking (decided 2026-10-17; design open).** The proposer will be a custom model architecture
+built for this, not scratchtape's LM used directly. Its main job is (b) ranking which laws and candidates to try, ahead of (a)
+laws beyond 5 nodes and (c) new definitions:
+- **Why ranking.** The 5-node enumeration already yields every true law of that size, so the open question is choice.
+  Labels exist: per-proposal credit, `transfer_score.sh`, and the miner's gains. There is a measured defect to beat.
+  Keeping one candidate per left side dropped add3's general `sub` chain orientation: serving add3 batch 0 gives M 46
+  with its own library, 36 with sbo3's, and 27 with the chain rules swapped ("Why add3 did better with sbo3's library").
+- **Literature.** Every learned win found reorders a complete, checked candidate set (premise selection, rewrite
+  policies). Enumo shows plain size-5 enumeration already derives 327 of Halide's 725 rules. A survey's figures for
+  LLM-proposed rules (28.1% / 69.7%; 36 of 977 unsound) were not found in the sources and are unverified. No learned
+  proposer of new operators has a measured win.
+- **Falsifier first.** A small ranker over candidate features, trained on two families' logged candidates and tested on
+  the third. It must beat the miner's own order on held-out M before a model is designed.
+- **Parked:** (a) until a 6-7 node hash index shows true laws the mined rules can't derive; (c) until conservative
+  definitions can be checked.
+
 ## Risks
 - Degeneration: the proposer repeats what it knows. Needs a novelty and difficulty filter from the kernel's signals.
 - Soundness: only kernel-checked rules may enter the library. Machine-proved laws are checked; the ring-theory spike's lemmas are
@@ -2287,9 +2303,12 @@ under `lt_u`'s borrow chain applied to `choose`'s continuations, and that chain'
 at each. `conv` keeps no pair memo (one was A/B'd for speed and reverted, 2026-10-12 run log). Probe, reverted
 (`docs/runs/2026-10-12/patches/conv_pair_memo_probe.patch`, applies to f980cb2): a per-`def_eq` set of pairs already
 shown equal, checked after the `same` test. With it the countdown invariant takes 0.79 / 1.43 / 3.17 / 6.09 ms at
-n = 4 / 16 / 32 / 64, the other checks move within noise, and the controls are still rejected at n=64. Not decided: whether
-to keep it, which needs the 2026-10-12 CPU-time A/B rerun against it (its overhead on the proof corpus). Until then
-`wasm_scaling` stops at n=16.
+n = 4 / 16 / 32 / 64, the other checks move within noise, and the controls are still rejected at n=64. On the proof
+corpus it is neutral: `runs time --pcs` (`proof_cost_split`, cmp3d, 24 alternating pairs, d36897f against d36897f plus
+the patch) gives job CPU median 2.070 / 2.016 s and best 1.531 / 1.516 s, the memo winning 15 of 24 pairs (median pair
+-0.03 s). The machine was contended (other load 31-85% per run, the quiet gate off; a gated attempt found no quiet minute
+in 95 min), Defender real-time protection off. Not yet kept: a kernel change waits on a yes. Until then `wasm_scaling`
+stops at n=16.
 
 **Closed function values are reduced once (kernel change, kept, 2026-10-14).** The n=48 wall above was unsharing
 in `whnf`. A word's bit is a shared node such as `s = xor_ a b`, and each use applies it to its own continuations
