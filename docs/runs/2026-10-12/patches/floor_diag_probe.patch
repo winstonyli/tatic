@@ -1,0 +1,24 @@
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index df4f05b..eba14d3 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -2022,7 +2022,19 @@ pub fn rule_set_kernel_check() {
+         for (name, t1, t2) in &laws {
+             RULE_BUDGET.with(|b| b.set(200));
+             let before = MACHINE_FALLBACKS.with(|c| c.get());
++            let cuts0 = super::rewrite::CYCLE_CUTS.with(|c| c.get());
+             let r = rewrite_plan(4, kv, t1, t2);
++            if env_var("FLOOR_DIAG").is_some() && MACHINE_FALLBACKS.with(|c| c.get()) > before {
++                let cuts = super::rewrite::CYCLE_CUTS.with(|c| c.get()) - cuts0;
++                RULE_BUDGET.with(|b| b.set(200));
++                let c1 = super::rewrite::CYCLE_CUTS.with(|c| c.get());
++                let n1 = rewrite(t1, 4, kv).0;
++                let c2 = super::rewrite::CYCLE_CUTS.with(|c| c.get());
++                RULE_BUDGET.with(|b| b.set(200));
++                let n2 = rewrite(t2, 4, kv).0;
++                let c3 = super::rewrite::CYCLE_CUTS.with(|c| c.get());
++                println!("\nFLOORDIAG\t{name}\t{cuts}\t{}\t{}\t{}\t{}", c2 - c1, c3 - c2, n1.show(), n2.show());
++            }
+             // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
+             if RULE_BUDGET.with(|b| b.get()) <= 0 {
+                 exhausted += 1;

@@ -62,8 +62,12 @@ laws beyond 5 nodes and (c) new definitions:
   Simply mining on those laws as well cuts mined-batch M by 59%, almost three times the oracle's gain (1169 to 479;
   "More laws beat any ranking"). So the proposer's ranking should be over which laws to mine on, not which candidates
   to keep. M falls steeply up to about 1000 extra laws (-82%) and levels off by 3000 at a per-family floor ("How
-  many extra laws").
-- **Parked:** (a) until a 6-7 node hash index shows true laws the mined rules can't derive; (c) until conservative
+  many extra laws"). Part of that is renamed twins of the served laws among the extras; without them M still falls by
+  two thirds (1169 to 388) and levels off near 400 ("Renamed twins").
+- **The floor is permutations, not size.** Of the 171 laws left at the largest dose, 101 stay even when the miner mines
+  on exactly them. 74 of those look like permutations of their other side (+ 1 on a different summand, `lt(~a, b)` against
+  `lt(~b, a)`), and 61 hit a cycle cut ("What the floor is"). Ordered rewriting is the general fix to test.
+- **Parked:** (a) laws beyond 5 nodes, since the floor turned out not to be about size; (c) until conservative
   definitions can be checked.
 
 ## Risks
@@ -4116,14 +4120,68 @@ the mean time of one cold stage (9 loops, 18 mines, two stages at a time):
   change is noise (cmp3d 111 against 117, the only family with more than 3000 laws). The 300 row (427) is below the
   earlier control (479) because add3's phase p + 3 has only about 200 laws; here the rest come from the next phase.
 - **The floor is a family's own, not the stream's.** add3 stops at 40 once all 813 of its unserved laws are in, and cmp3d
-  at about 115. What stays unproved on these batches is not reachable by mining more laws of this stream. Laws of more than
-  5 nodes, target (a), are one candidate cause; not yet checked.
+  at about 115. Mining more laws of this stream does not remove the machine proofs left on these batches. What they are:
+  "What the floor is" below.
 - **At large doses the loops stop being loops.** Every mine then mines the same extra laws, so the library is almost one
   library per family mined offline, and the batch it mines on matters little. That makes it closer to the own stage
   (loops warm-started from a ref mine's library) than to a cold loop. Comparing the two on the same served batches has not
   been done.
 
 Rows: `salts_d_<n>_s<salt>.tsv`, `durations_dose.txt`. Same machine conditions.
+
+*Renamed twins (2026-10-17).* The stream is the system's own enumeration (`pool3_sequence`: every equal pair of the
+family's pool terms, shuffled), and it lists each renaming of a law's variables as a separate law. Up to renaming
+variables and swapping sides, 1096 of the 1327 laws in the mined batches (batches 1 and 2 of all 9 loops) have a twin
+among the extras at dose `all` (salt 1; 1064 at salt 5), and 664 at dose 1000 (salt 1). A twin needs the same rules up to
+renaming (not exactly the same, since operand order follows variable names), so part of the dose effect is mining on the
+test laws themselves. `MINE_TWINFREE=1` (in the same probe patch) drops
+every extra whose class appears anywhere in phases 1-3. That leaves, at salt 1, 3012 extras for cmp3d, 322 for add3 and
+1046 for sbo3. Mined-batch M over salts 1-10:
+
+| extras | M | cmp3d | add3 | sbo3 |
+|---|---|---|---|---|
+| none | 1169 | 550 | 282 | 337 |
+| 1000 with twins | 206 | 121 | 40 | 45 |
+| 1000 twin-free (add3: its 322) | 388 | 169 | 123 | 96 |
+| all with twins | 171 | 117 | 40 | 14 |
+| all twin-free | 405 | 182 | 123 | 100 |
+
+- **Most of the gain survives without twins.** Twin-free extras still cut M by two thirds (1169 to 388), against -82% with
+  twins and -21% for the oracle ranking. At a matched count, add3's 322 twin-free extras give 123 against 63 for 300
+  extras with twins.
+- **Twin-free M levels off by 1000 too** (405 at `all`, within noise of 388; per salt 30-53). The floor without twins is
+  about 400.
+- **For the proposer:** the laws worth mining on are not only new laws but also variants of laws already met; how much
+  of the twins' extra gain a proposer could get without seeing the test laws is open.
+
+Rows: `salts_t_<1000|all>_s<salt>.tsv`; `rows/floor/canon.awk` counts twins.
+
+*What the floor is (2026-10-17).* At dose `all`, the mined batches leave 171 laws that need a whole-term machine proof
+(none unproved): 92 distinct for cmp3d, 37 for add3 and 10 for sbo3. With each loop's final library (after its second
+mine, which saw batch 1) 124 still do (cmp3d 94, add3 18, sbo3 12). Mining on exactly those laws, with that library
+as the base (`rows/floor/insample.sh`), adds 15 rules for cmp3d, 1 for add3 and none for sbo3, and leaves 101 (72, 17, 12).
+Mining on the laws themselves does not remove them, so no choice of laws to mine on will. A throwaway diagnostic
+(`patches/floor_diag_probe.patch`, `FLOOR_DIAG=1`) prints, per remaining law, the cycle cuts and both normal forms
+(`rows/floor/diag.tsv`):
+- **74 of the 101 look like permutations.** Both normal forms use the same multiset of symbols (`rows/floor/perm.awk`;
+  the common shapes below are operand or variable permutations, checked by eye): add3 14 of 17,
+  sbo3 12 of 12, cmp3d 48 of 72. add3 and sbo3 differ in which summand of x + y + z carries the + 1 (`sub(t, -1)`),
+  e.g. `add(sub(add(x, y), -1), z)` against `add(sub(x, -1), add(y, z))`. cmp3d's include `lt(xor(a, -1), b)` against
+  `lt(xor(b, -1), a)` (21 laws) and `lt(shl1(y, 0), add(sub(x, z), y))` against `lt(shl1(y, 0), add(sub(y, x), z))` (19).
+- **61 hit a cycle cut while being proved:** every add3 and sbo3 law, and 32 of cmp3d's. The libraries hold rules that
+  move operands around (add3's has both `add(sub(x, y), z) -> add(sub(z, y), x)` and `add(sub(x, -1), add(y, z)) ->
+  add(sub(add(x, y), -1), z)`), and the cut leaves each side wherever its chain stopped. The exact cycles were not
+  traced.
+- **27 are not, all with a cycle cut:** 24 cmp3d `lt` laws and 3 add3 laws (e.g. `sub(-1, sub(xor(y, z), x))` against
+  `sub(add(-1, x), xor(y, z))`). Several keep subterms unsimplified (`sub(t, 0)`), presumably frozen by the cut, and a few
+  are `lt` facts about wraparound, e.g. `lt(t, sub(0, z))` against `lt(t, add(sub(t, 0), z))`.
+
+So the floor is not about rule size, and target (a) as worded (laws beyond 5 nodes) would not lift it. A rule that joins
+two permutations of a term is itself permutative: plain rewriting either cycles on it (the cut) or must leave one
+orientation out. A larger pool would add more such rules, not orient them; that is reasoning, not tested. The general
+mechanism that addresses it is ordered rewriting: apply a rule instance only when it lowers a fixed total order on
+terms, as the built-in commutativity already does by sorting operands. It would cover at most the 74 permutations, not
+the 27; untested.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
