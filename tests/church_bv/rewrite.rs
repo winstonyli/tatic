@@ -2447,13 +2447,14 @@ fn join_steps(t: &Term, table: &RuleTable, cap: usize, out: &mut Vec<(Term, Plan
 
 /// The plan of `a = b` by joining them: breadth-first from both at once (one layer of the smaller frontier at a time) over
 /// `join_eqs`, through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or more than
-/// `JOIN_VISIT` (5000) terms are reached. Only pairs equal on random inputs are searched, so an unequal pair costs no search.
-/// `ABLATE=join` switches it off.
+/// `JOIN_VISIT` (1000) terms are reached (5000 left a few laws fewer to the machine proof for 2-3 times the sweep time:
+/// docs/tier-cycle.md, "The bounded join"). Only pairs equal on random inputs are searched, so an unequal pair costs no
+/// search. `ABLATE=join` switches it off.
 pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     if ablated("join") || a.differs_in(b, n, k, 16) {
         return None;
     }
-    let (cap, visit) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 5000usize));
+    let (cap, visit) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize));
     // each reached term with the term it was reached from and the plan of that step
     type Seen = hashbrown::HashMap<Term, Option<(Term, PlanRc)>>;
     let path = |seen: &Seen, mut t: Term| -> PlanRc {
