@@ -68,7 +68,14 @@ laws beyond 5 nodes and (c) new definitions:
 - **The floor is permutations, not size.** Of the 171 laws left at the largest dose, 101 stay even when the miner mines
   on exactly them. 74 of those look like permutations of their other side (+ 1 on a different summand, `lt(~a, b)` against
   `lt(~b, a)`), and 61 hit a cycle cut ("What the floor is"). One path order for every rule instance joins more of
-  them but makes whole loops 2-10x worse ("Ordered rewriting against the floor"); completion is untried.
+  them but makes whole loops 2-10x worse ("Ordered rewriting against the floor"). Adding the floor laws' normal-form
+  pairs as rules (in-sample completion) removes up to 42 of cmp3d's 72 and none of add3's or sbo3's: for 59 of the 101
+  the two sides already reach one rewrite cycle and the cut stops them at different members. Proposed, not built: a cut
+  that returns a canonical member of the cycle ("Completion on the floor").
+- **Which new laws pay: other shapes of the same family.** At matched counts, extras with the shapes being mined give
+  -17%, shapes the family never serves -19%, any shape not being mined -50%, as good as peeking at the next batches'
+  shapes ("What kind of new law pays most"). The twins' extra gain (405 to 171) is mining on the test laws themselves:
+  legitimate only when the stream is the proposer's own pool ("The twins gap").
 - **Parked:** (a) laws beyond 5 nodes, since the floor turned out not to be about size; (c) until conservative
   definitions can be checked.
 
@@ -4204,7 +4211,91 @@ cycling penalty are negative results"). It was rechecked against the floor below
   mined-batch M 264 / 282 plain against 120 / 128 now, and 143 / 167 at dose `all` against 14 / 22 (`lpo_<0|all>_s<salt>.tsv`).
   Libraries that fire freely and get cut cover far more laws than libraries held to one order. This agrees with
   2026-10-11. Ordered rewriting is not the lever; joining the permutations without that cost would take completion
-  (adding the critical-pair rules that make the ordered system confluent), which was not tried.
+  (adding the critical-pair rules that make the ordered system confluent); see the next paragraph.
+
+*Completion on the floor: cmp3d's floor joins, add3's and sbo3's are one rewrite cycle (2026-10-17).* The cheapest
+completion step, in-sample: to each floor law's in-sample library (`rows/floor/insample.sh`'s working libraries) add every
+remaining floor law's own normal-form pair as a rule, oriented forwards (left normal form to right), backwards, or from
+the larger `show()` to the smaller, then serve the floor laws and the loop's mined batches again (`rows/floor/complete.sh`,
+code at 9c601c3 with the oracle-headroom probe built in but none of its variables set; `complete_<fwd|back|down>.txt`):
+
+| orientation | cmp3d floor | add3 floor | sbo3 floor | cmp3d batches | add3 batches | sbo3 batches |
+|---|---|---|---|---|---|---|
+| none (in-sample library) | 72 | 17 | 12 | 133 | 21 | 14 |
+| forwards | 43 | 17 | 12 | 104 | 21 | 14 |
+| backwards | 32 | 17 | 12 | 93 | 21 | 14 |
+| larger to smaller | 30 | 17 | 12 | 91 | 21 | 14 |
+
+- **cmp3d's floor partly joins, and the joining transfers.** The added rules remove up to 42 of cmp3d's 72 floor laws and
+  42 more machine proofs on its mined batches (133 to 91), with no orientation making anything worse.
+- **add3's and sbo3's do not move at all, in any orientation.** For 26 of their 29 laws the two sides already sit in one
+  rewrite cycle, and the cycle cut leaves each side at a different member of it (next bullet). Traced on one add3 law (`NF_TRACE=1 search::normal_forms`):
+  `add(add(x, y), sub(z, -1)) = sub(add(x, y), sub(-1, z))` cycles through `sub(add(x, y), z) -> add(sub(x, z), y)`,
+  the built-in AC, and `add(sub(x, -1), add(y, z)) -> add(sub(add(x, y), -1), z)`; one side stops at
+  `add(sub(add(x, y), -1), z)`, the other at `add(sub(x, -1), add(y, z))`, both members of the same cycle.
+- **Most of the floor is that case.** Tracing each side of every floor law alone (`rows/floor/samecycle.sh`), one side's
+  normal form is among the terms the other side's rewriting visited for add3 14 of 17, sbo3 12 of 12 and cmp3d 33 of 72:
+  59 of 101 (`samecycle.txt`). These laws are joinable already; the cut just stops the two sides at different points.
+
+The general fix this points to is in the cycle cut, not in the rules: on a cut, return a canonical member of the cycle
+(e.g. the `show()`-least term visited) instead of the term where the cut fired. Rewriting is deterministic, so two sides
+that reach the same cycle would then get the same normal form. It needs a proof from the entry point to that member.
+`REWRITE_PATH` holds only the terms; the plans between them are composed up the call stack as the calls return, so the
+choice would have to be made in the call that pushed the cut's path entry (`CUT_LOW` already records which one), and the
+memo's replay rules (`rewrite_memo`) would have to respect it. Not built, and not designed further. If it works, it
+might also make the per-rule `show()` order in `rule_step_in` unnecessary, and it needs no order on whole terms, which is
+what made `FLOOR_LPO` costly. Why the added rules leave add3 and sbo3 unchanged was not traced with them in; the trace above
+is with the in-sample library alone.
+
+*What kind of new law pays most (2026-10-17).* `patches/law_bucket_probe.patch` (a superset of the oracle-headroom probe)
+takes the twin-free extras from one bucket, by skeleton (the law with every variable written `v`, smaller side first):
+`past` (skeleton among the laws the mine is mining on), `future` (not past, but among phases 1-3's laws: peeks),
+`novel` (neither), `unseen` (not past; legitimate) and `random` (no skeleton filter; despite the name, the first
+twin-free laws in stream order, as in the earlier arms). Counts are matched to what
+the smallest bucket offers: add3 60, sbo3 180, cmp3d 350 per mine (`MINE_EXTRA=add3:60,sbo3:180,cmp3d:350`). Every
+bucket filled except novel (add3 3042 and cmp3d 20286 of 3600 and 21000 extras over the run) and past sbo3 (10797 of 10800).
+Mined-batch M over salts 1-10 (`rows/oracle_headroom/bucket.sh`, `salts_b_<bucket>_s<salt>.tsv`):
+
+| bucket | M | cmp3d | add3 | sbo3 | per salt |
+|---|---|---|---|---|---|
+| none (plain) | 1169 | 550 | 282 | 337 | 85-137 |
+| past | 966 | 397 | 226 | 343 | 79-112 |
+| novel | 951 | 452 | 221 | 278 | 73-122 |
+| random | 624 | 253 | 148 | 223 | 50-74 |
+| unseen | 581 | 247 | 130 | 204 | 45-73 |
+| future | 578 | 248 | 139 | 191 | 41-73 |
+
+- **The laws that pay share shapes with what comes next, but not with what is being mined.** More of the mined batch's
+  own shapes gives -17%, and shapes the family never serves -19%; shapes the next batches have -51%.
+- **The legitimate filter gets it without peeking.** `unseen` only drops the shapes being mined, and is as good as
+  `future` (581 against 578), because the stream's shapes recur: at salt 1, 65-82% of each loop's `unseen` extras have a
+  future skeleton (by overlap with the `future` arm's extras), the rest novel.
+- So for a proposer: don't propose more of the shapes the miner already has; propose other shapes the family uses.
+  Shapes from outside the family pay little. Caveat: the skeleton merges every renaming and operand placement of
+  variables, so `past` also holds laws that differ from the mined ones only in where the variables sit.
+
+*The twins gap: what anticipating the next laws' renaming classes is worth (2026-10-17).* At dose `all`, twin-free
+extras leave M 405 and extras with twins 171. Per law of the mined batches (13270 over salts 1-10, all loops), whether
+it needs a machine proof in the twin-free arm (`T`) and in the twins arm (`D`), and whether its renaming class (as in
+`canon.awk`) is among the twins arm's extras (`rows/floor/gap.awk`, counts in `gap.txt`):
+
+| | has a twin | no twin |
+|---|---|---|
+| machine in both | 58 | 19 |
+| machine only twin-free (twins fix it) | 297 | 31 |
+| machine only with twins (twins break it) | 58 | 36 |
+| neither | 10357 | 2414 |
+
+- **The gap is direct: the twins arm mines on the test laws themselves.** Twins fix 328 laws and break 94 (net 234 =
+  405 - 171). 297 of the fixed laws have their own twin among the extras, and fixed laws with a twin outnumber broken ones
+  5 to 1 (297 against 58); without a twin it is about even (31 against 36), so on laws without a twin the twins arm's libraries show no net gain.
+  By family the net gain is cmp3d 65, add3 83, sbo3 86.
+- **So anticipating the next laws' renaming classes is worth the whole gap, about 234 of 405, but only by predicting the
+  test laws.** No proposer can do that for laws from outside it. In the real setting the stream is the proposer's own pool,
+  so mining on the pool ahead of serving it is legitimate and reaches about 171: the loop then becomes one offline mine
+  per family ("How many extra laws", last bullet). For laws from outside the pool, twin-free (about 400) is the honest
+  floor for more laws. Whether the rewrite-cycle fix above lowers it is untested: the floor analysed there is the twins
+  arm's 171, not the twin-free 405.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the

@@ -1,0 +1,9 @@
+cmp3d	15-1	from_none	46	44,1,1	43	0	0
+cmp3d	15-2	from_none	57	39,14,4	36	1	0
+cmp3d	15-3	from_none	50	39,7,4	39	0	0
+add3	7-1	from_none	56	47,9,0	17	0	0
+add3	7-2	from_none	52	47,5,0	16	0	0
+add3	7-3	from_none	47	43,4,0	13	0	0
+sbo3	11-1	from_none	37	32,4,1	25	0	0
+sbo3	11-2	from_none	30	25,4,1	22	0	0
+sbo3	11-3	from_none	38	24,13,1	29	0	0

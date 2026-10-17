@@ -1,0 +1,28 @@
+   2414 Tf Df none
+  10357 Tf Df twin
+     36 Tf Dm none
+     58 Tf Dm twin
+     31 Tm Df none
+    297 Tm Df twin
+     19 Tm Dm none
+     58 Tm Dm twin
+
+     15 add3 Tf Dm none
+     17 add3 Tf Dm twin
+     21 add3 Tm Df none
+     94 add3 Tm Df twin
+      5 add3 Tm Dm none
+      3 add3 Tm Dm twin
+     18 cmp3d Tf Dm none
+     38 cmp3d Tf Dm twin
+      5 cmp3d Tm Df none
+    116 cmp3d Tm Df twin
+      7 cmp3d Tm Dm none
+     54 cmp3d Tm Dm twin
+      3 sbo3 Tf Dm none
+      3 sbo3 Tf Dm twin
+      5 sbo3 Tm Df none
+     87 sbo3 Tm Df twin
+      7 sbo3 Tm Dm none
+      1 sbo3 Tm Dm twin
+
