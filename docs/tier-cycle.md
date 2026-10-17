@@ -2207,10 +2207,48 @@ Check times (s), on a machine at 60% CPU from other jobs; Defender real-time pro
 
 Only the `eq` lemma grows with n; the rest stays near flat.
 
-Not shown: an invariant across an `if`. With `Q` in Sort0, the step must case-split the condition bit at Sort0.
-That should be derivable, but this is unverified: for any bit with a `GoodBool` witness, eliminate at the motive
-`\b. GoodBool0 b`, which is a Sort1 type, as `lift_good` does. The witness for a compare's output bit is not built
-here.
+An invariant across an `if` needs a case split on the condition bit at Sort0, where `Q` lives. Shown in the next
+paragraph.
+
+**An invariant across an `if` (probe, reverted, 2026-10-17; `docs/runs/2026-10-12/patches/if_invariant_probe.patch`).**
+Derivable, with no kernel change, and cheap. Three pieces, all checked:
+- **A Sort0 split from the Sort1 witness.** `GoodBool0 a = Pi P:(Bool0 -> Sort0). P true -> P false -> P a` is a
+  Sort1 type, so `GoodBool a` eliminates at the motive `\b. GoodBool0 b`: `lower_bit : Pi a. GoodBool a -> GoodBool0 a`
+  is one application. A word lowers the same way, shaped as `lift_good`: `lower_bv : Pi x. GoodBv x -> GoodBv0 x`,
+  where `GoodBv0`'s motive is `Bv_n -> Sort0` and its step takes `GoodBool0` witnesses (`GoodBv0 x` is a Sort2 type,
+  so it is a legal motive for `GoodBv`).
+- **The If invariant.** `Pi R:Sort0. Pi Q:R->Sort0. Pi w:Bv_1. GoodBv w -> Pi x y. Q x -> Q y -> Q (choose w x y)`,
+  with `choose` as above (`Lift R`): lower `w`'s witness, eliminate it at `\w. Q (choose w x y)`, and split the bit at
+  `\b. Q (choose (mk b) x y)`, which reduces to `Q x` and `Q y` at the leaves.
+- **The compare's witness.** `good_lt : Pi a b. GoodBv a -> GoodBv b -> GoodBv_1 (lt_u a b)` is `good_sub`'s borrow
+  chain keeping only the last borrow, through `good_vec` with its result width taken from the result bits (the patch
+  generalises `good_vec` from n to m output bits; for n-bit results nothing changes).
+
+Composed, `Pi a b. GoodBv a -> GoodBv b -> Pi R Q x y. Q x -> Q y -> Q (choose (lt_u a b) x y)` for symbolic `a`, `b`.
+Check times, machine at 32% CPU from other jobs, Defender real-time protection off:
+
+| n | `good_lt` | `lower_bv` | composed invariant |
+|---|---|---|---|
+| 1 | 0.08 ms | 0.02 ms | 0.11 ms |
+| 4 | 0.14 ms | 0.03 ms | 0.14 ms |
+| 16 | 0.39 ms | 0.07 ms | 0.24 ms |
+| 32 | 0.67 ms | 0.13 ms | 0.37 ms |
+| 64 | 1.86 ms | 0.30 ms | 1.14 ms |
+
+(`if_inv` alone, at width 1, 0.13 ms.) Controls, all rejected:
+- the false leaf given `Q x` (type mismatch at the leaf);
+- the witnesses eliminated at Sort0 directly, without lowering ("inferred Type0, expected Type2"): the universe
+  obstacle is real, and lowering is what removes it;
+- the conclusion stated as `Q x`;
+- `lower_bv` passing the unlowered `GoodBool` witnesses;
+- the composed statement for `lt_u b a` at every width.
+
+Concrete: `choose (lt_u 0 1) x y` is `x`, `choose (lt_u 1 0) x y` is `y` and not `x`, by conversion at n=4 and 64.
+
+Not shown: the step through the If law's `Id` (`M (c_c ++ if c_t c_e) .. = choose m_c ..`) to the invariant over
+`M`. It is one transport along that law, but the instruction-list encoding it needs was reverted with its probe
+and was not rebuilt here. Also not shown: a loop whose body contains the `if`, which composes this with the loop law
+when `I` carries `GoodBv` of the compared words.
 
 **Closed function values are reduced once (kernel change, kept, 2026-10-14).** The n=48 wall above was unsharing
 in `whnf`. A word's bit is a shared node such as `s = xor_ a b`, and each use applies it to its own continuations

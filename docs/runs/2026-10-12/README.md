@@ -15,7 +15,8 @@ and libraries (43 MB) were not kept.
 - `patches/`: `probe_promo.patch` (the temporary `ORDER=show|rev|size` switch over the three operand-order sites and
   `PROMOTED_FILE`, which replaces `PROMOTED` with a rule file), `heldout_lookahead.patch` (runners-up chosen by held-out
   finished value), `option_a_probe.patch` (adds `tests/option_a_probe.rs`, option A's falsifier). Apply to the commit named
-  below; the first two still apply cleanly to b7fde44, the third to 11e081d.
+  below; the first two still apply cleanly to b7fde44, the third to 11e081d. `if_invariant_probe.patch` (adds
+  `tests/church_bv/if_probe.rs` and widens `good_vec`'s result) applies to c2ebfbf.
 - `promo/`: the re-promoted rule sets (round 1, and both rounds) under the `show()` and size-first orders.
 
 | Runs | Build | Script | Result (tier-cycle.md) |
@@ -205,3 +206,4 @@ and libraries (43 MB) were not kept.
 | `rt_pcs/` (`runs.tsv`, `summary.txt`, `state.txt`, `done.txt`, outputs) | `runs time rt_pcs --pcs bv_runs.exe --arm-env a: --arm-env b: --rounds 2 --keep-dirty --quiet-secs 0`: two identical arms, both rounds clean, `done 2/2 all rounds`; b - a jobcpu median +0.016 s, build +6.8 ms, check +0.8 ms (noise) | `tools/runs` (548bccc) | "Survey: workflow time outside the sweep" |
 | (not kept: `sweep_xperf/`) | `sweep_xperf.ps1 $TEMP/bv_runs.exe` (release `church_bv` at 15ccec0), unelevated, through the Samply task's new xperf mode (`~/.claude/samply/profile.ps1 -Mode xperf`): sweep exit 0, wall 4.5 s, jobcpu 7.95 s, 16 s in all with the merge; trace 5.5 s, 0 lost events or buffers. A check that the script works, not a measurement: CPU 49% from other sessions, Defender RTP False | `sweep_xperf.ps1`, `tools/runs` (ffda1cc) | "How often the large-page stall hits a sweep" |
 | (none kept; `patches/option_a_probe.patch`) | `cargo test --test option_a_probe -- --nocapture` at 11e081d: the 24 distinct add/sub-only rules among the 203 rule lines of the 11 mined and hand rule files (`scripts/data/*_rules.txt`, `scripts/rules/`, `promo/`, `scripts/cmp3d_own_rules.txt`) against the 19 builders of `tests/rule_match_census.rs` (286 nodes, 32 add/sub, 4 add/sub over add/sub): 2 hits, both on `add(sub(v2, v1), v0)` in `over_application_if_between_closures`, 0 instructions saved | 11e081d | "Compiling hot transformations ..." (option A's falsifier) |
+| (none kept; `patches/if_invariant_probe.patch`) | `cargo test --release --test church_bv if_probe::if_invariant_probe -- --exact --ignored --nocapture` at c2ebfbf plus the patch (separate target dir; another session's cargo was running), BelowNormal, affinity FFF: `if_inv` 0.13 ms; composed `lt_u` If invariant 0.11-1.14 ms for n = 1-64; all five controls rejected; CPU 32%, RTP False | c2ebfbf | "An invariant across an `if`" |

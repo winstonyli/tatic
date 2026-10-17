@@ -1,0 +1,211 @@
+diff --git a/tests/church_bv/encoding.rs b/tests/church_bv/encoding.rs
+index f891b5d..4e876ff 100644
+--- a/tests/church_bv/encoding.rs
++++ b/tests/church_bv/encoding.rs
+@@ -1650,6 +1650,7 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
+         &(0..n).map(ga).collect::<Vec<_>>(),
+         &(0..n).map(gb).collect::<Vec<_>>(),
+     );
++    let m = s.len(); // the result width
+     let st_b = var((db - 1 - 5) as u32);
+     let step_y = binders(n, apps(st_b, s.into_iter().chain(gs).collect()));
+     let a_da = |i: usize| var((da - 1 - (6 + i)) as u32);
+@@ -1662,9 +1663,9 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
+     let motive_x = lam(bv_ty(n), app(var(2), app2(vec, var(0), var(5))));
+     let body = app2(var(3), motive_x, step_x);
+     let proof = lam(bv_ty(n), lam(bv_ty(n), lam(app(good_bv(n), var(1)), lam(app(good_bv(n), var(1)),
+-        lam(arrow(bv_ty(n), sort(2)), lam(good_bv_step(n), body))))));
++        lam(arrow(bv_ty(m), sort(2)), lam(good_bv_step(m), body))))));
+     let ty = pi(bv_ty(n), pi(bv_ty(n), arrow(app(good_bv(n), var(1)), arrow(app(good_bv(n), var(0)),
+-        app(good_bv(n), app2(vec, var(1), var(0)))))));
++        app(good_bv(m), app2(vec, var(1), var(0)))))));
+     (proof, ty)
+ }
+ 
+diff --git a/tests/church_bv/if_probe.rs b/tests/church_bv/if_probe.rs
+new file mode 100644
+index 0000000..b49586b
+--- /dev/null
++++ b/tests/church_bv/if_probe.rs
+@@ -0,0 +1,169 @@
++// Throwaway probe (docs/tier-cycle.md, option B, "an invariant across an `if`"): a Sort0 case split on a one-bit
++// word with a `GoodBv` witness, and that witness for `lt_u`'s output bit.
++use super::*;
++
++/// GoodBool0 a := Pi P:(Bool0 -> Sort0). P true -> P false -> P a   (ctx [a])
++pub fn good_bool0() -> Expr {
++    lam(bool0(), pi(arrow(bool0(), sort(0)), pi(app(var(0), t()), pi(app(var(1), f()), app(var(2), var(3))))))
++}
++fn good0_bit(b: bool) -> Expr {
++    lam(arrow(bool0(), sort(0)), lam(app(var(0), t()), lam(app(var(1), f()), var(if b { 1 } else { 0 }))))
++}
++/// `Pi a. GoodBool a -> GoodBool0 a`: eliminate at the Sort1 motive `\b. GoodBool0 b`.
++pub fn lower_bit() -> (Expr, Expr) {
++    let motive = lam(bool0(), app(good_bool0(), var(0)));
++    let p = lam(bool0(), lam(app(good_bool(), var(0)), app3(var(0), motive, good0_bit(true), good0_bit(false))));
++    (p, pi(bool0(), arrow(app(good_bool(), var(0)), app(good_bool0(), var(0)))))
++}
++fn good_bv0_step(n: usize) -> Expr {
++    let args: Vec<Expr> = (0..n).map(|i| var((2 * n - 1 - i) as u32)).collect();
++    let mut body = app(var(2 * n as u32), church_tuple(&args));
++    for _ in 0..n {
++        body = pi(app(good_bool0(), var(n as u32 - 1)), body);
++    }
++    for _ in 0..n {
++        body = pi(bool0(), body);
++    }
++    body
++}
++/// GoodBv0 x := Pi P:(Bv_n -> Sort0). (step over GoodBool0) -> P x
++pub fn good_bv0(n: usize) -> Expr {
++    lam(bv_ty(n), pi(arrow(bv_ty(n), sort(0)), pi(good_bv0_step(n), app(var(1), var(2)))))
++}
++/// `Pi x. GoodBv x -> GoodBv0 x`, shaped as `lift_good`, lowering each bit's witness.
++pub fn lower_bv(n: usize, bad_lower: bool) -> (Expr, Expr) {
++    let (lb, _) = lower_bit();
++    // ctx [x, g, a_0.., ga_0.., P, s]: a_i = var(2n+1-i), ga_i = var(n+1-i)
++    let a = |i: usize| var((2 * n + 1 - i) as u32);
++    let ga = |i: usize| var((n + 1 - i) as u32);
++    let args = (0..n).map(a).chain((0..n).map(|i| if bad_lower { ga(i) } else { app2(lb, a(i), ga(i)) })).collect();
++    let mut step = lam(arrow(bv_ty(n), sort(0)), lam(good_bv0_step(n), apps(var(0), args)));
++    for _ in 0..n {
++        step = lam(app(good_bool(), var(n as u32 - 1)), step);
++    }
++    for _ in 0..n {
++        step = lam(bool0(), step);
++    }
++    let p = lam(bv_ty(n), lam(app(good_bv(n), var(0)), app2(var(0), good_bv0(n), step)));
++    (p, pi(bv_ty(n), arrow(app(good_bv(n), var(0)), app(good_bv0(n), var(0)))))
++}
++/// `choose w x y = w (Lift R) (\c Y g. g (c R x y)) R id`, with `Lift R = Pi Y:Sort0. (R -> Y) -> Y`.
++pub fn choose(r: Expr, w: Expr, x: Expr, y: Expr) -> Expr {
++    let lift = pi(sort(0), arrow(arrow(shift(&r, 0, 1), var(0)), var(0)));
++    let k = lam(bool0(), lam(sort(0), lam(arrow(shift(&r, 0, 2), var(0)),
++        app(var(0), app3(var(2), shift(&r, 0, 3), shift(&x, 0, 3), shift(&y, 0, 3))))));
++    apps(w, vec![lift, k, r.clone(), lam(r, var(0))])
++}
++fn lams(bs: &[Expr], body: Expr) -> Expr {
++    bs.iter().rev().fold(body, |b, t| lam(*t, b))
++}
++fn pis(bs: &[Expr], body: Expr) -> Expr {
++    bs.iter().rev().fold(body, |b, t| pi(*t, b))
++}
++#[derive(Clone, Copy, PartialEq)]
++pub enum Ctl {
++    Ok,
++    SameLeaf,  // the false leaf reuses `Q x`
++    NoLower,   // eliminate the Sort2/Sort1 witnesses at Sort0 directly
++    ClaimsX,   // concludes `Q x`
++}
++/// `Pi R:Sort0. Pi Q:R->Sort0. Pi w:Bv_1. GoodBv w -> Pi x y:R. Q x -> Q y -> Q (choose w x y)`.
++pub fn if_inv(c: Ctl) -> (Expr, Expr) {
++    let bs = [sort(0), arrow(var(0), sort(0)), bv_ty(1), app(good_bv(1), var(0)), var(3), var(4), app(var(4), var(1)), app(var(5), var(1))];
++    // depth 8: R=7 Q=6 w=5 gw=4 x=3 y=2 qx=1 qy=0
++    let motive = lam(bv_ty(1), app(var(7), choose(var(8), var(0), var(4), var(3))));
++    // under a, ga0 (depth 10): R=9 Q=8 x=5 y=4 qx=3 qy=2; under b: +1
++    let mb = lam(bool0(), app(var(9), choose(var(10), church_tuple(&[var(0)]), var(6), var(5))));
++    let leaf_f = if c == Ctl::SameLeaf { var(3) } else { var(2) };
++    let body = if c == Ctl::NoLower {
++        let step = lam(bool0(), lam(app(good_bool(), var(0)), app3(var(0), mb, var(3), leaf_f)));
++        app2(var(4), motive, step)
++    } else {
++        let step = lam(bool0(), lam(app(good_bool0(), var(0)), app3(var(0), mb, var(3), leaf_f)));
++        app2(app2(lower_bv(1, false).0, var(5), var(4)), motive, step)
++    };
++    let concl = if c == Ctl::ClaimsX { app(var(6), var(3)) } else { app(var(6), choose(var(7), var(5), var(3), var(2))) };
++    (lams(&bs, body), pis(&bs, concl))
++}
++/// `Pi a b. GoodBv a -> GoodBv b -> GoodBv_1 (lt_u a b)`: the borrow chain of `good_sub`, keeping only the last borrow.
++pub fn good_lt(n: usize) -> (Expr, Expr) {
++    let (g_and, _) = good2(&|a, b| and(a, b), &|a, b| a && b);
++    let (g_or, _) = good2(&|a, b| or(a, b), &|a, b| a || b);
++    let (g_xor, _) = good2(&|a, b| xor(a, b), &|a, b| a != b);
++    good_vec(n, lt_u(n), &move |a, b, ga, gb| {
++        let (mut c, mut gc) = (f(), good_bit(false));
++        for i in 0..n {
++            let p = xor(a[i], t());
++            let gp = apps(g_xor, vec![a[i], t(), ga[i], good_bit(true)]);
++            let x2 = xor(p, b[i]);
++            let gx2 = apps(g_xor, vec![p, b[i], gp, gb[i]]);
++            let (ab, g_ab) = (and(p, b[i]), apps(g_and, vec![p, b[i], gp, gb[i]]));
++            let (cx, g_cx) = (and(c, x2), apps(g_and, vec![c, x2, gc, gx2]));
++            gc = apps(g_or, vec![ab, cx, g_ab, g_cx]);
++            c = or(ab, cx);
++        }
++        (vec![c], vec![gc])
++    })
++}
++/// `Pi a b. GoodBv a -> GoodBv b -> Pi R Q x y. Q x -> Q y -> Q (choose (lt_u a b) x y)`; `swap` states it for `lt b a`.
++pub fn lt_if_inv(n: usize, swap: bool) -> (Expr, Expr) {
++    let bs = [bv_ty(n), bv_ty(n), app(good_bv(n), var(1)), app(good_bv(n), var(1)), sort(0), arrow(var(0), sort(0)),
++        var(1), var(2), app(var(2), var(1)), app(var(3), var(1))];
++    // depth 10: a=9 b=8 ga=7 gb=6 R=5 Q=4 x=3 y=2 qx=1 qy=0
++    let lt = app2(lt_u(n), var(9), var(8));
++    let w = apps(good_lt(n).0, vec![var(9), var(8), var(7), var(6)]);
++    let body = apps(if_inv(Ctl::Ok).0, vec![var(5), var(4), lt, w, var(3), var(2), var(1), var(0)]);
++    let stated = if swap { app2(lt_u(n), var(8), var(9)) } else { lt };
++    (lams(&bs, body), pis(&bs, app(var(4), choose(var(5), stated, var(3), var(2)))))
++}
++
++#[test]
++#[ignore]
++pub fn if_invariant_probe() {
++    let (p, ty) = lower_bit();
++    ck("lower_bit", &p, &ty);
++    let (p, ty) = if_inv(Ctl::Ok);
++    let t0 = Instant::now();
++    ck("if_inv", &p, &ty);
++    println!("IFP if_inv checked in {:?}", t0.elapsed());
++    for c in [Ctl::SameLeaf, Ctl::NoLower, Ctl::ClaimsX] {
++        let (p, ty) = if_inv(c);
++        let r = holds(&p, &ty);
++        println!("IFP control {}: {}", ["ok", "same-leaf", "no-lower", "claims-x"][c as usize],
++            r.as_ref().map(|_| "ACCEPTED".to_string()).unwrap_or_else(|e| format!("rejected ({})", e.chars().take(120).collect::<String>())));
++        assert!(r.is_err());
++    }
++    let (p, ty) = lower_bv(4, true);
++    assert!(holds(&p, &ty).is_err(), "lower_bv without lowering the bits must be rejected");
++    // concrete: choose (lt 1 0) and choose (lt 0 1) pick the else and then answers
++    for n in [4usize, 64] {
++        tatic::kernel::scoped(|| {
++            let (r, x, y) = (bool0(), t(), f());
++            assert!(def_eq(&choose(r, app2(lt_u(n), lit(n, 0), lit(n, 1)), x, y), &x));
++            assert!(def_eq(&choose(r, app2(lt_u(n), lit(n, 1), lit(n, 0)), x, y), &y));
++            assert!(!def_eq(&choose(r, app2(lt_u(n), lit(n, 1), lit(n, 0)), x, y), &x));
++        })
++    }
++    for n in [1usize, 4, 16, 32, 64] {
++        tatic::kernel::scoped(|| {
++            let (p, ty) = good_lt(n);
++            let t0 = Instant::now();
++            ck(&format!("good_lt n={n}"), &p, &ty);
++            let t_lt = t0.elapsed();
++            let (p, ty) = lower_bv(n, false);
++            let t0 = Instant::now();
++            ck(&format!("lower_bv n={n}"), &p, &ty);
++            let t_low = t0.elapsed();
++            let (p, ty) = lt_if_inv(n, false);
++            let t0 = Instant::now();
++            ck(&format!("lt_if_inv n={n}"), &p, &ty);
++            let t_inv = t0.elapsed();
++            let (p2, ty2) = lt_if_inv(n, true);
++            let swapped = holds(&p2, &ty2).is_err();
++            println!("IFP n={n}: good_lt {t_lt:?}, lower_bv {t_low:?}, lt_if_inv {t_inv:?}; swapped operands rejected: {swapped}");
++            if n <= 16 {
++                assert!(swapped);
++            }
++        })
++    }
++}
+diff --git a/tests/church_bv/main.rs b/tests/church_bv/main.rs
+index fee4f73..fdd7ae2 100644
+--- a/tests/church_bv/main.rs
++++ b/tests/church_bv/main.rs
+@@ -5,6 +5,7 @@ use tatic::kernel::*;
+ 
+ mod driver;
+ mod encoding;
++mod if_probe;
+ mod lemma_cache;
+ mod rewrite;
+ mod machine;
