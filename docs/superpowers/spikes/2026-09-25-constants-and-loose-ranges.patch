@@ -1,0 +1,926 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 791897b..0b5c545 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,6 +18,9 @@ stacker = "0.1.25"
+ wasmtime = "42.0.1"
+ wat = "1.245.1"
+ 
++[features]
++spike_hash = []
++
+ [dev-dependencies]
+ criterion = "0.5"
+ 
+diff --git a/src/kernel.rs b/src/kernel.rs
+index e594c4f..6d1747e 100644
+--- a/src/kernel.rs
++++ b/src/kernel.rs
+@@ -36,7 +36,190 @@
+ 
+ use hashbrown::{HashMap, HashSet};
+ use std::fmt;
+-use std::rc::Rc;
++
++// SPIKE: kernel-local Rc caching each node's loose-bvar range.
++thread_local! {
++    pub static SPIKE_SKIP: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("SPIKE").is_ok_and(|v| v.contains('s')));
++    pub static SPIKE_CONST: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("SPIKE").is_ok_and(|v| v.contains('c')));
++    pub static SPIKE_HASH: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("SPIKE").is_ok_and(|v| v.contains('h')));
++}
++fn skip_on() -> bool { SPIKE_SKIP.with(|c| c.get()) }
++thread_local! {
++    pub static SPIKE_MEMO: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("SPIKE").is_ok_and(|v| v.contains('m')));
++    /// Shared children a traversal found already done in its memo.
++    pub static MEMO_HIT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++    pub static MEMO_LOOK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++    pub static INST_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++}
++fn memo_on() -> bool { SPIKE_MEMO.with(|c| c.get()) }
++type Memo = HashMap<(usize, u32), Rc<Expr>>;
++thread_local! {
++    pub static SPIKE_P: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("SPIKE").is_ok_and(|v| v.contains('p')));
++    /// Nodes `abstract_levels` rebuilt, and children it kept by pointer.
++    pub static ABS_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++    pub static ABS_SKIP: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++    /// Nodes `shift` rebuilt.
++    pub static SHIFT_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++}
++fn bump(c: &'static std::thread::LocalKey<std::cell::Cell<u64>>) { c.with(|x| x.set(x.get() + 1)) }
++thread_local! {
++    pub static KDEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++    pub static SHIFT_WORK_BUILDER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
++}
++struct InKernel;
++thread_local! {
++    pub static SCOPE_OPEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++}
++pub static STATS: std::sync::Mutex<Option<std::collections::BTreeMap<String, u64>>> = std::sync::Mutex::new(None);
++pub fn stat(key: String) {
++    let mut g = STATS.lock().unwrap();
++    *g.get_or_insert_with(Default::default).entry(key).or_insert(0) += 1;
++}
++fn note_entry(what: &str, loc: &std::panic::Location<'_>) {
++    if KDEPTH.with(|d| d.get()) == 0 {
++        let open = SCOPE_OPEN.with(|s| s.get()) > 0;
++        stat(format!("{what} scope_open={open} at {}:{}", loc.file(), loc.line()));
++    }
++}
++impl InKernel { fn enter() -> Self { KDEPTH.with(|d| d.set(d.get() + 1)); InKernel } }
++impl Drop for InKernel { fn drop(&mut self) { KDEPTH.with(|d| d.set(d.get() - 1)); } }
++
++/// One more than the largest `Const` level in `e`, 0 when it has none.
++pub fn free_of(e: &Expr) -> u32 {
++    use Expr::*;
++    let f = |c: &Rc<Expr>| c.free();
++    match e {
++        Const(l) => l + 1,
++        Var(_) | Sort(_) => 0,
++        Pi(a, b) | Lam(a, b) | W(a, b) | Sigma(a, b) | App(a, b) | Sup(a, b) => f(a).max(f(b)),
++        Id(a, b, c) | SigRec { motive: a, step: b, target: c } | Pair(a, b, c) => f(a).max(f(b)).max(f(c)),
++        Refl(a) => f(a),
++        J { motive, base, a, b, p } => f(motive).max(f(base)).max(f(a)).max(f(b)).max(f(p)),
++        WRec { motive, children_ty, step, target } => f(motive).max(f(children_ty)).max(f(step)).max(f(target)),
++    }
++}
++
++/// `e` sits under the binders for levels `base..k` (outermost first) and
++/// `d` more of its own: `Const(l)` for `base <= l < k` becomes the `Var`
++/// for its binder. Children mentioning no such level are kept by pointer.
++fn abstract_levels(e: &Expr, base: u32, k: u32, d: u32) -> Expr {
++    abstract_levels_rec(e, base, k, d, &mut Memo::new())
++}
++fn abstract_levels_rec(e: &Expr, base: u32, k: u32, d: u32, memo: &mut Memo) -> Expr {
++    bump(&ABS_WORK);
++    let mut go = |x: &Rc<Expr>, d: u32| -> Rc<Expr> {
++        if x.free() <= base { bump(&ABS_SKIP); return x.clone(); }
++        let shared = memo_on() && Rc::strong_count(x) > 1;
++        let key = (Rc::as_ptr(x) as usize, d);
++        if shared {
++            bump(&MEMO_LOOK);
++            if let Some(r) = memo.get(&key) { bump(&MEMO_HIT); return r.clone(); }
++        }
++        let r = Rc::new(abstract_levels_rec(x, base, k, d, memo));
++        if shared { memo.insert(key, r.clone()); }
++        r
++    };
++    grow(|| match e {
++        Expr::Const(l) if *l >= base && *l < k => Expr::Var(k - 1 - l + d),
++        Expr::Const(l) => Expr::Const(*l),
++        Expr::Var(i) => Expr::Var(*i),
++        Expr::Sort(i) => Expr::Sort(*i),
++        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
++        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
++        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
++        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
++        Expr::Refl(a) => Expr::Refl(go(a, d)),
++        Expr::J { motive, base: bs, a, b, p } => Expr::J { motive: go(motive, d), base: go(bs, d), a: go(a, d), b: go(b, d), p: go(p, d) },
++        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
++        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
++        Expr::WRec { motive, children_ty, step, target } => Expr::WRec { motive: go(motive, d), children_ty: go(children_ty, d + 1), step: go(step, d), target: go(target, d) },
++        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
++        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
++        Expr::SigRec { motive, step, target } => Expr::SigRec { motive: go(motive, d), step: go(step, d), target: go(target, d) },
++    })
++}
++
++/// `close_pi`/`close_lam` when the scope's parameters are levels.
++fn close_levels(base_len: usize, ctx: &Ctx, body: Expr, mk: fn(Expr, Expr) -> Expr) -> Expr {
++    let top = ctx.len() as u32;
++    let base = base_len as u32;
++    let body = if free_of(&body) <= base { body } else { abstract_levels(&body, base, top, 0) };
++    (base_len..ctx.len()).rev().fold(body, |acc, i| {
++        let dom = &ctx[i];
++        let dom = if free_of(dom) <= base { dom.clone() } else { abstract_levels(dom, base, i as u32, 0) };
++        mk(dom, acc)
++    })
++}
++pub struct Node<T> {
++    loose: u32,
++    free: u32,
++    #[cfg(feature = "spike_hash")]
++    hash: u64,
++    val: T,
++}
++pub struct Rc<T>(std::rc::Rc<Node<T>>);
++impl Rc<Expr> {
++    pub fn new(e: Expr) -> Self {
++        let loose = loose_of(&e);
++        let free = free_of(&e);
++        #[cfg(feature = "spike_hash")]
++        let hash = if SPIKE_HASH.with(|c| c.get()) { hash_of(&e) } else { 0 };
++        Rc(std::rc::Rc::new(Node { loose, free, #[cfg(feature = "spike_hash")] hash, val: e }))
++    }
++    pub fn loose(&self) -> u32 { self.0.loose }
++    pub fn free(&self) -> u32 { self.0.free }
++}
++impl<T> Rc<T> {
++    pub fn ptr_eq(a: &Self, b: &Self) -> bool { std::rc::Rc::ptr_eq(&a.0, &b.0) }
++    pub fn strong_count(a: &Self) -> usize { std::rc::Rc::strong_count(&a.0) }
++    pub fn as_ptr(a: &Self) -> *const T { &a.0.val as *const T }
++}
++impl<T> AsRef<T> for Rc<T> { fn as_ref(&self) -> &T { &self.0.val } }
++impl<T> Clone for Rc<T> { fn clone(&self) -> Self { Rc(self.0.clone()) } }
++impl<T> std::ops::Deref for Rc<T> { type Target = T; fn deref(&self) -> &T { &self.0.val } }
++impl<T: PartialEq> PartialEq for Rc<T> { fn eq(&self, o: &Self) -> bool { Rc::ptr_eq(self, o) || self.0.val == o.0.val } }
++impl<T: fmt::Debug> fmt::Debug for Rc<T> { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.val.fmt(f) } }
++
++/// One more than the largest loose `Var` index in `e`, 0 when closed.
++pub fn loose_of(e: &Expr) -> u32 {
++    use Expr::*;
++    let l = |c: &Rc<Expr>| c.loose();
++    let u = |c: &Rc<Expr>| c.loose().saturating_sub(1);
++    match e {
++        Var(k) => k + 1,
++        Sort(_) | Const(_) => 0,
++        Pi(a, b) | Lam(a, b) | W(a, b) | Sigma(a, b) => l(a).max(u(b)),
++        App(a, b) | Sup(a, b) => l(a).max(l(b)),
++        Id(a, b, c) | SigRec { motive: a, step: b, target: c } => l(a).max(l(b)).max(l(c)),
++        Pair(fam, a, b) => u(fam).max(l(a)).max(l(b)),
++        Refl(a) => l(a),
++        J { motive, base, a, b, p } => l(motive).max(l(base)).max(l(a)).max(l(b)).max(l(p)),
++        WRec { motive, children_ty, step, target } => l(motive).max(u(children_ty)).max(l(step)).max(l(target)),
++    }
++}
++#[cfg(feature = "spike_hash")]
++fn hash_of(e: &Expr) -> u64 {
++    use Expr::*;
++    let mix = |h: u64, x: u64| (h.rotate_left(5) ^ x).wrapping_mul(0x517c_c1b7_2722_0a95);
++    let h = |c: &Rc<Expr>| c.0.hash;
++    match e {
++        Var(k) => mix(1, *k as u64),
++        Sort(k) => mix(2, *k as u64),
++        Const(k) => mix(3, *k as u64),
++        Pi(a, b) => mix(mix(4, h(a)), h(b)),
++        Lam(a, b) => mix(mix(5, h(a)), h(b)),
++        App(a, b) => mix(mix(6, h(a)), h(b)),
++        W(a, b) => mix(mix(7, h(a)), h(b)),
++        Sup(a, b) => mix(mix(8, h(a)), h(b)),
++        Sigma(a, b) => mix(mix(9, h(a)), h(b)),
++        Id(a, b, c) => mix(mix(mix(10, h(a)), h(b)), h(c)),
++        Pair(a, b, c) => mix(mix(mix(11, h(a)), h(b)), h(c)),
++        SigRec { motive, step, target } => mix(mix(mix(12, h(motive)), h(step)), h(target)),
++        Refl(a) => mix(13, h(a)),
++        J { motive, base, a, b, p } => mix(mix(mix(mix(mix(14, h(motive)), h(base)), h(a)), h(b)), h(p)),
++        WRec { motive, children_ty, step, target } => mix(mix(mix(mix(15, h(motive)), h(children_ty)), h(step)), h(target)),
++    }
++}
+ 
+ // --- stack growth ----------------------------------------------------------
+ //
+@@ -148,6 +331,8 @@ fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
+ pub enum Expr {
+     /// De Bruijn index; `Var(0)` is the innermost binder.
+     Var(u32),
++    /// SPIKE: a postulate by level, typed `ctx[l]` unshifted.
++    Const(u32),
+     /// `Type_i`.
+     Sort(u32),
+     /// `Pi(A, B)`: `B` is checked one binder deeper than `A` (i.e. `B` may
+@@ -244,7 +429,7 @@ impl PartialEq for Expr {
+ pub(crate) fn same_shape(x: &Expr, y: &Expr, mut c: impl FnMut(&Rc<Expr>, &Rc<Expr>) -> bool) -> bool {
+     use Expr::*;
+     match (x, y) {
+-        (Var(i), Var(j)) | (Sort(i), Sort(j)) => i == j,
++        (Var(i), Var(j)) | (Sort(i), Sort(j)) | (Const(i), Const(j)) => i == j,
+         (Refl(a), Refl(b)) => c(a, b),
+         (Pi(a1, b1), Pi(a2, b2))
+         | (Lam(a1, b1), Lam(a2, b2))
+@@ -304,7 +489,7 @@ impl Drop for Expr {
+             }
+         };
+         grow_slow(|| match self {
+-            Expr::Var(_) | Expr::Sort(_) => {}
++            Expr::Var(_) | Expr::Sort(_) | Expr::Const(_) => {}
+             Expr::Refl(a) => free(a),
+             Expr::Pi(a, b) | Expr::Lam(a, b) | Expr::App(a, b) | Expr::W(a, b) | Expr::Sup(a, b) | Expr::Sigma(a, b) => {
+                 free(a);
+@@ -338,6 +523,7 @@ impl fmt::Debug for Expr {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         grow(|| match self {
+             Expr::Var(k) => write!(f, "#{k}"),
++            Expr::Const(k) => write!(f, "@{k}"),
+             Expr::Sort(i) => write!(f, "Type{i}"),
+             Expr::Pi(a, b) => write!(f, "(Pi {a:?}. {b:?})"),
+             Expr::Lam(a, b) => write!(f, "(\\{a:?}. {b:?})"),
+@@ -432,11 +618,26 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
+ /// term built at one ambient context depth for reuse at a deeper one --
+ /// see `proof.rs`'s `Anchored`.
+ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+-    // Adding 0 changes no index, so this is provably the identity on `e`
+-    // regardless of its content -- skip the full recursive rebuild.
+-    if amount == 0 {
++    shift_rec(e, cutoff, amount, &mut Memo::new())
++}
++fn shift_rec(e: &Expr, cutoff: u32, amount: i32, memo: &mut Memo) -> Expr {
++    if amount == 0 || (skip_on() && loose_of(e) <= cutoff) {
+         return e.clone();
+     }
++    let mut go = |x: &Rc<Expr>, c: u32| -> Rc<Expr> {
++        if skip_on() && x.loose() <= c { return x.clone(); }
++        let shared = memo_on() && Rc::strong_count(x) > 1;
++        let key = (Rc::as_ptr(x) as usize, c);
++        if shared {
++            bump(&MEMO_LOOK);
++            if let Some(r) = memo.get(&key) { bump(&MEMO_HIT); return r.clone(); }
++        }
++        let r = Rc::new(shift_rec(x, c, amount, memo));
++        if shared { memo.insert(key, r.clone()); }
++        r
++    };
++    bump(&SHIFT_WORK);
++    if KDEPTH.with(|d| d.get()) == 0 { bump(&SHIFT_WORK_BUILDER); }
+     grow(|| match e {
+         Expr::Var(k) => {
+             if *k >= cutoff {
+@@ -446,66 +647,22 @@ pub fn shift(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+             }
+         }
+         Expr::Sort(i) => Expr::Sort(*i),
+-        Expr::Pi(a, b) => pi(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
+-        Expr::Lam(a, b) => lam(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
+-        Expr::App(f, a) => app(shift(f, cutoff, amount), shift(a, cutoff, amount)),
+-        Expr::Id(a, x, y) => id(
+-            shift(a, cutoff, amount),
+-            shift(x, cutoff, amount),
+-            shift(y, cutoff, amount),
+-        ),
+-        Expr::Refl(a) => refl(shift(a, cutoff, amount)),
+-        Expr::J {
+-            motive,
+-            base,
+-            a,
+-            b,
+-            p,
+-        } => jelim(
+-            shift(motive, cutoff, amount),
+-            shift(base, cutoff, amount),
+-            shift(a, cutoff, amount),
+-            shift(b, cutoff, amount),
+-            shift(p, cutoff, amount),
+-        ),
+-        Expr::W(a, b) => wty(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
+-        Expr::Sup(a, f) => sup(shift(a, cutoff, amount), shift(f, cutoff, amount)),
+-        Expr::WRec {
+-            motive,
+-            children_ty,
+-            step,
+-            target,
+-        } => wrec(
+-            shift(motive, cutoff, amount),
+-            shift(children_ty, cutoff + 1, amount),
+-            shift(step, cutoff, amount),
+-            shift(target, cutoff, amount),
+-        ),
+-        Expr::Sigma(..) | Expr::Pair(..) | Expr::SigRec { .. } => shift_sigma_family(e, cutoff, amount),
++        Expr::Const(i) => Expr::Const(*i),
++        Expr::Pi(a, b) => Expr::Pi(go(a, cutoff), go(b, cutoff + 1)),
++        Expr::Lam(a, b) => Expr::Lam(go(a, cutoff), go(b, cutoff + 1)),
++        Expr::App(f, a) => Expr::App(go(f, cutoff), go(a, cutoff)),
++        Expr::Id(a, x, y) => Expr::Id(go(a, cutoff), go(x, cutoff), go(y, cutoff)),
++        Expr::Refl(a) => Expr::Refl(go(a, cutoff)),
++        Expr::J { motive, base, a, b, p } => Expr::J { motive: go(motive, cutoff), base: go(base, cutoff), a: go(a, cutoff), b: go(b, cutoff), p: go(p, cutoff) },
++        Expr::W(a, b) => Expr::W(go(a, cutoff), go(b, cutoff + 1)),
++        Expr::Sup(a, f) => Expr::Sup(go(a, cutoff), go(f, cutoff)),
++        Expr::WRec { motive, children_ty, step, target } => Expr::WRec { motive: go(motive, cutoff), children_ty: go(children_ty, cutoff + 1), step: go(step, cutoff), target: go(target, cutoff) },
++        Expr::Sigma(a, b) => Expr::Sigma(go(a, cutoff), go(b, cutoff + 1)),
++        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, cutoff + 1), go(a, cutoff), go(b, cutoff)),
++        Expr::SigRec { motive, step, target } => Expr::SigRec { motive: go(motive, cutoff), step: go(step, cutoff), target: go(target, cutoff) },
+     })
+ }
+ 
+-/// `shift`'s own `Sigma`/`Pair`/`SigRec` cases, out of line -- see
+-/// `infer_sigma`'s docs for why these extractions exist and why they
+-/// are kept.
+-#[inline(never)]
+-fn shift_sigma_family(e: &Expr, cutoff: u32, amount: i32) -> Expr {
+-    match e {
+-        Expr::Sigma(a, b) => sigma(shift(a, cutoff, amount), shift(b, cutoff + 1, amount)),
+-        Expr::Pair(fam, a, b) => pair(
+-            shift(fam, cutoff + 1, amount),
+-            shift(a, cutoff, amount),
+-            shift(b, cutoff, amount),
+-        ),
+-        Expr::SigRec { motive, step, target } => sigrec(
+-            shift(motive, cutoff, amount),
+-            shift(step, cutoff, amount),
+-            shift(target, cutoff, amount),
+-        ),
+-        _ => unreachable!("shift_sigma_family called on a non-Sigma-family Expr"),
+-    }
+-}
+-
+ /// Beta-substitution: replace `Var(0)` in `body` (which lives one binder
+ /// deeper) with `s`, then discharge that binder. `s` is walked only where
+ /// `body` uses it, so not at all when `body` doesn't mention `Var(0)`:
+@@ -523,8 +680,27 @@ fn subst_top(body: &Expr, s: &Expr) -> Expr {
+ /// only where it's used, not at every binder crossed and again in the
+ /// result (`RELATED_WORK.md` §52).
+ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
+-    let go = |x: &Rc<Expr>, d: u32| instantiate(x, s, d);
++    instantiate_rec(e, s, d, &mut Memo::new())
++}
++fn instantiate_rec(e: &Expr, s: &Expr, d: u32, memo: &mut Memo) -> Expr {
++    if skip_on() && loose_of(e) <= d {
++        return e.clone();
++    }
++    bump(&INST_WORK);
++    let mut go = |x: &Rc<Expr>, d: u32| -> Rc<Expr> {
++        if skip_on() && x.loose() <= d { return x.clone(); }
++        let shared = memo_on() && Rc::strong_count(x) > 1;
++        let key = (Rc::as_ptr(x) as usize, d);
++        if shared {
++            bump(&MEMO_LOOK);
++            if let Some(r) = memo.get(&key) { bump(&MEMO_HIT); return r.clone(); }
++        }
++        let r = Rc::new(instantiate_rec(x, s, d, memo));
++        if shared { memo.insert(key, r.clone()); }
++        r
++    };
+     grow(|| match e {
++        Expr::Const(i) => Expr::Const(*i),
+         Expr::Var(k) => {
+             if *k == d {
+                 shift(s, 0, d as i32)
+@@ -535,18 +711,18 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
+             }
+         }
+         Expr::Sort(i) => Expr::Sort(*i),
+-        Expr::Pi(a, b) => pi(go(a, d), go(b, d + 1)),
+-        Expr::Lam(a, b) => lam(go(a, d), go(b, d + 1)),
+-        Expr::App(f, a) => app(go(f, d), go(a, d)),
+-        Expr::Id(a, x, y) => id(go(a, d), go(x, d), go(y, d)),
+-        Expr::Refl(a) => refl(go(a, d)),
+-        Expr::J { motive, base, a, b, p } => jelim(go(motive, d), go(base, d), go(a, d), go(b, d), go(p, d)),
+-        Expr::W(a, b) => wty(go(a, d), go(b, d + 1)),
+-        Expr::Sup(a, f) => sup(go(a, d), go(f, d)),
+-        Expr::WRec { motive, children_ty, step, target } => wrec(go(motive, d), go(children_ty, d + 1), go(step, d), go(target, d)),
+-        Expr::Sigma(a, b) => sigma(go(a, d), go(b, d + 1)),
+-        Expr::Pair(fam, a, b) => pair(go(fam, d + 1), go(a, d), go(b, d)),
+-        Expr::SigRec { motive, step, target } => sigrec(go(motive, d), go(step, d), go(target, d)),
++        Expr::Pi(a, b) => Expr::Pi(go(a, d), go(b, d + 1)),
++        Expr::Lam(a, b) => Expr::Lam(go(a, d), go(b, d + 1)),
++        Expr::App(f, a) => Expr::App(go(f, d), go(a, d)),
++        Expr::Id(a, x, y) => Expr::Id(go(a, d), go(x, d), go(y, d)),
++        Expr::Refl(a) => Expr::Refl(go(a, d)),
++        Expr::J { motive, base, a, b, p } => Expr::J { motive: go(motive, d), base: go(base, d), a: go(a, d), b: go(b, d), p: go(p, d) },
++        Expr::W(a, b) => Expr::W(go(a, d), go(b, d + 1)),
++        Expr::Sup(a, f) => Expr::Sup(go(a, d), go(f, d)),
++        Expr::WRec { motive, children_ty, step, target } => Expr::WRec { motive: go(motive, d), children_ty: go(children_ty, d + 1), step: go(step, d), target: go(target, d) },
++        Expr::Sigma(a, b) => Expr::Sigma(go(a, d), go(b, d + 1)),
++        Expr::Pair(fam, a, b) => Expr::Pair(go(fam, d + 1), go(a, d), go(b, d)),
++        Expr::SigRec { motive, step, target } => Expr::SigRec { motive: go(motive, d), step: go(step, d), target: go(target, d) },
+     })
+ }
+ 
+@@ -564,6 +740,7 @@ fn instantiate(e: &Expr, s: &Expr, d: u32) -> Expr {
+ fn is_var_free(e: &Expr, idx: u32) -> bool {
+     grow(|| match e {
+         Expr::Var(k) => *k == idx,
++        Expr::Const(_) => false,
+         Expr::Sort(_) => false,
+         Expr::Pi(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
+         Expr::Lam(a, b) => is_var_free(a, idx) || is_var_free(b, idx + 1),
+@@ -634,9 +811,20 @@ struct InferCache {
+     types: HashMap<(PtrKey, u32), Expr>,
+     contexts: HashMap<(u32, PtrKey), u32>,
+     next: u32,
++    rc: ReductionCache,
++}
++
++thread_local! {
++    pub static SPIKE_SHARED: std::cell::Cell<bool> = std::cell::Cell::new(std::env::var("SPIKE").is_ok_and(|v| v.contains('r')));
+ }
+ 
+ impl InferCache {
++    fn def_eq(&mut self, a: &Expr, b: &Expr) -> bool {
++        if SPIKE_SHARED.with(|c| c.get()) { conv(a, b, &mut self.rc) } else { def_eq(a, b) }
++    }
++    fn whnf(&mut self, e: &Expr) -> Expr {
++        if SPIKE_SHARED.with(|c| c.get()) { whnf_impl(e, &mut self.rc) } else { whnf(e) }
++    }
+     /// The id of context `cid` extended by a binder of type `a`.
+     fn enter(&mut self, cid: u32, a: &Rc<Expr>) -> u32 {
+         let next = &mut self.next;
+@@ -679,6 +867,7 @@ impl std::hash::Hash for PtrKey {
+ 
+ /// Weak head normal form: reduce only the outermost redex chain.
+ pub fn whnf(e: &Expr) -> Expr {
++    let _k = InKernel::enter();
+     whnf_impl(e, &mut ReductionCache::default())
+ }
+ 
+@@ -811,6 +1000,7 @@ fn nf_impl(e: &Expr, cache: &mut ReductionCache) -> Expr {
+ fn nf_whnf(w: &Expr, cache: &mut ReductionCache) -> Expr {
+     grow(|| match w {
+         Expr::Var(k) => Expr::Var(*k),
++        Expr::Const(k) => Expr::Const(*k),
+         Expr::Sort(i) => Expr::Sort(*i),
+         Expr::Pi(a, b) => pi(nf_rc(a, cache), nf_rc(b, cache)),
+         Expr::Lam(a, b) => lam(nf_rc(a, cache), nf_rc(b, cache)),
+@@ -864,6 +1054,7 @@ fn nf_rc(e: &Rc<Expr>, cache: &mut ReductionCache) -> Expr {
+ /// `a`/`b` reference overlapping subterms, which two sides of a proof
+ /// obligation very often do (the same postulates, the same sub-witnesses).
+ pub fn def_eq(a: &Expr, b: &Expr) -> bool {
++    let _k = InKernel::enter();
+     conv(a, b, &mut ReductionCache::default())
+ }
+ 
+@@ -917,6 +1108,7 @@ fn eq_noting(a: &Expr, b: &Expr, unequal: &mut HashSet<(PtrKey, PtrKey)>) -> boo
+ }
+ 
+ pub fn normalize(e: &Expr) -> Expr {
++    let _k = InKernel::enter();
+     nf(e)
+ }
+ 
+@@ -951,6 +1143,9 @@ pub type Ctx = im::Vector<Expr>;
+ /// needs to quantify over freshly-introduced variables (see `proof.rs`'s
+ /// `params_and_close`, built on top of this).
+ pub fn close_pi(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
++    if SPIKE_P.with(|c| c.get()) {
++        return close_levels(base_len, ctx, body, pi);
++    }
+     ctx.iter()
+         .skip(base_len)
+         .rev()
+@@ -962,6 +1157,9 @@ pub fn close_pi(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
+ /// have -- for when the goal is a term of that `Pi`-type (e.g. a motive or
+ /// a proof to pass as an argument), not the type itself.
+ pub fn close_lam(base_len: usize, ctx: &Ctx, body: Expr) -> Expr {
++    if SPIKE_P.with(|c| c.get()) {
++        return close_levels(base_len, ctx, body, lam);
++    }
+     ctx.iter()
+         .skip(base_len)
+         .rev()
+@@ -982,29 +1180,29 @@ fn ctx_lookup(ctx: &Ctx, k: u32) -> Option<Expr> {
+     Some(shift(&ctx[idx], 0, k as i32 + 1))
+ }
+ 
+-fn expect_sort(e: &Expr) -> Result<u32, String> {
+-    match whnf(e) {
++fn expect_sort(e: &Expr, ic: &mut InferCache) -> Result<u32, String> {
++    match ic.whnf(e) {
+         Expr::Sort(i) => Ok(i),
+         other => Err(format!("expected a Sort, got {other:?}")),
+     }
+ }
+ 
+-fn expect_pi(e: &Expr) -> Result<(Expr, Expr), String> {
+-    match whnf(e) {
++fn expect_pi(e: &Expr, ic: &mut InferCache) -> Result<(Expr, Expr), String> {
++    match ic.whnf(e) {
+         Expr::Pi(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
+         other => Err(format!("expected a Pi type, got {other:?}")),
+     }
+ }
+ 
+-fn expect_w(e: &Expr) -> Result<(Expr, Expr), String> {
+-    match whnf(e) {
++fn expect_w(e: &Expr, ic: &mut InferCache) -> Result<(Expr, Expr), String> {
++    match ic.whnf(e) {
+         Expr::W(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
+         other => Err(format!("expected a W type, got {other:?}")),
+     }
+ }
+ 
+-fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
+-    match whnf(e) {
++fn expect_sigma(e: &Expr, ic: &mut InferCache) -> Result<(Expr, Expr), String> {
++    match ic.whnf(e) {
+         Expr::Sigma(ref a, ref b) => Ok(((**a).clone(), (**b).clone())),
+         other => Err(format!("expected a Sigma type, got {other:?}")),
+     }
+@@ -1024,11 +1222,11 @@ fn expect_sigma(e: &Expr) -> Result<(Expr, Expr), String> {
+ /// because anything depends on them.
+ #[inline(never)]
+ fn infer_sigma(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, b: &Rc<Expr>) -> Result<Expr, String> {
+-    let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
++    let i = expect_sort(&infer_rc(ic, ctx, cid, a)?, ic)?;
+     let mut ctx2 = ctx.clone();
+     ctx2.push_back((**a).clone());
+     let cid2 = ic.enter(cid, a);
+-    let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
++    let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?, ic)?;
+     Ok(Expr::Sort(i.max(j)))
+ }
+ 
+@@ -1038,7 +1236,7 @@ fn infer_pair(ic: &mut InferCache, ctx: &Ctx, cid: u32, fam: &Rc<Expr>, a: &Rc<E
+     let mut ctx2 = ctx.clone();
+     ctx2.push_back(ta.clone());
+     let cid2 = ic.fresh();
+-    expect_sort(&infer_rc(ic, &ctx2, cid2, fam)?)?;
++    expect_sort(&infer_rc(ic, &ctx2, cid2, fam)?, ic)?;
+     let expected_b_ty = subst_top(fam, a);
+     check_rc(ic, ctx, cid, b, &expected_b_ty)?;
+     Ok(sigma(ta, (**fam).clone()))
+@@ -1046,7 +1244,7 @@ fn infer_pair(ic: &mut InferCache, ctx: &Ctx, cid: u32, fam: &Rc<Expr>, a: &Rc<E
+ 
+ #[inline(never)]
+ fn infer_sigrec(ic: &mut InferCache, ctx: &Ctx, cid: u32, motive: &Rc<Expr>, step: &Rc<Expr>, target: &Rc<Expr>) -> Result<Expr, String> {
+-    let (sa, sb) = expect_sigma(&infer_rc(ic, ctx, cid, target)?)?;
++    let (sa, sb) = expect_sigma(&infer_rc(ic, ctx, cid, target)?, ic)?;
+     infer_rc(ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
+ 
+     // step : Pi a:A. Pi b:B(a). motive (pair(B,a,b))
+@@ -1084,7 +1282,7 @@ fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
+ #[inline(never)]
+ fn infer_sup(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr>) -> Result<Expr, String> {
+     let ta = infer_rc(ic, ctx, cid, a)?;
+-    let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?)?;
++    let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?, ic)?;
+     // `cod` is written one binder deeper than `f`'s own domain binder; a
+     // `Sup`'s codomain must not actually depend on it -- enforced here
+     // (not just documented), by an occurs-check on `cod`'s own normal
+@@ -1096,12 +1294,12 @@ fn infer_sup(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr
+         return Err(sup_codomain_depends_on_own_argument(&cod_nf));
+     }
+     let w_candidate = subst_top(&cod, a);
+-    let (wa, wb) = expect_w(&w_candidate)?;
+-    if !def_eq(&wa, &ta) {
++    let (wa, wb) = expect_w(&w_candidate, ic)?;
++    if !ic.def_eq(&wa, &ta) {
+         return Err(format!("sup: element type mismatch: {wa:?} vs {ta:?}"));
+     }
+     let expected_dom = subst_top(&wb, a);
+-    if !def_eq(&dom, &expected_dom) {
++    if !ic.def_eq(&dom, &expected_dom) {
+         return Err(format!(
+             "sup: children-function domain mismatch: {dom:?} vs {expected_dom:?}"
+         ));
+@@ -1109,7 +1307,10 @@ fn infer_sup(ic: &mut InferCache, ctx: &Ctx, cid: u32, a: &Rc<Expr>, f: &Rc<Expr
+     Ok(wty(wa, wb))
+ }
+ 
++#[track_caller]
+ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
++    note_entry("infer", std::panic::Location::caller());
++    let _k = InKernel::enter();
+     infer_node(&mut InferCache::default(), ctx, 0, &Rc::new(e.clone()))
+ }
+ 
+@@ -1136,17 +1337,21 @@ fn infer_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Ex
+ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<Expr, String> {
+     grow(|| match &**e {
+         Expr::Var(k) => ctx_lookup(ctx, *k).ok_or_else(|| format!("unbound variable #{k}")),
++        Expr::Const(l) => match ctx.get(*l as usize) {
++            Some(ty) if loose_of(ty) == 0 => Ok(ty.clone()),
++            _ => Err(format!("bad constant @{l}")),
++        },
+         Expr::Sort(i) => i.checked_add(1).map(Expr::Sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
+         Expr::Pi(a, b) => {
+-            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
++            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?, ic)?;
+             let mut ctx2 = ctx.clone();
+             ctx2.push_back((**a).clone());
+             let cid2 = ic.enter(cid, a);
+-            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
++            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?, ic)?;
+             Ok(Expr::Sort(i.max(j)))
+         }
+         Expr::Lam(a, body) => {
+-            expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
++            expect_sort(&infer_rc(ic, ctx, cid, a)?, ic)?;
+             let mut ctx2 = ctx.clone();
+             ctx2.push_back((**a).clone());
+             let cid2 = ic.enter(cid, a);
+@@ -1154,12 +1359,12 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
+             Ok(pi((**a).clone(), tbody))
+         }
+         Expr::App(f, a) => {
+-            let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?)?;
++            let (dom, cod) = expect_pi(&infer_rc(ic, ctx, cid, f)?, ic)?;
+             check_rc(ic, ctx, cid, a, &dom)?;
+             Ok(subst_top(&cod, a))
+         }
+         Expr::Id(a, x, y) => {
+-            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
++            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?, ic)?;
+             check_rc(ic, ctx, cid, x, a)?;
+             check_rc(ic, ctx, cid, y, a)?;
+             Ok(Expr::Sort(i))
+@@ -1197,11 +1402,11 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
+             ))
+         }
+         Expr::W(a, b) => {
+-            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?)?;
++            let i = expect_sort(&infer_rc(ic, ctx, cid, a)?, ic)?;
+             let mut ctx2 = ctx.clone();
+             ctx2.push_back((**a).clone());
+             let cid2 = ic.enter(cid, a);
+-            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?)?;
++            let j = expect_sort(&infer_rc(ic, &ctx2, cid2, b)?, ic)?;
+             Ok(Expr::Sort(i.max(j)))
+         }
+         Expr::Sup(a, f) => infer_sup(ic, ctx, cid, a, f),
+@@ -1211,7 +1416,7 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
+             step,
+             target,
+         } => {
+-            let (wa, wb) = expect_w(&infer_rc(ic, ctx, cid, target)?)?;
++            let (wa, wb) = expect_w(&infer_rc(ic, ctx, cid, target)?, ic)?;
+             // Soundness gate for `whnf_impl`'s own use of `children_ty`
+             // (see `Expr::WRec`'s own doc): `target`'s *real* children-type
+             // family, independently re-derived here from its own inferred
+@@ -1221,7 +1426,7 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
+             // lies about what's actually being recursed into, letting an
+             // otherwise-untyped step function's body get away with
+             // anything at that domain.
+-            if !def_eq(children_ty, &wb) {
++            if !ic.def_eq(children_ty, &wb) {
+                 return Err(wrec_children_ty_mismatch(children_ty, &wb));
+             }
+             infer_rc(ic, ctx, cid, motive)?;
+@@ -1265,16 +1470,19 @@ fn infer_node(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>) -> Result<
+ /// one that used to exist (`MAX_CHECK_DEPTH`, `RELATED_WORK.md` 30) was
+ /// purely a stack-survival bound. How long a deep check takes is the
+ /// caller's to bound; `proof.rs`'s step budgets do that.
++#[track_caller]
+ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
++    note_entry("check", std::panic::Location::caller());
++    let _k = InKernel::enter();
+     check_rc(&mut InferCache::default(), ctx, 0, &Rc::new(e.clone()), expected)
+ }
+ 
+ fn check_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>, expected: &Expr) -> Result<(), String> {
+     grow(|| {
+         if let Expr::Lam(a, body) = &**e
+-            && let Expr::Pi(ref dom, ref cod) = whnf(expected)
++            && let Expr::Pi(ref dom, ref cod) = ic.whnf(expected)
+         {
+-            if !def_eq(a, dom) {
++            if !ic.def_eq(a, dom) {
+                 return Err(format!("lambda domain mismatch: {a:?} vs {dom:?}"));
+             }
+             let mut ctx2 = ctx.clone();
+@@ -1283,7 +1491,7 @@ fn check_rc(ic: &mut InferCache, ctx: &Ctx, cid: u32, e: &Rc<Expr>, expected: &E
+             return check_rc(ic, &ctx2, cid2, body, cod);
+         }
+         let inferred = infer_rc(ic, ctx, cid, e)?;
+-        if def_eq(&inferred, expected) {
++        if ic.def_eq(&inferred, expected) {
+             Ok(())
+         } else {
+             Err(format!(
+@@ -1316,17 +1524,23 @@ pub fn typecheck(e: &Expr) -> Result<Expr, String> {
+ #[derive(Clone)]
+ pub struct Postulates {
+     pub ctx: Ctx,
++    pub locals_base: usize,
+ }
+ impl Postulates {
+     pub fn new() -> Self {
+-        Postulates { ctx: Ctx::new() }
++        Postulates { ctx: Ctx::new(), locals_base: usize::MAX }
+     }
++    #[track_caller]
+     pub fn push(&mut self, ty: Expr) -> usize {
++        if self.locals_base != usize::MAX { let l = std::panic::Location::caller(); stat(format!("push in scope at {}:{}", l.file(), l.line())); }
+         let pos = self.ctx.len();
+         self.ctx.push_back(ty);
+         pos
+     }
+     pub fn get(&self, pos: usize) -> Expr {
++        if SPIKE_P.with(|c| c.get()) || (SPIKE_CONST.with(|c| c.get()) && pos < self.locals_base) {
++            return Expr::Const(pos as u32);
++        }
+         var((self.ctx.len() - 1 - pos) as u32)
+     }
+ }
+@@ -1710,6 +1924,7 @@ mod tests {
+                 }
+             }
+             Expr::Sort(i) => Expr::Sort(*i),
++            Expr::Const(i) => Expr::Const(*i),
+             Expr::Pi(a, b) => pi(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
+             Expr::Lam(a, b) => lam(subst(a, j, s), subst(b, j + 1, &shift(s, 0, 1))),
+             Expr::App(f, a) => app(subst(f, j, s), subst(a, j, s)),
+diff --git a/src/proof.rs b/src/proof.rs
+index c4c6a77..26b660d 100644
+--- a/src/proof.rs
++++ b/src/proof.rs
+@@ -1704,6 +1704,9 @@ fn params_and_close(
+     build: impl FnOnce(&mut ArithPostulates, &Params) -> Option<Expr>,
+ ) -> Option<Expr> {
+     let base_len = arith.p.ctx.len();
++    let saved_base = arith.p.locals_base;
++    arith.p.locals_base = saved_base.min(base_len);
++    kernel::SCOPE_OPEN.with(|s| s.set(s.get() + 1));
+     let mut positions = Vec::with_capacity(n);
+     for _ in 0..n {
+         let ty = arith.int_ty();
+@@ -1713,6 +1716,8 @@ fn params_and_close(
+     let body = build(arith, &pp);
+     let closed = body.map(|b| close(base_len, &arith.p.ctx, b));
+     arith.p.ctx.truncate(base_len);
++    arith.p.locals_base = saved_base;
++    kernel::SCOPE_OPEN.with(|s| s.set(s.get() - 1));
+     closed
+ }
+ 
+@@ -1733,6 +1738,9 @@ fn params_and_close_typed(
+     build: impl FnOnce(&mut ClosureCombinators<'_>, &Params) -> Option<Expr>,
+ ) -> Option<Expr> {
+     let base_len = arith.p.ctx.len();
++    let saved_base = arith.p.locals_base;
++    arith.p.locals_base = saved_base.min(base_len);
++    kernel::SCOPE_OPEN.with(|s| s.set(s.get() + 1));
+     let mut positions = Vec::with_capacity(param_types.len());
+     for pt in param_types {
+         let ty = match pt {
+@@ -1745,6 +1753,8 @@ fn params_and_close_typed(
+     let body = build(arith, &pp);
+     let closed = body.map(|b| close(base_len, &arith.p.ctx, b));
+     arith.p.ctx.truncate(base_len);
++    arith.p.locals_base = saved_base;
++    kernel::SCOPE_OPEN.with(|s| s.set(s.get() - 1));
+     closed
+ }
+ 
+@@ -2081,6 +2091,9 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>>
+         Some(kernel::sort(0))
+     })?;
+     let p_base_len = arith.p.ctx.len();
++    let p_saved_base = arith.p.locals_base;
++    arith.p.locals_base = p_saved_base.min(p_base_len);
++    kernel::SCOPE_OPEN.with(|s| s.set(s.get() + 1));
+     let p_pos = arith.p.push(motive_ty);
+     let p_of = |arith: &ArithPostulates, params: &[Expr], v: Expr, e: Expr| -> Expr {
+         apply_n(arith.p.get(p_pos), params.iter().cloned().chain([v, e]))
+@@ -2130,6 +2143,8 @@ fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>>
+     let ev_rec_ty_body = leaf_case_tys.iter().rev().fold(concl_ty, |acc, ty| kernel::arrow(ty.clone(), acc));
+     let ev_rec_ty = kernel::close_pi(p_base_len, &arith.p.ctx, ev_rec_ty_body);
+     arith.p.ctx.truncate(p_base_len);
++    arith.p.locals_base = p_saved_base;
++    kernel::SCOPE_OPEN.with(|s| s.set(s.get() - 1));
+     let ev_rec_pos = arith.p.push(ev_rec_ty);
+     let ev_rec_ref = |arith: &ArithPostulates, motive: Expr, cases: &[Expr], params: &[Expr], v: Expr, e: Expr| -> Expr {
+         apply_n(
+@@ -7588,6 +7603,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) ->
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::kernel::Rc;
+     use crate::eval;
+     use crate::term::TermStore;
+ 
+@@ -9491,6 +9507,118 @@ mod tests {
+         assert!(large < 4 * small, "fib(8): {small} nodes, fib(12): {large}");
+     }
+ 
++    #[test]
++    #[ignore]
++    fn spike_counts() {
++        use kernel::*;
++        let cs: [&'static std::thread::LocalKey<std::cell::Cell<u64>>; 8] =
++            [&ABS_WORK, &ABS_SKIP, &SHIFT_WORK, &SHIFT_WORK_BUILDER, &INST_WORK, &MEMO_LOOK, &MEMO_HIT, &SHIFT_WORK];
++        let names = ["abs_work", "abs_skip", "shift", "shift_builder", "inst", "memo_look", "memo_hit"];
++        let cfgs: Vec<String> = std::env::var("CFGS").unwrap_or("sc,scm,scp,scpm".into()).split(',').map(String::from).collect();
++        let mut s = TermStore::new();
++        let g = gcd(&mut s);
++        for cfg in &cfgs {
++            SPIKE_SKIP.with(|c| c.set(cfg.contains('s')));
++            SPIKE_CONST.with(|c| c.set(cfg.contains('c')));
++            SPIKE_P.with(|c| c.set(cfg.contains('p')));
++            SPIKE_MEMO.with(|c| c.set(cfg.contains('m')));
++            for c in cs { c.with(|x| x.set(0)); }
++            let proof = prove_tail_recursive_universal(&s, g).expect("gcd proves");
++            let counts: Vec<String> = names.iter().zip(cs).map(|(n, c)| format!("{n}={}", c.with(|x| x.get()))).collect();
++            println!("SPIKE gcd cfg={cfg:5} dag={} {}", dag_size(&proof.theorem_proof), counts.join(" "));
++        }
++        let mut s = TermStore::new();
++        let n = s.var(0);
++        let f = s.var(1);
++        let two = s.lit(2);
++        let cond = s.prim(PrimOp::Lt, n, two);
++        let one = s.lit(1);
++        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
++        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
++        let call1 = s.app(f, n_minus_1);
++        let call2 = s.app(f, n_minus_2);
++        let else_branch = s.prim(PrimOp::Add, call1, call2);
++        let body = s.if_(cond, n, else_branch);
++        let abs = s.abs(body);
++        let fib = s.rec(abs);
++        for cfg in &cfgs {
++            SPIKE_SKIP.with(|c| c.set(cfg.contains('s')));
++            SPIKE_CONST.with(|c| c.set(cfg.contains('c')));
++            SPIKE_P.with(|c| c.set(cfg.contains('p')));
++            SPIKE_MEMO.with(|c| c.set(cfg.contains('m')));
++            for c in cs { c.with(|x| x.set(0)); }
++            let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
++            kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone())).unwrap();
++            let counts: Vec<String> = names.iter().zip(cs).map(|(n, c)| format!("{n}={}", c.with(|x| x.get()))).collect();
++            println!("SPIKE fib16 cfg={cfg:5} dag={} {}", dag_size(&proof.proof), counts.join(" "));
++        }
++    }
++
++    #[test]
++    #[ignore]
++    fn zzz_spike_dump() {
++        for (k, v) in kernel::STATS.lock().unwrap().iter().flatten() {
++            println!("STAT {v:8} {k}");
++        }
++    }
++
++    #[test]
++    #[ignore]
++    fn spike_sizes() {
++        println!("SIZES Expr={} Node={}", std::mem::size_of::<Expr>(), std::mem::size_of::<kernel::Node<Expr>>());
++    }
++
++    #[test]
++    #[ignore]
++    fn spike_fib() {
++        let mut s = TermStore::new();
++        let n = s.var(0);
++        let f = s.var(1);
++        let two = s.lit(2);
++        let cond = s.prim(PrimOp::Lt, n, two);
++        let one = s.lit(1);
++        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
++        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
++        let call1 = s.app(f, n_minus_1);
++        let call2 = s.app(f, n_minus_2);
++        let else_branch = s.prim(PrimOp::Add, call1, call2);
++        let body = s.if_(cond, n, else_branch);
++        let abs = s.abs(body);
++        let fib = s.rec(abs);
++        let reps: usize = std::env::var("REPS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
++        let ns: Vec<i64> = std::env::var("NS").unwrap_or("8,12,16".into()).split(',').map(|x| x.parse().unwrap()).collect();
++        let cfgs: Vec<String> = std::env::var("CFGS").unwrap_or("-,s,c,sc".into()).split(',').map(String::from).collect();
++        for &n in &ns {
++            let mut best = vec![(f64::MAX, f64::MAX); cfgs.len()];
++            let mut sizes = vec![0; cfgs.len()];
++            let mut counts = vec![[0u64; 3]; cfgs.len()];
++            for _ in 0..reps {
++                for (i, cfg) in cfgs.iter().enumerate() {
++                    kernel::SPIKE_SKIP.with(|c| c.set(cfg.contains('s')));
++                    kernel::SPIKE_CONST.with(|c| c.set(cfg.contains('c')));
++                    kernel::SPIKE_SHARED.with(|c| c.set(cfg.contains('r')));
++                    kernel::SPIKE_P.with(|c| c.set(cfg.contains('p')));
++                    kernel::SPIKE_MEMO.with(|c| c.set(cfg.contains('m')));
++                    for c in [&kernel::ABS_WORK, &kernel::ABS_SKIP, &kernel::SHIFT_WORK, &kernel::SHIFT_WORK_BUILDER] { c.with(|x| x.set(0)); }
++                    let t = std::time::Instant::now();
++                    let proof = prove_tail_recursive_instance(&s, fib, &[n]).unwrap();
++                    let t_prove = t.elapsed().as_secs_f64() * 1e3;
++                    let shift_in_prove = kernel::SHIFT_WORK.with(|x| x.get());
++                    if cfg.contains('p') || cfg.contains('c') { eprintln!("PHASE fib({n}) {cfg} shift_in_prove={shift_in_prove} of_which_builder={}", kernel::SHIFT_WORK_BUILDER.with(|x| x.get())); }
++                    let t2 = std::time::Instant::now();
++                    kernel::check(&proof.ctx, &proof.proof, &kernel::id(proof.int_ty.clone(), proof.lhs.clone(), proof.rhs.clone())).unwrap();
++                    let t_check = t2.elapsed().as_secs_f64() * 1e3;
++                    if t_prove + t_check < best[i].0 + best[i].1 { best[i] = (t_prove, t_check); }
++                    sizes[i] = dag_size(&proof.proof);
++                    counts[i] = [&kernel::ABS_WORK, &kernel::ABS_SKIP, &kernel::SHIFT_WORK].map(|c| c.with(|x| x.get()));
++                }
++            }
++            for (i, cfg) in cfgs.iter().enumerate() {
++                println!("SPIKE fib({n}) cfg={cfg:4} prove={:9.2} ms recheck={:9.2} ms dag={} abs_work={} abs_skip={} shift_work={}", best[i].0, best[i].1, sizes[i], counts[i][0], counts[i][1], counts[i][2]);
++            }
++        }
++    }
++
+     #[test]
+     fn one_functions_instance_proof_is_rejected_against_anothers_type() {
+         // Same adversarial shape as

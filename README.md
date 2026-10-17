@@ -53,9 +53,10 @@ This project was developed with substantial AI assistance: over 90% of the
 commits (500 of 536 when this note was written) carry a `Co-Authored-By:
 Claude` trailer, and the design notes in `RELATED_WORK.md` were written the
 same way. Treat the measurements and proofs as claims to re-run, not as
-audited results. The internal planning notes and experiment scripts that some
-commits and `RELATED_WORK.md` refer to (`docs/superpowers/`,
-`scripts/experiments/`) are not part of this repository.
+audited results. The design specs and implementation plans behind the work are
+in `docs/superpowers/` (each starts with its `status:`); the experiment scripts
+that some commits and `RELATED_WORK.md` refer to (`scripts/experiments/`) are
+not part of this repository.
 
 ## The end-to-end loop experiment
 
