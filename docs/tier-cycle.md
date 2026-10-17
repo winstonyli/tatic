@@ -1880,7 +1880,19 @@ Options, ranked by end-state design (fewer concepts, fewer special cases):
 A is the only option that removes concepts; B and C each add a second implementation of something that exists. A's
 cheapest falsifier is additive and leaves no rework: on the JIT's own corpus (`src/test_corpus.rs`), count the terms
 that the mined `add`/`sub` rules would rewrite (ring identities, which hold at every width) and the change in compiled
-instruction count. If the mined rules never fire on the JIT's programs, A's cycle has nothing to run on. Not run.
+instruction count. If the mined rules never fire on the JIT's programs, A's cycle has nothing to run on.
+
+*Result (2026-10-17, probe reverted; `docs/runs/2026-10-12/patches/option_a_probe.patch`): nearly nothing to run on.*
+The 24 distinct add/sub-only rules in the 11 mined and hand rule files (of 203 rule lines; the rest use `lt`, `xor` or
+shifts, which `term.rs` lacks) were matched against every node of `tests/rule_match_census.rs`'s 19 builders (the
+benchmark terms, so `test_corpus` less its two `(150)` loop variants and three IR fixtures, plus
+`redundant_arithmetic_recursion`): 286 nodes, 32 of them add or sub, 4 an add or sub over another. Two rules fire, both
+on one node, `add(sub(v2, v1), v0)` in `over_application_if_between_closures`, and both only reorder it: 0 instructions
+saved (no operator removed, no constant left foldable). The other three nested nodes are `add(add(..), ..)`, which no
+mined rule rewrites, and the planted `x + 0`. The JIT's programs are loops and closures over `n - 1` and `a + b`; the
+miner's laws are about deeper word arithmetic. So A's cycle needs workloads with arithmetic depth (or the JIT's
+specialiser to produce it, by inlining) before its rules can pay; unifying the term languages stands on concept count
+alone, not on measured gain.
 
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.

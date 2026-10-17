@@ -1,0 +1,173 @@
+diff --git a/tests/option_a_probe.rs b/tests/option_a_probe.rs
+new file mode 100644
+index 0000000..c6c529b
+--- /dev/null
++++ b/tests/option_a_probe.rs
+@@ -0,0 +1,167 @@
++// Throwaway probe (docs/tier-cycle.md, option A's falsifier): how many of the JIT corpus's nodes would a mined
++// add/sub rule rewrite, and how many wasm instructions would that save? Pattern variables bind any subterm
++// (consistently); numeric constants match `Lit`. A rewrite saves an instruction only if its right side has fewer
++// operators, or leaves an operator whose two operands are both literals (constant-foldable).
++#[path = "../benches/common.rs"]
++mod common;
++
++use std::collections::{HashMap, HashSet};
++use tatic::term::{Hash, PrimOp, Term, TermStore};
++
++#[derive(Debug, Clone)]
++enum P {
++    V(String),
++    C(i64),
++    Op(PrimOp, Box<P>, Box<P>),
++}
++
++fn parse(s: &str) -> Option<P> {
++    let s = s.trim();
++    for (name, op) in [("add", PrimOp::Add), ("sub", PrimOp::Sub)] {
++        if let Some(rest) = s.strip_prefix(name).and_then(|r| r.strip_prefix('(')).and_then(|r| r.strip_suffix(')')) {
++            let (mut depth, mut cut) = (0, None);
++            for (i, c) in rest.char_indices() {
++                match c {
++                    '(' => depth += 1,
++                    ')' => depth -= 1,
++                    ',' if depth == 0 => {
++                        cut = Some(i);
++                        break;
++                    }
++                    _ => {}
++                }
++            }
++            let i = cut?;
++            return Some(P::Op(op, Box::new(parse(&rest[..i])?), Box::new(parse(&rest[i + 1..])?)));
++        }
++    }
++    if let Ok(n) = s.parse() {
++        return Some(P::C(n));
++    }
++    (s.chars().all(|c| c.is_ascii_lowercase()) && s.len() == 1).then(|| P::V(s.into()))
++}
++
++fn ops(p: &P) -> usize {
++    match p {
++        P::Op(_, a, b) => 1 + ops(a) + ops(b),
++        _ => 0,
++    }
++}
++
++fn matches(s: &TermStore, p: &P, h: Hash, env: &mut HashMap<String, Hash>) -> bool {
++    match (p, s.resolve(h)) {
++        (P::V(v), _) => *env.entry(v.clone()).or_insert(h) == h,
++        (P::C(n), Term::Lit(m)) => n == m,
++        (P::Op(o, a, b), Term::Prim(o2, x, y)) => o == o2 && matches(s, a, *x, env) && matches(s, b, *y, env),
++        _ => false,
++    }
++}
++
++// Whether the instantiated right side has an operator over two literals.
++fn foldable(s: &TermStore, p: &P, env: &HashMap<String, Hash>) -> bool {
++    let lit = |q: &P| match q {
++        P::C(_) => true,
++        P::V(v) => matches!(s.resolve(env[v]), Term::Lit(_)),
++        _ => false,
++    };
++    match p {
++        P::Op(_, a, b) => (lit(a) && lit(b)) || foldable(s, a, env) || foldable(s, b, env),
++        _ => false,
++    }
++}
++
++#[test]
++fn mined_add_sub_rules_on_the_jit_corpus() {
++    let files = [
++        "scripts/data/add3_mm_rules.txt",
++        "scripts/data/add3_nl_rules.txt",
++        "scripts/data/mix3_mm_rules.txt",
++        "scripts/data/mix3_nl_rules.txt",
++        "scripts/rules/reassoc.txt",
++        "scripts/rules/cmp.txt",
++        "docs/runs/2026-10-12/promo/show.rules",
++        "docs/runs/2026-10-12/promo/show_r1.rules",
++        "docs/runs/2026-10-12/promo/size.rules",
++        "docs/runs/2026-10-12/promo/size_r1.rules",
++        "docs/runs/2026-10-12/scripts/cmp3d_own_rules.txt",
++    ];
++    let mut seen = HashSet::new();
++    let mut rules = vec![];
++    let mut all = 0;
++    for f in files {
++        for line in std::fs::read_to_string(f).unwrap().lines() {
++            let Some((l, r)) = line.split_once("->") else { continue };
++            all += 1;
++            if let (Some(l), Some(r)) = (parse(l), parse(r)) {
++                if seen.insert(line.trim().to_string()) {
++                    rules.push((line.trim().to_string(), l, r));
++                }
++            }
++        }
++    }
++    println!("PROBE rules: {all} lines, {} distinct add/sub-only", rules.len());
++
++    type B = fn(&mut TermStore) -> Hash;
++    let corpus: Vec<(&str, B)> = vec![
++        ("factorial", common::factorial),
++        ("fib", common::fib),
++        ("redundant_arithmetic_recursion", common::redundant_arithmetic_recursion),
++        ("gcd", common::gcd),
++        ("gcd_with_two_base_cases", common::gcd_with_two_base_cases),
++        ("capturing_closure_loop", common::capturing_closure_loop),
++        ("partial_application_loop", common::partial_application_loop),
++        ("straight_line", common::straight_line),
++        ("twice_inc_5", common::twice_inc_5),
++        ("a_capturing_closure_call", common::a_capturing_closure_call),
++        ("a_pap_non_capturing", common::a_pap_non_capturing),
++        ("a_pap_capturing", common::a_pap_capturing),
++        ("iterate", common::iterate),
++        ("non_tail_closure_carrying_recursion", common::non_tail_closure_carrying_recursion),
++        ("branching_non_tail_closure_carrying_recursion", common::branching_non_tail_closure_carrying_recursion),
++        ("over_application_if_between_closures", common::over_application_if_between_closures),
++        ("over_application_pap_producing_root", common::over_application_pap_producing_root),
++        ("tail_recursive_loop_with_if_between_closures_self_call_arg", common::tail_recursive_loop_with_if_between_closures_self_call_arg),
++        ("tail_recursive_loop_with_pap_producing_root_self_call_arg", common::tail_recursive_loop_with_pap_producing_root_self_call_arg),
++    ];
++    let (mut nodes, mut addsub, mut nested, mut hits, mut saved) = (0, 0, 0, 0, 0);
++    for (name, b) in &corpus {
++        let mut s = TermStore::new();
++        let root = b(&mut s);
++        let mut seen = HashSet::new();
++        let mut stack = vec![root];
++        while let Some(h) = stack.pop() {
++            if !seen.insert(h) {
++                continue;
++            }
++            nodes += 1;
++            match s.resolve(h).clone() {
++                Term::Prim(op, a, b2) => {
++                    let is = |o: PrimOp| matches!(o, PrimOp::Add | PrimOp::Sub);
++                    if is(op) {
++                        addsub += 1;
++                        if [a, b2].iter().any(|&k| matches!(s.resolve(k), Term::Prim(o, _, _) if is(*o))) {
++                            nested += 1;
++                            let sh = |k: Hash| match s.resolve(k) { Term::Prim(o, x, y) => format!("{o:?}({:?},{:?})", s.resolve(*x), s.resolve(*y)), t => format!("{t:?}") };
++                            println!("PROBE nested {name}: {op:?}({}, {})", sh(a), sh(b2));
++                        }
++                    }
++                    for (text, l, r) in &rules {
++                        let mut env = HashMap::new();
++                        if matches(&s, l, h, &mut env) {
++                            hits += 1;
++                            let gain = ops(l) as i64 - ops(r) as i64 + i64::from(foldable(&s, r, &env));
++                            saved += gain;
++                            println!("PROBE hit {name}: {text} (instructions saved {gain})");
++                        }
++                    }
++                    stack.extend([a, b2]);
++                }
++                Term::If(c, t, e) => stack.extend([c, t, e]),
++                Term::Abs(x) | Term::Rec(x) => stack.push(x),
++                Term::App(f, x) => stack.extend([f, x]),
++                _ => {}
++            }
++        }
++    }
++    println!("PROBE corpus: nodes={nodes} add/sub={addsub} add/sub over add/sub={nested} rule hits={hits} instructions saved={saved}");
++}
