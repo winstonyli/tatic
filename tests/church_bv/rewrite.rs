@@ -1174,11 +1174,13 @@ fn pattern_classes(p: &Term) -> Classes {
 /// for leaves, the rules in that order that are not ablated and whose left side can match such a term, each with the classes
 /// its two operands can match. Keyed by the root operator alone, `rule_step_in` called `match_pat` on 16.7 rules a call, 31M a
 /// sweep (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
+/// `join`: the equation steps `join_eq` takes (`join_eqs`).
 pub struct RuleTable {
     pub mined: Vec<(Term, Term)>,
     rules: Vec<TableRule>,
     by_op: [Vec<(u32, [Classes; 2])>; OP_INFO.len()],
     leaf: Vec<u32>,
+    join: Vec<JoinEq>,
 }
 
 impl RuleTable {
@@ -1197,7 +1199,8 @@ impl RuleTable {
                 Node::Zero | Node::Ones => leaf.push(i as u32),
             }
         }
-        RuleTable { mined, rules, by_op, leaf }
+        let join = join_eqs(&rules);
+        RuleTable { mined, rules, by_op, leaf, join }
     }
 
     /// The rules that can match `t`, in order.
@@ -2334,7 +2337,7 @@ pub fn prove_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     if let Some(p) = shr_mask_eq(n, k, a, b) {
         return Some(p);
     }
-    machine_fallback(n, k, a, b)
+    join_or_machine(n, k, a, b)
 }
 
 /// The whole-term machine proof of `a = b` (the carry-encoding proof for the two terms as bit-serial machines), counted in
@@ -2350,6 +2353,123 @@ fn machine_fallback(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     }
     MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
     Some(Plan::law(LawKind::Tree, *a, *b, vars(k)))
+}
+
+/// `a = b` by the bounded join, else by the whole-term machine proof: the floor laws' normal forms all join within a few
+/// equation steps (docs/tier-cycle.md, "Equational reach of the floor").
+fn join_or_machine(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+    join_eq(n, k, a, b).or_else(|| machine_fallback(n, k, a, b))
+}
+
+/// One step the join may take: `from -> to` over the pattern variables `V(0..vars)`, an instance of the proved law
+/// `lhs = rhs` of `kind` (read right to left when `backward`).
+#[derive(Clone, Copy)]
+struct JoinEq {
+    from: Term,
+    to: Term,
+    vars: usize,
+    kind: LawKind,
+    lhs: Term,
+    rhs: Term,
+    backward: bool,
+}
+
+/// The join's steps: every rule not ablated (built-in, promoted and mined), add's associativity and commutativity and those of
+/// and, or and xor, each rule and associativity both ways. A direction is a step when its left side is not a bare variable,
+/// binds every variable of its right side, and keeps `lt` at the root (`lt` occurs nowhere else).
+fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
+    let (x, y, z) = (Term::v(0), Term::v(1), Term::v(2));
+    let op = Term::op;
+    let mut laws: Vec<(LawKind, Term, Term, bool)> = rules.iter().filter(|r| !ablated(r.name)).map(|r| (LawKind::Rule(r.name), r.lhs, r.rhs, true)).collect();
+    laws.push((LawKind::Assoc, op(ADD, op(ADD, x, y), z), op(ADD, x, op(ADD, y, z)), true));
+    laws.push((LawKind::Comm, op(ADD, x, y), op(ADD, y, x), false));
+    for o in [AND, OR, XOR] {
+        laws.push((LawKind::Bitwise, op(o, op(o, x, y), z), op(o, x, op(o, y, z)), true));
+        laws.push((LawKind::Bitwise, op(o, x, y), op(o, y, x), false));
+    }
+    let is_lt = |t: &Term| matches!(*t.node(), Node::Op(LT, ..));
+    let usable = |from: &Term, to: &Term| {
+        !matches!(*from.node(), Node::V(_)) && (0..RULE_VARS).all(|v| !to.has_var(v) || from.has_var(v)) && is_lt(from) == is_lt(to)
+    };
+    let mut eqs = vec![];
+    for (kind, lhs, rhs, both) in laws {
+        let vars = lhs.max_var().max(rhs.max_var()) + 1;
+        for (from, to, backward) in [(lhs, rhs, false), (rhs, lhs, true)] {
+            if (both || !backward) && usable(&from, &to) {
+                eqs.push(JoinEq { from, to, vars, kind, lhs, rhs, backward });
+            }
+        }
+    }
+    eqs
+}
+
+/// Every term one step of `eqs` from `t`, at any position, of at most `cap` nodes, with the plan of `t = term`.
+fn join_steps(t: &Term, eqs: &[JoinEq], cap: usize, out: &mut Vec<(Term, PlanRc)>) {
+    for e in eqs {
+        let mut sub = [None; RULE_VARS];
+        if !match_pat(&e.from, t, &mut sub) || PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) {
+            continue;
+        }
+        let u = subst_pat(&e.to, &sub);
+        if u.size() > cap || u == *t {
+            continue;
+        }
+        let law = Plan::law(e.kind, e.lhs, e.rhs, sub[..e.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect());
+        out.push((u, if e.backward { Plan::sym(law) } else { law }));
+    }
+    if let Node::Op(o, a, b) = *t.node() {
+        let mut inner = vec![];
+        join_steps(&a, eqs, cap - (t.size() - a.size()), &mut inner);
+        out.extend(inner.drain(..).map(|(a2, p)| (Term::op(o, a2, b), Plan::cong(o, p, Plan::refl(&b)))));
+        join_steps(&b, eqs, cap - (t.size() - b.size()), &mut inner);
+        out.extend(inner.drain(..).map(|(b2, p)| (Term::op(o, a, b2), Plan::cong(o, Plan::refl(&a), p))));
+    }
+}
+
+/// The plan of `a = b` by joining them: breadth-first from both at once (one layer of the smaller frontier at a time) over
+/// `join_eqs`, through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or more than
+/// `JOIN_VISIT` (5000) terms are reached. Only pairs equal on random inputs are searched, so an unequal pair costs no search.
+/// `ABLATE=join` switches it off.
+pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+    if ablated("join") || a.differs_in(b, n, k, 16) {
+        return None;
+    }
+    let (cap, visit) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 5000usize));
+    // each reached term with the term it was reached from and the plan of that step
+    type Seen = hashbrown::HashMap<Term, Option<(Term, PlanRc)>>;
+    let path = |seen: &Seen, mut t: Term| -> PlanRc {
+        let mut steps = vec![];
+        while let Some((prev, step)) = &seen[&t] {
+            steps.push(step.clone());
+            t = *prev;
+        }
+        steps.into_iter().rev().reduce(Plan::trans).unwrap_or_else(|| Plan::refl(&t))
+    };
+    let mut seen: [Seen; 2] = [Seen::from([(*a, None)]), Seen::from([(*b, None)])];
+    let mut front = [vec![*a], vec![*b]];
+    RULE_TABLE.with(|table| {
+        let eqs = &table.borrow().join;
+        let mut out = vec![];
+        while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
+            let s = (front[0].len() > front[1].len()) as usize;
+            for t in std::mem::take(&mut front[s]) {
+                join_steps(&t, eqs, cap, &mut out);
+                for (u, step) in out.drain(..) {
+                    if seen[1 - s].contains_key(&u) {
+                        // `this side = u` and `other side = u`
+                        let (here, there) = (Plan::trans(path(&seen[s], t), step), path(&seen[1 - s], u));
+                        let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
+                        return Some(Plan::trans(pa, Plan::sym(pb)));
+                    }
+                    if !seen[s].contains_key(&u) {
+                        seen[s].insert(u, Some((t, step)));
+                        front[s].push(u);
+                    }
+                }
+            }
+        }
+        None
+    })
 }
 
 /// `shr1 A = shr1 B` (or `0 = shr1 B`, as `shr1 0`) for machine-expressible `A`, `B`, without a lookahead machine: the
@@ -2419,7 +2539,7 @@ pub fn rewrite_plan(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<PlanRc> 
             };
             match by_operands {
                 Some(plan) => plan,
-                None => machine_fallback(n, k, &r1, &r2)?,
+                None => join_or_machine(n, k, &r1, &r2)?,
             }
         };
         (p1, p2, mid)
@@ -2486,6 +2606,27 @@ fn plans_compile_to_checked_proofs() {
             let (p, s) = law_proof(4, k, l, r, &plans[0]);
             ck(&format!("{} = {}", l.show(), r.show()), &p, &s);
         }
+    })
+}
+
+/// The bounded join closes an equal pair by a mined rule and add commutativity (a plan whose sides are the pair's and which
+/// the kernel accepts, and which counting finds too), and gives none for a pair that is not equal.
+#[test]
+fn join_eq_closes_an_equal_pair_by_rule_and_comm_steps() {
+    tatic::kernel::scoped(|| {
+        set_extra_rules(vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))]);
+        let (n, k) = (4, 3);
+        let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
+        SCORE_ONLY.with(|s| s.set(true));
+        let counted = join_eq(n, k, &a, &b);
+        SCORE_ONLY.with(|s| s.set(false));
+        assert!(matches!(counted.as_deref(), Some(Plan::Counting)), "counting found no join");
+        let plan = join_eq(n, k, &a, &b).expect("a join");
+        assert!(Compiler::new(n, k).proof(&plan).0 == a && Compiler::new(n, k).proof(&plan).1 == b);
+        let (p, s) = law_proof(n, k, &a, &b, &plan);
+        ck("joined", &p, &s);
+        assert!(join_eq(n, k, &a, &parse_term("add(sub(add(x, y), -1), y)")).is_none());
+        set_extra_rules(vec![]);
     })
 }
 
