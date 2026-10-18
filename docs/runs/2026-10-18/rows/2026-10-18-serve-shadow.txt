@@ -1,0 +1,20 @@
+salt 1: exit 0 wall 115 s, 243 serving searches
+salt 2: exit 0 wall 178 s, 234 serving searches
+salt 3: exit 0 wall 124 s, 229 serving searches
+real fail->fail: 212
+real met->met: 494
+real failures 212: larger side mean 6.9 nodes (max 9), shadow reached mean 75
+real fails at the visit cap: 0 (max reached 191, mean 14)
+most frequent failing pairs:
+      9 add(sub(x, y), z)	sub(x, sub(y, z))
+      8 add(sub(y, x), z)	sub(y, sub(x, z))
+      7 lt(add(-1, x), add(x, add(y, z)))	lt(add(y, z), sub(0, x))
+      6 sub(z, add(x, y))	sub(sub(z, x), y)
+      4 sub(z, shl1(y, 0))	sub(sub(z, y), y)
+      4 sub(x, shl1(z, 0))	sub(sub(x, z), z)
+      4 sub(x, add(y, z))	sub(sub(x, z), y)
+      4 sub(shl1(y, 0), x)	sub(y, sub(x, y))
+      4 add(sub(x, z), y)	sub(y, sub(z, x))
+      4 add(sub(x, y), z)	sub(z, sub(y, x))
+      3 sub(z, add(x, y))	sub(sub(z, y), x)
+      3 sub(y, shl1(z, 0))	sub(sub(y, z), z)

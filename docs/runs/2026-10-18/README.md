@@ -39,6 +39,11 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   `cost_join_ac.patch`; exe `bv_sbnd`): `JOIN_COST_BOUND=<budget>`, the bounded join replacing the real one in the
   serving worker. `scripts/serve_bound_ab.sh <exe> <salt>...`: per salt, `SWEEP=cold:cmp3d` as built and with
   `JOIN_COST_BOUND=4`, a 12 GB watchdog, and each loop's M and rules compared.
+- `scripts/exact_salts.sh <exe> <salt>...`: per salt, `SWEEP=cold:cmp3d` as built and with `JOIN_EXACT=1` (exe `bv_jexact2`,
+  10a8a50 + `patches/join_exact.patch`), wall seconds, each loop's M and rules compared, and totals.
+- `patches/serve_shadow.patch` (on 10a8a50, `cost_join.patch` plus `JOIN_SHADOW_SERVE=1`; exe `bv_cserve`): the shadow on
+  every join search of the serving worker, none of the miner's, with both terms. `scripts/serve_shadow.sh <exe>
+  <salt>...`: one `SWEEP=cold:cmp3d` per salt and the outcomes against the real join's.
 - `scripts/interner_ab.sh <exe A> <exe B> <salt>`: `SWEEP=cold:cmp3d` at 1 lane in the order A B B A, wall seconds, and
   which sweeps' files agree with A's first. A was `bv_lazy2`, B `bv_lockfree` (a49d1af with the lock-free interner).
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
@@ -64,3 +69,5 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-cost-join` | `bv_cjoin` | `cost_join.sh` with `JOIN_SAMPLE_MASK=31`, salt 1 | budget 4: meets 99.9% of real joins and 62% of real failures, at 4.3-8.6 times the terms |
 | `2026-10-18-cost-join-ac` | `bv_cjac` | `cost_join.sh` with `JOIN_AC=1 JOIN_SAMPLE_MASK=31 BUDGETS=4`, salt 1 | 1.8 times the terms, but meets only 79% of real joins |
 | `2026-10-18-serve-bound` | `bv_sbnd` | `serve_bound_ab.sh`, salts 1-3 | bound in serving: every loop's M and rules unchanged |
+| `2026-10-18-exact-salts` | `bv_jexact2` | `exact_salts.sh`, salts 1-10 | `JOIN_EXACT`: M 750 against 749 at +84% wall; rules differ in 28 of 30 loops |
+| `2026-10-18-serve-shadow` | `bv_cserve` | `serve_shadow.sh`, salts 1-3 | serving's join failures are exhausted small pairs, none at the visit cap |

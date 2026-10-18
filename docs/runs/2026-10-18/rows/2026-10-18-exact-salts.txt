@@ -1,0 +1,52 @@
+salt 1 base: exit 0 wall 71 s
+salt 1 exact: exit 0 wall 169 s
+salt 1 loop 1: M base 29 exact 29, rules differ
+salt 1 loop 2: M base 17 exact 17, rules differ
+salt 1 loop 3: M base 30 exact 31, rules differ
+salt 2 base: exit 0 wall 130 s
+salt 2 exact: exit 0 wall 223 s
+salt 2 loop 1: M base 22 exact 22, rules differ
+salt 2 loop 2: M base 14 exact 14, rules differ
+salt 2 loop 3: M base 29 exact 29, rules differ
+salt 3 base: exit 0 wall 108 s
+salt 3 exact: exit 0 wall 198 s
+salt 3 loop 1: M base 27 exact 27, rules differ
+salt 3 loop 2: M base 24 exact 24, rules differ
+salt 3 loop 3: M base 19 exact 18, rules differ
+salt 4 base: exit 0 wall 137 s
+salt 4 exact: exit 0 wall 258 s
+salt 4 loop 1: M base 23 exact 23, rules differ
+salt 4 loop 2: M base 34 exact 34, rules differ
+salt 4 loop 3: M base 25 exact 25, rules differ
+salt 5 base: exit 0 wall 112 s
+salt 5 exact: exit 0 wall 236 s
+salt 5 loop 1: M base 26 exact 26, rules differ
+salt 5 loop 2: M base 23 exact 23, rules differ
+salt 5 loop 3: M base 21 exact 21, rules same
+salt 6 base: exit 0 wall 322 s
+salt 6 exact: exit 0 wall 319 s
+salt 6 loop 1: M base 32 exact 32, rules differ
+salt 6 loop 2: M base 19 exact 19, rules differ
+salt 6 loop 3: M base 36 exact 36, rules differ
+salt 7 base: exit 0 wall 197 s
+salt 7 exact: exit 0 wall 611 s
+salt 7 loop 1: M base 25 exact 25, rules differ
+salt 7 loop 2: M base 24 exact 24, rules differ
+salt 7 loop 3: M base 27 exact 27, rules differ
+salt 8 base: exit 0 wall 103 s
+salt 8 exact: exit 0 wall 211 s
+salt 8 loop 1: M base 25 exact 25, rules differ
+salt 8 loop 2: M base 26 exact 26, rules differ
+salt 8 loop 3: M base 20 exact 21, rules differ
+salt 9 base: exit 0 wall 188 s
+salt 9 exact: exit 0 wall 297 s
+salt 9 loop 1: M base 24 exact 24, rules differ
+salt 9 loop 2: M base 25 exact 25, rules differ
+salt 9 loop 3: M base 25 exact 25, rules differ
+salt 10 base: exit 0 wall 191 s
+salt 10 exact: exit 0 wall 348 s
+salt 10 loop 1: M base 28 exact 28, rules same
+salt 10 loop 2: M base 24 exact 24, rules differ
+salt 10 loop 3: M base 26 exact 26, rules differ
+total base: M 749 wall 1559 s
+total exact: M 750 wall 2870 s

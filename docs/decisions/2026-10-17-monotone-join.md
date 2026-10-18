@@ -230,5 +230,36 @@ Three follow-ups (2026-10-18, `patches/cost_join_ac.patch` and `patches/cost_sea
   1-3): every loop's M and rules are the real join's, and serving joins exactly as many pairs per loop (at 1.4-2.8 times
   the terms reached). So the failures the bound would join are not pairs serving asks about, at least on these salts;
   the extra joins do not raise M there.
+- **Why serving asks nothing the bound would join** (run `2026-10-18-serve-shadow`, `patches/serve_shadow.patch`: the
+  bounded join beside every join search of the serving worker, salts 1-3): it meets exactly the 494 of 706 searches the
+  real join meets. The 212 real failures are none at the visit cap (at most 191 terms reached, mean 14): they are small
+  pairs (at most 9 nodes) whose reachable space is used up, mostly reassociations of `sub` and `add` such as
+  `add(sub(x, y), z)` against `sub(x, sub(y, z))`. The rules in force have no step between them within the size cap, so
+  no bound on the search helps; a rule would. The cap failures the bound joins are the miner's, under candidate rules.
+
+## Survey 3: the exact memo's cost, and the memo's history (2026-10-18)
+
+The exact memo over salts 1-10 (run `2026-10-18-exact-salts`, `JOIN_EXACT=1` against as built, 6 miner threads, machine
+loaded by other sessions): M 750 against 749 (two loops +1, one -1), wall 2870 against 1559 s (+84%), rules different
+in 28 of 30 loops. So it is not the +64% of salt 1 alone.
+
+The scheduling dependence needs an inexact memo and a history that varies. Each scoring worker keeps one memo across
+the candidates it takes from a shared queue (`search::rule_miner`, the scoring workers), so a candidate's gain depends on
+which candidates its worker scored before it. Options that fix the history rather than the memo, untried:
+
+- **Fixed assignment** (candidate i to worker i mod threads, in order): keeps all reuse and loses the timing dependence,
+  but not the thread count's; whether speculative proofs returning early still change which candidates are scored is
+  unchecked.
+- **Each candidate seeded from one snapshot taken at the round's start**, no memo carried between candidates: a gain is
+  then a function of the rules and the snapshot, independent of threads, timing and chunking, and the workers hold no
+  state. It gives up reuse between candidates of a round, which may be small (nearly every candidate touches a large
+  join's examined terms, "Context"). Assumes the snapshot is built deterministically. Cheapest falsifier: reset the
+  worker's memo to the snapshot per candidate, then salts 1-10 against as built, and 1 thread against 6 byte-equal.
+- **Merging the workers' new entries after each chunk, in candidate order**: more reuse than the snapshot, but a chunk is
+  `threads * 4` candidates, so the thread count stays in the result.
+- **A cheaper exact memo** (an index for `Trace::touched_by`): helps only if the exact memo's cost is in checking traces;
+  the 2026-10-17 note points at the searches rerun after invalidation instead. Probably dead.
+- Decided against: keeping a met entry while its slack under the visit cap exceeds the new rule's added neighbours; the
+  added terms have neighbours of their own, so there is no local bound.
 
 Not built; the timing one-off's fix is still the user's choice (`PARKED.md`).
