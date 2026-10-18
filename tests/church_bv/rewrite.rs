@@ -2579,6 +2579,24 @@ struct JoinEq {
     lhs: Term,
     rhs: Term,
     backward: bool,
+    /// `size(to) - size(from)` when every variable occurs in `to` at least as often as in `from`
+    grow: Option<isize>,
+}
+
+impl JoinEq {
+    fn new(from: Term, to: Term, vars: usize, kind: LawKind, lhs: Term, rhs: Term, backward: bool) -> JoinEq {
+        let (mut of, mut ot) = ([0; RULE_VARS], [0; RULE_VARS]);
+        (from.occurrences(&mut of), to.occurrences(&mut ot));
+        let grow = of.iter().zip(&ot).all(|(f, t)| t >= f).then(|| to.size() as isize - from.size() as isize);
+        JoinEq { from, to, vars, kind, lhs, rhs, backward, grow }
+    }
+    /// A lower bound on the size of `subst_pat(to, sub)` for a match `sub` of `from` at `t`, found without matching: each
+    /// variable binds at least one node, so the step is at least `size(to)`, and at least `size(t) + grow` when `grow` is
+    /// known (each variable's binding is counted in `to` at least as often as in `t`). 43% of the join's matcher calls
+    /// have a bound over the cap (docs/tier-cycle.md, "How much the size bound would skip").
+    fn min_size(&self, t: Term) -> usize {
+        self.grow.map_or(0, |g| (t.size() as isize + g).max(0) as usize).max(self.to.size())
+    }
 }
 
 /// Whether `from -> to` can be a join step: `from` is not a bare variable, binds every variable of `to`, and keeps `lt` at the
@@ -2605,11 +2623,37 @@ fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
         let vars = lhs.max_var().max(rhs.max_var()) + 1;
         for (from, to, backward) in [(lhs, rhs, false), (rhs, lhs, true)] {
             if (both || !backward) && join_usable(&from, &to) {
-                eqs.push(JoinEq { from, to, vars, kind, lhs, rhs, backward });
+                eqs.push(JoinEq::new(from, to, vars, kind, lhs, rhs, backward));
             }
         }
     }
     eqs
+}
+
+/// `JoinEq::min_size` never exceeds the size of a match's step, and is that size for a rule that repeats no variable,
+/// such as commutativity: so `join_walk` skipping a match whose bound is over the cap changes no search.
+#[test]
+fn join_min_size_is_a_lower_bound() {
+    let rule = |l: &str, r: &str| TableRule { name: "t", lhs: parse_term(l), rhs: parse_term(r), vars: 2, permutative: false };
+    let eqs = join_eqs(&[rule("and(x, or(x, y))", "x"), rule("add(x, x)", "shl1(x, 0)"), rule("xor(x, y)", "xor(y, xor(x, 0))")]);
+    let mut terms = vec![Term::v(0), Term::v(1), Term::ZERO];
+    for _ in 0..2 {
+        let level: Vec<Term> = terms.iter().flat_map(|&a| terms.iter().flat_map(move |&b| [ADD, AND, OR, XOR, SHL1].map(|o| Term::op(o, a, b)))).collect();
+        terms.extend(level);
+    }
+    let (mut matched, mut exact) = (0, 0);
+    for e in &eqs {
+        for &t in &terms {
+            let mut sub = [None; RULE_VARS];
+            if match_pat(&e.from, &t, &mut sub) {
+                let size = subst_sig(&e.to, &sub).1;
+                assert!(e.min_size(t) <= size, "{} -> {} at {}: bound {} over {}", e.from.show(), e.to.show(), t.show(), e.min_size(t), size);
+                matched += 1;
+                exact += (matches!(e.kind, LawKind::Comm) && e.min_size(t) == size) as usize;
+            }
+        }
+    }
+    assert!(matched > 1000 && exact > 100, "matched {matched}, exact for add's commutativity {exact}");
 }
 
 
@@ -2677,7 +2721,7 @@ type JoinPlace = [(usize, Term, Term, bool)];
 
 /// `t`'s join steps of at most `cap` nodes in all, in order: those at the root by `table.join`, then those in the left
 /// child, then the right; each passed to `visit` with its place, subterm, step index and match, while `visit` returns
-/// true. Adds `t`'s subterms to `examined`.
+/// true; a rule whose `JoinEq::min_size` is over the cap is skipped unmatched. Adds `t`'s subterms to `examined`.
 fn join_walk(
     t: Term,
     table: &RuleTable,
@@ -2691,6 +2735,9 @@ fn join_walk(
     }
     for i in table.join_index.get(&t) {
         let e = &table.join[i];
+        if e.min_size(t) > cap {
+            continue;
+        }
         let mut sub = [None; RULE_VARS];
         if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
             return false;
