@@ -4730,6 +4730,15 @@ a met join is kept under rules added off its path).
   here, and the exact memo makes the miner's choices independent of its scheduling. Its cost: 108 s against 66 s at 6
   threads (1.56M against 1.18M join searches); its rules differ from the inexact memo's in all three loops, M 29/17/31
   against 29/17/30 (one salt). CPU 10% at start, RTP off.
+- **Fixed by a memo per candidate** (2026-10-18, runs `2026-10-18-exact-salts`, `-snap-salt1`, `-snap-salts`,
+  `-snap-threads`). Over salts 1-10 the exact memo costs +84% wall for M 750 against 749. The scheduling dependence came
+  from each scoring worker's memo carried across the candidates it took from the shared queue; scoring each candidate
+  from an empty memo keeps M (749 in every loop over salts 1-10), costs no time, and makes the rules byte-equal at 1 and
+  6 threads (salts 1, 5, 7) and across runs. Built: `search::rule_miner` scores every candidate from an empty memo,
+  `RewriteMemo::absorb` is gone, and `LOOP_THREADS` sets the loops' scoring workers; the check is
+  `docs/runs/2026-10-18/scripts/threads_check.sh`. Rules differ from the old miner's in 4 of 30 loops (5-1, 6-3, 7-3,
+  10-3), so older cold rows are not reproduced byte for byte. Options in `docs/decisions/2026-10-17-monotone-join.md`
+  ("Survey 3").
 
 *Profile of the lazy join (2026-10-18, run `2026-10-18-lazy-prof`).* samply over salt 1's cold:cmp3d loops at 1 lane
 (e654360 with debug info; CPU 7% at start, RTP off; frames in `docs/runs/2026-10-18/rows/2026-10-18-lazy-prof.txt`,

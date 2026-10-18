@@ -2189,19 +2189,14 @@ impl RewriteMemo {
 
     /// The traced entries whose traces `keep` accepts. A rule tried after the others changes no entry whose trace it matches
     /// nowhere among the terms no rule fired on, nor a join that examined no term it touches (`Trace::touched_by`), so the rule
-    /// miner seeds each candidate's scoring with the entries of the rules chosen so far that the candidate cannot change.
+    /// miner seeds each evaluation of a chosen set with the last one's entries that the rules in or out cannot change.
     pub fn filtered(&self, keep: impl Fn(&Trace) -> bool) -> RewriteMemo {
-        // presized to the whole memo (an upper bound): grown from empty, the map rehashed several times per candidate
+        // presized to the whole memo (an upper bound): grown from empty, the map rehashed several times per evaluation
         let mut map = hashbrown::HashMap::with_capacity(self.map.len());
         map.extend(self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (*k, e.clone())));
         let mut joins = hashbrown::HashMap::with_capacity(self.joins.len());
         joins.extend(self.joins.iter().filter(|(_, e)| keep(&e.1)).map(|(k, e)| (*k, e.clone())));
         RewriteMemo { k: self.k, map, joins }
-    }
-
-    pub fn absorb(&mut self, other: RewriteMemo) {
-        self.map.extend(other.map);
-        self.joins.extend(other.joins);
     }
 }
 

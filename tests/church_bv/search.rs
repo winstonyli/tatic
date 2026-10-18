@@ -915,19 +915,17 @@ pub fn rule_miner() {
             bound_time.set(bound_time.get() + t0.elapsed());
             // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
             // scope, a chunk at a time in order of their bound; scoring stops at a bound below the best gain so far, since those
-            // candidates cannot win, so the choice does not depend on the thread count or the chunking. Each worker keeps a memo valid
-            // under the rules chosen so far: a candidate's scoring is seeded with the entries it cannot change (`RewriteMemo::filtered`),
-            // and the entries it computed without touching their traces join the memo. Expressions are per thread, so
-            // each worker grows its own (1.5x faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
+            // candidates cannot win, so the choice does not depend on the thread count or the chunking. Each candidate is scored from
+            // an empty memo: a memo kept across a worker's candidates made a gain depend on which candidates that worker scored before
+            // (its join entries are inexact by design), so the choice depended on scheduling, and it saved no time (docs/decisions/
+            // 2026-10-17-monotone-join.md, "Spike of the snapshot"). Expressions are per thread, so each worker grows its own (1.5x
+            // faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
             let threads = cfg.threads.clamp(1, 12);
             // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` it can touch
-            let score_rule = |rule: &(Term, Term), aff: &[usize], memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
+            let score_rule = |rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
                 let mut with = chosen.clone();
                 with.push(*rule);
-                // the entries computed with the candidate in force may have it firing, so only those it touches nowhere join the memo
-                let nowhere = |tr: &Trace| !tr.touched_by(rule, |_| true);
-                let (fresh, grown) = score_laws(&with, &base_prefs, aff, true, Some(memo.filtered(|tr| !touches(rule, tr))));
-                memo.absorb(grown.filtered(nowhere));
+                let (fresh, _) = score_laws(&with, &base_prefs, aff, true, None);
                 law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
                 law_reuses.fetch_add(all_laws.len() - aff.len(), std::sync::atomic::Ordering::Relaxed);
                 let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
@@ -937,7 +935,7 @@ pub fn rule_miner() {
                 let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
                 ((count(&f) - count(covered)) * 1000 + (guarded(&f) - guarded(covered)) * guard_w + (size - sz), f, sz)
             };
-            let score_one = |i: usize, memo: &mut RewriteMemo| score_rule(provable[i], &affected[i], memo);
+            let score_one = |i: usize| score_rule(provable[i], &affected[i]);
             // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
             // candidates whose bound reaches the next best
             let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
@@ -953,10 +951,9 @@ pub fn rule_miner() {
                     let worker = move || {
                         let before = JoinCost::now();
                         tatic::kernel::scoped(|| {
-                            let mut memo = RewriteMemo::new(kv);
                             loop {
                                 let Ok(i) = queue.lock().unwrap().recv() else { break };
-                                done_tx.send((i, score_one(i, &mut memo))).unwrap();
+                                done_tx.send((i, score_one(i))).unwrap();
                             }
                         });
                         join_workers.lock().unwrap().add_since(before);
@@ -1007,11 +1004,10 @@ pub fn rule_miner() {
             // the winner's left side with another right side: same affected laws, proved only if it would win
             // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`); scoring compiles no plans, so an
             // unprovable rival (`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)` once the promoted rules are out) is never proved
-            let mut memo = RewriteMemo::new(kv);
             let mut rival: Option<((Term, Term), i64)> = None;
             for rv in rivals.get(&provable[i].0).into_iter().flatten() {
                 let fast = SCORE_ONLY.with(|s| s.replace(true));
-                let rg = score_rule(rv, &affected[i], &mut memo).0;
+                let rg = score_rule(rv, &affected[i]).0;
                 SCORE_ONLY.with(|s| s.set(fast));
                 if rg > rival.as_ref().map_or(g, |r| r.1) && prove_any(rv) {
                     rival = Some((*rv, rg));

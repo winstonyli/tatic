@@ -834,7 +834,9 @@ fn sweep() {
         b: 100,
         k: 3,
         offset: 0,
-        threads: 6,
+        // LOOP_THREADS: the scoring workers of mines and loops (the miner's choice does not depend on it,
+        // docs/runs/2026-10-18/scripts/threads_check.sh)
+        threads: env_or("LOOP_THREADS", 6),
         rounds: usize::MAX,
         deep3: 1,
         split: 2,

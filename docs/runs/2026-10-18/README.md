@@ -47,6 +47,8 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 - `patches/memo_per_cand.patch` (on ae96a7e, includes `join_exact.patch`; exe `bv_snap`): `MEMO_PER_CAND=1`, each scoring
   worker starts every candidate from an empty memo. `scripts/snap_salts.sh <exe> <salt>...`: per salt the arms in `ARMS`
   (default `base6 snap6 snap1`), M per loop, rules of snap6 against base6 and of snap1 against snap6, and totals.
+- `scripts/threads_check.sh <exe> <salt>`: the built check: `SWEEP=cold:cmp3d` at `LOOP_THREADS` 6 and 1 and whether every
+  loop's rules agree.
 - `scripts/interner_ab.sh <exe A> <exe B> <salt>`: `SWEEP=cold:cmp3d` at 1 lane in the order A B B A, wall seconds, and
   which sweeps' files agree with A's first. A was `bv_lazy2`, B `bv_lockfree` (a49d1af with the lock-free interner).
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the

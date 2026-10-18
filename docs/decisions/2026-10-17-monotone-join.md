@@ -4,7 +4,9 @@ Decision: keep the join's visit cap (`JOIN_VISIT`, 1000 terms) and let the miner
 rules that act off its path (option 1 below), accepting a rare inexactness, measured as none ("Option 1 built"). The user
 first chose option 3 (a depth cap per side, so the join is monotone in the rule set); its probe ("Probe result") found
 no depth that keeps the visit cap's strength at an acceptable cost, and the user then chose option 1. Monotone caps that
-stay adaptive are surveyed and parked ("Survey"). Measurements are in `docs/tier-cycle.md` ("The miner sees the join");
+stay adaptive are surveyed and parked ("Survey"). The inexactness later made the miner's choices depend on scheduling
+(2026-10-18); the user chose to fix the memo's history rather than the memo, and each candidate is now scored from an
+empty memo ("Survey 3", "Spike of the snapshot"). Measurements are in `docs/tier-cycle.md` ("The miner sees the join");
 this file keeps the options and the reasoning.
 
 ## Context
@@ -275,4 +277,4 @@ made fresh per round, and the state memo cannot be handed to them (it holds `Rc`
 
 So the memo carried between candidates bought no time, and was the whole scheduling dependence: without it the miner is
 independent of thread count and timing, at no cost, while the memo stays inexact by design (option 1 above). The
-exact memo's +84% is not needed for byte-equal sweeps. Not yet built; the build is the user's go-ahead (`PARKED.md`).
+exact memo's +84% is not needed for byte-equal sweeps. Built 2026-10-18: every candidate is scored from an empty memo; the check is `docs/runs/2026-10-18/scripts/threads_check.sh`.
