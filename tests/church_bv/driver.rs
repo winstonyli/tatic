@@ -17,8 +17,8 @@
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the law
-//! generator's laws (`scope_extras`); off with ABLATE=gen; GEN_SOURCE=stream is the stream control; GEN_F, GEN_SHARED=1 and
-//! GEN_COUNTS=legacy are temporary.
+//! generator's laws (`scope_extras`); off with ABLATE=gen; GEN_SOURCE=stream is the stream control; GEN_F, GEN_SHARED=1,
+//! GEN_N=matched (n capped at what the filtered stream fits, for a same-n pair) and GEN_COUNTS=legacy are temporary.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas.bin across all its loops instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
 //! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
@@ -243,6 +243,22 @@ fn extra_slices_are_disjoint_and_full() {
     assert!(shared[0].end <= shared[2].start && shared[2].end <= shared[4].start, "{shared:?}");
     // a scope with no laws (a family with no pool): n is 0 and the mine takes nothing
     assert_eq!(extra_slices(0, 1, 1, 0, true), Ok(vec![0..0]));
+}
+
+/// The largest n whose slices a list of `len` laws fits (`extra_slices`' inverse): `GEN_N=matched` caps both sources at the
+/// stream list's.
+fn fit_n(len: usize, loops: usize, mines: usize, fresh: bool) -> usize {
+    len / if fresh { loops * mines } else { loops }
+}
+
+/// `fit_n` fits and one more does not, fresh and shared, including a list too short for one law per mine.
+#[test]
+fn fit_n_is_the_largest_that_fits() {
+    for (len, fresh) in [(292, true), (42, true), (166, false), (5, true), (0, false)] {
+        let n = fit_n(len, 3, 2, fresh);
+        assert!(extra_slices(len, 3, 2, n, fresh).is_ok(), "{len} {fresh}: {n} does not fit");
+        assert!(extra_slices(len, 3, 2, n + 1, fresh).is_err(), "{len} {fresh}: {} fits too", n + 1);
+    }
 }
 
 /// A list shorter than its slices returns the shortfall.
@@ -584,25 +600,38 @@ fn filtered(source: &[(Term, Term)], served: &[(Term, Term)], reps: &mut ClassRe
 /// against the laws they serve and those of `also` (for a ref mine, every loop the sweep runs). n = ⌊f × L⌋ with f from
 /// `GEN_F` (temporary, default 0.08) and L the generator's filtered list; with `GEN_SOURCE=stream` (the control arm) the
 /// slices come from the stream phases the scope does not serve, from the one after its last, filtered alike. Fresh slices
-/// unless `GEN_SHARED=1` (temporary). Sets each loop's `extras` and `extra_at`, or says by how much the list is short.
+/// unless `GEN_SHARED=1` (temporary). `GEN_N=matched` (temporary) caps n at what the filtered stream list fits (`fit_n`),
+/// whichever the source, so a grammar arm and its stream control take the same n. Sets each loop's `extras` and
+/// `extra_at`, or says by how much the list is short.
 fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
     let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(served_laws).collect();
     let c = scope[0].clone();
     let grammar = filtered(&draw.grammar(&c), &served, &mut draw.reps);
-    let n = (env_or("GEN_F", 0.08f64) * grammar.len() as f64) as usize;
+    let mut n = (env_or("GEN_F", 0.08f64) * grammar.len() as f64) as usize;
     let source = env_var("GEN_SOURCE").unwrap_or("grammar");
-    let laws = match source {
-        "grammar" => grammar,
-        "stream" => {
-            let own: Vec<usize> = scope.iter().map(|c| c.sphase).collect();
-            let last = *own.iter().max().unwrap();
-            let stream: Vec<(Term, Term)> =
-                (1..=c.stride).map(|i| (last + i) % c.stride).filter(|q| !own.contains(q)).flat_map(|q| stream_laws(&c, q, 0, usize::MAX)).collect();
-            filtered(&stream, &served, &mut draw.reps)
-        }
-        s => panic!("GEN_SOURCE must be grammar or stream, got {s}"),
+    let matched = match env_var("GEN_N") {
+        None => false,
+        Some("matched") => true,
+        Some(s) => panic!("GEN_N must be matched, got {s}"),
     };
     let (mines, fresh) = (mines_of(&c), env_var("GEN_SHARED") != Some("1"));
+    let stream = (source == "stream" || matched).then(|| {
+        let own: Vec<usize> = scope.iter().map(|c| c.sphase).collect();
+        let last = *own.iter().max().unwrap();
+        let raw: Vec<(Term, Term)> =
+            (1..=c.stride).map(|i| (last + i) % c.stride).filter(|q| !own.contains(q)).flat_map(|q| stream_laws(&c, q, 0, usize::MAX)).collect();
+        let kept = filtered(&raw, &served, &mut draw.reps);
+        println!("GEN {}: stream {} laws, {} after the filter", c.out.display(), raw.len(), kept.len());
+        kept
+    });
+    if matched {
+        n = n.min(fit_n(stream.as_ref().unwrap().len(), scope.len(), mines, fresh));
+    }
+    let laws = match source {
+        "grammar" => grammar,
+        "stream" => stream.unwrap(),
+        s => panic!("GEN_SOURCE must be grammar or stream, got {s}"),
+    };
     let at = extra_slices(laws.len(), scope.len(), mines, n, fresh)
         .map_err(|short| format!("{}: {source} list of {} laws is {short} short of {} loops x {mines} mines x {n} (fresh {fresh})", c.out.display(), laws.len(), scope.len()))?;
     println!("GEN {}: L {} n {n} source {source}", c.out.display(), laws.len());
