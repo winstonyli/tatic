@@ -21,3 +21,23 @@ folder under `%LOCALAPPDATA%\claude-runs\tatic\<run id>`. Builds were `cargo tes
 | `2026-10-17-join-trace` | 43c6d8f, cad853e + `join_trace.patch` | by hand: `SWEEP="mines:cmp3d cold:cmp3d"`, salt 1 | 6.1 to 2.9 µs per reached term |
 | `2026-10-17-join-cap` | cad853e | `join_cap.sh`, salts 1-2 | cap 1000 chosen |
 | `2026-10-17-join-final` | 8d5b29d (cap 1000) | `join_cold.sh` with `STAGES="mines own cold pooled"`, salts 1-10 | the section's table |
+
+Later the same day, on the miner's view of the join (`docs/tier-cycle.md`, "The miner sees the join", and
+`docs/decisions/2026-10-17-monotone-join.md`). Builds were copied to `$TEMP/bv_jtrace3.exe`, `bv_jmemo.exe`,
+`bv_jdepth.exe` and `bv_jsticky.exe`; the baseline is `bv_join3.exe` (8d5b29d).
+
+- `scripts/join_trace.sh <exe> <salt>`: one full sweep with `JOIN_TRACE` from `patches/join_trace2.patch` (the line adds
+  the rule set's fingerprint, n and k).
+- `scripts/join_ab.sh <exe_a> <exe_b> <salt>...`: full sweeps of two builds side by side per salt, `$ENV_B` for b only.
+- `scripts/join_depth.sh <exe> <salt> <depth>...`: full sweeps with `JOIN_DEPTH=<d>` (0 = the visit cap) and the trace,
+  from `patches/join_depth.patch` (against 0c383d6, with the exact miner).
+- `patches/join_check.patch`: `JOIN_CHECK`, re-running the search on every memo hit of a met plan and counting flips.
+
+| Run | Build | Script | Result |
+|---|---|---|---|
+| `2026-10-17-join-trace2` | 0c383d6 + `join_trace2.patch` | `join_trace.sh`, salt 1 | 40214 searches, 90% met; 23419 distinct (rule set, pair), 3624 distinct pairs |
+| `2026-10-17-join-memo` | 8d5b29d against the exact miner | `join_ab.sh`, salts 1-10 | mines 2 to 0, own 13 to 26, cold 1568 to 1563, pooled 33 to 36 |
+| `2026-10-17-join-depth` | the exact miner + `join_depth.patch` | `join_depth.sh`, salt 1, depths 0 2 3 4 | the decision file's probe table |
+| `2026-10-17-join-sticky` | 8d5b29d against option 1 (+ `join_check.patch`, off) | `join_ab.sh`, salts 1-10 | M and rules those of the exact miner on every salt; mine 33 s blind, 46 s option 1 |
+| `2026-10-17-join-sticky-ablate` | the same two | `join_ab.sh` with `ABLATE=join` | identical rows |
+| `2026-10-17-join-sticky-flips` | option 1 against itself, `ENV_B=JOIN_CHECK=1` | `join_ab.sh`, salts 1-10 | no flips in at least 230000 met-plan hits; rows identical |

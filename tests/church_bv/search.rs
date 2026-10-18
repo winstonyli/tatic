@@ -768,9 +768,10 @@ pub fn rule_miner() {
         // rules together, which a one-rule-at-a-time score cannot see
         // `score_laws` rewrites the scored laws `which` under the base rules plus `extra`: per law, whether it needs fewer machine proofs
         // than under the built-in rules alone, the size of its normalized terms (stragglers only) and, with `record`, every term
-        // `rule_step` was asked about with the rule that fired on it. A candidate whose left side matches none of the terms where it
-        // would come first (`Fired::preempted_by`: the run-time rules are tried most specific first, not in the order added) cannot
-        // change a law's rewriting, so its laws keep the result under the rules chosen so far.
+        // `rule_step` was asked about with the rule that fired on it, and every term the join examined. A candidate whose left side
+        // matches none of the terms where it would come first (`Fired::preempted_by`: the run-time rules are tried most specific first,
+        // not in the order added), and that is a join step at none of the join's terms (`Trace::touched_by`), cannot change a law's
+        // rewriting or join, so its laws keep the result under the rules chosen so far.
         // `prefs`: the rule preferences in force (`set_rule_prefs`). `base_now`: the base rules in force, all of them until the
         // preference phase drops some
         let base_now = std::sync::Mutex::new(base.clone());
@@ -855,7 +856,7 @@ pub fn rule_miner() {
             covered: Vec<bool>,
             size: i64,
         }
-        // the last evaluation's memo, under its rules: an entry holds under other rules when no rule in or out matches a term of its
+        // the last evaluation's memo, under its rules: an entry holds under other rules when no rule in or out touches a term of its
         // trace (`RewriteMemo::filtered`), so each evaluation is seeded with what the rules that changed cannot touch
         let key = |c: &[(Term, Term)]| {
             let mut v = c.to_vec();
@@ -864,11 +865,14 @@ pub fn rule_miner() {
         };
         let state_memo: std::cell::RefCell<Option<(Vec<(Term, Term)>, RewriteMemo)>> = Default::default();
         let state_time = std::cell::Cell::new(std::time::Duration::ZERO);
+        // the join's work on this thread and the scoring workers (`JoinCost`), and the time spent bounding the candidates' gains
+        let (join_main, join_workers) = (JoinCost::now(), std::sync::Mutex::new(JoinCost::default()));
+        let bound_time = std::cell::Cell::new(std::time::Duration::ZERO);
         let state = |chosen: Vec<(Term, Term)>| {
             let t0 = Instant::now();
             let seed = state_memo.borrow_mut().take().map(|(was, memo)| {
-                let changed: Vec<&Term> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).map(|(l, _)| l).collect();
-                memo.filtered(|tr| !changed.iter().any(|l| tr.any_match(l, |_| true)))
+                let changed: Vec<&(Term, Term)> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).collect();
+                memo.filtered(|tr| !changed.iter().any(|r| tr.touched_by(r, |_| true)))
             });
             let (eval, grown) = score_laws(&chosen, &base_prefs, &all_laws, true, seed);
             *state_memo.borrow_mut() = Some((chosen.clone(), grown));
@@ -886,18 +890,20 @@ pub fn rule_miner() {
         // more, if one is proved, then the winner
         let pick = |s: &Chosen| -> Vec<((Term, Term), i64)> {
             let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
-            // a candidate changes only the laws whose rewriting asked about a term its left side matches (`affected`), so its gain is at most
+            // a candidate changes only the laws whose rewriting asked about a term its left side matches, or whose join examined a
+            // term it is a step at (`affected`, `Trace::touched_by`), so its gain is at most
             // 1000 per affected uncovered straggler, `guard_w` per affected uncovered guard law and the affected stragglers' whole size
             // a candidate can only rewrite a term where it comes before the rule that fired (`Fired::preempted_by`), unless a
             // preference makes it a winner (the trace was made without the candidate)
             // the run-time order of every rule in play, ranked once (`run_order` builds strings)
+            let t0 = Instant::now();
             let mut ranked: Vec<(Term, Term)> = base_now.lock().unwrap().iter().chain(chosen).chain(provable.iter().copied()).cloned().collect();
             ranked.sort_by_cached_key(|(l, r)| run_order(l, r));
             let rank: hashbrown::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
             let touches = |rule: &(Term, Term), tr: &Trace| {
                 let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
                 let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
-                tr.any_match(&rule.0, |fired| anywhere || fired.preempted_by(before))
+                tr.touched_by(rule, |fired| anywhere || fired.preempted_by(before))
             };
             let affected: Vec<Vec<usize>> = provable.iter().map(|r| all_laws.iter().copied().filter(|&si| touches(r, &base_eval[si].2)).collect()).collect();
             let bound = |i: usize| -> i64 {
@@ -906,19 +912,20 @@ pub fn rule_miner() {
             };
             let mut order: Vec<(i64, usize)> = (0..provable.len()).map(|i| (bound(i), i)).collect();
             order.sort_by_key(|&(b, i)| (std::cmp::Reverse(b), i));
+            bound_time.set(bound_time.get() + t0.elapsed());
             // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
             // scope, a chunk at a time in order of their bound; scoring stops at a bound below the best gain so far, since those
             // candidates cannot win, so the choice does not depend on the thread count or the chunking. Each worker keeps a memo valid
             // under the rules chosen so far: a candidate's scoring is seeded with the entries it cannot change (`RewriteMemo::filtered`),
-            // and the entries it computed without its left side matching their traces join the memo. Expressions are per thread, so
+            // and the entries it computed without touching their traces join the memo. Expressions are per thread, so
             // each worker grows its own (1.5x faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
             let threads = cfg.threads.clamp(1, 12);
-            // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` its left side can touch
+            // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` it can touch
             let score_rule = |rule: &(Term, Term), aff: &[usize], memo: &mut RewriteMemo| -> (i64, Vec<bool>, i64) {
                 let mut with = chosen.clone();
                 with.push(*rule);
-                // the entries computed with the candidate in force may have it firing, so only those it matches nowhere join the memo
-                let nowhere = |tr: &Trace| !tr.any_match(&rule.0, |_| true);
+                // the entries computed with the candidate in force may have it firing, so only those it touches nowhere join the memo
+                let nowhere = |tr: &Trace| !tr.touched_by(rule, |_| true);
                 let (fresh, grown) = score_laws(&with, &base_prefs, aff, true, Some(memo.filtered(|tr| !touches(rule, tr))));
                 memo.absorb(grown.filtered(nowhere));
                 law_evals.fetch_add(all_laws.len(), std::sync::atomic::Ordering::Relaxed);
@@ -942,15 +949,17 @@ pub fn rule_miner() {
                 let (work, queue) = std::sync::mpsc::channel::<usize>();
                 let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
                 for _ in 0..threads {
-                    let (done_tx, score_one, queue) = (done_tx.clone(), &score_one, queue.clone());
+                    let (done_tx, score_one, queue, join_workers) = (done_tx.clone(), &score_one, queue.clone(), &join_workers);
                     let worker = move || {
+                        let before = JoinCost::now();
                         tatic::kernel::scoped(|| {
                             let mut memo = RewriteMemo::new(kv);
                             loop {
                                 let Ok(i) = queue.lock().unwrap().recv() else { break };
                                 done_tx.send((i, score_one(i, &mut memo))).unwrap();
                             }
-                        })
+                        });
+                        join_workers.lock().unwrap().add_since(before);
                     };
                     std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
                 }
@@ -1219,6 +1228,10 @@ pub fn rule_miner() {
             println!("RULEMINER lazy proofs: {} proved, {} failed", p.iter().filter(|x| **x == Some(true)).count(), p.iter().filter(|x| **x == Some(false)).count());
         }
         println!("RULEMINER time in rule-set evaluations: {:.1}s", state_time.get().as_secs_f64());
+        println!("RULEMINER time bounding candidates' gains: {:.1}s", bound_time.get().as_secs_f64());
+        let mut j = *join_workers.lock().unwrap();
+        j.add_since(join_main);
+        println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits", j.searches, j.reached, j.met, j.hits);
         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
         for (st, c) in stragglers.iter().zip(&covered) {
             if !c {
@@ -2018,10 +2031,11 @@ pub fn rule_set_kernel_check() {
         if env_or("RULE_CONFLICTS", 0u8) != 0 {
             *RULE_CONFLICTS.get(Default::default).lock().unwrap() = Some(Default::default());
         }
-        let (mut proved, mut free, mut none, mut exhausted) = (0, 0, 0, 0);
+        let (mut proved, mut free, mut none, mut exhausted, mut joined) = (0, 0, 0, 0, 0);
+        let (cost0, met) = (JoinCost::now(), || JoinCost::now().met);
         for (name, t1, t2) in &laws {
             RULE_BUDGET.with(|b| b.set(200));
-            let before = MACHINE_FALLBACKS.with(|c| c.get());
+            let (before, met0) = (MACHINE_FALLBACKS.with(|c| c.get()), met());
             let r = rewrite_plan(4, kv, t1, t2);
             // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
             if RULE_BUDGET.with(|b| b.get()) <= 0 {
@@ -2037,6 +2051,7 @@ pub fn rule_set_kernel_check() {
                     proved += 1;
                     let machine = MACHINE_FALLBACKS.with(|c| c.get()) - before;
                     free += (machine == 0) as u32;
+                    joined += (machine == 0 && met() > met0) as u32;
                     if machine > 0 {
                         println!("MACHINE {machine} {name}");
                     }
@@ -2045,6 +2060,9 @@ pub fn rule_set_kernel_check() {
             }
         }
         println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved, {exhausted} used up the rule budget");
+        let mut cost = JoinCost::default();
+        cost.add_since(cost0);
+        println!("JOINED {joined} of them by the join, {} searches reaching {} terms", cost.searches, cost.reached);
         print_rule_conflicts();
         if fast {
             return;
@@ -2064,7 +2082,8 @@ pub fn rule_set_kernel_check() {
 }
 
 /// Where the kernel's work goes under a rule set: like `rule_set_kernel_check` (same `CHECK_FAMILY`, `CHECK_RULES`, `RULEMINER_*` vars), but
-/// reports, for the laws proved without a whole-term machine proof ("rules") and for those that needed one ("machine"), the count, the
+/// reports, for the laws proved by rules alone ("rules"), by rules and the join with no whole-term machine proof ("joined"), and
+/// for those that needed one ("machine"), the count, the
 /// time to build the proof, the time for the kernel to check it, and its size (unique nodes / nodes per occurrence); then the same
 /// for the proofs of the rules themselves, which a conversion rule or a one-time admission would pay once.
 #[test]
@@ -2075,11 +2094,12 @@ pub fn proof_cost_split() {
         let (rules, kv, laws) = check_laws();
         #[derive(Default)]
         struct Acc { n: u32, build: Duration, check: Duration, nodes: usize, occ: u128 }
-        let mut acc = [Acc::default(), Acc::default()]; // [rules, machine]
+        let mut acc = [Acc::default(), Acc::default(), Acc::default()]; // [rules, joined, machine]
         let mut none = 0;
+        let met = || JoinCost::now().met;
         for (name, t1, t2) in &laws {
             RULE_BUDGET.with(|b| b.set(200));
-            let before = MACHINE_FALLBACKS.with(|c| c.get());
+            let (before, met0) = (MACHINE_FALLBACKS.with(|c| c.get()), met());
             let t = Instant::now();
             let Some((p, s)) = rewrite_law(4, kv, t1, t2) else { none += 1; continue };
             let build = t.elapsed();
@@ -2087,7 +2107,7 @@ pub fn proof_cost_split() {
             ck(name, &p, &s);
             let check = t.elapsed();
             let (nodes, occ) = tatic::kernel::term_sizes(&p);
-            let a = &mut acc[(MACHINE_FALLBACKS.with(|c| c.get()) != before) as usize];
+            let a = &mut acc[if MACHINE_FALLBACKS.with(|c| c.get()) != before { 2 } else { (met() > met0) as usize }];
             (a.n, a.build, a.check, a.nodes, a.occ) = (a.n + 1, a.build + build, a.check + check, a.nodes + nodes, a.occ + occ);
         }
         let mut ra = Acc::default();
@@ -2102,7 +2122,7 @@ pub fn proof_cost_split() {
             let (nodes, occ) = tatic::kernel::term_sizes(&p);
             (ra.n, ra.build, ra.check, ra.nodes, ra.occ) = (ra.n + 1, ra.build + build, ra.check + check, ra.nodes + nodes, ra.occ + occ);
         }
-        for (what, a) in [("rules", &acc[0]), ("machine", &acc[1]), ("rule-proofs", &ra)] {
+        for (what, a) in [("rules", &acc[0]), ("joined", &acc[1]), ("machine", &acc[2]), ("rule-proofs", &ra)] {
             println!("COST {what}: n={} build={:.1}ms check={:.1}ms nodes={} occurrences={}", a.n, a.build.as_secs_f64() * 1e3, a.check.as_secs_f64() * 1e3, a.nodes, a.occ);
         }
         println!("COST not-proved={none}");

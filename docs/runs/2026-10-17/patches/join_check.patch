@@ -1,0 +1,18 @@
+# join_check: the flip probe behind run 2026-10-17-join-sticky-flips (exe bv_jsticky.exe). Inserted in
+# tests/church_bv/rewrite.rs `join_eq`, on a memo hit, right after `count_join(|c| c.hits += 1);`: with `JOIN_CHECK`
+# set, every hit on a met plan re-runs the search under the current rules; a failure there is a flip (the kept plan
+# says met where a fresh search fails). Prints each flip and a running count every 10000 met hits.
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ join_eq, memo hit @@
+             replay(&e.1);
+             count_join(|c| c.hits += 1);
++            if e.0.is_some() && env_var("JOIN_CHECK").is_some() {
++                let flip = join_search(a, b, &mut None).is_none();
++                static N: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
++                let (h, f) = (N[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, N[1].fetch_add(flip as u64, std::sync::atomic::Ordering::Relaxed) + flip as u64);
++                if flip || h % 10000 == 0 {
++                    println!("JOIN_CHECK met hits {h} flips {f}{}", if flip { format!(": {} = {}", a.show(), b.show()) } else { String::new() });
++                }
++            }
+             return e.0.clone();

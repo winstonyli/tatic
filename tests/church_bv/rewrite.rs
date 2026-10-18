@@ -1239,12 +1239,13 @@ pub fn run_order(l: &Term, r: &Term) -> (std::cmp::Reverse<usize>, String, Strin
 }
 
 /// The first rule that fired on a term `rule_step` was asked about (`RULE_TRACE`): none, a built-in rule (tried before every
-/// run-time rule) or a run-time rule.
+/// run-time rule) or a run-time rule; or `Join`, a term the join examined (`join_eq`), where every rule that matches gives a step.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Fired {
     None,
     Fixed,
     Mined(Term, Term),
+    Join,
 }
 
 impl Fired {
@@ -1252,7 +1253,7 @@ impl Fired {
     /// before run-time rule `r` (`run_order`): it rewrites the term if it matches it (and no preference makes another rule win).
     pub fn preempted_by(&self, before: impl Fn(&(Term, Term)) -> bool) -> bool {
         match self {
-            Fired::None => true,
+            Fired::None | Fired::Join => true,
             Fired::Fixed => false,
             Fired::Mined(l, r) => before(&(*l, *r)),
         }
@@ -1996,9 +1997,12 @@ impl Trace {
         &self.items
     }
 
-    /// Whether `l` matches some term of the trace on which `also` holds of the rule that fired.
-    pub fn any_match(&self, l: &Term, also: impl Fn(&Fired) -> bool) -> bool {
-        self.shapes & l.needs() == l.needs() && self.items.iter().any(|(t, f)| matches(l, t) && also(f))
+    /// Whether `rule` could act on some term of the trace on which `also` holds of the rule that fired: its left side matches it,
+    /// or, on a term the join examined, its right side does where the rule is a join step backward (`join_usable`).
+    pub fn touched_by(&self, (l, r): &(Term, Term), also: impl Fn(&Fired) -> bool) -> bool {
+        let fits = |p: &Term| self.shapes & p.needs() == p.needs();
+        let (fl, fr) = (fits(l), fits(r) && join_usable(r, l));
+        (fl || fr) && self.items.iter().any(|(t, f)| (fl && matches(l, t) || fr && *f == Fired::Join && matches(r, t)) && also(f))
     }
 }
 
@@ -2018,28 +2022,36 @@ struct Rewritten {
 /// While `Some`, `rewrite` calls over `k` variables are cached by (width, term). The rule miner sets it for one rule set
 /// (one `score_laws` call): the result of `rewrite` is a function of the term, the rules in force and the budget left, so a repeat
 /// under the same rules is a hit. Calls over other variable counts (the generalization path adds witnesses) are not cached.
+/// `joins` caches `join_eq` by pair, with the trace that invalidates it: a failed search's examined terms, a met one's path.
 pub struct RewriteMemo {
     k: usize,
     map: hashbrown::HashMap<(usize, Term), std::rc::Rc<Rewritten>>,
+    joins: hashbrown::HashMap<(Term, Term), std::rc::Rc<Joined>>,
 }
+
+/// A memoized `join_eq`: its plan (`None` if the search failed) and its trace.
+type Joined = (Option<PlanRc>, Trace);
 
 impl RewriteMemo {
     pub fn new(k: usize) -> RewriteMemo {
-        RewriteMemo { k, map: Default::default() }
+        RewriteMemo { k, map: Default::default(), joins: Default::default() }
     }
 
     /// The traced entries whose traces `keep` accepts. A rule tried after the others changes no entry whose trace it matches
-    /// nowhere among the terms no rule fired on, so the rule miner seeds each candidate's scoring with the entries of the rules
-    /// chosen so far that the candidate cannot change.
+    /// nowhere among the terms no rule fired on, nor a join that examined no term it touches (`Trace::touched_by`), so the rule
+    /// miner seeds each candidate's scoring with the entries of the rules chosen so far that the candidate cannot change.
     pub fn filtered(&self, keep: impl Fn(&Trace) -> bool) -> RewriteMemo {
         // presized to the whole memo (an upper bound): grown from empty, the map rehashed several times per candidate
         let mut map = hashbrown::HashMap::with_capacity(self.map.len());
         map.extend(self.map.iter().filter(|(_, e)| e.traced && keep(&e.trace)).map(|(k, e)| (*k, e.clone())));
-        RewriteMemo { k: self.k, map }
+        let mut joins = hashbrown::HashMap::with_capacity(self.joins.len());
+        joins.extend(self.joins.iter().filter(|(_, e)| keep(&e.1)).map(|(k, e)| (*k, e.clone())));
+        RewriteMemo { k: self.k, map, joins }
     }
 
     pub fn absorb(&mut self, other: RewriteMemo) {
         self.map.extend(other.map);
+        self.joins.extend(other.joins);
     }
 }
 
@@ -2308,6 +2320,32 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
 // Per thread, so that the parallel miner's workers each read their own before/after difference.
 thread_local! {
     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0 }) };
+}
+
+/// The join's searches run (`join_search`), the terms they reached, how many met, and the memo hits that ran none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JoinCost {
+    pub searches: u64,
+    pub reached: u64,
+    pub met: u64,
+    pub hits: u64,
+}
+
+impl JoinCost {
+    /// this thread's count
+    pub fn now() -> JoinCost {
+        JOIN_COST.with(|c| c.get())
+    }
+    /// this thread's count since `before`, added to `self`
+    pub fn add_since(&mut self, before: JoinCost) {
+        let now = JoinCost::now();
+        self.searches += now.searches - before.searches;
+        self.reached += now.reached - before.reached;
+        self.met += now.met - before.met;
+        self.hits += now.hits - before.hits;
+    }
 }
 
 /// `t` with every occurrence of the subterm `x` replaced by `with`.
@@ -2393,9 +2431,15 @@ struct JoinEq {
     backward: bool,
 }
 
+/// Whether `from -> to` can be a join step: `from` is not a bare variable, binds every variable of `to`, and keeps `lt` at the
+/// root (`lt` occurs nowhere else).
+fn join_usable(from: &Term, to: &Term) -> bool {
+    let is_lt = |t: &Term| matches!(*t.node(), Node::Op(LT, ..));
+    !matches!(*from.node(), Node::V(_)) && (0..RULE_VARS).all(|v| !to.has_var(v) || from.has_var(v)) && is_lt(from) == is_lt(to)
+}
+
 /// The join's steps: every rule not ablated (built-in, promoted and mined), add's associativity and commutativity and those of
-/// and, or and xor, each rule and associativity both ways. A direction is a step when its left side is not a bare variable,
-/// binds every variable of its right side, and keeps `lt` at the root (`lt` occurs nowhere else).
+/// and, or and xor, each rule and associativity both ways where `join_usable`.
 fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
     let (x, y, z) = (Term::v(0), Term::v(1), Term::v(2));
     let op = Term::op;
@@ -2406,15 +2450,11 @@ fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
         laws.push((LawKind::Bitwise, op(o, op(o, x, y), z), op(o, x, op(o, y, z)), true));
         laws.push((LawKind::Bitwise, op(o, x, y), op(o, y, x), false));
     }
-    let is_lt = |t: &Term| matches!(*t.node(), Node::Op(LT, ..));
-    let usable = |from: &Term, to: &Term| {
-        !matches!(*from.node(), Node::V(_)) && (0..RULE_VARS).all(|v| !to.has_var(v) || from.has_var(v)) && is_lt(from) == is_lt(to)
-    };
     let mut eqs = vec![];
     for (kind, lhs, rhs, both) in laws {
         let vars = lhs.max_var().max(rhs.max_var()) + 1;
         for (from, to, backward) in [(lhs, rhs, false), (rhs, lhs, true)] {
-            if (both || !backward) && usable(&from, &to) {
+            if (both || !backward) && join_usable(&from, &to) {
                 eqs.push(JoinEq { from, to, vars, kind, lhs, rhs, backward });
             }
         }
@@ -2422,8 +2462,12 @@ fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
     eqs
 }
 
-/// Every term one join step (`RuleTable::join`) from `t`, at any position, of at most `cap` nodes, with the plan of `t = term`.
-fn join_steps(t: &Term, table: &RuleTable, cap: usize, out: &mut Vec<(Term, PlanRc)>) {
+/// Every term one join step (`RuleTable::join`) from `t`, at any position, of at most `cap` nodes, with the plan of `t = term`;
+/// adds `t` and the subterms it looked at to `examined`.
+fn join_steps(t: &Term, table: &RuleTable, cap: usize, out: &mut Vec<(Term, PlanRc)>, examined: &mut Option<hashbrown::HashSet<Term>>) {
+    if let Some(x) = examined {
+        x.insert(*t);
+    }
     for e in table.join_index.get(t).map(|i| &table.join[i]) {
         let mut sub = [None; RULE_VARS];
         if !match_pat(&e.from, t, &mut sub) || PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) {
@@ -2438,9 +2482,9 @@ fn join_steps(t: &Term, table: &RuleTable, cap: usize, out: &mut Vec<(Term, Plan
     }
     if let Node::Op(o, a, b) = *t.node() {
         let mut inner = vec![];
-        join_steps(&a, table, cap - (t.size() - a.size()), &mut inner);
+        join_steps(&a, table, cap - (t.size() - a.size()), &mut inner, examined);
         out.extend(inner.drain(..).map(|(a2, p)| (Term::op(o, a2, b), Plan::cong(o, p, Plan::refl(&b)))));
-        join_steps(&b, table, cap - (t.size() - b.size()), &mut inner);
+        join_steps(&b, table, cap - (t.size() - b.size()), &mut inner, examined);
         out.extend(inner.drain(..).map(|(b2, p)| (Term::op(o, a, b2), Plan::cong(o, Plan::refl(&a), p))));
     }
 }
@@ -2450,10 +2494,51 @@ fn join_steps(t: &Term, table: &RuleTable, cap: usize, out: &mut Vec<(Term, Plan
 /// `JOIN_VISIT` (1000) terms are reached (5000 left a few laws fewer to the machine proof for 2-3 times the sweep time:
 /// docs/tier-cycle.md, "The bounded join removes the floor"). Only pairs equal on random inputs are searched, so an unequal
 /// pair costs no search. `ABLATE=join` switches it off.
+/// The terms it examined go to `RULE_TRACE` (`Fired::Join`) and, with the result, to `REWRITE_MEMO`'s `joins`, so the rule
+/// miner reuses it as it does a rewrite: a failed search, all of them (under other rules it is the same search when no rule
+/// in or out touches them); a met one, the terms on its path and their subterms, where the rules its plan used fired (the
+/// plan stays a proof while no rule it used is removed, so rules added elsewhere keep it). That is inexact where added rules
+/// would push the search over `JOIN_VISIT` before it meets: the
+/// cap makes the join non-monotone in its rules, and no rule-independent cap tried was as strong at the same cost
+/// (docs/decisions/2026-10-17-monotone-join.md).
 pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     if ablated("join") || a.differs_in(b, n, k, 16) {
         return None;
     }
+    // the memo holds searches with no rule blocked (`PROVING`), and a plan made while counting serves only a caller that counts
+    let memo_on = REWRITE_MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.k == k)) && PROVING.with(|p| p.borrow().is_empty());
+    let traced = RULE_TRACE.with(|tr| tr.borrow().is_some());
+    let counting = SCORE_ONLY.with(|s| s.get());
+    let key = (*a, *b);
+    let replay = |trace: &Trace| {
+        RULE_TRACE.with(|tr| {
+            if let Some(v) = tr.borrow_mut().as_mut() {
+                v.extend_from_slice(trace.items());
+            }
+        })
+    };
+    if memo_on {
+        let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.joins.get(&key).cloned()));
+        if let Some(e) = hit.filter(|e| counting || e.0.as_ref().is_none_or(|p| !matches!(**p, Plan::Counting))) {
+            replay(&e.1);
+            count_join(|c| c.hits += 1);
+            return e.0.clone();
+        }
+    }
+    let mut examined = (memo_on || traced).then(hashbrown::HashSet::<Term>::default);
+    let found = join_search(a, b, &mut examined);
+    if let Some(x) = examined {
+        let trace = Trace::new(x.into_iter().map(|t| (t, Fired::Join)).collect());
+        replay(&trace);
+        if memo_on {
+            REWRITE_MEMO.with(|m| m.borrow_mut().as_mut().map(|m| m.joins.insert(key, std::rc::Rc::new((found.clone(), trace)))));
+        }
+    }
+    found
+}
+
+/// `join_eq`'s search, adding the terms it examined to `examined`.
+fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
     let (cap, visit) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize));
     // each reached term with the term it was reached from and the plan of that step
     type Seen = hashbrown::HashMap<Term, Option<(Term, PlanRc)>>;
@@ -2467,15 +2552,30 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     };
     let mut seen: [Seen; 2] = [Seen::from([(*a, None)]), Seen::from([(*b, None)])];
     let mut front = [vec![*a], vec![*b]];
-    RULE_TABLE.with(|table| {
+    let found = RULE_TABLE.with(|table| {
         let table = &table.borrow();
         let mut out = vec![];
         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
             let s = (front[0].len() > front[1].len()) as usize;
             for t in std::mem::take(&mut front[s]) {
-                join_steps(&t, table, cap, &mut out);
+                join_steps(&t, table, cap, &mut out, examined);
                 for (u, step) in out.drain(..) {
                     if seen[1 - s].contains_key(&u) {
+                        // a met search's result rests on its path only: keep what was examined at the path's terms
+                        if let Some(x) = examined {
+                            x.clear();
+                            let mut on_path = vec![u];
+                            for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
+                                on_path.push(p);
+                                while let Some((prev, _)) = &side[&p] {
+                                    p = *prev;
+                                    on_path.push(p);
+                                }
+                            }
+                            for p in on_path {
+                                join_steps(&p, table, cap, &mut vec![], examined);
+                            }
+                        }
                         // `this side = u` and `other side = u`
                         let (here, there) = (Plan::trans(path(&seen[s], t), step), path(&seen[1 - s], u));
                         let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
@@ -2489,6 +2589,17 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
             }
         }
         None
+    });
+    let reached = (seen[0].len() + seen[1].len()) as u64;
+    count_join(|c| (c.searches, c.reached, c.met) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64));
+    found
+}
+
+fn count_join(f: impl FnOnce(&mut JoinCost)) {
+    JOIN_COST.with(|c| {
+        let mut v = c.get();
+        f(&mut v);
+        c.set(v)
     })
 }
 
@@ -2921,13 +3032,102 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
     for extra in ["sub(sub(x, y), z) -> sub(x, add(y, z))\n", "or(x, and(x, y)) -> x\n"] {
         let rules: Vec<(Term, Term)> = base.iter().cloned().chain(parse_rules(extra)).collect();
         let l = &rules.last().unwrap().0;
-        let seed = memo.filtered(|tr| !tr.any_match(l, |fired| fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
+        let seed = memo.filtered(|tr| !tr.touched_by(rules.last().unwrap(), |fired| fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
         assert!(!seed.map.is_empty() && seed.map.len() < memo.map.len(), "{extra}: the filter kept {} of {}", seed.map.len(), memo.map.len());
         let fresh = run(&rules, RewriteMemo::new(kv)).0;
         assert_eq!(run(&rules, seed).0, fresh, "{extra}");
         // the unfiltered memo would replay `before` (debug builds reject such a replay, `check_replay`)
         assert_ne!(before, fresh, "{extra}: the extra rule changes nothing here");
     }
+}
+
+/// The join's trace under `rules`: the terms `join_eq` recorded (`Fired::Join`) and whether it met.
+fn join_trace(a: &str, b: &str, rules: &str) -> (bool, Trace) {
+    set_extra_rules(parse_rules(rules));
+    RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
+    let met = join_eq(4, 3, &parse_term(a), &parse_term(b)).is_some();
+    set_extra_rules(vec![]);
+    (met, Trace::new(RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap()))
+}
+
+/// A join that fails records every term it examined (`Fired::Join`), so a candidate that could make it meet is seen: in the
+/// join a rule acts wherever either usable side matches, here at a term no rewrite of the two sides asks about.
+#[test]
+fn failed_join_traces_every_term_it_examines() {
+    let (a, b) = ("sub(x, y)", "sub(0, sub(y, x))");
+    let (met, joined) = join_trace(a, b, "");
+    assert!(!met);
+    // ~(y - x) = x - y - 1, at `xor(sub(y, x), -1)`, a step from `sub(0, sub(y, x))`
+    let rule = parse_rules("xor(sub(x, y), -1) -> add(sub(y, x), -1)\n")[0];
+    let sides = Trace::new(vec![(parse_term(a), Fired::None), (parse_term(b), Fired::None)]);
+    assert!(!sides.touched_by(&rule, |_| true), "the rule's left side matches neither side");
+    assert!(joined.touched_by(&rule, |_| true), "the join examined a term the rule's left side matches");
+    let back = (parse_term("and(x, or(y, x))"), rule.0);
+    assert!(joined.touched_by(&back, |_| true), "a rule whose right side matches there acts backward");
+    assert!(!Trace::new(joined.items().iter().map(|(t, _)| (*t, Fired::None)).collect()).touched_by(&back, |_| true), "but not in a rewrite");
+    assert!(!joined.touched_by(&parse_rules("or(x, and(x, y)) -> x\n")[0], |_| true), "no or anywhere, and x cannot be a step's start");
+}
+
+/// A join that meets records only the terms on its path (what the search examined at them), where the rules its plan used
+/// fired: a rule added elsewhere leaves the plan a proof (the miner's error is a search that more rules would push past the
+/// visit cap, docs/decisions/2026-10-17-monotone-join.md), and a rule it used, removed, touches the trace.
+#[test]
+fn met_join_traces_its_path_only() {
+    let (a, b) = ("add(add(z, y), sub(x, -1))", "add(sub(add(x, y), -1), z)");
+    let (met, joined) = join_trace(a, b, "");
+    assert!(met);
+    for t in [a, b] {
+        assert!(joined.items().iter().any(|(u, _)| *u == parse_term(t)), "{t} is on the path");
+    }
+    // -(~x) = x + 1, at `sub(0, xor(x, -1))`, a term the search examined off its path
+    assert!(!joined.touched_by(&parse_rules("sub(0, xor(x, -1)) -> sub(0, sub(-1, x))\n")[0], |_| true));
+    let rule = "or(x, y) -> add(xor(x, y), and(x, y))\n";
+    let (met, joined) = join_trace("or(x, y)", "add(xor(x, y), and(x, y))", rule);
+    assert!(met);
+    assert!(joined.touched_by(&parse_rules(rule)[0], |_| true), "the plan used the rule");
+}
+
+/// Join results are kept in `RewriteMemo` with the terms each search examined: under an extra rule `filtered` keeps the entries
+/// the rule touches nowhere, and they give what a fresh search would; a hit gives the stored result.
+#[test]
+fn filtered_join_entries_hold_under_an_extra_rule() {
+    let (n, kv) = (4, 3);
+    let pairs: Vec<(Term, Term)> = [("or(x, y)", "add(xor(x, y), and(x, y))"), ("xor(xor(x, y), z)", "xor(z, xor(y, x))")]
+        .iter()
+        .map(|(a, b)| (parse_term(a), parse_term(b)))
+        .collect();
+    let run = |rules: Vec<(Term, Term)>, memo: RewriteMemo| {
+        set_extra_rules(rules);
+        REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(memo));
+        let out: Vec<bool> = pairs.iter().map(|(a, b)| join_eq(n, kv, a, b).is_some()).collect();
+        set_extra_rules(vec![]);
+        (out, REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap())
+    };
+    let (before, memo) = run(vec![], RewriteMemo::new(kv));
+    assert_eq!(memo.joins.len(), pairs.len());
+    assert_eq!(run(vec![], memo.filtered(|_| true)).0, before, "hits");
+    let rule = parse_rules("or(x, y) -> add(xor(x, y), and(x, y))\n")[0];
+    let seed = memo.filtered(|tr| !tr.touched_by(&rule, |_| true));
+    assert_eq!(seed.joins.len(), 1, "the xor pair's search met no or, nor xor beside and under add");
+    let fresh = run(vec![rule], RewriteMemo::new(kv)).0;
+    assert_eq!(run(vec![rule], seed).0, fresh);
+    assert_ne!(before, fresh, "the rule joins the first pair");
+}
+
+/// `JOIN_COST` counts the searches run, the terms they reached and the ones that met; a memo hit runs none and counts as a hit.
+#[test]
+fn join_cost_counts_searches_but_not_memo_hits() {
+    let (a, b) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
+    let cost = JoinCost::now;
+    let c0 = cost();
+    REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(3)));
+    assert!(join_eq(4, 3, &a, &b).is_some());
+    let c1 = cost();
+    assert!(join_eq(4, 3, &a, &b).is_some());
+    REWRITE_MEMO.with(|m| m.borrow_mut().take());
+    assert_eq!((c1.searches - c0.searches, c1.met - c0.met), (1, 1));
+    assert!(c1.reached - c0.reached >= 2, "both sides at least");
+    assert_eq!(cost(), JoinCost { hits: c1.hits + 1, ..c1 }, "the second call was a hit");
 }
 
 /// A memo hit gives what a fresh rewrite would, also under rules that cycle: an entry made where the path was short is replayed

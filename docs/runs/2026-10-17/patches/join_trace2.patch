@@ -1,0 +1,42 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 50d8147..4a82e99 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2467,8 +2467,19 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+     };
+     let mut seen: [Seen; 2] = [Seen::from([(*a, None)]), Seen::from([(*b, None)])];
+     let mut front = [vec![*a], vec![*b]];
+-    RULE_TABLE.with(|table| {
++    let t0 = std::time::Instant::now();
++    let mut fp = 0u64;
++    let res = RULE_TABLE.with(|table| {
+         let table = &table.borrow();
++        if env_var("JOIN_TRACE").is_some() {
++            use std::hash::{Hash, Hasher};
++            let mut h = std::collections::hash_map::DefaultHasher::new();
++            for r in &table.rules {
++                (r.lhs, r.rhs).hash(&mut h);
++            }
++            PROVING.with(|p| p.borrow().hash(&mut h));
++            fp = h.finish();
++        }
+         let mut out = vec![];
+         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
+             let s = (front[0].len() > front[1].len()) as usize;
+@@ -2489,7 +2500,15 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+             }
+         }
+         None
+-    })
++    });
++    if let Some(p) = env_var("JOIN_TRACE") {
++        use std::io::Write;
++        static F: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
++        let line = format!("{}\t{}\t{}\t{fp:x}\t{n}\t{k}\t{}\t{}\n", res.is_some() as u8, seen[0].len() + seen[1].len(), t0.elapsed().as_micros(), a.show(), b.show());
++        let mut g = F.lock().unwrap();
++        g.get_or_insert_with(|| std::fs::OpenOptions::new().create(true).append(true).open(format!("{p}.{}", std::process::id())).unwrap()).write_all(line.as_bytes()).unwrap();
++    }
++    res
+ }
+ 
+ /// `shr1 A = shr1 B` (or `0 = shr1 B`, as `shr1 0`) for machine-expressible `A`, `B`, without a lookahead machine: the

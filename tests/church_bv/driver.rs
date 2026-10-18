@@ -21,19 +21,20 @@
 //! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
 //! `CHECK_LAWFILE`).
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
-//! up the rule budget: nonzero means a rewrite cycle or growing rules), mine_<name>.log and serve_<skip>.log. The last line printed is
-//! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=..`.
+//! up the rule budget: nonzero means a rewrite cycle or growing rules, laws the join closed with no machine proof, terms the join's
+//! searches reached: its cost, which M does not show), mine_<name>.log and serve_<skip>.log. The last line printed is
+//! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
 //! **A sweep** (the experiments of docs/loop-result.md): `SWEEP_OUT=<dir> [SALT=1] [LIB=<dir>] [SWEEP="mines own cold"] <exe>
 //! driver::sweep --exact --ignored --nocapture` (`MACHINE_STATE=0` skips its two machine-state lines too). Every stage uses `RULEMINER_FAST=1` and `RULEMINER_SHUFFLE=$SALT`. Stages, in order:
 //! - `mines`, optionally `:<family>,..` (default sbo3,add3,mix3,cmp3d; u3 only when named): one ref mine per family on its phase-0
-//!   stream (`MINES`) -> `lib_<family>/`, summary rows in `<stage>.tsv` (family, seconds, total M, rules, exhausted).
+//!   stream (`MINES`) -> `lib_<family>/`, summary rows in `<stage>.tsv` (family, seconds, total M, rules, exhausted, joined, reached).
 //! - `own`, `cold`, `cross`, `pooled`, `mixed`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on
 //!   phases 1-3, seeded with the family's own library, nothing, each other family's library, the pooled library (cmp3d's, add3's and
 //!   sbo3's, `pooled.rules`, plus the preferences and rule drops the family learns on it on its phase-0 stream, `pooled_<family>/`; rows in
 //!   `pooled_prefs.tsv` as for mines), or the library mined on u3. Libraries are read from `LIB/lib_<family>/rules.txt`
 //!   (default LIB = SWEEP_OUT). One row per loop in `<stage>.tsv` (`:` becomes `_`): family, stride-phase, from_<source>, total M,
-//!   per-batch M, rules at the end, seconds, exhausted.
+//!   per-batch M, rules at the end, seconds, exhausted, joined, reached (as in m.tsv, summed over the batches).
 
 use super::*;
 use std::io::Write;
@@ -207,6 +208,9 @@ struct Summary {
     ms: Vec<usize>,
     rules: usize,
     exhausted: usize,
+    /// laws served with no machine proof by the join, and the terms its searches reached (`JOIN_COST`, which M does not show)
+    joined: usize,
+    reached: usize,
 }
 
 /// The child process that runs this driver's children as tasks (`worker`), started at the first task and again after a
@@ -442,7 +446,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
             .collect();
         append(&rules, &chosen);
     };
-    // (M, laws, laws that used up the rule budget) of the batch at `skip`
+    // (M, laws, laws that used up the rule budget, laws joined, terms the join reached) of the batch at `skip`
     let serve = |skip: usize| {
         let log = out.join(format!("serve_{skip}.log"));
         let mut env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
@@ -451,9 +455,12 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
         // CHECKED <n> laws kernel-checked (<k> with no whole-term machine proof), <p> not proved, <x> used up the rule budget
         let text = std::fs::read_to_string(&log).unwrap();
         let line = text.lines().find(|l| l.starts_with("CHECKED ")).unwrap_or_else(|| panic!("no CHECKED line (see {})", log.display()));
-        let nums: Vec<usize> = line.split(|c: char| !c.is_ascii_digit()).filter_map(|w| w.parse().ok()).collect();
-        let &[n, k, p, x] = &nums[..] else { panic!("unexpected CHECKED line: {line}") };
-        (n - k + p, n + p, x)
+        let nums = |line: &str| line.split(|c: char| !c.is_ascii_digit()).filter_map(|w| w.parse().ok()).collect::<Vec<usize>>();
+        let &[n, k, p, x] = &nums(line)[..] else { panic!("unexpected CHECKED line: {line}") };
+        // JOINED <j> of them by the join, <s> searches reaching <r> terms
+        let line = text.lines().find(|l| l.starts_with("JOINED ")).unwrap_or_else(|| panic!("no JOINED line (see {})", log.display()));
+        let &[j, _, r] = &nums(line)[..] else { panic!("unexpected JOINED line: {line}") };
+        (n - k + p, n + p, x, j, r)
     };
     match &cfg.warm {
         Some(w) => {
@@ -465,19 +472,19 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
     if cfg.mode == "ref" {
         mine("ref", cfg.offset, cfg.b * cfg.k);
     }
-    let (mut ms, mut exhausted) = (vec![], 0);
+    let (mut ms, mut exhausted, mut joined, mut reached) = (vec![], 0, 0, 0);
     for r in 0..cfg.k {
         let (skip, t0) = (cfg.offset + r * cfg.b, std::time::Instant::now());
-        let (m, laws, ex) = serve(skip);
-        append(&out.join("m.tsv"), &format!("{r}\t{m}\t{laws}\t{}\t{}\t{ex}\n", count(), t0.elapsed().as_secs()));
+        let (m, laws, ex, j, rc) = serve(skip);
+        append(&out.join("m.tsv"), &format!("{r}\t{m}\t{laws}\t{}\t{}\t{ex}\t{j}\t{rc}\n", count(), t0.elapsed().as_secs()));
         ms.push(m);
-        exhausted += ex;
+        (exhausted, joined, reached) = (exhausted + ex, joined + j, reached + rc);
         if cfg.mode == "loop" && r + 1 < cfg.k {
             mine(&r.to_string(), skip, cfg.b);
         }
     }
-    let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted };
-    println!("mode={} B={} K={} offset={} total_M={} rules={} exhausted={}", cfg.mode, cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted);
+    let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted, joined, reached };
+    println!("mode={} B={} K={} offset={} total_M={} rules={} exhausted={} joined={} reached={}", cfg.mode, cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted, sum.joined, sum.reached);
     sum
 }
 
@@ -551,7 +558,7 @@ fn sweep() {
                 let cfg = LoopCfg { stride, split, b, k: 4, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) };
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg, &lemmas, &worker);
-                append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
+                append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted, s.joined, s.reached));
             }
             continue;
         }
@@ -574,7 +581,7 @@ fn sweep() {
                 cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg, &lemmas, &worker);
-                append(&out.join("pooled_prefs.tsv"), &format!("{fam}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted));
+                append(&out.join("pooled_prefs.tsv"), &format!("{fam}\t{}\t{}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted, s.joined, s.reached));
             }
         }
         for fam in fams.split(',') {
@@ -599,7 +606,7 @@ fn sweep() {
                     let t0 = std::time::Instant::now();
                     let s = run_loop(&cfg, &lemmas, &worker);
                     let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
-                    append(&tsv, &format!("{fam}\t{stride}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\n", s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted));
+                    append(&tsv, &format!("{fam}\t{stride}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted, s.joined, s.reached));
                 }
             }
         }

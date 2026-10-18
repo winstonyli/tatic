@@ -4391,8 +4391,37 @@ Full sweeps (`mines own cold pooled`), salts 1-10, with one exe on and off, the 
 
   1000 became the default (8d5b29d): 5000 leaves a few laws fewer for 2-3 times the time. Wall times here are side by
   side under 60% foreign CPU load, so they compare arms only within a salt.
-- Not measured: the kernel cost of a joined law's proof against a machine proof; whether caching searches per pair and
-  rule set pays (`PARKED.md`).
+- The kernel cost of joined proofs and the miner's view of the join: next section.
+
+*The miner sees the join; a met join's plan survives rules added off its path (2026-10-17).*
+Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
+- **Blind spot.** The miner's gain bound asks which laws a candidate rule touches (`Trace::touched_by`), but a law's trace
+  held only the rule steps of rewriting, not the terms its join examined. A candidate acting only inside a join looked
+  harmless. Now a join adds the terms it examined, with their subterms, to the trace (`Fired::Join`); a candidate
+  touches a join item by its left side, or by its right side where the join could use the rule right to left
+  (`join_usable`). Joins are memoized per pair in `RewriteMemo.joins`, invalidated like other entries.
+- **Exact miner first** (every failed or met join traces all it examined; run `2026-10-17-join-memo`, salts 1-10 against
+  8d5b29d, CPU 14% at launch, RTP off): M mines 2 to 0, own 13 to 26, cold 1568 to 1563, pooled 33 to 36; summed mine
+  time 33 to 51 s. Almost every candidate touches the many terms a met join examined, so its memo entry was rerun.
+- **Option 1, built:** a met join traces only the terms on its path and their subterms. Its entry is dropped when a
+  rule added or removed matches one of them, and kept when the rules added act only elsewhere in what the search
+  examined. Inexact: those added rules widen the search's frontiers, so a pair that met can reach `JOIN_VISIT` before
+  meeting, and serving then fails where the miner counted it joined. Tests: `failed_join_traces_every_term_it_examines`,
+  `met_join_traces_its_path_only`.
+- **Results** (run `2026-10-17-join-sticky`, salts 1-10, against 8d5b29d, CPU 17% at launch, RTP off): every salt's M
+  and every stage's rule count are those of the exact miner (mines 0, own 26, cold 1563, pooled 36; rules 383, 1165,
+  640, 3259); summed mine time 46 s (exact 51, blind 33). `ABLATE=join` on both builds gives identical rows
+  (`2026-10-17-join-sticky-ablate`). With `JOIN_CHECK` (`docs/runs/2026-10-17/patches/join_check.patch`: on every memo
+  hit of a met plan, search again under the current rules; run `2026-10-17-join-sticky-flips`), no kept plan failed in
+  at least 230000 hits over the 10 salts. Where the remaining 13 s over the blind miner goes is not isolated: the
+  searches themselves (salt 6's cmp3d mine: 74760 searches reaching 10.1M terms, 94.5% met, 35783 memo hits) or a
+  weaker gain bound (3801 of 15158 scorings skipped, the exact miner 3603 of 15158, the blind one 2720 of 5434).
+- **Cost reporting.** The mine log has `RULEMINER join: <searches> searches reaching <terms> terms, <met> met, <hits>
+  memo hits` (workers' counts summed, `JoinCost`) and the time spent bounding candidates' gains (0.4 s of salt 6's cmp3d
+  mine). The sweep's stage files gain columns for the laws joined and the terms the joins reached. `proof_cost_split`
+  has a joined row: on two served cmp3d batches at salt 6 (a probe, not recorded), a joined law's proof cost about 9 ms
+  to build against 2.5 ms for rules only, about 0.4 against 0.24 ms to check, about 950 against 720 unique nodes. No
+  law in those batches needed a machine proof, so there is no row to set against.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
