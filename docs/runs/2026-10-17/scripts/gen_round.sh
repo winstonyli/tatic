@@ -5,6 +5,9 @@
 # GEN_N=matched: n capped at what the filtered stream list fits), stream_<arm> (GEN_SOURCE=stream at that arm's n and
 # slices: the stream control; only stream_m08 fits, the filtered stream being 5-20x short of the other arms' n). Prints
 # mined-batch M per family, rules and summed loop seconds per arm and salt.
+# After the default (2026-10-18): GEN_F, GEN_SHARED and GEN_COUNTS are gone, so f04-s16 and legacy all run as s16, and
+# m08 / stream_m08 take shared slices at the stream's fit (a larger n than the measured fresh pair). Reproduce rounds A
+# and B on a5da697.
 exe=$1; shift
 d=$(bash "$(dirname "$0")/../../2026-10-12/scripts/kk.sh")
 arm_env() {

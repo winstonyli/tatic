@@ -19,7 +19,10 @@ in `PARKED.md`.
   loop time ("A law generator"), but a quarter of its laws are served laws behind padding ("Why padding laws pay").
   With the same value-class twin filter on every source (salts 1-10), the padding laws lose to the stream (40 against
   29), the mixed grammar wins (21) at 9 times the stream's loop time, and the non-padding laws reach 10 at 26
-  times, never worse than the stream on a salt ("One filter for every source"). The generator's spec is next (`PARKED.md`); mining cost decides its source.
+  times, never worse than the stream on a salt ("One filter for every source"). Built as a stage, 2026-10-18: every
+  mine with rule rounds mines a shared 16% slice of the generator's filtered non-padding laws; cold M over salts 1-20
+  221 to 11, at 7786 loop seconds against 9, and at equal n it beats the filtered stream on 13 salts of 20, worse on 5
+  ("The law generator as a stage"). Open: warm loops and ref mines, hidden twins (`PARKED.md`).
 - **v0.4 - Does a learned proposer, ranking which laws to mine on, beat the hash-ordered stream?** Experiments 1 and 2
   with the custom proposer model in place of the uniform and n-gram baselines.
 - **v0.5 - Does closing the cycle push the frontier?** Experiment 3: train on accepted laws, repeat, and track the

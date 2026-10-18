@@ -4641,6 +4641,41 @@ row (117220 searches, 30.9M terms). Of 204253 busy samples over the loop's three
 So an extras mine has the ref mine's shape, only more of it: the levers above stand, with term building (`Term::op`
 from the join's rewrite steps) first.
 
+*The law generator as a stage (2026-10-18, plan `docs/superpowers/plans/2026-10-17-law-generator.md`).* Every mine with
+rule rounds now also mines a slice of the generator's non-padding laws (`driver::scope_extras`), filtered against the laws
+its scope serves by value-class twin key (`ClassReps`) and by skeleton. Cold sweeps, mined-batch M (scripts in
+`docs/runs/2026-10-17/`, rows in its README):
+- **Checks** (run `2026-10-18-gen-check`): with the stage off (`ABLATE=gen`) every rule file equals the build before it
+  (`-gen-check-plain`) on 10 of 10 salts; with the probe's counts (`GEN_COUNTS=legacy`, since deleted) it equals
+  `-gen-cost`'s nopad arm on 9 of 10, salt 4's one differing rule file being build drift since 4346cda (`-gen-check-s4-*`).
+- **Probe** (salt 1, CPU 88% from other sessions): wall seconds off 12, f04 78, f08 90, s08 98, s16 285. The stream
+  control could not run at the generator's n: the filter leaves the unserved stream phases 292 / 42 / 166 laws (cmp3d /
+  add3 / sbo3) against 6n = 1134 / 450 / 444 at f 0.04. So the control is a matched pair: `GEN_N=matched` caps n at what
+  the filtered stream fits, for both sources (m08 and stream_m08).
+- **Round A** (salts 1-10, run `2026-10-18-gen-round-a`; f = share of the filtered list, fresh slices per mine or shared
+  per loop):
+
+| arm | M (cmp3d add3 sbo3) | rules | loop s | vs s16: better / equal / worse |
+|---|---|---|---|---|
+| s16 (shared, 0.16) | 5 (5 0 0) | 4141 | 4029 | |
+| legacy (probe counts) | 9 (8 0 1) | 2468 | 929 | 1 / 4 / 5 |
+| f08 (fresh, 0.08) | 17 (17 0 0) | 3270 | 1048 | 0 / 6 / 4 |
+| s08 (shared, 0.08) | 23 (22 0 1) | 2804 | 1082 | 0 / 4 / 6 |
+| f04 (fresh, 0.04) | 35 (32 0 3) | 2213 | 297 | 0 / 2 / 8 |
+| m08 (f08, matched n) | 88 (65 10 13) | 1071 | 20 | 0 / 0 / 10 |
+| stream_m08 | 92 (56 9 27) | 689 | 2 | 0 / 0 / 10 |
+| off | 120 (84 9 27) | 640 | 9 | 0 / 0 / 10 |
+
+- **Round B** (salts 11-20, run `2026-10-18-gen-round-b`), over salts 1-20: s16 11 (rules 8490, loop s 7786), m08 155,
+  stream_m08 183, off 221; s16 beats each on all 20 salts. Round B's off equals `-gen-salts`' plain (101).
+- **Default: s16**, the only arm with no more salts worse than better against the best. The share, not fresh slices,
+  carries the gain: at f 0.08 fresh beats shared (17 against 23), but shared at 0.16 beats both.
+- **Acceptance** (the spec: the generator beats the stream at the same n): m08 against stream_m08 over salts 1-20, better
+  on 13, equal on 2, worse on 5. The stage stays on by default.
+- **Cost**: s16's loops take 7786 s over 20 salts against off's 9 (the probe's sweep wall time 285 s against 12), all in
+  the join's searches ("Where an extras mine's time goes"). Numbers from here on are with the stage on unless they say
+  `ABLATE=gen`.
+
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three

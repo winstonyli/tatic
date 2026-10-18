@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # The law generator: a stream-blind source of extra laws for every mine

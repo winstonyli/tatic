@@ -17,8 +17,8 @@
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the law
-//! generator's laws (`scope_extras`); off with ABLATE=gen; GEN_SOURCE=stream is the stream control; GEN_F, GEN_SHARED=1,
-//! GEN_N=matched (n capped at what the filtered stream fits, for a same-n pair) and GEN_COUNTS=legacy are temporary.
+//! generator's laws (`scope_extras`, a shared 16% slice per loop); off with ABLATE=gen; GEN_SOURCE=stream (the stream control)
+//! and GEN_N=matched (n capped at what the filtered stream fits, for a same-n pair) are temporary.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas.bin across all its loops instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
 //! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
@@ -186,14 +186,13 @@ struct LoopCfg {
 }
 
 /// Each mine's slice of a scope's filtered extras list of `len` laws, ordered (loop, mine): `loops` loops of `mines` mines,
-/// `n` laws each, fresh (consecutive slices in that order) or one slice per loop for its mines; the shortfall if they do not
-/// fit (spec §3).
-fn extra_slices(len: usize, loops: usize, mines: usize, n: usize, fresh: bool) -> Result<Vec<std::ops::Range<usize>>, usize> {
-    let need = if fresh { loops * mines * n } else { loops * n };
-    if need > len {
-        return Err(need - len);
+/// `n` laws each, a loop's mines sharing its one slice (shared slices, spec §3: the default arm s16 is shared, see `GEN_F`);
+/// the shortfall if they do not fit.
+fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<std::ops::Range<usize>>, usize> {
+    if loops * n > len {
+        return Err(loops * n - len);
     }
-    Ok((0..loops).flat_map(|i| (0..mines).map(move |j| (if fresh { i * mines + j } else { i }) * n)).map(|s| s..s + n).collect())
+    Ok((0..loops).flat_map(|i| (0..mines).map(move |_| i * n..(i + 1) * n)).collect())
 }
 
 /// The filter drops a twin of a served law (here through `sub(y, 0)`, which normalizes to `y`) and a law with a served
@@ -222,19 +221,10 @@ fn mines_of(cfg: &LoopCfg) -> usize {
     if cfg.mode == "ref" { 1 } else { cfg.k.saturating_sub(1) }
 }
 
-/// Fresh slices are disjoint, each n long, and cover loops × mines × n; shared slices give a loop's mines one range.
+/// A loop's mines share one n-law range, and the loops' ranges are disjoint, in order.
 #[test]
 fn extra_slices_are_disjoint_and_full() {
-    let fresh = extra_slices(100, 3, 2, 10, true).unwrap();
-    assert_eq!(fresh.len(), 6);
-    assert!(fresh.iter().all(|r| r.len() == 10), "{fresh:?}");
-    let mut seen = vec![false; 100];
-    for i in fresh.iter().flat_map(|r| r.clone()) {
-        assert!(!seen[i], "law {i} in two slices: {fresh:?}");
-        seen[i] = true;
-    }
-    assert_eq!(seen.iter().filter(|&&s| s).count(), 60);
-    let shared = extra_slices(100, 3, 2, 10, false).unwrap();
+    let shared = extra_slices(100, 3, 2, 10).unwrap();
     assert_eq!(shared.len(), 6);
     for l in 0..3 {
         assert_eq!(shared[2 * l], shared[2 * l + 1], "{shared:?}");
@@ -242,31 +232,30 @@ fn extra_slices_are_disjoint_and_full() {
     }
     assert!(shared[0].end <= shared[2].start && shared[2].end <= shared[4].start, "{shared:?}");
     // a scope with no laws (a family with no pool): n is 0 and the mine takes nothing
-    assert_eq!(extra_slices(0, 1, 1, 0, true), Ok(vec![0..0]));
+    assert_eq!(extra_slices(0, 1, 1, 0), Ok(vec![0..0]));
 }
 
 /// The largest n whose slices a list of `len` laws fits (`extra_slices`' inverse): `GEN_N=matched` caps both sources at the
 /// stream list's.
-fn fit_n(len: usize, loops: usize, mines: usize, fresh: bool) -> usize {
-    len / if fresh { loops * mines } else { loops }
+fn fit_n(len: usize, loops: usize) -> usize {
+    len / loops
 }
 
-/// `fit_n` fits and one more does not, fresh and shared, including a list too short for one law per mine.
+/// `fit_n` fits and one more does not, including a list too short for one law per loop.
 #[test]
 fn fit_n_is_the_largest_that_fits() {
-    for (len, fresh) in [(292, true), (42, true), (166, false), (5, true), (0, false)] {
-        let n = fit_n(len, 3, 2, fresh);
-        assert!(extra_slices(len, 3, 2, n, fresh).is_ok(), "{len} {fresh}: {n} does not fit");
-        assert!(extra_slices(len, 3, 2, n + 1, fresh).is_err(), "{len} {fresh}: {} fits too", n + 1);
+    for len in [292, 42, 166, 2, 0] {
+        let n = fit_n(len, 3);
+        assert!(extra_slices(len, 3, 2, n).is_ok(), "{len}: {n} does not fit");
+        assert!(extra_slices(len, 3, 2, n + 1).is_err(), "{len}: {} fits too", n + 1);
     }
 }
 
 /// A list shorter than its slices returns the shortfall.
 #[test]
 fn extra_slices_refuse_a_short_list() {
-    assert_eq!(extra_slices(59, 3, 2, 10, true), Err(1));
-    assert_eq!(extra_slices(29, 3, 2, 10, false), Err(1));
-    assert!(extra_slices(60, 3, 2, 10, true).is_ok() && extra_slices(30, 3, 2, 10, false).is_ok());
+    assert_eq!(extra_slices(29, 3, 2, 10), Err(1));
+    assert!(extra_slices(30, 3, 2, 10).is_ok());
 }
 
 /// Extras exist to be mined into rules: a mine with no rule rounds (the pooled stage's preference mines), a loop that only
@@ -538,20 +527,15 @@ fn law_text((a, b): &(Term, Term)) -> String {
     format!("{} = {}", a.show(), b.show())
 }
 
-/// `s` with every lone lowercase letter (a variable) mapped by `f`.
-fn map_vars(s: &str, mut f: impl FnMut(u8) -> char) -> String {
-    let b = s.as_bytes();
-    (0..b.len())
+/// A law's skeleton: every variable (a lone lowercase letter) written `v`, the smaller side first.
+fn skeleton(l: &(Term, Term)) -> String {
+    let b = law_text(l).into_bytes();
+    let e: String = (0..b.len())
         .map(|i| {
             let alone = (i == 0 || !b[i - 1].is_ascii_alphanumeric()) && (i + 1 == b.len() || !b[i + 1].is_ascii_alphanumeric());
-            if alone && b[i].is_ascii_lowercase() { f(b[i]) } else { b[i] as char }
+            if alone && b[i].is_ascii_lowercase() { 'v' } else { b[i] as char }
         })
-        .collect()
-}
-
-/// A law's skeleton: every variable written `v`, the smaller side first.
-fn skeleton(l: &(Term, Term)) -> String {
-    let e = map_vars(&law_text(l), |_| 'v');
+        .collect();
     let (a, c) = e.split_once(" = ").unwrap();
     if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
 }
@@ -596,25 +580,29 @@ fn filtered(source: &[(Term, Term)], served: &[(Term, Term)], reps: &mut ClassRe
     out
 }
 
+/// The share of the filtered list each loop's mines take: 0.16 in shared slices had the lowest M of the generator arms
+/// over salts 1-20 (runs `2026-10-18-gen-round-a` and `-b`, docs/tier-cycle.md "The law generator as a stage").
+const GEN_F: f64 = 0.16;
+
 /// Draws one scope's extras (spec §1-3): `scope`'s loops (a stage's 3 loops of one family and source, or one ref mine)
-/// against the laws they serve and those of `also` (for a ref mine, every loop the sweep runs). n = ⌊f × L⌋ with f from
-/// `GEN_F` (temporary, default 0.08) and L the generator's filtered list; with `GEN_SOURCE=stream` (the control arm) the
-/// slices come from the stream phases the scope does not serve, from the one after its last, filtered alike. Fresh slices
-/// unless `GEN_SHARED=1` (temporary). `GEN_N=matched` (temporary) caps n at what the filtered stream list fits (`fit_n`),
-/// whichever the source, so a grammar arm and its stream control take the same n. Sets each loop's `extras` and
+/// against the laws they serve and those of `also` (for a ref mine, every loop the sweep runs). n = ⌊`GEN_F` × L⌋ with L
+/// the generator's filtered list, in shared slices; with `GEN_SOURCE=stream` (the control arm, temporary) the slices come
+/// from the stream phases the scope does not serve, from the one after its last, filtered alike. `GEN_N=matched`
+/// (temporary) caps n at what the filtered stream list fits (`fit_n`), whichever the source, so a grammar arm and its
+/// stream control take the same n: the stream is too short for the control at `GEN_F`'s n. Sets each loop's `extras` and
 /// `extra_at`, or says by how much the list is short.
 fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
     let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(served_laws).collect();
     let c = scope[0].clone();
     let grammar = filtered(&draw.grammar(&c), &served, &mut draw.reps);
-    let mut n = (env_or("GEN_F", 0.08f64) * grammar.len() as f64) as usize;
+    let mut n = (GEN_F * grammar.len() as f64) as usize;
     let source = env_var("GEN_SOURCE").unwrap_or("grammar");
     let matched = match env_var("GEN_N") {
         None => false,
         Some("matched") => true,
         Some(s) => panic!("GEN_N must be matched, got {s}"),
     };
-    let (mines, fresh) = (mines_of(&c), env_var("GEN_SHARED") != Some("1"));
+    let mines = mines_of(&c);
     let stream = (source == "stream" || matched).then(|| {
         let own: Vec<usize> = scope.iter().map(|c| c.sphase).collect();
         let last = *own.iter().max().unwrap();
@@ -625,15 +613,15 @@ fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Res
         kept
     });
     if matched {
-        n = n.min(fit_n(stream.as_ref().unwrap().len(), scope.len(), mines, fresh));
+        n = n.min(fit_n(stream.as_ref().unwrap().len(), scope.len()));
     }
     let laws = match source {
         "grammar" => grammar,
         "stream" => stream.unwrap(),
         s => panic!("GEN_SOURCE must be grammar or stream, got {s}"),
     };
-    let at = extra_slices(laws.len(), scope.len(), mines, n, fresh)
-        .map_err(|short| format!("{}: {source} list of {} laws is {short} short of {} loops x {mines} mines x {n} (fresh {fresh})", c.out.display(), laws.len(), scope.len()))?;
+    let at = extra_slices(laws.len(), scope.len(), mines, n)
+        .map_err(|short| format!("{}: {source} list of {} laws is {short} short of {} loops x {n}", c.out.display(), laws.len(), scope.len()))?;
     println!("GEN {}: L {} n {n} source {source}", c.out.display(), laws.len());
     let laws = std::sync::Arc::new(laws);
     for (i, cfg) in scope.iter_mut().enumerate() {
@@ -641,41 +629,6 @@ fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Res
         cfg.extra_at = at[i * mines..(i + 1) * mines].to_vec();
     }
     Ok(())
-}
-
-/// `GEN_COUNTS=legacy` (temporary, the on-path check against `-gen-cost`'s nopad arms): the probe's extras per loop mine.
-/// Today's counts, the generator's list from `sphase × n`, kept when no law of phases 1-3 up to renaming variables and
-/// swapping sides and of none of the mine's own laws' skeletons, then the first n.
-fn legacy_extras(cfg: &mut LoopCfg, laws: &[(Term, Term)]) {
-    let want = match cfg.family.as_str() {
-        "add3" => 60,
-        "sbo3" => 180,
-        "cmp3d" => 350,
-        _ => 0,
-    };
-    // up to renaming variables (in order of first use) and swapping sides
-    let key = |l: &(Term, Term)| {
-        let canon = |s: String| {
-            let mut seen = vec![];
-            map_vars(&s, |c| {
-                let j = seen.iter().position(|&m| m == c).unwrap_or_else(|| {
-                    seen.push(c);
-                    seen.len() - 1
-                });
-                (b'a' + j as u8) as char
-            })
-        };
-        canon(law_text(l)).min(canon(law_text(&(l.1, l.0))))
-    };
-    let served: hashbrown::HashSet<String> = (1..=3).flat_map(|q| stream_laws(cfg, q, 0, usize::MAX)).map(|l| key(&l)).collect();
-    let (mut all, mut at) = (vec![], vec![]);
-    for r in 0..mines_of(cfg) {
-        let past: hashbrown::HashSet<String> = stream_laws(cfg, cfg.sphase, cfg.offset + r * cfg.b, cfg.b).iter().map(skeleton).collect();
-        let start = all.len();
-        all.extend(laws.iter().skip(cfg.sphase * want).filter(|l| !served.contains(&key(*l)) && !past.contains(&skeleton(*l))).take(want).copied());
-        at.push(start..all.len());
-    }
-    (cfg.extras, cfg.extra_at) = (std::sync::Arc::new(all), at);
 }
 
 /// One loop; its children share the lemma file `lemmas`, which the caller owns (creates nothing, deletes it when done).
@@ -869,11 +822,6 @@ fn sweep() {
             }
         }
     }
-    let legacy = match env_var("GEN_COUNTS") {
-        None => false,
-        Some("legacy") => true,
-        Some(s) => panic!("GEN_COUNTS must be legacy, got {s}"),
-    };
     // a ref mine's library is served on the loops of every family the sweep runs (each family's phase 1-3 batches once);
     // a sweep of mines alone runs no loop, so its ref mines filter against their own batches only
     let mut loops: Vec<LoopCfg> = scopes.iter().flatten().filter(|c| c.mode == "loop").cloned().collect();
@@ -882,14 +830,6 @@ fn sweep() {
     let (mut draw, mut short) = (Draw::new(), vec![]);
     for scope in &mut scopes {
         if !scope.iter().all(|c| takes_extras(c, ablated("gen"))) {
-            continue;
-        }
-        if legacy {
-            // the probe gave loop mines extras only
-            if scope[0].mode == "loop" {
-                let laws = draw.grammar(&scope[0]);
-                scope.iter_mut().for_each(|c| legacy_extras(c, &laws));
-            }
             continue;
         }
         let also = if scope[0].mode == "ref" { &loops[..] } else { &[] };

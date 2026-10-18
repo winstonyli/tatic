@@ -54,16 +54,16 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
   SWEEP=mines:cmp3d, since `profile.ps1` passes no environment): a samply profile of that mine, built with
   `CARGO_PROFILE_SWEEP_DEBUG=true`.
 - `scripts/gen_src.sh <exe> <salt>...`: cold sweeps plain and with `MINE_EXTRA` from each `MINE_SOURCE` (stream, grammar),
-  one after another; prints mined-batch M per family.
+  one after another; prints mined-batch M per family. These no longer run against builds after the generator's stage (`MINE_EXTRA`, `MINE_SOURCE` and `GEN_PAD` are gone).
 - `scripts/gen_cost.sh <exe> <salt>...`: the same per arm of `$ARMS` (default `half quarter pad nopad`; also `plain`,
   `stream`, `grammar`): grammar at half and a quarter of the counts, and `GEN_PAD=pad|nopad` at full counts. Prints M per
-  family, rules and summed loop seconds.
+  family, rules and summed loop seconds. These no longer run against builds after the generator's stage (`MINE_EXTRA`, `MINE_SOURCE` and `GEN_PAD` are gone).
 - `scripts/pad_strip.py <run dir>`: strips the padding from each `pad_*` loop's extras and counts how many are twins of a
   served law (`tier-cycle.md`, "Why padding laws pay"). `scripts/pad_files.py <run dir> <out>` writes the probe's extras
   files from the same: `full`, `untwin` and `control` (the inputs are kept in
   `%LOCALAPPDATA%\claude-runs\tatic\2026-10-17-gen-twin-inputs`). Run each as `python -P <script> ... < /dev/null`.
 - `scripts/gen_twin.sh <exe> <inputs> <salt>...` with `patches/extra_file.patch` (`MINE_SOURCE=file`, reverted): cold
-  sweeps per arm reading the extras from those files.
+  sweeps per arm reading the extras from those files. These no longer run against builds after the generator's stage (`MINE_EXTRA`, `MINE_SOURCE` and `GEN_PAD` are gone).
 - `scripts/twin_wide.py <run root> <arm prefix>...`: counts each arm's extras that twin a served law under three
   normalizations (the strip on the extras, the strip on both sides, two-leaf value classes on both sides) and the laws
   trivial after normalizing (`tier-cycle.md`, "One filter for every source"). Since the generator's plan, its class key
@@ -80,7 +80,7 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 - `scripts/gen_round.sh <exe> <salt>...`: the law generator's extras stage (its plan, Tasks 6-7), cold sweeps per arm of
   `$ARMS`: `off` (`ABLATE=gen`), `plain` (an old build), `legacy` (`GEN_COUNTS=legacy`), `f04`/`f08` (fresh, `GEN_F`),
   `s08`/`s16` (`GEN_SHARED=1`), `m08` (`GEN_N=matched`) and `stream_<arm>` (`GEN_SOURCE=stream`). Prints M per family,
-  rules and summed loop seconds. `scripts/same_arms.sh <dir a> <dir b>`: `same`, or the cold-stage files that differ
+  rules and summed loop seconds. After the default (2026-10-18) `GEN_F`, `GEN_SHARED` and `GEN_COUNTS` are gone: every arm but `off`, `m08` and `stream_*` runs as s16, and `m08` and `stream_m08` take shared slices capped at the stream's fit, a larger n than the measured pair's fresh ones. `scripts/same_arms.sh <dir a> <dir b>`: `same`, or the cold-stage files that differ
   (time columns aside).
 - `scripts/gen_pairs.py [--best <arm>] <run dir>...`: per arm, M per family, rules and loop seconds summed over its salts,
   and its paired count (better, equal, worse) against the best generator arm (or `--best`). Run as `python -P <script>
