@@ -28,6 +28,12 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   `SWEEP=cold:cmp3d` and the counters' sum.
 - `patches/size_bound.patch` (on e450d24, exe `bv_sbound`): counters of what a size bound before matching would skip
   (fields in the patch's header), run with `match_count.sh`.
+- `patches/join_paths.patch` (on a615974, exe `bv_jpaths`): `JOIN_PATHS`, each met join search's path with its size
+  changes per side. `scripts/join_paths.sh <exe> <salt>`: one `SWEEP=cold:cmp3d` and the uphill-step summary.
+- `patches/cost_join.patch` (on a615974, includes `join_paths.patch`; exe `bv_cjoin`): `JOIN_SHADOW`, a join bounded by
+  size-increasing steps run beside the real one on a sample of pairs (fields in the patch's header).
+  `scripts/cost_join.sh <exe> <salt>`: one sweep per budget in `BUDGETS`, the outcomes against the real join's and the
+  terms reached.
 - `scripts/interner_ab.sh <exe A> <exe B> <salt>`: `SWEEP=cold:cmp3d` at 1 lane in the order A B B A, wall seconds, and
   which sweeps' files agree with A's first. A was `bv_lazy2`, B `bv_lockfree` (a49d1af with the lock-free interner).
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
@@ -49,3 +55,5 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-match-count` | `bv_mprobe` | `match_count.sh`, salt 1 | matcher fails 60%, 59% of matches over the cap; 37% of step terms expanded; `Term::op` 26.2% table hits, 0.35% new |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |
+| `2026-10-18-join-paths` | `bv_jpaths` | `join_paths.sh`, salt 1 | met paths: at most 4 uphill steps in 99.8%; deep sides mostly flat steps |
+| `2026-10-18-cost-join` | `bv_cjoin` | `cost_join.sh` with `JOIN_SAMPLE_MASK=31`, salt 1 | budget 4: meets 99.9% of real joins and 62% of real failures, at 4.3-8.6 times the terms |

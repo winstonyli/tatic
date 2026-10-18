@@ -1,0 +1,22 @@
+budget 3: exit 0 wall 124 s
+  real fail->fail: 1587
+  real fail->met: 2938
+  real fail->unknown: 220
+  real met->fail: 14
+  real met->met: 32140
+  real met->unknown: 24
+  real reached: p50 72 p99 1547 p99.9 3789 max 5323 (n 36923)
+  shadow reached: p50 238 p99 51704 p99.9 200011 max 200018 (n 36923)
+  shadow fail on real met: mean reached 1663
+  shadow fail on real met: mean reached 514
+budget 4: exit 0 wall 124 s
+  real fail->fail: 1578
+  real fail->met: 2947
+  real fail->unknown: 220
+  real met->fail: 4
+  real met->met: 32147
+  real met->unknown: 24
+  real reached: p50 72 p99 1547 p99.9 3789 max 5323 (n 36920)
+  shadow reached: p50 238 p99 51704 p99.9 200011 max 200018 (n 36920)
+  shadow fail on real met: mean reached 1691
+  shadow fail on real met: mean reached 598

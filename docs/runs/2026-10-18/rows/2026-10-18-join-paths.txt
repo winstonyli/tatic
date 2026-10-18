@@ -1,0 +1,5 @@
+exit 0 wall 91 s
+met paths 1055824
+uphill steps per path: 0:220363 1:304522 2:397605 3:122314 4:8761 5:2128 6:111 7:17 8:3 >8:0
+peak over the larger side: 0:425650 2:630174
+paths with a side >= 5 deep 108831; uphill steps on that side: 0:9755 1:68518 2:29898 3:578 4:67 >=5:15

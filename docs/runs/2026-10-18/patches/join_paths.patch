@@ -1,0 +1,39 @@
+# join_paths: JOIN_PATHS behind run 2026-10-18-join-paths (exe bv_jpaths.exe, a615974 + this): one line per met join
+# search: steps on side a, on side b, uphill steps on each, peak size over the larger side, sizes of a and b, size changes.
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 3a17dfc..48215f3 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2842,6 +2842,32 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                         }
+                     }
+                 }
++                // PROBE: the met path's size changes per side, root first
++                if let Some(p) = env_var("JOIN_PATHS") {
++                    use std::io::Write;
++                    let chain = |side: &Seen, mut p: Term| {
++                        let mut v = vec![p];
++                        while let Some(prev) = get(side, p) {
++                            p = prev.from;
++                            v.push(p);
++                        }
++                        v.reverse();
++                        v
++                    };
++                    let mut mine_side = chain(&seen[s], t);
++                    mine_side.push(u);
++                    let other_side = chain(&seen[1 - s], u);
++                    let (s0, s1) = if s == 0 { (mine_side, other_side) } else { (other_side, mine_side) };
++                    let deltas = |v: &[Term]| v.windows(2).map(|w| w[1].size() as i64 - w[0].size() as i64).collect::<Vec<_>>();
++                    let (d0, d1) = (deltas(&s0), deltas(&s1));
++                    let up = |d: &[i64]| d.iter().filter(|&&x| x > 0).count();
++                    let peak = s0.iter().chain(&s1).map(|t| t.size()).max().unwrap() as i64 - a.size().max(b.size()) as i64;
++                    let fmt = |d: &[i64]| d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
++                    let line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", d0.len(), d1.len(), up(&d0), up(&d1), peak, a.size(), b.size(), fmt(&d0), fmt(&d1));
++                    static F: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
++                    let mut g = F.lock().unwrap();
++                    g.get_or_insert_with(|| std::fs::OpenOptions::new().create(true).append(true).open(format!("{p}.{}", std::process::id())).unwrap()).write_all(line.as_bytes()).unwrap();
++                }
+                 // `this side = u` and `other side = u`
+                 let (here, there) = (Plan::trans(path(&seen[s], t, table), step_plan(&step, table)), path(&seen[1 - s], u, table));
+                 let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };

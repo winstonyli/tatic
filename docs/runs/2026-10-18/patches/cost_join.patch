@@ -1,0 +1,137 @@
+# cost_join: the shadow search behind run 2026-10-18-cost-join (exe bv_cjoin.exe, a615974's code + this, which includes
+# join_paths.patch's JOIN_PATHS log): JOIN_SHADOW, JOIN_BUDGET, JOIN_SAFETY, JOIN_SAMPLE_MASK; cost_join() at the end.
+# Shadow lines: real met, real reached, shadow outcome, shadow reached, final split (a side, b side), larger size, micros.
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 3a17dfc..e4837d1 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2842,6 +2842,32 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                         }
+                     }
+                 }
++                // PROBE: the met path's size changes per side, root first
++                if let Some(p) = env_var("JOIN_PATHS") {
++                    use std::io::Write;
++                    let chain = |side: &Seen, mut p: Term| {
++                        let mut v = vec![p];
++                        while let Some(prev) = get(side, p) {
++                            p = prev.from;
++                            v.push(p);
++                        }
++                        v.reverse();
++                        v
++                    };
++                    let mut mine_side = chain(&seen[s], t);
++                    mine_side.push(u);
++                    let other_side = chain(&seen[1 - s], u);
++                    let (s0, s1) = if s == 0 { (mine_side, other_side) } else { (other_side, mine_side) };
++                    let deltas = |v: &[Term]| v.windows(2).map(|w| w[1].size() as i64 - w[0].size() as i64).collect::<Vec<_>>();
++                    let (d0, d1) = (deltas(&s0), deltas(&s1));
++                    let up = |d: &[i64]| d.iter().filter(|&&x| x > 0).count();
++                    let peak = s0.iter().chain(&s1).map(|t| t.size()).max().unwrap() as i64 - a.size().max(b.size()) as i64;
++                    let fmt = |d: &[i64]| d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
++                    let line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", d0.len(), d1.len(), up(&d0), up(&d1), peak, a.size(), b.size(), fmt(&d0), fmt(&d1));
++                    static F: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
++                    let mut g = F.lock().unwrap();
++                    g.get_or_insert_with(|| std::fs::OpenOptions::new().create(true).append(true).open(format!("{p}.{}", std::process::id())).unwrap()).write_all(line.as_bytes()).unwrap();
++                }
+                 // `this side = u` and `other side = u`
+                 let (here, there) = (Plan::trans(path(&seen[s], t, table), step_plan(&step, table)), path(&seen[1 - s], u, table));
+                 let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
+@@ -2851,6 +2877,17 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+         None
+     });
+     let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
++    // PROBE: the cost-bounded join beside this one, on the pairs whose hashes clear JOIN_SAMPLE_MASK (default one in 8)
++    if let (Some(p), true) = (env_var("JOIN_SHADOW"), (a.sh() ^ b.sh()) & env_or("JOIN_SAMPLE_MASK", 7u64) == 0) {
++        use std::io::Write;
++        let budget = env_or("JOIN_BUDGET", 4u32);
++        let t1 = std::time::Instant::now();
++        let (outcome, n, split) = cost_join(a, b, cap, budget, env_or("JOIN_SAFETY", 200_000usize));
++        let line = format!("{}\t{reached}\t{outcome}\t{n}\t{}\t{}\t{}\t{}\n", found.is_some() as u8, split.0, split.1, a.size().max(b.size()), t1.elapsed().as_micros());
++        static F: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
++        let mut g = F.lock().unwrap();
++        g.get_or_insert_with(|| std::fs::OpenOptions::new().create(true).append(true).open(format!("{p}.{}", std::process::id())).unwrap()).write_all(line.as_bytes()).unwrap();
++    }
+     count_join(|c| {
+         (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
+         c.failed_nanos += if found.is_some() { 0 } else { nanos };
+@@ -3707,3 +3744,78 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++/// PROBE: whether some path of join steps from `a` to `b` through terms of at most `cap` nodes has at most `budget`
++/// size-increasing steps (others free), searched from both sides by cost level, the side whose next level is smaller
++/// raised first: "met", "fail", or "unknown" past `safety` terms; with the terms reached and the final per-side limits.
++fn cost_join(a: &Term, b: &Term, cap: usize, budget: u32, safety: usize) -> (&'static str, usize, (u32, u32)) {
++    let mut dist: [hashbrown::HashMap<Term, u32>; 2] = [Default::default(), Default::default()];
++    let mut buckets: [Vec<Vec<Term>>; 2] = [vec![vec![]; budget as usize + 2], vec![vec![]; budget as usize + 2]];
++    for (s, t) in [(0, *a), (1, *b)] {
++        dist[s].insert(t, 0);
++        buckets[s][0].push(t);
++    }
++    if a == b {
++        return ("met", 2, (0, 0));
++    }
++    let mut lim: [Option<u32>; 2] = [None, None];
++    RULE_TABLE.with(|table| {
++        let table = &table.borrow();
++        let mut up = vec![];
++        loop {
++            // the side to raise: both to level 0 first, then the smaller next level while the limits sum under budget
++            let s = match lim {
++                [None, _] => 0,
++                [_, None] => 1,
++                [Some(x), Some(y)] if x + y >= budget => return ("fail", dist[0].len() + dist[1].len(), (x, y)),
++                [Some(x), Some(y)] => (buckets[1][y as usize + 1].len() < buckets[0][x as usize + 1].len()) as usize,
++            };
++            let level = lim[s].map_or(0, |l| l + 1);
++            let other_lim = lim[1 - s];
++            while let Some(t) = buckets[s][level as usize].pop() {
++                if dist[s][&t] < level {
++                    continue;
++                }
++                let mut met = false;
++                let (mine, other) = if s == 0 { let (x, y) = dist.split_at_mut(1); (&mut x[0], &y[0]) } else { let (x, y) = dist.split_at_mut(1); (&mut y[0], &x[0]) };
++                let bs = &mut buckets[s];
++                join_walk(t, table, cap, &mut up, &mut None, &mut |up, x, eq, sub, cap| {
++                    let e = &table.join[eq];
++                    let (h, size) = subst_sig(&e.to, sub);
++                    if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
++                        return true;
++                    }
++                    let u = place(up, subst_pat(&e.to, sub));
++                    let c = level + (u.size() > t.size()) as u32;
++                    if c > budget {
++                        return true;
++                    }
++                    if let (Some(&d), Some(ol)) = (other.get(&u), other_lim) {
++                        if d <= ol && c + d <= budget {
++                            met = true;
++                            return false;
++                        }
++                    }
++                    if mine.get(&u).is_none_or(|&d| c < d) {
++                        mine.insert(u, c);
++                        bs[c as usize].push(u);
++                    }
++                    true
++                });
++                if met {
++                    return ("met", dist[0].len() + dist[1].len(), (lim[0].unwrap_or(0), lim[1].unwrap_or(0)));
++                }
++                if dist[0].len() + dist[1].len() > safety {
++                    return ("unknown", dist[0].len() + dist[1].len(), (lim[0].unwrap_or(0), lim[1].unwrap_or(0)));
++                }
++            }
++            lim[s] = Some(level);
++            // a term of this side's new level already reached by the other within its limit
++            if let Some(ol) = lim[1 - s] {
++                if dist[s].iter().any(|(t, &d)| d <= level && dist[1 - s].get(t).is_some_and(|&e| e <= ol && d + e <= budget)) {
++                    return ("met", dist[0].len() + dist[1].len(), (lim[0].unwrap(), lim[1].unwrap()));
++                }
++            }
++        }
++    })
++}

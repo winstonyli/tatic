@@ -176,3 +176,38 @@ path; it pays only if nearly all met paths need few (say 4 or under) and the dee
 replay the cost-bounded search at that budget for its terms reached per search (p99, max against about 1000), failing
 pairs included. The existing `JOIN_TRACE` logs (run `2026-10-17-join-depth`) hold per-side meeting depths, not step
 sizes, and predate the lazy join and the extras.
+
+## Probe of survey 2 (2026-10-18): the uphill-step bound is monotone and stronger, but four times dearer
+
+Runs in `docs/runs/2026-10-18/README.md`, salt 1 cold:cmp3d at 2 lanes, a615974's code plus the patches.
+
+- **Met paths need few size-increasing steps** (run `2026-10-18-join-paths`, `patches/join_paths.patch`, every met
+  search's path logged with its size changes). Of 1055824 met paths, 87.4% have at most 2 uphill steps and 99.8% at
+  most 4; counting flat steps too needs a budget of about 9 for 99%. The deep sides (5 or more steps, 108831 paths) are
+  mostly flat steps, not downhill: 3.5 flat, 1.0 down and 1.2 up of 5.7, and at most 2 uphill in 99.4% of them. So the
+  falsifier of the survey passed for the cost "uphill steps, flat and downhill free", but the free steps are flat ones,
+  the kind whose closures branch.
+- **The bounded search beside the real one** (run `2026-10-18-cost-join`, `patches/cost_join.patch`; one pair in 32,
+  36920 searches; budget 4, levels raised on the side whose next level is smaller, an effort safety of 200000 terms
+  answering "unknown"):
+
+  | real join | shadow met | shadow fail | shadow unknown |
+  |---|---|---|---|
+  | met (32175) | 32147 | 4 | 24 |
+  | failed (4745) | 2947 | 1578 | 220 |
+
+  It meets 99.9% of what the visit cap meets and 62% of what it fails: most of today's failures are pairs with a path of
+  few uphill steps that the visit cap stops short of. But it reaches 4.3 times the terms without its unknowns and 8.6
+  times with them (stopped at the safety); per search p50 238 against 72 terms, p99 51704 against 1547, p99.9 at the
+  safety. Budget 3 is the same but for 14 real joins missed against 4. The shadow makes every term it reaches (the real
+  join builds only new terms), so only the reached counts compare, not its time.
+- Where the cost goes: a level is closed under its free steps before the other side moves, so even pairs the visit cap
+  meets at its first layers pay for the flat closure (met against met: 4.1 times the terms). The 0.66% unknowns are the
+  flat closures that do not end.
+
+So a monotone, adaptive bound exists and would also join more laws, but not cheaply. Ways to cut its cost that keep it
+monotone, untried: meet checks inside a level (the shadow checks per step only against the other side's closed
+levels), flat steps at a fractional cost (between budget 4 and the about 9 that counting them needs), and the free
+closure taken modulo AC (a canonical AC form for the flat AC steps, so permutations are one term). The unknowns stay
+the open problem: any effort safety must keep "unknown" apart from "fails". Not built; the timing one-off's fix is
+still the user's choice (`PARKED.md`).
