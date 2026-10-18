@@ -4423,6 +4423,15 @@ Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
   23.1-35.1 s, wall 7-10 s either way. The candidates the bound skips touch few laws, so they cost few searches. The
   searches: 74760 reaching 10.1M terms, 94.5% met, 35783 memo hits. Each scoring worker starts each pick with a fresh
   memo (expressions are interned per thread), so the same pair is searched again in each pick.
+- **Carrying the workers' memo across rounds saves little; reusing serving's joins saves nothing** (run
+  `2026-10-17-join-pool`, `join_ab.sh` with c87573b's build `bv_jtime.exe` against the `score-pool` spike ported onto it,
+  `patches/score_pool_join.patch`, salts 1-10, CPU 14% at launch, RTP off). Workers alive for the whole search, each
+  dropping at a new round only the entries a rule in or out touches: every stage's M and every rules file equal; mine
+  join searches 588769 to 568676 (-3.4%), salt 6's cmp3d mine 74757 to 70879 with 39.1 against 37.7 s searching; mine
+  time 52 s both, sweep wall within 1 s per salt. A chosen rule touches most join traces, so few entries outlive a round.
+  Reverted. Serving: served batches are disjoint stream slices, so no pair repeats across them, and serving's joins over
+  the 1090 batches of `2026-10-17-join-sticky` (arm b) reached 1.36M terms, about 4 s in all. Both are `decided against`
+  in `PARKED.md`.
 - **Kernel cost of a joined proof against the machine proof it replaces** (run `2026-10-17-join-proof-cost`,
   `scripts/join_cost.sh`: `proof_cost_split` on every served cmp3d batch of `2026-10-17-join-sticky`'s loops, salts
   1-5, 135 batches, under each loop's final rules, with the join on and with `ABLATE=join`, the faster of 2 alternated

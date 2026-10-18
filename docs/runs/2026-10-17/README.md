@@ -48,8 +48,11 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 - `scripts/join_cost.sh <exe> <sweep dir> <salt>...`: `proof_cost_split` on every served cmp3d batch of a sweep's
   loops, join on and off, into `cost.tsv`.
 - `scripts/join_time.sh <exe> <salt> <reps>`: the cmp3d ref mine with the gain bound on and off, alternated.
+- `patches/score_pool_join.patch`: the `score-pool` spike (96b6e7e) ported onto c87573b: scoring workers alive for the
+  whole search, their memo carried across rounds (reverted).
 
 | Run | Build | Script | Result |
 |---|---|---|---|
 | `2026-10-17-join-proof-cost` | `bv_jtime.exe` | `join_cost.sh` on `2026-10-17-join-sticky`, salts 1-5 | per joined law: build 7.7 against 21.5 ms for the machine proof, check 0.49 against 0.47 ms |
+| `2026-10-17-join-pool` | `bv_jtime.exe` against it + `patches/score_pool_join.patch` (`bv_jpool.exe`) | `join_ab.sh`, salts 1-10 | M and rules equal; mine join searches -3.4%, mine time 52 s both |
 | `2026-10-17-join-time` | `bv_jtime.exe` | `join_time.sh`, salt 6, 4 reps; then by hand two `runs run` (job CPU, `job.txt`) and two PowerShell runs (`cpu.txt`, process CPU 0: the mine runs in a child) | same rules either way; join searches 84% of the stage's CPU, failed ones 26% |
