@@ -207,7 +207,28 @@ Runs in `docs/runs/2026-10-18/README.md`, salt 1 cold:cmp3d at 2 lanes, a615974'
 
 So a monotone, adaptive bound exists and would also join more laws, but not cheaply. Ways to cut its cost that keep it
 monotone, untried: meet checks inside a level (the shadow checks per step only against the other side's closed
-levels), flat steps at a fractional cost (between budget 4 and the about 9 that counting them needs), and the free
-closure taken modulo AC (a canonical AC form for the flat AC steps, so permutations are one term). The unknowns stay
-the open problem: any effort safety must keep "unknown" apart from "fails". Not built; the timing one-off's fix is
-still the user's choice (`PARKED.md`).
+levels) and flat steps at a fractional cost (between budget 4 and the about 9 that counting them needs). The unknowns
+stay the open problem: any effort safety must keep "unknown" apart from "fails".
+
+Three follow-ups (2026-10-18, `patches/cost_join_ac.patch` and `patches/cost_search.patch`):
+
+- **The free closure modulo AC** (run `2026-10-18-cost-join-ac`, as above with `JOIN_AC=1`: the flat AC steps skipped,
+  every term put in a canonical form with its add/and/or/xor chains flattened, sorted and nested to the right):
+
+  | real join | shadow met | shadow fail | shadow unknown |
+  |---|---|---|---|
+  | met (32158) | 25411 | 6742 | 5 |
+  | failed (4746) | 2450 | 2196 | 100 |
+
+  Cheaper (1.8 times the real join's terms without unknowns, 3.7 with; per search p50 54, p99 6825) but it loses 21%
+  of the real joins: the rules then match only the canonical arrangement, and a step that needs another arrangement is
+  gone. Canonical forms would need rules matched modulo AC to be sound, which the matcher does not do.
+- **In the miner** (`JOIN_COST_BOUND=4` replacing the join everywhere; a spike, not recorded): rounds took 90-195 s, and
+  loop 1's mine ran out of memory at about 34 GB across the lane processes. Interned terms are never freed, and the
+  bound's closures make several times the terms. Infeasible as built.
+- **In serving only** (run `2026-10-18-serve-bound`, the bound replacing the join in the serving worker alone, salts
+  1-3): every loop's M and rules are the real join's, and serving joins exactly as many pairs per loop (at 1.4-2.8 times
+  the terms reached). So the failures the bound would join are not pairs serving asks about, at least on these salts;
+  the extra joins do not raise M there.
+
+Not built; the timing one-off's fix is still the user's choice (`PARKED.md`).

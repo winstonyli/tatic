@@ -1,0 +1,15 @@
+salt 1 real: exit 0 wall 64 s
+salt 1 bound: exit 0 wall 71 s
+salt 1 loop 1: M real 29 bound 29, rules same
+salt 1 loop 2: M real 17 bound 17, rules same
+salt 1 loop 3: M real 30 bound 30, rules same
+salt 2 real: exit 0 wall 121 s
+salt 2 bound: exit 0 wall 123 s
+salt 2 loop 1: M real 22 bound 22, rules same
+salt 2 loop 2: M real 14 bound 14, rules same
+salt 2 loop 3: M real 29 bound 29, rules same
+salt 3 real: exit 0 wall 103 s
+salt 3 bound: exit 0 wall 93 s
+salt 3 loop 1: M real 27 bound 27, rules same
+salt 3 loop 2: M real 24 bound 24, rules same
+salt 3 loop 3: M real 19 bound 19, rules same

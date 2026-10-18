@@ -1,0 +1,11 @@
+budget 4: exit 0 wall 106 s
+  real fail->fail: 2196
+  real fail->met: 2450
+  real fail->unknown: 100
+  real met->fail: 6742
+  real met->met: 25411
+  real met->unknown: 5
+  real reached: p50 72 p99 1547 p99.9 3789 max 5323 (n 36904)
+  shadow reached: p50 54 p99 6825 p99.9 200009 max 200024 (n 36904)
+  shadow fail on real met: mean reached 193
+  shadow fail on real met: mean reached 107

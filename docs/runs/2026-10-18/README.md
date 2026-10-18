@@ -34,6 +34,11 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   size-increasing steps run beside the real one on a sample of pairs (fields in the patch's header).
   `scripts/cost_join.sh <exe> <salt>`: one sweep per budget in `BUDGETS`, the outcomes against the real join's and the
   terms reached.
+- `patches/cost_join_ac.patch` (on a615974, includes `cost_join.patch`; exe `bv_cjac`): `JOIN_AC=1`, the shadow with flat AC steps
+  skipped and terms in a canonical AC form; run with `cost_join.sh`. `patches/cost_search.patch` (on a615974, includes
+  `cost_join_ac.patch`; exe `bv_sbnd`): `JOIN_COST_BOUND=<budget>`, the bounded join replacing the real one in the
+  serving worker. `scripts/serve_bound_ab.sh <exe> <salt>...`: per salt, `SWEEP=cold:cmp3d` as built and with
+  `JOIN_COST_BOUND=4`, a 12 GB watchdog, and each loop's M and rules compared.
 - `scripts/interner_ab.sh <exe A> <exe B> <salt>`: `SWEEP=cold:cmp3d` at 1 lane in the order A B B A, wall seconds, and
   which sweeps' files agree with A's first. A was `bv_lazy2`, B `bv_lockfree` (a49d1af with the lock-free interner).
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
@@ -57,3 +62,5 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |
 | `2026-10-18-join-paths` | `bv_jpaths` | `join_paths.sh`, salt 1 | met paths: at most 4 uphill steps in 99.8%; deep sides mostly flat steps |
 | `2026-10-18-cost-join` | `bv_cjoin` | `cost_join.sh` with `JOIN_SAMPLE_MASK=31`, salt 1 | budget 4: meets 99.9% of real joins and 62% of real failures, at 4.3-8.6 times the terms |
+| `2026-10-18-cost-join-ac` | `bv_cjac` | `cost_join.sh` with `JOIN_AC=1 JOIN_SAMPLE_MASK=31 BUDGETS=4`, salt 1 | 1.8 times the terms, but meets only 79% of real joins |
+| `2026-10-18-serve-bound` | `bv_sbnd` | `serve_bound_ab.sh`, salts 1-3 | bound in serving: every loop's M and rules unchanged |

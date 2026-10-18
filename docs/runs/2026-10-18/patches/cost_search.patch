@@ -1,0 +1,291 @@
+# cost_search: the probes behind runs 2026-10-18-cost-join-ac and 2026-10-18-serve-bound (exes bv_cjac.exe, bv_sbnd.exe;
+# a615974's code + this, which includes cost_join.patch). JOIN_AC=1 makes cost_join skip flat AC steps and canonicalize
+# terms (ac_canon: add/and/or/xor chains flattened, sorted, nested right). JOIN_COST_BOUND=<budget> replaces join_search
+# with cost_search (the bounded join, building plans) in the serving worker only (gated on CHECK_RULES).
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 3a17dfc..aa0c4a8 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2778,6 +2778,10 @@ fn step_plan(step: &JoinStep, table: &RuleTable) -> PlanRc {
+ /// `sh` and `is_step` before it is made, so only new terms are made (58% of a cmp3d mine's steps reached a term its side
+ /// had: docs/tier-cycle.md, "Lazy join steps"), and plans are made only on the path that meets.
+ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
++    // PROBE: serving only (its worker alone has CHECK_RULES)
++    if let (Some(budget), Some(_)) = (env_var("JOIN_COST_BOUND"), env_var("CHECK_RULES")) {
++        return cost_search(a, b, budget.parse().expect("a budget"), examined);
++    }
+     let (cap, visit, t0) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize), std::time::Instant::now());
+     // each reached term with the step it was reached by, hashed by `sh`
+     type Seen = hashbrown::HashTable<(Term, Option<JoinStep>)>;
+@@ -2842,6 +2846,32 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                         }
+                     }
+                 }
++                // PROBE: the met path's size changes per side, root first
++                if let Some(p) = env_var("JOIN_PATHS") {
++                    use std::io::Write;
++                    let chain = |side: &Seen, mut p: Term| {
++                        let mut v = vec![p];
++                        while let Some(prev) = get(side, p) {
++                            p = prev.from;
++                            v.push(p);
++                        }
++                        v.reverse();
++                        v
++                    };
++                    let mut mine_side = chain(&seen[s], t);
++                    mine_side.push(u);
++                    let other_side = chain(&seen[1 - s], u);
++                    let (s0, s1) = if s == 0 { (mine_side, other_side) } else { (other_side, mine_side) };
++                    let deltas = |v: &[Term]| v.windows(2).map(|w| w[1].size() as i64 - w[0].size() as i64).collect::<Vec<_>>();
++                    let (d0, d1) = (deltas(&s0), deltas(&s1));
++                    let up = |d: &[i64]| d.iter().filter(|&&x| x > 0).count();
++                    let peak = s0.iter().chain(&s1).map(|t| t.size()).max().unwrap() as i64 - a.size().max(b.size()) as i64;
++                    let fmt = |d: &[i64]| d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
++                    let line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", d0.len(), d1.len(), up(&d0), up(&d1), peak, a.size(), b.size(), fmt(&d0), fmt(&d1));
++                    static F: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
++                    let mut g = F.lock().unwrap();
++                    g.get_or_insert_with(|| std::fs::OpenOptions::new().create(true).append(true).open(format!("{p}.{}", std::process::id())).unwrap()).write_all(line.as_bytes()).unwrap();
++                }
+                 // `this side = u` and `other side = u`
+                 let (here, there) = (Plan::trans(path(&seen[s], t, table), step_plan(&step, table)), path(&seen[1 - s], u, table));
+                 let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
+@@ -2851,6 +2881,17 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+         None
+     });
+     let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
++    // PROBE: the cost-bounded join beside this one, on the pairs whose hashes clear JOIN_SAMPLE_MASK (default one in 8)
++    if let (Some(p), true) = (env_var("JOIN_SHADOW"), (a.sh() ^ b.sh()) & env_or("JOIN_SAMPLE_MASK", 7u64) == 0) {
++        use std::io::Write;
++        let budget = env_or("JOIN_BUDGET", 4u32);
++        let t1 = std::time::Instant::now();
++        let (outcome, n, split) = cost_join(a, b, cap, budget, env_or("JOIN_SAFETY", 200_000usize));
++        let line = format!("{}\t{reached}\t{outcome}\t{n}\t{}\t{}\t{}\t{}\n", found.is_some() as u8, split.0, split.1, a.size().max(b.size()), t1.elapsed().as_micros());
++        static F: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
++        let mut g = F.lock().unwrap();
++        g.get_or_insert_with(|| std::fs::OpenOptions::new().create(true).append(true).open(format!("{p}.{}", std::process::id())).unwrap()).write_all(line.as_bytes()).unwrap();
++    }
+     count_join(|c| {
+         (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
+         c.failed_nanos += if found.is_some() { 0 } else { nanos };
+@@ -3707,3 +3748,220 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++/// PROBE: whether some path of join steps from `a` to `b` through terms of at most `cap` nodes has at most `budget`
++/// size-increasing steps (others free), searched from both sides by cost level, the side whose next level is smaller
++/// raised first: "met", "fail", or "unknown" past `safety` terms; with the terms reached and the final per-side limits.
++fn cost_join(a: &Term, b: &Term, cap: usize, budget: u32, safety: usize) -> (&'static str, usize, (u32, u32)) {
++    let ac = env_var("JOIN_AC").is_some();
++    let (a, b) = if ac { (&ac_canon(*a), &ac_canon(*b)) } else { (a, b) };
++    let mut dist: [hashbrown::HashMap<Term, u32>; 2] = [Default::default(), Default::default()];
++    let mut buckets: [Vec<Vec<Term>>; 2] = [vec![vec![]; budget as usize + 2], vec![vec![]; budget as usize + 2]];
++    for (s, t) in [(0, *a), (1, *b)] {
++        dist[s].insert(t, 0);
++        buckets[s][0].push(t);
++    }
++    if a == b {
++        return ("met", 2, (0, 0));
++    }
++    let mut lim: [Option<u32>; 2] = [None, None];
++    RULE_TABLE.with(|table| {
++        let table = &table.borrow();
++        let mut up = vec![];
++        loop {
++            // the side to raise: both to level 0 first, then the smaller next level while the limits sum under budget
++            let s = match lim {
++                [None, _] => 0,
++                [_, None] => 1,
++                [Some(x), Some(y)] if x + y >= budget => return ("fail", dist[0].len() + dist[1].len(), (x, y)),
++                [Some(x), Some(y)] => (buckets[1][y as usize + 1].len() < buckets[0][x as usize + 1].len()) as usize,
++            };
++            let level = lim[s].map_or(0, |l| l + 1);
++            let other_lim = lim[1 - s];
++            while let Some(t) = buckets[s][level as usize].pop() {
++                if dist[s][&t] < level {
++                    continue;
++                }
++                let mut met = false;
++                let (mine, other) = if s == 0 { let (x, y) = dist.split_at_mut(1); (&mut x[0], &y[0]) } else { let (x, y) = dist.split_at_mut(1); (&mut y[0], &x[0]) };
++                let bs = &mut buckets[s];
++                join_walk(t, table, cap, &mut up, &mut None, &mut |up, x, eq, sub, cap| {
++                    let e = &table.join[eq];
++                    if ac && matches!(e.kind, LawKind::Assoc | LawKind::Comm | LawKind::Bitwise) {
++                        return true;
++                    }
++                    let (h, size) = subst_sig(&e.to, sub);
++                    if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
++                        return true;
++                    }
++                    let u = place(up, subst_pat(&e.to, sub));
++                    let u = if ac { ac_canon(u) } else { u };
++                    let c = level + (u.size() > t.size()) as u32;
++                    if c > budget {
++                        return true;
++                    }
++                    if let (Some(&d), Some(ol)) = (other.get(&u), other_lim) {
++                        if d <= ol && c + d <= budget {
++                            met = true;
++                            return false;
++                        }
++                    }
++                    if mine.get(&u).is_none_or(|&d| c < d) {
++                        mine.insert(u, c);
++                        bs[c as usize].push(u);
++                    }
++                    true
++                });
++                if met {
++                    return ("met", dist[0].len() + dist[1].len(), (lim[0].unwrap_or(0), lim[1].unwrap_or(0)));
++                }
++                if dist[0].len() + dist[1].len() > safety {
++                    return ("unknown", dist[0].len() + dist[1].len(), (lim[0].unwrap_or(0), lim[1].unwrap_or(0)));
++                }
++            }
++            lim[s] = Some(level);
++            // a term of this side's new level already reached by the other within its limit
++            if let Some(ol) = lim[1 - s] {
++                if dist[s].iter().any(|(t, &d)| d <= level && dist[1 - s].get(t).is_some_and(|&e| e <= ol && d + e <= budget)) {
++                    return ("met", dist[0].len() + dist[1].len(), (lim[0].unwrap(), lim[1].unwrap()));
++                }
++            }
++        }
++    })
++}
++
++/// PROBE: `t` with every `add`, `and`, `or`, `xor` chain flattened, its operands sorted (`Ord`) and nested to the right.
++fn ac_canon(t: Term) -> Term {
++    let Node::Op(o, a, b) = *t.node() else { return t };
++    let (a, b) = (ac_canon(a), ac_canon(b));
++    if ![ADD, AND, OR, XOR].contains(&o) {
++        return Term::op(o, a, b);
++    }
++    let mut xs = vec![];
++    for mut x in [a, b] {
++        while let Node::Op(p, l, r) = *x.node() {
++            if p != o {
++                break;
++            }
++            xs.push(l);
++            x = r;
++        }
++        xs.push(x);
++    }
++    xs.sort();
++    let last = xs.pop().unwrap();
++    xs.into_iter().rev().fold(last, |acc, x| Term::op(o, x, acc))
++}
++
++/// PROBE: `cost_join`'s search as the join itself (`JOIN_COST_BOUND=<budget>`): the plan of `a = b` along a path of at
++/// most `budget` size-increasing steps, or None (also past `JOIN_SAFETY` terms); traces as `join_search` does.
++fn cost_search(a: &Term, b: &Term, budget: u32, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
++    let (cap, safety, t0) = (a.size().max(b.size()) + 2, env_or("JOIN_SAFETY", 200_000usize), std::time::Instant::now());
++    type Seen = hashbrown::HashMap<Term, (u32, Option<JoinStep>)>;
++    let mut seen: [Seen; 2] = [Default::default(), Default::default()];
++    let mut buckets: [Vec<Vec<Term>>; 2] = [vec![vec![]; budget as usize + 2], vec![vec![]; budget as usize + 2]];
++    for (s, t) in [(0, *a), (1, *b)] {
++        seen[s].insert(t, (0, None));
++        buckets[s][0].push(t);
++    }
++    let path = |seen: &Seen, mut t: Term, table: &RuleTable, terms: &mut Vec<Term>| -> PlanRc {
++        let mut steps = vec![];
++        terms.push(t);
++        while let Some(step) = seen[&t].1 {
++            steps.push(step_plan(&step, table));
++            t = step.from;
++            terms.push(t);
++        }
++        steps.into_iter().rev().reduce(Plan::trans).unwrap_or_else(|| Plan::refl(&t))
++    };
++    let mut lim: [Option<u32>; 2] = [None, None];
++    let found = RULE_TABLE.with(|table| {
++        let table = &table.borrow();
++        let mut up = vec![];
++        // the plan through `x`, reached by both sides, or by side `s` from `t` by `step`
++        let finish = |seen: &[Seen; 2], meet: (Term, Option<(usize, Term, JoinStep)>), examined: &mut Option<hashbrown::HashSet<Term>>| -> PlanRc {
++            let mut terms = vec![];
++            let (pa, pb) = match meet.1 {
++                None => (path(&seen[0], meet.0, table, &mut terms), path(&seen[1], meet.0, table, &mut terms)),
++                Some((s, t, step)) => {
++                    let here = Plan::trans(path(&seen[s], t, table, &mut terms), step_plan(&step, table));
++                    let there = path(&seen[1 - s], meet.0, table, &mut terms);
++                    if s == 0 { (here, there) } else { (there, here) }
++                }
++            };
++            if let Some(x) = examined {
++                x.clear();
++                while let Some(q) = terms.pop() {
++                    if let (true, Node::Op(_, l, r)) = (x.insert(q), *q.node()) {
++                        terms.extend([l, r]);
++                    }
++                }
++            }
++            Plan::trans(pa, Plan::sym(pb))
++        };
++        if a == b {
++            return Some(finish(&seen, (*a, None), examined));
++        }
++        loop {
++            let s = match lim {
++                [None, _] => 0,
++                [_, None] => 1,
++                [Some(x), Some(y)] if x + y >= budget => return None,
++                [Some(x), Some(y)] => (buckets[1][y as usize + 1].len() < buckets[0][x as usize + 1].len()) as usize,
++            };
++            let level = lim[s].map_or(0, |l| l + 1);
++            let other_lim = lim[1 - s];
++            while let Some(t) = buckets[s][level as usize].pop() {
++                if seen[s][&t].0 < level {
++                    continue;
++                }
++                let mut met = None;
++                let (mine, other) = if s == 0 { let (x, y) = seen.split_at_mut(1); (&mut x[0], &y[0]) } else { let (x, y) = seen.split_at_mut(1); (&mut y[0], &x[0]) };
++                let bs = &mut buckets[s];
++                join_walk(t, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
++                    let e = &table.join[eq];
++                    let (h, size) = subst_sig(&e.to, sub);
++                    if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
++                        return true;
++                    }
++                    let u = place(up, subst_pat(&e.to, sub));
++                    let c = level + (u.size() > t.size()) as u32;
++                    if c > budget {
++                        return true;
++                    }
++                    let step = JoinStep { from: t, path: up.iter().rev().fold(0, |p, e| p << 1 | e.3 as u64), depth: up.len() as u8, eq: eq as u32 };
++                    if let (Some(&(d, _)), Some(ol)) = (other.get(&u), other_lim) {
++                        if d <= ol && c + d <= budget {
++                            met = Some((u, step));
++                            return false;
++                        }
++                    }
++                    if mine.get(&u).is_none_or(|&(d, _)| c < d) {
++                        mine.insert(u, (c, Some(step)));
++                        bs[c as usize].push(u);
++                    }
++                    true
++                });
++                if let Some((u, step)) = met {
++                    return Some(finish(&seen, (u, Some((s, t, step))), examined));
++                }
++                if seen[0].len() + seen[1].len() > safety {
++                    return None;
++                }
++            }
++            lim[s] = Some(level);
++            if let Some(ol) = lim[1 - s] {
++                let x = seen[s].iter().find(|&(t, &(d, _))| d <= level && seen[1 - s].get(t).is_some_and(|&(e, _)| e <= ol && d + e <= budget)).map(|(t, _)| *t);
++                if let Some(x) = x {
++                    return Some(finish(&seen, (x, None), examined));
++                }
++            }
++        }
++    });
++    let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
++    count_join(|c| {
++        (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
++        c.failed_nanos += if found.is_some() { 0 } else { nanos };
++    });
++    found
++}
