@@ -23,6 +23,11 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   environment set in the test. `scripts/lazy_prof.sh <exe>`: the samply profile. `scripts/prof_named.py <dir> <exe>
   [leaf...]`: self and inclusive shares by function, naming the exe's frames with llvm-symbolizer (samply could not: the
   PDB must sit beside the exe under the name the exe records), and the callers of the named leaves.
+- `patches/match_count.patch` (on a49d1af, exe `bv_mprobe`): `JoinCost.probe`, ten counters of the join's matching, step
+  terms and `Term::op` (fields in the patch's header), printed per mine. `scripts/match_count.sh <exe> <salt>`: one
+  `SWEEP=cold:cmp3d` and the counters' sum.
+- `scripts/interner_ab.sh <exe A> <exe B> <salt>`: `SWEEP=cold:cmp3d` at 1 lane in the order A B B A, wall seconds, and
+  which sweeps' files agree with A's first. A was `bv_lazy2`, B `bv_lockfree` (a49d1af with the lock-free interner).
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
   loop that differed between `-lanes-check`'s sweeps.
 
@@ -39,3 +44,5 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-join-check` | `bv_jcheck` | `join_check.sh`, salt 1 | kept join entries flip (up to 65 per lane worker) and differ in trace (up to 790) |
 | `2026-10-18-join-exact` | `bv_jexact` | `join_exact.sh`, salt 1 | threads change loop 15-2 as built, nothing with `JOIN_EXACT`; exact 108 s against 66 s |
 | `2026-10-18-lazy-prof` | `bv_lprof` | `lazy_prof.sh` | join 82.7%; `Term::op` 28% (mutex 8.5%), `match_pat` 19.4%, `subst_sig` 12.2% |
+| `2026-10-18-match-count` | `bv_mprobe` | `match_count.sh`, salt 1 | matcher fails 60%, 59% of matches over the cap; 37% of step terms expanded; `Term::op` 26.2% table hits, 0.35% new |
+| `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |

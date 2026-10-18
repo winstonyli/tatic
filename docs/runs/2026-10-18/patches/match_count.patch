@@ -1,0 +1,114 @@
+# match_count: the counters behind run 2026-10-18-match-count (exe bv_mprobe.exe, a49d1af + this): JoinCost.probe, printed as
+# 'RULEMINER probe: [..]' per mine: 0 join matcher calls, 1 matched, 2 steps over the cap, 3 identity steps, 4 terms walked
+# (expanded), 5 terms built, 6 Term::op calls, 7 its per-thread cache hits, 8 its table hits, 9 new nodes.
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index b9ed46c..1b5ebdf 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -89,15 +89,18 @@ impl Term {
+     /// first: nodes are never freed, so a cached node stays the term's one node.
+     pub fn op(o: usize, a: Term, b: Term) -> Term {
+         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
++        probe(6);
+         OP_CACHE.with(|c| {
+             let slot = &c[(h >> 44) as usize % OP_CACHE_SLOTS];
+             if let Some(m) = slot.get().filter(|m| m.node == n) {
++                probe(7);
+                 return Term(m);
+             }
+             let mut t = TABLE[(h >> 40) as usize % SHARDS].lock().unwrap();
+             let m = match t.find(h, |m| m.node == n) {
+-                Some(&m) => m,
++                Some(&m) => { probe(8); m }
+                 None => {
++                    probe(9);
+                     let shape = 1 << o | side_bit(o, 0, class(&a)) | side_bit(o, 1, class(&b));
+                     let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape, sh: sh_op(o, a.0.sh, b.0.sh) }));
+                     t.insert_unique(h, m, |m| match m.node {
+@@ -2385,7 +2388,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, probe: [0; 10] }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2398,6 +2401,7 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    pub probe: [u64; 10],
+ }
+ 
+ impl JoinCost {
+@@ -2414,6 +2418,9 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        for i in 0..10 {
++            self.probe[i] += now.probe[i] - before.probe[i];
++        }
+     }
+ }
+ 
+@@ -2611,7 +2618,8 @@ fn join_walk(
+     for i in table.join_index.get(&t) {
+         let e = &table.join[i];
+         let mut sub = [None; RULE_VARS];
+-        if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
++        probe(0);
++        if match_pat(&e.from, &t, &mut sub) && { probe(1); true } && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
+             return false;
+         }
+     }
+@@ -2715,6 +2723,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
+             let s = (front[0].len() > front[1].len()) as usize;
+             for t in std::mem::take(&mut front[s]) {
++                probe(4);
+                 let mut met = None;
+                 let (here, there) = seen.split_at_mut(1);
+                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
+@@ -2722,6 +2731,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                     let e = &table.join[eq];
+                     let (h, size) = subst_sig(&e.to, sub);
+                     if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
++                        probe(if size > cap { 2 } else { 3 });
+                         return true;
+                     }
+                     let h = place_sh(up, h);
+@@ -2732,6 +2742,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                     }
+                     if mine.find(h, |c| is_step(c.0, up, &e.to, sub)).is_none() {
+                         let u = place(up, subst_pat(&e.to, sub));
++                        probe(5);
+                         mine.insert_unique(h, (u, Some(step)), |c| c.0.sh());
+                         front[s].push(u);
+                     }
+@@ -3621,3 +3632,13 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++/// PROBE (throwaway): bumps `JOIN_COST.probe[i]`: 0 join matcher calls, 1 matched, 2 over the cap, 3 identity steps,
++/// 4 terms walked, 5 terms built, 6 `Term::op` calls, 7 its cache hits, 8 its table hits, 9 new nodes.
++fn probe(i: usize) {
++    JOIN_COST.with(|c| {
++        let mut v = c.get();
++        v.probe[i] += 1;
++        c.set(v)
++    })
++}
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 2a53044..ac094eb 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1232,6 +1232,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER probe: {:?}", j.probe);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {

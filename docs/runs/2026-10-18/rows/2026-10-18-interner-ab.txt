@@ -1,0 +1,7 @@
+A 1: exit 0 wall 150 s
+B 2: exit 0 wall 136 s
+B 3: exit 0 wall 140 s
+A 4: exit 0 wall 142 s
+B_2 vs A_1: cold_cmp3d_cmp3d_2_none/rules.txt 
+B_3 vs A_1: cold_cmp3d_cmp3d_2_none/rules.txt 
+A_4 vs A_1: cold_cmp3d_cmp3d_2_none/rules.txt 

@@ -71,8 +71,44 @@ const OP_CACHE_SLOTS: usize = 1 << 16;
 thread_local! {
     static OP_CACHE: Box<[std::cell::Cell<Option<&'static Interned>>]> = (0..OP_CACHE_SLOTS).map(|_| std::cell::Cell::new(None)).collect();
 }
-static TABLE: [std::sync::Mutex<hashbrown::HashTable<&'static Interned>>; SHARDS] =
-    [const { std::sync::Mutex::new(hashbrown::HashTable::new()) }; SHARDS];
+/// One shard's open-addressed cells (linear probing from the hash's low bits), each null or a node. Cells only go from null
+/// to a node, and a shard's cells are replaced only by a larger copy, so a reader needs no lock: it may miss a node made
+/// since it loaded the cells, and then looks again under the shard's lock. Replaced cells are never freed (a reader may
+/// still hold them); a table that grows by doubling leaves at most its own size behind.
+struct Cells {
+    mask: usize,
+    cells: Box<[std::sync::atomic::AtomicPtr<Interned>]>,
+}
+impl Cells {
+    fn new(len: usize) -> &'static Cells {
+        Box::leak(Box::new(Cells { mask: len - 1, cells: (0..len).map(|_| std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())).collect() }))
+    }
+    /// The node `n` (hash `h`), or the free cell where it would go.
+    fn find(&self, h: u64, n: &Node) -> Result<&'static Interned, usize> {
+        let mut i = h as usize & self.mask;
+        loop {
+            let p = self.cells[i].load(std::sync::atomic::Ordering::Acquire);
+            if p.is_null() {
+                return Err(i);
+            }
+            // SAFETY: cells hold only leaked `Interned` nodes, which are never freed
+            let m: &'static Interned = unsafe { &*p };
+            if m.node == *n {
+                return Ok(m);
+            }
+            i = (i + 1) & self.mask;
+        }
+    }
+}
+const FIRST_CELLS: usize = 1 << 10;
+/// Each shard's cells and, behind its lock, its node count; inserts take the lock, lookups do not (`Cells`).
+static TABLE: [(std::sync::atomic::AtomicPtr<Cells>, std::sync::Mutex<usize>); SHARDS] =
+    [const { (std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()), std::sync::Mutex::new(0)) }; SHARDS];
+fn cells(shard: usize) -> Option<&'static Cells> {
+    let p = TABLE[shard].0.load(std::sync::atomic::Ordering::Acquire);
+    // SAFETY: the pointer is null or a leaked `Cells`, never freed
+    (!p.is_null()).then(|| unsafe { &*p })
+}
 /// The table's hash of `Op(o, a, b)`: unseeded, so every call agrees (a default-built seeded hasher may not).
 fn op_hash(o: usize, a: Term, b: Term) -> u64 {
     mix(o as u64 ^ a.addr().rotate_left(21) ^ b.addr().rotate_left(43))
@@ -84,8 +120,8 @@ impl Term {
         assert!(i < LEAVES.len(), "variable {i} past the leaf table");
         Term(&LEAVES[i])
     }
-    /// The one node `Op(o, a, b)`, made on first sight. The shard is bits 40..44 of the hash, which hashbrown uses
-    /// for neither its tag (top 7 bits) nor its bucket (low bits). The thread's `OP_CACHE` slot (bits 44..60) is tried
+    /// The one node `Op(o, a, b)`, made on first sight. The shard is bits 40..44 of the hash, apart from the low
+    /// bits its cells probe from; a lookup takes no lock, and only a new node takes the shard's (`Cells`). The thread's `OP_CACHE` slot (bits 44..60) is tried
     /// first: nodes are never freed, so a cached node stays the term's one node.
     pub fn op(o: usize, a: Term, b: Term) -> Term {
         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
@@ -94,22 +130,49 @@ impl Term {
             if let Some(m) = slot.get().filter(|m| m.node == n) {
                 return Term(m);
             }
-            let mut t = TABLE[(h >> 40) as usize % SHARDS].lock().unwrap();
-            let m = match t.find(h, |m| m.node == n) {
-                Some(&m) => m,
-                None => {
-                    let shape = 1 << o | side_bit(o, 0, class(&a)) | side_bit(o, 1, class(&b));
-                    let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape, sh: sh_op(o, a.0.sh, b.0.sh) }));
-                    t.insert_unique(h, m, |m| match m.node {
-                        Node::Op(o, a, b) => op_hash(o, a, b),
-                        _ => unreachable!("only Op nodes are interned"),
-                    });
-                    m
-                }
+            let shard = (h >> 40) as usize % SHARDS;
+            let m = match cells(shard).map(|c| c.find(h, &n)) {
+                Some(Ok(m)) => m,
+                _ => Term::insert(shard, h, n),
             };
             slot.set(Some(m));
             Term(m)
         })
+    }
+    /// `n`'s node, made under the shard's lock unless another thread made it first; the cells double past 3/4 full.
+    fn insert(shard: usize, h: u64, n: Node) -> &'static Interned {
+        use std::sync::atomic::Ordering;
+        let mut count = TABLE[shard].1.lock().unwrap();
+        let mut c = cells(shard).unwrap_or_else(|| {
+            let c = Cells::new(FIRST_CELLS);
+            TABLE[shard].0.store(c as *const Cells as *mut Cells, Ordering::Release);
+            c
+        });
+        let free = match c.find(h, &n) {
+            Ok(m) => return m,
+            Err(i) => i,
+        };
+        let Node::Op(o, a, b) = n else { unreachable!("only Op nodes are interned") };
+        let shape = 1 << o | side_bit(o, 0, class(&a)) | side_bit(o, 1, class(&b));
+        let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape, sh: sh_op(o, a.0.sh, b.0.sh) }));
+        let at = if (*count + 1) * 4 > c.cells.len() * 3 {
+            let grown = Cells::new(c.cells.len() * 2);
+            for p in c.cells.iter().map(|p| p.load(Ordering::Relaxed)).filter(|p| !p.is_null()) {
+                // SAFETY: as in `Cells::find`
+                let Node::Op(o, a, b) = unsafe { &*p }.node else { unreachable!("only Op nodes are interned") };
+                let Err(i) = grown.find(op_hash(o, a, b), &Node::Zero) else { unreachable!("a node is in its cells once") };
+                grown.cells[i].store(p, Ordering::Relaxed);
+            }
+            TABLE[shard].0.store(grown as *const Cells as *mut Cells, Ordering::Release);
+            c = grown;
+            let Err(i) = c.find(h, &n) else { unreachable!("a new node") };
+            i
+        } else {
+            free
+        };
+        c.cells[at].store(m as *const Interned as *mut Interned, Ordering::Release);
+        *count += 1;
+        m
     }
     pub fn node(&self) -> &'static Node {
         &self.0.node
@@ -186,6 +249,29 @@ fn op_is_one_node_per_term_across_threads() {
         assert!(t == u, "one node across threads");
     }
     assert!(here.iter().zip(&again).all(|(x, y)| x.1 == y.1), "one node on a second look");
+}
+
+/// Threads making the same new terms at once (racing to insert them, and the table growing under them) get one node each.
+#[test]
+fn op_racing_threads_make_one_node_per_term() {
+    let barrier = std::sync::Barrier::new(8);
+    let build = || {
+        barrier.wait();
+        // terms no other test makes: variable 40 on the left of every one
+        let mut level = vec![Term::v(40), Term::v(41), Term::v(42)];
+        let mut out = vec![];
+        for _ in 0..3 {
+            let next: Vec<Term> = (0..5).flat_map(|o| level.iter().flat_map(move |&a| [Term::v(40), Term::v(43)].map(|b| (o, a, b)))).map(|(o, a, b)| Term::op(o, a, b)).collect();
+            out.extend(&next);
+            level = next;
+        }
+        let wide: Vec<Term> = out.iter().flat_map(|&a| out.iter().take(200).map(move |&b| Term::op(4, a, b))).collect();
+        out.extend(wide);
+        out
+    };
+    let all: Vec<Vec<Term>> = std::thread::scope(|s| (0..8).map(|_| s.spawn(build)).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap()).collect());
+    assert!(all[0].len() > 100_000, "enough new terms to grow the table");
+    assert!(all.iter().all(|v| v == &all[0]), "one node per term across racing threads");
 }
 
 impl std::hash::Hash for Term {

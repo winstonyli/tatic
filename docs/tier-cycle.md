@@ -4745,6 +4745,27 @@ without a lock), the join's rule matching (it already goes through `PatIndex`, b
 deeper index such as a discrimination tree pays only if most `match_pat` calls fail, which is not measured), and terms
 made for steps never expanded (the last layer's terms are reached but never searched from).
 
+*Counts behind those levers (2026-10-18, run `2026-10-18-match-count`, `patches/match_count.patch`).* Salt 1 cold:cmp3d,
+2 lanes, summed over every mine (CPU 41% at start, RTP off):
+- the join's matcher fails on 60% of its 5.54G calls after `PatIndex`'s cut, and 59% of the 2.23G matches give a step over
+  the size cap, found only after `subst_sig` hashes it (identity steps 0.8%); so about 84% of matcher calls lead nowhere;
+- of 324M step terms built, 37% (119M) are ever expanded; the rest are only reached;
+- `Term::op`: 1.14G calls, 73.5% the thread's cache, 26.2% hits in the shared table, 0.35% new nodes. The locked path is
+  almost all lookups of nodes that exist, which a lock-free read serves.
+Levers this measures: a lock-free table read (below); a size bound before matching (a rule `from -> to` grows a term by
+at least `size(to) - size(from)` when every variable occurs on the right at least as often as on the left, so a match at a
+position whose term is already too large for the cap could be skipped unmatched; parked in `PARKED.md`); and building a
+step's term only when it is expanded, up to 63% of `place`.
+
+*Lock-free interner reads (2026-10-18, run `2026-10-18-interner-ab`).* `Term::op`'s shared table is now per shard an
+open-addressed array of node pointers read without a lock (cells go only from null to a node; a full array is replaced by
+a doubled copy, the old one leaked), and only a new node takes the shard's mutex. Test
+`op_racing_threads_make_one_node_per_term` (eight threads making the same 100000+ new terms, the table growing under them)
+guards the one node per term. Salt 1 cold:cmp3d at 1 lane, run in the order old, new, new, old (CPU 21% at start, RTP
+off): 136 and 140 s against 150 and 142, about 5% less wall, against the profile's 8.5% for the mutex. Rules and M
+(29/17/30) agree in every run but the first old one, which differs in loop 15-2 only: the timing one-off above, not the
+table.
+
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three
