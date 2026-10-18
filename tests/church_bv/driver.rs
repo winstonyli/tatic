@@ -22,7 +22,8 @@
 //! only: ref mines and warm loops take extras too, unmeasured (PARKED.md, the spec's step 4), so until then sweeps with a
 //! `mines` stage or warm loops (the default SWEEP has both) run with ABLATE=gen or after a 1-salt probe.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
-//! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas.bin across all its loops instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
+//! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
+//! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
 //! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
 //! `CHECK_LAWFILE`).
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
@@ -396,6 +397,46 @@ impl Drop for Worker {
             Self::stop(p);
         }
     }
+}
+
+/// `f(item, lane)` for every item on `lanes` threads, each lane taking the next item when its last is done; the results in
+/// `items`' order.
+fn run_lanes<T: Sync, R: Send>(items: &[T], lanes: usize, f: impl Fn(&T, usize) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out: Vec<std::sync::Mutex<Option<R>>> = items.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for lane in 0..lanes.max(1) {
+            let (next, out, f) = (&next, &out, &f);
+            s.spawn(move || loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(item) = items.get(i) else { break };
+                *out[i].lock().unwrap() = Some(f(item, lane));
+            });
+        }
+    });
+    out.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
+}
+
+/// Every item runs once, its result lands at its own index, and the lanes run items at once.
+#[test]
+fn run_lanes_keeps_order_and_overlaps() {
+    let busy = std::sync::atomic::AtomicUsize::new(0);
+    let (peak, items) = (std::sync::atomic::AtomicUsize::new(0), (0..12).collect::<Vec<usize>>());
+    let out = run_lanes(&items, 3, |&i, lane| {
+        let now = busy.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+        // hold the lane until another lane is busy too (or a deadline), so overlap is observed, not hoped for
+        let t0 = std::time::Instant::now();
+        while peak.load(std::sync::atomic::Ordering::SeqCst) < 2 && t0.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::yield_now();
+        }
+        busy.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        (i * 10, lane)
+    });
+    assert_eq!(out.iter().map(|r| r.0).collect::<Vec<_>>(), items.iter().map(|i| i * 10).collect::<Vec<_>>());
+    assert!(out.iter().all(|r| r.1 < 3), "{out:?}");
+    assert!(peak.into_inner() >= 2, "lanes never overlapped");
+    assert_eq!(run_lanes(&[] as &[usize], 2, |&i, _| i), Vec::<usize>::new());
 }
 
 fn append(path: &Path, text: &str) {
@@ -864,21 +905,29 @@ fn sweep() {
         Some(d) => LoopCfg { extras: d.extras.clone(), extra_at: d.extra_at.clone(), ..cfg },
         None => cfg,
     };
-    // one lemma file for every loop of the sweep: all its processes run this exe, so every statement in it was checked by this build
-    let lemmas = out.join("lemmas.bin");
-    let _ = std::fs::remove_file(&lemmas);
-    let worker = Worker::new();
-    machine_state("start", &env, &worker, &out);
+    // a stage's mines, then its loops, run `SWEEP_LANES` (default 2) at a time: each reads only what earlier stages wrote, and
+    // 2 × 6 mining threads fit the 12-thread cap. A lane has its own worker and lemma file (all its processes run this exe, so
+    // every statement in it was checked by this build; one shared file would race on its save). SWEEP_LANES=1 for timings.
+    let lanes: usize = env_or("SWEEP_LANES", 2usize).max(1);
+    let lemmas: Vec<PathBuf> = (0..lanes).map(|l| out.join(format!("lemmas_{l}.bin"))).collect();
+    lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));
+    let workers: Vec<Worker> = (0..lanes).map(|_| Worker::new()).collect();
+    let run = |cfgs: &[LoopCfg]| {
+        run_lanes(cfgs, lanes, |cfg, l| {
+            let t0 = std::time::Instant::now();
+            let s = run_loop(cfg, &lemmas[l], &workers[l]);
+            (s, t0.elapsed().as_secs())
+        })
+    };
+    machine_state("start", &env, &workers[0], &out);
     for stage in stages.split_whitespace() {
         let (name, fams) = stage_fams(stage);
         let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
         std::fs::write(&tsv, "").unwrap();
         if name == "mines" {
-            for fam in fams.split(',') {
-                let cfg = with_extras(ref_cfg(fam));
-                let t0 = std::time::Instant::now();
-                let s = run_loop(&cfg, &lemmas, &worker);
-                append(&tsv, &format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", cfg.family, t0.elapsed().as_secs(), s.total, s.rules, s.exhausted, s.joined, s.reached));
+            let cfgs: Vec<LoopCfg> = fams.split(',').map(|fam| with_extras(ref_cfg(fam))).collect();
+            for (cfg, (s, secs)) in cfgs.iter().zip(run(&cfgs)) {
+                append(&tsv, &format!("{}\t{secs}\t{}\t{}\t{}\t{}\t{}\n", cfg.family, s.total, s.rules, s.exhausted, s.joined, s.reached));
             }
             continue;
         }
@@ -894,29 +943,30 @@ fn sweep() {
             // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins, and which
             // rules where two libraries' normal forms meet to drop (`drop_units`), on its phase-0 stream: a mine with no rule
             // rounds, only preferences (`RULEMINER_PREFS`), on the pooled library
-            for fam in fams.split(',') {
-                let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
-                let mut cfg = LoopCfg { stride, split, b, k: 4, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };
-                cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
-                cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
-                let t0 = std::time::Instant::now();
-                let s = run_loop(&cfg, &lemmas, &worker);
-                append(&out.join("pooled_prefs.tsv"), &format!("{fam}\t{}\t{}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted, s.joined, s.reached));
+            let cfgs: Vec<LoopCfg> = fams
+                .split(',')
+                .map(|fam| {
+                    let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
+                    let mut cfg = LoopCfg { stride, split, b, k: 4, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };
+                    cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
+                    cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
+                    cfg
+                })
+                .collect();
+            for (cfg, (s, secs)) in cfgs.iter().zip(run(&cfgs)) {
+                append(&out.join("pooled_prefs.tsv"), &format!("{}\t{secs}\t{}\t{}\t{}\t{}\t{}\n", cfg.family, s.total, s.rules, s.exhausted, s.joined, s.reached));
             }
         }
-        for fam in fams.split(',') {
-            for src in srcs(name, fam) {
-                for cfg in loop_cfgs(stage, fam, src) {
-                    let cfg = with_extras(cfg);
-                    let p = cfg.sphase;
-                    let t0 = std::time::Instant::now();
-                    let s = run_loop(&cfg, &lemmas, &worker);
-                    let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
-                    append(&tsv, &format!("{fam}\t{}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", cfg.stride, s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted, s.joined, s.reached));
-                }
-            }
+        let (srcs_of, cfgs): (Vec<&str>, Vec<LoopCfg>) = fams
+            .split(',')
+            .flat_map(|fam| srcs(name, fam).into_iter().flat_map(move |src| loop_cfgs(stage, fam, src).into_iter().map(move |c| (src, c))))
+            .map(|(src, c)| (src, with_extras(c)))
+            .unzip();
+        for ((cfg, src), (s, secs)) in cfgs.iter().zip(srcs_of).zip(run(&cfgs)) {
+            let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
+            append(&tsv, &format!("{}\t{}-{}\tfrom_{src}\t{}\t{}\t{}\t{secs}\t{}\t{}\t{}\n", cfg.family, cfg.stride, cfg.sphase, s.total, ms.join(","), s.rules, s.exhausted, s.joined, s.reached));
         }
     }
-    let _ = std::fs::remove_file(&lemmas);
-    machine_state("end", &env, &worker, &out);
+    lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));
+    machine_state("end", &env, &workers[0], &out);
 }
