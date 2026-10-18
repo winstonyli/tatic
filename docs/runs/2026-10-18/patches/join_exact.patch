@@ -1,0 +1,28 @@
+# join_exact: the probe behind run 2026-10-18-join-exact (exe bv_jexact.exe, e654360 + this). JOIN_EXACT=1: a met join keeps
+# every term it examined in its trace (the exact miner), not only its path's; LOOP_THREADS: the miner threads of mines and loops (6).
+diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
+index 55a4e73..80d9d31 100644
+--- a/tests/church_bv/driver.rs
++++ b/tests/church_bv/driver.rs
+@@ -834,7 +834,7 @@ fn sweep() {
+         b: 100,
+         k: 3,
+         offset: 0,
+-        threads: 6,
++        threads: env_or("LOOP_THREADS", 6),
+         rounds: usize::MAX,
+         deep3: 1,
+         split: 2,
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index b9ed46c..0895c5e 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2739,7 +2739,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                 });
+                 let Some((step, u)) = met else { continue };
+                 // a met search's result rests on its path only: keep what was examined at the path's terms
+-                if let Some(x) = examined {
++                if let Some(x) = examined.as_mut().filter(|_| env_var("JOIN_EXACT").is_none()) {
+                     x.clear();
+                     let mut stack = vec![u];
+                     for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {

@@ -1,0 +1,28 @@
+# lazy_prof: the throwaway test behind run 2026-10-18-lazy-prof (e654360 + this, debug info): driver::sweep_prof, salt 1's
+# cold cmp3d loops on one lane, its environment set in the test since profile.ps1 passes none.
+diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
+index 55a4e73..6988e1f 100644
+--- a/tests/church_bv/driver.rs
++++ b/tests/church_bv/driver.rs
+@@ -792,6 +792,21 @@ const MINES: [(&str, usize, usize, usize); 5] =
+ /// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, no round cap, CHECK_FAST).
+ const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
+ 
++// PROFILE PROBE (throwaway): salt 1's cold cmp3d loops (extras on), the environment set here for `profile.ps1` (which passes
++// none); one lane, so the profile's threads are one loop's at a time
++#[test]
++#[ignore]
++fn sweep_prof() {
++    let out = std::env::temp_dir().join("lazy_prof_sweep");
++    #[allow(unused_unsafe)]
++    unsafe {
++        for (k, v) in [("MACHINE_STATE", "0"), ("SALT", "1"), ("SWEEP", "cold:cmp3d"), ("SWEEP_LANES", "1"), ("SWEEP_OUT", out.to_str().unwrap())] {
++            std::env::set_var(k, v);
++        }
++    }
++    sweep();
++}
++
+ /// The loops (family, stride, phase) whose served laws every ref mine's extras are filtered against (spec §1): phases 1-3 of
+ /// each loop family, fixed rather than taken from the stages a sweep runs.
+ fn served_by_loops() -> Vec<(&'static str, usize, usize)> {

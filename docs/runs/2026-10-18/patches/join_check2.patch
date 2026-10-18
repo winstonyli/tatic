@@ -1,0 +1,26 @@
+# join_check2: the probe behind run 2026-10-18-join-check (exe bv_jcheck.exe, e654360 + this). On every join memo hit with
+# JOIN_CHECK set, the search is rerun under the rules in force: flips (met against failed) and hits whose fresh trace differs
+# from the kept one. Prints each flip and a running count every 20000 hits (counters per process).
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index b9ed46c..b67005c 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2565,6 +2565,18 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+         if let Some(e) = hit.filter(|e| counting || e.0.as_ref().is_none_or(|p| !matches!(**p, Plan::Counting))) {
+             replay(&e.1);
+             count_join(|c| c.hits += 1);
++            if env_var("JOIN_CHECK").is_some() {
++                let mut fresh_x = Some(hashbrown::HashSet::<Term>::default());
++                let fresh = join_search(a, b, &mut fresh_x);
++                let old: hashbrown::HashSet<Term> = e.1.items().iter().map(|(t, _)| *t).collect();
++                let (flip, diff) = (fresh.is_some() != e.0.is_some(), fresh_x.unwrap() != old);
++                static N: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
++                let add = |i: usize, b: bool| N[i].fetch_add(b as u64, std::sync::atomic::Ordering::Relaxed) + b as u64;
++                let (h, f, d, m) = (add(0, true), add(1, flip), add(2, diff), add(3, e.0.is_some()));
++                if flip || h % 20000 == 0 {
++                    println!("JOIN_CHECK hits {h} (met {m}) flips {f} trace diffs {d}{}", if flip { format!(": {} = {} kept {}", a.show(), b.show(), e.0.is_some()) } else { String::new() });
++                }
++            }
+             return e.0.clone();
+         }
+     }

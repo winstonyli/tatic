@@ -1,0 +1,27 @@
+exit 0 wall 80 s
+/c/Users/Winston: 
+Li/AppData/Local/claude-runs/tatic/2026-10-18-join-check/cold_cmp3d_cmp3d_1_none/mine_0.log: 
+/c/Users/Winston: 
+Li/AppData/Local/claude-runs/tatic/2026-10-18-join-check/cold_cmp3d_cmp3d_2_none/mine_0.log: 
+/c/Users/Winston: 
+Li/AppData/Local/claude-runs/tatic/2026-10-18-join-check/cold_cmp3d_cmp3d_3_none/mine_0.log: 
+JOIN_CHECK hits 15157 (met 12782) flips 1 trace diffs 106: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 15715 (met 13333) flips 2 trace diffs 115: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 28369 (met 25846) flips 3 trace diffs 220: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 28788 (met 26260) flips 4 trace diffs 225: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 38598 (met 36058) flips 5 trace diffs 303: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 39033 (met 36489) flips 6 trace diffs 304: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 39481 (met 36932) flips 7 trace diffs 306: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 42052 (met 39476) flips 8 trace diffs 316: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 42471 (met 39891) flips 9 trace diffs 320: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 52541 (met 49944) flips 10 trace diffs 414: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 52646 (met 50049) flips 11 trace diffs 418: lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) kept true
+JOIN_CHECK hits 1719 (met 907) flips 1 trace diffs 6: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 1837 (met 987) flips 2 trace diffs 7: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 1838 (met 988) flips 3 trace diffs 8: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 1898 (met 1018) flips 4 trace diffs 9: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 1952 (met 1044) flips 5 trace diffs 10: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 1960 (met 1050) flips 6 trace diffs 11: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 2053 (met 1100) flips 7 trace diffs 12: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 2055 (met 1102) flips 8 trace diffs 13: lt(x, z) = lt(x, sub(x, z)) kept true
+JOIN_CHECK hits 2310 (met 1222) flips 9 trace diffs 14: lt(x, z) = lt(x, sub(x, z)) kept true

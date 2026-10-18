@@ -14,7 +14,16 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   against a sweep they did not make; their rows compare by hand.
 - `scripts/history_check.sh <exe> <salt>`: `SWEEP=cold:cmp3d` at 1 lane, 3 lanes and 1 lane with `LEMMA_RECHECK=1`, and
   which loops' rules agree with the 3-lane run.
-- `rows/<run id>.txt`: each run's `out.log`. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
+- `patches/join_check2.patch` (on e654360, exe `bv_jcheck`): `JOIN_CHECK`, rerunning the join search on every memo hit
+  and counting flips and differing traces. `scripts/join_check.sh <exe> <salt>`: one `SWEEP=cold:cmp3d` with it on.
+- `patches/join_exact.patch` (on e654360, exe `bv_jexact`): `JOIN_EXACT` (a met join keeps every examined term in its
+  trace) and `LOOP_THREADS` (the scoring workers of mines and loops, default 6). `scripts/join_exact.sh <exe> <salt>`:
+  `SWEEP=cold:cmp3d` as built and exact, at 6 and 1 threads, and which arms' rule files agree.
+- `patches/lazy_prof.patch` (on e654360, debug info): `driver::sweep_prof`, salt 1's cold cmp3d loops on one lane with the
+  environment set in the test. `scripts/lazy_prof.sh <exe>`: the samply profile. `scripts/prof_named.py <dir> <exe>
+  [leaf...]`: self and inclusive shares by function, naming the exe's frames with llvm-symbolizer (samply could not: the
+  PDB must sit beside the exe under the name the exe records), and the callers of the named leaves.
+- `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
   loop that differed between `-lanes-check`'s sweeps.
 
 | Run | Build | Script | Result |
@@ -27,3 +36,6 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-lazy-join` | `bv_lazy` | `LANES=1` | cold 154 s, every file as the eager join's |
 | `2026-10-18-eager-join-ab` | `bv_lanes` | `ARMS=cold LANES=1` | cold 331 s, the A/B for `-lazy-join` |
 | `2026-10-18-lazy-lanes2` | `bv_lazy2` | `LANES=2` | cold 99 s, every file as the eager join's |
+| `2026-10-18-join-check` | `bv_jcheck` | `join_check.sh`, salt 1 | kept join entries flip (up to 65 per lane worker) and differ in trace (up to 790) |
+| `2026-10-18-join-exact` | `bv_jexact` | `join_exact.sh`, salt 1 | threads change loop 15-2 as built, nothing with `JOIN_EXACT`; exact 108 s against 66 s |
+| `2026-10-18-lazy-prof` | `bv_lprof` | `lazy_prof.sh` | join 82.7%; `Term::op` 28% (mutex 8.5%), `match_pat` 19.4%, `subst_sig` 12.2% |

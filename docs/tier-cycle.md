@@ -4711,6 +4711,40 @@ falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
   (`PARKED.md`, "The miner's choices depend on timing"); the mine's join counts also differ by about 70 searches between
   runs with equal rules, the same number moving between searches and memo hits, consistent with per-thread memos.
 
+*The timing one-off is the join memo's inexactness (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The two
+`mine_0.log` files of the differing loop first differ in how many candidates a round scored (132 against 133), before any
+choice: gains differ, not proofs. A gain differs only through the memos, and which entries a scoring worker's memo holds
+depends on which candidates it scored (a shared queue) and on when speculative proofs come back. With an exact memo that
+history would not matter; the join memo is not exact by design (option 1 of `docs/decisions/2026-10-17-monotone-join.md`:
+a met join is kept under rules added off its path).
+- **The kept entries disagree with fresh searches** (run `2026-10-18-join-check`, `patches/join_check2.patch`: on every
+  join memo hit, the search rerun under the rules in force). Salt 1 cold:cmp3d, 2 lanes: up to 65 flips (kept met, a
+  fresh search fails at the visit cap) and up to 790 hits whose fresh trace differs from the kept one, per lane worker of
+  about 100000 hits (counters per process). The 2026-10-17 check (230000 hits, no flips, the default sweep before the
+  extras and the lazy join) did not reach these laws; it also did not compare traces, which steer `affected` and the bound
+  as much as a flip does.
+- **Thread count as a deterministic stand-in for timing** (run `2026-10-18-join-exact`, `patches/join_exact.patch`:
+  `LOOP_THREADS` sets the loops' scoring workers, `JOIN_EXACT=1` keeps every examined term in a met join's trace, the
+  exact miner). As built, 1 thread against 6 changes loop 15-2's rules (rules 62 against 58, M 17 both), the loop that
+  differed under load; with `JOIN_EXACT` the thread count changes no loop. So the memo's inexactness is the whole cause
+  here, and the exact memo makes the miner's choices independent of its scheduling. Its cost: 108 s against 66 s at 6
+  threads (1.56M against 1.18M join searches); its rules differ from the inexact memo's in all three loops, M 29/17/31
+  against 29/17/30 (one salt). CPU 10% at start, RTP off.
+
+*Profile of the lazy join (2026-10-18, run `2026-10-18-lazy-prof`).* samply over salt 1's cold:cmp3d loops at 1 lane
+(e654360 with debug info; CPU 7% at start, RTP off; frames in `docs/runs/2026-10-18/rows/2026-10-18-lazy-prof.txt`,
+named by `scripts/prof_named.py`). Of 358357 busy samples (about 4.4 cores over the 82 s run):
+- `join_search` 82.7% inclusive; the miner's memo tests `Trace::touched_by` 6.1% and `RewriteMemo::filtered` 5.3%;
+- `Term::op` 28% inclusive, nearly all from `place` (21.8%, making a new step's term): the shared table's mutex 8.5% self
+  (lock, unlock, spin; no other caller) and node compares 10.7% (7.0% probing the table, 3.7% checking the thread's cache
+  slot), so most new terms miss the per-thread cache and go to the locked table, where loads of cold nodes dominate;
+- `match_pat` 19.4% inclusive (13.9% from `join_walk` matching rules at every position, 4.2% from `touched_by`);
+- `subst_sig` 12.2% (hashing a step's term before making it; `sh_op` 6.6%).
+The levers, by share: the interner's locked path (a lock-free table: entries are never removed, so lookups could read
+without a lock), the join's rule matching (it already goes through `PatIndex`, by root operator and operand classes; a
+deeper index such as a discrimination tree pays only if most `match_pat` calls fail, which is not measured), and terms
+made for steps never expanded (the last layer's terms are reached but never searched from).
+
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three
