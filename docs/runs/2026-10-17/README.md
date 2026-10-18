@@ -69,6 +69,9 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
   trivial after normalizing (`tier-cycle.md`, "One filter for every source"). `scripts/wide_files.py <out>
   <run root>/<prefix>...` writes `gen_twin.sh` inputs from the class normalization: `<prefix>_full`, `<prefix>_class`,
   and for pad `pad_notriv` and `pad_ctl` (kept in `%LOCALAPPDATA%\claude-runs\tatic\2026-10-17-gen-wide-inputs`).
+- `scripts/gen_prof.sh <exe>` with `patches/gen_prof.patch` (on `extra_file.patch`; `driver::sweep_prof`, a throwaway test
+  setting salt 6, `cold:cmp3d` and the nopad_class extras files): a samply profile of that loop, built with
+  `CARGO_PROFILE_SWEEP_DEBUG=true`. `scripts/prof_incl.py <run dir>`: inclusive frames and the callers of `Term::op`.
 - `scripts/op_cache.sh <exe>` with `patches/op_cache.patch` (the probe build: `OP_CACHE_BITS`, 0 for off, and an
   `OPPROBE` line counting `Term::op` calls, new nodes and the join's share): `runs time` over 5 cache sizes.
 
@@ -86,4 +89,5 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 | `2026-10-17-gen-twin` | b492165 + `extra_file.patch` (`bv_padfile.exe`) | `gen_twin.sh`, salts 1-10 | M full 16 (all 90 rule files equal `-gen-cost` pad's), untwin 30, control 14 |
 | `2026-10-17-gen-wide` | the same | `gen_twin.sh` with `ARMS="pad_class pad_notriv pad_ctl stream_full stream_class grammar_full grammar_class"`, salts 1-10 | M pad_class 40, pad_notriv 42, pad_ctl 83, stream 31 / class 29, grammar 12 / class 21; loop s 51 / 49 / 5 / 86 / 40 / 413 / 359 |
 | `2026-10-17-gen-nopad` | the same | `gen_twin.sh` with `ARMS=nopad_class`, salts 1-10 | M 10 (cmp3d 9, sbo3 1), rules 2478, loop s 1043; against stream_class better 6, equal 4 |
+| `2026-10-17-gen-prof` | a5ade34 + `extra_file.patch` + `gen_prof.patch`, debug info | `gen_prof.sh` | join 89.5% inclusive; `Term::op` 43.8% self (from `join_steps` 29.8%, `subst_pat` 13.7%); frames in `rows/2026-10-17-gen-prof.txt` |
 | `2026-10-17-join-time` | `bv_jtime.exe` | `join_time.sh`, salt 6, 4 reps; then by hand two `runs run` (job CPU, `job.txt`) and two PowerShell runs (`cpu.txt`, process CPU 0: the mine runs in a child) | same rules either way; join searches 84% of the stage's CPU, failed ones 26% |

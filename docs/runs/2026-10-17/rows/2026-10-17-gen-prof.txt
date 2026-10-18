@@ -1,0 +1,122 @@
+# 2026-10-17-gen-prof: prof_self.py then prof_incl.py on the run folder
+busy samples 204253
+== self (leaf frame)
+   43.8% church_bv::rewrite::Term::op(unsigned long long, church_bv::rewrite::Term, church_bv::rewrite::Term)
+   13.8% church_bv::rewrite::match_pat(church_bv::rewrite::Term*, church_bv::rewrite::Term*, ref_mut$)
+   10.8% church_bv::rewrite::join_steps(church_bv::rewrite::Term*, church_bv::rewrite::RuleTable*, unsigned long long, 
+    4.0% church_bv::rewrite::subst_pat(church_bv::rewrite::Term*, ref$)
+    2.2% std::sys::sync::mutex::futex::Mutex::lock_contended()
+    2.0% enum2$::cong(unsigned long long, alloc::rc::Rc, alloc::rc::Rc)
+    1.9% hashbrown::map::HashMap::insert(church_bv::rewrite::Term, tuple$)
+    1.9% church_bv::rewrite::join_eq(unsigned long long, unsigned long long, church_bv::rewrite::Term*, church_bv::rewr
+    1.7% mi_malloc_aligned(unsigned long long, unsigned long long)
+    1.7% hashbrown::raw::RawTable::reserve_rehash(unsigned long long, hashbrown::map::make_hasher::closure_env$0, hashb
+    0.6% hashbrown::map::HashMap::insert(tuple$, alloc::rc::Rc)
+    0.6% enum2$::refl(church_bv::rewrite::Term*)
+    0.6% enum2$::law(enum2$, church_bv::rewrite::Term, church_bv::rewrite::Term, alloc::vec::Vec)
+    0.6% mi_free(void*)
+    0.5% church_bv::search::rule_miner::closure$0::closure$41::closure$2(church_bv::search::rule_miner::closure$0::clos
+    0.5% fun_2f5fa0
+    0.5% fun_2f4ed0
+    0.5% mi_free_block_local(mi_page_s*, mi_block_s*, bool, bool, bool)
+    0.5% enum2$::sym(alloc::rc::Rc)
+    0.5% hashbrown::map::HashMap::insert(church_bv::rewrite::Term, enum2$)
+    0.4% core::ptr::drop_glue(alloc::vec::drain::Drain*)
+    0.4% church_bv::search::rule_miner::closure$0::closure$41::closure$7::closure$0(church_bv::search::rule_miner::clos
+    0.4% mi_theap_realloc_aligned(mi_theap_s*, void*, unsigned long long, unsigned long long)
+    0.4% church_bv::search::rule_miner::closure$0::closure$41::closure$7(church_bv::search::rule_miner::closure$0::clos
+    0.4% church_bv::rewrite::rewrite_memo(church_bv::rewrite::Term*, unsigned long long, unsigned long long)
+    0.4% church_bv::search::rule_miner::closure$0::closure$31(church_bv::search::rule_miner::closure$0::closure_env$31*
+    0.3% alloc::raw_vec::RawVecInner::finish_grow(unsigned long long, core::alloc::layout::Layout)
+    0.3% core::ptr::drop_glue(alloc::vec::Vec*)
+    0.2% tatic::kernel::spaces::Spaces::mk(enum2$)
+    0.2% alloc::raw_vec::RawVec::grow_one()
+== self, std/hashbrown/im frames charged to the first other frame
+   46.2% church_bv::rewrite::Term::op(unsigned long long, church_bv::rewrite::Term, church_bv::rewrite::Term)
+   14.3% church_bv::rewrite::join_steps(church_bv::rewrite::Term*, church_bv::rewrite::RuleTable*, unsigned long long, 
+   13.8% church_bv::rewrite::match_pat(church_bv::rewrite::Term*, church_bv::rewrite::Term*, ref_mut$)
+    4.0% church_bv::rewrite::subst_pat(church_bv::rewrite::Term*, ref$)
+    3.2% church_bv::rewrite::join_eq(unsigned long long, unsigned long long, church_bv::rewrite::Term*, church_bv::rewr
+    2.0% enum2$::cong(unsigned long long, alloc::rc::Rc, alloc::rc::Rc)
+    1.7% mi_malloc_aligned(unsigned long long, unsigned long long)
+    1.1% church_bv::search::rule_miner::closure$0::closure$41::closure$7(church_bv::search::rule_miner::closure$0::clos
+    0.8% church_bv::search::rule_miner::closure$0::closure$31(church_bv::search::rule_miner::closure$0::closure_env$31*
+    0.6% enum2$::refl(church_bv::rewrite::Term*)
+    0.6% enum2$::law(enum2$, church_bv::rewrite::Term, church_bv::rewrite::Term, alloc::vec::Vec)
+    0.6% mi_free(void*)
+    0.5% church_bv::search::rule_miner::closure$0::closure$41::closure$2(church_bv::search::rule_miner::closure$0::clos
+    0.5% fun_2f5fa0
+    0.5% fun_2f4ed0
+    0.5% mi_free_block_local(mi_page_s*, mi_block_s*, bool, bool, bool)
+    0.5% enum2$::sym(alloc::rc::Rc)
+    0.4% church_bv::search::rule_miner::closure$0::closure$41::closure$7::closure$0(church_bv::search::rule_miner::clos
+    0.4% mi_theap_realloc_aligned(mi_theap_s*, void*, unsigned long long, unsigned long long)
+    0.4% church_bv::rewrite::rewrite_memo(church_bv::rewrite::Term*, unsigned long long, unsigned long long)
+    0.3% tatic::kernel::spaces::Spaces::mk(enum2$)
+    0.2% church_bv::rewrite::RuleTable::new(alloc::vec::Vec)
+    0.2% tatic::kernel::spaces::Space::push(bool, unsigned int, enum2$, tuple$, unsigned char, unsigned char)
+    0.2% fun_1c010
+    0.1% church_bv::machine::impl$0::parse::go(church_bv::rewrite::Term*, church_bv::machine::Machine*, hashbrown::map:
+    0.1% church_bv::rewrite::rule_weight(church_bv::rewrite::Term*)
+    0.1% church_bv::rewrite::Term::show_into(alloc::string::String*)
+    0.1% church_bv::rewrite::rule_step(church_bv::rewrite::Term*)
+    0.1% fun_252310
+    0.1% tatic::kernel::inst_rec::closure$0(tatic::kernel::inst_rec::closure_env$0*, tatic::kernel::Expr, bool)
+busy samples 204253
+== inclusive (church_bv/tatic frames)
+   94.9% church_bv::search::rule_miner::closure$0::closure$41::closure$7
+   93.3% church_bv::search::rule_miner::closure$0::closure$41::closure$9::closure$0::closure$0
+   93.2% church_bv::search::rule_miner::closure$0::closure$41::closure$8
+   93.1% church_bv::search::rule_miner::closure$0::closure$31
+   91.3% church_bv::rewrite::rewrite_plan
+   89.8% church_bv::rewrite::join_or_machine
+   89.5% church_bv::rewrite::join_eq
+   85.5% church_bv::rewrite::join_steps
+   48.8% church_bv::rewrite::Term::op
+   19.3% church_bv::rewrite::subst_pat
+   14.0% church_bv::rewrite::match_pat
+    4.6% church_bv::search::rule_miner::closure$0
+    4.6% church_bv::search::rule_miner
+    3.4% church_bv::search::rule_miner::closure$0::closure$43
+    3.4% church_bv::search::rule_miner::closure$0::closure$41
+    3.2% church_bv::rewrite::prove_eq
+    2.0% church_bv::search::rule_miner::closure$0::closure$41::closure$2
+    1.6% church_bv::rewrite::rewrite
+    1.6% church_bv::rewrite::rewrite_memo
+    1.3% church_bv::search::rule_miner::closure$0::closure$33
+    1.3% church_bv::search::rule_miner::closure$0::closure$33::closure$0
+    1.3% church_bv::machine::add_tree_law
+    1.2% church_bv::rewrite::rewrite_uncached
+    1.0% tatic::kernel::infer_rc
+    1.0% tatic::kernel::infer_node::closure$0
+    1.0% tatic::kernel::check_rc::closure$0
+    1.0% tatic::kernel::check_rc
+    1.0% tatic::kernel::check_in::closure$0::closure$0::closure$0
+    1.0% church_bv::machine::tree_proof::closure$8
+    0.9% church_bv::search::rule_miner::closure$0::closure$41::closure$7::closure$0
+    0.9% church_bv::search::rule_miner::closure$0::closure$37
+    0.7% tatic::kernel::whnf_in
+    0.7% tatic::kernel::conv
+    0.7% church_bv::rewrite::set_extra_rules
+    0.7% tatic::kernel::whnf_step::closure$0
+    0.6% tatic::kernel::instantiate_n
+    0.5% tatic::kernel::spaces::Spaces::mk
+    0.5% tatic::kernel::inst_rec::closure$1
+    0.5% church_bv::encoding::ck
+    0.5% church_bv::encoding::holds
+== callers of church_bv::rewrite::Term::op (43.8% of busy samples), share of all busy samples
+   29.8% church_bv::rewrite::join_steps
+   13.7% church_bv::rewrite::subst_pat
+    0.1% church_bv::rewrite::rewrite_uncached
+    0.1% church_bv::rewrite::rule_step_in::closure$0
+    0.0% church_bv::rewrite::RuleTable::new
+    0.0% church_bv::search::rule_miner::closure$0
+    0.0% church_bv::rewrite::shr_mask_eq
+    0.0% church_bv::rewrite::rule_step
+    0.0% church_bv::rewrite::rewrite_uncached::closure$8
+    0.0% church_bv::rewrite::parse_term::go
+    0.0% church_bv::rewrite::rewrite_uncached::closure$9
+    0.0% core::iter::adapters::map::impl$2::next
+    0.0% church_bv::search::rule_miner::closure$0::abstractions
+    0.0% church_bv::search::rule_miner::closure$0::renum
+    0.0% church_bv::rewrite::prove_eq

@@ -1,0 +1,48 @@
+diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
+index 9970e19..9377aaf 100644
+--- a/tests/church_bv/driver.rs
++++ b/tests/church_bv/driver.rs
+@@ -476,6 +476,12 @@ fn extra_laws(cfg: &LoopCfg, env: &[(String, String)], mine_laws: &str) -> Strin
+             };
+             laws.iter().skip(cfg.sphase * want).map(|(a, b)| format!("{} = {}", a.show(), b.show())).collect()
+         }
++        // PROBE (throwaway): the extras from `MINE_EXTRA_DIR/<family>_<phase>.txt`
++        "file" => std::fs::read_to_string(PathBuf::from(env_var("MINE_EXTRA_DIR").unwrap()).join(format!("{}_{}.txt", cfg.family, cfg.sphase)))
++            .unwrap()
++            .lines()
++            .map(String::from)
++            .collect(),
+         s => panic!("MINE_SOURCE must be stream or grammar, got {s}"),
+     };
+     candidates.into_iter().filter(|l| !served.contains(&key(l)) && !past.contains(&skel(l))).take(want).map(|l| l + "\n").collect()
+@@ -601,6 +607,30 @@ const MINES: [(&str, usize, usize, usize); 5] =
+ /// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, no round cap, CHECK_FAST).
+ const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
+ 
++// PROFILE PROBE (throwaway): salt 6's cold cmp3d loop with the non-padding extras, twins dropped (gen_twin.sh's
++// nopad_class arm), the environment set here for `profile.ps1` (which passes none)
++#[test]
++#[ignore]
++fn sweep_prof() {
++    let out = std::env::temp_dir().join("gen_prof_sweep");
++    let dir = r"C:\Users\Winston Li\AppData\Local\claude-runs\tatic\2026-10-17-gen-wide-inputs\nopad_class\s6";
++    #[allow(unused_unsafe)]
++    unsafe {
++        for (k, v) in [
++            ("MACHINE_STATE", "0"),
++            ("SALT", "6"),
++            ("SWEEP", "cold:cmp3d"),
++            ("SWEEP_OUT", out.to_str().unwrap()),
++            ("MINE_SOURCE", "file"),
++            ("MINE_EXTRA", "add3:60,sbo3:180,cmp3d:350"),
++            ("MINE_EXTRA_DIR", dir),
++        ] {
++            std::env::set_var(k, v);
++        }
++    }
++    sweep();
++}
++
+ #[test]
+ #[ignore]
+ fn sweep() {

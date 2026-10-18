@@ -4626,8 +4626,20 @@ Law evaluations are 94% reused (non-padding cmp3d: 2241297 of 2394280), the gain
 about 2 s of the 92, so the levers are the searches themselves (how busy the 6 scoring threads stay was not measured):
 fewer terms built per visited term (99% of `Term::op` calls find an existing node, "The interner's per-thread cache"),
 early cuts of failed searches (`PARKED.md`, now on 23-48% of search time), or an order that meets sooner (inexact:
-it changes which pairs meet within the cap). The only profile is of a ref mine before the op cache; an extras mine's
-profile is the next measurement.
+it changes which pairs meet within the cap).
+
+*Profile of an extras mine (2026-10-18, run `2026-10-17-gen-prof`).* samply over salt 6's cold cmp3d loop with the
+non-padding extras, class twins dropped (`gen_twin.sh`'s nopad_class files; `patches/gen_prof.patch` on
+`extra_file.patch`, a5ade34's code, debug info; CPU 12% at start, RTP off). Its first mine is the table's non-padding
+row (117220 searches, 30.9M terms). Of 204253 busy samples over the loop's three phases (frames in
+`docs/runs/2026-10-17/rows/2026-10-17-gen-prof.txt`):
+- the join is 89.5% inclusive (`join_eq`; `join_steps` 85.5%); the rest of the miner, the kernel checks and the
+  rewriting add up to under 10%;
+- `Term::op` is 43.8% self (48.8% inclusive), called from `join_steps` (29.8% of all samples) and `subst_pat` (13.7%);
+  `match_pat` 13.8% self; the interner's lock waits are 2.2% (11% in the ref mine's profile before the op cache).
+
+So an extras mine has the ref mine's shape, only more of it: the levers above stand, with term building (`Term::op`
+from the join's rewrite steps) first.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
