@@ -68,6 +68,7 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-join-exact` | `bv_jexact` | `join_exact.sh`, salt 1 | threads change loop 15-2 as built, nothing with `JOIN_EXACT`; exact 108 s against 66 s |
 | `2026-10-18-lazy-prof` | `bv_lprof` | `lazy_prof.sh` | join 82.7%; `Term::op` 28% (mutex 8.5%), `match_pat` 19.4%, `subst_sig` 12.2% |
 | `2026-10-18-match-count` | `bv_mprobe` | `match_count.sh`, salt 1 | matcher fails 60%, 59% of matches over the cap; 37% of step terms expanded; `Term::op` 26.2% table hits, 0.35% new |
+| `2026-10-18-pcand-prof` | `bv_lprof2` | `lazy_prof.sh` | join 85.3%; `Term::op` 22.2% (no mutex; cold node loads), `match_pat` 21.1%, `place` 17.2%, `subst_sig` 14.0% |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |
 | `2026-10-18-join-paths` | `bv_jpaths` | `join_paths.sh`, salt 1 | met paths: at most 4 uphill steps in 99.8%; deep sides mostly flat steps |

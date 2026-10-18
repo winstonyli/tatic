@@ -1,0 +1,171 @@
+busy samples 407479
+== self (leaf, inlined frames expanded)
+   19.8% church_bv::rewrite::match_pat
+   10.4% church_bv::rewrite::impl$32::eq
+    6.6% church_bv::rewrite::subst_sig
+    5.0% core::num::impl$9::wrapping_add
+    4.3% core::ptr::const_ptr::impl$0::is_null::runtime
+    4.2% enum2$::filter
+    3.6% church_bv::rewrite::join_walk
+    2.2% church_bv::rewrite::impl$18::get::closure$0
+    1.9% core::slice::index::impl$2::index
+    1.9% core::core_arch::x86::sse2::_mm_movemask_epi8
+    1.5% church_bv::rewrite::is_subst
+    1.2% church_bv::rewrite::sh_op
+    1.1% church_bv::rewrite::Term::node
+    1.1% hashbrown::raw::RawTableInner::is_bucket_full
+    1.1% enum2$::map
+    1.1% hashbrown::control::bitmask::BitMask::lowest_set_bit
+    1.1% church_bv::rewrite::subst_pat
+    0.9% hashbrown::control::tag::Tag::full
+    0.9% church_bv::rewrite::is_step
+    0.8% core::iter::adapters::chain::impl$1::next
+    0.8% core::ptr::mut_ptr::impl$0::add
+    0.8% hashbrown::util::likely
+    0.8% church_bv::rewrite::mix
+    0.7% church_bv::rewrite::Term::size
+    0.7% church_bv::rewrite::Term::op
+    0.7% alloc::vec::impl$10::deref
+    0.6% core::slice::iter::impl$171::find
+    0.6% core::ptr::write
+    0.6% hashbrown::control::group::sse2::Group::match_empty_or_deleted
+    0.6% enum2$::as_mut
+    0.5% alloc::vec::Vec::push_mut
+    0.5% church_bv::rewrite::Cells::find
+    0.5% hashbrown::raw::impl$8::find::closure$0
+    0.5% church_bv::rewrite::impl$2::op::closure$0
+    0.5% core::ptr::non_null::NonNull::add
+    0.5% core::ptr::copy_nonoverlapping
+    0.4% core::slice::iter::impl$171::next
+    0.4% core::cell::Cell::get
+    0.4% hashbrown::raw::RawTableInner::bucket_ptr
+    0.4% mi_theap_realloc_zero_aligned
+== inclusive (church_bv/tatic frames)
+   99.6% tatic::kernel::scoped
+   94.7% church_bv::search::rule_miner::closure$0::closure$31
+   94.3% church_bv::search::rule_miner::closure$0::closure$41::closure$7
+   93.4% church_bv::search::rule_miner::closure$0::closure$31::closure$4
+   92.8% church_bv::search::rule_miner::closure$0::closure$41::closure$9::closure$0
+   92.8% church_bv::search::rule_miner::closure$0::closure$41::closure$9::closure$0::closure$0
+   92.6% church_bv::search::rule_miner::closure$0::closure$41::closure$8
+   91.5% church_bv::rewrite::rewrite_plan
+   86.5% church_bv::rewrite::join_or_machine
+   85.9% church_bv::rewrite::join_eq
+   85.3% church_bv::rewrite::join_search
+   85.1% church_bv::rewrite::join_search::closure$3
+   84.5% church_bv::rewrite::join_walk
+   48.8% church_bv::rewrite::join_search::closure$3::closure$0
+   22.2% church_bv::rewrite::Term::op
+   21.1% church_bv::rewrite::match_pat
+   20.6% church_bv::rewrite::impl$2::op::closure$0
+   17.2% church_bv::rewrite::place
+   17.1% church_bv::rewrite::place::closure$0
+   14.0% church_bv::rewrite::subst_sig
+   10.9% church_bv::rewrite::Cells::find
+   10.8% church_bv::rewrite::impl$2::op::closure$0::closure$1
+   10.6% church_bv::rewrite::impl$32::eq
+    7.1% church_bv::rewrite::sh_op
+    6.2% church_bv::search::rule_miner::closure$0
+    6.2% church_bv::search::rule_miner
+    6.1% church_bv::search::rule_miner::closure$0::closure$46
+    5.3% church_bv::search::rule_miner::closure$0::closure$43
+    5.3% church_bv::search::rule_miner::closure$0::closure$41
+    5.2% church_bv::rewrite::rewrite
+    5.1% church_bv::rewrite::rewrite_memo
+    4.6% church_bv::rewrite::impl$2::op::closure$0::closure$0
+    4.4% church_bv::rewrite::rewrite_uncached
+    4.0% church_bv::rewrite::prove_eq
+    3.3% church_bv::search::rule_miner::closure$0::closure$41::closure$3
+    3.3% church_bv::rewrite::Trace::touched_by
+    3.3% church_bv::search::rule_miner::closure$0::closure$41::closure$3::closure$0
+    3.3% church_bv::search::rule_miner::closure$0::closure$41::closure$2
+    3.1% church_bv::rewrite::impl$22::touched_by::closure$1
+    3.0% church_bv::rewrite::matches
+    2.8% church_bv::rewrite::subst_pat
+    2.5% church_bv::rewrite::is_step
+    2.4% church_bv::rewrite::join_search::closure$3::closure$0::closure$2
+    2.3% church_bv::rewrite::impl$18::get::closure$0
+    1.8% church_bv::rewrite::PatIndex::get
+    1.8% church_bv::rewrite::place_sh
+    1.7% church_bv::rewrite::place_sh::closure$0
+    1.6% church_bv::rewrite::rule_step
+    1.5% church_bv::rewrite::rule_step::closure$0
+    1.5% church_bv::rewrite::rule_step_in
+    1.5% church_bv::rewrite::is_subst
+    1.4% church_bv::search::rule_miner::closure$0::closure$31::closure$4::closure$3
+    1.2% church_bv::search::rule_miner::closure$0::closure$44
+    1.2% church_bv::search::rule_miner::closure$0::closure$46::closure$2
+    1.2% church_bv::_::__rust_alloc
+    1.1% church_bv::rewrite::Term::node
+    1.1% church_bv::rewrite::set_extra_rules
+    1.1% church_bv::_::__rust_realloc
+    0.9% church_bv::rewrite::rule_step_in::closure$1
+    0.9% church_bv::rewrite::rule_step_in::closure$0
+== callers of leaves matching 'impl$32::eq'
+    5.9% church_bv::rewrite::Cells::find < church_bv::rewrite::impl$2::op::closure$0::closure$1
+    4.4% church_bv::rewrite::impl$2::op::closure$0::closure$0 < church_bv::rewrite::impl$2::op::closure$0
+    0.0% church_bv::rewrite::Cells::find < church_bv::rewrite::Term::insert
+== callers of leaves matching 'wrapping_add'
+    4.4% church_bv::rewrite::sh_op < church_bv::rewrite::subst_sig
+    0.6% church_bv::rewrite::sh_op < church_bv::rewrite::place_sh::closure$0
+    0.0% church_bv::rewrite::sh_op < church_bv::rewrite::Term::insert
+    0.0% church_bv::rewrite::OP_INFO::closure$0 < church_bv::rewrite::zip_word
+    0.0% tatic::kernel::bin::write < church_bv::lemma_cache::record::closure$0
+    0.0% church_bv::lemma_cache::exe_identity::closure$0 < church_bv::lemma_cache::exe_identity
+    0.0% church_bv::rewrite::memo::closure$1 < church_bv::rewrite::memo
+== callers of leaves matching 'is_null'
+    4.3% church_bv::rewrite::Cells::find < church_bv::rewrite::impl$2::op::closure$0::closure$1
+    0.0% church_bv::task::PerTask::peek_at < church_bv::task::PerTask::get_at
+    0.0% church_bv::rewrite::Cells::find < church_bv::rewrite::Term::insert
+    0.0% church_bv::rewrite::impl$2::insert::closure$2 < church_bv::rewrite::Term::insert
+== callers of leaves matching 'enum2$::filter'
+    4.2% church_bv::rewrite::impl$2::op::closure$0 < church_bv::rewrite::Term::op
+    0.0% church_bv::task::PerTask::peek_at < church_bv::task::PerTask::get_at
+== callers of leaves matching '_mm_movemask'
+    1.0% church_bv::rewrite::join_search::closure$3::closure$0 < church_bv::rewrite::join_walk
+    0.5% church_bv::rewrite::join_walk < church_bv::rewrite::join_walk
+    0.1% church_bv::search::rule_miner::closure$0::closure$31::closure$4::closure$3 < church_bv::search::rule_miner::closure$0::closure$31::closure$4
+    0.0% church_bv::machine::impl$0::parse::go < church_bv::machine::impl$0::parse::go
+    0.0% church_bv::machine::impl$0::parse::go < church_bv::machine::Machine::parse
+    0.0% church_bv::rewrite::join_walk < church_bv::rewrite::join_search::closure$3
+    0.0% church_bv::rewrite::rewrite_memo::closure$1::closure$0 < church_bv::rewrite::rewrite_memo::closure$1
+    0.0% tatic::kernel::spaces::spread < tatic::kernel::spaces::Space::find
+== callers of leaves matching 'get::closure'
+    1.5% church_bv::rewrite::join_walk < church_bv::rewrite::join_walk
+    0.6% church_bv::rewrite::join_walk < church_bv::rewrite::join_search::closure$3
+    0.1% church_bv::rewrite::rule_step_in < church_bv::rewrite::rule_step::closure$0
+    0.0% tatic::kernel::spaces::Spaces::key < tatic::kernel::hc::spine_get
+== callers of leaves matching 'impl$32::eq'
+    5.9% church_bv::rewrite::Cells::find < church_bv::rewrite::impl$2::op::closure$0::closure$1
+    4.4% church_bv::rewrite::impl$2::op::closure$0::closure$0 < church_bv::rewrite::impl$2::op::closure$0
+    0.0% church_bv::rewrite::Cells::find < church_bv::rewrite::Term::insert
+== callers of leaves matching 'wrapping_add'
+    4.4% church_bv::rewrite::sh_op < church_bv::rewrite::subst_sig
+    0.6% church_bv::rewrite::sh_op < church_bv::rewrite::place_sh::closure$0
+    0.0% church_bv::rewrite::sh_op < church_bv::rewrite::Term::insert
+    0.0% church_bv::rewrite::OP_INFO::closure$0 < church_bv::rewrite::zip_word
+    0.0% tatic::kernel::bin::write < church_bv::lemma_cache::record::closure$0
+    0.0% church_bv::lemma_cache::exe_identity::closure$0 < church_bv::lemma_cache::exe_identity
+    0.0% church_bv::rewrite::memo::closure$1 < church_bv::rewrite::memo
+== callers of leaves matching 'is_null'
+    4.3% church_bv::rewrite::Cells::find < church_bv::rewrite::impl$2::op::closure$0::closure$1
+    0.0% church_bv::task::PerTask::peek_at < church_bv::task::PerTask::get_at
+    0.0% church_bv::rewrite::Cells::find < church_bv::rewrite::Term::insert
+    0.0% church_bv::rewrite::impl$2::insert::closure$2 < church_bv::rewrite::Term::insert
+== callers of leaves matching 'enum2$::filter'
+    4.2% church_bv::rewrite::impl$2::op::closure$0 < church_bv::rewrite::Term::op
+    0.0% church_bv::task::PerTask::peek_at < church_bv::task::PerTask::get_at
+== callers of leaves matching '_mm_movemask'
+    1.0% church_bv::rewrite::join_search::closure$3::closure$0 < church_bv::rewrite::join_walk
+    0.5% church_bv::rewrite::join_walk < church_bv::rewrite::join_walk
+    0.1% church_bv::search::rule_miner::closure$0::closure$31::closure$4::closure$3 < church_bv::search::rule_miner::closure$0::closure$31::closure$4
+    0.0% church_bv::machine::impl$0::parse::go < church_bv::machine::impl$0::parse::go
+    0.0% church_bv::machine::impl$0::parse::go < church_bv::machine::Machine::parse
+    0.0% church_bv::rewrite::join_walk < church_bv::rewrite::join_search::closure$3
+    0.0% church_bv::rewrite::rewrite_memo::closure$1::closure$0 < church_bv::rewrite::rewrite_memo::closure$1
+    0.0% tatic::kernel::spaces::spread < tatic::kernel::spaces::Space::find
+== callers of leaves matching 'get::closure'
+    1.5% church_bv::rewrite::join_walk < church_bv::rewrite::join_walk
+    0.6% church_bv::rewrite::join_walk < church_bv::rewrite::join_search::closure$3
+    0.1% church_bv::rewrite::rule_step_in < church_bv::rewrite::rule_step::closure$0
+    0.0% tatic::kernel::spaces::Spaces::key < tatic::kernel::hc::spine_get

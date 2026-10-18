@@ -4784,6 +4784,21 @@ off): 136 and 140 s against 150 and 142, about 5% less wall, against the profile
 (29/17/30) agree in every run but the first old one, which differs in loop 15-2 only: the timing one-off above, not the
 table.
 
+*Profile after the lock-free reads and the memo per candidate (2026-10-18, run `2026-10-18-pcand-prof`).* Same script as
+`-lazy-prof` (8528735 with debug info; CPU 28% at start, RTP off; frames in
+`docs/runs/2026-10-18/rows/2026-10-18-pcand-prof.txt`). Of 407479 busy samples:
+- `join_search` 85.3% inclusive; `Trace::touched_by` 3.3%, `rewrite` 5.2%;
+- `Term::op` 22.2% inclusive and no mutex: `Cells::find` 10.9% (node compares 5.9%, loading cells 4.3%) and the thread's
+  cache slot check 8.6% (`filter` 4.2%, node compare 4.4%), so its cost is now loads of cold nodes and cells, on misses as
+  well as hits; most calls come from `place` (17.2% inclusive);
+- `match_pat` 21.1% inclusive (19.8% self; 16.5% from `join_walk`, 2.7% from `touched_by`);
+- `subst_sig` 14.0% inclusive (6.6% self, its `sh_op` hashing 4.4%).
+Levers, by estimated share (none measured): the size bound before matching (parked; it skips 43% of the walk's matcher
+calls and 96% of over-cap matches with their `subst_sig`, roughly 10-15% of samples); building a step's term only when it
+is expanded (up to 63% of `place`, about 11%, but `seen` must then compare unbuilt steps); hash tags beside the interner's
+cell and cache pointers so a mismatch needs no node load (part of the 10.3% of node compares); a cheaper `sh_op` (one
+finaliser, not two; about 2%).
+
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three
