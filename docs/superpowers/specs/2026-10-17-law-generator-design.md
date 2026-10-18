@@ -49,9 +49,11 @@ Today the source is a probe (`driver::extra_laws`, doc comment "LAW SOURCE PROBE
 
 This spec makes it a designed stage.
 
-## Decision for review: the source
+## Decision: the source
 
-1. **Non-padding laws (recommended).** Lowest M (9) and almost no twins, so the twin filter barely touches it. Costs
+Chosen by the user on 2026-10-17: option 1, the non-padding laws.
+
+1. **Non-padding laws (chosen).** Lowest M (9) and almost no twins, so the twin filter barely touches it. Costs
    the most: 1373 loop seconds at today's counts. The count rule (§2) is how the cost is managed, and the mining-cost
    work (`PARKED.md`, "Make the join cheaper") is how it shrinks. A 10-salt result, from another build; round B (§2)
    and the acceptance rule below settle it.
@@ -61,7 +63,7 @@ This spec makes it a designed stage.
 3. **Padding laws.** Cheap (51 s), but filtered they lose to the stream (40 against 29, worse on 6 salts of 10). A
    generator that does worse than the stream it replaces does not answer v0.3.
 
-The rest of this spec assumes option 1. Option 3 becomes a `decided against` line (§5); option 2 is held until round
+The rest of this spec builds option 1. Option 3 becomes a `decided against` line (§5); option 2 is held until round
 A's f 0.04 arm, and becomes `decided against` if that arm costs no more than 359 loop seconds over salts 1-10 at lower M.
 
 **Acceptance:** the stage is on by default only if its chosen arm beats the stream control at the same n, over salts
