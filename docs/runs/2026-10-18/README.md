@@ -26,6 +26,8 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 - `patches/match_count.patch` (on a49d1af, exe `bv_mprobe`): `JoinCost.probe`, ten counters of the join's matching, step
   terms and `Term::op` (fields in the patch's header), printed per mine. `scripts/match_count.sh <exe> <salt>`: one
   `SWEEP=cold:cmp3d` and the counters' sum.
+- `patches/size_bound.patch` (on e450d24, exe `bv_sbound`): counters of what a size bound before matching would skip
+  (fields in the patch's header), run with `match_count.sh`.
 - `scripts/interner_ab.sh <exe A> <exe B> <salt>`: `SWEEP=cold:cmp3d` at 1 lane in the order A B B A, wall seconds, and
   which sweeps' files agree with A's first. A was `bv_lazy2`, B `bv_lockfree` (a49d1af with the lock-free interner).
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
@@ -46,3 +48,4 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-lazy-prof` | `bv_lprof` | `lazy_prof.sh` | join 82.7%; `Term::op` 28% (mutex 8.5%), `match_pat` 19.4%, `subst_sig` 12.2% |
 | `2026-10-18-match-count` | `bv_mprobe` | `match_count.sh`, salt 1 | matcher fails 60%, 59% of matches over the cap; 37% of step terms expanded; `Term::op` 26.2% table hits, 0.35% new |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
+| `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |

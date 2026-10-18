@@ -1,0 +1,104 @@
+# size_bound: the counters behind run 2026-10-18-size-bound (exe bv_sbound.exe, e450d24 + this; script match_count.sh):
+# JoinCost.probe per mine: 0 join matcher calls, 1 calls the size bound would skip, 2 of those that match, 3 of those
+# within the cap (must be 0), 4 matches over the cap, 5 of those the bound skips. The search itself is unchanged.
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 3a17dfc..85c5a19 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2471,7 +2471,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, probe: [0; 6] }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2484,6 +2484,7 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    pub probe: [u64; 6],
+ }
+ 
+ impl JoinCost {
+@@ -2500,6 +2501,9 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        for i in 0..6 {
++            self.probe[i] += now.probe[i] - before.probe[i];
++        }
+     }
+ }
+ 
+@@ -2579,6 +2583,7 @@ fn join_or_machine(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+ struct JoinEq {
+     from: Term,
+     to: Term,
++    grow: Option<isize>,
+     vars: usize,
+     kind: LawKind,
+     lhs: Term,
+@@ -2610,7 +2615,7 @@ fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
+         let vars = lhs.max_var().max(rhs.max_var()) + 1;
+         for (from, to, backward) in [(lhs, rhs, false), (rhs, lhs, true)] {
+             if (both || !backward) && join_usable(&from, &to) {
+-                eqs.push(JoinEq { from, to, vars, kind, lhs, rhs, backward });
++                eqs.push(JoinEq { from, to, grow: (0..RULE_VARS).all(|v| occ(&to, v) >= occ(&from, v)).then(|| to.size() as isize - from.size() as isize), vars, kind, lhs, rhs, backward });
+             }
+         }
+     }
+@@ -2697,7 +2702,16 @@ fn join_walk(
+     for i in table.join_index.get(&t) {
+         let e = &table.join[i];
+         let mut sub = [None; RULE_VARS];
+-        if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
++        let skip = e.grow.map_or(e.to.size(), |d| e.to.size().max((t.size() as isize + d).max(0) as usize)) > cap;
++        probe(0);
++        if skip { probe(1) }
++        let m = match_pat(&e.from, &t, &mut sub);
++        if m {
++            let over = subst_sig(&e.to, &sub).1 > cap;
++            if over { probe(4); if skip { probe(5) } }
++            if skip { probe(2); if !over { probe(3) } }
++        }
++        if m && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
+             return false;
+         }
+     }
+@@ -3707,3 +3721,22 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++/// PROBE (throwaway): bumps `JOIN_COST.probe[i]`: 0 join matcher calls, 1 calls a size bound would skip, 2 of those that
++/// match, 3 of those within the cap (must be 0), 4 matches over the cap, 5 of those the bound skips.
++fn probe(i: usize) {
++    JOIN_COST.with(|c| {
++        let mut v = c.get();
++        v.probe[i] += 1;
++        c.set(v)
++    })
++}
++
++/// PROBE: occurrences of variable `v` in `t`.
++fn occ(t: &Term, v: usize) -> usize {
++    match *t.node() {
++        Node::V(i) => (i == v) as usize,
++        Node::Op(_, a, b) => occ(&a, v) + occ(&b, v),
++        _ => 0,
++    }
++}
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 2a53044..ac094eb 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1232,6 +1232,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER probe: {:?}", j.probe);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {

@@ -4757,6 +4757,15 @@ at least `size(to) - size(from)` when every variable occurs on the right at leas
 position whose term is already too large for the cap could be skipped unmatched; parked in `PARKED.md`); and building a
 step's term only when it is expanded, up to 63% of `place`.
 
+*How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
+only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
+every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule
+when it exceeds the cap changes no search: in salt 1's cold:cmp3d loops it never skipped a match within the cap. It would
+skip 43% of the matcher's 5.84G calls before matching, and 96% of the 1.36G matches over the cap with them (so their
+`subst_sig` too). With `match_pat` from the walk at 13.9% and `subst_sig` at 12.2% of the lazy join's profile, that is
+on the order of a tenth of the join's CPU, unmeasured. (The calls differ from `-match-count`'s 5.54G by the timing
+one-off.)
+
 *Lock-free interner reads (2026-10-18, run `2026-10-18-interner-ab`).* `Term::op`'s shared table is now per shard an
 open-addressed array of node pointers read without a lock (cells go only from null to a node; a full array is replaced by
 a doubled copy, the old one leaked), and only a new node takes the shard's mutex. Test
