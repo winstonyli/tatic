@@ -22,10 +22,10 @@ this file keeps the options and the reasoning.
   option 1's recorded figures are in `docs/tier-cycle.md`); the gain bound skipped 3603 of 15158
   scorings against 2720 of 5434 before. Nearly every candidate touches the large set of terms a join examined, so the
   memo entry is invalidated and the search rerun for each candidate.
-- Kernel cost of joined proofs (`proof_cost_split`, two served cmp3d batches at salt 6, no machine proofs in them; a probe,
-  not recorded): per
-  law, build about 9 ms joined against 2.5 ms rules-only, check about 0.4 against 0.24 ms, about 950 against 720 unique
-  nodes.
+- Kernel cost of joined proofs against the machine proofs they replace (run `2026-10-17-join-proof-cost`, 135 served
+  cmp3d batches, salts 1-5, join on against `ABLATE=join`): per joined law, build 7.7 against 21.5 ms, check 0.49 against
+  0.47 ms, 965 against 889 unique nodes. A first probe (two batches, not recorded) had set joined laws against rules-only
+  ones, which is not the alternative.
 
 ## Options considered
 

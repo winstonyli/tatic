@@ -41,3 +41,15 @@ Later the same day, on the miner's view of the join (`docs/tier-cycle.md`, "The 
 | `2026-10-17-join-sticky` | 8d5b29d against option 1 (+ `join_check.patch`, off) | `join_ab.sh`, salts 1-10 | M and rules those of the exact miner on every salt; mine 33 s blind, 46 s option 1 |
 | `2026-10-17-join-sticky-ablate` | the same two | `join_ab.sh` with `ABLATE=join` | identical rows |
 | `2026-10-17-join-sticky-flips` | option 1 against itself, `ENV_B=JOIN_CHECK=1` | `join_ab.sh`, salts 1-10 | no flips in at least 230000 met-plan hits; rows identical |
+
+The join's cost (`docs/tier-cycle.md`, "The miner sees the join", its last bullets). Build `$TEMP/bv_jtime.exe`: the
+search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, scoring every candidate; reverted).
+
+- `scripts/join_cost.sh <exe> <sweep dir> <salt>...`: `proof_cost_split` on every served cmp3d batch of a sweep's
+  loops, join on and off, into `cost.tsv`.
+- `scripts/join_time.sh <exe> <salt> <reps>`: the cmp3d ref mine with the gain bound on and off, alternated.
+
+| Run | Build | Script | Result |
+|---|---|---|---|
+| `2026-10-17-join-proof-cost` | `bv_jtime.exe` | `join_cost.sh` on `2026-10-17-join-sticky`, salts 1-5 | per joined law: build 7.7 against 21.5 ms for the machine proof, check 0.49 against 0.47 ms |
+| `2026-10-17-join-time` | `bv_jtime.exe` | `join_time.sh`, salt 6, 4 reps; then by hand two `runs run` (job CPU, `job.txt`) and two PowerShell runs (`cpu.txt`, process CPU 0: the mine runs in a child) | same rules either way; join searches 84% of the stage's CPU, failed ones 26% |

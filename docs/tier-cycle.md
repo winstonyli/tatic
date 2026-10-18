@@ -4413,15 +4413,27 @@ Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
   640, 3259); summed mine time 46 s (exact 51, blind 33). `ABLATE=join` on both builds gives identical rows
   (`2026-10-17-join-sticky-ablate`). With `JOIN_CHECK` (`docs/runs/2026-10-17/patches/join_check.patch`: on every memo
   hit of a met plan, search again under the current rules; run `2026-10-17-join-sticky-flips`), no kept plan failed in
-  at least 230000 hits over the 10 salts. Where the remaining 13 s over the blind miner goes is not isolated: the
-  searches themselves (salt 6's cmp3d mine: 74760 searches reaching 10.1M terms, 94.5% met, 35783 memo hits) or a
-  weaker gain bound (3801 of 15158 scorings skipped, the exact miner 3603 of 15158, the blind one 2720 of 5434).
+  at least 230000 hits over the 10 salts.
+- **The mine's time is the join's searches; the gain bound saves none of it** (run `2026-10-17-join-time`, salt 6's
+  cmp3d mine alone, build `bv_jtime.exe` with `patches/no_bound.patch`, CPU 24% at launch, RTP off). Measured in a job
+  object (`tools/runs`, `runs run`, two runs in the run's `job.txt`), the stage (the mine and serving its batches)
+  took 25.3 and 29.9 CPU s in 6.9 and 8.2 s of wall, of which the mine's join searches 21.2 and 25.0 s (84%), failed
+  ones 6.6 and 7.9 s (26%); rule-set evaluations and bounding took 0.4 s each. Scoring every candidate (`RULEMINER_NO_BOUND`, 4 runs each way, alternated)
+  mines the same rules: 15158 scorings against 11357, 76800 searches against 74760, join time 22.6-26.9 s against
+  23.1-35.1 s, wall 7-10 s either way. The candidates the bound skips touch few laws, so they cost few searches. The
+  searches: 74760 reaching 10.1M terms, 94.5% met, 35783 memo hits. Each scoring worker starts each pick with a fresh
+  memo (expressions are interned per thread), so the same pair is searched again in each pick.
+- **Kernel cost of a joined proof against the machine proof it replaces** (run `2026-10-17-join-proof-cost`,
+  `scripts/join_cost.sh`: `proof_cost_split` on every served cmp3d batch of `2026-10-17-join-sticky`'s loops, salts
+  1-5, 135 batches, under each loop's final rules, with the join on and with `ABLATE=join`, the faster of 2 alternated
+  runs per batch; CPU 10% at launch, RTP off). With the join on, 3375 laws are joined and 13 need a machine proof;
+  with it off, 3388 need one. Per joined law: build 7.7 ms against 21.5 ms for the machine proof, check 0.49 against
+  0.47 ms, 965 against 889 unique nodes. The rules-only laws (10112, the same in both arms) differ by 10% in build time
+  between the arms, so the check times are equal within noise; building is 2.8 times cheaper.
 - **Cost reporting.** The mine log has `RULEMINER join: <searches> searches reaching <terms> terms, <met> met, <hits>
-  memo hits` (workers' counts summed, `JoinCost`) and the time spent bounding candidates' gains (0.4 s of salt 6's cmp3d
-  mine). The sweep's stage files gain columns for the laws joined and the terms the joins reached. `proof_cost_split`
-  has a joined row: on two served cmp3d batches at salt 6 (a probe, not recorded), a joined law's proof cost about 9 ms
-  to build against 2.5 ms for rules only, about 0.4 against 0.24 ms to check, about 950 against 720 unique nodes. No
-  law in those batches needed a machine proof, so there is no row to set against.
+  memo hits, <s>s searching (<s>s in failed searches)` (workers' counts summed, `JoinCost`) and the time spent bounding
+  candidates' gains. The sweep's stage files gain columns for the laws joined and the terms the joins reached.
+  `proof_cost_split` has a joined row.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the

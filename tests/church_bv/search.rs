@@ -1231,7 +1231,7 @@ pub fn rule_miner() {
         println!("RULEMINER time bounding candidates' gains: {:.1}s", bound_time.get().as_secs_f64());
         let mut j = *join_workers.lock().unwrap();
         j.add_since(join_main);
-        println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits", j.searches, j.reached, j.met, j.hits);
+        println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
         for (st, c) in stragglers.iter().zip(&covered) {
             if !c {

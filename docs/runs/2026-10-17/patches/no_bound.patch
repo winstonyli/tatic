@@ -1,0 +1,13 @@
+# no_bound: `RULEMINER_NO_BOUND` scores every candidate (each one's bound set to i64::MAX), behind run
+# 2026-10-17-join-time. The bound is sound, so the picks are the same and only the time changes.
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -910,7 +910,8 @@ pub fn rule_miner() {
+                 let gain = |si: usize, w: i64| if covered[si] { 0 } else { w };
+                 affected[i].iter().map(|&si| if si < stragglers.len() { gain(si, 1000) + base_eval[si].1 } else { gain(si, guard_w) }).sum()
+             };
+-            let mut order: Vec<(i64, usize)> = (0..provable.len()).map(|i| (bound(i), i)).collect();
++            let no_bound = env_var("RULEMINER_NO_BOUND").is_some();
++            let mut order: Vec<(i64, usize)> = (0..provable.len()).map(|i| (if no_bound { i64::MAX } else { bound(i) }, i)).collect();
+             order.sort_by_key(|&(b, i)| (std::cmp::Reverse(b), i));
+             bound_time.set(bound_time.get() + t0.elapsed());

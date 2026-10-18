@@ -2321,16 +2321,19 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
 thread_local! {
     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0 }) };
+    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
 }
 
-/// The join's searches run (`join_search`), the terms they reached, how many met, and the memo hits that ran none.
+/// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+/// time in the searches, of it in those that failed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct JoinCost {
     pub searches: u64,
     pub reached: u64,
     pub met: u64,
     pub hits: u64,
+    pub nanos: u64,
+    pub failed_nanos: u64,
 }
 
 impl JoinCost {
@@ -2345,6 +2348,8 @@ impl JoinCost {
         self.reached += now.reached - before.reached;
         self.met += now.met - before.met;
         self.hits += now.hits - before.hits;
+        self.nanos += now.nanos - before.nanos;
+        self.failed_nanos += now.failed_nanos - before.failed_nanos;
     }
 }
 
@@ -2539,7 +2544,7 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
 
 /// `join_eq`'s search, adding the terms it examined to `examined`.
 fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
-    let (cap, visit) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize));
+    let (cap, visit, t0) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize), std::time::Instant::now());
     // each reached term with the term it was reached from and the plan of that step
     type Seen = hashbrown::HashMap<Term, Option<(Term, PlanRc)>>;
     let path = |seen: &Seen, mut t: Term| -> PlanRc {
@@ -2590,8 +2595,11 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
         }
         None
     });
-    let reached = (seen[0].len() + seen[1].len()) as u64;
-    count_join(|c| (c.searches, c.reached, c.met) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64));
+    let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
+    count_join(|c| {
+        (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
+        c.failed_nanos += if found.is_some() { 0 } else { nanos };
+    });
     found
 }
 
@@ -3128,6 +3136,11 @@ fn join_cost_counts_searches_but_not_memo_hits() {
     assert_eq!((c1.searches - c0.searches, c1.met - c0.met), (1, 1));
     assert!(c1.reached - c0.reached >= 2, "both sides at least");
     assert_eq!(cost(), JoinCost { hits: c1.hits + 1, ..c1 }, "the second call was a hit");
+    assert!(c1.nanos > c0.nanos && c1.failed_nanos == c0.failed_nanos, "a met search's time counts, not as failed");
+    // an equal pair the join cannot close (`failed_join_traces_every_term_it_examines`)
+    assert!(join_eq(4, 3, &parse_term("sub(x, y)"), &parse_term("sub(0, sub(y, x))")).is_none());
+    let c2 = cost();
+    assert!(c2.met == c1.met && c2.failed_nanos > c1.failed_nanos && c2.nanos - c1.nanos == c2.failed_nanos - c1.failed_nanos);
 }
 
 /// A memo hit gives what a fresh rewrite would, also under rules that cycle: an entry made where the path was short is replayed
