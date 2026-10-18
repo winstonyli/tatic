@@ -399,7 +399,7 @@ fn write_laws(family: &str, env: &[(String, String)], path: &Path, var: &str) ->
 /// LAW SOURCE PROBE (docs/tier-cycle.md, "A law generator"): with `MINE_EXTRA=<family>:<n>,...`, the n extra laws a loop's
 /// mine takes besides `mine_laws`, one per line. `MINE_SOURCE=stream` (the default) takes them from the stream phases no loop
 /// serves (all but 1-3, phase p + 3 first), as the bucket probe's `unseen` arm did; `grammar` from `grammar_laws` (stream-blind,
-/// `GEN_TERMS` grown terms, the loop's slice at its phase). Either way an extra is kept only if it is no law of the served phases
+/// non-padding laws, the loop's slice at its phase). Either way an extra is kept only if it is no law of the served phases
 /// 1-3 up to renaming variables and swapping sides (twin-free), and its skeleton is not among `mine_laws`' (unseen).
 fn extra_laws(cfg: &LoopCfg, env: &[(String, String)], mine_laws: &str) -> String {
     let get = |k: &str, d: usize| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| env_or(k, d), |(_, v)| v.parse().unwrap());
@@ -451,23 +451,16 @@ fn extra_laws(cfg: &LoopCfg, env: &[(String, String)], mine_laws: &str) -> Strin
         "stream" => (0..cfg.stride).map(|i| (cfg.sphase + 3 + i) % cfg.stride).filter(|q| !(1..=3).contains(q)).flat_map(phase).collect(),
         "grammar" => {
             // keyed by every variable `grammar_laws` reads
-            // `GEN_PAD=pad|nopad`: only the laws with a padded grown side, or only the rest
-            let pad = match env_var("GEN_PAD") {
-                None => None,
-                Some("pad") => Some(true),
-                Some("nopad") => Some(false),
-                Some(s) => panic!("GEN_PAD must be pad or nopad, got {s}"),
-            };
-            type Memo = Vec<((String, usize, usize, usize, Option<bool>), std::sync::Arc<Vec<(Term, Term)>>)>;
+            type Memo = Vec<((String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>)>;
             static MEMO: std::sync::Mutex<Memo> = std::sync::Mutex::new(Vec::new());
-            let k = (cfg.family.clone(), get("RULEMINER_SHUFFLE", 0), env_or("GEN_TERMS", 20000), get("RULEMINER_DEEP3", 0), pad);
+            let k = (cfg.family.clone(), get("RULEMINER_SHUFFLE", 0), get("RULEMINER_DEEP3", 0));
             let laws = {
                 let mut memo = MEMO.lock().unwrap();
                 match memo.iter().find(|(kk, _)| *kk == k) {
                     Some((_, l)) => l.clone(),
                     None => {
                         let t0 = std::time::Instant::now();
-                        let l = std::sync::Arc::new(grammar_laws(&k.0, &get, k.2, k.1, k.4));
+                        let l = std::sync::Arc::new(grammar_laws(&k.0, k.2, k.1));
                         println!("GEN_LAWS {}: {} laws in {:.1}s", k.0, l.len(), t0.elapsed().as_secs_f64());
                         memo.push((k, l.clone()));
                         l
