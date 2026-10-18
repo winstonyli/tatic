@@ -1,0 +1,126 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index be82f6c..02e5957 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2371,7 +2371,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, nbrs: 0, new: 0, dup: 0, spine: 0, cut: 0, cut_nanos: 0 }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2384,6 +2384,12 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    pub nbrs: u64,
++    pub new: u64,
++    pub dup: u64,
++    pub spine: u64,
++    pub cut: u64,
++    pub cut_nanos: u64,
+ }
+ 
+ impl JoinCost {
+@@ -2400,6 +2406,12 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        self.nbrs += now.nbrs - before.nbrs;
++        self.new += now.new - before.new;
++        self.dup += now.dup - before.dup;
++        self.spine += now.spine - before.spine;
++        self.cut += now.cut - before.cut;
++        self.cut_nanos += now.cut_nanos - before.cut_nanos;
+     }
+ }
+ 
+@@ -2538,8 +2550,10 @@ fn join_steps(t: &Term, table: &RuleTable, cap: usize, out: &mut Vec<(Term, Plan
+     if let Node::Op(o, a, b) = *t.node() {
+         let mut inner = vec![];
+         join_steps(&a, table, cap - (t.size() - a.size()), &mut inner, examined);
++        count_join(|c| c.spine += inner.len() as u64);
+         out.extend(inner.drain(..).map(|(a2, p)| (Term::op(o, a2, b), Plan::cong(o, p, Plan::refl(&b)))));
+         join_steps(&b, table, cap - (t.size() - b.size()), &mut inner, examined);
++        count_join(|c| c.spine += inner.len() as u64);
+         out.extend(inner.drain(..).map(|(b2, p)| (Term::op(o, a, b2), Plan::cong(o, Plan::refl(&a), p))));
+     }
+ }
+@@ -2615,6 +2629,10 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+             for t in std::mem::take(&mut front[s]) {
+                 join_steps(&t, table, cap, &mut out, examined);
+                 for (u, step) in out.drain(..) {
++                    count_join(|c| {
++                        c.nbrs += 1;
++                        c.dup += seen[s].contains_key(&u) as u64;
++                    });
+                     if seen[1 - s].contains_key(&u) {
+                         // a met search's result rests on its path only: keep what was examined at the path's terms
+                         if let Some(x) = examined {
+@@ -2637,6 +2655,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                         return Some(Plan::trans(pa, Plan::sym(pb)));
+                     }
+                     if !seen[s].contains_key(&u) {
++                        count_join(|c| c.new += 1);
+                         seen[s].insert(u, Some((t, step)));
+                         front[s].push(u);
+                     }
+@@ -2650,9 +2669,44 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+         (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
+         c.failed_nanos += if found.is_some() { 0 } else { nanos };
+     });
++    // probe: would an operator invariant have cut this failed search? An operator on one side only that no join step can
++    // remove or create (a step dropping or copying a variable removes or creates anything)
++    if found.is_none() && RULE_TABLE.with(|table| op_cut(a, b, &table.borrow().join)) {
++        count_join(|c| (c.cut, c.cut_nanos) = (c.cut + 1, c.cut_nanos + nanos));
++    }
+     found
+ }
+ 
++fn op_counts(t: &Term, n: &mut [i64; OP_INFO.len()], var: &mut [i64; RULE_VARS]) {
++    match *t.node() {
++        Node::Op(o, a, b) => {
++            n[o] += 1;
++            op_counts(&a, n, var);
++            op_counts(&b, n, var);
++        }
++        Node::V(v) if v < RULE_VARS => var[v] += 1,
++        _ => {}
++    }
++}
++
++fn op_cut(a: &Term, b: &Term, eqs: &[JoinEq]) -> bool {
++    let (mut removable, mut creatable) = ([false; OP_INFO.len()], [false; OP_INFO.len()]);
++    for e in eqs {
++        let (mut nf, mut vf, mut nt, mut vt) = ([0; OP_INFO.len()], [0; RULE_VARS], [0; OP_INFO.len()], [0; RULE_VARS]);
++        op_counts(&e.from, &mut nf, &mut vf);
++        op_counts(&e.to, &mut nt, &mut vt);
++        let (drops, copies) = ((0..RULE_VARS).any(|v| vf[v] > vt[v]), (0..RULE_VARS).any(|v| vt[v] > vf[v]));
++        for o in 0..OP_INFO.len() {
++            removable[o] |= drops || nf[o] > nt[o];
++            creatable[o] |= copies || nt[o] > nf[o];
++        }
++    }
++    let (mut na, mut nb) = ([0; OP_INFO.len()], [0; OP_INFO.len()]);
++    op_counts(a, &mut na, &mut [0; RULE_VARS]);
++    op_counts(b, &mut nb, &mut [0; RULE_VARS]);
++    (0..OP_INFO.len()).any(|o| (na[o] > 0) != (nb[o] > 0) && !removable[o] && !creatable[o])
++}
++
+ fn count_join(f: impl FnOnce(&mut JoinCost)) {
+     JOIN_COST.with(|c| {
+         let mut v = c.get();
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 2a53044..fe55b59 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1232,6 +1232,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER join probe: {} neighbours, {} new, {} seen on their side, {} spine rebuilds; {} failed searches cut by the op invariant ({:.1}s)", j.nbrs, j.new, j.dup, j.spine, j.cut, j.cut_nanos as f64 / 1e9);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {
