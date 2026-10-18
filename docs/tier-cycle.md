@@ -4674,7 +4674,8 @@ its scope serves by value-class twin key (`ClassReps`) and by skeleton. Cold swe
   on 13, equal on 2, worse on 5. The stage stays on by default.
 - **Cost**: s16's loops take 7786 s over 20 salts against off's 9 (the probe's sweep wall time 285 s against 12), all in
   the join's searches ("Where an extras mine's time goes"). Numbers from here on are with the stage on unless they say
-  `ABLATE=gen`.
+  `ABLATE=gen`. Ref mines and warm loops take extras too but are unmeasured (the spec's step 4, `PARKED.md`): until
+  then, sweeps with a `mines` stage or warm loops run with `ABLATE=gen` or after a 1-salt probe.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
