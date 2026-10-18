@@ -4513,7 +4513,8 @@ Loop seconds split by run (salts 1-10 + 11-20); the salts 1-10 of the padding-on
   salts 1-10, 11 against 16 on 11-20) is within the noise.
 - **No padding gives the lowest M (9 on salts 1-10, not run on 11-20) at 14 times the stream's time,** with the miner
   keeping 2483 rules (why so many was not traced). So per law the non-padding laws pay at least as much; padding is
-  chosen for cost. Why padding laws pay: see the next note (much of it is twins of served laws in disguise).
+  chosen for cost. Why padding laws pay: see the next note (much of it is twins of served laws in disguise); filtered alike, they lose
+  to the stream and the mixed grammar wins (the note after it).
 - **Fewer laws lose part of the gain:** half counts still cut plain's 120 to 33 (at 2.3 times stream's time) but do no
   better than stream; a quarter gives 64.
 - Generating costs 0.1-0.6 s per family (`GEN_LAWS` lines), against loop seconds in the hundreds, so nearly all the extra
@@ -4553,12 +4554,76 @@ RTP off):
 - **The replay is exact:** all 90 rule files equal the `-gen-cost` padding arm's, so the file source changes nothing.
 - **The twins carry the padding arm's edge over the stream.** Dropping them takes M 16 to 30; dropping as many
   other laws leaves 14 (twins dropped is worse on 4 salts, better on 1, equal on 5 against that control). Untwinned, the
-  padding laws match the stream's unseen laws (30 against 29) with 12% fewer rules.
-- So the earlier reading "a stream-blind grammar matches the stream" holds only after the same twin filter is applied
-  to both, through the padding. A generator proposes laws from the family's own pool, which is the stream's universe, so
-  it will propose served laws; a fair measurement must filter them up to equal-valued subterms, not up to text.
-- Not tested: whether the mixed grammar's and the non-padding laws' gains also hide twins (the non-padding laws strip to
-  nothing, but a grown term could equal a deeper pool subterm, which this strip does not see).
+  padding laws seemed to match the stream's unseen laws (30 against 29) with 12% fewer rules, but the stream arm was not
+  filtered the same way, and the strip missed twins: see the next note, where the fair comparison has the padding laws
+  losing.
+- A generator proposes laws from the family's own pool, which is the stream's universe, so it will propose served
+  laws; a fair measurement must filter them up to equal-valued subterms, not up to text, and filter every arm alike.
+
+*One filter for every source: with twins removed alike, the padding laws lose to the stream and the wider grammar
+wins (2026-10-17).* The strip above has two gaps: it normalizes the extras but not the served laws (which hold padding
+nodes too: 5164 lines of the padding arms' served files have a same-leaf or identity node), and it only maps nodes equal
+to a leaf. `scripts/twin_wide.py` normalizes every node over two leaves (`lt` aside) to its width-4 value class's
+representative (a leaf if one is in the class, else the shortest, then least, two-leaf term), on both sides, and keys
+the result as the filter does. Twins of a phase 1-3 served law, per 10 salts (cmp3d, add3, sbo3 summed: 17700 extras per
+arm):
+
+| source | twins: extras stripped (above) | both stripped | value classes, both sides | trivial after normalizing |
+|---|---|---|---|---|
+| padding laws (`-gen-cost` pad) | 4762 | 7870 | 7423 (42%) | 5413 |
+| mixed grammar (`-gen-src` grammar) | 1867 | 3109 | 2933 (17%) | 2322 |
+| non-padding laws (`-gen-cost` nopad) | 5 | 11 | 22 (0.1%) | 269 |
+| stream's unseen laws (`-gen-src` stream) | 2091 | 6259 | 8467 (48%) | 3912 |
+
+So the stream's own unseen laws, filtered twin-free as text, are half served laws behind equal-valued two-leaf nodes,
+more than any generator's. The causal test replays each source with its class twins dropped (run
+`2026-10-17-gen-wide`, `gen_twin.sh` with `ARMS` over the files of `scripts/wide_files.py`, build `bv_padfile.exe` as in
+the note above; salts 1-10, sequential, CPU 13% at start, RTP off):
+
+| arm | mined-batch M | cmp3d | add3 | sbo3 | rules | loop seconds |
+|---|---|---|---|---|---|---|
+| stream, replayed | 31 | 22 | 3 | 6 | 1155 | 86 |
+| stream, class twins dropped | 29 | 14 | 9 | 6 | 895 | 40 |
+| padding laws, class twins dropped | 40 | 22 | 9 | 9 | 957 | 51 |
+| the same, trivial laws dropped too | 42 | 24 | 9 | 9 | 933 | 49 |
+| the same, as many other laws dropped instead | 83 | 47 | 9 | 27 | 709 | 5 |
+| mixed grammar, replayed | 12 | 8 | 4 | 0 | 1889 | 413 |
+| mixed grammar, class twins dropped | 21 | 16 | 4 | 1 | 1859 | 359 |
+| non-padding laws (`-gen-cost`, not replayed; 22 twins) | 9 | | | | 2483 | 1373 |
+
+- **The replays are exact within a build, not across builds.** A second run of the stream replay's salt 1 gave the same
+  rule files; against `-gen-src` (da775e7 plus the probe), 6 of the stream replay's 90 rule files and 2 of the
+  grammar's differ, and M moves by 1 on salts 1 and 4. Each comparison below is within this run's one build.
+- **Twins pay only behind padding.** Dropping the stream's twins costs nothing (31 to 29, half the loop time);
+  dropping the padding laws' costs 16 to 40 (with the strip's twins alone, 30). The mixed grammar loses 12 to 21.
+- **Fairly filtered, the padding laws lose to the stream:** 40 against 29, worse on 6 salts, better on 3, equal on 1.
+  The mixed grammar beats the stream (21 against 29: better on 6, worse on 2, equal on 2), at 9 times its loop time. The
+  non-padding laws, which hide almost no twins, have the lowest M (9) at about 34 times the filtered stream's loop time.
+- **Trivial laws barely pay:** a law whose sides normalize to the same term (24-42% of the padding laws per family)
+  is an identity of two-leaf nodes in context. Dropping them costs 40 to 42 and saves little time. The control (dropping
+  as many of the other laws) is matched on cmp3d only: add3 and sbo3 have fewer other laws than trivial ones, so it
+  drops all their other laws.
+- Not covered: a grown node equal in value to a deeper subterm of a pool term (only two-leaf nodes are normalized).
+
+*Where an extras mine's time goes (2026-10-17, from the runs above, no new run).* Every mine's time is still the join's
+searches (`RULEMINER join` lines, the first mine of salt 6's cmp3d phase 1 loop unless noted), 1.5-3 µs per reached term
+(summed over the scoring workers); extras multiply the searches and their reach:
+
+| mine's laws | searches | terms reached | per search | search CPU s | in failed searches |
+|---|---|---|---|---|---|
+| plain (100) | 4208 | 0.47M | 111 | 0.7 | 29% |
+| stream (+350) | 26903 | 3.89M | 145 | 8.3 | 40% |
+| padding (+350) | 28442 | 3.60M | 126 | 10.5 | 23% |
+| mixed grammar (+350) | 69541 | 16.4M | 236 | 31.2 | 48% |
+| non-padding (+350) | 117210 | 30.9M | 264 | 91.9 | 31% |
+| non-padding, sbo3 (+180) | 70884 | 18.7M | 264 | 56.2 | 37% |
+
+Law evaluations are 94% reused (non-padding cmp3d: 2241297 of 2394280), the gain bound and rule-set evaluation take
+about 2 s of the 92, so the levers are the searches themselves (how busy the 6 scoring threads stay was not measured):
+fewer terms built per visited term (99% of `Term::op` calls find an existing node, "The interner's per-thread cache"),
+early cuts of failed searches (`PARKED.md`, now on 23-48% of search time), or an order that meets sooner (inexact:
+it changes which pairs meet within the cap). The only profile is of a ref mine before the op cache; an extras mine's
+profile is the next measurement.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
