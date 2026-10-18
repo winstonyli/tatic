@@ -140,3 +140,39 @@ Parked in `PARKED.md`: neither is needed while the visit cap's inexactness stays
 
 Open: whether redundant rules pay under the join's cap, as Enumo found under node limits (a question for the miner's
 gain, which scores rules one at a time).
+
+## Survey 2 (2026-10-18): a bound on path cost, split freely between the sides
+
+Asked after the timing one-off (`docs/tier-cycle.md`, "The timing one-off is the join memo's inexactness"). A Sonnet
+subagent searched; the two sources below were re-read before writing this.
+
+- **The split between the sides does not change the answer of a cost-bounded search.** GBFHS
+  ([Barley et al., SoCS 2018](https://ojs.aaai.org/index.php/SOCS/article/download/18452/18243)) bounds each level by a
+  total `fLim` and lets a `split` function divide it between forward and backward limits (never lowering either); "with
+  an appropriate split function, GBFHS can search forward, backward, or any bidirectional split", and in unit-cost
+  domains, given any order of the sides, it finds optimal solutions on first collision. Choosing a good split
+  automatically is listed as future work. fMM and dfMM (Shperberg, Felner, Sturtevant et al.) fix or vary a fraction
+  instead; the subagent found no rule for choosing it either (not re-read).
+- **Depth-bounded distances only shrink under added edges.** Even-Shiloach trees maintain a shortest-path tree up to
+  depth X under edge insertions, each node's distance changing at most X times (Theorem 1.2 of
+  [Henzinger, Krinninger, Nanongkai, arXiv 1512.08147](https://ar5iv.labs.arxiv.org/html/1512.08147)): "joined within
+  cost C" never reverts as rules are added.
+- **Proof orderings as a rule-independent path cost.** Bachmair-Dershowitz-Hsiang order proofs by the multiset of their
+  steps' terms, peaks costing most (lecture script, not re-read:
+  [MPI autrea 4.6-4.7](https://rg1-teaching.mpi-inf.mpg.de/autrea-ws13/script-4.6-4.7.pdf)); our size cap is the crude
+  form of a peak bound.
+- No source found for bounded joinability in E, Waldmeister or Twee (they normalize to a fixpoint), for budgeted
+  tabling (XSB's incremental tabling keeps fixpoint answers exact under assert and retract), or for any discussion of
+  effort budgets (Lean `simp`'s `maxSteps`, our visit cap) being non-monotone.
+
+Reasoning (ours): the visit cap is a bound on search effort; a bound on path cost that depends only on the pair (a
+total depth `dF + dB <= D`, or a cost counting size-increasing steps) is monotone, and today's adaptive choice (expand
+the smaller frontier) becomes a free split: lopsided joins stay reachable without a per-side cap. The cost moves to
+failing pairs, which must exhaust the bound; a safety cap on effort may stay only if it answers "unknown", kept apart
+from "fails" in the memo, or the scheduling dependence returns through it. The 2026-10-17 depth probe tried per-side
+caps only; a total depth (deep sides up to 14 mean D up to about 16) and the uphill-step cost are untried. Cheapest
+falsifier for the uphill cost: log each met path's steps with their size change and side, and count uphill steps per
+path; it pays only if nearly all met paths need few (say 4 or under) and the deep sides are mostly downhill. Then
+replay the cost-bounded search at that budget for its terms reached per search (p99, max against about 1000), failing
+pairs included. The existing `JOIN_TRACE` logs (run `2026-10-17-join-depth`) hold per-side meeting depths, not step
+sizes, and predate the lazy join and the extras.
