@@ -16,6 +16,9 @@
 //! line at start and end, about 2 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
 //! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
+//! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the law
+//! generator's laws (`scope_extras`); off with ABLATE=gen; GEN_SOURCE=stream is the stream control; GEN_F, GEN_SHARED=1 and
+//! GEN_COUNTS=legacy are temporary.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas.bin across all its loops instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
 //! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
@@ -174,6 +177,10 @@ struct LoopCfg {
     split: usize,
     warm: Option<PathBuf>,
     check_fast: bool,
+    /// the extras list of this loop's scope (`scope_extras`), shared by the scope's loops
+    extras: std::sync::Arc<Vec<(Term, Term)>>,
+    /// each of this loop's mines' slice of `extras`, in mining order (a ref loop's one mine, or a loop's mines 0, 1, ...)
+    extra_at: Vec<std::ops::Range<usize>>,
     /// further variables for the children (a sweep's RULEMINER_FAST and RULEMINER_SHUFFLE)
     env: Vec<(String, String)>,
 }
@@ -187,6 +194,22 @@ fn extra_slices(len: usize, loops: usize, mines: usize, n: usize, fresh: bool) -
         return Err(need - len);
     }
     Ok((0..loops).flat_map(|i| (0..mines).map(move |j| (if fresh { i * mines + j } else { i }) * n)).map(|s| s..s + n).collect())
+}
+
+/// The filter drops a twin of a served law (here through `sub(y, 0)`, which normalizes to `y`) and a law with a served
+/// law's skeleton, and keeps a law trivial after normalizing and an unrelated law, in order.
+#[test]
+fn filtered_drops_twins_and_skeletons_only() {
+    let p = |a: &str, b: &str| (parse_term(a), parse_term(b));
+    let served = [p("and(or(x, y), z)", "or(and(x, z), and(y, z))")];
+    let twin = p("and(or(x, sub(y, 0)), z)", "or(and(x, z), and(y, z))");
+    let skel = p("and(or(x, y), y)", "or(and(x, y), and(y, y))");
+    let trivial = p("sub(x, x)", "and(y, 0)");
+    let other = p("add(add(x, y), z)", "add(x, add(y, z))");
+    // `Term` has no `Debug`, so compare texts
+    let text = |(a, b): (Term, Term)| format!("{} = {}", a.show(), b.show());
+    let got: Vec<String> = filtered(&[twin, skel, trivial, other], &served, &mut ClassReps::new()).into_iter().map(text).collect();
+    assert_eq!(got, [trivial, other].map(text));
 }
 
 /// Whether a mine of `cfg` takes extras: it mines (not `none`) with rule rounds, and `ABLATE=gen` is off.
@@ -247,7 +270,7 @@ impl LoopCfg {
     fn from_env() -> LoopCfg {
         let mode = env_var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop").to_string();
         assert!(["none", "ref", "loop"].contains(&mode.as_str()), "LOOP_MODE must be none, ref or loop, got {mode}");
-        LoopCfg {
+        let cfg = LoopCfg {
             mode,
             out: PathBuf::from(env_var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
             family: env_var("FAMILY").unwrap_or("add3").into(),
@@ -262,8 +285,17 @@ impl LoopCfg {
             split: env_or("SPLIT", 2),
             warm: env_var("WARM_RULES").map(PathBuf::from),
             check_fast: env_or("CHECK_FAST", 0usize) == 1,
+            extras: Default::default(),
+            extra_at: vec![],
             env: vec![],
+        };
+        if takes_extras(&cfg, ablated("gen")) {
+            let mut scope = [cfg];
+            scope_extras(&mut scope, &[], &mut Draw::new()).unwrap_or_else(|e| panic!("{e}"));
+            let [cfg] = scope;
+            return cfg;
         }
+        cfg
     }
 }
 
@@ -461,36 +493,139 @@ fn write_laws(family: &str, env: &[(String, String)], path: &Path, var: &str) ->
     (var.to_string(), path.display().to_string())
 }
 
-/// LAW SOURCE PROBE (docs/tier-cycle.md, "A law generator"): with `MINE_EXTRA=<family>:<n>,...`, the n extra laws a loop's
-/// mine takes besides `mine_laws`, one per line. `MINE_SOURCE=stream` (the default) takes them from the stream phases no loop
-/// serves (all but 1-3, phase p + 3 first), as the bucket probe's `unseen` arm did; `grammar` from `grammar_laws` (stream-blind,
-/// non-padding laws, the loop's slice at its phase). Either way an extra is kept only if it is no law of the served phases
-/// 1-3 up to renaming variables and swapping sides (twin-free), and its skeleton is not among `mine_laws`' (unseen).
-fn extra_laws(cfg: &LoopCfg, env: &[(String, String)], mine_laws: &str) -> String {
-    let get = |k: &str, d: usize| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| env_or(k, d), |(_, v)| v.parse().unwrap());
-    let spec = env_var("MINE_EXTRA").unwrap();
-    let want: usize = spec.split(',').find_map(|p| p.split_once(':').filter(|(f, _)| *f == cfg.family).map(|(_, n)| n.parse().unwrap())).unwrap_or(0);
-    let phase = |q: usize| -> Vec<String> {
-        let e = |k: &str, d: usize| match k {
-            "RULEMINER_PHASE" => q,
-            "RULEMINER_SKIP" => 0,
-            "RULEMINER_LAWS" => usize::MAX,
-            _ => get(k, d),
-        };
-        family_laws(&cfg.family, &e, 4, family_vars(&cfg.family), 7).into_iter().map(|(n, _, _)| n).collect()
+/// `cfg`'s value of the child variable `k`: its `env`, then this process's, as `run_loop`'s children read it.
+fn cfg_var(cfg: &LoopCfg, k: &str, d: usize) -> usize {
+    cfg.env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| env_or(k, d), |(_, v)| v.parse().unwrap())
+}
+
+/// The laws a child of `cfg` takes at stride phase `phase`: `laws` of them from `skip`, through the variables `run_loop` gives
+/// its children.
+fn stream_laws(cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
+    let env = |k: &str, d: usize| match k {
+        "RULEMINER_DEEP3" => cfg.deep3,
+        "RULEMINER_STRIDE" => cfg.stride,
+        "RULEMINER_PHASE" => phase,
+        "RULEMINER_SHAPE" => cfg.split,
+        "RULEMINER_SKIP" => skip,
+        "RULEMINER_LAWS" => laws,
+        _ => cfg_var(cfg, k, d),
     };
-    // a variable is a lone lowercase letter in a law's text
-    fn map_vars(s: &str, mut f: impl FnMut(u8) -> char) -> String {
-        let b = s.as_bytes();
-        (0..b.len())
-            .map(|i| {
-                let alone = (i == 0 || !b[i - 1].is_ascii_alphanumeric()) && (i + 1 == b.len() || !b[i + 1].is_ascii_alphanumeric());
-                if alone && b[i].is_ascii_lowercase() { f(b[i]) } else { b[i] as char }
-            })
-            .collect()
+    family_laws(&cfg.family, &env, 4, family_vars(&cfg.family), 7).into_iter().map(|(_, a, b)| (a, b)).collect()
+}
+
+/// The laws `cfg`'s loop serves, and its mines mine: its K batches of B from OFFSET.
+fn served_laws(cfg: &LoopCfg) -> Vec<(Term, Term)> {
+    stream_laws(cfg, cfg.sphase, cfg.offset, cfg.b * cfg.k)
+}
+
+fn law_text((a, b): &(Term, Term)) -> String {
+    format!("{} = {}", a.show(), b.show())
+}
+
+/// `s` with every lone lowercase letter (a variable) mapped by `f`.
+fn map_vars(s: &str, mut f: impl FnMut(u8) -> char) -> String {
+    let b = s.as_bytes();
+    (0..b.len())
+        .map(|i| {
+            let alone = (i == 0 || !b[i - 1].is_ascii_alphanumeric()) && (i + 1 == b.len() || !b[i + 1].is_ascii_alphanumeric());
+            if alone && b[i].is_ascii_lowercase() { f(b[i]) } else { b[i] as char }
+        })
+        .collect()
+}
+
+/// A law's skeleton: every variable written `v`, the smaller side first.
+fn skeleton(l: &(Term, Term)) -> String {
+    let e = map_vars(&law_text(l), |_| 'v');
+    let (a, c) = e.split_once(" = ").unwrap();
+    if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
+}
+
+/// What a sweep's scopes share while their extras are drawn: the class representatives and each family's generator laws.
+struct Draw {
+    reps: ClassReps,
+    laws: hashbrown::HashMap<(String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>>,
+}
+
+impl Draw {
+    fn new() -> Draw {
+        Draw { reps: ClassReps::new(), laws: Default::default() }
     }
+
+    /// `grammar_laws` for `cfg`'s family, `deep3` and salt, generated once per sweep.
+    fn grammar(&mut self, cfg: &LoopCfg) -> std::sync::Arc<Vec<(Term, Term)>> {
+        let k = (cfg.family.clone(), cfg.deep3, cfg_var(cfg, "RULEMINER_SHUFFLE", 0));
+        self.laws
+            .entry(k)
+            .or_insert_with_key(|k| {
+                let t0 = std::time::Instant::now();
+                let l = grammar_laws(&k.0, k.1, k.2);
+                println!("GEN_LAWS {}: {} laws in {:.1}s", k.0, l.len(), t0.elapsed().as_secs_f64());
+                std::sync::Arc::new(l)
+            })
+            .clone()
+    }
+}
+
+/// The filter chain (spec §1): the laws of `source` that, against `served`, are no twin after normalizing (a law trivial
+/// after normalizing is kept) and have no served law's skeleton, in `source`'s order.
+fn filtered(source: &[(Term, Term)], served: &[(Term, Term)], reps: &mut ClassReps) -> Vec<(Term, Term)> {
+    let keys: hashbrown::HashSet<String> = served.iter().filter_map(|(a, b)| reps.key(a, b)).collect();
+    let skels: hashbrown::HashSet<String> = served.iter().map(skeleton).collect();
+    let mut out = vec![];
+    for l in source {
+        if !reps.key(&l.0, &l.1).is_some_and(|k| keys.contains(&k)) && !skels.contains(&skeleton(l)) {
+            out.push(*l);
+        }
+    }
+    out
+}
+
+/// Draws one scope's extras (spec §1-3): `scope`'s loops (a stage's 3 loops of one family and source, or one ref mine)
+/// against the laws they serve and those of `also` (for a ref mine, every loop the sweep runs). n = ⌊f × L⌋ with f from
+/// `GEN_F` (temporary, default 0.08) and L the generator's filtered list; with `GEN_SOURCE=stream` (the control arm) the
+/// slices come from the stream phases the scope does not serve, from the one after its last, filtered alike. Fresh slices
+/// unless `GEN_SHARED=1` (temporary). Sets each loop's `extras` and `extra_at`, or says by how much the list is short.
+fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
+    let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(served_laws).collect();
+    let c = scope[0].clone();
+    let grammar = filtered(&draw.grammar(&c), &served, &mut draw.reps);
+    let n = (env_or("GEN_F", 0.08f64) * grammar.len() as f64) as usize;
+    let source = env_var("GEN_SOURCE").unwrap_or("grammar");
+    let laws = match source {
+        "grammar" => grammar,
+        "stream" => {
+            let own: Vec<usize> = scope.iter().map(|c| c.sphase).collect();
+            let last = *own.iter().max().unwrap();
+            let stream: Vec<(Term, Term)> =
+                (1..=c.stride).map(|i| (last + i) % c.stride).filter(|q| !own.contains(q)).flat_map(|q| stream_laws(&c, q, 0, usize::MAX)).collect();
+            filtered(&stream, &served, &mut draw.reps)
+        }
+        s => panic!("GEN_SOURCE must be grammar or stream, got {s}"),
+    };
+    let (mines, fresh) = (mines_of(&c), env_var("GEN_SHARED") != Some("1"));
+    let at = extra_slices(laws.len(), scope.len(), mines, n, fresh)
+        .map_err(|short| format!("{}: {source} list of {} laws is {short} short of {} loops x {mines} mines x {n} (fresh {fresh})", c.out.display(), laws.len(), scope.len()))?;
+    println!("GEN {}: L {} n {n} source {source}", c.out.display(), laws.len());
+    let laws = std::sync::Arc::new(laws);
+    for (i, cfg) in scope.iter_mut().enumerate() {
+        cfg.extras = laws.clone();
+        cfg.extra_at = at[i * mines..(i + 1) * mines].to_vec();
+    }
+    Ok(())
+}
+
+/// `GEN_COUNTS=legacy` (temporary, the on-path check against `-gen-cost`'s nopad arms): the probe's extras per loop mine.
+/// Today's counts, the generator's list from `sphase × n`, kept when no law of phases 1-3 up to renaming variables and
+/// swapping sides and of none of the mine's own laws' skeletons, then the first n.
+fn legacy_extras(cfg: &mut LoopCfg, laws: &[(Term, Term)]) {
+    let want = match cfg.family.as_str() {
+        "add3" => 60,
+        "sbo3" => 180,
+        "cmp3d" => 350,
+        _ => 0,
+    };
     // up to renaming variables (in order of first use) and swapping sides
-    let key = |l: &str| {
+    let key = |l: &(Term, Term)| {
         let canon = |s: String| {
             let mut seen = vec![];
             map_vars(&s, |c| {
@@ -501,42 +636,17 @@ fn extra_laws(cfg: &LoopCfg, env: &[(String, String)], mine_laws: &str) -> Strin
                 (b'a' + j as u8) as char
             })
         };
-        let (a, b) = l.split_once(" = ").unwrap();
-        canon(format!("{a} = {b}")).min(canon(format!("{b} = {a}")))
+        canon(law_text(l)).min(canon(law_text(&(l.1, l.0))))
     };
-    // every variable written `v`, the smaller side first
-    let skel = |l: &str| {
-        let e = map_vars(l, |_| 'v');
-        let (a, c) = e.split_once(" = ").unwrap();
-        if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
-    };
-    let served: hashbrown::HashSet<String> = (1..=3).flat_map(|q| phase(q).iter().map(|l| key(l)).collect::<Vec<_>>()).collect();
-    let past: hashbrown::HashSet<String> = mine_laws.lines().map(skel).collect();
-    let candidates: Vec<String> = match env_var("MINE_SOURCE").unwrap_or("stream") {
-        "stream" => (0..cfg.stride).map(|i| (cfg.sphase + 3 + i) % cfg.stride).filter(|q| !(1..=3).contains(q)).flat_map(phase).collect(),
-        "grammar" => {
-            // keyed by every variable `grammar_laws` reads
-            type Memo = Vec<((String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>)>;
-            static MEMO: std::sync::Mutex<Memo> = std::sync::Mutex::new(Vec::new());
-            let k = (cfg.family.clone(), get("RULEMINER_SHUFFLE", 0), get("RULEMINER_DEEP3", 0));
-            let laws = {
-                let mut memo = MEMO.lock().unwrap();
-                match memo.iter().find(|(kk, _)| *kk == k) {
-                    Some((_, l)) => l.clone(),
-                    None => {
-                        let t0 = std::time::Instant::now();
-                        let l = std::sync::Arc::new(grammar_laws(&k.0, k.2, k.1));
-                        println!("GEN_LAWS {}: {} laws in {:.1}s", k.0, l.len(), t0.elapsed().as_secs_f64());
-                        memo.push((k, l.clone()));
-                        l
-                    }
-                }
-            };
-            laws.iter().skip(cfg.sphase * want).map(|(a, b)| format!("{} = {}", a.show(), b.show())).collect()
-        }
-        s => panic!("MINE_SOURCE must be stream or grammar, got {s}"),
-    };
-    candidates.into_iter().filter(|l| !served.contains(&key(l)) && !past.contains(&skel(l))).take(want).map(|l| l + "\n").collect()
+    let served: hashbrown::HashSet<String> = (1..=3).flat_map(|q| stream_laws(cfg, q, 0, usize::MAX)).map(|l| key(&l)).collect();
+    let (mut all, mut at) = (vec![], vec![]);
+    for r in 0..mines_of(cfg) {
+        let past: hashbrown::HashSet<String> = stream_laws(cfg, cfg.sphase, cfg.offset + r * cfg.b, cfg.b).iter().map(skeleton).collect();
+        let start = all.len();
+        all.extend(laws.iter().skip(cfg.sphase * want).filter(|l| !served.contains(&key(*l)) && !past.contains(&skeleton(*l))).take(want).copied());
+        at.push(start..all.len());
+    }
+    (cfg.extras, cfg.extra_at) = (std::sync::Arc::new(all), at);
 }
 
 /// One loop; its children share the lemma file `lemmas`, which the caller owns (creates nothing, deletes it when done).
@@ -561,7 +671,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
     common.extend(cfg.env.iter().cloned());
     let with = |extra: &[(&str, String)]| common.iter().cloned().chain(extra.iter().map(|(k, v)| (k.to_string(), v.clone()))).collect::<Vec<_>>();
     let count = || parse_rules(&std::fs::read_to_string(&rules).unwrap()).len();
-    let mine = |name: &str, skip: usize, laws: usize| {
+    let mine = |name: &str, skip: usize, laws: usize, slot: usize| {
         let log = out.join(format!("mine_{name}.log"));
         let mut env = with(&[
             ("RULEMINER_PERM", s(1)),
@@ -572,13 +682,11 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
         env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
-        if cfg.mode == "loop" && env_var("MINE_EXTRA").is_some() {
-            let file = PathBuf::from(&env.last().unwrap().1);
-            let text = std::fs::read_to_string(&file).unwrap();
-            let extra = extra_laws(cfg, &env, &text);
-            println!("MINE_EXTRA {name}: {} laws", extra.lines().count());
+        if let Some(at) = cfg.extra_at.get(slot) {
+            let extra: String = cfg.extras[at.clone()].iter().map(|l| law_text(l) + "\n").collect();
+            println!("GEN_EXTRA {name}: {} laws", at.len());
             std::fs::write(out.join(format!("laws_extra_{name}.txt")), &extra).unwrap();
-            std::fs::write(&file, text + &extra).unwrap();
+            append(Path::new(&env.last().unwrap().1), &extra);
         }
         assert!(worker.run("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
         // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
@@ -621,7 +729,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
     }
     std::fs::write(out.join("m.tsv"), "").unwrap();
     if cfg.mode == "ref" {
-        mine("ref", cfg.offset, cfg.b * cfg.k);
+        mine("ref", cfg.offset, cfg.b * cfg.k, 0);
     }
     let (mut ms, mut exhausted, mut joined, mut reached) = (vec![], 0, 0, 0);
     for r in 0..cfg.k {
@@ -631,7 +739,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
         ms.push(m);
         (exhausted, joined, reached) = (exhausted + ex, joined + j, reached + rc);
         if cfg.mode == "loop" && r + 1 < cfg.k {
-            mine(&r.to_string(), skip, cfg.b);
+            mine(&r.to_string(), skip, cfg.b, r);
         }
     }
     let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted, joined, reached };
@@ -688,28 +796,99 @@ fn sweep() {
         split: 2,
         warm: None,
         check_fast: true,
+        extras: Default::default(),
+        extra_at: vec![],
         env: env.clone(),
     };
     let library = |fam: &str| lib.join(format!("lib_{fam}")).join("rules.txt");
     // `MINES_WARM=<sweep dir>`: each ref mine starts from that sweep's pooled library for its family, where there is one
     // (docs/tier-cycle.md, "Promotion as an iterated sweep": one iteration lowers the best loops 157 to 142, a second adds nothing)
     let mines_warm = |fam: &str| env_var("MINES_WARM").map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
+    let stage_fams = |stage: &'static str| stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
+    let ref_cfg = |fam: &str| {
+        let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
+        LoopCfg { stride, split, b, k: 4, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) }
+    };
+    let srcs = |name: &str, fam: &'static str| -> Vec<&'static str> {
+        match name {
+            "own" => vec![fam],
+            "cold" => vec!["none"],
+            "cross" => ["cmp3d", "add3", "sbo3"].into_iter().filter(|s| *s != fam).collect(),
+            "pooled" => vec!["pooled"],
+            "mixed" => vec!["u3"],
+            _ => panic!("unknown stage {name}"),
+        }
+    };
+    let loop_cfgs = |stage: &str, fam: &str, src: &str| -> Vec<LoopCfg> {
+        let stride = LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1;
+        let warm = match src {
+            "none" => None,
+            "pooled" => Some(out.join(format!("pooled_{fam}")).join("rules.txt")),
+            s => Some(library(s)),
+        };
+        (1..=3).map(|p| LoopCfg { stride, sphase: p, warm: warm.clone(), ..base("loop", out.join(format!("{}_{fam}_{p}_{src}", stage.replace(':', "_"))), fam) }).collect()
+    };
+    // every scope's extras, drawn before the first stage, so a list too short for its slices stops the sweep before any work
+    let mut scopes: Vec<Vec<LoopCfg>> = vec![];
+    for stage in stages.split_whitespace() {
+        let (name, fams) = stage_fams(stage);
+        for fam in fams.split(',') {
+            if name == "mines" {
+                scopes.push(vec![ref_cfg(fam)]);
+            } else {
+                scopes.extend(srcs(name, fam).into_iter().map(|src| loop_cfgs(stage, fam, src)));
+            }
+        }
+    }
+    let legacy = match env_var("GEN_COUNTS") {
+        None => false,
+        Some("legacy") => true,
+        Some(s) => panic!("GEN_COUNTS must be legacy, got {s}"),
+    };
+    // a ref mine's library is served on the loops of every family the sweep runs (each family's phase 1-3 batches once);
+    // a sweep of mines alone runs no loop, so its ref mines filter against their own batches only
+    let mut loops: Vec<LoopCfg> = scopes.iter().flatten().filter(|c| c.mode == "loop").cloned().collect();
+    loops.sort_by(|a, b| (&a.family, a.sphase).cmp(&(&b.family, b.sphase)));
+    loops.dedup_by(|a, b| (&a.family, a.sphase) == (&b.family, b.sphase));
+    let (mut draw, mut short) = (Draw::new(), vec![]);
+    for scope in &mut scopes {
+        if !scope.iter().all(|c| takes_extras(c, ablated("gen"))) {
+            continue;
+        }
+        if legacy {
+            // the probe gave loop mines extras only
+            if scope[0].mode == "loop" {
+                let laws = draw.grammar(&scope[0]);
+                scope.iter_mut().for_each(|c| legacy_extras(c, &laws));
+            }
+            continue;
+        }
+        let also = if scope[0].mode == "ref" { &loops[..] } else { &[] };
+        if let Err(e) = scope_extras(scope, also, &mut draw) {
+            short.push(e);
+        }
+    }
+    assert!(short.is_empty(), "extras lists too short for their slices:\n{}", short.join("\n"));
+    let drawn: hashbrown::HashMap<PathBuf, LoopCfg> = scopes.into_iter().flatten().map(|c| (c.out.clone(), c)).collect();
+    let with_extras = |cfg: LoopCfg| match drawn.get(&cfg.out) {
+        Some(d) => LoopCfg { extras: d.extras.clone(), extra_at: d.extra_at.clone(), ..cfg },
+        None => cfg,
+    };
     // one lemma file for every loop of the sweep: all its processes run this exe, so every statement in it was checked by this build
     let lemmas = out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);
     let worker = Worker::new();
     machine_state("start", &env, &worker, &out);
     for stage in stages.split_whitespace() {
-        let (name, fams) = stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
+        let (name, fams) = stage_fams(stage);
         let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
         std::fs::write(&tsv, "").unwrap();
         if name == "mines" {
             for fam in fams.split(',') {
-                let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
-                let cfg = LoopCfg { stride, split, b, k: 4, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) };
+                let cfg = with_extras(ref_cfg(fam));
                 let t0 = std::time::Instant::now();
                 let s = run_loop(&cfg, &lemmas, &worker);
-                append(&tsv, &format!("{fam}\t{}\t{}\t{}\t{}\t{}\t{}\n", t0.elapsed().as_secs(), s.total, s.rules, s.exhausted, s.joined, s.reached));
+                append(&tsv, &format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", cfg.family, t0.elapsed().as_secs(), s.total, s.rules, s.exhausted, s.joined, s.reached));
             }
             continue;
         }
@@ -736,28 +915,14 @@ fn sweep() {
             }
         }
         for fam in fams.split(',') {
-            let stride = LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1;
-            let srcs: Vec<&str> = match name {
-                "own" => vec![fam],
-                "cold" => vec!["none"],
-                "cross" => ["cmp3d", "add3", "sbo3"].into_iter().filter(|s| *s != fam).collect(),
-                "pooled" => vec!["pooled"],
-                "mixed" => vec!["u3"],
-                _ => panic!("unknown stage {stage}"),
-            };
-            for src in srcs {
-                let warm = match src {
-                    "none" => None,
-                    "pooled" => Some(pooled_for(fam)),
-                    s => Some(library(s)),
-                };
-                for p in 1..=3 {
-                    let dir = out.join(format!("{}_{fam}_{p}_{src}", stage.replace(':', "_")));
-                    let cfg = LoopCfg { stride, sphase: p, warm: warm.clone(), ..base("loop", dir, fam) };
+            for src in srcs(name, fam) {
+                for cfg in loop_cfgs(stage, fam, src) {
+                    let cfg = with_extras(cfg);
+                    let p = cfg.sphase;
                     let t0 = std::time::Instant::now();
                     let s = run_loop(&cfg, &lemmas, &worker);
                     let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
-                    append(&tsv, &format!("{fam}\t{stride}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted, s.joined, s.reached));
+                    append(&tsv, &format!("{fam}\t{}-{p}\tfrom_{src}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", cfg.stride, s.total, ms.join(","), s.rules, t0.elapsed().as_secs(), s.exhausted, s.joined, s.reached));
                 }
             }
         }

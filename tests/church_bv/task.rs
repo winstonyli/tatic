@@ -141,7 +141,7 @@ fn flagged(line: &str) -> Option<&str> {
 /// so a `driver::worker` task never sees another task's configuration or counters.
 #[test]
 fn task_state_is_classified() {
-    const PURE: [(&str, &str, &str); 11] = [
+    const PURE: [(&str, &str, &str); 10] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("rewrite.rs", "SCREENS", "values on fixed pseudo-random inputs, keyed by width and variable count"),
         ("rewrite.rs", "TREE_CANDS", "keyed by width, variable count and nops()"),
@@ -152,7 +152,6 @@ fn task_state_is_classified() {
         ("task.rs", "TASK", "the task machinery"),
         ("task.rs", "TASK_ENV", "the task machinery"),
         ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
-        ("driver.rs", "MEMO", "extra_laws' grammar_laws, keyed by every variable it reads"),
     ];
     assert_eq!(flagged("    static X: std::sync::OnceLock<u8> = std::sync::OnceLock::new();"), Some("X"));
     assert_eq!(flagged("pub static Y: [std::sync::atomic::AtomicU64; 3] = x;"), Some("Y"));
