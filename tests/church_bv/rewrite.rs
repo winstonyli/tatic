@@ -69,31 +69,43 @@ const SHARDS: usize = 16;
 /// "The interner's per-thread cache").
 const OP_CACHE_SLOTS: usize = 1 << 16;
 thread_local! {
-    static OP_CACHE: Box<[std::cell::Cell<Option<&'static Interned>>]> = (0..OP_CACHE_SLOTS).map(|_| std::cell::Cell::new(None)).collect();
+    static OP_CACHE: Box<[std::cell::Cell<u64>]> = (0..OP_CACHE_SLOTS).map(|_| std::cell::Cell::new(0)).collect();
 }
-/// One shard's open-addressed cells (linear probing from the hash's low bits), each null or a node. Cells only go from null
-/// to a node, and a shard's cells are replaced only by a larger copy, so a reader needs no lock: it may miss a node made
-/// since it loaded the cells, and then looks again under the shard's lock. Replaced cells are never freed (a reader may
-/// still hold them); a table that grows by doubling leaves at most its own size behind.
+/// A node's address with a 16-bit `tag` from its hash in the top bits (user addresses are below 2^48), 0 for none: the
+/// interner's cache slots and cells hold these, so a lookup passes over another node without loading it (loads of cold
+/// nodes were most of `Term::op`'s cost, docs/tier-cycle.md, "Profile after the lock-free reads and the memo per
+/// candidate").
+fn tagged(m: &'static Interned, tag: u64) -> u64 {
+    let p = m as *const Interned as u64;
+    assert!(p >> 48 == 0, "a node address past 48 bits");
+    p | tag << 48
+}
+/// The node in `w` when its tag is `tag`.
+fn untag(w: u64, tag: u64) -> Option<&'static Interned> {
+    // SAFETY: a nonzero word is `tagged` from a leaked `Interned` node, never freed
+    (w != 0 && w >> 48 == tag).then(|| unsafe { &*((w & (1 << 48) - 1) as *const Interned) })
+}
+/// One shard's open-addressed cells (linear probing from the hash's low bits), each 0 or a node `tagged` with the hash's
+/// top 16 bits. Cells only go from 0 to a node, and a shard's cells are replaced only by a larger copy, so a reader needs
+/// no lock: it may miss a node made since it loaded the cells, and then looks again under the shard's lock. Replaced cells
+/// are never freed (a reader may still hold them); a table that grows by doubling leaves at most its own size behind.
 struct Cells {
     mask: usize,
-    cells: Box<[std::sync::atomic::AtomicPtr<Interned>]>,
+    cells: Box<[std::sync::atomic::AtomicU64]>,
 }
 impl Cells {
     fn new(len: usize) -> &'static Cells {
-        Box::leak(Box::new(Cells { mask: len - 1, cells: (0..len).map(|_| std::sync::atomic::AtomicPtr::new(std::ptr::null_mut())).collect() }))
+        Box::leak(Box::new(Cells { mask: len - 1, cells: (0..len).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() }))
     }
     /// The node `n` (hash `h`), or the free cell where it would go.
     fn find(&self, h: u64, n: &Node) -> Result<&'static Interned, usize> {
         let mut i = h as usize & self.mask;
         loop {
-            let p = self.cells[i].load(std::sync::atomic::Ordering::Acquire);
-            if p.is_null() {
+            let w = self.cells[i].load(std::sync::atomic::Ordering::Acquire);
+            if w == 0 {
                 return Err(i);
             }
-            // SAFETY: cells hold only leaked `Interned` nodes, which are never freed
-            let m: &'static Interned = unsafe { &*p };
-            if m.node == *n {
+            if let Some(m) = untag(w, h >> 48).filter(|m| m.node == *n) {
                 return Ok(m);
             }
             i = (i + 1) & self.mask;
@@ -121,13 +133,14 @@ impl Term {
         Term(&LEAVES[i])
     }
     /// The one node `Op(o, a, b)`, made on first sight. The shard is bits 40..44 of the hash, apart from the low
-    /// bits its cells probe from; a lookup takes no lock, and only a new node takes the shard's (`Cells`). The thread's `OP_CACHE` slot (bits 44..60) is tried
-    /// first: nodes are never freed, so a cached node stays the term's one node.
+    /// bits its cells probe from; a lookup takes no lock, and only a new node takes the shard's (`Cells`). The thread's
+    /// `OP_CACHE` slot (bits 44..60, its node `tagged` with the low 16) is tried first: nodes are never freed, so a cached
+    /// node stays the term's one node.
     pub fn op(o: usize, a: Term, b: Term) -> Term {
         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
         OP_CACHE.with(|c| {
             let slot = &c[(h >> 44) as usize % OP_CACHE_SLOTS];
-            if let Some(m) = slot.get().filter(|m| m.node == n) {
+            if let Some(m) = untag(slot.get(), h & 0xffff).filter(|m| m.node == n) {
                 return Term(m);
             }
             let shard = (h >> 40) as usize % SHARDS;
@@ -135,7 +148,7 @@ impl Term {
                 Some(Ok(m)) => m,
                 _ => Term::insert(shard, h, n),
             };
-            slot.set(Some(m));
+            slot.set(tagged(m, h & 0xffff));
             Term(m)
         })
     }
@@ -157,11 +170,10 @@ impl Term {
         let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape, sh: sh_op(o, a.0.sh, b.0.sh) }));
         let at = if (*count + 1) * 4 > c.cells.len() * 3 {
             let grown = Cells::new(c.cells.len() * 2);
-            for p in c.cells.iter().map(|p| p.load(Ordering::Relaxed)).filter(|p| !p.is_null()) {
-                // SAFETY: as in `Cells::find`
-                let Node::Op(o, a, b) = unsafe { &*p }.node else { unreachable!("only Op nodes are interned") };
+            for w in c.cells.iter().map(|w| w.load(Ordering::Relaxed)) {
+                let Some(Node::Op(o, a, b)) = untag(w, w >> 48).map(|m| m.node) else { continue };
                 let Err(i) = grown.find(op_hash(o, a, b), &Node::Zero) else { unreachable!("a node is in its cells once") };
-                grown.cells[i].store(p, Ordering::Relaxed);
+                grown.cells[i].store(w, Ordering::Relaxed);
             }
             TABLE[shard].0.store(grown as *const Cells as *mut Cells, Ordering::Release);
             c = grown;
@@ -170,7 +182,7 @@ impl Term {
         } else {
             free
         };
-        c.cells[at].store(m as *const Interned as *mut Interned, Ordering::Release);
+        c.cells[at].store(tagged(m, h >> 48), Ordering::Release);
         *count += 1;
         m
     }
