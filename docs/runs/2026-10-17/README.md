@@ -53,6 +53,8 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 - `scripts/join_prof.sh <exe>` with `patches/join_prof.patch` (`driver::sweep_prof`, a throwaway test setting SALT=6
   SWEEP=mines:cmp3d, since `profile.ps1` passes no environment): a samply profile of that mine, built with
   `CARGO_PROFILE_SWEEP_DEBUG=true`.
+- `scripts/gen_src.sh <exe> <salt>...`: cold sweeps plain and with `MINE_EXTRA` from each `MINE_SOURCE` (stream, grammar),
+  one after another; prints mined-batch M per family.
 - `scripts/op_cache.sh <exe>` with `patches/op_cache.patch` (the probe build: `OP_CACHE_BITS`, 0 for off, and an
   `OPPROBE` line counting `Term::op` calls, new nodes and the join's share): `runs time` over 5 cache sizes.
 
@@ -64,4 +66,5 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 | `2026-10-17-join-prof2` | the same | `join_prof.sh` (`-Command`) | `Term::op` 43% self + 11% shard lock; callers `join_steps` 37%, `subst_pat` 21% |
 | `2026-10-17-op-cache` | c87573b + `op_cache.patch` (`bv_opcache.exe`) | `op_cache.sh`, salt 6 cmp3d, 3 clean rounds | job CPU 25.8 s off, 16.9 s at 2^16 slots; rules equal in all 25 runs |
 | `2026-10-17-op-cache-ab` | `bv_jtime.exe` against the cache (`bv_opc.exe`) | `join_ab.sh`, salts 1-10 | all 2430 stage, rules and law files equal (time columns aside); wall 86 to 77 s summed, mines 35 to 30 s |
+| `2026-10-17-gen-src` | da775e7 + `grammar_laws`, `extra_laws` (`bv_gen.exe`) | `gen_src.sh`, salts 1-10 | mined-batch M plain 120, stream 29, grammar 12; batch 0 1443 in every arm; rules 640 / 1163 / 1889 |
 | `2026-10-17-join-time` | `bv_jtime.exe` | `join_time.sh`, salt 6, 4 reps; then by hand two `runs run` (job CPU, `job.txt`) and two PowerShell runs (`cpu.txt`, process CPU 0: the mine runs in a child) | same rules either way; join searches 84% of the stage's CPU, failed ones 26% |

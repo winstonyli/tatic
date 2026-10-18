@@ -4454,7 +4454,8 @@ Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
 
   Rules equal in all 25 runs; peak job memory about +20 MB. Over salts 1-10 (run `2026-10-17-op-cache-ab`, `join_ab.sh`,
   c87573b's build against it) all 2430 stage, rules and law files are equal but for their time columns, and the arms'
-  times (run side by side, so only rough) sum to 77 s against 86 of wall, mines 30 s against 35. Early cuts of failed searches are still open, now on about 60% of the old search time.
+  times (run side by side, so only rough) sum to 77 s against 86 of wall, mines 30 s against 35. Early cuts of failed
+  searches are still open, now on about 60% of the old search time.
 - **Kernel cost of a joined proof against the machine proof it replaces** (run `2026-10-17-join-proof-cost`,
   `scripts/join_cost.sh`: `proof_cost_split` on every served cmp3d batch of `2026-10-17-join-sticky`'s loops, salts
   1-5, 135 batches, under each loop's final rules, with the join on and with `ABLATE=join`, the faster of 2 alternated
@@ -4466,6 +4467,40 @@ Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
   memo hits, <s>s searching (<s>s in failed searches)` (workers' counts summed, `JoinCost`) and the time spent bounding
   candidates' gains. The sweep's stage files gain columns for the laws joined and the terms the joins reached.
   `proof_cost_split` has a joined row.
+
+*A law generator: a stream-blind wider grammar beats the stream's own unseen laws (2026-10-17).* The extras that cut M in
+"What kind of new law pays most" came from the stream itself (phases no loop serves). A generator must not read the stream.
+`search::grammar_laws` is the first stream-blind source: it takes the family's pool, grows one leaf of a pool term into a
+depth-1 term over the operators the pool uses (`lt` excluded: its result is one bit wide), samples about `GEN_TERMS` such
+terms (default 20000) by a hash of the salt, groups them with the pool by width-4 values (`pool_conjectures`), and keeps the
+pairs with a grown side that use all three variables, shuffled by the salt. Every pool is closed under renaming variables
+(each leaf slot ranges over x, y and z), so no such law is a stream law or shares a stream law's skeleton: by the bucket
+probe's skeletons they are all `novel`, the class that paid least there. Of the first laws `grammar_laws_lie_outside_the_pool`
+prints, most pad a term with a grown leaf equal to a leaf (`sub(y, y)`, `and(0, -1)`, `or(-1, z)`), e.g. `or(x, z) = add(or(z, x), sub(sub(y, y), 0))`.
+
+`driver::extra_laws` is one extras pipeline with two sources: `MINE_EXTRA=<family>:<n>,...` adds n laws to each cold loop's
+mine from `MINE_SOURCE=stream` (the bucket probe's `unseen` arm, rebuilt on the current code) or `grammar` (the loop's slice
+of `grammar_laws` at its phase), and keeps a law only if it is twin-free against the served phases 1-3 and its skeleton is
+not among the mine's own laws (filters the grammar source passes by construction). Counts matched as before: add3 60,
+sbo3 180, cmp3d 350 per mine. Cold sweeps over salts 1-10 (run `2026-10-17-gen-src`, `scripts/gen_src.sh`, sequential,
+CPU 29% at start, RTP off; M is deterministic, the times are not):
+
+| arm | mined-batch M | cmp3d | add3 | sbo3 | per salt | rules | loop seconds |
+|---|---|---|---|---|---|---|---|
+| plain | 120 | 84 | 9 | 27 | 6-24 | 640 | 3 |
+| stream (`unseen`) | 29 | 20 | 3 | 6 | 0-9 | 1163 | 98 |
+| grammar | 12 | 8 | 4 | 0 | 0-4 | 1889 | 506 |
+
+- **The headroom is about a tenth of what it was** (plain 120 against 1169 at 9c601c3; the join and the other changes
+  since were not separated), so the counts are small. Batch 0's M is 1443 in every arm, so the extras act only through
+  mining.
+- **The stream-blind source does better than the stream's own unseen laws** (12 against 29, better or equal on 7 of 10
+  salts), against the skeleton reading's prediction. The bucket result ("shapes from outside the family pay little")
+  holds for stream shapes the family never serves; laws one grown leaf away from the pool are another kind, and they pay.
+- **It costs rules and time:** 63% more rules than the stream arm and about 5 times the mining time (why was not
+  traced). Whether it still wins at matched rule count or matched time is open.
+- Per salt, grammar against stream: better on 6, equal on 1, worse on 3 (salts 1-3, by 1-4); most of the gap is salts 7
+  and 9 (stream 9 and 5, grammar 0 and 0). Ten salts at these counts are a signal, not a margin.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the

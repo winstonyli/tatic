@@ -396,6 +396,82 @@ fn write_laws(family: &str, env: &[(String, String)], path: &Path, var: &str) ->
     (var.to_string(), path.display().to_string())
 }
 
+/// LAW SOURCE PROBE (docs/tier-cycle.md, "A law generator"): with `MINE_EXTRA=<family>:<n>,...`, the n extra laws a loop's
+/// mine takes besides `mine_laws`, one per line. `MINE_SOURCE=stream` (the default) takes them from the stream phases no loop
+/// serves (all but 1-3, phase p + 3 first), as the bucket probe's `unseen` arm did; `grammar` from `grammar_laws` (stream-blind,
+/// `GEN_TERMS` grown terms, the loop's slice at its phase). Either way an extra is kept only if it is no law of the served phases
+/// 1-3 up to renaming variables and swapping sides (twin-free), and its skeleton is not among `mine_laws`' (unseen).
+fn extra_laws(cfg: &LoopCfg, env: &[(String, String)], mine_laws: &str) -> String {
+    let get = |k: &str, d: usize| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| env_or(k, d), |(_, v)| v.parse().unwrap());
+    let spec = env_var("MINE_EXTRA").unwrap();
+    let want: usize = spec.split(',').find_map(|p| p.split_once(':').filter(|(f, _)| *f == cfg.family).map(|(_, n)| n.parse().unwrap())).unwrap_or(0);
+    let phase = |q: usize| -> Vec<String> {
+        let e = |k: &str, d: usize| match k {
+            "RULEMINER_PHASE" => q,
+            "RULEMINER_SKIP" => 0,
+            "RULEMINER_LAWS" => usize::MAX,
+            _ => get(k, d),
+        };
+        family_laws(&cfg.family, &e, 4, family_vars(&cfg.family), 7).into_iter().map(|(n, _, _)| n).collect()
+    };
+    // a variable is a lone lowercase letter in a law's text
+    fn map_vars(s: &str, mut f: impl FnMut(u8) -> char) -> String {
+        let b = s.as_bytes();
+        (0..b.len())
+            .map(|i| {
+                let alone = (i == 0 || !b[i - 1].is_ascii_alphanumeric()) && (i + 1 == b.len() || !b[i + 1].is_ascii_alphanumeric());
+                if alone && b[i].is_ascii_lowercase() { f(b[i]) } else { b[i] as char }
+            })
+            .collect()
+    }
+    // up to renaming variables (in order of first use) and swapping sides
+    let key = |l: &str| {
+        let canon = |s: String| {
+            let mut seen = vec![];
+            map_vars(&s, |c| {
+                let j = seen.iter().position(|&m| m == c).unwrap_or_else(|| {
+                    seen.push(c);
+                    seen.len() - 1
+                });
+                (b'a' + j as u8) as char
+            })
+        };
+        let (a, b) = l.split_once(" = ").unwrap();
+        canon(format!("{a} = {b}")).min(canon(format!("{b} = {a}")))
+    };
+    // every variable written `v`, the smaller side first
+    let skel = |l: &str| {
+        let e = map_vars(l, |_| 'v');
+        let (a, c) = e.split_once(" = ").unwrap();
+        if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
+    };
+    let served: hashbrown::HashSet<String> = (1..=3).flat_map(|q| phase(q).iter().map(|l| key(l)).collect::<Vec<_>>()).collect();
+    let past: hashbrown::HashSet<String> = mine_laws.lines().map(skel).collect();
+    let candidates: Vec<String> = match env_var("MINE_SOURCE").unwrap_or("stream") {
+        "stream" => (0..cfg.stride).map(|i| (cfg.sphase + 3 + i) % cfg.stride).filter(|q| !(1..=3).contains(q)).flat_map(phase).collect(),
+        "grammar" => {
+            // keyed by every variable `grammar_laws` reads
+            type Memo = Vec<((String, usize, usize, usize), std::sync::Arc<Vec<(Term, Term)>>)>;
+            static MEMO: std::sync::Mutex<Memo> = std::sync::Mutex::new(Vec::new());
+            let k = (cfg.family.clone(), get("RULEMINER_SHUFFLE", 0), env_or("GEN_TERMS", 20000), get("RULEMINER_DEEP3", 0));
+            let laws = {
+                let mut memo = MEMO.lock().unwrap();
+                match memo.iter().find(|(kk, _)| *kk == k) {
+                    Some((_, l)) => l.clone(),
+                    None => {
+                        let l = std::sync::Arc::new(grammar_laws(&k.0, &get, k.2, k.1));
+                        memo.push((k, l.clone()));
+                        l
+                    }
+                }
+            };
+            laws.iter().skip(cfg.sphase * want).map(|(a, b)| format!("{} = {}", a.show(), b.show())).collect()
+        }
+        s => panic!("MINE_SOURCE must be stream or grammar, got {s}"),
+    };
+    candidates.into_iter().filter(|l| !served.contains(&key(l)) && !past.contains(&skel(l))).take(want).map(|l| l + "\n").collect()
+}
+
 /// One loop; its children share the lemma file `lemmas`, which the caller owns (creates nothing, deletes it when done).
 fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
     let (out, rules) = (&cfg.out, cfg.out.join("rules.txt"));
@@ -429,6 +505,14 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
         env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
+        if cfg.mode == "loop" && env_var("MINE_EXTRA").is_some() {
+            let file = PathBuf::from(&env.last().unwrap().1);
+            let text = std::fs::read_to_string(&file).unwrap();
+            let extra = extra_laws(cfg, &env, &text);
+            println!("MINE_EXTRA {name}: {} laws", extra.lines().count());
+            std::fs::write(out.join(format!("laws_extra_{name}.txt")), &extra).unwrap();
+            std::fs::write(&file, text + &extra).unwrap();
+        }
         assert!(worker.run("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
         // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
         let text = std::fs::read_to_string(&log).unwrap();

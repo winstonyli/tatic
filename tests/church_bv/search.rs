@@ -1802,6 +1802,109 @@ pub fn pools_have_no_repeated_terms() {
     }
 }
 
+/// A stream-blind law source for a three-variable family (the law-generator probe, docs/tier-cycle.md "A law generator"):
+/// the family's pool with one leaf of a pool term grown into a depth-1 term over the pool's own operators (a "wider
+/// grammar"), about `terms` of those sampled by a hash of `salt`, grouped with the pool by their width-4 values
+/// (`pool_conjectures`). Its laws are the pairs with a grown side that use all three variables, shuffled by `salt`. Pools are
+/// closed under renaming variables, so no law here is a stream law or shares a stream law's skeleton.
+pub fn grammar_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, terms: usize, salt: usize) -> Vec<(Term, Term)> {
+    let Some(pool) = pool3(family, env) else { return vec![] };
+    let in_pool: HashSet<Term> = pool.iter().cloned().collect();
+    // the operators the pool uses below a comparison (an `lt` result is one bit wide and is never an argument)
+    fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
+        if let Node::Op(o, a, b) = *t.node() {
+            if o != LT {
+                out.insert(o);
+            }
+            ops_of(a, out);
+            ops_of(b, out);
+        }
+    }
+    let mut ops = std::collections::BTreeSet::new();
+    pool.iter().for_each(|t| ops_of(*t, &mut ops));
+    let leaves = leaves3();
+    let grow: Vec<Term> = ops
+        .iter()
+        .flat_map(|&o| if o == SHL1 { leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
+        .collect();
+    // the leaf positions of a term (`shl1`'s second argument is not one), and the term with leaf `k` replaced by `g`
+    fn leaf_count(t: Term) -> usize {
+        match *t.node() {
+            Node::Op(SHL1, a, _) => leaf_count(a),
+            Node::Op(_, a, b) => leaf_count(a) + leaf_count(b),
+            _ => 1,
+        }
+    }
+    fn replaced(t: Term, k: &mut Option<usize>, g: Term) -> Term {
+        match *t.node() {
+            Node::Op(SHL1, a, b) => Term::op(SHL1, replaced(a, k, g), b),
+            Node::Op(o, a, b) => {
+                let a = replaced(a, k, g);
+                Term::op(o, a, replaced(b, k, g))
+            }
+            _ => match *k {
+                Some(0) => {
+                    *k = None;
+                    g
+                }
+                Some(i) => {
+                    *k = Some(i - 1);
+                    t
+                }
+                None => t,
+            },
+        }
+    }
+    let total: usize = pool.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
+    let mix = |mut z: u64| {
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z ^ (z >> 31)
+    };
+    let (mut sample, mut seen) = (vec![], HashSet::new());
+    let mut i = 0u64;
+    for t in &pool {
+        for p in 0..leaf_count(*t) {
+            for g in &grow {
+                i += 1;
+                if (mix(i ^ mix(salt as u64)) % total as u64) < terms as u64 {
+                    let w = replaced(*t, &mut Some(p), *g);
+                    if !in_pool.contains(&w) && seen.insert(w) {
+                        sample.push(w);
+                    }
+                }
+            }
+        }
+    }
+    // the pool first, so a group's first member (each law's left side) is a pool term where the group has one
+    let laws = pool_conjectures(pool.iter().cloned().chain(sample), 4, 3, 0)
+        .into_iter()
+        .filter(|(a, b)| !in_pool.contains(a) || !in_pool.contains(b))
+        .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+        .collect();
+    shuffled(laws, salt)
+}
+
+/// The grammar source's laws hold at width 4, each has a side outside the family's pool (so none is a stream law or shares
+/// a stream law's skeleton), uses all three variables, and the same salt gives the same laws.
+#[test]
+pub fn grammar_laws_lie_outside_the_pool() {
+    let env = |k: &str, d: usize| if k == "RULEMINER_DEEP3" { 1 } else { d };
+    for f in ["add3", "sbo3", "cmp3d"] {
+        let pool: HashSet<Term> = pool3(f, &env).unwrap().into_iter().collect();
+        let laws = grammar_laws(f, &env, 3000, 1);
+        assert!(laws.len() > 100, "{f}: {} laws", laws.len());
+        assert!(laws == grammar_laws(f, &env, 3000, 1), "{f}: same salt, other laws");
+        println!("{f}: {} laws, e.g. {}", laws.len(), laws.iter().take(3).map(|(a, b)| format!("{} = {}", a.show(), b.show())).collect::<Vec<_>>().join("; "));
+        let mut memo = ValueMemo::exhaustive(4, 3);
+        for (a, b) in &laws {
+            assert!(!pool.contains(a) || !pool.contains(b), "{f}: {} = {} is a stream law", a.show(), b.show());
+            assert!((0..3).all(|v| a.has_var(v) || b.has_var(v)), "{f}: {} = {}", a.show(), b.show());
+            assert_eq!(memo.values(a).to_vec(), memo.values(b).to_vec(), "{f}: {} = {}", a.show(), b.show());
+        }
+    }
+}
+
 /// Variables per law of a family: the three-variable families against the two-variable rest.
 pub fn family_vars(family: &str) -> usize {
     if THREE_VAR_FAMILIES.contains(&family) { 3 } else { 2 }
