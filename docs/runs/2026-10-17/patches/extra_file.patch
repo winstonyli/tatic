@@ -1,0 +1,17 @@
+diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
+index 9970e19..7b6b173 100644
+--- a/tests/church_bv/driver.rs
++++ b/tests/church_bv/driver.rs
+@@ -476,6 +476,12 @@ fn extra_laws(cfg: &LoopCfg, env: &[(String, String)], mine_laws: &str) -> Strin
+             };
+             laws.iter().skip(cfg.sphase * want).map(|(a, b)| format!("{} = {}", a.show(), b.show())).collect()
+         }
++        // PROBE (throwaway): the extras from `MINE_EXTRA_DIR/<family>_<phase>.txt`
++        "file" => std::fs::read_to_string(PathBuf::from(env_var("MINE_EXTRA_DIR").unwrap()).join(format!("{}_{}.txt", cfg.family, cfg.sphase)))
++            .unwrap()
++            .lines()
++            .map(String::from)
++            .collect(),
+         s => panic!("MINE_SOURCE must be stream or grammar, got {s}"),
+     };
+     candidates.into_iter().filter(|l| !served.contains(&key(l)) && !past.contains(&skel(l))).take(want).map(|l| l + "\n").collect()

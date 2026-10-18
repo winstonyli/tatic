@@ -4513,8 +4513,7 @@ Loop seconds split by run (salts 1-10 + 11-20); the salts 1-10 of the padding-on
   salts 1-10, 11 against 16 on 11-20) is within the noise.
 - **No padding gives the lowest M (9 on salts 1-10, not run on 11-20) at 14 times the stream's time,** with the miner
   keeping 2483 rules (why so many was not traced). So per law the non-padding laws pay at least as much; padding is
-  chosen for cost. Why padding laws pay at all (each restates a pool term with a leaf written as a term of equal value)
-  was not traced.
+  chosen for cost. Why padding laws pay: see the next note (much of it is twins of served laws in disguise).
 - **Fewer laws lose part of the gain:** half counts still cut plain's 120 to 33 (at 2.3 times stream's time) but do no
   better than stream; a quarter gives 64.
 - Generating costs 0.1-0.6 s per family (`GEN_LAWS` lines), against loop seconds in the hundreds, so nearly all the extra
@@ -4522,6 +4521,44 @@ Loop seconds split by run (salts 1-10 + 11-20); the salts 1-10 of the padding-on
   of a run (1443 on salts 1-10, 1408 on 11-20), so the extras act only through mining. The headroom is about a tenth of
   what it was (plain 120 on salts 1-10 against 1169 at 9c601c3; the join and the other changes since were not
   separated), so the counts are small: a tie is the reading, not a ranking among the grammar arms.
+
+*Why padding laws pay: about a quarter are served laws in disguise (2026-10-17).* A padding law is a pool term set equal
+to another pool term with one leaf written as a term of equal value, so stripping the padding (each node over two
+leaves whose width-4 value equals a leaf becomes that leaf) gives a law between two pool terms. The twin-free filter
+compares text up to renaming, so it cannot see through the padding. Stripped and keyed as the filter keys laws
+(`scripts/pad_strip.py`, over the padding arms' extras), per 10 salts:
+
+| family | extras | twin of a served law | of which the loop's own later batches | strips to `a = a` | other |
+|---|---|---|---|---|---|
+| cmp3d | 10500 | 2576 (25%) | 576 | 1678 | 6246 |
+| add3 | 1800 | 656 (36%) | 98 | 292 | 852 |
+| sbo3 | 5400 | 1530 (28%) | 302 | 1272 | 2598 |
+
+(Salts 1-10 from `-gen-cost`; salts 11-20 from `-gen-salts` give the same shares within 1-2 points.) "Served" is any
+batch of a phase 1-3 loop of the family, the set the filter guards; the rest of the twins are the loop's own mined batch 0
+and other loops' batches. The mined rules carry no padding: no rule of the padding, plain or stream arms has a same-leaf
+(`sub(x, x)`) or identity (`add(x, 0)`, `and(x, -1)`) subterm.
+
+The causal test (run `2026-10-17-gen-twin`, `scripts/gen_twin.sh` with the throwaway `patches/extra_file.patch`,
+`MINE_SOURCE=file` reading extras from files written by `scripts/pad_files.py`; salts 1-10, sequential, CPU 26% at start,
+RTP off):
+
+| arm | mined-batch M | cmp3d | add3 | sbo3 | per salt | rules | loop seconds |
+|---|---|---|---|---|---|---|---|
+| padding laws, replayed from the files | 16 | 16 | 0 | 0 | 0-5 | 1220 | 142 |
+| the stripped twins dropped | 30 | 23 | 0 | 7 | 0-9 | 1028 | 85 |
+| as many other laws dropped (fixed hash) | 14 | 10 | 3 | 1 | 0-4 | 1052 | 73 |
+| stream (`unseen`, `-gen-src`) | 29 | 20 | 3 | 6 | 0-9 | 1163 | 98 |
+
+- **The replay is exact:** all 90 rule files equal the `-gen-cost` padding arm's, so the file source changes nothing.
+- **The twins carry the padding arm's edge over the stream.** Dropping them takes M 16 to 30; dropping as many
+  other laws leaves 14 (twins dropped is worse on 4 salts, better on 1, equal on 5 against that control). Untwinned, the
+  padding laws match the stream's unseen laws (30 against 29) with 12% fewer rules.
+- So the earlier reading "a stream-blind grammar matches the stream" holds only after the same twin filter is applied
+  to both, through the padding. A generator proposes laws from the family's own pool, which is the stream's universe, so
+  it will propose served laws; a fair measurement must filter them up to equal-valued subterms, not up to text.
+- Not tested: whether the mixed grammar's and the non-padding laws' gains also hide twins (the non-padding laws strip to
+  nothing, but a grown term could equal a deeper pool subterm, which this strip does not see).
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
