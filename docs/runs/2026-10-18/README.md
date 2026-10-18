@@ -51,6 +51,9 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   loop's rules agree.
 - `scripts/interner_ab.sh <exe A> <exe B> <salt>`: `SWEEP=cold:cmp3d` at 1 lane in the order A B B A, wall seconds, and
   which sweeps' files agree with A's first. A was `bv_lazy2`, B `bv_lockfree` (a49d1af with the lock-free interner).
+- `scripts/arms_ab.sh <salt> <exe>...`: the same for any number of exes, in order and then reversed, with a memory
+  watchdog. `bv_base` was 31e0903, `bv_sb` 8de04c1 (the size bound), `bv_both` 2de4854 (and the interner's tags); the
+  rows file adds each sweep's `RULEMINER join` lines.
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
   loop that differed between `-lanes-check`'s sweeps.
 
@@ -69,6 +72,7 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-lazy-prof` | `bv_lprof` | `lazy_prof.sh` | join 82.7%; `Term::op` 28% (mutex 8.5%), `match_pat` 19.4%, `subst_sig` 12.2% |
 | `2026-10-18-match-count` | `bv_mprobe` | `match_count.sh`, salt 1 | matcher fails 60%, 59% of matches over the cap; 37% of step terms expanded; `Term::op` 26.2% table hits, 0.35% new |
 | `2026-10-18-pcand-prof` | `bv_lprof2` | `lazy_prof.sh` | join 85.3%; `Term::op` 22.2% (no mutex; cold node loads), `match_pat` 21.1%, `place` 17.2%, `subst_sig` 14.0% |
+| `2026-10-18-sbound-tag-ab` | `bv_base`, `bv_sb`, `bv_both` | `arms_ab.sh 1` | same files; wall 198/200/198 s; join seconds 699/670/639 (contended) |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |
 | `2026-10-18-join-paths` | `bv_jpaths` | `join_paths.sh`, salt 1 | met paths: at most 4 uphill steps in 99.8%; deep sides mostly flat steps |

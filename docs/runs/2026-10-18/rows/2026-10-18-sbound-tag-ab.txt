@@ -1,0 +1,56 @@
+== Winston
+RULEMINER join: 430007 searches reaching 107499537 terms, 390506 met, 42854 memo hits, 109.6s searching (39.5s in failed searches)
+RULEMINER join: 27 searches reaching 1762 terms, 27 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 466619 searches reaching 124399445 terms, 422592 met, 65870 memo hits, 130.2s searching (47.1s in failed searches)
+RULEMINER join: 26 searches reaching 1579 terms, 26 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 334668 searches reaching 99409677 terms, 290830 met, 28513 memo hits, 103.7s searching (45.9s in failed searches)
+RULEMINER join: 420 searches reaching 136451 terms, 335 met, 104 memo hits, 0.2s searching (0.1s in failed searches)
+== Winston
+RULEMINER join: 430007 searches reaching 107499537 terms, 390506 met, 42854 memo hits, 98.8s searching (36.2s in failed searches)
+RULEMINER join: 27 searches reaching 1762 terms, 27 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 466619 searches reaching 124399445 terms, 422592 met, 65870 memo hits, 120.8s searching (45.1s in failed searches)
+RULEMINER join: 26 searches reaching 1579 terms, 26 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 334668 searches reaching 99409677 terms, 290830 met, 28513 memo hits, 110.4s searching (48.7s in failed searches)
+RULEMINER join: 420 searches reaching 136451 terms, 335 met, 104 memo hits, 0.2s searching (0.1s in failed searches)
+== Winston
+RULEMINER join: 430007 searches reaching 107499537 terms, 390506 met, 42854 memo hits, 109.7s searching (37.0s in failed searches)
+RULEMINER join: 27 searches reaching 1762 terms, 27 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 466619 searches reaching 124399445 terms, 422592 met, 65870 memo hits, 124.7s searching (44.7s in failed searches)
+RULEMINER join: 26 searches reaching 1579 terms, 26 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 334668 searches reaching 99409677 terms, 290830 met, 28513 memo hits, 97.1s searching (42.1s in failed searches)
+RULEMINER join: 420 searches reaching 136451 terms, 335 met, 104 memo hits, 0.2s searching (0.1s in failed searches)
+== Winston
+RULEMINER join: 430007 searches reaching 107499537 terms, 390506 met, 42854 memo hits, 97.1s searching (35.4s in failed searches)
+RULEMINER join: 27 searches reaching 1762 terms, 27 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 466619 searches reaching 124399445 terms, 422592 met, 65870 memo hits, 116.0s searching (40.8s in failed searches)
+RULEMINER join: 26 searches reaching 1579 terms, 26 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 334668 searches reaching 99409677 terms, 290830 met, 28513 memo hits, 93.7s searching (40.9s in failed searches)
+RULEMINER join: 420 searches reaching 136451 terms, 335 met, 104 memo hits, 0.2s searching (0.1s in failed searches)
+== Winston
+RULEMINER join: 430007 searches reaching 107499537 terms, 390506 met, 42854 memo hits, 106.1s searching (37.2s in failed searches)
+RULEMINER join: 27 searches reaching 1762 terms, 27 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 466619 searches reaching 124399445 terms, 422592 met, 65870 memo hits, 130.0s searching (47.0s in failed searches)
+RULEMINER join: 26 searches reaching 1579 terms, 26 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 334668 searches reaching 99409677 terms, 290830 met, 28513 memo hits, 103.1s searching (44.4s in failed searches)
+RULEMINER join: 420 searches reaching 136451 terms, 335 met, 104 memo hits, 0.2s searching (0.1s in failed searches)
+== Winston
+RULEMINER join: 430007 searches reaching 107499537 terms, 390506 met, 42854 memo hits, 115.4s searching (41.6s in failed searches)
+RULEMINER join: 27 searches reaching 1762 terms, 27 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 466619 searches reaching 124399445 terms, 422592 met, 65870 memo hits, 134.3s searching (51.1s in failed searches)
+RULEMINER join: 26 searches reaching 1579 terms, 26 met, 0 memo hits, 0.0s searching (0.0s in failed searches)
+RULEMINER join: 334668 searches reaching 99409677 terms, 290830 met, 28513 memo hits, 105.8s searching (47.6s in failed searches)
+RULEMINER join: 420 searches reaching 136451 terms, 335 met, 104 memo hits, 0.2s searching (0.1s in failed searches)
+1 bv_base: exit 0 wall 99 s
+2 bv_sb: exit 0 wall 101 s
+3 bv_both: exit 0 wall 103 s
+4 bv_both: exit 0 wall 95 s
+5 bv_sb: exit 0 wall 99 s
+6 bv_base: exit 0 wall 99 s
+6_bv_base vs 1_bv_base: same 
+total bv_base: wall 198 s
+2_bv_sb vs 1_bv_base: same 
+5_bv_sb vs 1_bv_base: same 
+total bv_sb: wall 200 s
+3_bv_both vs 1_bv_base: same 
+4_bv_both vs 1_bv_base: same 
+total bv_both: wall 198 s

@@ -4799,6 +4799,17 @@ is expanded (up to 63% of `place`, about 11%, but `seen` must then compare unbui
 cell and cache pointers so a mismatch needs no node load (part of the 10.3% of node compares); a cheaper `sh_op` (one
 finaliser, not two; about 2%).
 
+*The size bound and the interner's tags, built (2026-10-18, run `2026-10-18-sbound-tag-ab`, script
+`scripts/arms_ab.sh`).* `JoinEq::min_size` (8de04c1; test `join_min_size_is_a_lower_bound`) skips a rule unmatched in
+`join_walk` when its bound is over the cap; the interner's cache slots and cells hold node addresses tagged with 16 bits
+of the hash (2de4854), so a lookup passes over other nodes without loading them. Salt 1 cold:cmp3d at 1 lane, in the
+order base, bound, both, both, bound, base (CPU 30% at start and 79% when sampled mid-run: other sessions, so contended;
+RTP off): every sweep gives the same files; wall 198, 200 and 198 s per arm (two sweeps each), so no change; the
+miners' summed join seconds 699, 670 and 639 s, so 4% less with the bound and 9% with both, against the profile's
+estimate of 10-15% for the bound alone. The wall does not follow the join's seconds: at about 3.4 cores searching
+during a 99 s sweep, the wall is likely held by the sweep's less parallel parts (not measured). Neither change is reverted: both are exact
+and small, and the join's CPU is what lanes and bigger sweeps pay. Not measured: job CPU on a quiet machine.
+
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three
