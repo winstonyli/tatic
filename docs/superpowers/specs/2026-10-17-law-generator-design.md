@@ -4,20 +4,25 @@ status: draft
 
 # The law generator: a stream-blind source of extra laws for every mine
 
-Date: 2026-10-17. Evidence: `docs/tier-cycle.md`, "A law generator" (runs `2026-10-17-gen-src`, `-gen-cost`, `-gen-salts`)
-and "What kind of new law pays most". Roadmap: v0.3 ("Can the kernel itself propose the laws that pay?").
+Date: 2026-10-17. Evidence: `docs/tier-cycle.md`, "A law generator" and "Why padding laws pay" (runs `2026-10-17-gen-src`,
+`-gen-cost`, `-gen-salts`, `-gen-twin`), and "What kind of new law pays most". Roadmap: v0.3 ("Can the kernel itself
+propose the laws that pay?").
 
 ## Why
 
 Extra laws given to a mine cut later machine proofs. Until now the extras that paid came from the test stream itself.
-`search::grammar_laws` needs no stream. It grows one leaf of a pool term and keeps the value-equal pairs. On cold sweeps
-over salts 1-20 it ties with the stream's own unseen laws: mined-batch M 28 against 44, against 221 with no extras.
-Most of that gap is salts 7 and 9; without them the totals are 28 against 30. Its padding-only slice reaches M 27 at 7%
-more rules and 1.7-1.9 times the stream arm's loop time. Fewer laws lose part of the gain: at half the counts M is 33, at
-a quarter 64.
+`search::grammar_laws` needs no stream: it grows one leaf of a pool term and keeps the value-equal pairs. On cold sweeps
+over salts 1-20 it ties with the stream's own unseen laws (mined-batch M 28 against 44, plain 221; 28 against 30 without
+salts 7 and 9). Its padding-only slice gets 27 at about the stream arm's cost.
 
-This passes step 1's test ("does the gain hold at matched cost?") as a tie, not a win. The padding slice costs about
-what the stream arm costs and gets the same M without reading the stream.
+But padding hides served laws. A padding law sets a pool term equal to another pool term with one leaf written as a term
+of equal value. Stripped of the padding, about a quarter of them are twins of laws the loops serve, which the text-level
+twin filter cannot see. Dropping those twins takes the padding arm on salts 1-10 from M 16 to 30, against 14 for
+dropping as many other laws. That is a tie with the stream's 29, at 12% fewer rules.
+
+So with the same twin filter on both, the stream-blind generator matches the stream's unseen laws. That is step 1's
+answer ("does the gain hold at matched cost?"): a tie, without reading the stream. A fair stage must filter twins up to
+equal-valued subterms.
 
 Today the source is a probe (`driver::extra_laws`, doc comment "LAW SOURCE PROBE"):
 - it is gated on three env vars (`MINE_EXTRA`, `MINE_SOURCE`, `GEN_PAD`);
@@ -25,6 +30,7 @@ Today the source is a probe (`driver::extra_laws`, doc comment "LAW SOURCE PROBE
 - it runs in every loop-mode mine (`cfg.mode == "loop"`), which covers the cold, own, cross, pooled and mixed stages, but it
   was measured on the cold stage only;
 - it memoizes in a process-wide static (`MEMO`, listed in `task::PURE`);
+- it reads `RULEMINER_DEEP3` with default 0 rather than the sweep's `deep3`;
 - it skips `sphase × n` laws, then filters, then takes n, so it returns fewer than n without a word if the list runs out.
 
 This spec makes it a designed stage.
@@ -42,141 +48,156 @@ Every mine that adds rules takes generator laws, appended to its law file. That 
 A mine with no rule rounds (`rounds == 0`, the pooled stage's preference mine) takes none. That is one general rule:
 extras exist to be mined into rules.
 
-- **Filters only where they can bite:** every generator law has a side outside the pool. Pools are closed under
-  renaming, so no generator law twins a stream law or shares the skeleton of one, including the mine's own laws. The
-  twin-free and unseen-skeleton filters therefore stay on the stream control arm only, unchanged (phases 1-3). The
-  generator path takes its slice as is, and a test checks the argument (Testing).
-- **Switch:** on by default, off with `ABLATE=gen`, the same pattern as `ABLATE=join` (read with `rewrite::ablated`). When
-  off, sweeps reproduce today's plain numbers exactly. The check diffs the `ABLATE=gen` arm against the `plain_*` folders
-  of `2026-10-17-gen-salts` (time columns aside). Being on by default moves every baseline: notes after the change say
-  which side of `ABLATE=gen` their numbers are on. Children also receive `ABLATE=gen`; they ignore it.
-- **Source:** padding-only grammar laws (`grammar_laws(.., pad: Some(true))`), chosen for cost. The non-padding laws pay
-  at least as much per law but cost 14 times the stream arm's time. Nopad and the mixed grammar go from the pipeline (see
-  Removed).
-- **Stream source:** kept as `GEN_SOURCE=stream`, only as the control arm while v0.3 is open. It reads the test stream,
-  so it is no generator. It takes the generator's n per family (its own list is far longer, so the same f would not match
-counts), drawn by the same slice rule. Delete it when v0.3 is tagged or answered against,
-  whichever comes first.
+- **One filter, through equal-valued subterms:** a generator law is kept only if, once normalized, it is no twin (up to
+  renaming variables and swapping sides) of a law its scope serves (§3).
+  - *Normalized:* bottom-up, every node over two leaves whose exhaustive width-4 value (`ValueMemo::exhaustive(4, 3)`)
+    equals a leaf's becomes that leaf.
+  - *Served laws:* every batch of every loop in the scope. These include each mine's own laws, since a loop mines the
+    batch it just served.
+  - *Scope-level:* the filter depends on the scope, not the mine, so the filtered list and its length L are one per
+    scope.
+  - *Trivial after normalization:* a law whose sides normalize to the same term (cmp3d: 1678 of 10500) is kept, as the
+    probe's `untwin` arm kept it. Whether those pay is untested.
 
-### 2. One count rule, tied to the generator's own output
+  The per-mine unseen-skeleton filter does not apply to the generator. Before normalization, no generator law shares a
+  pool skeleton: every leaf slot of the add3, sbo3 and cmp3 pools ranges over all of `leaves3()`, so a term with a pool
+  term's skeleton is in the pool. After normalization, the twin filter is the check that matters. The skeleton filter
+  stays the stream control arm's definition. This is the probe's `untwin` arm.
+- **What the normalization does not see:** a grown term equal in value to a deeper pool subterm. The probe left that
+  untested, so step 5 measures it before the stage is called fair beyond padding.
+- **Switch:** on by default, off with `ABLATE=gen`, the same pattern as `ABLATE=join` (read with `rewrite::ablated`).
+  - Being on by default moves every baseline: notes after the change say which side of `ABLATE=gen` their numbers are on.
+  - Children also receive `ABLATE=gen`; they ignore it.
+- **Source:** padding-only grammar laws (`grammar_laws(.., pad: Some(true))`), chosen for cost. The non-padding laws
+  have the lowest measured M (9 on salts 1-10), but at 14 times the stream arm's time, and their M is not yet
+  twin-checked. The mixed grammar goes too (see Removed).
+- **Stream source:** kept as `GEN_SOURCE=stream`, only as the control arm while v0.3 is open. It reads the test stream,
+  so it is no generator.
+  - It keeps its own filters (text twin-free against phases 1-3, unseen skeleton), then takes the generator's n per
+    family by the same slice rule, sliced after its filters.
+  - Delete it when v0.3 is tagged or answered against, whichever comes first.
+
+### 2. One count rule, tied to the filtered list
 
 The per-family list was an artifact of matching the bucket probe. It is replaced by one fraction `f`: a mine takes
-`n = ⌊f × L⌋` extras, where L is the length of the family's generator list (one number per family and sweep; no
-filter shortens it, §1). A ratio to the mine's own
-law count was considered and rejected. At any one ratio it would give cmp3d (whose extras carry the gain) too few or
-add3 and sbo3 (left at M 0-1) many laws they only pay time for.
+`n = ⌊f × L⌋` extras, where L is the scope's filtered list length (§1). A ratio to the mine's own law count was
+considered and rejected. At any one ratio it would give cmp3d (whose extras carry the gain) too few laws, or add3 and
+sbo3 (left at M 0-1) many laws they only pay time for.
 
-Padding laws at 20000 terms, from the `GEN_LAWS` lines of `2026-10-17-gen-cost/pad_*`: add3 1546-1645, sbo3 1504-1614,
-cmp3d 2520-2662. Today's counts are f ≈ 0.04 for add3, 0.12 for sbo3 and 0.13 for cmp3d. The rule therefore gives add3
-about three times its tested count; the f sweep's time column shows whether that costs.
+Padding laws at 20000 terms (`GEN_LAWS` lines of the `pad_*` arms): add3 1546-1645, sbo3 1504-1660, cmp3d 2520-2662.
+The twin filter keeps about 64-76% of them. That gives L of roughly add3 1050, sbo3 1150, cmp3d 1950, and puts today's
+counts at f ≈ 0.06, 0.16 and 0.18.
 
 `f` is set by measurement before the default is fixed:
-- cold sweeps over salts 1-20 at f ∈ {0.06, 0.12} with fresh slices (§3), and f = 0.12 and 0.25 with the shared slice;
-- per arm, the table gives M per family, rules, loop seconds and the salts better, equal or worse than the f = 0.12
-  shared arm (a paired count: totals of about 28 move by 3 on one salt);
-- the best arm is the one with the lowest total mined-batch M. The default is the cheapest arm (by loop seconds) whose
-  paired count against the best arm has no more worse salts than better ones.
+- cold sweeps over salts 1-20, fresh slices (§3) at f ∈ {0.08, 0.16}, shared slices at f ∈ {0.16, 0.30};
+- per arm, the table gives M per family, rules and loop seconds;
+- the best arm has the lowest total mined-batch M. Each other arm gets a paired count against the best (salts better,
+  equal, worse), since totals of about 30 move by 3 on one salt;
+- the default is the cheapest arm (by loop seconds) with no more worse salts than better ones against the best.
+
+The arms are not fully crossed: fresh at 0.30 does not fit (§3). So "variety, not count" is measured at f = 0.16 only.
 
 ### 3. Slices: drawn without replacement, never short
 
 Today both mines of a cold loop get the same extras: the slice depends on the loop's phase only, so `laws_extra_0.txt`
-equals `laws_extra_1.txt`, checked on salt 1, cmp3d. The designed stage draws slices from the generator list. The scope
-is one (stage, source, family): its 3 loops (phases 1-3) of 2 mines each. Different scopes are independent runs and may
-reuse laws. `sweep` hands each loop its first slice index in a new `LoopCfg` field `slice`; a ref mine is a scope of one
-mine.
-- **fresh:** the scope's mines take consecutive n-law slices, in the order (phase, mine). This needs `6n ≤ L`: f ≤ 1/6;
+equals `laws_extra_1.txt`, checked on salt 1, cmp3d.
+
+The designed stage draws slices from the scope's filtered list.
+- **Scope:** one (stage, source, family), that is, its 3 loops (phases 1-3) of 2 mines each, or one ref mine. Different
+  scopes are independent runs and may reuse laws.
+- **Hand-off:** `sweep` filters once per scope and hands each loop its list and its first slice index, in two new
+  `LoopCfg` fields.
+- **fresh:** the scope's mines take consecutive n-law slices, in the order (phase, mine). This needs `6n ≤ L`: f ≤ 1/6.
 - **shared:** both mines of a loop take the loop's one slice. This needs `3n ≤ L`: f ≤ 1/3.
 
-A config whose slices do not fit panics with the counts, rather than taking fewer laws. Whether fresh slices beat the
-shared slice is measured in the f sweep. If fresh slices lose, the shared slice stays and the doc says so. Every mine gets
-n laws in both arms, so at one f the comparison is about variety, not count.
+A config whose slices do not fit panics with the counts, rather than taking fewer laws. Every mine gets n laws in both
+arms. If fresh slices lose, the shared slice stays, and the doc says so.
 
-### 4. Generated once per sweep, passed in
+### 4. Generated once per scope family, passed in
 
-`grammar_laws` runs once per family in `driver::sweep`, since salt and deep3 are fixed per sweep. Its laws travel to
-`run_loop` through `LoopCfg`, as an `Option<Arc<Vec<(Term, Term)>>>` field next to `warm`. `LoopCfg::from_env` (the
-`loop_stream` test) fills it by calling `grammar_laws` itself.
+`grammar_laws` runs once per family in `driver::sweep`, with the sweep's own salt and `deep3` (not the env default).
+`LoopCfg::from_env` (the `loop_stream` test) fills the new fields by calling the same code itself.
 
 The static `MEMO`, its `PURE` entry (11 entries to 10) and the `GEN_TERMS` env var go. The term budget becomes a
-constant beside `grammar_laws` (20000, the value every run used). Generation takes 0.1-0.6 s per family.
+constant beside `grammar_laws` (20000, the value every run used). Generation took 0.1-0.6 s per family on the loop
+families. The mix3 pool (about 27000 terms, more than the sample) has never been generated, so its L, its time and its
+coverage are recorded before step 4.
 
 ### 5. Removed
 
 - **`MINE_EXTRA` and `MINE_SOURCE`:** replaced by `ABLATE=gen`, `GEN_SOURCE=stream` (control only) and the f constant.
 - **`GEN_PAD` and the `pad` parameter of `grammar_laws`:** the generator yields padding laws only. Test
   `grammar_pad_splits_the_laws` goes too; `grammar_laws_lie_outside_the_pool` keeps its checks on the padding laws.
-- **The no-padding result:** M 9 on salts 1-10 at 14 times the stream's time. It becomes a `decided against` line in
-  `PARKED.md`, triggered if mining gets several times cheaper.
-- **The "LAW SOURCE PROBE" wording** in the doc comment. The scripts `gen_src.sh` and `gen_cost.sh` stay as the record of
-  the runs behind the note. They will no longer run against new builds, and `docs/runs/2026-10-17/README.md` says so.
-
-## Open question carried, not answered here
-
-**Why do padding laws pay?** Each one restates a pool term with one leaf written as a term of equal value, for example
-`sub(y, y)` for `0`. Served laws contain no grown terms, so a rule like `sub(x, x) -> 0` has nothing to rewrite in them
-directly.
-
-The probe, run after the stage lands:
-- on salt 1, list the rules the padding arm's mines keep that plain's do not;
-- trace which served laws' proofs use them;
-- record the answer in the note.
-
-If the answer names a smaller class (for example "only the laws whose padding is absorbing"), the generator narrows to
-it in a later change.
+- **The no-padding result:** it becomes a `decided against` line in `PARKED.md`: M 9 on salts 1-10 at 14 times the
+  stream's time, twins not checked. It is triggered if mining gets several times cheaper.
+- **The "LAW SOURCE PROBE" wording** in the doc comment. The scripts `gen_src.sh`, `gen_cost.sh` and `gen_twin.sh` stay as
+  the record of the runs behind the notes. They will no longer run against new builds, and
+  `docs/runs/2026-10-17/README.md` says so.
 
 ## Testing
 
-- **The slicing is a pure function** `extra_slices(laws: usize, phases: usize, mines: usize, n: usize, fresh: bool)`
-  that returns each mine's range or the shortfall. It is written first, against a stub returning today's behaviour
-  (`sphase × n` for both mines), so its tests fail on assertions, not on compilation:
+- **`normalize_strips_leaf_equal_nodes`** (search.rs):
+  - `sub(y, y)` normalizes to `0`, and `add(x, 0)` to `x`;
+  - `add(or(z, x), sub(sub(y, y), 0))` normalizes to `or(z, x)`;
+  - a pool term is unchanged.
+
+  It fails first on a stub that returns its input.
+- **`normalize_finds_the_probes_twins`:** on salt 1, cmp3d phase 1, the number of extras of the `-gen-cost` padding arm
+  that the Rust filter drops equals the count `scripts/pad_strip.py` gives. The script modelled `shl1` by guess, so a
+  mismatch means one of the two is wrong; find out which before going on.
+- **`extra_slices(laws, phases, mines, n, fresh)`**, a pure function returning each mine's range or the shortfall. It is
+  written against a stub returning today's behaviour (`sphase × n` for both mines), so its tests fail on assertions:
   - `extra_slices_are_disjoint_and_full`: fresh slices are disjoint, each exactly n long, and they cover `mines × n`;
   - `extra_slices_refuse_a_short_list`: a list shorter than the slices need returns the shortfall.
-- **`generator_laws_pass_the_stream_filters`:** for add3, sbo3 and cmp3d on salt 1, the twin-free and unseen-skeleton
-  filters (against phases 1-3 and against the first mine's laws) drop none of the generator list. It guards §1's
-  argument and §3's counts. It is a characterization test, expected to pass on its first run: the property holds on
-  today's code by construction, and the test is there to catch a future generator that breaks it.
+- **`no_extras_without_rounds`:** a `rounds == 0` config, and any config under `ABLATE=gen`, gets no extras. It fails first
+  on today's gate, which looks only at the mode.
 - **Existing tests:**
-  - `grammar_laws_lie_outside_the_pool` stays and gains mix3 (the mines stage mines it; `pool3("mix3")` exists, but no
-    run has made its laws). Record mix3's law count in the note.
+  - `grammar_laws_lie_outside_the_pool` stays and gains mix3;
   - `task_state_is_classified` must pass with `MEMO` gone.
 - **Suite:** `cargo test --release --test church_bv -j 8`.
-- **Sweep checks:**
-  - the off path: `ABLATE=gen` against `2026-10-17-gen-salts`'s `plain_*` folders, as in §1;
-  - the on path: a temporary `GEN_COUNTS=legacy` reproduces today's counts (60/180/350) and today's slice (skip
-    `sphase × n`, both mines alike). Diffed against the `pad_*` folders of `2026-10-17-gen-cost` (salts 1-10) and
-    `-gen-salts` (11-20), its M and rule files must match (time columns aside).
+- **Sweep checks** (cold only; the warm and ref paths have the unit tests above and step 4's sweeps):
+  - **Off path:** `ABLATE=gen` against the plain arms of `2026-10-17-gen-src` (salts 1-10) and `-gen-salts` (11-20), time
+    columns aside. Both were older builds (da775e7 and 4346cda plus the probe). If they mismatch, rebuild b492165 as a
+    control to tell a build difference from a refactor bug.
+  - **On path:** a temporary `GEN_COUNTS=legacy` (today's counts, today's slice, then the new filter) against
+    `2026-10-17-gen-twin`'s `untwin_*` arms (salts 1-10). M and rule files must match.
 
 ## Build order
 
-1. Extras pipeline refactor, tests first:
+1. Extras stage, tests first:
+   - `normalize` and its tests;
    - `extra_slices` and its tests;
+   - the scope-level filter;
    - the f rule;
-   - laws passed in through `LoopCfg`;
-   - the filters confined to the stream arm, and `generator_laws_pass_the_stream_filters`;
+   - the `LoopCfg` fields;
    - the `rounds == 0` rule;
    - `ABLATE=gen` and `GEN_SOURCE=stream`;
-   - a temporary `GEN_SHARED=1` for the slice A/B, and a temporary `GEN_COUNTS=legacy` for the on-path check;
+   - temporary `GEN_SHARED=1` and `GEN_COUNTS=legacy`;
    - removals.
 2. Cold sweeps through `run.ps1`, salts 1-20, padding source:
-   - four generator arms (f 0.06 and 0.12 fresh; 0.12 and 0.25 shared);
-   - one `ABLATE=gen` arm (the off-path check);
-   - one `GEN_COUNTS=legacy` arm (the on-path check, which must match before the other arms count);
-   - one `GEN_SOURCE=stream` arm at the f = 0.12 shared arm's counts.
+   - four generator arms (fresh at 0.08 and 0.16, shared at 0.16 and 0.30);
+   - `ABLATE=gen` (the off-path check);
+   - `GEN_COUNTS=legacy` (the on-path check, salts 1-10; it must match before the other arms count);
+   - `GEN_SOURCE=stream` at the fresh 0.16 arm's counts.
 
-   Expected wall time: 45-90 min sequential. Today's padding arm (f ≈ 0.04-0.13) took 10-37 s per salt, about 20 s on
-   average. f = 0.25 may cost several times that if mining is superlinear in its laws.
-3. Fix the default f and the slice choice. Delete `GEN_SHARED`, `GEN_COUNTS`, and the fresh-slice code if it lost. Update the note,
-   `PARKED.md` and `ROADMAP.md`.
+   Expected wall time: 45-90 min sequential. The untwinned padding arm took 8-18 s per salt (85 loop seconds over 10
+   salts). f = 0.30 may cost several times that if mining is superlinear in its laws.
+3. Fix the default f and the slice choice, delete `GEN_SHARED`, `GEN_COUNTS`, and the fresh-slice code if it lost. Update
+   the note, `PARKED.md` and `ROADMAP.md`.
 4. Warm loops and ref mines: full sweeps (mines, own, cold, cross, pooled, mixed: every stage the default turns on; mines
-   includes mix3, at the f chosen on the loop families), salts 1-10, in three arms: generator on, `ABLATE=gen`,
-   and on with ref mines off (a temporary `ABLATE=gen_ref`). Ref mines build the libraries the warm loops start from, so
-   the third arm is what separates their effect from the loops'.
-   - A plain full sweep takes about 8 s per salt (`2026-10-17-op-cache-ab`). With the generator on, every loop stage
-     costs about what the cold stage does, so a 1-salt probe goes first and its time sets the stated estimate (expected
-     1-3 min per salt, so 25-60 min for the three arms). `ABLATE=gen_ref` goes after the decision.
-   - Measured per regime. A regime whose M gets worse runs with the generator off, and the doc says why. That makes the
-     regime, not the family, the unit of the decision.
-5. The padding probe above.
+   includes mix3), salts 1-10, in three arms: generator on, `ABLATE=gen`, and on with ref mines off (a temporary
+   `ABLATE=gen_ref`). Ref mines build the libraries the warm loops start from, so the third arm separates their effect
+   from the loops'.
+   - Ref mines mine 200-400 laws against a loop mine's 100, so the same f gives them a smaller share of extras. A ref
+     loss may be that share, not the generator. The table states it, and a ref loss is followed up before the regime
+     is turned off.
+   - A plain full sweep takes about 8 s per salt (`2026-10-17-op-cache-ab`). A 1-salt probe goes first, and its time
+     sets the stated estimate (expected 1-3 min per salt, so 25-60 min for the three arms).
+   - A regime whose M gets worse runs with the generator off, and the doc says why. `ABLATE=gen_ref` goes after the
+     decision.
+5. Hidden twins beyond padding: for the non-padding laws (which the stage does not use), count twins after normalizing
+   grown terms equal in value to any pool subterm, not only to a leaf. If the padding laws' kept share also changes
+   under that wider normalization, the stage's filter widens to it.
 
 ## Not in scope
 
@@ -184,4 +205,4 @@ it in a later change.
 - Enumo-style full enumeration.
 - Ranking the generator's laws: that is v0.4's learned proposer, which would take this stage's output as its candidates.
 - The sbo3 split. At full counts, every grammar arm left sbo3's mined-batch M at 0 or 1, against 40 plain and 6 for the
-  stream. Whether sbo3 has headroom left is a separate question.
+  stream; untwinned, sbo3 is back to 7. Whether sbo3 has headroom left is a separate question.
