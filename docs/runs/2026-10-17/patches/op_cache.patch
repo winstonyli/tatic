@@ -1,0 +1,87 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 14b2f1a..a833d43 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -48,6 +48,20 @@ static LEAVES: [Interned; 64] = {
+ // The leaf consts name statics: a promoted `&Interned` need not have one address.
+ static ZERO_NODE: Interned = Interned::leaf(Node::Zero, 0, ZERO_SHAPE);
+ static ONES_NODE: Interned = Interned::leaf(Node::Ones, 0, ONES_SHAPE);
++thread_local! {
++    // OP PROBE (throwaway): this thread's `Term::op` calls and the nodes they made
++    pub static OP_PROBE: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
++    pub static OP_JOIN: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
++    // OP CACHE PROBE: `OP_CACHE_BITS` (0 = off) slots of this thread's last `Term::op` result per hash
++    static OP_CACHE: std::cell::RefCell<Vec<Option<&'static Interned>>> = std::cell::RefCell::new(vec![None; match env_or("OP_CACHE_BITS", 0usize) { 0 => 0, b => 1 << b }]);
++}
++pub static OP_PROBE_SUM: std::sync::Mutex<(u64, u64, u64, u64)> = std::sync::Mutex::new((0, 0, 0, 0));
++pub fn op_probe_flush() {
++    let (c, m) = OP_PROBE.with(|c| c.replace((0, 0)));
++    let (jc, jm) = OP_JOIN.with(|c| c.replace((0, 0)));
++    let mut s = OP_PROBE_SUM.lock().unwrap();
++    *s = (s.0 + c, s.1 + m, s.2 + jc, s.3 + jm);
++}
+ const SHARDS: usize = 16;
+ static TABLE: [std::sync::Mutex<hashbrown::HashTable<&'static Interned>>; SHARDS] =
+     [const { std::sync::Mutex::new(hashbrown::HashTable::new()) }; SHARDS];
+@@ -71,10 +85,23 @@ impl Term {
+     /// for neither its tag (top 7 bits) nor its bucket (low bits).
+     pub fn op(o: usize, a: Term, b: Term) -> Term {
+         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
++        OP_PROBE.with(|c| c.set((c.get().0 + 1, c.get().1)));
++        let slot = (h >> 44) as usize;
++        if let Some(m) = OP_CACHE.with(|c| c.borrow().get(slot & (c.borrow().len().wrapping_sub(1))).copied().flatten()).filter(|m| m.node == n) {
++            return Term(m);
++        }
+         let mut t = TABLE[(h >> 40) as usize % SHARDS].lock().unwrap();
+         if let Some(&m) = t.find(h, |m| m.node == n) {
++            OP_CACHE.with(|c| {
++                let mut c = c.borrow_mut();
++                let k = c.len().wrapping_sub(1);
++                if let Some(e) = c.get_mut(slot & k) {
++                    *e = Some(m);
++                }
++            });
+             return Term(m);
+         }
++        OP_PROBE.with(|c| c.set((c.get().0, c.get().1 + 1)));
+         let shape = 1 << o | side_bit(o, 0, class(&a)) | side_bit(o, 1, class(&b));
+         let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape }));
+         t.insert_unique(h, m, |m| match m.node {
+@@ -2545,6 +2572,15 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+ /// `join_eq`'s search, adding the terms it examined to `examined`.
+ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
+     let (cap, visit, t0) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize), std::time::Instant::now());
++    let op0 = OP_PROBE.with(|c| c.get());
++    struct OpJoin((u64, u64));
++    impl Drop for OpJoin {
++        fn drop(&mut self) {
++            let now = OP_PROBE.with(|c| c.get());
++            OP_JOIN.with(|c| c.set((c.get().0 + now.0 - self.0.0, c.get().1 + now.1 - self.0.1)));
++        }
++    }
++    let _op = OpJoin(op0);
+     // each reached term with the term it was reached from and the plan of that step
+     type Seen = hashbrown::HashMap<Term, Option<(Term, PlanRc)>>;
+     let path = |seen: &Seen, mut t: Term| -> PlanRc {
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 00bbe4a..54c0d52 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -959,6 +959,7 @@ pub fn rule_miner() {
+                                 done_tx.send((i, score_one(i, &mut memo))).unwrap();
+                             }
+                         });
++                        op_probe_flush();
+                         join_workers.lock().unwrap().add_since(before);
+                     };
+                     std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
+@@ -1231,6 +1232,9 @@ pub fn rule_miner() {
+         println!("RULEMINER time bounding candidates' gains: {:.1}s", bound_time.get().as_secs_f64());
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
++        op_probe_flush();
++        let s = *OP_PROBE_SUM.lock().unwrap();
++        println!("OPPROBE Term::op calls {} new {} (in the join: calls {} new {})", s.0, s.1, s.2, s.3);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {

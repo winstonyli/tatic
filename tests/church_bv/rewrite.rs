@@ -49,6 +49,14 @@ static LEAVES: [Interned; 64] = {
 static ZERO_NODE: Interned = Interned::leaf(Node::Zero, 0, ZERO_SHAPE);
 static ONES_NODE: Interned = Interned::leaf(Node::Ones, 0, ONES_SHAPE);
 const SHARDS: usize = 16;
+/// Each thread's last `Term::op` node per slot of the hash, in front of the shared table. Nearly every call finds a node
+/// that exists (99% in a cmp3d mine, almost all from the join), and the table's lock and lookup were over half of that
+/// mine's time; 2^16 slots (512 KB) took its job CPU from 25.8 to 16.9 s, 2^12 to 2^18 all helped (docs/tier-cycle.md,
+/// "The interner's per-thread cache").
+const OP_CACHE_SLOTS: usize = 1 << 16;
+thread_local! {
+    static OP_CACHE: Box<[std::cell::Cell<Option<&'static Interned>>]> = (0..OP_CACHE_SLOTS).map(|_| std::cell::Cell::new(None)).collect();
+}
 static TABLE: [std::sync::Mutex<hashbrown::HashTable<&'static Interned>>; SHARDS] =
     [const { std::sync::Mutex::new(hashbrown::HashTable::new()) }; SHARDS];
 /// The table's hash of `Op(o, a, b)`: unseeded, so every call agrees (a default-built seeded hasher may not).
@@ -68,20 +76,31 @@ impl Term {
         Term(&LEAVES[i])
     }
     /// The one node `Op(o, a, b)`, made on first sight. The shard is bits 40..44 of the hash, which hashbrown uses
-    /// for neither its tag (top 7 bits) nor its bucket (low bits).
+    /// for neither its tag (top 7 bits) nor its bucket (low bits). The thread's `OP_CACHE` slot (bits 44..60) is tried
+    /// first: nodes are never freed, so a cached node stays the term's one node.
     pub fn op(o: usize, a: Term, b: Term) -> Term {
         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
-        let mut t = TABLE[(h >> 40) as usize % SHARDS].lock().unwrap();
-        if let Some(&m) = t.find(h, |m| m.node == n) {
-            return Term(m);
-        }
-        let shape = 1 << o | side_bit(o, 0, class(&a)) | side_bit(o, 1, class(&b));
-        let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape }));
-        t.insert_unique(h, m, |m| match m.node {
-            Node::Op(o, a, b) => op_hash(o, a, b),
-            _ => unreachable!("only Op nodes are interned"),
-        });
-        Term(m)
+        OP_CACHE.with(|c| {
+            let slot = &c[(h >> 44) as usize % OP_CACHE_SLOTS];
+            if let Some(m) = slot.get().filter(|m| m.node == n) {
+                return Term(m);
+            }
+            let mut t = TABLE[(h >> 40) as usize % SHARDS].lock().unwrap();
+            let m = match t.find(h, |m| m.node == n) {
+                Some(&m) => m,
+                None => {
+                    let shape = 1 << o | side_bit(o, 0, class(&a)) | side_bit(o, 1, class(&b));
+                    let m: &'static Interned = Box::leak(Box::new(Interned { node: n, size: 1 + a.0.size + b.0.size, vars: a.0.vars | b.0.vars, shape }));
+                    t.insert_unique(h, m, |m| match m.node {
+                        Node::Op(o, a, b) => op_hash(o, a, b),
+                        _ => unreachable!("only Op nodes are interned"),
+                    });
+                    m
+                }
+            };
+            slot.set(Some(m));
+            Term(m)
+        })
     }
     pub fn node(&self) -> &'static Node {
         &self.0.node
@@ -124,6 +143,37 @@ impl PartialEq for Term {
     }
 }
 impl Eq for Term {}
+
+/// `Term::op` makes one node per term whatever a thread's cache holds: terms made on another thread are the same pointers,
+/// and each node is the one asked for, with more terms than cache slots so that slots are shared.
+#[test]
+fn op_is_one_node_per_term_across_threads() {
+    let build = || {
+        let mut level = vec![Term::v(0), Term::v(1), Term::ZERO, Term::ONES];
+        let mut out = vec![];
+        for _ in 0..3 {
+            let mut next = vec![];
+            for o in 0..5 {
+                for &a in &level {
+                    for &b in level.iter().take(100_000 / (5 * level.len()) + 1) {
+                        next.push(((o, a, b), Term::op(o, a, b)));
+                    }
+                }
+            }
+            level = next.iter().map(|e| e.1).collect();
+            out.extend(next);
+        }
+        out
+    };
+    let (here, there, again) = (build(), std::thread::spawn(build).join().unwrap(), build());
+    assert!(here.len() > 1 << 16, "more terms than cache slots");
+    for (((o, a, b), t), (_, u)) in here.iter().zip(&there) {
+        assert!(*t.node() == Node::Op(*o, *a, *b), "the node asked for");
+        assert!(t == u, "one node across threads");
+    }
+    assert!(here.iter().zip(&again).all(|(x, y)| x.1 == y.1), "one node on a second look");
+}
+
 impl std::hash::Hash for Term {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
         self.addr().hash(h)

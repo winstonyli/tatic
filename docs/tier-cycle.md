@@ -4432,6 +4432,29 @@ Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
   Reverted. Serving: served batches are disjoint stream slices, so no pair repeats across them, and serving's joins over
   the 1090 batches of `2026-10-17-join-sticky` (arm b) reached 1.36M terms, about 4 s in all. Both are `decided against`
   in `PARKED.md`.
+- **The interner's per-thread cache: the join's time was building terms, and a cache in front of the shared table cuts
+  the mine's CPU by a third.** A samply profile of salt 6's cmp3d mine (run `2026-10-17-join-prof2`,
+  `scripts/join_prof.sh`, the throwaway test in `patches/join_prof.patch`; `join-prof`, the run before it, passed its
+  test name wrongly and profiled nothing) put 58% of the busy samples under `Term::op` (43% in its own frame, 11% in
+  the shard mutexes' contention), 37% of them through `join_steps` rebuilding a neighbour's spine and 21% through
+  `subst_pat`; `match_pat`'s own frame was 8%. A count (`patches/op_cache.patch`, its `OPPROBE` line) found 167M
+  `Term::op` calls in that mine, 97% from the join and 99% finding an existing node: about 16 per term the join reached
+  (10.1M). `Term::op` now first tries a per-thread slot array (`OP_CACHE`, 2^16 slots by bits 44..60 of the hash, a hit
+  when the slot's node is the one asked for), then the shared table, and keeps the result in the slot. Nodes are never freed, so a cached node is the term's one node and
+  outputs cannot change. Timed by `scripts/op_cache.sh` (run `2026-10-17-op-cache`, `runs time`, 5 arms alternated, 3
+  clean rounds, CPU 9%, RTP off), job CPU median of salt 6's cmp3d stage:
+
+  | slots | job CPU s | wall s | join searching s |
+  |---|---|---|---|
+  | off | 25.8 | 7.0 | 21.4-23.0 |
+  | 2^12 | 18.2 | 5.5 | 14.0-18.9 |
+  | 2^14 | 17.4 | 5.5 | 13.0-16.1 |
+  | 2^16 | 16.9 | 5.3 | 12.6-14.5 |
+  | 2^18 | 17.4 | 5.4 | 12.6-14.7 |
+
+  Rules equal in all 25 runs; peak job memory about +20 MB. Over salts 1-10 (run `2026-10-17-op-cache-ab`, `join_ab.sh`,
+  c87573b's build against it) all 2430 stage, rules and law files are equal but for their time columns, and the arms'
+  times (run side by side, so only rough) sum to 77 s against 86 of wall, mines 30 s against 35. Early cuts of failed searches are still open, now on about 60% of the old search time.
 - **Kernel cost of a joined proof against the machine proof it replaces** (run `2026-10-17-join-proof-cost`,
   `scripts/join_cost.sh`: `proof_cost_split` on every served cmp3d batch of `2026-10-17-join-sticky`'s loops, salts
   1-5, 135 batches, under each loop's final rules, with the join on and with `ABLATE=join`, the faster of 2 alternated

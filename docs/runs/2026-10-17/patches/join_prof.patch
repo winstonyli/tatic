@@ -1,0 +1,25 @@
+diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
+index ce50f34..9a43e29 100644
+--- a/tests/church_bv/driver.rs
++++ b/tests/church_bv/driver.rs
+@@ -508,6 +508,20 @@ const MINES: [(&str, usize, usize, usize); 5] =
+ /// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, no round cap, CHECK_FAST).
+ const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
+ 
++// PROFILE PROBE (throwaway): salt 6's cmp3d mine, the environment set here for `profile.ps1` (which passes none)
++#[test]
++#[ignore]
++fn sweep_prof() {
++    let out = std::env::temp_dir().join("join_prof_sweep");
++    #[allow(unused_unsafe)]
++    unsafe {
++        for (k, v) in [("MACHINE_STATE", "0"), ("SALT", "6"), ("SWEEP", "mines:cmp3d"), ("SWEEP_OUT", out.to_str().unwrap())] {
++            std::env::set_var(k, v);
++        }
++    }
++    sweep();
++}
++
+ #[test]
+ #[ignore]
+ fn sweep() {
