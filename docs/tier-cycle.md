@@ -4671,7 +4671,9 @@ its scope serves by value-class twin key (`ClassReps`) and by skeleton. Cold swe
 - **Default: s16**, the only arm with no more salts worse than better against the best. The share, not fresh slices,
   carries the gain: at f 0.08 fresh beats shared (17 against 23), but shared at 0.16 beats both.
 - **Acceptance** (the spec: the generator beats the stream at the same n): m08 against stream_m08 over salts 1-20, better
-  on 13, equal on 2, worse on 5. The stage stays on by default.
+  on 13, equal on 2, worse on 5. The stage stays on by default. This checks the source at the stream's small n (fresh
+  slices, salt 1: n 48 / 7 / 27 for cmp3d / add3 / sbo3, against s16's hundreds), not the chosen arm, and 13 against 5
+  is a weak sign (two-sided sign test p ≈ 0.1); the stage's worth rests on s16 against off (20 salts of 20).
 - **Cost**: s16's loops take 7786 s over 20 salts against off's 9 (the probe's sweep wall time 285 s against 12), all in
   the join's searches ("Where an extras mine's time goes"). Numbers from here on are with the stage on unless they say
   `ABLATE=gen`. Ref mines and warm loops take extras too but are unmeasured (the spec's step 4, `PARKED.md`): until

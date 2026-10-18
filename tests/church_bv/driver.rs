@@ -18,7 +18,9 @@
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the law
 //! generator's laws (`scope_extras`, a shared 16% slice per loop); off with ABLATE=gen; GEN_SOURCE=stream (the stream control)
-//! and GEN_N=matched (n capped at what the filtered stream fits, for a same-n pair) are temporary.
+//! and GEN_N=matched (n capped at what the filtered stream fits, for a same-n pair) are temporary. Measured on cold loops
+//! only: ref mines and warm loops take extras too, unmeasured (PARKED.md, the spec's step 4), so until then sweeps with a
+//! `mines` stage or warm loops (the default SWEEP has both) run with ABLATE=gen or after a 1-salt probe.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas.bin across all its loops instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
 //! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
@@ -749,6 +751,25 @@ const MINES: [(&str, usize, usize, usize); 5] =
 /// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, no round cap, CHECK_FAST).
 const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
 
+/// The loops (family, stride, phase) whose served laws every ref mine's extras are filtered against (spec §1): phases 1-3 of
+/// each loop family, fixed rather than taken from the stages a sweep runs.
+fn served_by_loops() -> Vec<(&'static str, usize, usize)> {
+    LOOPS.iter().flat_map(|&(fam, stride)| (1..=3).map(move |p| (fam, stride, p))).collect()
+}
+
+/// Every ref mine filters its extras against these loops (family, stride, phase), whatever stages the sweep runs: phases 1-3
+/// of every loop family, so a library a `SWEEP=mines` run builds is filtered against the loops a later `LIB=` sweep serves.
+#[test]
+fn ref_mines_filter_against_every_loop_family() {
+    let served = served_by_loops();
+    assert_eq!(served.len(), 3 * LOOPS.len());
+    for (fam, stride) in LOOPS {
+        for p in 1..=3 {
+            assert!(served.contains(&(fam, stride, p)), "{fam} phase {p} missing: {served:?}");
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn sweep() {
@@ -822,11 +843,11 @@ fn sweep() {
             }
         }
     }
-    // a ref mine's library is served on the loops of every family the sweep runs (each family's phase 1-3 batches once);
-    // a sweep of mines alone runs no loop, so its ref mines filter against their own batches only
-    let mut loops: Vec<LoopCfg> = scopes.iter().flatten().filter(|c| c.mode == "loop").cloned().collect();
-    loops.sort_by(|a, b| (&a.family, a.sphase).cmp(&(&b.family, b.sphase)));
-    loops.dedup_by(|a, b| (&a.family, a.sphase) == (&b.family, b.sphase));
+    // a ref mine's library may be served on any loop, in this sweep or a later `LIB=` one (`served_by_loops`)
+    let loops: Vec<LoopCfg> = served_by_loops()
+        .into_iter()
+        .map(|(fam, stride, p)| LoopCfg { stride, sphase: p, ..base("loop", out.join(format!("served_{fam}_{p}")), fam) })
+        .collect();
     let (mut draw, mut short) = (Draw::new(), vec![]);
     for scope in &mut scopes {
         if !scope.iter().all(|c| takes_extras(c, ablated("gen"))) {
