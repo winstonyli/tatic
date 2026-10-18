@@ -14,9 +14,9 @@ in `PARKED.md`.
   kernel-checked, for 76% more sweep time ("The bounded join removes the floor"; its cost is in `PARKED.md`).
 - **v0.3 - Can the kernel itself propose the laws that pay?** At matched counts, extra laws of shapes not being mined cut
   mined-batch M by 50% ("What kind of new law pays most"); a Ruler/Enumo-style generator would supply them without the
-  test stream. First probe, 2026-10-17: a stream-blind wider grammar (`grammar_laws`) takes cold mined-batch M 120 to 12,
-  against 29 for the stream's own unseen laws, at 5 times the mining time ("A law generator"); matched-cost arms and a
-  spec are next (`PARKED.md`).
+  test stream. First probe, 2026-10-17: a stream-blind wider grammar (`grammar_laws`) takes cold mined-batch M 221 to 28
+  over salts 1-20, against 44 for the stream's own unseen laws: a tie (30 against 28 without salts 7 and 9); its padding-only slice gets 27 at 1.7-1.9 times their
+  loop time ("A law generator"). The generator's spec is next (`PARKED.md`).
 - **v0.4 - Does a learned proposer, ranking which laws to mine on, beat the hash-ordered stream?** Experiments 1 and 2
   with the custom proposer model in place of the uniform and n-gram baselines.
 - **v0.5 - Does closing the cycle push the frontier?** Experiment 3: train on accepted laws, repeat, and track the

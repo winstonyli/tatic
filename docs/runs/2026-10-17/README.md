@@ -55,6 +55,9 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
   `CARGO_PROFILE_SWEEP_DEBUG=true`.
 - `scripts/gen_src.sh <exe> <salt>...`: cold sweeps plain and with `MINE_EXTRA` from each `MINE_SOURCE` (stream, grammar),
   one after another; prints mined-batch M per family.
+- `scripts/gen_cost.sh <exe> <salt>...`: the same per arm of `$ARMS` (default `half quarter pad nopad`; also `plain`,
+  `stream`, `grammar`): grammar at half and a quarter of the counts, and `GEN_PAD=pad|nopad` at full counts. Prints M per
+  family, rules and summed loop seconds.
 - `scripts/op_cache.sh <exe>` with `patches/op_cache.patch` (the probe build: `OP_CACHE_BITS`, 0 for off, and an
   `OPPROBE` line counting `Term::op` calls, new nodes and the join's share): `runs time` over 5 cache sizes.
 
@@ -67,4 +70,6 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 | `2026-10-17-op-cache` | c87573b + `op_cache.patch` (`bv_opcache.exe`) | `op_cache.sh`, salt 6 cmp3d, 3 clean rounds | job CPU 25.8 s off, 16.9 s at 2^16 slots; rules equal in all 25 runs |
 | `2026-10-17-op-cache-ab` | `bv_jtime.exe` against the cache (`bv_opc.exe`) | `join_ab.sh`, salts 1-10 | all 2430 stage, rules and law files equal (time columns aside); wall 86 to 77 s summed, mines 35 to 30 s |
 | `2026-10-17-gen-src` | da775e7 + `grammar_laws`, `extra_laws` (`bv_gen.exe`) | `gen_src.sh`, salts 1-10 | mined-batch M plain 120, stream 29, grammar 12; batch 0 1443 in every arm; rules 640 / 1163 / 1889 |
+| `2026-10-17-gen-cost` | 4346cda + `GEN_PAD`, `GEN_LAWS` (`bv_gen2.exe`) | `gen_cost.sh`, salts 1-10 | M half 33, quarter 64, pad 16, nopad 9; rules 1352 / 1012 / 1220 / 2483; loop s 229 / 67 / 166 / 1373 |
+| `2026-10-17-gen-salts` | the same | `gen_cost.sh` with `ARMS="plain stream grammar pad"`, salts 11-20 | M plain 101, stream 15, grammar 16, pad 11; batch 0 1408 in every arm; loop s 2 / 110 / 673 / 204 |
 | `2026-10-17-join-time` | `bv_jtime.exe` | `join_time.sh`, salt 6, 4 reps; then by hand two `runs run` (job CPU, `job.txt`) and two PowerShell runs (`cpu.txt`, process CPU 0: the mine runs in a child) | same rules either way; join searches 84% of the stage's CPU, failed ones 26% |

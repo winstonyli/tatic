@@ -1806,8 +1806,10 @@ pub fn pools_have_no_repeated_terms() {
 /// the family's pool with one leaf of a pool term grown into a depth-1 term over the pool's own operators (a "wider
 /// grammar"), about `terms` of those sampled by a hash of `salt`, grouped with the pool by their width-4 values
 /// (`pool_conjectures`). Its laws are the pairs with a grown side that use all three variables, shuffled by `salt`. Pools are
-/// closed under renaming variables, so no law here is a stream law or shares a stream law's skeleton.
-pub fn grammar_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, terms: usize, salt: usize) -> Vec<(Term, Term)> {
+/// closed under renaming variables, so no law here is a stream law or shares a stream law's skeleton. `pad`: `Some(true)` keeps
+/// only the laws with a padded grown side (its leaf grew into a term equal to a leaf, such as `sub(y, y)`), `Some(false)` only
+/// the rest.
+pub fn grammar_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, terms: usize, salt: usize, pad: Option<bool>) -> Vec<(Term, Term)> {
     let Some(pool) = pool3(family, env) else { return vec![] };
     let in_pool: HashSet<Term> = pool.iter().cloned().collect();
     // the operators the pool uses below a comparison (an `lt` result is one bit wide and is never an argument)
@@ -1861,26 +1863,33 @@ pub fn grammar_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, terms: usi
         z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
         z ^ (z >> 31)
     };
-    let (mut sample, mut seen) = (vec![], HashSet::new());
+    let mut memo = ValueMemo::exhaustive(4, 3);
+    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
+    let padding: Vec<bool> = grow.iter().map(|g| leaf_values.contains(&memo.values(g).to_vec())).collect();
+    // each grown term, and whether its grown leaf was padding (the first way it was grown)
+    let (mut sample, mut padded) = (vec![], hashbrown::HashMap::new());
     let mut i = 0u64;
     for t in &pool {
         for p in 0..leaf_count(*t) {
-            for g in &grow {
+            for (gi, g) in grow.iter().enumerate() {
                 i += 1;
                 if (mix(i ^ mix(salt as u64)) % total as u64) < terms as u64 {
                     let w = replaced(*t, &mut Some(p), *g);
-                    if !in_pool.contains(&w) && seen.insert(w) {
+                    if !in_pool.contains(&w) && !padded.contains_key(&w) {
+                        padded.insert(w, padding[gi]);
                         sample.push(w);
                     }
                 }
             }
         }
     }
+    let padded_law = |a: &Term, b: &Term| padded.get(a) == Some(&true) || padded.get(b) == Some(&true);
     // the pool first, so a group's first member (each law's left side) is a pool term where the group has one
     let laws = pool_conjectures(pool.iter().cloned().chain(sample), 4, 3, 0)
         .into_iter()
         .filter(|(a, b)| !in_pool.contains(a) || !in_pool.contains(b))
         .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
+        .filter(|(a, b)| pad.is_none_or(|p| padded_law(a, b) == p))
         .collect();
     shuffled(laws, salt)
 }
@@ -1892,9 +1901,9 @@ pub fn grammar_laws_lie_outside_the_pool() {
     let env = |k: &str, d: usize| if k == "RULEMINER_DEEP3" { 1 } else { d };
     for f in ["add3", "sbo3", "cmp3d"] {
         let pool: HashSet<Term> = pool3(f, &env).unwrap().into_iter().collect();
-        let laws = grammar_laws(f, &env, 3000, 1);
+        let laws = grammar_laws(f, &env, 3000, 1, None);
         assert!(laws.len() > 100, "{f}: {} laws", laws.len());
-        assert!(laws == grammar_laws(f, &env, 3000, 1), "{f}: same salt, other laws");
+        assert!(laws == grammar_laws(f, &env, 3000, 1, None), "{f}: same salt, other laws");
         println!("{f}: {} laws, e.g. {}", laws.len(), laws.iter().take(3).map(|(a, b)| format!("{} = {}", a.show(), b.show())).collect::<Vec<_>>().join("; "));
         let mut memo = ValueMemo::exhaustive(4, 3);
         for (a, b) in &laws {
@@ -1902,6 +1911,20 @@ pub fn grammar_laws_lie_outside_the_pool() {
             assert!((0..3).all(|v| a.has_var(v) || b.has_var(v)), "{f}: {} = {}", a.show(), b.show());
             assert_eq!(memo.values(a).to_vec(), memo.values(b).to_vec(), "{f}: {} = {}", a.show(), b.show());
         }
+    }
+}
+
+/// `pad` splits the grammar laws in two: the laws whose grown side grew a leaf into a term equal to a leaf (`sub(y, y)`), and
+/// the rest.
+#[test]
+pub fn grammar_pad_splits_the_laws() {
+    let env = |k: &str, d: usize| if k == "RULEMINER_DEEP3" { 1 } else { d };
+    for f in ["add3", "cmp3d"] {
+        let set = |pad| grammar_laws(f, &env, 3000, 1, pad).into_iter().collect::<HashSet<_>>();
+        let (all, yes, no) = (set(None), set(Some(true)), set(Some(false)));
+        println!("{f}: {} laws, {} padding", all.len(), yes.len());
+        assert!(!yes.is_empty() && !no.is_empty(), "{f}");
+        assert!(yes.is_disjoint(&no) && yes.union(&no).count() == all.len() && yes.is_subset(&all), "{f}");
     }
 }
 
