@@ -262,4 +262,17 @@ which candidates its worker scored before it. Options that fix the history rathe
 - Decided against: keeping a met entry while its slack under the visit cap exceeds the new rule's added neighbours; the
   added terms have neighbours of their own, so there is no local bound.
 
-Not built; the timing one-off's fix is still the user's choice (`PARKED.md`).
+**Spike of the snapshot** (the user's choice, 2026-10-18; `patches/memo_per_cand.patch`). The worker memos are already
+made fresh per round, and the state memo cannot be handed to them (it holds `Rc`), so the snapshot is an empty memo:
+`MEMO_PER_CAND=1` starts each candidate's scoring from one.
+
+- Salt 1 (run `2026-10-18-snap-salt1`): rules at 1 and 6 miner threads byte-equal in every loop; M 76 as built; 80 s
+  against 93 s at 6 threads.
+- Salts 1-10 (run `2026-10-18-snap-salts`, loaded machine): M 749 as built in every one of the 30 loops, wall 1241 s
+  against 1352 s; rules differ from as built in 4 loops (5-1, 6-3, 7-3, 10-3).
+- Salts 5 and 7 (run `2026-10-18-snap-threads`): rules at 1 and 6 threads byte-equal in every loop, and the 6-thread
+  rules equal the earlier run's.
+
+So the memo carried between candidates bought no time, and was the whole scheduling dependence: without it the miner is
+independent of thread count and timing, at no cost, while the memo stays inexact by design (option 1 above). The
+exact memo's +84% is not needed for byte-equal sweeps. Not yet built; the build is the user's go-ahead (`PARKED.md`).

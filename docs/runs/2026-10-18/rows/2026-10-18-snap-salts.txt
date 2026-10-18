@@ -1,0 +1,52 @@
+salt 1 base6: exit 0 wall 154 s
+salt 1 snap6: exit 0 wall 126 s
+salt 1 loop 1: M base6 29 snap6 29 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 1 loop 2: M base6 17 snap6 17 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 1 loop 3: M base6 30 snap6 30 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 2 base6: exit 0 wall 156 s
+salt 2 snap6: exit 0 wall 127 s
+salt 2 loop 1: M base6 22 snap6 22 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 2 loop 2: M base6 14 snap6 14 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 2 loop 3: M base6 29 snap6 29 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 3 base6: exit 0 wall 109 s
+salt 3 snap6: exit 0 wall 121 s
+salt 3 loop 1: M base6 27 snap6 27 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 3 loop 2: M base6 24 snap6 24 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 3 loop 3: M base6 19 snap6 19 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 4 base6: exit 0 wall 148 s
+salt 4 snap6: exit 0 wall 138 s
+salt 4 loop 1: M base6 23 snap6 23 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 4 loop 2: M base6 34 snap6 34 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 4 loop 3: M base6 25 snap6 25 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 5 base6: exit 0 wall 99 s
+salt 5 snap6: exit 0 wall 157 s
+salt 5 loop 1: M base6 26 snap6 26 snap1 -; snap6 vs base6 differ, snap1 vs snap6 -
+salt 5 loop 2: M base6 23 snap6 23 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 5 loop 3: M base6 21 snap6 21 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 6 base6: exit 0 wall 119 s
+salt 6 snap6: exit 0 wall 93 s
+salt 6 loop 1: M base6 32 snap6 32 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 6 loop 2: M base6 19 snap6 19 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 6 loop 3: M base6 36 snap6 36 snap1 -; snap6 vs base6 differ, snap1 vs snap6 -
+salt 7 base6: exit 0 wall 239 s
+salt 7 snap6: exit 0 wall 184 s
+salt 7 loop 1: M base6 25 snap6 25 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 7 loop 2: M base6 24 snap6 24 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 7 loop 3: M base6 27 snap6 27 snap1 -; snap6 vs base6 differ, snap1 vs snap6 -
+salt 8 base6: exit 0 wall 75 s
+salt 8 snap6: exit 0 wall 76 s
+salt 8 loop 1: M base6 25 snap6 25 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 8 loop 2: M base6 26 snap6 26 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 8 loop 3: M base6 20 snap6 20 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 9 base6: exit 0 wall 114 s
+salt 9 snap6: exit 0 wall 112 s
+salt 9 loop 1: M base6 24 snap6 24 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 9 loop 2: M base6 25 snap6 25 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 9 loop 3: M base6 25 snap6 25 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 10 base6: exit 0 wall 139 s
+salt 10 snap6: exit 0 wall 107 s
+salt 10 loop 1: M base6 28 snap6 28 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 10 loop 2: M base6 24 snap6 24 snap1 -; snap6 vs base6 same, snap1 vs snap6 -
+salt 10 loop 3: M base6 26 snap6 26 snap1 -; snap6 vs base6 differ, snap1 vs snap6 -
+total base6: M 749 wall 1352 s
+total snap6: M 749 wall 1241 s

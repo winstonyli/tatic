@@ -1,0 +1,13 @@
+salt 5 snap6: exit 0 wall 95 s
+salt 5 snap1: exit 0 wall 353 s
+salt 5 loop 1: M base6 - snap6 26 snap1 26; snap6 vs base6 -, snap1 vs snap6 same
+salt 5 loop 2: M base6 - snap6 23 snap1 23; snap6 vs base6 -, snap1 vs snap6 same
+salt 5 loop 3: M base6 - snap6 21 snap1 21; snap6 vs base6 -, snap1 vs snap6 same
+salt 7 snap6: exit 0 wall 179 s
+salt 7 snap1: exit 0 wall 729 s
+salt 7 loop 1: M base6 - snap6 25 snap1 25; snap6 vs base6 -, snap1 vs snap6 same
+salt 7 loop 2: M base6 - snap6 24 snap1 24; snap6 vs base6 -, snap1 vs snap6 same
+salt 7 loop 3: M base6 - snap6 27 snap1 27; snap6 vs base6 -, snap1 vs snap6 same
+total snap6: M 146 wall 274 s
+total snap1: M 146 wall 1082 s
+6-thread rules against 2026-10-18-snap-salts' run: same in all 6 loops

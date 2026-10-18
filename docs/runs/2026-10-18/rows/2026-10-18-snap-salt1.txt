@@ -1,0 +1,9 @@
+salt 1 base6: exit 0 wall 93 s
+salt 1 snap6: exit 0 wall 80 s
+salt 1 snap1: exit 0 wall 543 s
+salt 1 loop 1: M base6 29 snap6 29 snap1 29; snap6 vs base6 same, snap1 vs snap6 same
+salt 1 loop 2: M base6 17 snap6 17 snap1 17; snap6 vs base6 differ, snap1 vs snap6 same
+salt 1 loop 3: M base6 30 snap6 30 snap1 30; snap6 vs base6 same, snap1 vs snap6 same
+total base6: M 76 wall 93 s
+total snap6: M 76 wall 80 s
+total snap1: M 76 wall 543 s

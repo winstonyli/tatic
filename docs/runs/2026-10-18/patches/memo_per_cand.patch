@@ -1,0 +1,47 @@
+# memo_per_cand: the probe behind runs 2026-10-18-snap-salt1 and -snap-salts (exe bv_snap.exe, ae96a7e's tree + this, which includes
+# join_exact.patch: JOIN_EXACT, LOOP_THREADS). MEMO_PER_CAND=1: each scoring worker starts every candidate from an empty
+# memo, so a candidate's gain does not depend on which candidates its worker scored before it.
+diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
+index 55a4e73..80d9d31 100644
+--- a/tests/church_bv/driver.rs
++++ b/tests/church_bv/driver.rs
+@@ -834,7 +834,7 @@ fn sweep() {
+         b: 100,
+         k: 3,
+         offset: 0,
+-        threads: 6,
++        threads: env_or("LOOP_THREADS", 6),
+         rounds: usize::MAX,
+         deep3: 1,
+         split: 2,
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 3a17dfc..18f4b51 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2825,7 +2825,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                 });
+                 let Some((step, u)) = met else { continue };
+                 // a met search's result rests on its path only: keep what was examined at the path's terms
+-                if let Some(x) = examined {
++                if let Some(x) = examined.as_mut().filter(|_| env_var("JOIN_EXACT").is_none()) {
+                     x.clear();
+                     let mut stack = vec![u];
+                     for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 2a53044..a6d334e 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -954,8 +954,13 @@ pub fn rule_miner() {
+                         let before = JoinCost::now();
+                         tatic::kernel::scoped(|| {
+                             let mut memo = RewriteMemo::new(kv);
++                            // PROBE: MEMO_PER_CAND=1: each candidate scored from an empty memo, so no history across candidates
++                            let per_cand = env_var("MEMO_PER_CAND").is_some();
+                             loop {
+                                 let Ok(i) = queue.lock().unwrap().recv() else { break };
++                                if per_cand {
++                                    memo = RewriteMemo::new(kv);
++                                }
+                                 done_tx.send((i, score_one(i, &mut memo))).unwrap();
+                             }
+                         });
