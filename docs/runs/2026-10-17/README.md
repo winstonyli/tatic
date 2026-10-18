@@ -77,6 +77,11 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
   `CARGO_PROFILE_SWEEP_DEBUG=true`. `scripts/prof_incl.py <run dir>`: inclusive frames and the callers of `Term::op`.
 - `scripts/op_cache.sh <exe>` with `patches/op_cache.patch` (the probe build: `OP_CACHE_BITS`, 0 for off, and an
   `OPPROBE` line counting `Term::op` calls, new nodes and the join's share): `runs time` over 5 cache sizes.
+- `scripts/gen_round.sh <exe> <salt>...`: the law generator's extras stage (its plan, Tasks 6-7), cold sweeps per arm of
+  `$ARMS`: `off` (`ABLATE=gen`), `plain` (an old build), `legacy` (`GEN_COUNTS=legacy`), `f04`/`f08` (fresh, `GEN_F`),
+  `s08`/`s16` (`GEN_SHARED=1`), `m08` (`GEN_N=matched`) and `stream_<arm>` (`GEN_SOURCE=stream`). Prints M per family,
+  rules and summed loop seconds. `scripts/same_arms.sh <dir a> <dir b>`: `same`, or the cold-stage files that differ
+  (time columns aside).
 
 | Run | Build | Script | Result |
 |---|---|---|---|
@@ -93,4 +98,9 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 | `2026-10-17-gen-wide` | the same | `gen_twin.sh` with `ARMS="pad_class pad_notriv pad_ctl stream_full stream_class grammar_full grammar_class"`, salts 1-10 | M pad_class 40, pad_notriv 42, pad_ctl 83, stream 31 / class 29, grammar 12 / class 21; loop s 51 / 49 / 5 / 86 / 40 / 413 / 359 |
 | `2026-10-17-gen-nopad` | the same | `gen_twin.sh` with `ARMS=nopad_class`, salts 1-10 | M 10 (cmp3d 9, sbo3 1), rules 2478, loop s 1043; against stream_class better 6, equal 4 |
 | `2026-10-17-gen-prof` | a5ade34 + `extra_file.patch` + `gen_prof.patch`, debug info | `gen_prof.sh` | join 89.5% inclusive; `Term::op` 43.8% self (from `join_steps` 29.8%, `subst_pat` 13.7%); frames in `rows/2026-10-17-gen-prof.txt` |
+| `2026-10-18-gen-round-probe` | 138fbfc (`bv_gen3.exe`) | `gen_round.sh`, salt 1, CPU 88% (other sessions' builds) | wall s off 12, legacy 94, f04 78, f08 90, s08 98, s16 285; every `stream_` arm stops short: the filtered stream keeps 292 / 42 / 166 laws (cmp3d / add3 / sbo3) against 6n = 1134 / 450 / 444 at f04 |
+| `2026-10-18-gen-check-plain` | b492165 + `extra_file.patch` (`bv_padfile.exe`) | `gen_round.sh` with `ARMS=plain`, salts 1-10 | the off-path control |
+| `2026-10-18-gen-check` | `bv_gen3.exe` | `gen_round.sh` with `ARMS="off legacy"`, salts 1-10 | off same as plain on 10 of 10; legacy same as `-gen-cost` nopad on 9 of 10 |
+| `2026-10-18-gen-check-s4-padfile`, `-s4-again` | `bv_padfile.exe`; `bv_gen3.exe` | `gen_cost.sh` nopad, salt 4; `gen_round.sh` legacy, salt 4 | both same as `-gen-check`'s legacy_4: salt 4's one differing rule file (law files all equal) is build drift since 4346cda |
+| `2026-10-18-gen-matched-probe` | a5da697 (`bv_gen4.exe`) | `gen_round.sh` with `ARMS="m08 stream_m08"`, salt 1 | n 48 / 7 / 27; M m08 3, stream_m08 13 (off's 13); wall s 5 / 6 |
 | `2026-10-17-join-time` | `bv_jtime.exe` | `join_time.sh`, salt 6, 4 reps; then by hand two `runs run` (job CPU, `job.txt`) and two PowerShell runs (`cpu.txt`, process CPU 0: the mine runs in a child) | same rules either way; join searches 84% of the stage's CPU, failed ones 26% |
