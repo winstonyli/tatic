@@ -157,7 +157,7 @@ fn worker() {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct LoopCfg {
     /// none|ref|loop
     mode: String,
@@ -176,6 +176,71 @@ struct LoopCfg {
     check_fast: bool,
     /// further variables for the children (a sweep's RULEMINER_FAST and RULEMINER_SHUFFLE)
     env: Vec<(String, String)>,
+}
+
+/// Each mine's slice of a scope's filtered extras list of `len` laws, ordered (loop, mine): `loops` loops of `mines` mines,
+/// `n` laws each, fresh (consecutive slices in that order) or one slice per loop for its mines; the shortfall if they do not
+/// fit (spec §3).
+fn extra_slices(len: usize, loops: usize, mines: usize, n: usize, fresh: bool) -> Result<Vec<std::ops::Range<usize>>, usize> {
+    let need = if fresh { loops * mines * n } else { loops * n };
+    if need > len {
+        return Err(need - len);
+    }
+    Ok((0..loops).flat_map(|i| (0..mines).map(move |j| (if fresh { i * mines + j } else { i }) * n)).map(|s| s..s + n).collect())
+}
+
+/// Whether a mine of `cfg` takes extras: it mines (not `none`) with rule rounds, and `ABLATE=gen` is off.
+fn takes_extras(cfg: &LoopCfg, ablated: bool) -> bool {
+    !ablated && cfg.rounds > 0 && cfg.mode != "none"
+}
+
+/// The mines of one loop of `cfg`: a ref loop mines once, a loop after every batch but its last.
+fn mines_of(cfg: &LoopCfg) -> usize {
+    if cfg.mode == "ref" { 1 } else { cfg.k.saturating_sub(1) }
+}
+
+/// Fresh slices are disjoint, each n long, and cover loops × mines × n; shared slices give a loop's mines one range.
+#[test]
+fn extra_slices_are_disjoint_and_full() {
+    let fresh = extra_slices(100, 3, 2, 10, true).unwrap();
+    assert_eq!(fresh.len(), 6);
+    assert!(fresh.iter().all(|r| r.len() == 10), "{fresh:?}");
+    let mut seen = vec![false; 100];
+    for i in fresh.iter().flat_map(|r| r.clone()) {
+        assert!(!seen[i], "law {i} in two slices: {fresh:?}");
+        seen[i] = true;
+    }
+    assert_eq!(seen.iter().filter(|&&s| s).count(), 60);
+    let shared = extra_slices(100, 3, 2, 10, false).unwrap();
+    assert_eq!(shared.len(), 6);
+    for l in 0..3 {
+        assert_eq!(shared[2 * l], shared[2 * l + 1], "{shared:?}");
+        assert_eq!(shared[2 * l].len(), 10);
+    }
+    assert!(shared[0].end <= shared[2].start && shared[2].end <= shared[4].start, "{shared:?}");
+    // a scope with no laws (a family with no pool): n is 0 and the mine takes nothing
+    assert_eq!(extra_slices(0, 1, 1, 0, true), Ok(vec![0..0]));
+}
+
+/// A list shorter than its slices returns the shortfall.
+#[test]
+fn extra_slices_refuse_a_short_list() {
+    assert_eq!(extra_slices(59, 3, 2, 10, true), Err(1));
+    assert_eq!(extra_slices(29, 3, 2, 10, false), Err(1));
+    assert!(extra_slices(60, 3, 2, 10, true).is_ok() && extra_slices(30, 3, 2, 10, false).is_ok());
+}
+
+/// Extras exist to be mined into rules: a mine with no rule rounds (the pooled stage's preference mines), a loop that only
+/// serves, and any mine under `ABLATE=gen` take none; loop mines and ref mines with rounds take them.
+#[test]
+fn no_extras_without_rounds() {
+    let c = |mode: &str, rounds: usize| LoopCfg { mode: mode.into(), rounds, k: 3, ..Default::default() };
+    assert!(takes_extras(&c("loop", usize::MAX), false));
+    assert!(takes_extras(&c("ref", usize::MAX), false), "a ref mine with rounds");
+    assert!(!takes_extras(&c("ref", 0), false), "a mine with no rule rounds");
+    assert!(!takes_extras(&c("loop", 0), false), "a mine with no rule rounds");
+    assert!(!takes_extras(&c("loop", usize::MAX), true), "ABLATE=gen");
+    assert!(!takes_extras(&c("none", usize::MAX), false), "a loop that only serves");
 }
 
 impl LoopCfg {
