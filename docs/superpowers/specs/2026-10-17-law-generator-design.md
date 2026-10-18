@@ -26,13 +26,13 @@ non-padding laws. Replayed with those twins dropped (salts 1-10):
 | stream's unseen laws (control) | 31 | 29 | 40 |
 | padding laws | 16 | 40 | 51 |
 | mixed grammar | 12 | 21 | 359 |
-| non-padding laws (22 twins in 17700) | 9 (`-gen-cost`, another build) | not replayed | 1373 (unfiltered) |
+| non-padding laws (22 twins in 17700) | 9 (`-gen-cost`, another build) | 10 | 1043 |
 
-The rows above the last come from one run and build (`-gen-wide`, b492165 plus the probe); the last is `-gen-cost`
-(4346cda), whose padding arm b492165 reproduced exactly. So, filtered alike, a stream-blind source beats the stream on
-salts 1-10: the non-padding laws most (better than the filtered stream on 6 salts, equal on 4), with 2483 rules against
-895 and about 14-16 times the unfiltered stream's loop time (86-98 s), about 34 times the filtered stream's (comparing
-across runs, so indicative only). Their mines' time is the join's searches (11 times the stream mine's on salt 6,
+All rows come from one build (b492165 plus the probe): `-gen-wide`, and `-gen-nopad` for the last row's filtered
+replay; the unfiltered 9 is `-gen-cost` (4346cda), whose padding arm b492165 reproduced exactly. So, filtered alike, a
+stream-blind source beats the stream on salts 1-10: the non-padding laws most (better than the filtered stream on 6
+salts, equal on 4, never worse), with 2478 rules against 895 at 26 times the filtered stream's loop time and about 12
+times the unfiltered stream's (86 s). Their mines' time is the join's searches (11 times the stream mine's on salt 6,
 cmp3d). That cost decides this spec's count rule and its first sweep. Salts 11-20 have not been run for them; on those
 salts the unfiltered mixed grammar tied the stream (16 against 15) where salts 1-10 had it far ahead.
 

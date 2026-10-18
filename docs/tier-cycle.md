@@ -4589,7 +4589,8 @@ the note above; salts 1-10, sequential, CPU 13% at start, RTP off):
 | the same, as many other laws dropped instead | 83 | 47 | 9 | 27 | 709 | 5 |
 | mixed grammar, replayed | 12 | 8 | 4 | 0 | 1889 | 413 |
 | mixed grammar, class twins dropped | 21 | 16 | 4 | 1 | 1859 | 359 |
-| non-padding laws (`-gen-cost`, not replayed; 22 twins) | 9 | | | | 2483 | 1373 |
+| non-padding laws (`-gen-cost`, another build) | 9 | 8 | 0 | 1 | 2483 | 1373 |
+| non-padding laws, class twins dropped (22; `-gen-nopad`) | 10 | 9 | 0 | 1 | 2478 | 1043 |
 
 - **The replays are exact within a build, not across builds.** A second run of the stream replay's salt 1 gave the same
   rule files; against `-gen-src` (da775e7 plus the probe), 6 of the stream replay's 90 rule files and 2 of the
@@ -4598,7 +4599,10 @@ the note above; salts 1-10, sequential, CPU 13% at start, RTP off):
   dropping the padding laws' costs 16 to 40 (with the strip's twins alone, 30). The mixed grammar loses 12 to 21.
 - **Fairly filtered, the padding laws lose to the stream:** 40 against 29, worse on 6 salts, better on 3, equal on 1.
   The mixed grammar beats the stream (21 against 29: better on 6, worse on 2, equal on 2), at 9 times its loop time. The
-  non-padding laws, which hide almost no twins, have the lowest M (9) at about 34 times the filtered stream's loop time.
+  non-padding laws, which hide almost no twins, have the lowest M: replayed with their 22 twins dropped (run
+  `2026-10-17-gen-nopad`, same build and script, salts 1-10, CPU 14% at start, RTP off), 10 against the stream's 29
+  (better on 6 salts, equal on 4, never worse), with 2478 rules against 895, at 26 times the filtered stream's loop
+  time (1043 against 40 s).
 - **Trivial laws barely pay:** a law whose sides normalize to the same term (24-42% of the padding laws per family)
   is an identity of two-leaf nodes in context. Dropping them costs 40 to 42 and saves little time. The control (dropping
   as many of the other laws) is matched on cmp3d only: add3 and sbo3 have fewer other laws than trivial ones, so it
