@@ -4679,6 +4679,38 @@ its scope serves by value-class twin key (`ClassReps`) and by skeleton. Cold swe
   `ABLATE=gen`. Ref mines and warm loops take extras too but are unmeasured (the spec's step 4, `PARKED.md`): until
   then, sweeps with a `mines` stage or warm loops run with `ABLATE=gen` or after a 1-salt probe.
 
+*Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
+(`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
+falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
+- **Probe** (run `2026-10-18-join-count`, `patches/join_count.patch` on 6e621ca, salt 6 `cold:cmp3d` with extras, CPU
+  33-100% from other sessions): the first mine made 490628 searches, 816.5 s searching (307.6 s failed), and built 387M
+  neighbours, 162M (42%) new and 224M (58%) a term its side had reached, at 649M spine rebuilds (1.7 per neighbour). An
+  operator-invariant cut (a pair whose sides differ in an invariant no step changes) fired 0 times in every mine, so
+  option 3 is out: only pairs equal on random inputs are searched.
+- **Lazy join steps** (7ee55b3). Each interned term carries `sh`, a structural hash from its children's (`sh_op`), so the
+  hash of a step's term follows from its match and place without making it (`subst_sig`, `place_sh`). `join_search`
+  keys its seen sets by `sh` (a `HashTable`), checks a hit with `is_step` (the siblings along the place by address, the
+  replacement against the pattern), makes only new terms and keeps each step as (term, place, step index); plans are
+  built only on the met path, by matching again (`step_plan`). The steps come in the order `join_steps` gave them and
+  the seen sets fill alike, so the search is the same: a test compared it with the old one (plans, examined terms,
+  reached counts) on 300 pairs before the old one was deleted. Salt 1, 1 lane, CPU 6% and 17%, RTP off: cold loop
+  seconds 324 to 148 (wall 331 to 154 s), and cmp3d 15-1's first mine 251.5 to 109.9 s searching; every rule file of
+  the default sweep (`ABLATE=gen`) and the cold sweep (extras on) unchanged (`-lazy-join`, `-eager-join-ab`). The gain
+  is about twice the survey's bound (35-40%). A guess, not profiled: fewer `Term::op` calls also mean fewer per-thread
+  cache evictions, so fewer shared-table lookups and lock waits under the mine's 6 threads.
+- **Lanes** (397dcf2). The driver ran a sweep's loops one at a time, though each stage reads only what earlier stages
+  wrote. `sweep` now runs a stage's mines, then its loops, `SWEEP_LANES` (default 2) at a time (`run_lanes`), each lane
+  with its own worker and lemma file, rows in the old order. Salt 1 cold, eager join: 386 s at 1 lane, 236, 223 and 199
+  s at 2; the default sweep (`ABLATE=gen`) takes 5 s either way. The lazy join at 2 lanes: cold 99 s (`-lazy-lanes2`).
+  Timings use `SWEEP_LANES=1`.
+- **A timing one-off.** One of the three 2-lane cold sweeps (`-lanes-check`) differed in one loop (cmp3d 15-2: rules
+  62 against 58); the other two (`-cold-l2-repeat`) and two 1-lane sweeps (`-cold-repeat`) agree. A loop takes no
+  history from its lane (`-loop-history`: its cmp3d loops give the same rules at 1 lane, 3 lanes and with
+  `LEMMA_RECHECK=1`), and the differing loop's laws files are identical: its first mine chose differently from the same
+  input. Lanes share only CPU time with each other, so the miner is sensitive to timing under load. Where is open
+  (`PARKED.md`, "The miner's choices depend on timing"); the mine's join counts also differ by about 70 searches between
+  runs with equal rules, the same number moving between searches and memo hits, consistent with per-thread memos.
+
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three

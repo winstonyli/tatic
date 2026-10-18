@@ -1,0 +1,2 @@
+cold 1, lanes 1: exit 0 wall 366 s
+cold: cold.tsv cold_add3_1_none/rules.txt cold_add3_2_none/rules.txt cold_add3_3_none/rules.txt cold_cmp3d_1_none/rules.txt cold_cmp3d_2_none/rules.txt cold_cmp3d_3_none/rules.txt cold_sbo3_1_none/rules.txt cold_sbo3_2_none/rules.txt cold_sbo3_3_none/rules.txt 

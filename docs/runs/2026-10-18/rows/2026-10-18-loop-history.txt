@@ -1,0 +1,6 @@
+one: exit 0 wall 223 s
+fresh: exit 0 wall 114 s
+recheck: exit 0 wall 202 s
+cold_cmp3d_cmp3d_1_none/rules.txt: one same, recheck same
+cold_cmp3d_cmp3d_2_none/rules.txt: one same, recheck same
+cold_cmp3d_cmp3d_3_none/rules.txt: one same, recheck same

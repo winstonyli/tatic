@@ -1,0 +1,4 @@
+all 1, lanes 1: exit 0 wall 4 s
+all: cold.tsv mines.tsv own.tsv cold_add3_1_none/rules.txt cold_add3_2_none/rules.txt cold_add3_3_none/rules.txt cold_cmp3d_1_none/rules.txt cold_cmp3d_2_none/rules.txt cold_cmp3d_3_none/rules.txt cold_sbo3_1_none/rules.txt cold_sbo3_2_none/rules.txt cold_sbo3_3_none/rules.txt lib_add3/rules.txt lib_cmp3d/rules.txt lib_mix3/rules.txt lib_sbo3/rules.txt own_add3_1_add3/rules.txt own_add3_2_add3/rules.txt own_add3_3_add3/rules.txt own_cmp3d_1_cmp3d/rules.txt own_cmp3d_2_cmp3d/rules.txt own_cmp3d_3_cmp3d/rules.txt own_sbo3_1_sbo3/rules.txt own_sbo3_2_sbo3/rules.txt own_sbo3_3_sbo3/rules.txt 
+cold 1, lanes 1: exit 0 wall 154 s
+cold: cold.tsv cold_add3_1_none/rules.txt cold_add3_2_none/rules.txt cold_add3_3_none/rules.txt cold_cmp3d_1_none/rules.txt cold_cmp3d_2_none/rules.txt cold_cmp3d_3_none/rules.txt cold_sbo3_1_none/rules.txt cold_sbo3_2_none/rules.txt cold_sbo3_3_none/rules.txt 

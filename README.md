@@ -77,7 +77,9 @@ that produced them under `docs/runs/`.
   holds six general reassociation rules that cut machine proofs on add3, mix3
   and sbo3 streams), and `SPLIT=0|1` (one structure-based half of the laws).
   `driver::sweep` runs the experiments of `docs/loop-result.md` (ref mines,
-  then own, cold, cross-family and pooled loops) with `SWEEP_OUT=<dir>`.
+  then own, cold, cross-family and pooled loops) with `SWEEP_OUT=<dir>`, a
+  stage's mines, then its loops, `SWEEP_LANES` (default 2; 1 for timings) at a
+  time.
 - The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
   settings from `RULEMINER_*` environment variables. Options added for this
   experiment, off by default unless noted: `PHASE` (residue class of a strided law

@@ -1,0 +1,6 @@
+all lanes 1: exit 0 wall 5 s
+all lanes 2: exit 0 wall 5 s
+all: same 
+cold lanes 1: exit 0 wall 386 s
+cold lanes 2: exit 0 wall 236 s
+cold: cold.tsv cold_cmp3d_2_none/rules.txt 

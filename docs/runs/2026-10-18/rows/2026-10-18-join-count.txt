@@ -1,0 +1,18 @@
+
+running 1 test
+GEN_LAWS cmp3d: 4805 laws in 0.6s
+GEN C:\Users\Winston Li\AppData\Local\claude-runs\tatic\2026-10-18-join-count\sweep\cold_cmp3d_cmp3d_1_none: L 4801 n 768 source grammar
+GEN_EXTRA 0: 768 laws
+test driver::sweep has been running for over 60 seconds
+GEN_EXTRA 1: 768 laws
+mode=loop B=100 K=3 offset=0 total_M=32 rules=74 exhausted=0 joined=32 reached=2939
+GEN_EXTRA 0: 768 laws
+GEN_EXTRA 1: 768 laws
+mode=loop B=100 K=3 offset=0 total_M=19 rules=51 exhausted=0 joined=51 reached=3112
+GEN_EXTRA 0: 768 laws
+GEN_EXTRA 1: 768 laws
+mode=loop B=100 K=3 offset=0 total_M=36 rules=70 exhausted=0 joined=55 reached=4135
+test driver::sweep ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 164 filtered out; finished in 476.99s
+
