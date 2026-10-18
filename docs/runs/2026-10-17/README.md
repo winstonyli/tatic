@@ -82,6 +82,9 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
   `s08`/`s16` (`GEN_SHARED=1`), `m08` (`GEN_N=matched`) and `stream_<arm>` (`GEN_SOURCE=stream`). Prints M per family,
   rules and summed loop seconds. `scripts/same_arms.sh <dir a> <dir b>`: `same`, or the cold-stage files that differ
   (time columns aside).
+- `scripts/gen_pairs.py [--best <arm>] <run dir>...`: per arm, M per family, rules and loop seconds summed over its salts,
+  and its paired count (better, equal, worse) against the best generator arm (or `--best`). Run as `python -P <script>
+  ... < /dev/null`.
 
 | Run | Build | Script | Result |
 |---|---|---|---|
@@ -103,4 +106,6 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 | `2026-10-18-gen-check` | `bv_gen3.exe` | `gen_round.sh` with `ARMS="off legacy"`, salts 1-10 | off same as plain on 10 of 10; legacy same as `-gen-cost` nopad on 9 of 10 |
 | `2026-10-18-gen-check-s4-padfile`, `-s4-again` | `bv_padfile.exe`; `bv_gen3.exe` | `gen_cost.sh` nopad, salt 4; `gen_round.sh` legacy, salt 4 | both same as `-gen-check`'s legacy_4: salt 4's one differing rule file (law files all equal) is build drift since 4346cda |
 | `2026-10-18-gen-matched-probe` | a5da697 (`bv_gen4.exe`) | `gen_round.sh` with `ARMS="m08 stream_m08"`, salt 1 | n 48 / 7 / 27; M m08 3, stream_m08 13 (off's 13); wall s 5 / 6 |
+| `2026-10-18-gen-round-a` | `bv_gen4.exe` | `gen_round.sh` with `ARMS="f04 f08 s08 s16 m08 stream_m08"`, salts 1-10 (with `-gen-check`'s off and legacy) | best s16 M 5 (loop s 4029); legacy 9, f08 17, s08 23, f04 35 (297 s), m08 88, stream_m08 92, off 120; no arm but s16 has worse ≤ better against it |
+| `2026-10-18-gen-round-b` | the same | `gen_round.sh` with `ARMS="s16 off m08 stream_m08"`, salts 11-20 | over 20 salts: s16 M 11 (loop s 7786), m08 155, stream_m08 183, off 221; m08 against stream_m08 better 13, equal 2, worse 5; off on 11-20 = `-gen-salts` plain (101) |
 | `2026-10-17-join-time` | `bv_jtime.exe` | `join_time.sh`, salt 6, 4 reps; then by hand two `runs run` (job CPU, `job.txt`) and two PowerShell runs (`cpu.txt`, process CPU 0: the mine runs in a child) | same rules either way; join searches 84% of the stage's CPU, failed ones 26% |
