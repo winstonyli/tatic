@@ -1938,6 +1938,124 @@ pub fn grammar_laws_have_no_padding() {
     }
 }
 
+/// The width-4 value classes of the leaves and the two-leaf terms (the law generator's twin filter,
+/// docs/superpowers/specs/2026-10-17-law-generator-design.md §1, `scripts/twin_wide.py`'s `REP`).
+pub struct ClassReps {
+    memo: ValueMemo<u8>,
+    /// a class's values to its representative
+    rep: hashbrown::HashMap<Vec<u8>, Term>,
+    /// two-leaf nodes already looked up
+    done: hashbrown::HashMap<Term, Term>,
+}
+
+impl ClassReps {
+    pub fn new() -> ClassReps {
+        let mut memo = ValueMemo::exhaustive(4, 3);
+        let leaves = leaves3();
+        let mut two = vec![];
+        for o in [ADD, SUB, XOR, AND, OR] {
+            for a in &leaves {
+                for b in &leaves {
+                    two.push(mk(o, a, b));
+                }
+            }
+        }
+        two.extend(leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)));
+        two.sort_by_cached_key(|t| {
+            let s = t.show();
+            (s.len(), s)
+        });
+        let mut rep = hashbrown::HashMap::new();
+        // a leaf where the class has one (the first in x, y, z, 0, -1), else the least two-leaf term by (length, text)
+        for t in leaves.iter().chain(&two) {
+            rep.entry(memo.values(t).to_vec()).or_insert(*t);
+        }
+        ClassReps { memo, rep, done: Default::default() }
+    }
+
+    /// `t` with every node over two leaves (an `lt` aside), bottom-up, replaced by its class's representative.
+    pub fn normalize(&mut self, t: Term) -> Term {
+        let Node::Op(o, a, b) = *t.node() else { return t };
+        let (a, b) = (self.normalize(a), self.normalize(b));
+        let n = Term::op(o, a, b);
+        let leaf = |t: Term| !matches!(t.node(), Node::Op(..));
+        if o == LT || !leaf(a) || !leaf(b) {
+            return n;
+        }
+        if let Some(r) = self.done.get(&n) {
+            return *r;
+        }
+        let r = self.rep.get(self.memo.values(&n)).copied().unwrap_or(n);
+        self.done.insert(n, r);
+        r
+    }
+
+    /// A law's twin key: the least `a = b` text, over the six renamings of x, y, z and both side orders, of the law renamed
+    /// then normalized (renaming first, since a representative is not preserved by renaming); `None` if the law's sides
+    /// normalize to one term.
+    pub fn key(&mut self, a: &Term, b: &Term) -> Option<String> {
+        if self.normalize(*a) == self.normalize(*b) {
+            return None;
+        }
+        const PERMS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        fn renamed(t: Term, to: &[usize; 3]) -> Term {
+            match *t.node() {
+                Node::V(i) => Term::v(to[i]),
+                Node::Op(o, a, b) => Term::op(o, renamed(a, to), renamed(b, to)),
+                _ => t,
+            }
+        }
+        let mut best: Option<String> = None;
+        for p in &PERMS {
+            for (l, r) in [(a, b), (b, a)] {
+                let s = format!("{} = {}", self.normalize(renamed(*l, p)).show(), self.normalize(renamed(*r, p)).show());
+                if best.as_ref().is_none_or(|k| s < *k) {
+                    best = Some(s);
+                }
+            }
+        }
+        best
+    }
+}
+
+/// Normalization maps padding to its leaf, puts value-equal two-leaf nodes in one class, leaves nodes over a non-leaf and
+/// `lt` alone, and the key is the same for two laws that differ by renaming variables.
+#[test]
+pub fn normalize_maps_two_leaf_nodes_to_their_class() {
+    let mut c = ClassReps::new();
+    let mut n = |s: &str| c.normalize(parse_term(s)).show();
+    assert_eq!(n("sub(y, y)"), "0");
+    assert_eq!(n("add(x, 0)"), "x");
+    assert_eq!(n("xor(x, -1)"), n("sub(-1, x)"));
+    let r = n("or(z, x)");
+    assert_eq!(n("add(or(z, x), sub(sub(y, y), 0))"), format!("add({r}, 0)"), "the outer add is over a non-leaf");
+    assert_eq!(n("lt(x, x)"), "lt(x, x)");
+    let p = parse_term;
+    let swap = c.key(&p("sub(or(y, x), y)"), &p("and(y, z)"));
+    assert_eq!(c.key(&p("sub(or(x, y), x)"), &p("and(x, z)")), swap, "renaming x and y");
+    assert!(swap.is_some());
+    assert_eq!(c.key(&p("sub(y, y)"), &p("and(x, 0)")), None, "both sides normalize to 0");
+}
+
+/// On the probe's fixture (salt 1 of `-gen-cost`'s pad arm, cmp3d: mine 0's extras of phases 1-3 against the served laws of
+/// phases 1-3), the extras whose key is a served law's key are as many as `scripts/twin_wide.py` counts (`class`, trivial
+/// laws not counted).
+#[test]
+pub fn normalize_finds_the_probes_twins() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/runs/2026-10-17/fixtures/pad_1");
+    let laws = |p: std::path::PathBuf| -> Vec<(Term, Term)> {
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display())).lines().filter_map(|l| parse_law(l, 3)).collect()
+    };
+    let loops: Vec<std::path::PathBuf> = (1..=3).map(|p| dir.join(format!("cold_cmp3d_{p}_none"))).collect();
+    let served: Vec<(Term, Term)> = loops.iter().flat_map(|l| [0, 100, 200].map(|s| l.join(format!("laws_serve_{s}.txt")))).flat_map(laws).collect();
+    let extras: Vec<(Term, Term)> = loops.iter().flat_map(|l| laws(l.join("laws_extra_0.txt"))).collect();
+    assert_eq!((served.len(), extras.len()), (900, 1050));
+    let mut c = ClassReps::new();
+    let keys: HashSet<String> = served.iter().filter_map(|(a, b)| c.key(a, b)).collect();
+    let twins = extras.iter().filter(|(a, b)| c.key(a, b).is_some_and(|k| keys.contains(&k))).count();
+    assert_eq!(twins, 502, "twin_wide.py counts 502; find out which of the two is wrong before going on");
+}
+
 /// Variables per law of a family: the three-variable families against the two-variable rest.
 pub fn family_vars(family: &str) -> usize {
     if THREE_VAR_FAMILIES.contains(&family) { 3 } else { 2 }
