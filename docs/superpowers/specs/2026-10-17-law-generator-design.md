@@ -201,9 +201,9 @@ are heavy for `cargo test`, so its L, time and coverage are measured in step 4's
 
   It fails first on a stub that returns its input.
 - **`normalize_finds_the_probes_twins`:** fixtures committed under `docs/runs/2026-10-17/fixtures/` (a run folder can be
-  deleted by the retention rule): salt 1 of the `-gen-cost` padding arm, cmp3d, the 350 extras of phase 1 and the served
-  files of phases 1-3 (twins are rare in the non-padding laws, so the padding arm exercises the filter). Run over that
-  file's extras, not a scope list, the number of laws the Rust twin check drops (trivial laws not counted) equals
+  deleted by the retention rule): salt 1 of the `-gen-cost` padding arm, cmp3d, the extras of the phase 1-3 loops (1050) and their
+  served files (900 laws; twins are rare in the non-padding laws, so the padding arm exercises the filter). Run over those
+  extras, not a scope list, the number of laws the Rust twin check drops (trivial laws not counted) equals
   `scripts/twin_wide.py`'s class count for the loop, once the script has the renaming-first key (§1). A mismatch means
   one of the two is wrong; find out which before going on.
 - **`extra_slices(len, loops, mines_per_loop, n, fresh)`**, a pure function returning each mine's range in the filtered
