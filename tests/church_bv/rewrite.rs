@@ -2784,8 +2784,8 @@ impl JoinStep {
         JoinStep { from, path: up.iter().rev().fold(0, |p, e| p << 1 | e.3 as u64), depth: up.len() as u8, eq: eq as u32 }
     }
     /// The term the step reaches, by its law's side `to` under the match `sub`.
-    fn reach(self, to: Term, sub: &Sub) -> Reach<'_> {
-        Reach::At(self.from, self.path, self.depth, to, sub)
+    fn at(self, to: Term, sub: &Sub) -> At<'_> {
+        At { from: self.from, path: self.path, depth: self.depth, to, sub }
     }
 }
 
@@ -2845,49 +2845,77 @@ fn subst_sig(p: &Term, sub: &[Option<Term>]) -> (u64, usize) {
 /// A pattern's match: what each variable is bound to.
 type Sub = [Option<Term>; RULE_VARS];
 
-/// A term the join reached, made or not: a made term, `subst_pat(p, sub)`, or `from` with the subterm `depth` children
-/// down (going right at depth `i` where bit `i` of `path` is set) replaced by `subst_pat(p, sub)`.
-#[derive(Clone, Copy)]
-enum Reach<'a> {
-    Term(Term),
-    Pat(Term, &'a Sub),
-    At(Term, u64, u8, Term, &'a Sub),
+/// Whether `t` is `subst_pat(p, sub)`.
+fn is_subst(t: Term, p: &Term, sub: &Sub) -> bool {
+    match (*p.node(), *t.node()) {
+        (Node::V(i), _) => sub[i] == Some(t),
+        (Node::Op(o, pa, pb), Node::Op(q, a, b)) => o == q && is_subst(a, &pa, sub) && is_subst(b, &pb, sub),
+        (Node::Op(..), _) => false,
+        _ => t == *p,
+    }
 }
 
-impl Reach<'_> {
-    /// The root: a made term, or an operator over two reaches.
-    fn head(self) -> Result<Term, (usize, Self, Self)> {
-        match self {
-            Reach::Term(t) => Ok(t),
-            Reach::Pat(p, sub) => match *p.node() {
-                Node::V(i) => Ok(sub[i].expect("bound")),
-                Node::Op(o, a, b) => Err((o, Reach::Pat(a, sub), Reach::Pat(b, sub))),
-                _ => Ok(p),
-            },
-            Reach::At(_, _, 0, p, sub) => Reach::Pat(p, sub).head(),
-            Reach::At(from, path, depth, p, sub) => {
-                let Node::Op(o, a, b) = *from.node() else { unreachable!("a step's path stays in the term") };
-                let down = |c| Reach::At(c, path >> 1, depth - 1, p, sub);
-                Err(if path & 1 == 1 { (o, Reach::Term(a), down(b)) } else { (o, down(a), Reach::Term(b)) })
-            }
-        }
-    }
-    /// Whether the two are the same term, without making either: made subterms compare by pointer.
-    fn same(self, other: Reach) -> bool {
-        let split = |t: Term| match *t.node() {
-            Node::Op(o, a, b) => Some((o, Reach::Term(a), Reach::Term(b))),
-            _ => None,
-        };
-        match (self.head(), other.head()) {
-            (Ok(t), Ok(u)) => t == u,
-            (Ok(t), Err((o, l, r))) | (Err((o, l, r)), Ok(t)) => split(t).is_some_and(|(q, a, b)| q == o && a.same(l) && b.same(r)),
-            (Err((o, a, b)), Err((q, l, r))) => o == q && a.same(l) && b.same(r),
-        }
+/// The term a join step reaches, not made: `from` with the subterm `depth` children down (going right at depth `i` where
+/// bit `i` of `path` is set) replaced by `subst_pat(to, sub)`.
+#[derive(Clone, Copy)]
+struct At<'a> {
+    from: Term,
+    path: u64,
+    depth: u8,
+    to: Term,
+    sub: &'a Sub,
+}
+
+impl<'a> At<'a> {
+    /// One level down the path (`depth > 0`): the root's operator, its child off the path, whether the path goes right,
+    /// and the step from the child on it.
+    fn down(self) -> (usize, Term, bool, At<'a>) {
+        let Node::Op(o, a, b) = *self.from.node() else { unreachable!("a step's path stays in the term") };
+        let right = self.path & 1 == 1;
+        let next = At { from: if right { b } else { a }, path: self.path >> 1, depth: self.depth - 1, ..self };
+        (o, if right { a } else { b }, right, next)
     }
     fn make(self) -> Term {
-        match self.head() {
-            Ok(t) => t,
-            Err((o, a, b)) => Term::op(o, a.make(), b.make()),
+        if self.depth == 0 {
+            return subst_pat(&self.to, self.sub);
+        }
+        let (o, off, right, next) = self.down();
+        let u = next.make();
+        if right { Term::op(o, off, u) } else { Term::op(o, u, off) }
+    }
+    /// Whether `u` is the step's term: down `u` along the path, the children off it compared by pointer, then the pattern.
+    fn is(mut self, mut u: Term) -> bool {
+        while self.depth > 0 {
+            let (o, off, right, next) = self.down();
+            match *u.node() {
+                Node::Op(q, l, r) if q == o && (if right { l } else { r }) == off => u = if right { r } else { l },
+                _ => return false,
+            }
+            self = next;
+        }
+        is_subst(u, &self.to, self.sub)
+    }
+    /// Whether two steps reach the same term: down both paths while they agree; where they part, each side's child off
+    /// its path against the other's step, and where one reaches its pattern, that pattern's term (made) against the other.
+    fn same(mut self, mut other: At) -> bool {
+        loop {
+            if self.depth == 0 {
+                return other.is(subst_pat(&self.to, self.sub));
+            }
+            if other.depth == 0 {
+                return self.is(subst_pat(&other.to, other.sub));
+            }
+            let ((o, a, ra, na), (q, b, rb, nb)) = (self.down(), other.down());
+            if o != q {
+                return false;
+            }
+            if ra != rb {
+                return na.is(b) && nb.is(a);
+            }
+            if a != b {
+                return false;
+            }
+            (self, other) = (na, nb);
         }
     }
 }
@@ -2922,23 +2950,31 @@ enum Reached {
 }
 
 impl Reached {
-    fn reach<'a>(&'a self, table: &RuleTable) -> Reach<'a> {
+    /// The made term, or the step's.
+    fn term<'a>(&'a self, table: &RuleTable) -> Result<Term, At<'a>> {
         match self {
-            Reached::Side(t) => Reach::Term(*t),
-            Reached::Step(step, sub) => step.reach(table.join[step.eq as usize].to, sub),
+            Reached::Side(t) => Ok(*t),
+            Reached::Step(step, sub) => Err(step.at(table.join[step.eq as usize].to, sub)),
         }
+    }
+    fn make(&self, table: &RuleTable) -> Term {
+        self.term(table).unwrap_or_else(At::make)
+    }
+    /// Whether this is the term `to` reaches.
+    fn same(&self, table: &RuleTable, to: At) -> bool {
+        self.term(table).map_or_else(|at| at.same(to), |t| to.is(t))
     }
 }
 
 /// `join_eq`'s search, adding the terms it examined to `examined`. A step's term is looked up among those reached by its
-/// `sh` and `Reach::same` without being made, and is made only when the search expands it or its path meets (37% of the
-/// step terms a sweep made were ever expanded: docs/tier-cycle.md, "Counts behind those levers"); plans are made only on
-/// the path that meets.
+/// full `sh` and `Reached::same` without being made, and is made only when the search expands it or its path meets (37%
+/// of the step terms a sweep made were ever expanded: docs/tier-cycle.md, "Counts behind those levers"); plans are made
+/// only on the path that meets.
 fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
     let (cap, visit, t0) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize), std::time::Instant::now());
     // each reached term by its `sh`
     type Seen = hashbrown::HashTable<(u64, Reached)>;
-    let get = |seen: &Seen, t: Term, table: &RuleTable| match seen.find(t.sh(), |e| e.1.reach(table).same(Reach::Term(t))).expect("reached").1 {
+    let get = |seen: &Seen, t: Term, table: &RuleTable| match seen.find(t.sh(), |e| e.0 == t.sh() && e.1.term(table).map_or_else(|at| at.is(t), |u| u == t)).expect("reached").1 {
         Reached::Side(_) => None,
         Reached::Step(step, _) => Some(step),
     };
@@ -2961,24 +2997,24 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
             let s = (front[0].len() > front[1].len()) as usize;
             for r in std::mem::take(&mut front[s]) {
-                let t = r.reach(table).make();
+                let t = r.make(table);
                 let mut met = None;
                 let (here, there) = seen.split_at_mut(1);
                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
                 join_walk(t, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
                     let e = &table.join[eq];
                     let (h, size) = subst_sig(&e.to, sub);
-                    if size > cap || h == x.sh() && Reach::Pat(e.to, sub).same(Reach::Term(x)) {
+                    if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
                         return true;
                     }
                     let h = place_sh(up, h);
                     let step = JoinStep::new(t, up, eq);
-                    let to = step.reach(e.to, sub);
-                    if let Some((_, r)) = other.find(h, |c| c.1.reach(table).same(to)) {
+                    let to = step.at(e.to, sub);
+                    if let Some((_, r)) = other.find(h, |c| c.0 == h && c.1.same(table, to)) {
                         met = Some((step, *r));
                         return false;
                     }
-                    if mine.find(h, |c| c.1.reach(table).same(to)).is_none() {
+                    if mine.find(h, |c| c.0 == h && c.1.same(table, to)).is_none() {
                         let r = Reached::Step(step, *sub);
                         mine.insert_unique(h, (h, r), |c| c.0);
                         front[s].push(r);
@@ -2986,7 +3022,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
                     true
                 });
                 let Some((step, r)) = met else { continue };
-                let u = r.reach(table).make();
+                let u = r.make(table);
                 // a met search's result rests on its path only: keep what was examined at the path's terms
                 if let Some(x) = examined {
                     x.clear();
@@ -3187,36 +3223,43 @@ fn join_eq_closes_an_equal_pair_by_rule_and_comm_steps() {
     })
 }
 
-/// A join step is known before it is made: `subst_sig` and `place_sh` give the `sh` and size of the term `Reach::make`
-/// makes, and `Reach::same` knows that term from its step and match, against a made term or another step's, and only it.
+/// A join step is known before it is made: `subst_sig` and `place_sh` give the `sh` and size of the term `At::make`
+/// makes, and `At::is` and `At::same` know that term from its step and match, against a made term or another step's, and
+/// only it.
 #[test]
 fn a_join_step_is_known_before_it_is_made() {
     let (x, z) = (Term::v(0), Term::v(2));
     let (p, inner) = (parse_term("add(sub(x, y), add(y, -1))"), parse_term("xor(and(z, x), 0)"));
     let mut sub = [None; RULE_VARS];
     (sub[0], sub[1]) = (Some(parse_term("add(y, z)")), Some(inner));
-    let u = Reach::Pat(p, &sub).make();
-    assert!(u == subst_pat(&p, &sub) && subst_sig(&p, &sub) == (u.sh(), u.size()));
+    let u = subst_pat(&p, &sub);
+    assert!(subst_sig(&p, &sub) == (u.sh(), u.size()) && is_subst(u, &p, &sub) && !is_subst(inner, &p, &sub));
     // from `and(or(x, inner), z)`, left then right: `inner` becomes `u`
     let from = Term::op(AND, Term::op(OR, x, inner), z);
     let up = [(AND, Term::op(OR, x, inner), z, false), (OR, x, inner, true)];
-    let step = JoinStep::new(from, &up, 0);
-    let t = step.reach(p, &sub).make();
+    let step = JoinStep::new(from, &up, 0).at(p, &sub);
+    let t = step.make();
     assert!(t == Term::op(AND, Term::op(OR, x, u), z) && place_sh(&up, u.sh()) == t.sh());
-    let made = |t: Term| Reach::Term(t);
-    assert!(step.reach(p, &sub).same(made(t)) && made(t).same(step.reach(p, &sub)));
-    assert!(!step.reach(p, &sub).same(made(Term::op(AND, Term::op(OR, x, u), x))), "another sibling");
-    assert!(!step.reach(p, &sub).same(made(from)), "another replacement");
-    assert!(!step.reach(p, &sub).same(made(Term::op(AND, Term::op(XOR, x, u), z))), "another operator");
-    // the same term by another step: from another term, and at another depth with another pattern
+    assert!(step.is(t));
+    assert!(!step.is(Term::op(AND, Term::op(OR, x, u), x)), "another sibling");
+    assert!(!step.is(from), "another replacement");
+    assert!(!step.is(Term::op(AND, Term::op(XOR, x, u), z)), "another operator");
+    // the same term by another step: from another term, at another depth with another pattern, down the other child
+    let both = |a: At, b: At| a.same(b) && b.same(a);
     let other = JoinStep::new(Term::op(AND, Term::op(OR, x, x), z), &[(AND, Term::op(OR, x, x), z, false), (OR, x, x, true)], 0);
-    assert!(step.reach(p, &sub).same(other.reach(p, &sub)));
+    assert!(both(step, other.at(p, &sub)));
     let (q, mut sub2) = (parse_term("or(x, y)"), [None; RULE_VARS]);
     (sub2[0], sub2[1]) = (Some(x), Some(u));
-    let shallow = JoinStep::new(Term::op(AND, z, z), &[(AND, z, z, false)], 0);
-    assert!(shallow.reach(q, &sub2).same(step.reach(p, &sub)) && step.reach(p, &sub).same(shallow.reach(q, &sub2)));
-    let wrong = JoinStep::new(Term::op(AND, z, x), &[(AND, z, x, false)], 0);
-    assert!(!wrong.reach(q, &sub2).same(step.reach(p, &sub)), "another sibling, both steps");
+    let shallow = JoinStep::new(Term::op(AND, z, z), &[(AND, z, z, false)], 0).at(q, &sub2);
+    assert!(both(shallow, step));
+    let wrong = JoinStep::new(Term::op(AND, z, x), &[(AND, z, x, false)], 0).at(q, &sub2);
+    assert!(!wrong.same(step) && !step.same(wrong), "another sibling, both steps");
+    // `and(u, or(x, u))` by a step down the right child and one down the left
+    let right = JoinStep::new(Term::op(AND, u, z), &[(AND, u, z, true)], 0).at(q, &sub2);
+    let left = JoinStep::new(Term::op(AND, z, Term::op(OR, x, u)), &[(AND, z, Term::op(OR, x, u), false)], 0).at(p, &sub);
+    assert!(right.make() == Term::op(AND, u, Term::op(OR, x, u)) && both(right, left));
+    let off = JoinStep::new(Term::op(AND, z, Term::op(OR, x, x)), &[(AND, z, Term::op(OR, x, x), false)], 0).at(p, &sub);
+    assert!(!right.same(off) && !off.same(right), "paths apart, another sibling");
 }
 
 #[test]
