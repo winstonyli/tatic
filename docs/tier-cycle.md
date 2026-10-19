@@ -4825,6 +4825,16 @@ round where it ran under 16.5% others against 6.6%; median wall 48.8 against 50.
 Its test runs on every match before the cap and identity filters, and a walk to the reached subterm per expanded term,
 which cost more than the signature and lookup it saved on 14% of candidates (unprofiled).
 
+*Profile with the spine deferral (2026-10-19, runs `2026-10-19-spineprof` and `-mainprof3`, `lazy_prof.sh` back to back,
+others 6% and 3%, the same 897 k searches reaching 232 M terms).* The visit fell from 96.9 k samples to 76.6 k (`place`'s
+30.6 k gone), and making the popped terms' spines (`Spine::make`) costs back 14.0 k, so `Term::op` went from 17.9% to 11.4%
+of busy samples. But the whole profile has 249.5 k busy samples against 241.1 k, and the walk outside the visit, the same
+code in both, took 114.5 k against 104.9 k: this one-lane profile's noise is about as large as the deferral's net (about 6 k),
+so it neither confirms nor contradicts the 8% of the quiet two-lane A/B. What is left of the join, by self samples:
+`match_pat` 16.7% (inclusive 17.7%); `JoinEq::min_size` about 5.5% (`Term::size` 3.0% and `map_or` 2.5%, once per indexed
+rule per walked subterm); `subst_sig` 7.7% inclusive; `PatIndex::get` 3.3%; the hash tables (the seen tables in the visit,
+`examined` in the walk) a few percent between them.
+
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
 every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule
