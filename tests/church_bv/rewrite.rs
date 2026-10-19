@@ -1323,26 +1323,64 @@ fn class(t: &Term) -> usize {
 /// Patterns indexed by what they can match: for each class of term (`class`), the patterns in order whose root can match such
 /// a term, each with the shape bits (`Term::needs`) that a match needs at each of the term's two operands, so the index
 /// rules out a pattern down to its grandchildren (an operand's shape has its own class's bit, so its needs check its class
-/// too). Keyed by the root operator alone, `rule_step_in` called `match_pat` on 16.7 rules a call, 31M a sweep
+/// too), and the pairs of positions within depth 2 (`shallow`) where it has one subpattern (a repeated variable, say),
+/// which a match must fill with one subterm, terms being hash-consed.
+/// Keyed by the root operator alone, `rule_step_in` called `match_pat` on 16.7 rules a call, 31M a sweep
 /// (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching"); with the operands' classes alone, 31% of the
-/// join's matcher calls failed at the grandchildren and 8.5% at a leaf ("Why the join's matches fail"). The join's index
-/// carries each step's `Need`, so a step over the cap is skipped without loading the step.
+/// join's matcher calls failed at the grandchildren and 8.5% at a leaf ("Why the join's matches fail"), and with the shape
+/// alone, 48% on a repeated variable within depth 2 ("Which repeated-variable failures the index could reject"). The
+/// join's index carries each step's `Need`, so a step over the cap is skipped without loading the step.
 struct PatIndex<K = ()> {
     by_class: [Vec<Entry<K>>; CLASSES],
+    /// each class's pairs that some entry needs equal, so `get` compares only those
+    pairs: [u16; CLASSES],
 }
 
-/// A pattern's index, the shape bits it needs at the root's two operands (none for a leaf), and what it carries.
-type Entry<K> = (u32, [u64; 2], K);
+/// A pattern's index, the shape bits it needs at the root's two operands (none for a leaf), the pairs of `shallow`
+/// positions that must hold one subterm (bits of `PAIRS`), and what it carries.
+type Entry<K> = (u32, [u64; 2], u16, K);
+
+/// The positions within depth 2 of `t`'s root that `PatIndex` compares: its operands, then their operands (None where an
+/// operand is a leaf, or for a leaf).
+fn shallow(t: &Term) -> [Option<Term>; 6] {
+    let Node::Op(_, a, b) = *t.node() else { return [None; 6] };
+    let kids = |c: Term| match *c.node() {
+        Node::Op(_, x, y) => [Some(x), Some(y)],
+        _ => [None; 2],
+    };
+    let ([aa, ab], [ba, bb]) = (kids(a), kids(b));
+    [Some(a), Some(b), aa, ab, ba, bb]
+}
+
+/// The pairs of `shallow` positions, one bit each.
+const PAIRS: [(usize, usize); 15] = {
+    let (mut p, mut i, mut k) = ([(0, 0); 15], 0, 0);
+    while i < 6 {
+        let mut j = i + 1;
+        while j < 6 {
+            p[k] = (i, j);
+            (j, k) = (j + 1, k + 1);
+        }
+        i += 1;
+    }
+    p
+};
 
 impl<K: Copy> PatIndex<K> {
     /// Each pattern with what its entry carries (`K`), so a caller can drop it before looking the pattern up.
     fn new<'a>(pats: impl Iterator<Item = (usize, &'a Term, K)>) -> PatIndex<K> {
-        let mut ix = PatIndex { by_class: std::array::from_fn(|_| vec![]) };
+        let mut ix = PatIndex { by_class: std::array::from_fn(|_| vec![]), pairs: [0; CLASSES] };
         for (i, p, k) in pats {
             match *p.node() {
-                Node::Op(_, a, b) => ix.by_class[class(p)].push((i as u32, [a.needs(), b.needs()], k)),
-                Node::V(_) => ix.by_class.iter_mut().for_each(|c| c.push((i as u32, [0; 2], k))),
-                Node::Zero | Node::Ones => ix.by_class[class(p)].push((i as u32, [0; 2], k)),
+                Node::Op(_, a, b) => {
+                    let at = shallow(p);
+                    let same = |&(x, y): &(usize, usize)| matches!((at[x], at[y]), (Some(u), Some(v)) if u == v);
+                    let pairs = PAIRS.iter().enumerate().filter(|(_, q)| same(q)).fold(0, |m, (b, _)| m | 1 << b);
+                    ix.by_class[class(p)].push((i as u32, [a.needs(), b.needs()], pairs, k));
+                    ix.pairs[class(p)] |= pairs;
+                }
+                Node::V(_) => ix.by_class.iter_mut().for_each(|c| c.push((i as u32, [0; 2], 0, k))),
+                Node::Zero | Node::Ones => ix.by_class[class(p)].push((i as u32, [0; 2], 0, k)),
             }
         }
         ix
@@ -1350,13 +1388,22 @@ impl<K: Copy> PatIndex<K> {
 
     /// The patterns that can match `t`, in order, each with its entry's `K`.
     fn get(&self, t: &Term) -> impl Iterator<Item = (usize, K)> + '_ {
+        let c = class(t);
         let [sa, sb] = match *t.node() {
             Node::Op(_, a, b) => [a.shape(), b.shape()],
             _ => [0; 2],
         };
-        // the missing bits of both, one test without branches (an `all` over three was 5.6% of the sweep's samples)
-        let fits = move |e: &&Entry<K>| (e.1[0] & !sa) | (e.1[1] & !sb) == 0;
-        self.by_class[class(t)].iter().filter(fits).map(|&(i, _, k)| (i as usize, k))
+        // which needed pairs differ; a position the term lacks is a pattern's only where the shape rules the pattern out
+        let (at, mut need, mut differs) = (shallow(t), self.pairs[c], 0u16);
+        while need != 0 {
+            let k = need.trailing_zeros() as usize;
+            let (x, y) = PAIRS[k];
+            differs |= ((at[x] != at[y]) as u16) << k;
+            need &= need - 1;
+        }
+        // one test without branches (an `all` over three shapes was 5.6% of the sweep's samples)
+        let fits = move |e: &&Entry<K>| (e.1[0] & !sa) | (e.1[1] & !sb) | (e.2 & differs) as u64 == 0;
+        self.by_class[c].iter().filter(fits).map(|&(i, _, _, k)| (i as usize, k))
     }
 }
 
@@ -3911,29 +3958,29 @@ fn rule_table_lists_every_matching_rule_in_order() {
     assert!(skipped > 0 && tried > 0, "{tried} tried, {skipped} skipped");
 }
 
-/// `PatIndex::get` offers every pattern that matches a term, and for a pattern that repeats no variable only those: it
-/// checks the shape down to the grandchildren, and a leaf's own class.
+/// `PatIndex::get` offers every pattern that matches a term, and for a pattern whose repeated variables all lie within
+/// depth 2 only those: it checks the shape down to the grandchildren, a leaf's own class, and that the positions within
+/// depth 2 holding one variable hold one subterm.
 #[test]
 fn pat_index_offers_only_matches_down_to_grandchildren() {
-    let pats: Vec<Term> = ["and(x, or(y, 0))", "and(x, or(y, z))", "0", "add(x, x)", "y", "-1", "or(and(x, -1), y)"].map(parse_term).to_vec();
+    let pats = ["and(x, or(y, 0))", "and(x, or(y, z))", "0", "add(x, x)", "y", "-1", "or(and(x, -1), y)", "or(and(x, y), and(y, x))", "or(x, and(x, 0))"];
+    let pats: Vec<Term> = pats.map(parse_term).to_vec();
     let ix = PatIndex::new(pats.iter().enumerate().map(|(i, p)| (i, p, ())));
     let mut terms = vec![Term::v(0), Term::v(1), Term::ZERO, Term::ONES];
     for _ in 0..2 {
         let level: Vec<Term> = terms.iter().flat_map(|&a| terms.iter().flat_map(move |&b| [ADD, AND, OR].map(|o| Term::op(o, a, b)))).collect();
         terms.extend(level);
     }
-    let (mut matched, mut repeated) = (0, 0);
+    let mut matched = vec![0; pats.len()];
     for t in &terms {
         let offered: Vec<usize> = ix.get(t).map(|(i, ())| i).collect();
         for (i, p) in pats.iter().enumerate() {
             let m = match_pat(p, t, &mut [None; RULE_VARS]);
-            assert!(!m || offered.contains(&i), "{} matches {} but is not offered", p.show(), t.show());
-            assert!(m || !offered.contains(&i) || i == 3, "{} is offered for {} but does not match", p.show(), t.show());
-            matched += m as usize;
-            repeated += (!m && offered.contains(&3) && i == 3) as usize;
+            assert!(m == offered.contains(&i), "{} {} {} but is{} offered", p.show(), if m { "matches" } else { "does not match" }, t.show(), if m { " not" } else { "" });
+            matched[i] += m as usize;
         }
     }
-    assert!(matched > 1000 && repeated > 100, "matched {matched}, repeated-variable misses offered {repeated}");
+    assert!(matched.iter().all(|&m| m > 0) && matched.iter().sum::<usize>() > 1000, "matched {matched:?}");
 }
 
 #[test]
