@@ -4912,7 +4912,19 @@ round took 6.7 s longer on average (7 of 8 rounds), and `bv_pairs` won all four 
 was within -2.8 to +3.9 s in the four it ran second. Averaging the two orders cancels the position: 5.7 s less (-2.7%),
 and every pairing of a first-run round with a second-run round is negative. Less than the 48% of `match_pat` calls
 of 13.9% self (`-fitsprof`) would predict (6.7%): the rejected calls fail at the binding, so each was cheaper
-than the average call. Kept.
+than the average call. Kept. The counters (run `2026-10-19-match-fail-pairs`, 75d4b99 + `match_fail.patch`, files the
+same as `-match-fail`) agree with the probe: `match_pat` calls 1.93 G to 1.01 G, binding failures 934 M to 16 M, depth-3
+failures 18.7 M to 12.5 M, the same 977.2 M matches; 97% of the calls left match.
+
+*Profile with the depth-2 pairs (2026-10-19, run `2026-10-19-pairsprof`, frames in
+`docs/runs/2026-10-19/rows/2026-10-19-pairsprof.txt`).* Started after a minute under 20% CPU, but the join's searches
+took 67.2 s against `-shapeprof`'s 55.4 s on one lane, so others came back: shares only, against `-fitsprof` (also
+loaded). `match_pat` inclusive 14.9% to 8.0%, while `PatIndex::get` went 2.2% to 6.8% (its own 0.8% to 3.0%: `shallow`'s
+grandchild loads and the `differs` loop, with `Option<Term>`'s `eq` 1.2%; `fits` 4.8% to 5.9%). So the pairs cost about
+two thirds of what they save in the matcher, which is the A/B's 2.7%. Working `differs` out only when a candidate with
+pairs passes the shape test would save part of that, unmeasured. What leads now: `join_walk` 72.2% inclusive (5.4% self),
+`Term::op` 13.6% inclusive (the interner's `eq` 4.4%, `Cells::find` 4.6%), `subst_sig` 8.7%, `rewrite_memo` 7.3%,
+`Spine::make` 6.7%, `sh_op` 5.8%.
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
