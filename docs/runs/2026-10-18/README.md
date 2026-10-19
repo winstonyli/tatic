@@ -97,6 +97,7 @@ directly (to tell numbered closures apart). `bv_lprof3` is 3a851d6 with `patches
 | `2026-10-18-lv2prof` | `bv_lv2prof` (984bde2 + `lazy_prof.patch`) | `lazy_prof.sh` | 525.6 k busy samples, join 441 k; `At::same` 15.0% (`At::is` 5.2%, made pattern subterms ~7%) |
 | `2026-10-18-mainprof2` | `bv_mainprof` | `lazy_prof.sh`, back to back with `-lv2prof` | 482.0 k busy samples, join 403 k; `is_step` 3.1%, `place` 15.0% |
 | `2026-10-18-dup-count` | `bv_dprobe` (645fb11 + `dup_count.patch`) | `match_count.sh`, salt 1 | duplicates 63.6% of candidates, 22.6% of them the predecessor; new terms' spine 1.80, pattern 1.62 nodes; `Term::op` thread-cache hit 74.0%, 77% of misses on a held slot |
+| `2026-10-18-cache-ways` | `bv_cways` (645fb11 + `cache_ways.patch`) | `match_count.sh`, salt 1 | shadow caches: 74.0% direct 2^16 (the real count), 77.5% 2-way and 79.7% 4-way at 512 KB, 79.5% at 2^17, 83.2% at 2^18 |
 | `2026-10-18-miner-serial-quiet` | `bv_both`, `bv_riv` | `quiet_ab.sh 1 3` (1 clean round by the 3 h deadline) | same files; wall 73.6/58.2 s, job CPU 301/291 s |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |

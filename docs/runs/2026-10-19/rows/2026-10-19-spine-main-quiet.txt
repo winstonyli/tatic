@@ -1,0 +1,25 @@
+arm	round	position	start	wall_s	jobcpu_s	procs	stragglers	peakproc_mb	peakjob_mb	other_pct	others	rtp	exit	clean
+bv_riv	1	1	1792418462	49.95	249.484	2	0	827	1212	5.1	0	False	0	true
+bv_spine	1	2	1792418512	45.62	229.484	2	0	632	953	4.5	0	False	0	true
+bv_spine	2	1	1792418618	42.81	212.781	2	0	643	965	3.1	0	False	0	true
+bv_riv	2	2	1792418661	46.70	232.562	2	0	840	1161	2.9	0	False	0	true
+bv_riv	3	1	1792418768	53.61	268.172	2	0	841	1162	11.0	0	False	0	true
+bv_spine	3	2	1792418821	52.49	260.141	2	0	636	958	10.8	0	False	0	true
+bv_spine	4	1	1792418935	51.96	260.469	2	0	638	960	16.5	0	False	0	true
+bv_riv	4	2	1792418987	51.83	261.734	2	0	853	1174	6.6	0	False	0	true
+round 1 done, clean rounds 1
+round 2 done, clean rounds 2
+round 3 done, clean rounds 3
+round 4 done, clean rounds 4
+bv_riv: jobcpu median=255.609 best=232.562 wall median=50.890 best=46.702
+bv_spine: jobcpu median=244.812 best=212.781 wall median=48.790 best=42.808
+bv_spine - bv_riv jobcpu: median -13.906, won 4/4: r1 -20.000, r2 -19.781, r3 -8.031, r4 -1.266
+bv_spine - bv_riv wall: median -2.506, won 3/4: r1 -4.334, r2 -3.894, r3 -1.117, r4 +0.134
+done 4/4 clean rounds
+bv_riv_2 vs bv_riv_1: same 
+bv_riv_3 vs bv_riv_1: same 
+bv_riv_4 vs bv_riv_1: same 
+bv_spine_1 vs bv_riv_1: same 
+bv_spine_2 vs bv_riv_1: same 
+bv_spine_3 vs bv_riv_1: same 
+bv_spine_4 vs bv_riv_1: same 

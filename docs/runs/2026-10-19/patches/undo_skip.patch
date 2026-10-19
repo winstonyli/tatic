@@ -1,0 +1,80 @@
+# undo_skip: commit 07e3416 on spine-view (dropped): the join skips the step that gives back the subterm the expanded term
+# was reached by. Exact but about 4% more job CPU than eabd8d5 alone (run 2026-10-19-spine-back-quiet). Applies on eabd8d5.
+From 07e341683791a3f4f2c1e13271dd286ba0ee5bbf Mon Sep 17 00:00:00 2001
+From: Winston Li <92236815+winstonyli@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 00:02:10 -0700
+Subject: [PATCH] church_bv: the join skips the step that gives back the
+ subterm the expanded term was reached by
+
+At the same place, that step reaches the term the expanded one came from, which its side has (and the other
+cannot, or the two would have met), so it is skipped before its signature and lookups; debug builds check it
+is a duplicate. 14.4% of the steps past the filters were these (run 2026-10-18-dup-count). Exact; timing
+pending.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ tests/church_bv/rewrite.rs | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index c2c78bc..9e3ef80 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2783,6 +2783,16 @@ impl JoinStep {
+     fn new(from: Term, up: &JoinPlace, eq: usize) -> JoinStep {
+         JoinStep { from, path: up.iter().rev().fold(0, |p, e| p << 1 | e.3 as u64), depth: up.len() as u8, eq: eq as u32 }
+     }
++    /// The subterm of `from` the step rewrites.
++    fn subterm(self) -> Term {
++        let (mut t, mut path) = (self.from, self.path);
++        for _ in 0..self.depth {
++            let Node::Op(_, a, b) = *t.node() else { unreachable!("a step's path stays in the term") };
++            t = if path & 1 == 1 { b } else { a };
++            path >>= 1;
++        }
++        t
++    }
+     /// The term the step reaches, its rewritten subterm `at` made.
+     fn spine(self, at: Term) -> Spine {
+         Spine { from: self.from, path: self.path, depth: self.depth, at }
+@@ -3029,17 +3039,27 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+             let s = (front[0].len() > front[1].len()) as usize;
+             for r in std::mem::take(&mut front[s]) {
+                 let t = r.make();
++                // a step at the place of the one `t` was reached by that gives back its subterm reaches that step's
++                // `from`, which this side has (and the other cannot, or they would have met): skipped before its
++                // signature and lookups (22.6% of the steps reaching a term their side had, docs/tier-cycle.md, "What the
++                // join's duplicates and term building are")
++                let back = r.step().map(|s| (s.path, s.depth, s.subterm()));
+                 let mut met = None;
+                 let (here, there) = seen.split_at_mut(1);
+                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
+                 join_walk(t, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
+                     let e = &table.join[eq];
++                    let step = JoinStep::new(t, up, eq);
++                    if back.is_some_and(|(path, depth, y)| (path, depth) == (step.path, step.depth) && is_subst(y, &e.to, sub)) {
++                        let h = place_sh(up, subst_sig(&e.to, sub).0);
++                        debug_assert!(mine.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)).is_some(), "an undoing step's term is its side's");
++                        return true;
++                    }
+                     let (h, size) = subst_sig(&e.to, sub);
+                     if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
+                         return true;
+                     }
+                     let h = place_sh(up, h);
+-                    let step = JoinStep::new(t, up, eq);
+                     if let Some(&(_, u)) = other.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)) {
+                         met = Some((step, u));
+                         return false;
+@@ -3271,6 +3291,8 @@ fn a_join_step_is_known_before_it_is_made() {
+     let up = [(AND, or(x, inner), z, false), (OR, x, inner, true)];
+     let step = JoinStep::new(from, &up, 0).spine(u);
+     let t = step.make();
++    assert!(JoinStep::new(from, &up, 0).subterm() == inner && JoinStep::new(from, &up[..1], 0).subterm() == or(x, inner));
++    assert!(JoinStep::new(and(u, z), &[(AND, u, z, true)], 0).subterm() == z && JoinStep::new(from, &[], 0).subterm() == from);
+     assert!(t == and(or(x, u), z) && place_sh(&up, u.sh()) == t.sh());
+     assert!(is_step(t, &up, &p, &sub) && step.is(t));
+     for (other, why) in [(and(or(x, u), x), "another sibling"), (from, "another replacement"), (and(Term::op(XOR, x, u), z), "another operator")] {
+-- 
+2.43.0.windows.1
+

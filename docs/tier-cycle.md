@@ -4807,6 +4807,24 @@ did no better than 2^16 on salt 6 (above, "The interner's per-thread cache"), wh
 cache missing L2 (1 MB per core) as often as the shared table does; which one is untested (PARKED.md, "Make the
 interner's thread cache 2-way").
 
+*The three levers, tried (2026-10-19).* Shadow caches in `Term::op` (run `2026-10-18-cache-ways`,
+`patches/cache_ways.patch`, counting only; its direct-mapped 2^16 shadow hit exactly the real cache's 872.7 M) split
+the misses: at 512 KB, 2 ways hit 77.5% and 4 ways 79.7% against 74.0%; doubling to 2^17 slots hits 79.5%, and 2^18 or
+2 ways over 2^16 sets 83.2%. So most misses are capacity, the same-size cache gains at most 5.7 points, and the 83% of
+2^18 already bought nothing on salt 6: decided against. Deferring only the spine is on `main` (eabd8d5): a seen entry
+holds its step and the made rewritten subterm (`Spine`), a candidate is compared against it down both paths with siblings
+and the subterm by pointer and the pattern unmade (`Spine::is_step`), and a spine is made when the term is expanded or
+meets. It is exact (files the same in every run below) and cheaper: against `bv_riv` (`main` before it) in two quiet
+rounds (run `2026-10-19-spine-quiet`, others 10-20%, RTP off) job CPU 274.0 and 252.4 s against 290.6 and 312.3 s, wall
+54.9 and 50.4 against 58.4 and 62.4 s; job CPU there tracked others' load by about 5 s a point, and corrected to 15% the
+gain is about 4%. On a quieter machine (run `2026-10-19-spine-main-quiet`, 4 clean rounds, RTP off) it won job CPU in
+all 4: at 3-5% others 229.5 and 212.8 s against 249.5 and 232.6 (-8%), at 11% 260.1 against 268.2, and about even in a
+round where it ran under 16.5% others against 6.6%; median wall 48.8 against 50.9 s. Skipping the step that undoes the one before, on top of it (07e3416, dropped; kept as
+`docs/runs/2026-10-19/patches/undo_skip.patch`), is exact but dearer: in the three rounds at 5-6% others (run
+`2026-10-19-spine-back-quiet`) 239.1, 228.5 and 238.3 s against 227.2, 232.6 and 226.9 (median of the 4 clean rounds +4%).
+Its test runs on every match before the cap and identity filters, and a walk to the reached subterm per expanded term,
+which cost more than the signature and lookup it saved on 14% of candidates (unprofiled).
+
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
 every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule

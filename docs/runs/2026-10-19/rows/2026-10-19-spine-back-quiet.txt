@@ -1,0 +1,19 @@
+arm	round	position	start	wall_s	jobcpu_s	procs	stragglers	peakproc_mb	peakjob_mb	other_pct	others	rtp	exit	clean
+bv_spine	1	1	1792398444	60.55	297.078	2	0	692	1077	28.1	0	False	0	false
+bv_back	1	2	1792398505	58.15	289.297	2	0	625	946	19.9	0	False	0	true
+bv_back	2	1	1792399700	54.13	270.578	2	0	632	953	13.9	0	False	0	true
+bv_spine	2	2	1792399754	49.67	250.062	2	0	649	970	7.6	0	False	0	true
+bv_spine	3	1	1792399864	45.31	227.203	2	0	641	962	6.0	0	False	0	true
+bv_back	3	2	1792399909	47.21	239.125	2	0	663	984	5.2	0	False	0	true
+bv_back	4	1	1792400017	45.26	228.453	2	0	682	1003	5.4	0	False	0	true
+bv_spine	4	2	1792400062	46.66	232.625	2	0	639	961	5.8	0	False	0	true
+bv_spine	5	1	1792400169	44.71	226.922	2	0	636	958	5.1	0	False	0	true
+bv_back	5	2	1792400214	47.34	238.312	2	0	644	965	5.4	0	False	0	true
+round 5 done, clean rounds 4
+end: RTP=False CPU=5% lockpriv=True
+clean 4 rounds: [2, 3, 4, 5]
+bv_spine: jobcpu median=229.914 best=226.922 wall median=45.986 best=44.708
+bv_back: jobcpu median=238.719 best=228.453 wall median=47.278 best=45.259
+bv_back - bv_spine jobcpu: median +11.656, won 1/4: r2 +20.516, r3 +11.922, r4 -4.172, r5 +11.391
+bv_back - bv_spine wall: median +2.270, won 1/4: r2 +4.459, r3 +1.906, r4 -1.405, r5 +2.635
+done 4/5 clean rounds
