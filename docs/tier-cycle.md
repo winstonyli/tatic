@@ -4853,6 +4853,15 @@ operator subterm, so the root misses are leaf subterms offered every leaf patter
 constant). Grandchild classes in the index, worked out once per subterm, and the leaf list keyed by class would avoid 39%
 of the calls; the repeated-variable failures need the bindings compared, which `match_pat` already does in O(1) per pair.
 
+*The index down to the grandchildren (2026-10-19, fcef618, run `2026-10-19-match-fail-shape`).* `PatIndex` keeps one list
+per class of term, and each entry the shape bits (`Term::needs`) the pattern needs at the root and at its two operands,
+checked against the term's and its operands' `Term::shape`; this replaces the operand class masks and the unkeyed leaf
+list, for the rule index and the join's alike (test `pat_index_offers_only_matches_down_to_grandchildren`; 4 of 5
+mutations killed, the fifth, leaf entries' own bits, was redundant with the list and removed). The shape's side bits are
+`% 53` but distinct within one operator, so the operand check is exact. Counted as above: `match_pat` calls 3.17 G to
+1.93 G, index candidates 5.63 G to 3.23 G, the same 977 M matches, no failure left at a leaf root or the grandchildren,
+and the sweep's files the same. Not yet timed: lever 1 saved nothing its profile share promised, so this needs an A/B.
+
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
 every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule

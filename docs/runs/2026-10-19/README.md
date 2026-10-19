@@ -17,3 +17,4 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-mainprof3` | `bv_mainprof` | `lazy_prof.sh`, back to back with `-spineprof` | 241.1 k busy samples; the visit 40.2%, `place` 12.7%, `Term::op` 17.9% |
 | `2026-10-19-match-fail` | `bv_mprobe2` (bce3407 + `patches/match_fail.patch`) | 2026-10-18's `match_count.sh` salt 1 | 3.17 G `match_pat` calls, 31% match; failures 969 M at grandchildren, 934 M a repeated variable, 270 M leaf roots, 19 M deeper |
 | `2026-10-19-room-quiet` | `bv_spine`, `bv_room` (bce3407) | `quiet_ab.sh 1 4` (4 clean of 5) | files the same; job CPU median 250.5/258.0 s, won 2/4: no gain |
+| `2026-10-19-match-fail-shape` | `bv_mprobe3` (fcef618 + `patches/match_fail.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; `match_pat` calls 3.17 G to 1.93 G, the same 977 M matches |
