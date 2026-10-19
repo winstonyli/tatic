@@ -4926,6 +4926,22 @@ pairs passes the shape test would save part of that, unmeasured. What leads now:
 `Term::op` 13.6% inclusive (the interner's `eq` 4.4%, `Cells::find` 4.6%), `subst_sig` 8.7%, `rewrite_memo` 7.3%,
 `Spine::make` 6.7%, `sh_op` 5.8%.
 
+*The pairs compared only once the shapes fit (2026-10-19, run `2026-10-19-lazy-quiet`, commit cadb700).* `get` compares
+an entry's pairs only after its shape test passes, instead of working out which of the class's pairs differ for every
+subterm. Files the same; against `bv_pairs` job CPU median 202.0/195.6 s, and over the two orders -5.0 s (-2.5%):
+`bv_lazy` ran 11.8-14.4 s faster in the four rounds it ran first and 0.0-4.4 s slower in the four it ran second (running
+second +7.6 s), so every pairing is negative; the won count alone said 4/8. Kept; with it the depth-2 pairs are about
+5% less job CPU than `bv_fits`.
+
+*Where `Term::op` stands (2026-10-19, survey, no run).* Its 13.6% inclusive in `-pairsprof` is the thread cache's and
+the shared cells' confirming load of a node (`m.node == n`: the interner's `eq` 4.4%, of it 2.2% in the cache hit and
+2.1% in `Cells::find`) and `op`'s own 4.1%. The levers inside the interner are spent: the cache's misses are capacity
+("The three levers, tried": 2 ways decided against, 2^18 slots no better), the shared table's reads take no lock, and
+the tags already skip other nodes without a load. The confirming load is the node the caller reads next (its shape,
+size or children), so it is moved rather than added. What is left is fewer calls: `Spine::make` (6.7% inclusive, spines
+made on expansion or a meeting), the join's step making, and `subst_pat`; a count of `Term::op` calls by caller is the
+next probe, unrun.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay

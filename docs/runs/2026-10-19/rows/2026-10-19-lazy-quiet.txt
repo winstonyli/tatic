@@ -1,0 +1,17 @@
+arm	round	position	start	wall_s	jobcpu_s	procs	stragglers	peakproc_mb	peakjob_mb	other_pct	others	rtp	exit	clean
+bv_pairs	1	1	1792451669	46.90	232.500	2	0	616	937	15.3	0	False	0	true
+bv_lazy	1	2	1792451716	46.67	232.516	2	0	637	958	16.7	0	False	0	true
+bv_lazy	2	1	1792452592	39.06	192.922	2	0	638	1023	6.4	0	False	0	true
+bv_pairs	2	2	1792452631	41.16	204.719	2	0	674	995	5.7	0	False	0	true
+bv_pairs	3	1	1792452732	39.15	195.062	2	0	653	974	5.5	0	False	0	true
+bv_lazy	3	2	1792452771	39.79	199.422	2	0	616	938	5.6	0	False	0	true
+bv_lazy	4	1	1792452872	38.09	189.547	2	0	680	1001	5.4	0	False	0	true
+bv_pairs	4	2	1792452910	40.96	201.750	2	0	653	974	5.9	0	False	0	true
+bv_pairs	5	1	1792453011	39.18	196.047	2	0	651	972	5.6	0	False	0	true
+bv_lazy	5	2	1792453051	39.79	198.312	2	0	630	951	5.7	0	False	0	true
+bv_lazy	6	1	1792453151	38.35	190.406	2	0	617	939	6.1	0	False	0	true
+bv_pairs	6	2	1792453189	40.81	204.781	2	0	644	965	5.6	0	False	0	true
+bv_pairs	7	1	1792453291	39.35	194.500	2	0	635	956	5.5	0	False	0	true
+bv_lazy	7	2	1792453330	39.65	198.344	2	0	677	998	5.6	0	False	0	true
+bv_lazy	8	1	1792453430	37.99	190.172	2	0	658	979	4.9	0	False	0	true
+bv_pairs	8	2	1792453468	40.62	202.141	2	0	622	943	5.4	0	False	0	true

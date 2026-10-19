@@ -3,7 +3,7 @@
 Rows behind `docs/tier-cycle.md`, "The three levers, tried". Each run is recorded in `docs/runs.md` with its raw folder
 under `%LOCALAPPDATA%\claude-runs\tatic\<run id>`. Builds were `cargo test --profile sweep --test church_bv --no-run`,
 copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `bv_spine` (eabd8d5, the spine deferral),
-`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index), `bv_shape` (fcef618, the index down to the grandchildren), `bv_fits` (7e4f037, the operands' needs alone, branchless), `bv_pairs` (75d4b99, the depth-2 pairs). The scripts are 2026-10-18's (`quiet_ab.sh`), except `scripts/order_fx.py` (the order within a round, from the rows).
+`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index), `bv_shape` (fcef618, the index down to the grandchildren), `bv_fits` (7e4f037, the operands' needs alone, branchless), `bv_pairs` (75d4b99, the depth-2 pairs), `bv_lazy` (cadb700, the pairs compared only once the shapes fit). The scripts are 2026-10-18's (`quiet_ab.sh`), except `scripts/order_fx.py` (the order within a round, from the rows).
 
 - `patches/undo_skip.patch`: commit 07e3416, dropped from the branch; it applies on eabd8d5.
 - `patches/match_fail.patch`: the counters of `-match-fail`; it applies on bce3407.
@@ -29,3 +29,4 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-pairs-quiet` | `bv_fits`, `bv_pairs` (75d4b99) | `quiet_ab.sh 1 8` (8 clean of 8) | files the same; job CPU median 210.9/203.6 s, won 5/8 (all 4 run first); the mean over the two orders -5.7 s (-2.7%), the second arm +6.7 s |
 | `2026-10-19-match-fail-pairs` | `bv_pprobe` (75d4b99 + `patches/match_fail.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; `match_pat` calls 1.93 G to 1.01 G, binding failures 934 M to 16 M, the same 977 M matches |
 | `2026-10-19-pairsprof` | `bv_pairsprof` (75d4b99 + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | loaded again during the run (searches 67.2 s against 55.4 s), shares only: `match_pat` 8.0% inclusive (14.9%), `PatIndex::get` 6.8% (2.2%) |
+| `2026-10-19-lazy-quiet` | `bv_pairs`, `bv_lazy` (cadb700) | `quiet_ab.sh 1 8` (8 clean of 8) | files the same; job CPU median 202.0/195.6 s, won 4/8; the mean over the two orders -5.0 s (-2.5%), running second +7.6 s |
