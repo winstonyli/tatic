@@ -93,6 +93,9 @@ directly (to tell numbered closures apart). `bv_lprof3` is 3a851d6 with `patches
 | `2026-10-18-lview-ab` | `bv_riv`, `bv_lview` (branch `lazy-view`) | `salts_ab.sh`, salts 1-4 | rules and M equal in all 12 loops; wall 432/456 s, job CPU 2963/3211 s (others 40-53%) |
 | `2026-10-18-lvprof` | `bv_lvprof` (`lazy-view` + `lazy_prof.patch`) | `lazy_prof.sh` | 523.6 k busy samples; the seen tables' equality (`Reach::same`/`head`) 18.3%, `Term::op` 8.0% |
 | `2026-10-18-mainprof` | `bv_mainprof` (2280c01's code + `lazy_prof.patch`) | `lazy_prof.sh` | 485.5 k busy samples; `is_step` 3.1%, `place` 14.9%, `Term::op` 20.6% |
+| `2026-10-18-lview2-ab` | `bv_riv`, `bv_lview2` (`lazy-view` 984bde2) | `salts_ab.sh`, salts 1-4 | rules and M equal in all 12 loops; job CPU 3066/3332 s (others 45-70%, uneven) |
+| `2026-10-18-lv2prof` | `bv_lv2prof` (984bde2 + `lazy_prof.patch`) | `lazy_prof.sh` | 525.6 k busy samples, join 441 k; `At::same` 15.0% (`At::is` 5.2%, made pattern subterms ~7%) |
+| `2026-10-18-mainprof2` | `bv_mainprof` | `lazy_prof.sh`, back to back with `-lv2prof` | 482.0 k busy samples, join 403 k; `is_step` 3.1%, `place` 15.0% |
 | `2026-10-18-miner-serial-quiet` | `bv_both`, `bv_riv` | `quiet_ab.sh 1 3` (1 clean round by the 3 h deadline) | same files; wall 73.6/58.2 s, job CPU 301/291 s |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |

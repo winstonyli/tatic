@@ -4783,6 +4783,13 @@ costs back 7.3%. The loss is the seen tables' equality: 18.3% (`Reach::head` 13.
 sides, where `is_step` steps one pointer down a made term. With an equality as cheap as `is_step`, the visit and pop would
 take about 47 k samples fewer than `main`'s, roughly a tenth of the join, an estimate from the two profiles, untested
 (PARKED.md, "Build a join step's term only when it is expanded").
+Tested and refuted: with the full `sh` compared first and the equality a loop down both paths (`lazy-view` 984bde2;
+runs `2026-10-18-lview2-ab`, exact in all 12 loops, and back-to-back profiles `-lv2prof` / `-mainprof2`), the join still
+took 441 k samples against 403 k. `At::same` is 15.0%: its check against a made term (`At::is`) alone is 5.2%, above
+`is_step`'s 3.1%, and about 7% goes to making the pattern subterm where one step reaches its pattern while the two still
+agree. The estimate above assumed an equality as cheap as `is_step`; an unmade entry cannot be, since confirming a
+duplicate (58% of steps) walks both derivations, and making a term is mostly a thread-cache hit. Pattern-to-pattern
+comparison without making either would recover at most the ~7%, about break-even.
 
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
