@@ -3,7 +3,7 @@
 Rows behind `docs/tier-cycle.md`, "The three levers, tried". Each run is recorded in `docs/runs.md` with its raw folder
 under `%LOCALAPPDATA%\claude-runs\tatic\<run id>`. Builds were `cargo test --profile sweep --test church_bv --no-run`,
 copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `bv_spine` (eabd8d5, the spine deferral),
-`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index). The scripts are 2026-10-18's (`quiet_ab.sh`).
+`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index), `bv_shape` (fcef618, the index down to the grandchildren). The scripts are 2026-10-18's (`quiet_ab.sh`).
 
 - `patches/undo_skip.patch`: commit 07e3416, dropped from the branch; it applies on eabd8d5.
 - `patches/match_fail.patch`: the counters of `-match-fail`; it applies on bce3407.
@@ -18,3 +18,5 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-match-fail` | `bv_mprobe2` (bce3407 + `patches/match_fail.patch`) | 2026-10-18's `match_count.sh` salt 1 | 3.17 G `match_pat` calls, 31% match; failures 969 M at grandchildren, 934 M a repeated variable, 270 M leaf roots, 19 M deeper |
 | `2026-10-19-room-quiet` | `bv_spine`, `bv_room` (bce3407) | `quiet_ab.sh 1 4` (4 clean of 5) | files the same; job CPU median 250.5/258.0 s, won 2/4: no gain |
 | `2026-10-19-match-fail-shape` | `bv_mprobe3` (fcef618 + `patches/match_fail.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; `match_pat` calls 3.17 G to 1.93 G, the same 977 M matches |
+| `2026-10-19-shape-quiet` | `bv_room`, `bv_shape` (fcef618) | `quiet_ab.sh 1 8` (8 clean of 11) | files the same; job CPU median 242.5/223.1 s (-8.2%), won 8/8 |
+| `2026-10-19-shapeprof` | `bv_shapeprof` (fcef618 + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | 234.2 k busy samples; `match_pat` 14.9% self, the index filter 5.6%, `Term::op` 13.0% inclusive |

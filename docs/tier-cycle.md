@@ -4860,7 +4860,16 @@ list, for the rule index and the join's alike (test `pat_index_offers_only_match
 mutations killed, the fifth, leaf entries' own bits, was redundant with the list and removed). The shape's side bits are
 `% 53` but distinct within one operator, so the operand check is exact. Counted as above: `match_pat` calls 3.17 G to
 1.93 G, index candidates 5.63 G to 3.23 G, the same 977 M matches, no failure left at a leaf root or the grandchildren,
-and the sweep's files the same. Not yet timed: lever 1 saved nothing its profile share promised, so this needs an A/B.
+and the sweep's files the same. Timed (run `2026-10-19-shape-quiet`, `quiet_ab.sh 1 8`, 8 clean rounds of 11 at 6-19%
+others, RTP off): job CPU median 242.5 s before and 223.1 s after (-8.2%), won 8/8 (-6.8 to -31.8 s), wall 48.8 to 45.4 s;
+every run's files the same.
+
+*Profile with the finer index (2026-10-19, run `2026-10-19-shapeprof`, `lazy_prof.sh`, the same 897 k searches reaching
+232 M terms; frames in `docs/runs/2026-10-19/rows/2026-10-19-shapeprof.txt`).* 234.2 k busy samples against
+`-spineprof`'s 249.5 k; the walk 172 k inclusive against 191 k. `match_pat` is 14.9% self (34.9 k samples, from 41.7 k):
+the failures it still meets are mostly a repeated variable's, which recurse through the pattern before the bindings
+differ. The index's filter is now the second cost of the walk, 5.6% self (`PatIndex::get`'s `fits`, an `all` over the
+three needs, short-circuiting). `Term::op` 13.0% inclusive, `subst_sig` 8.6%, `Spine::make` 6.2%.
 
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
