@@ -4918,7 +4918,7 @@ than the average call. Kept.
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
 fair, but the won count can read a 3% gain as 5/8. Read an A/B by the mean over the two orders (each arm first in half
-the rounds); the verdicts of this day's earlier A/Bs stand that way too (room +3.6 s, fits +0.3 s, shape -22.3 s).
+the rounds); the verdicts of this day's earlier A/Bs stand that way too (room +3.6 s, fits +0.3 s, shape -22.3 s). `runs time` now prints that mean, and the cost of running second, under each won count.
 
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when

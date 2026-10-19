@@ -158,7 +158,9 @@ fn median(mut v: Vec<f64>) -> f64 {
 }
 
 /// Per arm over `rounds`: median and best of job CPU, wall and each grep column. Then each arm against the first,
-/// paired by round: the differences, their median, and how many rounds it won (lower wins).
+/// paired by round: the differences, their median, how many rounds it won (lower wins), and the mean over the two
+/// orders (the mean of the rounds it ran first and the mean of those it ran second, halved), which cancels a cost of
+/// running second (2026-10-19: about 3% in the church_bv sweep) that the won count reads as a gain or a loss.
 fn summary(rows: &[Row], arms: &[String], greps: &[String], rounds: &[usize]) -> String {
     let names: Vec<String> = ["jobcpu".to_string(), "wall".to_string()].into_iter().chain(greps.iter().cloned()).collect();
     let value = |w: &Row, m: usize| -> Option<f64> {
@@ -169,6 +171,7 @@ fn summary(rows: &[Row], arms: &[String], greps: &[String], rounds: &[usize]) ->
         }
     };
     let get = |arm: &str, r: usize, m: usize| rows.iter().find(|w| w.arm == arm && w.round == r).and_then(|w| value(w, m));
+    let pos = |arm: &str, r: usize| rows.iter().find(|w| w.arm == arm && w.round == r).map(|w| w.pos);
     let mut s = format!("{} rounds: {:?}\n", rounds.len(), rounds);
     for arm in arms {
         write!(s, "{arm}:").unwrap();
@@ -187,6 +190,14 @@ fn summary(rows: &[Row], arms: &[String], greps: &[String], rounds: &[usize]) ->
                 let list: Vec<String> = d.iter().map(|(r, x)| format!("r{r} {x:+.3}")).collect();
                 let med = median(d.iter().map(|x| x.1).collect());
                 writeln!(s, "{arm} - {first} {name}: median {med:+.3}, won {wins}/{}: {}", d.len(), list.join(", ")).unwrap();
+                // the won count mixes the order effect in; the mean over the two orders cancels it
+                let ran_first = |r: usize| Some(pos(arm, r)? < pos(first, r)?);
+                let mean_of = |f: bool| {
+                    let v: Vec<f64> = d.iter().filter(|(r, _)| ran_first(*r) == Some(f)).map(|x| x.1).collect();
+                    (v.iter().sum::<f64>() / v.len() as f64, v.len())
+                };
+                let ((a, na), (b, nb)) = (mean_of(true), mean_of(false));
+                writeln!(s, "{arm} - {first} {name} over the two orders: {:+.3} ({arm} first {a:+.3} in {na}, second {b:+.3} in {nb}), running second {:+.3}", (a + b) / 2.0, (b - a) / 2.0).unwrap();
             }
         }
     }
@@ -559,7 +570,8 @@ mod tests {
         let row = |arm: &str, round, cpu| Row {
             arm: arm.into(),
             round,
-            pos: 1,
+            // AB, BA, AB as `order` runs them
+            pos: 1 + ((arm == "new") != (round == 2)) as usize,
             start: 0,
             r: job::RunResult { exit: 0, wall: 1.0, job_cpu: cpu, procs: 1, stragglers: 0, peak_proc_mb: 0.0, peak_job_mb: 0.0, other_pct: 0.0, others: 0 },
             rtp: None,
@@ -570,5 +582,8 @@ mod tests {
         let s = summary(&rows, &["old".into(), "new".into()], &[], &[1, 2, 3]);
         assert!(s.contains("old: jobcpu median=10.000 best=10.000"), "{s}");
         assert!(s.contains("new - old jobcpu: median -1.000, won 2/3: r1 -1.000, r2 +1.000, r3 -2.000"), "{s}");
+        // new ran first in r2 (+1) and second in r1, r3 (-1.5 on average): -0.25 over the two orders, and a run's
+        // second place costs it (-1.5 - 1) / 2
+        assert!(s.contains("new - old jobcpu over the two orders: -0.250 (new first +1.000 in 1, second -1.500 in 2), running second -1.250"), "{s}");
     }
 }
