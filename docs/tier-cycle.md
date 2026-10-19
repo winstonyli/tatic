@@ -4791,6 +4791,22 @@ agree. The estimate above assumed an equality as cheap as `is_step`; an unmade e
 duplicate (58% of steps) walks both derivations, and making a term is mostly a thread-cache hit. Pattern-to-pattern
 comparison without making either would recover at most the ~7%, about break-even.
 
+*What the join's duplicates and term building are (2026-10-18, run `2026-10-18-dup-count`, `patches/dup_count.patch`,
+counting only, salt 1's cold:cmp3d loops).* Of 907.5 M candidates past the filters, 577.4 M (63.6%) reach a term their
+own side has; 130.4 M of those (22.6%, 14.4% of candidates) are the term the popped one was reached from, and 99.7% of
+those at the same place, so they are the step that undoes the step before. The 329.0 M new terms average a spine of 1.80
+nodes and a pattern of 1.62 operator nodes, so making them costs about 593 M spine and 532 M pattern `Term::op` calls;
+36.8% of them are ever expanded, so the spines of the rest are about 375 M calls (32% of all 1.18 G). Two cheaper levers
+than the lazy step follow: making a step's subterm but deferring only its spine (equality then compares the subterm by
+pointer, as `is_step` does, which removes the ~7% of pattern making that sank 984bde2) bounds at those 375 M calls,
+roughly 6% of samples by `Term::op`'s 20.5% in `-mainprof2`; skipping the step that undoes the one before bounds at the
+14.4% of candidates' `subst_sig`, placed hash and lookup, a few percent of the join; both estimates, untested. `Term::op`
+itself: 74.0% of calls hit the thread's cache, 25.7% find the node in the shared table, 0.3% insert; 236.4 M of the 307 M
+misses (77%) found the slot holding another node, so they are conflict or capacity misses, not first sight. 2^18 slots
+did no better than 2^16 on salt 6 (above, "The interner's per-thread cache"), which points at conflicts, or at a 2 MB
+cache missing L2 (1 MB per core) as often as the shared table does; which one is untested (PARKED.md, "Make the
+interner's thread cache 2-way").
+
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
 every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule

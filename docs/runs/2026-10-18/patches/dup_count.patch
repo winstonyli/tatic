@@ -1,0 +1,132 @@
+# dup_count: the counters behind run 2026-10-18-dup-count (exe bv_dprobe.exe, 645fb11 + this): JoinCost.probe, printed as
+# 'RULEMINER probe: [..]' per mine: 0 terms expanded, 1 steps past the cap and identity filters, 2 met, 3 duplicates in
+# their own side, 4 of them the term the expanded term was reached from, 5 of those at the same place as that step, 6/7
+# duplicates' spine depth / pattern operator nodes (sums), 8 new terms, 9/10 their spine depth / pattern operator nodes,
+# 11 Term::op calls, 12 its per-thread cache hits, 13 shared-table hits, 14 inserts, 15 misses on a slot another node held.
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index e05b5d4..7eb1cec 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -140,14 +140,26 @@ impl Term {
+         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
+         OP_CACHE.with(|c| {
+             let slot = &c[(h >> 44) as usize % OP_CACHE_SLOTS];
++            probe(11, 1);
+             if let Some(m) = untag(slot.get(), h & 0xffff).filter(|m| m.node == n) {
++                probe(12, 1);
+                 return Term(m);
+             }
+             let shard = (h >> 40) as usize % SHARDS;
+             let m = match cells(shard).map(|c| c.find(h, &n)) {
+-                Some(Ok(m)) => m,
+-                _ => Term::insert(shard, h, n),
++                Some(Ok(m)) => {
++                    probe(13, 1);
++                    m
++                }
++                _ => {
++                    probe(14, 1);
++                    Term::insert(shard, h, n)
++                }
+             };
++            // a slot taken by another node (a conflict miss) rather than empty
++            if slot.get() != 0 {
++                probe(15, 1);
++            }
+             slot.set(tagged(m, h & 0xffff));
+             Term(m)
+         })
+@@ -2529,7 +2541,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, probe: [0; 16] }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2542,6 +2554,7 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    pub probe: [u64; 16],
+ }
+ 
+ impl JoinCost {
+@@ -2558,6 +2571,9 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        for i in 0..16 {
++            self.probe[i] += now.probe[i] - before.probe[i];
++        }
+     }
+ }
+ 
+@@ -2906,6 +2922,8 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
+             let s = (front[0].len() > front[1].len()) as usize;
+             for t in std::mem::take(&mut front[s]) {
++                probe(0, 1);
++                let pred = get(&seen[s], t);
+                 let mut met = None;
+                 let (here, there) = seen.split_at_mut(1);
+                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
+@@ -2915,13 +2933,26 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                     if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
+                         return true;
+                     }
++                    probe(1, 1);
+                     let h = place_sh(up, h);
+                     let step = JoinStep { from: t, path: up.iter().rev().fold(0, |p, e| p << 1 | e.3 as u64), depth: up.len() as u8, eq: eq as u32 };
+                     if let Some(&(u, _)) = other.find(h, |c| is_step(c.0, up, &e.to, sub)) {
++                        probe(2, 1);
+                         met = Some((step, u));
+                         return false;
+                     }
+-                    if mine.find(h, |c| is_step(c.0, up, &e.to, sub)).is_none() {
++                    let (depth, ops) = (up.len() as u64, pat_ops(&e.to));
++                    if let Some(&(u, _)) = mine.find(h, |c| is_step(c.0, up, &e.to, sub)) {
++                        probe(3, 1);
++                        if let Some(p) = pred.filter(|p| p.from == u) {
++                            probe(4, 1);
++                            if (p.path, p.depth) == (step.path, step.depth) {
++                                probe(5, 1);
++                            }
++                        }
++                        (probe(6, depth), probe(7, ops));
++                    } else {
++                        (probe(8, 1), probe(9, depth), probe(10, ops));
+                         let u = place(up, subst_pat(&e.to, sub));
+                         mine.insert_unique(h, (u, Some(step)), |c| c.0.sh());
+                         front[s].push(u);
+@@ -2963,6 +2994,17 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+     found
+ }
+ 
++// PROBE (throwaway): dup_count counters
++pub fn probe(i: usize, n: u64) {
++    count_join(|c| c.probe[i] += n)
++}
++fn pat_ops(t: &Term) -> u64 {
++    match *t.node() {
++        Node::Op(_, a, b) => 1 + pat_ops(&a) + pat_ops(&b),
++        _ => 0,
++    }
++}
++
+ fn count_join(f: impl FnOnce(&mut JoinCost)) {
+     JOIN_COST.with(|c| {
+         let mut v = c.get();
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 833bcda..fa5e146 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1257,6 +1257,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER probe: {:?}", j.probe);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {
