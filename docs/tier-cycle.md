@@ -4847,6 +4847,10 @@ afterwards in the same order. Built: the winner's rivals go through the round's 
 `2026-10-18-rivals-pool-ab`, `bv_aff` against this, salts 1-4, others' load 48-58%, RTP off): rules byte-equal and M
 equal in all 12 loops (293); wall 513 against 475 s (-7%), job CPU 3094 against 2974 s, both under that load. At 1
 and 6 scoring threads the rules stay the same (run `2026-10-18-rivals-threads`, `threads_check.sh`, salt 5).
+On a quiet machine, the two main-thread moves together (`bv_riv` against `bv_both`, the commit before them; run
+`2026-10-18-miner-serial-quiet`, `quiet_ab.sh`, salt 1 at one lane, RTP off) gave the same files, wall 73.6 against 58.2 s
+(-21%) and job CPU 301 against 291 s (-4%): work moved off the waiting main thread, not work saved. That is one clean round:
+the machine was quiet for only one of the rounds the 3 h deadline allowed (the other's load 18-28% gave 66.6 s).
 `state` in parallel would also be exact (surveyed, not built): its seed is reusable only because every memo entry is a pure
 function of its key, so each worker can take the whole filtered seed, evaluate a share of the laws and hand back its grown
 memo for a union merge. It needs the memo's `Rc`s made `Arc` (or copied per worker) for about 3.4 s of a ~100 s sweep

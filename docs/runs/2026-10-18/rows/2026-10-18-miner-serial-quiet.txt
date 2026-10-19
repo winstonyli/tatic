@@ -1,0 +1,17 @@
+start: RTP=False CPU=67% lockpriv=True
+bv_both.1 wall=73.4s jobcpu=302.81s procs=2 stragglers=0 peakproc=819MB peakjob=1140MB other=18% others=0 rtp=False exit=0
+bv_riv.1 wall=66.6s jobcpu=325.97s procs=2 stragglers=0 peakproc=845MB peakjob=1231MB other=28% others=0 rtp=False exit=0
+round 1 done, clean rounds 0
+bv_riv.2 wall=58.2s jobcpu=290.56s procs=2 stragglers=0 peakproc=855MB peakjob=1176MB other=16% others=0 rtp=False exit=0
+bv_both.2 wall=73.6s jobcpu=301.44s procs=2 stragglers=0 peakproc=794MB peakjob=1115MB other=17% others=0 rtp=False exit=0
+round 2 done, clean rounds 1
+end: RTP=False CPU=44% lockpriv=True
+clean 1 rounds: [2]
+bv_both: jobcpu median=301.438 best=301.438 wall median=73.564 best=73.564
+bv_riv: jobcpu median=290.562 best=290.562 wall median=58.182 best=58.182
+bv_riv - bv_both jobcpu: median -10.875, won 1/1: r2 -10.875
+bv_riv - bv_both wall: median -15.382, won 1/1: r2 -15.382
+done 1/2 deadline
+bv_both_2 vs bv_both_1: same 
+bv_riv_1 vs bv_both_1: same 
+bv_riv_2 vs bv_both_1: same 
