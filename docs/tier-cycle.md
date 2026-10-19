@@ -4775,7 +4775,14 @@ Built (branch `lazy-view`, 22d9867, not on `main`): exact but slower (run `2026-
 every salt), wall 432 against 456 s, peak memory per process about 50 MB lower. Making a step's term was cheaper than
 `place`'s share suggested, since 73.5% of `Term::op` calls hit the thread's cache, while the unmade steps cost on every
 comparison (a walk from the step's `from`) and in `seen` entries that carry the match inline (about 90 bytes against 30).
-Not profiled (PARKED.md, "Build a join step's term only when it is expanded").
+Profiled against `main` (runs `2026-10-18-lvprof` and `-mainprof`, `lazy_prof.sh`, others' load 38-41%; the same 897 k
+searches reaching 232 M terms in both): `join_search` took 442 k busy samples against 406 k. The deferral did what it
+should: `place` (14.9% of `main`'s samples, nearly all `Term::op`) is gone from the visit, and making the popped terms
+costs back 7.3%. The loss is the seen tables' equality: 18.3% (`Reach::head` 13.2% self, `Reach::same` 4.9%) against
+`is_step` and `is_subst`'s 3.1%. The recursive `head` builds an operator-and-two-reaches result at every node of both
+sides, where `is_step` steps one pointer down a made term. With an equality as cheap as `is_step`, the visit and pop would
+take about 47 k samples fewer than `main`'s, roughly a tenth of the join, an estimate from the two profiles, untested
+(PARKED.md, "Build a join step's term only when it is expanded").
 
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
