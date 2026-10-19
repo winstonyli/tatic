@@ -4847,6 +4847,10 @@ afterwards in the same order. Built: the winner's rivals go through the round's 
 `2026-10-18-rivals-pool-ab`, `bv_aff` against this, salts 1-4, others' load 48-58%, RTP off): rules byte-equal and M
 equal in all 12 loops (293); wall 513 against 475 s (-7%), job CPU 3094 against 2974 s, both under that load. At 1
 and 6 scoring threads the rules stay the same (run `2026-10-18-rivals-threads`, `threads_check.sh`, salt 5).
+`state` in parallel would also be exact (surveyed, not built): its seed is reusable only because every memo entry is a pure
+function of its key, so each worker can take the whole filtered seed, evaluate a share of the laws and hand back its grown
+memo for a union merge. It needs the memo's `Rc`s made `Arc` (or copied per worker) for about 3.4 s of a ~100 s sweep
+(PARKED.md, "The miner's serial main thread").
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
