@@ -83,7 +83,7 @@ fn tagged(m: &'static Interned, tag: u64) -> u64 {
 /// The node in `w` when its tag is `tag`.
 fn untag(w: u64, tag: u64) -> Option<&'static Interned> {
     // SAFETY: a nonzero word is `tagged` from a leaked `Interned` node, never freed
-    (w != 0 && w >> 48 == tag).then(|| unsafe { &*((w & (1 << 48) - 1) as *const Interned) })
+    (w != 0 && w >> 48 == tag).then(|| unsafe { &*((w & ((1 << 48) - 1)) as *const Interned) })
 }
 /// One shard's open-addressed cells (linear probing from the hash's low bits), each 0 or a node `tagged` with the hash's
 /// top 16 bits. Cells only go from 0 to a node, and a shard's cells are replaced only by a larger copy, so a reader needs
@@ -2168,6 +2168,57 @@ impl Trace {
     }
 }
 
+/// Many traces' terms for `Trace::touched_by` over all of them at once: each distinct (term, fired) once, with the traces it
+/// is in, grouped by the term's shape. The rule miner asks which of every law's traces each candidate touches (`affected`),
+/// and the same terms recur across the laws' traces.
+pub struct TraceIndex {
+    groups: Vec<(u64, Vec<Indexed>)>,
+}
+
+/// A distinct trace item and the traces it is in, ascending.
+type Indexed = (Term, Fired, Vec<usize>);
+
+impl TraceIndex {
+    pub fn new<'a>(traces: impl IntoIterator<Item = &'a Trace>) -> TraceIndex {
+        let mut at: hashbrown::HashMap<(Term, Fired), Vec<usize>> = Default::default();
+        for (i, tr) in traces.into_iter().enumerate() {
+            for item in &tr.items {
+                let v = at.entry(*item).or_default();
+                if v.last() != Some(&i) {
+                    v.push(i);
+                }
+            }
+        }
+        let mut groups: hashbrown::HashMap<u64, Vec<Indexed>> = Default::default();
+        for ((t, f), v) in at {
+            groups.entry(t.shape()).or_default().push((t, f, v));
+        }
+        TraceIndex { groups: groups.into_iter().collect() }
+    }
+
+    /// The traces, ascending, whose `touched_by(rule, also)` holds. A term's shape has every bit a pattern needs where the
+    /// pattern matches it (`Term::shape`), so only those groups are scanned.
+    pub fn touched(&self, (l, r): &(Term, Term), also: impl Fn(&Fired) -> bool) -> Vec<usize> {
+        let back = join_usable(r, l);
+        let (nl, nr) = (l.needs(), r.needs());
+        let mut out = vec![];
+        for (shape, items) in &self.groups {
+            let (fl, fr) = (shape & nl == nl, back && shape & nr == nr);
+            if !(fl || fr) {
+                continue;
+            }
+            for (t, f, v) in items {
+                if (fl && matches(l, t) || fr && *f == Fired::Join && matches(r, t)) && also(f) {
+                    out.extend_from_slice(v);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 /// A cached `rewrite`: the result and what the call did besides returning it, so that a hit can replay it.
 struct Rewritten {
     out: (Term, PlanRc),
@@ -3421,6 +3472,44 @@ fn met_join_traces_its_path_only() {
     let (met, joined) = join_trace("or(x, y)", "add(xor(x, y), and(x, y))", rule);
     assert!(met);
     assert!(joined.touched_by(&parse_rules(rule)[0], |_| true), "the plan used the rule");
+}
+
+/// `TraceIndex::touched` gives the traces `Trace::touched_by` accepts, for rules matching forward, backward and nowhere, and
+/// for a condition on the fired rule.
+#[test]
+fn trace_index_agrees_with_touched_by() {
+    let (n, kv) = (4, 3);
+    let mut traces: Vec<Trace> = [("sub(x, y)", "sub(0, sub(y, x))"), ("add(add(z, y), sub(x, -1))", "add(sub(add(x, y), -1), z)"), ("xor(xor(x, y), z)", "xor(z, xor(y, x))")]
+        .iter()
+        .map(|(a, b)| join_trace(a, b, "").1)
+        .collect();
+    for t in ["sub(sub(x, y), and(x, y))", "or(and(x, y), xor(x, -1))", "add(x, sub(0, x))", "xor(or(x, y), and(x, y))"] {
+        RULE_TRACE.with(|tr| *tr.borrow_mut() = Some(vec![]));
+        rewrite(&parse_term(t), n, kv);
+        traces.push(Trace::new(RULE_TRACE.with(|tr| tr.borrow_mut().take()).unwrap()));
+    }
+    traces.push(Trace::default());
+    let index = TraceIndex::new(&traces);
+    // rules whose sides are the traces' own terms (each matches itself) and patterns with variables
+    let mut terms: Vec<Term> = traces.iter().flat_map(|tr| tr.items().iter().map(|(t, _)| *t)).collect();
+    terms.sort();
+    terms.dedup();
+    let mut rules: Vec<(Term, Term)> = terms.iter().step_by(7).zip(terms.iter().skip(3).step_by(11)).map(|(l, r)| (*l, *r)).collect();
+    rules.extend(parse_rules("xor(sub(x, y), -1) -> add(sub(y, x), -1)\nor(x, and(x, y)) -> x\nsub(x, y) -> add(x, sub(0, y))\nadd(x, y) -> add(y, x)\n"));
+    rules.push((parse_term("and(x, or(y, x))"), parse_term("xor(sub(x, y), -1)")));
+    rules.extend(parse_rules("and(and(and(x, y), z), and(x, y)) -> and(x, and(y, z))\nor(or(x, -1), or(y, -1)) -> -1\n"));
+    let (mut some, mut none, mut narrowed) = (0, 0, 0);
+    for rule in &rules {
+        let mut got = vec![];
+        for also in [&(|_: &Fired| true) as &dyn Fn(&Fired) -> bool, &|f: &Fired| *f != Fired::Fixed, &|f: &Fired| *f == Fired::Join] {
+            let want: Vec<usize> = (0..traces.len()).filter(|&i| traces[i].touched_by(rule, also)).collect();
+            assert_eq!(index.touched(rule, also), want, "{} -> {}", rule.0.show(), rule.1.show());
+            if want.is_empty() { none += 1 } else { some += 1 }
+            got.push(want);
+        }
+        narrowed += (got[0] != got[2]) as usize;
+    }
+    assert!(some > 20 && none > 5 && narrowed > 3, "touched {some}, untouched {none}, narrowed by the condition {narrowed}");
 }
 
 /// Join results are kept in `RewriteMemo` with the terms each search examined: under an extra rule `filtered` keeps the entries

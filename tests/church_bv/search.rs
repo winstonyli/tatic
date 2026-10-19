@@ -900,12 +900,25 @@ pub fn rule_miner() {
             let mut ranked: Vec<(Term, Term)> = base_now.lock().unwrap().iter().chain(chosen).chain(provable.iter().copied()).cloned().collect();
             ranked.sort_by_cached_key(|(l, r)| run_order(l, r));
             let rank: hashbrown::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-            let touches = |rule: &(Term, Term), tr: &Trace| {
+            // every law's trace at once (`TraceIndex`: a term shared by many laws' traces is matched once), the candidates split
+            // over the scoring threads; each candidate's laws are the same whichever thread finds them
+            let index = TraceIndex::new(base_eval.iter().map(|e| &e.2));
+            let touched = |rule: &(Term, Term)| {
                 let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
                 let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
-                tr.touched_by(rule, |fired| anywhere || fired.preempted_by(before))
+                index.touched(rule, |fired| anywhere || fired.preempted_by(before))
             };
-            let affected: Vec<Vec<usize>> = provable.iter().map(|r| all_laws.iter().copied().filter(|&si| touches(r, &base_eval[si].2)).collect()).collect();
+            let threads = cfg.threads.clamp(1, 12);
+            let affected: Vec<Vec<usize>> = std::thread::scope(|sc| {
+                let handles: Vec<_> = (0..threads)
+                    .map(|t| {
+                        let (touched, provable) = (&touched, &provable);
+                        sc.spawn(move || (t..provable.len()).step_by(threads).map(|i| touched(provable[i])).collect::<Vec<_>>())
+                    })
+                    .collect();
+                let mut parts: Vec<_> = handles.into_iter().map(|h| h.join().unwrap().into_iter()).collect();
+                (0..provable.len()).map(|i| parts[i % threads].next().unwrap()).collect()
+            });
             let bound = |i: usize| -> i64 {
                 let gain = |si: usize, w: i64| if covered[si] { 0 } else { w };
                 affected[i].iter().map(|&si| if si < stragglers.len() { gain(si, 1000) + base_eval[si].1 } else { gain(si, guard_w) }).sum()
@@ -920,7 +933,6 @@ pub fn rule_miner() {
             // (its join entries are inexact by design), so the choice depended on scheduling, and it saved no time (docs/decisions/
             // 2026-10-17-monotone-join.md, "Spike of the snapshot"). Expressions are per thread, so each worker grows its own (1.5x
             // faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
-            let threads = cfg.threads.clamp(1, 12);
             // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` it can touch
             let score_rule = |rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
                 let mut with = chosen.clone();

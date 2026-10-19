@@ -1,0 +1,70 @@
+salt 1 A: exit 0 s1_A wall=66.9s jobcpu=404.84s procs=3 stragglers=0 peakproc=589MB peakjob=1295MB other=29% others=8 rtp=False exit=0
+salt 1 B: exit 0 s1_B wall=57.0s jobcpu=403.33s procs=3 stragglers=0 peakproc=613MB peakjob=1323MB other=33% others=8 rtp=False exit=0
+salt 1 loop 1: M A 29 B 29, rules same
+salt 1 loop 2: M A 17 B 17, rules same
+salt 1 loop 3: M A 30 B 30, rules same
+salt 2 B: exit 0 s2_B wall=119.0s jobcpu=822.73s procs=3 stragglers=0 peakproc=649MB peakjob=1501MB other=44% others=10 rtp=False exit=0
+salt 2 A: exit 0 s2_A wall=158.5s jobcpu=923.66s procs=3 stragglers=0 peakproc=623MB peakjob=1448MB other=50% others=10 rtp=False exit=0
+salt 2 loop 1: M A 22 B 22, rules same
+salt 2 loop 2: M A 14 B 14, rules same
+salt 2 loop 3: M A 29 B 29, rules same
+salt 3 A: exit 0 s3_A wall=120.6s jobcpu=730.19s procs=3 stragglers=0 peakproc=658MB peakjob=1495MB other=49% others=10 rtp=False exit=0
+salt 3 B: exit 0 s3_B wall=111.2s jobcpu=721.45s procs=3 stragglers=0 peakproc=677MB peakjob=1521MB other=51% others=10 rtp=False exit=0
+salt 3 loop 1: M A 27 B 27, rules same
+salt 3 loop 2: M A 24 B 24, rules same
+salt 3 loop 3: M A 19 B 19, rules same
+salt 4 B: exit 0 s4_B wall=146.4s jobcpu=899.56s procs=3 stragglers=0 peakproc=630MB peakjob=1415MB other=50% others=10 rtp=False exit=0
+salt 4 A: exit 0 s4_A wall=143.6s jobcpu=850.34s procs=3 stragglers=0 peakproc=603MB peakjob=1336MB other=46% others=10 rtp=False exit=0
+salt 4 loop 1: M A 23 B 23, rules same
+salt 4 loop 2: M A 34 B 34, rules same
+salt 4 loop 3: M A 25 B 25, rules same
+total A: M 293; wall 490 s, job cpu 2909 s
+total B: M 293; wall 434 s, job cpu 2847 s
+A RULEMINER time bounding candidates' gains: 6.6s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 5.8s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 7.2s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 11.6s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 20.4s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 15.3s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 14.0s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 7.9s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 11.5s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 15.6s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 13.5s
+A RULEMINER time bounding candidates' gains: 0.0s
+A RULEMINER time bounding candidates' gains: 8.8s
+A RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 0.8s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 0.7s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 0.5s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 0.7s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 2.1s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 1.0s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 1.9s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 0.8s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 1.3s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 1.4s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 1.2s
+B RULEMINER time bounding candidates' gains: 0.0s
+B RULEMINER time bounding candidates' gains: 1.1s
+B RULEMINER time bounding candidates' gains: 0.0s

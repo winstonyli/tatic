@@ -84,6 +84,7 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-sbound-tag-ab` | `bv_base`, `bv_sb`, `bv_both` | `arms_ab.sh 1` | same files; wall 198/200/198 s; join seconds 699/670/639 (contended) |
 | `2026-10-18-sbound-tag-quiet` | `bv_base`, `bv_sb`, `bv_both` | `quiet_ab.sh 1 3` (stopped after 2 rounds) | same files; wall 88.0/78.3/77.8 s, job CPU 372/324/321 s |
 | `2026-10-18-pcand-salts-record` | `bv_old`, `bv_both` | `salts_ab.sh`, salts 1-10 | M 749 both, every loop equal; wall 1130/954 s, job CPU 7942/6289 s; rules differ in 4 of 30 loops |
+| `2026-10-18-aff-index-ab` | `bv_both`, `bv_aff` | `salts_ab.sh`, salts 1-4 | rules and M equal in all 12 loops; bounding 138.2/13.5 s; wall 490/434 s (loaded) |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |
 | `2026-10-18-join-paths` | `bv_jpaths` | `join_paths.sh`, salt 1 | met paths: at most 4 uphill steps in 99.8%; deep sides mostly flat steps |

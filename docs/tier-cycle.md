@@ -4828,6 +4828,12 @@ its seeded memo, among them; not split further). Both run while the scoring work
 of serial work, so up to about 11 s of this sweep's wall); make `touched_by` cheaper (an index from rule to trace terms,
 the same result); and evaluating the chosen set in parallel, which would split its seeded memo, and the memo's join
 entries are inexact (the timing one-off above), so it could change results: not exact as it stands.
+The first two are built (run `2026-10-18-aff-index-ab`, `scripts/salts_ab.sh`, 2de4854's exe against this one, salts
+1-4, others' load 29-51%, RTP off): `TraceIndex` (test `trace_index_agrees_with_touched_by`) holds every law's trace
+items once each, with the laws they are in, grouped by shape, so a candidate matches a term shared by many laws' traces
+once; and the candidates' `affected` is computed on the scoring threads. Rules byte-equal and M equal in all 12 loops
+(293 in both); the miners' time bounding the gains, summed over the 24 mines, 138.2 against 13.5 s; wall 490 against
+434 s (-11%) and job CPU 2909 against 2847 s, both under that load. The chosen set's evaluation stays serial (parked).
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
