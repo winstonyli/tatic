@@ -4770,6 +4770,12 @@ Levers this measures: a lock-free table read (below); a size bound before matchi
 at least `size(to) - size(from)` when every variable occurs on the right at least as often as on the left, so a match at a
 position whose term is already too large for the cap could be skipped unmatched; parked in `PARKED.md`); and building a
 step's term only when it is expanded, up to 63% of `place`.
+Built (branch `lazy-view`, 22d9867, not on `main`): exact but slower (run `2026-10-18-lview-ab`, salts 1-4 against
+`bv_riv`, others' load 40-53%, RTP off): rules and M equal in all 12 loops, job CPU 2963 against 3211 s (+8%, higher in
+every salt), wall 432 against 456 s, peak memory per process about 50 MB lower. Making a step's term was cheaper than
+`place`'s share suggested, since 73.5% of `Term::op` calls hit the thread's cache, while the unmade steps cost on every
+comparison (a walk from the step's `from`) and in `seen` entries that carry the match inline (about 90 bytes against 30).
+Not profiled (PARKED.md, "Build a join step's term only when it is expanded").
 
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
