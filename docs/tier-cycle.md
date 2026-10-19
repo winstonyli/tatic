@@ -4887,9 +4887,22 @@ occurrence of the repeated variables and compares them would walk 2.92 G nodes o
 when it compares every occurrence; stopping at the first two that differ walks less, but at least two occurrences' depths
 (at least 1 each). So it saves between about 1.2 G and 2.2 G node visits, 15-28% of the matcher's work and on the order of
 2-4% of the samples, before its own branches and the 53 M calls it lets through, which pay twice. Not worth building
-as a general pre-check. Unmeasured: how many of
-the failures are a pattern whose root's two operands are the variable itself (`add(x, x)`), which an entry flag could
-reject with one pointer compare in `PatIndex::get`.
+as a general pre-check.
+
+*Which repeated-variable failures the index could reject (2026-10-19, run `2026-10-19-shallow-eq`,
+`docs/runs/2026-10-19/patches/shallow_eq.patch`, counting only, files the same as `-match-fail`).* `PatIndex::get`
+already loads the term's two operands, whose nodes hold the grandchildren. Comparing the subterms at each pair of
+positions within depth 2 that hold the same variable rejects 917 M of the 934 M binding failures (98%), 48% of the
+1.93 G `match_pat` calls; 961 M calls are of patterns with such a pair, so 44 M would still go on to match. Patterns
+rooted at `op(x, x)` alone are 311 M (33%), so a flag for that shape alone covers a third. The pairs (at most 15 among the
+six positions) fit a `u16` per entry, against a mask of which pairs differ, worked out once per subterm.
+
+*Profile with the branchless filter (2026-10-19, run `2026-10-19-fitsprof`, frames in
+`docs/runs/2026-10-19/rows/2026-10-19-fitsprof.txt`).* Taken on a loaded machine (CPU 60% at the start, 27% just before;
+the join's searches took 76.9 s against `-shapeprof`'s 55.4 s on one lane), so 295.8 k busy samples compare with nothing;
+shares only. The filter (`get`'s `fits`) is 4.7% self against the `all`'s 5.6%: most of its cost is the candidates' and
+the operands' loads, as the A/B said. `match_pat` 13.9% self, `join_walk` 6.0%, `Need::skips` 2.3% (0.9%: the entry's
+load charged to the next line read), `Term::op` 13.1% inclusive.
 
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when

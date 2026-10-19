@@ -8,6 +8,7 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 - `patches/undo_skip.patch`: commit 07e3416, dropped from the branch; it applies on eabd8d5.
 - `patches/match_fail.patch`: the counters of `-match-fail`; it applies on bce3407.
 - `patches/rep_var.patch`: the counters of `-rep-var`, `match_fail.patch`'s and five more; it applies on 7e4f037.
+- `patches/shallow_eq.patch`: the counters of `-shallow-eq`, `match_fail.patch`'s and five more; it applies on 7ad582e.
 
 | Run | Build | Script | Result |
 |---|---|---|---|
@@ -23,3 +24,5 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-shapeprof` | `bv_shapeprof` (fcef618 + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | 234.2 k busy samples; `match_pat` 14.9% self, the index filter 5.6%, `Term::op` 13.0% inclusive |
 | `2026-10-19-rep-var` | `bv_rprobe` (7e4f037 + `patches/rep_var.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; 987 M calls of repeating patterns, 934 M fail on the binding, visiting 4.15 G of 7.96 G pattern nodes; a pre-check walks 2.92 G |
 | `2026-10-19-fits-quiet` | `bv_shape`, `bv_fits` (7e4f037) | `quiet_ab.sh 1 8` (8 clean of 9) | files the same; job CPU median 206.8/207.3 s, won 3/8: no gain |
+| `2026-10-19-shallow-eq` | `bv_xprobe` (7ad582e + `patches/shallow_eq.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; depth-2 same-variable pairs reject 917 M of 934 M binding failures; `op(x, x)` roots 311 M |
+| `2026-10-19-fitsprof` | `bv_fitsprof` (7ad582e + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | loaded machine (CPU 60% at start), shares only: `match_pat` 13.9% self, the filter 4.7% |
