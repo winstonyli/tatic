@@ -1335,36 +1335,40 @@ fn pattern_classes(p: &Term) -> Classes {
 /// Patterns indexed by what they can match: for each root operator, and for leaves, the patterns in order whose root can match
 /// such a term, each with the classes its two operands can match. Keyed by the root operator alone, `rule_step_in` called
 /// `match_pat` on 16.7 rules a call, 31M a sweep (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
-#[derive(Default)]
-struct PatIndex {
-    by_op: [Vec<(u32, [Classes; 2])>; OP_INFO.len()],
-    leaf: Vec<u32>,
+/// The join's index carries each step's `Need`, so a step over the cap is skipped without loading the step.
+struct PatIndex<K = ()> {
+    // each entry: the pattern's index, its operands' classes and what it carries
+    by_op: [Vec<OpEntry<K>>; OP_INFO.len()],
+    leaf: Vec<(u32, K)>,
 }
 
-impl PatIndex {
-    fn new<'a>(pats: impl Iterator<Item = (usize, &'a Term)>) -> PatIndex {
-        let mut ix = PatIndex::default();
-        for (i, p) in pats {
+type OpEntry<K> = (u32, [Classes; 2], K);
+
+impl<K: Copy> PatIndex<K> {
+    /// Each pattern with what its entry carries (`K`), so a caller can drop it before looking the pattern up.
+    fn new<'a>(pats: impl Iterator<Item = (usize, &'a Term, K)>) -> PatIndex<K> {
+        let mut ix = PatIndex { by_op: std::array::from_fn(|_| vec![]), leaf: vec![] };
+        for (i, p, k) in pats {
             match *p.node() {
-                Node::Op(o, a, b) => ix.by_op[o].push((i as u32, [pattern_classes(&a), pattern_classes(&b)])),
+                Node::Op(o, a, b) => ix.by_op[o].push((i as u32, [pattern_classes(&a), pattern_classes(&b)], k)),
                 Node::V(_) => {
-                    ix.by_op.iter_mut().for_each(|b| b.push((i as u32, [Classes::MAX; 2])));
-                    ix.leaf.push(i as u32);
+                    ix.by_op.iter_mut().for_each(|b| b.push((i as u32, [Classes::MAX; 2], k)));
+                    ix.leaf.push((i as u32, k));
                 }
-                Node::Zero | Node::Ones => ix.leaf.push(i as u32),
+                Node::Zero | Node::Ones => ix.leaf.push((i as u32, k)),
             }
         }
         ix
     }
 
-    /// The patterns that can match `t`, in order.
-    fn get(&self, t: &Term) -> impl Iterator<Item = usize> + '_ {
-        let (ids, [ca, cb], leaf): (&[(u32, [Classes; 2])], _, &[u32]) = match *t.node() {
+    /// The patterns that can match `t`, in order, each with its entry's `K`.
+    fn get(&self, t: &Term) -> impl Iterator<Item = (usize, K)> + '_ {
+        let (ids, [ca, cb], leaf): (&[OpEntry<K>], _, &[(u32, K)]) = match *t.node() {
             Node::Op(o, a, b) => (&self.by_op[o], [class(&a), class(&b)], &[]),
             _ => (&[], [0, 0], &self.leaf),
         };
-        let fits = move |&&(_, [ma, mb]): &&(u32, [Classes; 2])| (ma >> ca) & (mb >> cb) & 1 == 1;
-        ids.iter().filter(fits).map(|&(i, _)| i).chain(leaf.iter().copied()).map(|i| i as usize)
+        let fits = move |&&(_, [ma, mb], _): &&OpEntry<K>| (ma >> ca) & (mb >> cb) & 1 == 1;
+        ids.iter().filter(fits).map(|&(i, _, k)| (i, k)).chain(leaf.iter().copied()).map(|(i, k)| (i as usize, k))
     }
 }
 
@@ -1375,7 +1379,7 @@ pub struct RuleTable {
     rules: Vec<TableRule>,
     index: PatIndex,
     join: Vec<JoinEq>,
-    join_index: PatIndex,
+    join_index: PatIndex<Need>,
 }
 
 impl RuleTable {
@@ -1383,15 +1387,15 @@ impl RuleTable {
         static FIXED: crate::task::PerTask<Vec<TableRule>> = crate::task::PerTask::new();
         let fixed = FIXED.get(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
         let rules: Vec<TableRule> = fixed.iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
-        let index = PatIndex::new(rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)).map(|(i, r)| (i, &r.lhs)));
+        let index = PatIndex::new(rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)).map(|(i, r)| (i, &r.lhs, ())));
         let join = join_eqs(&rules);
-        let join_index = PatIndex::new(join.iter().enumerate().map(|(i, e)| (i, &e.from)));
+        let join_index = PatIndex::new(join.iter().enumerate().map(|(i, e)| (i, &e.from, e.need)));
         RuleTable { mined, rules, index, join, join_index }
     }
 
     /// The rules that can match `t`, in order.
     fn candidates(&self, t: &Term) -> impl Iterator<Item = (usize, &TableRule)> {
-        self.index.get(t).map(|i| (i, &self.rules[i]))
+        self.index.get(t).map(|(i, ())| (i, &self.rules[i]))
     }
 }
 
@@ -2642,23 +2646,35 @@ struct JoinEq {
     lhs: Term,
     rhs: Term,
     backward: bool,
-    /// `size(to) - size(from)` when every variable occurs in `to` at least as often as in `from`
-    grow: Option<isize>,
+    need: Need,
+}
+
+/// How many nodes a join step needs, found without matching, so `join_walk` skips a step over the cap unmatched. When every
+/// variable occurs in `to` at least as often as in `from`, the step at `t` has `size(t) + size(to) - size(from)` nodes or
+/// more (each binding is counted in `to` at least as often as in `t`): it needs that growth from the room the cap leaves
+/// above `size(t)`. Otherwise each variable binds at least one node, so it needs `size(to)` of the cap (`of_cap`). 43% of
+/// the join's matcher calls have a bound over the cap (docs/tier-cycle.md, "How much the size bound would skip").
+#[derive(Clone, Copy, Debug)]
+struct Need {
+    nodes: isize,
+    of_cap: bool,
+}
+
+impl Need {
+    fn skips(self, room: isize, cap: isize) -> bool {
+        self.nodes > if self.of_cap { cap } else { room }
+    }
 }
 
 impl JoinEq {
     fn new(from: Term, to: Term, vars: usize, kind: LawKind, lhs: Term, rhs: Term, backward: bool) -> JoinEq {
         let (mut of, mut ot) = ([0; RULE_VARS], [0; RULE_VARS]);
         (from.occurrences(&mut of), to.occurrences(&mut ot));
-        let grow = of.iter().zip(&ot).all(|(f, t)| t >= f).then(|| to.size() as isize - from.size() as isize);
-        JoinEq { from, to, vars, kind, lhs, rhs, backward, grow }
-    }
-    /// A lower bound on the size of `subst_pat(to, sub)` for a match `sub` of `from` at `t`, found without matching: each
-    /// variable binds at least one node, so the step is at least `size(to)`, and at least `size(t) + grow` when `grow` is
-    /// known (each variable's binding is counted in `to` at least as often as in `t`). 43% of the join's matcher calls
-    /// have a bound over the cap (docs/tier-cycle.md, "How much the size bound would skip").
-    fn min_size(&self, t: Term) -> usize {
-        self.grow.map_or(0, |g| (t.size() as isize + g).max(0) as usize).max(self.to.size())
+        let need = match of.iter().zip(&ot).all(|(f, t)| t >= f) {
+            true => Need { nodes: to.size() as isize - from.size() as isize, of_cap: false },
+            false => Need { nodes: to.size() as isize, of_cap: true },
+        };
+        JoinEq { from, to, vars, kind, lhs, rhs, backward, need }
     }
 }
 
@@ -2693,10 +2709,10 @@ fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
     eqs
 }
 
-/// `JoinEq::min_size` never exceeds the size of a match's step, and is that size for a rule that repeats no variable,
-/// such as commutativity: so `join_walk` skipping a match whose bound is over the cap changes no search.
+/// `Need::skips` skips a match only when its step is over the cap, and every match over the cap for a rule that repeats
+/// no variable, such as commutativity: so `join_walk` skipping by it changes no search.
 #[test]
-fn join_min_size_is_a_lower_bound() {
+fn join_need_skips_only_steps_over_the_cap() {
     let rule = |l: &str, r: &str| TableRule { name: "t", lhs: parse_term(l), rhs: parse_term(r), vars: 2, permutative: false };
     let eqs = join_eqs(&[rule("and(x, or(x, y))", "x"), rule("add(x, x)", "shl1(x, 0)"), rule("xor(x, y)", "xor(y, xor(x, 0))")]);
     let mut terms = vec![Term::v(0), Term::v(1), Term::ZERO];
@@ -2710,9 +2726,12 @@ fn join_min_size_is_a_lower_bound() {
             let mut sub = [None; RULE_VARS];
             if match_pat(&e.from, &t, &mut sub) {
                 let size = subst_sig(&e.to, &sub).1;
-                assert!(e.min_size(t) <= size, "{} -> {} at {}: bound {} over {}", e.from.show(), e.to.show(), t.show(), e.min_size(t), size);
+                let skips: Vec<bool> = (0..size + 3).map(|cap| e.need.skips(cap as isize - t.size() as isize, cap as isize)).collect();
+                for (cap, &s) in skips.iter().enumerate() {
+                    assert!(!s || size > cap, "{} -> {} at {}: skipped at cap {cap}, step {size}", e.from.show(), e.to.show(), t.show());
+                }
                 matched += 1;
-                exact += (matches!(e.kind, LawKind::Comm) && e.min_size(t) == size) as usize;
+                exact += (matches!(e.kind, LawKind::Comm) && skips.iter().enumerate().all(|(cap, &s)| s == (size > cap))) as usize;
             }
         }
     }
@@ -2873,7 +2892,7 @@ type JoinPlace = [(usize, Term, Term, bool)];
 
 /// `t`'s join steps of at most `cap` nodes in all, in order: those at the root by `table.join`, then those in the left
 /// child, then the right; each passed to `visit` with its place, subterm, step index and match, while `visit` returns
-/// true; a rule whose `JoinEq::min_size` is over the cap is skipped unmatched. Adds `t`'s subterms to `examined`.
+/// true; a rule whose `Need` is over the cap is skipped unmatched. Adds `t`'s subterms to `examined`.
 fn join_walk(
     t: Term,
     table: &RuleTable,
@@ -2885,11 +2904,13 @@ fn join_walk(
     if let Some(x) = examined {
         x.insert(t);
     }
-    for i in table.join_index.get(&t) {
-        let e = &table.join[i];
-        if e.min_size(t) > cap {
+    let size = t.size();
+    let room = cap as isize - size as isize;
+    for (i, need) in table.join_index.get(&t) {
+        if need.skips(room, cap as isize) {
             continue;
         }
+        let e = &table.join[i];
         let mut sub = [None; RULE_VARS];
         if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
             return false;
@@ -2898,7 +2919,7 @@ fn join_walk(
     if let Node::Op(o, a, b) = *t.node() {
         for (right, c) in [(false, a), (true, b)] {
             up.push((o, a, b, right));
-            let go = join_walk(c, table, cap - (t.size() - c.size()), up, examined, visit);
+            let go = join_walk(c, table, cap - (size - c.size()), up, examined, visit);
             up.pop();
             if !go {
                 return false;
