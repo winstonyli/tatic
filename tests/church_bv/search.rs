@@ -947,32 +947,46 @@ pub fn rule_miner() {
                 let (f, sz) = (ev.iter().map(|e| e.0).collect::<Vec<bool>>(), ev.iter().map(|e| e.1).sum::<i64>());
                 ((count(&f) - count(covered)) * 1000 + (guarded(&f) - guarded(covered)) * guard_w + (size - sz), f, sz)
             };
-            let score_one = |i: usize| score_rule(provable[i], &affected[i]);
+            // the winner's left side with another right side: same affected laws, proved only if it would win
+            // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`); scoring compiles no plans, so an
+            // unprovable rival (`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)` once the promoted rules are out) is never proved
+            let rivals_of = |i: usize| rivals.get(&provable[i].0).map_or(&[][..], |v| &v[..]);
+            // a job: candidate `i`, or with `Some(k)` the `k`th rival of the winner `i`
+            let score_job = |(i, k): (usize, Option<usize>)| match k {
+                None => score_rule(provable[i], &affected[i]),
+                Some(k) => {
+                    let fast = SCORE_ONLY.with(|s| s.replace(true));
+                    let r = score_rule(&rivals_of(i)[k], &affected[i]);
+                    SCORE_ONLY.with(|s| s.set(fast));
+                    r
+                }
+            };
             // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
             // candidates whose bound reaches the next best
             let mut results: Vec<Option<(i64, Vec<bool>, i64)>> = vec![None; provable.len()];
             let mut next = 0;
-            let winner = std::thread::scope(|sc| {
+            let (winner, rival_gains) = std::thread::scope(|sc| {
                 // one queue for all workers: each takes the next candidate when it is free, so a chunk ends when its last
-                // candidate is scored rather than when the slowest worker's fixed share is
+                // candidate is scored rather than when the slowest worker's fixed share is; the winner's rivals go through it too,
+                // each scored on its own, so their gains do not depend on which worker scored them
                 let (done_tx, done_rx) = std::sync::mpsc::channel();
-                let (work, queue) = std::sync::mpsc::channel::<usize>();
+                let (work, queue) = std::sync::mpsc::channel::<(usize, Option<usize>)>();
                 let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
                 for _ in 0..threads {
-                    let (done_tx, score_one, queue, join_workers) = (done_tx.clone(), &score_one, queue.clone(), &join_workers);
+                    let (done_tx, score_job, queue, join_workers) = (done_tx.clone(), &score_job, queue.clone(), &join_workers);
                     let worker = move || {
                         let before = JoinCost::now();
                         tatic::kernel::scoped(|| {
                             loop {
-                                let Ok(i) = queue.lock().unwrap().recv() else { break };
-                                done_tx.send((i, score_one(i))).unwrap();
+                                let Ok(job) = queue.lock().unwrap().recv() else { break };
+                                done_tx.send((job, score_job(job))).unwrap();
                             }
                         });
                         join_workers.lock().unwrap().add_since(before);
                     };
                     std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
                 }
-                loop {
+                let winner = loop {
                     let best = (0..provable.len()).filter(|&i| proofs.borrow()[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
                     let floor = best.map_or(1, |b| b.0);
                     let chunk: Vec<usize> = order[next..].iter().take_while(|&&(b, _)| b >= floor).take(threads * 4).map(|&(_, i)| i).collect();
@@ -1001,26 +1015,29 @@ pub fn rule_miner() {
                     }
                     next += chunk.len();
                     for &i in &chunk {
-                        work.send(i).unwrap();
+                        work.send((i, None)).unwrap();
                     }
-                    for (i, r) in done_rx.iter().take(chunk.len()) {
+                    for ((i, _), r) in done_rx.iter().take(chunk.len()) {
                         results[i] = Some(r);
                     }
+                };
+                let mut gains = vec![0; winner.map_or(0, |i| rivals_of(i).len())];
+                for k in 0..gains.len() {
+                    work.send((winner.unwrap(), Some(k))).unwrap();
                 }
+                for ((_, k), r) in done_rx.iter().take(gains.len()) {
+                    gains[k.unwrap()] = r.0;
+                }
+                (winner, gains)
             });
             scorings.set(scorings.get() + next);
             skipped.set(skipped.get() + provable.len() - next);
             phase(&format!("round over {} of {} candidates", next, provable.len()));
             let Some(i) = winner else { return vec![] };
             let g = results[i].as_ref().unwrap().0;
-            // the winner's left side with another right side: same affected laws, proved only if it would win
-            // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`); scoring compiles no plans, so an
-            // unprovable rival (`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)` once the promoted rules are out) is never proved
+            // in the rivals' order, as when they were scored one after another here
             let mut rival: Option<((Term, Term), i64)> = None;
-            for rv in rivals.get(&provable[i].0).into_iter().flatten() {
-                let fast = SCORE_ONLY.with(|s| s.replace(true));
-                let rg = score_rule(rv, &affected[i]).0;
-                SCORE_ONLY.with(|s| s.set(fast));
+            for (rv, &rg) in rivals_of(i).iter().zip(&rival_gains) {
                 if rg > rival.as_ref().map_or(g, |r| r.1) && prove_any(rv) {
                     rival = Some((*rv, rg));
                 }

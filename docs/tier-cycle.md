@@ -4839,10 +4839,14 @@ wall: 102.7 s against 97): the main thread has 13.6 k busy samples against 25.3 
 20.5 s (one-busy wall 20.2% against 26.8%). Of what is left on it (`PROF_PARENTS` in `prof_named.py`, which names what a
 numbered closure calls): 52% is `score_rule` in `pick` (it only calls `score_laws`), which on the main thread runs only for
 the winner's rivals, scored one after another; 25% is `state` (the chosen set's evaluation); 12% is the winner loop's own
-code, most likely its `best` scan over every candidate per chunk (no frame below it says, so this is a guess);
-`TraceIndex::new` is 3%. Scoring the rivals on the scoring workers is independent per rival (each from an empty memo),
-with the choice among them made afterwards in the same order, so it is exact; so is keeping the best gain as results
-arrive instead of rescanning.
+code; `TraceIndex::new` is 3%. The winner loop's share is not its `best` scan: its samples end in the kernel under
+`WaitOnAddress` / `NtWaitForAlertByThreadId` (the thread parking on the workers' results, much of it under the profiler's
+`RtlWalkFrameChain`), with thread creation 0.2%, so keeping the best gain incrementally would save nothing (not built).
+Scoring the rivals on the scoring workers is exact: each is scored from an empty memo and the choice among them runs
+afterwards in the same order. Built: the winner's rivals go through the round's worker queue (run
+`2026-10-18-rivals-pool-ab`, `bv_aff` against this, salts 1-4, others' load 48-58%, RTP off): rules byte-equal and M
+equal in all 12 loops (293); wall 513 against 475 s (-7%), job CPU 3094 against 2974 s, both under that load. At 1
+and 6 scoring threads the rules stay the same (run `2026-10-18-rivals-threads`, `threads_check.sh`, salt 5).
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the

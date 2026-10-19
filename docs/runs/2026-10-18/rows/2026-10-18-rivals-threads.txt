@@ -1,0 +1,5 @@
+threads 6: exit 0 wall 88 s
+threads 1: exit 0 wall 335 s
+cold_cmp3d_cmp3d_1_none/rules.txt: same
+cold_cmp3d_cmp3d_2_none/rules.txt: same
+cold_cmp3d_cmp3d_3_none/rules.txt: same
