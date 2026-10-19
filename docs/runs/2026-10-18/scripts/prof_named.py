@@ -114,5 +114,17 @@ for key in sys.argv[3:]:
             up = [n for n in flat[1:] if re.match(r"^(church_bv|tatic)::", n) and key not in n][:2]
             by[" < ".join(up)] += 1
     lines += [f"== callers of leaves matching {key!r}"] + [f"  {100*v/tot:5.1f}% {n}" for n, v in by.most_common(8)]
+# PROF_PARENTS=<frame>,<frame>: for samples under each named frame, the church_bv/tatic frame directly inside it (what a
+# numbered closure calls, to tell closures apart)
+for key in filter(None, __import__("os").environ.get("PROF_PARENTS", "").split(",")):
+    by = collections.Counter()
+    for c in samples:
+        flat = []
+        for f in c:
+            flat.extend(names.get(f[1], [f"exe:{f[1]}"]) if f[0] == "exe" else [f[1]])
+        if key in flat:
+            inner = [n for n in flat[: flat.index(key)] if re.match(r"^(church_bv|tatic)::", n)]
+            by[inner[-1] if inner else "(leaf)"] += 1
+    lines += [f"== inside {key}"] + [f"  {100*v/tot:5.1f}% {n}" for n, v in by.most_common(6)]
 open(f"{D}/named" + (f"_{ONLY.replace(':', '_')}" if ONLY else "") + ".txt", "w").write("\n".join(lines) + "\n")
 print("\n".join(lines))

@@ -1,0 +1,1 @@
+exit 0 RULEMINER join: 430007 searches reaching 107499537 terms, 390506 met, 42854 memo hits, 126.6s searching (44.2s in failed searches) RULEMINER join: 27 searches reaching 1762 terms, 27 met, 0 memo hits, 0.0s searching (0.0s in failed searches) RULEMINER join: 466619 searches reaching 124399445 terms, 422592 met, 65870 memo hits, 162.3s searching (56.6s in failed searches) 

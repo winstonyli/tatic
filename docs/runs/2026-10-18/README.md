@@ -61,7 +61,9 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   CPU. A was `bv_old` (dc2102c, before the memo per candidate), B `bv_both`.
 - `scripts/prof_timeline.py <dir>`: a samply profile's wall by how many threads are busy at once, split into the miner's
   main thread and its scoring pool, and cores busy per second. `prof_named.py` takes `PROF_THREAD=<name>` to keep one
-  thread name's samples (table in `named_<name>.txt`).
+  thread name's samples (table in `named_<name>.txt`), and `PROF_PARENTS=<frame>,...` to list what each named frame calls
+directly (to tell numbered closures apart). `bv_lprof3` is 3a851d6 with `patches/lazy_prof.patch`, debug info.
+`rows/2026-10-18-aff-prof-timeline.txt` and `-aff-prof-main.txt` are its timeline and main-thread tables.
 - `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table; `rows/2026-10-18-pcand-timeline.txt` is `prof_timeline.py`'s on
 `-pcand-prof`, and `rows/2026-10-18-pcand-prof-main.txt` the main thread's `prof_named.py` table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
   loop that differed between `-lanes-check`'s sweeps.
@@ -85,6 +87,7 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-sbound-tag-quiet` | `bv_base`, `bv_sb`, `bv_both` | `quiet_ab.sh 1 3` (stopped after 2 rounds) | same files; wall 88.0/78.3/77.8 s, job CPU 372/324/321 s |
 | `2026-10-18-pcand-salts-record` | `bv_old`, `bv_both` | `salts_ab.sh`, salts 1-10 | M 749 both, every loop equal; wall 1130/954 s, job CPU 7942/6289 s; rules differ in 4 of 30 loops |
 | `2026-10-18-aff-index-ab` | `bv_both`, `bv_aff` | `salts_ab.sh`, salts 1-4 | rules and M equal in all 12 loops; bounding 138.2/13.5 s; wall 490/434 s (loaded) |
+| `2026-10-18-aff-prof` | `bv_lprof3` | `lazy_prof.sh` | main thread 13.6 k busy samples (25.3 k before), alone 8.9 s; rivals' `score_rule` 52%, `state` 25%, winner loop 12% |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |
 | `2026-10-18-join-paths` | `bv_jpaths` | `join_paths.sh`, salt 1 | met paths: at most 4 uphill steps in 99.8%; deep sides mostly flat steps |
