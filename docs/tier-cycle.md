@@ -4904,6 +4904,22 @@ shares only. The filter (`get`'s `fits`) is 4.7% self against the `all`'s 5.6%: 
 the operands' loads, as the A/B said. `match_pat` 13.9% self, `join_walk` 6.0%, `Need::skips` 2.3% (0.9%: the entry's
 load charged to the next line read), `Term::op` 13.1% inclusive.
 
+*The depth-2 pairs in the index (2026-10-19, run `2026-10-19-pairs-quiet`, commit 75d4b99).* Each `PatIndex` entry now
+carries the pairs among [a, b, aa, ab, ba, bb] where its pattern has one subpattern (a repeated variable), and `get`
+compares only the pairs some entry of the term's class needs, once per subterm. Files the same; job CPU `bv_fits`/`bv_pairs`
+median 210.9/203.6 s, won 5/8, under 5-18% others with RTP off. The won count understates it: the arm run second in a
+round took 6.7 s longer on average (7 of 8 rounds), and `bv_pairs` won all four rounds it ran first (by 7.0-16.2 s) and
+was within -2.8 to +3.9 s in the four it ran second. Averaging the two orders cancels the position: 5.7 s less (-2.7%),
+and every pairing of a first-run round with a second-run round is negative. Less than the 48% of `match_pat` calls
+of 13.9% self (`-fitsprof`) would predict (6.7%): the rejected calls fail at the binding, so each was cheaper
+than the average call. Kept.
+
+*The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
+by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
+in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
+fair, but the won count can read a 3% gain as 5/8. Read an A/B by the mean over the two orders (each arm first in half
+the rounds); the verdicts of this day's earlier A/Bs stand that way too (room +3.6 s, fits +0.3 s, shape -22.3 s).
+
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
 every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule

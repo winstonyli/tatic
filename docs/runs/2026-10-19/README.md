@@ -3,7 +3,7 @@
 Rows behind `docs/tier-cycle.md`, "The three levers, tried". Each run is recorded in `docs/runs.md` with its raw folder
 under `%LOCALAPPDATA%\claude-runs\tatic\<run id>`. Builds were `cargo test --profile sweep --test church_bv --no-run`,
 copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `bv_spine` (eabd8d5, the spine deferral),
-`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index), `bv_shape` (fcef618, the index down to the grandchildren), `bv_fits` (7e4f037, the operands' needs alone, branchless). The scripts are 2026-10-18's (`quiet_ab.sh`).
+`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index), `bv_shape` (fcef618, the index down to the grandchildren), `bv_fits` (7e4f037, the operands' needs alone, branchless), `bv_pairs` (75d4b99, the depth-2 pairs). The scripts are 2026-10-18's (`quiet_ab.sh`), except `scripts/order_fx.py` (the order within a round, from the rows).
 
 - `patches/undo_skip.patch`: commit 07e3416, dropped from the branch; it applies on eabd8d5.
 - `patches/match_fail.patch`: the counters of `-match-fail`; it applies on bce3407.
@@ -26,3 +26,4 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-fits-quiet` | `bv_shape`, `bv_fits` (7e4f037) | `quiet_ab.sh 1 8` (8 clean of 9) | files the same; job CPU median 206.8/207.3 s, won 3/8: no gain |
 | `2026-10-19-shallow-eq` | `bv_xprobe` (7ad582e + `patches/shallow_eq.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; depth-2 same-variable pairs reject 917 M of 934 M binding failures; `op(x, x)` roots 311 M |
 | `2026-10-19-fitsprof` | `bv_fitsprof` (7ad582e + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | loaded machine (CPU 60% at start), shares only: `match_pat` 13.9% self, the filter 4.7% |
+| `2026-10-19-pairs-quiet` | `bv_fits`, `bv_pairs` (75d4b99) | `quiet_ab.sh 1 8` (8 clean of 8) | files the same; job CPU median 210.9/203.6 s, won 5/8 (all 4 run first); the mean over the two orders -5.7 s (-2.7%), the second arm +6.7 s |
