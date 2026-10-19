@@ -1332,8 +1332,6 @@ fn class(t: &Term) -> usize {
 /// join's index carries each step's `Need`, so a step over the cap is skipped without loading the step.
 struct PatIndex<K = ()> {
     by_class: [Vec<Entry<K>>; CLASSES],
-    /// each class's pairs that some entry needs equal, so `get` compares only those
-    pairs: [u16; CLASSES],
 }
 
 /// A pattern's index, the shape bits it needs at the root's two operands (none for a leaf), the pairs of `shallow`
@@ -1369,7 +1367,7 @@ const PAIRS: [(usize, usize); 15] = {
 impl<K: Copy> PatIndex<K> {
     /// Each pattern with what its entry carries (`K`), so a caller can drop it before looking the pattern up.
     fn new<'a>(pats: impl Iterator<Item = (usize, &'a Term, K)>) -> PatIndex<K> {
-        let mut ix = PatIndex { by_class: std::array::from_fn(|_| vec![]), pairs: [0; CLASSES] };
+        let mut ix = PatIndex { by_class: std::array::from_fn(|_| vec![]) };
         for (i, p, k) in pats {
             match *p.node() {
                 Node::Op(_, a, b) => {
@@ -1377,7 +1375,6 @@ impl<K: Copy> PatIndex<K> {
                     let same = |&(x, y): &(usize, usize)| matches!((at[x], at[y]), (Some(u), Some(v)) if u == v);
                     let pairs = PAIRS.iter().enumerate().filter(|(_, q)| same(q)).fold(0, |m, (b, _)| m | 1 << b);
                     ix.by_class[class(p)].push((i as u32, [a.needs(), b.needs()], pairs, k));
-                    ix.pairs[class(p)] |= pairs;
                 }
                 Node::V(_) => ix.by_class.iter_mut().for_each(|c| c.push((i as u32, [0; 2], 0, k))),
                 Node::Zero | Node::Ones => ix.by_class[class(p)].push((i as u32, [0; 2], 0, k)),
@@ -1393,16 +1390,20 @@ impl<K: Copy> PatIndex<K> {
             Node::Op(_, a, b) => [a.shape(), b.shape()],
             _ => [0; 2],
         };
-        // which needed pairs differ; a position the term lacks is a pattern's only where the shape rules the pattern out
-        let (at, mut need, mut differs) = (shallow(t), self.pairs[c], 0u16);
-        while need != 0 {
-            let k = need.trailing_zeros() as usize;
-            let (x, y) = PAIRS[k];
-            differs |= ((at[x] != at[y]) as u16) << k;
-            need &= need - 1;
-        }
-        // one test without branches (an `all` over three shapes was 5.6% of the sweep's samples)
-        let fits = move |e: &&Entry<K>| (e.1[0] & !sa) | (e.1[1] & !sb) | (e.2 & differs) as u64 == 0;
+        // whether some pair differs; a position the term lacks is a pattern's only where the shape rules the pattern out
+        let at = shallow(t);
+        let differ = move |mut pairs: u16| {
+            let mut d = false;
+            while pairs != 0 {
+                let (x, y) = PAIRS[pairs.trailing_zeros() as usize];
+                d |= at[x] != at[y];
+                pairs &= pairs - 1;
+            }
+            d
+        };
+        // the shapes in one test without branches (an `all` over three shapes was 5.6% of the sweep's samples), the pairs
+        // only for an entry that passes it (worked out for every subterm, they cost two thirds of what they saved)
+        let fits = move |e: &&Entry<K>| (e.1[0] & !sa) | (e.1[1] & !sb) == 0 && (e.2 == 0 || !differ(e.2));
         self.by_class[c].iter().filter(fits).map(|&(i, _, _, k)| (i as usize, k))
     }
 }
