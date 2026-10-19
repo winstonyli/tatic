@@ -4835,6 +4835,24 @@ so it neither confirms nor contradicts the 8% of the quiet two-lane A/B. What is
 rule per walked subterm); `subst_sig` 7.7% inclusive; `PatIndex::get` 3.3%; the hash tables (the seen tables in the visit,
 `examined` in the walk) a few percent between them.
 
+*The size need in the index (2026-10-19, bce3407, run `2026-10-19-room-quiet`).* `JoinEq::min_size` is replaced by a
+`Need` that each join index entry carries: a step that keeps every variable needs its growth from the room the cap leaves
+above the subterm, any other its `size(to)` of the cap, so the walk sizes a subterm once and skips with one compare
+without loading the step (test `join_need_skips_only_steps_over_the_cap`, 5 of 5 mutations killed). Exact (every run's
+files the same), but no gain: salt 1 cold:cmp3d, 4 clean rounds at 8-12% others, RTP off, job CPU median 250.5 s before
+and 258.0 s after, won 2/4 (-7.8, +18.4, -5.0, +8.8 s). The profile's 5.5% for `min_size` was not arithmetic that could be
+saved; a guess, unchecked: it was the step's loads, which the doubled index entries (16 bytes from 8) now pay.
+
+*Why the join's matches fail (2026-10-19, run `2026-10-19-match-fail`, `docs/runs/2026-10-19/patches/match_fail.patch`,
+counting only).* Salt 1 cold:cmp3d: `join_walk` walked 1.44 G subterms, the index offered 5.63 G steps (44% skipped by
+the need) and `match_pat` ran 3.17 G times, 31% matching. All 2.19 G failures are rules' (associativity and commutativity
+patterns are one level deep, so the index's operand classes decide them). By the least depth where the pattern's shape
+rejects the subterm: 969 M (31% of calls) at the grandchildren, 934 M (29%) nowhere (a repeated variable bound to two
+different subterms), 270 M (8.5%) at the root and 19 M deeper. The index rules out the root and operand classes of an
+operator subterm, so the root misses are leaf subterms offered every leaf pattern (the leaf list is not keyed by
+constant). Grandchild classes in the index, worked out once per subterm, and the leaf list keyed by class would avoid 39%
+of the calls; the repeated-variable failures need the bindings compared, which `match_pat` already does in O(1) per pair.
+
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
 every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule
