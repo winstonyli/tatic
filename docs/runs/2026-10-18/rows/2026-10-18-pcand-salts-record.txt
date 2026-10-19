@@ -1,0 +1,52 @@
+salt 1 A: exit 0 s1_A wall=78.4s jobcpu=542.69s procs=3 stragglers=0 peakproc=586MB peakjob=1323MB other=29% others=8 rtp=False exit=0
+salt 1 B: exit 0 s1_B wall=61.8s jobcpu=394.92s procs=3 stragglers=0 peakproc=592MB peakjob=1285MB other=29% others=8 rtp=False exit=0
+salt 1 loop 1: M A 29 B 29, rules same
+salt 1 loop 2: M A 17 B 17, rules differ
+salt 1 loop 3: M A 30 B 30, rules same
+salt 2 B: exit 0 s2_B wall=108.9s jobcpu=761.36s procs=3 stragglers=0 peakproc=637MB peakjob=1534MB other=28% others=8 rtp=False exit=0
+salt 2 A: exit 0 s2_A wall=130.8s jobcpu=972.69s procs=3 stragglers=0 peakproc=619MB peakjob=1468MB other=28% others=8 rtp=False exit=0
+salt 2 loop 1: M A 22 B 22, rules same
+salt 2 loop 2: M A 14 B 14, rules same
+salt 2 loop 3: M A 29 B 29, rules same
+salt 3 A: exit 0 s3_A wall=106.7s jobcpu=797.91s procs=3 stragglers=0 peakproc=638MB peakjob=1490MB other=28% others=8 rtp=False exit=0
+salt 3 B: exit 0 s3_B wall=89.8s jobcpu=631.91s procs=3 stragglers=0 peakproc=654MB peakjob=1472MB other=27% others=8 rtp=False exit=0
+salt 3 loop 1: M A 27 B 27, rules same
+salt 3 loop 2: M A 24 B 24, rules same
+salt 3 loop 3: M A 19 B 19, rules same
+salt 4 B: exit 0 s4_B wall=115.1s jobcpu=757.19s procs=3 stragglers=0 peakproc=595MB peakjob=1359MB other=28% others=8 rtp=False exit=0
+salt 4 A: exit 0 s4_A wall=139.2s jobcpu=974.89s procs=3 stragglers=0 peakproc=612MB peakjob=1377MB other=28% others=8 rtp=False exit=0
+salt 4 loop 1: M A 23 B 23, rules same
+salt 4 loop 2: M A 34 B 34, rules same
+salt 4 loop 3: M A 25 B 25, rules same
+salt 5 A: exit 0 s5_A wall=99.1s jobcpu=705.58s procs=3 stragglers=0 peakproc=751MB peakjob=1502MB other=28% others=8 rtp=False exit=0
+salt 5 B: exit 0 s5_B wall=81.4s jobcpu=544.80s procs=3 stragglers=0 peakproc=766MB peakjob=1484MB other=29% others=8 rtp=False exit=0
+salt 5 loop 1: M A 26 B 26, rules differ
+salt 5 loop 2: M A 23 B 23, rules same
+salt 5 loop 3: M A 21 B 21, rules same
+salt 6 B: exit 0 s6_B wall=77.1s jobcpu=480.89s procs=3 stragglers=0 peakproc=891MB peakjob=1511MB other=28% others=8 rtp=False exit=0
+salt 6 A: exit 0 s6_A wall=101.8s jobcpu=648.28s procs=3 stragglers=0 peakproc=976MB peakjob=1589MB other=28% others=8 rtp=False exit=0
+salt 6 loop 1: M A 32 B 32, rules same
+salt 6 loop 2: M A 19 B 19, rules same
+salt 6 loop 3: M A 36 B 36, rules differ
+salt 7 A: exit 0 s7_A wall=154.9s jobcpu=961.80s procs=3 stragglers=0 peakproc=626MB peakjob=1321MB other=28% others=8 rtp=False exit=0
+salt 7 B: exit 0 s7_B wall=151.8s jobcpu=868.03s procs=3 stragglers=0 peakproc=637MB peakjob=1325MB other=27% others=8 rtp=False exit=0
+salt 7 loop 1: M A 25 B 25, rules same
+salt 7 loop 2: M A 24 B 24, rules same
+salt 7 loop 3: M A 27 B 27, rules differ
+salt 8 B: exit 0 s8_B wall=60.2s jobcpu=413.28s procs=3 stragglers=0 peakproc=582MB peakjob=1348MB other=27% others=8 rtp=False exit=0
+salt 8 A: exit 0 s8_A wall=72.5s jobcpu=528.95s procs=3 stragglers=0 peakproc=575MB peakjob=1361MB other=28% others=8 rtp=False exit=0
+salt 8 loop 1: M A 25 B 25, rules same
+salt 8 loop 2: M A 26 B 26, rules same
+salt 8 loop 3: M A 20 B 20, rules same
+salt 9 A: exit 0 s9_A wall=124.7s jobcpu=912.92s procs=3 stragglers=0 peakproc=634MB peakjob=1322MB other=28% others=8 rtp=False exit=0
+salt 9 B: exit 0 s9_B wall=106.5s jobcpu=725.34s procs=3 stragglers=0 peakproc=623MB peakjob=1333MB other=29% others=8 rtp=False exit=0
+salt 9 loop 1: M A 24 B 24, rules same
+salt 9 loop 2: M A 25 B 25, rules same
+salt 9 loop 3: M A 25 B 25, rules same
+salt 10 B: exit 0 s10_B wall=100.9s jobcpu=711.41s procs=3 stragglers=0 peakproc=593MB peakjob=1288MB other=29% others=8 rtp=False exit=0
+salt 10 A: exit 0 s10_A wall=122.1s jobcpu=895.83s procs=3 stragglers=0 peakproc=590MB peakjob=1232MB other=29% others=8 rtp=False exit=0
+salt 10 loop 1: M A 28 B 28, rules same
+salt 10 loop 2: M A 24 B 24, rules same
+salt 10 loop 3: M A 26 B 26, rules same
+total A: M 749; wall 1130 s, job cpu 7942 s
+total B: M 749; wall 954 s, job cpu 6289 s

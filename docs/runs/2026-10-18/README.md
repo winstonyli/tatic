@@ -54,7 +54,16 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 - `scripts/arms_ab.sh <salt> <exe>...`: the same for any number of exes, in order and then reversed, with a memory
   watchdog. `bv_base` was 31e0903, `bv_sb` 8de04c1 (the size bound), `bv_both` 2de4854 (and the interner's tags); the
   rows file adds each sweep's `RULEMINER join` lines.
-- `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
+- `scripts/quiet_ab.sh <salt> <rounds> <exe>...`: the same arms through `runs time` (alternated, job CPU and wall, a
+  round kept only while others' load is low), then which runs' files agree with the first's.
+- `scripts/salts_ab.sh <exe A> <exe B> <salts...>`: `SWEEP=cold:cmp3d` per salt with A and B (A first on odd salts),
+  each a `runs run`; per loop the M of each and whether their rules agree, then per arm the totals of M, wall and job
+  CPU. A was `bv_old` (dc2102c, before the memo per candidate), B `bv_both`.
+- `scripts/prof_timeline.py <dir>`: a samply profile's wall by how many threads are busy at once, split into the miner's
+  main thread and its scoring pool, and cores busy per second. `prof_named.py` takes `PROF_THREAD=<name>` to keep one
+  thread name's samples (table in `named_<name>.txt`).
+- `rows/<run id>.txt`: each run's `out.log`; `rows/2026-10-18-lazy-prof.txt` is `prof_named.py`'s table; `rows/2026-10-18-pcand-timeline.txt` is `prof_timeline.py`'s on
+`-pcand-prof`, and `rows/2026-10-18-pcand-prof-main.txt` the main thread's `prof_named.py` table. `rows/lanes-check_cold_l{1,2}_cmp3d_2_mine_0.log`: the first mine of the
   loop that differed between `-lanes-check`'s sweeps.
 
 | Run | Build | Script | Result |
@@ -73,6 +82,8 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
 | `2026-10-18-match-count` | `bv_mprobe` | `match_count.sh`, salt 1 | matcher fails 60%, 59% of matches over the cap; 37% of step terms expanded; `Term::op` 26.2% table hits, 0.35% new |
 | `2026-10-18-pcand-prof` | `bv_lprof2` | `lazy_prof.sh` | join 85.3%; `Term::op` 22.2% (no mutex; cold node loads), `match_pat` 21.1%, `place` 17.2%, `subst_sig` 14.0% |
 | `2026-10-18-sbound-tag-ab` | `bv_base`, `bv_sb`, `bv_both` | `arms_ab.sh 1` | same files; wall 198/200/198 s; join seconds 699/670/639 (contended) |
+| `2026-10-18-sbound-tag-quiet` | `bv_base`, `bv_sb`, `bv_both` | `quiet_ab.sh 1 3` (stopped after 2 rounds) | same files; wall 88.0/78.3/77.8 s, job CPU 372/324/321 s |
+| `2026-10-18-pcand-salts-record` | `bv_old`, `bv_both` | `salts_ab.sh`, salts 1-10 | M 749 both, every loop equal; wall 1130/954 s, job CPU 7942/6289 s; rules differ in 4 of 30 loops |
 | `2026-10-18-interner-ab` | `bv_lazy2`, `bv_lockfree` | `interner_ab.sh`, salt 1 | lock-free 136/140 s against 150/142; rules agree but the first old sweep's loop 15-2 |
 | `2026-10-18-size-bound` | `bv_sbound` | `match_count.sh`, salt 1 | the bound skips 43% of matcher calls, 96% of over-cap matches, no match within the cap |
 | `2026-10-18-join-paths` | `bv_jpaths` | `join_paths.sh`, salt 1 | met paths: at most 4 uphill steps in 99.8%; deep sides mostly flat steps |

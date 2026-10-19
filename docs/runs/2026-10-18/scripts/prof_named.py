@@ -9,6 +9,9 @@ D, EXE = sys.argv[1], sys.argv[2]
 p = json.load(gzip.open(f"{D}/pcs.json.gz"))
 libs = p["libs"]
 threads = list(p["threads"]) + [t for sp in p.get("processes", []) for t in sp["threads"]]
+# PROF_THREAD=<name>: only threads of that name (e.g. search::rule_miner), the table in named_<name>.txt
+ONLY = __import__("os").environ.get("PROF_THREAD")
+threads = [t for t in threads if ONLY is None or t.get("name") == ONLY]
 IDLE = ("NtWaitFor", "NtDelayExecution", "NtWaitForWorkViaWorkerFactory", "ZwWaitFor", "NtRemoveIoCompletion", "NtWaitForAlertByThreadId")
 syms = json.load(open(f"{D}/pcs.json.syms.json"))
 ST = syms["string_table"]
@@ -111,5 +114,5 @@ for key in sys.argv[3:]:
             up = [n for n in flat[1:] if re.match(r"^(church_bv|tatic)::", n) and key not in n][:2]
             by[" < ".join(up)] += 1
     lines += [f"== callers of leaves matching {key!r}"] + [f"  {100*v/tot:5.1f}% {n}" for n, v in by.most_common(8)]
-open(f"{D}/named.txt", "w").write("\n".join(lines) + "\n")
+open(f"{D}/named" + (f"_{ONLY.replace(':', '_')}" if ONLY else "") + ".txt", "w").write("\n".join(lines) + "\n")
 print("\n".join(lines))

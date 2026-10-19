@@ -1,0 +1,14 @@
+start: RTP=False CPU=16% lockpriv=True
+bv_base.1 wall=86.4s jobcpu=366.03s procs=2 stragglers=0 peakproc=824MB peakjob=1145MB other=17% others=0 rtp=False exit=0
+bv_sb.1 wall=78.9s jobcpu=326.14s procs=2 stragglers=0 peakproc=807MB peakjob=1128MB other=17% others=0 rtp=False exit=0
+bv_both.1 wall=78.7s jobcpu=324.75s procs=2 stragglers=0 peakproc=803MB peakjob=1124MB other=23% others=0 rtp=False exit=0
+round 1 done, clean rounds 0
+bv_sb.2 wall=77.7s jobcpu=321.55s procs=2 stragglers=0 peakproc=816MB peakjob=1137MB other=16% others=0 rtp=False exit=0
+bv_both.2 wall=76.8s jobcpu=316.89s procs=2 stragglers=0 peakproc=806MB peakjob=1128MB other=23% others=0 rtp=False exit=0
+bv_base.2 wall=89.6s jobcpu=378.80s procs=2 stragglers=0 peakproc=792MB peakjob=1113MB other=21% others=0 rtp=False exit=0
+round 2 done, clean rounds 0
+bv_base_2 vs bv_base_1: same 
+bv_both_1 vs bv_base_1: same 
+bv_both_2 vs bv_base_1: same 
+bv_sb_1 vs bv_base_1: same 
+bv_sb_2 vs bv_base_1: same 

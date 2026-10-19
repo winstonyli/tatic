@@ -4737,7 +4737,12 @@ a met join is kept under rules added off its path).
   6 threads (salts 1, 5, 7) and across runs. Built: `search::rule_miner` scores every candidate from an empty memo,
   `RewriteMemo::absorb` is gone, and `LOOP_THREADS` sets the loops' scoring workers; the check is
   `docs/runs/2026-10-18/scripts/threads_check.sh`. Rules differ from the old miner's in 4 of 30 loops (5-1, 6-3, 7-3,
-  10-3), so older cold rows are not reproduced byte for byte. Options in `docs/decisions/2026-10-17-monotone-join.md`
+  10-3), so older cold rows are not reproduced byte for byte. The before/after record (run
+  `2026-10-18-pcand-salts-record`, `scripts/salts_ab.sh`, the old miner at dc2102c against 2de4854, so the memo per
+  candidate, the size bound and the tags together; salts 1-10, the arms' order alternated per salt, others' load 27-29%,
+  RTP off): M 749 in both and equal in every loop; wall 1130 against 954 s (-16%), job CPU 7942 against 6289 s (-21%).
+  Rules differ in 4 of 30 loops again, but not the same four (1-2, 5-1, 6-3, 7-3): the old miner's rules move from run to
+  run. Options in `docs/decisions/2026-10-17-monotone-join.md`
   ("Survey 3").
 
 *Profile of the lazy join (2026-10-18, run `2026-10-18-lazy-prof`).* samply over salt 1's cold:cmp3d loops at 1 lane
@@ -4806,9 +4811,23 @@ of the hash (2de4854), so a lookup passes over other nodes without loading them.
 order base, bound, both, both, bound, base (CPU 30% at start and 79% when sampled mid-run: other sessions, so contended;
 RTP off): every sweep gives the same files; wall 198, 200 and 198 s per arm (two sweeps each), so no change; the
 miners' summed join seconds 699, 670 and 639 s, so 4% less with the bound and 9% with both, against the profile's
-estimate of 10-15% for the bound alone. The wall does not follow the join's seconds: at about 3.4 cores searching
-during a 99 s sweep, the wall is likely held by the sweep's less parallel parts (not measured). Neither change is reverted: both are exact
-and small, and the join's CPU is what lanes and bigger sweeps pay. Not measured: job CPU on a quiet machine.
+estimate of 10-15% for the bound alone. That contention hid the gain: on a quieter machine (run
+`2026-10-18-sbound-tag-quiet`, `runs time` through `scripts/quiet_ab.sh`, arms alternated, 2 rounds each, others' load
+16-23%, so no round was clean by its 20% limit) the same arms took wall 86.4/89.6, 78.9/77.7 and 78.7/76.8 s and job
+CPU 366/379, 326/322 and 325/317 s, all files the same: the bound cuts 11% of wall and 13% of CPU, the tags about 1%
+more.
+
+*Where the sweep's wall goes (2026-10-18, profile `2026-10-18-pcand-prof`, `scripts/prof_timeline.py`).* Counting the
+threads busy in each millisecond of the 97 s profiled sweep (a sample is busy when its CPU delta is at least half the
+interval): 4.1% of the wall has no thread busy, 26.8% one, 6.8% two, 5.5% three, 6.6% four, 11.7% five, 35.7% six and
+2.8% more. In the one-thread stretches the miner's main thread does 20.5 s of work and a lone scoring worker 5.2 s (a
+round's last candidate). The main thread (25.3 s in all, `PROF_THREAD=search::rule_miner prof_named.py`) spends 53% in
+`Trace::touched_by`, nearly all of it computing each round's `affected` (every candidate against every law's trace,
+in `pick`) and 38% in `rewrite_plan` under `score_laws` on the main thread (the chosen set's evaluation, `state`, with
+its seeded memo, among them; not split further). Both run while the scoring workers wait. Levers: compute `affected` on the scoring workers (independent per candidate, so the same result; about 13 s
+of serial work, so up to about 11 s of this sweep's wall); make `touched_by` cheaper (an index from rule to trace terms,
+the same result); and evaluating the chosen set in parallel, which would split its seeded memo, and the memo's join
+entries are inexact (the timing one-off above), so it could change results: not exact as it stands.
 
 *Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
