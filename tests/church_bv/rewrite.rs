@@ -1320,42 +1320,30 @@ fn class(t: &Term) -> usize {
     }
 }
 
-/// The operand classes a rule pattern's operand can match, one bit each: a pattern variable matches every class, anything else
-/// only its own.
-type Classes = u16;
-const _: () = assert!(CLASSES <= Classes::BITS as usize);
-
-fn pattern_classes(p: &Term) -> Classes {
-    match *p.node() {
-        Node::V(_) => Classes::MAX,
-        _ => 1 << class(p),
-    }
-}
-
-/// Patterns indexed by what they can match: for each root operator, and for leaves, the patterns in order whose root can match
-/// such a term, each with the classes its two operands can match. Keyed by the root operator alone, `rule_step_in` called
-/// `match_pat` on 16.7 rules a call, 31M a sweep (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
-/// The join's index carries each step's `Need`, so a step over the cap is skipped without loading the step.
+/// Patterns indexed by what they can match: for each class of term (`class`), the patterns in order whose root can match such
+/// a term, each with the shape bits (`Term::needs`) that a match needs at the term's root and at each of its two operands, so
+/// the index rules out a pattern down to its grandchildren. Keyed by the root operator alone, `rule_step_in` called
+/// `match_pat` on 16.7 rules a call, 31M a sweep (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching");
+/// with the operands' classes alone, 31% of the join's matcher calls failed at the grandchildren and 8.5% at a leaf
+/// ("Why the join's matches fail"). The join's index carries each step's `Need`, so a step over the cap is skipped without
+/// loading the step.
 struct PatIndex<K = ()> {
-    // each entry: the pattern's index, its operands' classes and what it carries
-    by_op: [Vec<OpEntry<K>>; OP_INFO.len()],
-    leaf: Vec<(u32, K)>,
+    by_class: [Vec<Entry<K>>; CLASSES],
 }
 
-type OpEntry<K> = (u32, [Classes; 2], K);
+/// A pattern's index, the shape bits it needs at the root and at the root's two operands (none for a leaf, whose class is its
+/// list's), and what it carries.
+type Entry<K> = (u32, [u64; 3], K);
 
 impl<K: Copy> PatIndex<K> {
     /// Each pattern with what its entry carries (`K`), so a caller can drop it before looking the pattern up.
     fn new<'a>(pats: impl Iterator<Item = (usize, &'a Term, K)>) -> PatIndex<K> {
-        let mut ix = PatIndex { by_op: std::array::from_fn(|_| vec![]), leaf: vec![] };
+        let mut ix = PatIndex { by_class: std::array::from_fn(|_| vec![]) };
         for (i, p, k) in pats {
             match *p.node() {
-                Node::Op(o, a, b) => ix.by_op[o].push((i as u32, [pattern_classes(&a), pattern_classes(&b)], k)),
-                Node::V(_) => {
-                    ix.by_op.iter_mut().for_each(|b| b.push((i as u32, [Classes::MAX; 2], k)));
-                    ix.leaf.push((i as u32, k));
-                }
-                Node::Zero | Node::Ones => ix.leaf.push((i as u32, k)),
+                Node::Op(_, a, b) => ix.by_class[class(p)].push((i as u32, [p.needs(), a.needs(), b.needs()], k)),
+                Node::V(_) => ix.by_class.iter_mut().for_each(|c| c.push((i as u32, [0; 3], k))),
+                Node::Zero | Node::Ones => ix.by_class[class(p)].push((i as u32, [0; 3], k)),
             }
         }
         ix
@@ -1363,12 +1351,12 @@ impl<K: Copy> PatIndex<K> {
 
     /// The patterns that can match `t`, in order, each with its entry's `K`.
     fn get(&self, t: &Term) -> impl Iterator<Item = (usize, K)> + '_ {
-        let (ids, [ca, cb], leaf): (&[OpEntry<K>], _, &[(u32, K)]) = match *t.node() {
-            Node::Op(o, a, b) => (&self.by_op[o], [class(&a), class(&b)], &[]),
-            _ => (&[], [0, 0], &self.leaf),
+        let shapes = match *t.node() {
+            Node::Op(_, a, b) => [t.shape(), a.shape(), b.shape()],
+            _ => [t.shape(), 0, 0],
         };
-        let fits = move |&&(_, [ma, mb], _): &&OpEntry<K>| (ma >> ca) & (mb >> cb) & 1 == 1;
-        ids.iter().filter(fits).map(|&(i, _, k)| (i, k)).chain(leaf.iter().copied()).map(|(i, k)| (i as usize, k))
+        let fits = move |e: &&Entry<K>| e.1.iter().zip(shapes).all(|(&n, s)| s & n == n);
+        self.by_class[class(t)].iter().filter(fits).map(|&(i, _, k)| (i as usize, k))
     }
 }
 
@@ -3921,6 +3909,31 @@ fn rule_table_lists_every_matching_rule_in_order() {
         skipped += table.rules.len() - ids.len();
     }
     assert!(skipped > 0 && tried > 0, "{tried} tried, {skipped} skipped");
+}
+
+/// `PatIndex::get` offers every pattern that matches a term, and for a pattern that repeats no variable only those: it
+/// checks the shape down to the grandchildren, and a leaf's own class.
+#[test]
+fn pat_index_offers_only_matches_down_to_grandchildren() {
+    let pats: Vec<Term> = ["and(x, or(y, 0))", "and(x, or(y, z))", "0", "add(x, x)", "y", "-1"].map(parse_term).to_vec();
+    let ix = PatIndex::new(pats.iter().enumerate().map(|(i, p)| (i, p, ())));
+    let mut terms = vec![Term::v(0), Term::v(1), Term::ZERO, Term::ONES];
+    for _ in 0..2 {
+        let level: Vec<Term> = terms.iter().flat_map(|&a| terms.iter().flat_map(move |&b| [ADD, AND, OR].map(|o| Term::op(o, a, b)))).collect();
+        terms.extend(level);
+    }
+    let (mut matched, mut repeated) = (0, 0);
+    for t in &terms {
+        let offered: Vec<usize> = ix.get(t).map(|(i, ())| i).collect();
+        for (i, p) in pats.iter().enumerate() {
+            let m = match_pat(p, t, &mut [None; RULE_VARS]);
+            assert!(!m || offered.contains(&i), "{} matches {} but is not offered", p.show(), t.show());
+            assert!(m || !offered.contains(&i) || i == 3, "{} is offered for {} but does not match", p.show(), t.show());
+            matched += m as usize;
+            repeated += (!m && offered.contains(&3) && i == 3) as usize;
+        }
+    }
+    assert!(matched > 1000 && repeated > 100, "matched {matched}, repeated-variable misses offered {repeated}");
 }
 
 #[test]
