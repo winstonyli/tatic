@@ -3,10 +3,11 @@
 Rows behind `docs/tier-cycle.md`, "The three levers, tried". Each run is recorded in `docs/runs.md` with its raw folder
 under `%LOCALAPPDATA%\claude-runs\tatic\<run id>`. Builds were `cargo test --profile sweep --test church_bv --no-run`,
 copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `bv_spine` (eabd8d5, the spine deferral),
-`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index), `bv_shape` (fcef618, the index down to the grandchildren). The scripts are 2026-10-18's (`quiet_ab.sh`).
+`bv_back` (07e3416, with the undoing step skipped) and `bv_room` (bce3407, the size need in the index), `bv_shape` (fcef618, the index down to the grandchildren), `bv_fits` (7e4f037, the operands' needs alone, branchless). The scripts are 2026-10-18's (`quiet_ab.sh`).
 
 - `patches/undo_skip.patch`: commit 07e3416, dropped from the branch; it applies on eabd8d5.
 - `patches/match_fail.patch`: the counters of `-match-fail`; it applies on bce3407.
+- `patches/rep_var.patch`: the counters of `-rep-var`, `match_fail.patch`'s and five more; it applies on 7e4f037.
 
 | Run | Build | Script | Result |
 |---|---|---|---|
@@ -20,3 +21,5 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-match-fail-shape` | `bv_mprobe3` (fcef618 + `patches/match_fail.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; `match_pat` calls 3.17 G to 1.93 G, the same 977 M matches |
 | `2026-10-19-shape-quiet` | `bv_room`, `bv_shape` (fcef618) | `quiet_ab.sh 1 8` (8 clean of 11) | files the same; job CPU median 242.5/223.1 s (-8.2%), won 8/8 |
 | `2026-10-19-shapeprof` | `bv_shapeprof` (fcef618 + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | 234.2 k busy samples; `match_pat` 14.9% self, the index filter 5.6%, `Term::op` 13.0% inclusive |
+| `2026-10-19-rep-var` | `bv_rprobe` (7e4f037 + `patches/rep_var.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; 987 M calls of repeating patterns, 934 M fail on the binding, visiting 4.15 G of 7.96 G pattern nodes; a pre-check walks 2.92 G |
+| `2026-10-19-fits-quiet` | `bv_shape`, `bv_fits` (7e4f037) | `quiet_ab.sh 1 8` (8 clean of 9) | files the same; job CPU median 206.8/207.3 s, won 3/8: no gain |

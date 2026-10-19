@@ -1,0 +1,149 @@
+# rep_var: the counters behind run 2026-10-19-rep-var (exe bv_rprobe.exe, 7e4f037 + this): match_fail.patch's 0-10, and
+# 11 pattern nodes match_pat visits (a counting copy, checked to agree), 12 of them in failures where the shape fits (a
+# repeated variable bound to two different subterms), 13 calls of patterns that repeat a variable, 14 what a pre-check of
+# those calls' repeated variables would walk (the depth of each occurrence, summed), 15 pattern nodes visited in matches.
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index be4f44c..aa30558 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2521,7 +2521,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, probe: [0; 16] }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2534,6 +2534,7 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    pub probe: [u64; 16],
+ }
+ 
+ impl JoinCost {
+@@ -2550,6 +2551,9 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        for i in 0..16 {
++            self.probe[i] += now.probe[i] - before.probe[i];
++        }
+     }
+ }
+ 
+@@ -2894,13 +2898,44 @@ fn join_walk(
+     }
+     let size = t.size();
+     let room = cap as isize - size as isize;
++    probe(0, 1);
+     for (i, need) in table.join_index.get(&t) {
++        probe(1, 1);
+         if need.skips(room, cap as isize) {
++            probe(2, 1);
+             continue;
+         }
+         let e = &table.join[i];
+         let mut sub = [None; RULE_VARS];
+-        if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
++        probe(3, 1);
++        let ok = match_pat(&e.from, &t, &mut sub);
++        let (mut nodes, mut sub2) = (0, [None; RULE_VARS]);
++        assert_eq!(match_nodes(&e.from, &t, &mut sub2, &mut nodes), ok);
++        probe(11, nodes);
++        let rep = repeat_depths(&e.from);
++        if rep > 0 {
++            probe(13, 1);
++            probe(14, rep);
++        }
++        if ok {
++            probe(4, 1);
++            probe(15, nodes);
++        } else {
++            match shape_miss(&e.from, &t, 0) {
++                Some(0 | 1) => probe(5, 1),
++                Some(2) => probe(6, 1),
++                Some(_) => probe(7, 1),
++                None => {
++                    probe(8, 1);
++                    probe(12, nodes);
++                }
++            }
++            probe(10, matches!(e.kind, LawKind::Rule(_)) as u64);
++        }
++        if ok && PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) {
++            probe(9, 1);
++        }
++        if ok && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
+             return false;
+         }
+     }
+@@ -3096,6 +3131,55 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+     found
+ }
+ 
++// PROBE (throwaway): match_fail counters
++pub fn probe(i: usize, n: u64) {
++    count_join(|c| c.probe[i] += n)
++}
++/// `match_pat`, counting the pattern nodes it visits into `n`.
++fn match_nodes(p: &Term, t: &Term, sub: &mut [Option<Term>], n: &mut u64) -> bool {
++    *n += 1;
++    match (*p.node(), *t.node()) {
++        (Node::V(i), _) => match &sub[i] {
++            Some(b) => b == t,
++            None => {
++                sub[i] = Some(*t);
++                true
++            }
++        },
++        (Node::Zero, Node::Zero) | (Node::Ones, Node::Ones) => true,
++        (Node::Op(o, a, b), Node::Op(o2, c, d)) => o == o2 && match_nodes(&a, &c, sub, n) && match_nodes(&b, &d, sub, n),
++        _ => false,
++    }
++}
++/// What a pre-check of `p`'s repeated variables would walk: the depth of each occurrence of a variable that occurs twice or
++/// more, summed (0 when no variable repeats).
++fn repeat_depths(p: &Term) -> u64 {
++    fn walk(p: &Term, depth: u64, out: &mut Vec<(usize, u64)>) {
++        match *p.node() {
++            Node::V(i) => out.push((i, depth)),
++            Node::Op(_, a, b) => {
++                walk(&a, depth + 1, out);
++                walk(&b, depth + 1, out);
++            }
++            _ => {}
++        }
++    }
++    let mut occ = vec![];
++    walk(p, 0, &mut occ);
++    occ.iter().filter(|(v, _)| occ.iter().filter(|(w, _)| w == v).count() > 1).map(|&(_, d)| d).sum()
++}
++/// The least depth (root 0) where `p`'s shape rejects `t`, ignoring what a repeated variable binds; None when it fits.
++fn shape_miss(p: &Term, t: &Term, depth: u64) -> Option<u64> {
++    match (*p.node(), *t.node()) {
++        (Node::V(_), _) | (Node::Zero, Node::Zero) | (Node::Ones, Node::Ones) => None,
++        (Node::Op(o, a, b), Node::Op(o2, c, d)) if o == o2 => match (shape_miss(&a, &c, depth + 1), shape_miss(&b, &d, depth + 1)) {
++            (Some(x), Some(y)) => Some(x.min(y)),
++            (x, y) => x.or(y),
++        },
++        _ => Some(depth),
++    }
++}
++
+ fn count_join(f: impl FnOnce(&mut JoinCost)) {
+     JOIN_COST.with(|c| {
+         let mut v = c.get();
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 833bcda..fa5e146 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1257,6 +1257,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER probe: {:?}", j.probe);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {

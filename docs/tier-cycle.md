@@ -4871,6 +4871,26 @@ the failures it still meets are mostly a repeated variable's, which recurse thro
 differ. The index's filter is now the second cost of the walk, 5.6% self (`PatIndex::get`'s `fits`, an `all` over the
 three needs, short-circuiting). `Term::op` 13.0% inclusive, `subst_sig` 8.6%, `Spine::make` 6.2%.
 
+*The filter without branches (2026-10-19, 7e4f037, run `2026-10-19-fits-quiet`).* An operand's shape has its own class's
+bit, so its needs check its class and the root's needs only repeated them (the list is the root's class): entries keep the
+two operands' needs, tested in one `(n0 & !sa) | (n1 & !sb) == 0`. Exact (every run's files the same) but no faster: 8
+clean rounds at about 5% others, RTP off, job CPU median 206.8 s before and 207.3 s after, won 3/8 (pairs -12.3 to
++7.7 s). Kept as the simpler index. The profile's 5.6% for the `all` was the loads of the candidates and their operands'
+shapes, which the test still needs, not its branches. (This run's medians are 16 s under `-shape-quiet`'s for the same
+`bv_shape`: a quieter machine, so compare runs only within an A/B.)
+
+*What a repeated-variable pre-check would save (2026-10-19, run `2026-10-19-rep-var`, `docs/runs/2026-10-19/patches/rep_var.patch`,
+counting only, on 7e4f037).* Of the join's 1.93 G `match_pat` calls, 987 M are of patterns that repeat a variable, and
+934 M of those (95%) fail only because the variable is bound to two different subterms. Those failures visit 4.15 G
+pattern nodes, 52% of the matcher's 7.96 G (4.4 a failure, against 3.8 a match). A pre-check that walks to each
+occurrence of the repeated variables and compares them would walk 2.92 G nodes over those 987 M calls (3.0 a call)
+when it compares every occurrence; stopping at the first two that differ walks less, but at least two occurrences' depths
+(at least 1 each). So it saves between about 1.2 G and 2.2 G node visits, 15-28% of the matcher's work and on the order of
+2-4% of the samples, before its own branches and the 53 M calls it lets through, which pay twice. Not worth building
+as a general pre-check. Unmeasured: how many of
+the failures are a pattern whose root's two operands are the variable itself (`add(x, x)`), which an entry flag could
+reject with one pointer compare in `PatIndex::get`.
+
 *How much the size bound would skip (2026-10-18, run `2026-10-18-size-bound`, `patches/size_bound.patch`, counting
 only).* The bound on a step's rewritten subterm, `max(size(to), size(t) + size(to) - size(from))` (the second only when
 every variable occurs in `to` at least as often as in `from`), is a lower bound on the step's size, so skipping a rule
