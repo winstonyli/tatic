@@ -4952,6 +4952,15 @@ the two orders needs about twice the rounds for the same error, so sequential ro
 took 30 minutes against 69, the difference being the quiet waits, which `--together` does not need to change. Kept as an
 option, unused, then removed (it is in ba246fd).
 
+*A shorter quiet wait before each round (2026-10-19, run `2026-10-19-lazy-aa-q10`, inconclusive).* Over every
+`runs.tsv` so far (`docs/runs/2026-10-19/scripts/noise_load.py`), a pairing's distance from its run order's mean
+grows with the round's highest other load: RMS 1.6% of job CPU under 10% (39 pairings), 2.1% at 10-20% (29), 8-11%
+above 20% (6), so `--foreign-max 20` stays. The lever left was the 60 s of quiet `runs time` waits for before each
+round. An A/A of `bv_lazy` with `--quiet-secs 10` gave 1 clean round of 9 in 36 minutes and was stopped: a 10 s dip
+does not predict a quiet round, others' load came back at 12-45% within the runs (job CPU 220-317 s against
+`lazy-quiet`'s 196 s). The machine was busier than in `lazy-quiet`, which got 8 clean of 8 with 60 s, so this does not
+compare the two waits; that would need both alternating in one session. The default stays 60 s.
+
 *Where `Term::op` stands (2026-10-19, survey, no run).* Its 13.6% inclusive in `-pairsprof` is the thread cache's and
 the shared cells' confirming load of a node (`m.node == n`: the interner's `eq` 4.4%, of it 2.2% in the cache hit and
 2.1% in `Cells::find`) and `op`'s own 4.1%. The levers inside the interner are spent: the cache's misses are capacity
