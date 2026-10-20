@@ -1,0 +1,80 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index ab63f82..489fb0a 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2569,7 +2569,10 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, probe: [0; 6] }) };
++    /// PROBE: the visit bound of the next search (0: JOIN_VISIT); whether the last search ended at the visit bound
++    pub static VISIT_OVERRIDE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++    pub static LAST_LIMITED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2582,6 +2585,8 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    /// PROBE: searches met, ended at the visit bound, ended at an empty front; of those at the bound, rerun at 4 times it: met, at the bound again, at an empty front
++    pub probe: [u64; 6],
+ }
+ 
+ impl JoinCost {
+@@ -2598,6 +2603,9 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        for i in 0..6 {
++            self.probe[i] += now.probe[i] - before.probe[i];
++        }
+     }
+ }
+ 
+@@ -3120,7 +3128,23 @@ impl Reached {
+ /// expands it or its path meets (36.8% of new terms were expanded: "What the join's duplicates and term building are"),
+ /// and plans only on the path that meets.
+ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
+-    let (cap, visit, t0) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize), std::time::Instant::now());
++    let found = join_search_run(a, b, examined);
++    let limited = LAST_LIMITED.with(|l| l.get());
++    let before = JoinCost::now();
++    let mut p = before.probe;
++    p[if found.is_some() { 0 } else if limited { 1 } else { 2 }] += 1;
++    if limited {
++        VISIT_OVERRIDE.with(|v| v.set(4 * env_or("JOIN_VISIT", 1000usize)));
++        let wide = join_search_run(a, b, &mut None);
++        VISIT_OVERRIDE.with(|v| v.set(0));
++        p[if wide.is_some() { 3 } else if LAST_LIMITED.with(|l| l.get()) { 4 } else { 5 }] += 1;
++    }
++    JOIN_COST.with(|c| c.set(JoinCost { probe: p, ..before }));
++    found
++}
++
++fn join_search_run(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
++    let (cap, visit, t0) = (a.size().max(b.size()) + 2, match VISIT_OVERRIDE.with(|v| v.get()) { 0 => env_or("JOIN_VISIT", 1000usize), v => v }, std::time::Instant::now());
+     // each reached term by its `sh`
+     type Seen = hashbrown::HashTable<(u64, Reached)>;
+     let get = |seen: &Seen, t: Term| seen.find(t.sh(), |e| e.0 == t.sh() && e.1.is(t)).expect("reached").1.step();
+@@ -3195,6 +3219,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+         }
+         None
+     });
++    LAST_LIMITED.with(|l| l.set(found.is_none() && !front[0].is_empty() && !front[1].is_empty()));
+     let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
+     count_join(|c| {
+         (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 833bcda..bafa987 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1257,6 +1257,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER visprobe: {:?}", j.probe);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {

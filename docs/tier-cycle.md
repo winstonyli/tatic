@@ -5094,6 +5094,22 @@ visit bound); salt 5 7568 against 912. The skip meets more within the bound, and
 the different rules it mines, with their 61% more searches. Reverted (the commit after 5be9ad2): it costs 51% more CPU
 for a worse M. Why more met searches mine worse rules is not known (unmeasured); once it is, the skip is worth retrying.
 
+*How far a change to the join's answers moves the mined rules (2026-10-20, `scripts/first_diff.sh` on the gate runs,
+and run `2026-10-20-visit-probe`).* The miner picks rules greedily by laws fixed and size saved, and a rule's score
+counts the joins it allows, so any change to which searches meet changes the scores: the first rule of salt 1 loop 1
+fixes 146 laws without the inner-first skip and 155 with it, and the picks part at rule 5. In both gates every loop's
+cmp3d picks part within the first 18 rules of about 65 (left-to-right order: rules 1-14, median 4;
+inner first: 1-18, median 3), so each arm mines a different rule set from there on. The two gates' per-salt swings in
+searches are alike (left to right: salt 3 +47%, salts 2, 4 and 5 -9 to -19%; inner first: salts 1 and 5 +61% and +65%,
+salts 2-4 -1 to -7%), and so are their M changes (-1 and +3 over 15 loops). A change that moves the join's answers is
+therefore judged end to end against a rule-set lottery: a single salt (the 51% above) says little, and a gate over five
+salts separates a real effect from the lottery only if it is larger than the spread a neutral change produces
+(unmeasured; a visit bound of 1001 for 1000 would be one). What does not depend on the picks is each search's own
+answer and cost, measured by rerunning the same search (the probe above). The visit bound moves far more answers than
+the step order: under the left-to-right order, 9.4% of the 8.62 M searches over salts 1-5 end at the bound of 1000
+reached terms, and at 4000 59% of those meet (476894, 5.5% of all searches; the skip's net gain was 0.07% and 0.3%); 2.7%
+end at an empty front, a no within the size cap.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
