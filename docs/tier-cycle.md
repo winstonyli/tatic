@@ -5002,6 +5002,15 @@ does not need one: `rule_step_in` ran 14.5 M times, 1% of the join's visits, and
 under the table. Clearing a cache per table would cost more than it saves at 2^16 slots (166.7 k clears), so a cache must
 be invalidated by tagging, not clearing.
 
+*A cache of the join's offers per rule table (negative, 2026-10-19, run `2026-10-19-offers-quiet`, commit 5997554).*
+`JOIN_OFFERS` kept each subterm's index offers in 2^12 direct-mapped slots tagged by the table's id and an epoch, each
+offer matched on its first visit within the cap and kept with its rewritten subterm's `sh` and size. The sweep's files
+were the same, but against `bv_lazy` it cost +8.1 s of job CPU over the two orders (+3.6% of 221 s; +5.4 s first, +10.8
+s second), won 1 of 4 clean rounds, wall +1.3 s, and +80-110 MB peak per process; only 4 of 8 rounds stayed under 20%
+other load by the 3 h deadline, so the size is loose, but there is no gain. The 86% repeat rate did not turn into time:
+what a hit skips (the index filter, one `match_pat` and `subst_sig` per offer) costs about what the lookup and the
+96-byte offers it reads cost, so the ~30% ceiling read from `-lazyprof`'s frames was not there to take.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
