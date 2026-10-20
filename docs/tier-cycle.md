@@ -5176,6 +5176,23 @@ a second walk per met search, so 4284 s quiet against 3089 s at 62% load: at lea
 committed and cheaper than no order, was not in these arms, so inner first with this trace has not been timed against
 it.
 
+*An order-free trace without the second walk (survey, 2026-10-20, not built).* There are two ideas.
+
+First, record edges during the forward walk. This cannot be order-free. The walk at a term is ordered by the step that
+first reached it (`r.step()`). The skip then drops exactly the edges a commuted path would use, and which edges it drops
+depends on which parent came first. So any order-free trace needs the edges the pruned walk did not make. The skip is
+also what inner first saves, so making those edges by walking again costs the saving back.
+
+Second, test pairs instead of walking. A join step rewrites one subterm (`JoinStep`: `from`, `path`, `eq`). So whether
+term `p` has a step to term `m` can be checked without a walk: descend while the two agree at the root and in one
+child, then match `join_index` at each node of that spine against the other side's subterm there. That is a handful of
+pattern matches per pair, against a full walk of `p`. With pair tests, the backward pass can also keep one canonical
+path instead of the union: the smallest-key parent with a step into each term, chosen over the whole finished layer.
+That choice does not depend on the order, and it keeps today's trace size, which spike 3's union exceeded (9.23 M
+searches against 8.42 M). What it would cost: finishing the met layer (+10% in `split-meet`, under load), pair tests
+of a met search's layers against the path's terms, and a smallest-key choice. It is cheaper than spike 3 by the second
+walk and the wider trace; whether it beats the left-to-right order is unmeasured.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
