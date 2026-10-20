@@ -4933,6 +4933,14 @@ subterm. Files the same; against `bv_pairs` job CPU median 202.0/195.6 s, and ov
 second +7.6 s), so every pairing is negative; the won count alone said 4/8. Kept; with it the depth-2 pairs are about
 5% less job CPU than `bv_fits`.
 
+*Profile with the pairs compared lazily (2026-10-19, run `2026-10-19-lazyprof`, frames in
+`docs/runs/2026-10-19/rows/2026-10-19-lazyprof.txt`).* Taken without waiting for quiet (CPU 28% at start, searches
+71.7 s), so shares only, against `-pairsprof`. The index's frames now sit mostly in the filter closure, which inlines
+`differ`: self 7.5% there and 0.9% in `shallow`'s closure, against 5.8% and 3.0% (`get` itself) before, so about 8.4%
+against 8.8% in all; the A/B's 2.5% is more than that drop, so the saving is mostly outside the frames that hold it
+(fewer branches mispredicted or loads made, unmeasured). `match_pat` 8.1% self (7.5%), `Term::op` 13.4% inclusive
+(13.6%), `join_walk` 72.8% (72.2%), `subst_sig` 7.9%, `Spine::make` 6.5%: the order of what leads is unchanged.
+
 *Where `Term::op` stands (2026-10-19, survey, no run).* Its 13.6% inclusive in `-pairsprof` is the thread cache's and
 the shared cells' confirming load of a node (`m.node == n`: the interner's `eq` 4.4%, of it 2.2% in the cache hit and
 2.1% in `Cells::find`) and `op`'s own 4.1%. The levers inside the interner are spent: the cache's misses are capacity
