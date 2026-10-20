@@ -2848,34 +2848,60 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     found
 }
 
-/// A join step from the reached term `from`: the step `table.join[eq]` at the subterm `depth` children down, going right
-/// at depth `i` where bit `i` of `path` is set. The search keeps these and makes plans only on the path that meets.
+/// The path to the subterm a join step is at: `depth` children down, going right at depth `i` where bit `i` of `path`
+/// is set.
+#[derive(Clone, Copy)]
+struct StepPath {
+    path: u64,
+    depth: u8,
+}
+
+impl StepPath {
+    /// The path to the subterm `join_walk` is at (`up`).
+    fn of(up: &JoinPlace) -> StepPath {
+        StepPath { path: up.iter().rev().fold(0, |p, e| p << 1 | e.3 as u64), depth: up.len() as u8 }
+    }
+    /// One level down (`depth > 0`): whether the path goes right, and the path from that child.
+    fn down(self) -> (bool, StepPath) {
+        (self.path & 1 == 1, StepPath { path: self.path >> 1, depth: self.depth - 1 })
+    }
+    /// After a step at this path, `join_walk`'s path in child `right`: None (skip it) for a child left of the path, and
+    /// `Some(None)` for the rewritten subterm's children and those right of the path, which the walk takes whole.
+    fn child(self, right: bool) -> Option<Option<StepPath>> {
+        if self.depth == 0 {
+            return Some(None);
+        }
+        let (on, next) = self.down();
+        if on == right { Some(Some(next)) } else { right.then_some(None) }
+    }
+}
+
+/// A join step from the reached term `from`: the step `table.join[eq]` at the subterm at `path`. The search keeps these
+/// and makes plans only on the path that meets.
 #[derive(Clone, Copy)]
 struct JoinStep {
     from: Term,
-    path: u64,
-    depth: u8,
+    path: StepPath,
     eq: u32,
 }
 
 impl JoinStep {
     /// The step `eq` from `from` at the subterm `join_walk` is at (`up`).
     fn new(from: Term, up: &JoinPlace, eq: usize) -> JoinStep {
-        JoinStep { from, path: up.iter().rev().fold(0, |p, e| p << 1 | e.3 as u64), depth: up.len() as u8, eq: eq as u32 }
+        JoinStep { from, path: StepPath::of(up), eq: eq as u32 }
     }
     /// The term the step reaches, its rewritten subterm `at` made.
     fn spine(self, at: Term) -> Spine {
-        Spine { from: self.from, path: self.path, depth: self.depth, at }
+        Spine { from: self.from, path: self.path, at }
     }
 }
 
-/// A term a join step reaches with its rewritten subterm made and the spine above it not: `from` with the subterm
-/// `depth` children down (going right at depth `i` where bit `i` of `path` is set) replaced by `at`.
+/// A term a join step reaches with its rewritten subterm made and the spine above it not: `from` with the subterm at
+/// `path` replaced by `at`.
 #[derive(Clone, Copy)]
 struct Spine {
     from: Term,
-    path: u64,
-    depth: u8,
+    path: StepPath,
     at: Term,
 }
 
@@ -2884,11 +2910,11 @@ impl Spine {
     /// and the spine from the child on it.
     fn down(self) -> (usize, Term, bool, Spine) {
         let Node::Op(o, a, b) = *self.from.node() else { unreachable!("a step's path stays in the term") };
-        let right = self.path & 1 == 1;
-        (o, if right { a } else { b }, right, Spine { from: if right { b } else { a }, path: self.path >> 1, depth: self.depth - 1, at: self.at })
+        let (right, path) = self.path.down();
+        (o, if right { a } else { b }, right, Spine { from: if right { b } else { a }, path, at: self.at })
     }
     fn make(self) -> Term {
-        if self.depth == 0 {
+        if self.path.depth == 0 {
             return self.at;
         }
         let (o, off, right, next) = self.down();
@@ -2897,7 +2923,7 @@ impl Spine {
     }
     /// Whether `u` is this term: down `u` along the path, the children off it and then `at` compared by pointer.
     fn is(mut self, mut u: Term) -> bool {
-        while self.depth > 0 {
+        while self.path.depth > 0 {
             let (o, off, right, next) = self.down();
             match *u.node() {
                 Node::Op(q, l, r) if q == o && (if right { l } else { r }) == off => u = if right { r } else { l },
@@ -2910,7 +2936,7 @@ impl Spine {
     /// Whether this is `subst_pat(p, sub)`: down the pattern and the path together, then `is_subst` or `is` where one
     /// ends.
     fn is_pat(self, p: &Term, sub: &[Option<Term>]) -> bool {
-        if self.depth == 0 {
+        if self.path.depth == 0 {
             return is_subst(self.at, p, sub);
         }
         match *p.node() {
@@ -2927,7 +2953,7 @@ impl Spine {
     /// or `is_pat`.
     fn is_step(mut self, up: &JoinPlace, p: &Term, sub: &[Option<Term>]) -> bool {
         for (i, &(o, a, b, right)) in up.iter().enumerate() {
-            if self.depth == 0 {
+            if self.path.depth == 0 {
                 return is_step(self.at, &up[i..], p, sub);
             }
             let (q, off, r, next) = self.down();
@@ -2950,26 +2976,6 @@ impl Spine {
 /// Where `join_walk` is in a term: each ancestor of the subterm it is at, as its operator, children and whether the walk
 /// went right.
 type JoinPlace = [(usize, Term, Term, bool)];
-
-/// The path of the step a term was reached by, from the subterm `join_walk` is at: `depth` children down, going right at
-/// depth `i` where bit `i` of `path` is set.
-#[derive(Clone, Copy)]
-struct StepPath {
-    path: u64,
-    depth: u8,
-}
-
-impl StepPath {
-    /// The path in child `right`; None (skip it) for a child left of the path, and `Some(None)` for the rewritten subterm's
-    /// children and those right of the path, which the walk takes whole.
-    fn child(self, right: bool) -> Option<Option<StepPath>> {
-        match (self.depth, self.path & 1 == 1) {
-            (0, _) => Some(None),
-            (_, on) if on == right => Some(Some(StepPath { path: self.path >> 1, depth: self.depth - 1 })),
-            (_, _) => right.then_some(None),
-        }
-    }
-}
 
 /// `t`'s join steps of at most `cap` nodes in all, in order: those at the root by `table.join`, then those in the left
 /// child, then the right; each passed to `visit` with its place, subterm, step index and match, while `visit` returns
@@ -3056,10 +3062,11 @@ fn is_step(mut t: Term, up: &JoinPlace, p: &Term, sub: &[Option<Term>]) -> bool 
 
 /// The plan of `step.from = ` the term the step reaches.
 fn step_plan(step: &JoinStep, table: &RuleTable) -> PlanRc {
-    let (mut up, mut x) = (vec![], step.from);
-    for i in 0..step.depth {
+    let (mut up, mut x, mut path) = (vec![], step.from, step.path);
+    while path.depth > 0 {
         let Node::Op(o, a, b) = *x.node() else { unreachable!("a step's path stays in the term") };
-        let right = step.path >> i & 1 == 1;
+        let right;
+        (right, path) = path.down();
         up.push((o, a, b, right));
         x = if right { b } else { a };
     }
@@ -3140,7 +3147,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
                 let mut met = None;
                 let (here, there) = seen.split_at_mut(1);
                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
-                let order = r.step().map(|s| StepPath { path: s.path, depth: s.depth });
+                let order = r.step().map(|s| s.path);
                 join_walk(t, order, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
                     let e = &table.join[eq];
                     let (h, size) = subst_sig(&e.to, sub);
