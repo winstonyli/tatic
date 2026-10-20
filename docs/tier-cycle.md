@@ -5086,7 +5086,13 @@ a search loses a join only where that order's middle term is over the size cap a
 (unmeasured); the rest of the M and joined change comes through a different mined rule set, as with the left-to-right
 order's +17.5% searches on salt 1. On a quiet machine (run `2026-10-20-inner-quiet`, salt 1, 8 rounds) the job took
 51% more CPU (210.6 against 318.8 s median, won 0/8): 61% more searches at only 5% less each (about 114 against
-108 µs), far below the gate's 11%, which was taken under load.
+108 µs), far below the gate's 11%, which was taken under load. Rerunning each of the skip's join searches without it
+(run `2026-10-20-inner-probe`, `patches/inner_probe.patch`, salts 1 and 5, the two that lost M) shows the skip is not
+what loses proofs: of 2.33 M searches on salt 1, 4492 met only with it (4470 of them because the unskipped search hit
+the visit bound first) and 2770 only without it (1575 at an empty front, the cap stopping the other order; 1195 at the
+visit bound); salt 5 7568 against 912. The skip meets more within the bound, and the M and joined losses come through
+the different rules it mines, with their 61% more searches. Reverted (the commit after 5be9ad2): it costs 51% more CPU
+for a worse M. Why more met searches mine worse rules is not known (unmeasured); once it is, the skip is worth retrying.
 
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower

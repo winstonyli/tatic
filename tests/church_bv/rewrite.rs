@@ -2683,9 +2683,6 @@ struct JoinEq {
     rhs: Term,
     backward: bool,
     need: Need,
-    /// The variables (bit `v` for `V(v)`) that occur once in `from` and once in `to`: `join_walk` skips their bindings in
-    /// the subterm this step rewrites.
-    once: u8,
 }
 
 /// How many nodes a join step needs, found without matching, so `join_walk` skips a step over the cap unmatched. When every
@@ -2713,8 +2710,7 @@ impl JoinEq {
             true => Need { nodes: to.size() as isize - from.size() as isize, of_cap: false },
             false => Need { nodes: to.size() as isize, of_cap: true },
         };
-        let once = (0..RULE_VARS).filter(|&v| (of[v], ot[v]) == (1, 1)).fold(0, |m, v| m | 1 << v);
-        JoinEq { from, to, vars, kind, lhs, rhs, backward, need, once }
+        JoinEq { from, to, vars, kind, lhs, rhs, backward, need }
     }
 }
 
@@ -2756,40 +2752,22 @@ fn join_walk_after_a_step_skips_the_subtrees_left_of_its_path() {
     // the step rewrote `c` in `add(and(a, b), or(c, d))`: right at the root, then left
     let t = parse_term("add(and(x, y), or(xor(x, y), sub(y, x)))");
     let table = RuleTable::new(vec![]);
+    let walked = |order: Option<StepPath>| {
+        let mut examined = Some(hashbrown::HashSet::default());
+        join_walk(t, order, &table, 1000, &mut vec![], &mut examined, &mut |_, _, _, _, _| true);
+        let mut v: Vec<String> = examined.unwrap().into_iter().map(|t| t.show()).collect();
+        v.sort();
+        v
+    };
     let mut all = vec![];
     t.subterms(&mut all);
     let mut want: Vec<String> = all.iter().map(|t| t.show()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-    assert_eq!(walked(t, &table, Order::Whole), want);
-    // `and(x, y)` is left of the path; `x` and `y` stay, as subterms of the right side too (and the step, xor's
-    // commutativity, leaves its bindings `x` and `y` to the walk there)
+    assert_eq!(walked(None), want);
+    // `and(x, y)` is left of the path; `x` and `y` stay, as subterms of the right side too
     want.retain(|s| s != "and(x, y)");
-    let comm = table.join.iter().position(|e| e.from == parse_term("xor(x, y)") && e.to == parse_term("xor(y, x)")).unwrap();
-    assert_eq!(walked(t, &table, Order::Path(StepPath { path: 0b01, depth: 2 }, comm as u32)), want);
-}
-
-/// The subterms `join_walk` examines of `t` walked in `order`, sorted.
-#[cfg(test)]
-fn walked(t: Term, table: &RuleTable, order: Order) -> Vec<String> {
-    let mut examined = Some(hashbrown::HashSet::default());
-    join_walk(t, order, table, 1000, &mut vec![], &mut examined, &mut |_, _, _, _, _| true);
-    let mut v: Vec<String> = examined.unwrap().into_iter().map(|t| t.show()).collect();
-    v.sort();
-    v
-}
-
-/// After a step, `join_walk` skips in its rewritten subterm the bindings of variables that occur once in the rule's `from`
-/// and once in its `to`: a step there and this one, the inner taken first, reach the same term, and this step is at an
-/// ancestor of the inner one's place, which the walk keeps. A variable's binding repeated on either side stays.
-#[test]
-fn join_walk_after_a_step_skips_the_bindings_of_its_variables_once_in_from_and_to() {
-    let table = RuleTable::new(vec![(parse_term("sub(x, xor(y, y))"), parse_term("add(x, xor(y, y))")), (parse_term("add(x, 0)"), parse_term("x"))]);
-    let eq = |l: &str, r: &str| table.join.iter().position(|e| e.from == parse_term(l) && e.to == parse_term(r)).unwrap() as u32;
-    let at_root = |eq: u32| Order::at(StepPath { path: 0, depth: 0 }, eq, &table);
-    // `x` bound `and(x, z)`, once on each side: skipped; `y` bound twice: walked
-    let t = parse_term("add(and(x, z), xor(y, y))");
-    assert_eq!(walked(t, &table, at_root(eq("sub(x, xor(y, y))", "add(x, xor(y, y))"))), ["add(and(x, z), xor(y, y))", "xor(y, y)", "y"]);
-    // a step to a bare variable once on each side leaves nothing of its term to walk
-    assert_eq!(walked(t, &table, at_root(eq("add(x, 0)", "x"))), Vec::<String>::new());
+    assert_eq!(walked(Some(StepPath { path: 0b01, depth: 2 })), want);
+    // a step at the root leaves nothing to its left
+    assert_eq!(walked(Some(StepPath { path: 0, depth: 0 })).len(), want.len() + 1);
 }
 
 /// `Need::skips` skips a match only when its step is over the cap, and every match over the cap for a rule that repeats
@@ -2887,48 +2865,14 @@ impl StepPath {
     fn down(self) -> (bool, StepPath) {
         (self.path & 1 == 1, StepPath { path: self.path >> 1, depth: self.depth - 1 })
     }
-}
-
-/// What `join_walk` walks of a subterm of a term reached by a join step. Of two steps that commute one for one, it walks one
-/// order: at disjoint places the left one first, and at nested places that do not overlap the inner one first, so after a
-/// step it skips what is left of the step's path and, in the subterm the step rewrote, the bindings of the rule's variables
-/// that occur once in `from` and once in `to`. Each skipped step was walked before this one, in the term it was found in,
-/// and this step is then at an ancestor of its place or right of it, which the walk keeps.
-#[derive(Clone, Copy)]
-enum Order {
-    /// Every step: a side's own term, and the subtrees right of a step's path.
-    Whole,
-    /// On the path of the step `table.join[eq]`, above its place (`depth > 0`).
-    Path(StepPath, u32),
-    /// In the subterm the step rewrote, at this subpattern of its `to`, with the rule's `once`.
-    To(Term, u8),
-}
-
-impl Order {
-    /// On `path` of the step `table.join[eq]`: `To` its `to` where the path ends.
-    fn at(path: StepPath, eq: u32, table: &RuleTable) -> Order {
-        match path.depth {
-            0 => Order::To(table.join[eq as usize].to, table.join[eq as usize].once),
-            _ => Order::Path(path, eq),
+    /// After a step at this path, `join_walk`'s path in child `right`: None (skip it) for a child left of the path, and
+    /// `Some(None)` for the rewritten subterm's children and those right of the path, which the walk takes whole.
+    fn child(self, right: bool) -> Option<Option<StepPath>> {
+        if self.depth == 0 {
+            return Some(None);
         }
-    }
-    /// Whether this subterm is skipped whole: the binding of a variable in `once`.
-    fn skips(self) -> bool {
-        matches!(self, Order::To(p, once) if matches!(*p.node(), Node::V(v) if once >> v & 1 == 1))
-    }
-    /// The order in child `right`; None to skip a child left of the path.
-    fn child(self, right: bool, table: &RuleTable) -> Option<Order> {
-        match self {
-            Order::Whole => Some(Order::Whole),
-            Order::Path(p, eq) => {
-                let (on, next) = p.down();
-                if on == right { Some(Order::at(next, eq, table)) } else { right.then_some(Order::Whole) }
-            }
-            Order::To(p, once) => Some(match *p.node() {
-                Node::Op(_, a, b) => Order::To(if right { b } else { a }, once),
-                _ => Order::Whole,
-            }),
-        }
+        let (on, next) = self.down();
+        if on == right { Some(Some(next)) } else { right.then_some(None) }
     }
 }
 
@@ -3036,22 +2980,19 @@ type JoinPlace = [(usize, Term, Term, bool)];
 /// `t`'s join steps of at most `cap` nodes in all, in order: those at the root by `table.join`, then those in the left
 /// child, then the right; each passed to `visit` with its place, subterm, step index and match, while `visit` returns
 /// true; a rule whose `Need` is over the cap is skipped unmatched. Adds the subterms it walks to `examined`.
-/// After a step, only one order of two steps that commute is walked (`Order`). A search reaches the same terms at each
-/// depth, except where the cap or the visit budget stops the other order's middle term. Skipping what is left of the path
-/// cut the walk calls 28% and the search time about 21% (docs/tier-cycle.md, "Independent join steps in left-to-right
-/// order only"); the bindings held 35% of the walk calls left ("Where an ordered walk goes").
+/// After a step (`order`), only one order of two steps at disjoint places is walked: the subtrees left of the step's path
+/// are skipped, as a step there and this one, the other taken first, reach the same term. A search reaches the same terms
+/// at each depth, except where the cap stops the other order's middle term; the walk calls fell 28% and the search time
+/// about 21% (docs/tier-cycle.md, "Independent join steps in left-to-right order only").
 fn join_walk(
     t: Term,
-    order: Order,
+    order: Option<StepPath>,
     table: &RuleTable,
     cap: usize,
     up: &mut Vec<(usize, Term, Term, bool)>,
     examined: &mut Option<hashbrown::HashSet<Term>>,
     visit: &mut impl FnMut(&JoinPlace, Term, usize, &[Option<Term>; RULE_VARS], usize) -> bool,
 ) -> bool {
-    if order.skips() {
-        return true;
-    }
     if let Some(x) = examined {
         x.insert(t);
     }
@@ -3069,7 +3010,7 @@ fn join_walk(
     }
     if let Node::Op(o, a, b) = *t.node() {
         for (right, c) in [(false, a), (true, b)] {
-            let Some(order) = order.child(right, table) else { continue };
+            let Some(order) = order.map_or(Some(None), |p| p.child(right)) else { continue };
             up.push((o, a, b, right));
             let go = join_walk(c, order, table, cap - (size - c.size()), up, examined, visit);
             up.pop();
@@ -3206,7 +3147,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
                 let mut met = None;
                 let (here, there) = seen.split_at_mut(1);
                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
-                let order = r.step().map_or(Order::Whole, |s| Order::at(s.path, s.eq, table));
+                let order = r.step().map(|s| s.path);
                 join_walk(t, order, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
                     let e = &table.join[eq];
                     let (h, size) = subst_sig(&e.to, sub);
