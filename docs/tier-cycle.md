@@ -5052,6 +5052,25 @@ CPU did not move (216.4 against 216.7 s median, +0.2 s over the two orders): the
 searches (1.45 against 1.23 M) at 17% less time each. The gain per search is real; whether it shows end to end depends
 on which rules the order lets the miner keep.
 
+*Where an ordered walk goes (2026-10-20, run `2026-10-20-walk-categories`, `docs/runs/2026-10-20/patches/walk_categories.patch`,
+counting only).* Salt 1 with the ordered rules, by where each walked subterm lies relative to the step its term was
+reached by:
+
+| | walk calls | `match_pat` calls | matches |
+|---|---|---|---|
+| a side's own term | 23.4 M | 29.9 M | 29.2 M |
+| an ancestor of the step | 221.0 M | 293.9 M | 258.8 M |
+| the step's subterm | 129.3 M | 316.9 M | 312.3 M |
+| inside it | 583.3 M | 212.2 M | 211.9 M |
+| right of the path | 177.9 M | 71.1 M | 70.8 M |
+
+Reusing the parent's matches right of the path (the same subterms, walked in the parent) would skip 8% of the matches'
+work and 16% of the walk calls: too little to pay for carrying the parent's match lists, so not pursued. At the
+ancestors, 185.3 M of the 258.8 M matches put the step under a variable of the rule's pattern (they do not overlap it),
+and 157.9 M under a variable that occurs once in `from` and once in `to`: those two steps commute one for one, a diamond
+the search still takes both ways, as it took disjoint steps before the order. Its other order is a step inside the
+rewritten subterm, in the binding of that variable, and inside the subterm is where half the walk calls are.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
