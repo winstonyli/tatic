@@ -5002,7 +5002,7 @@ does not need one: `rule_step_in` ran 14.5 M times, 1% of the join's visits, and
 under the table. Clearing a cache per table would cost more than it saves at 2^16 slots (166.7 k clears), so a cache must
 be invalidated by tagging, not clearing.
 
-*A cache of the join's offers per rule table (negative, 2026-10-19, run `2026-10-19-offers-quiet`, commit 5997554).*
+*A cache of the join's offers per rule table (negative, reverted, 2026-10-19, run `2026-10-19-offers-quiet`, commit 5997554).*
 `JOIN_OFFERS` kept each subterm's index offers in 2^12 direct-mapped slots tagged by the table's id and an epoch, each
 offer matched on its first visit within the cap and kept with its rewritten subterm's `sh` and size. The sweep's files
 were the same, but against `bv_lazy` it cost +8.1 s of job CPU over the two orders (+3.6% of 221 s; +5.4 s first, +10.8

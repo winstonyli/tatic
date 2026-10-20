@@ -141,12 +141,11 @@ fn flagged(line: &str) -> Option<&str> {
 /// so a `driver::worker` task never sees another task's configuration or counters.
 #[test]
 fn task_state_is_classified() {
-    const PURE: [(&str, &str, &str); 11] = [
+    const PURE: [(&str, &str, &str); 10] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("rewrite.rs", "SCREENS", "values on fixed pseudo-random inputs, keyed by width and variable count"),
         ("rewrite.rs", "TREE_CANDS", "keyed by width, variable count and nops()"),
         ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
-        ("rewrite.rs", "MADE", "rule-table ids: they only tell tables apart, so process-wide is fine"),
         ("machine.rs", "TREE_ENCS", "pure in its key; carry_cap() is a screen before the lookup"),
         ("search.rs", "MEMO", "pool3_sequence, keyed by every variable it reads (the driver's)"),
         ("lemma_cache.rs", "ID", "the running exe's identity"),
