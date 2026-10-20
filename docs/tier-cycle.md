@@ -5021,6 +5021,15 @@ a slot and then offers in a 3 MB array at random, against index entries and inte
 shares of these frames measure work that was cheap compute, not time a memo can take; a lever on the join has to
 remove visits or memory traffic, not recomputation.
 
+*Where the offer cache's time went (2026-10-19, run `2026-10-19-offersprof`, 5997554 profiled, shares only, under
+load).* Against `-lazyprof2` the cache took `match_pat` under `join_walk` from 7.7% to 4.8%, the index filter from 9.2%
+to 5.3% and `subst_sig` from 8.0% to 3.7%: about 11 points, not the ~24 the hit rate promised, because the hits are at
+the small subterms off the path, where matching was cheap, and the misses at the new path subterms carry most of it
+(`match_pat` at the walk's root, never a hit, stayed at 2.2-2.4%). It added about as much: `JoinOffers::at` 12.0%
+inclusive, 6.7% beside the index it calls on a miss, the walk's loop closure 2.8%, `Need::skips` and `Term` equality
++1.9 points. This replaces the memory-traffic guess above as the measured account: the saving was half the estimate
+and the lookup ate it.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
