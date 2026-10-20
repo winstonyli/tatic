@@ -1,8 +1,7 @@
 # quiet_ab.sh <salt> <rounds> <exe>...: `runs time` over the exes (SWEEP=cold:cmp3d at 1 lane, each exe an arm named after
 # it, `_<k>` added to the k-th repeat of a name, so an exe given twice is an A/A), arms alternated per round and a round
 # kept only while other load stays under `runs time`'s limit; job CPU and wall per run into $RUN_DIR. `QUIET_AB_FLAGS`
-# adds flags to `runs time` (`--together`: a round's arms at once on halves of the cores, 2026-10-19). Then whether each
-# run's files agree with the first's (same_arms.sh).
+# adds flags to `runs time` (`--quiet-secs 10`, say). Then whether each run's files agree with the first's (same_arms.sh).
 s=$1; rounds=$2; shift 2
 here=$(dirname "$0"); d=$(cygpath -w "$RUN_DIR"); args=(); declare -A seen
 for exe in "$@"; do

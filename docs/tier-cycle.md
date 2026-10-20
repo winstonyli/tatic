@@ -4950,7 +4950,7 @@ as alone, now on three cores and their SMT siblings), and the rounds differ by 3
 mean, against `lazy-quiet`'s 1.6 s (0.8%) around each run order's. A round takes 57 s against 80 s, but the mean over
 the two orders needs about twice the rounds for the same error, so sequential rounds stay the default; the whole run
 took 30 minutes against 69, the difference being the quiet waits, which `--together` does not need to change. Kept as an
-option, unused.
+option, unused, then removed (it is in ba246fd).
 
 *Where `Term::op` stands (2026-10-19, survey, no run).* Its 13.6% inclusive in `-pairsprof` is the thread cache's and
 the shared cells' confirming load of a node (`m.node == n`: the interner's `eq` 4.4%, of it 2.2% in the cache hit and
