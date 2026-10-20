@@ -10,6 +10,7 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 - `patches/rep_var.patch`: the counters of `-rep-var`, `match_fail.patch`'s and five more; it applies on 7e4f037.
 - `patches/shallow_eq.patch`: the counters of `-shallow-eq`, `match_fail.patch`'s and five more; it applies on 7ad582e.
 - `patches/op_callers.patch`: the counters of `-op-callers` (`match_fail.patch`'s plumbing, `Term::op` calls by origin and outcome); it applies on 3f2265b.
+- `patches/walk_repeat.patch`: `op_callers.patch` plus the counters of `-walk-repeat` (subterms walked again in a search); it applies on d1599dd.
 
 | Run | Build | Script | Result |
 |---|---|---|---|
@@ -35,3 +36,4 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-lazyprof` | `bv_lazyprof` (cadb700 + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | taken under load without waiting (CPU 28% at start), shares only: the index's self 8.4% (8.8%), mostly the filter closure now; `match_pat` 8.1% self, `Term::op` 13.4% inclusive |
 | `2026-10-19-lazy-aa-together` | `bv_lazy` twice | `QUIET_AB_FLAGS=--together quiet_ab.sh 1 8` (8 clean of 8) | files the same; A/A job CPU median 281.3/281.0 s, over the two parts -0.8 s, part 2 +1.0 s; sd 3.2 s (1.1%) within a part order against `-lazy-quiet`'s 1.6 s (0.8%): noisier, and each run +44% job CPU |
 | `2026-10-19-lazy-aa-q10` | `bv_lazy` twice | `QUIET_AB_FLAGS="--quiet-secs 10" quiet_ab.sh 1 8`, stopped after 9 rounds | files the same; 1 clean of 9 in 36 min, others at 12-45% within the runs: inconclusive against 60 s |
+| `2026-10-19-walk-repeat` | `bv_wprobe` (d1599dd + `patches/op_callers.patch` + `patches/walk_repeat.patch`) | 2026-10-18's `match_count.sh` salt 1 | 1436 M subterm visits in the join, 82.3% already walked in the same search; 59.3% of 1006 M `match_pat` calls at those |

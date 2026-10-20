@@ -4982,6 +4982,17 @@ calls (43% of all), is made only to be compared by pointer. Deferring it too is 
 comparing entries unmade was put at about break-even ("Counts behind those levers"); with 92.5% cache hits these calls are the
 cheap ones. The dearer calls are the spines' cell lookups, 66.3 M, which a larger thread cache did not remove.
 
+*Subterms a search walks again (2026-10-19, run `2026-10-19-walk-repeat`, `docs/runs/2026-10-19/patches/walk_repeat.patch`
+on top of `op_callers.patch`, counting only on d1599dd).* An expanded term is its parent with one path rebuilt, so
+`join_walk` meets the subterms off the path again. Over salt 1's cold:cmp3d loops it was at 1436.2 M subterms, and 1181.6
+M (82.3%) of them had been walked earlier in the same search; 596.5 M (59.3%) of the 1005.9 M `match_pat` calls were at
+those (the new subterms are the path's, larger, with more candidates). A subterm's matches, and each match's
+right-hand side `sh`, size and whether it rewrites to itself, depend on the subterm alone (the cap's room is checked per
+visit from the stored `Need`; `PROVING` does not change within a search), so a per-search memo of them would skip the
+index filter at 82% of visits and the matcher at 59% of its calls, with `subst_sig` and `is_subst` for those matches.
+Those frames are about 30% of the samples in `-lazyprof`; a memo lookup costs one probe of a table of a few hundred
+entries per search. Not built.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
