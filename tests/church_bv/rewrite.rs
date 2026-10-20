@@ -2770,6 +2770,18 @@ fn join_walk_after_a_step_skips_the_subtrees_left_of_its_path() {
     assert_eq!(walked(Some(StepPath { path: 0, depth: 0 })).len(), want.len() + 1);
 }
 
+/// A step orders the walk after it only when it did not shrink the term: then the other order's middle term is no larger
+/// than the end term, so within the cap whenever the end term is.
+#[test]
+fn a_join_step_orders_the_walk_after_it_only_when_it_did_not_shrink_the_term() {
+    let (from, path) = (parse_term("add(and(x, y), add(z, 0))"), StepPath { path: 0b1, depth: 1 });
+    let step = JoinStep { from, path, eq: 0 };
+    let ordered = |to: &str| step.order(parse_term(to)).map(|p| (p.path, p.depth));
+    assert_eq!(ordered("add(and(x, y), z)"), None, "the step shrank the term");
+    assert_eq!(ordered("add(and(x, y), add(0, z))"), Some((0b1, 1)), "same size");
+    assert_eq!(ordered("add(and(x, y), add(z, add(0, 0)))"), Some((0b1, 1)), "grew");
+}
+
 /// `Need::skips` skips a match only when its step is over the cap, and every match over the cap for a rule that repeats
 /// no variable, such as commutativity: so `join_walk` skipping by it changes no search.
 #[test]
@@ -2894,6 +2906,13 @@ impl JoinStep {
     fn spine(self, at: Term) -> Spine {
         Spine { from: self.from, path: self.path, at }
     }
+    /// The order of `join_walk` at `t`, the term the step reached: its path, unless the step shrank the term. A skipped
+    /// step's other order passes a middle term of `size(t) - Δ + δ` (`Δ` this step's size change, `δ` the skipped one's)
+    /// against the end term's `size(t) + δ`, so with `Δ >= 0` the cap stops neither and the search reaches the same terms
+    /// (docs/tier-cycle.md, "Making the picks less sensitive").
+    fn order(self, t: Term) -> Option<StepPath> {
+        (t.size() >= self.from.size()).then_some(self.path)
+    }
 }
 
 /// A term a join step reaches with its rewritten subterm made and the spine above it not: `from` with the subterm at
@@ -2981,9 +3000,10 @@ type JoinPlace = [(usize, Term, Term, bool)];
 /// child, then the right; each passed to `visit` with its place, subterm, step index and match, while `visit` returns
 /// true; a rule whose `Need` is over the cap is skipped unmatched. Adds the subterms it walks to `examined`.
 /// After a step (`order`), only one order of two steps at disjoint places is walked: the subtrees left of the step's path
-/// are skipped, as a step there and this one, the other taken first, reach the same term. A search reaches the same terms
-/// at each depth, except where the cap stops the other order's middle term; the walk calls fell 28% and the search time
-/// about 21% (docs/tier-cycle.md, "Independent join steps in left-to-right order only").
+/// are skipped, as a step there and this one, the other taken first, reach the same term. `join_search` orders the walk
+/// only after a step that did not shrink the term (`JoinStep::order`), where the cap cannot stop the other order's middle
+/// term, so a search reaches the same terms at each depth as unordered: the same rules and M on salts 1-5, 6% less search
+/// time (docs/tier-cycle.md, "The order made exact").
 fn join_walk(
     t: Term,
     order: Option<StepPath>,
@@ -3147,7 +3167,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
                 let mut met = None;
                 let (here, there) = seen.split_at_mut(1);
                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
-                let order = r.step().map(|s| s.path);
+                let order = r.step().and_then(|s| s.order(t));
                 join_walk(t, order, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
                     let e = &table.join[eq];
                     let (h, size) = subst_sig(&e.to, sub);

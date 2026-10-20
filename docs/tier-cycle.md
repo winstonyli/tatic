@@ -5125,6 +5125,15 @@ order, checked by equal output instead of a gate, with the walk savings kept whe
 share). Selection-side fixes were tried before and lost: held-out scoring, held-out runners-up, lookahead over runners-up
 ("The cold loss is a greedy path loss" and after); ties broken in bands would still move by a whole law per flip.
 
+*The order made exact (2026-10-20, run `2026-10-20-guard-gate`).* `JoinStep::order` gives the walk its order only after
+a step that did not shrink the term (test `a_join_step_orders_the_walk_after_it_only_when_it_did_not_shrink_the_term`).
+Against no order at all (`bv_lazy`, f6cb81c's parent), salts 1-5: the same rules in all 15 loops, M 363 both, joined
+825 both, the same 8424652 searches; search time 2499 against 2342 s (296.6 against 278.0 µs per search, -6.3%), job CPU
+2486 against 2308 s (-7.2%), wall 346 against 362 s (26% other load at start, RTP off; one run each, not a quiet A/B).
+So the order's cap losses were the whole of its change to the answers: the dedup of a term reached first by another
+order's path loses nothing here. The unguarded order skipped more (-17% per search, quiet) but changed the rules, and its
+M 362 against 363 was a pick of the lottery. A step-order change can now be checked by equal output.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
