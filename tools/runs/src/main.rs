@@ -24,7 +24,7 @@ const USAGE: &str = "usage:
   runs cmp <tag> [--dir D]     compare <tag>_old_<s> with <tag>_new_<s>, salts 1 and 2 (exit 1 if they differ)
   runs gate <tag> <old exe> <new exe>   four sweeps (new 1, old 1, old 2, new 2), then cmp; <run dir>/<tag>_gate.txt
   runs time <dir> --rounds N [--max-hours 3] [--others pat,...] [--foreign-max 20] [--quiet-secs 60] [--keep-dirty]
-            [--max-rounds 4N] [--grep NAME=REGEX]... [--affinity M] [--priority P] -- <arm> [-- <arm>]...
+            [--max-rounds 4N] [--grep NAME=REGEX]... [--affinity M] [--together] [--priority P] -- <arm> [-- <arm>]...
             an arm is <name> [VAR=val]... <exe> <args>... (name: letters, digits, _ . -); {r}, {arm}, {dir} are substituted
   runs time <dir> --sweep <old exe> <new exe>             hc_rounds.ps1's sweeps (6 clean rounds)
   runs time <dir> --pcs <exe> --arm-env NAME:VAR=val,... --arm-env ...   proof_cost_split arms (or --pcs <old> <new>)";
@@ -114,7 +114,7 @@ fn append(path: &Path, line: &str) -> Result<(), String> {
 /// `runs time`: exits 0 unless a run, or a write of its records, failed (`done.txt` says which).
 fn cmd_time(words: &[String]) -> Result<i32, String> {
     let p = parse(words);
-    p.check(&["rounds", "max-hours", "others", "foreign-max", "quiet-secs", "keep-dirty", "max-rounds", "grep", "affinity", "priority", "sweep", "pcs", "arm-env"])?;
+    p.check(&["rounds", "max-hours", "others", "foreign-max", "quiet-secs", "keep-dirty", "max-rounds", "grep", "affinity", "together", "priority", "sweep", "pcs", "arm-env"])?;
     let [dir] = &p.pos[..] else { return Err("time takes one directory".into()) };
     let num = |name: &str, default: f64| -> Result<f64, String> {
         p.one(name)?.map_or(Ok(default), |v| v.parse().map_err(|_| format!("--{name} {v}: not a number")))
@@ -151,6 +151,7 @@ fn cmd_time(words: &[String]) -> Result<i32, String> {
         max_rounds: p.one("max-rounds")?.map_or(Ok(4 * rounds), |v| v.parse().map_err(|_| format!("--max-rounds {v}: not a number")))?,
         greps,
         affinity: probe.affinity,
+        together: p.flag("together")?,
         priority: probe.priority,
         arms,
     };

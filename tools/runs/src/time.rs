@@ -1,6 +1,7 @@
 //! `runs time`: alternating timing of two or more arms in rounds, each run measured by `runs::job`. Before each round
 //! it waits for a quiet machine, and it counts only rounds no one else loaded: `scripts/quiet_ab`'s rules, which it
-//! replaced, with `cpu_ab.ps1`'s, `cpu_arms.ps1`'s and `hc_rounds.ps1`'s experiments as presets.
+//! replaced, with `cpu_ab.ps1`'s, `cpu_arms.ps1`'s and `hc_rounds.ps1`'s experiments as presets. With `--together` a
+//! round's arms run at once on disjoint parts of the affinity mask, swapped round by round.
 
 use crate::{append, job, state};
 use regex::Regex;
@@ -33,6 +34,9 @@ pub struct Timing {
     pub max_rounds: usize,
     pub greps: Vec<Grep>,
     pub affinity: usize,
+    /// Run a round's arms at once, each on its own part of `affinity` (`split_mask`), the parts passing to the next arm
+    /// each round as `order` rotates, so that over the rounds each arm meets each part as often.
+    pub together: bool,
     pub priority: job::Priority,
     pub arms: Vec<Arm>,
 }
@@ -67,6 +71,22 @@ pub fn order(arms: usize, r: usize) -> Vec<usize> {
 }
 
 /// `s` with `{r}`, `{arm}` and `{dir}` replaced.
+/// `mask`'s processors in `parts` runs of equal count, lowest first (logical processors 2k and 2k+1 share a core here,
+/// so an even count per part keeps the parts on separate cores).
+pub fn split_mask(mask: usize, parts: usize) -> Result<Vec<usize>, String> {
+    let bits: Vec<usize> = (0..usize::BITS as usize).filter(|b| mask >> b & 1 == 1).collect();
+    if parts == 0 || bits.is_empty() || !bits.len().is_multiple_of(parts) {
+        return Err(format!("--together: affinity {mask:X} holds {} processors, not a multiple of the {parts} arms", bits.len()));
+    }
+    Ok(bits.chunks(bits.len() / parts).map(|c| c.iter().map(|b| 1 << b).sum()).collect())
+}
+
+/// Round `r`'s runs in order: each arm's index and its affinity.
+fn placement(t: &Timing, r: usize) -> Result<Vec<(usize, usize)>, String> {
+    let parts = if t.together { split_mask(t.affinity, t.arms.len())? } else { vec![t.affinity; t.arms.len()] };
+    Ok(order(t.arms.len(), r).into_iter().zip(parts).collect())
+}
+
 pub fn subst(s: &str, r: usize, arm: &str, dir: &Path) -> String {
     s.replace("{r}", &r.to_string()).replace("{arm}", arm).replace("{dir}", &dir.display().to_string())
 }
@@ -264,6 +284,7 @@ fn check_arm_names(arms: &[Arm]) -> Result<(), String> {
 pub fn time(t: &Timing) -> Result<bool, String> {
     let dir = &t.dir;
     check_arm_names(&t.arms)?;
+    placement(t, 1)?;
     let deadline = Duration::try_from_secs_f64(t.max_hours * 3600.0)
         .ok()
         .and_then(|d| Instant::now().checked_add(d))
@@ -312,26 +333,50 @@ fn rounds(t: &Timing, tsv: &Path, stop: &Path, deadline: Instant, p: &mut Progre
             println!("rtp changed to {}", state::rtp_text(rtp));
         }
         rtp_seen = Some(rtp);
+        let runs: Vec<(usize, String, PathBuf, job::RunSpec)> = placement(t, round)?
+            .into_iter()
+            .map(|(i, mask)| {
+                let a = &t.arms[i];
+                let label = format!("{}.{round}", a.name);
+                let out = dir.join(format!("{label}.out.txt"));
+                let sub = |s: &str| subst(s, round, &a.name, dir);
+                let mut spec = job::RunSpec::new(sub(&a.exe), a.args.iter().map(|x| sub(x)).collect(), job::Output::Split(out.clone(), dir.join(format!("{label}.err.txt"))));
+                spec.env = a.env.iter().map(|(k, v)| (k.clone(), sub(v))).collect();
+                spec.affinity = mask;
+                spec.priority = t.priority;
+                spec.others = t.others.clone();
+                (i, label, out, spec)
+            })
+            .collect();
+        let now = || SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        // together, the runs start at once and each one's other_pct leaves out every arm's CPU, not only its own
+        let mut together = if t.together {
+            let start = now();
+            let t0 = state::times();
+            let mut rs: Vec<Result<job::RunResult, String>> = std::thread::scope(|s| {
+                let hs: Vec<_> = runs.iter().map(|(.., spec)| s.spawn(move || job::run(spec))).collect();
+                hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("its thread panicked".into()))).collect()
+            });
+            let (busy, total) = state::times().since(&t0);
+            let cpu: f64 = rs.iter().flatten().map(|r| r.job_cpu).sum();
+            rs.iter_mut().flatten().for_each(|r| r.other_pct = job::other_pct(busy, total, cpu));
+            rs.into_iter().map(|r| (start, r)).collect()
+        } else {
+            vec![]
+        }
+        .into_iter();
         let mut all_clean = true;
-        for (pos, &i) in order(t.arms.len(), round).iter().enumerate() {
-            let a = &t.arms[i];
-            let label = format!("{}.{round}", a.name);
-            let out = dir.join(format!("{label}.out.txt"));
-            let sub = |s: &str| subst(s, round, &a.name, dir);
-            let mut spec = job::RunSpec::new(sub(&a.exe), a.args.iter().map(|x| sub(x)).collect(), job::Output::Split(out.clone(), dir.join(format!("{label}.err.txt"))));
-            spec.env = a.env.iter().map(|(k, v)| (k.clone(), sub(v))).collect();
-            spec.affinity = t.affinity;
-            spec.priority = t.priority;
-            spec.others = t.others.clone();
-            let start = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            let r = match job::run(&spec) {
+        for (pos, (i, label, out, spec)) in runs.iter().enumerate() {
+            let a = &t.arms[*i];
+            let (start, r) = together.next().unwrap_or_else(|| (now(), job::run(spec)));
+            let r = match r {
                 Ok(r) => r,
                 Err(e) => break 'timing (format!("{label}: {e}"), true),
             };
-            let text = String::from_utf8_lossy(&std::fs::read(&out).unwrap_or_default()).into_owned();
+            let text = String::from_utf8_lossy(&std::fs::read(out).unwrap_or_default()).into_owned();
             let greps = t.greps.iter().map(|g| grep_last(&g.re, &text)).collect();
             let clean = job::clean(r.exit, r.other_pct, r.others, t.foreign_max);
-            println!("{}", crate::result_line(&label, &r, rtp));
+            println!("{}", crate::result_line(label, &r, rtp));
             let row = Row { arm: a.name.clone(), round, pos: pos + 1, start, r, rtp, clean, greps };
             append(tsv, &tsv_row(&row))?;
             all_clean &= clean;
@@ -355,6 +400,10 @@ fn finish(t: &Timing, p: &Progress) -> Result<(), String> {
     let names: Vec<String> = t.arms.iter().map(|a| a.name.clone()).collect();
     let gnames: Vec<String> = t.greps.iter().map(|g| g.name.clone()).collect();
     let mut s = format!("clean {}", summary(&p.rows, &names, &gnames, &p.clean_rounds));
+    if t.together {
+        // the summary's orders are then core parts: "first" is the part on the lowest processors
+        s.insert_str(0, &format!("together on parts {:X?}: a run's position is its part\n", split_mask(t.affinity, t.arms.len()).unwrap_or_default()));
+    }
     if t.keep_dirty {
         let all: Vec<usize> = (1..=p.round).collect();
         s += &format!("all {}", summary(&p.rows, &names, &gnames, &all));
@@ -394,6 +443,7 @@ mod tests {
             max_rounds: 2,
             greps: vec![parse_grep("dir=(System32)").unwrap()],
             affinity: 0xFFF,
+            together: false,
             priority: job::Priority::BelowNormal,
             arms,
         }
@@ -585,5 +635,46 @@ mod tests {
         // new ran first in r2 (+1) and second in r1, r3 (-1.5 on average): -0.25 over the two orders, and a run's
         // second place costs it (-1.5 - 1) / 2
         assert!(s.contains("new - old jobcpu over the two orders: -0.250 (new first +1.000 in 1, second -1.500 in 2), running second -1.250"), "{s}");
+    }
+
+    #[test]
+    fn together_splits_the_mask_and_swaps_the_parts_each_round() {
+        assert_eq!(split_mask(0xFFF, 2), Ok(vec![0x03F, 0xFC0]));
+        assert_eq!(split_mask(0xF0F, 2), Ok(vec![0x00F, 0xF00]));
+        assert_eq!(split_mask(0xFFF, 3), Ok(vec![0x00F, 0x0F0, 0xF00]));
+        assert!(split_mask(0xFFF, 5).is_err() && split_mask(0, 1).is_err());
+        let d = scratch("split");
+        let mut t = timing(d.join("t"), vec![where_arm("a", "x"), where_arm("b", "y")]);
+        assert_eq!(placement(&t, 1), Ok(vec![(0, 0xFFF), (1, 0xFFF)]));
+        t.together = true;
+        assert_eq!(placement(&t, 1), Ok(vec![(0, 0x03F), (1, 0xFC0)]));
+        assert_eq!(placement(&t, 2), Ok(vec![(1, 0x03F), (0, 0xFC0)]));
+        t.affinity = 0x7;
+        let e = time(&t).unwrap_err();
+        assert!(e.contains("--together"), "{e}");
+        assert!(!d.join("t").exists(), "wrote before refusing");
+    }
+
+    #[test]
+    fn together_runs_a_rounds_arms_at_once() {
+        let d = scratch("together");
+        let spin = |name: &str| Arm {
+            name: name.into(),
+            env: vec![("RUNS_HELPER".into(), "spin".into())],
+            exe: std::env::current_exe().unwrap().display().to_string(),
+            args: ["job::tests::helper", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec(),
+        };
+        let mut t = timing(d.to_path_buf(), vec![spin("a"), spin("b")]);
+        t.together = true;
+        t.keep_dirty = true;
+        assert!(!time(&t).unwrap(), "{}", done_line(&d));
+        // a run's output file is made as it starts; each spins 0.5 s, so one after the other they would start that far apart
+        let made = |arm: &str| std::fs::metadata(d.join(format!("{arm}.1.out.txt"))).unwrap().created().unwrap();
+        let apart = made("b").duration_since(made("a")).or_else(|_| made("a").duration_since(made("b"))).unwrap();
+        let tsv = std::fs::read_to_string(d.join("runs.tsv")).unwrap();
+        assert!(apart < Duration::from_millis(250), "started {apart:?} apart\n{tsv}");
+        // both take the round's other_pct, which leaves out every arm's CPU (its own window would count the sibling's)
+        let pcts: Vec<&str> = tsv.lines().skip(1).map(|r| r.split('\t').nth(10).unwrap()).collect();
+        assert!(pcts[0] == pcts[1], "{tsv}");
     }
 }
