@@ -14,3 +14,4 @@ first=$(ls -d "$RUN_DIR"/*_*/ | head -1)
 for o in "$RUN_DIR"/*_*/; do
   [ "$o" = "$first" ] || echo "$(basename "$o") vs $(basename "$first"): $(bash "$here/../../2026-10-17/scripts/same_arms.sh" "$first" "$o" | tr '\n' ' ')"
 done
+bash "$here/../../2026-10-20/scripts/join_work.sh" "$RUN_DIR"/*_*/
