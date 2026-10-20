@@ -1416,17 +1416,21 @@ pub struct RuleTable {
     index: PatIndex,
     join: Vec<JoinEq>,
     join_index: PatIndex<Need>,
+    /// This table among those made, so `JOIN_OFFERS` serves only this table's steps
+    id: u64,
 }
 
 impl RuleTable {
     fn new(mined: Vec<(Term, Term)>) -> RuleTable {
+        static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         static FIXED: crate::task::PerTask<Vec<TableRule>> = crate::task::PerTask::new();
         let fixed = FIXED.get(|| fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect());
         let rules: Vec<TableRule> = fixed.iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
         let index = PatIndex::new(rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)).map(|(i, r)| (i, &r.lhs, ())));
         let join = join_eqs(&rules);
         let join_index = PatIndex::new(join.iter().enumerate().map(|(i, e)| (i, &e.from, e.need)));
-        RuleTable { mined, rules, index, join, join_index }
+        let id = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        RuleTable { mined, rules, index, join, join_index, id }
     }
 
     /// The rules that can match `t`, in order.
@@ -2774,6 +2778,45 @@ fn join_need_skips_only_steps_over_the_cap() {
     assert!(matched > 1000 && exact > 100, "matched {matched}, exact for add's commutativity {exact}");
 }
 
+/// `join_walk` keeps a subterm's steps across walks, but only for the rule table it was given: walked under two tables in
+/// turn, the same terms get each table's steps, those that match and do not rewrite the subterm to itself.
+#[test]
+fn join_walk_keeps_each_tables_steps() {
+    let tables = [RuleTable::new(vec![]), RuleTable::new(parse_rules("and(x, or(x, y)) -> x\nadd(x, x) -> shl1(x, 0)\n"))];
+    let ts = ["and(add(x, x), or(add(x, x), y))", "add(and(x, or(x, y)), and(x, or(x, y)))"].map(parse_term);
+    let show = |eq: usize, sub: &[Option<Term>], sh: u64| format!("{eq} {:?} {sh}", sub.iter().map(|s| s.map(|s| s.show())).collect::<Vec<_>>());
+    let walk = |table: &RuleTable, t: Term| {
+        let mut v = vec![];
+        join_walk(t, table, 1000, &mut vec![], &mut None, &mut |_, eq, sub, sh| {
+            v.push(show(eq, sub, sh));
+            true
+        });
+        v
+    };
+    let want = |table: &RuleTable, t: Term| {
+        let mut xs = vec![];
+        t.subterms(&mut xs);
+        let mut v = vec![];
+        for x in xs {
+            for (i, e) in table.join.iter().enumerate() {
+                let mut sub = [None; RULE_VARS];
+                if match_pat(&e.from, &x, &mut sub) && subst_pat(&e.to, &sub) != x {
+                    v.push(show(i, &sub, subst_pat(&e.to, &sub).sh()));
+                }
+            }
+        }
+        v
+    };
+    assert!(want(&tables[0], ts[0]).len() < want(&tables[1], ts[0]).len());
+    for _ in 0..2 {
+        for table in &tables {
+            for &t in &ts {
+                assert_eq!(walk(table, t), want(table, t), "{}", t.show());
+            }
+        }
+    }
+}
+
 
 /// The plan of `a = b` by joining them: breadth-first from both at once (one layer of the smaller frontier at a time) over
 /// `join_eqs`, through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or more than
@@ -2926,31 +2969,115 @@ impl Spine {
 /// went right.
 type JoinPlace = [(usize, Term, Term, bool)];
 
+/// A join step `table.join_index` offers at a subterm, as `JOIN_OFFERS` keeps it: the step, its `Need`, and its match once
+/// matched.
+#[derive(Clone, Copy)]
+struct Offer {
+    eq: u32,
+    need: Need,
+    step: OfferStep,
+}
+
+#[derive(Clone, Copy)]
+enum OfferStep {
+    Unmatched,
+    /// It does not match, or rewrites the subterm to itself.
+    None,
+    /// The match, and the `sh` and size of the rewritten subterm.
+    Some([Option<Term>; RULE_VARS], u64, usize),
+}
+
+impl OfferStep {
+    fn of(e: &JoinEq, t: Term) -> OfferStep {
+        let mut sub = [None; RULE_VARS];
+        if !match_pat(&e.from, &t, &mut sub) {
+            return OfferStep::None;
+        }
+        let (sh, size) = subst_sig(&e.to, &sub);
+        if sh == t.sh() && is_subst(t, &e.to, &sub) {
+            return OfferStep::None;
+        }
+        OfferStep::Some(sub, sh, size)
+    }
+}
+
+const JOIN_SLOTS: usize = 1 << 12;
+const JOIN_MAX_OFFERS: usize = 1 << 15;
+
+/// A `JoinOffers` slot: its epoch, subterm, and range of `offers`.
+type OfferSlot = (u32, Option<Term>, u32, u32);
+
+/// Each subterm's offers under the last rule table `join_walk` was given, in a direct-mapped cache by `sh`: a slot holds a
+/// subterm and its range of `offers`, valid while its `epoch` is the cache's. Expanded terms share most subterms: under one
+/// table 86% of the walk's visits were at a subterm already walked, and 84% would hit with 2^12 slots (docs/tier-cycle.md,
+/// "The same subterms under one rule table"). A new table, or `offers` reaching `JOIN_MAX_OFFERS`, starts a new epoch.
+struct JoinOffers {
+    table: u64,
+    epoch: u32,
+    slots: Box<[OfferSlot]>,
+    offers: Vec<Offer>,
+}
+
+thread_local! {
+    static JOIN_OFFERS: std::cell::RefCell<JoinOffers> =
+        std::cell::RefCell::new(JoinOffers { table: u64::MAX, epoch: 0, slots: vec![(0, None, 0, 0); JOIN_SLOTS].into(), offers: vec![] });
+}
+
+impl JoinOffers {
+    /// The range of `offers` at `t` under `table`: its slot's, or the index's offers, unmatched.
+    fn at(&mut self, t: Term, table: &RuleTable) -> std::ops::Range<usize> {
+        if self.table != table.id || self.offers.len() >= JOIN_MAX_OFFERS {
+            (self.table, self.epoch) = (table.id, self.epoch + 1);
+            self.offers.clear();
+        }
+        let slot = &mut self.slots[t.sh() as usize % JOIN_SLOTS];
+        if slot.0 == self.epoch && slot.1 == Some(t) {
+            return slot.2 as usize..slot.3 as usize;
+        }
+        let start = self.offers.len();
+        self.offers.extend(table.join_index.get(&t).map(|(i, need)| Offer { eq: i as u32, need, step: OfferStep::Unmatched }));
+        *slot = (self.epoch, Some(t), start as u32, self.offers.len() as u32);
+        start..self.offers.len()
+    }
+}
+
 /// `t`'s join steps of at most `cap` nodes in all, in order: those at the root by `table.join`, then those in the left
-/// child, then the right; each passed to `visit` with its place, subterm, step index and match, while `visit` returns
-/// true; a rule whose `Need` is over the cap is skipped unmatched. Adds `t`'s subterms to `examined`.
+/// child, then the right; each passed to `visit` with its place, step index, match and the rewritten subterm's `sh`, while
+/// `visit` returns true. A step whose `Need` is over the cap is skipped unmatched, and one that rewrites the subterm to
+/// itself is skipped. Adds `t`'s subterms to `examined`.
 fn join_walk(
     t: Term,
     table: &RuleTable,
     cap: usize,
     up: &mut Vec<(usize, Term, Term, bool)>,
     examined: &mut Option<hashbrown::HashSet<Term>>,
-    visit: &mut impl FnMut(&JoinPlace, Term, usize, &[Option<Term>; RULE_VARS], usize) -> bool,
+    visit: &mut impl FnMut(&JoinPlace, usize, &[Option<Term>; RULE_VARS], u64) -> bool,
 ) -> bool {
     if let Some(x) = examined {
         x.insert(t);
     }
     let size = t.size();
     let room = cap as isize - size as isize;
-    for (i, need) in table.join_index.get(&t) {
-        if need.skips(room, cap as isize) {
-            continue;
+    let go = JOIN_OFFERS.with(|c| {
+        let c = &mut *c.borrow_mut();
+        for k in c.at(t, table) {
+            let o = &mut c.offers[k];
+            if o.need.skips(room, cap as isize) {
+                continue;
+            }
+            let e = &table.join[o.eq as usize];
+            if let OfferStep::Unmatched = o.step {
+                o.step = OfferStep::of(e, t);
+            }
+            let OfferStep::Some(sub, sh, n) = o.step else { continue };
+            if n <= cap && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, o.eq as usize, &sub, sh) {
+                return false;
+            }
         }
-        let e = &table.join[i];
-        let mut sub = [None; RULE_VARS];
-        if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
-            return false;
-        }
+        true
+    });
+    if !go {
+        return false;
     }
     if let Node::Op(o, a, b) = *t.node() {
         for (right, c) in [(false, a), (true, b)] {
@@ -3089,12 +3216,8 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
                 let mut met = None;
                 let (here, there) = seen.split_at_mut(1);
                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
-                join_walk(t, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
+                join_walk(t, table, cap, &mut up, examined, &mut |up, eq, sub, h| {
                     let e = &table.join[eq];
-                    let (h, size) = subst_sig(&e.to, sub);
-                    if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
-                        return true;
-                    }
                     let h = place_sh(up, h);
                     let step = JoinStep::new(t, up, eq);
                     if let Some(&(_, u)) = other.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)) {
