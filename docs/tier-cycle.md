@@ -5159,6 +5159,23 @@ joins' reuse) and from 292 to 560 us each (the finished layer, and making every 
 to 10840 s under 20-49% load. Most of the cost likely comes from the wider trace, not the canonical meet (unsplit). A
 trace of the path alone would be cheaper, but the path runs through each term's first-found parent, which the order still picks.
 
+*Where that cost goes, and a cheaper trace no order changes (spike, 2026-10-20, runs `2026-10-20-split-meet`,
+`-split-trace`, `-split-exact`; `patches/split_spike.patch`, not committed).* Split, with no order in every arm but the
+last. Finishing the met layer and taking the smallest meet costs little: 8.42 M to 8.00 M searches, job CPU 3089 to
+3412 s (+10%) under 57-62% load. The wide trace is the cost: tracing every reached term made 18.08 M searches against
+9.23 M for the cheaper trace in the same gate. Canonical parents cannot make the path's trace order-free. Inner first
+removes some steps from a term's parents, so the set of parents, and the smallest among them, still depends on the
+order. What no order changes is the union of all shortest meeting paths. Take the meeting terms of the finished layer at
+the least depth on the other side, then, on each side, the terms of each layer below with a step into the union's terms
+above. That needs a second walk of the met search's layers, in no order. A failed search's trace becomes the walked
+terms with their subterms, since the skip leaves parts of a walk unexamined. With that trace, no order and inner first
+mined the same rules in all 15 loops and made the same 9.23 M searches (`split-exact`, 14% load). Inner first then took
+19% less search time (3437 s against 4238 s) and 16% less job CPU (3615 s against 4284 s). Against the committed code
+the trace costs more than inner first saves. In this spike's no-order arms, 9.23 M searches against 8.42 M (+10%) and
+a second walk per met search, so 4284 s quiet against 3089 s at 62% load: at least +39%. The left-to-right order,
+committed and cheaper than no order, was not in these arms, so inner first with this trace has not been timed against
+it.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
