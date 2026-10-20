@@ -4941,6 +4941,17 @@ against 8.8% in all; the A/B's 2.5% is more than that drop, so the saving is mos
 (fewer branches mispredicted or loads made, unmeasured). `match_pat` 8.1% self (7.5%), `Term::op` 13.4% inclusive
 (13.6%), `join_walk` 72.8% (72.2%), `subst_sig` 7.9%, `Spine::make` 6.5%: the order of what leads is unchanged.
 
+*Both arms at once on separate cores (2026-10-19, run `2026-10-19-lazy-aa-together`, commit ba246fd).* `runs time
+--together` runs a round's arms at once, each on its own half of the mask (3F and FC0: three cores each), the halves
+swapping every round; `quiet_ab.sh` takes it through `QUIET_AB_FLAGS`. An A/A of `bv_lazy` over 8 rounds: all clean,
+files the same, and the halves read the same (over the two parts -0.8 s of 281 s, part 2 +1.0 s). But it is not the
+cheaper way to a verdict. Each run takes 44% more job CPU and 43% more wall than alone (about 4.9 busy threads per arm,
+as alone, now on three cores and their SMT siblings), and the rounds differ by 3.2 s (1.1%) around each part order's
+mean, against `lazy-quiet`'s 1.6 s (0.8%) around each run order's. A round takes 57 s against 80 s, but the mean over
+the two orders needs about twice the rounds for the same error, so sequential rounds stay the default; the whole run
+took 30 minutes against 69, the difference being the quiet waits, which `--together` does not need to change. Kept as an
+option, unused.
+
 *Where `Term::op` stands (2026-10-19, survey, no run).* Its 13.6% inclusive in `-pairsprof` is the thread cache's and
 the shared cells' confirming load of a node (`m.node == n`: the interner's `eq` 4.4%, of it 2.2% in the cache hit and
 2.1% in `Cells::find`) and `op`'s own 4.1%. The levers inside the interner are spent: the cache's misses are capacity
