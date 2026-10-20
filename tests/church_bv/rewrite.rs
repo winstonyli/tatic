@@ -2745,6 +2745,31 @@ fn join_eqs(rules: &[TableRule]) -> Vec<JoinEq> {
     eqs
 }
 
+/// After a step, `join_walk` skips the subtrees left of the step's path: there a step and this one, the other
+/// taken first, would reach the same term. Its ancestors, the rewritten subterm and what is right of it stay.
+#[test]
+fn join_walk_after_a_step_skips_the_subtrees_left_of_its_path() {
+    // the step rewrote `c` in `add(and(a, b), or(c, d))`: right at the root, then left
+    let t = parse_term("add(and(x, y), or(xor(x, y), sub(y, x)))");
+    let table = RuleTable::new(vec![]);
+    let walked = |order: Option<StepPath>| {
+        let mut examined = Some(hashbrown::HashSet::default());
+        join_walk(t, order, &table, 1000, &mut vec![], &mut examined, &mut |_, _, _, _, _| true);
+        let mut v: Vec<String> = examined.unwrap().into_iter().map(|t| t.show()).collect();
+        v.sort();
+        v
+    };
+    let mut all = vec![];
+    t.subterms(&mut all);
+    let mut want: Vec<String> = all.iter().map(|t| t.show()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    assert_eq!(walked(None), want);
+    // `and(x, y)` is left of the path; `x` and `y` stay, as subterms of the right side too
+    want.retain(|s| s != "and(x, y)");
+    assert_eq!(walked(Some(StepPath { path: 0b01, depth: 2 })), want);
+    // a step at the root leaves nothing to its left
+    assert_eq!(walked(Some(StepPath { path: 0, depth: 0 })).len(), want.len() + 1);
+}
+
 /// `Need::skips` skips a match only when its step is over the cap, and every match over the cap for a rule that repeats
 /// no variable, such as commutativity: so `join_walk` skipping by it changes no search.
 #[test]
@@ -2926,11 +2951,36 @@ impl Spine {
 /// went right.
 type JoinPlace = [(usize, Term, Term, bool)];
 
+/// The path of the step a term was reached by, from the subterm `join_walk` is at: `depth` children down, going right at
+/// depth `i` where bit `i` of `path` is set.
+#[derive(Clone, Copy)]
+struct StepPath {
+    path: u64,
+    depth: u8,
+}
+
+impl StepPath {
+    /// The path in child `right`; None (skip it) for a child left of the path, and `Some(None)` for the rewritten subterm's
+    /// children and those right of the path, which the walk takes whole.
+    fn child(self, right: bool) -> Option<Option<StepPath>> {
+        match (self.depth, self.path & 1 == 1) {
+            (0, _) => Some(None),
+            (_, on) if on == right => Some(Some(StepPath { path: self.path >> 1, depth: self.depth - 1 })),
+            (_, _) => right.then_some(None),
+        }
+    }
+}
+
 /// `t`'s join steps of at most `cap` nodes in all, in order: those at the root by `table.join`, then those in the left
 /// child, then the right; each passed to `visit` with its place, subterm, step index and match, while `visit` returns
-/// true; a rule whose `Need` is over the cap is skipped unmatched. Adds `t`'s subterms to `examined`.
+/// true; a rule whose `Need` is over the cap is skipped unmatched. Adds the subterms it walks to `examined`.
+/// After a step (`order`), only one order of two steps at disjoint places is walked: the subtrees left of the step's path
+/// are skipped, as a step there and this one, the other taken first, reach the same term. A search reaches the same terms
+/// at each depth, except where the cap stops the other order's middle term; the walk calls fell 28% and the search time
+/// about 21% (docs/tier-cycle.md, "Independent join steps in left-to-right order only").
 fn join_walk(
     t: Term,
+    order: Option<StepPath>,
     table: &RuleTable,
     cap: usize,
     up: &mut Vec<(usize, Term, Term, bool)>,
@@ -2954,8 +3004,9 @@ fn join_walk(
     }
     if let Node::Op(o, a, b) = *t.node() {
         for (right, c) in [(false, a), (true, b)] {
+            let Some(order) = order.map_or(Some(None), |p| p.child(right)) else { continue };
             up.push((o, a, b, right));
-            let go = join_walk(c, table, cap - (size - c.size()), up, examined, visit);
+            let go = join_walk(c, order, table, cap - (size - c.size()), up, examined, visit);
             up.pop();
             if !go {
                 return false;
@@ -3089,7 +3140,8 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
                 let mut met = None;
                 let (here, there) = seen.split_at_mut(1);
                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
-                join_walk(t, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
+                let order = r.step().map(|s| StepPath { path: s.path, depth: s.depth });
+                join_walk(t, order, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
                     let e = &table.join[eq];
                     let (h, size) = subst_sig(&e.to, sub);
                     if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
