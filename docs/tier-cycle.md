@@ -5046,6 +5046,12 @@ before, 362 ordered (one loop 19 to 18, the other 14 equal), the join closed 848
 fewer on 4 and 5), and no law went unproved, exhausted or over the rule budget in either. The rule sets differ in every
 loop, and with them the work: 8.62 M searches against 8.42 M (salt 3 +47%, three salts 9-19% fewer), so the job CPU
 fell only 8.8% (2264 against 2482 s, under 22-48% other load), less than the paired probe's 21% of search time; time per search fell 6.4% (250 against 267 us), over other searches.
+On a quiet machine the paired probe again took 20.9% less search time (226.5 against 179.2 s, run
+`2026-10-20-join-order-quiet`), but end to end on salt 1 at 1 lane (`2026-10-20-order-quiet`, 8 clean rounds) the job
+CPU did not move (216.4 against 216.7 s median, +0.2 s over the two orders): the ordered rule set ran 17.5% more
+searches (1.45 against 1.23 M) at 17% less time each. The gain per search is real; whether it shows end to end depends
+on which rules the order lets the miner keep.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
