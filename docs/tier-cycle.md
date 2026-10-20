@@ -5031,7 +5031,7 @@ inclusive, 6.7% beside the index it calls on a miss, the walk's loop closure 2.8
 and the lookup ate it.
 
 *Independent join steps in left-to-right order only (2026-10-19/20, runs `2026-10-19-join-order`, `-join-order-pair`,
-`2026-10-20-join-order-alt2`, `docs/runs/2026-10-19/patches/join_order*.patch`, not built).* Two steps at disjoint
+`2026-10-20-join-order-alt2`, `docs/runs/2026-10-19/patches/join_order*.patch`; built in f6cb81c).* Two steps at disjoint
 places reach the same term in either order, and the search made it both ways. Walking a term a step reached without the
 subtrees left of that step's path (its ancestors, its rewritten subterm and everything right of it still walked) keeps
 one order. Run both ways on every search in one process, keeping the base's result: `join_walk` calls fell 28.3% (1436.2
@@ -5041,6 +5041,11 @@ not a weaker one. With which runs first alternated, the ordered search took 29.2
 of search time; base first 155.7 against 99.1 s, ordered first 127.7 against 126.0 s; running second saves 27.5 s
 either way), under 49% other load. Run alone it changes the mined rules, so its files differ; on salt 1 M stayed 29,
 17, 30 per loop and the join closed 49/70/61 laws against 49/67/47.
+The quality gate over salts 1-5 (run `2026-10-20-order-gate`, `docs/runs/2026-10-20/scripts/gate_sum.sh`) passes: M 363
+before, 362 ordered (one loop 19 to 18, the other 14 equal), the join closed 848 laws against 825 (more on salts 1-3,
+fewer on 4 and 5), and no law went unproved, exhausted or over the rule budget in either. The rule sets differ in every
+loop, and with them the work: 8.62 M searches against 8.42 M (salt 3 +47%, three salts 9-19% fewer), so the job CPU
+fell only 8.8% (2264 against 2482 s, under 22-48% other load), less than the paired probe's 21% of search time; time per search fell 6.4% (250 against 267 us), over other searches.
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
