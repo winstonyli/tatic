@@ -5134,6 +5134,19 @@ So the order's cap losses were the whole of its change to the answers: the dedup
 order's path loses nothing here. The unguarded order skipped more (-17% per search, quiet) but changed the rules, and its
 M 362 against 363 was a pick of the lottery. A step-order change can now be checked by equal output.
 
+*Inner first under the guard: the same answers, other plans (2026-10-20, runs `2026-10-20-guardin-gate`,
+`-guardin-probe`; `patches/inner_guarded.patch`, not committed).* With the inner-first skip back on top of the guard,
+the rules differ from no order in 4 of 15 loops (M 363 both; job CPU -10% under 41-45% load). Yet rerunning each search
+without the skip (salts 1, 3 and 5) changed no answer in 4.63 M searches; only the number of terms reached differs, in
+about half, which a met search's stop mid-layer explains. So the rules differ through something other than the answers,
+most likely the met path (a guess, unmeasured): the walk matches a term's root before its children, so with no order a
+search finds the outer-then-inner path first, and the inner-first skip removes that path and meets by the other. The
+plan, and the terms its path examined, then differ; those terms are the join's trace, which decides where a memoized
+join is reused under other rules (inexact by design, `RewriteMemo::filtered`) and which laws a candidate can touch. The
+left-to-right order keeps the path walked first (left before right), so its plans did not change. The walk after steps
+that shrank the term is 1.8-2.3% of walk calls and 1.3-1.6% of expansions, so the guard costs little, and narrowing it
+(skipping there what the cap allows) would win back at most about 2% of the walk: not pursued.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
