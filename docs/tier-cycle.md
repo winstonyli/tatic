@@ -5075,6 +5075,19 @@ rules): the bindings of variables once in `from` and `to` hold 399.9 M of the 11
 the 883.0 M matches (10.3%); the rest of the subterm 183.5 M and 121.2 M. Skipping them, as the left-of-path subtrees
 are skipped, would cut more walk calls than the left-to-right order did (28%) but fewer matches.
 
+*Nested steps inner first only: fails the gate (2026-10-20, run `2026-10-20-inner-gate`, b7bb853).* `JoinEq.once` marks
+the variables once in `from` and once in `to`, and `join_walk` after a step skips their bindings in the rewritten
+subterm (test `join_walk_after_a_step_skips_the_bindings_of_its_variables_once_in_from_and_to`). Against the
+left-to-right order alone (f6cb81c), salts 1-5: M 362 against 365 (salt 1 loops 2 and 3, salt 5 loop 1, +1 each);
+joined 848 against 808; exhausted, not proved and budget 0 in both. Per search the join is 11% cheaper (292.2 against
+259.3 µs), but the rules it mines differ and run 17% more searches (8.62 M against 10.12 M; salts 1 and 5 +61% and
++65%), so job CPU rose 7% (2404 against 2571 s). The other order of each diamond is still taken, so
+a search loses a join only where that order's middle term is over the size cap and the skipped one's is not
+(unmeasured); the rest of the M and joined change comes through a different mined rule set, as with the left-to-right
+order's +17.5% searches on salt 1. On a quiet machine (run `2026-10-20-inner-quiet`, salt 1, 8 rounds) the job took
+51% more CPU (210.6 against 318.8 s median, won 0/8): 61% more searches at only 5% less each (about 114 against
+108 µs), far below the gate's 11%, which was taken under load.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
