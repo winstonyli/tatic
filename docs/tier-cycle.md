@@ -5110,6 +5110,21 @@ the step order: under the left-to-right order, 9.4% of the 8.62 M searches over 
 reached terms, and at 4000 59% of those meet (476894, 5.5% of all searches; the skip's net gain was 0.07% and 0.3%); 2.7%
 end at an empty front, a no within the size cap.
 
+*Making the picks less sensitive (survey, 2026-10-20, nothing built).* A law covered is worth 1000 in a round's gain
+against a few hundred of size, so one join answer flipped moves a candidate by a whole law, and later rounds' gains are
++1 to +3 laws: the picks part at the first near-tie the flip reaches. Two kinds of change flip answers. A real one (a
+bigger visit bound, other rules) should move the picks, and is judged against the spread of a neutral change. A search
+order should not: the walk's own doc says a canonical order reaches the same terms at each depth "except where the cap
+stops the other order's middle term", and with the same terms per layer the visit bound (checked between layers) and
+the meeting layer come out the same. The middle term of the order not walked is `size(t) - Δ + δ` where `Δ` is the size
+change of the step that reached `t` and `δ` the skipped step's; the order walked ends at `size(t) + δ`, within the cap.
+So when `Δ >= 0` (the step did not shrink the term) the other order's middle fits too, and the skip loses nothing; for
+both skips (left of the path, and the bindings of variables once in `from` and `to`, whose step changes size by the same
+`δ` in either order). Guarding the skip by `Δ >= 0` would make any canonical order exact: the same rules and M as no
+order, checked by equal output instead of a gate, with the walk savings kept wherever steps do not shrink (unmeasured
+share). Selection-side fixes were tried before and lost: held-out scoring, held-out runners-up, lookahead over runners-up
+("The cold loss is a greedy path loss" and after); ties broken in bands would still move by a whole law per flip.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
