@@ -5011,6 +5011,16 @@ other load by the 3 h deadline, so the size is loose, but there is no gain. The 
 what a hit skips (the index filter, one `match_pat` and `subst_sig` per offer) costs about what the lookup and the
 96-byte offers it reads cost, so the ~30% ceiling read from `-lazyprof`'s frames was not there to take.
 
+*The join's frames again, after the offer cache (2026-10-19, run `2026-10-19-lazyprof2`, shares only, under load).* A
+fresh profile of the same code read within 0.5 points of `-lazyprof`: `join_walk` 73.1% inclusive, of which its visit
+34.3% (`subst_sig` 8.0%, the reached sets' `find` 6.7%, `place_sh` 2.9%, `Spine::is_step` 2.3%); outside the visit the
+index filter 9.2%, `match_pat` 9.0%, `join_walk`'s own 4.6%; `Term::op` 12.1% across the join (`Spine::make` 5.8%,
+`subst_pat` 3.8%); the rewriter 7.3% and `set_extra_rules` 2.6%. The offer cache skipped about 85% of the index filter,
+`match_pat`, `subst_sig` and `is_subst` (28.7% inclusive in all, so ~24% expected) and still lost 3.6%; likely (not measured) because its lookup reads
+a slot and then offers in a 3 MB array at random, against index entries and interned nodes that stay in cache. The
+shares of these frames measure work that was cheap compute, not time a memo can take; a lever on the join has to
+remove visits or memory traffic, not recomputation.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
