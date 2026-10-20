@@ -356,11 +356,23 @@ mod tests {
         }
     }
 
-    fn spin(d: Duration) {
-        let t = Instant::now();
+    /// Spins until this thread has had `cpu` of processor time: a loaded machine makes it take longer, never use less
+    /// (spinning for wall time, the job tests' 0.4 s floor failed with others at 96%, 2026-10-19).
+    fn spin(cpu: Duration) {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+        let used = || {
+            let mut t = [FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }; 4];
+            let [a, b, c, d] = &mut t;
+            assert_ne!(unsafe { GetThreadTimes(GetCurrentThread(), a, b, c, d) }, 0, "GetThreadTimes");
+            let ticks = |f: &FILETIME| (f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64;
+            Duration::from_nanos(100 * (ticks(&t[2]) + ticks(&t[3])))
+        };
         let mut x = 0u64;
-        while t.elapsed() < d {
-            x = std::hint::black_box(x.wrapping_add(1));
+        while used() < cpu {
+            for _ in 0..100_000 {
+                x = std::hint::black_box(x.wrapping_add(1));
+            }
         }
     }
 
