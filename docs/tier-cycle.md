@@ -4991,7 +4991,16 @@ right-hand side `sh`, size and whether it rewrites to itself, depend on the subt
 visit from the stored `Need`; `PROVING` does not change within a search), so a per-search memo of them would skip the
 index filter at 82% of visits and the matcher at 59% of its calls, with `subst_sig` and `is_subst` for those matches.
 Those frames are about 30% of the samples in `-lazyprof`; a memo lookup costs one probe of a table of a few hundred
-entries per search. Not built.
+entries per search. Not built as such: see the next paragraph.
+
+*The same subterms under one rule table (2026-10-19, run `2026-10-19-table-repeat`,
+`docs/runs/2026-10-19/patches/table_repeat.patch`, counting only on 5aafba2).* A subterm's join matches depend on the
+rule table, not the search, and a table serves 7.4 searches on average (166.7 k tables, from `set_extra_rules`, for 1.23 M
+searches). Under one table 1239.6 M of the 1436.2 M visits (86.3%) were at a subterm already walked; a direct-mapped
+cache by `sh` would hit 85.4% with 2^16 slots and 83.9% with 2^12, so a small cache keeps nearly all of it. The rewriter
+does not need one: `rule_step_in` ran 14.5 M times, 1% of the join's visits, and 14.3% of those at a term it had seen
+under the table. Clearing a cache per table would cost more than it saves at 2^16 slots (166.7 k clears), so a cache must
+be invalidated by tagging, not clearing.
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s

@@ -11,6 +11,7 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 - `patches/shallow_eq.patch`: the counters of `-shallow-eq`, `match_fail.patch`'s and five more; it applies on 7ad582e.
 - `patches/op_callers.patch`: the counters of `-op-callers` (`match_fail.patch`'s plumbing, `Term::op` calls by origin and outcome); it applies on 3f2265b.
 - `patches/walk_repeat.patch`: `op_callers.patch` plus the counters of `-walk-repeat` (subterms walked again in a search); it applies on d1599dd.
+- `patches/table_repeat.patch`: `walk_repeat.patch` plus the counters of `-table-repeat` (subterms walked again under a rule table, two direct-mapped caches simulated, the rewriter's repeats); it applies on 5aafba2.
 
 | Run | Build | Script | Result |
 |---|---|---|---|
@@ -37,3 +38,4 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-lazy-aa-together` | `bv_lazy` twice | `QUIET_AB_FLAGS=--together quiet_ab.sh 1 8` (8 clean of 8) | files the same; A/A job CPU median 281.3/281.0 s, over the two parts -0.8 s, part 2 +1.0 s; sd 3.2 s (1.1%) within a part order against `-lazy-quiet`'s 1.6 s (0.8%): noisier, and each run +44% job CPU |
 | `2026-10-19-lazy-aa-q10` | `bv_lazy` twice | `QUIET_AB_FLAGS="--quiet-secs 10" quiet_ab.sh 1 8`, stopped after 9 rounds | files the same; 1 clean of 9 in 36 min, others at 12-45% within the runs: inconclusive against 60 s |
 | `2026-10-19-walk-repeat` | `bv_wprobe` (d1599dd + `patches/op_callers.patch` + `patches/walk_repeat.patch`) | 2026-10-18's `match_count.sh` salt 1 | 1436 M subterm visits in the join, 82.3% already walked in the same search; 59.3% of 1006 M `match_pat` calls at those |
+| `2026-10-19-table-repeat` | `bv_tprobe` (5aafba2 + `patches/table_repeat.patch`) | 2026-10-18's `match_count.sh` salt 1 | 86.3% of join visits at a subterm already walked under the same rule table; a direct-mapped cache of 2^12 slots would hit 83.9%, of 2^16 85.4%; 7.4 searches per table; `rule_step_in` only 14.5 M calls, 14.3% repeats |
