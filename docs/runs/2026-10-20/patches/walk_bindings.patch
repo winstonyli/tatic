@@ -1,0 +1,132 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index ab63f82..9630a6c 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2569,7 +2569,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, probe: [0; 18] }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2582,6 +2582,8 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    /// PROBE: per walk category (side, ancestor of the step, at it, inside it, right of its path, inside a binding of a variable once in the rule's `from` and `to`): walk calls, match_pat calls, matches
++    pub probe: [u64; 18],
+ }
+ 
+ impl JoinCost {
+@@ -2598,6 +2600,9 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        for i in 0..18 {
++            self.probe[i] += now.probe[i] - before.probe[i];
++        }
+     }
+ }
+ 
+@@ -2754,7 +2759,7 @@ fn join_walk_after_a_step_skips_the_subtrees_left_of_its_path() {
+     let table = RuleTable::new(vec![]);
+     let walked = |order: Option<StepPath>| {
+         let mut examined = Some(hashbrown::HashSet::default());
+-        join_walk(t, order, &table, 1000, &mut vec![], &mut examined, &mut |_, _, _, _, _| true);
++        join_walk(t, order, (order.map_or(0, |p| if p.depth > 0 { 1 } else { 2 }), None, None), &table, 1000, &mut vec![], &mut examined, &mut |_, _, _, _, _| true);
+         let mut v: Vec<String> = examined.unwrap().into_iter().map(|t| t.show()).collect();
+         v.sort();
+         v
+@@ -2984,15 +2989,34 @@ type JoinPlace = [(usize, Term, Term, bool)];
+ /// are skipped, as a step there and this one, the other taken first, reach the same term. A search reaches the same terms
+ /// at each depth, except where the cap stops the other order's middle term; the walk calls fell 28% and the search time
+ /// about 21% (docs/tier-cycle.md, "Independent join steps in left-to-right order only").
++#[allow(clippy::too_many_arguments)]
+ fn join_walk(
+     t: Term,
+     order: Option<StepPath>,
++    probe: (usize, Option<u32>, Option<Term>),
+     table: &RuleTable,
+     cap: usize,
+     up: &mut Vec<(usize, Term, Term, bool)>,
+     examined: &mut Option<hashbrown::HashSet<Term>>,
+     visit: &mut impl FnMut(&JoinPlace, Term, usize, &[Option<Term>; RULE_VARS], usize) -> bool,
+ ) -> bool {
++    // PROBE: (category, the step's rule while on its path, the rule's `to` below the step's place)
++    let (mut cat, eq, mut guide) = probe;
++    let lin = |eq: u32, p: Term| {
++        let e = &table.join[eq as usize];
++        fn n(t: Term, v: usize) -> usize { match *t.node() { Node::V(w) => (w == v) as usize, Node::Op(_, a, b) => n(a, v) + n(b, v), _ => 0 } }
++        matches!(*p.node(), Node::V(v) if n(e.from, v) == 1 && n(e.to, v) == 1)
++    };
++    if cat == 2 {
++        guide = eq.map(|q| table.join[q as usize].to);
++        if let (Some(q), Some(g)) = (eq, guide) {
++            if lin(q, g) {
++                cat = 5;
++                guide = None;
++            }
++        }
++    }
++    count_join(|c| c.probe[cat] += 1);
+     if let Some(x) = examined {
+         x.insert(t);
+     }
+@@ -3004,15 +3028,31 @@ fn join_walk(
+         }
+         let e = &table.join[i];
+         let mut sub = [None; RULE_VARS];
+-        if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) && !visit(up, t, i, &sub, cap) {
+-            return false;
++        count_join(|c| c.probe[6 + cat] += 1);
++        if match_pat(&e.from, &t, &mut sub) && !PROVING.with(|p| p.borrow().iter().any(|&(l, r)| (l, r) == (e.lhs, e.rhs))) {
++            count_join(|c| c.probe[12 + cat] += 1);
++            if !visit(up, t, i, &sub, cap) {
++                return false;
++            }
+         }
+     }
+     if let Node::Op(o, a, b) = *t.node() {
+         for (right, c) in [(false, a), (true, b)] {
+             let Some(order) = order.map_or(Some(None), |p| p.child(right)) else { continue };
++            let child = match (cat, order) {
++                (1, Some(p)) => (if p.depth > 0 { 1 } else { 2 }, eq, None),
++                (1, None) => (4, None, None),
++                (2 | 3, _) => match guide.map(|g| *g.node()) {
++                    Some(Node::Op(_, ga, gb)) => {
++                        let g = if right { gb } else { ga };
++                        if lin(eq.unwrap(), g) { (5, None, None) } else { (3, eq, Some(g)) }
++                    }
++                    _ => (3, None, None),
++                },
++                (k, _) => (k, None, None),
++            };
+             up.push((o, a, b, right));
+-            let go = join_walk(c, order, table, cap - (size - c.size()), up, examined, visit);
++            let go = join_walk(c, order, child, table, cap - (size - c.size()), up, examined, visit);
+             up.pop();
+             if !go {
+                 return false;
+@@ -3148,7 +3188,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                 let (here, there) = seen.split_at_mut(1);
+                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
+                 let order = r.step().map(|s| s.path);
+-                join_walk(t, order, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
++                join_walk(t, order, (order.map_or(0, |p| if p.depth > 0 { 1 } else { 2 }), r.step().map(|s| s.eq), None), table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
+                     let e = &table.join[eq];
+                     let (h, size) = subst_sig(&e.to, sub);
+                     if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 833bcda..fa5e146 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1257,6 +1257,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER probe: {:?}", j.probe);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {

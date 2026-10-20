@@ -5070,6 +5070,10 @@ ancestors, 185.3 M of the 258.8 M matches put the step under a variable of the r
 and 157.9 M under a variable that occurs once in `from` and once in `to`: those two steps commute one for one, a diamond
 the search still takes both ways, as it took disjoint steps before the order. Its other order is a step inside the
 rewritten subterm, in the binding of that variable, and inside the subterm is where half the walk calls are.
+Following the rule's `to` down the subterm (run `2026-10-20-walk-bindings`, `patches/walk_bindings.patch`, the same
+rules): the bindings of variables once in `from` and `to` hold 399.9 M of the 1134.9 M walk calls (35%) but 90.9 M of
+the 883.0 M matches (10.3%); the rest of the subterm 183.5 M and 121.2 M. Skipping them, as the left-of-path subtrees
+are skipped, would cut more walk calls than the left-to-right order did (28%) but fewer matches.
 
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
