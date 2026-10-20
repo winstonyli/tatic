@@ -1,0 +1,124 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 483044b..740d6fa 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2569,7 +2569,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, pair: [0; 10] }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2582,6 +2582,8 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    /// PROBE: join_walk calls, outcomes that differ (base met, ordered met), reached, nanos; base then ordered; then nanos where the base ran first
++    pub pair: [u64; 10],
+ }
+ 
+ impl JoinCost {
+@@ -2598,6 +2600,9 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        for i in 0..10 {
++            self.pair[i] += now.pair[i] - before.pair[i];
++        }
+     }
+ }
+ 
+@@ -2812,7 +2817,34 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+         }
+     }
+     let mut examined = (memo_on || traced).then(hashbrown::HashSet::<Term>::default);
++    // alternate which runs first (each pair is two searches): odd pairs run the base first
++    let base_first = JoinCost::now().searches / 2 % 2 == 1;
++    let run_ordered = || {
++        let c0 = JoinCost::now();
++        JOIN_ORDER.with(|o| o.set(true));
++        let ordered = join_search(a, b, &mut None).is_some();
++        JOIN_ORDER.with(|o| o.set(false));
++        let c1 = JoinCost::now();
++        (ordered, c1.reached - c0.reached, c1.nanos - c0.nanos)
++    };
++    let early = if base_first { None } else { Some(run_ordered()) };
++    let c1 = JoinCost::now();
+     let found = join_search(a, b, &mut examined);
++    let c2 = JoinCost::now();
++    let (ordered, o_reached, o_nanos) = early.unwrap_or_else(run_ordered);
++    count_join(|c| {
++        let base = found.is_some();
++        c.pair[2] += (base && !ordered) as u64;
++        c.pair[3] += (ordered && !base) as u64;
++        c.pair[4] += c2.reached - c1.reached;
++        c.pair[5] += o_reached;
++        c.pair[6] += c2.nanos - c1.nanos;
++        c.pair[7] += o_nanos;
++        if base_first {
++            c.pair[8] += c2.nanos - c1.nanos;
++            c.pair[9] += o_nanos;
++        }
++    });
+     if let Some(x) = examined {
+         let trace = Trace::new(x.into_iter().map(|t| (t, Fired::Join)).collect());
+         replay(&trace);
+@@ -2931,12 +2963,14 @@ type JoinPlace = [(usize, Term, Term, bool)];
+ /// true; a rule whose `Need` is over the cap is skipped unmatched. Adds `t`'s subterms to `examined`.
+ fn join_walk(
+     t: Term,
++    order: Option<(u64, u8)>,
+     table: &RuleTable,
+     cap: usize,
+     up: &mut Vec<(usize, Term, Term, bool)>,
+     examined: &mut Option<hashbrown::HashSet<Term>>,
+     visit: &mut impl FnMut(&JoinPlace, Term, usize, &[Option<Term>; RULE_VARS], usize) -> bool,
+ ) -> bool {
++    count_join(|c| c.pair[JOIN_ORDER.with(|o| o.get()) as usize] += 1);
+     if let Some(x) = examined {
+         x.insert(t);
+     }
+@@ -2954,8 +2988,9 @@ fn join_walk(
+     }
+     if let Node::Op(o, a, b) = *t.node() {
+         for (right, c) in [(false, a), (true, b)] {
++            let sub_order = match order { Some((p, d)) if d > 0 => if (p & 1 == 1) == right { Some((p >> 1, d - 1)) } else if right { None } else { continue }, _ => None };
+             up.push((o, a, b, right));
+-            let go = join_walk(c, table, cap - (size - c.size()), up, examined, visit);
++            let go = join_walk(c, sub_order, table, cap - (size - c.size()), up, examined, visit);
+             up.pop();
+             if !go {
+                 return false;
+@@ -3089,7 +3124,8 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                 let mut met = None;
+                 let (here, there) = seen.split_at_mut(1);
+                 let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
+-                join_walk(t, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
++                let order = if JOIN_ORDER.with(|o| o.get()) { r.step().map(|s| (s.path, s.depth)) } else { None };
++                join_walk(t, order, table, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
+                     let e = &table.join[eq];
+                     let (h, size) = subst_sig(&e.to, sub);
+                     if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
+@@ -4105,3 +4141,8 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++thread_local! {
++    /// PROBE: join_search walks in the left-to-right order of independent steps
++    static JOIN_ORDER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 833bcda..def22eb 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1257,6 +1257,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER pair: {:?}", j.pair);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {

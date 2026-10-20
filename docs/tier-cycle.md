@@ -5030,6 +5030,18 @@ inclusive, 6.7% beside the index it calls on a miss, the walk's loop closure 2.8
 +1.9 points. This replaces the memory-traffic guess above as the measured account: the saving was half the estimate
 and the lookup ate it.
 
+*Independent join steps in left-to-right order only (2026-10-19/20, runs `2026-10-19-join-order`, `-join-order-pair`,
+`2026-10-20-join-order-alt2`, `docs/runs/2026-10-19/patches/join_order*.patch`, not built).* Two steps at disjoint
+places reach the same term in either order, and the search made it both ways. Walking a term a step reached without the
+subtrees left of that step's path (its ancestors, its rewritten subterm and everything right of it still walked) keeps
+one order. Run both ways on every search in one process, keeping the base's result: `join_walk` calls fell 28.3% (1436.2
+M to 1029.4 M) and the reached terms 1.7%, and 4698 of about 1.23 M searches changed outcome, 2280 met only in the base
+and 2418 only ordered: not the same search, as the cap and the visit budget cut the reordered paths differently, but
+not a weaker one. With which runs first alternated, the ordered search took 29.2 s less over the two orders (about 21%
+of search time; base first 155.7 against 99.1 s, ordered first 127.7 against 126.0 s; running second saves 27.5 s
+either way), under 49% other load. Run alone it changes the mined rules, so its files differ; on salt 1 M stayed 29,
+17, 30 per loop and the join closed 49/70/61 laws against 49/67/47.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
