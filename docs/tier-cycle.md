@@ -5147,6 +5147,18 @@ left-to-right order keeps the path walked first (left before right), so its plan
 that shrank the term is 1.8-2.3% of walk calls and 1.3-1.6% of expansions, so the guard costs little, and narrowing it
 (skipping there what the cap allows) would win back at most about 2% of the walk: not pursued.
 
+*A trace no order changes: the guess confirmed, at about 4x the cost (spike, 2026-10-20, run `2026-10-20-canon-gate`;
+`patches/canon_noorder.patch`, `patches/canon_inner.patch`, not committed).* `join_search` finished the layer it met in,
+took the meet with the smallest (term `sh`, from `sh`, eq), and gave every search, met or not, the trace of all terms
+reached on both sides with their subterms. These depend on no order, since an exact order reaches the same terms each layer. With
+that change, no order and inner first under the guard mined the same rules in all 15 loops of salts 1-5, and both made
+the same 19.25 M searches. So the plan and trace caused the divergence, not the answers. Inner first then
+saved 19% of search time (8691 s against 10776 s) and 14% of job CPU (9303 s against 10840 s). But the change itself is
+costly. Against the `guardin-gate` no-order arm, searches went from 8.62 M to 19.25 M (the larger traces cut memoized
+joins' reuse) and from 292 to 560 us each (the finished layer, and making every reached term). Job CPU went from 2404 s
+to 10840 s under 20-49% load. Most of the cost likely comes from the wider trace, not the canonical meet (unsplit). A
+trace of the path alone would be cheaper, but the path runs through each term's first-found parent, which the order still picks.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
