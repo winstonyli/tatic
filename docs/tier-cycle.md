@@ -4940,7 +4940,19 @@ the shared cells' confirming load of a node (`m.node == n`: the interner's `eq` 
 the tags already skip other nodes without a load. The confirming load is the node the caller reads next (its shape,
 size or children), so it is moved rather than added. What is left is fewer calls: `Spine::make` (6.7% inclusive, spines
 made on expansion or a meeting), the join's step making, and `subst_pat`; a count of `Term::op` calls by caller is the
-next probe, unrun.
+next probe (below).
+
+*`Term::op` calls in the join by caller (2026-10-19, run `2026-10-19-op-callers`,
+`docs/runs/2026-10-19/patches/op_callers.patch`, counting only on 3f2265b, files the same as `-match-fail`).* The join
+makes 787.4 M `Term::op` calls in salt 1's cold:cmp3d loops (1.18 G before the spine deferral). 532.0 M (68%) are new
+steps' `subst_pat`, 1.62 a new term over the 329.0 M new terms, and 92.5% of them hit the thread's cache (7.4% the
+shared cells); 201.1 M (26%) are spines made for 118.7 M expanded step terms and the met ones, 1.69 an expansion, and
+only 66.4% hit the cache (33.0% the cells); 54.3 M (7%) are the join's other calls, 92.0% cache hits. Only 1.59 M calls
+(0.2%) insert a node: nearly every term the join makes already exists. The cells' 110 M lookups are where a call is
+dear, and spines are 60% of them. 63.9% of the new terms (210.3 M) are never expanded, so their `subst_pat`, about 340 M
+calls (43% of all), is made only to be compared by pointer. Deferring it too is the lazy step that sank 984bde2, and
+comparing entries unmade was put at about break-even ("Counts behind those levers"); with 92.5% cache hits these calls are the
+cheap ones. The dearer calls are the spines' cell lookups, 66.3 M, which a larger thread cache did not remove.
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s

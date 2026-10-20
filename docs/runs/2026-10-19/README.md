@@ -9,6 +9,7 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 - `patches/match_fail.patch`: the counters of `-match-fail`; it applies on bce3407.
 - `patches/rep_var.patch`: the counters of `-rep-var`, `match_fail.patch`'s and five more; it applies on 7e4f037.
 - `patches/shallow_eq.patch`: the counters of `-shallow-eq`, `match_fail.patch`'s and five more; it applies on 7ad582e.
+- `patches/op_callers.patch`: the counters of `-op-callers` (`match_fail.patch`'s plumbing, `Term::op` calls by origin and outcome); it applies on 3f2265b.
 
 | Run | Build | Script | Result |
 |---|---|---|---|
@@ -30,3 +31,4 @@ copied to `$TEMP/bv_<name>.exe`: `bv_riv` (2280c01, the same code as db442d8), `
 | `2026-10-19-match-fail-pairs` | `bv_pprobe` (75d4b99 + `patches/match_fail.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; `match_pat` calls 1.93 G to 1.01 G, binding failures 934 M to 16 M, the same 977 M matches |
 | `2026-10-19-pairsprof` | `bv_pairsprof` (75d4b99 + 2026-10-18's `lazy_prof.patch`) | `lazy_prof.sh` | loaded again during the run (searches 67.2 s against 55.4 s), shares only: `match_pat` 8.0% inclusive (14.9%), `PatIndex::get` 6.8% (2.2%) |
 | `2026-10-19-lazy-quiet` | `bv_pairs`, `bv_lazy` (cadb700) | `quiet_ab.sh 1 8` (8 clean of 8) | files the same; job CPU median 202.0/195.6 s, won 4/8; the mean over the two orders -5.0 s (-2.5%), running second +7.6 s |
+| `2026-10-19-op-callers` | `bv_oprobe` (3f2265b + `patches/op_callers.patch`) | 2026-10-18's `match_count.sh` salt 1 | files the same as `-match-fail`; 787 M `Term::op` calls in the join: 532 M new steps' `subst_pat` (92.5% cache hits), 201 M spines (66.4%), 54 M other; 0.2% insert |
