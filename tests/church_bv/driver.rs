@@ -28,7 +28,8 @@
 //! `CHECK_LAWFILE`).
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules, laws the join closed with no machine proof, terms the join's
-//! searches reached: its cost, which M does not show), mine_<name>.log and serve_<skip>.log. The last line printed is
+//! searches reached: its cost, which M does not show), mine_<name>.log and serve_<skip>.log, each with a `.results` file
+//! beside it (the task's `key<TAB>value` records from `task::result`, which the driver reads). The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
 //! **A sweep** (the experiments of docs/loop-result.md): `SWEEP_OUT=<dir> [SALT=1] [LIB=<dir>] [SWEEP="mines own cold"] <exe>
@@ -121,7 +122,8 @@ fn task_fn(name: &str) -> Option<fn()> {
 
 /// A sweep's children as tasks of one process (`Worker` starts it, with `TATIC_WORKER=1`; it returns at once otherwise).
 /// Reads `<test>\t<log>\t<KEY>=<VALUE>...` lines; runs each test on a fresh thread (fresh thread-locals) with the task's
-/// pairs over this process's environment (`task::begin`) and its stdout and stderr in the log; answers `WORKER ok` or
+/// pairs over this process's environment (`task::begin`), its stdout and stderr in the log and its result records
+/// (`task::result`) in `results_path(log)`; answers `WORKER ok` or
 /// `WORKER fail` on a line of its own, and exits after a failure (a panic can leave a lock poisoned) or at EOF. A task that
 /// starts a process must give it a null stdin, as `Command::output` does: this stdin is the task pipe.
 #[test]
@@ -135,9 +137,9 @@ fn worker() {
         let mut fields = line.split('\t');
         let (name, log) = (fields.next().unwrap_or("").to_string(), fields.next().unwrap_or("").to_string());
         let env = fields.filter_map(|f| f.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        crate::task::begin(env);
-        let ok = match std::fs::File::create(&log) {
-            Ok(f) => {
+        let ok = match (std::fs::File::create(&log), std::fs::File::create(results_path(Path::new(&log)))) {
+            (Ok(f), Ok(results)) => {
+                crate::task::begin(env, results);
                 std::io::stdout().flush().unwrap();
                 let saved = stdio::redirect(&f);
                 let ok = match task_fn(&name) {
@@ -149,10 +151,11 @@ fn worker() {
                 };
                 std::io::stdout().flush().unwrap();
                 stdio::restore(saved);
+                crate::task::end();
                 ok
             }
-            Err(e) => {
-                eprintln!("worker: cannot create {log}: {e}");
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("worker: cannot create {log} or its result file: {e}");
                 false
             }
         };
@@ -332,6 +335,11 @@ struct WorkerProc {
     start: Vec<(String, String)>,
 }
 
+/// Where a task logging to `log` leaves its result records: `<log stem>.results` beside it.
+fn results_path(log: &Path) -> PathBuf {
+    log.with_extension("results")
+}
+
 /// The pairs of `env` read when a process starts (mimalloc's options, std's `RUST_MIN_STACK` and `RUST_BACKTRACE`), the last
 /// of each name winning: a worker serves only tasks that agree on them.
 fn process_start(env: &[(String, String)]) -> Vec<(String, String)> {
@@ -345,12 +353,16 @@ impl Worker {
         Worker { proc: std::sync::Mutex::new(None) }
     }
 
-    /// Runs test `name` of this exe with `env` added, output to `log`; returns whether it succeeded.
-    fn run(&self, name: &str, env: &[(String, String)], log: &Path) -> bool {
-        // an earlier run's log must not survive a task that fails before creating its own: callers read the log either way
-        match std::fs::remove_file(log) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("cannot clear {}: {e}", log.display()),
-            _ => {}
+    /// Runs test `name` of this exe with `env` added, output to `log`; returns its result records (`task::result`), or
+    /// `None` if it failed.
+    fn run(&self, name: &str, env: &[(String, String)], log: &Path) -> Option<Vec<(String, String)>> {
+        // an earlier run's log and records must not survive a task that fails before creating its own
+        let results = results_path(log);
+        for f in [log, &results] {
+            match std::fs::remove_file(f) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("cannot clear {}: {e}", f.display()),
+                _ => {}
+            }
         }
         let mut slot = self.proc.lock().unwrap_or_else(|e| e.into_inner());
         let start = process_start(env);
@@ -365,8 +377,11 @@ impl Worker {
         let ok = sent && (&mut p.stdout).lines().map_while(Result::ok).find_map(|l| l.strip_prefix("WORKER ").map(|r| r == "ok")) == Some(true);
         if !ok {
             Self::stop(slot.take().unwrap());
+            return None;
         }
-        ok
+        let text = std::fs::read_to_string(&results).unwrap_or_else(|e| panic!("cannot read {}: {e}", results.display()));
+        let record = |l: &str| l.split_once('\t').map(|(k, v)| (k.to_string(), v.to_string())).unwrap_or_else(|| panic!("a result line with no tab: {l:?}"));
+        Some(text.lines().map(record).collect())
     }
 
     fn spawn(start: Vec<(String, String)>) -> WorkerProc {
@@ -452,14 +467,13 @@ fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Pa
     }
     std::fs::create_dir_all(out).unwrap();
     let log = out.join(format!("machine_state_{when}.log"));
-    worker.run("machine::pages_line", env, &log);
-    let text = std::fs::read_to_string(&log).unwrap_or_default();
-    let pages = text.lines().find_map(|l| l.strip_prefix("pages: ")).unwrap_or("pages unavailable");
+    let records = worker.run("machine::pages_line", env, &log).unwrap_or_default();
+    let pages = records.iter().find(|(k, _)| k == "pages").map_or("pages unavailable", |(_, v)| v.as_str());
     eprintln!("machine at {when}: machine state: {} {pages}", crate::machine::rtp_cpu());
 }
 
-/// Prints `env_var(k)` for each name in `ECHO` (a comma list) and a nonce unique to this process; panics when
-/// `ECHO_PANIC=1`. A task for `worker_runs_tasks`.
+/// Prints `env_var(k)` for each name in `ECHO` (a comma list), also handing each to the driver as a result record, and a
+/// nonce unique to this process; panics when `ECHO_PANIC=1`. A task for `worker_runs_tasks`.
 #[test]
 #[ignore]
 fn env_echo() {
@@ -467,12 +481,14 @@ fn env_echo() {
     let nonce = NONCE.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
     for k in env_var("ECHO").unwrap_or("").split(',').filter(|k| !k.is_empty()) {
         println!("ECHO {k}={}", env_var(k).unwrap_or("<unset>"));
+        crate::task::result(k, env_var(k).unwrap_or("<unset>"));
     }
     println!("ECHO nonce={nonce}");
     assert!(!env_flag("ECHO_PANIC", false), "env_echo panicked on request");
 }
 
-/// A worker runs each task with its own environment and log, leaks no variable from one task to the next, starts afresh
+/// A worker runs each task with its own environment, log and result records, leaks no variable or record from one task to
+/// the next (task 10 reuses task 9's log), starts afresh
 /// after a failed task, and is replaced when a task's process-start variables differ. Starts processes:
 /// `cargo test --release --test church_bv driver::worker_runs_tasks -- --exact --ignored --nocapture`.
 #[test]
@@ -483,7 +499,7 @@ fn worker_runs_tasks() {
     let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
     let log = |i: usize| dir.join(format!("{i}.log"));
     let w = Worker::new();
-    let ok = [
+    let records = [
         w.run("driver::env_echo", &[kv("ECHO", "A,B,C"), kv("A", "1"), kv("C", "x=y")], &log(1)),
         w.run("driver::env_echo", &[kv("ECHO", "A,B"), kv("B", "2")], &log(2)),
         w.run("driver::env_echo", &[kv("ECHO_PANIC", "1")], &log(3)),
@@ -493,8 +509,14 @@ fn worker_runs_tasks() {
         w.run("driver::env_echo", &[kv("RUST_BACKTRACE", "0")], &log(7)),
         w.run("driver::env_echo", &[kv("RUST_BACKTRACE", "0")], &log(8)),
         w.run("driver::env_echo", &[], &log(9)),
+        w.run("driver::env_echo", &[kv("ECHO", "B"), kv("B", "3")], &log(9)),
     ];
-    assert_eq!(ok, [true, true, false, true, false, false, true, true, true]);
+    let ok = records.iter().map(Option::is_some).collect::<Vec<_>>();
+    assert_eq!(ok, [true, true, false, true, false, false, true, true, true, true]);
+    let pairs = |r: &[(&str, &str)]| r.iter().map(|&(k, v)| kv(k, v)).collect::<Vec<_>>();
+    assert_eq!(records[0], Some(pairs(&[("A", "1"), ("B", "<unset>"), ("C", "x=y")])));
+    assert_eq!(records[1], Some(pairs(&[("A", "<unset>"), ("B", "2")])), "no record leaks from task 1");
+    assert_eq!(records[9], Some(pairs(&[("B", "3")])), "task 10, on task 9's log, has only its own records");
     let text = |i: usize| std::fs::read_to_string(log(i)).unwrap();
     let echoes = |i: usize| text(i).lines().filter(|l| !l.starts_with("ECHO nonce=")).map(String::from).collect::<Vec<_>>();
     let nonce = |i: usize| text(i).lines().find_map(|l| l.strip_prefix("ECHO nonce=").map(String::from)).unwrap();
@@ -514,7 +536,7 @@ fn worker_runs_tasks() {
 }
 
 /// A task whose log cannot be cleared stops the driver, as the old per-child `File::create(log).unwrap()` did, rather than
-/// leaving an earlier run's log to be read as this one's (`run_loop`'s serve reads it whatever `run` returns). The log is
+/// leaving an earlier run's log or records to be read as this one's. The log is
 /// held open without sharing, so neither the driver nor a worker can remove or recreate it.
 #[cfg(windows)]
 #[test]
@@ -713,21 +735,16 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
             std::fs::write(out.join(format!("laws_extra_{name}.txt")), &extra).unwrap();
             append(Path::new(&env.last().unwrap().1), &extra);
         }
-        assert!(worker.run("search::rule_miner", &env, &log), "rule_miner failed (see {})", log.display());
-        // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
-        let text = std::fs::read_to_string(&log).unwrap();
+        let records = worker.run("search::rule_miner", &env, &log).unwrap_or_else(|| panic!("rule_miner failed (see {})", log.display()));
         // the base rules a preference phase dropped leave the file
         let rule = |l: &str| (!l.contains("  OVER  ")).then(|| l.trim().split_once(" -> ")).flatten().map(|(a, b)| (parse_term(a.trim()), parse_term(b.trim())));
-        let dropped: hashbrown::HashSet<RuleKey> = text.lines().filter_map(|l| l.strip_prefix("RULEMINER drop (")).filter_map(|l| l.split_once("): ")).filter_map(|(_, r)| rule(r)).collect();
+        let dropped: hashbrown::HashSet<RuleKey> = records.iter().filter(|(k, _)| k == "drop").filter_map(|(_, r)| rule(r)).collect();
         if !dropped.is_empty() {
             let kept: String = std::fs::read_to_string(&rules).unwrap().lines().filter(|l| !rule(l).is_some_and(|r| dropped.contains(&r))).map(|l| format!("{l}\n")).collect();
             std::fs::write(&rules, kept).unwrap();
         }
-        let chosen: String = text
-            .lines()
-            .filter(|l| (l.contains("RULEMINER chosen") || l.contains("RULEMINER prefer")) && l.contains(" -> "))
-            .map(|l| format!("{}\n", l.split_once("): ").map_or(l, |(_, r)| r)))
-            .collect();
+        // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
+        let chosen: String = records.iter().filter(|(k, _)| k == "chosen" || k == "prefer").map(|(_, r)| format!("{r}\n")).collect();
         append(&rules, &chosen);
     };
     // (M, laws, laws that used up the rule budget, laws joined, terms the join reached) of the batch at `skip`
@@ -735,15 +752,13 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
         let log = out.join(format!("serve_{skip}.log"));
         let mut env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
         env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_serve_{skip}.txt")), "CHECK_LAWFILE"));
-        worker.run("search::rule_set_kernel_check", &env, &log);
-        // CHECKED <n> laws kernel-checked (<k> with no whole-term machine proof), <p> not proved, <x> used up the rule budget
-        let text = std::fs::read_to_string(&log).unwrap();
-        let line = text.lines().find(|l| l.starts_with("CHECKED ")).unwrap_or_else(|| panic!("no CHECKED line (see {})", log.display()));
-        let nums = |line: &str| line.split(|c: char| !c.is_ascii_digit()).filter_map(|w| w.parse().ok()).collect::<Vec<usize>>();
-        let &[n, k, p, x] = &nums(line)[..] else { panic!("unexpected CHECKED line: {line}") };
-        // JOINED <j> of them by the join, <s> searches reaching <r> terms
-        let line = text.lines().find(|l| l.starts_with("JOINED ")).unwrap_or_else(|| panic!("no JOINED line (see {})", log.display()));
-        let &[j, _, r] = &nums(line)[..] else { panic!("unexpected JOINED line: {line}") };
+        let records = worker.run("search::rule_set_kernel_check", &env, &log).unwrap_or_else(|| panic!("rule_set_kernel_check failed (see {})", log.display()));
+        let count = |key: &str| -> usize {
+            let v = records.iter().find(|(k, _)| k == key).map(|(_, v)| v).unwrap_or_else(|| panic!("no {key} record (see {})", log.display()));
+            v.parse().unwrap_or_else(|_| panic!("record {key} is not a count: {v}"))
+        };
+        // laws kernel-checked (`free` of them with no whole-term machine proof), not proved, out of rule budget, joined
+        let (n, k, p, x, j, r) = (count("proved"), count("free"), count("none"), count("exhausted"), count("joined"), count("reached"));
         (n - k + p, n + p, x, j, r)
     };
     match &cfg.warm {

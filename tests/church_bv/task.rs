@@ -12,12 +12,33 @@ use std::sync::{Arc, Mutex};
 static TASK: AtomicUsize = AtomicUsize::new(0);
 /// The current task's environment pairs, over the process's own (`rewrite::env_var`).
 static TASK_ENV: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// The current task's result file (`result`), open from `begin` to `end`; `None` in a process that runs one test.
+static RESULTS: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
-/// Starts a task whose environment is the process's with `env` over it: every `PerTask` and `PerTaskArc` is rebuilt at its
-/// next read. Only `driver::worker` calls it, between tasks, with no task thread running.
-pub fn begin(env: Vec<(String, String)>) {
+/// Starts a task whose environment is the process's with `env` over it and whose result records go to `results`: every
+/// `PerTask` and `PerTaskArc` is rebuilt at its next read. Only `driver::worker` calls it, between tasks, with no task
+/// thread running.
+pub fn begin(env: Vec<(String, String)>, results: std::fs::File) {
     *TASK_ENV.lock().unwrap_or_else(|e| e.into_inner()) = env;
+    *RESULTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(results);
     TASK.fetch_add(1, Relaxed);
+}
+
+/// Ends the task `begin` started, closing its result file.
+pub fn end() {
+    RESULTS.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
+/// Hands the driver one record of this task's outcome: a `key<TAB>value` line in the task's result file, which
+/// `Worker::run` returns, in order, as `(key, value)` pairs. The driver reads only these; the log's printed lines stay for
+/// people and scripts. Does nothing in a process that runs one test, where no driver reads them.
+pub fn result(key: &str, value: impl std::fmt::Display) {
+    use std::io::Write;
+    let value = value.to_string();
+    assert!(![key, value.as_str()].iter().any(|f| f.contains(['\t', '\n', '\r'])), "a result field holds a tab or a newline: {key:?} {value:?}");
+    if let Some(f) = RESULTS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        writeln!(f, "{key}\t{value}").expect("write a task result");
+    }
 }
 
 /// The current task's environment pairs (empty outside a worker).
@@ -190,12 +211,13 @@ fn flagged(line: &str) -> Option<&str> {
 /// so a `driver::worker` task never sees another task's configuration or counters.
 #[test]
 fn task_state_is_classified() {
-    const PURE: [(&str, &str, &str); 6] = [
+    const PURE: [(&str, &str, &str); 7] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
         ("lemma_cache.rs", "ID", "the running exe's identity"),
         ("task.rs", "TASK", "the task machinery"),
         ("task.rs", "TASK_ENV", "the task machinery"),
+        ("task.rs", "RESULTS", "the task machinery"),
         ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
     ];
     assert_eq!(flagged("    static X: std::sync::OnceLock<u8> = std::sync::OnceLock::new();"), Some("X"));

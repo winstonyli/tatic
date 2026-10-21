@@ -1130,6 +1130,7 @@ pub fn rule_miner() {
             round: usize,
             proof: Option<usize>,
             line: String,
+            rule: String,
         }
         // commits the open rounds whose proofs hold, oldest first, until `keep` are left; at a failed proof, voids the rounds built
         // on it (their picks too, as the failed winner is never picked again) and returns it, to be played again
@@ -1138,6 +1139,7 @@ pub fn rule_miner() {
                 let o = open.remove(0);
                 if o.proof.is_none_or(&resolve) {
                     println!("{}", o.line);
+                    crate::task::result("chosen", &o.rule);
                     continue;
                 }
                 println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(provable[i])));
@@ -1207,7 +1209,7 @@ pub fn rule_miner() {
                 let next = then(&s, &rule);
                 let line = format!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", count(&next.covered) - count(&s.covered), s.size - next.size, rule.0.show(), rule.1.show());
                 phase("rule-set evaluation");
-                open.push(Open { before: s, round, proof, line });
+                open.push(Open { before: s, round, proof, line, rule: rule_show(&rule) });
                 (s, round) = (next, round + 1);
                 // the newest three rounds stay open: a winner's proof (about 87 ms on cmp3d) runs while the next three rounds are
                 // scored (about 60 ms each at 6 threads); docs/tier-cycle.md, "Why six threads gave little"
@@ -1262,11 +1264,13 @@ pub fn rule_miner() {
                 None => break,
                 Some((g, Ok((w, l)))) => {
                     println!("RULEMINER prefer (+{g} gain): {}  OVER  {}", rule_show(&w), rule_show(&l));
+                    crate::task::result("prefer", format!("{}  OVER  {}", rule_show(&w), rule_show(&l)));
                     prefs = flipped(&(w, l));
                 }
                 Some((g, Err(u))) => {
                     for (l, r) in &units[u] {
                         println!("RULEMINER drop (+{g} gain): {} -> {}", l.show(), r.show());
+                        crate::task::result("drop", format!("{} -> {}", l.show(), r.show()));
                     }
                     dropped.push(u);
                     set_base(&dropped);
@@ -2332,6 +2336,9 @@ pub fn rule_set_kernel_check() {
         let mut cost = JoinCost::default();
         cost.add_since(cost0);
         println!("JOINED {joined} of them by the join, {} searches reaching {} terms", cost.searches, cost.reached);
+        for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached)]) {
+            crate::task::result(key, v);
+        }
         print_rule_conflicts();
         if fast {
             return;

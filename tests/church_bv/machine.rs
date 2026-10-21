@@ -324,7 +324,9 @@ pub fn machine_state_line() {
 #[test]
 #[ignore]
 pub fn pages_line() {
-    println!("pages: {}", pages_text());
+    let pages = pages_text();
+    println!("pages: {pages}");
+    crate::task::result("pages", pages);
 }
 
 /// What `prove_checked` found for a law.
