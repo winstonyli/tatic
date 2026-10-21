@@ -61,11 +61,20 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   docs/tier-cycle.md:1869, 1926), its lib.rs gate, the replay test in `tests/church_bv/encoding.rs:853-895` and the
   kernel.rs:37 doc line, once the fuzz tests are confirmed to cover its differential check. Status: todo.
 - **C11 (D): the `record-defeq` probes in the trusted kernel** (34 cfg sites in kernel.rs, hand-numbered `WALKS`
-  slots), read only by ignored experiments. Status: ruling.
+  slots), read only by ignored experiments. Status: ruled 2026-10-21: delete the whole feature in one commit with C10
+  (Cargo feature, every probe site, `law_work_report`, `walk_counts_on_hard_queries`, `replay_defeq`, `kernel_lazy`),
+  after checking tier-cycle.md holds every cited count. tier-cycle.md (the `law_work_report` sections) and a PARKED entry
+  name the commit: restore with `git revert <sha>` (trigger: a new kernel-work question). Chosen over a saved `.patch`
+  file (a stale duplicate of history) and over keeping the 6 slots `law_work_report` reads.
 - **C12: hot-path diagnostics read only by ignored tests.** `RULE_HITS` (a mutex and a linear find on every rule firing,
   rewrite.rs:2181), `TRACE_RULES`/`NF_TRACE`, and `PROF`/`LEMMA_HITS` in `tree_proof` (machine.rs:236). Status: done e2bb64f.
 - **C13 (D): unreferenced ignored tests.** Ten ignored tests no doc, script or PARKED entry names, the five
-  `*_conjecture_miner` tests (machine.rs, about 650 lines), `RULEMINER_PERM=2` and env knobs used nowhere. Status: ruling.
+  `*_conjecture_miner` tests (machine.rs, about 650 lines), `RULEMINER_PERM=2` and env knobs used nowhere. Status: ruled
+  2026-10-21: delete the 9 that nothing cites (encoding.rs `church_bitvector_add_computes_by_conv_at_64_bits`,
+  `scaling_probe`, `skeleton_probe`, `add_comm_scaling`, `profile_add_zero_n256`; machine.rs `raw_table_probe`,
+  `machine_lemma_probe`, `lemma_overhead_probe`; search.rs `three_var_probe`) in one commit named in PARKED's Code
+  hygiene section. Kept: the conjecture miners (tier-cycle.md, PARKED.md, 3 specs) and `RULEMINER_PERM=2` (spec
+  2026-10-02 part2:934).
 - **C14: test-only public API.** `NatPostulates` (kernel/postulates.rs:395-595) moves into the tests; `args_id`
   (kernel.rs:962) returns `Aid`, not an always-`Some` `Option`. Status: done 5419183.
 
