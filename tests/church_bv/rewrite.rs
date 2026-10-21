@@ -1205,8 +1205,9 @@ pub struct Rule {
 }
 
 thread_local! {
-    /// Set by the rule miner while scoring (`RULEMINER_FAST=1`): `prove_eq` takes a machine fallback when a few tuples agree,
-    /// without searching for its carry encoding, so a plan made under it may not compile.
+    /// Set where a plan is only counted: by the rule miner's scoring rounds, by its rule-set evaluations under
+    /// `RULEMINER_FAST=1` or when the caller asks, and by tests that count. `prove_eq` then takes a machine fallback when a
+    /// few tuples agree, without searching for its carry encoding, so a plan made under it may not compile.
     pub static SCORE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The rules `rule_step` tries: the built-in ones, then those added at run time (by the rule miner) in `set_extra_rules`
     /// order. Write it only through `set_extra_rules`.
@@ -2123,8 +2124,8 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
             return None;
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
-        // (a path order on every tied instance, `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`, `PERM_ORDER=tie`,
-        // never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
+        // (a path order on every tied instance, the removed `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`,
+        // `PERM_ORDER=tie`, never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
         if r.permutative && inst.show_cmp(t).is_ge() {
             return None;
         }

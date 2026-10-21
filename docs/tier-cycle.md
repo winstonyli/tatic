@@ -663,7 +663,7 @@ do, all the same shape: Boolean evaluation by building Church terms and kernel-n
 - The collapse step in `rewrite_uncached`: a bitwise node's truth table, `normalize(t.bit(..))`.
 - `prove_eq`'s `eq_truth`: the same check for equality.
 - `find_constant_carry` (`chain_step`): the constant carry, by `normalize`.
-- `nf_cached`/`fingerprint`: only the ignored `conjecture_miner` probe; it also hashes `Debug` text.
+- `nf_cached`/`fingerprint`: only the ignored `conjecture_miner` probe; it also hashes `Debug` text (both since removed).
 
 Nothing else on the rewrite path reads a term: `rule_step` gets its lemmas through `shared_lemma` (placeholders when counting, at the time),
 winner proofs run outside scoring, and the integer screens (`plausibly_equals`, `refute`) already use `Term::interp`. Plan:
