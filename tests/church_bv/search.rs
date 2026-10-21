@@ -2196,41 +2196,6 @@ fn depth1(ops: &[usize], shl: bool) -> Vec<Term> {
     d1
 }
 
-/// Three-variable probe (benchmark with headroom): equal pairs of the depth-1 pool over `x`, `y`, `z`, proved by
-/// `rewrite_law` at width 4, counting the ones that still need a whole-term machine proof.
-#[test]
-#[ignore]
-pub fn three_var_probe() {
-    tatic::kernel::scoped(|| {
-        let _banner = MachineBanner::start("PROBE3");
-        let pool = add3_pool(false);
-        let conj = pool_conjectures(pool.clone(), 4, 3, 0);
-        println!("PROBE3 pool {} terms, {} conjectures", pool.len(), conj.len());
-        let (mut ok, mut straggler, mut unproved) = (0, 0, 0);
-        for (a, b) in conj.iter().filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v))) {
-            if !a.is_law(b, 3) {
-                continue;
-            }
-            let before = MACHINE_FALLBACKS.with(|c| c.get());
-            match rewrite_plan(4, 3, a, b) {
-                Some(_) => {
-                    let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
-                    ok += 1;
-                    if fell > 0 {
-                        straggler += 1;
-                        println!("PROBE3 straggler {} = {} ({fell})", a.show(), b.show());
-                    }
-                }
-                None => {
-                    unproved += 1;
-                    println!("PROBE3 unproved {} = {}", a.show(), b.show());
-                }
-            }
-        }
-        println!("PROBE3 {ok} proved ({straggler} with a machine proof), {unproved} unproved");
-    })
-}
-
 #[test]
 pub fn tie_break_orients_reassociation_and_leaves_commutativity_permutative() {
     let t = |s: &str| parse_term(s);

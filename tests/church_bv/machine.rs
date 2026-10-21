@@ -809,66 +809,6 @@ pub fn plain_steps_match_the_kernel_gates() {
     })
 }
 
-/// Time of the evaluation of one machine on every (operand bits, carries) assignment.
-#[test]
-#[ignore]
-pub fn raw_table_probe() {
-    let v = |i: usize| Term::v(i);
-    let add = |a: Term, b: Term| Term::op(ADD, a, b);
-    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
-    for c in 2..=5usize {
-        let left = leaves[1..=c].iter().fold(leaves[0], |a, b| add(a, *b));
-        let m = Machine::parse(&left).unwrap();
-        let t0 = Instant::now();
-        let raw = raw_table(&m, 3);
-        println!("PROBE raw_table carries={c}: {} rows in {:?}", raw.len(), t0.elapsed());
-    }
-}
-
-/// Check time of a case-analysis lemma whose body is the machine's output against itself (c = 3..5, k = 3).
-#[test]
-#[ignore]
-pub fn machine_lemma_probe() {
-    let v = |i: usize| Term::v(i);
-    let add = |a: Term, b: Term| Term::op(ADD, a, b);
-    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2)];
-    let gops = GoodOps::new();
-    for c in 3..=5usize {
-        let body = || {
-            let left = leaves[1..=c].iter().fold(leaves[0], |a, b| add(a, *b));
-            let m = Machine::parse(&left).unwrap();
-            for (what, pick) in [("out", 0usize), ("next carry 0", 1), ("table of next carries", 2)] {
-                let f_of = |vv: &[Expr]| -> Expr {
-                    let dummy: Vec<Gb> = vv.iter().map(|e| Gb { e: *e, g: f() }).collect();
-                    let (o, next) = m.step(&gops, &dummy[..3], &dummy[3..]);
-                    match pick {
-                        0 => o.e,
-                        1 => next[0].e,
-                        _ => table_app(&next.iter().map(|g| g.e).collect::<Vec<_>>(), &|b| b.iter().filter(|x| **x).count() % 2 == 1),
-                    }
-                };
-                let (p, ty) = lemma_n(3 + c, &|vv| id(bool0(), f_of(vv), f_of(vv)), &|b| refl(f_of(&b.iter().map(|x| bit(*x)).collect::<Vec<_>>())));
-                let t0 = Instant::now();
-                let ok = holds(&p, &ty).is_ok();
-                println!("PROBE carries={c} {what}: check {:?} ok {ok}", t0.elapsed());
-            }
-        };
-        if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
-    }
-}
-
-/// Where the per-lemma time goes: the case split alone (trivial leaves) against a real machine lemma.
-#[test]
-#[ignore]
-pub fn lemma_overhead_probe() {
-    for vars in [5usize, 6, 7, 8] {
-        let (p, ty) = lemma_n(vars, &|v| id(bool0(), v[0], v[0]), &|b| refl(bit(b[0])));
-        let t0 = Instant::now();
-        let ok = holds(&p, &ty).is_ok();
-        println!("PROBE trivial lemma over {vars} bits: check {:?} ok {ok}", t0.elapsed());
-    }
-}
-
 /// Mine at width `MINER_N` (default 4) over `MINER_VARS` variables (default 2), `MINER_DEEP=1` for terms two
 /// operators deep. Prints the classes, then tries every conjecture over x, y with the generic builder.
 #[test]

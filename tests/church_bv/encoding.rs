@@ -188,23 +188,14 @@ pub fn ripple(n: usize, sub: bool) -> Expr {
 /// Like `add`, but each carry is bound once by `(\c. rest) carry_expr`, so the body stays O(n)
 /// nodes instead of O(n^2) (a carry used twice per position is otherwise copied by every beta).
 pub fn add_shared(n: usize) -> Expr {
-    add_mode(n, 0)
-}
-pub fn add_mode(n: usize, mode: u8) -> Expr {
     let d0 = 4 + 2 * n; // depth with all of a's and b's bits open
     let a_at = |j: usize, depth: usize| var((depth - 1 - (4 + j)) as u32);
     let b_at = |j: usize, depth: usize| var((depth - 1 - (4 + n + j)) as u32);
     let df = d0 + n.saturating_sub(1); // depth once c_1 .. c_(n-1) are bound
     let carry_at_final = |j: usize| if j == 0 { f() } else { var((n - 1 - j) as u32) };
-    let sums = (0..n)
-        .map(|i| match mode {
-            1 => f(),
-            2 => xor(a_at(i, df), b_at(i, df)),
-            _ => xor(xor(a_at(i, df), b_at(i, df)), carry_at_final(i)),
-        })
-        .collect();
+    let sums = (0..n).map(|i| xor(xor(a_at(i, df), b_at(i, df)), carry_at_final(i))).collect();
     let mut body = apps(var((df - 1 - 3) as u32), sums);
-    for i in (0..if mode == 0 { n.saturating_sub(1) } else { 0 }).rev() {
+    for i in (0..n.saturating_sub(1)).rev() {
         let depth = d0 + i; // i carries bound so far; c_i is var(0) when i >= 1
         let ci = if i == 0 { f() } else { var(0) };
         let x = xor(a_at(i, depth), b_at(i, depth));
@@ -296,45 +287,6 @@ fn constants_are_built_once_per_generation() {
 #[test]
 pub fn church_bitvector_add_computes_by_conv_at_8_bits() {
     run(8);
-}
-
-/// ~0.8 s per add on a loaded machine (98% CPU); superlinear in width (8 bits: ~2 ms).
-#[test]
-#[ignore]
-pub fn church_bitvector_add_computes_by_conv_at_64_bits() {
-    run(64);
-}
-
-#[test]
-#[ignore]
-pub fn scaling_probe() {
-    for n in [8usize, 16, 24, 32, 48] {
-        let ad = add_shared(n);
-        let mask = low_bits(n);
-        let (x, y) = (0x0123_4567_89AB_CDEFu128 & mask, 0xFEDC_BA98_7654_3210u128 & mask);
-        let got = app2(ad, lit(n, x), lit(n, y));
-        let t0 = Instant::now();
-        let w = normalize(&got);
-        let tn = t0.elapsed();
-        let t1 = Instant::now();
-        assert!(def_eq(&got, &lit(n, (x + y) & mask)));
-        println!("SCALE n={n}: normalize {tn:?}, def_eq {:?}", t1.elapsed());
-        let _ = w;
-    }
-}
-
-#[test]
-#[ignore]
-pub fn skeleton_probe() {
-    for mode in [1u8, 2] {
-        for n in [16usize, 32, 64] {
-            let ad = add_mode(n, mode);
-            let got = app2(ad, lit(n, 0x5555), lit(n, 0x3333));
-            let t0 = Instant::now();
-            let _ = normalize(&got);
-            println!("SKEL mode={mode} n={n}: normalize {:?}", t0.elapsed());
-        }
-    }
 }
 
 // ---- Universal lemma over a symbolic n-bit tuple: `add x zero = x` for `x` with a `GoodBv` witness.
@@ -767,17 +719,6 @@ pub fn add_is_commutative_on_symbolic_good_vectors() {
     }
 }
 
-#[test]
-#[ignore]
-pub fn add_comm_scaling() {
-    for n in [8usize, 16, 32] {
-        let (proof, stmt) = add_comm_proof(n, false);
-        let t0 = Instant::now();
-        ck(&format!("n={n}"), &proof, &stmt);
-        println!("COMM-SCALE n={n}: {:?}", t0.elapsed());
-    }
-}
-
 /// One rejection check at width `COMM_N`: `COMM_CASE` is `own` (the wrong statement against its own
 /// proof) or `right` (the right proof against the wrong statement). Prints the verdict and time.
 /// For running one case under a memory watchdog (design doc section 82).
@@ -796,7 +737,7 @@ pub fn add_comm_rejection_probe() {
     if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
 }
 
-/// As `add_comm_scaling`, built and checked inside one `scoped` call, up to the widths in the
+/// `add x y = add y x` built and checked inside one `scoped` call, up to the widths in the
 /// environment variable `COMM_NS` (comma separated; default 8,16,32,64). Prints build and check time
 /// separately and the proof DAG (design doc section 81).
 #[test]
@@ -879,14 +820,6 @@ pub fn profile_add_zero_n64() {
 pub fn profile_add_zero_n128() {
     let (proof, stmt) = add_zero_proof(128, 0);
     ck("profile n=128", &proof, &stmt);
-}
-
-/// As `profile_add_zero_n64`, at n=256.
-#[test]
-#[ignore]
-pub fn profile_add_zero_n256() {
-    let (proof, stmt) = add_zero_proof(256, 0);
-    ck("profile n=256", &proof, &stmt);
 }
 
 /// As `profile_add_zero_n64`, at n=512.
