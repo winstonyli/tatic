@@ -5291,7 +5291,25 @@ The probe's store is per thread, and the miner hands candidates to whichever wor
 worker's candidates makes a gain depend on which candidates that worker scored before. That is the scheduling
 dependence the memo had, removed on 2026-10-18 (`docs/decisions/2026-10-17-monotone-join.md`, "Spike of the
 snapshot"). A store that is built only from deterministic searches and is read-only while a round is scored would
-avoid it. Terms are interned globally, so workers can share one; how much such a store serves is not measured.
+avoid it. Terms are interned globally, so workers can share one.
+
+*A shared store fed by the main thread (2026-10-20, run `2026-10-20-store-shared`, `patches/store_shared.patch`, same
+salts).* One store per process (a mine), fed only by the miner's main thread: the evaluations of the chosen rules and
+the winners' proofs. All threads query it. The workers' searches no longer feed it, so what a worker reads does not
+depend on which candidates it scored.
+- A path within the cap existed for 77% of searches (950 k of 1.23 M, 1.17 M of 1.56 M, 1.05 M of 1.38 M), more than
+  the per-thread store's 58%. Of the workers' searches, 77%, 75% and 76% were served (943 k of 1.22 M, 1.16 M of
+  1.55 M, 1.05 M of 1.38 M). The mean path is 4.9-5.1 steps.
+- The served searches took 46-55% of the join's search time (137 of 251 s, 201 of 441 s, 194 of 370 s). Queries took
+  7-11 s.
+- The search failed on 0.7-1.6% of those served (6.4 k, 14.0 k, 16.6 k): there the store would add a joined law.
+- The store held only 7.4-7.6 k edges.
+So the workers' searches mostly repeat the main thread's evaluation of the chosen rules: each candidate is scored from
+an empty memo, and it re-searches the same few thousand pairs. A store of a few thousand steps would serve three
+quarters of the searches and save about half the join's search time, less the queries.
+The probe let the main thread write while the store was in use. In the miner it writes during a round when it proves a
+winner between chunks, and the chunks depend on the thread count (`threads * 4` candidates each). A kept store must be
+frozen per round, a snapshot taken when the round starts, so the gains do not depend on the thread count.
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s

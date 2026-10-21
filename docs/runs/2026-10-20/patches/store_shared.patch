@@ -1,0 +1,182 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index e069ccf..b740b63 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2569,7 +2569,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, st_served: 0, st_cap: 0, st_cap_failed: 0, st_len: 0, st_nanos: 0, st_edges: 0, st_srv_nanos: 0, st_work: 0, st_work_cap: 0 }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2582,6 +2582,19 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    /// probe: searches the step store had a path for (any size), within the cap, of those the search failed, the
++    /// within-cap paths' summed lengths, the time in store queries, and the store's new edges
++    pub st_served: u64,
++    pub st_cap: u64,
++    pub st_cap_failed: u64,
++    pub st_len: u64,
++    pub st_nanos: u64,
++    pub st_edges: u64,
++    /// probe: the search time of the searches with a path within the cap, the searches on threads that do not feed the
++    /// store (the scoring workers), and of them with a path within the cap
++    pub st_srv_nanos: u64,
++    pub st_work: u64,
++    pub st_work_cap: u64,
+ }
+ 
+ impl JoinCost {
+@@ -2598,9 +2611,77 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        self.st_served += now.st_served - before.st_served;
++        self.st_cap += now.st_cap - before.st_cap;
++        self.st_cap_failed += now.st_cap_failed - before.st_cap_failed;
++        self.st_len += now.st_len - before.st_len;
++        self.st_nanos += now.st_nanos - before.st_nanos;
++        self.st_edges += now.st_edges - before.st_edges;
++        self.st_srv_nanos += now.st_srv_nanos - before.st_srv_nanos;
++        self.st_work += now.st_work - before.st_work;
++        self.st_work_cap += now.st_work_cap - before.st_work_cap;
++    }
++}
++
++/// Probe: for the process (one mine), the path steps of every met search the miner's main thread ran, each labeled with
++/// the law (`lhs`, `rhs`) it is an instance of; a path through steps whose laws are all in the current table proves its
++/// ends equal. Only the main thread's searches (the evaluations of the chosen rules, the winners' proofs) feed it, so
++/// what the workers read does not depend on which worker scored what.
++#[derive(Default)]
++struct JoinStore {
++    edges: hashbrown::HashMap<Term, Vec<(Term, (Term, Term))>>,
++}
++
++impl JoinStore {
++    fn add(&mut self, a: Term, b: Term, law: (Term, Term)) {
++        let v = self.edges.entry(a).or_default();
++        if !v.iter().any(|e| e.0 == b && e.1 == law) {
++            v.push((b, law));
++            self.edges.entry(b).or_default().push((a, law));
++            count_join(|c| c.st_edges += 1);
++        }
++    }
++    /// the shortest stored path from `a` to `b` through the current table's laws and terms of at most `cap` nodes (`None`
++    /// for any size), as its length, within 1000 terms
++    fn path(&self, table: &RuleTable, a: Term, b: Term, cap: Option<usize>) -> Option<u64> {
++        let fp = table.mined.iter().fold(table.join.len() as u64, |h, (l, r)| h.rotate_left(5) ^ l.sh() ^ r.sh().rotate_left(17));
++        STORE_LAWS.with(|laws| {
++            let mut laws = laws.borrow_mut();
++            if laws.0 != fp {
++                *laws = (fp, table.join.iter().map(|e| (e.lhs, e.rhs)).collect());
++            }
++            let allowed = &laws.1;
++            let mut depth: hashbrown::HashMap<Term, u64> = [(a, 0u64)].into_iter().collect();
++            let mut front = vec![a];
++            while !front.is_empty() && depth.len() <= 1000 {
++                for t in std::mem::take(&mut front) {
++                    let d = depth[&t];
++                    for &(u, law) in self.edges.get(&t).into_iter().flatten() {
++                        if !allowed.contains(&law) || cap.is_some_and(|c| u.size() > c) || depth.contains_key(&u) {
++                            continue;
++                        }
++                        if u == b {
++                            return Some(d + 1);
++                        }
++                        depth.insert(u, d + 1);
++                        front.push(u);
++                    }
++                }
++            }
++            None
++        })
+     }
+ }
+ 
++static JOIN_STORE: std::sync::LazyLock<std::sync::RwLock<JoinStore>> = std::sync::LazyLock::new(Default::default);
++
++thread_local! {
++    /// the current table's laws, by the table's fingerprint
++    static STORE_LAWS: std::cell::RefCell<(u64, hashbrown::HashSet<(Term, Term)>)> = Default::default();
++    /// whether this thread's met searches feed `JOIN_STORE` (the miner's main thread)
++    pub static STORE_FEEDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
+ /// `t` with every occurrence of the subterm `x` replaced by `with`.
+ pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
+     if t == x {
+@@ -2849,7 +2930,31 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+         }
+     }
+     let mut examined = (memo_on || traced).then(hashbrown::HashSet::<Term>::default);
++    let t0 = std::time::Instant::now();
++    let stored = memo_on.then(|| {
++        let cap = a.size().max(b.size()) + 2;
++        RULE_TABLE.with(|table| {
++            let (table, s) = (&table.borrow(), JOIN_STORE.read().unwrap());
++            (s.path(table, *a, *b, None), s.path(table, *a, *b, Some(cap)))
++        })
++    });
++    let nanos = t0.elapsed().as_nanos() as u64;
++    let t1 = std::time::Instant::now();
+     let found = join_search(a, b, &mut examined);
++    let searched = t1.elapsed().as_nanos() as u64;
++    if let Some((any, capped)) = stored {
++        let work = !STORE_FEEDS.with(|f| f.get());
++        count_join(|c| {
++            c.st_served += any.is_some() as u64;
++            c.st_cap += capped.is_some() as u64;
++            c.st_cap_failed += (capped.is_some() && found.is_none()) as u64;
++            c.st_len += capped.unwrap_or(0);
++            c.st_nanos += nanos;
++            c.st_srv_nanos += if capped.is_some() { searched } else { 0 };
++            c.st_work += work as u64;
++            c.st_work_cap += (work && capped.is_some()) as u64;
++        });
++    }
+     if let Some(x) = examined {
+         let trace = Trace::new(x.into_iter().map(|t| (t, Fired::Join)).collect());
+         replay(&trace);
+@@ -3189,6 +3294,17 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                 });
+                 let Some((step, u)) = met else { continue };
+                 let u = u.make();
++                let law = |eq: u32| (table.join[eq as usize].lhs, table.join[eq as usize].rhs);
++                if STORE_FEEDS.with(|f| f.get()) {
++                    let mut st = JOIN_STORE.write().unwrap();
++                    st.add(t, u, law(step.eq));
++                    for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
++                        while let Some(prev) = get(side, p) {
++                            st.add(prev.from, p, law(prev.eq));
++                            p = prev.from;
++                        }
++                    }
++                }
+                 // a met search's result rests on its path only: keep what was examined at the path's terms
+                 if let Some(x) = examined {
+                     x.clear();
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 833bcda..7c11d78 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -444,6 +444,7 @@ impl MinerConfig {
+ #[ignore]
+ pub fn rule_miner() {
+     tatic::kernel::scoped(|| {
++        super::rewrite::STORE_FEEDS.with(|f| f.set(true));
+         // phase clock: `phase(label)` prints the seconds since the previous mark
+         let last = std::cell::Cell::new(Instant::now());
+         let phase = |label: &str| {
+@@ -1257,6 +1258,8 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER store: {} searches with a stored path, {} within the cap ({} of them failed), {} summed path length, {:.1}s querying, {} edges", j.st_served, j.st_cap, j.st_cap_failed, j.st_len, j.st_nanos as f64 / 1e9, j.st_edges);
++        println!("RULEMINER store2: {:.1}s searching in searches with a path within the cap, {} searches on workers, {} of them with a path within the cap", j.st_srv_nanos as f64 / 1e9, j.st_work, j.st_work_cap);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {
