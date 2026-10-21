@@ -5336,7 +5336,10 @@ the miner's start to its end. Each round's workers get a `Read` of the copy `fro
 starts. A thread without one is never served. The table's steps are found by law through `RuleTable::join_key`, built
 with the table, so no fingerprint cache is needed. Gate against `bv_guard`: M 363 against 362, job CPU 2321 against
 1297 s (-44%), wall 320 against 194 s. Its rules are byte-equal to the spike's in all 15 loops, and byte-equal at 6
-and 1 threads on salts 1 and 5.
+and 1 threads on salts 1 and 5. A review (2026-10-21) found what those checks missed. `join_search` feeds the store
+from every met search, while reads require the memo to be on. The miner's proofs run on the main thread only at 1
+thread (`prove`) or when not speculated (`prove_any`), so the store's contents, and through them a candidate's gain,
+can depend on the thread count. The fix is pending.
 
 *Whether the memo's join entries can go (2026-10-21, a reading of the code).* No, not as a deletion. The memo's join
 entries (`RewriteMemo::joins`) do three things the store does not.
@@ -5347,7 +5350,21 @@ entries (`RewriteMemo::joins`) do three things the store does not.
 3. On the main thread, `state` seeds each round's memo with the previous round's entries, filtered by trace.
 Removing them would need a negative store and a per-candidate overlay on the workers' copies: that is a second cache
 in another shape, not one fewer. What could merge is the met entries alone, if most memo hits are on met pairs the
-store already serves. That is not measured (parked).
+store already serves (parked; counted in the next paragraph).
+
+*Memo join hits by kind (2026-10-21, run `2026-10-21-hit-probe`, `2026-10-20/patches/hit_probe.patch` on e8bac31,
+`2026-10-20/scripts/hit_probe.sh`, cold:cmp3d salts 1, 3, 5, counting only).* Each memo join hit was counted by met or
+failed, by the miner's main thread or a worker, and by whether the thread's store would serve the pair. Over the three
+salts, 552271 of 572099 hits (96.5%) were met and 19827 failed. The main thread's 141612 met hits were all served, as
+expected, since it feeds the store from its own met searches. The workers' 410659 met hits were 88.3% served (362542).
+The other 48117 are the workers' repeats, within one candidate, of pairs searched after the freeze. The store would
+serve 88.1% of all hits (87.1%, 87.1% and 90.5% per salt) and none of the failed ones. So the parked trigger is met by
+count. But merging the met entries into the store removes no concept. The memo stays for the failed pairs and for the
+workers' unserved repeats, which would otherwise be searched again (about 0.35 ms each, about 5-8 s of search per salt).
+A store query costs about 5 us (6 s over 1.16M queries in salt 1), against a hash lookup for a hit. A served path can
+also differ from the memo's plan, since it is the shortest stored path, not the one the search met on. Traces and gains
+could then change. The counts predate the fix for the thread-count finding above. The runs used 6 threads, so proofs fed
+the store only through `prove_any` run inline.
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s

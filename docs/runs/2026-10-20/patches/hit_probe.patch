@@ -1,0 +1,61 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 00a2449..07ca11b 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2575,7 +2575,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, stored: 0, store_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, stored: 0, store_nanos: 0, hp: [0; 8] }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2591,6 +2591,7 @@ pub struct JoinCost {
+     pub failed_nanos: u64,
+     pub stored: u64,
+     pub store_nanos: u64,
++    pub hp: [u64; 8],
+ }
+ 
+ impl JoinCost {
+@@ -2609,6 +2610,9 @@ impl JoinCost {
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
+         self.stored += now.stored - before.stored;
+         self.store_nanos += now.store_nanos - before.store_nanos;
++        for i in 0..8 {
++            self.hp[i] += now.hp[i] - before.hp[i];
++        }
+     }
+ }
+ 
+@@ -2959,6 +2963,17 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+         if let Some(e) = hit.filter(|e| counting || e.0.as_ref().is_none_or(|p| !matches!(**p, Plan::Counting))) {
+             replay(&e.1);
+             count_join(|c| c.hits += 1);
++            // probe: [met main, met worker, failed main, failed worker, met served main, met served worker, failed served main, failed served worker]
++            let worker = JOIN_STORE.with(|s| matches!(&*s.borrow(), Some(JoinStoreUse::Read(_)))) as usize;
++            let met = e.0.is_some();
++            let served = stored_join(*a, *b).is_some();
++            let i = if met { 0 } else { 2 } + worker;
++            count_join(|c| {
++                c.hp[i] += 1;
++                if served {
++                    c.hp[i + 4] += 1;
++                }
++            });
+             return e.0.clone();
+         }
+     }
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index c397b72..057dcaf 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1265,6 +1265,7 @@ pub fn rule_miner() {
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
+         println!("RULEMINER join store: {} joins served, {:.1}s querying", j.stored, j.store_nanos as f64 / 1e9);
++        println!("RULEMINER memohits: {:?}", j.hp);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {
