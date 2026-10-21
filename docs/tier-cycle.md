@@ -5276,6 +5276,23 @@ The probe above places the sharing across rule sets, and the miner's rule sets a
 e-graph per rule set shares little (1%), and one across rule sets would need its edges labeled by rule: that is the
 store of labeled steps above, with congruence closure on top.
 
+*A store of labeled steps (2026-10-20, run `2026-10-20-store-probe`, `patches/store_probe.patch`, counting only, salts
+1, 3 and 5 of cold:cmp3d).* Per scoring thread, for the whole mine, the probe kept each met search's path steps as
+edges between terms, each labeled with its law (`lhs`, `rhs`). Before each search the memo did not serve, it looked
+for the shortest stored path from one side to the other through edges whose laws are in the current table (within
+1000 terms), once at any size and once with every term within the search's cap.
+- A path existed for 57-58% of searches (716 k of 1.23 M, 903 k of 1.56 M, 795 k of 1.38 M), against the classes'
+  upper bound of 61-62%. Nearly all were within the cap (713 k, 900 k, 793 k), with a mean of 4.9-5.1 steps.
+- The search failed on 0.5-0.7% of those (3.9 k, 4.6 k, 5.2 k): there the store would add a joined law.
+- Queries took 6-8 s against 322-551 s of searching (summed over threads); the store reached 1.9-2.1 M edges.
+So a sound store could serve most of the repetition. The time it would save is not measured: met searches took 203 of
+salt 1's 322 s, and the served searches' share of that is unknown.
+The probe's store is per thread, and the miner hands candidates to whichever worker is free. A store kept across a
+worker's candidates makes a gain depend on which candidates that worker scored before. That is the scheduling
+dependence the memo had, removed on 2026-10-18 (`docs/decisions/2026-10-17-monotone-join.md`, "Spike of the
+snapshot"). A store that is built only from deterministic searches and is read-only while a round is scored would
+avoid it. Terms are interned globally, so workers can share one; how much such a store serves is not measured.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
