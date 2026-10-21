@@ -17,22 +17,36 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   `RULE_TRACE`, `RULE_PREFS`, `RULE_BUDGET`, `PROVING`, `REWRITE_MEMO`, `REWRITE_PATH`, `CYCLE_CUTS`, `CUT_LOW`,
   `REWROTE`, `MACHINE_FALLBACKS`, `JOIN_COST` and `JOIN_STORE`. `proving` (rewrite.rs:1856) and `check_replay`
   (rewrite.rs:2424) save and restore 6-8 of them by hand; one job-state swap replaces both. Also folds in the
-  `PerTask` statics against `thread_local!` split (`task.rs:126-160`). Status: ruling.
+  `PerTask` statics against `thread_local!` split (`task.rs:126-160`). Status: ruled 2026-10-21: an explicit `&mut Ctx` (a `Setup` plus the current `Job`) threaded
+  through every rewrite and miner function, no thread-locals; nested jobs are values, workers get `Ctx::new(setup.clone())`.
+  Chosen over a `with_job` swap of thread-locals because it removes the hidden state, not only the lists. Built together
+  with C3 under its own plan.
 - **C2: one `measured(steps, f)` helper** for "set the budget to 200, read the fallback delta" (about 16 sites in
   search.rs and rewrite.rs; `law_cost` at search.rs:2550 already does it). The `200` and `i64::MAX / 2` literals get
   names. Status: todo (after C1).
 - **C3 (D): split `rule_miner`** (search.rs:445, 831 lines, about 60 closures) into a `Miner` struct with methods for
-  candidates, scoring, rounds, finish and the preference phase. After C1. Status: ruling.
+  candidates, scoring, rounds, finish and the preference phase. Status: ruled 2026-10-21: part of C1's plan (the
+  closures must take `ctx`, which forces the split).
 - **C4: finish `MinerConfig`.** Its doc says it holds every `RULEMINER_*` switch, but about 9 are read inline. Flag parsing
   disagrees (`==1`, `!=0`, `is_some()`, so `NF_TRACE=0` turns tracing on): one `env_flag`. Status: done 30d5a3a (gate 2026-10-21-c4-gate: M 362 = 362, rules same in 15 loops and across threads).
 - **C5 (D): one denote walker in `src/proof/`.** `denote_with_placeholders` (hardening.rs:201) mirrors
   `denote_closure_typed` (hardening.rs:437) except for the `SelfCall` arm; the three literal collectors
-  (`proof.rs:335`, `closures.rs:2300`, `closures.rs:1813`) are one walk with different accept tables. Status: ruling.
+  (`proof.rs:335`, `closures.rs:2300`, `closures.rs:1813`) are one walk with different accept tables. Status: ruled 2026-10-21: one closure denoter with a self-call mode
+  (`Reject` | `Placeholders`), deleting `denote_with_placeholders` and the `denote_closure` wrapper; one
+  `collect_literals(store, h, scope)` (`Arith`, `Closure`, `AnyTerm`; `collect_literals_dyn` included), the if-tree variant a
+  loop over it. Then a throwaway spike: does the closure denoter give `denote_in`'s kernel terms on arithmetic input
+  (test corpus), keeping its exact hash memo? Fold it in only if so; record the result either way.
 - **C6 (D): bundle the parameters that travel together.** proof/: `store` beside `combinators` (which holds it) in about 20
   functions, and the `(params, concrete, facts)` triple; kernel: `Spaces, Globals, InferCache, CtxScope` in 7
-  signatures. Removes 9 `too_many_arguments` allows. Status: ruling.
+  signatures. Removes 9 `too_many_arguments` allows. Status: ruled 2026-10-21: both halves: proof/ drops the `store` that
+  `combinators` already holds (23 functions) and gains `Frame { params, concrete, facts }` (10); the kernel gains
+  `Checker { s, g, ic, ctx, cid }` with `infer`/`check` methods (7). Kernel half mechanical, covered by the kernel and
+  soundness fuzzers, timed by the gate.
 - **C7 (D): a typed handoff from the miner to the driver.** The driver parses `RULEMINER drop`, `chosen` and `prefer`
-  lines from the miner's stdout (driver.rs:721-728). Status: ruling.
+  lines from the miner's stdout (driver.rs:721-728). Status: ruled 2026-10-21: a task result channel,
+  `task::result(key, value)` appending `key<TAB>value` text next to the task's log; `worker.run` returns the parsed
+  records; the miner emits its drop, chosen and prefer records and the check its named counts through it, and the
+  driver's stdout parsers (driver.rs:718-747) are deleted. Text, not binary: binary formats parked in `PARKED.md`.
 - **C8 (D): the ablation switches.** `ablated("...")` is checked at 11 hard-coded sites; 7 names appear in no script.
   Status: ruling.
 - **C9: one builder-bug mechanism in `src/compile.rs`** (three counters with the same count, debug-panic, reject shape,
