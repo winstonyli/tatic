@@ -82,11 +82,18 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 
 - **C15: shared code.** One splitmix64 PRNG instead of 9 copies; one `SharedMemo<K, V>` for the global caches
   (`SCREENS`, `TREE_CANDS`, `TREE_ENCS`), which also removes `task.rs`'s hand-kept list. Status: done ba28d56 (gate 2026-10-21-c15-gate: M 362 = 362, rules same in 15 loops and across threads).
-- **C16 (D): `docs/runs/2026-10-12/scripts`** (14 `*_pair.sh`, 18 `*_seq.sh` near-copies). Status: ruling.
+- **C16 (D): `docs/runs/2026-10-12/scripts`** (14 `*_pair.sh`, 18 `*_seq.sh` near-copies). Status: decided against 2026-10-21: they are the exact commands behind that day's README rows,
+  nothing after 2026-10-12 calls them, and today's A/Bs go through `salts_ab.sh` and `runs time`.
 - **C17: nits.** Stale comments at rewrite.rs:2129 (`PERM_ORDER`) and rewrite.rs:1209 (`SCORE_ONLY`); tier-cycle.md:666
   names functions that are gone; lib.rs's allocator list misses `tests/proof_scope.rs`; `compile::tests` (60% of
   compile.rs) moves to `src/compile/tests.rs`. Status: done 4bff6e4.
-- **C18 (D): the jit's sample-based provers** feed only reporting above arity 0 (jit.rs:381-423). Status: ruling.
+- **C18 (D): the jit's sample-based provers** feed only reporting above arity 0 (jit.rs:381-423). Status: ruled 2026-10-21: split gate from
+  evidence. `kernel_verify` answers only the install gate (`Universal` or `None`; arity 0's single sample counts as
+  universal); a separate `JitEngine::evidence(h)` runs the per-sample provers and the theorem instances on demand, and
+  the repl calls it for "only at the sampled inputs". Deleted: `ProofStrength::Samples` from the gate, `prove_instances`
+  and `universal_instances_checked` (set and read only by tests). Then a throwaway spike: does
+  `prove_closure_expr_instance` succeed everywhere `prove_tail_recursive_call` does on the proof tests' corpus (and at
+  what certificate size and time)? If so, the per-call tail prover goes.
 
 ## Not covered by the survey
 
