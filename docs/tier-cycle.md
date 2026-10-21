@@ -5339,7 +5339,13 @@ with the table, so no fingerprint cache is needed. Gate against `bv_guard`: M 36
 and 1 threads on salts 1 and 5. A review (2026-10-21) found what those checks missed. `join_search` feeds the store
 from every met search, while reads require the memo to be on. The miner's proofs run on the main thread only at 1
 thread (`prove`) or when not speculated (`prove_any`), so the store's contents, and through them a candidate's gain,
-can depend on the thread count. The fix is pending.
+can depend on the thread count. Fixed in fbfda55: a search feeds the store only under the condition that reads it (the
+memo on, no rule blocked), test `join_store_is_fed_only_where_it_is_read`. Gate against `bv_storekept` (runs
+`2026-10-21-storefix-gate`, `-storefix-threads-s1`, `-s3`, `-s5`): M 362 both, rules byte-equal in all 15 loops, job CPU
+1230 against 1240 s; rules byte-equal at 6 and 1 threads on salts 1, 3 and 5. So at 6 threads the proofs' paths changed
+no rule. The same commit tests a path read backwards, through several steps and after its law moves in the table. The
+review's note that the store's query overshoots `JOIN_VISIT` within a layer stands as designed: the search is bounded
+once a layer too.
 
 *Whether the memo's join entries can go (2026-10-21, a reading of the code).* No, not as a deletion. The memo's join
 entries (`RewriteMemo::joins`) do three things the store does not.
