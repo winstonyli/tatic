@@ -5030,6 +5030,31 @@ inclusive, 6.7% beside the index it calls on a miss, the walk's loop closure 2.8
 +1.9 points. This replaces the memory-traffic guess above as the measured account: the saving was half the estimate
 and the lookup ate it.
 
+*Canonical orders for the join search: overview (2026-10-19/20; the dated paragraphs below hold the measurements).*
+`join_search` reaches the same term by commuted orders of the same steps. A canonical order skips those repeats after
+each step. Its test is the gate: the same mined rules in all 15 loops of salts 1-5. That test is strict. The greedy
+rule picks diverge at the first near-tie after any change, so the join's answers and its trace (the terms a result
+rests on, which decide memoized reuse and which laws a candidate touches) must not move. The thread so far:
+- Left-to-right order for disjoint steps (f6cb81c). Not exact at first: the skipped order's middle term could exceed
+  the size cap. Made exact by the guard (0e1dab3): order the walk only after a step that did not shrink the term.
+  This is committed, about 6% faster per search than no order.
+- Inner first for nested steps (skip the bindings of variables once in from and to). It failed the gate alone
+  (b7bb853, reverted). Under the guard it gave the same answers in 4.63 M searches but other rules: its met paths, and
+  so its traces, differ from no order's.
+- Traces no order changes. All were exact, and all cost more than the skip saves:
+  - every reached term: 4.5x job CPU;
+  - every shortest meeting path, found by a second walk: at least +39%;
+  - one canonical path found by pair tests: +37% job CPU against left-to-right.
+  Each needs the met layer finished (+10%) and a wider trace for failed searches. Inner first alone is about 5% per
+  search ahead of left-to-right (-11% against -6% per search, two gates).
+- Ruled out without building:
+  - canonical parents: a term's parents depend on the order;
+  - edges recorded in the forward walk: the skip drops the edges an order-free trace needs;
+  - standardizing the met path (reordering its commuting steps into a normal form, as a standard reduction does):
+    the first meeting term already depends on the order, so it still needs the finished layer, whose +10% alone
+    exceeds inner first's 5%.
+- Status: inner first decided against (PARKED); left-to-right under the guard stays.
+
 *Independent join steps in left-to-right order only (2026-10-19/20, runs `2026-10-19-join-order`, `-join-order-pair`,
 `2026-10-20-join-order-alt2`, `docs/runs/2026-10-19/patches/join_order*.patch`; built in f6cb81c).* Two steps at disjoint
 places reach the same term in either order, and the search made it both ways. Walking a term a step reached without the
