@@ -1,0 +1,135 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index e069ccf..a0f0651 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2569,7 +2569,7 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
+ thread_local! {
+     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
+-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
++    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, trans: 0, trans_met: 0, known: 0, rep: 0 }) };
+ }
+ 
+ /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
+@@ -2582,6 +2582,11 @@ pub struct JoinCost {
+     pub hits: u64,
+     pub nanos: u64,
+     pub failed_nanos: u64,
++    /// probe: searches whose sides were already in one class of proven-equal terms, of them met, with a side in some class, and reached terms an earlier search of this rule set (this thread) reached
++    pub trans: u64,
++    pub trans_met: u64,
++    pub known: u64,
++    pub rep: u64,
+ }
+ 
+ impl JoinCost {
+@@ -2598,9 +2603,56 @@ impl JoinCost {
+         self.hits += now.hits - before.hits;
+         self.nanos += now.nanos - before.nanos;
+         self.failed_nanos += now.failed_nanos - before.failed_nanos;
++        self.trans += now.trans - before.trans;
++        self.trans_met += now.trans_met - before.trans_met;
++        self.known += now.known - before.known;
++        self.rep += now.rep - before.rep;
+     }
+ }
+ 
++/// Probe: per thread and rule set (`fp`, the mined rules' fingerprint), the classes of terms proven equal by met searches'
++/// paths and the terms searches reached.
++#[derive(Default)]
++struct JoinProbe {
++    fp: u64,
++    parent: hashbrown::HashMap<Term, Term>,
++    reached: hashbrown::HashSet<Term>,
++}
++
++impl JoinProbe {
++    fn find(&self, t: Term) -> Option<Term> {
++        let mut r = *self.parent.get(&t)?;
++        while let Some(&p) = self.parent.get(&r).filter(|&&p| p != r) {
++            r = p;
++        }
++        Some(r)
++    }
++    fn union(&mut self, ts: &[Term]) {
++        let roots: Vec<Term> = ts.iter().map(|&t| self.find(t).unwrap_or(t)).collect();
++        for &t in ts {
++            self.parent.entry(t).or_insert(t);
++        }
++        for &r in &roots[1..] {
++            self.parent.insert(r, roots[0]);
++        }
++    }
++    /// the probe of this thread, cleared when the rule set changed
++    fn with<R>(f: impl FnOnce(&mut JoinProbe) -> R) -> R {
++        let fp = RULE_TABLE.with(|t| t.borrow().mined.iter().fold(0x9e37u64, |h, (l, r)| h.rotate_left(5) ^ l.sh() ^ r.sh().rotate_left(17)));
++        JOIN_PROBE.with(|p| {
++            let mut p = p.borrow_mut();
++            if p.fp != fp {
++                *p = JoinProbe { fp, ..Default::default() };
++            }
++            f(&mut p)
++        })
++    }
++}
++
++thread_local! {
++    static JOIN_PROBE: std::cell::RefCell<JoinProbe> = std::cell::RefCell::new(JoinProbe::default());
++}
++
+ /// `t` with every occurrence of the subterm `x` replaced by `with`.
+ pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
+     if t == x {
+@@ -2849,7 +2901,20 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
+         }
+     }
+     let mut examined = (memo_on || traced).then(hashbrown::HashSet::<Term>::default);
++    let (trans, known) = if memo_on {
++        JoinProbe::with(|p| {
++            let (ka, kb) = (p.find(*a), p.find(*b));
++            (ka.is_some() && ka == kb, ka.is_some() || kb.is_some())
++        })
++    } else {
++        (false, false)
++    };
+     let found = join_search(a, b, &mut examined);
++    count_join(|c| {
++        c.trans += trans as u64;
++        c.trans_met += (trans && found.is_some()) as u64;
++        c.known += known as u64;
++    });
+     if let Some(x) = examined {
+         let trace = Trace::new(x.into_iter().map(|t| (t, Fired::Join)).collect());
+         replay(&trace);
+@@ -3200,6 +3265,7 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+                             stack.push(p);
+                         }
+                     }
++                    JoinProbe::with(|pr| pr.union(&stack));
+                     // with their subterms
+                     while let Some(q) = stack.pop() {
+                         if let (true, Node::Op(_, l, r)) = (x.insert(q), *q.node()) {
+@@ -3216,6 +3282,11 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
+         None
+     });
+     let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
++    if examined.is_some() {
++        let terms: Vec<Term> = seen.iter().flat_map(|side| side.iter().map(|e| e.1.make())).collect();
++        let rep = JoinProbe::with(|p| terms.iter().filter(|&&t| !p.reached.insert(t)).count() as u64);
++        count_join(|c| c.rep += rep);
++    }
+     count_join(|c| {
+         (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
+         c.failed_nanos += if found.is_some() { 0 } else { nanos };
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 833bcda..d44ea19 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1257,6 +1257,7 @@ pub fn rule_miner() {
+         let mut j = *join_workers.lock().unwrap();
+         j.add_since(join_main);
+         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
++        println!("RULEMINER probe: {} searches with both sides in one class ({} met), {} with a side in a class, {} of {} reached terms reached before", j.trans, j.trans_met, j.known, j.rep, j.reached);
+         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
+         for (st, c) in stragglers.iter().zip(&covered) {
+             if !c {

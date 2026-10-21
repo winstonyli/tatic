@@ -5246,6 +5246,25 @@ the skip. Inner first is decided against (PARKED).
   order on whole paths, not on the meeting vertex.
 
 
+*How much the join's searches repeat each other (2026-10-20, runs `2026-10-20-class-probe`, `-class-probe-global`;
+`patches/class_probe.patch`, `class_probe_global.patch`, counting only, salts 1, 3 and 5 of cold:cmp3d).* Per scoring
+thread, each met search's path terms were joined into a class of proven-equal terms (a union-find). Before each search
+not served by the memo, the probe checked whether both sides were already in one class. It also counted the reached
+terms that an earlier search had reached.
+- Within one rule set (classes cleared when the mined rules change): 1.0-1.2% of searches had both sides in one class
+  (13.9 k, 12.4 k and 16.0 k of 1.23-1.56 M), and 2.1-2.8% of reached terms were reached before. Sharing work across
+  the pairs of one rule set cannot pay: this rules out a union-find or an e-graph per rule set.
+- Across rule sets (one set of classes per thread for the whole mine): 61-62% of searches had both sides in one class
+  (769 k, 962 k and 858 k), and 96% of those searches met. 71-79% of reached terms were reached before (235 M of 331 M,
+  413 M of 524 M, 336 M of 443 M). The memo served 137-217 k searches.
+So the join repeats itself across the miner's rule sets, not within one, and the memo captures a small part of that.
+The classes ignore which rules a proof used, so 61% is an upper bound on what a cross-rule-set store could serve
+exactly. Each class edge is a step by one rule, and an edge holds under a rule set that contains its rule. A store of
+proven steps labeled by rule, queried under the current rules, would be sound. It would not reproduce the bounded
+search, though: a proof through stored steps can exceed the search's size cap and visit bound, or take another path,
+so it changes the output and needs a quality gate, not the exactness gate. Classes are per thread, so the true overlap
+across a mine's 6 scoring threads is higher still.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
