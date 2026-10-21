@@ -669,7 +669,7 @@ Nothing else on the rewrite path reads a term: `rule_step` gets its lemmas throu
 winner proofs run outside scoring, and the integer screens (`plausibly_equals`, `refute`) already use `Term::interp`. Plan:
 first decide at these sites by plain evaluation (a `bool` `Term::bit`, a `bool` implementation of `Gates` for `raw_table`, so
 `GoodOps` is built only for proofs); rows must stay identical, since the Church gates compute the same Boolean functions. Then the
-proof plans. Also left: `add_tree_law`'s `guarded` formats its lemma key eagerly (for `LEMMA_HITS`), so counting still builds
+proof plans. Also left: `add_tree_law`'s `guarded` formats its lemma key eagerly (`LEMMA_HITS`, which read it first, was removed 2026-10-21), so counting still builds
 that string (under 0.05% of the profile; part of the typed-key item).
 
 Done (e49535f): the five sites evaluate plain Booleans (`search::Bools`, a third `Gates` implementation beside `GoodOps` and

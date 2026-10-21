@@ -89,7 +89,6 @@ pub fn rewrite_rules_over_the_mul_laws() {
                 }
             }
         }
-        println!("RULES rule instances: {:?}", RULE_HITS.get(Default::default).lock().unwrap());
         println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
     })
 }

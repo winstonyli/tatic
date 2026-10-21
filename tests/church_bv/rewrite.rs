@@ -2088,9 +2088,6 @@ pub fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
 /// Print every rule application (set by the `normal_forms` debug test).
 pub static TRACE_RULES: crate::task::PerTask<std::sync::atomic::AtomicBool> = crate::task::PerTask::new();
 
-/// Instances of `rule_step` by rule name, for the audit.
-pub static RULE_HITS: crate::task::PerTask<std::sync::Mutex<Vec<(&'static str, u64)>>> = crate::task::PerTask::new();
-
 /// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms; `print_rule_conflicts` lists them.
 pub static RULE_CONFLICTS: crate::task::PerTask<std::sync::Mutex<Option<hashbrown::HashMap<Pref, u64>>>> = crate::task::PerTask::new();
 
@@ -2178,11 +2175,6 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
     }
     // a pattern variable the left side does not mention is free in the law: any value serves
     let args = sub[..r.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect();
-    let mut hits = RULE_HITS.get(Default::default).lock().unwrap();
-    match hits.iter_mut().find(|h| h.0 == r.name) {
-        Some(h) => h.1 += 1,
-        None => hits.push((r.name, 1)),
-    }
     Some((subst_pat(&r.rhs, &sub), Plan::law(LawKind::Rule(r.name), r.lhs, r.rhs, args)))
 }
 
@@ -2419,7 +2411,7 @@ fn rewrite_memo(t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
 }
 
 /// Debug builds: a memo hit about to be replayed is redone without the memo, under the same path and budget, and must match it
-/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `RULE_HITS` and `RULE_CONFLICTS` keep the redo's counts.
+/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `RULE_CONFLICTS` keeps the redo's counts.
 #[cfg(debug_assertions)]
 fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
     let memo = REWRITE_MEMO.with(|m| m.take());
