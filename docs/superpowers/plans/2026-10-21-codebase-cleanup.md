@@ -48,7 +48,9 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   records; the miner emits its drop, chosen and prefer records and the check its named counts through it, and the
   driver's stdout parsers (driver.rs:718-747) are deleted. Text, not binary: binary formats parked in `PARKED.md`.
 - **C8 (D): the ablation switches.** `ablated("...")` is checked at 11 hard-coded sites; 7 names appear in no script.
-  Status: ruling.
+  Status: decided against 2026-10-21: every name is documented (scripts, spec 2026-10-01:1059's ablation table,
+  rewrite.rs:2741) and each costs one guard read once per task; only `ablated`'s doc list was fixed (it missed `gen`,
+  `join`).
 - **C9: one builder-bug mechanism in `src/compile.rs`** (three counters with the same count, debug-panic, reject shape,
   compile.rs:352-493) and a `decline` helper for the 7 repeated decline sequences in `jit::compile_verify_and_apply`
   (jit.rs:225-326). Status: done 0119ddf.

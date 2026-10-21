@@ -940,7 +940,7 @@ pub fn discharge(body: Expr) -> Expr {
 }
 
 /// Whether the rewriter's rule `name` is switched off by the env var `ABLATE` (comma list: comm, assoc, chain, tree, collapse,
-/// promoted, ruleset, a built-in rule's name, and `prove_eq`'s eq_truth, eq_pos, shrmask). Read once per task: `rule_step`
+/// join, promoted, ruleset, a built-in rule's name, `prove_eq`'s eq_truth, eq_pos, shrmask, and the driver's gen). Read once per task: `rule_step`
 /// asks for every rule it tries, and reading the environment each time was 11% of a mine (docs/tier-cycle.md).
 pub fn ablated(name: &str) -> bool {
     static SET: crate::task::PerTask<Vec<String>> = crate::task::PerTask::new();
