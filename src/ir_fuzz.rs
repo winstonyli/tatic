@@ -282,15 +282,11 @@ fn closure_templates_agree_under_both_dispatch_modes() {
 
 // ---- Random well-typed IR ---------------------------------------------
 
-/// SplitMix64, the same generator `tests/compile_fuzz.rs` uses.
-struct Rng(u64);
+/// The crate's SplitMix64 stream, drawn in `usize` and percent.
+struct Rng(crate::rng::SplitMix64);
 impl Rng {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^ (z >> 31)
+        self.0.next_u64()
     }
     fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
@@ -465,7 +461,7 @@ fn fuzz(seeds: u64) {
         // A fresh `Rng` per seed, not one carried across the loop: a
         // failure's message names only `seed`, so reproducing it must not
         // require replaying every earlier iteration's draws first.
-        let mut rng = Rng(0x7A71C_u64.wrapping_add(seed.wrapping_mul(0x9E3779B97F4A7C15)));
+        let mut rng = Rng(crate::rng::SplitMix64::new(0x7A71C_u64.wrapping_add(seed.wrapping_mul(0x9E3779B97F4A7C15))));
         let m = random_module(&mut rng);
         check(&m).unwrap_or_else(|e| panic!("seed {seed}: the generator produced an ill-formed module: {e}"));
         for _ in 0..3 {

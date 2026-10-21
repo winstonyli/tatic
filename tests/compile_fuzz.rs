@@ -47,29 +47,7 @@ use tatic::proof;
 use tatic::term::{Hash, PrimOp, Term, TermStore};
 use tatic::{spec_check, specialise};
 
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Rng(seed)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: u32) -> u32 {
-        (self.next_u64() % n as u64) as u32
-    }
-
-    fn i64_range(&mut self, lo: i64, hi: i64) -> i64 {
-        lo + (self.next_u64() % ((hi - lo + 1) as u64)) as i64
-    }
-}
+use tatic::rng::SplitMix64 as Rng;
 
 const MAX_LIT: i64 = 50;
 

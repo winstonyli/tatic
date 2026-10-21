@@ -26,25 +26,17 @@
 use tatic::kernel::{self, Expr};
 
 struct Rng {
-    state: u64,
+    mix: tatic::rng::SplitMix64,
     made_free: bool,
 }
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Rng { state: seed, made_free: false }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^ (z >> 31)
+        Rng { mix: tatic::rng::SplitMix64::new(seed), made_free: false }
     }
 
     fn below(&mut self, n: u32) -> u32 {
-        (self.next_u64() % n as u64) as u32
+        self.mix.below(n)
     }
 }
 

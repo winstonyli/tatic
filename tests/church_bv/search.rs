@@ -229,18 +229,15 @@ pub fn family_laws(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, n
 /// takes every child's law window from it (`driver::write_laws`), where each child used to rebuild the pool (35% of a sweep's
 /// loops) and the driver to clone and reshuffle it per child (6% of a sweep, docs/tier-cycle.md).
 fn pool3_sequence(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
-    type Memo = Vec<((String, usize, usize, usize), std::sync::Arc<Vec<(Term, Term)>>)>;
-    static MEMO: std::sync::Mutex<Memo> = std::sync::Mutex::new(Vec::new());
-    let key = (family.to_string(), env("RULEMINER_DEEP3", 0), n, env("RULEMINER_SHUFFLE", 0));
-    let mut memo = MEMO.lock().unwrap();
-    if let Some((_, c)) = memo.iter().find(|(k, _)| *k == key) {
-        return Some(c.clone());
-    }
-    let mut seq = shuffled(pool_conjectures(pool3(family, env)?, n, 3, 0), key.3);
-    seq.retain(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)));
-    let seq = std::sync::Arc::new(seq);
-    memo.push((key, seq.clone()));
-    Some(seq)
+    // keyed by every variable it reads; `None` (not a pool3 family) is kept too
+    static MEMO: crate::task::SharedMemo<(String, usize, usize, usize), Option<std::sync::Arc<Vec<(Term, Term)>>>> = crate::task::SharedMemo::new();
+    let salt = env("RULEMINER_SHUFFLE", 0);
+    let build = || {
+        let mut seq = shuffled(pool_conjectures(pool3(family, env)?, n, 3, 0), salt);
+        seq.retain(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)));
+        Some(std::sync::Arc::new(seq))
+    };
+    MEMO.with((family.to_string(), env("RULEMINER_DEEP3", 0), n, salt), build, |c| c.clone())
 }
 
 /// A law window written as a law file (`driver::write_laws`) and read back (`read_laws`) gives the same laws, names included.
@@ -1934,11 +1931,7 @@ pub fn grammar_sample(family: &str, deep3: usize, salt: usize) -> Option<(Vec<Te
         }
     }
     let total: usize = pool.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
-    let mix = |mut z: u64| {
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-        z ^ (z >> 31)
-    };
+    let mix = tatic::rng::mix64;
     let mut memo = ValueMemo::exhaustive(4, 3);
     let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
     let padding: Vec<bool> = grow.iter().map(|g| leaf_values.contains(&memo.values(g).to_vec())).collect();

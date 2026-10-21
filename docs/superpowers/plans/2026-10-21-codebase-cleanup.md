@@ -24,7 +24,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 - **C3 (D): split `rule_miner`** (search.rs:445, 831 lines, about 60 closures) into a `Miner` struct with methods for
   candidates, scoring, rounds, finish and the preference phase. After C1. Status: ruling.
 - **C4: finish `MinerConfig`.** Its doc says it holds every `RULEMINER_*` switch, but about 9 are read inline. Flag parsing
-  disagrees (`==1`, `!=0`, `is_some()`, so `NF_TRACE=0` turns tracing on): one `env_flag`. Status: done (this commit; gated).
+  disagrees (`==1`, `!=0`, `is_some()`, so `NF_TRACE=0` turns tracing on): one `env_flag`. Status: done 30d5a3a (gate 2026-10-21-c4-gate: M 362 = 362, rules same in 15 loops and across threads).
 - **C5 (D): one denote walker in `src/proof/`.** `denote_with_placeholders` (hardening.rs:201) mirrors
   `denote_closure_typed` (hardening.rs:437) except for the `SelfCall` arm; the three literal collectors
   (`proof.rs:335`, `closures.rs:2300`, `closures.rs:1813`) are one walk with different accept tables. Status: ruling.
@@ -56,7 +56,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 ## Smaller
 
 - **C15: shared code.** One splitmix64 PRNG instead of 9 copies; one `SharedMemo<K, V>` for the global caches
-  (`SCREENS`, `TREE_CANDS`, `TREE_ENCS`), which also removes `task.rs`'s hand-kept list. Status: todo.
+  (`SCREENS`, `TREE_CANDS`, `TREE_ENCS`), which also removes `task.rs`'s hand-kept list. Status: done (this commit).
 - **C16 (D): `docs/runs/2026-10-12/scripts`** (14 `*_pair.sh`, 18 `*_seq.sh` near-copies). Status: ruling.
 - **C17: nits.** Stale comments at rewrite.rs:2129 (`PERM_ORDER`) and rewrite.rs:1209 (`SCORE_ONLY`); tier-cycle.md:666
   names functions that are gone; lib.rs's allocator list misses `tests/proof_scope.rs`; `compile::tests` (60% of

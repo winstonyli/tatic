@@ -409,19 +409,14 @@ mod tests {
     /// normalisation, and a `Rec` either can't name itself or is a loop
     /// whose counter, clamped to 20, goes down by one per self-call.
     struct Gen {
-        rng: u64,
+        rng: crate::rng::SplitMix64,
         /// Earlier subterms, by the scope they were built in.
         pool: HashMap<Vec<bool>, Vec<Hash>>,
     }
 
     impl Gen {
         fn below(&mut self, n: u64) -> u64 {
-            // splitmix64, as in the other fuzzers.
-            self.rng = self.rng.wrapping_add(0x9E3779B97F4A7C15);
-            let mut z = self.rng;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-            (z ^ (z >> 31)) % n
+            self.rng.next_u64() % n
         }
 
         fn lit(&mut self, s: &mut TermStore) -> Hash {
@@ -559,7 +554,7 @@ mod tests {
         const ARGS: [i64; 5] = [0, 1, -2, 7, 25];
         let (mut typed, mut ran, mut div) = (0, 0, 0);
         for seed in 0..SEEDS {
-            let mut g = Gen { rng: seed, pool: HashMap::new() };
+            let mut g = Gen { rng: crate::rng::SplitMix64::new(seed), pool: HashMap::new() };
             let mut s = TermStore::new();
             let arity = g.below(3) as usize;
             let h = g.program(&mut s, arity);
@@ -595,7 +590,7 @@ mod tests {
         const SEEDS: u64 = 4000;
         let mut shared = 0;
         for seed in 0..SEEDS {
-            let mut g = Gen { rng: seed, pool: HashMap::new() };
+            let mut g = Gen { rng: crate::rng::SplitMix64::new(seed), pool: HashMap::new() };
             let mut s = TermStore::new();
             let arity = g.below(3) as usize;
             let h = g.program(&mut s, arity);

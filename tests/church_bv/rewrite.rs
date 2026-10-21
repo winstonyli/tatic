@@ -617,13 +617,13 @@ const VALUE_BLOCK: usize = 1 << 16;
 const SCREEN_INPUTS: usize = 204;
 
 /// The plausibility screen's value memos, by width and variable count, shared by a process's threads behind one lock: per
-/// thread, 66% of a sweep's screen fills redid another thread's (docs/tier-cycle.md, "Per-thread refills").
-static SCREENS: std::sync::Mutex<Option<hashbrown::HashMap<(usize, usize), ValueMemo<u128>>>> = std::sync::Mutex::new(None);
+/// thread, 66% of a sweep's screen fills redid another thread's (docs/tier-cycle.md, "Per-thread refills"). Pure: values on
+/// fixed pseudo-random inputs.
+static SCREENS: crate::task::SharedMemo<(usize, usize), ValueMemo<u128>> = crate::task::SharedMemo::new();
 
 /// `f` on the screen's value memo for width `n` and `k` variables.
 fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R) -> R {
-    let mut s = SCREENS.lock().unwrap_or_else(|e| e.into_inner());
-    f(s.get_or_insert_with(Default::default).entry((n, k)).or_insert_with(|| ValueMemo::screen(n, k)))
+    SCREENS.with((n, k), || ValueMemo::screen(n, k), f)
 }
 
 impl<W: Word> ValueMemo<W> {
@@ -1153,14 +1153,14 @@ pub fn tree_step(n: usize, t1: &Term, k: usize) -> Option<(Term, PlanRc)> {
         return None;
     }
     // `tree_encoding` refuses a candidate whose screen values differ from `t1`'s, so only those with `t1`'s vector are tried
-    let index = TREE_CANDS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).entry((n, k, nops())).or_insert_with(|| tree_candidates(n, k)).clone();
+    let index = TREE_CANDS.with((n, k, nops()), || tree_candidates(n, k), |c| c.clone());
     let cand = *with_screen(n, k, |m| index.get(m.values(t1)))?.iter().find(|cand| tree_encoding(n, k, t1, cand).is_some())?;
     Some((cand, Plan::law(LawKind::Tree, *t1, cand, vars(k))))
 }
 
 /// `tree_step`'s candidates by their screen vector, per width, variable count and operator count (`tree_candidates`), shared
 /// by a process's threads: the rule miner's scoped workers each rebuilt them (docs/tier-cycle.md, "Per-thread refills").
-static TREE_CANDS: std::sync::Mutex<Option<hashbrown::HashMap<(usize, usize, usize), std::sync::Arc<CandIndex>>>> = std::sync::Mutex::new(None);
+static TREE_CANDS: crate::task::SharedMemo<(usize, usize, usize), std::sync::Arc<CandIndex>> = crate::task::SharedMemo::new();
 
 /// Candidates by screen vector, each list in candidate order. Hashed on eight of the vector's pseudo-random rows, not all
 /// 204: hashing the whole 3.3 KB on every `tree_step` was 1.3% of a sweep (docs/tier-cycle.md, "Profile at 2ff4c44").

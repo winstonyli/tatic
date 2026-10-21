@@ -1,6 +1,7 @@
 //! Per-task state for `driver::worker`, which runs many tasks (a sweep's children) in one process. Every process-wide static
-//! in church_bv is either a pure memo, whose value depends only on its key (configuration included), kept across tasks,
-//! or task state: a `PerTask` or `PerTaskArc`, rebuilt at its first read in each task. `task_state_is_classified` holds
+//! in church_bv is either a pure memo, whose value depends only on its key (configuration included), kept across tasks
+//! (a `SharedMemo`, or one of the few on `task_state_is_classified`'s list), or task state: a `PerTask` or `PerTaskArc`,
+//! rebuilt at its first read in each task. `task_state_is_classified` holds
 //! every static to that rule (docs/tier-cycle.md, "A persistent worker").
 
 use std::marker::PhantomData;
@@ -93,6 +94,35 @@ impl<T> PerTaskArc<T> {
     }
 }
 
+/// A pure memo shared by a process's threads and kept across tasks: each value must depend only on its key, configuration
+/// included. `task_state_is_classified` takes that on trust, so each static of this type says why at its declaration.
+pub struct SharedMemo<K, V> {
+    map: Mutex<Option<hashbrown::HashMap<K, V>>>,
+}
+
+impl<K: Eq + std::hash::Hash, V> SharedMemo<K, V> {
+    pub const fn new() -> Self {
+        SharedMemo { map: Mutex::new(None) }
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<hashbrown::HashMap<K, V>>> {
+        self.map.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// `f` on `key`'s value, built by `init` if absent; both run under the memo's lock.
+    pub fn with<R>(&self, key: K, init: impl FnOnce() -> V, f: impl FnOnce(&mut V) -> R) -> R {
+        f(self.lock().get_or_insert_with(Default::default).entry(key).or_insert_with(init))
+    }
+    /// `key`'s value, if built: with `insert`, for a value built unlocked.
+    pub fn get(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.lock().as_ref()?.get(key).cloned()
+    }
+    pub fn insert(&self, key: K, v: V) {
+        self.lock().get_or_insert_with(Default::default).insert(key, v);
+    }
+}
+
 /// Each epoch builds its own value once; `peek` sees only the current epoch's. Explicit epochs: bumping `TASK` here would
 /// reset the counters of the suite's other tests, which run in this process at the same time.
 #[test]
@@ -121,10 +151,29 @@ fn per_task_rebuilds_per_task() {
     assert!(first.upgrade().is_none(), "the first epoch's value dropped when the second replaced it");
 }
 
+/// A key's value is built once and kept, across tasks too; `get` and `insert` reach the same map.
+#[test]
+fn shared_memo_builds_each_key_once() {
+    let m: SharedMemo<u8, Vec<u8>> = SharedMemo::new();
+    let builds = std::cell::Cell::new(0);
+    let build = |k: u8| {
+        builds.set(builds.get() + 1);
+        vec![k]
+    };
+    assert_eq!(m.with(1, || build(1), |v| v.clone()), vec![1]);
+    assert_eq!(m.with(1, || build(9), |v| { v.push(2); v.clone() }), vec![1, 2]);
+    assert_eq!(builds.get(), 1);
+    assert_eq!(m.get(&1), Some(vec![1, 2]));
+    assert_eq!(m.get(&3), None);
+    m.insert(3, vec![3]);
+    assert_eq!(m.with(3, || build(3), |v| v.clone()), vec![3]);
+    assert_eq!(builds.get(), 1);
+}
+
 /// The name of the process-wide mutable static declared on `line`, if any: `static mut`, or a static whose type mentions a
-/// lock, a once-cell or an atomic. Thread-locals in church_bv hold `Cell`s and `RefCell`s, so they are not flagged (a lock in
-/// a thread-local would be, falsely). It cannot see interior mutability behind a struct's name (`static X: Counters`):
-/// no church_bv static is one.
+/// lock, a once-cell or an atomic, other than the classified kinds (`PerTask`, `PerTaskArc`, `SharedMemo`). Thread-locals in
+/// church_bv hold `Cell`s and `RefCell`s, so they are not flagged (a lock in a thread-local would be, falsely). It cannot see
+/// interior mutability behind any other struct's name (`static X: Counters`): no church_bv static is one.
 fn flagged(line: &str) -> Option<&str> {
     let t = line.trim_start();
     let rest = ["pub(crate) static ", "pub static ", "static "].iter().find_map(|p| t.strip_prefix(p))?;
@@ -134,20 +183,16 @@ fn flagged(line: &str) -> Option<&str> {
     };
     let (name, ty) = rest.split_once(':')?;
     let mutable = is_mut || ["Mutex", "RwLock", "Once", "LazyLock", "Atomic"].iter().any(|m| ty.contains(m));
-    (mutable && !ty.contains("PerTask")).then_some(name.trim())
+    (mutable && !["PerTask", "SharedMemo"].iter().any(|k| ty.contains(k))).then_some(name.trim())
 }
 
-/// Every process-wide mutable static in church_bv is task state (`PerTask`, `PerTaskArc`) or a pure memo on this list,
+/// Every process-wide mutable static in church_bv is task state (`PerTask`, `PerTaskArc`), a `SharedMemo` or a pure memo on this list,
 /// so a `driver::worker` task never sees another task's configuration or counters.
 #[test]
 fn task_state_is_classified() {
-    const PURE: [(&str, &str, &str); 10] = [
+    const PURE: [(&str, &str, &str); 6] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
-        ("rewrite.rs", "SCREENS", "values on fixed pseudo-random inputs, keyed by width and variable count"),
-        ("rewrite.rs", "TREE_CANDS", "keyed by width, variable count and nops()"),
         ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
-        ("machine.rs", "TREE_ENCS", "pure in its key; carry_cap() is a screen before the lookup"),
-        ("search.rs", "MEMO", "pool3_sequence, keyed by every variable it reads (the driver's)"),
         ("lemma_cache.rs", "ID", "the running exe's identity"),
         ("task.rs", "TASK", "the task machinery"),
         ("task.rs", "TASK_ENV", "the task machinery"),
@@ -157,6 +202,7 @@ fn task_state_is_classified() {
     assert_eq!(flagged("pub static Y: [std::sync::atomic::AtomicU64; 3] = x;"), Some("Y"));
     assert_eq!(flagged("static mut Z: u8 = 0;"), Some("Z"));
     assert_eq!(flagged("static W: PerTask<std::sync::Mutex<u8>> = PerTask::new();"), None);
+    assert_eq!(flagged("static M: crate::task::SharedMemo<u8, std::sync::Arc<u8>> = SharedMemo::new();"), None);
     assert_eq!(flagged("    static T: std::cell::RefCell<u8> = Default::default();"), None);
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/church_bv");
     let mut bad = vec![];

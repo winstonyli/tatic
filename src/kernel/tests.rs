@@ -93,14 +93,9 @@ fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
 }
 
 /// A splitmix64 stream, for the randomised tests below.
-fn splitmix(mut seed: u64) -> impl FnMut() -> usize {
-    move || {
-        seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = seed;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        (z ^ (z >> 31)) as usize
-    }
+fn splitmix(seed: u64) -> impl FnMut() -> usize {
+    let mut rng = crate::rng::SplitMix64::new(seed);
+    move || rng.next_u64() as usize
 }
 
 /// A random term with every `Expr` shape, built from a pool of nodes so
@@ -471,14 +466,8 @@ fn beta_leaves_const_and_free_alone() {
 
 /// A random `Expr` of every variant, ill-typed as often as not, with
 /// indices small enough that `Var(0)` is often free and often not.
-fn random_expr(seed: &mut u64, fuel: u32) -> Expr {
-    let mut next = || {
-        *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = *seed;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    };
+fn random_expr(seed: &mut crate::rng::SplitMix64, fuel: u32) -> Expr {
+    let mut next = || seed.next_u64();
     let pick = next();
     let k = (next() % 4) as u32;
     if fuel == 0 || pick % 4 == 0 {
@@ -507,7 +496,7 @@ fn random_expr(seed: &mut u64, fuel: u32) -> Expr {
 /// the variable and when it doesn't.
 #[test]
 fn subst_top_is_substituting_then_shifting() {
-    let (mut seed, mut used, mut unused) = (1u64, 0, 0);
+    let (mut seed, mut used, mut unused) = (crate::rng::SplitMix64::new(1), 0, 0);
     for _ in 0..20_000 {
         let body = random_expr(&mut seed, 5);
         let s = random_expr(&mut seed, 3);
@@ -696,9 +685,8 @@ fn def_eq_normalises_only_where_the_sides_differ() {
 
 /// Wraps some of `e`'s subterms in a redex that reduces back to them,
 /// `(\_. x) Sort(0)` with `x` shifted under the new binder.
-fn with_redexes(e: &Expr, seed: &mut u64) -> Expr {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    let wrap = (*seed >> 33).is_multiple_of(4);
+fn with_redexes(e: &Expr, seed: &mut crate::rng::SplitMix64) -> Expr {
+    let wrap = seed.next_u64().is_multiple_of(4);
     let rebuilt = match e.node() {
         n @ (Node::Pi(..) | Node::Lam(..) | Node::App(..) | Node::Id(..) | Node::Sigma(..) | Node::Pair(..)) => {
             mk(n.map_kids(|c, _| with_redexes(&c, seed)))
@@ -713,7 +701,7 @@ fn with_redexes(e: &Expr, seed: &mut u64) -> Expr {
 /// inserted.
 #[test]
 fn def_eq_agrees_with_comparing_normal_forms() {
-    let (mut seed, mut equal, mut unequal) = (7u64, 0, 0);
+    let (mut seed, mut equal, mut unequal) = (crate::rng::SplitMix64::new(7), 0, 0);
     for i in 0..20_000 {
         let a = random_expr(&mut seed, 4);
         let b = if i % 2 == 0 { a } else { random_expr(&mut seed, 4) };

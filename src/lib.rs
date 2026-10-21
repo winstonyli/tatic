@@ -9,6 +9,7 @@ pub mod kernel;
 pub mod kernel_lazy;
 pub(crate) mod lower_wat;
 pub mod proof;
+pub mod rng;
 pub mod spec_check;
 pub mod specialise;
 pub mod syntax;

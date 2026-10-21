@@ -381,9 +381,9 @@ thread_local! {
 }
 
 /// `tree_encoding` results past its cheap screens, by the same key, shared by a process's threads behind one lock: per thread,
-/// 87.6% of a sweep's searches redid another thread's (docs/tier-cycle.md, "Survey: long-lived sweep workers").
-static TREE_ENCS: std::sync::Mutex<Option<hashbrown::HashMap<(usize, usize, Term, Term), Option<std::sync::Arc<TreeEnc>>>>> =
-    std::sync::Mutex::new(None);
+/// 87.6% of a sweep's searches redid another thread's (docs/tier-cycle.md, "Survey: long-lived sweep workers"). Pure in its key;
+/// `carry_cap()` is a screen before the lookup.
+static TREE_ENCS: crate::task::SharedMemo<(usize, usize, Term, Term), Option<std::sync::Arc<TreeEnc>>> = crate::task::SharedMemo::new();
 
 /// What `tree_encoding` found for a pair: the carry encoding, and the reachable carry states it holds over (`None`: all of them).
 pub struct TreeEnc {
@@ -407,8 +407,7 @@ pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sy
         return None;
     }
     let key = (n, k, *t1, *t2);
-    let encs = || TREE_ENCS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(hit) = encs().get_or_insert_with(Default::default).get(&key).cloned() {
+    if let Some(hit) = TREE_ENCS.get(&key) {
         return hit;
     }
     // the search runs unlocked: two threads may both search a pair, and find the same encoding
@@ -425,7 +424,7 @@ pub fn tree_encoding(n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sy
         }
     }
     .map(std::sync::Arc::new);
-    encs().get_or_insert_with(Default::default).insert(key, found.clone());
+    TREE_ENCS.insert(key, found.clone());
     found
 }
 

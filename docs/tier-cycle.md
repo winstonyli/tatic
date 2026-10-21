@@ -3527,10 +3527,11 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     - Task state is a `task::PerTask<T>`, rebuilt at its first read in each task and leaked, which suits small values. The lemma cache's `PROCESS` is a `PerTaskArc`, replaced and freed. Task state covers:
       - the `ENV` snapshot, now the process environment, then `<exe>.env` for names it lacks, then the task's pairs (`load_exe_env` is gone);
       - `ABLATE`'s set and the fixed rules and table;
-      - `TRACE_RULES`, `RULE_HITS`, `RULE_CONFLICTS`, `LEMMA_HITS` and `PROF`;
+      - `TRACE_RULES`, `RULE_HITS`, `RULE_CONFLICTS`, `LEMMA_HITS` and `PROF` (`RULE_HITS`, `LEMMA_HITS` and `PROF` since removed, 2026-10-21);
       - the lemma cache, its counters and its recheck flag.
     - `task::task_state_is_classified` scans tests/church_bv at test time and fails on any other lock, once-cell, atomic or `static mut` static that is not on its pure list. A temporary `PROBE` static made it fail as it should.
     - Limits: the scan reads declarations line by line, so a type alias or a struct hiding a lock would get past it; none exists. It covers tests/church_bv only; src/'s statics are thread-locals or unreachable from tasks.
+    - Since 2026-10-21 (cleanup C15) `SCREENS`, `TREE_CANDS`, `TREE_ENCS` and `MEMO` are `task::SharedMemo`s, a type the scan trusts as it trusts `PerTask`; each says at its declaration why it is pure. The list keeps the term table, `promoted_rules`' table, the exe identity, the task machinery and `env_echo`'s nonce.
   - **Outputs.** Gate `wk` against 38c4e3d: 416 files on both salts, identical but for the known `LEMMA_CACHE starts empty` move in salt 2's `lib_sbo3/mine_ref.log`. Gate `pt` (the statics alone) was fully identical.
     - `gate_cmp.sh` now drops libtest's harness lines, which a task's log no longer has, and normalizes `m.tsv`'s and `pooled_prefs.tsv`'s seconds columns. It labels a difference that sorting removes "(order only)".
     - The libtest lines are matched as whole lines, which assumes the old children ran on more than one core (affinity FFF gives twelve).

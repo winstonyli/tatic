@@ -524,14 +524,8 @@ mod tests {
 
     /// The kernel's own random `Expr` generator (ill-typed as often as
     /// not), copied from `kernel::tests`.
-    fn random_expr(seed: &mut u64, fuel: u32) -> Expr {
-        let mut next = || {
-            *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = *seed;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            z ^ (z >> 31)
-        };
+    fn random_expr(seed: &mut crate::rng::SplitMix64, fuel: u32) -> Expr {
+        let mut next = || seed.next_u64();
         let pick = next();
         let k = (next() % 4) as u32;
         if fuel == 0 || pick % 4 == 0 {
@@ -557,9 +551,8 @@ mod tests {
 
     /// Wraps some subterms in a redex that reduces back to them, as the
     /// kernel's own `with_redexes` does.
-    fn with_redexes(e: &Expr, seed: &mut u64) -> Expr {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let wrap = (*seed >> 33).is_multiple_of(4);
+    fn with_redexes(e: &Expr, seed: &mut crate::rng::SplitMix64) -> Expr {
+        let wrap = seed.next_u64().is_multiple_of(4);
         let mut go = |x: &Expr| with_redexes(x, seed);
         let rebuilt = match &e.node() {
             Node::Pi(a, b) => pi(go(a), go(b)),
@@ -577,7 +570,7 @@ mod tests {
     /// unrelated and some the same term with different redexes inserted.
     #[test]
     fn def_eq_lazy_agrees_with_the_kernel() {
-        let (mut seed, mut equal, mut unequal) = (7u64, 0, 0);
+        let (mut seed, mut equal, mut unequal) = (crate::rng::SplitMix64::new(7), 0, 0);
         for i in 0..20_000 {
             let a = random_expr(&mut seed, 4);
             let b = if i % 2 == 0 { a } else { random_expr(&mut seed, 4) };
