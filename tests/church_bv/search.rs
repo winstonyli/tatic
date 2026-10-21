@@ -444,6 +444,8 @@ impl MinerConfig {
 #[ignore]
 pub fn rule_miner() {
     tatic::kernel::scoped(|| {
+        // the join store this mine feeds from this thread (`JoinStore`); the scoring workers read a copy of it
+        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
         // phase clock: `phase(label)` prints the seconds since the previous mark
         let last = std::cell::Cell::new(Instant::now());
         let phase = |label: &str| {
@@ -931,7 +933,9 @@ pub fn rule_miner() {
             // candidates cannot win, so the choice does not depend on the thread count or the chunking. Each candidate is scored from
             // an empty memo: a memo kept across a worker's candidates made a gain depend on which candidates that worker scored before
             // (its join entries are inexact by design), so the choice depended on scheduling, and it saved no time (docs/decisions/
-            // 2026-10-17-monotone-join.md, "Spike of the snapshot"). Expressions are per thread, so each worker grows its own (1.5x
+            // 2026-10-17-monotone-join.md, "Spike of the snapshot"). The join store is shared instead, read-only: the workers read
+            // the copy frozen as the round starts, which only this thread's searches fed (docs/tier-cycle.md, "Spike of the join
+            // store"). Expressions are per thread, so each worker grows its own (1.5x
             // faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
             // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` it can touch
             let score_rule = |rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
@@ -972,9 +976,12 @@ pub fn rule_miner() {
                 let (done_tx, done_rx) = std::sync::mpsc::channel();
                 let (work, queue) = std::sync::mpsc::channel::<(usize, Option<usize>)>();
                 let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
+                // the join store as this round starts, for the workers
+                let frozen = frozen_join_store();
                 for _ in 0..threads {
-                    let (done_tx, score_job, queue, join_workers) = (done_tx.clone(), &score_job, queue.clone(), &join_workers);
+                    let (done_tx, score_job, queue, join_workers, frozen) = (done_tx.clone(), &score_job, queue.clone(), &join_workers, frozen.clone());
                     let worker = move || {
+                        set_join_store(frozen.map(JoinStoreUse::Read));
                         let before = JoinCost::now();
                         tatic::kernel::scoped(|| {
                             loop {
@@ -1257,12 +1264,14 @@ pub fn rule_miner() {
         let mut j = *join_workers.lock().unwrap();
         j.add_since(join_main);
         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
+        println!("RULEMINER join store: {} joins served, {:.1}s querying", j.stored, j.store_nanos as f64 / 1e9);
         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
         for (st, c) in stragglers.iter().zip(&covered) {
             if !c {
                 println!("RULEMINER uncovered: {}", st.0);
             }
         }
+        set_join_store(None);
     });
 }
 

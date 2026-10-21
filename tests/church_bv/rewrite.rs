@@ -1416,6 +1416,8 @@ pub struct RuleTable {
     index: PatIndex,
     join: Vec<JoinEq>,
     join_index: PatIndex<Need>,
+    /// `join`'s steps by their law and direction (`lhs`, `rhs`, `backward`), the first of each, for `JoinStore`
+    join_key: hashbrown::HashMap<(Term, Term, bool), u32>,
 }
 
 impl RuleTable {
@@ -1426,7 +1428,11 @@ impl RuleTable {
         let index = PatIndex::new(rules.iter().enumerate().filter(|(_, r)| !ablated(r.name)).map(|(i, r)| (i, &r.lhs, ())));
         let join = join_eqs(&rules);
         let join_index = PatIndex::new(join.iter().enumerate().map(|(i, e)| (i, &e.from, e.need)));
-        RuleTable { mined, rules, index, join, join_index }
+        let mut join_key = hashbrown::HashMap::new();
+        for (i, e) in join.iter().enumerate() {
+            join_key.entry((e.lhs, e.rhs, e.backward)).or_insert(i as u32);
+        }
+        RuleTable { mined, rules, index, join, join_index, join_key }
     }
 
     /// The rules that can match `t`, in order.
@@ -2569,11 +2575,12 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
 thread_local! {
     pub static MACHINE_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// the join's cost, which M does not show (a joined law is free in M); per thread, like `MACHINE_FALLBACKS`
-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0 }) };
+    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, stored: 0, store_nanos: 0 }) };
 }
 
 /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
-/// time in the searches, of it in those that failed.
+/// time in the searches, of it in those that failed; the joins `JoinStore` served, and the time in its queries (served
+/// or not).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct JoinCost {
     pub searches: u64,
@@ -2582,6 +2589,8 @@ pub struct JoinCost {
     pub hits: u64,
     pub nanos: u64,
     pub failed_nanos: u64,
+    pub stored: u64,
+    pub store_nanos: u64,
 }
 
 impl JoinCost {
@@ -2598,7 +2607,106 @@ impl JoinCost {
         self.hits += now.hits - before.hits;
         self.nanos += now.nanos - before.nanos;
         self.failed_nanos += now.failed_nanos - before.failed_nanos;
+        self.stored += now.stored - before.stored;
+        self.store_nanos += now.store_nanos - before.store_nanos;
     }
+}
+
+/// A join step `JoinStore` keeps: the step at `path` from `from` by the law `lhs = rhs` read in direction `backward`, which
+/// a table holds under that key (`RuleTable::join_key`) whatever its index.
+#[derive(Clone, Copy)]
+struct StoredStep {
+    from: Term,
+    path: StepPath,
+    law: (Term, Term, bool),
+}
+
+/// The steps of the join's met paths, as edges between the terms they join: each term's neighbours, by the step and
+/// whether it is walked backwards. A path through steps whose laws the current table holds proves its ends equal, so
+/// `join_eq` serves a pair from the store before it searches. The miner keeps one per mine, fed by its main thread's
+/// searches; its workers read a copy frozen when a round of scoring starts, so a candidate's gain depends neither on the
+/// thread count nor on which worker scored what (docs/tier-cycle.md, "Spike of the join store").
+#[derive(Clone, Default)]
+pub struct JoinStore {
+    edges: hashbrown::HashMap<Term, Vec<(Term, StoredStep, bool)>>,
+}
+
+/// How a thread uses a join store: feeding it from its met searches and reading it, or reading a frozen copy.
+pub enum JoinStoreUse {
+    Feed(JoinStore),
+    Read(std::sync::Arc<JoinStore>),
+}
+
+thread_local! {
+    static JOIN_STORE: std::cell::RefCell<Option<JoinStoreUse>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Sets this thread's join store, giving back the one it had.
+pub fn set_join_store(store: Option<JoinStoreUse>) -> Option<JoinStoreUse> {
+    JOIN_STORE.with(|s| s.replace(store))
+}
+
+/// A frozen copy of the store this thread feeds, for the threads that read it.
+pub fn frozen_join_store() -> Option<std::sync::Arc<JoinStore>> {
+    JOIN_STORE.with(|s| match &*s.borrow() {
+        Some(JoinStoreUse::Feed(store)) => Some(std::sync::Arc::new(store.clone())),
+        _ => None,
+    })
+}
+
+impl JoinStore {
+    fn add(&mut self, to: Term, step: StoredStep) {
+        let same = |e: &(Term, StoredStep, bool)| e.0 == to && e.1.law == step.law && (e.1.path.path, e.1.path.depth) == (step.path.path, step.path.depth);
+        let v = self.edges.entry(step.from).or_default();
+        if !v.iter().any(same) {
+            v.push((to, step, false));
+            self.edges.entry(to).or_default().push((step.from, step, true));
+        }
+    }
+    /// The plan of `a = b` along the shortest stored path through `table`'s laws and terms of at most `cap` nodes, looked
+    /// for among 1000 terms at most (as the search's `JOIN_VISIT`), and the path's terms.
+    fn path(&self, table: &RuleTable, a: Term, b: Term, cap: usize) -> Option<(PlanRc, Vec<Term>)> {
+        let mut prev: hashbrown::HashMap<Term, Option<(Term, StoredStep, bool, u32)>> = [(a, None)].into_iter().collect();
+        let mut front = vec![a];
+        while !front.is_empty() && prev.len() <= 1000 {
+            for t in std::mem::take(&mut front) {
+                for &(u, step, back) in self.edges.get(&t).into_iter().flatten() {
+                    let Some(&eq) = table.join_key.get(&step.law) else { continue };
+                    if u.size() > cap || prev.contains_key(&u) {
+                        continue;
+                    }
+                    prev.insert(u, Some((t, step, back, eq)));
+                    if u == b {
+                        // back from `b`: each step's plan, `p = x` read forwards
+                        let (mut plans, mut terms, mut x) = (vec![], vec![b], b);
+                        while let Some((p, step, back, eq)) = prev[&x] {
+                            let plan = step_plan(&JoinStep { from: step.from, path: step.path, eq }, table);
+                            plans.push(if back { Plan::sym(plan) } else { plan });
+                            terms.push(p);
+                            x = p;
+                        }
+                        return Some((plans.into_iter().rev().reduce(Plan::trans).expect("a step"), terms));
+                    }
+                    front.push(u);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The plan of `a = b` from this thread's join store under the current table, and the path's terms.
+fn stored_join(a: Term, b: Term) -> Option<(PlanRc, Vec<Term>)> {
+    let cap = a.size().max(b.size()) + 2;
+    JOIN_STORE.with(|s| {
+        let s = s.borrow();
+        let store = match &*s {
+            Some(JoinStoreUse::Feed(store)) => store,
+            Some(JoinStoreUse::Read(store)) => &**store,
+            None => return None,
+        };
+        RULE_TABLE.with(|t| store.path(&t.borrow(), a, b, cap))
+    })
 }
 
 /// `t` with every occurrence of the subterm `x` replaced by `with`.
@@ -2816,7 +2924,8 @@ fn join_need_skips_only_steps_over_the_cap() {
 /// `join_eqs`, through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or more than
 /// `JOIN_VISIT` (1000) terms are reached (5000 left a few laws fewer to the machine proof for 2-3 times the sweep time:
 /// docs/tier-cycle.md, "The bounded join removes the floor"). Only pairs equal on random inputs are searched, so an unequal
-/// pair costs no search. `ABLATE=join` switches it off.
+/// pair costs no search. `ABLATE=join` switches it off. With the memo on, a pair this thread's `JoinStore` has a path for
+/// is served from it without a search (77% of a cold:cmp3d mine's searches: docs/tier-cycle.md, "Spike of the join store").
 /// The terms it examined go to `RULE_TRACE` (`Fired::Join`) and, with the result, to `REWRITE_MEMO`'s `joins`, so the rule
 /// miner reuses it as it does a rewrite: a failed search, all of them (under other rules it is the same search when no rule
 /// in or out touches them); a met one, the terms on its path and their subterms, where the rules its plan used fired (the
@@ -2849,7 +2958,23 @@ pub fn join_eq(n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
         }
     }
     let mut examined = (memo_on || traced).then(hashbrown::HashSet::<Term>::default);
-    let found = join_search(a, b, &mut examined);
+    let t0 = std::time::Instant::now();
+    let stored = if memo_on { stored_join(*a, *b) } else { None };
+    count_join(|c| (c.stored, c.store_nanos) = (c.stored + stored.is_some() as u64, c.store_nanos + t0.elapsed().as_nanos() as u64));
+    let found = match stored {
+        // a stored path's result rests on its terms, as a met search's on its path's: they and their subterms
+        Some((plan, mut stack)) => {
+            if let Some(x) = &mut examined {
+                while let Some(q) = stack.pop() {
+                    if let (true, Node::Op(_, l, r)) = (x.insert(q), *q.node()) {
+                        stack.extend([l, r]);
+                    }
+                }
+            }
+            Some(plan)
+        }
+        None => join_search(a, b, &mut examined),
+    };
     if let Some(x) = examined {
         let trace = Trace::new(x.into_iter().map(|t| (t, Fired::Join)).collect());
         replay(&trace);
@@ -3189,6 +3314,21 @@ fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term
                 });
                 let Some((step, u)) = met else { continue };
                 let u = u.make();
+                // the path's steps to the store this thread feeds
+                JOIN_STORE.with(|st| {
+                    let Some(JoinStoreUse::Feed(st)) = &mut *st.borrow_mut() else { return };
+                    let kept = |s: &JoinStep| {
+                        let e = &table.join[s.eq as usize];
+                        StoredStep { from: s.from, path: s.path, law: (e.lhs, e.rhs, e.backward) }
+                    };
+                    st.add(u, kept(&step));
+                    for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
+                        while let Some(prev) = get(side, p) {
+                            st.add(p, kept(&prev));
+                            p = prev.from;
+                        }
+                    }
+                });
                 // a met search's result rests on its path only: keep what was examined at the path's terms
                 if let Some(x) = examined {
                     x.clear();
@@ -3867,6 +4007,76 @@ fn join_cost_counts_searches_but_not_memo_hits() {
     assert!(join_eq(4, 3, &parse_term("sub(x, y)"), &parse_term("sub(0, sub(y, x))")).is_none());
     let c2 = cost();
     assert!(c2.met == c1.met && c2.failed_nanos > c1.failed_nanos && c2.nanos - c1.nanos == c2.failed_nanos - c1.failed_nanos);
+}
+
+/// The join store serves a pair it holds a path for, with a plan the kernel accepts (and by counting under `SCORE_ONLY`),
+/// without a search; it serves none once a law on the path leaves the table, and no thread without a store is served.
+#[test]
+fn join_store_serves_a_stored_path_under_its_laws_only() {
+    tatic::kernel::scoped(|| {
+        let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
+        let (n, k) = (4, 3);
+        let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
+        let join = || {
+            REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(k)));
+            let c0 = JoinCost::now();
+            let plan = join_eq(n, k, &a, &b);
+            REWRITE_MEMO.with(|m| m.borrow_mut().take());
+            let c1 = JoinCost::now();
+            (plan, c1.searches - c0.searches, c1.stored - c0.stored)
+        };
+        set_extra_rules(vec![rule]);
+        assert!(matches!(join(), (Some(_), 1, 0)), "no store: searched");
+        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+        assert!(matches!(join(), (Some(_), 1, 0)), "an empty store: searched, and the path fed");
+        let (plan, searches, stored) = join();
+        assert_eq!((searches, stored), (0, 1), "served from the store");
+        let plan = plan.expect("a stored join");
+        assert!(Compiler::new(n, k).proof(&plan).0 == a && Compiler::new(n, k).proof(&plan).1 == b);
+        let (p, s) = law_proof(n, k, &a, &b, &plan);
+        ck("stored", &p, &s);
+        SCORE_ONLY.with(|s| s.set(true));
+        let (counted, _, stored) = join();
+        SCORE_ONLY.with(|s| s.set(false));
+        assert!(matches!(counted.as_deref(), Some(Plan::Counting)) && stored == 1, "counting is served too");
+        set_extra_rules(vec![]);
+        assert_eq!(join().2, 0, "the rule left: no stored path");
+        set_join_store(None);
+    })
+}
+
+/// A worker reads the store as it was frozen: what the feeding thread adds later is not in its copy.
+#[test]
+fn join_store_workers_read_the_frozen_copy() {
+    tatic::kernel::scoped(|| {
+        let k = 3;
+        set_extra_rules(vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))]);
+        let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
+        let (c, d) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
+        let join = move |x: &Term, y: &Term| {
+            REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(k)));
+            let c0 = JoinCost::now();
+            assert!(join_eq(4, k, x, y).is_some());
+            REWRITE_MEMO.with(|m| m.borrow_mut().take());
+            JoinCost::now().stored - c0.stored
+        };
+        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+        join(&a, &b);
+        let frozen = frozen_join_store().expect("this thread feeds a store");
+        join(&c, &d);
+        let rules = RULE_TABLE.with(|t| t.borrow().mined.clone());
+        let worker = std::thread::spawn(move || {
+            tatic::kernel::scoped(|| {
+                set_extra_rules(rules);
+                set_join_store(Some(JoinStoreUse::Read(frozen)));
+                (join(&a, &b), join(&c, &d))
+            })
+        });
+        assert_eq!(worker.join().unwrap(), (1, 0), "the pair joined before the freeze is served, the one after is not");
+        assert_eq!(join(&c, &d), 1, "the feeding thread reads its own store");
+        set_join_store(None);
+        set_extra_rules(vec![]);
+    })
 }
 
 /// A memo hit gives what a fresh rewrite would, also under rules that cycle: an entry made where the path was short is replayed

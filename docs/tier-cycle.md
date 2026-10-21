@@ -5328,6 +5328,27 @@ frozen when each round of scoring starts.
 So the store keeps M (one lower) with a smaller library, takes 43% off the job's CPU, and keeps the miner independent of
 the thread count.
 
+*The join store, built (2026-10-21, runs `2026-10-21-storekept-gate`, `-storekept-threads-s1`, `-s5`).* Built
+test-first (`join_store_serves_a_stored_path_under_its_laws_only`, `join_store_workers_read_the_frozen_copy`). Kept
+code has no globals, unlike the spike, whose process-wide store would have been shared by parallel tests and by any later
+joins in the process. Each thread has its own `JoinStoreUse`. The miner's main thread holds the `Feed` it fills, from
+the miner's start to its end. Each round's workers get a `Read` of the copy `frozen_join_store` takes as the round
+starts. A thread without one is never served. The table's steps are found by law through `RuleTable::join_key`, built
+with the table, so no fingerprint cache is needed. Gate against `bv_guard`: M 363 against 362, job CPU 2321 against
+1297 s (-44%), wall 320 against 194 s. Its rules are byte-equal to the spike's in all 15 loops, and byte-equal at 6
+and 1 threads on salts 1 and 5.
+
+*Whether the memo's join entries can go (2026-10-21, a reading of the code).* No, not as a deletion. The memo's join
+entries (`RewriteMemo::joins`) do three things the store does not.
+1. They keep failed searches. The store keeps only met paths, and failed searches are the costly ones (119 of salt 1's
+   322 s of searching in the store probe).
+2. They serve a worker's repeats within one candidate. The worker's store is a read-only copy, so a pair the worker
+   searched itself is not in it.
+3. On the main thread, `state` seeds each round's memo with the previous round's entries, filtered by trace.
+Removing them would need a negative store and a per-candidate overlay on the workers' copies: that is a second cache
+in another shape, not one fewer. What could merge is the met entries alone, if most memo hits are on met pairs the
+store already serves. That is not measured (parked).
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
