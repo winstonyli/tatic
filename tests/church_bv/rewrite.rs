@@ -2664,11 +2664,11 @@ impl JoinStore {
         }
     }
     /// The plan of `a = b` along the shortest stored path through `table`'s laws and terms of at most `cap` nodes, looked
-    /// for among 1000 terms at most (as the search's `JOIN_VISIT`), and the path's terms.
+    /// for among `join_visit()` terms at most, as the search, and the path's terms.
     fn path(&self, table: &RuleTable, a: Term, b: Term, cap: usize) -> Option<(PlanRc, Vec<Term>)> {
         let mut prev: hashbrown::HashMap<Term, Option<(Term, StoredStep, bool, u32)>> = [(a, None)].into_iter().collect();
-        let mut front = vec![a];
-        while !front.is_empty() && prev.len() <= 1000 {
+        let (mut front, visit) = (vec![a], join_visit());
+        while !front.is_empty() && prev.len() <= visit {
             for t in std::mem::take(&mut front) {
                 for &(u, step, back) in self.edges.get(&t).into_iter().flatten() {
                     let Some(&eq) = table.join_key.get(&step.law) else { continue };
@@ -2919,6 +2919,11 @@ fn join_need_skips_only_steps_over_the_cap() {
     assert!(matched > 1000 && exact > 100, "matched {matched}, exact for add's commutativity {exact}");
 }
 
+
+/// How many terms the join reaches at most, `JOIN_VISIT` (1000): its searches and `JoinStore`'s queries.
+fn join_visit() -> usize {
+    env_or("JOIN_VISIT", 1000)
+}
 
 /// The plan of `a = b` by joining them: breadth-first from both at once (one layer of the smaller frontier at a time) over
 /// `join_eqs`, through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or more than
@@ -3265,7 +3270,7 @@ impl Reached {
 /// expands it or its path meets (36.8% of new terms were expanded: "What the join's duplicates and term building are"),
 /// and plans only on the path that meets.
 fn join_search(a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>) -> Option<PlanRc> {
-    let (cap, visit, t0) = (a.size().max(b.size()) + 2, env_or("JOIN_VISIT", 1000usize), std::time::Instant::now());
+    let (cap, visit, t0) = (a.size().max(b.size()) + 2, join_visit(), std::time::Instant::now());
     // each reached term by its `sh`
     type Seen = hashbrown::HashTable<(u64, Reached)>;
     let get = |seen: &Seen, t: Term| seen.find(t.sh(), |e| e.0 == t.sh() && e.1.is(t)).expect("reached").1.step();
