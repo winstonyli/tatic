@@ -5265,6 +5265,17 @@ search, though: a proof through stored steps can exceed the search's size cap an
 so it changes the output and needs a quality gate, not the exactness gate. Classes are per thread, so the true overlap
 across a mine's 6 scoring threads is higher still.
 
+*E-graphs for the join (survey, 2026-10-20).*
+- Proofs. egg's explanations (Flatt et al., FMCAD 2022, arXiv 2209.03398) add no asymptotic overhead to congruence
+  closure: a greedy O(n log n) pass, smaller proofs than Z3 on 3,760 benchmarks.
+- Memory. AC rules are the known cause of e-graph blowup. AC-native matching over multisets (Rosin, Ullrich and Hack,
+  EGRAPHS 2026, preliminary) reports asymptotically less memory in some cases.
+- Changing rule sets. E-graphs only grow, and no source found retracts what a removed rule derived ("Incremental
+  Equality Saturation", EGRAPHS 2025, not read).
+The probe above places the sharing across rule sets, and the miner's rule sets add and drop candidate rules. So an
+e-graph per rule set shares little (1%), and one across rule sets would need its edges labeled by rule: that is the
+store of labeled steps above, with congruence closure on top.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
