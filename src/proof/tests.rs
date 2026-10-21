@@ -1244,8 +1244,8 @@ fn a_closure_created_in_a_leafs_own_top_level_expression_gets_a_universal_proof(
     // closure creation+call sits in the leaf's own top-level
     // expression (combined arithmetically with the recursive call),
     // not nested inside a self-call's own argument list --
-    // find_self_calls/denote_with_placeholders now cover this too
-    // (mirroring denote_closure_typed's own Term::Abs | Term::Rec
+    // find_self_calls/denote_closure now cover this too
+    // (mirroring denote_closure's own Term::Abs | Term::Rec
     // handling), not just a self-call argument's own closure creation.
     let mut s = TermStore::new();
     let y = s.var(0);
@@ -1463,7 +1463,7 @@ fn an_if_nested_inside_an_arithmetic_leaf_gets_a_universal_proof() {
     // `Prim`, not as the whole body of some branch, so `classify_tree`
     // doesn't extract it into the DecisionTree itself; it stays part
     // of the leaf's own expression instead, and (with no self-call
-    // inside it here) `find_self_calls`/`denote_with_placeholders`
+    // inside it here) `find_self_calls`/placeholder-mode `denote_closure`
     // just walk through it the same way they already walk a `Prim`.
     let mut s = TermStore::new();
     let n = s.var(0);
@@ -1495,7 +1495,7 @@ fn a_self_call_inside_a_nested_if_branch_gets_a_universal_proof_and_a_correct_in
     // either (it's the right-hand operand of the outer `+`), and this
     // time each of its two branches contains its own self-call
     // occurrence: `find_self_calls` must find both (in the same
-    // left-to-right order `denote_with_placeholders` substitutes them
+    // left-to-right order placeholder-mode `denote_closure` substitutes them
     // in), each becoming its own placeholder of the leaf's `combine`
     // function.
     let mut s = TermStore::new();
@@ -1537,7 +1537,7 @@ fn a_clo_typed_nested_if_as_a_direct_self_call_argument_gets_a_universal_proof()
     // -- `chosen = if n mod 2 == 0 then g else h` is a self-call's own
     // argument (threaded into the next iteration's `g` slot), and both
     // branches are `Clo`-typed parameters, not `Int`s -- exercises
-    // `denote_closure_typed`'s widened `Term::If` arm (mirroring
+    // `denote_closure`'s widened `Term::If` arm (mirroring
     // `denote_closure`'s three-way Int/Int-or-Clo/Clo match via
     // `ite_clo_ref`), which builds each self-call argument's own
     // denotation for the leaf's `Ev` constructor. `g`/`h` are each
@@ -1594,9 +1594,9 @@ fn a_clo_typed_nested_if_as_an_ad_hoc_closures_own_argument_gets_a_universal_pro
     // `x` and calling its own `h` parameter, so `h` is itself
     // Clo-typed) created and called within the leaf, *alongside* a
     // separate, visible self-call in the same leaf's `Prim` tree. This
-    // exercises `denote_with_placeholders`'s own widened `Term::If`
+    // exercises placeholder-mode `denote_closure`'s own widened `Term::If`
     // arm -- the leaf-specific walker that builds the leaf's `combine`
-    // function body -- rather than `denote_closure_typed`'s. `g`/`g2`
+    // function body -- rather than `denote_closure`'s. `g`/`g2`
     // are each called directly (`g(0)`/`g2(0)`) purely so
     // `infer_closure_arities` classifies both as `Clo`-typed.
     let mut s = TermStore::new();
@@ -2771,7 +2771,7 @@ fn a_closure_created_in_a_self_call_argument_capturing_a_closure_typed_loop_para
     // exercise the capture-typing question -- it would just be
     // rejected (or silently misclassified) for an unrelated reason.
     //
-    // Exercises `denote_closure_typed`'s own value-leaf registration
+    // Exercises `denote_closure`'s own value-leaf registration
     // with a `Clo`-typed capture, inside `build_universal`'s full
     // induction pipeline (not just the non-recursive `prove_closure_expr`
     // fragment `a_capture_of_a_closure_typed_value_gets_a_closure_proof`

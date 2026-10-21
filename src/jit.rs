@@ -1207,7 +1207,7 @@ mod tests {
         // directly against proof.rs: prove_tail_recursive_universal covers
         // a closure *created and called* inside a self-call argument too,
         // not just a closure-typed *parameter* (see proof.rs's own
-        // denote_closure_typed/prime_closure_postulates docs), so this
+        // denote_closure/prime_closure_postulates docs), so this
         // gets the universal theorem, not just per-sample relational
         // proofs.
         let mut s = TermStore::new();

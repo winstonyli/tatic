@@ -159,48 +159,6 @@ pub(super) fn dyn_frame_param_types(store: &TermStore, frame: &[DynVal]) -> Opti
         .collect()
 }
 
-/// Collects every literal anywhere in `h`'s own reachable structure,
-/// including inside a nested `Abs`/`Rec`'s own body -- unlike
-/// `collect_literals`/`collect_literals_closure`, which both deliberately
-/// treat a called or bare literal lambda as opaque (the universal proof
-/// never denotes a callee's own body, so it never needs to). `eval_dyn`
-/// might inline *any* literal lambda's own body (see this section's own
-/// docs), so every literal reachable anywhere -- not just at the top
-/// level -- needs to be pre-postulated (`ArithPostulates::lit`'s own
-/// documented precondition: every literal a term uses must be postulated
-/// before any `Var`-referencing postulate is pushed). Over-collecting
-/// (from a body that turns out never to need inlining) is harmless --
-/// `lit` is memoized -- so this doesn't try to predict which bodies
-/// `eval_dyn` will actually descend into, just walks everything once.
-pub(super) fn collect_literals_dyn(store: &TermStore, h: Hash, out: &mut Vec<i64>) {
-    match store.resolve(h) {
-        Term::Var(_) => {}
-        Term::Lit(n) => {
-            if !out.contains(n) {
-                out.push(*n);
-            }
-        }
-        Term::Prim(_, a, b) => {
-            let (a, b) = (*a, *b);
-            collect_literals_dyn(store, a, out);
-            collect_literals_dyn(store, b, out);
-        }
-        Term::If(c, t, e) => {
-            let (c, t, e) = (*c, *t, *e);
-            collect_literals_dyn(store, c, out);
-            collect_literals_dyn(store, t, out);
-            collect_literals_dyn(store, e, out);
-        }
-        Term::App(f, a) => {
-            let (f, a) = (*f, *a);
-            collect_literals_dyn(store, f, out);
-            collect_literals_dyn(store, a, out);
-        }
-        Term::Abs(body) => collect_literals_dyn(store, *body, out),
-        Term::Rec(inner) => collect_literals_dyn(store, *inner, out),
-    }
-}
-
 /// Builds `mk_env(v_1,...,v_n)` for a combinator whose relative capture
 /// indices are `captures`, reading each captured value's current value
 /// directly out of `frame` -- the per-instance analogue of
@@ -697,7 +655,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
     }
 
     let mut lits = Vec::new();
-    collect_literals_dyn(store, body, &mut lits);
+    collect_literals(store, body, &LitScope::AnyTerm, &mut lits);
 
     let mut combinators = ClosureCombinators::new(store);
     for n in lits {

@@ -18,7 +18,7 @@ use super::*;
 // Per leaf `i`, with `k_i` self-calls: `combine_i` (built once, reused at
 // several deeper points) is leaf `i`'s own expression with each
 // self-call occurrence replaced by one of `k_i` placeholders
-// (`denote_with_placeholders`); `ev_leaf_i` is `Ev`'s constructor for this
+// (placeholder-mode `denote_closure`); `ev_leaf_i` is `Ev`'s constructor for this
 // leaf (`push_path` for the path premises, then `v_1..v_{k_i}` and
 // `e_1:Ev(new_params_1,v_1)..e_{k_i}:..` for each self-call, concluding
 // `Ev(params, combine_i(params,vs))`); `leaf_case_ty_i` is `ev_rec`'s
@@ -57,7 +57,7 @@ use super::*;
 // ever denotes to `0` or `1`); `body` must have at least one leaf with a
 // self-call in it somewhere. A leaf's own expression *may* contain a
 // further nested `If`, purely arithmetic or choosing between two
-// `Clo`-typed values (`find_self_calls`/`denote_with_placeholders` both
+// `Clo`-typed values (`find_self_calls`/placeholder-mode `denote_closure` both
 // recurse into one, embedding it opaquely via `ite_ref`/`ite_clo_ref`,
 // same as `denote_closure` always has). `prove_tail_recursive_call`
 // already handles arbitrary branching
@@ -78,11 +78,10 @@ use super::*;
 // Deref<Target = ArithPostulates>` lets this whole pipeline keep calling
 // every plain-arithmetic postulate method unchanged). A closure-typed
 // self-call argument, or one fed to a closure call, may also be a freshly
-// *created* closure (`denote_closure_typed` mirrors `denote_closure`'s own
-// `Term::Abs`/`Term::Rec` handling via the same `ClosureCombinators`), not
-// just a bare parameter reference, and an `If` choosing between two
-// `Clo`-typed values is in scope too (`ite_clo_ref`, same as
-// `denote_closure`'s own) -- see `build_universal`'s own doc comment below
+// *created* closure (`denote_closure` handles `Term::Abs`/`Term::Rec` via
+// `ClosureCombinators` in every self-call mode), not just a bare parameter
+// reference, and an `If` choosing between two `Clo`-typed values is in scope
+// too (`ite_clo_ref`) -- see `build_universal`'s own doc comment below
 // for the one thing still out of scope here (a captured free variable).
 // `params_and_close_typed`'s scope locals are `Free`s (`RELATED_WORK.md`
 // §70), never pushed onto `globals`; a lazily-memoized postulate
@@ -95,25 +94,23 @@ use super::*;
 // exactly the shape `compile.rs`'s own
 // `self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles`
 // test and `capturing_closure_loop` benchmark already exercise, previously
-// compiled but never proven. `denote_closure_typed` (the self-call-argument
-// denotation `new_params_for` uses) mirrors `denote_closure`'s own
-// `Term::Abs`/`Term::Rec` handling almost verbatim, now that `arith` is a
-// full `ClosureCombinators` (not just `ClosurePostulates`) -- registering a
+// compiled but never proven. `denote_closure` (in `SelfCalls::Reject` mode,
+// the self-call-argument denotation `new_params_for` uses) handles them as it
+// does for `prove_closure_expr`, now that `arith` is a full
+// `ClosureCombinators` (not just `ClosurePostulates`) -- registering a
 // combinator, calling one directly, or partially applying one (still never
 // a *recursive* root, per `pap_ref`'s own restriction) all reuse the exact
 // same methods `prove_closure_expr` does. A leaf's own *top-level*
-// expression gets the identical treatment: `denote_with_placeholders`
-// (the placeholder-substitution-aware sibling `combine_i`'s body uses)
-// and `find_self_calls` (which recurses into a closure call's own
-// arguments, or treats a bare closure value as opaque, the same way
-// `collect_literals` already does) mirror `denote_closure_typed`'s/
-// `denote_closure`'s handling too -- e.g. `(\y. n+y)(5) + f(n-1)`, a
+// expression gets the identical treatment: `denote_closure` in
+// `SelfCalls::Placeholders` mode (what `combine_i`'s body uses) and
+// `find_self_calls` (which recurses into a closure call's own arguments, or
+// treats a bare closure value as opaque, the same way `collect_literals`
+// already does) -- e.g. `(\y. n+y)(5) + f(n-1)`, a
 // closure-call's result combined arithmetically with the recursive call
 // directly, not nested inside any self-call's own argument list.
 // `register`/`call_ref`/`pap_ref`, and transitively `mk_env_ref`/`env_ty`
-// for a capturing one, are all lazily memoized; either `denote_closure_typed`'s
-// or `denote_with_placeholders`'s first real call (from inside a temporary
-// scope) may trigger any of them for the first time. Also honestly scoped: `eval_and_prove`/
+// for a capturing one, are all lazily memoized; `denote_closure`'s first
+// real call in either mode (from inside a temporary scope) may trigger any of them for the first time. Also honestly scoped: `eval_and_prove`/
 // `build_ev_witness` (the *instance*, per-call specialization) remain
 // untouched and still reject `App`/`Abs` outright, so a concrete instance
 // proof for either shape still declines -- `kernel_verified` doesn't

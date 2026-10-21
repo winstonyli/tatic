@@ -497,7 +497,7 @@ pub(super) fn inner_closure_literal_value(
 ///
 /// Guarded by `combinator_return_type(root) == Some(Some(k))` and
 /// `args.len() == root_arity + k` (the whole thing fully resolves to
-/// `Int` -- matches `denote_with_placeholders`'s own identical
+/// `Int` -- matches placeholder-mode `denote_closure`'s own identical
 /// requirement, enforced there by calling the `Clo_k` value directly with
 /// exactly `k` `Int` arguments) -- `None` otherwise, not an error: a
 /// partial or chained over-application, or one whose own saturated call stays `Int`

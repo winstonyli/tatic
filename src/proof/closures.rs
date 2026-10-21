@@ -96,7 +96,7 @@ use super::*;
 // `build_read`'s own recursive case, when compiling a function that
 // is itself a capturing closure -- has no proof-side counterpart here,
 // not because it's deferred, but because it can't arise: `denote_closure`/
-// `denote_closure_typed` never enter a registered combinator's own body
+// `denote_closure` never enter a registered combinator's own body
 // (a call is always postulated opaque), and `compile::peel` always folds
 // consecutive `Abs` layers into one combinator before that combinator is
 // ever registered, so there is no way for this fragment to encounter one
@@ -330,7 +330,7 @@ pub(super) fn pap_extra_arity(store: &TermStore, root: Hash) -> usize {
 /// convention `find_self_calls`'s own recursion uses) -- also reused
 /// directly (with `self_idx` possibly `None`, and `arity`/`param_types`
 /// describing whatever ambient scope `h` sits in) by `denote_closure`/
-/// `denote_closure_typed`/`denote_with_placeholders`'s own nested-`If`
+/// `denote_closure`'s own nested-`If`
 /// case, to learn *which* arity's `ite_clo_ref`/`clo_ty` two `Clo`-typed
 /// branches share -- a fully general "what does this expression denote"
 /// structural classifier, not just a combinator-body-specific one; every
@@ -901,12 +901,12 @@ impl<'a> ClosureCombinators<'a> {
 
         // `h`'s own body's literals are never collected by any existing
         // pass (a combinator's body is always opaque to
-        // `collect_literals`/`collect_literals_closure`, by the same
+        // `collect_literals`, by the same
         // design that keeps it opaque to `denote_closure` -- see their own
         // docs) -- collected here, explicitly, before `denote` below needs
         // to read any of them back via `lit_ref`.
         let mut lits = Vec::new();
-        if !collect_literals(self.store, body, arity, None, None, &mut lits) {
+        if !collect_literals(self.store, body, &LitScope::Arith { arity, self_idx: None }, &mut lits) {
             return None;
         }
         for lit_n in lits {
@@ -1108,9 +1108,17 @@ impl<'a> ClosureCombinators<'a> {
         // opaque to this construction (its own literals are collected
         // later, when `call_eq_ref` runs on whichever one is concretely
         // chosen).
+        // every `cond` in `tree`, in pre-order; `Pap`-shaped leaves' own `args` are not collected here, as
+        // `clo_eq_ref_pap` doesn't: their literals are collected when `eval_and_prove`/`denote` runs on them
         let mut lits = Vec::new();
-        if !collect_closure_if_tree_literals(self.store, &tree, arity, &mut lits) {
-            return None;
+        let mut pending = vec![&tree];
+        while let Some(t) = pending.pop() {
+            if let DecisionTree::If { cond, then_branch, else_branch } = t {
+                if !collect_literals(self.store, *cond, &LitScope::Arith { arity, self_idx: None }, &mut lits) {
+                    return None;
+                }
+                pending.extend([&**else_branch, &**then_branch]);
+            }
         }
         for lit_n in lits {
             self.cp.arith.lit(lit_n);
@@ -1158,7 +1166,7 @@ impl<'a> ClosureCombinators<'a> {
             // RHS: recursively `ite_clo_k(denote(cond, params_full),
             // <then's value>, <else's value>)` at every internal node,
             // bottoming out at each leaf's own `register`/`mk_env_ref`
-            // value -- mirrors `denote_with_placeholders`'s own
+            // value -- mirrors placeholder-mode `denote_closure`'s own
             // `Term::If` (`Clo` branches) case structurally, generalized
             // from one step to the whole tree, over these abstract
             // quantified vars instead of a caller's real `params`.
@@ -1237,7 +1245,7 @@ impl<'a> ClosureCombinators<'a> {
         // the same reason).
         let mut lits = Vec::new();
         for &a in &args {
-            if !collect_literals(self.store, a, arity, None, None, &mut lits) {
+            if !collect_literals(self.store, a, &LitScope::Arith { arity, self_idx: None }, &mut lits) {
                 return None;
             }
         }
@@ -1358,7 +1366,7 @@ impl<'a> ClosureCombinators<'a> {
         // `call_eq_ref` runs on `g` concretely (`eval_and_prove_direct_call`).
         let mut lits = Vec::new();
         for &a in &args {
-            if !collect_literals(self.store, a, arity, None, None, &mut lits) {
+            if !collect_literals(self.store, a, &LitScope::Arith { arity, self_idx: None }, &mut lits) {
                 return None;
             }
         }
@@ -1804,23 +1812,6 @@ pub(super) fn closure_if_tree_leaves(tree: &DecisionTree, out: &mut Vec<Hash>) {
     }
 }
 
-/// `collect_literals` over every `cond` in `tree`, generalizing
-/// `clo_eq_ref_if_tree`'s own single-condition pre-pass to however many
-/// internal nodes the tree actually has. `Pap`-shaped leaves' own
-/// supplied `args` are *not* collected here, mirroring `clo_eq_ref_pap`'s
-/// own identical choice -- their own literals are collected later, when
-/// `eval_and_prove`/`denote` actually runs on them.
-pub(super) fn collect_closure_if_tree_literals(store: &TermStore, tree: &DecisionTree, arity: usize, lits: &mut Vec<i64>) -> bool {
-    match tree {
-        DecisionTree::Leaf(_) => true,
-        DecisionTree::If { cond, then_branch, else_branch } => {
-            collect_literals(store, *cond, arity, None, None, lits)
-                && collect_closure_if_tree_literals(store, then_branch, arity, lits)
-                && collect_closure_if_tree_literals(store, else_branch, arity, lits)
-        }
-    }
-}
-
 /// An `Abs`-shaped leaf's own `register`/`mk_env_ref` value expression,
 /// over abstract `params_full` -- `clo_eq_ref_if_tree`'s own single-pair
 /// `value_expr`, generalized to read a leaf's own captures from
@@ -1901,7 +1892,7 @@ pub(super) fn closure_leaf_call_value_expr(store: &TermStore, combinators: &mut 
 /// expression (`closure_leaf_value_expr` for `Abs`,
 /// `closure_leaf_pap_value_expr` for `Pap`, `closure_leaf_call_value_expr`
 /// for `Call`, dispatched via `leaf_shapes`). Mirrors
-/// `denote_with_placeholders`'s own `Term::If` (`Clo` branches) case
+/// placeholder-mode `denote_closure`'s own `Term::If` (`Clo` branches) case
 /// structurally, generalized from one step to the whole tree.
 pub(super) fn build_closure_if_tree_rhs(
     store: &TermStore,
@@ -2291,49 +2282,6 @@ pub(super) fn build_env_expr(combinators: &mut ClosureCombinators, captures: &[u
     Some(apply_n(mk_env, values))
 }
 
-/// Like `collect_literals`, but for the closures fragment: an `App` chain
-/// is only ever a closure call (resolved the same way `denote_closure`
-/// resolves one), never rejected outright the way `collect_literals`
-/// (built for the arithmetic-only fragments) rejects any bare `App`.
-/// `param_types[i]` is `Some(k)` for a closure-typed parameter (see
-/// `denote_closure`'s docs), `None` for a plain `Int` one.
-pub(super) fn collect_literals_closure(store: &TermStore, h: Hash, param_types: &[Option<usize>], out: &mut Vec<i64>) -> bool {
-    let all = |hs: &[Hash], out: &mut Vec<i64>| hs.iter().all(|&a| collect_literals_closure(store, a, param_types, out));
-    match compile::classify(store, h, param_types.len(), None) {
-        Shape::VarCall { var, args, .. } => param_types.get(var as usize).copied().flatten().is_some() && all(&args, out),
-        Shape::CombinatorCall { args, .. } => all(&args, out),
-        Shape::SelfCall(_) | Shape::OtherCall => false,
-        Shape::Var(_) => true,
-        Shape::Lit(n) => {
-            if !out.contains(&n) {
-                out.push(n);
-            }
-            true
-        }
-        Shape::Prim(_, a, b) => all(&[a, b], out),
-        Shape::If(c, t, e) => all(&[c, t, e], out),
-        Shape::Combinator { .. } => true, // a bare value -- opaque, nothing inside it to collect
-    }
-}
-
-/// Translates a closures-fragment term into a kernel expression -- see the
-/// section docs above for what each case represents on both readings.
-/// `params[i]`/`param_types[i]` describe the enclosing function's own
-/// `Var(i)`: `param_types[i] = Some(k)` for a closure-typed parameter
-/// always called with `k` arguments (`compile::infer_closure_arities`'s own
-/// classification, reindexed from its positional convention to `denote`'s
-/// by-`Var`-index one), `None` for a plain `Int` parameter. `params` are
-/// the parameters' postulates as `Const`s, which no later push shifts.
-pub(super) fn denote_closure(
-    store: &TermStore,
-    h: Hash,
-    combinators: &mut ClosureCombinators,
-    params: &[Expr],
-    param_types: &[Option<usize>],
-) -> Option<Denoted> {
-    denote_closure_typed(store, h, None, param_types, combinators, params)
-}
-
 /// Attempts to build an [`EquivalenceProof`] for `h`, covering every input,
 /// for the closures fragment `compile.rs` compiles, capturing, partially
 /// applied, self-recursive-combinator-calling, or none of those (see the
@@ -2374,7 +2322,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
         .collect();
 
     let mut lits = Vec::new();
-    if !collect_literals_closure(store, body, &param_types, &mut lits) {
+    if !collect_literals(store, body, &LitScope::Closure { arity, self_idx: None, param_types: &param_types }, &mut lits) {
         return None;
     }
 
@@ -2398,7 +2346,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
         params.push(combinators.cp.arith.p.get(pos));
     }
 
-    let denoted = denote_closure(store, body, &mut combinators, &params, &param_types)?;
+    let denoted = denote_closure(store, body, &mut SelfCalls::None, &param_types, &mut combinators, &params)?;
     // `result_ty` mirrors `denoted`'s own tag: `Int`'s postulate for a
     // `Denoted::Int`, or the specific `Clo_k` for a `Denoted::Clo` --
     // `k` re-derived structurally via `return_type_of` applied to the

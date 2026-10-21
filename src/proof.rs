@@ -103,7 +103,7 @@
 //!
 //! Each leaf also gets a `combine` function -- its own arithmetic
 //! expression with each self-call occurrence replaced by a placeholder
-//! (`denote_with_placeholders`) -- and applying `ev_rec` with the
+//! (placeholder-mode `denote_closure`) -- and applying `ev_rec` with the
 //! constant-`Int` motive and, per leaf, `combine` applied to the
 //! recursively-computed induction hypotheses gives `loop_val`, a term
 //! computing exactly what the compiled code computes: a base leaf's
@@ -137,7 +137,7 @@
 //! further nested `If`, either purely arithmetic (e.g.
 //! `n + (if c then 1 else 2)`) or choosing between two `Clo`-typed values
 //! (e.g. a self-call argument `f(n-1, if c then g else h)`) --
-//! `find_self_calls`/`denote_with_placeholders` recurse into it exactly
+//! `find_self_calls`/placeholder-mode `denote_closure` recurse into it exactly
 //! like a `Prim`, treating it as fully opaque via `ite_ref`/`ite_clo_ref`
 //! the same way `denote_closure` already does (no branch is ever resolved
 //! concretely at this, the universal, all-inputs level; a self-call
@@ -312,39 +312,49 @@ impl Default for ArithPostulates {
     }
 }
 
-/// Collects every distinct `Lit` value in `h`, returning `false` if `h`
-/// contains anything outside the pure fragment this module covers. With
-/// `self_idx: None` (the straight-line case), any `App` at all disqualifies
-/// `h`; with `self_idx: Some(_)` (the tail-recursive case), a
-/// fully-saturated self-call is instead recursed *into* (collecting
-/// literals from its argument expressions) -- any other `App`/`Abs`/`Rec`
-/// (e.g. genuinely non-tail recursion, as in a naive Fibonacci) still
-/// disqualifies it.
-/// `param_types` is `Some(..)` only for `build_universal`'s own closure-aware
-/// call (see its docs): when present, an `App` that isn't a self-call but
-/// *is* a fully-saturated call through a `Clo`-typed parameter (`Var(i)`
-/// with `param_types[i] = Some(k)`, `k` arguments) is recursed into (its
-/// arguments may still contain literals) instead of rejected outright.
-/// `None` (every other caller) keeps the original, closures-blind behavior:
-/// any bare `App` fails the whole collection.
-fn collect_literals(
-    store: &TermStore,
-    h: Hash,
-    arity: usize,
-    self_idx: Option<u32>,
-    param_types: Option<&[Option<usize>]>,
-    out: &mut Vec<i64>,
-) -> bool {
-    let all = |hs: &[Hash], out: &mut Vec<i64>| hs.iter().all(|&a| collect_literals(store, a, arity, self_idx, param_types, out));
+/// Which terms [`collect_literals`] walks, matching what the denoter that follows it accepts.
+pub(super) enum LitScope<'a> {
+    /// `denote`'s fragment (`Var`/`Lit`/`Prim`/`If`), plus, with `self_idx`, a saturated self-call, whose arguments are
+    /// collected: `prove_pure_expr`, the tail-recursive provers' `setup`, and the closure provers' arithmetic pre-passes.
+    Arith { arity: usize, self_idx: Option<u32> },
+    /// [`denote_closure`]'s fragment: also a call through a `Clo`-typed parameter at its own arity, a call to a closure
+    /// created right here (its arguments only: a combinator's body is never denoted), and a bare closure value, a bare
+    /// `Rec` only with no self-call in scope.
+    Closure { arity: usize, self_idx: Option<u32>, param_types: &'a [Option<usize>] },
+    /// Every term, bodies included, never failing: `eval_dyn` may inline any literal lambda's body, so every literal
+    /// anywhere must be postulated first (over-collecting is harmless, `lit` is memoised).
+    AnyTerm,
+}
+
+/// Collects every distinct `Lit` value in `h`, in walk order, returning `false` if `h` holds anything outside `scope`.
+/// Every literal a term uses must be postulated before any `Var`-referencing postulate is pushed
+/// (`ArithPostulates::lit`), so each prover runs this first.
+pub(super) fn collect_literals(store: &TermStore, h: Hash, scope: &LitScope, out: &mut Vec<i64>) -> bool {
+    let all = |hs: &[Hash], out: &mut Vec<i64>| hs.iter().all(|&a| collect_literals(store, a, scope, out));
+    let mut lit = |n: i64| {
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    };
+    let (arity, self_idx, param_types) = match *scope {
+        LitScope::Arith { arity, self_idx } => (arity, self_idx, None),
+        LitScope::Closure { arity, self_idx, param_types } => (arity, self_idx, Some(param_types)),
+        LitScope::AnyTerm => {
+            return match *store.resolve(h) {
+                Term::Var(_) => true,
+                Term::Lit(n) => {
+                    lit(n);
+                    true
+                }
+                Term::Prim(_, a, b) => all(&[a, b], out),
+                Term::If(c, t, e) => all(&[c, t, e], out),
+                Term::App(f, a) => all(&[f, a], out),
+                Term::Abs(b) | Term::Rec(b) => all(&[b], out),
+            };
+        }
+    };
     match compile::classify(store, h, arity, self_idx) {
         Shape::SelfCall(args) => all(&args, out),
-        // Any other call only in the closures-aware fragment: through a
-        // `Clo`-typed parameter at its own arity, or to a closure created
-        // right here (see denote_closure_typed's own docs). Only the
-        // arguments are ever collected from -- a combinator's own body is
-        // never denoted regardless of whether it's called, matching
-        // collect_literals_closure's identical "opaque, nothing to
-        // collect" treatment of a bare Abs/Rec value.
         Shape::VarCall { var, args, .. } => {
             param_types.is_some_and(|pt| pt.get(var as usize).copied().flatten() == Some(args.len())) && all(&args, out)
         }
@@ -352,20 +362,12 @@ fn collect_literals(
         Shape::OtherCall => false,
         Shape::Var(_) => true,
         Shape::Lit(n) => {
-            if !out.contains(&n) {
-                out.push(n);
-            }
+            lit(n);
             true
         }
         Shape::Prim(_, a, b) => all(&[a, b], out),
         Shape::If(c, t, e) => all(&[c, t, e], out),
-        // A freshly-created closure used as a bare value (not applied here
-        // -- see denote_closure_typed's own docs), only when `param_types`
-        // says we're in the closures-aware fragment at all (`None` means
-        // the plain-arithmetic-only callers, `prove_pure_expr`/
-        // `prove_tail_recursive_call`'s shared `setup`, where an `Abs`
-        // anywhere is still unconditionally out of scope).
-        Shape::Combinator { is_rec } => !is_rec && param_types.is_some(),
+        Shape::Combinator { is_rec } => param_types.is_some() && !(is_rec && self_idx.is_some()),
     }
 }
 
@@ -433,7 +435,7 @@ pub struct EquivalenceProof {
 /// convention). Returns `None` if `body` isn't in the covered fragment.
 fn setup(store: &TermStore, body: Hash, arity: usize, self_idx: Option<u32>) -> Option<(ArithPostulates, Vec<Expr>)> {
     let mut lits = Vec::new();
-    if !collect_literals(store, body, arity, self_idx, None, &mut lits) {
+    if !collect_literals(store, body, &LitScope::Arith { arity, self_idx }, &mut lits) {
         return None;
     }
 

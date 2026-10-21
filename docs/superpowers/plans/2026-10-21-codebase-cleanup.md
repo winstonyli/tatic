@@ -35,7 +35,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   (`Reject` | `Placeholders`), deleting `denote_with_placeholders` and the `denote_closure` wrapper; one
   `collect_literals(store, h, scope)` (`Arith`, `Closure`, `AnyTerm`; `collect_literals_dyn` included), the if-tree variant a
   loop over it. Then a throwaway spike: does the closure denoter give `denote_in`'s kernel terms on arithmetic input
-  (test corpus), keeping its exact hash memo? Fold it in only if so; record the result either way.
+  (test corpus), keeping its exact hash memo? Fold it in only if so; record the result either way. Merge done (this commit); spike: todo.
 - **C6 (D): bundle the parameters that travel together.** proof/: `store` beside `combinators` (which holds it) in about 20
   functions, and the `(params, concrete, facts)` triple; kernel: `Spaces, Globals, InferCache, CtxScope` in 7
   signatures. Removes 9 `too_many_arguments` allows. Status: ruled 2026-10-21: both halves: proof/ drops the `store` that
