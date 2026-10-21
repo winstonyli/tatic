@@ -5193,6 +5193,17 @@ searches against 8.42 M). What it would cost: finishing the met layer (+10% in `
 of a met search's layers against the path's terms, and a smallest-key choice. It is cheaper than spike 3 by the second
 walk and the wider trace; whether it beats the left-to-right order is unmeasured.
 
+*Pair tests and one canonical path: exact, but slower than the left-to-right order (spike, 2026-10-20, runs
+`2026-10-20-pair-exact`, `-pair-cost`; `patches/pair_spike.patch` mode 4, not committed).* Built as surveyed. A failed
+search's trace was the walked terms with their subterms, as in mode 3, and a pair test that disagreed with the walk
+would have panicked; none did. No order and inner first then mined the same rules in all 15 loops and made the same
+9.34 M searches (29% load). Inner first took 345 against 430 us per search (-20%) and 3264 against 3914 s of job CPU
+(-17%). Against the committed left-to-right order (`bv_guard`, same gate, 26% load), inner first with this trace ran
+349 against 269 us per search (+30%) and 3260 against 2372 s of job CPU (+37%). It also made 9.34 M against 8.42 M
+searches, but the search count moves with the rule picks. So every trace no order changes costs more than inner first
+saves over the left-to-right order. Finishing the met layer, the pair tests and the wider failed trace together outweigh
+the skip. Inner first is decided against (PARKED).
+
 *Related work on canonical paths (surveyed 2026-10-20).*
 - Partial-order reduction. The join's canonical orders resemble sleep sets: they cut transitions, not states. Persistent
   sets also cut states, so they would shrink the reached set, and every trace with it. That changes the output, so it
