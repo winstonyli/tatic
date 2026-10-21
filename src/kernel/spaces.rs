@@ -408,13 +408,6 @@ impl Spaces {
         self.memos.borrow_mut().clear();
     }
 
-    /// Nodes in both spaces (`take_built`'s count of new nodes is this one's growth).
-    #[cfg(feature = "record-defeq")]
-    pub(crate) fn len(&self) -> usize {
-        let i = self.get();
-        i.persistent.nodes.len() + i.region.nodes.len()
-    }
-
     #[cfg(test)]
     fn persistent_len(&self) -> usize {
         self.get().persistent.nodes.len()

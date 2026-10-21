@@ -34,8 +34,7 @@
 //! This is the trusted core: the proof pipeline (`proof`, `jit`) builds terms and has this module check them; nothing
 //! else decides equality or typing. Layout: this file holds `Node`/`Expr`, `shift`/`instantiate`, the hash-consing
 //! layer (`hc`), `whnf`/`def_eq`/`normalize` and `infer`/`check`. Child modules: `postulates` (builders over `Globals`,
-//! not read by the checker) and `tests`. The closure-based `kernel_lazy::def_eq` is an untrusted second evaluator used
-//! to test `def_eq` differentially.
+//! not read by the checker) and `tests`.
 
 use hashbrown::HashMap;
 use std::fmt;
@@ -333,8 +332,6 @@ impl Spaces {
     }
 
     pub(crate) fn mk(&self, n: Node<Expr>) -> Expr {
-        #[cfg(feature = "record-defeq")]
-        BUILT.with(|c| c.set(c.get() + 1));
         let r = self.build(n.map_kids(|c, _| self.res(&c)));
         Expr::at(r, self.epoch())
     }
@@ -389,22 +386,6 @@ impl Spaces {
             self.set_uses_at(self.res(e), (1 << 30 | d << 15 | m) << 1 | r as u32);
         }
     }
-}
-
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    /// `mk` calls since the last [`take_built`], and the spaces' node count then.
-    static BUILT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static NEW: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Probe: the number of `mk` calls and of new nodes (the spaces' growth; a region that closed in between counts as
-/// shrinking) since the last call, on this thread.
-#[cfg(feature = "record-defeq")]
-pub fn take_built() -> (u64, u64) {
-    let len = with_spaces(|s| s.len());
-    let before = NEW.with(|n| n.replace(len));
-    (BUILT.with(|b| b.replace(0)), len.saturating_sub(before) as u64)
 }
 
 // --- stack growth ----------------------------------------------------------
@@ -809,7 +790,6 @@ fn shift_in(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// `shift` for an `e` already known to have a loose variable at or above
 /// `cutoff` (and `amount != 0`).
 fn shift_unchecked(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
-    walk_count(1);
     grow(|| match s.node(e) {
         Node::Var(k) if k >= cutoff => var((k as i32 + amount) as u32),
         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
@@ -1080,7 +1060,6 @@ fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
 
 /// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo.
 fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
-    walk_count(0);
     let m = args.len() as u32;
     let go = |x: Expr, under: bool| {
         let d = d + under as u32;
@@ -1102,44 +1081,7 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
     };
     grow(|| match s.node(e) {
         Node::Var(k) if k >= d + m => var(k - m),
-        Node::Var(k) if k >= d => {
-            let arg = args[(m - 1 - (k - d)) as usize];
-            // Probe slots: 5 uses, 6 at depth 0, 7 deeper with a closed argument, 8 deeper with
-            // loose variables, 9 `shift` visits those last uses cost.
-            walk_count(5);
-            if d == 0 {
-                walk_count(6);
-            } else if s.loose(arg) == 0 {
-                walk_count(7);
-            } else {
-                walk_count(8);
-            }
-            #[cfg(feature = "record-defeq")]
-            let v0 = WALKS.with(|w| w[1].get());
-            let r = shift_in(s, arg, 0, d as i32);
-            #[cfg(feature = "record-defeq")]
-            if d > 0 && s.loose(arg) > 0 {
-                // Slots 10/11: uses whose argument mentions a binder `conv` opened (internal) or
-                // only the checker's context; 12/13 the shift visits each class cost.
-                let k = INTERNAL.with(|c| c.get());
-                let internal = (0..k).any(|i| is_var_free(s, arg, i));
-                let cost = WALKS.with(|w| w[1].get()) - v0;
-                // Slots 15/16: distinct (argument, depth) pairs within one `def_eq` and the shift
-                // visits they cost, i.e. what a per-query shift memo would still pay.
-                let fresh = SEEN.with(|m| m.borrow_mut().insert((node_key(arg), d)));
-                WALKS.with(|w| {
-                    if fresh {
-                        w[15].set(w[15].get() + 1);
-                        w[16].set(w[16].get() + cost);
-                    }
-                    w[9].set(w[9].get() + cost);
-                    let (n, c) = if internal { (10, 12) } else { (11, 13) };
-                    w[n].set(w[n].get() + 1);
-                    w[c].set(w[c].get() + cost);
-                });
-            }
-            r
-        }
+        Node::Var(k) if k >= d => shift_in(s, args[(m - 1 - (k - d)) as usize], 0, d as i32),
         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
         n => s.mk(n.map_kids(&go)),
     })
@@ -1240,9 +1182,6 @@ struct InferCache {
     lows: IdMap<(Key, u32), u32>,
     /// (context id, lowest loose variable, loose range) to [`InferCache::memo_context`]'s answer.
     context_of: IdMap<(u32, u32, u32), (u32, u32)>,
-    /// Probe: (node key, signature of the bindings it can depend on) seen so far.
-    #[cfg(feature = "record-defeq")]
-    relaxed: std::collections::HashSet<(u64, u64)>,
 }
 
 thread_local! {
@@ -1262,7 +1201,6 @@ fn with_infer_cache<R>(f: impl FnOnce(&mut InferCache) -> R) -> R {
 impl InferCache {
     /// The id of context `cid` extended by a binder of type `a`.
     fn enter(&mut self, s: &Spaces, cid: u32, a: &Expr) -> u32 {
-        walk_count(21);
         let next = &mut self.next;
         let info = &mut self.info;
         *self.contexts.entry((cid, s.key(a))).or_insert_with(|| {
@@ -1324,8 +1262,6 @@ impl InferCache {
             path,
             lows,
             context_of,
-            #[cfg(feature = "record-defeq")]
-            relaxed,
         } = self;
         empty_map(types);
         empty_map(contexts);
@@ -1336,8 +1272,6 @@ impl InferCache {
         empty_vec(info);
         empty_vec(path);
         *next = 0;
-        #[cfg(feature = "record-defeq")]
-        relaxed.clear();
     }
 
     /// An id no other context has: for a binder type that isn't a node
@@ -1420,38 +1354,6 @@ impl InferCache {
         self.path = path;
         w
     }
-
-    /// Probe: a signature of the innermost bindings `e` can depend on in context `cid` (the loose
-    /// range of `e`, closed over the loose ranges of those bindings' own types), and how many that
-    /// is.
-    #[cfg(feature = "record-defeq")]
-    fn relevant_signature(&self, cid: u32, e: &Expr) -> (u64, u32) {
-        let mut chain: Vec<(u64, u32)> = Vec::new();
-        let mut c = cid;
-        while c != 0 {
-            let CtxBinder { parent, ty, loose, .. } = self.info[c as usize];
-            chain.push((ty.map_or(0, |k| k as u64), loose));
-            c = parent;
-        }
-        let mut need = e.loose() as usize;
-        let mut p = 0;
-        while p < need && p < chain.len() {
-            let m = chain[p].1;
-            if m == u32::MAX {
-                need = chain.len();
-            } else {
-                need = need.max(p + 1 + m as usize);
-            }
-            p += 1;
-        }
-        let take = need.min(chain.len());
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &(ptr, _) in &chain[..take] {
-            h = (h ^ ptr).wrapping_mul(0x100_0000_01b3);
-        }
-        h ^= (need > chain.len()) as u64;
-        (h, take as u32)
-    }
 }
 
 /// Weak head normal form: reduce only the outermost redex chain.
@@ -1505,8 +1407,6 @@ fn beta_spine(s: &Spaces, e: &Expr, head: &Expr) -> Option<Expr> {
         body = inner;
         taken += 1;
     }
-    #[cfg(feature = "record-defeq")]
-    BETAS.with(|c| c.set(c.get() + taken as u64));
     let used: Vec<&Expr> = args[..taken].iter().collect();
     let mut r = instantiate_n(s, &body, &used, 0);
     for a in &args[taken..] {
@@ -1546,8 +1446,6 @@ fn closed_prefix_spine(s: &Spaces, e: &Expr, p: &Expr) -> Option<Expr> {
     if taken == 0 {
         return None;
     }
-    #[cfg(feature = "record-defeq")]
-    BETAS.with(|c| c.set(c.get() + taken as u64));
     let used: Vec<&Expr> = args[..taken].iter().collect();
     let mut r = instantiate_n(s, &body, &used, 0);
     for a in &args[taken..] {
@@ -1618,8 +1516,6 @@ fn whnf_step(s: &Spaces, e: &Expr) -> Option<Expr> {
             let wf = whnf_in(s, &f);
             match s.node(&wf) {
                 Node::Lam(_, body) => {
-                    #[cfg(feature = "record-defeq")]
-                    BETAS.with(|c| c.set(c.get() + 1));
                     let r = subst_top(s, &body, &a);
                     Some(whnf_in(s, &r))
                 }
@@ -1705,7 +1601,6 @@ fn nf_in(s: &Spaces, e: &Expr) -> Expr {
 /// `nf` of a term already in weak head normal form: its constructor over
 /// the `nf` of each child.
 fn nf_whnf(s: &Spaces, w: &Expr) -> Expr {
-    walk_count(4);
     grow(|| match s.node(w) {
         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *w,
         n => s.mk(n.map_kids(|c, _| nf_in(s, &c))),
@@ -1722,10 +1617,6 @@ pub fn def_eq(a: &Expr, b: &Expr) -> bool {
 
 /// [`def_eq`] inside the kernel.
 fn def_eq_in(s: &Spaces, a: &Expr, b: &Expr) -> bool {
-    #[cfg(feature = "record-defeq")]
-    let _g = site(3);
-    #[cfg(feature = "record-defeq")]
-    SEEN.with(|m| m.borrow_mut().clear());
     EQUAL.with(|m| m.borrow_mut().clear());
     conv(s, a, b)
 }
@@ -1768,37 +1659,7 @@ fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
 /// Compares two weak head normal forms: same constructor, then `conv` on
 /// each pair of children, in the order `nf_in` visits them.
 fn conv_whnf(s: &Spaces, x: &Expr, y: &Expr) -> bool {
-    walk_count(3);
     let (nx, ny) = (s.node(x), s.node(y));
-    #[cfg(feature = "record-defeq")]
-    {
-        // Probe: track how many binders `conv` has opened (by comparing bodies without
-        // instantiating them), so a loose variable in a substituted argument can be told apart as
-        // internal or a reference to the checker's context.
-        let mut idx = 0;
-        let under = match nx {
-            Node::Pi(..) | Node::Lam(..) | Node::W(..) | Node::Sigma(..) => 1,
-            Node::Pair(..) | Node::WRec { .. } => 1,
-            _ => usize::MAX,
-        };
-        let x_pair = matches!(nx, Node::Pair(..));
-        return grow(|| {
-            nx.same_shape(&ny, |p, q| {
-                let opens = if x_pair { idx == 0 } else { idx == under };
-                idx += 1;
-                if opens {
-                    walk_count(14);
-                    INTERNAL.with(|c| c.set(c.get() + 1));
-                }
-                let r = conv(s, p, q);
-                if opens {
-                    INTERNAL.with(|c| c.set(c.get() - 1));
-                }
-                r
-            })
-        });
-    }
-    #[cfg(not(feature = "record-defeq"))]
     grow(|| nx.same_shape(&ny, |p, q| conv(s, p, q)))
 }
 
@@ -1865,17 +1726,6 @@ fn ctx_lookup(s: &Spaces, ctx: &CtxScope, k: u32) -> Result<Expr, String> {
     // current length requires shifting by `k + 1`, not `k` — e.g. for
     // `Var(0)` itself (k=0), its stored type was written one binder
     // shallower than "now", so it still needs a shift of 1.
-    #[cfg(feature = "record-defeq")]
-    let _g = site(1);
-    #[cfg(feature = "record-defeq")]
-    {
-        // Probe slot 17: `shift` visits spent in this lookup.
-        let v0 = WALKS.with(|w| w[1].get());
-        let r = shift_in(s, ty, 0, k as i32 + 1);
-        WALKS.with(|w| w[17].set(w[17].get() + w[1].get() - v0));
-        return Ok(r);
-    }
-    #[cfg(not(feature = "record-defeq"))]
     Ok(shift_in(s, ty, 0, k as i32 + 1))
 }
 
@@ -2060,36 +1910,16 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 /// costs unshared terms no hashing. Only successes are stored: an error
 /// ends the whole check.
 fn infer_rc(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr) -> Result<Expr, String> {
-    // Probe slots 18 unshared calls, 19 memo hits, 20 memo misses (inserts), 21 binder entries
-    // (`InferCache::enter`).
     if !s.shared(e) {
-        walk_count(18);
         return infer_node(s, g, ic, ctx, cid, e);
     }
     // Keyed by the window of binders the node can depend on, not the whole context, so one
     // inference serves every binder stack that agrees on that window (bit-vector design doc §50:
     // 96 to 99.5% of the whole-context misses were such repeats).
     let key = (s.key(e), ic.memo_context(s, cid, e));
-    #[cfg(feature = "record-defeq")]
-    {
-        // Probe slots 22 relaxed-key lookups, 23 strict misses a relaxed key would have hit, 24 sum
-        // of window sizes.
-        let (sig, take) = ic.relevant_signature(cid, e);
-        walk_count(22);
-        WALKS.with(|w| w[24].set(w[24].get() + take as u64));
-        let seen = !ic.relaxed.insert((node_key(e), sig));
-        if seen && !ic.types.contains_key(&key) {
-            walk_count(23);
-            if s.loose(e) == 0 {
-                walk_count(25);
-            }
-        }
-    }
     if let Some(ty) = ic.types.get(&key) {
-        walk_count(19);
         return Ok(s.expr_of(ty));
     }
-    walk_count(20);
     let ty = infer_node(s, g, ic, ctx, cid, e)?;
     ic.types.insert(key, s.key(&ty));
     Ok(ty)
@@ -2146,8 +1976,6 @@ fn infer_node(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, 
                 pending.push(a);
                 ty = cod;
             }
-            #[cfg(feature = "record-defeq")]
-            let _g = site(2);
             Ok(instantiate_n(s, &ty, &pending, 0))
         }
         Node::Id(a, x, y) => {
@@ -2270,50 +2098,6 @@ pub fn check(ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
     check_in(&Globals::new(), ctx, e, expected)
 }
 
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    /// `check_rc`'s comparisons, persisted so their readers can use them after the check's region closes.
-    static DEFEQ_LOG: std::cell::RefCell<Vec<(PExpr, PExpr, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static BETAS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-// Node visits by `[instantiate, shift, (unused), conv_whnf, nf_whnf]` since the last
-// `take_walk_counts`, to see which traversals pay by tree node. Compiled out by default.
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static WALKS: [std::cell::Cell<u64>; 26] = const { [const { std::cell::Cell::new(0) }; 26] };
-}
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static SEEN: std::cell::RefCell<hashbrown::HashSet<(u64, u32)>> = std::cell::RefCell::new(hashbrown::HashSet::new());
-}
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static INTERNAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-// Probe: `[instantiate, shift, eq]` visits by call site (0 other, 1 `ctx_lookup`, 2 `App` rule's
-// `subst_top`, 3 `def_eq`).
-#[cfg(feature = "record-defeq")]
-thread_local! {
-    static SITE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static SITES: [[std::cell::Cell<u64>; 3]; 4] = const { [const { [const { std::cell::Cell::new(0) }; 3] }; 4] };
-}
-#[cfg(feature = "record-defeq")]
-struct SiteGuard(usize);
-#[cfg(feature = "record-defeq")]
-impl Drop for SiteGuard {
-    fn drop(&mut self) {
-        SITE.with(|c| c.set(self.0));
-    }
-}
-#[cfg(feature = "record-defeq")]
-fn site(i: usize) -> SiteGuard {
-    SiteGuard(SITE.with(|c| c.replace(i)))
-}
 /// (distinct nodes, nodes counted once per occurrence) in `e`.
 pub fn term_sizes(e: &Expr) -> (usize, u128) {
     fn go(e: &Expr, seen: &mut HashMap<u64, u128>) -> u128 {
@@ -2335,38 +2119,6 @@ pub fn term_sizes(e: &Expr) -> (usize, u128) {
     let tree = go(e, &mut seen);
     (seen.len() + 1, tree)
 }
-#[cfg(feature = "record-defeq")]
-pub fn take_site_counts() -> [[u64; 3]; 4] {
-    SITES.with(|s| std::array::from_fn(|i| std::array::from_fn(|j| s[i][j].replace(0))))
-}
-#[cfg(feature = "record-defeq")]
-#[inline(always)]
-fn walk_count(i: usize) {
-    WALKS.with(|w| w[i].set(w[i].get() + 1));
-    if i < 3 {
-        let site = SITE.with(|c| c.get());
-        SITES.with(|s| s[site][i].set(s[site][i].get() + 1));
-    }
-}
-#[cfg(not(feature = "record-defeq"))]
-#[inline(always)]
-fn walk_count(_: usize) {}
-#[cfg(feature = "record-defeq")]
-pub fn take_walk_counts() -> [u64; 26] {
-    WALKS.with(|w| std::array::from_fn(|i| w[i].replace(0)))
-}
-
-/// Beta steps `whnf_step` took since the last call.
-#[cfg(feature = "record-defeq")]
-pub fn take_beta_count() -> u64 {
-    BETAS.with(|c| c.replace(0))
-}
-
-/// Drains the `(inferred, expected, context depth)` triples `check_rc` compared since the last call.
-#[cfg(feature = "record-defeq")]
-pub fn take_defeq_log() -> Vec<(Expr, Expr, u32)> {
-    DEFEQ_LOG.with(|l| std::mem::take(&mut *l.borrow_mut())).into_iter().map(|(a, b, d)| (a.get(), b.get(), d)).collect()
-}
 
 fn check_rc(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr, expected: &Expr) -> Result<(), String> {
     grow(|| {
@@ -2387,8 +2139,6 @@ fn check_rc(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, ci
             return r;
         }
         let inferred = infer_rc(s, g, ic, ctx, cid, e)?;
-        #[cfg(feature = "record-defeq")]
-        DEFEQ_LOG.with(|l| l.borrow_mut().push((persist(inferred.clone()), persist(expected.clone()), (ctx.base.len() + ctx.local.len()) as u32)));
         if def_eq_in(s, &inferred, expected) {
             Ok(())
         } else {

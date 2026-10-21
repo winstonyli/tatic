@@ -603,8 +603,7 @@ pub fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
 /// by no more than 4.5x per doubling of the width, and stay under a fixed size at n=64. Both were
 /// breached by an unshared shift in `cong_n`/`trans_proof` (design doc sections 54-56: 8x per doubling,
 /// 1.58M nodes at n=64, against 3.0x and 288k now). A new proof builder that copies where it should
-/// share fails here, not months later in a timing. Check-time visit counts are gated by hand with
-/// `walk_counts_on_hard_queries` (needs the `record-defeq` feature).
+/// share fails here, not months later in a timing.
 #[test]
 pub fn add_zero_proof_size_scales_gently() {
     let size = |n: usize| tatic::kernel::term_sizes(&add_zero_proof(n, 0).0).0;
@@ -849,121 +848,7 @@ pub fn add_shared_zero_scaling() {
     }
 }
 
-/// Replays every `def_eq` query the `add x 0 = x` lemma's check makes through the kernel and
-/// through `kernel_lazy`, same exe back to back. Needs `--features record-defeq`.
-/// Run: `cargo test --release --features record-defeq --test church_bv replay_defeq -- --ignored --nocapture`
-#[cfg(feature = "record-defeq")]
-#[test]
-#[ignore]
-pub fn replay_defeq_queries() {
-    use tatic::kernel_lazy::{def_eq_lazy_shared, take_stats};
-    for n in [8usize, 16, 32] {
-        let (proof, stmt) = add_zero_proof(n, 0);
-        let _ = take_defeq_log();
-        ck(&format!("n={n}"), &proof, &stmt);
-        let qs = take_defeq_log();
-        let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
-        {
-            // Probe: eq visits per easy (equal) query, bucketed.
-            let _ = take_walk_counts();
-            let mut buckets = [(0u64, 0u64); 5]; // (queries, visits) for 0, 1-3, 4-15, 16-63, 64+
-            for (a, b, _) in qs.iter().filter(|(a, b, _)| a == b) {
-                let v0 = take_walk_counts()[2];
-                assert!(def_eq(a, b));
-                let v = take_walk_counts()[2];
-                let _ = v0;
-                let k = match v { 0 => 0, 1..=3 => 1, 4..=15 => 2, 16..=63 => 3, _ => 4 };
-                buckets[k].0 += 1;
-                buckets[k].1 += v;
-            }
-            println!("EASY n={n}: (queries, eq visits) by visits-per-query 0 / 1-3 / 4-15 / 16-63 / 64+ = {buckets:?}");
-        }
-        let t0 = Instant::now();
-        let _ = take_beta_count();
-        let k: Vec<bool> = hard.iter().map(|(a, b, _)| def_eq(a, b)).collect();
-        let tk = t0.elapsed();
-        let kernel_betas = take_beta_count();
-        let _ = take_stats();
-        let t1 = Instant::now();
-        let s: Vec<bool> = hard.iter().map(|(a, b, d)| def_eq_lazy_shared(a, b, *d)).collect();
-        let ts = t1.elapsed();
-        let st = take_stats();
-        println!("REPLAY n={n}: queries={} hard={} kernel {tk:?} shared {ts:?} agree={} kernel_betas={kernel_betas} lazy_betas={}", qs.len(), hard.len(), k == s, st.betas);
-        println!("REPLAY n={n}: evals={} conv={}", st.eval_calls, st.conv_calls);
-    }
-}
-
-/// Which traversals pay by tree node: visits per kernel function on the hard queries.
-/// Run like `replay_defeq_queries`.
-#[cfg(feature = "record-defeq")]
-#[test]
-#[ignore]
-pub fn walk_counts_on_hard_queries() {
-    for n in [8usize, 16, 32, 64] {
-        let (proof, stmt) = add_zero_proof(n, 0);
-        let _ = take_defeq_log();
-        let _ = take_site_counts();
-        let _ = take_walk_counts();
-        let _ = tatic::kernel::take_built();
-        let tck = Instant::now();
-        ck(&format!("n={n}"), &proof, &stmt);
-        {
-            let (calls, new) = tatic::kernel::take_built();
-            println!("HC n={n}: mk calls in the check={calls}, new nodes={new} ({:.1}% were intern hits)", 100.0 * calls.saturating_sub(new) as f64 / calls.max(1) as f64);
-        }
-        println!("CHECK n={n}: whole check {:?}", tck.elapsed());
-        { let (pd, pt) = tatic::kernel::term_sizes(&proof); let (sd, st) = tatic::kernel::term_sizes(&stmt); println!("SIZE n={n}: proof dag={pd} tree={pt}; statement dag={sd} tree={st}"); }
-        { let w = take_walk_counts(); println!("CHECK n={n}: whole-check visits instantiate={} shift={} eq={} conv_whnf={} shift-in-ctx_lookup={}", w[0], w[1], w[2], w[3], w[17]); println!("INFER-MEMO n={n}: single-ref calls={} hits={} misses={} binder entries={}", w[18], w[19], w[20], w[21]); println!("RELAXED-MEMO n={n}: memo-eligible lookups={} extra hits under a relevance key={} of which closed nodes={} (strict misses {}), mean window={:.1}", w[22], w[23], w[25], w[20], w[24] as f64 / w[22].max(1) as f64); }
-        {
-            let sc = take_site_counts();
-            println!("SITES n={n} [instantiate, shift, eq]: other={:?} ctx_lookup={:?} app_subst={:?} def_eq={:?}", sc[0], sc[1], sc[2], sc[3]);
-        }
-        let qs = take_defeq_log();
-        let hard: Vec<_> = qs.iter().filter(|(a, b, _)| a != b).collect();
-        {
-            // Probe: eq visits per easy (equal) query, bucketed.
-            let _ = take_walk_counts();
-            let mut buckets = [(0u64, 0u64); 5]; // (queries, visits) for 0, 1-3, 4-15, 16-63, 64+
-            for (a, b, _) in qs.iter().filter(|(a, b, _)| a == b) {
-                let v0 = take_walk_counts()[2];
-                assert!(def_eq(a, b));
-                let v = take_walk_counts()[2];
-                let _ = v0;
-                let k = match v { 0 => 0, 1..=3 => 1, 4..=15 => 2, 16..=63 => 3, _ => 4 };
-                buckets[k].0 += 1;
-                buckets[k].1 += v;
-            }
-            println!("EASY n={n}: (queries, eq visits) by visits-per-query 0 / 1-3 / 4-15 / 16-63 / 64+ = {buckets:?}");
-        }
-        let _ = take_walk_counts();
-        let _ = take_beta_count();
-        let t0 = Instant::now();
-        for (a, b, _) in &hard {
-            assert!(def_eq(a, b));
-        }
-        let w = take_walk_counts();
-        println!(
-            "WALK n={n}: time={:?} betas={} instantiate={} shift={} eq={} conv_whnf={} nf_whnf={}",
-            t0.elapsed(),
-            take_beta_count(),
-            w[0], w[1], w[2], w[3], w[4]
-        );
-        println!(
-            "PROBE n={n}: uses={} depth0={} deeper-closed={} deeper-loose={} shift visits from deeper-loose={} of {}",
-            w[5], w[6], w[7], w[8], w[9], w[1]
-        );
-        println!(
-            "PROBE2 n={n}: conv binders opened={}; deeper-loose uses internal={} ctx-only={}; shift visits internal={} ctx-only={}",
-            w[14], w[10], w[11], w[12], w[13]
-        );
-        println!(
-            "PROBE3 n={n}: distinct (arg,depth) shifts per def_eq={} of {}; their shift visits={} of {}",
-            w[15], w[8], w[16], w[1]
-        );
-    }
-}
-
-/// Whole-check wall time without the `record-defeq` feature, best of 3 per width, with the machine's
+/// Whole-check wall time, best of 3 per width, with the machine's
 /// CPU load before and after (`LONG_RUNS.md`): the figure to compare across kernel changes.
 #[test]
 #[ignore]

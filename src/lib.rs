@@ -4,9 +4,6 @@ pub mod eval;
 pub(crate) mod ir;
 pub mod jit;
 pub mod kernel;
-// untrusted prototype, called only by its own tests and the record-defeq replay harness
-#[cfg(any(test, feature = "record-defeq"))]
-pub mod kernel_lazy;
 pub(crate) mod lower_wat;
 pub mod proof;
 pub mod rng;
