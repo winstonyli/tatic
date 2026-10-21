@@ -958,10 +958,10 @@ mod hc {
     }
 
     /// An id for the argument list: the node's key for one argument (`LIST_BIT` clear), `LIST_BIT | n` for the `n`-th
-    /// list of several. Always `Some`.
-    pub fn args_id(s: &Spaces, args: &[&Expr]) -> Option<Aid> {
+    /// list of several.
+    pub fn args_id(s: &Spaces, args: &[&Expr]) -> Aid {
         if let [a] = args {
-            return Some(s.key(a));
+            return s.key(a);
         }
         // The keys go in a stack buffer when they fit; the set is only allocated for a new list.
         let mut buf = [0u32; 8];
@@ -975,12 +975,12 @@ mod hc {
         };
         let mut m = s.memos.borrow_mut();
         if let Some(&n) = m.arg_sets.get(keys) {
-            return Some(n);
+            return n;
         }
         let n = m.arg_sets.len() as u32;
         assert!(n < LIST_BIT, "argument lists ran out of ids");
         m.arg_sets.insert(keys.to_vec(), LIST_BIT | n);
-        Some(LIST_BIT | n)
+        LIST_BIT | n
     }
 
     /// Whether `x` is too small for the instantiation memo to pay: at most two levels above its
@@ -991,15 +991,12 @@ mod hc {
         s.height(x) <= 2
     }
 
-    pub fn inst_get(s: &Spaces, x: &Expr, aid: Option<Aid>, d: u32) -> Option<Expr> {
-        let aid = aid?;
+    pub fn inst_get(s: &Spaces, x: &Expr, aid: Aid, d: u32) -> Option<Expr> {
         s.memos.borrow().inst.get(&(s.key(x), aid, d)).map(|r| s.expr_of(r))
     }
 
-    pub fn inst_put(s: &Spaces, x: &Expr, aid: Option<Aid>, d: u32, r: &Expr) {
-        if let Some(aid) = aid {
-            s.memos.borrow_mut().inst.insert((s.key(x), aid, d), s.key(r));
-        }
+    pub fn inst_put(s: &Spaces, x: &Expr, aid: Aid, d: u32, r: &Expr) {
+        s.memos.borrow_mut().inst.insert((s.key(x), aid, d), s.key(r));
     }
 
     /// `x`'s weak head normal form, if the memos have it. `whnf` reads no context, so an answer holds for the whole
@@ -1081,8 +1078,8 @@ fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
     inst_rec(s, e, args, hc::args_id(s, args), d)
 }
 
-/// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo (`None`: none).
-fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Option<Aid>, d: u32) -> Expr {
+/// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo.
+fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
     walk_count(0);
     let m = args.len() as u32;
     let go = |x: Expr, under: bool| {
@@ -1090,7 +1087,7 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Option<Aid>, d: u32) -> E
         if s.loose(&x) <= d {
             return x;
         }
-        if aid.is_some() && s.loose(&x) != u32::MAX && !hc::uses(s, &x, d, m) {
+        if s.loose(&x) != u32::MAX && !hc::uses(s, &x, d, m) {
             return shift_child(s, &x, d + m, -(m as i32));
         }
         let memo = s.shared(&x) && !hc::low(s, &x);

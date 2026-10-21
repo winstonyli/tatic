@@ -1,4 +1,4 @@
-//! Builders over `Globals`: `Postulates` (assumed constants and parameter scopes) and `NatPostulates` (a postulated
+//! Builders over `Globals`: `Postulates` (assumed constants and parameter scopes) and, for tests, `NatPostulates` (a postulated
 //! Bool/Nat construction). Nothing here is read by the checker; a term built with it is checked like any other. A child
 //! module of `kernel` so it keeps access to the private fields of `Globals` and `Ctx`.
 
@@ -378,6 +378,7 @@ pub fn cong_n(a_ty: &Expr, b_ty: &Expr, f: &Expr, xs: &[Expr], ys: &[Expr], ps: 
 /// `false_ref`'s own (shared) ambient depth -- the shared shape
 /// `bool_rec`'s own type and both its computation-rule axioms all need,
 /// differing only in what comes after the three binders.
+#[cfg(test)]
 fn wrap_c_ct_cf(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Expr) -> Expr {
     let c_ty = arrow(*bool_ref, sort(0));
     let true_d1 = shift(true_ref, 0, 1);
@@ -414,6 +415,7 @@ fn wrap_c_ct_cf(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Exp
 /// self-contained test needed a hand-written `shift` to work around once
 /// (a value built once, then reused unchanged after a later `p.push`,
 /// silently ends up referencing the wrong postulate).
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub struct NatPostulates {
     pub bool_pos: usize,
@@ -430,6 +432,7 @@ pub struct NatPostulates {
     pub bool_rec_true_eq_pos: usize,
     pub bool_rec_false_eq_pos: usize,
 }
+#[cfg(test)]
 impl NatPostulates {
     /// Pushes every postulate this construction needs onto `p`, in
     /// order. Call once per `Postulates`; every other method just

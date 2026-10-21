@@ -22,7 +22,7 @@ fn hc_uses(x: &Expr, d: u32, m: u32) -> bool {
 fn hc_low(x: &Expr) -> bool {
     with_spaces(|s| hc::low(s, x))
 }
-fn hc_args_id(args: &[&Expr]) -> Option<Aid> {
+fn hc_args_id(args: &[&Expr]) -> Aid {
     with_spaces(|s| hc::args_id(s, args))
 }
 fn hc_lowest_loose(x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
@@ -612,11 +612,11 @@ fn args_id_is_stable_for_short_and_long_lists() {
         let vs: Vec<Expr> = (0..12).map(var).collect();
         let refs: Vec<&Expr> = vs.iter().collect();
         let (short, long) = (&refs[..3], &refs[..12]);
-        let (s, l) = (hc_args_id(short).unwrap(), hc_args_id(long).unwrap());
+        let (s, l) = (hc_args_id(short), hc_args_id(long));
         assert!(s & LIST_BIT != 0 && l & LIST_BIT != 0);
         assert_ne!(s, l);
-        assert_eq!((hc_args_id(short), hc_args_id(long)), (Some(s), Some(l)));
-        assert_ne!(hc_args_id(&refs[1..4]), Some(s));
+        assert_eq!((hc_args_id(short), hc_args_id(long)), (s, l));
+        assert_ne!(hc_args_id(&refs[1..4]), s);
     })
 }
 
