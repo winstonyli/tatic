@@ -232,7 +232,8 @@ rewriter: it is a shortcut (Enumo's fast-forwarding makes the same point). The l
 ### Instruction count as a metric (2026-10-10)
 Question: can a precise count of work replace M (a 0/1 count per law) as the efficiency signal? A hardware count of retired
 instructions needs admin on Windows (ETW) and changes with every rebuild, and wasmtime fuel counts only JIT code, not the kernel. So the
-count is the kernel's own deterministic work. `law_work_report` (ignored, needs `--features record-defeq`) writes one row per law:
+count is the kernel's own deterministic work. `law_work_report` (ignored, needs `--features record-defeq`; both removed in
+306a968, restore with `git revert 306a968`) writes one row per law:
 fallbacks, rule steps, proof size, nodes built while building the proof, kernel node visits while checking it (instantiate, shift,
 eq, conv and nf whnf, infer misses), beta steps, and the build and check wall times. The data is 300 held-out shuffled laws (salt 1;
 skip 2000 sbo3, 5000 cmp3d), the same windows as the credit runs. The times are from the `record-defeq` build, whose probes make it
@@ -1626,7 +1627,7 @@ than the 5% ceiling. Sequential sweep pair (rows `cts_*`, script `ctab_seq.sh`):
 
 **Fewer substitutions: what was tried before (survey, no code, 2026-10-13).** `beta_spine` -> `instantiate_n` is 44% of
 busy samples. Doing fewer substitutions rather than cheaper ones was explored on 2026-09-30 (the git-ignored
-`docs/superpowers/specs/2026-09-30-bitvector-interface-design.md` §25-§35, and `src/kernel_lazy.rs`): a closure-based
+`docs/superpowers/specs/2026-09-30-bitvector-interface-design.md` §25-§35, and `src/kernel_lazy.rs`, deleted in 306a968): a closure-based
 (call-by-need, Rocq-style) `def_eq` was 13-25x slower without sharing, 8-18x with a pointer-keyed memo, and level with
 the kernel from n = 32 once it memoized closed nodes only; it took 467x the kernel's beta steps (each one cheap), so a
 step-certificate kernel was dropped. That comparison predates hash-consing, the per-scope instantiation and `whnf`
@@ -1866,7 +1867,7 @@ evaluating faster rather than less, the case Rocq's `vm_compute` and `native_com
 The cheapest test of the idea is an untrusted evaluator timed on the same conversions: if a closure-based one cannot
 beat the kernel there, a compiled one would have to win on constant factors alone.
 
-**`kernel_lazy` on today's conversions: 64-100x slower (probe, reverted, no patch kept, 2026-10-13).** At a357781,
+**`kernel_lazy` on today's conversions: 64-100x slower (probe, reverted, no patch kept, 2026-10-13; the module itself was deleted in 306a968).** At a357781,
 `proof_cost_split` cmp3d own's work (the 300 laws, building and checking, then the rule proofs) with each `check_rc`
 query whose sides are not `==` timed in place (the kernel's `def_eq` as it runs, with that check's memos), logged, and
 replayed through `def_eq_lazy_shared` (closed-node memo, reset per query). CPU about 28% at the start, Defender RTP off.
@@ -3660,7 +3661,7 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     - The cost is the task state in church_bv thread-locals that a fresh thread now resets for free:
       - set per search, but persisting: `RULE_BUDGET`, `PROVING`, `REWRITE_MEMO`, `PARAMS`, `RULE_TABLE`, `RULE_PREFS`, and the cycle-cut bookkeeping (`CYCLE_CUTS`, `CUT_LOW`, `REWRITE_PATH`, `REWROTE`);
       - never reset: `SCORE_ONLY` and `RULE_TRACE`;
-      - in kernel_lazy, keyed by node address: `MEMO` and `STATS`.
+      - in kernel_lazy (deleted in 306a968), keyed by node address: `MEMO` and `STATS`.
     - A pool therefore needs one reset of all task state at each task's start, ideally by registry: `task_state_is_classified` (task.rs) already classifies church_bv's statics, and could cover thread-locals the same way.
     - The worker also names each task's thread after the test, for panic text; a pooled thread's name is fixed at spawn. Output redirection is process-wide, so it is unaffected.
     - Prover threads (search.rs ~750, ~938, ~1093) borrow stack data through `spawn_scoped`, and the speculative proofs at ~1093 run alongside the main path. The 256 MB stacks have no recorded reason; the kernel grows its own segments.
