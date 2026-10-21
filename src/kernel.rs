@@ -1233,7 +1233,7 @@ impl InferCache {
     }
 
     /// Empties the cache for the next call, keeping its capacity: a sweep makes thousands of calls, and growing
-    /// each one's maps from empty was most of `infer_rc`'s 0.9% under `reserve_rehash` (`docs/tier-cycle.md`,
+    /// each one's maps from empty was most of `Checker::infer`'s 0.9% under `reserve_rehash` (`docs/tier-cycle.md`,
     /// "where the growth comes from"). Clearing costs time in the capacity, so a map grown past `KEEP` is let go.
     fn reset(&mut self) {
         const KEEP: usize = 1 << 14;
@@ -1285,7 +1285,7 @@ impl InferCache {
         self.next
     }
 
-    /// What `infer_rc` keys its memo by for node `e` in context `cid`, besides `e`: `(lo, window)`,
+    /// What `Checker::infer` keys its memo by for node `e` in context `cid`, besides `e`: `(lo, window)`,
     /// the interned window of the binder types `e` can depend on, instead of the whole context.
     /// `lo` is `e`'s lowest loose variable: the `lo` innermost binders are never looked up, so
     /// contexts that differ only there share the entry (a `J` motive's own binders around a shared
@@ -1773,70 +1773,299 @@ fn expect_sigma(s: &Spaces, e: &Expr) -> Result<(Expr, Expr), String> {
     }
 }
 
-/// `infer`'s own `Sigma`/`Pair`/`SigRec` cases, out of line, so these
-/// arms' locals don't sit in `infer`'s frame on every *other* shape.
-///
-/// This, and every other `#[inline(never)]` extraction in this module,
-/// was once load-bearing: `eval_dyn`'s per-instance proof search ran
-/// close to a native-stack budget tuned in a debug test thread, and
-/// inlining these arms back into `infer` measurably shrank its margin
-/// and overflowed a deep-recursion test. Every traversal here, and
-/// `eval_dyn`, now runs through [`grow`] (`RELATED_WORK.md` 31, 32), so
-/// frame size only decides how soon a deep walk moves to a new stack
-/// segment. They are kept because smaller hot frames cost nothing, not
-/// because anything depends on them.
-#[inline(never)]
-fn infer_sigma(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Expr, b: &Expr) -> Result<Expr, String> {
-    let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, a)?)?;
-    let depth = ctx.local.len();
-    ctx.local.push(*a);
-    let cid2 = ic.enter(s, cid, a);
-    let j = infer_rc(s, g, ic, ctx, cid2, b);
-    ctx.local.truncate(depth);
-    let j = expect_sort(s, &j?)?;
-    Ok(sort(i.max(j)))
+/// One type check in progress: the spaces and globals it reads, the inference memo, and the context entered so far with
+/// its id (`InferCache::enter`).
+struct Checker<'c> {
+    s: &'c Spaces,
+    g: &'c Globals,
+    ic: &'c mut InferCache,
+    ctx: CtxScope,
+    cid: u32,
 }
 
-#[inline(never)]
-#[allow(clippy::too_many_arguments)]
-fn infer_pair(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, fam: &Expr, a: &Expr, b: &Expr) -> Result<Expr, String> {
-    let ta = infer_rc(s, g, ic, ctx, cid, a)?;
-    let depth = ctx.local.len();
-    ctx.local.push(ta);
-    let cid2 = ic.fresh();
-    let tf = infer_rc(s, g, ic, ctx, cid2, fam);
-    ctx.local.truncate(depth);
-    expect_sort(s, &tf?)?;
-    let expected_b_ty = subst_top(s, fam, a);
-    check_rc(s, g, ic, ctx, cid, b, &expected_b_ty)?;
-    Ok(sigma(ta, *fam))
+impl Checker<'_> {
+    /// Runs `f` under one more binder, of type `a` and context id `cid`, restoring the context afterwards (on error too).
+    fn under<R>(&mut self, a: Expr, cid: u32, f: impl FnOnce(&mut Self) -> R) -> R {
+        let (depth, outer) = (self.ctx.local.len(), self.cid);
+        self.ctx.local.push(a);
+        self.cid = cid;
+        let r = f(self);
+        self.ctx.local.truncate(depth);
+        self.cid = outer;
+        r
+    }
+
+    /// `infer`'s own `Sigma`/`Pair`/`SigRec` cases, out of line, so these
+    /// arms' locals don't sit in `infer`'s frame on every *other* shape.
+    ///
+    /// This, and every other `#[inline(never)]` extraction in this module,
+    /// was once load-bearing: `eval_dyn`'s per-instance proof search ran
+    /// close to a native-stack budget tuned in a debug test thread, and
+    /// inlining these arms back into `infer` measurably shrank its margin
+    /// and overflowed a deep-recursion test. Every traversal here, and
+    /// `eval_dyn`, now runs through [`grow`] (`RELATED_WORK.md` 31, 32), so
+    /// frame size only decides how soon a deep walk moves to a new stack
+    /// segment. They are kept because smaller hot frames cost nothing, not
+    /// because anything depends on them.
+    #[inline(never)]
+    fn infer_sigma(&mut self, a: &Expr, b: &Expr) -> Result<Expr, String> {
+        let s = self.s;
+        let i = expect_sort(s, &self.infer(a)?)?;
+        let cid2 = self.ic.enter(s, self.cid, a);
+        let j = self.under(*a, cid2, |c| c.infer(b));
+        let j = expect_sort(s, &j?)?;
+        Ok(sort(i.max(j)))
+    }
+
+    #[inline(never)]
+    fn infer_pair(&mut self, fam: &Expr, a: &Expr, b: &Expr) -> Result<Expr, String> {
+        let s = self.s;
+        let ta = self.infer(a)?;
+        let cid2 = self.ic.fresh();
+        let tf = self.under(ta, cid2, |c| c.infer(fam));
+        expect_sort(s, &tf?)?;
+        let expected_b_ty = subst_top(s, fam, a);
+        self.check(b, &expected_b_ty)?;
+        Ok(sigma(ta, *fam))
+    }
+
+    #[inline(never)]
+    fn infer_sigrec(&mut self, motive: &Expr, step: &Expr, target: &Expr) -> Result<Expr, String> {
+        let s = self.s;
+        let (sa, sb) = expect_sigma(s, &self.infer(target)?)?;
+        self.infer(motive)?; // sanity: motive must itself be well-typed
+
+        // step : Pi a:A. Pi b:B(a). motive (pair(B,a,b))
+        // `sb` already assumes exactly one binder (`Sigma`'s own convention)
+        // -- b's own domain under binder `a` (depth1) is `sb` unchanged, the
+        // same way `WRec`'s own `f_dom_d1` reuses `wb` unchanged.
+        let b_dom_d1 = sb;
+        // under binders a(Var1), b(Var0) -- depth2:
+        let motive_d2 = shift_in(s, motive, 0, 2);
+        // `sb`'s own bound tag (Var0) must stay untouched (`Pair`'s own `fam`
+        // field needs a *fresh* tag binder of its own, one level below
+        // wherever the `Pair` itself sits) -- only whatever `sb` references
+        // *above* that (the 2 extra binders `a`/`b` now sitting between it
+        // and the ambient context) shifts, cutoff 1.
+        let fam_d2 = shift_in(s, &sb, 1, 2);
+        let concl_d2 = app(motive_d2, pair(fam_d2, var(1), var(0)));
+        let expected_step_ty = pi(sa, pi(b_dom_d1, concl_d2));
+        self.check(step, &expected_step_ty)?;
+
+        Ok(app(*motive, *target))
+    }
+
+    /// `infer`'s own `Sup` arm, out of line: `ta`/`dom`/`cod`/`w_candidate`/
+    /// `wa`/`wb` would otherwise sit in `infer`'s frame on every call (see
+    /// `infer_sigma`).
+    #[inline(never)]
+    fn infer_sup(&mut self, a: &Expr, f: &Expr) -> Result<Expr, String> {
+        let s = self.s;
+        let ta = self.infer(a)?;
+        let (dom, cod) = expect_pi(s, &self.infer(f)?)?;
+        // `cod` is written one binder deeper than `f`'s own domain binder; a
+        // `Sup`'s codomain must not actually depend on it -- enforced here
+        // (not just documented), by an occurs-check on `cod`'s own normal
+        // form, since `subst_top` just below would otherwise only ever be
+        // validated at this one concrete `a`, silently trusting every other
+        // point of `f`'s domain agrees.
+        let cod_nf = nf_in(s, &cod);
+        if is_var_free(s, &cod_nf, 0) {
+            return Err(sup_codomain_depends_on_own_argument(&cod_nf));
+        }
+        let w_candidate = subst_top(s, &cod, a);
+        let (wa, wb) = expect_w(s, &w_candidate)?;
+        if !def_eq_in(s, &wa, &ta) {
+            return Err(format!("sup: element type mismatch: {} vs {}", brief(&wa), brief(&ta)));
+        }
+        let expected_dom = subst_top(s, &wb, a);
+        if !def_eq_in(s, &dom, &expected_dom) {
+            return Err(format!(
+                "sup: children-function domain mismatch: {} vs {}",
+                brief(&dom),
+                brief(&expected_dom)
+            ));
+        }
+        Ok(wty(wa, wb))
+    }
+
+    /// `infer` on a child. A node with two or more parents is memoised by
+    /// node and context id, so a shared subterm is inferred once per context
+    /// rather than once per occurrence (`RELATED_WORK.md` §63). A node with one
+    /// parent can only be reached twice through a shared ancestor, which is
+    /// memoised instead, so skipping it keeps the walk linear in the DAG and
+    /// costs unshared terms no hashing. Only successes are stored: an error
+    /// ends the whole check.
+    fn infer(&mut self, e: &Expr) -> Result<Expr, String> {
+        let s = self.s;
+        if !s.shared(e) {
+            return self.infer_node(e);
+        }
+        // Keyed by the window of binders the node can depend on, not the whole context, so one
+        // inference serves every binder stack that agrees on that window (bit-vector design doc §50:
+        // 96 to 99.5% of the whole-context misses were such repeats).
+        let key = (s.key(e), self.ic.memo_context(s, self.cid, e));
+        if let Some(ty) = self.ic.types.get(&key) {
+            return Ok(s.expr_of(ty));
+        }
+        let ty = self.infer_node(e)?;
+        self.ic.types.insert(key, s.key(&ty));
+        Ok(ty)
+    }
+
+    fn infer_node(&mut self, e: &Expr) -> Result<Expr, String> {
+        let s = self.s;
+        grow(|| match s.node(e) {
+            Node::Var(k) => ctx_lookup(s, &self.ctx, k),
+            Node::Sort(i) => i.checked_add(1).map(sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
+            Node::Const(l) => const_type(s, self.g, l),
+            Node::Free(l) => Err(free_escaped(l)),
+            Node::Pi(a, b) => {
+                let i = expect_sort(s, &self.infer(&a)?)?;
+                let cid2 = self.ic.enter(s, self.cid, &a);
+                let j = self.under(a, cid2, |c| c.infer(&b));
+                let j = expect_sort(s, &j?)?;
+                Ok(sort(i.max(j)))
+            }
+            Node::Lam(a, body) => {
+                expect_sort(s, &self.infer(&a)?)?;
+                let cid2 = self.ic.enter(s, self.cid, &a);
+                let tbody = self.under(a, cid2, |c| c.infer(&body));
+                let tbody = tbody?;
+                Ok(pi(a, tbody))
+            }
+            Node::App(..) => {
+                // The whole spine `h a1 ... ak` at once, as `beta_spine` does for reduction: each domain
+                // is instantiated with the arguments before it and the last codomain once with all of
+                // them, instead of one `subst_top` per argument, each copying the rest of the telescope.
+                // A codomain that is not syntactically a Pi takes the pending arguments first, then whnf.
+                let mut args = vec![];
+                let mut head = *e;
+                while let Node::App(f, a) = s.node(&head) {
+                    args.push(a);
+                    head = f;
+                }
+                args.reverse();
+                let mut ty = self.infer(&head)?;
+                let mut pending: Vec<&Expr> = vec![];
+                for a in &args {
+                    if !matches!(s.node(&ty), Node::Pi(..)) && !pending.is_empty() {
+                        ty = instantiate_n(s, &ty, &pending, 0);
+                        pending.clear();
+                    }
+                    let (dom, cod) = expect_pi(s, &ty)?;
+                    let dom = if pending.is_empty() { dom } else { instantiate_n(s, &dom, &pending, 0) };
+                    self.check(a, &dom)?;
+                    pending.push(a);
+                    ty = cod;
+                }
+                Ok(instantiate_n(s, &ty, &pending, 0))
+            }
+            Node::Id(a, x, y) => {
+                let i = expect_sort(s, &self.infer(&a)?)?;
+                self.check(&x, &a)?;
+                self.check(&y, &a)?;
+                Ok(sort(i))
+            }
+            Node::Refl(a) => {
+                let ta = self.infer(&a)?;
+                Ok(id(ta, a, a))
+            }
+            Node::J { motive, base, a, b, p } => {
+                let ta = self.infer(&a)?;
+                self.check(&b, &ta)?;
+                self.check(&p, &id(ta, a, b))?;
+                self.infer(&motive)?; // sanity: motive must itself be well-typed
+                let expected_base_ty = pi(ta, app3(shift_in(s, &motive, 0, 1), var(0), var(0), refl(var(0))));
+                self.check(&base, &expected_base_ty)?;
+                Ok(app3(motive, a, b, p))
+            }
+            Node::W(a, b) => {
+                let i = expect_sort(s, &self.infer(&a)?)?;
+                let cid2 = self.ic.enter(s, self.cid, &a);
+                let j = self.under(a, cid2, |c| c.infer(&b));
+                let j = expect_sort(s, &j?)?;
+                Ok(sort(i.max(j)))
+            }
+            Node::Sup(a, f) => self.infer_sup(&a, &f),
+            Node::WRec { motive, children_ty, step, target } => {
+                let (wa, wb) = expect_w(s, &self.infer(&target)?)?;
+                // Soundness gate for `whnf_in`'s own use of `children_ty`
+                // (see `Node::WRec`'s own doc): `target`'s *real* children-type
+                // family, independently re-derived here from its own inferred
+                // type, must match the field a `WRec` term carries exactly --
+                // otherwise a term built with a wrong `children_ty` would
+                // reduce its own induction-hypothesis closure to a domain that
+                // lies about what's actually being recursed into, letting an
+                // otherwise-untyped step function's body get away with
+                // anything at that domain.
+                if !def_eq_in(s, &children_ty, &wb) {
+                    return Err(wrec_children_ty_mismatch(&children_ty, &wb));
+                }
+                self.infer(&motive)?;
+                let w_ty0 = wty(wa, wb);
+
+                // f : B(a) -> W(A,B), formed under binder `a` (depth 1).
+                let f_dom_d1 = wb; // wb already assumes exactly one binder
+                let f_ty_d1 = pi(f_dom_d1, shift_in(s, &w_ty0, 0, 2));
+
+                // under binders a (Var1), f (Var0) — depth 2:
+                // ih_ty : Pi y : B(a). motive (f y)      [formed at depth2, body at depth3]
+                let ih_dom_d2 = shift_in(s, &wb, 0, 1); // B(a) reindexed for depth-2 frame
+                let motive_d3 = shift_in(s, &motive, 0, 3);
+                let f_at_d3 = var(1); // f, seen from depth3 (a=2,f=1,y=0)
+                let y_at_d3 = var(0);
+                let ih_body_d3 = app(motive_d3, app(f_at_d3, y_at_d3));
+                let ih_ty_d2 = pi(ih_dom_d2, ih_body_d3);
+
+                // concl_ty : motive (sup a f), at depth2 (a=1, f=0)
+                let motive_d2 = shift_in(s, &motive, 0, 2);
+                let concl_ty_d2 = app(motive_d2, sup(var(1), var(0)));
+
+                let arrow_ty_d2 = pi(ih_ty_d2, shift_in(s, &concl_ty_d2, 0, 1));
+
+                let expected_step_ty = pi(wa, pi(f_ty_d1, arrow_ty_d2));
+                self.check(&step, &expected_step_ty)?;
+
+                Ok(app(motive, target))
+            }
+            Node::Sigma(a, b) => self.infer_sigma(&a, &b),
+            Node::Pair(fam, a, b) => self.infer_pair(&fam, &a, &b),
+            Node::SigRec { motive, step, target } => self.infer_sigrec(&motive, &step, &target),
+        })
+    }
+
+    fn check(&mut self, e: &Expr, expected: &Expr) -> Result<(), String> {
+        let s = self.s;
+        grow(|| {
+            if let Node::Lam(a, body) = s.node(e)
+                && let Node::Pi(dom, cod) = s.node(&whnf_in(s, expected))
+            {
+                // As `infer`'s `Lam` rule does: `def_eq` alone would accept an
+                // ill-typed annotation that reduces to `dom`.
+                expect_sort(s, &self.infer(&a)?)?;
+                if !def_eq_in(s, &a, &dom) {
+                    return Err(format!("lambda domain mismatch: {} vs {}", brief(&a), brief(&dom)));
+                }
+                let cid2 = self.ic.enter(s, self.cid, &a);
+                return self.under(a, cid2, |c| c.check(&body, &cod));
+            }
+            let inferred = self.infer(e)?;
+            if def_eq_in(s, &inferred, expected) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "type mismatch: inferred {}, expected {}",
+                    brief_nf(&inferred),
+                    brief_nf(expected)
+                ))
+            }
+        })
+    }
 }
 
-#[inline(never)]
-#[allow(clippy::too_many_arguments)]
-fn infer_sigrec(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, motive: &Expr, step: &Expr, target: &Expr) -> Result<Expr, String> {
-    let (sa, sb) = expect_sigma(s, &infer_rc(s, g, ic, ctx, cid, target)?)?;
-    infer_rc(s, g, ic, ctx, cid, motive)?; // sanity: motive must itself be well-typed
 
-    // step : Pi a:A. Pi b:B(a). motive (pair(B,a,b))
-    // `sb` already assumes exactly one binder (`Sigma`'s own convention)
-    // -- b's own domain under binder `a` (depth1) is `sb` unchanged, the
-    // same way `WRec`'s own `f_dom_d1` reuses `wb` unchanged.
-    let b_dom_d1 = sb;
-    // under binders a(Var1), b(Var0) -- depth2:
-    let motive_d2 = shift_in(s, motive, 0, 2);
-    // `sb`'s own bound tag (Var0) must stay untouched (`Pair`'s own `fam`
-    // field needs a *fresh* tag binder of its own, one level below
-    // wherever the `Pair` itself sits) -- only whatever `sb` references
-    // *above* that (the 2 extra binders `a`/`b` now sitting between it
-    // and the ambient context) shifts, cutoff 1.
-    let fam_d2 = shift_in(s, &sb, 1, 2);
-    let concl_d2 = app(motive_d2, pair(fam_d2, var(1), var(0)));
-    let expected_step_ty = pi(sa, pi(b_dom_d1, concl_d2));
-    check_rc(s, g, ic, ctx, cid, step, &expected_step_ty)?;
 
-    Ok(app(*motive, *target))
-}
 
 /// `infer`'s own `WRec` mismatch error, out of line and `#[cold]` so its
 /// own locals (two `nf` calls, a `format!`) stay off `infer`'s hot frame
@@ -1847,45 +2076,13 @@ fn wrec_children_ty_mismatch(children_ty: &Expr, wb: &Expr) -> String {
     format!("wrec: children_ty doesn't match target's own real children-type: {} vs {}", brief_nf(children_ty), brief_nf(wb))
 }
 
-/// `infer`'s own `Sup` arm, out of line: `ta`/`dom`/`cod`/`w_candidate`/
-/// `wa`/`wb` would otherwise sit in `infer`'s frame on every call (see
-/// `infer_sigma`).
-#[inline(never)]
-fn infer_sup(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, a: &Expr, f: &Expr) -> Result<Expr, String> {
-    let ta = infer_rc(s, g, ic, ctx, cid, a)?;
-    let (dom, cod) = expect_pi(s, &infer_rc(s, g, ic, ctx, cid, f)?)?;
-    // `cod` is written one binder deeper than `f`'s own domain binder; a
-    // `Sup`'s codomain must not actually depend on it -- enforced here
-    // (not just documented), by an occurs-check on `cod`'s own normal
-    // form, since `subst_top` just below would otherwise only ever be
-    // validated at this one concrete `a`, silently trusting every other
-    // point of `f`'s domain agrees.
-    let cod_nf = nf_in(s, &cod);
-    if is_var_free(s, &cod_nf, 0) {
-        return Err(sup_codomain_depends_on_own_argument(&cod_nf));
-    }
-    let w_candidate = subst_top(s, &cod, a);
-    let (wa, wb) = expect_w(s, &w_candidate)?;
-    if !def_eq_in(s, &wa, &ta) {
-        return Err(format!("sup: element type mismatch: {} vs {}", brief(&wa), brief(&ta)));
-    }
-    let expected_dom = subst_top(s, &wb, a);
-    if !def_eq_in(s, &dom, &expected_dom) {
-        return Err(format!(
-            "sup: children-function domain mismatch: {} vs {}",
-            brief(&dom),
-            brief(&expected_dom)
-        ));
-    }
-    Ok(wty(wa, wb))
-}
 
 /// `e`'s type, with constants typed by `globals` and variables by `ctx`.
 /// A `Free` anywhere in `e` is an error; so is one in a `ctx` entry, when
 /// `e` uses it.
 ///
 /// Checked here, not only at the leaf: `infer` hands some children to
-/// `check_rc` (an `App`'s argument, `Id`'s sides, `J`'s fields), whose
+/// `Checker::check` (an `App`'s argument, `Id`'s sides, `J`'s fields), whose
 /// `Lam` rule against a `Pi` compares the domain by `def_eq` and never
 /// infers it, and `WRec`'s `children_ty` is only compared, so a `Free`
 /// under a redex in any of them would reduce away unseen. `free` is
@@ -1894,7 +2091,7 @@ pub fn infer_in(globals: &Globals, ctx: &Ctx, e: &Expr) -> Result<Expr, String> 
     if e.free() > 0 {
         return Err(free_escaped(e.free() - 1));
     }
-    scoped(|| with_spaces(|s| with_infer_cache(|ic| infer_node(s, globals, ic, &mut CtxScope::new(ctx), 0, e))))
+    scoped(|| with_spaces(|s| with_infer_cache(|ic| Checker { s, g: globals, ic, ctx: CtxScope::new(ctx), cid: 0 }.infer_node(e))))
 }
 
 /// [`infer_in`] with no globals.
@@ -1902,158 +2099,7 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
     infer_in(&Globals::new(), ctx, e)
 }
 
-/// `infer` on a child. A node with two or more parents is memoised by
-/// node and context id, so a shared subterm is inferred once per context
-/// rather than once per occurrence (`RELATED_WORK.md` §63). A node with one
-/// parent can only be reached twice through a shared ancestor, which is
-/// memoised instead, so skipping it keeps the walk linear in the DAG and
-/// costs unshared terms no hashing. Only successes are stored: an error
-/// ends the whole check.
-fn infer_rc(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr) -> Result<Expr, String> {
-    if !s.shared(e) {
-        return infer_node(s, g, ic, ctx, cid, e);
-    }
-    // Keyed by the window of binders the node can depend on, not the whole context, so one
-    // inference serves every binder stack that agrees on that window (bit-vector design doc §50:
-    // 96 to 99.5% of the whole-context misses were such repeats).
-    let key = (s.key(e), ic.memo_context(s, cid, e));
-    if let Some(ty) = ic.types.get(&key) {
-        return Ok(s.expr_of(ty));
-    }
-    let ty = infer_node(s, g, ic, ctx, cid, e)?;
-    ic.types.insert(key, s.key(&ty));
-    Ok(ty)
-}
 
-fn infer_node(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr) -> Result<Expr, String> {
-    grow(|| match s.node(e) {
-        Node::Var(k) => ctx_lookup(s, ctx, k),
-        Node::Sort(i) => i.checked_add(1).map(sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
-        Node::Const(l) => const_type(s, g, l),
-        Node::Free(l) => Err(free_escaped(l)),
-        Node::Pi(a, b) => {
-            let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
-            let depth = ctx.local.len();
-            ctx.local.push(a);
-            let cid2 = ic.enter(s, cid, &a);
-            let j = infer_rc(s, g, ic, ctx, cid2, &b);
-            ctx.local.truncate(depth);
-            let j = expect_sort(s, &j?)?;
-            Ok(sort(i.max(j)))
-        }
-        Node::Lam(a, body) => {
-            expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
-            let depth = ctx.local.len();
-            ctx.local.push(a);
-            let cid2 = ic.enter(s, cid, &a);
-            let tbody = infer_rc(s, g, ic, ctx, cid2, &body);
-            ctx.local.truncate(depth);
-            let tbody = tbody?;
-            Ok(pi(a, tbody))
-        }
-        Node::App(..) => {
-            // The whole spine `h a1 ... ak` at once, as `beta_spine` does for reduction: each domain
-            // is instantiated with the arguments before it and the last codomain once with all of
-            // them, instead of one `subst_top` per argument, each copying the rest of the telescope.
-            // A codomain that is not syntactically a Pi takes the pending arguments first, then whnf.
-            let mut args = vec![];
-            let mut head = *e;
-            while let Node::App(f, a) = s.node(&head) {
-                args.push(a);
-                head = f;
-            }
-            args.reverse();
-            let mut ty = infer_rc(s, g, ic, ctx, cid, &head)?;
-            let mut pending: Vec<&Expr> = vec![];
-            for a in &args {
-                if !matches!(s.node(&ty), Node::Pi(..)) && !pending.is_empty() {
-                    ty = instantiate_n(s, &ty, &pending, 0);
-                    pending.clear();
-                }
-                let (dom, cod) = expect_pi(s, &ty)?;
-                let dom = if pending.is_empty() { dom } else { instantiate_n(s, &dom, &pending, 0) };
-                check_rc(s, g, ic, ctx, cid, a, &dom)?;
-                pending.push(a);
-                ty = cod;
-            }
-            Ok(instantiate_n(s, &ty, &pending, 0))
-        }
-        Node::Id(a, x, y) => {
-            let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
-            check_rc(s, g, ic, ctx, cid, &x, &a)?;
-            check_rc(s, g, ic, ctx, cid, &y, &a)?;
-            Ok(sort(i))
-        }
-        Node::Refl(a) => {
-            let ta = infer_rc(s, g, ic, ctx, cid, &a)?;
-            Ok(id(ta, a, a))
-        }
-        Node::J { motive, base, a, b, p } => {
-            let ta = infer_rc(s, g, ic, ctx, cid, &a)?;
-            check_rc(s, g, ic, ctx, cid, &b, &ta)?;
-            check_rc(s, g, ic, ctx, cid, &p, &id(ta, a, b))?;
-            infer_rc(s, g, ic, ctx, cid, &motive)?; // sanity: motive must itself be well-typed
-            let expected_base_ty = pi(ta, app3(shift_in(s, &motive, 0, 1), var(0), var(0), refl(var(0))));
-            check_rc(s, g, ic, ctx, cid, &base, &expected_base_ty)?;
-            Ok(app3(motive, a, b, p))
-        }
-        Node::W(a, b) => {
-            let i = expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
-            let depth = ctx.local.len();
-            ctx.local.push(a);
-            let cid2 = ic.enter(s, cid, &a);
-            let j = infer_rc(s, g, ic, ctx, cid2, &b);
-            ctx.local.truncate(depth);
-            let j = expect_sort(s, &j?)?;
-            Ok(sort(i.max(j)))
-        }
-        Node::Sup(a, f) => infer_sup(s, g, ic, ctx, cid, &a, &f),
-        Node::WRec { motive, children_ty, step, target } => {
-            let (wa, wb) = expect_w(s, &infer_rc(s, g, ic, ctx, cid, &target)?)?;
-            // Soundness gate for `whnf_in`'s own use of `children_ty`
-            // (see `Node::WRec`'s own doc): `target`'s *real* children-type
-            // family, independently re-derived here from its own inferred
-            // type, must match the field a `WRec` term carries exactly --
-            // otherwise a term built with a wrong `children_ty` would
-            // reduce its own induction-hypothesis closure to a domain that
-            // lies about what's actually being recursed into, letting an
-            // otherwise-untyped step function's body get away with
-            // anything at that domain.
-            if !def_eq_in(s, &children_ty, &wb) {
-                return Err(wrec_children_ty_mismatch(&children_ty, &wb));
-            }
-            infer_rc(s, g, ic, ctx, cid, &motive)?;
-            let w_ty0 = wty(wa, wb);
-
-            // f : B(a) -> W(A,B), formed under binder `a` (depth 1).
-            let f_dom_d1 = wb; // wb already assumes exactly one binder
-            let f_ty_d1 = pi(f_dom_d1, shift_in(s, &w_ty0, 0, 2));
-
-            // under binders a (Var1), f (Var0) — depth 2:
-            // ih_ty : Pi y : B(a). motive (f y)      [formed at depth2, body at depth3]
-            let ih_dom_d2 = shift_in(s, &wb, 0, 1); // B(a) reindexed for depth-2 frame
-            let motive_d3 = shift_in(s, &motive, 0, 3);
-            let f_at_d3 = var(1); // f, seen from depth3 (a=2,f=1,y=0)
-            let y_at_d3 = var(0);
-            let ih_body_d3 = app(motive_d3, app(f_at_d3, y_at_d3));
-            let ih_ty_d2 = pi(ih_dom_d2, ih_body_d3);
-
-            // concl_ty : motive (sup a f), at depth2 (a=1, f=0)
-            let motive_d2 = shift_in(s, &motive, 0, 2);
-            let concl_ty_d2 = app(motive_d2, sup(var(1), var(0)));
-
-            let arrow_ty_d2 = pi(ih_ty_d2, shift_in(s, &concl_ty_d2, 0, 1));
-
-            let expected_step_ty = pi(wa, pi(f_ty_d1, arrow_ty_d2));
-            check_rc(s, g, ic, ctx, cid, &step, &expected_step_ty)?;
-
-            Ok(app(motive, target))
-        }
-        Node::Sigma(a, b) => infer_sigma(s, g, ic, ctx, cid, &a, &b),
-        Node::Pair(fam, a, b) => infer_pair(s, g, ic, ctx, cid, &fam, &a, &b),
-        Node::SigRec { motive, step, target } => infer_sigrec(s, g, ic, ctx, cid, &motive, &step, &target),
-    })
-}
 
 /// Checks `e` against `expected`.
 ///
@@ -2083,9 +2129,9 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
             let large = hc::large(s, e, expected);
             let body = || {
                 with_infer_cache(|ic| {
-                    let mut scope = CtxScope::new(ctx);
-                    expect_sort(s, &infer_rc(s, globals, ic, &mut scope, 0, expected)?)?;
-                    check_rc(s, globals, ic, &mut scope, 0, e, expected)
+                    let mut c = Checker { s, g: globals, ic, ctx: CtxScope::new(ctx), cid: 0 };
+                    expect_sort(s, &c.infer(expected)?)?;
+                    c.check(e, expected)
                 })
             };
             if large { on_segment(CHECK_SEGMENT, body) } else { body() }
@@ -2120,36 +2166,6 @@ pub fn term_sizes(e: &Expr) -> (usize, u128) {
     (seen.len() + 1, tree)
 }
 
-fn check_rc(s: &Spaces, g: &Globals, ic: &mut InferCache, ctx: &mut CtxScope, cid: u32, e: &Expr, expected: &Expr) -> Result<(), String> {
-    grow(|| {
-        if let Node::Lam(a, body) = s.node(e)
-            && let Node::Pi(dom, cod) = s.node(&whnf_in(s, expected))
-        {
-            // As `infer`'s `Lam` rule does: `def_eq` alone would accept an
-            // ill-typed annotation that reduces to `dom`.
-            expect_sort(s, &infer_rc(s, g, ic, ctx, cid, &a)?)?;
-            if !def_eq_in(s, &a, &dom) {
-                return Err(format!("lambda domain mismatch: {} vs {}", brief(&a), brief(&dom)));
-            }
-            let depth = ctx.local.len();
-            ctx.local.push(a);
-            let cid2 = ic.enter(s, cid, &a);
-            let r = check_rc(s, g, ic, ctx, cid2, &body, &cod);
-            ctx.local.truncate(depth);
-            return r;
-        }
-        let inferred = infer_rc(s, g, ic, ctx, cid, e)?;
-        if def_eq_in(s, &inferred, expected) {
-            Ok(())
-        } else {
-            Err(format!(
-                "type mismatch: inferred {}, expected {}",
-                brief_nf(&inferred),
-                brief_nf(expected)
-            ))
-        }
-    })
-}
 
 /// Typecheck a closed term and return its normalized type.
 pub fn typecheck(e: &Expr) -> Result<Expr, String> {

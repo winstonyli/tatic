@@ -1616,7 +1616,7 @@ fn a_global_whose_type_is_open_is_rejected() {
 /// never looks: a lambda's domain under `check` (compared by `def_eq`
 /// only) and the expected type, each under a redex that reduces the
 /// `Free` away. `infer_in` faces the same trap: `infer` hands an
-/// `App`'s argument to `check_rc`, so a `Free` hidden in that
+/// `App`'s argument to `Checker::check`, so a `Free` hidden in that
 /// argument's own lambda domain (or, for `WRec`, in `children_ty`)
 /// reduces away under `def_eq` and is never itself inferred -- this is
 /// the case the final review's counterexample found with the door
@@ -1638,7 +1638,7 @@ fn a_free_is_rejected_everywhere() {
     assert!(infer_in(&g, &ctx, &var(0)).is_err(), "in a context entry");
 
     // `infer_in`, not just `check_in`: an `App`'s argument goes to
-    // `check_rc`, whose `Lam` rule against a `Pi` compares the domain
+    // `Checker::check`, whose `Lam` rule against a `Pi` compares the domain
     // by `def_eq` and never infers it. With the door removed, this
     // exact term type-checked and returned `Ok(Const(0))` -- the
     // hidden `Free` in the argument's lambda domain reduced away

@@ -78,7 +78,7 @@ fn abstract_frees(e: &Expr, first: u32, levels: &[u32], d: u32) -> Expr {
 
 /// `abstract_frees` with a memo shared across calls for the same
 /// `levels`. A node with two or more parents is memoised by node and
-/// depth, as `infer_rc` does, so a shared subterm is walked once and its
+/// depth, as `Checker::infer` does, so a shared subterm is walked once and its
 /// result stays shared. Unmemoised, a doubling DAG is walked as the tree
 /// it unfolds to, and the copy loses the sharing `infer`'s memo relies on
 /// (`RELATED_WORK.md` §63).

@@ -710,6 +710,7 @@ pub(super) fn build_clo_call_bridge(
 /// equals `chosen_value`, and the instantiated `apply_*_eq_ref` fact
 /// bridging `chosen_value`, called directly, down to a direct call on
 /// `chosen`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_closure_shape_to_leaf(
     combinators: &mut ClosureCombinators<'_>,
     call_at_denoted: &Expr,
@@ -1139,7 +1140,7 @@ pub(super) fn build_ev_witness(
 
     let mut premises = Vec::with_capacity(leaf.path.len());
     for &(cond, _lit) in &leaf.path {
-        let (_, _, proof) = eval_and_prove(cond, combinators, Frame { params: &params, concrete: concrete, facts: &param_facts })?;
+        let (_, _, proof) = eval_and_prove(cond, combinators, Frame { params: &params, concrete, facts: &param_facts })?;
         premises.push(proof);
     }
 
@@ -1151,7 +1152,7 @@ pub(super) fn build_ev_witness(
         let mut denoted_facts = Vec::with_capacity(self_call.arity);
         for i in 0..self_call.arity {
             let arg = call[self_call.arity - 1 - i];
-            let (x, denoted, pf) = eval_and_prove(arg, combinators, Frame { params: &params, concrete: concrete, facts: &param_facts })?;
+            let (x, denoted, pf) = eval_and_prove(arg, combinators, Frame { params: &params, concrete, facts: &param_facts })?;
             new_concrete.push(x);
             denoted_args.push(denoted);
             denoted_facts.push(pf);
