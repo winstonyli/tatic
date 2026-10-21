@@ -5311,6 +5311,23 @@ The probe let the main thread write while the store was in use. In the miner it 
 winner between chunks, and the chunks depend on the thread count (`threads * 4` candidates each). A kept store must be
 frozen per round, a snapshot taken when the round starts, so the gains do not depend on the thread count.
 
+*Spike of the join store (2026-10-21, runs `2026-10-21-store-gate`, `-store-threads`; `patches/store_spike.patch` on
+0e1dab3's code).* One store per mine (`JoinStore`), emptied when the miner starts and fed by its main thread's met
+searches. Each step is kept with its subterm's path and its law's key (`lhs`, `rhs`, direction), so a table finds the
+step under that key whatever its index, and plans are rebuilt by `step_plan` under the caller's counting mode. Before
+it searches, `join_eq` (with the memo on) looks for the shortest stored path through the current table's laws and
+terms within the cap (1000 terms at most); if it finds one, the plan is the path's steps, and the trace is the path's
+terms with their subterms, as for a met search. The main thread reads the store itself; the other threads read a copy
+frozen when each round of scoring starts.
+- Gate against `bv_guard` (salts 1-5, the arms run side by side, the machine loaded by other sessions at 64-72%): M 363
+  against 362, rules at the end 993 against 918, joined laws 825 against 753, exhausted 0 in both. Rules differ in
+  every loop, as a store that is not exact must make them.
+- Cost: job CPU 2534 against 1439 s (-43%), wall 536 against 306 s. The join ran 1.95 M searches against 8.42 M
+  (3575 against 1514 s searching); the store served 6.23 M joins in 78 s of queries.
+- Thread check (salt 1): rules at 6 and 1 threads byte-equal in all 3 loops.
+So the store keeps M (one lower) with a smaller library, takes 43% off the job's CPU, and keeps the miner independent of
+the thread count.
+
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
 in `-spine-main-quiet`, `-spine-back-quiet` and `-shape-quiet`. The script alternates the order, so the medians stay
