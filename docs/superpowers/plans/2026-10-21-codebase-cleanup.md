@@ -56,7 +56,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 ## Smaller
 
 - **C15: shared code.** One splitmix64 PRNG instead of 9 copies; one `SharedMemo<K, V>` for the global caches
-  (`SCREENS`, `TREE_CANDS`, `TREE_ENCS`), which also removes `task.rs`'s hand-kept list. Status: done (this commit).
+  (`SCREENS`, `TREE_CANDS`, `TREE_ENCS`), which also removes `task.rs`'s hand-kept list. Status: done ba28d56 (gate 2026-10-21-c15-gate: M 362 = 362, rules same in 15 loops and across threads).
 - **C16 (D): `docs/runs/2026-10-12/scripts`** (14 `*_pair.sh`, 18 `*_seq.sh` near-copies). Status: ruling.
 - **C17: nits.** Stale comments at rewrite.rs:2129 (`PERM_ORDER`) and rewrite.rs:1209 (`SCORE_ONLY`); tier-cycle.md:666
   names functions that are gone; lib.rs's allocator list misses `tests/proof_scope.rs`; `compile::tests` (60% of
