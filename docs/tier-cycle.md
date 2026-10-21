@@ -5193,6 +5193,22 @@ searches against 8.42 M). What it would cost: finishing the met layer (+10% in `
 of a met search's layers against the path's terms, and a smallest-key choice. It is cheaper than spike 3 by the second
 walk and the wider trace; whether it beats the left-to-right order is unmeasured.
 
+*Related work on canonical paths (surveyed 2026-10-20).*
+- Partial-order reduction. The join's canonical orders resemble sleep sets: they cut transitions, not states. Persistent
+  sets also cut states, so they would shrink the reached set, and every trace with it. That changes the output, so it
+  is not exact by this gate's test.
+- Permutation equivalence and standardization (Lévy; van Oostrom and de Vrijer's four equivalences). A standard
+  reduction is a canonical representative of the reductions that do the same steps in another order. Standardizing a
+  met path would give a canonical path without walking again: reorder its adjacent commuting steps into a fixed normal
+  form, which needs pair tests along the path only. It is exact only where the two orders' paths do the same steps in
+  another order. Two different derivations of the same length would still differ.
+- A trace of redexes instead of terms: each step's rule and the subterm it matched. It is the same under any swap of
+  steps at disjoint positions, but not of nested ones, and nested steps are what inner first skips.
+- E-graphs (egg) store commuted paths once by construction. Their explanations are proofs found greedily, not
+  canonically. This would replace the search's design, not fix its trace.
+- No source found combines bidirectional search with a canonical shortest path. The one rule seen is a fixed total
+  order on whole paths, not on the meeting vertex.
+
 
 *The order within a round of `quiet_ab.sh` (2026-10-19, rows of this day's A/Bs).* The second arm of a round was slower
 by +6.5 s and +6.7 s (7 of 8 rounds) in `-fits-quiet` and `-pairs-quiet`, +10.0 s in `-room-quiet`, but -1.7 to +2.4 s
