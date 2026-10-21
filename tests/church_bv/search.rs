@@ -393,7 +393,8 @@ pub fn family_law_phases_are_disjoint() {
     assert_eq!(woven, whole);
 }
 
-/// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `from_env`).
+/// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `from_env`), except the law window's (`RULEMINER_LAWS`,
+/// `_SHAPE`, `_SHAPE_SALT`, `_PHASE`, `_STRIDE` and the like), which `family_laws` reads through the `env` it is given.
 pub struct MinerConfig {
     /// `MULMINER_MAX`: largest constant in the mul family.
     pub max: u32,
@@ -410,15 +411,32 @@ pub struct MinerConfig {
     pub rounds: usize,
     /// `RULEMINER_THREADS`: scoring threads, clamped to 1..=12.
     pub threads: usize,
-    /// `RULEMINER_ANY`, `_SHOW`, `_FAST`: set to 1 to enable.
+    /// `RULEMINER_ANY`, `_SHOW`, `_FAST`: switches (`env_flag`), off by default.
     pub any_op: bool,
     pub show: bool,
     pub fast: bool,
+    /// `RULEMINER_FAMILY`: the law family (default `mul`); with `lawfile` it still sets the variable count.
+    pub family: String,
+    /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) and their preferences in force throughout (section 74).
+    pub base: Option<String>,
+    /// `RULEMINER_LAWFILE=<file>`: mine from these `lhs = rhs` lines (a proposer's band) instead of the family's window.
+    pub lawfile: Option<String>,
+    /// `RULEMINER_GUARD=<k>`: about k machine-free laws scored with the stragglers (default 120, 0 = off).
+    pub guard: usize,
+    /// `RULEMINER_EXTRA=<file>`: extra candidates (`lhs -> rhs` lines).
+    pub extra: Option<String>,
+    /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
+    pub no_dup_lhs: bool,
+    /// `RULEMINER_PREFS` (switch, off by default): run the preference phase.
+    pub prefs: bool,
+    /// `RULEMINER_UNITS=<file>`: the base's drop units, read only with `prefs`.
+    pub units: Option<String>,
 }
 
 impl MinerConfig {
     pub fn from_env() -> Self {
-        let flag = |k: &str| env_or(k, 0) == 1;
+        let flag = |k: &str| env_flag(k, false);
+        let path = |k: &str| env_var(k).map(String::from);
         MinerConfig {
             max: env_or("MULMINER_MAX", 7) as u32,
             trials: env_or("RULEMINER_TRIALS", 400),
@@ -430,6 +448,14 @@ impl MinerConfig {
             any_op: flag("RULEMINER_ANY"),
             show: flag("RULEMINER_SHOW"),
             fast: flag("RULEMINER_FAST"),
+            family: env_var("RULEMINER_FAMILY").unwrap_or("mul").into(),
+            base: path("RULEMINER_BASE"),
+            lawfile: path("RULEMINER_LAWFILE"),
+            guard: env_or("RULEMINER_GUARD", 120),
+            extra: path("RULEMINER_EXTRA"),
+            no_dup_lhs: env_flag("RULEMINER_NODUPLHS", true),
+            prefs: flag("RULEMINER_PREFS"),
+            units: path("RULEMINER_UNITS"),
         }
     }
 }
@@ -461,10 +487,9 @@ pub fn rule_miner() {
             1 => rule_order_or_tie(l, r),
             _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
         };
-        let family = env_var("RULEMINER_FAMILY").unwrap_or("mul");
-        // RULEMINER_BASE=<file>: rules (`lhs -> rhs` lines) and their preferences in force throughout, the stragglers are those left with
-        // them (section 74)
-        let base_text = env_var("RULEMINER_BASE").map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
+        let family = cfg.family.as_str();
+        // the stragglers are the laws left with the base's rules
+        let base_text = cfg.base.as_ref().map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
         let (base, base_prefs) = (parse_rules(&base_text), parse_prefs(&base_text));
         set_extra_rules(base.clone());
         set_rule_prefs(base_prefs.clone());
@@ -473,10 +498,9 @@ pub fn rule_miner() {
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
         // stragglers under the built-in rules
         let mut stragglers: Vec<(String, Term, Term, [Term; 2], u64, std::time::Duration)> = vec![];
-        // RULEMINER_LAWFILE=<file>: mine from these `lhs = rhs` lines (a proposer's band, docs/tier-cycle.md) instead of the family's
-        // window; RULEMINER_FAMILY still sets the variable count
-        let laws = match env_var("RULEMINER_LAWFILE") {
-            Some(f) => read_named_laws(&f),
+        // a lawfile is a proposer's band (docs/tier-cycle.md)
+        let laws = match &cfg.lawfile {
+            Some(f) => read_named_laws(f),
             None => family_laws(&family, &env_or::<usize>, n, nv, max),
         };
         phase("law building");
@@ -513,7 +537,7 @@ pub fn rule_miner() {
         phase("laws and stragglers");
         // `RULEMINER_GUARD=<k>` (default 120, 0 = off): about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
         // the same 1000 per law as it gains per straggler fixed (the miner otherwise sees only the stragglers and cannot see a regression)
-        let guard_k = env_or("RULEMINER_GUARD", 120); // default 120; 0 turns the check off
+        let guard_k = cfg.guard;
         let mut scored = stragglers.clone();
         let mut guard_w = 1000i64; // each sampled guard law stands for clean/sampled laws, so a regression costs that many times 1000
         if guard_k > 0 && !clean.is_empty() {
@@ -680,15 +704,15 @@ pub fn rule_miner() {
                 }
             }
         }
-        // `RULEMINER_EXTRA=<file>`: extra candidates (`lhs -> rhs` lines) joining the miner's own, before the one-per-left-side pass
-        if let Some(path) = env_var("RULEMINER_EXTRA") {
-            let extra = read_rule_file(&path);
+        // extra candidates join the miner's own before the one-per-left-side pass
+        if let Some(path) = &cfg.extra {
+            let extra = read_rule_file(path);
             println!("RULEMINER {} extra candidates from {path}", extra.len());
             cands.extend(extra);
         }
         // `RULEMINER_NODUPLHS` (default on, 0 = off): drop candidates whose left side already has a rule in force (`RULEMINER_BASE`); the one-per-left-side pass
         // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
-        if env_var("RULEMINER_NODUPLHS").map_or(true, |v| v != "0") {
+        if cfg.no_dup_lhs {
             let before = cands.len();
             let in_force: hashbrown::HashSet<&Term> = base.iter().map(|(l, _)| l).collect();
             cands.retain(|(l, _)| !in_force.contains(l));
@@ -1204,7 +1228,7 @@ pub fn rule_miner() {
         // off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
         // rival orientations in the miner")
         // `RULEMINER_UNITS=<file>`: the base's drop units (`joinability_units`, built once per pooled library by `driver::sweep`)
-        let units = env_var("RULEMINER_UNITS").filter(|_| env_or("RULEMINER_PREFS", 0u8) != 0).map_or(vec![], |f| parse_units(&std::fs::read_to_string(f).unwrap()));
+        let units = cfg.units.as_ref().filter(|_| cfg.prefs).map_or(vec![], |f| parse_units(&std::fs::read_to_string(f).unwrap()));
         for (u, rules) in units.iter().enumerate() {
             println!("RULEMINER drop unit {u}: {}", rules.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect::<Vec<_>>().join("; "));
         }
@@ -1213,7 +1237,7 @@ pub fn rule_miner() {
             *base_now.lock().unwrap() = base.iter().filter(|r| !dropped.iter().any(|&u| units[u].contains(r))).cloned().collect();
         };
         let mut prefs = base_prefs.clone();
-        while env_or("RULEMINER_PREFS", 0u8) != 0 {
+        while cfg.prefs {
             *RULE_CONFLICTS.get(Default::default).lock().unwrap() = Some(Default::default());
             let (now, _) = score_laws(&chosen, &prefs, &all_laws, false, None);
             let mut conflicts: Vec<Pref> = RULE_CONFLICTS.get(Default::default).lock().unwrap().take().unwrap().into_keys().collect();
@@ -2243,7 +2267,7 @@ pub fn normal_forms() {
     tatic::kernel::scoped(|| {
         let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(env_var("NF_RULES").unwrap_or_default()).unwrap_or_default());
         set_extra_rules(rules);
-        TRACE_RULES.get(Default::default).store(env_var("NF_TRACE").is_some(), std::sync::atomic::Ordering::Relaxed);
+        TRACE_RULES.get(Default::default).store(env_flag("NF_TRACE", false), std::sync::atomic::Ordering::Relaxed);
         RULE_BUDGET.with(|b| b.set(200));
         let (n, k) = (4, 3);
         for line in std::fs::read_to_string(env_var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
@@ -2313,9 +2337,9 @@ pub fn rule_set_kernel_check() {
         let (_, kv, laws) = check_laws();
         // CHECK_FAST=1: count only (machine fallbacks are counted without building their proofs, nothing is kernel-checked, no NFSAME pass);
         // the CHECKED line and so M are unchanged, for exploration (the miner's RULEMINER_FAST, applied to serving)
-        let fast = env_or("CHECK_FAST", 0u8) != 0;
+        let fast = env_flag("CHECK_FAST", false);
         SCORE_ONLY.with(|s| s.set(fast));
-        if env_or("RULE_CONFLICTS", 0u8) != 0 {
+        if env_flag("RULE_CONFLICTS", false) {
             *RULE_CONFLICTS.get(Default::default).lock().unwrap() = Some(Default::default());
         }
         let (mut proved, mut free, mut none, mut exhausted, mut joined) = (0, 0, 0, 0, 0);

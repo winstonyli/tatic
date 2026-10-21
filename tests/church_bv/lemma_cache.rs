@@ -124,7 +124,7 @@ fn process() -> std::sync::Arc<Option<Process>> {
 /// Whether `LEMMA_RECHECK=1`: build and check every lemma, comparing the cached statements with the built ones.
 pub fn recheck() -> bool {
     static R: crate::task::PerTask<bool> = crate::task::PerTask::new();
-    *R.get(|| env_var("LEMMA_RECHECK").is_some_and(|v| v == "1"))
+    *R.get(|| env_flag("LEMMA_RECHECK", false))
 }
 
 /// The statement an earlier process checked for `key`, if the cache has one.

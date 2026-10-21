@@ -292,7 +292,7 @@ impl LoopCfg {
             deep3: env_or("DEEP3", 1),
             split: env_or("SPLIT", 2),
             warm: env_var("WARM_RULES").map(PathBuf::from),
-            check_fast: env_or("CHECK_FAST", 0usize) == 1,
+            check_fast: env_flag("CHECK_FAST", false),
             extras: Default::default(),
             extra_at: vec![],
             env: vec![],
@@ -447,7 +447,7 @@ fn append(path: &Path, text: &str) {
 /// machine-wide, so read here; `lockpriv` and `pages` belong to the children's process and environment, so a worker
 /// task (`machine::pages_line`, with the children's `env`) reports them. `MACHINE_STATE=0` skips it, in a loop or a sweep.
 fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Path) {
-    if env_or("MACHINE_STATE", 1usize) == 0 {
+    if !env_flag("MACHINE_STATE", true) {
         return;
     }
     std::fs::create_dir_all(out).unwrap();
@@ -469,7 +469,7 @@ fn env_echo() {
         println!("ECHO {k}={}", env_var(k).unwrap_or("<unset>"));
     }
     println!("ECHO nonce={nonce}");
-    assert!(env_var("ECHO_PANIC") != Some("1"), "env_echo panicked on request");
+    assert!(!env_flag("ECHO_PANIC", false), "env_echo panicked on request");
 }
 
 /// A worker runs each task with its own environment and log, leaks no variable from one task to the next, starts afresh
@@ -940,7 +940,7 @@ fn sweep() {
             let text: String = ["cmp3d", "add3", "sbo3"].iter().map(|fam| format!("# library {fam}\n{}\n", std::fs::read_to_string(library(fam)).unwrap().trim_end())).collect();
             std::fs::write(&pooled, &text).unwrap();
             let units = out.join("pooled.units");
-            std::fs::write(&units, units_text(&joinability_units(&text, 4, env_or("RULEMINER_STEPS", 200i64)))).unwrap();
+            std::fs::write(&units, units_text(&joinability_units(&text, 4, crate::search::MinerConfig::from_env().steps as i64))).unwrap();
             std::fs::write(out.join("pooled_prefs.tsv"), "").unwrap();
             // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins, and which
             // rules where two libraries' normal forms meet to drop (`drop_units`), on its phase-0 stream: a mine with no rule

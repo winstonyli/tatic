@@ -551,7 +551,7 @@ pub fn shared_carry_proof_checks_and_rejects_wrong_statements() {
 #[test]
 #[ignore]
 pub fn shared_carry_scaling() {
-    let ns: Vec<usize> = if env_var("SHARED_N64").is_some() { vec![16, 32, 64] } else { vec![16, 32] };
+    let ns: Vec<usize> = if env_flag("SHARED_N64", false) { vec![16, 32, 64] } else { vec![16, 32] };
     for n in ns {
         for round in 0..2 {
             let (p, s) = add_identity_proof_shared(n, 0, false, add_shared);
@@ -654,7 +654,7 @@ pub fn add_zero_lemma_scaling_scoped() {
                 tatic::kernel::term_sizes(&proof).0
             );
         };
-        if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
+        if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -794,7 +794,7 @@ pub fn add_comm_rejection_probe() {
         let r = if case == "own" { holds(&wp, &ws) } else { holds(&proof, &ws) };
         println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
     };
-    if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
+    if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
 }
 
 /// As `add_comm_scaling`, built and checked inside one `scoped` call, up to the widths in the
@@ -821,7 +821,7 @@ pub fn add_comm_scaling_scoped() {
                 tatic::kernel::term_sizes(&proof).0
             );
         };
-        if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
+        if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
     }
 }
 

@@ -24,7 +24,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 - **C3 (D): split `rule_miner`** (search.rs:445, 831 lines, about 60 closures) into a `Miner` struct with methods for
   candidates, scoring, rounds, finish and the preference phase. After C1. Status: ruling.
 - **C4: finish `MinerConfig`.** Its doc says it holds every `RULEMINER_*` switch, but about 9 are read inline. Flag parsing
-  disagrees (`==1`, `!=0`, `is_some()`, so `NF_TRACE=0` turns tracing on): one `env_flag`. Status: todo.
+  disagrees (`==1`, `!=0`, `is_some()`, so `NF_TRACE=0` turns tracing on): one `env_flag`. Status: done (this commit; gated).
 - **C5 (D): one denote walker in `src/proof/`.** `denote_with_placeholders` (hardening.rs:201) mirrors
   `denote_closure_typed` (hardening.rs:437) except for the `SelfCall` arm; the three literal collectors
   (`proof.rs:335`, `closures.rs:2300`, `closures.rs:1813`) are one walk with different accept tables. Status: ruling.
@@ -37,7 +37,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   Status: ruling.
 - **C9: one builder-bug mechanism in `src/compile.rs`** (three counters with the same count, debug-panic, reject shape,
   compile.rs:352-493) and a `decline` helper for the 7 repeated decline sequences in `jit::compile_verify_and_apply`
-  (jit.rs:225-326). Status: done (this commit).
+  (jit.rs:225-326). Status: done 0119ddf.
 
 ## Deletions
 

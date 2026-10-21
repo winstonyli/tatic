@@ -297,7 +297,7 @@ fn pages_text_has_both_fields() {
 pub struct MachineBanner(&'static str);
 impl MachineBanner {
     pub fn start(tag: &'static str) -> Self {
-        if env_var("MACHINE_BANNER").is_some_and(|v| v == "0") {
+        if !env_flag("MACHINE_BANNER", true) {
             return MachineBanner("");
         }
         println!("{tag} machine at start: {}", machine_state());
@@ -507,7 +507,7 @@ fn tree_proof(n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Exp
                 if inv.is_some() { pi(hty(v), shift(&inner, 0, 1)) } else { inner }
             };
             let ty = lemma_n_ty(nv, &body);
-            if inv.is_some() && env_var("GUARDTRACE").is_some() {
+            if inv.is_some() && env_flag("GUARDTRACE", false) {
                 eprintln!("GUARDED lemma nv={nv} tag={tag}");
             }
             let leaf = |bits: &[bool]| {
@@ -854,7 +854,7 @@ pub fn machine_lemma_probe() {
                 println!("PROBE carries={c} {what}: check {:?} ok {ok}", t0.elapsed());
             }
         };
-        if env_var("NO_SCOPE").is_none() { tatic::kernel::scoped(body) } else { body() }
+        if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -876,7 +876,7 @@ pub fn lemma_overhead_probe() {
 #[ignore]
 pub fn conjecture_miner() {
     tatic::kernel::scoped(|| {
-        let (n, nvars, deep) = (env_or("MINER_N", 4), env_or("MINER_VARS", 2), env_or("MINER_DEEP", 0) == 1);
+        let (n, nvars, deep) = (env_or("MINER_N", 4), env_or("MINER_VARS", 2), env_flag("MINER_DEEP", false));
         let ts = terms(nvars, deep);
         let t0 = Instant::now();
         // classes by the values on the tuples (variable `i` is bits `n*i..` of a tuple)
@@ -904,7 +904,7 @@ pub fn conjecture_miner() {
         }
         let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
         println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
-        let show = env_var("MINER_SHOW").is_some();
+        let show = env_flag("MINER_SHOW", false);
         // Every conjecture (class representative = shortest term) over x, y, by what can check it.
         let (mut by_builder, mut rejected, mut needs_add, mut needs_z, mut by_third) = (0, vec![], vec![], 0, (0usize, 0usize));
         let (mut by_rewrite, mut rewrite_bugs, mut by_chain, mut by_tree) = (0, vec![], 0, 0);

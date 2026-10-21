@@ -366,11 +366,19 @@ pub const OP_INFO: [OpInfo; 8] = [
 ];
 /// How many of `OP_INFO` the miner enumerates: `sub` only with `MINER_SUB=1`.
 pub fn nops() -> usize {
-    if env_var("MINER_SUB").is_some() { 5 } else { 4 }
+    if env_flag("MINER_SUB", false) { 5 } else { 4 }
 }
 /// The environment variable `k` parsed as `T`, or `d` when unset or unparsable.
 pub fn env_or<T: std::str::FromStr>(k: &str, d: T) -> T {
     env_var(k).and_then(|v| v.parse().ok()).unwrap_or(d)
+}
+/// The environment variable `k` as a switch: `d` when unset, off at `0`, on at any other value. Every church_bv switch reads
+/// this way.
+pub fn env_flag(k: &str, d: bool) -> bool {
+    switch_value(env_var(k), d)
+}
+fn switch_value(v: Option<&str>, d: bool) -> bool {
+    v.map_or(d, |v| v != "0")
 }
 
 /// The task's environment, taken whole at its first `env_var` (names upper-cased on Windows, where they ignore case; values
@@ -4302,6 +4310,17 @@ fn env_var_reads_the_process_environment() {
         assert_eq!(env_var(k), want.as_deref(), "{k}");
     }
     assert_eq!(env_var("CHURCH_BV_SURELY_UNSET"), None);
+}
+
+#[test]
+fn a_switch_is_off_only_at_0_and_its_default_when_unset() {
+    for d in [false, true] {
+        assert_eq!(switch_value(None, d), d);
+    }
+    assert!(!switch_value(Some("0"), true));
+    assert!(switch_value(Some("1"), false));
+    assert!(switch_value(Some("2"), false)); // `== 1` read this as off
+    assert!(!env_flag("CHURCH_BV_SURELY_UNSET", false));
 }
 
 #[test]
