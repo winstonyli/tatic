@@ -367,7 +367,7 @@ fn eval_and_prove_call_respects_call_refs_own_argument_order_for_a_non_symmetric
     let mut combinators = ClosureCombinators::new(&s);
     combinators.cp.arith.lit(5);
     combinators.cp.arith.lit(3);
-    let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
+    let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
         .expect("a non-capturing literal-lambda self-call-argument should get a concrete witness");
     assert_eq!(result, 2, "eval_and_prove_call must not swap call_ref's own argument order");
     combinators.cp.arith.p.check(
@@ -420,7 +420,7 @@ fn eval_and_prove_call_over_gets_a_concrete_instance_for_the_canonical_if_betwee
         combinators.cp.arith.lit(a_val);
         combinators.cp.arith.lit(b_val);
         combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
+        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
             .expect("an over-applied literal lambda returning an If-chosen closure should get a concrete witness");
         assert_eq!(result, expected);
         combinators.cp.arith.p.check(
@@ -473,7 +473,7 @@ fn eval_and_prove_call_over_respects_the_over_applied_calls_own_argument_order_f
         combinators.cp.arith.lit(a_val);
         combinators.cp.arith.lit(c_val);
         combinators.cp.arith.lit(d_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
+        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
             .expect("a non-symmetric over-applied closure call should get a concrete witness");
         assert_eq!(result, expected, "eval_and_prove_call_over must not swap the over-applied call's own argument order");
         combinators.cp.arith.p.check(
@@ -557,7 +557,7 @@ fn a_call_shaped_if_tree_leaf_whose_own_target_is_itself_a_further_if_tree_gets_
         combinators.cp.arith.lit(a_val);
         combinators.cp.arith.lit(b_val);
         combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[]).unwrap_or_else(|| {
+        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).unwrap_or_else(|| {
             panic!("a={a_val} b={b_val} c={c_val}: a Call-shaped leaf targeting a further IfTree should get a concrete instance")
         });
         assert_eq!(
@@ -622,7 +622,7 @@ fn eval_and_prove_call_over_resolves_an_inner_closures_own_captures_against_root
         let w_fact = kernel::refl(w_lit);
         combinators.cp.arith.lit(a_val);
         combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[w_param], &[w_val], &[w_fact])
+        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[w_param], concrete: &[w_val], facts: &[w_fact] })
             .expect("an inner closure capturing both root's own param and root's own capture should get a concrete witness");
         assert_eq!(result, expected, "eval_and_prove_call_over must resolve an inner closure's own captures against root's frame directly, not double-shifted by root's own arity");
         combinators.cp.arith.p.check(
@@ -674,7 +674,7 @@ fn a_pap_producing_root_gets_a_concrete_instance_for_eval_and_prove_call_over() 
     combinators.cp.arith.lit(5);
     combinators.cp.arith.lit(3);
     let (result, denoted, proof) =
-        eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).expect("a PAP-producing root's over-application should get a concrete instance");
+        eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).expect("a PAP-producing root's over-application should get a concrete instance");
     assert_eq!(result, 53, "should agree with the reference interpreter, not just typecheck");
     let int_ty = combinators.cp.arith.int_ty();
     combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
@@ -737,7 +737,7 @@ fn a_further_indirectly_called_combinator_gets_a_concrete_instance_for_eval_and_
     combinators.cp.arith.lit(100);
     combinators.cp.arith.lit(7);
     combinators.cp.arith.lit(2);
-    let (result, denoted, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[])
+    let (result, denoted, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
         .expect("a further indirectly-called combinator's over-application should get a concrete instance");
     assert_eq!(result, 72, "should agree with the reference interpreter, not just typecheck");
     let int_ty = combinators.cp.arith.int_ty();
@@ -791,7 +791,7 @@ fn two_levels_of_further_indirection_still_get_a_concrete_instance() {
     combinators.cp.arith.lit(11);
     combinators.cp.arith.lit(4);
     let (result, denoted, proof) =
-        eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[]).expect("two levels of further indirection should still get a concrete instance");
+        eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).expect("two levels of further indirection should still get a concrete instance");
     assert_eq!(result, 7, "should agree with the reference interpreter, not just typecheck");
     let int_ty = combinators.cp.arith.int_ty();
     combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
@@ -856,7 +856,7 @@ fn a_pap_producing_root_with_two_supplied_args_and_a_capturing_g_gets_a_concrete
         combinators.cp.arith.lit(lit);
     }
     let (result, denoted, proof) =
-        eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).expect("a capturing PAP-producing root's over-application should get a concrete instance");
+        eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).expect("a capturing PAP-producing root's over-application should get a concrete instance");
     assert_eq!(result, 580, "should agree with the reference interpreter, not just typecheck");
     let int_ty = combinators.cp.arith.int_ty();
     combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
@@ -907,7 +907,7 @@ fn a_further_nested_if_inside_a_branch_gets_a_concrete_instance_for_eval_and_pro
         let mut combinators = ClosureCombinators::new(&s);
         combinators.cp.arith.lit(a_val);
         combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h, &mut combinators, &[], &[], &[])
+        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
             .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a further-nested If inside a branch should get a concrete instance"));
         assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
         combinators.cp.arith.p.check(
@@ -992,7 +992,7 @@ fn an_if_tree_leaf_that_is_itself_a_partial_application_gets_a_concrete_instance
         combinators.cp.arith.lit(b1_val);
         combinators.cp.arith.lit(b2_val);
         combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[]).unwrap_or_else(|| {
+        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).unwrap_or_else(|| {
             panic!("a={a_val} b1={b1_val} b2={b2_val} c={c_val}: a Pap-shaped IfTree leaf should get a concrete instance")
         });
         assert_eq!(
@@ -1077,7 +1077,7 @@ fn an_if_tree_leaf_reached_only_through_a_further_saturated_call_gets_a_concrete
         combinators.cp.arith.lit(a_val);
         combinators.cp.arith.lit(b_val);
         combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[]).unwrap_or_else(|| {
+        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).unwrap_or_else(|| {
             panic!("a={a_val} b={b_val} c={c_val}: a Call-shaped IfTree leaf should get a concrete instance")
         });
         assert_eq!(
@@ -1137,7 +1137,7 @@ fn a_self_recursive_root_whose_body_never_actually_self_calls_gets_a_concrete_in
         let mut combinators = ClosureCombinators::new(&s);
         combinators.cp.arith.lit(a_val);
         combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(&s, h_term, &mut combinators, &[], &[], &[])
+        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
             .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a self-recursive root that never self-calls should get a concrete instance"));
         assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
         combinators.cp.arith.p.check(
@@ -1178,7 +1178,7 @@ fn an_over_application_with_the_wrong_number_of_extra_args_is_out_of_scope() {
 
     let mut combinators = ClosureCombinators::new(&s);
     assert!(
-        eval_and_prove(&s, h, &mut combinators, &[], &[], &[]).is_none(),
+        eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).is_none(),
         "an under-applied over-application should stay out of scope, not panic"
     );
 }

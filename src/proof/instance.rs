@@ -71,13 +71,12 @@ use super::*;
 /// (and recursing into a sibling sub-expression) pushing further postulates
 /// onto `arith.p.globals` never shifts a value already resolved here.
 pub(super) fn eval_and_prove(
-    store: &TermStore,
     h: Hash,
     combinators: &mut ClosureCombinators<'_>,
-    params: &[Expr],
-    concrete: &[i64],
-    param_facts: &[Expr],
+    frame: Frame<'_>,
 ) -> Option<(i64, Expr, Expr)> {
+    let Frame { params, concrete, facts: param_facts } = frame;
+    let store = combinators.store;
     match compile::classify(store, h, params.len(), None) {
         // `param_types` is always empty here: every caller of this
         // function (via `instance_from_scaffold`'s own precondition) only
@@ -88,13 +87,13 @@ pub(super) fn eval_and_prove(
         // would, without needing to fabricate one.
         shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, &[])? {
             AppShape::LitLambdaExact { root, args, callee_param_types } => {
-                eval_and_prove_call(store, root, &args, &callee_param_types, combinators, params, concrete, param_facts)
+                eval_and_prove_call(root, &args, &callee_param_types, combinators, frame)
             }
             // `root`'s own saturated call returns a `Clo_k`, then the
             // extra arguments are dispatched against it directly -- see
             // `eval_and_prove_call_over`'s own docs.
             AppShape::LitLambdaOver { root, args, callee_param_types } => {
-                eval_and_prove_call_over(store, root, &args, &callee_param_types, combinators, params, concrete, param_facts)
+                eval_and_prove_call_over(root, &args, &callee_param_types, combinators, frame)
             }
             // A `Clo`-typed result (`LitLambdaPartial`) has no concrete
             // representation at all (see `instance_from_scaffold`'s own
@@ -110,8 +109,8 @@ pub(super) fn eval_and_prove(
             Some((n, l, kernel::refl(l)))
         }
         Shape::Prim(op, a, b) => {
-            let (xa, da, pa) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
-            let (xb, db, pb) = eval_and_prove(store, b, combinators, params, concrete, param_facts)?;
+            let (xa, da, pa) = eval_and_prove(a, combinators, frame)?;
+            let (xb, db, pb) = eval_and_prove(b, combinators, frame)?;
             let fact = combinators.cp.arith.assume_prim_fact(op, xa, xb);
             let result = apply_prim_concrete(op, xa, xb);
 
@@ -140,9 +139,9 @@ pub(super) fn eval_and_prove(
         // though only one is the branch `eval_concrete` actually takes --
         // to discharge `app3(ite_ref, dc, dt, de) = lit_ref(result)`.
         Shape::If(c, t, e) => {
-            let (xc, dc, pc) = eval_and_prove(store, c, combinators, params, concrete, param_facts)?;
-            let (xt, dt, pt) = eval_and_prove(store, t, combinators, params, concrete, param_facts)?;
-            let (xe, de, pe) = eval_and_prove(store, e, combinators, params, concrete, param_facts)?;
+            let (xc, dc, pc) = eval_and_prove(c, combinators, frame)?;
+            let (xt, dt, pt) = eval_and_prove(t, combinators, frame)?;
+            let (xe, de, pe) = eval_and_prove(e, combinators, frame)?;
             let fact = combinators.cp.arith.assume_ite_fact(xc, xt, xe);
             let result = if xc != 0 { xt } else { xe };
 
@@ -183,17 +182,15 @@ pub(super) fn eval_and_prove(
 /// `denote_closure`'s own arm needs it, since that also has to look up
 /// each argument's own *type*, `Int` or `Clo`; here every argument is
 /// already known to be `Int`).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_and_prove_call(
-    store: &TermStore,
     root: Hash,
     args: &[Hash],
     callee_param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
-    params: &[Expr],
-    concrete: &[i64],
-    param_facts: &[Expr],
+    frame: Frame<'_>,
 ) -> Option<(i64, Expr, Expr)> {
+    let Frame { params, concrete, facts: param_facts } = frame;
+    let store = combinators.store;
     if callee_param_types.iter().any(Option::is_some) {
         return None;
     }
@@ -201,7 +198,7 @@ pub(super) fn eval_and_prove_call(
     // Evaluate each argument in the *outer* frame, application order.
     let mut arg_triples = Vec::with_capacity(args.len());
     for &a in args {
-        let (x, d, p) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
+        let (x, d, p) = eval_and_prove(a, combinators, frame)?;
         arg_triples.push((x, d, p));
     }
 
@@ -222,7 +219,7 @@ pub(super) fn eval_and_prove_call(
         cap_triples.push((x, d, p));
     }
 
-    eval_and_prove_direct_call(store, root, combinators, &cap_triples, &arg_triples)
+    eval_and_prove_direct_call(root, combinators, &cap_triples, &arg_triples)
 }
 
 /// `eval_and_prove_call`'s own reusable core, once `root`'s own captures
@@ -243,12 +240,12 @@ pub(super) fn eval_and_prove_call(
 /// `compile::free_vars` are already needed again just below) rather than
 /// threading them through as extra parameters.
 pub(super) fn eval_and_prove_direct_call(
-    store: &TermStore,
     root: Hash,
     combinators: &mut ClosureCombinators<'_>,
     cap_triples: &[(i64, Expr, Expr)],
     arg_triples: &[(i64, Expr, Expr)],
 ) -> Option<(i64, Expr, Expr)> {
+    let store = combinators.store;
     let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
     let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
     let n = root_captures.len();
@@ -393,7 +390,7 @@ pub(super) fn eval_and_prove_direct_call(
     // further postulates (`assume_prim_fact`/`assume_ite_fact`, fresh
     // literals); a pushed `Const` shifts nothing already built above
     // (`RELATED_WORK.md` §69), so nothing here needs re-resolving after it.
-    let (result, denote_lit, proof_d) = eval_and_prove(store, root_body, combinators, &inner_params, &inner_concrete, &inner_facts)?;
+    let (result, denote_lit, proof_d) = eval_and_prove(root_body, combinators, Frame { params: &inner_params, concrete: &inner_concrete, facts: &inner_facts })?;
 
     // Chain: call_at_denoted = call_at_lit_env_lit_args (bridge)
     //      = denote(root_body, [lit_args, lit_caps]) (axiom_at_literals)
@@ -447,10 +444,9 @@ pub(super) type CloCallBridge = (Expr, Expr, Expr, Expr, Vec<Expr>, Vec<i64>, Ve
 pub(super) fn inner_closure_literal_value(
     combinators: &mut ClosureCombinators<'_>,
     inner: Hash,
-    inner_params: &[Expr],
-    inner_concrete: &[i64],
-    inner_facts: &[Expr],
+    frame: Frame<'_>,
 ) -> Option<(Expr, ValueTriples)> {
+    let Frame { params: inner_params, concrete: inner_concrete, facts: inner_facts } = frame;
     let (inner_arity, inner_body, inner_is_rec) = compile::peel(combinators.store, inner)?;
     if inner_is_rec {
         return None;
@@ -526,16 +522,14 @@ pub(super) fn inner_closure_literal_value(
 /// to `root`; factored out, parametrized over `subject`, so
 /// `resolve_closure_shape_to_leaf`'s own `Call` arm can build the
 /// identical thing for a further indirect call's own callee, recursively.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_clo_call_bridge(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     subject: Hash,
     sat_arg_triples: &[(i64, Expr, Expr)],
-    outer_params: &[Expr],
-    outer_concrete: &[i64],
-    outer_facts: &[Expr],
+    frame: Frame<'_>,
 ) -> Option<CloCallBridge> {
+    let Frame { params: outer_params, concrete: outer_concrete, facts: outer_facts } = frame;
+    let store = combinators.store;
     let (subject_arity, subject_body, subject_is_rec) = compile::peel(store, subject)?;
     let k = match combinator_return_type(store, subject) {
         Some(Some(k)) => k,
@@ -716,27 +710,25 @@ pub(super) fn build_clo_call_bridge(
 /// equals `chosen_value`, and the instantiated `apply_*_eq_ref` fact
 /// bridging `chosen_value`, called directly, down to a direct call on
 /// `chosen`.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_closure_shape_to_leaf(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     call_at_denoted: &Expr,
     call_at_lit_env_lit_args: &Expr,
     bridge: &Expr,
     axiom_at_literals: &Expr,
     shape: &ClosureRhsShape,
-    inner_params: &[Expr],
-    inner_concrete: &[i64],
-    inner_facts: &[Expr],
+    frame: Frame<'_>,
     k: usize,
     extra_arg_triples: &[(i64, Expr, Expr)],
 ) -> Option<(Hash, ValueTriples, ValueTriples, Expr, Expr, Expr)> {
+    let Frame { params: inner_params, concrete: inner_concrete, facts: inner_facts } = frame;
+    let store = combinators.store;
 
     match shape {
         ClosureRhsShape::IfTree(tree) => {
             let leaf_shapes = classify_closure_if_tree_leaves(store, tree, k)?;
             let (resolution, tree_value_at_literals, leaf_value, tree_to_leaf_value) =
-                resolve_closure_if_tree(store, combinators, tree, &leaf_shapes, inner_params, inner_concrete, inner_facts, k, extra_arg_triples)?;
+                resolve_closure_if_tree(combinators, tree, &leaf_shapes, frame, k, extra_arg_triples)?;
 
             let call_at_denoted_here = *call_at_denoted;
             let call_at_lit_env_lit_args_here = *call_at_lit_env_lit_args;
@@ -839,7 +831,7 @@ pub(super) fn resolve_closure_shape_to_leaf(
 
             let mut supplied_triples = Vec::with_capacity(s);
             for &a in args {
-                let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
+                let (x, d, p) = eval_and_prove(a, combinators, frame)?;
                 supplied_triples.push((x, d, p));
             }
 
@@ -917,11 +909,11 @@ pub(super) fn resolve_closure_shape_to_leaf(
             // depth).
             let mut g_arg_triples = Vec::with_capacity(args.len());
             for &a in args {
-                let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
+                let (x, d, p) = eval_and_prove(a, combinators, frame)?;
                 g_arg_triples.push((x, d, p));
             }
             let (g_call_at_denoted, g_call_at_lit_env_lit_args, g_bridge, g_axiom_at_literals, g_inner_params, g_inner_concrete, g_inner_facts, g_k, g_shape) =
-                build_clo_call_bridge(store, combinators, *g, &g_arg_triples, inner_params, inner_concrete, inner_facts)?;
+                build_clo_call_bridge(combinators, *g, &g_arg_triples, frame)?;
             if g_k != k {
                 return None; // should be unreachable given clo_eq_ref_call's own validation, but stay defensive
             }
@@ -943,17 +935,13 @@ pub(super) fn resolve_closure_shape_to_leaf(
             let clo_ty = combinators.cp.clo_ty(k);
             let root_to_g = kernel::trans_proof(&clo_ty, &call_at_denoted_here, &call_at_lit_env_lit_args_here, &g_call_at_denoted, bridge_here, axiom_at_literals_here);
 
-            let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, g_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(
-                store,
-                combinators,
+            let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, g_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(combinators,
                 &g_call_at_denoted.clone(),
                 &g_call_at_lit_env_lit_args,
                 &g_bridge,
                 &g_axiom_at_literals,
                 &g_shape,
-                &g_inner_params,
-                &g_inner_concrete,
-                &g_inner_facts,
+                Frame { params: &g_inner_params, concrete: &g_inner_concrete, facts: &g_inner_facts },
                 k,
                 extra_arg_triples,
             )?;
@@ -972,17 +960,14 @@ pub(super) fn resolve_closure_shape_to_leaf(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_and_prove_call_over(
-    store: &TermStore,
     root: Hash,
     args: &[Hash],
     callee_param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
-    params: &[Expr],
-    concrete: &[i64],
-    param_facts: &[Expr],
+    frame: Frame<'_>,
 ) -> Option<(i64, Expr, Expr)> {
+    let store = combinators.store;
     if callee_param_types.iter().any(Option::is_some) {
         return None;
     }
@@ -1000,13 +985,13 @@ pub(super) fn eval_and_prove_call_over(
     // resolution `eval_and_prove_call` already does, split after.
     let mut arg_triples = Vec::with_capacity(args.len());
     for &a in args {
-        let (x, d, p) = eval_and_prove(store, a, combinators, params, concrete, param_facts)?;
+        let (x, d, p) = eval_and_prove(a, combinators, frame)?;
         arg_triples.push((x, d, p));
     }
     let (sat_arg_triples, extra_arg_triples) = arg_triples.split_at(root_arity);
 
     let (call_at_denoted, call_at_lit_env_lit_args, bridge, axiom_at_literals, inner_params, inner_concrete, inner_facts, k, shape) =
-        build_clo_call_bridge(store, combinators, root, sat_arg_triples, params, concrete, param_facts)?;
+        build_clo_call_bridge(combinators, root, sat_arg_triples, frame)?;
     debug_assert_eq!(k, k_check, "eval_and_prove_call_over: build_clo_call_bridge's own k must match combinator_return_type(root)");
 
     // `resolve_closure_shape_to_leaf` below may lazily push further
@@ -1027,17 +1012,13 @@ pub(super) fn eval_and_prove_call_over(
     // that recursive call (`chosen_arg_triples`), and the instantiated
     // `apply_*_eq_ref` fact bridging `chosen_value` called directly down
     // to a direct call on `chosen`.
-    let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, root_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(
-        store,
-        combinators,
+    let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, root_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(combinators,
         &call_at_denoted,
         &call_at_lit_env_lit_args,
         &bridge,
         &axiom_at_literals,
         &shape,
-        &inner_params,
-        &inner_concrete,
-        &inner_facts,
+        Frame { params: &inner_params, concrete: &inner_concrete, facts: &inner_facts },
         k,
         extra_arg_triples,
     )?;
@@ -1074,7 +1055,7 @@ pub(super) fn eval_and_prove_call_over(
     // `eval_and_prove_direct_call`'s own recursion below (into `chosen`'s
     // own body) may push further postulates.
     let (result, call_at_denoted_for_chosen, proof_for_chosen) =
-        eval_and_prove_direct_call(store, chosen, combinators, &chosen_cap_triples, &chosen_arg_triples)?;
+        eval_and_prove_direct_call(chosen, combinators, &chosen_cap_triples, &chosen_arg_triples)?;
 
     // Chain: apply_at_denoted = apply_at_chosen_denoted_args (clo_step)
     //      = call_at_denoted_for_chosen (apply_eq_chosen -- its own RHS,
@@ -1136,7 +1117,6 @@ pub(super) fn canonical_params(combinators: &ClosureCombinators<'_>, concrete: &
 /// number of newly-*derived* calls; a `memo` hit doesn't touch it.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_ev_witness(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     self_call: SelfCall,
     leaves: &[Leaf],
@@ -1147,6 +1127,7 @@ pub(super) fn build_ev_witness(
     budget: &mut usize,
     memo: &mut HashMap<Vec<i64>, (Expr, Expr)>,
 ) -> Option<(Expr, Expr)> {
+    let store = combinators.store;
     if let Some((v, e)) = memo.get(concrete) {
         return Some((*v, *e));
     }
@@ -1158,7 +1139,7 @@ pub(super) fn build_ev_witness(
 
     let mut premises = Vec::with_capacity(leaf.path.len());
     for &(cond, _lit) in &leaf.path {
-        let (_, _, proof) = eval_and_prove(store, cond, combinators, &params, concrete, &param_facts)?;
+        let (_, _, proof) = eval_and_prove(cond, combinators, Frame { params: &params, concrete: concrete, facts: &param_facts })?;
         premises.push(proof);
     }
 
@@ -1170,7 +1151,7 @@ pub(super) fn build_ev_witness(
         let mut denoted_facts = Vec::with_capacity(self_call.arity);
         for i in 0..self_call.arity {
             let arg = call[self_call.arity - 1 - i];
-            let (x, denoted, pf) = eval_and_prove(store, arg, combinators, &params, concrete, &param_facts)?;
+            let (x, denoted, pf) = eval_and_prove(arg, combinators, Frame { params: &params, concrete: concrete, facts: &param_facts })?;
             new_concrete.push(x);
             denoted_args.push(denoted);
             denoted_facts.push(pf);
@@ -1179,9 +1160,7 @@ pub(super) fn build_ev_witness(
         // The recursive call's own witness, always in canonical
         // (literal-params) form -- valid regardless of whether this came
         // from a fresh derivation or a `memo` hit.
-        let (v, e_canonical) = build_ev_witness(
-            store,
-            combinators,
+        let (v, e_canonical) = build_ev_witness(combinators,
             self_call,
             leaves,
             ev_leaf_positions,
@@ -1268,7 +1247,7 @@ pub struct UniversalInstanceProof {
 /// instead, which pays that cost once and clones the scaffold per attempt.
 pub fn prove_tail_recursive_instance(store: &TermStore, h: Hash, args: &[i64]) -> Option<UniversalInstanceProof> {
     let scaffold = build_universal(store, h)?;
-    instance_from_scaffold(store, scaffold, args)
+    instance_from_scaffold(scaffold, args)
 }
 
 /// Builds the universal theorem once and, from a clone of the same
@@ -1292,12 +1271,12 @@ pub fn prove_tail_recursive_universal_with_instances(
     };
     let instances = args_list
         .iter()
-        .map(|args| instance_from_scaffold(store, scaffold.clone(), args))
+        .map(|args| instance_from_scaffold(scaffold.clone(), args))
         .collect();
     Some((theorem, instances))
 }
 
-pub(super) fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalScaffold<'_>, args: &[i64]) -> Option<UniversalInstanceProof> {
+pub(super) fn instance_from_scaffold(mut scaffold: UniversalScaffold<'_>, args: &[i64]) -> Option<UniversalInstanceProof> {
     if args.len() != scaffold.arity {
         return None;
     }
@@ -1319,9 +1298,7 @@ pub(super) fn instance_from_scaffold(store: &TermStore, mut scaffold: UniversalS
 
     let mut budget = WITNESS_NODE_BUDGET;
     let mut memo = HashMap::new();
-    let (v, e) = build_ev_witness(
-        store,
-        &mut scaffold.combinators,
+    let (v, e) = build_ev_witness(&mut scaffold.combinators,
         scaffold.self_call,
         &scaffold.leaves,
         &scaffold.ev_leaf_positions,

@@ -1130,7 +1130,6 @@ impl<'a> ClosureCombinators<'a> {
         // order (captures first, then `root`'s own params) `call_eq_ref`
         // itself uses.
         let quant_types = vec![None; n_captures + arity];
-        let store = self.store;
         let ty = params_and_close_typed(self, &quant_types, kernel::Binder::Pi, |combinators, pp| {
             let (cs, ps) = pp.split_at(n_captures);
             let call_fn_here = call_fn;
@@ -1170,7 +1169,7 @@ impl<'a> ClosureCombinators<'a> {
             // `Term::If` (`Clo` branches) case structurally, generalized
             // from one step to the whole tree, over these abstract
             // quantified vars instead of a caller's real `params`.
-            let rhs = build_closure_if_tree_rhs(store, combinators, &tree, &leaf_shapes, &params_full, k)?;
+            let rhs = build_closure_if_tree_rhs(combinators, &tree, &leaf_shapes, &params_full, k)?;
 
             let clo_ty = combinators.cp.clo_ty(k);
             Some(kernel::id(clo_ty, lhs, rhs))
@@ -1834,7 +1833,8 @@ pub(super) fn closure_leaf_value_expr(combinators: &mut ClosureCombinators<'_>, 
 /// RHS-formula construction exactly (same `pap_ref(g,s)(g_env?,
 /// denote(args, params_full)...)`), just built over `root`'s own
 /// abstract quantified vars here instead of a fresh `Pi`'s own.
-pub(super) fn closure_leaf_pap_value_expr(store: &TermStore, combinators: &mut ClosureCombinators<'_>, g: Hash, args: &[Hash], params_full: &[Expr]) -> Option<Expr> {
+pub(super) fn closure_leaf_pap_value_expr( combinators: &mut ClosureCombinators<'_>, g: Hash, args: &[Hash], params_full: &[Expr]) -> Option<Expr> {
+    let store = combinators.store;
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
     let s = args.len();
@@ -1863,7 +1863,8 @@ pub(super) fn closure_leaf_pap_value_expr(store: &TermStore, combinators: &mut C
 /// RHS-formula construction exactly (`call_ref(g)(g_env?, denote(args,
 /// params_full)...)`), just built over `root`'s own abstract quantified
 /// vars here instead of a fresh `Pi`'s own.
-pub(super) fn closure_leaf_call_value_expr(store: &TermStore, combinators: &mut ClosureCombinators<'_>, g: Hash, args: &[Hash], params_full: &[Expr]) -> Option<Expr> {
+pub(super) fn closure_leaf_call_value_expr( combinators: &mut ClosureCombinators<'_>, g: Hash, args: &[Hash], params_full: &[Expr]) -> Option<Expr> {
+    let store = combinators.store;
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
     let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -1895,23 +1896,23 @@ pub(super) fn closure_leaf_call_value_expr(store: &TermStore, combinators: &mut 
 /// placeholder-mode `denote_closure`'s own `Term::If` (`Clo` branches) case
 /// structurally, generalized from one step to the whole tree.
 pub(super) fn build_closure_if_tree_rhs(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
     leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
     params_full: &[Expr],
     k: usize,
 ) -> Option<Expr> {
+    let store = combinators.store;
     match tree {
         DecisionTree::Leaf(h) => match leaf_shapes.get(h)? {
             ClosureIfTreeLeafShape::Abs { captures } => closure_leaf_value_expr(combinators, *h, captures, params_full),
-            ClosureIfTreeLeafShape::Pap { g, args } => closure_leaf_pap_value_expr(store, combinators, *g, args, params_full),
-            ClosureIfTreeLeafShape::Call { g, args } => closure_leaf_call_value_expr(store, combinators, *g, args, params_full),
+            ClosureIfTreeLeafShape::Pap { g, args } => closure_leaf_pap_value_expr(combinators, *g, args, params_full),
+            ClosureIfTreeLeafShape::Call { g, args } => closure_leaf_call_value_expr(combinators, *g, args, params_full),
         },
         DecisionTree::If { cond, then_branch, else_branch } => {
             let dc = denote(store, *cond, &combinators.cp.arith, params_full)?;
-            let dt = build_closure_if_tree_rhs(store, combinators, then_branch, leaf_shapes, params_full, k)?;
-            let de = build_closure_if_tree_rhs(store, combinators, else_branch, leaf_shapes, params_full, k)?;
+            let dt = build_closure_if_tree_rhs(combinators, then_branch, leaf_shapes, params_full, k)?;
+            let de = build_closure_if_tree_rhs(combinators, else_branch, leaf_shapes, params_full, k)?;
             let ite_clo = combinators.cp.ite_clo_ref(k);
             Some(kernel::app3(ite_clo, dc, dt, de))
         }
@@ -1930,14 +1931,13 @@ pub(super) fn build_closure_if_tree_rhs(
 /// outer over-application supplies, not just the extra ones (`Pap`'s own
 /// convention -- see `resolve_closure_shape_to_leaf`).
 pub(super) fn inner_closure_pap_value(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     g: Hash,
     args: &[Hash],
-    inner_params: &[Expr],
-    inner_concrete: &[i64],
-    inner_facts: &[Expr],
+    frame: Frame<'_>,
 ) -> Option<(Expr, ValueTriples, ValueTriples)> {
+    let Frame { params: inner_params, concrete: inner_concrete, facts: inner_facts } = frame;
+    let store = combinators.store;
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
     let s = args.len();
@@ -1953,7 +1953,7 @@ pub(super) fn inner_closure_pap_value(
 
     let mut supplied_triples = Vec::with_capacity(s);
     for &a in args {
-        let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
+        let (x, d, p) = eval_and_prove(a, combinators, frame)?;
         supplied_triples.push((x, d, p));
     }
 
@@ -1990,14 +1990,13 @@ pub(super) fn inner_closure_pap_value(
 /// into `g`'s own full resolution separately, only when that branch is
 /// actually reached.
 pub(super) fn inner_closure_call_value(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     g: Hash,
     args: &[Hash],
-    inner_params: &[Expr],
-    inner_concrete: &[i64],
-    inner_facts: &[Expr],
+    frame: Frame<'_>,
 ) -> Option<Expr> {
+    let Frame { params: inner_params, concrete: inner_concrete, facts: inner_facts } = frame;
+    let store = combinators.store;
     let (g_arity, g_body, g_is_rec) = compile::peel(store, g)?;
     let g_captures = compile::free_vars(store, g_body, g_arity, g_is_rec);
     let g_dummy: Vec<Option<usize>> = vec![None; g_captures.iter().map(|&r| r as usize + 1).max().unwrap_or(0)];
@@ -2034,34 +2033,32 @@ pub(super) fn inner_closure_call_value(
 /// `dt`/`de` present syntactically) -- `resolve_closure_if_tree` builds
 /// the *taken* branch's own value (and a proof chaining it to a concrete
 /// leaf) itself, more expensively, since only that one ever needs it.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn closure_if_tree_value_at_literals(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
     leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
-    inner_params: &[Expr],
-    inner_concrete: &[i64],
-    inner_facts: &[Expr],
+    frame: Frame<'_>,
     k: usize,
 ) -> Option<Expr> {
+    let inner_params = frame.params;
+    let store = combinators.store;
     match tree {
         DecisionTree::Leaf(h) => match leaf_shapes.get(h)? {
             ClosureIfTreeLeafShape::Abs { .. } => {
-                let (v, _caps) = inner_closure_literal_value(combinators, *h, inner_params, inner_concrete, inner_facts)?;
+                let (v, _caps) = inner_closure_literal_value(combinators, *h, frame)?;
                 Some(v)
             }
             ClosureIfTreeLeafShape::Pap { g, args } => {
-                let (v, _g_caps, _supplied) = inner_closure_pap_value(store, combinators, *g, args, inner_params, inner_concrete, inner_facts)?;
+                let (v, _g_caps, _supplied) = inner_closure_pap_value(combinators, *g, args, frame)?;
                 Some(v)
             }
-            ClosureIfTreeLeafShape::Call { g, args } => inner_closure_call_value(store, combinators, *g, args, inner_params, inner_concrete, inner_facts),
+            ClosureIfTreeLeafShape::Call { g, args } => inner_closure_call_value(combinators, *g, args, frame),
         },
         DecisionTree::If { cond, then_branch, else_branch } => {
             let params_full: Vec<Expr> = inner_params.to_vec();
             let dc = denote(store, *cond, &combinators.cp.arith, &params_full)?;
-            let dt = closure_if_tree_value_at_literals(store, combinators, then_branch, leaf_shapes, inner_params, inner_concrete, inner_facts, k)?;
-            let de = closure_if_tree_value_at_literals(store, combinators, else_branch, leaf_shapes, inner_params, inner_concrete, inner_facts, k)?;
+            let dt = closure_if_tree_value_at_literals(combinators, then_branch, leaf_shapes, frame, k)?;
+            let de = closure_if_tree_value_at_literals(combinators, else_branch, leaf_shapes, frame, k)?;
             let ite_clo = combinators.cp.ite_clo_ref(k);
             Some(kernel::app3(ite_clo, dc, dt, de))
         }
@@ -2114,28 +2111,25 @@ pub(super) enum IfTreeLeafResolution {
     },
 }
 
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 pub(super) fn resolve_closure_if_tree(
-    store: &TermStore,
     combinators: &mut ClosureCombinators<'_>,
     tree: &DecisionTree,
     leaf_shapes: &HashMap<Hash, ClosureIfTreeLeafShape>,
-    inner_params: &[Expr],
-    inner_concrete: &[i64],
-    inner_facts: &[Expr],
+    frame: Frame<'_>,
     k: usize,
     extra_arg_triples: &[(i64, Expr, Expr)],
 ) -> Option<(IfTreeLeafResolution, Expr, Expr, Expr)> {
     match tree {
         DecisionTree::Leaf(h) => match leaf_shapes.get(h)? {
             ClosureIfTreeLeafShape::Abs { .. } => {
-                let (value_lit, cap_triples) = inner_closure_literal_value(combinators, *h, inner_params, inner_concrete, inner_facts)?;
+                let (value_lit, cap_triples) = inner_closure_literal_value(combinators, *h, frame)?;
                 let proof = kernel::refl(value_lit);
                 Some((IfTreeLeafResolution::Direct { chosen: *h, cap_triples, arg_prefix: Vec::new() }, value_lit, value_lit, proof))
             }
             ClosureIfTreeLeafShape::Pap { g, args } => {
                 let (value_lit, g_cap_triples, supplied_triples) =
-                    inner_closure_pap_value(store, combinators, *g, args, inner_params, inner_concrete, inner_facts)?;
+                    inner_closure_pap_value(combinators, *g, args, frame)?;
                 let proof = kernel::refl(value_lit);
                 Some((
                     IfTreeLeafResolution::Direct { chosen: *g, cap_triples: g_cap_triples, arg_prefix: supplied_triples },
@@ -2147,7 +2141,7 @@ pub(super) fn resolve_closure_if_tree(
             ClosureIfTreeLeafShape::Call { g, args } => {
                 let mut g_arg_triples = Vec::with_capacity(args.len());
                 for &a in args {
-                    let (x, d, p) = eval_and_prove(store, a, combinators, inner_params, inner_concrete, inner_facts)?;
+                    let (x, d, p) = eval_and_prove(a, combinators, frame)?;
                     g_arg_triples.push((x, d, p));
                 }
                 // `leaf_value` (this leaf's own canonical value) matches
@@ -2157,7 +2151,7 @@ pub(super) fn resolve_closure_if_tree(
                 // from `build_clo_call_bridge`'s own first return value
                 // rather than rebuilt, avoiding redundant work.
                 let (leaf_value, g_call_at_lit_env_lit_args, g_bridge, g_axiom_at_literals, g_inner_params, g_inner_concrete, g_inner_facts, g_k, g_shape) =
-                    build_clo_call_bridge(store, combinators, *g, &g_arg_triples, inner_params, inner_concrete, inner_facts)?;
+                    build_clo_call_bridge(combinators, *g, &g_arg_triples, frame)?;
                 if g_k != k {
                     return None; // should be unreachable given classify_closure_if_tree_leaf's own validation, but stay defensive
                 }
@@ -2170,17 +2164,13 @@ pub(super) fn resolve_closure_if_tree(
                 // chain, applied once a genuine `Abs`/`Pap` leaf is finally
                 // reached, however many further `Call`/`IfTree`/`Pap`
                 // layers sit in between).
-                let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, leaf_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(
-                    store,
-                    combinators,
+                let (chosen, chosen_cap_triples, chosen_arg_triples, chosen_value, leaf_to_chosen, apply_eq_chosen) = resolve_closure_shape_to_leaf(combinators,
                     &leaf_value.clone(),
                     &g_call_at_lit_env_lit_args,
                     &g_bridge,
                     &g_axiom_at_literals,
                     &g_shape,
-                    &g_inner_params,
-                    &g_inner_concrete,
-                    &g_inner_facts,
+                    Frame { params: &g_inner_params, concrete: &g_inner_concrete, facts: &g_inner_facts },
                     k,
                     extra_arg_triples,
                 )?;
@@ -2198,12 +2188,12 @@ pub(super) fn resolve_closure_if_tree(
             }
         },
         DecisionTree::If { cond, then_branch, else_branch } => {
-            let (result_c, denote_c, proof_c) = eval_and_prove(store, *cond, combinators, inner_params, inner_concrete, inner_facts)?;
+            let (result_c, denote_c, proof_c) = eval_and_prove(*cond, combinators, frame)?;
 
             let (taken, other) = if result_c != 0 { (then_branch, else_branch) } else { (else_branch, then_branch) };
             let (resolution, taken_subtree_value, leaf_value, taken_proof) =
-                resolve_closure_if_tree(store, combinators, taken, leaf_shapes, inner_params, inner_concrete, inner_facts, k, extra_arg_triples)?;
-            let other_value = closure_if_tree_value_at_literals(store, combinators, other, leaf_shapes, inner_params, inner_concrete, inner_facts, k)?;
+                resolve_closure_if_tree(combinators, taken, leaf_shapes, frame, k, extra_arg_triples)?;
+            let other_value = closure_if_tree_value_at_literals(combinators, other, leaf_shapes, frame, k)?;
 
             combinators.cp.arith.lit(result_c);
             let ite_eq_axiom = combinators.ite_clo_eq_ref(result_c, k);
@@ -2346,7 +2336,7 @@ pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof
         params.push(combinators.cp.arith.p.get(pos));
     }
 
-    let denoted = denote_closure(store, body, &mut SelfCalls::None, &param_types, &mut combinators, &params)?;
+    let denoted = denote_closure(body, &mut SelfCalls::None, &param_types, &mut combinators, &params)?;
     // `result_ty` mirrors `denoted`'s own tag: `Int`'s postulate for a
     // `Denoted::Int`, or the specific `Clo_k` for a `Denoted::Clo` --
     // `k` re-derived structurally via `return_type_of` applied to the

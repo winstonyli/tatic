@@ -165,7 +165,8 @@ pub(super) fn dyn_frame_param_types(store: &TermStore, frame: &[DynVal]) -> Opti
 /// `build_env_expr`, differing only in resolving each slot via `frame`'s
 /// own `Expr` value rather than a raw postulate position (see `DynVal`'s
 /// own docs for why a substituted slot may hold one).
-pub(super) fn build_env_expr_dyn(store: &TermStore, combinators: &mut ClosureCombinators, captures: &[u32], frame: &[DynVal]) -> Option<Expr> {
+pub(super) fn build_env_expr_dyn( combinators: &mut ClosureCombinators, captures: &[u32], frame: &[DynVal]) -> Option<Expr> {
+    let store = combinators.store;
     let frame_types = dyn_frame_param_types(store, frame)?;
     let sig = capture_sig(captures, &frame_types)?;
     let mut values = Vec::with_capacity(captures.len());
@@ -249,13 +250,13 @@ impl DynBudget {
 /// (this function's own reason for existing) rather than replaced by a
 /// freshly created one with different captures partway through.
 pub(super) fn eval_dyn_tail_recursive(
-    store: &TermStore,
     body: Hash,
     arity: usize,
     combinators: &mut ClosureCombinators,
     budget: &mut DynBudget,
     mut frame: Vec<DynVal>,
 ) -> Option<DynDenoted> {
+    let store = combinators.store;
     let self_idx = arity as u32;
     let self_ctx = Some((body, arity));
 
@@ -266,7 +267,7 @@ pub(super) fn eval_dyn_tail_recursive(
         budget.steps -= 1;
         let concrete = dyn_frame_concrete_ints(&frame);
         match classify_step(store, body, arity, self_idx, &concrete)? {
-            StepOutcome::Base(leaf) => return eval_dyn(store, leaf, combinators, self_ctx, budget, &frame),
+            StepOutcome::Base(leaf) => return eval_dyn(leaf, combinators, self_ctx, budget, &frame),
             StepOutcome::TailCall(arg_exprs) => {
                 if arg_exprs.len() != arity {
                     return None;
@@ -274,7 +275,7 @@ pub(super) fn eval_dyn_tail_recursive(
                 let mut new_frame = Vec::with_capacity(arity);
                 for i in 0..arity {
                     let expr = arg_exprs[arity - 1 - i];
-                    let val = match eval_dyn(store, expr, combinators, self_ctx, budget, &frame)? {
+                    let val = match eval_dyn(expr, combinators, self_ctx, budget, &frame)? {
                         DynDenoted::Int(e) => {
                             let n = eval_concrete_dyn(store, expr, &frame)?;
                             DynVal::Int(e, n)
@@ -332,9 +333,7 @@ pub(super) fn eval_dyn_tail_recursive(
 /// wrong frame to know it disagrees with a different call site's own
 /// correct one -- can catch on its own if a future generalization ever
 /// violated it.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_dyn_direct_call(
-    store: &TermStore,
     combinators: &mut ClosureCombinators,
     root: Hash,
     root_frame: &[DynVal],
@@ -343,6 +342,7 @@ pub(super) fn eval_dyn_direct_call(
     budget: &mut DynBudget,
     calling_frame: &[DynVal],
 ) -> Option<DynDenoted> {
+    let store = combinators.store;
     let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
     if args.len() != root_arity {
         return None;
@@ -368,7 +368,7 @@ pub(super) fn eval_dyn_direct_call(
 
     let mut arg_vals = Vec::with_capacity(args.len());
     for &a in args {
-        arg_vals.push(eval_dyn(store, a, combinators, calling_self_ctx, budget, calling_frame)?);
+        arg_vals.push(eval_dyn(a, combinators, calling_self_ctx, budget, calling_frame)?);
     }
     let needs_inline = return_ty.is_some()
         || arg_vals
@@ -377,7 +377,7 @@ pub(super) fn eval_dyn_direct_call(
             .any(|(j, v)| root_param_types[root_arity - 1 - j].is_none() && matches!(v, DynDenoted::Clo(..)));
 
     if needs_inline {
-        return eval_dyn_inline_call(store, combinators, root_body, root_arity, root_is_rec, captures, arg_vals, args, calling_frame, budget);
+        return eval_dyn_inline_call(combinators, root_body, root_arity, root_is_rec, captures, arg_vals, args, calling_frame, budget);
     }
 
     // Ordinary opaque call: mirrors `denote_closure`'s own
@@ -388,7 +388,7 @@ pub(super) fn eval_dyn_direct_call(
     let env_expr = if captures.is_empty() {
         None
     } else {
-        let e = build_env_expr_dyn(store, combinators, &captures, root_frame)?;
+        let e = build_env_expr_dyn(combinators, &captures, root_frame)?;
         Some(e)
     };
     let mut arg_exprs = Vec::with_capacity(root_arity);
@@ -450,10 +450,9 @@ pub(super) fn eval_dyn_direct_call(
 /// -- when `return_ty.is_some()` there, so this path is unconditionally
 /// about to be taken regardless of `arg_vals` -- can check it *before*
 /// spending the cost of evaluating every argument, rather than after.
-#[allow(clippy::too_many_arguments)]
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_dyn_inline_call(
-    store: &TermStore,
     combinators: &mut ClosureCombinators,
     root_body: Hash,
     root_arity: usize,
@@ -464,6 +463,7 @@ pub(super) fn eval_dyn_inline_call(
     calling_frame: &[DynVal],
     budget: &mut DynBudget,
 ) -> Option<DynDenoted> {
+    let store = combinators.store;
     if !captures.is_empty() {
         return None; // scoped out -- see eval_dyn_direct_call's own docs
     }
@@ -482,7 +482,7 @@ pub(super) fn eval_dyn_inline_call(
     }
     let child: Vec<DynVal> = child.into_iter().collect::<Option<Vec<_>>>()?;
     if root_is_rec {
-        return eval_dyn_tail_recursive(store, root_body, root_arity, combinators, budget, child);
+        return eval_dyn_tail_recursive(root_body, root_arity, combinators, budget, child);
     }
     // A non-`Rec` body is the one descent `eval_dyn_tail_recursive`'s loop
     // never counts, so it costs its own step -- without this, mutual
@@ -492,7 +492,7 @@ pub(super) fn eval_dyn_inline_call(
         return None;
     }
     budget.steps -= 1;
-    eval_dyn(store, root_body, combinators, None, budget, &child)
+    eval_dyn(root_body, combinators, None, budget, &child)
 }
 
 /// Per-instance, closure-capable sibling of `denote_closure` -- see this
@@ -529,12 +529,13 @@ pub(super) fn eval_dyn_inline_call(
 /// `eval_dyn_direct_call`, `eval_dyn_inline_call`) passes back through
 /// here, so this one [`kernel::grow`] makes the whole family's depth
 /// bounded by heap, not native stack.
-pub(super) fn eval_dyn(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, self_ctx: Option<(Hash, usize)>, budget: &mut DynBudget, frame: &[DynVal]) -> Option<DynDenoted> {
-    kernel::grow(|| eval_dyn_node(store, h, combinators, self_ctx, budget, frame))
+pub(super) fn eval_dyn( h: Hash, combinators: &mut ClosureCombinators, self_ctx: Option<(Hash, usize)>, budget: &mut DynBudget, frame: &[DynVal]) -> Option<DynDenoted> {
+    kernel::grow(|| eval_dyn_node(h, combinators, self_ctx, budget, frame))
 }
 
 /// [`eval_dyn`]'s body.
-pub(super) fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut ClosureCombinators, self_ctx: Option<(Hash, usize)>, budget: &mut DynBudget, frame: &[DynVal]) -> Option<DynDenoted> {
+pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self_ctx: Option<(Hash, usize)>, budget: &mut DynBudget, frame: &[DynVal]) -> Option<DynDenoted> {
+    let store = combinators.store;
     let shape = match self_ctx {
         Some((_, self_arity)) => compile::classify(store, h, self_arity, Some(self_arity as u32)),
         None => compile::classify(store, h, frame.len(), None),
@@ -543,7 +544,7 @@ pub(super) fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut Closur
         Shape::If(c, t, e) => {
             let concrete = dyn_frame_concrete_ints(frame);
             let cv = eval_concrete(store, c, &concrete)?;
-            eval_dyn(store, if cv != 0 { t } else { e }, combinators, self_ctx, budget, frame)
+            eval_dyn(if cv != 0 { t } else { e }, combinators, self_ctx, budget, frame)
         }
         Shape::SelfCall(args) => {
             // An embedded (non-tail) self-call -- see this function's
@@ -552,7 +553,7 @@ pub(super) fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut Closur
             let mut new_frame: Vec<Option<DynVal>> = vec![None; self_arity];
             for (j, &a) in args.iter().enumerate() {
                 let pos = self_arity - 1 - j;
-                let denoted = eval_dyn(store, a, combinators, self_ctx, budget, frame)?;
+                let denoted = eval_dyn(a, combinators, self_ctx, budget, frame)?;
                 new_frame[pos] = Some(match denoted {
                     DynDenoted::Int(e) => {
                         let n = eval_concrete_dyn(store, a, frame)?;
@@ -562,15 +563,15 @@ pub(super) fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut Closur
                 });
             }
             let new_frame: Vec<DynVal> = new_frame.into_iter().collect::<Option<Vec<_>>>()?;
-            eval_dyn_tail_recursive(store, self_body, self_arity, combinators, budget, new_frame)
+            eval_dyn_tail_recursive(self_body, self_arity, combinators, budget, new_frame)
         }
         Shape::VarCall { var, args, .. } => {
             let DynVal::Clo(_, cc) = frame.get(var as usize)?.clone() else { return None };
             let cc_root = cc.root;
             let cc_frame = cc.frame.clone();
-            eval_dyn_direct_call(store, combinators, cc_root, &cc_frame, &args, self_ctx, budget, frame)
+            eval_dyn_direct_call(combinators, cc_root, &cc_frame, &args, self_ctx, budget, frame)
         }
-        Shape::CombinatorCall { root, args, .. } => eval_dyn_direct_call(store, combinators, root, frame, &args, self_ctx, budget, frame),
+        Shape::CombinatorCall { root, args, .. } => eval_dyn_direct_call(combinators, root, frame, &args, self_ctx, budget, frame),
         Shape::OtherCall => None,
         Shape::Var(i) => {
             if let Some((_, self_arity)) = self_ctx
@@ -590,8 +591,8 @@ pub(super) fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut Closur
         }
         Shape::Lit(n) => Some(DynDenoted::Int(combinators.cp.arith.lit_ref(n))),
         Shape::Prim(op, a, b) => {
-            let DynDenoted::Int(da) = eval_dyn(store, a, combinators, self_ctx, budget, frame)? else { return None };
-            let DynDenoted::Int(db) = eval_dyn(store, b, combinators, self_ctx, budget, frame)? else { return None };
+            let DynDenoted::Int(da) = eval_dyn(a, combinators, self_ctx, budget, frame)? else { return None };
+            let DynDenoted::Int(db) = eval_dyn(b, combinators, self_ctx, budget, frame)? else { return None };
             let op_ref = combinators.cp.arith.op_ref(op); // pre-postulated once -- never pushes
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
@@ -616,7 +617,7 @@ pub(super) fn eval_dyn_node(store: &TermStore, h: Hash, combinators: &mut Closur
             if captures.is_empty() {
                 return Some(DynDenoted::Clo(sym, cc));
             }
-            let env = build_env_expr_dyn(store, combinators, &captures, frame)?;
+            let env = build_env_expr_dyn(combinators, &captures, frame)?;
             let applied = kernel::app(sym, env);
             let clo_ty = combinators.cp.clo_ty(arity);
             debug_assert_has_type(&combinators.cp.arith.p, &applied, &clo_ty, "eval_dyn: capturing closure value");
@@ -675,9 +676,9 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
 
     let mut budget = DynBudget::new();
     let denoted = if is_rec {
-        eval_dyn_tail_recursive(store, body, arity, &mut combinators, &mut budget, frame)?
+        eval_dyn_tail_recursive(body, arity, &mut combinators, &mut budget, frame)?
     } else {
-        eval_dyn(store, body, &mut combinators, None, &mut budget, &frame)?
+        eval_dyn(body, &mut combinators, None, &mut budget, &frame)?
     };
     let (result_ty, denotation) = match denoted {
         DynDenoted::Int(e) => (combinators.cp.arith.int_ty(), e),

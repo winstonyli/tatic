@@ -412,6 +412,15 @@ fn denote_in(
     Some(d)
 }
 
+/// One call frame's parameters, as the instance provers thread them: each parameter's kernel term, its concrete value
+/// and the fact that ties the two together.
+#[derive(Clone, Copy)]
+pub(super) struct Frame<'f> {
+    pub(super) params: &'f [Expr],
+    pub(super) concrete: &'f [i64],
+    pub(super) facts: &'f [Expr],
+}
+
 /// A kernel-checked witness that a term's compiled and interpreted
 /// readings agree: either for *every* input (`prove_pure_expr`, the
 /// straight-line fragment) or for one specific call

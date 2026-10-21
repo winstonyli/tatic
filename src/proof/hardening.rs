@@ -219,13 +219,13 @@ impl SelfCalls<'_> {
 /// a postulate on first use. With a self-call in scope, a bare `Term::Rec` (a self-recursive combinator nested inside
 /// another's body) stays out of scope: proving one induction while assuming another is a different problem.
 pub(super) fn denote_closure(
-    store: &TermStore,
     h: Hash,
     self_calls: &mut SelfCalls,
     param_types: &[Option<usize>],
     combinators: &mut ClosureCombinators<'_>,
     params: &[Expr],
 ) -> Option<Denoted> {
+    let store = combinators.store;
     // with a self-call: its arity and index; without one, the function's own parameter counts and no index
     let self_call = self_calls.self_call();
     let (classify_arity, classify_idx, ret_arity, ret_idx) = match self_call {
@@ -243,10 +243,10 @@ pub(super) fn denote_closure(
         },
         shape @ (Shape::VarCall { .. } | Shape::CombinatorCall { .. }) => match app_shape(store, shape, param_types)? {
             AppShape::ParamCall { root, k, args } => {
-                let callee = denote_closure(store, root, self_calls, param_types, combinators, params)?.clo()?;
+                let callee = denote_closure(root, self_calls, param_types, combinators, params)?.clo()?;
                 let mut arg_exprs = Vec::with_capacity(k);
                 for &a in &args {
-                    let e = denote_closure(store, a, self_calls, param_types, combinators, params)?.int()?;
+                    let e = denote_closure(a, self_calls, param_types, combinators, params)?.int()?;
                     arg_exprs.push(e);
                 }
                 let applied = apply_n(callee, arg_exprs);
@@ -277,7 +277,7 @@ pub(super) fn denote_closure(
                 };
                 let mut arg_exprs = Vec::with_capacity(k);
                 for (j, &a) in args.iter().enumerate() {
-                    let d = denote_closure(store, a, self_calls, param_types, combinators, params)?;
+                    let d = denote_closure(a, self_calls, param_types, combinators, params)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, ret_arity, ret_idx, param_types))?;
                     arg_exprs.push(e);
                 }
@@ -305,7 +305,7 @@ pub(super) fn denote_closure(
                 };
                 let mut arg_exprs = Vec::with_capacity(arity);
                 for (j, &a) in sat_args.iter().enumerate() {
-                    let d = denote_closure(store, a, self_calls, param_types, combinators, params)?;
+                    let d = denote_closure(a, self_calls, param_types, combinators, params)?;
                     let e = arg_denotation(d, callee_param_types[arity - 1 - j], || return_type_of(store, a, ret_arity, ret_idx, param_types))?;
                     arg_exprs.push(e);
                 }
@@ -333,7 +333,7 @@ pub(super) fn denote_closure(
                 let extra_args = &args[arity..];
                 let mut extra_arg_exprs = Vec::with_capacity(extra_args.len());
                 for &a in extra_args {
-                    let e = denote_closure(store, a, self_calls, param_types, combinators, params)?.int()?;
+                    let e = denote_closure(a, self_calls, param_types, combinators, params)?.int()?;
                     extra_arg_exprs.push(e);
                 }
                 let applied = apply_n(sat_applied, extra_arg_exprs);
@@ -353,8 +353,8 @@ pub(super) fn denote_closure(
         }
         Shape::Lit(n) => Some(Denoted::Int(combinators.cp.arith.lit_ref(n))),
         Shape::Prim(op, a, b) => {
-            let da = denote_closure(store, a, self_calls, param_types, combinators, params)?.int()?;
-            let db = denote_closure(store, b, self_calls, param_types, combinators, params)?.int()?;
+            let da = denote_closure(a, self_calls, param_types, combinators, params)?.int()?;
+            let db = denote_closure(b, self_calls, param_types, combinators, params)?.int()?;
             let op_ref = combinators.cp.arith.op_ref(op);
             let applied = kernel::app2(op_ref, da, db);
             let int_ty = combinators.cp.arith.int_ty();
@@ -367,13 +367,13 @@ pub(super) fn denote_closure(
         // choosing which `Clo`-typed value to thread onward), a mismatch
         // rejected.
         Shape::If(c, t, e) => {
-            let dc = denote_closure(store, c, self_calls, param_types, combinators, params)?.int()?;
-            let dt = denote_closure(store, t, self_calls, param_types, combinators, params)?;
+            let dc = denote_closure(c, self_calls, param_types, combinators, params)?.int()?;
+            let dt = denote_closure(t, self_calls, param_types, combinators, params)?;
             let dt_is_clo = matches!(dt, Denoted::Clo(_));
             let dt = match dt {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
             };
-            let de = denote_closure(store, e, self_calls, param_types, combinators, params)?;
+            let de = denote_closure(e, self_calls, param_types, combinators, params)?;
             let de_is_clo = matches!(de, Denoted::Clo(_));
             let de = match de {
                 Denoted::Int(e) | Denoted::Clo(e) => e,
@@ -619,7 +619,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
     let new_params_for = |arith: &mut ClosureCombinators<'_>, call_args: &[Hash], params: &[Expr]| -> Option<Vec<Expr>> {
         (0..arity)
             .map(|i| {
-                let d = denote_closure(store, call_args[arity - 1 - i], &mut SelfCalls::Reject(self_call), &param_types, arith, params)?;
+                let d = denote_closure(call_args[arity - 1 - i], &mut SelfCalls::Reject(self_call), &param_types, arith, params)?;
                 match param_types[i] {
                     Some(_) => d.clo(),
                     None => d.int(),
@@ -687,7 +687,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
     for leaf in &leaves {
         let expr = params_and_close_typed(&mut arith, &param_types, kernel::Binder::Lam, |arith, pp| {
             params_and_close_typed(arith, &no_closures(leaf.calls.len()), kernel::Binder::Lam, |arith, pp2| {
-                denote_closure(store, leaf.expr, &mut SelfCalls::Placeholders(self_call, pp2, 0), &param_types, arith, pp)?.int()
+                denote_closure(leaf.expr, &mut SelfCalls::Placeholders(self_call, pp2, 0), &param_types, arith, pp)?.int()
             })
         })?;
         combines.push(expr);
