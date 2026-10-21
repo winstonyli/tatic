@@ -41,7 +41,9 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   signatures. Removes 9 `too_many_arguments` allows. Status: ruled 2026-10-21: both halves: proof/ drops the `store` that
   `combinators` already holds (23 functions) and gains `Frame { params, concrete, facts }` (10); the kernel gains
   `Checker { s, g, ic, ctx, cid }` with `infer`/`check` methods (7). Kernel half mechanical, covered by the kernel and
-  soundness fuzzers, timed by the gate.
+  soundness fuzzers, timed by the gate. Status: done 4ec505e, 1fab9e5 (gate 2026-10-21-c6-gate: M 362 = 362, rules same
+  in 15 loops and across threads). Timing inconclusive: job cpu 1514 s against 1427 s (+6%) with other sessions at
+  33-78% CPU; a quiet `runs time` A/B of the kernel half is parked if a slowdown shows up later.
 - **C7 (D): a typed handoff from the miner to the driver.** The driver parses `RULEMINER drop`, `chosen` and `prefer`
   lines from the miner's stdout (driver.rs:721-728). Status: ruled 2026-10-21: a task result channel,
   `task::result(key, value)` appending `key<TAB>value` text next to the task's log; `worker.run` returns the parsed
