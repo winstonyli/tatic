@@ -347,29 +347,39 @@ fn build_env(ctx: &BuildCtx, captures: &[u32]) -> Option<Vec<ir::Read>> {
     captures.iter().map(|&rel| build_read(ctx, rel)).collect()
 }
 
-static IR_CHECK_FAILURES: AtomicUsize = AtomicUsize::new(0);
-
-/// How many times, process-wide, `try_compile` has found the builder's IR
-/// ill-formed (`ir::check`). Always 0 unless the builder has a bug; the
-/// release-mode fuzzers assert it, since there the failure is otherwise a
-/// silent rejection. It stays a process-wide counter rather than a `jit`
-/// `Stats` field: `Stats` lives on one `jit::Cache` and only sees calls
-/// routed through it, while fuzzers and other direct callers of
-/// `try_compile` never touch a `Cache` at all -- a `Stats` field would miss
-/// them.
-pub fn ir_check_failures() -> usize {
-    IR_CHECK_FAILURES.load(Ordering::Relaxed)
+/// A bug in an untrusted pass that the pipeline caught. Never a property of
+/// the term: in debug and test builds it panics; in release the term is
+/// rejected soundly (the interpreter runs it) and the bug counted, so the
+/// release-mode fuzzers can assert none happened.
+#[derive(Clone, Copy, Debug)]
+pub enum BuilderBug {
+    /// `try_compile` found the builder's IR ill-formed (`ir::check`).
+    IllFormed,
+    /// `try_compile` rejected a well-formed module that did not decompile
+    /// back to the source term (`decompile::decompile`): a builder bug, or a
+    /// false alarm in the decompiler, and either way a bug.
+    Untranslated,
+    /// `compile_specialised` discarded a specialisation because
+    /// `spec_check::check` rejected its trace: a specialiser bug.
+    BadTrace,
 }
 
-static IR_VALIDATION_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static BUILDER_BUGS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 
-/// How many times, process-wide, `try_compile` has rejected a well-formed
-/// module because it did not decompile back to the source term
-/// (`decompile::decompile`): a builder bug, or a false alarm in the
-/// decompiler, and either way a bug. The release-mode fuzzers assert it
-/// is 0, as with `ir_check_failures`.
-pub fn ir_validation_failures() -> usize {
-    IR_VALIDATION_FAILURES.load(Ordering::Relaxed)
+/// How many `kind` bugs were caught, process-wide. A process-wide counter
+/// rather than a `jit` `Stats` field: `Stats` lives on one `jit::Cache` and
+/// only sees calls routed through it, while fuzzers and other direct callers
+/// of `try_compile` never touch a `Cache` at all.
+pub fn builder_bugs(kind: BuilderBug) -> usize {
+    BUILDER_BUGS[kind as usize].load(Ordering::Relaxed)
+}
+
+/// Counts a `kind` bug, and panics with `msg` in debug and test builds.
+fn builder_bug(kind: BuilderBug, msg: impl FnOnce() -> String) {
+    BUILDER_BUGS[kind as usize].fetch_add(1, Ordering::Relaxed);
+    if cfg!(debug_assertions) {
+        panic!("{}", msg());
+    }
 }
 
 /// The largest term, counted as a tree, that `try_compile` compiles. The IR
@@ -419,14 +429,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     }
     let m = build(store, h)?;
     if let Err(e) = ir::check(&m) {
-        // A builder bug, never a property of the term. In debug and test
-        // builds it fails loudly; in release it is rejected soundly (the
-        // interpreter runs the term) but counted, so a release-mode fuzzer
-        // can still see it.
-        IR_CHECK_FAILURES.fetch_add(1, Ordering::Relaxed);
-        if cfg!(debug_assertions) {
-            panic!("the IR builder produced an ill-formed module for {h:?}: {e}");
-        }
+        builder_bug(BuilderBug::IllFormed, || format!("the IR builder produced an ill-formed module for {h:?}: {e}"));
         return None;
     }
     // Translation validation: the IR must mean exactly `h`, up to a
@@ -436,26 +439,12 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     // `jit.rs` doesn't install such a fragment: the kernel types closures by
     // exact arity, so it gets no universal proof (`RELATED_WORK.md` §40).
     // Sample verification alone would miss one reached only off-sample.
-    // A mismatch here is handled like an ill-formed module: loud in debug,
-    // soundly rejected (and counted) in release.
+    // A mismatch here is a builder bug like an ill-formed module.
     if crate::decompile::decompile(&m, &mut TermStore::new()) != Some(h) {
-        IR_VALIDATION_FAILURES.fetch_add(1, Ordering::Relaxed);
-        if cfg!(debug_assertions) {
-            panic!("the IR for {h:?} failed translation validation: it does not decompile back to the source term");
-        }
+        builder_bug(BuilderBug::Untranslated, || format!("the IR for {h:?} failed translation validation: it does not decompile back to the source term"));
         return None;
     }
     Some(crate::lower_wat::lower(&m))
-}
-
-static SPEC_CHECK_FAILURES: AtomicUsize = AtomicUsize::new(0);
-
-/// How many times, process-wide, `compile_specialised` discarded a
-/// specialisation because `spec_check::check` rejected its trace. Every
-/// such case is a specialiser bug. The release-mode compile fuzzer asserts
-/// it is 0, as with `ir_validation_failures`.
-pub fn spec_check_failures() -> usize {
-    SPEC_CHECK_FAILURES.load(Ordering::Relaxed)
 }
 
 /// What `compile_specialised` compiled.
@@ -493,12 +482,9 @@ fn compile_candidate(store: &TermStore, h: Hash, sp: crate::specialise::Speciali
                     return Some(Compiled { frag, specialised: Some((sp.store, sp.term)) });
                 }
             }
-            Err(e) => {
-                SPEC_CHECK_FAILURES.fetch_add(1, Ordering::Relaxed);
-                if cfg!(debug_assertions) {
-                    panic!("the specialiser produced a trace the checker rejects for {h:?}: step {}: {}", e.step, e.reason);
-                }
-            }
+            Err(e) => builder_bug(BuilderBug::BadTrace, || {
+                format!("the specialiser produced a trace the checker rejects for {h:?}: step {}: {}", e.step, e.reason)
+            }),
         }
     }
     try_compile(store, h).map(|frag| Compiled { frag, specialised: None })

@@ -2800,7 +2800,7 @@ and environment lengths, it requires every lambda and every recursive
 function to have `arity >= 1` and every `CallUnknown` to have arguments, so
 nothing it admits makes `lower` panic, loop or disagree with the decompiler.
 A check failure is a builder bug; release builds reject the term and count
-it in `compile::ir_check_failures()`, which `compile_fuzz` asserts is 0.
+it in `compile::builder_bugs(BuilderBug::IllFormed)`, which `compile_fuzz` asserts is 0.
 
 **What changed besides the split.** The discovery pass is gone. The dispatch
 mode is a field of the module, known before any WAT is written. Renames:
@@ -2838,7 +2838,7 @@ test -- an allowlist on every `crate::` path, not just a denylist on
 `compile`/`lower_wat`), so a bug in `classify`/`peel`/`local_index`/
 `free_vars` cannot be mirrored by it and cancel out -- the pitfall the Œuf
 and CompCert-validator work warns about. A mismatch is loud in debug and
-counted (`compile::ir_validation_failures`) and rejected in release; the
+counted (`compile::builder_bugs(BuilderBug::Untranslated)`) and rejected in release; the
 whole suite and the release fuzzers run with zero failures, i.e. no false
 alarms on anything the fragment compiles. `ir::check` also gained a rule
 the decompiler needed: the combinator reference graph (`CallKnown.f`,
@@ -2895,7 +2895,7 @@ machine's run-to-run spread.
 
 **Deviations from the spec.** The decompiler lives in its own file and
 takes the target `TermStore` (so step 3 can evaluate what it builds); the
-failure count is a process-wide counter like `ir_check_failures`, not a
+failure count is a process-wide counter like `builder_bugs`, not a
 `jit::Stats` field -- every caller of `try_compile`, not only the JIT, is
 covered that way.
 
@@ -3154,7 +3154,7 @@ because `gen_redex_rich` can use a closure as an `Int`. `verify()` catches
 that only when a sample reaches the ill-typed code, which is the bug §38
 fixes. The latest run
 specialised 645 seeds, compiled 564 (213 from `h'`) and compared 4400
-compiled runs. Before, the fuzz asserted `spec_check_failures() == 0`
+compiled runs. Before, the fuzz asserted `builder_bugs(BuilderBug::BadTrace) == 0`
 without ever calling `compile_specialised`, so the assertion was vacuous.
 A planted rejection in `compile_candidate` now fails it (645 failures),
 and a planted `i64.add` -> `i64.sub` in `h'`'s WAT fails the compiled
@@ -3162,7 +3162,7 @@ comparison.
 
 `compile.rs` covers the driver's two fallbacks. A trace the checker
 rejects panics in debug and, in release, falls back to `h` and increments
-`spec_check_failures`. A checked `h'` that doesn't compile also falls back
+`builder_bugs(BuilderBug::BadTrace)`. A checked `h'` that doesn't compile also falls back
 to `h`: `over_application_if_between_closures` specialises to
 `(if 0 < 10 then \c. .. else \c. ..) 100`, an application headed by an
 `If`, which `build` doesn't cover.

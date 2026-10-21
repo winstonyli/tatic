@@ -37,7 +37,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   Status: ruling.
 - **C9: one builder-bug mechanism in `src/compile.rs`** (three counters with the same count, debug-panic, reject shape,
   compile.rs:352-493) and a `decline` helper for the 7 repeated decline sequences in `jit::compile_verify_and_apply`
-  (jit.rs:225-326). Status: todo.
+  (jit.rs:225-326). Status: done (this commit).
 
 ## Deletions
 
@@ -47,11 +47,11 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 - **C11 (D): the `record-defeq` probes in the trusted kernel** (34 cfg sites in kernel.rs, hand-numbered `WALKS`
   slots), read only by ignored experiments. Status: ruling.
 - **C12: hot-path diagnostics read only by ignored tests.** `RULE_HITS` (a mutex and a linear find on every rule firing,
-  rewrite.rs:2181), `TRACE_RULES`/`NF_TRACE`, and `PROF`/`LEMMA_HITS` in `tree_proof` (machine.rs:236). Status: todo.
+  rewrite.rs:2181), `TRACE_RULES`/`NF_TRACE`, and `PROF`/`LEMMA_HITS` in `tree_proof` (machine.rs:236). Status: done e2bb64f.
 - **C13 (D): unreferenced ignored tests.** Ten ignored tests no doc, script or PARKED entry names, the five
   `*_conjecture_miner` tests (machine.rs, about 650 lines), `RULEMINER_PERM=2` and env knobs used nowhere. Status: ruling.
 - **C14: test-only public API.** `NatPostulates` (kernel/postulates.rs:395-595) moves into the tests; `args_id`
-  (kernel.rs:962) returns `Aid`, not an always-`Some` `Option`. Status: todo.
+  (kernel.rs:962) returns `Aid`, not an always-`Some` `Option`. Status: done 5419183.
 
 ## Smaller
 
@@ -60,7 +60,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 - **C16 (D): `docs/runs/2026-10-12/scripts`** (14 `*_pair.sh`, 18 `*_seq.sh` near-copies). Status: ruling.
 - **C17: nits.** Stale comments at rewrite.rs:2129 (`PERM_ORDER`) and rewrite.rs:1209 (`SCORE_ONLY`); tier-cycle.md:666
   names functions that are gone; lib.rs's allocator list misses `tests/proof_scope.rs`; `compile::tests` (60% of
-  compile.rs) moves to `src/compile/tests.rs`. Status: todo.
+  compile.rs) moves to `src/compile/tests.rs`. Status: done 4bff6e4.
 - **C18 (D): the jit's sample-based provers** feed only reporting above arity 0 (jit.rs:381-423). Status: ruling.
 
 ## Not covered by the survey

@@ -387,9 +387,9 @@ fn gen_program(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Option<Hash>) 
 /// is only a silent rejection (the hit-rate thresholds are too loose to
 /// notice it). The counter is process-wide, so any test's failure shows.
 fn assert_no_ir_failures() {
-    assert_eq!(compile::ir_check_failures(), 0, "the IR builder produced an ill-formed module (ir::check) -- a builder bug");
-    assert_eq!(compile::ir_validation_failures(), 0, "try_compile accepted a module that failed translation validation (decompile::decompile) -- a builder bug or a decompiler false alarm");
-    assert_eq!(compile::spec_check_failures(), 0, "compile_specialised discarded a specialisation because spec_check::check rejected its trace -- a specialiser bug");
+    assert_eq!(compile::builder_bugs(compile::BuilderBug::IllFormed), 0, "the IR builder produced an ill-formed module (ir::check) -- a builder bug");
+    assert_eq!(compile::builder_bugs(compile::BuilderBug::Untranslated), 0, "try_compile accepted a module that failed translation validation (decompile::decompile) -- a builder bug or a decompiler false alarm");
+    assert_eq!(compile::builder_bugs(compile::BuilderBug::BadTrace), 0, "compile_specialised discarded a specialisation because spec_check::check rejected its trace -- a specialiser bug");
 }
 
 #[test]

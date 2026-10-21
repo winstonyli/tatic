@@ -1184,9 +1184,9 @@ fn a_trace_the_checker_rejects_panics_in_debug() {
 fn a_trace_the_checker_rejects_falls_back_to_h_and_is_counted_in_release() {
     let (s, h, sp) = a_rejected_candidate();
     // The counter is process-wide, so compare before and after.
-    let before = spec_check_failures();
+    let before = builder_bugs(BuilderBug::BadTrace);
     let c = compile_candidate(&s, h, sp).expect("h itself compiles");
-    assert_eq!(spec_check_failures(), before + 1);
+    assert_eq!(builder_bugs(BuilderBug::BadTrace), before + 1);
     assert!(c.specialised.is_none());
     assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
 }

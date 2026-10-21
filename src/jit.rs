@@ -228,21 +228,42 @@ impl JitEngine {
         h: Hash,
         args: &[i64],
     ) -> Result<i64, EvalError> {
+        match self.try_install(terms, h, args.len()) {
+            Ok(()) => {
+                self.stats.cache_hits += 1;
+                self.call_compiled(h, args)
+            }
+            Err(declined) => {
+                if let Some(entry) = declined {
+                    match entry {
+                        CacheEntry::IllTyped => self.stats.declined_ill_typed += 1,
+                        CacheEntry::NoUniversalProof(_) => self.stats.declined_no_universal_proof += 1,
+                        CacheEntry::FailedVerification => self.stats.verification_failures += 1,
+                        _ => {}
+                    }
+                    self.cache.insert(h, entry);
+                }
+                self.stats.interpreted += 1;
+                eval::apply_term(terms, h, args)
+            }
+        }
+    }
+
+    /// Compiles, checks and installs `h` for calls of `nargs` arguments, or the entry that caches why not (`None`: this
+    /// call's argument count is not `h`'s arity, which says nothing about `h`).
+    fn try_install(&mut self, terms: &TermStore, h: Hash, nargs: usize) -> Result<(), Option<CacheEntry>> {
         let Some(crate::compile::Compiled { frag, specialised }) = crate::compile::compile_specialised(terms, h) else {
-            self.cache.insert(h, CacheEntry::NotCompilable);
-            self.stats.interpreted += 1;
-            return eval::apply_term(terms, h, args);
+            return Err(Some(CacheEntry::NotCompilable));
         };
 
-        if frag.arity != args.len() {
+        if frag.arity != nargs {
             // Don't cache this as `NotCompilable` -- that would conflate
             // "is `h` compilable at all" (a property of `h` alone) with
             // "did this one call's arg count match `h`'s own arity" (a
             // property of this call), permanently defeating compilation
             // for `h` even once a later, correctly-sized call comes in.
             // Just interpret this one call and leave the cache untouched.
-            self.stats.interpreted += 1;
-            return eval::apply_term(terms, h, args);
+            return Err(None);
         }
 
         // Compiled code is untyped: an `Int` and a closure are the same
@@ -253,73 +274,60 @@ impl JitEngine {
         // and `RELATED_WORK.md` §38. The check is on `h`: a specialisation
         // `h'` is βv-equivalent to it, and βv preserves types.
         if !crate::typing::well_typed(terms, h, frag.arity) {
-            self.cache.insert(h, CacheEntry::IllTyped);
-            self.stats.declined_ill_typed += 1;
-            self.stats.interpreted += 1;
-            return eval::apply_term(terms, h, args);
+            return Err(Some(CacheEntry::IllTyped));
         }
 
         let Some((module, func, hp_global)) = self.instantiate(&frag.wat) else {
-            self.cache.insert(h, CacheEntry::NotCompilable);
-            self.stats.interpreted += 1;
-            return eval::apply_term(terms, h, args);
+            return Err(Some(CacheEntry::NotCompilable));
         };
         debug_assert_eq!(hp_global.is_some(), frag.needs_hp_reset, "compile.rs's export and needs_hp_reset flag should always agree");
 
-        if self.verify(terms, h, func, hp_global, frag.arity) {
-            // The kernel theorems model the structure of the term that was
-            // compiled, so for a specialised fragment they are proved about
-            // `h'`. `h' ≡ h` itself is certificate-checked, not
-            // kernel-checked (RELATED_WORK.md §37).
-            let (proof_store, proof_term) = specialised.as_ref().map_or((terms, h), |(s, t)| (s, *t));
-            let proof = self.kernel_verify(proof_store, proof_term, frag.arity);
-            if proof != ProofStrength::None {
-                self.stats.kernel_proofs_checked += 1;
-            }
-            // The installation gate. `verify()` agreeing on the sample
-            // battery is necessary but not sufficient: it is a finite
-            // probe of an `i64` domain, and a compiled form installed on
-            // that alone goes on to serve arbitrary arguments no evidence
-            // ever covered. `ProofStrength::Samples` doesn't close that --
-            // its certificates sit at exactly the same sampled points --
-            // so only a universal theorem earns installation.
-            //
-            // Note this does *not* make the JIT sound end to end: the
-            // theorem is about `proof.rs`'s `denote`, which models
-            // the compiler (`build_node`, the `lower_wat` templates) rather
-            // than reading the WAT that actually
-            // runs. `verify()` remains the only check touching emitted
-            // code, which is why it stays as the first half of this gate
-            // rather than being replaced by the proof. See
-            // `RELATED_WORK.md` 28.
-            if proof != ProofStrength::Universal {
-                self.cache.insert(h, CacheEntry::NoUniversalProof(proof));
-                self.stats.declined_no_universal_proof += 1;
-                self.stats.interpreted += 1;
-                return eval::apply_term(terms, h, args);
-            }
-            self.cache.insert(
-                h,
-                CacheEntry::Compiled {
-                    func,
-                    arity: frag.arity,
-                    _module: module,
-                    proof,
-                    hp_global,
-                },
-            );
-            self.stats.compiled += 1;
-            if specialised.is_some() {
-                self.stats.specialised += 1;
-            }
-            self.stats.cache_hits += 1;
-            self.call_compiled(h, args)
-        } else {
-            self.cache.insert(h, CacheEntry::FailedVerification);
-            self.stats.verification_failures += 1;
-            self.stats.interpreted += 1;
-            eval::apply_term(terms, h, args)
+        if !self.verify(terms, h, func, hp_global, frag.arity) {
+            return Err(Some(CacheEntry::FailedVerification));
         }
+        // The kernel theorems model the structure of the term that was
+        // compiled, so for a specialised fragment they are proved about
+        // `h'`. `h' ≡ h` itself is certificate-checked, not
+        // kernel-checked (RELATED_WORK.md §37).
+        let (proof_store, proof_term) = specialised.as_ref().map_or((terms, h), |(s, t)| (s, *t));
+        let proof = self.kernel_verify(proof_store, proof_term, frag.arity);
+        if proof != ProofStrength::None {
+            self.stats.kernel_proofs_checked += 1;
+        }
+        // The installation gate. `verify()` agreeing on the sample
+        // battery is necessary but not sufficient: it is a finite
+        // probe of an `i64` domain, and a compiled form installed on
+        // that alone goes on to serve arbitrary arguments no evidence
+        // ever covered. `ProofStrength::Samples` doesn't close that --
+        // its certificates sit at exactly the same sampled points --
+        // so only a universal theorem earns installation.
+        //
+        // Note this does *not* make the JIT sound end to end: the
+        // theorem is about `proof.rs`'s `denote`, which models
+        // the compiler (`build_node`, the `lower_wat` templates) rather
+        // than reading the WAT that actually
+        // runs. `verify()` remains the only check touching emitted
+        // code, which is why it stays as the first half of this gate
+        // rather than being replaced by the proof. See
+        // `RELATED_WORK.md` 28.
+        if proof != ProofStrength::Universal {
+            return Err(Some(CacheEntry::NoUniversalProof(proof)));
+        }
+        self.cache.insert(
+            h,
+            CacheEntry::Compiled {
+                func,
+                arity: frag.arity,
+                _module: module,
+                proof,
+                hp_global,
+            },
+        );
+        self.stats.compiled += 1;
+        if specialised.is_some() {
+            self.stats.specialised += 1;
+        }
+        Ok(())
     }
 
     /// Attempts a kernel-checked equivalence proof for `h`, on top of (not
