@@ -84,7 +84,7 @@ impl MinerConfig {
 }
 
 pub fn run(setup: &Arc<Setup>) {
-    let job = &Job::new(setup.clone());
+    let job = &mut Job::new(setup.clone());
     tatic::kernel::scoped(|| {
         // the join store this mine feeds from this thread (`JoinStore`); the scoring workers read a copy of it
         set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
@@ -95,43 +95,46 @@ pub fn run(setup: &Arc<Setup>) {
         // the stragglers are the laws left with the base's rules
         let base_text = cfg.base.as_ref().map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
         let (base, base_prefs) = (parse_rules(&base_text), parse_prefs(&base_text));
-        set_extra_rules(job, base.clone());
-        set_rule_prefs(base_prefs.clone());
-        let (laws, budget) = laws(job, &cfg, base.is_empty(), &clock);
-        let (cands, rivals) = candidates(&laws, &cfg, &base);
-        clock.phase("candidate generation");
-        // keep candidates whose left side matches a subterm of some straggler's normalized terms
-        let applicable = |l: &Term| {
-            laws.stragglers.iter().any(|s| {
-                let mut subs = vec![];
-                s.3[0].subterms(&mut subs);
-                s.3[1].subterms(&mut subs);
-                subs.iter().any(|t| matches(l, t))
-            })
-        };
-        let trials = cfg.trials;
-        let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
-        println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
-        if cfg.show {
-            for (l, r) in &cands {
-                println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
+        // P0: everything on this thread below runs under the base rules and preferences, apart from what installs its own
+        let base_rules = job.rules().with_mined(setup, base.clone()).with_prefs(base_prefs.clone());
+        job.with_rules(base_rules, |job| {
+            let (laws, budget) = laws(job, &cfg, base.is_empty(), &clock);
+            let (cands, rivals) = candidates(&laws, &cfg, &base);
+            clock.phase("candidate generation");
+            // keep candidates whose left side matches a subterm of some straggler's normalized terms
+            let applicable = |l: &Term| {
+                laws.stragglers.iter().any(|s| {
+                    let mut subs = vec![];
+                    s.3[0].subterms(&mut subs);
+                    s.3[1].subterms(&mut subs);
+                    subs.iter().any(|t| matches(l, t))
+                })
+            };
+            let trials = cfg.trials;
+            let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
+            println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
+            if cfg.show {
+                for (l, r) in &cands {
+                    println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
+                }
             }
-        }
-        // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and the step
-        // budget of this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
-        // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
-        let rules = with_table(job, |t| t.mined.clone());
-        let prover = |prefs| Prover { rules: rules.clone(), prefs, budget, n: laws.n };
-        let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover(None).filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
-        println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
-        clock.phase("provable filter");
-        let scorer = Scorer::new(&laws, &cfg, base.clone());
-        // also on a thread of its own (`Rounds::play`): the base preferences, which every evaluation on this thread leaves installed
-        let prover = prover(Some(base_prefs.clone()));
-        let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
-        let Chosen { chosen, covered, .. } = rounds.play(job);
-        prefs_phase(job, &scorer, &chosen, &base, &base_prefs, &cfg, &clock);
-        rounds.report(&covered);
+            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and the step
+            // budget of this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
+            // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
+            let rules = job.rules().mined().to_vec();
+            let prover = |prefs| Prover { rules: rules.clone(), prefs, budget, n: laws.n };
+            let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover(None).filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
+            println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
+            clock.phase("provable filter");
+            let scorer = Scorer::new(&laws, &cfg, base.clone());
+            // also on a thread of its own (`Rounds::play`), so it installs the base preferences itself: the old code proved under
+            // the ones every evaluation on this thread left installed, which were these
+            let prover = prover(Some(base_prefs.clone()));
+            let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
+            let Chosen { chosen, covered, .. } = rounds.play(job);
+            prefs_phase(job, &scorer, &chosen, &base, &base_prefs, &cfg, &clock);
+            rounds.report(&covered);
+        });
         set_join_store(None);
     });
 }
@@ -148,7 +151,7 @@ struct Laws {
 
 /// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2). The `i64` is the step budget
 /// this thread is left with (Q5 of docs/superpowers/plans/2026-10-21-rewrite-context.md): the proofs of `Prover` run under it.
-fn laws(job: &Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
+fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
     let max = cfg.max;
     let family = cfg.family.as_str();
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
@@ -164,32 +167,34 @@ fn laws(job: &Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws,
     clock.phase("law building");
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
-    // `RULEMINER_FAST` counts the base rules' machine proofs the way it scores candidates: without building them
-    SCORE_ONLY.with(|s| s.set(cfg.fast));
-    for (name, t1, t2) in laws.iter().cloned() {
-        if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))) {
-            continue;
-        }
-        let before = fallbacks();
-        let t = Instant::now();
-        // base rules may loop; the step budget bounds them (the built-in rules never reach it)
-        RULE_BUDGET.with(|b| b.set(if base_empty { i64::MAX / 2 } else { cfg.steps as i64 }));
-        let r = rewrite_plan(job, n, kv, &t1, &t2);
-        let took = t.elapsed();
-        let fell = fallbacks() - before;
-        // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
-        unproved += r.is_none() as usize;
-        let fell = if r.is_none() { fell.max(1) } else { fell };
-        if r.is_none() || fell > 0 {
+    // `RULEMINER_FAST` counts the base rules' machine proofs the way it scores candidates: without building them. Carry-over:
+    // P1 runs under the base rules and preferences P0 installed
+    let counting = job.rules().counting(cfg.fast);
+    job.with_rules(counting, |job| {
+        for (name, t1, t2) in laws.iter().cloned() {
+            if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))) {
+                continue;
+            }
+            let before = fallbacks();
+            let t = Instant::now();
+            // base rules may loop; the step budget bounds them (the built-in rules never reach it)
             RULE_BUDGET.with(|b| b.set(if base_empty { i64::MAX / 2 } else { cfg.steps as i64 }));
-            let normal = [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0];
-            println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
-            stragglers.push((name, t1, t2, normal, fell, took));
-        } else {
-            clean.push((name, t1, t2));
+            let r = rewrite_plan(job, n, kv, &t1, &t2);
+            let took = t.elapsed();
+            let fell = fallbacks() - before;
+            // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
+            unproved += r.is_none() as usize;
+            let fell = if r.is_none() { fell.max(1) } else { fell };
+            if r.is_none() || fell > 0 {
+                RULE_BUDGET.with(|b| b.set(if base_empty { i64::MAX / 2 } else { cfg.steps as i64 }));
+                let normal = [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0];
+                println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
+                stragglers.push((name, t1, t2, normal, fell, took));
+            } else {
+                clean.push((name, t1, t2));
+            }
         }
-    }
-    SCORE_ONLY.with(|s| s.set(false));
+    });
     // what the last law's rewriting left, carried to the proofs (nothing until then rewrites on this thread)
     let left = RULE_BUDGET.with(|b| b.get());
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
@@ -432,24 +437,25 @@ struct Prover {
 }
 
 impl Prover {
-    fn install(&self, job: &Job) {
-        set_extra_rules(job, self.rules.clone());
-        if let Some(prefs) = &self.prefs {
-            set_rule_prefs(prefs.clone());
-        }
+    /// The job's rules with `rules` as the run-time rules and, if any, `prefs` as the preferences (otherwise the job's
+    /// stay: Q1); and `budget` as the step budget.
+    fn install(&self, job: &Job) -> Rules {
+        let rules = job.rules().with_mined(job.setup(), self.rules.clone());
         RULE_BUDGET.with(|b| b.set(self.budget));
+        match &self.prefs {
+            Some(prefs) => rules.with_prefs(prefs.clone()),
+            None => rules,
+        }
     }
 
     fn holds(&self, job: &Job, (l, r): &(Term, Term)) -> bool {
         prove_rule(job, self.n, l.max_var().max(r.max_var()) + 1, l, r).is_some()
     }
 
-    /// Proves one rule in an intern scope of its own; leaves no rules and the default budget installed after.
-    fn prove(&self, job: &Job, rule: &(Term, Term)) -> bool {
+    /// Proves one rule in an intern scope of its own; leaves the default budget installed after.
+    fn prove(&self, job: &mut Job, rule: &(Term, Term)) -> bool {
         tatic::kernel::scoped(|| {
-            self.install(job);
-            let ok = self.holds(job, rule);
-            set_extra_rules(job, vec![]);
+            let ok = job.with_rules(self.install(job), |job| self.holds(job, rule));
             RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
             ok
         })
@@ -457,12 +463,10 @@ impl Prover {
 
     /// The indices of the candidates that are proved, in order, on `threads` workers (one intern scope each; one thread
     /// proves on this thread).
-    fn filter(&self, job: &Job, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
-        let prove = |job: &Job, idx: &[usize]| -> Vec<usize> {
-            tatic::kernel::scoped(|| {
-                self.install(job);
-                idx.iter().copied().filter(|&i| self.holds(job, &cands[i])).collect()
-            })
+    fn filter(&self, job: &mut Job, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
+        // carry-over: with one thread, the base preferences `run` installed stay (Q1); a worker's job has none
+        let prove = |job: &mut Job, idx: &[usize]| -> Vec<usize> {
+            tatic::kernel::scoped(|| job.with_rules(self.install(job), |job| idx.iter().copied().filter(|&i| self.holds(job, &cands[i])).collect()))
         };
         let threads = threads.clamp(1, 12);
         let mut ok: Vec<usize> = if threads == 1 {
@@ -473,7 +477,7 @@ impl Prover {
                     .map(|t| {
                         let idx: Vec<usize> = (t..cands.len()).step_by(threads).collect();
                         let (prove, setup) = (&prove, job.setup().clone());
-                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || prove(&Job::new(setup), &idx)).unwrap()
+                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || prove(&mut Job::new(setup), &idx)).unwrap()
                     })
                     .collect();
                 handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
@@ -519,45 +523,46 @@ impl<'a> Scorer<'a> {
     /// matches none of the terms where it would come first (`Fired::preempted_by`: the run-time rules are tried most specific first,
     /// not in the order added), and that is a join step at none of the join's terms (`Trace::touched_by`), cannot change a law's
     /// rewriting or join, so its laws keep the result under the rules chosen so far.
-    /// `prefs`: the rule preferences in force (`set_rule_prefs`).
-    fn score_laws(&self, job: &Job, extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
+    /// `prefs`: the rule preferences in force (`Rules::with_prefs`).
+    fn score_laws(&self, job: &mut Job, extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
         let (n, kv, cfg) = (self.laws.n, self.laws.kv, self.cfg);
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
-        set_extra_rules(job, self.base_now.lock().unwrap().iter().chain(extra).cloned().collect());
-        set_rule_prefs(prefs.to_vec());
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
         let steps = cfg.steps as i64;
         let budget = || RULE_BUDGET.with(|b| b.set(steps));
-        // counting only under `RULEMINER_FAST`, or when the caller asked for it (rivals, below)
-        let caller = SCORE_ONLY.with(|s| s.replace(cfg.fast || s.get()));
-        let out = which
-            .iter()
-            .map(|&si| {
-                let s = &self.laws.scored[si];
-                budget();
-                if record {
-                    RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
-                }
-                let before = fallbacks();
-                let ok = rewrite_plan(job, n, kv, &s.1, &s.2).is_some();
-                let fixed = ok && fallbacks() - before < s.4;
-                budget();
-                // the rule order's own measure: operator nodes first, then variable occurrences
-                let measure = |t: &Term| {
-                    let mut occ = [0usize; 8];
-                    t.occurrences(&mut occ);
-                    let (c, a) = rule_weight(t);
-                    (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
-                };
-                let size = if si < self.laws.stragglers.len() { measure(&rewrite(job, &s.1, n, kv).0) + measure(&rewrite(job, &s.2, n, kv).0) } else { 0 };
-                let mut seen: hashbrown::HashSet<(Term, Fired)> = Default::default();
-                let trace = Trace::new(RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect());
-                (fixed, size, trace)
-            })
-            .collect();
-        SCORE_ONLY.with(|s| s.set(caller));
+        // counting only under `RULEMINER_FAST`, or when the caller asked for it (rivals, below). Carry-over: the old code
+        // installed these rules and `prefs` and left them installed, which nothing read: every later rewrite on this thread
+        // is another `score_laws` or a `Prover::prove`, and each installs its own
+        let rules = job.rules().with_mined(job.setup(), self.base_now.lock().unwrap().iter().chain(extra).cloned().collect()).with_prefs(prefs.to_vec());
+        let rules = rules.counting(cfg.fast || rules.score_only());
+        let out = job.with_rules(rules, |job| {
+            which
+                .iter()
+                .map(|&si| {
+                    let s = &self.laws.scored[si];
+                    budget();
+                    if record {
+                        RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
+                    }
+                    let before = fallbacks();
+                    let ok = rewrite_plan(job, n, kv, &s.1, &s.2).is_some();
+                    let fixed = ok && fallbacks() - before < s.4;
+                    budget();
+                    // the rule order's own measure: operator nodes first, then variable occurrences
+                    let measure = |t: &Term| {
+                        let mut occ = [0usize; 8];
+                        t.occurrences(&mut occ);
+                        let (c, a) = rule_weight(t);
+                        (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
+                    };
+                    let size = if si < self.laws.stragglers.len() { measure(&rewrite(job, &s.1, n, kv).0) + measure(&rewrite(job, &s.2, n, kv).0) } else { 0 };
+                    let mut seen: hashbrown::HashSet<(Term, Fired)> = Default::default();
+                    let trace = Trace::new(RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect());
+                    (fixed, size, trace)
+                })
+                .collect()
+        });
         let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
-        set_extra_rules(job, vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (out, memo)
     }
@@ -599,7 +604,7 @@ struct Open {
     rule: String,
 }
 
-/// A rule set as a key: a round depends only on the set of rules chosen so far (`set_extra_rules` sorts them).
+/// A rule set as a key: a round depends only on the set of rules chosen so far (`RuleTable::sorted` sorts them).
 fn key(c: &[(Term, Term)]) -> Vec<(Term, Term)> {
     let mut v = c.to_vec();
     v.sort();
@@ -683,11 +688,11 @@ impl<'a> Rounds<'a> {
         }
     }
 
-    fn prove_one(&mut self, job: &Job, i: usize) -> bool {
+    fn prove_one(&mut self, job: &mut Job, i: usize) -> bool {
         if self.pending.contains(&i) { self.resolve(i) } else { self.prover.prove(job, &self.provable[i]) }
     }
 
-    fn state(&mut self, job: &Job, chosen: Vec<(Term, Term)>) -> Chosen {
+    fn state(&mut self, job: &mut Job, chosen: Vec<(Term, Term)>) -> Chosen {
         let t0 = Instant::now();
         let seed = self.state_memo.take().map(|(was, memo)| {
             let changed: Vec<&(Term, Term)> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).collect();
@@ -702,7 +707,7 @@ impl<'a> Rounds<'a> {
 
     /// one round on top of `s`: its alternatives with their gains, largest first: a rival orientation of the winner that gains
     /// more, if one is proved, then the winner
-    fn pick(&mut self, job: &Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
+    fn pick(&mut self, job: &mut Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
         let (scorer, provable, rivals, base_prefs, cfg) = (self.scorer, self.provable, self.rivals, self.base_prefs, self.cfg);
         let (stragglers, guard_w) = (&scorer.laws.stragglers, scorer.laws.guard_w);
         let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
@@ -752,7 +757,7 @@ impl<'a> Rounds<'a> {
         // store"). Expressions are per thread, so each worker grows its own (1.5x
         // faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
         // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` it can touch
-        let score_rule = |job: &Job, rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
+        let score_rule = |job: &mut Job, rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
             let mut with = chosen.clone();
             with.push(*rule);
             let (fresh, _) = scorer.score_laws(job, &with, base_prefs, aff, true, None);
@@ -766,17 +771,15 @@ impl<'a> Rounds<'a> {
             ((scorer.count(&f) - scorer.count(covered)) * 1000 + (scorer.guarded(&f) - scorer.guarded(covered)) * guard_w + (size - sz), f, sz)
         };
         // the winner's left side with another right side: same affected laws, proved only if it would win
-        // rivals are not proved before scoring, so they are scored by counting only (`SCORE_ONLY`); scoring compiles no plans, so an
+        // rivals are not proved before scoring, so they are scored by counting only (`Rules::counting`); scoring compiles no plans, so an
         // unprovable rival (`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)` once the promoted rules are out) is never proved
         let rivals_of = |i: usize| rivals.get(&provable[i].0).map_or(&[][..], |v| &v[..]);
         // a job: candidate `i`, or with `Some(k)` the `k`th rival of the winner `i`
-        let score_job = |job: &Job, (i, k): (usize, Option<usize>)| match k {
+        let score_job = |job: &mut Job, (i, k): (usize, Option<usize>)| match k {
             None => score_rule(job, &provable[i], &affected[i]),
             Some(k) => {
-                let fast = SCORE_ONLY.with(|s| s.replace(true));
-                let r = score_rule(job, &rivals_of(i)[k], &affected[i]);
-                SCORE_ONLY.with(|s| s.set(fast));
-                r
+                let counting = job.rules().counting(true);
+                job.with_rules(counting, |job| score_rule(job, &rivals_of(i)[k], &affected[i]))
             }
         };
         // best gain first, ties to the earlier candidate; the first one that is proved wins, and an unprovable one reopens the
@@ -795,7 +798,7 @@ impl<'a> Rounds<'a> {
             for _ in 0..threads {
                 let (done_tx, score_job, queue, join_workers, frozen, setup) = (done_tx.clone(), &score_job, queue.clone(), &scorer.join_workers, frozen.clone(), job.setup().clone());
                 let worker = move || {
-                    let job = &Job::new(setup);
+                    let job = &mut Job::new(setup);
                     set_join_store(frozen.map(JoinStoreUse::Read));
                     let before = JoinCost::now();
                     tatic::kernel::scoped(|| {
@@ -870,11 +873,11 @@ impl<'a> Rounds<'a> {
     /// a rival's larger round gain can lead to a worse finished set (docs/tier-cycle.md, "The cold loss is a greedy path loss"), so
     /// both are finished greedily (rivals taken, no lookahead) and the better finished set's choice is kept, ties to the rival.
     /// Looking ahead over runners-up too lost ("Lookahead on rival swaps")
-    fn then(&mut self, job: &Job, s: &Chosen, rule: &(Term, Term)) -> Chosen {
+    fn then(&mut self, job: &mut Job, s: &Chosen, rule: &(Term, Term)) -> Chosen {
         self.state(job, s.chosen.iter().chain([rule]).cloned().collect())
     }
 
-    fn pick_kept(&mut self, job: &Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
+    fn pick_kept(&mut self, job: &mut Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
         let kk = key(&s.chosen);
         if let Some(v) = self.picks.get(&kk) {
             return v.clone();
@@ -886,7 +889,7 @@ impl<'a> Rounds<'a> {
 
     /// the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds; while
     /// speculating, each pick's assumed winner is proved on a thread of its own (`spawn`)
-    fn finish(&mut self, job: &Job, mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)) -> i64 {
+    fn finish(&mut self, job: &mut Job, mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)) -> i64 {
         let (mut path, mut left) = (vec![], rounds);
         let (v, mut d) = loop {
             let kk = key(&chosen);
@@ -920,7 +923,7 @@ impl<'a> Rounds<'a> {
 
     /// commits the open rounds whose proofs hold, oldest first, until `keep` are left; at a failed proof, voids the rounds built
     /// on it (their picks too, as the failed winner is never picked again) and returns it, to be played again
-    fn settle(&mut self, job: &Job, open: &mut Vec<Open>, keep: usize) -> Option<Open> {
+    fn settle(&mut self, job: &mut Job, open: &mut Vec<Open>, keep: usize) -> Option<Open> {
         while open.len() > keep {
             let o = open.remove(0);
             if o.proof.is_none_or(|i| self.resolve(i)) {
@@ -943,12 +946,12 @@ impl<'a> Rounds<'a> {
     }
 
     /// The rounds, from no rules chosen until no candidate gains (or `RULEMINER_ROUNDS`): the final rule set.
-    fn play(&mut self, job: &Job) -> Chosen {
-        let (prover, provable, tx) = (self.prover, self.provable, self.proof_tx.clone());
+    fn play(&mut self, job: &mut Job) -> Chosen {
+        let (prover, provable, tx, setup) = (self.prover, self.provable, self.proof_tx.clone(), job.setup().clone());
         std::thread::scope(|sc| {
             let spawn = |i: usize| {
-                let (tx, rule, setup) = (tx.clone(), &provable[i], job.setup().clone());
-                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prover.prove(&Job::new(setup), rule))).unwrap()).unwrap();
+                let (tx, rule, setup) = (tx.clone(), &provable[i], setup.clone());
+                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prover.prove(&mut Job::new(setup), rule))).unwrap()).unwrap();
             };
             let (mut s, mut round, mut open) = (self.state(job, vec![]), 0, Vec::<Open>::new());
             loop {
@@ -1043,7 +1046,7 @@ impl<'a> Rounds<'a> {
 /// rule rounds' gain), until none gains. Only with `RULEMINER_PREFS=1`: a family's own rules rarely conflict, so the phase pays
 /// off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
 /// rival orientations in the miner") (P9)
-fn prefs_phase(job: &Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Term, Term)], base_prefs: &[Pref], cfg: &MinerConfig, clock: &Clock) {
+fn prefs_phase(job: &mut Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Term, Term)], base_prefs: &[Pref], cfg: &MinerConfig, clock: &Clock) {
     let (all_laws, guard_w) = (&scorer.all_laws, scorer.laws.guard_w);
     // `RULEMINER_UNITS=<file>`: the base's drop units (`joinability_units`, built once per pooled library by `driver::sweep`)
     let units = cfg.units.as_ref().filter(|_| cfg.prefs).map_or(vec![], |f| parse_units(&std::fs::read_to_string(f).unwrap()));
@@ -1062,7 +1065,8 @@ fn prefs_phase(job: &Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Ter
         let shown = |(w, l): &Pref| (rule_show(w), rule_show(l));
         conflicts.sort_by_cached_key(shown);
         let (f0, size0) = Scorer::summarize(&now);
-        let gain = |prefs: &[Pref]| {
+        // through `score_laws`, which installs its own rules and preferences (carry-over: as before)
+        let mut gain = |prefs: &[Pref]| {
             let (f, sz) = Scorer::summarize(&scorer.score_laws(job, chosen, prefs, all_laws, false, None).0);
             (scorer.count(&f) - scorer.count(&f0)) * 1000 + (scorer.guarded(&f) - scorer.guarded(&f0)) * guard_w + (size0 - sz)
         };

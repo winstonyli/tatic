@@ -403,7 +403,7 @@ Rulings made while executing Task 3 (2026-10-21):
 - docs/tier-cycle.md's "A persistent worker" entry got a dated C1 note in this task (asked for 2026-10-21), so
   Task 8 only extends it for Tasks 4-7.
 
-### Task 4: `Rules` into the job (`RULE_TABLE`, `RULE_PREFS`, `SCORE_ONLY`, `TRACE_RULES`)
+### Task 4: `Rules` into the job (`RULE_TABLE`, `RULE_PREFS`, `SCORE_ONLY`, `TRACE_RULES`) (done 2026-10-21)
 
 **Files:** `rewrite.rs` (`Rules`, `rule_step`, `Plan::new`, `join_search` and the other readers), `job.rs`
 (`rules` field, `with_rules`), callers.
@@ -442,7 +442,23 @@ impl Job {
 
 `Job::new` installs `Rules::new(&setup, vec![])`, which is today's thread-local default.
 
-- [ ] **Step 1: failing tests** in `job.rs`:
+**Rulings while building it (2026-10-21):**
+- Readers stay `&Job`; only a function that calls `with_rules`, and its callers, take `&mut Job` (the miner's
+  `Rounds` methods, `prefs_phase`, `Prover::prove`/`filter`, `Scorer::score_laws`, `laws`, `joinability_units`,
+  `proposal_credit`). Task 5 converts the rest when `RewriteState` arrives.
+- `rule_step_in` is merged into `rule_step(job: &Job, t)`, which reads `let rules = job.rules();` (a borrow; no `Rc`
+  clone was needed). `JoinStore::path` and `step_plan` take `job` beside their table.
+- `RuleTable::sorted(setup, mined)` holds `set_extra_rules`' sort; `Rules::new` and `with_mined` use it. Tests that
+  only need the run order read `Rules::new(..).mined()`.
+- `rule_step`'s early return for no preferences is gone: with none, the preference loop's first hop finds no winners,
+  so the result is the same.
+- `Job::with_mined(mined, f)` is shorthand for `with_rules(self.rules().with_mined(..), f)`, the most common case.
+- `check_laws` no longer installs: it returns the `Rules` (rules plus preferences) and the rules in file order, and its
+  callers wrap their bodies in `with_rules`. `proposal_credit_report`'s `m0` is under no mined rules but the check's
+  preferences, as before.
+- `scaling_sweep` builds its rules before its body and installs the job's own when `SWEEP_RULES` is unset.
+
+- [x] **Step 1: failing tests** in `job.rs`:
 
 ```rust
 #[test]
@@ -464,8 +480,8 @@ fn with_rules_catches_a_swapped_job() {
 }
 ```
 
-- [ ] **Step 2: run them.** Expected: they fail to compile, since `Rules` and `with_rules` don't exist yet.
-- [ ] **Step 3: implement and convert.**
+- [x] **Step 2: run them.** Expected: they fail to compile, since `Rules` and `with_rules` don't exist yet.
+- [x] **Step 3: implement and convert.**
   - Every `set_extra_rules(x) … set_extra_rules(vec![])` pair becomes `job.with_rules(job.rules().with_mined(setup, x), |job| …)`.
     The same goes for prefs (`with_prefs`), `SCORE_ONLY` (`counting`) and `TRACE_RULES` (`tracing`).
   - Readers take `job.rules()`. `Plan::new` and the plan constructors take `job: &Job`.
@@ -473,7 +489,7 @@ fn with_rules_catches_a_swapped_job() {
     call (`let table = job.rules().table.clone();`) only if the borrow checker requires it; otherwise it reads through
     a local `&Rules` copied out before the mutations. Prefer the borrow; measure in Task 10 if the clone was needed.
   - `set_extra_rules`, `set_rule_prefs`, `RULE_TABLE`, `RULE_PREFS`, `SCORE_ONLY` and `TRACE_RULES` are deleted.
-- [ ] **Step 4: the miner's carry-overs.** For each main-thread call that rewrites (P1's `rewrite_plan` and
+- [x] **Step 4: the miner's carry-overs.** For each main-thread call that rewrites (P1's `rewrite_plan` and
   `rewrite`, `Rounds::state`/`Scorer::score_laws`, inline `Prover::filter`/`Prover::prove`, P9's `gain`), write in a
   comment which rules, preferences and switches the thread-locals held at that point in today's code, and install
   exactly those. Known cases:
@@ -484,8 +500,8 @@ fn with_rules_catches_a_swapped_job() {
   - `score_laws` runs under `base_now + extra` with its `prefs`. Its "leaves prefs installed" has no reader after it,
     since every later main-thread rewrite goes through `score_laws` or `prove_any`, which install their own. Verify
     this by listing the calls.
-- [ ] **Step 5: suite, clippy, gate.** Expected: suite 521, no new warnings, gate equal.
-- [ ] **Step 6: commit:** `C1 step 2: the job's rules, replaced only through with_rules`.
+- [x] **Step 5: suite, clippy, gate.** Expected: suite 521, no new warnings, gate equal. Got: 521; no new warnings; run 2026-10-21-t4-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks).
+- [x] **Step 6: commit:** `C1 step 2: the job's rules, replaced only through with_rules`.
 
 ### Task 5: `RewriteState` and `blocked` (`REWRITE_PATH`, `REWROTE`, `CUT_LOW`, `CYCLE_CUTS`, `REWRITE_MEMO`, `RULE_TRACE`, `RULE_BUDGET`, `MACHINE_FALLBACKS`, `PROVING`)
 

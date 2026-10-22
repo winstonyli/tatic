@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::rewrite::{Rule, TableRule, Term};
+use crate::rewrite::{Rule, Rules, TableRule, Term};
 
 type Env = hashbrown::HashMap<String, String>;
 
@@ -143,22 +143,48 @@ fn merge_env(process: impl Iterator<Item = (String, String)>, exe_env: Option<&s
     env
 }
 
-/// One rewriting thread's state over its task's `Setup`. Tasks 4-7 of the plan move the rewriter's thread-locals here.
+/// One rewriting thread's state over its task's `Setup`. Tasks 5-7 of the plan move the rest of the rewriter's
+/// thread-locals here.
 pub struct Job {
     id: u64,
     setup: Arc<Setup>,
+    /// Replaced only by `with_rules`, which puts the outer rules back.
+    rules: Rules,
 }
 
 /// The next `Job::id`: unique in the process, so `Job::with_rules` can tell a job from its replacement.
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
 impl Job {
+    /// A job with the built-in rules of `setup` alone, no preferences, both switches off.
     pub fn new(setup: Arc<Setup>) -> Job {
-        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup }
+        let rules = Rules::new(&setup, vec![]);
+        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules }
     }
 
     pub fn setup(&self) -> &Arc<Setup> {
         &self.setup
+    }
+
+    pub fn rules(&self) -> &Rules {
+        &self.rules
+    }
+
+    /// `f` with `rules` installed; the job's rules are put back after. Panics if `f` left this job holding other rules,
+    /// or swapped it for another job.
+    pub fn with_rules<T>(&mut self, rules: Rules, f: impl FnOnce(&mut Job) -> T) -> T {
+        let (id, outer) = (self.id, std::mem::replace(&mut self.rules, rules));
+        let installed = self.rules.clone();
+        let out = f(self);
+        assert!(self.id == id && self.rules.is(&installed), "a job's rules were replaced outside with_rules");
+        self.rules = outer;
+        out
+    }
+
+    /// `f` with `mined` in place of the job's mined rules, its preferences and switches kept (`with_rules`).
+    pub fn with_mined<T>(&mut self, mined: Vec<(Term, Term)>, f: impl FnOnce(&mut Job) -> T) -> T {
+        let rules = self.rules.with_mined(&self.setup, mined);
+        self.with_rules(rules, f)
     }
 }
 
@@ -194,6 +220,25 @@ fn a_switch_is_off_only_at_0_and_its_default_when_unset() {
     assert!(!s.flag("Z", true));
     assert!(s.flag("O", false));
     assert!(s.flag("T", false)); // `== 1` read this as off
+}
+
+#[test]
+fn with_rules_puts_the_outer_rules_back() {
+    use crate::rewrite::parse_term;
+    let s = Setup::process();
+    let mut job = Job::new(s.clone());
+    let outer = job.rules().clone();
+    let inner = Rules::new(&s, vec![(parse_term("add(x, 0)"), parse_term("x"))]);
+    let seen = job.with_rules(inner.clone(), |job| job.rules().is(&inner));
+    assert!(seen && job.rules().is(&outer));
+}
+
+#[test]
+#[should_panic(expected = "replaced outside with_rules")]
+fn with_rules_catches_a_swapped_job() {
+    let s = Setup::process();
+    let (mut a, mut b) = (Job::new(s.clone()), Job::new(s.clone()));
+    a.with_rules(Rules::new(&s, vec![]), |job| std::mem::swap(job, &mut b));
 }
 
 #[test]

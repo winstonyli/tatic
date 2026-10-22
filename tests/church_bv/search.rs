@@ -491,17 +491,15 @@ pub fn lt_rules_with_constant_right_sides_are_provable() {
 /// Two root rules close `lt(x, x) = lt(-1, x + y)` without a machine proof of the whole law.
 #[test]
 pub fn lt_root_rules_close_constant_false_laws() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let (x, y) = (Term::v(0), Term::v(1));
         let lt = |a: Term, b: Term| Term::op(LT, a, b);
         let add = |a: Term, b: Term| Term::op(ADD, a, b);
         let falsum = lt(Term::ONES, Term::ONES);
-        set_extra_rules(job, vec![(lt(x, x), falsum), (lt(Term::ONES, x), falsum)]);
         let before = MACHINE_FALLBACKS.with(|c| c.get());
-        let r = rewrite_law(job, 4, 2, &lt(x, x), &lt(Term::ONES, add(x, y)));
+        let r = job.with_mined(vec![(lt(x, x), falsum), (lt(Term::ONES, x), falsum)], |job| rewrite_law(job, 4, 2, &lt(x, x), &lt(Term::ONES, add(x, y))));
         let fell = MACHINE_FALLBACKS.with(|c| c.get()) - before;
-        set_extra_rules(job, vec![]);
         let (p, s) = r.expect("proved");
         ck("lt(x,x) = lt(-1, x+y)", &p, &s);
         assert_eq!(fell, 0, "no whole-term machine proof");
@@ -838,18 +836,14 @@ pub fn soundness_sweep() {
 #[test]
 #[ignore]
 pub fn scaling_sweep() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     // SWEEP_SCOPE=law: one intern scope per law instead of one for the sweep (separates table size from per-node cost)
     let per_law = job.setup().var("SWEEP_SCOPE").is_some_and(|v| v == "law");
-    let body = || {
+    let body = |job: &mut Job| {
         let _banner = MachineBanner::start(job, "SCALE");
         let family = job.setup().var("SWEEP_FAMILY").unwrap_or("mul");
         let widths: Vec<usize> = job.setup().var("SWEEP_WIDTHS").unwrap_or("4,8,16,32").split(',').map(|w| w.parse().unwrap()).collect();
         let kv = family_vars(&family);
-        if let Some(f) = job.setup().var("SWEEP_RULES") {
-            let rules = parse_rules(&std::fs::read_to_string(f).unwrap());
-            set_extra_rules(job, rules);
-        }
         let all = family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
         let ok: Vec<&(String, Term, Term)> = all
             .iter()
@@ -902,7 +896,12 @@ pub fn scaling_sweep() {
         }
         let _ = t;
     };
-    if !per_law { tatic::kernel::scoped(body) } else { body() }
+    // SWEEP_RULES: mined rules to sweep under, besides the built-in ones
+    let rules = match job.setup().var("SWEEP_RULES") {
+        Some(f) => job.rules().with_mined(job.setup(), parse_rules(&std::fs::read_to_string(f).unwrap())),
+        None => job.rules().clone(),
+    };
+    if !per_law { tatic::kernel::scoped(|| job.with_rules(rules, body)) } else { job.with_rules(rules, body) }
 }
 
 /// The pool of the `add3` family: terms over `x`, `y`, `z` with at most one sum or difference above depth-1 terms.
@@ -1346,25 +1345,26 @@ pub fn permutative_rules_are_admitted_and_oriented_by_instance() {
 #[test]
 #[ignore]
 pub fn normal_forms() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(job.setup().var("NF_RULES").unwrap_or_default()).unwrap_or_default());
-        set_extra_rules(job, rules);
-        TRACE_RULES.with(|c| c.set(job.setup().flag("NF_TRACE", false)));
-        RULE_BUDGET.with(|b| b.set(200));
-        let (n, k) = (4, 3);
-        for line in std::fs::read_to_string(job.setup().var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
-            let (a, b) = line.split_once(" = ").unwrap();
-            let (a, b) = (parse_term(a), parse_term(b));
-            // each side with its own budget, as in `rewrite_law`; `steps` is what each used (200 or more: it used the budget up)
-            let side = |t: &Term| {
-                RULE_BUDGET.with(|c| c.set(200));
-                (rewrite(job, t, n, k).0, 200 - RULE_BUDGET.with(|c| c.get()))
-            };
-            let ((na, sa), (nb, sb)) = (side(&a), side(&b));
-            let carries = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
-            println!("NF {} | {} {} carries {}/{} steps {sa}/{sb}", na.show(), nb.show(), if na == nb { "SAME" } else { "DIFF" }, carries(&na), carries(&nb));
-        }
+        let rules = job.rules().with_mined(job.setup(), rules).tracing(job.setup().flag("NF_TRACE", false));
+        job.with_rules(rules, |job| {
+            RULE_BUDGET.with(|b| b.set(200));
+            let (n, k) = (4, 3);
+            for line in std::fs::read_to_string(job.setup().var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
+                let (a, b) = line.split_once(" = ").unwrap();
+                let (a, b) = (parse_term(a), parse_term(b));
+                // each side with its own budget, as in `rewrite_law`; `steps` is what each used (200 or more: it used the budget up)
+                let side = |t: &Term| {
+                    RULE_BUDGET.with(|c| c.set(200));
+                    (rewrite(job, t, n, k).0, 200 - RULE_BUDGET.with(|c| c.get()))
+                };
+                let ((na, sa), (nb, sb)) = (side(&a), side(&b));
+                let carries = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
+                println!("NF {} | {} {} carries {}/{} steps {sa}/{sb}", na.show(), nb.show(), if na == nb { "SAME" } else { "DIFF" }, carries(&na), carries(&nb));
+            }
+        })
     })
 }
 
@@ -1391,10 +1391,10 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
     })
 }
 
-/// The setup of the rule-set check tests: the `CHECK_RULES` installed as extra rules (with their preferences), `CHECK_FAMILY`'s
-/// variable count, and the laws of the family (sized by the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as
+/// The setup of the rule-set check tests: the `CHECK_RULES` as the job's rules to install (with their preferences) and in file
+/// order, `CHECK_FAMILY`'s variable count, and the laws of the family (sized by the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as
 /// the driver passes them) that are plausible at widths 1-6.
-fn check_laws(job: &Job) -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
+fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
     let family = job.setup().var("CHECK_FAMILY").unwrap_or("add3");
     let text = std::fs::read_to_string(job.setup().var("CHECK_RULES").unwrap()).unwrap();
     let rules = parse_rules(&text);
@@ -1404,9 +1404,8 @@ fn check_laws(job: &Job) -> (Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>
         None => family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, 7),
     };
     let laws = laws.into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
-    set_extra_rules(job, rules.clone());
-    set_rule_prefs(parse_prefs(&text));
-    (rules, kv, laws)
+    let installed = job.rules().with_mined(job.setup(), rules.clone()).with_prefs(parse_prefs(&text));
+    (installed, rules, kv, laws)
 }
 
 /// Kernel check of a rule set (search note section 75): every law of `CHECK_FAMILY` (sized by the `RULEMINER_*` vars, as in
@@ -1420,67 +1419,68 @@ pub fn rule_set_kernel_check() {
 }
 
 pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
-    let job = &Job::new(setup.clone());
+    let job = &mut Job::new(setup.clone());
     let _save = lemma_cache::Save(setup.clone());
     tatic::kernel::scoped(|| {
-        let (_, kv, laws) = check_laws(job);
+        let (rules, _, kv, laws) = check_laws(job);
         // CHECK_FAST=1: count only (machine fallbacks are counted without building their proofs, nothing is kernel-checked, no NFSAME pass);
         // the CHECKED line and so M are unchanged, for exploration (the miner's RULEMINER_FAST, applied to serving)
         let fast = job.setup().flag("CHECK_FAST", false);
-        SCORE_ONLY.with(|s| s.set(fast));
-        if job.setup().flag("RULE_CONFLICTS", false) {
-            RULE_CONFLICTS.with(|c| *c.borrow_mut() = Some(Default::default()));
-        }
-        let (mut proved, mut free, mut none, mut exhausted, mut joined) = (0, 0, 0, 0, 0);
-        let (cost0, met) = (JoinCost::now(), || JoinCost::now().met);
-        for (name, t1, t2) in &laws {
-            RULE_BUDGET.with(|b| b.set(200));
-            let (before, met0) = (MACHINE_FALLBACKS.with(|c| c.get()), met());
-            let r = rewrite_plan(job, 4, kv, t1, t2);
-            // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
-            if RULE_BUDGET.with(|b| b.get()) <= 0 {
-                exhausted += 1;
-                println!("EXHAUSTED {name}");
+        job.with_rules(rules.counting(fast), |job| {
+            if job.setup().flag("RULE_CONFLICTS", false) {
+                RULE_CONFLICTS.with(|c| *c.borrow_mut() = Some(Default::default()));
             }
-            match r {
-                Some(plan) => {
-                    if !fast {
-                        let (p, s) = law_proof(job, 4, kv, t1, t2, &plan);
-                        ck(name, &p, &s);
-                    }
-                    proved += 1;
-                    let machine = MACHINE_FALLBACKS.with(|c| c.get()) - before;
-                    free += (machine == 0) as u32;
-                    joined += (machine == 0 && met() > met0) as u32;
-                    if machine > 0 {
-                        println!("MACHINE {machine} {name}");
-                    }
+            let (mut proved, mut free, mut none, mut exhausted, mut joined) = (0, 0, 0, 0, 0);
+            let (cost0, met) = (JoinCost::now(), || JoinCost::now().met);
+            for (name, t1, t2) in &laws {
+                RULE_BUDGET.with(|b| b.set(200));
+                let (before, met0) = (MACHINE_FALLBACKS.with(|c| c.get()), met());
+                let r = rewrite_plan(job, 4, kv, t1, t2);
+                // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
+                if RULE_BUDGET.with(|b| b.get()) <= 0 {
+                    exhausted += 1;
+                    println!("EXHAUSTED {name}");
                 }
-                None => none += 1,
+                match r {
+                    Some(plan) => {
+                        if !fast {
+                            let (p, s) = law_proof(job, 4, kv, t1, t2, &plan);
+                            ck(name, &p, &s);
+                        }
+                        proved += 1;
+                        let machine = MACHINE_FALLBACKS.with(|c| c.get()) - before;
+                        free += (machine == 0) as u32;
+                        joined += (machine == 0 && met() > met0) as u32;
+                        if machine > 0 {
+                            println!("MACHINE {machine} {name}");
+                        }
+                    }
+                    None => none += 1,
+                }
             }
-        }
-        println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved, {exhausted} used up the rule budget");
-        let mut cost = JoinCost::default();
-        cost.add_since(cost0);
-        println!("JOINED {joined} of them by the join, {} searches reaching {} terms", cost.searches, cost.reached);
-        for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached)]) {
-            job.setup().result(key, v);
-        }
-        print_rule_conflicts();
-        if fast {
-            return;
-        }
-        // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
-        let (mut same, mut total) = (0, 0);
-        for (_, t1, t2) in &laws {
-            RULE_BUDGET.with(|b| b.set(200));
-            let n1 = rewrite(job, t1, 4, kv).0;
-            RULE_BUDGET.with(|b| b.set(200));
-            let n2 = rewrite(job, t2, 4, kv).0;
-            total += 1;
-            same += (n1 == n2) as u32;
-        }
-        println!("NFSAME {same} of {total} laws have equal normal forms on both sides");
+            println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved, {exhausted} used up the rule budget");
+            let mut cost = JoinCost::default();
+            cost.add_since(cost0);
+            println!("JOINED {joined} of them by the join, {} searches reaching {} terms", cost.searches, cost.reached);
+            for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached)]) {
+                job.setup().result(key, v);
+            }
+            print_rule_conflicts();
+            if fast {
+                return;
+            }
+            // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
+            let (mut same, mut total) = (0, 0);
+            for (_, t1, t2) in &laws {
+                RULE_BUDGET.with(|b| b.set(200));
+                let n1 = rewrite(job, t1, 4, kv).0;
+                RULE_BUDGET.with(|b| b.set(200));
+                let n2 = rewrite(job, t2, 4, kv).0;
+                total += 1;
+                same += (n1 == n2) as u32;
+            }
+            println!("NFSAME {same} of {total} laws have equal normal forms on both sides");
+        })
     });
 }
 
@@ -1492,44 +1492,46 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
 #[test]
 #[ignore]
 pub fn proof_cost_split() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     use std::time::{Duration, Instant};
     tatic::kernel::scoped(|| {
-        let (rules, kv, laws) = check_laws(job);
-        #[derive(Default)]
-        struct Acc { n: u32, build: Duration, check: Duration, nodes: usize, occ: u128 }
-        let mut acc = [Acc::default(), Acc::default(), Acc::default()]; // [rules, joined, machine]
-        let mut none = 0;
-        let met = || JoinCost::now().met;
-        for (name, t1, t2) in &laws {
-            RULE_BUDGET.with(|b| b.set(200));
-            let (before, met0) = (MACHINE_FALLBACKS.with(|c| c.get()), met());
-            let t = Instant::now();
-            let Some((p, s)) = rewrite_law(job, 4, kv, t1, t2) else { none += 1; continue };
-            let build = t.elapsed();
-            let t = Instant::now();
-            ck(name, &p, &s);
-            let check = t.elapsed();
-            let (nodes, occ) = tatic::kernel::term_sizes(&p);
-            let a = &mut acc[if MACHINE_FALLBACKS.with(|c| c.get()) != before { 2 } else { (met() > met0) as usize }];
-            (a.n, a.build, a.check, a.nodes, a.occ) = (a.n + 1, a.build + build, a.check + check, a.nodes + nodes, a.occ + occ);
-        }
-        let mut ra = Acc::default();
-        for (l, r) in &rules {
-            let k = l.max_var().max(r.max_var()) + 1;
-            let t = Instant::now();
-            let Some((p, ty)) = prove_rule(job, 4, k, l, r) else { continue };
-            let build = t.elapsed();
-            let t = Instant::now();
-            ck(&l.show(), &p, &ty);
-            let check = t.elapsed();
-            let (nodes, occ) = tatic::kernel::term_sizes(&p);
-            (ra.n, ra.build, ra.check, ra.nodes, ra.occ) = (ra.n + 1, ra.build + build, ra.check + check, ra.nodes + nodes, ra.occ + occ);
-        }
-        for (what, a) in [("rules", &acc[0]), ("joined", &acc[1]), ("machine", &acc[2]), ("rule-proofs", &ra)] {
-            println!("COST {what}: n={} build={:.1}ms check={:.1}ms nodes={} occurrences={}", a.n, a.build.as_secs_f64() * 1e3, a.check.as_secs_f64() * 1e3, a.nodes, a.occ);
-        }
-        println!("COST not-proved={none}");
+        let (installed, rules, kv, laws) = check_laws(job);
+        job.with_rules(installed, |job| {
+            #[derive(Default)]
+            struct Acc { n: u32, build: Duration, check: Duration, nodes: usize, occ: u128 }
+            let mut acc = [Acc::default(), Acc::default(), Acc::default()]; // [rules, joined, machine]
+            let mut none = 0;
+            let met = || JoinCost::now().met;
+            for (name, t1, t2) in &laws {
+                RULE_BUDGET.with(|b| b.set(200));
+                let (before, met0) = (MACHINE_FALLBACKS.with(|c| c.get()), met());
+                let t = Instant::now();
+                let Some((p, s)) = rewrite_law(job, 4, kv, t1, t2) else { none += 1; continue };
+                let build = t.elapsed();
+                let t = Instant::now();
+                ck(name, &p, &s);
+                let check = t.elapsed();
+                let (nodes, occ) = tatic::kernel::term_sizes(&p);
+                let a = &mut acc[if MACHINE_FALLBACKS.with(|c| c.get()) != before { 2 } else { (met() > met0) as usize }];
+                (a.n, a.build, a.check, a.nodes, a.occ) = (a.n + 1, a.build + build, a.check + check, a.nodes + nodes, a.occ + occ);
+            }
+            let mut ra = Acc::default();
+            for (l, r) in &rules {
+                let k = l.max_var().max(r.max_var()) + 1;
+                let t = Instant::now();
+                let Some((p, ty)) = prove_rule(job, 4, k, l, r) else { continue };
+                let build = t.elapsed();
+                let t = Instant::now();
+                ck(&l.show(), &p, &ty);
+                let check = t.elapsed();
+                let (nodes, occ) = tatic::kernel::term_sizes(&p);
+                (ra.n, ra.build, ra.check, ra.nodes, ra.occ) = (ra.n + 1, ra.build + build, ra.check + check, ra.nodes + nodes, ra.occ + occ);
+            }
+            for (what, a) in [("rules", &acc[0]), ("joined", &acc[1]), ("machine", &acc[2]), ("rule-proofs", &ra)] {
+                println!("COST {what}: n={} build={:.1}ms check={:.1}ms nodes={} occurrences={}", a.n, a.build.as_secs_f64() * 1e3, a.check.as_secs_f64() * 1e3, a.nodes, a.occ);
+            }
+            println!("COST not-proved={none}");
+        })
     });
 }
 
@@ -1606,7 +1608,7 @@ impl Cost {
     }
 }
 
-/// The `Cost` of `t1 = t2` under the rules installed by `set_extra_rules` (a 200-step budget, width 4).
+/// The `Cost` of `t1 = t2` under the job's rules (a 200-step budget, width 4).
 pub fn law_cost(job: &Job, kv: usize, t1: &Term, t2: &Term) -> Cost {
     RULE_BUDGET.with(|b| b.set(200));
     let before = MACHINE_FALLBACKS.with(|c| c.get());
@@ -1617,25 +1619,23 @@ pub fn law_cost(job: &Job, kv: usize, t1: &Term, t2: &Term) -> Cost {
 /// Per-proposal credit for a mined library `rules` (docs/tier-cycle.md). Each rule's held-out gain is how many more `held` laws are hard
 /// without it; a proposal uses a rule when it is cheap under `rules` but hard without that rule; each rule's gain is split evenly over
 /// the proposals that use it. Returns the per-rule gains, the per-rule user counts and the per-proposal credits.
-pub fn proposal_credit(job: &Job, rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)], props: &[(Term, Term)]) -> (Vec<i64>, Vec<usize>, Vec<f64>) {
-    let hard = |set: &[(Term, Term)], laws: &[(Term, Term)]| -> Vec<bool> {
-        set_extra_rules(job, set.to_vec());
-        laws.iter().map(|(a, b)| law_cost(job, kv, a, b).hard()).collect()
+pub fn proposal_credit(job: &mut Job, rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)], props: &[(Term, Term)]) -> (Vec<i64>, Vec<usize>, Vec<f64>) {
+    let hard = |job: &mut Job, set: &[(Term, Term)], laws: &[(Term, Term)]| -> Vec<bool> {
+        job.with_mined(set.to_vec(), |job| laws.iter().map(|(a, b)| law_cost(job, kv, a, b).hard()).collect())
     };
     let count = |v: &[bool]| v.iter().filter(|h| **h).count() as i64;
-    let (held_all, props_all) = (count(&hard(rules, held)), hard(rules, props));
+    let (held_all, props_all) = (count(&hard(job, rules, held)), hard(job, rules, props));
     let (mut gains, mut users, mut credit) = (vec![], vec![], vec![0.0; props.len()]);
     for i in 0..rules.len() {
         let without: Vec<(Term, Term)> = rules.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, r)| *r).collect();
-        let gain = count(&hard(&without, held)) - held_all;
-        let uses: Vec<usize> = hard(&without, props).iter().zip(&props_all).enumerate().filter(|(_, (h, h_all))| **h && !**h_all).map(|(p, _)| p).collect();
+        let gain = count(&hard(job, &without, held)) - held_all;
+        let uses: Vec<usize> = hard(job, &without, props).iter().zip(&props_all).enumerate().filter(|(_, (h, h_all))| **h && !**h_all).map(|(p, _)| p).collect();
         for &p in &uses {
             credit[p] += gain as f64 / uses.len() as f64;
         }
         gains.push(gain);
         users.push(uses.len());
     }
-    set_extra_rules(job, vec![]);
     (gains, users, credit)
 }
 
@@ -1645,49 +1645,50 @@ pub fn proposal_credit(job: &Job, rules: &[(Term, Term)], kv: usize, held: &[(Te
 #[test]
 #[ignore]
 pub fn proposal_credit_report() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
-        let (rules, kv, laws) = check_laws(job);
-        SCORE_ONLY.with(|s| s.set(true));
-        let held: Vec<(Term, Term)> = laws.into_iter().map(|(_, a, b)| (a, b)).collect();
-        let props = read_laws(&job.setup().var("CREDIT_LAWS").unwrap());
-        let (gains, users, credit) = proposal_credit(job, &rules, kv, &held, &props);
-        for (i, (l, r)) in rules.iter().enumerate() {
-            println!("CREDIT rule {} -> {}: held-out gain {}, used by {} proposals", l.show(), r.show(), gains[i], users[i]);
-        }
-        set_extra_rules(job, vec![]);
-        let m0 = held.iter().filter(|(a, b)| law_cost(job, kv, a, b).hard()).count();
-        set_extra_rules(job, rules.clone());
-        let m1 = held.iter().filter(|(a, b)| law_cost(job, kv, a, b).hard()).count();
-        let credited = credit.iter().filter(|c| **c != 0.0).count();
-        println!(
-            "CREDIT total: held-out M {m0} -> {m1} (gain {}), sum of rule gains {}, attributed {:.1}, {credited} of {} proposals credited",
-            m0 as i64 - m1 as i64,
-            gains.iter().sum::<i64>(),
-            credit.iter().sum::<f64>(),
-            props.len()
-        );
-        if let Some(out) = job.setup().var("CREDIT_OUT") {
-            let text: String = props.iter().zip(&credit).map(|((a, b), c)| format!("{c:.3}\t{} = {}\n", a.show(), b.show())).collect();
-            std::fs::write(out, text).unwrap();
-        }
+        let (installed, rules, kv, laws) = check_laws(job);
+        job.with_rules(installed.counting(true), |job| {
+            let held: Vec<(Term, Term)> = laws.into_iter().map(|(_, a, b)| (a, b)).collect();
+            let props = read_laws(&job.setup().var("CREDIT_LAWS").unwrap());
+            let (gains, users, credit) = proposal_credit(job, &rules, kv, &held, &props);
+            for (i, (l, r)) in rules.iter().enumerate() {
+                println!("CREDIT rule {} -> {}: held-out gain {}, used by {} proposals", l.show(), r.show(), gains[i], users[i]);
+            }
+            let m0 = job.with_mined(vec![], |job| held.iter().filter(|(a, b)| law_cost(job, kv, a, b).hard()).count());
+            let m1 = held.iter().filter(|(a, b)| law_cost(job, kv, a, b).hard()).count();
+            let credited = credit.iter().filter(|c| **c != 0.0).count();
+            println!(
+                "CREDIT total: held-out M {m0} -> {m1} (gain {}), sum of rule gains {}, attributed {:.1}, {credited} of {} proposals credited",
+                m0 as i64 - m1 as i64,
+                gains.iter().sum::<i64>(),
+                credit.iter().sum::<f64>(),
+                props.len()
+            );
+            if let Some(out) = job.setup().var("CREDIT_OUT") {
+                let text: String = props.iter().zip(&credit).map(|((a, b), c)| format!("{c:.3}\t{} = {}\n", a.show(), b.show())).collect();
+                std::fs::write(out, text).unwrap();
+            }
+        })
     })
 }
 
 /// A rule's credit goes to the proposal that needs it, in proportion to its held-out gain.
 #[test]
 pub fn proposal_credit_goes_to_rule_users() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
-        SCORE_ONLY.with(|s| s.set(true));
-        let law = |s: &str| s.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap();
-        let rules = parse_rules("lt(x, sub(x, y)) -> lt(x, y)\n");
-        // the proposal and the held-out law are both closed by the rule only if the built-in rules do not already close them
-        let (p, h) = (law("lt(x, sub(x, y)) = lt(x, y)"), law("lt(z, sub(z, x)) = lt(z, x)"));
-        let (gains, users, credit) = proposal_credit(job, &rules, 3, &[h], &[p, law("add(x, y) = add(y, x)")]);
-        assert_eq!(gains.len(), 1);
-        assert_eq!(credit[1], 0.0, "a proposal that does not use the rule gets nothing");
-        assert_eq!(credit[0], if users[0] == 1 { gains[0] as f64 } else { 0.0 });
+        let counting = job.rules().counting(true);
+        job.with_rules(counting, |job| {
+            let law = |s: &str| s.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap();
+            let rules = parse_rules("lt(x, sub(x, y)) -> lt(x, y)\n");
+            // the proposal and the held-out law are both closed by the rule only if the built-in rules do not already close them
+            let (p, h) = (law("lt(x, sub(x, y)) = lt(x, y)"), law("lt(z, sub(z, x)) = lt(z, x)"));
+            let (gains, users, credit) = proposal_credit(job, &rules, 3, &[h], &[p, law("add(x, y) = add(y, x)")]);
+            assert_eq!(gains.len(), 1);
+            assert_eq!(credit[1], 0.0, "a proposal that does not use the rule gets nothing");
+            assert_eq!(credit[0], if users[0] == 1 { gains[0] as f64 } else { 0.0 });
+        })
     })
 }
 
@@ -1913,72 +1914,74 @@ pub fn mutants_are_well_formed() {
 #[test]
 #[ignore]
 pub fn proposal_yield() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         std::panic::set_hook(Box::new(|_| {}));
-        let family = job.setup().var("YIELD_FAMILY").unwrap_or("add3");
+        let family = job.setup().var("YIELD_FAMILY").unwrap_or("add3").to_string();
         let kv = family_vars(&family);
         let n = job.setup().or("YIELD_N", 2000usize);
+        let mut rules = job.rules().counting(true);
         if let Some(path) = job.setup().var("CHECK_RULES") {
-            set_extra_rules(job, parse_rules(&std::fs::read_to_string(path).unwrap()));
+            rules = rules.with_mined(job.setup(), parse_rules(&std::fs::read_to_string(path).unwrap()));
         }
-        SCORE_ONLY.with(|s| s.set(true));
-        let strings = |laws: Vec<(String, Term, Term)>| -> Vec<String> { laws.into_iter().filter(|(_, a, b)| a.is_law(b, kv)).map(|(s, _, _)| s).collect() };
-        let train_lines = strings(family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, 7));
-        let whole = |k: &str, d: usize| match k {
-            "RULEMINER_STRIDE" => 1,
-            "RULEMINER_PHASE" | "RULEMINER_SKIP" => 0,
-            "RULEMINER_LAWS" => 1_000_000,
-            _ => job.setup().or(k, d),
-        };
-        let known_lines = strings(family_laws(job.setup(), &family, &whole, 4, kv, 7));
-        let lines: Vec<String> = match (job.setup().var("YIELD_FILE"), job.setup().var("PROPOSER")) {
-            (Some(path), _) => std::fs::read_to_string(path).unwrap().lines().map(String::from).collect(),
-            (_, Some("ngram")) => ngram_lines(&train_lines.join("\n"), job.setup().or("YIELD_ORDER", 8usize), n, 1),
-            (_, Some("pool")) => {
-                let pool = pool3(&family, &|k: &str, d: usize| job.setup().or(k, d)).expect("pool proposer needs a three-variable family");
-                let mut s = 7u64;
-                (0..n).map(|_| format!("{} = {}", pool[lcg(&mut s) as usize % pool.len()].show(), pool[lcg(&mut s) as usize % pool.len()].show())).collect()
+        job.with_rules(rules, |job| {
+            let strings = |laws: Vec<(String, Term, Term)>| -> Vec<String> { laws.into_iter().filter(|(_, a, b)| a.is_law(b, kv)).map(|(s, _, _)| s).collect() };
+            let train_lines = strings(family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, 7));
+            let whole = |k: &str, d: usize| match k {
+                "RULEMINER_STRIDE" => 1,
+                "RULEMINER_PHASE" | "RULEMINER_SKIP" => 0,
+                "RULEMINER_LAWS" => 1_000_000,
+                _ => job.setup().or(k, d),
+            };
+            let known_lines = strings(family_laws(job.setup(), &family, &whole, 4, kv, 7));
+            let lines: Vec<String> = match (job.setup().var("YIELD_FILE"), job.setup().var("PROPOSER")) {
+                (Some(path), _) => std::fs::read_to_string(path).unwrap().lines().map(String::from).collect(),
+                (_, Some("ngram")) => ngram_lines(&train_lines.join("\n"), job.setup().or("YIELD_ORDER", 8usize), n, 1),
+                (_, Some("pool")) => {
+                    let pool = pool3(&family, &|k: &str, d: usize| job.setup().or(k, d)).expect("pool proposer needs a three-variable family");
+                    let mut s = 7u64;
+                    (0..n).map(|_| format!("{} = {}", pool[lcg(&mut s) as usize % pool.len()].show(), pool[lcg(&mut s) as usize % pool.len()].show())).collect()
+                }
+                (_, Some("stream")) => {
+                    let held_out = |k: &str, d: usize| match k {
+                        "RULEMINER_SKIP" => job.setup().or("YIELD_SKIP", 1000usize),
+                        "RULEMINER_LAWS" => n,
+                        _ => job.setup().or(k, d),
+                    };
+                    strings(family_laws(job.setup(), &family, &held_out, 4, kv, 7))
+                }
+                (_, Some("mutate")) => {
+                    let seeds = read_laws(&job.setup().var("MUTATE_SEEDS").expect("the mutate proposer needs MUTATE_SEEDS (a BAND_OUT file)"));
+                    mutate_laws(&seeds, kv, &job.setup().var("MUTATE_KIND").unwrap_or("mix"), n, 11)
+                }
+                _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool|stream|mutate"),
+            };
+            if let Some(out) = job.setup().var("YIELD_OUT") {
+                std::fs::write(out, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
             }
-            (_, Some("stream")) => {
-                let held_out = |k: &str, d: usize| match k {
-                    "RULEMINER_SKIP" => job.setup().or("YIELD_SKIP", 1000usize),
-                    "RULEMINER_LAWS" => n,
-                    _ => job.setup().or(k, d),
-                };
-                strings(family_laws(job.setup(), &family, &held_out, 4, kv, 7))
+            let laws = |lines: Vec<String>| lines.iter().filter_map(|l| parse_law(l, kv)).collect::<HashSet<_>>();
+            let (train, known) = (laws(train_lines), laws(known_lines));
+            let verdicts = classify_proposals(job, &lines, kv, &train, &known);
+            let mut count: std::collections::BTreeMap<Verdict, usize> = Default::default();
+            for (v, _) in &verdicts {
+                *count.entry(*v).or_default() += 1;
             }
-            (_, Some("mutate")) => {
-                let seeds = read_laws(&job.setup().var("MUTATE_SEEDS").expect("the mutate proposer needs MUTATE_SEEDS (a BAND_OUT file)"));
-                mutate_laws(&seeds, kv, &job.setup().var("MUTATE_KIND").unwrap_or("mix"), n, 11)
+            println!("YIELD family={family} samples={} train={} known={} {count:?}", lines.len(), train.len(), known.len());
+            let band: Vec<(&String, Cost)> = lines.iter().zip(&verdicts).filter_map(|(l, (_, c))| c.filter(Cost::hard).map(|c| (l, c))).collect();
+            let mut steps: Vec<i64> = band.iter().map(|(_, c)| c.steps).collect();
+            steps.sort();
+            println!(
+                "BAND {} hard of {} scored: {} not proved, {} machine proofs, median rule steps {}",
+                band.len(),
+                verdicts.iter().filter(|(_, c)| c.is_some()).count(),
+                band.iter().filter(|(_, c)| !c.proved).count(),
+                band.iter().map(|(_, c)| c.fallbacks).sum::<u64>(),
+                steps.get(steps.len() / 2).copied().unwrap_or(0)
+            );
+            if let Some(out) = job.setup().var("BAND_OUT") {
+                std::fs::write(out, band.iter().map(|(l, _)| format!("{l}\n")).collect::<String>()).unwrap();
             }
-            _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool|stream|mutate"),
-        };
-        if let Some(out) = job.setup().var("YIELD_OUT") {
-            std::fs::write(out, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
-        }
-        let laws = |lines: Vec<String>| lines.iter().filter_map(|l| parse_law(l, kv)).collect::<HashSet<_>>();
-        let (train, known) = (laws(train_lines), laws(known_lines));
-        let verdicts = classify_proposals(job, &lines, kv, &train, &known);
-        let mut count: std::collections::BTreeMap<Verdict, usize> = Default::default();
-        for (v, _) in &verdicts {
-            *count.entry(*v).or_default() += 1;
-        }
-        println!("YIELD family={family} samples={} train={} known={} {count:?}", lines.len(), train.len(), known.len());
-        let band: Vec<(&String, Cost)> = lines.iter().zip(&verdicts).filter_map(|(l, (_, c))| c.filter(Cost::hard).map(|c| (l, c))).collect();
-        let mut steps: Vec<i64> = band.iter().map(|(_, c)| c.steps).collect();
-        steps.sort();
-        println!(
-            "BAND {} hard of {} scored: {} not proved, {} machine proofs, median rule steps {}",
-            band.len(),
-            verdicts.iter().filter(|(_, c)| c.is_some()).count(),
-            band.iter().filter(|(_, c)| !c.proved).count(),
-            band.iter().map(|(_, c)| c.fallbacks).sum::<u64>(),
-            steps.get(steps.len() / 2).copied().unwrap_or(0)
-        );
-        if let Some(out) = job.setup().var("BAND_OUT") {
-            std::fs::write(out, band.iter().map(|(l, _)| format!("{l}\n")).collect::<String>()).unwrap();
-        }
+        })
     })
 }
 

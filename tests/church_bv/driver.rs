@@ -962,7 +962,7 @@ fn sweep() {
             let text: String = ["cmp3d", "add3", "sbo3"].iter().map(|fam| format!("# library {fam}\n{}\n", std::fs::read_to_string(library(fam)).unwrap().trim_end())).collect();
             std::fs::write(&pooled, &text).unwrap();
             let units = out.join("pooled.units");
-            std::fs::write(&units, units_text(&joinability_units(&Job::new(setup.clone()), &text, 4, setup.or("RULEMINER_STEPS", 200i64)))).unwrap();
+            std::fs::write(&units, units_text(&joinability_units(&mut Job::new(setup.clone()), &text, 4, setup.or("RULEMINER_STEPS", 200i64)))).unwrap();
             std::fs::write(out.join("pooled_prefs.tsv"), "").unwrap();
             // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins, and which
             // rules where two libraries' normal forms meet to drop (`drop_units`), on its phase-0 stream: a mine with no rule

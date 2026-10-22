@@ -1,4 +1,5 @@
 use super::*;
+use std::rc::Rc;
 
 /// A hash-consed term: a pointer to its one node. Leaves are statics, `Op` nodes are interned (`Term::op`) and never
 /// freed, so equal terms are the same pointer: `==` and `Hash` take the address, and clone is a copy. Each node also
@@ -943,7 +944,7 @@ pub enum Plan {
     Sym(PlanRc),
     /// the closed law `lhs = rhs` over the pattern variables `V(0..)`, at the terms `args` (one per variable)
     Law(LawKind, Term, Term, Vec<Term>),
-    /// any step taken while counting (`SCORE_ONLY`), which compiles no plan: the constructors share one, so scoring allocates
+    /// any step taken while counting (`Rules::counting`), which compiles no plan: the constructors share one, so scoring allocates
     /// none (they were 1.6% of a sweep's samples; docs/tier-cycle.md, "Survey: the lemmas and the allocator")
     Counting,
 }
@@ -968,26 +969,26 @@ pub enum LawKind {
 
 impl Plan {
     /// `make()`, or while counting the shared `Plan::Counting`.
-    fn new(make: impl FnOnce() -> Plan) -> PlanRc {
+    fn new(job: &Job, make: impl FnOnce() -> Plan) -> PlanRc {
         thread_local! {
             static COUNTING: PlanRc = PlanRc::new(Plan::Counting);
         }
-        if SCORE_ONLY.with(|s| s.get()) { COUNTING.with(PlanRc::clone) } else { PlanRc::new(make()) }
+        if job.rules().score_only { COUNTING.with(PlanRc::clone) } else { PlanRc::new(make()) }
     }
-    pub fn refl(t: &Term) -> PlanRc {
-        Plan::new(|| Plan::Refl(*t))
+    pub fn refl(job: &Job, t: &Term) -> PlanRc {
+        Plan::new(job, || Plan::Refl(*t))
     }
-    pub fn cong(o: usize, a: PlanRc, b: PlanRc) -> PlanRc {
-        Plan::new(|| Plan::Cong(o, a, b))
+    pub fn cong(job: &Job, o: usize, a: PlanRc, b: PlanRc) -> PlanRc {
+        Plan::new(job, || Plan::Cong(o, a, b))
     }
-    pub fn trans(a: PlanRc, b: PlanRc) -> PlanRc {
-        Plan::new(|| Plan::Trans(a, b))
+    pub fn trans(job: &Job, a: PlanRc, b: PlanRc) -> PlanRc {
+        Plan::new(job, || Plan::Trans(a, b))
     }
-    pub fn sym(a: PlanRc) -> PlanRc {
-        Plan::new(|| Plan::Sym(a))
+    pub fn sym(job: &Job, a: PlanRc) -> PlanRc {
+        Plan::new(job, || Plan::Sym(a))
     }
-    pub fn law(kind: LawKind, lhs: Term, rhs: Term, args: Vec<Term>) -> PlanRc {
-        Plan::new(|| Plan::Law(kind, lhs, rhs, args))
+    pub fn law(job: &Job, kind: LawKind, lhs: Term, rhs: Term, args: Vec<Term>) -> PlanRc {
+        Plan::new(job, || Plan::Law(kind, lhs, rhs, args))
     }
 }
 
@@ -1023,7 +1024,7 @@ impl Compiler {
     pub fn proof(&self, job: &Job, plan: &Plan) -> (Term, Term, Expr) {
         let n = self.n;
         match plan {
-            Plan::Counting => panic!("a plan made while counting (SCORE_ONLY) has nothing to compile"),
+            Plan::Counting => panic!("a plan made while counting has nothing to compile"),
             Plan::Refl(t) => (*t, *t, refl(self.ev(t))),
             Plan::Cong(o, a, b) => {
                 let ((a1, a2, pa), (b1, b2, pb)) = (self.proof(job, a), self.proof(job, b));
@@ -1086,7 +1087,7 @@ pub fn chain_step(job: &Job, a: &Term, b: &Term) -> Option<(Term, PlanRc)> {
         .find(|cand| !matches!(*cand.node(), Node::V(i) if i >= atoms.len()) && find_constant_carry(&a1, &b1, cand).is_some())?;
     let target = if let Node::V(i) = *cand.node() { atoms[i] } else { cand };
     let args = (0..2).map(|i| atoms.get(i).cloned().unwrap_or(Term::v(0))).collect();
-    Some((target, Plan::law(LawKind::Chain, Term::op(ADD, a1, b1), cand, args)))
+    Some((target, Plan::law(job, LawKind::Chain, Term::op(ADD, a1, b1), cand, args)))
 }
 
 /// A sum tree of add-free leaves that the carry-encoding search shows equal to a constant, a variable or one
@@ -1099,7 +1100,7 @@ pub fn tree_step(job: &Job, n: usize, t1: &Term, k: usize) -> Option<(Term, Plan
     // `tree_encoding` refuses a candidate whose screen values differ from `t1`'s, so only those with `t1`'s vector are tried
     let index = TREE_CANDS.with((n, k, job.setup().nops()), || tree_candidates(job, n, k), |c| c.clone());
     let cand = *with_screen(n, k, |m| index.get(m.values(t1)))?.iter().find(|cand| tree_encoding(job, n, k, t1, cand).is_some())?;
-    Some((cand, Plan::law(LawKind::Tree, *t1, cand, vars(k))))
+    Some((cand, Plan::law(job, LawKind::Tree, *t1, cand, vars(k))))
 }
 
 /// `tree_step`'s candidates by their screen vector, per width, variable count and operator count (`tree_candidates`), shared
@@ -1157,20 +1158,77 @@ pub struct Rule {
 }
 
 thread_local! {
-    /// Set where a plan is only counted: by the rule miner's scoring rounds, by its rule-set evaluations under
-    /// `RULEMINER_FAST=1` or when the caller asks, and by tests that count. `prove_eq` then takes a machine fallback when a
-    /// few tuples agree, without searching for its carry encoding, so a plan made under it may not compile.
-    pub static SCORE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The rules `rule_step` tries: the built-in ones, then those added at run time (by the rule miner) in `set_extra_rules`
-    /// order. Write it only through `set_extra_rules`, read it through `with_table`: `None` until the thread's first use.
-    static RULE_TABLE: std::cell::RefCell<Option<RuleTable>> = const { std::cell::RefCell::new(None) };
     /// While `Some`, `rule_step` records every term it is asked to rewrite, and whether a rule fired on it: a rule added anywhere
     /// in the rule list can change a rewriting only if its left side matches one of them, and one added last only if it matches
     /// one where no rule fired (unless a preference makes it a winner).
     pub static RULE_TRACE: std::cell::RefCell<Option<Vec<(Term, Fired)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// What a job rewrites with (`Job::rules`, replaced only through `Job::with_rules`): the rule table, the preferences
+/// between its rules, and two switches. Values, cheap to copy: the table and preferences are shared.
+#[derive(Clone)]
+pub struct Rules {
+    /// The rules `rule_step` tries: the built-in ones, then those added at run time (by the rule miner) in `run_order`.
+    table: Rc<RuleTable>,
     /// Learned rule preferences, (winner, loser): where both rules would rewrite a term, the winner does, whatever the order
-    /// (docs/tier-cycle.md, "Rule order"). Set with the rules they belong to (`set_rule_prefs`).
-    pub static RULE_PREFS: std::cell::RefCell<hashbrown::HashSet<Pref>> = Default::default();
+    /// (docs/tier-cycle.md, "Rule order").
+    prefs: Rc<hashbrown::HashSet<Pref>>,
+    /// Set where a plan is only counted: by the rule miner's scoring rounds, by its rule-set evaluations under
+    /// `RULEMINER_FAST=1` or when the caller asks, and by tests that count. `prove_eq` then takes a machine fallback when a
+    /// few tuples agree, without searching for its carry encoding, so a plan made under it may not compile.
+    score_only: bool,
+    /// Print every rule application (the `normal_forms` debug test's `NF_TRACE`).
+    trace_rules: bool,
+}
+
+impl Rules {
+    /// The built-in rules of `setup` and the run-time rules `mined`, most specific first: larger left sides first, ties by
+    /// text. `rule_step` applies the first rule that matches, so a library's order would otherwise change its normal forms:
+    /// the same pooled library served in six orders gave total M 47-62 on add3 (docs/tier-cycle.md, "Rule order"). Any
+    /// order of the same rules now serves identically. No preferences, both switches off.
+    pub fn new(setup: &Setup, mined: Vec<(Term, Term)>) -> Rules {
+        Rules { table: Rc::new(RuleTable::sorted(setup, mined)), prefs: Default::default(), score_only: false, trace_rules: false }
+    }
+
+    /// These rules with the run-time rules `mined` instead; the preferences and switches stay.
+    pub fn with_mined(&self, setup: &Setup, mined: Vec<(Term, Term)>) -> Rules {
+        Rules { table: Rc::new(RuleTable::sorted(setup, mined)), ..self.clone() }
+    }
+
+    /// These rules with the preferences `prefs`, in order: a later preference replaces an earlier one for the same pair the
+    /// other way round.
+    pub fn with_prefs(&self, prefs: Vec<Pref>) -> Rules {
+        let mut p = hashbrown::HashSet::new();
+        for (w, l) in prefs {
+            p.remove(&(l, w));
+            p.insert((w, l));
+        }
+        Rules { prefs: Rc::new(p), ..self.clone() }
+    }
+
+    /// These rules, counting only (`score_only`) or not.
+    pub fn counting(&self, on: bool) -> Rules {
+        Rules { score_only: on, ..self.clone() }
+    }
+
+    /// These rules, printing every rule application or not.
+    pub fn tracing(&self, on: bool) -> Rules {
+        Rules { trace_rules: on, ..self.clone() }
+    }
+
+    /// The run-time rules, in the order they are tried.
+    pub fn mined(&self) -> &[(Term, Term)] {
+        &self.table.mined
+    }
+
+    pub fn score_only(&self) -> bool {
+        self.score_only
+    }
+
+    /// Whether `other` is these same rules: the same table and preferences (not equal copies), and the same switches.
+    pub(crate) fn is(&self, other: &Rules) -> bool {
+        Rc::ptr_eq(&self.table, &other.table) && Rc::ptr_eq(&self.prefs, &other.prefs) && (self.score_only, self.trace_rules) == (other.score_only, other.trace_rules)
+    }
 }
 
 /// A rule as its two sides, and a preference (winner, loser) between two rules.
@@ -1188,32 +1246,16 @@ pub fn parse_prefs(text: &str) -> Vec<Pref> {
     text.lines().filter_map(|l| l.split_once("  OVER  ")).filter_map(|(w, l)| Some((rule(w)?, rule(l)?))).collect()
 }
 
-/// Installs `prefs` in order: a later preference replaces an earlier one for the same pair the other way round.
-pub fn set_rule_prefs(prefs: Vec<Pref>) {
-    RULE_PREFS.with(|p| {
-        let mut p = p.borrow_mut();
-        p.clear();
-        for (w, l) in prefs {
-            p.remove(&(l, w));
-            p.insert((w, l));
-        }
-    });
-}
-
 #[test]
 fn preferences_choose_between_rules_that_both_match() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let text = "sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(x, sub(y, z)) -> add(sub(x, y), z)\n\
                 sub(x, sub(y, z)) -> add(sub(x, y), z)  OVER  sub(sub(x, y), z) -> sub(x, add(y, z))\n";
     assert_eq!(parse_rules(text).len(), 2, "a preference line is not a rule");
     let t = parse_term("sub(sub(x, y), sub(z, u))");
-    let step = |prefs: Vec<Pref>| {
-        set_extra_rules(job, parse_rules(text));
-        set_rule_prefs(prefs);
-        let out = rule_step(job, &t).unwrap().0.show();
-        set_extra_rules(job, vec![]);
-        set_rule_prefs(vec![]);
-        out
+    let mut step = |prefs: Vec<Pref>| {
+        let rules = job.rules().with_mined(job.setup(), parse_rules(text)).with_prefs(prefs);
+        job.with_rules(rules, |job| rule_step(job, &t).unwrap().0.show())
     };
     // same size, so specific first falls to the text order; the preference overrides it, and a later reverse line undoes it
     let prefs = parse_prefs(text);
@@ -1223,25 +1265,6 @@ fn preferences_choose_between_rules_that_both_match() {
     assert_eq!(preferred, parse_term("add(sub(sub(x, y), z), u)").show());
     let reverse = (prefs[0].1, prefs[0].0);
     assert_eq!(step(vec![prefs[0], reverse]), plain);
-}
-
-/// Installs `rules` as the run-time rules, most specific first: larger left sides first, ties by text. `rule_step` applies the first
-/// rule that matches, so a library's order would otherwise change its normal forms: the same pooled library served in six orders
-/// gave total M 47-62 on add3 (docs/tier-cycle.md, "Rule order"). Any order of the same rules now serves identically.
-pub fn set_extra_rules(job: &Job, mut rules: Vec<(Term, Term)>) {
-    rules.sort_by_cached_key(|(l, r)| run_order(l, r));
-    RULE_TABLE.with(|e| *e.borrow_mut() = Some(RuleTable::new(job.setup(), rules)));
-}
-
-/// `f` of this thread's rule table: the last `set_extra_rules`, or at the thread's first use the fixed rules of `job`'s
-/// setup alone (as the thread-local's initializer built them from the task's environment before `Setup`).
-pub fn with_table<R>(job: &Job, f: impl FnOnce(&RuleTable) -> R) -> R {
-    RULE_TABLE.with(|e| {
-        if e.borrow().is_none() {
-            *e.borrow_mut() = Some(RuleTable::new(job.setup(), vec![]));
-        }
-        f(e.borrow().as_ref().unwrap())
-    })
 }
 
 /// A rule as `rule_step` tries it, with what does not depend on the term decided when the rule set is installed (deciding
@@ -1386,6 +1409,12 @@ pub struct RuleTable {
 }
 
 impl RuleTable {
+    /// `new` with `mined` in `run_order` (`Rules::new`).
+    fn sorted(setup: &Setup, mut mined: Vec<(Term, Term)>) -> RuleTable {
+        mined.sort_by_cached_key(|(l, r)| run_order(l, r));
+        RuleTable::new(setup, mined)
+    }
+
     fn new(setup: &Setup, mined: Vec<(Term, Term)>) -> RuleTable {
         let rules: Vec<TableRule> = setup.fixed_table().iter().copied().chain(mined.iter().map(|&(l, r)| TableRule::new("mined", l, r))).collect();
         let index = PatIndex::new(rules.iter().enumerate().filter(|(_, r)| !setup.ablated(r.name)).map(|(i, r)| (i, &r.lhs, ())));
@@ -1404,7 +1433,7 @@ impl RuleTable {
     }
 }
 
-/// The run-time rules' order key (`set_extra_rules`).
+/// The run-time rules' order key (`RuleTable::sorted`).
 pub fn run_order(l: &Term, r: &Term) -> (std::cmp::Reverse<usize>, String, String) {
     (std::cmp::Reverse(l.size()), l.show(), r.show())
 }
@@ -1437,12 +1466,7 @@ fn rule_order_does_not_change_rewriting() {
     // overlapping rules: under list order the first one would win on sub(sub(x, y), z) whichever it is
     let a = "sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(x, y) -> add(x, sub(0, y))\nsub(sub(x, y), z) -> sub(sub(x, z), y)\n";
     let b = "sub(sub(x, y), z) -> sub(sub(x, z), y)\nsub(x, y) -> add(x, sub(0, y))\nsub(sub(x, y), z) -> sub(x, add(y, z))\n";
-    let installed = |text: &str| {
-        set_extra_rules(job, parse_rules(text));
-        let shown: Vec<String> = with_table(job, |e| e.mined.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect());
-        set_extra_rules(job, vec![]);
-        shown
-    };
+    let installed = |text: &str| -> Vec<String> { Rules::new(job.setup(), parse_rules(text)).mined().iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect() };
     let (ia, ib) = (installed(a), installed(b));
     assert_eq!(ia, ib);
     assert!(ia.last().unwrap().starts_with("sub(x, y)"), "the general rule goes after the specific ones: {ia:?}");
@@ -1472,7 +1496,7 @@ pub fn build_rule_set(name: Option<&str>) -> Vec<(Term, Term)> {
 }
 
 /// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins, the promoted rules, the
-/// `RULESET` rules; the mined ones (`RULE_TABLE`) come after them. `Setup::fixed_rules` keeps them per task.
+/// `RULESET` rules; the mined ones (`Rules`) come after them. `Setup::fixed_rules` keeps them per task.
 pub fn build_fixed_rules(setup: &Setup) -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
     let v = Term::v;
@@ -1649,20 +1673,19 @@ pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)], meet: &dyn Fn(&(Term
 /// The drop units of a pooled rules file (`library_sections`), where two rules meet when a critical pair of theirs does not
 /// join: rewritten (over `n` bits, `steps` per side) under all the file's rules and preferences, its two sides reach different
 /// normal forms. They depend only on the file, so `driver::sweep` builds them once (`units_text`) for every family's mine.
-pub fn joinability_units(job: &Job, text: &str, n: usize, steps: i64) -> Vec<Vec<(Term, Term)>> {
-    set_extra_rules(job, parse_rules(text));
-    set_rule_prefs(parse_prefs(text));
-    let joins = |a: &Term, b: &Term| {
-        let k = a.max_var().max(b.max_var()) + 1;
-        let side = |t: &Term| {
-            RULE_BUDGET.with(|c| c.set(steps));
-            rewrite(job, t, n, k).0
+pub fn joinability_units(job: &mut Job, text: &str, n: usize, steps: i64) -> Vec<Vec<(Term, Term)>> {
+    let rules = job.rules().with_mined(job.setup(), parse_rules(text)).with_prefs(parse_prefs(text));
+    let units = job.with_rules(rules, |job| {
+        let joins = |a: &Term, b: &Term| {
+            let k = a.max_var().max(b.max_var()) + 1;
+            let side = |t: &Term| {
+                RULE_BUDGET.with(|c| c.set(steps));
+                rewrite(job, t, n, k).0
+            };
+            side(a) == side(b)
         };
-        side(a) == side(b)
-    };
-    let units = drop_units(&library_sections(text), &|r, x| critical_pairs(r, x).iter().any(|(a, b)| !joins(a, b)));
-    set_extra_rules(job, vec![]);
-    set_rule_prefs(vec![]);
+        drop_units(&library_sections(text), &|r, x| critical_pairs(r, x).iter().any(|(a, b)| !joins(a, b)))
+    });
     RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
     units
 }
@@ -2044,8 +2067,6 @@ pub fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
 }
 
 thread_local! {
-    /// Print every rule application (set by the `normal_forms` debug test).
-    pub static TRACE_RULES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms;
     /// `print_rule_conflicts` lists them. Armed and read on one thread (the miner's preference phase, `rule_set_kernel_check`).
     pub static RULE_CONFLICTS: std::cell::RefCell<Option<hashbrown::HashMap<Pref, u64>>> = const { std::cell::RefCell::new(None) };
@@ -2064,10 +2085,8 @@ pub fn print_rule_conflicts() {
 
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the plan.
 pub fn rule_step(job: &Job, t: &Term) -> Option<(Term, PlanRc)> {
-    with_table(job, |table| rule_step_in(t, table))
-}
-
-fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
+    let rules = job.rules();
+    let table = &*rules.table;
     let all = &table.rules;
     let fires = |r: &TableRule| -> Option<[Option<Term>; RULE_VARS]> {
         let mut sub = [None; RULE_VARS];
@@ -2104,23 +2123,18 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
         }
     });
     let (mut i, mut sub) = first?;
-    RULE_PREFS.with(|prefer| {
-        let prefer = prefer.borrow();
-        if prefer.is_empty() {
-            return;
+    // follow preferences from the first rule that fires; at most one hop per rule, so a preference cycle stops (with none,
+    // the first hop finds no winners)
+    for _ in 0..all.len() {
+        let winners: Vec<&RuleKey> = rules.prefs.iter().filter(|(_, l)| all[i].is(l)).map(|(w, _)| w).collect();
+        if winners.is_empty() {
+            break;
         }
-        // follow preferences from the first rule that fires; at most one hop per rule, so a preference cycle stops
-        for _ in 0..all.len() {
-            let winners: Vec<&RuleKey> = prefer.iter().filter(|(_, l)| all[i].is(l)).map(|(w, _)| w).collect();
-            if winners.is_empty() {
-                break;
-            }
-            match table.candidates(t).find_map(|(j, r)| if j != i && winners.iter().any(|w| r.is(w)) { fires(r).map(|s| (j, s)) } else { None }) {
-                Some(next) => (i, sub) = next,
-                None => break,
-            }
+        match table.candidates(t).find_map(|(j, r)| if j != i && winners.iter().any(|w| r.is(w)) { fires(r).map(|s| (j, s)) } else { None }) {
+            Some(next) => (i, sub) = next,
+            None => break,
         }
-    });
+    }
     RULE_CONFLICTS.with(|c| {
         if let Some(m) = c.borrow_mut().as_mut() {
             for (_, r) in table.candidates(t).filter(|&(j, r)| j > i && fires(r).is_some()) {
@@ -2129,7 +2143,7 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
         }
     });
     let r = &all[i];
-    if TRACE_RULES.with(|c| c.get()) {
+    if rules.trace_rules {
         println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
     }
     if RULE_BUDGET.with(|b| b.replace(b.get() - 1)) <= 0 {
@@ -2137,7 +2151,7 @@ fn rule_step_in(t: &Term, table: &RuleTable) -> Option<(Term, PlanRc)> {
     }
     // a pattern variable the left side does not mention is free in the law: any value serves
     let args = sub[..r.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect();
-    Some((subst_pat(&r.rhs, &sub), Plan::law(LawKind::Rule(r.name), r.lhs, r.rhs, args)))
+    Some((subst_pat(&r.rhs, &sub), Plan::law(job, LawKind::Rule(r.name), r.lhs, r.rhs, args)))
 }
 
 /// The terms `rule_step` was asked about while rewriting, with the rule that fired on each (`RULE_TRACE`), and the OR of the
@@ -2297,7 +2311,7 @@ pub fn rewrite(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     if let Some(i) = REWRITE_PATH.with(|p| cut_at(&p.borrow(), t)) {
         CUT_LOW.with(|c| c.set(c.get().min(i)));
         CYCLE_CUTS.with(|c| c.set(c.get() + 1));
-        return (*t, Plan::refl(t));
+        return (*t, Plan::refl(job, t));
     }
     REWRITE_PATH.with(|p| p.borrow_mut().push(*t));
     REWROTE.with(|r| r.borrow_mut().push(*t));
@@ -2328,7 +2342,7 @@ fn rewrite_memo(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     let hit = REWRITE_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.map.get(&key).cloned()));
     // the entry was made with no cut against a term further out, so the path in force now must cut none of the terms it took up
     // either; and one made while counting has no plan to give a caller that is not
-    let counting = SCORE_ONLY.with(|s| s.get());
+    let counting = job.rules().score_only;
     let fits = |c: &Rewritten| {
         RULE_BUDGET.with(|b| b.get()) >= c.steps
             && (counting || !matches!(*c.out.1, Plan::Counting))
@@ -2405,21 +2419,21 @@ fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
 }
 
 fn rewrite_uncached(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
-    let Node::Op(o, a, b) = *t.node() else { return (*t, Plan::refl(t)) };
+    let Node::Op(o, a, b) = *t.node() else { return (*t, Plan::refl(job, t)) };
     // children first: trying the library rules on a node before its children are normalized raised M 3x (docs/tier-cycle.md, "Rule order")
     let ((a2, pa), (b2, pb)) = (rewrite(job, &a, n, k), rewrite(job, &b, n, k));
-    let cong = Plan::cong(o, pa, pb);
+    let cong = Plan::cong(job, o, pa, pb);
     let t1 = Term::op(o, a2, b2);
     if o != ADD {
         // the library rules first (`shldist`, ...)
         if let Some((target, step)) = rule_step(job, &t1) {
             let (t3, p3) = rewrite(job, &target, n, k);
-            return (t3, Plan::trans(Plan::trans(cong, step), p3));
+            return (t3, Plan::trans(job, Plan::trans(job, cong, step), p3));
         }
         if o == SUB {
             // a difference: then the carry-encoding search
             return match tree_step(job, n, &t1, k) {
-                Some((target, law)) => (target, Plan::trans(cong, law)),
+                Some((target, law)) => (target, Plan::trans(job, cong, law)),
                 None => (t1, cong),
             };
         }
@@ -2433,7 +2447,7 @@ fn rewrite_uncached(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
             t1.subterms(&mut subs);
             let cands = [Term::ZERO, Term::ONES].into_iter().chain(subs.into_iter().skip(1).filter(|c| c.size() < t1.size()));
             if let Some(c) = cands.into_iter().find(|c| c.add_free() && t1.is_law(c, k)) {
-                return (c, Plan::trans(cong, Plan::law(LawKind::Bitwise, t1, c, vars(k))));
+                return (c, Plan::trans(job, cong, Plan::law(job, LawKind::Bitwise, t1, c, vars(k))));
             }
         }
         // a bitwise node equal to 0, -1 or one of its atoms collapses to it (truth table, then `bitwise_law`)
@@ -2446,7 +2460,7 @@ fn rewrite_uncached(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
                 let target = if let Node::V(i) = *c.node() { atoms[i] } else { *c };
                 if target != t1 {
                     let args = (0..k).map(|i| atoms.get(i).cloned().unwrap_or(Term::v(0))).collect();
-                    return (target, Plan::trans(cong, Plan::law(LawKind::Bitwise, abs, *c, args)));
+                    return (target, Plan::trans(job, cong, Plan::law(job, LawKind::Bitwise, abs, *c, args)));
                 }
             }
         }
@@ -2464,15 +2478,15 @@ fn rewrite_uncached(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
         };
         if before {
             let swap = |x: Term, y: Term| Term::op(o, x, y);
-            let law = Plan::law(LawKind::Bitwise, swap(Term::v(0), Term::v(1)), swap(Term::v(1), Term::v(0)), vec![a2, b2]);
-            return (swap(b2, a2), Plan::trans(cong, law));
+            let law = Plan::law(job, LawKind::Bitwise, swap(Term::v(0), Term::v(1)), swap(Term::v(1), Term::v(0)), vec![a2, b2]);
+            return (swap(b2, a2), Plan::trans(job, cong, law));
         }
         return (t1, cong);
     }
     let sum = |p: &Term, q: &Term| Term::op(ADD, *p, *q);
     let (x, y, z) = (Term::v(0), Term::v(1), Term::v(2));
-    let assoc = |p: &Term, q: &Term, r: &Term| Plan::law(LawKind::Assoc, sum(&sum(&x, &y), &z), sum(&x, &sum(&y, &z)), vec![*p, *q, *r]);
-    let comm = |p: &Term, q: &Term| Plan::law(LawKind::Comm, sum(&x, &y), sum(&y, &x), vec![*p, *q]);
+    let assoc = |p: &Term, q: &Term, r: &Term| Plan::law(job, LawKind::Assoc, sum(&sum(&x, &y), &z), sum(&x, &sum(&y, &z)), vec![*p, *q, *r]);
+    let comm = |p: &Term, q: &Term| Plan::law(job, LawKind::Comm, sum(&x, &y), sum(&y, &x), vec![*p, *q]);
     // `x + 0` and `x + ~x` are constant-carry sums (`chain_step`); steps of their own were removed as redundant
     let step = if let Some(r) = rule_step(job, &t1) {
         Some(r)
@@ -2487,8 +2501,8 @@ fn rewrite_uncached(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
         if bp.show_cmp(&a2).is_lt() {
             // a + (b + c) = (a + b) + c = (b + a) + c = b + (a + c)
             let (a_, b_, c_) = (&a2, &bp, &bq);
-            let swapped = Plan::cong(ADD, comm(a_, b_), Plan::refl(c_));
-            Some((sum(b_, &sum(a_, c_)), Plan::trans(Plan::trans(Plan::sym(assoc(a_, b_, c_)), swapped), assoc(b_, a_, c_))))
+            let swapped = Plan::cong(job, ADD, comm(a_, b_), Plan::refl(job, c_));
+            Some((sum(b_, &sum(a_, c_)), Plan::trans(job, Plan::trans(job, Plan::sym(job, assoc(a_, b_, c_)), swapped), assoc(b_, a_, c_))))
         } else {
             None
         }
@@ -2501,7 +2515,7 @@ fn rewrite_uncached(job: &Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
         None => (t1, cong),
         Some((t2, p)) => {
             let (t3, p3) = rewrite(job, &t2, n, k);
-            (t3, Plan::trans(Plan::trans(cong, p), p3))
+            (t3, Plan::trans(job, Plan::trans(job, cong, p), p3))
         }
     }
 }
@@ -2644,12 +2658,12 @@ impl JoinStore {
                         // back from `b`: each step's plan, `p = x` read forwards
                         let (mut plans, mut terms, mut x) = (vec![], vec![b], b);
                         while let Some((p, step, back, eq)) = prev[&x] {
-                            let plan = step_plan(&JoinStep { from: step.from, path: step.path, eq }, table);
-                            plans.push(if back { Plan::sym(plan) } else { plan });
+                            let plan = step_plan(job, &JoinStep { from: step.from, path: step.path, eq }, table);
+                            plans.push(if back { Plan::sym(job, plan) } else { plan });
                             terms.push(p);
                             x = p;
                         }
-                        return Some((plans.into_iter().rev().reduce(Plan::trans).expect("a step"), terms));
+                        return Some((plans.into_iter().rev().reduce(|a, b| Plan::trans(job, a, b)).expect("a step"), terms));
                     }
                     front.push(u);
                 }
@@ -2669,7 +2683,7 @@ fn stored_join(job: &Job, a: Term, b: Term) -> Option<(PlanRc, Vec<Term>)> {
             Some(JoinStoreUse::Read(store)) => &**store,
             None => return None,
         };
-        with_table(job, |t| store.path(job, t, a, b, cap))
+        store.path(job, &job.rules().table, a, b, cap)
     })
 }
 
@@ -2689,7 +2703,7 @@ pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
 /// proof. `None` otherwise.
 pub fn prove_eq(job: &Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     if a == b {
-        return Some(Plan::refl(a));
+        return Some(Plan::refl(job, a));
     }
     // each step below can be switched off: `ABLATE=eq_truth,eq_pos,shrmask`
     let mut atoms = vec![];
@@ -2700,7 +2714,7 @@ pub fn prove_eq(job: &Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<Pla
         });
         if holds {
             let args = (0..k).map(|i| atoms.get(i).cloned().unwrap_or(Term::v(0))).collect();
-            return Some(Plan::law(LawKind::Bitwise, a1, a2, args));
+            return Some(Plan::law(job, LawKind::Bitwise, a1, a2, args));
         }
     }
     // add-free terms with shifts: the per-position prover, when the law holds exhaustively at widths 1..=5 (a position
@@ -2711,7 +2725,7 @@ pub fn prove_eq(job: &Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<Pla
             a.interp(w, &vals) == b.interp(w, &vals)
         }));
         if holds {
-            return Some(Plan::law(LawKind::Bitwise, *a, *b, vars(k)));
+            return Some(Plan::law(job, LawKind::Bitwise, *a, *b, vars(k)));
         }
     }
     // congruence on equal operators and generalizing a shared subterm into a variable were removed: neither decided a law
@@ -2729,12 +2743,12 @@ fn machine_fallback(job: &Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
     // scoring mode: only whether the rewriting needed this fallback matters, so count it without searching for the encoding (the
     // plan may then not compile); a pair that is not equal fails here as it would in `tree_encoding` (else congruence on unequal
     // operands would count two proofs); a few tuples suffice to tell, since unequal pairs differ almost everywhere
-    let screened = SCORE_ONLY.with(|s| s.get()) && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap(job);
+    let screened = job.rules().score_only && Machine::parse(a).is_some() && Machine::parse(b).is_some() && cost(a).max(cost(b)) <= carry_cap(job);
     if screened && a.differs_in(b, n, k, 16) || !screened && tree_encoding(job, n, k, a, b).is_none() {
         return None;
     }
     MACHINE_FALLBACKS.with(|c| c.set(c.get() + 1));
-    Some(Plan::law(LawKind::Tree, *a, *b, vars(k)))
+    Some(Plan::law(job, LawKind::Tree, *a, *b, vars(k)))
 }
 
 /// `a = b` by the bounded join, else by the whole-term machine proof: the floor laws' normal forms all join within a few
@@ -2910,7 +2924,7 @@ pub fn join_eq(job: &Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<Plan
     // the memo holds searches with no rule blocked (`PROVING`), and a plan made while counting serves only a caller that counts
     let memo_on = REWRITE_MEMO.with(|m| m.borrow().as_ref().is_some_and(|m| m.k == k)) && PROVING.with(|p| p.borrow().is_empty());
     let traced = RULE_TRACE.with(|tr| tr.borrow().is_some());
-    let counting = SCORE_ONLY.with(|s| s.get());
+    let counting = job.rules().score_only;
     let key = (*a, *b);
     let replay = |trace: &Trace| {
         RULE_TRACE.with(|tr| {
@@ -3177,7 +3191,7 @@ fn is_step(mut t: Term, up: &JoinPlace, p: &Term, sub: &[Option<Term>]) -> bool 
 }
 
 /// The plan of `step.from = ` the term the step reaches.
-fn step_plan(step: &JoinStep, table: &RuleTable) -> PlanRc {
+fn step_plan(job: &Job, step: &JoinStep, table: &RuleTable) -> PlanRc {
     let (mut up, mut x, mut path) = (vec![], step.from, step.path);
     while path.depth > 0 {
         let Node::Op(o, a, b) = *x.node() else { unreachable!("a step's path stays in the term") };
@@ -3189,9 +3203,9 @@ fn step_plan(step: &JoinStep, table: &RuleTable) -> PlanRc {
     let e = &table.join[step.eq as usize];
     let mut sub = [None; RULE_VARS];
     assert!(match_pat(&e.from, &x, &mut sub), "a step's law matches where it was found");
-    let law = Plan::law(e.kind, e.lhs, e.rhs, sub[..e.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect());
-    let p = if e.backward { Plan::sym(law) } else { law };
-    up.iter().rev().fold(p, |p, &(o, a, b, right)| if right { Plan::cong(o, Plan::refl(&a), p) } else { Plan::cong(o, p, Plan::refl(&b)) })
+    let law = Plan::law(job, e.kind, e.lhs, e.rhs, sub[..e.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect());
+    let p = if e.backward { Plan::sym(job, law) } else { law };
+    up.iter().rev().fold(p, |p, &(o, a, b, right)| if right { Plan::cong(job, o, Plan::refl(job, &a), p) } else { Plan::cong(job, o, p, Plan::refl(job, &b)) })
 }
 
 /// A term `join_search` reached: a side's own, or the step it was reached by with that step's rewritten subterm, the
@@ -3243,17 +3257,18 @@ fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::H
     let path = |seen: &Seen, mut t: Term, table: &RuleTable| -> PlanRc {
         let mut steps = vec![];
         while let Some(step) = get(seen, t) {
-            steps.push(step_plan(&step, table));
+            steps.push(step_plan(job, &step, table));
             t = step.from;
         }
-        steps.into_iter().rev().reduce(Plan::trans).unwrap_or_else(|| Plan::refl(&t))
+        steps.into_iter().rev().reduce(|a, b| Plan::trans(job, a, b)).unwrap_or_else(|| Plan::refl(job, &t))
     };
     let mut seen: [Seen; 2] = [Seen::new(), Seen::new()];
     for (side, t) in [(0, a), (1, b)] {
         seen[side].insert_unique(t.sh(), (t.sh(), Reached::Side(*t)), |e| e.0);
     }
     let mut front = [vec![Reached::Side(*a)], vec![Reached::Side(*b)]];
-    let found = with_table(job, |table| {
+    let table = &*job.rules().table;
+    let found = (|| {
         let mut up = vec![];
         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
             let s = (front[0].len() > front[1].len()) as usize;
@@ -3318,13 +3333,13 @@ fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::H
                     }
                 }
                 // `this side = u` and `other side = u`
-                let (here, there) = (Plan::trans(path(&seen[s], t, table), step_plan(&step, table)), path(&seen[1 - s], u, table));
+                let (here, there) = (Plan::trans(job, path(&seen[s], t, table), step_plan(job, &step, table)), path(&seen[1 - s], u, table));
                 let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
-                return Some(Plan::trans(pa, Plan::sym(pb)));
+                return Some(Plan::trans(job, pa, Plan::sym(job, pb)));
             }
         }
         None
-    });
+    })();
     let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
     count_join(|c| {
         (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
@@ -3359,7 +3374,7 @@ pub fn shr_mask_eq(job: &Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<
     let (ta, tb) = (Term::op(AND, x, mask), Term::op(AND, y, mask));
     let ((r1, p1), (r2, p2)) = (rewrite(job, &ta, n, k), rewrite(job, &tb, n, k));
     let mid = prove_eq(job, n, k, &r1, &r2)?;
-    let cong = Plan::cong(SHR1, Plan::trans(p1, Plan::trans(mid, Plan::sym(p2))), Plan::refl(&Term::ZERO));
+    let cong = Plan::cong(job, SHR1, Plan::trans(job, p1, Plan::trans(job, mid, Plan::sym(job, p2))), Plan::refl(job, &Term::ZERO));
     // `a = shr1 (A & M)` and `b = shr1 (B & M)`
     let side_proof = |orig: &Term, arg: &Term| -> Option<PlanRc> {
         if matches!(*orig.node(), Node::Zero) {
@@ -3372,13 +3387,13 @@ pub fn shr_mask_eq(job: &Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<
             if target != Term::ZERO {
                 return None;
             }
-            Some(Plan::trans(Plan::sym(step), Plan::cong(SHR1, Plan::sym(pr), Plan::refl(&Term::ZERO))))
+            Some(Plan::trans(job, Plan::sym(job, step), Plan::cong(job, SHR1, Plan::sym(job, pr), Plan::refl(job, &Term::ZERO))))
         } else {
-            Some(Plan::law(LawKind::Rule("shrmask"), shr(&Term::v(0)), shr(&Term::op(AND, Term::v(0), mask)), vec![*arg]))
+            Some(Plan::law(job, LawKind::Rule("shrmask"), shr(&Term::v(0)), shr(&Term::op(AND, Term::v(0), mask)), vec![*arg]))
         }
     };
     let (pa, pb) = (side_proof(a, &x)?, side_proof(b, &y)?);
-    Some(Plan::trans(Plan::trans(pa, cong), Plan::sym(pb)))
+    Some(Plan::trans(job, Plan::trans(job, pa, cong), Plan::sym(job, pb)))
 }
 
 /// The plan of `t1 = t2` over `k` variables: both sides rewritten, then closed with `prove_eq`; `None` when that cannot.
@@ -3396,11 +3411,11 @@ pub fn rewrite_plan(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Opti
         // `rewrite` normalizes the operands and applies the root rules; equal results close by `refl`, `lt` roots with
         // provable operands by congruence, the rest by the `lt` machine proof of the rewritten pair
         let mid = if r1 == r2 {
-            Plan::refl(&r1)
+            Plan::refl(job, &r1)
         } else {
             let by_operands = if let (Node::Op(LT, a2, b2), Node::Op(LT, c2, d2)) = (*r1.node(), *r2.node()) {
                 match (prove_eq(job, n, k, &a2, &c2), prove_eq(job, n, k, &b2, &d2)) {
-                    (Some(pa), Some(pb)) => Some(Plan::cong(LT, pa, pb)),
+                    (Some(pa), Some(pb)) => Some(Plan::cong(job, LT, pa, pb)),
                     _ => None,
                 }
             } else {
@@ -3416,10 +3431,10 @@ pub fn rewrite_plan(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Opti
         match prove_eq(job, n, k, &r1, &r2) {
             Some(mid) => (p1, p2, mid),
             // the rewriter may have pushed the shifts down to atoms; the mask reduction applies to the original sides
-            None => (Plan::refl(t1), Plan::refl(t2), shr_mask_eq(job, n, k, t1, t2)?),
+            None => (Plan::refl(job, t1), Plan::refl(job, t2), shr_mask_eq(job, n, k, t1, t2)?),
         }
     };
-    Some(Plan::trans(Plan::trans(p1, mid), Plan::sym(p2)))
+    Some(Plan::trans(job, Plan::trans(job, p1, mid), Plan::sym(job, p2)))
 }
 
 /// Proof of `t1 = t2` over `k` good vectors: `rewrite_plan`, compiled. `None` when there is no plan.
@@ -3445,11 +3460,11 @@ pub fn law_proof(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term, plan: &Pla
 }
 
 /// One law per kind of step (assoc and comm, a rule, a constant carry, the carry-encoding search, a collapse, an `lt` root, the
-/// bit-0 mask): counting (`SCORE_ONLY`) finds it too without building a plan, and the proving plan's sides are the law's and it
+/// bit-0 mask): counting (`Rules::counting`) finds it too without building a plan, and the proving plan's sides are the law's and it
 /// compiles to a proof the kernel accepts.
 #[test]
 fn plans_compile_to_checked_proofs() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let (v, z, ones) = (Term::v, Term::ZERO, Term::ONES);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
@@ -3466,10 +3481,9 @@ fn plans_compile_to_checked_proofs() {
         for (l, r) in &laws {
             let k = l.max_var().max(r.max_var()) + 1;
             let plans = [false, true].map(|counting| {
-                SCORE_ONLY.with(|s| s.set(counting));
-                rewrite_plan(job, 4, k, l, r).unwrap_or_else(|| panic!("no plan for {} = {} (counting: {counting})", l.show(), r.show()))
+                let rules = job.rules().counting(counting);
+                job.with_rules(rules, |job| rewrite_plan(job, 4, k, l, r)).unwrap_or_else(|| panic!("no plan for {} = {} (counting: {counting})", l.show(), r.show()))
             });
-            SCORE_ONLY.with(|s| s.set(false));
             assert!(matches!(*plans[1], Plan::Counting), "counting built a plan for {} = {}", l.show(), r.show());
             let (a, b, _) = Compiler::new(4, k).proof(job, &plans[0]);
             assert!((a, b) == (*l, *r), "{} = {}", l.show(), r.show());
@@ -3483,21 +3497,21 @@ fn plans_compile_to_checked_proofs() {
 /// the kernel accepts, and which counting finds too), and gives none for a pair that is not equal.
 #[test]
 fn join_eq_closes_an_equal_pair_by_rule_and_comm_steps() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
-        set_extra_rules(job, vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))]);
+        let rules = job.rules().with_mined(job.setup(), vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))]);
+        job.with_rules(rules, |job| {
         let (n, k) = (4, 3);
         let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
-        SCORE_ONLY.with(|s| s.set(true));
-        let counted = join_eq(job, n, k, &a, &b);
-        SCORE_ONLY.with(|s| s.set(false));
+        let counting = job.rules().counting(true);
+        let counted = job.with_rules(counting, |job| join_eq(job, n, k, &a, &b));
         assert!(matches!(counted.as_deref(), Some(Plan::Counting)), "counting found no join");
         let plan = join_eq(job, n, k, &a, &b).expect("a join");
         assert!(Compiler::new(n, k).proof(job, &plan).0 == a && Compiler::new(n, k).proof(job, &plan).1 == b);
         let (p, s) = law_proof(job, n, k, &a, &b, &plan);
         ck("joined", &p, &s);
         assert!(join_eq(job, n, k, &a, &parse_term("add(sub(add(x, y), -1), y)")).is_none());
-        set_extra_rules(job, vec![]);
+        })
     })
 }
 
@@ -3748,16 +3762,14 @@ pub fn carry_chain_builder_finds_the_constant_carry() {
 /// proof checks.
 #[test]
 fn rewrite_cycles_are_cut() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
-        set_extra_rules(job, parse_rules(rules));
         RULE_BUDGET.with(|b| b.set(200));
         let cuts0 = CYCLE_CUTS.with(|c| c.get());
         let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
-        let out = rewrite_law(job, 4, 3, &t1, &t2);
+        let out = job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2));
         let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
-        set_extra_rules(job, vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
         assert!(cuts > 0, "no cycle cut");
@@ -3772,16 +3784,14 @@ fn rewrite_cycles_are_cut() {
 /// the budget (which it runs out with only the repeat cut).
 #[test]
 fn growing_rewrite_chains_are_cut() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
-        set_extra_rules(job, parse_rules(rules));
         RULE_BUDGET.with(|b| b.set(200));
         let cuts0 = CYCLE_CUTS.with(|c| c.get());
         let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
-        let out = rewrite_law(job, 4, 3, &t1, &t2);
+        let out = job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2));
         let (cuts, left) = (CYCLE_CUTS.with(|c| c.get()) - cuts0, RULE_BUDGET.with(|b| b.get()));
-        set_extra_rules(job, vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
         assert!(cuts > 0, "no growth cut");
@@ -3820,47 +3830,45 @@ fn shapes_hold_every_bit_a_matching_pattern_needs() {
 
 #[test]
 fn filtered_memo_entries_hold_under_an_extra_rule() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let (n, kv) = (4, 3);
     let terms: Vec<Term> =
         ["sub(sub(z, x), sub(y, z))", "add(sub(x, y), sub(add(y, z), x))", "sub(add(x, y), sub(z, x))", "or(sub(x, y), and(sub(x, y), z))"].iter().map(|s| parse_term(s)).collect();
     let base = parse_rules("sub(add(x, y), z) -> add(sub(x, z), y)\n");
     // every term rewritten under `rules` with `memo` in force: the normal forms, the steps used, and the memo afterwards
-    let run = |rules: &[(Term, Term)], memo: RewriteMemo| {
-        set_extra_rules(job, rules.to_vec());
+    let run = |job: &mut Job, rules: &[(Term, Term)], memo: RewriteMemo| {
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(memo));
         RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
-        let out: Vec<(String, i64)> = terms
-            .iter()
-            .map(|t| {
-                RULE_BUDGET.with(|b| b.set(200));
-                (rewrite(job, t, n, kv).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
-            })
-            .collect();
+        let out: Vec<(String, i64)> = job.with_mined(rules.to_vec(), |job| {
+            terms
+                .iter()
+                .map(|t| {
+                    RULE_BUDGET.with(|b| b.set(200));
+                    (rewrite(job, t, n, kv).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
+                })
+                .collect()
+        });
         RULE_TRACE.with(|t| *t.borrow_mut() = None);
-        set_extra_rules(job, vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (out, REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap())
     };
-    let (before, memo) = run(&base, RewriteMemo::new(kv));
+    let (before, memo) = run(job, &base, RewriteMemo::new(kv));
     for extra in ["sub(sub(x, y), z) -> sub(x, add(y, z))\n", "or(x, and(x, y)) -> x\n"] {
         let rules: Vec<(Term, Term)> = base.iter().cloned().chain(parse_rules(extra)).collect();
         let l = &rules.last().unwrap().0;
         let seed = memo.filtered(|tr| !tr.touched_by(rules.last().unwrap(), |fired| fired.preempted_by(|f| run_order(l, &rules.last().unwrap().1) < run_order(&f.0, &f.1))));
         assert!(!seed.map.is_empty() && seed.map.len() < memo.map.len(), "{extra}: the filter kept {} of {}", seed.map.len(), memo.map.len());
-        let fresh = run(&rules, RewriteMemo::new(kv)).0;
-        assert_eq!(run(&rules, seed).0, fresh, "{extra}");
+        let fresh = run(job, &rules, RewriteMemo::new(kv)).0;
+        assert_eq!(run(job, &rules, seed).0, fresh, "{extra}");
         // the unfiltered memo would replay `before` (debug builds reject such a replay, `check_replay`)
         assert_ne!(before, fresh, "{extra}: the extra rule changes nothing here");
     }
 }
 
 /// The join's trace under `rules`: the terms `join_eq` recorded (`Fired::Join`) and whether it met.
-fn join_trace(job: &Job, a: &str, b: &str, rules: &str) -> (bool, Trace) {
-    set_extra_rules(job, parse_rules(rules));
+fn join_trace(job: &mut Job, a: &str, b: &str, rules: &str) -> (bool, Trace) {
     RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
-    let met = join_eq(job, 4, 3, &parse_term(a), &parse_term(b)).is_some();
-    set_extra_rules(job, vec![]);
+    let met = job.with_mined(parse_rules(rules), |job| join_eq(job, 4, 3, &parse_term(a), &parse_term(b)).is_some());
     (met, Trace::new(RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap()))
 }
 
@@ -3868,7 +3876,7 @@ fn join_trace(job: &Job, a: &str, b: &str, rules: &str) -> (bool, Trace) {
 /// join a rule acts wherever either usable side matches, here at a term no rewrite of the two sides asks about.
 #[test]
 fn failed_join_traces_every_term_it_examines() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let (a, b) = ("sub(x, y)", "sub(0, sub(y, x))");
     let (met, joined) = join_trace(job, a, b, "");
     assert!(!met);
@@ -3888,7 +3896,7 @@ fn failed_join_traces_every_term_it_examines() {
 /// visit cap, docs/decisions/2026-10-17-monotone-join.md), and a rule it used, removed, touches the trace.
 #[test]
 fn met_join_traces_its_path_only() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let (a, b) = ("add(add(z, y), sub(x, -1))", "add(sub(add(x, y), -1), z)");
     let (met, joined) = join_trace(job, a, b, "");
     assert!(met);
@@ -3907,7 +3915,7 @@ fn met_join_traces_its_path_only() {
 /// for a condition on the fired rule.
 #[test]
 fn trace_index_agrees_with_touched_by() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let (n, kv) = (4, 3);
     let mut traces: Vec<Trace> = [("sub(x, y)", "sub(0, sub(y, x))"), ("add(add(z, y), sub(x, -1))", "add(sub(add(x, y), -1), z)"), ("xor(xor(x, y), z)", "xor(z, xor(y, x))")]
         .iter()
@@ -3946,27 +3954,25 @@ fn trace_index_agrees_with_touched_by() {
 /// the rule touches nowhere, and they give what a fresh search would; a hit gives the stored result.
 #[test]
 fn filtered_join_entries_hold_under_an_extra_rule() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let (n, kv) = (4, 3);
     let pairs: Vec<(Term, Term)> = [("or(x, y)", "add(xor(x, y), and(x, y))"), ("xor(xor(x, y), z)", "xor(z, xor(y, x))")]
         .iter()
         .map(|(a, b)| (parse_term(a), parse_term(b)))
         .collect();
-    let run = |rules: Vec<(Term, Term)>, memo: RewriteMemo| {
-        set_extra_rules(job, rules);
+    let run = |job: &mut Job, rules: Vec<(Term, Term)>, memo: RewriteMemo| {
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(memo));
-        let out: Vec<bool> = pairs.iter().map(|(a, b)| join_eq(job, n, kv, a, b).is_some()).collect();
-        set_extra_rules(job, vec![]);
+        let out: Vec<bool> = job.with_mined(rules, |job| pairs.iter().map(|(a, b)| join_eq(job, n, kv, a, b).is_some()).collect());
         (out, REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap())
     };
-    let (before, memo) = run(vec![], RewriteMemo::new(kv));
+    let (before, memo) = run(job, vec![], RewriteMemo::new(kv));
     assert_eq!(memo.joins.len(), pairs.len());
-    assert_eq!(run(vec![], memo.filtered(|_| true)).0, before, "hits");
+    assert_eq!(run(job, vec![], memo.filtered(|_| true)).0, before, "hits");
     let rule = parse_rules("or(x, y) -> add(xor(x, y), and(x, y))\n")[0];
     let seed = memo.filtered(|tr| !tr.touched_by(&rule, |_| true));
     assert_eq!(seed.joins.len(), 1, "the xor pair's search met no or, nor xor beside and under add");
-    let fresh = run(vec![rule], RewriteMemo::new(kv)).0;
-    assert_eq!(run(vec![rule], seed).0, fresh);
+    let fresh = run(job, vec![rule], RewriteMemo::new(kv)).0;
+    assert_eq!(run(job, vec![rule], seed).0, fresh);
     assert_ne!(before, fresh, "the rule joins the first pair");
 }
 
@@ -3992,16 +3998,16 @@ fn join_cost_counts_searches_but_not_memo_hits() {
     assert!(c2.met == c1.met && c2.failed_nanos > c1.failed_nanos && c2.nanos - c1.nanos == c2.failed_nanos - c1.failed_nanos);
 }
 
-/// The join store serves a pair it holds a path for, with a plan the kernel accepts (and by counting under `SCORE_ONLY`),
+/// The join store serves a pair it holds a path for, with a plan the kernel accepts (and by counting, `Rules::counting`),
 /// without a search; it serves none once a law on the path leaves the table, and no thread without a store is served.
 #[test]
 fn join_store_serves_a_stored_path_under_its_laws_only() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
         let (n, k) = (4, 3);
         let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
-        let join = || {
+        let join = |job: &Job| {
             REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(k)));
             let c0 = JoinCost::now();
             let plan = join_eq(job, n, k, &a, &b);
@@ -4009,22 +4015,21 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
             let c1 = JoinCost::now();
             (plan, c1.searches - c0.searches, c1.stored - c0.stored)
         };
-        set_extra_rules(job, vec![rule]);
-        assert!(matches!(join(), (Some(_), 1, 0)), "no store: searched");
-        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
-        assert!(matches!(join(), (Some(_), 1, 0)), "an empty store: searched, and the path fed");
-        let (plan, searches, stored) = join();
-        assert_eq!((searches, stored), (0, 1), "served from the store");
-        let plan = plan.expect("a stored join");
-        assert!(Compiler::new(n, k).proof(job, &plan).0 == a && Compiler::new(n, k).proof(job, &plan).1 == b);
-        let (p, s) = law_proof(job, n, k, &a, &b, &plan);
-        ck("stored", &p, &s);
-        SCORE_ONLY.with(|s| s.set(true));
-        let (counted, _, stored) = join();
-        SCORE_ONLY.with(|s| s.set(false));
-        assert!(matches!(counted.as_deref(), Some(Plan::Counting)) && stored == 1, "counting is served too");
-        set_extra_rules(job, vec![]);
-        assert_eq!(join().2, 0, "the rule left: no stored path");
+        job.with_mined(vec![rule], |job| {
+            assert!(matches!(join(job), (Some(_), 1, 0)), "no store: searched");
+            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            assert!(matches!(join(job), (Some(_), 1, 0)), "an empty store: searched, and the path fed");
+            let (plan, searches, stored) = join(job);
+            assert_eq!((searches, stored), (0, 1), "served from the store");
+            let plan = plan.expect("a stored join");
+            assert!(Compiler::new(n, k).proof(job, &plan).0 == a && Compiler::new(n, k).proof(job, &plan).1 == b);
+            let (p, s) = law_proof(job, n, k, &a, &b, &plan);
+            ck("stored", &p, &s);
+            let counting = job.rules().counting(true);
+            let (counted, _, stored) = job.with_rules(counting, |job| join(job));
+            assert!(matches!(counted.as_deref(), Some(Plan::Counting)) && stored == 1, "counting is served too");
+        });
+        assert_eq!(join(job).2, 0, "the rule left: no stored path");
         set_join_store(None);
     })
 }
@@ -4032,37 +4037,38 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
 /// A worker reads the store as it was frozen: what the feeding thread adds later is not in its copy.
 #[test]
 fn join_store_workers_read_the_frozen_copy() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let k = 3;
-        set_extra_rules(job, vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))]);
-        let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
-        let (c, d) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
-        let join = move |job: &Job, x: &Term, y: &Term| {
-            REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(k)));
-            let c0 = JoinCost::now();
-            assert!(join_eq(job, 4, k, x, y).is_some());
-            REWRITE_MEMO.with(|m| m.borrow_mut().take());
-            JoinCost::now().stored - c0.stored
-        };
-        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
-        join(job, &a, &b);
-        let frozen = frozen_join_store().expect("this thread feeds a store");
-        join(job, &c, &d);
-        let rules = with_table(job, |t| t.mined.clone());
-        let setup = job.setup().clone();
-        let worker = std::thread::spawn(move || {
-            let job = &Job::new(setup);
-            tatic::kernel::scoped(|| {
-                set_extra_rules(job, rules);
-                set_join_store(Some(JoinStoreUse::Read(frozen)));
-                (join(job, &a, &b), join(job, &c, &d))
-            })
-        });
-        assert_eq!(worker.join().unwrap(), (1, 0), "the pair joined before the freeze is served, the one after is not");
-        assert_eq!(join(job, &c, &d), 1, "the feeding thread reads its own store");
-        set_join_store(None);
-        set_extra_rules(job, vec![]);
+        job.with_mined(vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))], |job| {
+            let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
+            let (c, d) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
+            let join = move |job: &Job, x: &Term, y: &Term| {
+                REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(k)));
+                let c0 = JoinCost::now();
+                assert!(join_eq(job, 4, k, x, y).is_some());
+                REWRITE_MEMO.with(|m| m.borrow_mut().take());
+                JoinCost::now().stored - c0.stored
+            };
+            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            join(job, &a, &b);
+            let frozen = frozen_join_store().expect("this thread feeds a store");
+            join(job, &c, &d);
+            let rules = job.rules().mined().to_vec();
+            let setup = job.setup().clone();
+            let worker = std::thread::spawn(move || {
+                let job = &mut Job::new(setup);
+                tatic::kernel::scoped(|| {
+                    job.with_mined(rules, |job| {
+                        set_join_store(Some(JoinStoreUse::Read(frozen)));
+                        (join(job, &a, &b), join(job, &c, &d))
+                    })
+                })
+            });
+            assert_eq!(worker.join().unwrap(), (1, 0), "the pair joined before the freeze is served, the one after is not");
+            assert_eq!(join(job, &c, &d), 1, "the feeding thread reads its own store");
+            set_join_store(None);
+        })
     })
 }
 
@@ -4070,7 +4076,7 @@ fn join_store_workers_read_the_frozen_copy() {
 /// the kernel accepts each plan.
 #[test]
 fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let (n, k) = (4, 3);
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
@@ -4079,7 +4085,7 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
             (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)")),
             (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))")),
         ];
-        let served = |a: &Term, b: &Term| {
+        let served = |job: &Job, a: &Term, b: &Term| {
             REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(k)));
             let c0 = JoinCost::now();
             let plan = join_eq(job, n, k, a, b).expect("joined");
@@ -4088,23 +4094,23 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
             ck("stored", &p, &s);
             JoinCost::now().stored - c0.stored
         };
-        set_extra_rules(job, vec![rule.clone()]);
-        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
-        for (a, b) in &pairs {
-            served(a, b);
-        }
-        let (c, d) = &pairs[1];
-        assert!(stored_join(job, *d, *c).expect("stored").1.len() > 2, "the xor pair's path has several steps");
-        let keys = || with_table(job, |t| t.join_key.clone());
-        let before = keys();
-        set_extra_rules(job, vec![other, rule]);
-        let after = keys();
-        assert!(before.iter().any(|(law, i)| after.get(law).is_some_and(|j| j != i)), "a law moved");
-        for (a, b) in &pairs {
-            assert_eq!((served(b, a), served(a, b)), (1, 1), "served backwards and forwards, the rule moved");
-        }
+        let before = job.with_mined(vec![rule], |job| {
+            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            for (a, b) in &pairs {
+                served(job, a, b);
+            }
+            let (c, d) = &pairs[1];
+            assert!(stored_join(job, *d, *c).expect("stored").1.len() > 2, "the xor pair's path has several steps");
+            job.rules().table.join_key.clone()
+        });
+        job.with_mined(vec![other, rule], |job| {
+            let after = &job.rules().table.join_key;
+            assert!(before.iter().any(|(law, i)| after.get(law).is_some_and(|j| j != i)), "a law moved");
+            for (a, b) in &pairs {
+                assert_eq!((served(job, b, a), served(job, a, b)), (1, 1), "served backwards and forwards, the rule moved");
+            }
+        });
         set_join_store(None);
-        set_extra_rules(job, vec![]);
     })
 }
 
@@ -4112,28 +4118,28 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
 /// thread at 1 thread and on others otherwise, so a store they fed would depend on the thread count.
 #[test]
 fn join_store_is_fed_only_where_it_is_read() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let k = 3;
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
-        set_extra_rules(job, vec![rule]);
-        let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
-        let join = |memo: bool| {
-            REWRITE_MEMO.with(|m| *m.borrow_mut() = memo.then(|| RewriteMemo::new(k)));
-            let c0 = JoinCost::now();
-            assert!(join_eq(job, 4, k, &a, &b).is_some());
-            REWRITE_MEMO.with(|m| m.borrow_mut().take());
-            JoinCost::now().stored - c0.stored
-        };
-        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
-        join(false);
-        PROVING.with(|p| p.borrow_mut().push(rule));
-        join(true);
-        PROVING.with(|p| p.borrow_mut().clear());
-        assert_eq!(join(true), 0, "searched without the memo and while proving: neither fed the store");
-        assert_eq!(join(true), 1, "searched with the memo: fed");
-        set_join_store(None);
-        set_extra_rules(job, vec![]);
+        job.with_mined(vec![rule], |job| {
+            let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
+            let join = |memo: bool| {
+                REWRITE_MEMO.with(|m| *m.borrow_mut() = memo.then(|| RewriteMemo::new(k)));
+                let c0 = JoinCost::now();
+                assert!(join_eq(job, 4, k, &a, &b).is_some());
+                REWRITE_MEMO.with(|m| m.borrow_mut().take());
+                JoinCost::now().stored - c0.stored
+            };
+            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            join(false);
+            PROVING.with(|p| p.borrow_mut().push(rule));
+            join(true);
+            PROVING.with(|p| p.borrow_mut().clear());
+            assert_eq!(join(true), 0, "searched without the memo and while proving: neither fed the store");
+            assert_eq!(join(true), 1, "searched with the memo: fed");
+            set_join_store(None);
+        })
     })
 }
 
@@ -4141,28 +4147,28 @@ fn join_store_is_fed_only_where_it_is_read() {
 /// inside a call that a fresh rewrite would cut (docs/tier-cycle.md, the law 168 entry under Open).
 #[test]
 fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let (n, kv) = (4, 3);
     // t = lt(x, sub(y, z)) -> u = lt(x, add(y, z)) -> v = lt(x, or(sub(y, z), y)) -> lt(x, and(..)): t embeds in v, so rewriting t
     // cuts at v, while u on its own (rewritten first, into the memo) does not
     // and t again, replayed from its own entry (its cut was against itself), then u, whose entry made inside t's call is not kept
     let terms: Vec<Term> = ["lt(x, add(y, z))", "lt(x, sub(y, z))", "lt(x, sub(y, z))", "lt(x, add(y, z))"].iter().map(|s| parse_term(s)).collect();
     let rules = "lt(x, sub(y, z)) -> lt(x, add(y, z))\nlt(x, add(y, z)) -> lt(x, or(sub(y, z), y))\nlt(x, or(y, z)) -> lt(x, and(y, z))\n";
-    set_extra_rules(job, parse_rules(rules));
-    let run = |memo: Option<RewriteMemo>| {
-        REWRITE_MEMO.with(|m| *m.borrow_mut() = memo);
-        let out: Vec<(String, i64)> = terms
-            .iter()
-            .map(|t| {
-                RULE_BUDGET.with(|b| b.set(200));
-                (rewrite(job, t, n, kv).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
-            })
-            .collect();
-        REWRITE_MEMO.with(|m| m.borrow_mut().take());
-        out
-    };
-    let (fresh, memo) = (run(None), run(Some(RewriteMemo::new(kv))));
-    set_extra_rules(job, vec![]);
+    let (fresh, memo) = job.with_mined(parse_rules(rules), |job| {
+        let run = |memo: Option<RewriteMemo>| {
+            REWRITE_MEMO.with(|m| *m.borrow_mut() = memo);
+            let out: Vec<(String, i64)> = terms
+                .iter()
+                .map(|t| {
+                    RULE_BUDGET.with(|b| b.set(200));
+                    (rewrite(job, t, n, kv).0.show(), 200 - RULE_BUDGET.with(|b| b.get()))
+                })
+                .collect();
+            REWRITE_MEMO.with(|m| m.borrow_mut().take());
+            out
+        };
+        (run(None), run(Some(RewriteMemo::new(kv))))
+    });
     RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
     let differ: Vec<_> = terms.iter().zip(fresh.iter().zip(&memo)).filter(|(_, (f, m))| f != m).map(|(t, (f, m))| format!("{}: fresh {f:?} memo {m:?}", t.show())).collect();
     assert!(differ.is_empty(), "{} of {} differ:\n{}", differ.len(), terms.len(), differ.join("\n"));
@@ -4172,18 +4178,17 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
 /// term further out is not (docs/tier-cycle.md, "Survey: `rewrite_memo`'s 17.4% of CPU").
 #[test]
 fn memo_keeps_rewrites_cut_inside_their_own_call() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let (n, kv) = (4, 3);
     // rewriting t goes t -> u -> v, where t embeds in v: the cut is against t itself; u's own call, inside t's, is cut by t
     let (t, u) = (parse_term("lt(x, sub(y, z))"), parse_term("lt(x, add(y, z))"));
-    set_extra_rules(job, parse_rules("lt(x, sub(y, z)) -> lt(x, add(y, z))\nlt(x, add(y, z)) -> lt(x, or(sub(y, z), y))\nlt(x, or(y, z)) -> lt(x, and(y, z))\n"));
+    let rules = parse_rules("lt(x, sub(y, z)) -> lt(x, add(y, z))\nlt(x, add(y, z)) -> lt(x, or(sub(y, z), y))\nlt(x, or(y, z)) -> lt(x, and(y, z))\n");
     REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(RewriteMemo::new(kv)));
     RULE_BUDGET.with(|b| b.set(200));
     let cuts0 = CYCLE_CUTS.with(|c| c.get());
-    rewrite(job, &t, n, kv);
+    job.with_mined(rules, |job| rewrite(job, &t, n, kv));
     let cut = CYCLE_CUTS.with(|c| c.get()) > cuts0;
     let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
-    set_extra_rules(job, vec![]);
     RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
     assert!(cut, "rewriting t cuts");
     assert!(memo.map.contains_key(&(n, t)), "t's rewrite, cut only against itself, is kept");
