@@ -675,12 +675,22 @@ For each of Q1–Q5:
 4. If mined rules change, write the difference (which loops, M before and after) into `docs/tier-cycle.md` and stop
    for a ruling before committing.
 
-- [ ] **Q1:** the provable filter's `Prover` gets `prefs: Some(base_prefs)`, so every thread proves under the base
+- [x] **Q1:** the provable filter's `Prover` gets `prefs: Some(base_prefs)`, so every thread proves under the base
   preferences. Expected: `nonfast1`, `nonfast4` (empty base, no preferences) and `pbase1` unchanged; `pbase4` changes
   only if the preferences matter to proofs, and then towards `pbase1` (Task 0's A/A difference).
-- [ ] **Q2:** `family_laws`'s closure returns `usize` and cannot carry a salt string. It becomes
+  Done 2026-10-22 (f6f416b): gate equal, `pbase4` included (`2026-10-22-t9-q1-gate`), so the base preference never
+  decided a proof here; suite 524. Ruling: with both provers installing the base preferences, `Prover::prefs` is a
+  plain `Vec<Pref>` and one `Prover` serves the filter and the rounds (the `None` branch and the second construction
+  are deleted). No unit test: the gate's `pbase1`/`pbase4` pair is the check.
+- [x] **Q2:** `family_laws`'s closure returns `usize` and cannot carry a salt string. It becomes
   `env: &dyn Fn(&str) -> Option<String>`, with the numeric reads parsed at the call, and `shape_part` takes the salt
   from it. Expected: no change, since no stage sets `RULEMINER_SHAPE_SALT` today (grep `driver.rs` to confirm).
+  Done 2026-10-22: confirmed no stage sets it; gate equal (`2026-10-22-t9-q2-gate`); test
+  `family_laws_takes_the_shape_salt_from_its_env` (RED: the old closure type did not compile). Rulings:
+  `search::num(v: Option<String>, d)` parses at the call and falls back to `d` on an unparsable value, as `Setup::or`
+  does (the driver's `cfg_var` and `write_laws` used to panic on one; their values are the driver's own numbers);
+  `shape_part(a, b, salt)` replaces `shape_part`/`shape_part_salted`; the ~20 closures were rewritten by script, a
+  fallback arm becoming `None` or the setup's `var`.
 - [ ] **Q3:** `Lemmas::tree_laws`' key gains `carry_cap`. Within one process the cap is fixed per task, so expected: no
   change.
 - [ ] **Q4:** `proving` gives the proof a fresh `rewrote` and leaves the caller's alone. First add a

@@ -561,27 +561,27 @@ fn worker_never_leaves_a_stale_log() {
 /// family's law pool once (`family_laws` keeps it) where every child used to rebuild it: 35% of a sweep's loops
 /// (docs/tier-cycle.md).
 fn write_laws(setup: &Setup, family: &str, env: &[(String, String)], path: &Path, var: &str) -> (String, String) {
-    let get = |k: &str, d: usize| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| setup.or(k, d), |(_, v)| v.parse().unwrap());
+    let get = |k: &str| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| setup.var(k).map(str::to_owned), |(_, v)| Some(v.clone()));
     std::fs::write(path, laws_text(&family_laws(setup, family, &get, 4, family_vars(family), 7))).unwrap();
     (var.to_string(), path.display().to_string())
 }
 
 /// `cfg`'s value of the child variable `k`: its `env`, then this process's, as `run_loop`'s children read it.
-fn cfg_var(cfg: &LoopCfg, k: &str, d: usize) -> usize {
-    cfg.env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| Setup::process().or(k, d), |(_, v)| v.parse().unwrap())
+fn cfg_var(cfg: &LoopCfg, k: &str) -> Option<String> {
+    cfg.env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| Setup::process().var(k).map(str::to_owned), |(_, v)| Some(v.clone()))
 }
 
 /// The laws a child of `cfg` takes at stride phase `phase`: `laws` of them from `skip`, through the variables `run_loop` gives
 /// its children.
 fn stream_laws(setup: &Setup, cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
-    let env = |k: &str, d: usize| match k {
-        "RULEMINER_DEEP3" => cfg.deep3,
-        "RULEMINER_STRIDE" => cfg.stride,
-        "RULEMINER_PHASE" => phase,
-        "RULEMINER_SHAPE" => cfg.split,
-        "RULEMINER_SKIP" => skip,
-        "RULEMINER_LAWS" => laws,
-        _ => cfg_var(cfg, k, d),
+    let env = |k: &str| match k {
+        "RULEMINER_DEEP3" => Some(cfg.deep3.to_string()),
+        "RULEMINER_STRIDE" => Some(cfg.stride.to_string()),
+        "RULEMINER_PHASE" => Some(phase.to_string()),
+        "RULEMINER_SHAPE" => Some(cfg.split.to_string()),
+        "RULEMINER_SKIP" => Some(skip.to_string()),
+        "RULEMINER_LAWS" => Some(laws.to_string()),
+        _ => cfg_var(cfg, k),
     };
     family_laws(setup, &cfg.family, &env, 4, family_vars(&cfg.family), 7).into_iter().map(|(_, a, b)| (a, b)).collect()
 }
@@ -621,7 +621,7 @@ impl Draw {
 
     /// `grammar_laws` for `cfg`'s family, `deep3` and salt, generated once per sweep.
     fn grammar(&mut self, cfg: &LoopCfg) -> std::sync::Arc<Vec<(Term, Term)>> {
-        let k = (cfg.family.clone(), cfg.deep3, cfg_var(cfg, "RULEMINER_SHUFFLE", 0));
+        let k = (cfg.family.clone(), cfg.deep3, num(cfg_var(cfg, "RULEMINER_SHUFFLE"), 0));
         self.laws
             .entry(k)
             .or_insert_with_key(|k| {

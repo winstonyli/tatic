@@ -159,7 +159,7 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
     // a lawfile is a proposer's band (docs/tier-cycle.md)
     let laws = match &cfg.lawfile {
         Some(f) => read_named_laws(f),
-        None => family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), n, nv, max),
+        None => family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), n, nv, max),
     };
     clock.phase("law building");
     let mut unproved = 0usize;

@@ -129,12 +129,12 @@ pub fn shuffled(mut laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
 pub fn shuffle_is_a_fixed_permutation() {
     let job = &Job::new(Setup::process());
     let laws = |salt: usize, take: usize| {
-        let env = move |k: &str, d: usize| match k {
-            "RULEMINER_SHUFFLE" => salt,
-            "RULEMINER_LAWS" => take,
-            "RULEMINER_STRIDE" => 1,
-            "RULEMINER_DEEP3" => 1,
-            _ => d,
+        let env = move |k: &str| match k {
+            "RULEMINER_SHUFFLE" => Some(salt.to_string()),
+            "RULEMINER_LAWS" => Some(take.to_string()),
+            "RULEMINER_STRIDE" => Some(1.to_string()),
+            "RULEMINER_DEEP3" => Some(1.to_string()),
+            _ => None,
         };
         family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
     };
@@ -154,11 +154,11 @@ pub fn shuffle_is_a_fixed_permutation() {
 pub fn u3w_window_is_an_equal_mix() {
     let job = &Job::new(Setup::process());
     let laws = |stride: usize, phase: usize| {
-        let env = move |k: &str, d: usize| match k {
-            "RULEMINER_LAWS" => 30,
-            "RULEMINER_STRIDE" => stride,
-            "RULEMINER_PHASE" => phase,
-            _ => d,
+        let env = move |k: &str| match k {
+            "RULEMINER_LAWS" => Some(30.to_string()),
+            "RULEMINER_STRIDE" => Some(stride.to_string()),
+            "RULEMINER_PHASE" => Some(phase.to_string()),
+            _ => None,
         };
         family_laws(job.setup(), "u3w", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
     };
@@ -168,16 +168,22 @@ pub fn u3w_window_is_an_equal_mix() {
     assert_eq!(laws(3, 1)[..5], w[1..].iter().step_by(3).take(5).cloned().collect::<Vec<_>>()[..]);
 }
 
-pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
+/// A law-sequence variable from `env`, parsed as a number, or `d` when unset or unparsable (as `Setup::or` reads one).
+pub fn num(v: Option<String>, d: usize) -> usize {
+    v.and_then(|v| v.parse().ok()).unwrap_or(d)
+}
+
+/// `family`'s laws, through the law-sequence variables (`RULEMINER_*`) that `env` gives, `None` for unset.
+pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str) -> Option<String>, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
     if family == "u3w" {
         // u3 with equal shares: the add3, sbo3 and cmp3d sequences (each shuffled as `RULEMINER_SHUFFLE` says) interleaved round-robin,
         // so a window holds the three families in equal parts instead of in proportion to their sizes (cmp3d has 4x add3's laws)
         let whole = |f: &str| {
-            let e = |k: &str, d: usize| match k {
-                "RULEMINER_STRIDE" => 1,
-                "RULEMINER_PHASE" | "RULEMINER_SKIP" => 0,
-                "RULEMINER_LAWS" => usize::MAX,
-                _ => env(k, d),
+            let e = |k: &str| match k {
+                "RULEMINER_STRIDE" => Some(1.to_string()),
+                "RULEMINER_PHASE" | "RULEMINER_SKIP" => Some(0.to_string()),
+                "RULEMINER_LAWS" => Some(usize::MAX.to_string()),
+                _ => env(k),
             };
             family_laws(setup, f, &e, n, nv, max).into_iter()
         };
@@ -190,37 +196,38 @@ pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str, usize) -> usi
                 break;
             }
         }
-        mixed.into_iter().skip(env("RULEMINER_PHASE", 0)).step_by(env("RULEMINER_STRIDE", 1)).skip(env("RULEMINER_SKIP", 0)).take(env("RULEMINER_LAWS", 250)).collect()
+        mixed.into_iter().skip(num(env("RULEMINER_PHASE"), 0)).step_by(num(env("RULEMINER_STRIDE"), 1)).skip(num(env("RULEMINER_SKIP"), 0)).take(num(env("RULEMINER_LAWS"), 250)).collect()
     } else if family == "shl" {
         let conj = shl_conjectures(2);
-        let stride = (conj.len() / env("RULEMINER_LAWS", 250)).max(1);
+        let stride = (conj.len() / num(env("RULEMINER_LAWS"), 250)).max(1);
         conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
     } else if family == "shr" {
         // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
         // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
-        let pool = if env("RULEMINER_DEEP", 0) == 1 { terms(setup, 2, true).to_vec() } else { lt_pool(2) };
+        let pool = if num(env("RULEMINER_DEEP"), 0) == 1 { terms(setup, 2, true).to_vec() } else { lt_pool(2) };
         let shr = |a: &Term| Term::op(SHR1, *a, Term::ZERO);
         let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
         pool_conjectures(all, n, nv, 0)
             .into_iter()
             .filter(|(a, b)| a.has_shift() || b.has_shift())
-            .step_by(env("RULEMINER_STRIDE", 1))
-            .take(env("RULEMINER_LAWS", 250))
+            .step_by(num(env("RULEMINER_STRIDE"), 1))
+            .take(num(env("RULEMINER_LAWS"), 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
     } else if let Some(seq) = pool3_sequence(family, env, n) {
+        let salt = env("RULEMINER_SHAPE_SALT").unwrap_or_default(); // a different salt gives a different split; unset keeps the original halves
         seq.iter()
-            .filter(|(a, b)| env("RULEMINER_SHAPE", 2) == 2 || shape_part(setup, a, b) == env("RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
-            .skip(env("RULEMINER_PHASE", 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
-            .step_by(env("RULEMINER_STRIDE", 1))
-            .skip(env("RULEMINER_SKIP", 0))
-            .take(env("RULEMINER_LAWS", 250))
+            .filter(|(a, b)| num(env("RULEMINER_SHAPE"), 2) == 2 || shape_part(a, b, &salt) == num(env("RULEMINER_SHAPE"), 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
+            .skip(num(env("RULEMINER_PHASE"), 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
+            .step_by(num(env("RULEMINER_STRIDE"), 1))
+            .skip(num(env("RULEMINER_SKIP"), 0))
+            .take(num(env("RULEMINER_LAWS"), 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), *a, *b))
             .collect()
     } else if family == "lt" {
         let pool = lt_pool(2);
         let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::op(LT, *a, *b)));
-        pool_conjectures(all, n, nv, env("RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+        pool_conjectures(all, n, nv, num(env("RULEMINER_LAWS"), 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
     } else {
         mul_laws(max)
     }
@@ -231,28 +238,28 @@ pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str, usize) -> usi
 /// instead of one lexicographic range). Built once per process for each family, `RULEMINER_DEEP3`, width and salt: the driver
 /// takes every child's law window from it (`driver::write_laws`), where each child used to rebuild the pool (35% of a sweep's
 /// loops) and the driver to clone and reshuffle it per child (6% of a sweep, docs/tier-cycle.md).
-fn pool3_sequence(family: &str, env: &dyn Fn(&str, usize) -> usize, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
+fn pool3_sequence(family: &str, env: &dyn Fn(&str) -> Option<String>, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
     // keyed by every variable it reads; `None` (not a pool3 family) is kept too
     static MEMO: crate::task::SharedMemo<(String, usize, usize, usize), Option<std::sync::Arc<Vec<(Term, Term)>>>> = crate::task::SharedMemo::new();
-    let salt = env("RULEMINER_SHUFFLE", 0);
+    let salt = num(env("RULEMINER_SHUFFLE"), 0);
     let build = || {
         let mut seq = shuffled(pool_conjectures(pool3(family, env)?, n, 3, 0), salt);
         seq.retain(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)));
         Some(std::sync::Arc::new(seq))
     };
-    MEMO.with((family.to_string(), env("RULEMINER_DEEP3", 0), n, salt), build, |c| c.clone())
+    MEMO.with((family.to_string(), num(env("RULEMINER_DEEP3"), 0), n, salt), build, |c| c.clone())
 }
 
 /// A law window written as a law file (`driver::write_laws`) and read back (`read_laws`) gives the same laws, names included.
 #[test]
 pub fn law_windows_survive_a_law_file() {
     let job = &Job::new(Setup::process());
-    let env = |k: &str, d: usize| match k {
-        "RULEMINER_SKIP" => 40,
-        "RULEMINER_LAWS" => 60,
-        "RULEMINER_SHUFFLE" => 1,
-        "RULEMINER_DEEP3" => 1,
-        _ => d,
+    let env = |k: &str| match k {
+        "RULEMINER_SKIP" => Some(40.to_string()),
+        "RULEMINER_LAWS" => Some(60.to_string()),
+        "RULEMINER_SHUFFLE" => Some(1.to_string()),
+        "RULEMINER_DEEP3" => Some(1.to_string()),
+        _ => None,
     };
     for family in ["add3", "cmp3d"] {
         let laws = family_laws(job.setup(), family, &env, 4, 3, 7);
@@ -275,11 +282,11 @@ pub fn laws_text(laws: &[(String, Term, Term)]) -> String {
 pub fn family_law_windows_tile_the_sequence() {
     let job = &Job::new(Setup::process());
     let laws = |skip: usize, take: usize| {
-        let env = move |k: &str, d: usize| match k {
-            "RULEMINER_SKIP" => skip,
-            "RULEMINER_LAWS" => take,
-            "RULEMINER_STRIDE" => 1,
-            _ => d,
+        let env = move |k: &str| match k {
+            "RULEMINER_SKIP" => Some(skip.to_string()),
+            "RULEMINER_LAWS" => Some(take.to_string()),
+            "RULEMINER_STRIDE" => Some(1.to_string()),
+            _ => None,
         };
         family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
     };
@@ -310,11 +317,7 @@ pub fn guard_plan_samples_and_weights() {
     assert_eq!(guard_plan(0, 5).0, 1); // no clean laws: nothing to sample (the caller skips the guard)
 }
 
-pub fn shape_part(setup: &Setup, a: &Term, b: &Term) -> usize {
-    shape_part_salted(a, b, &setup.var("RULEMINER_SHAPE_SALT").unwrap_or_default()) // a different salt gives a different split; unset keeps the original halves
-}
-
-fn shape_part_salted(a: &Term, b: &Term, salt: &str) -> usize {
+pub fn shape_part(a: &Term, b: &Term, salt: &str) -> usize {
     fn skeleton(t: &Term, out: &mut String) {
         match *t.node() {
             Node::V(_) => out.push('v'),
@@ -349,12 +352,12 @@ pub fn family_law_shape_halves_partition() {
 
 fn shape_halves_partition(job: &Job, family: &str) {
     let laws = |shape: usize| {
-        let env = move |k: &str, d: usize| match k {
-            "RULEMINER_SHAPE" => shape,
-            "RULEMINER_LAWS" => 100000,
-            "RULEMINER_STRIDE" => 1,
-            "RULEMINER_DEEP3" => 1,
-            _ => d,
+        let env = move |k: &str| match k {
+            "RULEMINER_SHAPE" => Some(shape.to_string()),
+            "RULEMINER_LAWS" => Some(100000.to_string()),
+            "RULEMINER_STRIDE" => Some(1.to_string()),
+            "RULEMINER_DEEP3" => Some(1.to_string()),
+            _ => None,
         };
         family_laws(job.setup(), family, &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<std::collections::BTreeSet<_>>()
     };
@@ -363,7 +366,26 @@ fn shape_halves_partition(job: &Job, family: &str) {
     assert!(h0.is_disjoint(&h1) && h0.len() + h1.len() == whole.len(), "{} {} {}", h0.len(), h1.len(), whole.len());
     assert!(!h0.is_empty() && !h1.is_empty());
     let (x, y, z) = (parse_term("add(x, y)"), parse_term("add(y, z)"), parse_term("sub(x, z)"));
-    assert_eq!(shape_part(job.setup(), &x, &z), shape_part(job.setup(), &y, &z));
+    assert_eq!(shape_part(&x, &z, ""), shape_part(&y, &z, ""));
+}
+
+/// `family_laws` takes `RULEMINER_SHAPE_SALT` from the `env` it is given, as it does `RULEMINER_SHAPE` (Q2): before, it read
+/// the salt from the task's environment, so a driver child's salt was never seen.
+#[test]
+pub fn family_laws_takes_the_shape_salt_from_its_env() {
+    let job = &Job::new(Setup::process());
+    assert!(job.setup().var("RULEMINER_SHAPE_SALT").is_none(), "run without RULEMINER_SHAPE_SALT");
+    let half = |salt: Option<&str>| {
+        let env = move |k: &str| match k {
+            "RULEMINER_SHAPE" => Some("0".to_string()),
+            "RULEMINER_LAWS" => Some("100000".to_string()),
+            "RULEMINER_DEEP3" => Some("1".to_string()),
+            "RULEMINER_SHAPE_SALT" => salt.map(str::to_owned),
+            _ => None,
+        };
+        family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
+    };
+    assert_ne!(half(None), half(Some("7")));
 }
 
 /// A different salt re-splits the laws (so the split is not one fixed key), and each salt still keeps variable renamings together.
@@ -371,10 +393,10 @@ fn shape_halves_partition(job: &Job, family: &str) {
 pub fn shape_salt_changes_the_split() {
     let laws = ["add(x, y)", "sub(add(x, y), z)", "add(sub(x, y), z)", "sub(x, sub(y, z))", "add(x, sub(y, z))", "sub(xor(x, -1), y)", "add(shl1(x, 0), y)", "sub(add(x, y), xor(z, -1))"];
     let rhs = parse_term("sub(x, y)");
-    let half = |salt: &str| laws.iter().map(|l| shape_part_salted(&parse_term(l), &rhs, salt)).collect::<Vec<_>>();
+    let half = |salt: &str| laws.iter().map(|l| shape_part(&parse_term(l), &rhs, salt)).collect::<Vec<_>>();
     assert_ne!(half(""), half("a"));
     for salt in ["", "a"] {
-        assert_eq!(shape_part_salted(&parse_term("add(x, y)"), &rhs, salt), shape_part_salted(&parse_term("add(y, z)"), &rhs, salt));
+        assert_eq!(shape_part(&parse_term("add(x, y)"), &rhs, salt), shape_part(&parse_term("add(y, z)"), &rhs, salt));
     }
 }
 
@@ -383,11 +405,11 @@ pub fn shape_salt_changes_the_split() {
 pub fn family_law_phases_are_disjoint() {
     let job = &Job::new(Setup::process());
     let laws = |stride: usize, phase: usize, take: usize| {
-        let env = move |k: &str, d: usize| match k {
-            "RULEMINER_STRIDE" => stride,
-            "RULEMINER_PHASE" => phase,
-            "RULEMINER_LAWS" => take,
-            _ => d,
+        let env = move |k: &str| match k {
+            "RULEMINER_STRIDE" => Some(stride.to_string()),
+            "RULEMINER_PHASE" => Some(phase.to_string()),
+            "RULEMINER_LAWS" => Some(take.to_string()),
+            _ => None,
         };
         family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
     };
@@ -794,7 +816,7 @@ pub fn soundness_sweep() {
         let family = job.setup().var("SWEEP_FAMILY").unwrap_or("mul").to_string();
         let widths: Vec<usize> = job.setup().var("SWEEP_WIDTHS").unwrap_or("3,4").split(',').map(|w| w.parse().unwrap()).collect();
         let kv = family_vars(&family);
-        let laws = family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
+        let laws = family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
         let cap = carry_cap(job);
         let capped = |t: &Term, w: usize| Machine::parse(t).is_some_and(|m| m.carries() > cap) && w > 0;
         let (mut checked, mut unproved, mut refused, mut false_laws) = (0usize, 0usize, 0usize, 0usize);
@@ -844,7 +866,7 @@ pub fn scaling_sweep() {
         let family = job.setup().var("SWEEP_FAMILY").unwrap_or("mul").to_string();
         let widths: Vec<usize> = job.setup().var("SWEEP_WIDTHS").unwrap_or("4,8,16,32").split(',').map(|w| w.parse().unwrap()).collect();
         let kv = family_vars(&family);
-        let all = family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
+        let all = family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
         let ok: Vec<&(String, Term, Term)> = all
             .iter()
             .filter(|(_, a, b)| a.is_law(b, kv) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))))
@@ -941,9 +963,9 @@ pub const THREE_VAR_FAMILIES: [&str; 7] = ["add3", "mix3", "sbo3", "cmp3", "cmp3
 /// for the deeper pool); mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed (section 73); sbo3: add, sub, and, or only,
 /// a leaf on either side at every level; cmp3: `lt` of two small add/sub/shl1 terms (laws about comparisons); cmp3d: cmp3 with
 /// reassociation redexes inside the comparison.
-pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Term>> {
+pub fn pool3(family: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<Vec<Term>> {
     let pool: Vec<Term> = match family {
-        "add3" => add3_pool(env("RULEMINER_DEEP3", 0) == 1),
+        "add3" => add3_pool(num(env("RULEMINER_DEEP3"), 0) == 1),
         "mix3" => depth2_pool(&[ADD, AND, OR, XOR, SUB], true, &[ADD]),
         "sbo3" => depth2_pool(&[ADD, SUB, AND, OR], false, &[ADD, SUB]),
         "cmp3" => cmp3_pool(false),
@@ -961,7 +983,7 @@ pub fn pool3(family: &str, env: &dyn Fn(&str, usize) -> usize) -> Option<Vec<Ter
 /// `show_cmp` is the order of the `show()` text, on every pair of a pool's first 300 terms (which include constants and variables).
 #[test]
 pub fn show_cmp_is_the_text_order() {
-    let pool = pool3("cmp3d", &|k, d| if k == "RULEMINER_DEEP3" { 1 } else { d }).unwrap();
+    let pool = pool3("cmp3d", &|k: &str| (k == "RULEMINER_DEEP3").then(|| 1.to_string())).unwrap();
     let ts: Vec<&Term> = pool.iter().take(300).chain([&Term::ZERO, &Term::ONES]).collect();
     for a in &ts {
         for b in &ts {
@@ -974,7 +996,7 @@ pub fn show_cmp_is_the_text_order() {
 #[test]
 pub fn pools_have_no_repeated_terms() {
     for f in ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3"] {
-        let pool = pool3(f, &|k, d| if k == "RULEMINER_DEEP3" { 1 } else { d }).unwrap();
+        let pool = pool3(f, &|k: &str| (k == "RULEMINER_DEEP3").then(|| 1.to_string())).unwrap();
         let distinct: HashSet<&Term> = pool.iter().collect();
         assert_eq!(distinct.len(), pool.len(), "{f}");
     }
@@ -1006,7 +1028,7 @@ pub const GEN_TERMS: usize = 20000;
 /// with whether its grown leaf was padding (grew into a term equal to a leaf, such as `sub(y, y)`; the first way it was
 /// grown). `None` for a family with no pool.
 pub fn grammar_sample(family: &str, deep3: usize, salt: usize) -> Option<(Vec<Term>, Vec<(Term, bool)>)> {
-    let env = |k: &str, d: usize| if k == "RULEMINER_DEEP3" { deep3 } else { d };
+    let env = |k: &str| (k == "RULEMINER_DEEP3").then(|| deep3.to_string());
     let pool = pool3(family, &env)?;
     let in_pool: HashSet<Term> = pool.iter().cloned().collect();
     // the operators the pool uses below a comparison (an `lt` result is one bit wide and is never an argument)
@@ -1082,7 +1104,7 @@ pub fn grammar_sample(family: &str, deep3: usize, salt: usize) -> Option<(Vec<Te
 /// a stream law's skeleton), uses all three variables, and the same salt gives the same laws.
 #[test]
 pub fn grammar_laws_lie_outside_the_pool() {
-    let env = |k: &str, d: usize| if k == "RULEMINER_DEEP3" { 1 } else { d };
+    let env = |k: &str| (k == "RULEMINER_DEEP3").then(|| 1.to_string());
     for f in ["add3", "sbo3", "cmp3d"] {
         let pool: HashSet<Term> = pool3(f, &env).unwrap().into_iter().collect();
         let laws = grammar_laws(f, 1, 1);
@@ -1402,7 +1424,7 @@ fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term,
     let kv = family_vars(&family);
     let laws = match job.setup().var("CHECK_LAWFILE") {
         Some(f) => read_named_laws(&f),
-        None => family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, 7),
+        None => family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, 7),
     };
     let laws = laws.into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
     let installed = job.rules().with_mined(job.setup(), rules.clone()).with_prefs(parse_prefs(&text));
@@ -1926,27 +1948,27 @@ pub fn proposal_yield() {
         }
         job.with_rules(rules, |job| {
             let strings = |laws: Vec<(String, Term, Term)>| -> Vec<String> { laws.into_iter().filter(|(_, a, b)| a.is_law(b, kv)).map(|(s, _, _)| s).collect() };
-            let train_lines = strings(family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), 4, kv, 7));
-            let whole = |k: &str, d: usize| match k {
-                "RULEMINER_STRIDE" => 1,
-                "RULEMINER_PHASE" | "RULEMINER_SKIP" => 0,
-                "RULEMINER_LAWS" => 1_000_000,
-                _ => job.setup().or(k, d),
+            let train_lines = strings(family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, 7));
+            let whole = |k: &str| match k {
+                "RULEMINER_STRIDE" => Some(1.to_string()),
+                "RULEMINER_PHASE" | "RULEMINER_SKIP" => Some(0.to_string()),
+                "RULEMINER_LAWS" => Some(1_000_000.to_string()),
+                _ => job.setup().var(k).map(str::to_owned),
             };
             let known_lines = strings(family_laws(job.setup(), &family, &whole, 4, kv, 7));
             let lines: Vec<String> = match (job.setup().var("YIELD_FILE"), job.setup().var("PROPOSER")) {
                 (Some(path), _) => std::fs::read_to_string(path).unwrap().lines().map(String::from).collect(),
                 (_, Some("ngram")) => ngram_lines(&train_lines.join("\n"), job.setup().or("YIELD_ORDER", 8usize), n, 1),
                 (_, Some("pool")) => {
-                    let pool = pool3(&family, &|k: &str, d: usize| job.setup().or(k, d)).expect("pool proposer needs a three-variable family");
+                    let pool = pool3(&family, &|k: &str| job.setup().var(k).map(str::to_owned)).expect("pool proposer needs a three-variable family");
                     let mut s = 7u64;
                     (0..n).map(|_| format!("{} = {}", pool[lcg(&mut s) as usize % pool.len()].show(), pool[lcg(&mut s) as usize % pool.len()].show())).collect()
                 }
                 (_, Some("stream")) => {
-                    let held_out = |k: &str, d: usize| match k {
-                        "RULEMINER_SKIP" => job.setup().or("YIELD_SKIP", 1000usize),
-                        "RULEMINER_LAWS" => n,
-                        _ => job.setup().or(k, d),
+                    let held_out = |k: &str| match k {
+                        "RULEMINER_SKIP" => Some(job.setup().or("YIELD_SKIP", 1000usize).to_string()),
+                        "RULEMINER_LAWS" => Some(n.to_string()),
+                        _ => job.setup().var(k).map(str::to_owned),
                     };
                     strings(family_laws(job.setup(), &family, &held_out, 4, kv, 7))
                 }
