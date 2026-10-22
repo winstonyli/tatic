@@ -49,6 +49,10 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   `task::result(key, value)` appending `key<TAB>value` text next to the task's log; `worker.run` returns the parsed
   records; the miner emits its drop, chosen and prefer records and the check its named counts through it, and the
   driver's stdout parsers (driver.rs:718-747) are deleted. Text, not binary: binary formats parked in `PARKED.md`.
+  Done 6763397 (gate 2026-10-21-c7-gate: M 362 = 362, rules same in 15 loops and across threads). Two additions: the
+  same channel carries `machine_state`'s `pages` record (the fourth stdout parser), and `serve` now panics on a failed
+  task instead of reading counts from a dead log. The printed lines stay (scripts grep them). Timing again
+  inconclusive (job cpu +5% under 53-79% load, with this session's C18 builds running alongside).
 - **C8 (D): the ablation switches.** `ablated("...")` is checked at 11 hard-coded sites; 7 names appear in no script.
   Status: decided against 2026-10-21: every name is documented (scripts, spec 2026-10-01:1059's ablation table,
   rewrite.rs:2741) and each costs one guard read once per task; only `ablated`'s doc list was fixed (it missed `gen`,
@@ -89,13 +93,23 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 - **C17: nits.** Stale comments at rewrite.rs:2129 (`PERM_ORDER`) and rewrite.rs:1209 (`SCORE_ONLY`); tier-cycle.md:666
   names functions that are gone; lib.rs's allocator list misses `tests/proof_scope.rs`; `compile::tests` (60% of
   compile.rs) moves to `src/compile/tests.rs`. Status: done 4bff6e4.
-- **C18 (D): the jit's sample-based provers** feed only reporting above arity 0 (jit.rs:381-423). Status: ruled 2026-10-21: split gate from
-  evidence. `kernel_verify` answers only the install gate (`Universal` or `None`; arity 0's single sample counts as
-  universal); a separate `JitEngine::evidence(h)` runs the per-sample provers and the theorem instances on demand, and
-  the repl calls it for "only at the sampled inputs". Deleted: `ProofStrength::Samples` from the gate, `prove_instances`
-  and `universal_instances_checked` (set and read only by tests). Then a throwaway spike: does
+- **C18 (D): the jit's sample-based provers** feed only reporting above arity 0 (jit.rs:381-423). Status: ruled 2026-10-21
+  (re-ruled the same day): no evidence report at all. The first ruling (a `JitEngine::evidence(h)` for the repl's "only
+  at the sampled inputs") rested on a false premise: the repl only calls `jit.apply(&store, h, &[])` (repl.rs:149), arity
+  0, where a per-sample proof already counts as universal, so that branch could never print; only two jit tests ever saw
+  `Samples`. So `kernel_verify` returns `bool` and runs the per-sample provers only at arity 0, where the one sample is
+  the whole domain. Deleted: `ProofStrength`, `proof_strength`, `NoUniversalProof`'s payload, `prove_instances` and
+  `universal_instances_checked`; the repl prints yes/no from `is_kernel_verified`. Then a throwaway spike: does
   `prove_closure_expr_instance` succeed everywhere `prove_tail_recursive_call` does on the proof tests' corpus (and at
-  what certificate size and time)? If so, the per-call tail prover goes.
+  what certificate size and time)? If so, the per-call tail prover goes. Gate done 68b0c19 (also deleted
+  `kernel_proofs_checked`, always equal to `compiled` once the gate is a bool, and
+  `prove_tail_recursive_universal_with_instances`, whose only caller was `prove_instances`). Spike (2026-10-21,
+  reverted): over `test_corpus::terms()` at every `sample_arg_vectors` vector, tail-only 0, both 84, instance-only 119,
+  neither 97; on the 84 shared calls the certificates are the same size (284 = 284 DAG nodes in total) and take the same
+  time (26.6 ms against 26.7 ms, best of 3). Also, `prove_tail_recursive_call` declines arity 0 outright, so it never
+  contributed to the gate. So it went in the next commit: its three scope tests deleted, the gcd and long-trace tests and
+  the two benches moved to `prove_closure_expr_instance`; its helpers (`classify_step`, `eval_concrete`) stay, used by
+  the instance provers. Status: done.
 
 ## Not covered by the survey
 
