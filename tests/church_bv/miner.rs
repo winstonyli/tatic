@@ -630,6 +630,15 @@ struct Rounds<'a> {
     skipped: usize,
 }
 
+/// The candidates a round scores, by their gain's bound, largest first, ties to the earlier: those not chosen already. A
+/// chosen rule changes nothing, so a scoring mismatch that gave it a gain would win every round and the mine would never
+/// end (run 2026-10-22-hidden-twins-2: `add(0, x) -> x` 8631 times, `rewrite::a_cached_failed_join_yields_to_a_stored_path`).
+fn by_bound(provable: &[(Term, Term)], chosen: &[(Term, Term)], bound: impl Fn(usize) -> i64) -> Vec<(i64, usize)> {
+    let mut order: Vec<(i64, usize)> = (0..provable.len()).filter(|&i| !chosen.contains(&provable[i])).map(|i| (bound(i), i)).collect();
+    order.sort_by_key(|&(b, i)| (std::cmp::Reverse(b), i));
+    order
+}
+
 impl<'a> Rounds<'a> {
     fn new(scorer: &'a Scorer<'a>, prover: &'a Prover, provable: &'a [(Term, Term)], rivals: &'a hashbrown::HashMap<Term, Vec<(Term, Term)>>, base_prefs: &'a [Pref], cfg: &'a MinerConfig, clock: &'a Clock) -> Self {
         let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, bool)>();
@@ -725,8 +734,7 @@ impl<'a> Rounds<'a> {
             let gain = |si: usize, w: i64| if covered[si] { 0 } else { w };
             affected[i].iter().map(|&si| if si < stragglers.len() { gain(si, 1000) + base_eval[si].1 } else { gain(si, guard_w) }).sum()
         };
-        let mut order: Vec<(i64, usize)> = (0..provable.len()).map(|i| (bound(i), i)).collect();
-        order.sort_by_key(|&(b, i)| (std::cmp::Reverse(b), i));
+        let order = by_bound(provable, chosen, bound);
         self.bound_time += t0.elapsed();
         // the candidates are scored on `RULEMINER_THREADS` workers (default 1; keep at most 12), each with its own intern
         // scope, a chunk at a time in order of their bound; scoring stops at a bound below the best gain so far, since those
@@ -1080,6 +1088,15 @@ fn prefs_phase(job: &mut Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[
             }
         }
     }
+}
+
+/// A round's candidates leave out the rules already chosen, and the rest go by bound, largest first, ties to the earlier.
+#[test]
+fn a_round_never_offers_a_chosen_rule() {
+    let r = |l: &str, rhs: &str| (parse_term(l), parse_term(rhs));
+    let provable = [r("add(0, x)", "x"), r("sub(x, x)", "0"), r("xor(x, x)", "0")];
+    let bounds = [5, 9, 5];
+    assert_eq!(by_bound(&provable, &[provable[1]], |i| bounds[i]), vec![(5, 0), (5, 2)]);
 }
 
 /// A proving worker's fresh job proves under the base preferences (Q1): before, the provable filter's workers installed
