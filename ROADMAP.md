@@ -5,9 +5,6 @@ step, and its message is the milestone sentence; tagging moves the line out of t
 2026-10-17 from the experiment plan in `docs/tier-cycle.md` ("Experiments" and the proposer bullets); deferred work is
 in `PARKED.md`.
 
-- **v0.1 - Can a small trusted kernel plus a rule miner turn a fixed law stream into rules that remove machine proofs?**
-  Built: the mine-and-serve loop (`driver::loop_stream`, `search::rule_miner`), the proposal verdicts of experiment 1's
-  kernel side, and the extra-laws, floor and equational-reach measurements. `Cargo.toml` is at `0.1.0`; not tagged.
 - **v0.2 - Does a bounded join in `prove_eq` remove the floor?** Every floor law joins within 5 steps over the rules in
   force ("Equational reach of the floor"); the milestone is that join turned into proof plans, measured on sweeps over
   salts 1-10. Answered yes, 2026-10-17, not tagged: own M 865 to 13, pooled 757 to 33, cold 4380 to 1568, every law
