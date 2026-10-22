@@ -118,18 +118,15 @@ pub fn run(setup: &Arc<Setup>) {
                     println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
                 }
             }
-            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and the step
+            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules, preferences and step
             // budget of this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
             // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
             let rules = job.rules().mined().to_vec();
-            let prover = |prefs| Prover { rules: rules.clone(), prefs, budget, n: laws.n };
-            let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover(None).filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
+            let prover = Prover { rules, prefs: base_prefs.clone(), budget, n: laws.n };
+            let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover.filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
             println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
             clock.phase("provable filter");
             let scorer = Scorer::new(&laws, &cfg, base.clone());
-            // also on a thread of its own (`Rounds::play`), so it installs the base preferences itself: the old code proved under
-            // the ones every evaluation on this thread left installed, which were these
-            let prover = prover(Some(base_prefs.clone()));
             let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
             // the main job's join work from here on
             let join_main = job.join_cost;
@@ -429,23 +426,17 @@ fn renum_placeholders(t: &Term) -> Term {
 /// budget P1 left: Q5).
 struct Prover {
     rules: Vec<(Term, Term)>,
-    /// The preferences to install, `None` for none. The provable filter installs none (Q1): its worker threads prove with
-    /// no preferences, while with one thread it runs on this thread, under the base preferences `run` installed.
-    prefs: Option<Vec<Pref>>,
+    /// The base preferences, installed on every proving thread.
+    prefs: Vec<Pref>,
     budget: i64,
     n: usize,
 }
 
 impl Prover {
-    /// The job's rules with `rules` as the run-time rules and, if any, `prefs` as the preferences (otherwise the job's
-    /// stay: Q1); and `budget` as the step budget.
+    /// The job's rules with `rules` as the run-time rules and `prefs` as the preferences; and `budget` as the step budget.
     fn install(&self, job: &mut Job) -> Rules {
-        let rules = job.rules().with_mined(job.setup(), self.rules.clone());
         job.rw.budget = self.budget;
-        match &self.prefs {
-            Some(prefs) => rules.with_prefs(prefs.clone()),
-            None => rules,
-        }
+        job.rules().with_mined(job.setup(), self.rules.clone()).with_prefs(self.prefs.clone())
     }
 
     fn holds(&self, job: &mut Job, (l, r): &(Term, Term)) -> bool {
@@ -465,7 +456,6 @@ impl Prover {
     /// The indices of the candidates that are proved, in order, on `threads` workers (one intern scope each; one thread
     /// proves on this thread).
     fn filter(&self, job: &mut Job, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
-        // carry-over: with one thread, the base preferences `run` installed stay (Q1); a worker's job has none
         let prove = |job: &mut Job, idx: &[usize]| -> Vec<usize> {
             tatic::kernel::scoped(|| {
                 let rules = self.install(job);
