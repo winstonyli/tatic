@@ -1,7 +1,7 @@
 //! The mine-and-serve loop and the sweeps over it (formerly `scripts/loop_stream.sh` and local sweep scripts). Serving
 //! (`search::rule_set_kernel_check`) and mining (`search::rule_miner`) run as tasks of one worker process of this exe (`worker`,
-//! `Worker`): each task gets fresh thread-locals, its own `Setup` (environment, results, caches) and its own log, while the
-//! pure memos carry over (`task.rs`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
+//! `Worker`): each task gets its own `Setup` (environment, results, caches), a `Job` per rewriting thread and its own log,
+//! while the pure memos carry over (`task.rs`, `job::hidden_state_is_classified`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
 //! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
@@ -121,7 +121,7 @@ fn task_fn(name: &str) -> Option<fn(&Arc<Setup>)> {
 }
 
 /// A sweep's children as tasks of one process (`Worker` starts it, with `TATIC_WORKER=1`; it returns at once otherwise).
-/// Reads `<test>\t<log>\t<KEY>=<VALUE>...` lines; runs each test on a fresh thread (fresh thread-locals) with the task's
+/// Reads `<test>\t<log>\t<KEY>=<VALUE>...` lines; runs each test on a fresh thread (fresh pure thread-local memos) with the task's
 /// pairs over this process's environment (its `Setup`), its stdout and stderr in the log and its result records
 /// (`Setup::result`) in `results_path(log)`; answers `WORKER ok` or
 /// `WORKER fail` on a line of its own, and exits after a failure (a panic can leave a lock poisoned) or at EOF. A task that

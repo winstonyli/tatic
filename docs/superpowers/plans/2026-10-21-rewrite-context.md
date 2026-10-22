@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Rewrite context: an explicit `Job` instead of hidden state (C1 + C3)
@@ -629,9 +629,21 @@ in `job.rs`, with `Lemmas::holds` and `Lemmas::ck`; `Job` gains `pub lemmas: Lem
 - [x] **Step 4: suite, clippy, gate.** Expected: suite 523, gate equal. Got: 523; clippy net unchanged; run 2026-10-22-t7-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks; CPU 22%, Defender RTP off).
 - [x] **Step 5: commit:** `C1 step 5: lemma parameters in the job`.
 
-### Task 8: the guard test and docs
+### Task 8: the guard test and docs (done 2026-10-22)
 
-- [ ] **Step 1: rewrite `task_state_is_classified`** (it moves to `job.rs` and is renamed
+**Rulings while building it (2026-10-22):**
+- One scanner, `hidden(text)`, classifies each line as `ThreadLocal(name)`, `ProcessWide(name)` or `JobSwap`; the test
+  checks each kind against its list. It replaces `task.rs`'s `flagged` and `task_state_is_classified`, so a static
+  inside a `thread_local!` block is classified as thread-local whatever its type (the old scan would have flagged a lock
+  there). A block opens only on a line that starts with `thread_local!`, so a string mentioning one (this test's own)
+  is not read as code; comment lines are skipped.
+- The job-swap rule matches `job` followed by `,` or `)`, so field takes (`mem::take(&mut job.lemmas)`) pass.
+- The test also fails on a listed static that no longer exists, so the lists cannot go stale, and this shows the scan
+  sees all 13.
+- The cleanup plan's C1 is not marked done: Tasks 9 and 10 remain. Its status records Tasks 0-8 instead.
+- C17's `SCORE_ONLY` comment nit was already resolved by C17's own commit (4bff6e4).
+
+- [x] **Step 1: rewrite `task_state_is_classified`** (it moves to `job.rs` and is renamed
   `hidden_state_is_classified`). It fails on:
   - any `thread_local!` static in church_bv not on D3's allow-list, by name: `OP_CACHE`, `BUFS`, `TERMS`,
     `COUNTING`, `CLOSED`, `CONSTANTS`, `BODIES`, and `gen_memo`'s statics;
@@ -642,16 +654,17 @@ in `job.rs`, with `Lemmas::holds` and `Lemmas::ck`; `Job` gains `pub lemmas: Lem
     the pattern should end in `job\s*[,)]` so only a whole-job swap matches.
 
   Keep the existing `flagged` unit tests, and add one per new rule with a line that must trip it.
-- [ ] **Step 2: run.** Expected: the suite passes, at 523 plus the guard tests added in Step 1. Then add `thread_local! { static ZZ: Cell<u8> = … }` to
-  `rewrite.rs` temporarily and confirm the guard fails, then remove it.
-- [ ] **Step 3: docs.**
+- [x] **Step 2: run.** Expected: the suite passes, at 523 plus the guard tests added in Step 1. Then add `thread_local! { static ZZ: Cell<u8> = … }` to
+  `rewrite.rs` temporarily and confirm the guard fails, then remove it. Got: 524 (523, less `task_state_is_classified`, plus the two guard tests); clippy one warning fewer (the old scan's collapsible `if`). With a thread-local `ZZ`
+  and a `std::mem::swap(job, other)` appended to rewrite.rs the guard failed on both; rewrite.rs then restored with git.
+- [x] **Step 3: docs.**
   - `docs/tier-cycle.md`, "A persistent worker": the worker now builds a `Setup` per task. The fresh thread remains
     only for D3's caches.
   - `task.rs` and `driver.rs` module docs.
   - The comments that named the deleted statics (`grep -rn 'RULE_BUDGET\|SCORE_ONLY\|REWRITE_MEMO\|PARAMS\|TREE_LAWS\|PerTask' tests docs/*.md README.md`;
     the plan files under `docs/superpowers` keep their history).
   - Cleanup plan: C1 done, and C17's `SCORE_ONLY` comment nit is resolved.
-- [ ] **Step 4: commit:** `C1 step 6: the guard covers thread-locals and job swaps; docs`.
+- [x] **Step 4: commit:** `C1 step 6: the guard covers thread-locals and job swaps; docs`.
 
 ### Task 9: the quirks, one commit each
 

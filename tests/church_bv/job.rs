@@ -289,3 +289,144 @@ fn every_job_has_its_own_id() {
     let s = Setup::process();
     assert_ne!(Job::new(s.clone()).id, Job::new(s).id);
 }
+
+/// State a church_bv source line holds outside `Setup` and `Job`, or a step around `Job`'s guards.
+#[derive(Debug, PartialEq)]
+enum Hidden<'a> {
+    /// a static inside a `thread_local!` block
+    ThreadLocal(&'a str),
+    /// a process-wide mutable static (`static mut`, or one whose type names a lock, a once-cell or an atomic) other than
+    /// a `SharedMemo`
+    ProcessWide(&'a str),
+    /// a whole job swapped or assigned (`mem::swap/replace/take(&mut job, ..)`, `*job = ..`), which would get past
+    /// `with_rules`' identity check
+    JobSwap,
+}
+
+/// The `static` declared on `line`: whether `mut`, its name and its type.
+fn declared(line: &str) -> Option<(bool, &str, &str)> {
+    let rest = ["pub(crate) static ", "pub static ", "static "].iter().find_map(|p| line.trim_start().strip_prefix(p))?;
+    let (is_mut, rest) = rest.strip_prefix("mut ").map_or((false, rest), |r| (true, r));
+    let (name, ty) = rest.split_once(':')?;
+    Some((is_mut, name.trim(), ty))
+}
+
+/// Whether `line` swaps, replaces, takes or assigns a whole job (not one of its fields).
+fn job_swap(line: &str) -> bool {
+    let assigned = line.trim_start().strip_prefix("*job").is_some_and(|r| r.trim_start().strip_prefix('=').is_some_and(|r| !r.starts_with('=')));
+    let moved = ["mem::swap(", "mem::replace(", "mem::take("].iter().any(|m| {
+        line.split(m).skip(1).any(|arg| {
+            let arg = arg.trim_start();
+            let arg = arg.strip_prefix("&mut").map_or(arg, str::trim_start);
+            let arg = arg.strip_prefix('*').unwrap_or(arg);
+            arg.strip_prefix("job").is_some_and(|r| r.trim_start().starts_with([',', ')']))
+        })
+    });
+    assigned || moved
+}
+
+/// What `text` (one source file) holds or does that `hidden_state_is_classified` checks, by line number. A static inside a
+/// `thread_local!` block is a `ThreadLocal`, whatever its type; comment lines are skipped.
+fn hidden(text: &str) -> Vec<(usize, Hidden<'_>)> {
+    let mut out = vec![];
+    // the brace depth inside a `thread_local!` block, 0 outside one
+    let mut depth = 0i32;
+    for (i, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        // a block opens on a line that starts with `thread_local!`; a one-line `thread_local! { static X: .. }` declares
+        // after the brace
+        let opens = line.trim_start().strip_prefix("thread_local!");
+        let decl = declared(line).or_else(|| declared(opens?.trim_start().strip_prefix('{')?));
+        if depth > 0 || opens.is_some() {
+            if let Some((_, name, _)) = decl {
+                out.push((i + 1, Hidden::ThreadLocal(name)));
+            }
+            depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+            continue;
+        }
+        if let Some((is_mut, name, ty)) = decl {
+            let mutable = is_mut || ["Mutex", "RwLock", "Once", "LazyLock", "Atomic"].iter().any(|m| ty.contains(m));
+            if mutable && !ty.contains("SharedMemo") {
+                out.push((i + 1, Hidden::ProcessWide(name)));
+            }
+        }
+        if job_swap(line) {
+            out.push((i + 1, Hidden::JobSwap));
+        }
+    }
+    out
+}
+
+#[test]
+fn hidden_finds_thread_locals_process_wide_statics_and_job_swaps() {
+    use Hidden::*;
+    let tl = "thread_local! {\n    /// doc {\n    static A: Cell<u8> = const { Cell::new(0) };\n    static B: Mutex<u8> = Mutex::new(0);\n}\nstatic C: u8 = 0;";
+    assert_eq!(hidden(tl), vec![(3, ThreadLocal("A")), (4, ThreadLocal("B"))]);
+    assert_eq!(hidden("    thread_local! { static D: RefCell<u8> = Default::default(); }"), vec![(1, ThreadLocal("D"))]);
+    assert_eq!(hidden("    static X: std::sync::OnceLock<u8> = std::sync::OnceLock::new();"), vec![(1, ProcessWide("X"))]);
+    assert_eq!(hidden("pub static Y: [std::sync::atomic::AtomicU64; 3] = x;"), vec![(1, ProcessWide("Y"))]);
+    assert_eq!(hidden("static mut Z: u8 = 0;"), vec![(1, ProcessWide("Z"))]);
+    assert_eq!(hidden("static M: crate::task::SharedMemo<u8, std::sync::Arc<u8>> = SharedMemo::new();"), vec![]);
+    assert_eq!(hidden("// static mut Z: u8 = 0;"), vec![]);
+    assert_eq!(hidden("    let s = \"thread_local! { static E: u8 = 0; }\";"), vec![]);
+    for swap in ["std::mem::swap(job, &mut other);", "let j = mem::replace(&mut *job, fresh);", "mem::take(&mut job)", "    *job = Job::new(s);"] {
+        assert_eq!(hidden(swap), vec![(1, JobSwap)], "{swap}");
+    }
+    for field in ["std::mem::take(&mut job.lemmas)", "mem::replace(&mut job.rw, inner)", "*job == other", "*jobs = vec![]"] {
+        assert_eq!(hidden(field), vec![], "{field}");
+    }
+}
+
+/// Every piece of hidden state in church_bv is classified: a thread-local is a pure memo on `THREAD_LOCAL` (D3 of
+/// docs/superpowers/plans/2026-10-21-rewrite-context.md), a process-wide mutable static is a `SharedMemo` or on
+/// `PROCESS_WIDE`, and only `job.rs` replaces a whole job. Everything else a task or a rewrite carries lives in its `Setup`
+/// or `Job`, so a `driver::worker` task never sees another task's state, nor a job another job's.
+#[test]
+fn hidden_state_is_classified() {
+    const THREAD_LOCAL: [(&str, &str, &str); 7] = [
+        ("rewrite.rs", "OP_CACHE", "op results by operator and operand values"),
+        ("rewrite.rs", "BUFS", "scratch buffers, emptied before each use"),
+        ("rewrite.rs", "TERMS", "enumerated terms by size and shape"),
+        ("rewrite.rs", "CLOSED", "memo's closed library terms by key"),
+        ("rewrite.rs", "COUNTING", "the one Counting plan, shared"),
+        ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
+        ("encoding.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
+    ];
+    const PROCESS_WIDE: [(&str, &str, &str); 6] = [
+        ("rewrite.rs", "TABLE", "the term table: interning is pure"),
+        ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
+        ("lemma_cache.rs", "ID", "the running exe's identity"),
+        ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
+        ("job.rs", "PROCESS_SETUP", "the one-test process's Setup; tasks build their own"),
+        ("job.rs", "NEXT_JOB", "job ids, unique per process on purpose"),
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/church_bv");
+    let (mut bad, mut seen) = (vec![], vec![]);
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let file = path.file_name().unwrap().to_str().unwrap().to_string();
+        let listed = |list: &[(&str, &str, &str)], name: &str| list.iter().any(|p| p.0 == file && p.1 == name);
+        for (line, h) in hidden(&std::fs::read_to_string(&path).unwrap()) {
+            let ok = match h {
+                Hidden::ThreadLocal(name) => listed(&THREAD_LOCAL, name),
+                Hidden::ProcessWide(name) => listed(&PROCESS_WIDE, name),
+                Hidden::JobSwap => file == "job.rs",
+            };
+            if !ok {
+                bad.push(format!("{file}:{line} {h:?}"));
+            }
+            if let Hidden::ThreadLocal(name) | Hidden::ProcessWide(name) = h {
+                seen.push((file.clone(), name.to_string()));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "hidden state that is not classified: {bad:?}");
+    // a listed static that is gone leaves the list
+    let stale: Vec<_> = THREAD_LOCAL.iter().chain(&PROCESS_WIDE).filter(|p| !seen.iter().any(|(f, n)| f == p.0 && n == p.1)).map(|p| p.1).collect();
+    assert!(stale.is_empty(), "listed statics that no longer exist: {stale:?}");
+}

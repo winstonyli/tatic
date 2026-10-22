@@ -21,7 +21,9 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   through every rewrite and miner function, no thread-locals; nested jobs are values, workers get `Ctx::new(setup.clone())`.
   Chosen over a `with_job` swap of thread-locals because it removes the hidden state, not only the lists. Built together
   with C3 under its own plan. Refined 2026-10-21 (D1-D5): one `job: &Job` / `&mut Job` parameter, rules replaced only
-  through `Job::with_rules`; plan `docs/superpowers/plans/2026-10-21-rewrite-context.md` (draft).
+  through `Job::with_rules`; plan `docs/superpowers/plans/2026-10-21-rewrite-context.md`. Progress 2026-10-22: Tasks 0-8
+  done (no rewriter thread-locals left but D3's pure memos, which `job::hidden_state_is_classified` guards); Task 9 (the
+  quirks Q1-Q5) and Task 10 (timing, close) remain.
 - **C2: one `measured(steps, f)` helper** for "set the budget to 200, read the fallback delta" (about 16 sites in
   search.rs and rewrite.rs; `law_cost` at search.rs:2550 already does it). The `200` and `i64::MAX / 2` literals get
   names. Status: todo (after C1).
