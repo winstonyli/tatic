@@ -69,15 +69,23 @@ below. That section is binding; where a task's text disagrees with it, the decis
 ## Global Constraints
 
 - **Equality gate, after Tasks 1, 3, 4, 5, 6, 7 and each Task 9 fix:**
-  1. `docs/runs/2026-10-18/scripts/salts_ab.sh <base exe> <new exe> 1 2 3 4 5`, rules `same` in all 15 loops (its
-     last line: `rules same in 15 of 15 loops; 0 of 10 arms failed`). It needs `tools/runs` built in the checkout it
-     runs from (`cargo build --release` there); since Task 1 it refuses to start without it and exits 1 on a failed arm.
-  2. `threads_check.sh <new exe> {1,3,5}` passes.
-  3. `miner_snap.sh` (Task 0) matches the base snapshots exactly.
+  `docs/runs/2026-10-21/scripts/gate.sh <new exe> docs/runs/2026-10-21/gate_base` exits 0, last line
+  `gate: miner snapshots same; salts same as base in 5 of 5; one thread same as six in 3 of 3; 0 of 8 arms failed`
+  (about 8 minutes). It runs, in one go, what were three gates (Tasks 1 and 3 ran them in turn, about 28 minutes):
+  1. the cold:cmp3d sweep on salts 1-5, each loop's tsv row (seconds dropped) and rules equal to `gate_base/`, the
+     base exe's snapshots (`main` at 92b4be4, from run `2026-10-21-t3-gate`'s base arms), instead of re-running the
+     base exe with `salts_ab.sh` each time;
+  2. salts 1, 3, 5 at `LOOP_THREADS=1` equal to the same salt at the default 6 (was `threads_check.sh`, whose 6-thread
+     arm repeated item 1's);
+  3. `miner_snap.sh` (Task 0) equal to the base snapshots.
 
+  Items 2 and 3 run concurrently (about 9 threads), then item 1's arms in turn; it compares outcomes, not timing.
+  Validated 2026-10-21 on Task 3's exe (run `2026-10-21-t3-newgate`, agreeing with the three old gates), and against
+  a stub exe: an altered base line, an empty sweep and empty miner output each fail it. A Task 9 fix that changes
+  output on purpose regenerates the base with `gate.sh <exe>` (no base dir) and says so in its commit.
   The sweep gate runs only `RULEMINER_FAST=1` and no preference phase (`driver.rs:36`, `:839`). `miner_snap.sh`
-  covers the rest. The base exe is built from the plan's base commit (`main` at its start). Each gate is launched
-  through `~/.claude/runs/run.ps1` (`-Kind gate`), which writes a row in `docs/runs.md`.
+  covers the rest. Each gate is launched through `~/.claude/runs/run.ps1` (`-Kind gate`), which writes a row in
+  `docs/runs.md`.
 - **The suite stays green after every commit:**
   `cargo test --profile sweep --tests -j 8 -- --test-threads 8` (517 passed at 4ffe2a2). The count changes only by
   tests a task adds or deletes, and the commit message says which.
