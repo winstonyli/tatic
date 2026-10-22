@@ -2640,9 +2640,10 @@ impl JoinStore {
             self.edges.entry(to).or_default().push(StoredEdge { to: step.from, step, back: true });
         }
     }
-    /// The plan of `a = b` along the shortest stored path through `table`'s laws and terms of at most `cap` nodes, looked
+    /// The plan of `a = b` along the shortest stored path through the job's laws and terms of at most `cap` nodes, looked
     /// for among `join_visit()` terms at most, as the search, and the path's terms.
-    fn path(&self, job: &Job, table: &RuleTable, a: Term, b: Term, cap: usize) -> Option<(PlanRc, Vec<Term>)> {
+    fn path(&self, job: &Job, a: Term, b: Term, cap: usize) -> Option<(PlanRc, Vec<Term>)> {
+        let table = &*job.rules().table;
         let mut prev: hashbrown::HashMap<Term, Option<(Term, StoredStep, bool, u32)>> = [(a, None)].into_iter().collect();
         let (mut front, visit) = (vec![a], join_visit(job));
         // bounded once a layer, as the search is
@@ -2658,7 +2659,7 @@ impl JoinStore {
                         // back from `b`: each step's plan, `p = x` read forwards
                         let (mut plans, mut terms, mut x) = (vec![], vec![b], b);
                         while let Some((p, step, back, eq)) = prev[&x] {
-                            let plan = step_plan(job, &JoinStep { from: step.from, path: step.path, eq }, table);
+                            let plan = step_plan(job, &JoinStep { from: step.from, path: step.path, eq });
                             plans.push(if back { Plan::sym(job, plan) } else { plan });
                             terms.push(p);
                             x = p;
@@ -2683,7 +2684,7 @@ fn stored_join(job: &Job, a: Term, b: Term) -> Option<(PlanRc, Vec<Term>)> {
             Some(JoinStoreUse::Read(store)) => &**store,
             None => return None,
         };
-        store.path(job, &job.rules().table, a, b, cap)
+        store.path(job, a, b, cap)
     })
 }
 
@@ -3191,7 +3192,7 @@ fn is_step(mut t: Term, up: &JoinPlace, p: &Term, sub: &[Option<Term>]) -> bool 
 }
 
 /// The plan of `step.from = ` the term the step reaches.
-fn step_plan(job: &Job, step: &JoinStep, table: &RuleTable) -> PlanRc {
+fn step_plan(job: &Job, step: &JoinStep) -> PlanRc {
     let (mut up, mut x, mut path) = (vec![], step.from, step.path);
     while path.depth > 0 {
         let Node::Op(o, a, b) = *x.node() else { unreachable!("a step's path stays in the term") };
@@ -3200,7 +3201,7 @@ fn step_plan(job: &Job, step: &JoinStep, table: &RuleTable) -> PlanRc {
         up.push((o, a, b, right));
         x = if right { b } else { a };
     }
-    let e = &table.join[step.eq as usize];
+    let e = &job.rules().table.join[step.eq as usize];
     let mut sub = [None; RULE_VARS];
     assert!(match_pat(&e.from, &x, &mut sub), "a step's law matches where it was found");
     let law = Plan::law(job, e.kind, e.lhs, e.rhs, sub[..e.vars].iter().map(|s| s.unwrap_or(Term::v(0))).collect());
@@ -3254,10 +3255,10 @@ fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::H
     // each reached term by its `sh`
     type Seen = hashbrown::HashTable<(u64, Reached)>;
     let get = |seen: &Seen, t: Term| seen.find(t.sh(), |e| e.0 == t.sh() && e.1.is(t)).expect("reached").1.step();
-    let path = |seen: &Seen, mut t: Term, table: &RuleTable| -> PlanRc {
+    let path = |seen: &Seen, mut t: Term| -> PlanRc {
         let mut steps = vec![];
         while let Some(step) = get(seen, t) {
-            steps.push(step_plan(job, &step, table));
+            steps.push(step_plan(job, &step));
             t = step.from;
         }
         steps.into_iter().rev().reduce(|a, b| Plan::trans(job, a, b)).unwrap_or_else(|| Plan::refl(job, &t))
@@ -3333,7 +3334,7 @@ fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::H
                     }
                 }
                 // `this side = u` and `other side = u`
-                let (here, there) = (Plan::trans(job, path(&seen[s], t, table), step_plan(job, &step, table)), path(&seen[1 - s], u, table));
+                let (here, there) = (Plan::trans(job, path(&seen[s], t), step_plan(job, &step)), path(&seen[1 - s], u));
                 let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
                 return Some(Plan::trans(job, pa, Plan::sym(job, pb)));
             }
