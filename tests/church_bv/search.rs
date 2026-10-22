@@ -78,7 +78,7 @@ pub fn rewrite_rules_over_the_mul_laws() {
             match r {
                 Some((p, s)) => {
                     let t = Instant::now();
-                    ck(&name, &p, &s);
+                    job.lemmas.ck(&name, &p, &s);
                     proved += 1;
                     machine_free += (fell == 0) as u32;
                     over_cap += (cs[0].max(cs[1]) > carry_cap(job)) as u32;
@@ -448,7 +448,7 @@ pub fn notsub_rule_is_provable() {
         for n in [3, 4] {
             let r = prove_rule(job, n, 1, &op(3, Term::v(0), Term::ONES), &op(4, Term::ONES, Term::v(0)));
             let (p, s) = r.expect("xor(x, -1) = sub(-1, x)");
-            ck("notsub", &p, &s);
+            job.lemmas.ck("notsub", &p, &s);
         }
     })
 }
@@ -467,7 +467,7 @@ pub fn rewrite_law_proves_lt_laws() {
             ("lt (x + y) (x + x) = lt (y + x) (x + x)", op(5, op(0, x, y), op(0, x, x)), op(5, op(0, y, x), op(0, x, x))),
         ] {
             let (p, s) = rewrite_law(job, n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no proof"));
-            ck(name, &p, &s);
+            job.lemmas.ck(name, &p, &s);
         }
         assert!(rewrite_law(job, n, 2, &op(5, x, y), &op(5, y, x)).is_none());
     })
@@ -482,7 +482,7 @@ pub fn lt_rules_with_constant_right_sides_are_provable() {
         for k in [1usize, 2] {
             for (l, r) in [(lt(Term::ONES, Term::v(0)), lt(Term::ONES, Term::ONES)), (lt(Term::v(0), Term::v(0)), lt(Term::ONES, Term::ONES))] {
                 let (p, s) = prove_rule(job, n, k, &l, &r).unwrap_or_else(|| panic!("k={k}: {} -> {}", l.show(), r.show()));
-                ck("lt rule", &p, &s);
+                job.lemmas.ck("lt rule", &p, &s);
             }
         }
     })
@@ -501,7 +501,7 @@ pub fn lt_root_rules_close_constant_false_laws() {
         let r = job.with_mined(vec![(lt(x, x), falsum), (lt(Term::ONES, x), falsum)], |job| rewrite_law(job, 4, 2, &lt(x, x), &lt(Term::ONES, add(x, y))));
         let fell = job.rw.fallbacks - before;
         let (p, s) = r.expect("proved");
-        ck("lt(x,x) = lt(-1, x+y)", &p, &s);
+        job.lemmas.ck("lt(x,x) = lt(-1, x+y)", &p, &s);
         assert_eq!(fell, 0, "no whole-term machine proof");
     })
 }
@@ -526,7 +526,7 @@ pub fn shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones() 
         for n in [1usize, 3, 4] {
             for (l, r) in &laws {
                 let (p, s) = rewrite_law(job, n, 2, l, r).unwrap_or_else(|| panic!("no proof: {} = {} at n={n}", l.show(), r.show()));
-                ck(&format!("{} = {} at n={n}", l.show(), r.show()), &p, &s);
+                job.lemmas.ck(&format!("{} = {} at n={n}", l.show(), r.show()), &p, &s);
             }
         }
         // not laws: the arguments differ above bit 0
@@ -541,7 +541,7 @@ pub fn shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones() 
 /// `add_tree_law` (no rewrite rule, no hand-written invariant), and checked by the kernel at several widths.
 #[test]
 pub fn encoding_search_rediscovers_library_lemmas_from_statements() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let v = Term::v;
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
@@ -555,7 +555,7 @@ pub fn encoding_search_rediscovers_library_lemmas_from_statements() {
         for n in [1usize, 3, 4] {
             for (name, k, l, r) in &laws {
                 let (p, s) = add_tree_law(job, n, *k, l, r).unwrap_or_else(|| panic!("no proof: {name} at n={n}"));
-                ck(&format!("{name} at n={n}"), &p, &s);
+                job.lemmas.ck(&format!("{name} at n={n}"), &p, &s);
             }
         }
         // a non-law is refused
@@ -808,7 +808,7 @@ pub fn soundness_sweep() {
                 for &w in &widths {
                     match rewrite_law(job, w, kv, t1, t2) {
                         Some((p, s)) => {
-                            if let Err(m) = holds(&p, &s) {
+                            if let Err(m) = job.lemmas.holds(&p, &s) {
                                 panic!("kernel rejected the proof of {name} at width {w}: {}", m.chars().take(300).collect::<String>());
                             }
                             checked += 1;
@@ -820,7 +820,7 @@ pub fn soundness_sweep() {
                 false_laws += 1;
                 for w in (1..=6).filter(|w| !t1.plausibly_equals(t2, *w, kv)) {
                     if let Some((p, s)) = rewrite_law(job, w, kv, t1, t2) {
-                        assert!(holds(&p, &s).is_err(), "FALSE law accepted: {name} at width {w}");
+                        assert!(job.lemmas.holds(&p, &s).is_err(), "FALSE law accepted: {name} at width {w}");
                     }
                     refused += 1;
                 }
@@ -867,7 +867,7 @@ pub fn scaling_sweep() {
                         Some((p, s)) => {
                             dags.push(tatic::kernel::term_sizes(&p).0 as usize);
                             let t = Instant::now();
-                            ck(name, &p, &s);
+                            job.lemmas.ck(name, &p, &s);
                             let c = t.elapsed().as_secs_f64();
                             check_t += c;
                             proved += 1;
@@ -1378,7 +1378,7 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
         for n in [4usize, 8] {
             let (l, r) = shrnot_rule();
             let (p, s) = prove_rule(job, n, 1, &l, &r).expect("shrnot");
-            ck(&format!("shrnot n={n}"), &p, &s);
+            job.lemmas.ck(&format!("shrnot n={n}"), &p, &s);
         }
         for (a, b) in [
             ("shr1(sub(-1, xor(x, y)), 0)", "xor(shr1(y, 0), xor(shr1(-1, 0), shr1(x, 0)))"),
@@ -1386,7 +1386,7 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
         ] {
             let before = job.rw.fallbacks;
             let (p, s) = rewrite_law(job, 4, 2, &parse_term(a), &parse_term(b)).unwrap_or_else(|| panic!("{a} = {b}"));
-            ck(a, &p, &s);
+            job.lemmas.ck(a, &p, &s);
             assert_eq!(job.rw.fallbacks, before, "{a} = {b} needed a machine proof");
         }
     })
@@ -1446,7 +1446,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
                     Some(plan) => {
                         if !fast {
                             let (p, s) = law_proof(job, 4, kv, t1, t2, &plan);
-                            ck(name, &p, &s);
+                            job.lemmas.ck(name, &p, &s);
                         }
                         proved += 1;
                         let machine = job.rw.fallbacks - before;
@@ -1509,7 +1509,7 @@ pub fn proof_cost_split() {
                 let Some((p, s)) = rewrite_law(job, 4, kv, t1, t2) else { none += 1; continue };
                 let build = t.elapsed();
                 let t = Instant::now();
-                ck(name, &p, &s);
+                job.lemmas.ck(name, &p, &s);
                 let check = t.elapsed();
                 let (nodes, occ) = tatic::kernel::term_sizes(&p);
                 let a = &mut acc[if job.rw.fallbacks != before { 2 } else { (job.join_cost.met > met0) as usize }];
@@ -1522,7 +1522,7 @@ pub fn proof_cost_split() {
                 let Some((p, ty)) = prove_rule(job, 4, k, l, r) else { continue };
                 let build = t.elapsed();
                 let t = Instant::now();
-                ck(&l.show(), &p, &ty);
+                job.lemmas.ck(&l.show(), &p, &ty);
                 let check = t.elapsed();
                 let (nodes, occ) = tatic::kernel::term_sizes(&p);
                 (ra.n, ra.build, ra.check, ra.nodes, ra.occ) = (ra.n + 1, ra.build + build, ra.check + check, ra.nodes + nodes, ra.occ + occ);
@@ -1547,7 +1547,7 @@ pub fn promoted_rule_sets_are_proved() {
                 let k = l.max_var().max(r.max_var()) + 1;
                 assert!((1..=4).all(|w| l.plausibly_equals(&r, w, k)), "{} -> {}", l.show(), r.show());
                 let (p, t) = prove_rule(job, 4, k, &l, &r).unwrap_or_else(|| panic!("{} -> {} not provable", l.show(), r.show()));
-                ck(&l.show(), &p, &t);
+                job.lemmas.ck(&l.show(), &p, &t);
             }
         }
     })
@@ -1563,7 +1563,7 @@ pub fn closed_terms_fold_to_constants() {
             let (t1, t2) = (parse_term(a), parse_term(b));
             let before = job.rw.fallbacks;
             let (p, ty) = rewrite_law(job, 4, 1, &t1, &t2).unwrap_or_else(|| panic!("{a} = {b} not proved"));
-            ck(a, &p, &ty);
+            job.lemmas.ck(a, &p, &ty);
             assert_eq!(job.rw.fallbacks, before, "{a} = {b} needed a machine proof");
         }
     })

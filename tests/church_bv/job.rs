@@ -7,6 +7,8 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tatic::kernel::{Expr, PExpr, Postulates, Scope};
+
 use crate::rewrite::{JoinCost, JoinStoreUse, Pref, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
 
 type Env = hashbrown::HashMap<String, String>;
@@ -143,8 +145,7 @@ fn merge_env(process: impl Iterator<Item = (String, String)>, exe_env: Option<&s
     env
 }
 
-/// One rewriting thread's state over its task's `Setup`. Task 7 of the plan moves the rest of the rewriter's
-/// thread-locals here.
+/// One rewriting thread's state over its task's `Setup`.
 pub struct Job {
     id: u64,
     setup: Arc<Setup>,
@@ -161,6 +162,37 @@ pub struct Job {
     /// `RULE_CONFLICTS=1` (experiment): while `Some`, for each (rule that rewrote a term, later rule that would also have),
     /// how many terms; `print_rule_conflicts` lists them.
     pub conflicts: Option<hashbrown::HashMap<Pref, u64>>,
+    /// The lemmas bound as parameters so far, and the proofs that mention them.
+    pub lemmas: Lemmas,
+}
+
+/// A job's lemmas: each is checked once and bound as a parameter of its statement (`rewrite::shared_lemma`), so a law
+/// using it is checked against the parameter; `rewrite::discharge` ends them all. Everything here may mention the
+/// parameters, so it lives and ends with them.
+#[derive(Default)]
+pub struct Lemmas {
+    /// `shared_lemma`'s (parameter, statement) by key.
+    pub bound: hashbrown::HashMap<String, (PExpr, PExpr)>,
+    /// The parameters' builder and, per lemma, its scope and proof (`None`: a statement loaded from `LEMMA_CACHE`). A
+    /// proof may use the lemmas bound before it (a mined rule proved through a machine proof uses its case lemmas).
+    pub params: Option<(Postulates, Vec<(Scope, Option<PExpr>)>)>,
+    /// `machine::add_tree_law` results (a proof over the parameters, or none) by width, variable count and the two terms:
+    /// the rewriter asks for the same pair again for every law and every mined candidate that reaches the same subterm.
+    pub tree_laws: hashbrown::HashMap<(usize, usize, Term, Term), Option<(PExpr, PExpr)>>,
+}
+
+impl Lemmas {
+    /// Whether `e : ty`, against the parameters bound so far.
+    pub fn holds(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
+        match &self.params {
+            Some((ps, ..)) => ps.check_open(e, ty),
+            None => crate::encoding::holds(e, ty),
+        }
+    }
+    /// `holds`, panicking with `name` when it fails.
+    pub fn ck(&self, name: &str, e: &Expr, ty: &Expr) {
+        crate::encoding::checked(name, self.holds(e, ty))
+    }
 }
 
 /// The next `Job::id`: unique in the process, so `Job::with_rules` can tell a job from its replacement.
@@ -170,7 +202,7 @@ impl Job {
     /// A job with the built-in rules of `setup` alone, no preferences, both switches off.
     pub fn new(setup: Arc<Setup>) -> Job {
         let rules = Rules::new(&setup, vec![]);
-        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), conflicts: None }
+        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), conflicts: None, lemmas: Lemmas::default() }
     }
 
     pub fn setup(&self) -> &Arc<Setup> {

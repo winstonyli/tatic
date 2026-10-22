@@ -352,14 +352,14 @@ pub struct Tried {
     pub check: std::time::Duration,
 }
 /// The driver step shared by the conjecture miners: prove `t1 = t2` over `nv` variables at width `n`, kernel-check the proof, else classify the failure.
-pub fn prove_checked(job: &Job, n: usize, nv: usize, name: &str, t1: &Term, t2: &Term) -> Tried {
+pub fn prove_checked(job: &mut Job, n: usize, nv: usize, name: &str, t1: &Term, t2: &Term) -> Tried {
     let t = Instant::now();
     let law = add_tree_law(job, n, nv, t1, t2);
     let law_time = t.elapsed();
     let verdict = match law {
         Some((p, s)) => {
             let t = Instant::now();
-            ck(name, &p, &s);
+            job.lemmas.ck(name, &p, &s);
             return Tried { verdict: Verdict::Proved, law: law_time, check: t.elapsed() };
         }
         None => {
@@ -379,12 +379,6 @@ pub fn prove_checked(job: &Job, n: usize, nv: usize, name: &str, t1: &Term, t2: 
 /// The most carries per side `add_tree_law` takes on (its lemmas are case trees over `k + carries` bits); env `CARRY_CAP`.
 pub fn carry_cap(job: &Job) -> usize {
     job.setup().or("CARRY_CAP", 10)
-}
-
-thread_local! {
-    /// `add_tree_law` results (a closed proof, or none) by width, variable count and the two terms: the rewriter asks for the same
-    /// pair again for every law and every mined candidate that reaches the same subterm.
-    static TREE_LAWS: std::cell::RefCell<hashbrown::HashMap<(usize, usize, Term, Term), Option<(tatic::kernel::PExpr, tatic::kernel::PExpr)>>> = Default::default();
 }
 
 /// `tree_encoding` results past its cheap screens, by the same key, shared by a process's threads behind one lock: per thread,
@@ -437,17 +431,17 @@ pub fn tree_encoding(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Opt
 
 /// Proof of `t1 = t2` for two sum trees of add-free leaves over `k` good vectors, from their carry encoding (`tree_encoding`);
 /// `None` when there is none.
-pub fn add_tree_law(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
+pub fn add_tree_law(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
     let key = (n, k, *t1, *t2);
-    if let Some(hit) = TREE_LAWS.with(|c| c.borrow().get(&key).map(|l| l.as_ref().map(|(p, s)| (p.get(), s.get())))) {
+    if let Some(hit) = job.lemmas.tree_laws.get(&key).map(|l| l.as_ref().map(|(p, s)| (p.get(), s.get()))) {
         return hit;
     }
     let law = tree_encoding(job, n, k, t1, t2).map(|found| tree_proof(job, n, k, t1, t2, &found));
-    TREE_LAWS.with(|c| c.borrow_mut().insert(key, law.map(|(p, s)| (tatic::kernel::persist(p), tatic::kernel::persist(s)))));
+    job.lemmas.tree_laws.insert(key, law.map(|(p, s)| (tatic::kernel::persist(p), tatic::kernel::persist(s))));
     law
 }
 
-fn tree_proof(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Expr, Expr) {
+fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Expr, Expr) {
     let (m1, m2) = (Machine::parse(t1).expect("a machine"), Machine::parse(t2).expect("a machine"));
     let last = m1.last();
     let cs = [m1.carries(), m2.carries()];
@@ -502,10 +496,10 @@ fn tree_proof(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeE
     // decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle.md, "Decision diagrams deleted")
     // `ab` gets the bits too at a leaf (`Some`), the symbolic ones in the statement (`None`)
     type CaseFn<'a> = dyn Fn(&[Expr], Option<&[bool]>) -> (Expr, Expr) + 'a;
-    let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
+    let mut guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
         let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
-        shared_lemma(job.setup(), key, || {
+        shared_lemma(job, key, |job| {
             let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
             let body = |v: &[Expr]| {
                 let (a, b) = ab(v, None);
@@ -658,7 +652,7 @@ fn tree_proof(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeE
 
 #[test]
 pub fn state_encoding_search_proves_three_leaf_sum_laws() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |a: Term, b: Term| Term::op(ADD, a, b);
@@ -673,7 +667,7 @@ pub fn state_encoding_search_proves_three_leaf_sum_laws() {
                     println!("ENCODING {name}: {} phi bits, phi1 {:?}", e.phi[0].len(), e.phi[0]);
                 }
                 let (p, s) = add_tree_law(job, n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
-                ck(&format!("{name} at n={n}"), &p, &s);
+                job.lemmas.ck(&format!("{name} at n={n}"), &p, &s);
             }
             // a false law has no encoding
             assert!(add_tree_law(job, n, 2, &op(op(v(0), v(1)), v(1)), &op(v(0), op(v(0), v(0)))).is_none());
@@ -683,7 +677,7 @@ pub fn state_encoding_search_proves_three_leaf_sum_laws() {
 
 #[test]
 pub fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leaves() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
@@ -693,15 +687,15 @@ pub fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leave
             let t1 = add(op(1, v(0), v(1)), op(2, v(0), v(1)));
             let t2 = add(v(0), v(1));
             let (p, s) = add_tree_law(job, n, 2, &t1, &t2).expect("and+or");
-            ck(&format!("and+or at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("and+or at n={n}"), &p, &s);
             // associativity over three vectors, found by search
             let (p, s) = add_tree_law(job, n, 3, &add(add(v(0), v(1)), v(2)), &add(v(0), add(v(1), v(2)))).expect("assoc3");
-            ck(&format!("assoc over x y z at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("assoc over x y z at n={n}"), &p, &s);
             // four leaves (three carries, two-bit total carry): (((x+y)+z)+x) = (x+(y+(z+x)))
             let l = add(add(add(v(0), v(1)), v(2)), v(0));
             let r = add(v(0), add(v(1), add(v(2), v(0))));
             let (p, s) = add_tree_law(job, n, 3, &l, &r).expect("four leaves");
-            ck(&format!("four leaves at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("four leaves at n={n}"), &p, &s);
             // false laws have no encoding
             assert!(add_tree_law(job, n, 3, &l, &add(v(0), add(v(1), add(v(2), v(2))))).is_none());
             assert!(add_tree_law(job, n, 2, &t1, &add(v(0), v(0))).is_none());
@@ -711,7 +705,7 @@ pub fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leave
 
 #[test]
 pub fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leaves() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
@@ -719,18 +713,18 @@ pub fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leav
         for n in [1usize, 2, 4] {
             // one add against two: the zero leaf adds a carry that never fires
             let (p, s) = add_tree_law(job, n, 2, &add(v(1), Term::ONES), &add(Term::ONES, add(v(1), Term::ZERO))).expect("unequal counts");
-            ck(&format!("y + -1 = -1 + (y + 0) at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("y + -1 = -1 + (y + 0) at n={n}"), &p, &s);
             // a bare leaf is a sum with no carries
             let (p, s) = add_tree_law(job, n, 2, &v(1), &add(v(1), Term::ZERO)).expect("bare leaf");
-            ck(&format!("y = y + 0 at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("y = y + 0 at n={n}"), &p, &s);
             let (p, s) = add_tree_law(job, n, 2, &op(3, v(0), Term::ONES), &add(op(3, v(0), Term::ONES), Term::ZERO)).expect("bare bitwise leaf");
-            ck(&format!("x^-1 = (x^-1) + 0 at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("x^-1 = (x^-1) + 0 at n={n}"), &p, &s);
             assert!(add_tree_law(job, n, 2, &v(1), &add(v(1), Term::ONES)).is_none());
             // five leaves, four carries
             let l = add(add(add(add(v(0), v(1)), v(2)), v(0)), v(1));
             let r = add(v(0), add(v(1), add(v(2), add(v(0), v(1)))));
             let (p, s) = add_tree_law(job, n, 3, &l, &r).expect("five leaves");
-            ck(&format!("five leaves at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("five leaves at n={n}"), &p, &s);
             assert!(add_tree_law(job, n, 3, &l, &add(v(0), add(v(1), add(v(2), add(v(0), v(0)))))).is_none());
             assert!(add_tree_law(job, n, 2, &add(v(1), Term::ONES), &add(v(0), add(v(1), Term::ZERO))).is_none());
         }
@@ -741,7 +735,7 @@ pub fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leav
 #[test]
 #[ignore]
 pub fn tree_proof_cost_by_carries() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     let v = |i: usize| Term::v(i);
     let add = |a: Term, b: Term| Term::op(ADD, a, b);
     let leaves = [v(0), v(1), v(2), v(0), v(1), v(2), v(0)];
@@ -754,7 +748,7 @@ pub fn tree_proof_cost_by_carries() {
                 let (p, s) = add_tree_law(job, n, 3, &left, &right).expect("encoding");
                 let built = t0.elapsed();
                 let t1 = Instant::now();
-                let ok = holds(&p, &s).is_ok();
+                let ok = job.lemmas.holds(&p, &s).is_ok();
                 println!("TREECOST n={n} carries={c}: build {built:?}, check {:?}, ok {ok}", t1.elapsed());
             })
         }
@@ -763,7 +757,7 @@ pub fn tree_proof_cost_by_carries() {
 
 #[test]
 pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         // computes: a - b mod 2^n on all pairs at n = 3
         let n = 3;
@@ -774,7 +768,7 @@ pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
             }
         }
         let (p, s) = good_sub(2);
-        ck("good_sub n=2", &p, &s);
+        job.lemmas.ck("good_sub n=2", &p, &s);
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         for n in [1usize, 2, 4] {
@@ -790,7 +784,7 @@ pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
                 ("x - (y - z) = (x - y) + z", 3, op(4, v(0), op(4, v(1), v(2))), op(0, op(4, v(0), v(1)), v(2))),
             ] {
                 let (p, s) = add_tree_law(job, n, k, &l, &r).unwrap_or_else(|| panic!("{name}: no encoding"));
-                ck(&format!("{name} at n={n}"), &p, &s);
+                job.lemmas.ck(&format!("{name} at n={n}"), &p, &s);
             }
             // false laws have none
             assert!(add_tree_law(job, n, 2, &op(4, v(0), v(1)), &op(4, v(1), v(0))).is_none());
@@ -875,20 +869,20 @@ pub fn conjecture_miner() {
                 }
                 if members[0].uses_add() || other.uses_add() {
                     match rewrite_law(job, n, k, members[0], other) {
-                        Some((p, s)) if k > 2 && holds(&p, &s).is_ok() => by_third.1 += 1,
+                        Some((p, s)) if k > 2 && job.lemmas.holds(&p, &s).is_ok() => by_third.1 += 1,
                         _ if k > 2 => match add_tree_law(job, n, k, members[0], other) {
-                            Some((p, s)) if holds(&p, &s).is_ok() => by_third.1 += 1,
+                            Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_third.1 += 1,
                             _ => needs_z += 1,
                         },
-                        Some((p, s)) if holds(&p, &s).is_ok() => by_rewrite += 1,
+                        Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_rewrite += 1,
                         Some(_) => rewrite_bugs.push(law),
                         None => {
                             // the generic carry-chain builder, in either orientation
                             let chain = carry_chain_law(n, members[0], other).or_else(|| carry_chain_law(n, other, members[0]));
                             match chain {
-                                Some((p, s)) if holds(&p, &s).is_ok() => by_chain += 1,
+                                Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_chain += 1,
                                 _ => match add_tree_law(job, n, 2, members[0], other) {
-                                    Some((p, s)) if holds(&p, &s).is_ok() => by_tree += 1,
+                                    Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_tree += 1,
                                     _ => needs_add.push(law),
                                 },
                             }
@@ -896,7 +890,7 @@ pub fn conjecture_miner() {
                     }
                 } else {
                     let (p, s) = bitwise_law_k(n, k, members[0], other);
-                    if holds(&p, &s).is_ok() {
+                    if job.lemmas.holds(&p, &s).is_ok() {
                         by_builder += 1;
                         by_third.1 += (k > 2) as usize;
                     } else {
@@ -923,9 +917,9 @@ pub fn conjecture_miner() {
         let (p1, s1) = add_identity_proof(n, 0, true);
         let (p2, s2) = add_comm_proof(n, false);
         for (name, mined, proved) in [
-            ("add x 0 = x", same(&op(0, v(0), Term::ZERO), &v(0)), holds(&p0, &s0).is_ok()),
-            ("add 0 x = x", same(&op(0, Term::ZERO, v(0)), &v(0)), holds(&p1, &s1).is_ok()),
-            ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), holds(&p2, &s2).is_ok()),
+            ("add x 0 = x", same(&op(0, v(0), Term::ZERO), &v(0)), job.lemmas.holds(&p0, &s0).is_ok()),
+            ("add 0 x = x", same(&op(0, Term::ZERO, v(0)), &v(0)), job.lemmas.holds(&p1, &s1).is_ok()),
+            ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), job.lemmas.holds(&p2, &s2).is_ok()),
         ] {
             println!("MINER known lemma {name}: conjectured {mined}, template proof checks {proved}");
             assert!(mined && proved, "{name}");
@@ -976,7 +970,7 @@ pub fn lt_pool(nvars: usize) -> Vec<Term> {
 
 #[test]
 pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let n = 4usize;
         // `lt_u` computes `a < b`
@@ -995,7 +989,7 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
         ];
         for (name, t1, t2) in &laws {
             let (p, s) = add_tree_law(job, n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
-            ck(name, &p, &s);
+            job.lemmas.ck(name, &p, &s);
         }
         // these hold only on the reachable carry states (the borrow of `x - 0` never becomes 1, the borrow of `x + y < x`
         // equals the add's carry): proved with lemmas conditional on a reachability invariant
@@ -1004,7 +998,7 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
             ("lt (x+y) x = lt (x+y) y", lt(op(0, v(0), v(1)), Term::v(0)), lt(op(0, v(0), v(1)), Term::v(1))),
         ] {
             let (p, s) = add_tree_law(job, n, 2, &t1, &t2).unwrap_or_else(|| panic!("no proof: {name}"));
-            ck(name, &p, &s);
+            job.lemmas.ck(name, &p, &s);
         }
         // false laws are not proved: by the plausibility screen, and a wrong proof would not check
         assert!(add_tree_law(job, n, 2, &lt(Term::v(0), Term::v(1)), &lt(Term::v(1), Term::v(0))).is_none());
@@ -1017,7 +1011,7 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
 #[test]
 #[ignore]
 pub fn lt_conjecture_miner() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let _banner = MachineBanner::start(job, "LTMINER");
         let n = 4usize;
@@ -1252,7 +1246,7 @@ pub fn large_sums_with_shared_subterms_stay_provable() {
         let t1 = add(s, add(s, s));
         let t2 = add(add(s, s), s);
         let (p, st) = rewrite_law(job, 2, 3, &t1, &t2).expect("proved");
-        ck("add S (add S S) = add (add S S) S", &p, &st);
+        job.lemmas.ck("add S (add S S) = add (add S S) S", &p, &st);
         // not equal: no proof
         assert!(rewrite_law(job, 2, 3, &t1, &add(add(s, s), v(0))).is_none());
     })
@@ -1263,7 +1257,7 @@ pub fn large_sums_with_shared_subterms_stay_provable() {
 
 #[test]
 pub fn shifts_inside_sums_are_machines_and_their_laws_check() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
@@ -1280,7 +1274,7 @@ pub fn shifts_inside_sums_are_machines_and_their_laws_check() {
         ];
         for (name, t1, t2) in &laws {
             let (p, s) = add_tree_law(job, n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
-            ck(name, &p, &s);
+            job.lemmas.ck(name, &p, &s);
         }
         // false laws get no proof
         assert!(add_tree_law(job, n, 2, &shl(v(0)), &v(0)).is_none());
@@ -1317,7 +1311,7 @@ pub fn shl_conjectures(nv: usize) -> Vec<(Term, Term)> {
 #[test]
 #[ignore]
 pub fn shl_conjecture_miner() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let _banner = MachineBanner::start(job, "SHLMINER");
         let n = 4usize;
@@ -1368,7 +1362,7 @@ pub fn mul_const(c: u32, t: &Term) -> Term {
 
 #[test]
 pub fn multiplication_by_constants_as_shift_and_add_machines() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
@@ -1389,7 +1383,7 @@ pub fn multiplication_by_constants_as_shift_and_add_machines() {
             let t0 = Instant::now();
             let (p, s) = add_tree_law(job, n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
             let built = t0.elapsed();
-            ck(name, &p, &s);
+            job.lemmas.ck(name, &p, &s);
             println!("MUL {name}: build {built:?}, total {:?}", t0.elapsed());
         }
         // false: 3x is not 4x - 2
@@ -1424,7 +1418,7 @@ pub fn mul_laws(max: u32) -> Vec<(String, Term, Term)> {
 #[test]
 #[ignore]
 pub fn mul_conjecture_miner() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let _banner = MachineBanner::start(job, "MULMINER");
         let max = job.setup().or("MULMINER_MAX", 7);
@@ -1465,7 +1459,7 @@ pub fn mul_conjecture_miner() {
 #[test]
 #[ignore]
 pub fn ablation_audit() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let _banner = MachineBanner::start(job, "AUDIT");
         let max = job.setup().or("MULMINER_MAX", 7);

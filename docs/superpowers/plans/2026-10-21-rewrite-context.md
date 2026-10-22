@@ -40,9 +40,10 @@ below. That section is binding; where a task's text disagrees with it, the decis
 - **D3: thread-local caches of pure functions stay thread-local,** on an allow-list the guard test enforces:
   - `OP_CACHE`, `BUFS`, `TERMS`, `COUNTING`;
   - `CLOSED`, which `memo` keeps for its pure entries only;
-  - `TREE_LAWS`, `CONSTANTS`, `BODIES` and encoding's `gen_memo` maps.
+  - `CONSTANTS`, `BODIES` and encoding's `gen_memo` maps.
 
-  `PARAMS`, and the lemma entries that `shared_lemma` keeps in `CLOSED` today, move into `Job`.
+  `PARAMS`, the lemma entries that `shared_lemma` keeps in `CLOSED` today, and `TREE_LAWS` move into `Job`.
+  `TREE_LAWS` was first listed here, but its proofs mention lemma parameters, so it is not pure (Task 7).
 - **D4: stage order.** First split the miner (thread-locals untouched). Then introduce `Setup`. Then move the
   thread-locals into `Job` one group at a time.
 - **D5: quirks are preserved exactly, written out explicitly,** until Task 9. Task 9 probes each one and fixes it
@@ -57,7 +58,7 @@ below. That section is binding; where a task's text disagrees with it, the decis
 - **Q2:** `shape_part` (`search.rs:308`) reads `RULEMINER_SHAPE_SALT` from the task's environment, while its caller
   `family_laws` (`:168`, `:210`) reads `RULEMINER_SHAPE` from the `env` closure it is given. In the driver, which
   passes a stage's env pairs through that closure (`write_laws`), a stage's own `RULEMINER_SHAPE_SALT` is ignored.
-- **Q3:** `TREE_LAWS` (`machine.rs:382`) is keyed without `carry_cap`, which comes from the environment.
+- **Q3:** `TREE_LAWS` (`machine.rs:382`; `Lemmas::tree_laws` from Task 7) is keyed without `carry_cap`, which comes from the environment.
 - **Q4:** `proving` (`rewrite.rs:1865`) does not save `REWROTE`. A proof's outermost `rewrite` therefore clears its
   caller's list, and the caller sees the proof's leftovers.
 - **Q5:** the budget that P5's proofs run under is whatever the main thread's `RULE_BUDGET` holds after P1, not a
@@ -582,33 +583,63 @@ impl Default for RewriteState { /* cut_low: usize::MAX, budget: i64::MAX / 2, th
 - [x] **Step 2: suite, clippy, gate.** Expected: suite unchanged, gate equal. Got: 522; clippy unchanged; run 2026-10-21-t6-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks).
 - [x] **Step 3: commit:** `C1 step 4: join state and conflict counts in the job`.
 
-### Task 7: lemmas (`PARAMS` and `shared_lemma`'s entries)
+### Task 7: lemmas (`PARAMS`, `shared_lemma`'s entries and `TREE_LAWS`) (done 2026-10-22)
 
-**Produces:** `pub struct Lemmas { closed: HashMap<String, (PExpr, PExpr)>, params: Option<(Postulates, Vec<(Scope, Option<PExpr>)>)> }`
-in `job.rs`; `Job` gains `pub lemmas: Lemmas`. `shared_lemma(job: &mut Job, key, build)` and
+**Produces:** `pub struct Lemmas { bound: HashMap<String, (PExpr, PExpr)>, params: Option<(Postulates, Vec<(Scope, Option<PExpr>)>)>, tree_laws: HashMap<(usize, usize, Term, Term), Option<(PExpr, PExpr)>> }`
+in `job.rs`, with `Lemmas::holds` and `Lemmas::ck`; `Job` gains `pub lemmas: Lemmas`.
+`shared_lemma(job: &mut Job, key, build: impl FnOnce(&mut Job) -> (Expr, Expr))` and
 `discharge(job: &mut Job, body)`. `memo` keeps `CLOSED` for its pure entries.
 
-- [ ] **Step 1: check that `memo`'s and `shared_lemma`'s keys don't collide.** List every `memo(` and
-  `shared_lemma(` key format. If one is used by both, stop and report.
-- [ ] **Step 2: failing test.** In one job, bind lemma A, `discharge` a body, bind lemma B, `discharge` again.
-  The second discharged term must apply only B's proof. It fails to compile until Step 3.
-- [ ] **Step 3: convert.**
+**Decisions taken with the user (2026-10-22):**
+- `TREE_LAWS` moves into `Lemmas` as `tree_laws`. It was on D3's list, but `tree_proof` builds its proofs over
+  `shared_lemma`'s parameters, so on a thread that ran a second job they would mention parameters that job never bound.
+- `discharge` takes the whole `Lemmas` (`bound`, `params`, `tree_laws`): it ends the parameters and everything that
+  mentions them, so a lemma asked for after a discharge is bound afresh. Before, `CLOSED` kept the ended parameter
+  ("call it last"). Only tests call `discharge`.
+- `encoding::holds`/`ck` check closed terms and keep their signature; `Lemmas::holds`/`Lemmas::ck` check a term over
+  the job's parameters. Every check site with a `job` in scope uses the job's (63 sites, rewritten by a script), except
+  the checks of a discharged term, which is closed. The kernel rejects a `Free` no scope binds, so a site that should
+  have used the job's check fails loudly on a positive check. The remaining closed-check sites in machine, rewrite,
+  search and wasm have no job in their function.
+
+**Rulings while building it (2026-10-22):**
+- `Lemmas`' first map is `bound`, not `closed`: its entries are parameters, not closed terms.
+- `shared_lemma` no longer goes through `memo`. It looks up and inserts `job.lemmas.bound` itself, in the same order
+  `memo` did (the entry is stored after the lemma is bound), and passes the job to `build`.
+- `encoding::checked(name, result)` is the panic both `ck`s share.
+- `law_time` checks against `job.lemmas.params` in place instead of taking `PARAMS` out and putting it back.
+- `if_law` and `if_good` (wasm.rs) build closed terms with no lemma and need no job.
+- The two clippy `type_complexity` warnings on `PARAMS` and `TREE_LAWS` moved with them to `job.rs` (net unchanged).
+- D3 re-checked for other memos holding kernel terms: `CONSTANTS`, `BODIES` and `memo`'s `gbit{n}_{o}` entries are
+  closed terms built by code that has no job; the shared memos (`TREE_ENCS`, `SCREENS`, `TREE_CANDS`, search's
+  `MEMO`) hold tables and `Term`s. None can mention a parameter.
+
+- [x] **Step 1: check that `memo`'s and `shared_lemma`'s keys don't collide.** `memo`: `gbit{n}_{o}` only.
+  `shared_lemma`: `good_add{n}`, `good_sub{n}`, `good_shl1{n}`, `good_shr1{n}`, `tree|{machine}|{k}|{nv}|{tag}|..`,
+  `{prover}_{l}_{r}_{n}_{k}` and the test's `nested`. No collision.
+- [x] **Step 2: failing test.** In one job, bind lemma A, `discharge` a body, bind lemma B, `discharge` again.
+  The second discharged term must apply only B's proof, and A asked for again must be bound afresh
+  (`a_second_discharge_in_a_job_applies_only_the_lemmas_bound_after_the_first`). Written against the old API first, it
+  failed with `A again: free parameter $0 escaped its scope`.
+- [x] **Step 3: convert.**
   - `PARAMS` is deleted.
   - Callers of `witnessed`, `holds`, `Compiler::proof`, `if_law`, `if_good`, `prove_checked`, `add_tree_law` and
     `tree_proof` gain `job` where the compiler asks.
-  - `encoding.rs`'s `holds`, which reads `PARAMS`, takes `job: &Job`.
-- [ ] **Step 4: suite, clippy, gate.** Expected: suite 523, gate equal.
-- [ ] **Step 5: commit:** `C1 step 5: lemma parameters in the job`.
+  - `encoding.rs`'s `holds`, which read `PARAMS`, checks closed terms; `Lemmas::holds` checks the rest (decision above).
+- [x] **Step 4: suite, clippy, gate.** Expected: suite 523, gate equal. Got: 523; clippy net unchanged; run 2026-10-22-t7-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks; CPU 22%, Defender RTP off).
+- [x] **Step 5: commit:** `C1 step 5: lemma parameters in the job`.
 
 ### Task 8: the guard test and docs
 
 - [ ] **Step 1: rewrite `task_state_is_classified`** (it moves to `job.rs` and is renamed
   `hidden_state_is_classified`). It fails on:
   - any `thread_local!` static in church_bv not on D3's allow-list, by name: `OP_CACHE`, `BUFS`, `TERMS`,
-    `COUNTING`, `CLOSED`, `TREE_LAWS`, `CONSTANTS`, `BODIES`, and `gen_memo`'s statics;
+    `COUNTING`, `CLOSED`, `CONSTANTS`, `BODIES`, and `gen_memo`'s statics;
   - any mutable process-wide static other than `SharedMemo`s and the list `TABLE`, `CACHE`, `ID`, `NONCE`,
     `NEXT_JOB`, `PROCESS_SETUP`;
   - outside `job.rs`, any line matching `mem::(swap|replace|take)\(\s*(&mut\s+)?\*?job\b` or `^\s*\*job\s*=`.
+    As written this also trips on a field take such as `discharge`'s `std::mem::take(&mut job.lemmas)` (Task 7);
+    the pattern should end in `job\s*[,)]` so only a whole-job swap matches.
 
   Keep the existing `flagged` unit tests, and add one per new rule with a line that must trip it.
 - [ ] **Step 2: run.** Expected: the suite passes, at 523 plus the guard tests added in Step 1. Then add `thread_local! { static ZZ: Cell<u8> = … }` to
@@ -617,7 +648,7 @@ in `job.rs`; `Job` gains `pub lemmas: Lemmas`. `shared_lemma(job: &mut Job, key,
   - `docs/tier-cycle.md`, "A persistent worker": the worker now builds a `Setup` per task. The fresh thread remains
     only for D3's caches.
   - `task.rs` and `driver.rs` module docs.
-  - The comments that named the deleted statics (`grep -rn 'RULE_BUDGET\|SCORE_ONLY\|REWRITE_MEMO\|PerTask' tests docs/*.md README.md`;
+  - The comments that named the deleted statics (`grep -rn 'RULE_BUDGET\|SCORE_ONLY\|REWRITE_MEMO\|PARAMS\|TREE_LAWS\|PerTask' tests docs/*.md README.md`;
     the plan files under `docs/superpowers` keep their history).
   - Cleanup plan: C1 done, and C17's `SCORE_ONLY` comment nit is resolved.
 - [ ] **Step 4: commit:** `C1 step 6: the guard covers thread-locals and job swaps; docs`.
@@ -637,7 +668,7 @@ For each of Q1–Q5:
 - [ ] **Q2:** `family_laws`'s closure returns `usize` and cannot carry a salt string. It becomes
   `env: &dyn Fn(&str) -> Option<String>`, with the numeric reads parsed at the call, and `shape_part` takes the salt
   from it. Expected: no change, since no stage sets `RULEMINER_SHAPE_SALT` today (grep `driver.rs` to confirm).
-- [ ] **Q3:** `TREE_LAWS`'s key gains `carry_cap`. Within one process the cap is fixed per task, so expected: no
+- [ ] **Q3:** `Lemmas::tree_laws`' key gains `carry_cap`. Within one process the cap is fixed per task, so expected: no
   change.
 - [ ] **Q4:** `proving` gives the proof a fresh `rewrote` and leaves the caller's alone. First add a
   `debug_assert!(job.rw.rewrote.is_empty())` at entry and run the debug suite (`cargo test --tests -j 8`; the sweep

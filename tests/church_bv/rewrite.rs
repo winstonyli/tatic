@@ -850,50 +850,44 @@ pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
     (p, s)
 }
 
-thread_local! {
-    /// The lemma parameters: one nested scope per bound lemma, outermost first, with the lemma's proof (none for one
-    /// loaded from `LEMMA_CACHE`). A proof may use the lemmas bound before it (a mined rule proved through a machine proof
-    /// uses its case lemmas).
-    pub static PARAMS: std::cell::RefCell<Option<(Postulates, Vec<(Scope, Option<tatic::kernel::PExpr>)>)>> = const { std::cell::RefCell::new(None) };
-}
-/// `memo` for a closed lemma `(proof, statement)`: the proof is checked once (`ck`, against the lemmas bound before it)
-/// and the lemma is returned as a parameter of that statement, so a law using it is checked against the parameter, not
-/// the proof. `discharge` turns a term over parameters back into a closed one. A statement an earlier process of the loop
-/// checked is bound without building its proof (`lemma_cache`).
-pub fn shared_lemma(setup: &Setup, key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
-    memo(key.clone(), || {
-        let (p, s) = match lemma_cache::lookup(setup, &key) {
-            Some(s) if !lemma_cache::recheck(setup) => (None, s),
-            cached => {
-                let (p, s) = build();
-                ck(&format!("lemma {key}"), &p, &s);
-                match cached {
-                    Some(c) => assert!(c == s, "LEMMA_RECHECK: the cached statement of {key} is not the one built"),
-                    None => lemma_cache::record(setup, &key, &s),
-                }
-                (Some(p), s)
+/// A closed lemma `(proof, statement)` built once per key in the job: the proof is checked once (`Lemmas::ck`, against the
+/// lemmas bound before it) and the lemma is returned as a parameter of that statement, so a law using it is checked
+/// against the parameter, not the proof. `discharge` turns a term over parameters back into a closed one. A statement an
+/// earlier process of the loop checked is bound without building its proof (`lemma_cache`).
+pub fn shared_lemma(job: &mut Job, key: String, build: impl FnOnce(&mut Job) -> (Expr, Expr)) -> (Expr, Expr) {
+    if let Some(v) = job.lemmas.bound.get(&key).map(|(r, s)| (r.get(), s.get())) {
+        return v;
+    }
+    let setup = job.setup().clone();
+    let (p, s) = match lemma_cache::lookup(&setup, &key) {
+        Some(s) if !lemma_cache::recheck(&setup) => (None, s),
+        cached => {
+            let (p, s) = build(job);
+            job.lemmas.ck(&format!("lemma {key}"), &p, &s);
+            match cached {
+                Some(c) => assert!(c == s, "LEMMA_RECHECK: the cached statement of {key} is not the one built"),
+                None => lemma_cache::record(&setup, &key, &s),
             }
-        };
-        PARAMS.with(|c| {
-            let mut c = c.borrow_mut();
-            let (ps, scopes) = c.get_or_insert_with(|| (Postulates::new(), Vec::new()));
-            let sc = ps.open();
-            let r = ps.bind(s);
-            scopes.push((sc, p.map(tatic::kernel::persist)));
-            (r, s)
-        })
-    })
+            (Some(p), s)
+        }
+    };
+    let (ps, scopes) = job.lemmas.params.get_or_insert_with(|| (Postulates::new(), Vec::new()));
+    let sc = ps.open();
+    let r = ps.bind(s);
+    scopes.push((sc, p.map(tatic::kernel::persist)));
+    job.lemmas.bound.insert(key, (tatic::kernel::persist(r), tatic::kernel::persist(s)));
+    (r, s)
 }
-/// `body` with the lemma parameters discharged, innermost first: `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, a closed term
-/// whose check re-checks every lemma proof `P_i` once. Ends the scopes; the memoised parameters stay in `CLOSED`, so
-/// call it last.
-pub fn discharge(body: Expr) -> Expr {
-    let Some((mut ps, scopes)) = PARAMS.with(|c| c.borrow_mut().take()) else { return body };
+/// `body` with the job's lemma parameters discharged, innermost first: `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, a closed
+/// term whose check re-checks every lemma proof `P_i` once. Ends the job's lemmas and everything that mentions them, so a
+/// lemma asked for later is bound afresh.
+pub fn discharge(job: &mut Job, body: Expr) -> Expr {
+    let Some((mut ps, scopes)) = std::mem::take(&mut job.lemmas).params else { return body };
     scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p.expect("discharge needs every lemma's proof: run without LEMMA_CACHE").get()))
 }
 
 /// `(value, GoodBv witness)` of `t` in context `[x, y, gx, gy]`.
-pub fn witnessed(job: &Job, t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
+pub fn witnessed(job: &mut Job, t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr, Expr) {
     let all = low_bits(n);
     match *t.node() {
         Node::V(i) => goods[i],
@@ -902,10 +896,10 @@ pub fn witnessed(job: &Job, t: &Term, n: usize, goods: &[(Expr, Expr)]) -> (Expr
         Node::Op(o, a, b) => {
             let ((av, aw), (bv, bw)) = (witnessed(job, &a, n, goods), witnessed(job, &b, n, goods));
             let (op, good_op) = match o {
-                0 => (add(n), shared_lemma(job.setup(), format!("good_add{n}"), || good_add(n)).0),
-                4 => (sub(n), shared_lemma(job.setup(), format!("good_sub{n}"), || good_sub(n)).0),
-                6 => (shl1_op(n), shared_lemma(job.setup(), format!("good_shl1{n}"), || good_shl1(n)).0),
-                7 => (shr1_op(n), shared_lemma(job.setup(), format!("good_shr1{n}"), || good_shr1(n)).0),
+                0 => (add(n), shared_lemma(job, format!("good_add{n}"), |_| good_add(n)).0),
+                4 => (sub(n), shared_lemma(job, format!("good_sub{n}"), |_| good_sub(n)).0),
+                6 => (shl1_op(n), shared_lemma(job, format!("good_shl1{n}"), |_| good_shl1(n)).0),
+                7 => (shr1_op(n), shared_lemma(job, format!("good_shr1{n}"), |_| good_shr1(n)).0),
                 _ => memo(format!("gbit{n}_{o}"), || {
                     let opf = move |p: Expr, q: Expr| match o {
                         1 => and(p, q),
@@ -1054,7 +1048,7 @@ impl Compiler {
                     LawKind::Chain => "chain".into(),
                     LawKind::Tree => "tree".into(),
                 };
-                let law = shared_lemma(&job.setup().clone(), format!("{prover}_{}_{}_{n}_{k}", l.show(), r.show()), || match kind {
+                let law = shared_lemma(job, format!("{prover}_{}_{}_{n}_{k}", l.show(), r.show()), |job| match kind {
                     LawKind::Rule(name) => prove_rule(job, n, k, l, r).unwrap_or_else(|| panic!("rule {name} is not provable")),
                     LawKind::Assoc => add_assoc_proof(n, false),
                     LawKind::Comm => add_comm_proof(n, false),
@@ -1806,7 +1800,7 @@ pub fn prove_rule(job: &mut Job, n: usize, k: usize, l: &Term, r: &Term) -> Opti
         shr_not_law(job, n)
     } else if l.add_free() && r.add_free() {
         let law = bitwise_law_k(n, k, l, r);
-        holds(&law.0, &law.1).ok().map(|_| law)
+        job.lemmas.holds(&law.0, &law.1).ok().map(|_| law)
     } else if matches!(*l.node(), Node::Op(SHR1, ..)) && matches!(*r.node(), Node::Op(SHR1, ..) | Node::Zero) || matches!(*r.node(), Node::Op(SHR1, ..)) && matches!(*l.node(), Node::Zero) {
         // laws with a `shr1` root are not machines: prove them with the rewriter (which falls back on the bit-0 mask
         // reduction), without the rule being proved, so that it cannot be used in its own proof
@@ -3450,7 +3444,7 @@ fn plans_compile_to_checked_proofs() {
             let (a, b, _) = Compiler::new(4, k).proof(job, &plans[0]);
             assert!((a, b) == (*l, *r), "{} = {}", l.show(), r.show());
             let (p, s) = law_proof(job, 4, k, l, r, &plans[0]);
-            ck(&format!("{} = {}", l.show(), r.show()), &p, &s);
+            job.lemmas.ck(&format!("{} = {}", l.show(), r.show()), &p, &s);
         }
     })
 }
@@ -3471,7 +3465,7 @@ fn join_eq_closes_an_equal_pair_by_rule_and_comm_steps() {
         let plan = join_eq(job, n, k, &a, &b).expect("a join");
         assert!(Compiler::new(n, k).proof(job, &plan).0 == a && Compiler::new(n, k).proof(job, &plan).1 == b);
         let (p, s) = law_proof(job, n, k, &a, &b, &plan);
-        ck("joined", &p, &s);
+        job.lemmas.ck("joined", &p, &s);
         assert!(join_eq(job, n, k, &a, &parse_term("add(sub(add(x, y), -1), y)")).is_none());
         })
     })
@@ -3554,13 +3548,13 @@ pub fn laws_over_three_vectors_check_and_false_ones_fail() {
         for n in [1usize, 3] {
             // bitwise (x ^ y) ^ z = x ^ (y ^ z)
             let (p, s) = bitwise_law_k(n, 3, &op(3, op(3, v(0), v(1)), v(2)), &op(3, v(0), op(3, v(1), v(2))));
-            ck(&format!("xor assoc at n={n}"), &p, &s);
-            assert!(holds(&bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).0, &bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).1).is_err());
+            job.lemmas.ck(&format!("xor assoc at n={n}"), &p, &s);
+            assert!(job.lemmas.holds(&bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).0, &bitwise_law_k(n, 3, &op(1, v(0), v(2)), &op(2, v(0), v(2))).1).is_err());
             // add associativity over three vectors, and a non-law
             let (p, s) = rewrite_law(job, n, 3, &op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2)))).expect("assoc");
-            ck(&format!("add assoc at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("add assoc at n={n}"), &p, &s);
             let (p, s) = rewrite_law(job, n, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
-            ck(&format!("add comm assoc at n={n}"), &p, &s);
+            job.lemmas.ck(&format!("add comm assoc at n={n}"), &p, &s);
             assert!(rewrite_law(job, n, 3, &op(0, v(0), v(2)), &op(0, v(0), v(1))).is_none());
         }
     })
@@ -3578,7 +3572,7 @@ pub fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
         ("add (and x y) y = add y (and y x)", op(0, op(1, v(0), v(1)), v(1)), op(0, v(1), op(1, v(1), v(0)))),
     ] {
         let (p, s) = rewrite_law(job, n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no rewrite proof"));
-        ck(name, &p, &s);
+        job.lemmas.ck(name, &p, &s);
     }
     // associativity instances, including one that needs reordering as well
     for (name, t1, t2) in [
@@ -3586,7 +3580,7 @@ pub fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
         ("add (add y y) x = add (add x y) y", op(0, op(0, v(1), v(1)), v(0)), op(0, op(0, v(0), v(1)), v(1))),
     ] {
         let (p, s) = rewrite_law(job, n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no rewrite proof"));
-        ck(name, &p, &s);
+        job.lemmas.ck(name, &p, &s);
     }
     // a false law is refused by the truth-table pre-check
     assert!(rewrite_law(job, n, 2, &op(0, v(0), v(1)), &op(0, v(0), v(0))).is_none());
@@ -3599,22 +3593,37 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let (p, s) = rewrite_law(job, 2, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
-        assert!(PARAMS.with(|c| c.borrow().as_ref().is_some_and(|(.., b)| !b.is_empty())), "no lemma was bound");
+        assert!(job.lemmas.params.as_ref().is_some_and(|(.., b)| !b.is_empty()), "no lemma was bound");
         assert!(check(&Ctx::new(), &p, &s).is_err(), "a proof over lemma parameters is not closed");
-        ck("over parameters", &p, &s);
+        job.lemmas.ck("over parameters", &p, &s);
         // a machine proof's case lemmas are parameters too
         let add = |a: Term, b: Term| op(0, a, b);
         let (pm, sm) = add_tree_law(job, 2, 3, &add(add(v(0), v(1)), v(2)), &add(v(0), add(v(1), v(2)))).expect("assoc3");
         assert!(check(&Ctx::new(), &pm, &sm).is_err(), "the machine proof's lemmas are not parameters");
-        ck("machine over parameters", &pm, &sm);
+        job.lemmas.ck("machine over parameters", &pm, &sm);
         // a lemma whose proof uses lemmas bound before it: a rule proved through a machine proof
-        let scopes = || PARAMS.with(|c| c.borrow().as_ref().map_or(0, |(_, b)| b.len()));
-        let before = scopes();
+        let scopes = |job: &Job| job.lemmas.params.as_ref().map_or(0, |(_, b)| b.len());
+        let before = scopes(job);
         let (l, r) = (add(op(4, v(0), v(1)), v(2)), add(op(4, v(2), v(1)), v(0)));
-        let (pr, sr) = shared_lemma(&job.setup().clone(), "nested".into(), || prove_rule(job, 2, 3, &l, &r).expect("rule"));
-        assert!(scopes() >= before + 2, "the rule's proof bound no lemma of its own");
+        let (pr, sr) = shared_lemma(job, "nested".into(), |job| prove_rule(job, 2, 3, &l, &r).expect("rule"));
+        assert!(scopes(job) >= before + 2, "the rule's proof bound no lemma of its own");
         let all = apps(lam(sm, lam(shift(&s, 0, 1), lam(shift(&sr, 0, 2), var(2)))), vec![pm, p, pr]);
-        ck("discharged", &discharge(all), &sm);
+        ck("discharged", &discharge(job, all), &sm);
+    })
+}
+
+#[test]
+pub fn a_second_discharge_in_a_job_applies_only_the_lemmas_bound_after_the_first() {
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let lemma = |n: usize| (good_lit(n, 0), app(good_bv(n), lit(n, 0)));
+        let (ra, sa) = shared_lemma(job, "A".into(), |_| lemma(2));
+        ck("A", &discharge(job, ra), &sa);
+        let (rb, sb) = shared_lemma(job, "B".into(), |_| lemma(3));
+        assert!(discharge(job, rb) == app(lam(sb, var(0)), lemma(3).0), "the second discharge applies B's proof alone");
+        // A asked for again after a discharge is bound afresh, not the ended scope's parameter
+        let (ra, _) = shared_lemma(job, "A".into(), |_| lemma(2));
+        ck("A again", &discharge(job, ra), &sa);
     })
 }
 
@@ -3755,7 +3764,7 @@ fn rewrite_cycles_are_cut() {
         assert!(cuts > 0, "no cycle cut");
         assert!(left > 0, "the step budget ran out");
         let (p, s) = out.expect("proved");
-        ck("cycle law", &p, &s);
+        job.lemmas.ck("cycle law", &p, &s);
     })
 }
 
@@ -3777,7 +3786,7 @@ fn growing_rewrite_chains_are_cut() {
         assert!(cuts > 0, "no growth cut");
         assert!(left > 0, "the step budget ran out");
         if let Some((p, s)) = out {
-            ck("growth law", &p, &s);
+            job.lemmas.ck("growth law", &p, &s);
         }
     })
 }
@@ -4003,7 +4012,7 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
             let plan = plan.expect("a stored join");
             assert!(Compiler::new(n, k).proof(job, &plan).0 == a && Compiler::new(n, k).proof(job, &plan).1 == b);
             let (p, s) = law_proof(job, n, k, &a, &b, &plan);
-            ck("stored", &p, &s);
+            job.lemmas.ck("stored", &p, &s);
             let counting = job.rules().counting(true);
             let (counted, _, stored) = job.with_rules(counting, |job| join(job));
             assert!(matches!(counted.as_deref(), Some(Plan::Counting)) && stored == 1, "counting is served too");
@@ -4070,7 +4079,7 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
             let plan = join_eq(job, n, k, a, b).expect("joined");
             job.rw.memo.take();
             let (p, s) = law_proof(job, n, k, a, b, &plan);
-            ck("stored", &p, &s);
+            job.lemmas.ck("stored", &p, &s);
             job.join_cost.stored - c0.stored
         };
         let before = job.with_mined(vec![rule], |job| {
@@ -4204,11 +4213,9 @@ pub fn law_time() {
     let mut once = || {
         tatic::kernel::scoped(|| {
             let (lp, ls) = prove_rule(job, n, k, l, r).expect("the rule proves");
-            let (p, lemmas) = PARAMS.with(|c| c.borrow_mut().take()).unwrap_or_else(|| (Postulates::new(), Vec::new()));
             let t = Instant::now();
-            let ok = p.check_open(&lp, &ls);
+            let ok = job.lemmas.params.as_ref().map_or_else(|| Postulates::new().check_open(&lp, &ls), |(p, _)| p.check_open(&lp, &ls));
             let took = t.elapsed();
-            PARAMS.with(|c| *c.borrow_mut() = Some((p, lemmas)));
             ok.expect("the law checks");
             took
         })

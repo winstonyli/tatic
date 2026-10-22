@@ -325,13 +325,17 @@ pub fn good_bv(n: usize) -> Expr {
     lam(bv_ty(n), pi(arrow(bv_ty(n), sort(2)), pi(good_bv_step(n), app(var(1), var(2)))))
 }
 
-/// Whether `e : ty`, against the lemma parameters bound so far (`rewrite::shared_lemma`).
+/// Whether the closed `e : ty` (`Lemmas::holds` for a term over a job's lemma parameters).
 pub fn holds(e: &Expr, ty: &Expr) -> Result<(), String> {
-    PARAMS.with(|c| c.borrow().as_ref().map(|(ps, ..)| ps.check_open(e, ty))).unwrap_or_else(|| check(&Ctx::new(), e, ty))
+    check(&Ctx::new(), e, ty)
 }
 /// `holds`, panicking with `name` when it fails.
 pub fn ck(name: &str, e: &Expr, ty: &Expr) {
-    if let Err(m) = holds(e, ty) {
+    checked(name, holds(e, ty))
+}
+/// Panics with `name` and the start of the error when a check failed.
+pub fn checked(name: &str, r: Result<(), String>) {
+    if let Err(m) = r {
         panic!("{name}: {}", m.chars().take(400).collect::<String>());
     }
 }
@@ -509,11 +513,11 @@ pub fn shared_carry_scaling() {
         for round in 0..2 {
             let (p, s) = add_identity_proof_shared(n, 0, false, add_shared);
             let t0 = Instant::now();
-            ck("shared", &p, &s);
+            job.lemmas.ck("shared", &p, &s);
             let shared = t0.elapsed();
             let (p, s) = add_identity_proof(n, 0, false);
             let t1 = Instant::now();
-            ck("inlined", &p, &s);
+            job.lemmas.ck("inlined", &p, &s);
             println!("SHARED-CARRY n={n} round={round}: shared {shared:?}, inlined {:?}", t1.elapsed());
         }
     }
@@ -600,7 +604,7 @@ pub fn add_zero_lemma_scaling_scoped() {
             let (proof, stmt) = add_zero_proof(n, 0);
             let built = t0.elapsed();
             let t1 = Instant::now();
-            ck(&format!("n={n}"), &proof, &stmt);
+            job.lemmas.ck(&format!("n={n}"), &proof, &stmt);
             println!(
                 "SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
                 t1.elapsed(),
@@ -734,7 +738,7 @@ pub fn add_comm_rejection_probe() {
         let (proof, _) = add_comm_proof(n, false);
         let (wp, ws) = add_comm_proof(n, true);
         let t0 = Instant::now();
-        let r = if case == "own" { holds(&wp, &ws) } else { holds(&proof, &ws) };
+        let r = if case == "own" { job.lemmas.holds(&wp, &ws) } else { job.lemmas.holds(&proof, &ws) };
         println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
     };
     if !job.setup().flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
@@ -758,7 +762,7 @@ pub fn add_comm_scaling_scoped() {
             let (proof, stmt) = add_comm_proof(n, false);
             let built = t0.elapsed();
             let t1 = Instant::now();
-            ck(&format!("n={n}"), &proof, &stmt);
+            job.lemmas.ck(&format!("n={n}"), &proof, &stmt);
             println!(
                 "COMM-SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
                 t1.elapsed(),
@@ -2061,7 +2065,7 @@ pub fn add_assoc_scaling_scoped() {
             let (proof, stmt) = add_assoc_proof(n, false);
             let built = t0.elapsed();
             let t1 = Instant::now();
-            ck(&format!("n={n}"), &proof, &stmt);
+            job.lemmas.ck(&format!("n={n}"), &proof, &stmt);
             println!("ASSOC-SCOPED n={n}: build {built:?}, check {:?}", t1.elapsed());
         })
     }
