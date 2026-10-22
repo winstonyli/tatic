@@ -2341,8 +2341,9 @@ fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
             && !c.rewrote.iter().any(|v| cut_by(&job.rw.path, v))
     };
     if let Some(c) = hit.filter(|c| fits(c)) {
-        #[cfg(debug_assertions)]
-        check_replay(job, t, n, k, &c);
+        if cfg!(debug_assertions) {
+            check_replay(job, t, n, k, &c);
+        }
         job.rw.budget -= c.steps;
         job.rw.fallbacks += c.fallbacks;
         if let Some(v) = job.rw.trace.as_mut() {
@@ -2375,8 +2376,8 @@ fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
 }
 
 /// Debug builds: a memo hit about to be replayed is redone without the memo, under the same path and budget, and must match it
-/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `Job::conflicts` keeps the redo's counts.
-#[cfg(debug_assertions)]
+/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `Job::conflicts` keeps the redo's counts. Release
+/// builds compile it too, so it cannot rot unseen.
 fn check_replay(job: &mut Job, t: &Term, n: usize, k: usize, c: &Rewritten) {
     let memo = std::mem::take(&mut job.rw.memo);
     let trace = std::mem::take(&mut job.rw.trace);

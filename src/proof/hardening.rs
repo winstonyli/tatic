@@ -24,8 +24,10 @@ use super::*;
 // already relies on: this is an *additional* internal consistency check on
 // top of (not instead of) the real trust gate, which is still `kernel::check`
 // at each function's own already-existing, unconditional call site.
-#[cfg(debug_assertions)]
 pub(super) fn debug_assert_has_type(p: &Postulates, e: &Expr, expected: &Expr, label: &str) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     if let Err(err) = p.check_open(e, expected) {
         panic!(
             "composition bug in {label}: the value doesn't have its expected type.\n  \
@@ -33,8 +35,6 @@ pub(super) fn debug_assert_has_type(p: &Postulates, e: &Expr, expected: &Expr, l
         );
     }
 }
-#[cfg(not(debug_assertions))]
-pub(super) fn debug_assert_has_type(_p: &Postulates, _e: &Expr, _expected: &Expr, _label: &str) {}
 
 /// `combine`'s value at `params`/`ihs` (both hoisted to a free function --
 /// not just a closure local to `prove_tail_recursive_universal` -- so
