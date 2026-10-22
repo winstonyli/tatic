@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Law generator on warm loops and ref mines (v0.2, step 4) Implementation Plan
