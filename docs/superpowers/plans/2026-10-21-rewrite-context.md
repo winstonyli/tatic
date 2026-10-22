@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Rewrite context: an explicit `Job` instead of hidden state (C1 + C3)
@@ -714,11 +714,14 @@ For each of Q1–Q5:
 
 ### Task 10: timing, parked item, close
 
-- [ ] **Step 1: quiet timing.** Sequential A/B of the base exe against the Task 9 exe, using `salts_ab.sh` with
+- [x] **Step 1: quiet timing.** Sequential A/B of the base exe against the Task 9 exe, using `salts_ab.sh` with
   salts 1–3 after an A/A pair. Require `\Processor(_Total)` under ~20% and report Defender RTP. Record the result
   in `docs/tier-cycle.md` with the run ids. Expected: the same or faster, since environment reads on hot paths
   (`ablated`, `nops`, `join_visit`) become field reads. If it is slower by more than noise, profile (SAMPLY.md)
   before closing.
-- [ ] **Step 2:** update the `PARKED.md` entry "Counters as return values" (added with this plan) with the delta-site
-  count after Task 5.
-- [ ] **Step 3:** set this plan's `status: done`, update the cleanup plan's C1 and C3 lines, and ask about merging.
+  Done 2026-10-22: A/A (salt 1) job CPU 148 s vs 153 s; A/B (salts 1-3) 598 s vs 601 s, wall 75 s vs 76 s, rules same
+  in 9 of 9 loops; CPU 8-9%, RTP off (`2026-10-22-t10-aa`, `-t10-ab`). Equal within noise, not faster; no profile.
+- [x] **Step 2:** update the `PARKED.md` entry "Counters as return values" (added with this plan) with the delta-site
+  count after Task 5. Done: 14 fallback, 4 cycle-cut and 11 join-cost snapshot sites.
+- [x] **Step 3:** set this plan's `status: done`, update the cleanup plan's C1 and C3 lines, and ask about merging.
+  Done; C3's line already said done on this branch, so only C1's changed.
