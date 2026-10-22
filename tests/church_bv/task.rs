@@ -211,7 +211,7 @@ fn flagged(line: &str) -> Option<&str> {
 /// so a `driver::worker` task never sees another task's configuration or counters.
 #[test]
 fn task_state_is_classified() {
-    const PURE: [(&str, &str, &str); 7] = [
+    const PURE: [(&str, &str, &str); 9] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
         ("lemma_cache.rs", "ID", "the running exe's identity"),
@@ -219,6 +219,8 @@ fn task_state_is_classified() {
         ("task.rs", "TASK_ENV", "the task machinery"),
         ("task.rs", "RESULTS", "the task machinery"),
         ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
+        ("job.rs", "PROCESS_SETUP", "the one-test process's Setup; tasks build their own"),
+        ("job.rs", "NEXT_JOB", "job ids, unique per process on purpose"),
     ];
     assert_eq!(flagged("    static X: std::sync::OnceLock<u8> = std::sync::OnceLock::new();"), Some("X"));
     assert_eq!(flagged("pub static Y: [std::sync::atomic::AtomicU64; 3] = x;"), Some("Y"));

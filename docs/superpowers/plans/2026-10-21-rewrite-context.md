@@ -232,7 +232,18 @@ never `pbase1` with `pbase4`.
 - [ ] **Step 4: gate**, as in Global Constraints. Expected: rules `same` in 15/15, threads pass, snapshots equal.
 - [ ] **Step 5: commit:** `C3: rule_miner as named parts in miner.rs`. Then update C3's line in the cleanup plan.
 
-### Task 2: `job.rs` with `Setup` and an empty `Job` (TDD)
+### Task 2: `job.rs` with `Setup` and an empty `Job` (TDD) (done 2026-10-21)
+
+**Rulings while building it (2026-10-21):**
+- `Setup` holds `env`, `ablate`, `nops` and `results` only. The `OnceLock` rule fields (`fixed`, `fixed_table`,
+  `rule_set`) and `lemmas` arrive in Task 3 with their builders, which read the environment through thread-locals
+  until then: added now, they would be dead fields with no builder. `TableRule` and `Rule` become `pub(crate)` in
+  Task 3 for the same reason.
+- `nops` is computed once in `from_env` (it is read in `tree_step`'s hot loop, like `ablate`).
+- `task_state_is_classified` lists `PROCESS_SETUP` and `NEXT_JOB` as process-wide on purpose (Task 8's guard
+  replaces that test).
+- The commit builds with 4 dead-code warnings (`Setup`'s and `Job`'s accessors have no caller yet); Task 3 gives them
+  callers. Suite 520 passed.
 
 **Files:** Create `tests/church_bv/job.rs`. Modify `main.rs` (`mod job;`).
 
