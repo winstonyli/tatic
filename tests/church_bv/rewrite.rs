@@ -3984,20 +3984,18 @@ fn filtered_join_entries_hold_under_an_extra_rule() {
 fn join_cost_counts_searches_but_not_memo_hits() {
     let job = &mut Job::new(Setup::process());
     let (a, b) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
-    let c0 = job.join_cost;
     job.rw.memo = Some(RewriteMemo::new(3));
-    assert!(join_eq(job, 4, 3, &a, &b).is_some());
-    let c1 = job.join_cost;
-    assert!(join_eq(job, 4, 3, &a, &b).is_some());
+    let (first, s1) = job.spent(|job| join_eq(job, 4, 3, &a, &b).is_some());
+    let (second, s2) = job.spent(|job| join_eq(job, 4, 3, &a, &b).is_some());
     job.rw.memo.take();
-    assert_eq!((c1.searches - c0.searches, c1.met - c0.met), (1, 1));
-    assert!(c1.reached - c0.reached >= 2, "both sides at least");
-    assert_eq!(job.join_cost, JoinCost { hits: c1.hits + 1, ..c1 }, "the second call was a hit");
-    assert!(c1.nanos > c0.nanos && c1.failed_nanos == c0.failed_nanos, "a met search's time counts, not as failed");
+    assert!(first && second);
+    assert_eq!((s1.join.searches, s1.join.met), (1, 1));
+    assert!(s1.join.reached >= 2, "both sides at least");
+    assert_eq!(s2.join, JoinCost { hits: 1, ..JoinCost::default() }, "the second call was a hit");
+    assert!(s1.join.nanos > 0 && s1.join.failed_nanos == 0, "a met search's time counts, not as failed");
     // an equal pair the join cannot close (`failed_join_traces_every_term_it_examines`)
-    assert!(join_eq(job, 4, 3, &parse_term("sub(x, y)"), &parse_term("sub(0, sub(y, x))")).is_none());
-    let c2 = job.join_cost;
-    assert!(c2.met == c1.met && c2.failed_nanos > c1.failed_nanos && c2.nanos - c1.nanos == c2.failed_nanos - c1.failed_nanos);
+    let (closed, s3) = job.spent(|job| join_eq(job, 4, 3, &parse_term("sub(x, y)"), &parse_term("sub(0, sub(y, x))")).is_some());
+    assert!(!closed && s3.join.met == 0 && s3.join.failed_nanos > 0 && s3.join.nanos == s3.join.failed_nanos);
 }
 
 /// The join store serves a pair it holds a path for, with a plan the kernel accepts (and by counting, `Rules::counting`),
