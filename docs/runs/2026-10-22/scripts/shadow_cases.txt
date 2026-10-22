@@ -1,0 +1,6 @@
+on_on_10/pooled_add3_2_pooled|add3|add(xor(-1, x), y) -> sub(-1, sub(x, y))
+on_on_2/cold_add3_1_none|add3|add(0, x) -> xor(0, x)
+on_on_2/mixed_cmp3d_2_u3|cmp3d|add(x, xor(y, -1)) -> sub(add(-1, x), y)
+on_on_5/cross_add3_1_cmp3d|add3|add(0, x) -> xor(0, x)
+on_on_5/mixed_add3_1_u3|add3|add(0, x) -> xor(0, x)
+on_on_6/cold_add3_2_none|add3|add(0, x) -> xor(0, x)
