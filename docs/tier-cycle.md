@@ -4721,6 +4721,29 @@ summed over salts 1-10 (total; mined-batch, batches 2-3, in brackets):
   before) is 1669 laws in 0.2 s, L 1644; u3's 1877 in 0.3 s; peak job memory 2.1 GB.
 - So the default stays: every mine with rule rounds takes extras. Hidden twins (the spec's step 5) are next.
 
+*Hidden twins beyond two-leaf nodes (2026-10-22; spec step 5; runs `2026-10-22-hidden-twins` and `-rest`, build
+5d14e65).* The twin filter normalized only nodes over two leaves. `ClassReps` now normalizes every node: to the least
+term of its width-4 class among the leaves, the two-leaf terms and the family pool's subterms, or else to a child of equal
+value (`add(t, 0)` to `t`); an `lt` stays.
+- **Count** (`hidden_twins_in_a_run`, over the extras step 4's sweeps drew, salts 2-10): cmp3d's loops drew 1790 twins
+  of 20895 (8.6%, 178-242 per scope on every salt), its ref mines 480 of 6965, u3's 79 of 2689; add3, sbo3 and mix3
+  none. They are real, such as `sub(add(x, y), add(x, z))` for `sub(y, z)` and `add(sub(-1, z), z)` for `-1` in a served
+  cmp3d law. Above the 5% bar, so the filter widened.
+- **L moves in every family** (salt 1: cmp3d 4737 to 4352, u3 1872 to 1795, add3 1877 to 1865, sbo3 1860 to 1866, mix3
+  1644 to 1653). It can grow: a law trivial after normalizing is kept, and a served law that turns trivial no longer
+  blocks its twins. The slices move with L, so add3's ref library changed too. The run skipped add3's and sbo3's own and
+  cold loops on the guess that their L would not move; `-rest` ran them.
+- **Effect** (salts 1-10, the generator on everywhere, against step 4's on_on): cold M 1451 to 1474 (cmp3d 751 to 775,
+  better / equal / worse 1/3/6; mined-batch M 8 to 31), warm M 735 to 788 (cross cmp3d 572 to 609, 0/1/9). add3's loops
+  other than pooled have the same M on every salt. The twins were served laws in disguise, and part of the generator's cmp3d gain came from
+  them: step 4's and "The law generator as a stage"'s cmp3d numbers overstate it.
+- **The generator still pays** (against step 4's off_off, which draws no extras, so the filter cannot touch it): cold
+  1474 against 1563, better on 9 salts of 10; warm 788 against 1067, 10 of 10.
+- The probe fixture's two-leaf count (502 twins, `twin_wide.py`) is now 443: 59 of those twins and 90 more padding laws
+  normalize to trivial. Cost: 28 min wall for the generator-on arms plus 3 min for `-rest`, CPU 15-41% at launch.
+- So the wider filter stays, and v0.2 is answered: the law generator pays everywhere it runs, measured with no served law
+  in disguise among its extras.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.

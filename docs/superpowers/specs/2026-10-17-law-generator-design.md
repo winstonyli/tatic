@@ -274,6 +274,10 @@ are heavy for `cargo test`, so its L, time and coverage are measured in step 4's
 5. Hidden twins beyond two-leaf nodes: count the generator's laws that twin a served law once any subterm is replaced
    by the least term of equal value up to the pool's depth (which covers `add(t, 0)` over a non-leaf t, and a grown node
    equal to a deeper pool subterm). If the count is material, the filter widens to it.
+   - Done 2026-10-22 (runs `2026-10-22-hidden-twins` and `-rest`): `ClassReps` normalizes every node over the family
+     pool's subterms, or to a child of equal value. 8.6% of cmp3d's drawn extras were hidden twins, none of add3's,
+     sbo3's or mix3's; the filter widened. cmp3d's M rises with them gone (they were served laws in disguise), and the
+     generator still pays against the generator off (`docs/tier-cycle.md`, "Hidden twins beyond two-leaf nodes").
 
 ## Not in scope
 
