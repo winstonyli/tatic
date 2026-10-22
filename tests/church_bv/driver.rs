@@ -641,18 +641,19 @@ fn filtered(source: &[(Term, Term)], served: &[(Term, Term)], reps: &mut ClassRe
 }
 
 /// The share of the filtered list each loop's mines take: 0.16 in shared slices had the lowest M of the generator arms
-/// over salts 1-20 (runs `2026-10-18-gen-round-a` and `-b`, docs/tier-cycle.md "The law generator as a stage").
+/// over salts 1-20 (runs `2026-10-18-gen-round-a` and `-b`, docs/tier-cycle.md "The law generator as a stage"); the variable
+/// `GEN_F` overrides it.
 const GEN_F: f64 = 0.16;
 
 /// Draws one scope's extras (spec §1-3): `scope`'s loops (a stage's 3 loops of one family and source, or one ref mine)
-/// against the laws they serve and those of `also` (for a ref mine, every loop the sweep runs). n = ⌊`GEN_F` × L⌋ with L
+/// against the laws they serve and those of `also` (for a ref mine, every loop the sweep runs). n = ⌊f × L⌋ (f: `GEN_F`) with L
 /// the generator's filtered list, in shared slices. Sets each loop's `extras` and `extra_at`, or says by how much the list
 /// is short.
 fn scope_extras(setup: &Setup, scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
     let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(|c| served_laws(setup, c)).collect();
     let c = scope[0].clone();
     let laws = filtered(&draw.grammar(&c), &served, draw.reps(&c));
-    let n = (GEN_F * laws.len() as f64) as usize;
+    let n = (setup.or("GEN_F", GEN_F) * laws.len() as f64) as usize;
     let mines = mines_of(&c);
     let at = extra_slices(laws.len(), scope.len(), mines, n)
         .map_err(|short| format!("{}: generator list of {} laws is {short} short of {} loops x {n}", c.out.display(), laws.len(), scope.len()))?;
