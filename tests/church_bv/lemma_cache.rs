@@ -100,40 +100,41 @@ struct Process {
     cache: Cache,
 }
 
-/// This task's cache (the file is read again in each `driver::worker` task, which sees the earlier tasks' saves) and
-/// counters.
-static PROCESS: crate::task::PerTaskArc<Option<Process>> = crate::task::PerTaskArc::new();
-static RECORDED: crate::task::PerTask<Mutex<Vec<(String, Vec<u8>)>>> = crate::task::PerTask::new();
-static HITS: crate::task::PerTask<AtomicU64> = crate::task::PerTask::new();
-static BUILT: crate::task::PerTask<AtomicU64> = crate::task::PerTask::new();
-static SKIPPED: crate::task::PerTask<AtomicU64> = crate::task::PerTask::new();
+/// A task's cache (the file is read again in each `driver::worker` task, which sees the earlier tasks' saves) and counters:
+/// `Setup::lemmas`.
+#[derive(Default)]
+pub struct TaskCache {
+    process: OnceLock<Option<Process>>,
+    recorded: Mutex<Vec<(String, Vec<u8>)>>,
+    hits: AtomicU64,
+    built: AtomicU64,
+    skipped: AtomicU64,
+}
 
-/// This task's cache, read at first use; holding `None` without `LEMMA_CACHE`.
-fn process() -> std::sync::Arc<Option<Process>> {
-    PROCESS.get(|| {
-        let path = PathBuf::from(env_var("LEMMA_CACHE")?);
+/// `setup`'s cache, read at first use; `None` without `LEMMA_CACHE`.
+fn process(setup: &Setup) -> Option<&Process> {
+    setup.lemmas.process.get_or_init(|| {
+        let path = PathBuf::from(setup.var("LEMMA_CACHE")?);
         let identity = exe_identity();
         let cache = Cache::load(&path, identity);
         if let Some(why) = &cache.why_empty {
             eprintln!("LEMMA_CACHE starts empty: {why}");
         }
         Some(Process { path, identity, cache })
-    })
+    }).as_ref()
 }
 
 /// Whether `LEMMA_RECHECK=1`: build and check every lemma, comparing the cached statements with the built ones.
-pub fn recheck() -> bool {
-    static R: crate::task::PerTask<bool> = crate::task::PerTask::new();
-    *R.get(|| env_flag("LEMMA_RECHECK", false))
+pub fn recheck(setup: &Setup) -> bool {
+    setup.flag("LEMMA_RECHECK", false)
 }
 
 /// The statement an earlier process checked for `key`, if the cache has one.
-pub fn lookup(key: &str) -> Option<Expr> {
-    let p = process();
-    let b = (*p).as_ref()?.cache.get(key)?;
+pub fn lookup(setup: &Setup, key: &str) -> Option<Expr> {
+    let b = process(setup)?.cache.get(key)?;
     match tatic::kernel::bin::read(b) {
         Ok(s) => {
-            HITS.get(Default::default).fetch_add(1, Relaxed);
+            setup.lemmas.hits.fetch_add(1, Relaxed);
             Some(s)
         }
         Err(e) => {
@@ -144,37 +145,38 @@ pub fn lookup(key: &str) -> Option<Expr> {
 }
 
 /// Keeps `stmt`, which this process just checked, for the next process. A statement that is not closed is not kept.
-pub fn record(key: &str, stmt: &Expr) {
-    if process().is_none() {
+pub fn record(setup: &Setup, key: &str, stmt: &Expr) {
+    if process(setup).is_none() {
         return;
     }
-    BUILT.get(Default::default).fetch_add(1, Relaxed);
+    let c = &setup.lemmas;
+    c.built.fetch_add(1, Relaxed);
     match (stmt.loose() == 0 && stmt.free() == 0).then(|| tatic::kernel::bin::write(stmt)) {
-        Some(Ok(b)) => RECORDED.get(Default::default).lock().unwrap_or_else(|e| e.into_inner()).push((key.to_string(), b)),
+        Some(Ok(b)) => c.recorded.lock().unwrap_or_else(|e| e.into_inner()).push((key.to_string(), b)),
         _ => {
-            SKIPPED.get(Default::default).fetch_add(1, Relaxed);
+            c.skipped.fetch_add(1, Relaxed);
         }
     }
 }
 
-/// Saves the cache when dropped (at every return of a test that builds lemmas, and on unwind: the recorded statements were
+/// Saves `0`'s cache when dropped (at every return of a test that builds lemmas, and on unwind: the recorded statements were
 /// all checked). Never panics.
-pub struct Save;
+pub struct Save(pub std::sync::Arc<Setup>);
 
 impl Drop for Save {
     fn drop(&mut self) {
         // a task that never looked anything up has nothing to add
-        let Some(arc) = PROCESS.peek() else { return };
-        let Some(p) = &*arc else { return };
-        let new = std::mem::take(&mut *RECORDED.get(Default::default).lock().unwrap_or_else(|e| e.into_inner()));
+        let c = &self.0.lemmas;
+        let Some(Some(p)) = c.process.get() else { return };
+        let new = std::mem::take(&mut *c.recorded.lock().unwrap_or_else(|e| e.into_inner()));
         let saved = if new.is_empty() { Ok((p.cache.len(), 0)) } else { p.cache.save(&p.path, p.identity, &new) };
         match saved {
             Ok((n, bytes)) => eprintln!(
                 "LEMMA_CACHE loaded={} hits={} built={} saved={n} skipped={} bytes={bytes}",
                 p.cache.len(),
-                HITS.get(Default::default).load(Relaxed),
-                BUILT.get(Default::default).load(Relaxed),
-                SKIPPED.get(Default::default).load(Relaxed)
+                c.hits.load(Relaxed),
+                c.built.load(Relaxed),
+                c.skipped.load(Relaxed)
             ),
             Err(e) => eprintln!("LEMMA_CACHE save to {} failed: {e}", p.path.display()),
         }

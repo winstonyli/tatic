@@ -7,6 +7,8 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::rewrite::{Rule, TableRule, Term};
+
 type Env = hashbrown::HashMap<String, String>;
 
 /// A task's configuration, read once when it is built: its environment, and the values parsed from it on hot paths.
@@ -18,6 +20,13 @@ pub struct Setup {
     nops: usize,
     /// The task's result file (`result`); `None` in a process that runs one test.
     results: Mutex<Option<std::fs::File>>,
+    /// `RULESET`'s rules, the fixed rules and their table rows, built at first use (the driver process builds a `Setup`
+    /// only to read configuration).
+    rule_set: OnceLock<Vec<(Term, Term)>>,
+    fixed: OnceLock<Vec<Rule>>,
+    fixed_table: OnceLock<Vec<TableRule>>,
+    /// The lemma cache's file and counters (`lemma_cache`).
+    pub lemmas: crate::lemma_cache::TaskCache,
 }
 
 impl Setup {
@@ -36,7 +45,16 @@ impl Setup {
 
     fn from_env(env: Env) -> Setup {
         let ablate = env.get("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default();
-        let mut s = Setup { env, ablate, nops: 0, results: Mutex::new(None) };
+        let mut s = Setup {
+            env,
+            ablate,
+            nops: 0,
+            results: Mutex::new(None),
+            rule_set: OnceLock::new(),
+            fixed: OnceLock::new(),
+            fixed_table: OnceLock::new(),
+            lemmas: Default::default(),
+        };
         s.nops = if s.flag("MINER_SUB", false) { 5 } else { 4 };
         s
     }
@@ -58,7 +76,8 @@ impl Setup {
     }
 
     /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, chain, tree, collapse, join,
-    /// promoted, ruleset, a built-in rule's name, `prove_eq`'s eq_truth, eq_pos, shrmask, and the driver's gen).
+    /// promoted, ruleset, a built-in rule's name, `prove_eq`'s eq_truth, eq_pos, shrmask, and the driver's gen). Parsed once:
+    /// `rule_step` asks for every rule it tries, and reading the environment each time was 11% of a mine (docs/tier-cycle.md).
     pub fn ablated(&self, name: &str) -> bool {
         self.ablate.iter().any(|x| x == name)
     }
@@ -66,6 +85,21 @@ impl Setup {
     /// How many of `OP_INFO` the miner enumerates: `sub` only with `MINER_SUB=1`.
     pub fn nops(&self) -> usize {
         self.nops
+    }
+
+    /// The mined rule set `RULESET` selects (`rewrite::build_rule_set`).
+    pub fn rule_set(&self) -> &[(Term, Term)] {
+        self.rule_set.get_or_init(|| crate::rewrite::build_rule_set(self.var("RULESET")))
+    }
+
+    /// The rules that do not change during the task (`rewrite::build_fixed_rules`).
+    pub fn fixed_rules(&self) -> &[Rule] {
+        self.fixed.get_or_init(|| crate::rewrite::build_fixed_rules(self))
+    }
+
+    /// `fixed_rules` as the rule table's rows.
+    pub(crate) fn fixed_table(&self) -> &[TableRule] {
+        self.fixed_table.get_or_init(|| self.fixed_rules().iter().map(|r| TableRule::new(r.name, r.lhs, r.rhs)).collect())
     }
 
     /// Hands the driver one record of this task's outcome: a `key<TAB>value` line in the task's result file, which
@@ -139,6 +173,27 @@ fn task_pairs_override_the_process_and_exe_env_fills_only_unset_names() {
 fn flags_are_off_only_at_zero() {
     let s = Setup::from_env(merge_env([("X".to_string(), "0".to_string()), ("Y".to_string(), "no".to_string())].into_iter(), None, &[]));
     assert_eq!((s.flag("X", true), s.flag("Y", false), s.flag("Z", true)), (false, true, true));
+}
+
+#[test]
+fn var_reads_the_process_environment() {
+    for k in ["PATH", "Path", "path"] {
+        // names ignore case on Windows only
+        let want = std::env::var(k).ok();
+        assert_eq!(Setup::process().var(k), want.as_deref(), "{k}");
+    }
+    assert_eq!(Setup::process().var("CHURCH_BV_SURELY_UNSET"), None);
+}
+
+#[test]
+fn a_switch_is_off_only_at_0_and_its_default_when_unset() {
+    let s = Setup::from_env(merge_env([("Z".to_string(), "0".to_string()), ("O".to_string(), "1".to_string()), ("T".to_string(), "2".to_string())].into_iter(), None, &[]));
+    for d in [false, true] {
+        assert_eq!(s.flag("U", d), d);
+    }
+    assert!(!s.flag("Z", true));
+    assert!(s.flag("O", false));
+    assert!(s.flag("T", false)); // `== 1` read this as off
 }
 
 #[test]

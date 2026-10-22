@@ -503,7 +503,8 @@ pub fn shared_carry_proof_checks_and_rejects_wrong_statements() {
 #[test]
 #[ignore]
 pub fn shared_carry_scaling() {
-    let ns: Vec<usize> = if env_flag("SHARED_N64", false) { vec![16, 32, 64] } else { vec![16, 32] };
+    let job = &Job::new(Setup::process());
+    let ns: Vec<usize> = if job.setup().flag("SHARED_N64", false) { vec![16, 32, 64] } else { vec![16, 32] };
     for n in ns {
         for round in 0..2 {
             let (p, s) = add_identity_proof_shared(n, 0, false, add_shared);
@@ -592,6 +593,7 @@ pub fn add_zero_lemma_scaling() {
 #[test]
 #[ignore]
 pub fn add_zero_lemma_scaling_scoped() {
+    let job = &Job::new(Setup::process());
     for n in [8usize, 16, 32, 64, 128, 256, 512] {
         let body = || {
             let t0 = Instant::now();
@@ -605,7 +607,7 @@ pub fn add_zero_lemma_scaling_scoped() {
                 tatic::kernel::term_sizes(&proof).0
             );
         };
-        if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
+        if !job.setup().flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -725,8 +727,9 @@ pub fn add_is_commutative_on_symbolic_good_vectors() {
 #[test]
 #[ignore]
 pub fn add_comm_rejection_probe() {
-    let n: usize = env_var("COMM_N").unwrap().parse().unwrap();
-    let case = env_var("COMM_CASE").unwrap();
+    let job = &Job::new(Setup::process());
+    let n: usize = job.setup().var("COMM_N").unwrap().parse().unwrap();
+    let case = job.setup().var("COMM_CASE").unwrap();
     let body = || {
         let (proof, _) = add_comm_proof(n, false);
         let (wp, ws) = add_comm_proof(n, true);
@@ -734,7 +737,7 @@ pub fn add_comm_rejection_probe() {
         let r = if case == "own" { holds(&wp, &ws) } else { holds(&proof, &ws) };
         println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
     };
-    if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
+    if !job.setup().flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
 }
 
 /// `add x y = add y x` built and checked inside one `scoped` call, up to the widths in the
@@ -743,7 +746,8 @@ pub fn add_comm_rejection_probe() {
 #[test]
 #[ignore]
 pub fn add_comm_scaling_scoped() {
-    let ns: Vec<usize> = env_var("COMM_NS")
+    let job = &Job::new(Setup::process());
+    let ns: Vec<usize> = job.setup().var("COMM_NS")
         .unwrap_or_else(|| "8,16,32,64".into())
         .split(',')
         .map(|v| v.trim().parse().unwrap())
@@ -761,7 +765,7 @@ pub fn add_comm_scaling_scoped() {
                 tatic::kernel::term_sizes(&proof).0
             );
         };
-        if !env_flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
+        if !job.setup().flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
     }
 }
 
@@ -2049,7 +2053,8 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
 #[test]
 #[ignore]
 pub fn add_assoc_scaling_scoped() {
-    let ns: Vec<usize> = env_var("ASSOC_NS").unwrap_or("8,16,32,64").split(',').map(|v| v.trim().parse().unwrap()).collect();
+    let job = &Job::new(Setup::process());
+    let ns: Vec<usize> = job.setup().var("ASSOC_NS").unwrap_or("8,16,32,64").split(',').map(|v| v.trim().parse().unwrap()).collect();
     for n in ns {
         tatic::kernel::scoped(|| {
             let t0 = Instant::now();

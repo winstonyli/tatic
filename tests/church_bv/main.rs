@@ -2,6 +2,8 @@
 // unrolled ripple-carry `add`, on the unchanged kernel (public API only).
 use std::time::Instant;
 use tatic::kernel::*;
+use std::sync::Arc;
+use job::{Job, Setup};
 
 mod driver;
 mod encoding;

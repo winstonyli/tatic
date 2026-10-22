@@ -16,20 +16,88 @@ impl Clock {
     }
 }
 
-pub fn run() {
+/// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `new`), except the law window's (`RULEMINER_LAWS`,
+/// `_SHAPE`, `_SHAPE_SALT`, `_PHASE`, `_STRIDE` and the like), which `family_laws` reads through the `env` it is given.
+pub struct MinerConfig {
+    /// `MULMINER_MAX`: largest constant in the mul family.
+    pub max: u32,
+    /// `RULEMINER_TRIALS`: candidate cap.
+    pub trials: usize,
+    /// `RULEMINER_PERM`: 0 strict rule order, 1 ties broken by `tie_greater`, 2 no order check.
+    pub perm: usize,
+    /// `RULEMINER_STEPS`: per-law rewrite budget once a base set is loaded.
+    pub steps: usize,
+    /// `RULEMINER_VARS`: variable cap of cross-side rules.
+    pub vars: usize,
+    /// `RULEMINER_ROUNDS`: greedy rounds (default no cap: the mine stops when no candidate gains; a cap trimmed general rules,
+    /// docs/tier-cycle.md "cmp3d's library lost its general rules"; with `RULEMINER_SHOW=1`, 0 just lists the candidates).
+    pub rounds: usize,
+    /// `RULEMINER_THREADS`: scoring threads, clamped to 1..=12.
+    pub threads: usize,
+    /// `RULEMINER_ANY`, `_SHOW`, `_FAST`: switches (`Setup::flag`), off by default.
+    pub any_op: bool,
+    pub show: bool,
+    pub fast: bool,
+    /// `RULEMINER_FAMILY`: the law family (default `mul`); with `lawfile` it still sets the variable count.
+    pub family: String,
+    /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) and their preferences in force throughout (section 74).
+    pub base: Option<String>,
+    /// `RULEMINER_LAWFILE=<file>`: mine from these `lhs = rhs` lines (a proposer's band) instead of the family's window.
+    pub lawfile: Option<String>,
+    /// `RULEMINER_GUARD=<k>`: about k machine-free laws scored with the stragglers (default 120, 0 = off).
+    pub guard: usize,
+    /// `RULEMINER_EXTRA=<file>`: extra candidates (`lhs -> rhs` lines).
+    pub extra: Option<String>,
+    /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
+    pub no_dup_lhs: bool,
+    /// `RULEMINER_PREFS` (switch, off by default): run the preference phase.
+    pub prefs: bool,
+    /// `RULEMINER_UNITS=<file>`: the base's drop units, read only with `prefs`.
+    pub units: Option<String>,
+}
+
+impl MinerConfig {
+    pub fn new(s: &Setup) -> Self {
+        let flag = |k: &str| s.flag(k, false);
+        let path = |k: &str| s.var(k).map(String::from);
+        MinerConfig {
+            max: s.or("MULMINER_MAX", 7) as u32,
+            trials: s.or("RULEMINER_TRIALS", 400),
+            perm: s.or("RULEMINER_PERM", 0),
+            steps: s.or("RULEMINER_STEPS", 200),
+            vars: s.or("RULEMINER_VARS", 4),
+            rounds: s.or("RULEMINER_ROUNDS", usize::MAX),
+            threads: s.or("RULEMINER_THREADS", 1).clamp(1, 12),
+            any_op: flag("RULEMINER_ANY"),
+            show: flag("RULEMINER_SHOW"),
+            fast: flag("RULEMINER_FAST"),
+            family: s.var("RULEMINER_FAMILY").unwrap_or("mul").into(),
+            base: path("RULEMINER_BASE"),
+            lawfile: path("RULEMINER_LAWFILE"),
+            guard: s.or("RULEMINER_GUARD", 120),
+            extra: path("RULEMINER_EXTRA"),
+            no_dup_lhs: s.flag("RULEMINER_NODUPLHS", true),
+            prefs: flag("RULEMINER_PREFS"),
+            units: path("RULEMINER_UNITS"),
+        }
+    }
+}
+
+pub fn run(setup: &Arc<Setup>) {
+    let job = &Job::new(setup.clone());
     tatic::kernel::scoped(|| {
         // the join store this mine feeds from this thread (`JoinStore`); the scoring workers read a copy of it
         set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
         let clock = Clock(std::cell::Cell::new(Instant::now()));
-        let _banner = MachineBanner::start("RULEMINER");
-        let _save = lemma_cache::Save;
-        let cfg = MinerConfig::from_env();
+        let _banner = MachineBanner::start(job, "RULEMINER");
+        let _save = lemma_cache::Save(setup.clone());
+        let cfg = MinerConfig::new(setup);
         // the stragglers are the laws left with the base's rules
         let base_text = cfg.base.as_ref().map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
         let (base, base_prefs) = (parse_rules(&base_text), parse_prefs(&base_text));
-        set_extra_rules(base.clone());
+        set_extra_rules(job, base.clone());
         set_rule_prefs(base_prefs.clone());
-        let (laws, budget) = laws(&cfg, base.is_empty(), &clock);
+        let (laws, budget) = laws(job, &cfg, base.is_empty(), &clock);
         let (cands, rivals) = candidates(&laws, &cfg, &base);
         clock.phase("candidate generation");
         // keep candidates whose left side matches a subterm of some straggler's normalized terms
@@ -52,17 +120,17 @@ pub fn run() {
         // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and the step
         // budget of this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
         // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
-        let rules = RULE_TABLE.with(|e| e.borrow().mined.clone());
+        let rules = with_table(job, |t| t.mined.clone());
         let prover = |prefs| Prover { rules: rules.clone(), prefs, budget, n: laws.n };
-        let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover(None).filter(&cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
+        let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover(None).filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
         println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
         clock.phase("provable filter");
         let scorer = Scorer::new(&laws, &cfg, base.clone());
         // also on a thread of its own (`Rounds::play`): the base preferences, which every evaluation on this thread leaves installed
         let prover = prover(Some(base_prefs.clone()));
         let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
-        let Chosen { chosen, covered, .. } = rounds.play();
-        prefs_phase(&scorer, &chosen, &base, &base_prefs, &cfg, &clock);
+        let Chosen { chosen, covered, .. } = rounds.play(job);
+        prefs_phase(job, &scorer, &chosen, &base, &base_prefs, &cfg, &clock);
         rounds.report(&covered);
         set_join_store(None);
     });
@@ -80,7 +148,7 @@ struct Laws {
 
 /// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2). The `i64` is the step budget
 /// this thread is left with (Q5 of docs/superpowers/plans/2026-10-21-rewrite-context.md): the proofs of `Prover` run under it.
-fn laws(cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
+fn laws(job: &Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
     let max = cfg.max;
     let family = cfg.family.as_str();
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
@@ -91,7 +159,7 @@ fn laws(cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
     // a lawfile is a proposer's band (docs/tier-cycle.md)
     let laws = match &cfg.lawfile {
         Some(f) => read_named_laws(f),
-        None => family_laws(&family, &env_or::<usize>, n, nv, max),
+        None => family_laws(job.setup(), &family, &|k: &str, d: usize| job.setup().or(k, d), n, nv, max),
     };
     clock.phase("law building");
     let mut unproved = 0usize;
@@ -99,14 +167,14 @@ fn laws(cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
     // `RULEMINER_FAST` counts the base rules' machine proofs the way it scores candidates: without building them
     SCORE_ONLY.with(|s| s.set(cfg.fast));
     for (name, t1, t2) in laws.iter().cloned() {
-        if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap())) {
+        if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))) {
             continue;
         }
         let before = fallbacks();
         let t = Instant::now();
         // base rules may loop; the step budget bounds them (the built-in rules never reach it)
         RULE_BUDGET.with(|b| b.set(if base_empty { i64::MAX / 2 } else { cfg.steps as i64 }));
-        let r = rewrite_plan(n, kv, &t1, &t2);
+        let r = rewrite_plan(job, n, kv, &t1, &t2);
         let took = t.elapsed();
         let fell = fallbacks() - before;
         // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
@@ -114,7 +182,7 @@ fn laws(cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
         let fell = if r.is_none() { fell.max(1) } else { fell };
         if r.is_none() || fell > 0 {
             RULE_BUDGET.with(|b| b.set(if base_empty { i64::MAX / 2 } else { cfg.steps as i64 }));
-            let normal = [rewrite(&t1, n, kv).0, rewrite(&t2, n, kv).0];
+            let normal = [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0];
             println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
             stragglers.push((name, t1, t2, normal, fell, took));
         } else {
@@ -364,24 +432,24 @@ struct Prover {
 }
 
 impl Prover {
-    fn install(&self) {
-        set_extra_rules(self.rules.clone());
+    fn install(&self, job: &Job) {
+        set_extra_rules(job, self.rules.clone());
         if let Some(prefs) = &self.prefs {
             set_rule_prefs(prefs.clone());
         }
         RULE_BUDGET.with(|b| b.set(self.budget));
     }
 
-    fn holds(&self, (l, r): &(Term, Term)) -> bool {
-        prove_rule(self.n, l.max_var().max(r.max_var()) + 1, l, r).is_some()
+    fn holds(&self, job: &Job, (l, r): &(Term, Term)) -> bool {
+        prove_rule(job, self.n, l.max_var().max(r.max_var()) + 1, l, r).is_some()
     }
 
     /// Proves one rule in an intern scope of its own; leaves no rules and the default budget installed after.
-    fn prove(&self, rule: &(Term, Term)) -> bool {
+    fn prove(&self, job: &Job, rule: &(Term, Term)) -> bool {
         tatic::kernel::scoped(|| {
-            self.install();
-            let ok = self.holds(rule);
-            set_extra_rules(vec![]);
+            self.install(job);
+            let ok = self.holds(job, rule);
+            set_extra_rules(job, vec![]);
             RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
             ok
         })
@@ -389,23 +457,23 @@ impl Prover {
 
     /// The indices of the candidates that are proved, in order, on `threads` workers (one intern scope each; one thread
     /// proves on this thread).
-    fn filter(&self, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
-        let prove = |idx: &[usize]| -> Vec<usize> {
+    fn filter(&self, job: &Job, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
+        let prove = |job: &Job, idx: &[usize]| -> Vec<usize> {
             tatic::kernel::scoped(|| {
-                self.install();
-                idx.iter().copied().filter(|&i| self.holds(&cands[i])).collect()
+                self.install(job);
+                idx.iter().copied().filter(|&i| self.holds(job, &cands[i])).collect()
             })
         };
         let threads = threads.clamp(1, 12);
         let mut ok: Vec<usize> = if threads == 1 {
-            prove(&(0..cands.len()).collect::<Vec<_>>())
+            prove(job, &(0..cands.len()).collect::<Vec<_>>())
         } else {
             std::thread::scope(|sc| {
                 let handles: Vec<_> = (0..threads)
                     .map(|t| {
                         let idx: Vec<usize> = (t..cands.len()).step_by(threads).collect();
-                        let prove = &prove;
-                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || prove(&idx)).unwrap()
+                        let (prove, setup) = (&prove, job.setup().clone());
+                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || prove(&Job::new(setup), &idx)).unwrap()
                     })
                     .collect();
                 handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
@@ -452,10 +520,10 @@ impl<'a> Scorer<'a> {
     /// not in the order added), and that is a join step at none of the join's terms (`Trace::touched_by`), cannot change a law's
     /// rewriting or join, so its laws keep the result under the rules chosen so far.
     /// `prefs`: the rule preferences in force (`set_rule_prefs`).
-    fn score_laws(&self, extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
+    fn score_laws(&self, job: &Job, extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
         let (n, kv, cfg) = (self.laws.n, self.laws.kv, self.cfg);
         let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
-        set_extra_rules(self.base_now.lock().unwrap().iter().chain(extra).cloned().collect());
+        set_extra_rules(job, self.base_now.lock().unwrap().iter().chain(extra).cloned().collect());
         set_rule_prefs(prefs.to_vec());
         REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
         let steps = cfg.steps as i64;
@@ -471,7 +539,7 @@ impl<'a> Scorer<'a> {
                     RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
                 }
                 let before = fallbacks();
-                let ok = rewrite_plan(n, kv, &s.1, &s.2).is_some();
+                let ok = rewrite_plan(job, n, kv, &s.1, &s.2).is_some();
                 let fixed = ok && fallbacks() - before < s.4;
                 budget();
                 // the rule order's own measure: operator nodes first, then variable occurrences
@@ -481,7 +549,7 @@ impl<'a> Scorer<'a> {
                     let (c, a) = rule_weight(t);
                     (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
                 };
-                let size = if si < self.laws.stragglers.len() { measure(&rewrite(&s.1, n, kv).0) + measure(&rewrite(&s.2, n, kv).0) } else { 0 };
+                let size = if si < self.laws.stragglers.len() { measure(&rewrite(job, &s.1, n, kv).0) + measure(&rewrite(job, &s.2, n, kv).0) } else { 0 };
                 let mut seen: hashbrown::HashSet<(Term, Fired)> = Default::default();
                 let trace = Trace::new(RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect());
                 (fixed, size, trace)
@@ -489,7 +557,7 @@ impl<'a> Scorer<'a> {
             .collect();
         SCORE_ONLY.with(|s| s.set(caller));
         let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
-        set_extra_rules(vec![]);
+        set_extra_rules(job, vec![]);
         RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
         (out, memo)
     }
@@ -615,17 +683,17 @@ impl<'a> Rounds<'a> {
         }
     }
 
-    fn prove_one(&mut self, i: usize) -> bool {
-        if self.pending.contains(&i) { self.resolve(i) } else { self.prover.prove(&self.provable[i]) }
+    fn prove_one(&mut self, job: &Job, i: usize) -> bool {
+        if self.pending.contains(&i) { self.resolve(i) } else { self.prover.prove(job, &self.provable[i]) }
     }
 
-    fn state(&mut self, chosen: Vec<(Term, Term)>) -> Chosen {
+    fn state(&mut self, job: &Job, chosen: Vec<(Term, Term)>) -> Chosen {
         let t0 = Instant::now();
         let seed = self.state_memo.take().map(|(was, memo)| {
             let changed: Vec<&(Term, Term)> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).collect();
             memo.filtered(|tr| !changed.iter().any(|r| tr.touched_by(r, |_| true)))
         });
-        let (eval, grown) = self.scorer.score_laws(&chosen, self.base_prefs, &self.scorer.all_laws, true, seed);
+        let (eval, grown) = self.scorer.score_laws(job, &chosen, self.base_prefs, &self.scorer.all_laws, true, seed);
         self.state_memo = Some((chosen.clone(), grown));
         let (covered, size) = Scorer::summarize(&eval);
         self.state_time += t0.elapsed();
@@ -634,7 +702,7 @@ impl<'a> Rounds<'a> {
 
     /// one round on top of `s`: its alternatives with their gains, largest first: a rival orientation of the winner that gains
     /// more, if one is proved, then the winner
-    fn pick(&mut self, s: &Chosen) -> Vec<((Term, Term), i64)> {
+    fn pick(&mut self, job: &Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
         let (scorer, provable, rivals, base_prefs, cfg) = (self.scorer, self.provable, self.rivals, self.base_prefs, self.cfg);
         let (stragglers, guard_w) = (&scorer.laws.stragglers, scorer.laws.guard_w);
         let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
@@ -684,10 +752,10 @@ impl<'a> Rounds<'a> {
         // store"). Expressions are per thread, so each worker grows its own (1.5x
         // faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
         // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` it can touch
-        let score_rule = |rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
+        let score_rule = |job: &Job, rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
             let mut with = chosen.clone();
             with.push(*rule);
-            let (fresh, _) = scorer.score_laws(&with, base_prefs, aff, true, None);
+            let (fresh, _) = scorer.score_laws(job, &with, base_prefs, aff, true, None);
             scorer.law_evals.fetch_add(scorer.all_laws.len(), std::sync::atomic::Ordering::Relaxed);
             scorer.law_reuses.fetch_add(scorer.all_laws.len() - aff.len(), std::sync::atomic::Ordering::Relaxed);
             let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
@@ -702,11 +770,11 @@ impl<'a> Rounds<'a> {
         // unprovable rival (`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)` once the promoted rules are out) is never proved
         let rivals_of = |i: usize| rivals.get(&provable[i].0).map_or(&[][..], |v| &v[..]);
         // a job: candidate `i`, or with `Some(k)` the `k`th rival of the winner `i`
-        let score_job = |(i, k): (usize, Option<usize>)| match k {
-            None => score_rule(&provable[i], &affected[i]),
+        let score_job = |job: &Job, (i, k): (usize, Option<usize>)| match k {
+            None => score_rule(job, &provable[i], &affected[i]),
             Some(k) => {
                 let fast = SCORE_ONLY.with(|s| s.replace(true));
-                let r = score_rule(&rivals_of(i)[k], &affected[i]);
+                let r = score_rule(job, &rivals_of(i)[k], &affected[i]);
                 SCORE_ONLY.with(|s| s.set(fast));
                 r
             }
@@ -725,14 +793,15 @@ impl<'a> Rounds<'a> {
             // the join store as this round starts, for the workers
             let frozen = frozen_join_store();
             for _ in 0..threads {
-                let (done_tx, score_job, queue, join_workers, frozen) = (done_tx.clone(), &score_job, queue.clone(), &scorer.join_workers, frozen.clone());
+                let (done_tx, score_job, queue, join_workers, frozen, setup) = (done_tx.clone(), &score_job, queue.clone(), &scorer.join_workers, frozen.clone(), job.setup().clone());
                 let worker = move || {
+                    let job = &Job::new(setup);
                     set_join_store(frozen.map(JoinStoreUse::Read));
                     let before = JoinCost::now();
                     tatic::kernel::scoped(|| {
                         loop {
-                            let Ok(job) = queue.lock().unwrap().recv() else { break };
-                            done_tx.send((job, score_job(job))).unwrap();
+                            let Ok(item) = queue.lock().unwrap().recv() else { break };
+                            done_tx.send((item, score_job(job, item))).unwrap();
                         }
                     });
                     join_workers.lock().unwrap().add_since(before);
@@ -756,7 +825,7 @@ impl<'a> Rounds<'a> {
                             true
                         }
                         None => {
-                            let ok = self.prove_one(i);
+                            let ok = self.prove_one(job, i);
                             self.proofs[i] = Some(ok);
                             ok
                         }
@@ -791,7 +860,7 @@ impl<'a> Rounds<'a> {
         // in the rivals' order, as when they were scored one after another here
         let mut rival: Option<((Term, Term), i64)> = None;
         for (rv, &rg) in rivals_of(i).iter().zip(&rival_gains) {
-            if rg > rival.as_ref().map_or(g, |r| r.1) && self.prover.prove(rv) {
+            if rg > rival.as_ref().map_or(g, |r| r.1) && self.prover.prove(job, rv) {
                 rival = Some((*rv, rg));
             }
         }
@@ -801,34 +870,34 @@ impl<'a> Rounds<'a> {
     /// a rival's larger round gain can lead to a worse finished set (docs/tier-cycle.md, "The cold loss is a greedy path loss"), so
     /// both are finished greedily (rivals taken, no lookahead) and the better finished set's choice is kept, ties to the rival.
     /// Looking ahead over runners-up too lost ("Lookahead on rival swaps")
-    fn then(&mut self, s: &Chosen, rule: &(Term, Term)) -> Chosen {
-        self.state(s.chosen.iter().chain([rule]).cloned().collect())
+    fn then(&mut self, job: &Job, s: &Chosen, rule: &(Term, Term)) -> Chosen {
+        self.state(job, s.chosen.iter().chain([rule]).cloned().collect())
     }
 
-    fn pick_kept(&mut self, s: &Chosen) -> Vec<((Term, Term), i64)> {
+    fn pick_kept(&mut self, job: &Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
         let kk = key(&s.chosen);
         if let Some(v) = self.picks.get(&kk) {
             return v.clone();
         }
-        let v = self.pick(s);
+        let v = self.pick(job, s);
         self.picks.insert(kk, v.clone());
         v
     }
 
     /// the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds; while
     /// speculating, each pick's assumed winner is proved on a thread of its own (`spawn`)
-    fn finish(&mut self, mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)) -> i64 {
+    fn finish(&mut self, job: &Job, mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)) -> i64 {
         let (mut path, mut left) = (vec![], rounds);
         let (v, mut d) = loop {
             let kk = key(&chosen);
             if let Some(&(v, d)) = self.finished.get(&kk).filter(|e| e.1 <= left) {
                 break (v, d);
             }
-            let s = self.state(chosen);
+            let s = self.state(job, chosen);
             if left == 0 {
                 return self.scorer.value(&s); // cut by the round cap: not kept
             }
-            let alts = self.pick_kept(&s);
+            let alts = self.pick_kept(job, &s);
             if let Some(j) = self.spawn_req.take() {
                 spawn(j);
             }
@@ -851,12 +920,12 @@ impl<'a> Rounds<'a> {
 
     /// commits the open rounds whose proofs hold, oldest first, until `keep` are left; at a failed proof, voids the rounds built
     /// on it (their picks too, as the failed winner is never picked again) and returns it, to be played again
-    fn settle(&mut self, open: &mut Vec<Open>, keep: usize) -> Option<Open> {
+    fn settle(&mut self, job: &Job, open: &mut Vec<Open>, keep: usize) -> Option<Open> {
         while open.len() > keep {
             let o = open.remove(0);
             if o.proof.is_none_or(|i| self.resolve(i)) {
                 println!("{}", o.line);
-                crate::task::result("chosen", &o.rule);
+                job.setup().result("chosen", &o.rule);
                 continue;
             }
             println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(&self.provable[i])));
@@ -874,24 +943,24 @@ impl<'a> Rounds<'a> {
     }
 
     /// The rounds, from no rules chosen until no candidate gains (or `RULEMINER_ROUNDS`): the final rule set.
-    fn play(&mut self) -> Chosen {
+    fn play(&mut self, job: &Job) -> Chosen {
         let (prover, provable, tx) = (self.prover, self.provable, self.proof_tx.clone());
         std::thread::scope(|sc| {
             let spawn = |i: usize| {
-                let (tx, rule) = (tx.clone(), &provable[i]);
-                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prover.prove(rule))).unwrap()).unwrap();
+                let (tx, rule, setup) = (tx.clone(), &provable[i], job.setup().clone());
+                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prover.prove(&Job::new(setup), rule))).unwrap()).unwrap();
             };
-            let (mut s, mut round, mut open) = (self.state(vec![]), 0, Vec::<Open>::new());
+            let (mut s, mut round, mut open) = (self.state(job, vec![]), 0, Vec::<Open>::new());
             loop {
                 self.speculate = true;
-                let alts = if round < self.cfg.rounds { self.pick_kept(&s) } else { vec![] };
+                let alts = if round < self.cfg.rounds { self.pick_kept(job, &s) } else { vec![] };
                 self.speculate = false;
                 // the main path's assumption is the round's own pending proof (`proof`)
                 self.assumed.clear();
                 let proof = self.spawn_req.take();
                 proof.map(spawn);
                 let Some(mut rule) = alts.first().map(|a| a.0) else {
-                    match self.settle(&mut open, 0) {
+                    match self.settle(job, &mut open, 0) {
                         Some(o) => (s, round) = (o.before, o.round),
                         None => break s,
                     }
@@ -901,7 +970,7 @@ impl<'a> Rounds<'a> {
                     // lookahead plays whole greedy paths from settled rounds, taking each pick's winner as provable while it is proved
                     // in the background; a path that took an unprovable winner voids the picks that offered it and the finished values
                     // (any may rest on it), and the paths are played again
-                    if let Some(o) = self.settle(&mut open, 0) {
+                    if let Some(o) = self.settle(job, &mut open, 0) {
                         (s, round) = (o.before, o.round);
                         continue;
                     }
@@ -913,7 +982,7 @@ impl<'a> Rounds<'a> {
                     let rest = self.cfg.rounds - round - 1;
                     let values = loop {
                         self.speculate = true;
-                        let values: Vec<i64> = alts.iter().map(|(r, _)| self.finish(s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn)).collect();
+                        let values: Vec<i64> = alts.iter().map(|(r, _)| self.finish(job, s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn)).collect();
                         self.speculate = false;
                         let failed: Vec<usize> = std::mem::take(&mut self.assumed).into_iter().filter(|&i| !self.resolve(i)).collect();
                         if failed.is_empty() {
@@ -929,14 +998,14 @@ impl<'a> Rounds<'a> {
                     }
                     rule = alts[best].0;
                 }
-                let next = self.then(&s, &rule);
+                let next = self.then(job, &s, &rule);
                 let line = format!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", self.scorer.count(&next.covered) - self.scorer.count(&s.covered), s.size - next.size, rule.0.show(), rule.1.show());
                 self.clock.phase("rule-set evaluation");
                 open.push(Open { before: s, round, proof, line, rule: rule_show(&rule) });
                 (s, round) = (next, round + 1);
                 // the newest three rounds stay open: a winner's proof (about 87 ms on cmp3d) runs while the next three rounds are
                 // scored (about 60 ms each at 6 threads); docs/tier-cycle.md, "Why six threads gave little"
-                if let Some(o) = self.settle(&mut open, 3) {
+                if let Some(o) = self.settle(job, &mut open, 3) {
                     (s, round) = (o.before, o.round);
                 }
             }
@@ -974,7 +1043,7 @@ impl<'a> Rounds<'a> {
 /// rule rounds' gain), until none gains. Only with `RULEMINER_PREFS=1`: a family's own rules rarely conflict, so the phase pays
 /// off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
 /// rival orientations in the miner") (P9)
-fn prefs_phase(scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Term, Term)], base_prefs: &[Pref], cfg: &MinerConfig, clock: &Clock) {
+fn prefs_phase(job: &Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Term, Term)], base_prefs: &[Pref], cfg: &MinerConfig, clock: &Clock) {
     let (all_laws, guard_w) = (&scorer.all_laws, scorer.laws.guard_w);
     // `RULEMINER_UNITS=<file>`: the base's drop units (`joinability_units`, built once per pooled library by `driver::sweep`)
     let units = cfg.units.as_ref().filter(|_| cfg.prefs).map_or(vec![], |f| parse_units(&std::fs::read_to_string(f).unwrap()));
@@ -987,14 +1056,14 @@ fn prefs_phase(scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Term, Term)], 
     };
     let mut prefs = base_prefs.to_vec();
     while cfg.prefs {
-        *RULE_CONFLICTS.get(Default::default).lock().unwrap() = Some(Default::default());
-        let (now, _) = scorer.score_laws(chosen, &prefs, all_laws, false, None);
-        let mut conflicts: Vec<Pref> = RULE_CONFLICTS.get(Default::default).lock().unwrap().take().unwrap().into_keys().collect();
+        RULE_CONFLICTS.with(|c| *c.borrow_mut() = Some(Default::default()));
+        let (now, _) = scorer.score_laws(job, chosen, &prefs, all_laws, false, None);
+        let mut conflicts: Vec<Pref> = RULE_CONFLICTS.with(|c| c.borrow_mut().take()).unwrap().into_keys().collect();
         let shown = |(w, l): &Pref| (rule_show(w), rule_show(l));
         conflicts.sort_by_cached_key(shown);
         let (f0, size0) = Scorer::summarize(&now);
         let gain = |prefs: &[Pref]| {
-            let (f, sz) = Scorer::summarize(&scorer.score_laws(chosen, prefs, all_laws, false, None).0);
+            let (f, sz) = Scorer::summarize(&scorer.score_laws(job, chosen, prefs, all_laws, false, None).0);
             (scorer.count(&f) - scorer.count(&f0)) * 1000 + (scorer.guarded(&f) - scorer.guarded(&f0)) * guard_w + (size0 - sz)
         };
         // a flip's move key is the pair it makes (winner, loser); a drop's is its unit's index
@@ -1014,13 +1083,13 @@ fn prefs_phase(scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Term, Term)], 
             None => break,
             Some((g, Ok((w, l)))) => {
                 println!("RULEMINER prefer (+{g} gain): {}  OVER  {}", rule_show(&w), rule_show(&l));
-                crate::task::result("prefer", format!("{}  OVER  {}", rule_show(&w), rule_show(&l)));
+                job.setup().result("prefer", format!("{}  OVER  {}", rule_show(&w), rule_show(&l)));
                 prefs = flipped(&(w, l));
             }
             Some((g, Err(u))) => {
                 for (l, r) in &units[u] {
                     println!("RULEMINER drop (+{g} gain): {} -> {}", l.show(), r.show());
-                    crate::task::result("drop", format!("{} -> {}", l.show(), r.show()));
+                    job.setup().result("drop", format!("{} -> {}", l.show(), r.show()));
                 }
                 dropped.push(u);
                 set_base(&dropped);

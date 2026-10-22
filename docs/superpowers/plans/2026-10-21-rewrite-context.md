@@ -316,7 +316,7 @@ fn every_job_has_its_own_id() {
 
 The largest commit in the plan, mechanical and compiler-driven.
 
-- [ ] **Step 1: the driver.**
+- [x] **Step 1: the driver.**
   - `task_fn` returns `fn(&Arc<Setup>)`.
   - `worker` builds `Setup::for_task(env, results)` and runs the task on a fresh thread
     (`spawn(move || run(&setup))`), keeping the fresh thread for the D3 caches.
@@ -325,7 +325,7 @@ The largest commit in the plan, mechanical and compiler-driven.
     `machine_state`) use `Setup::process()`.
   - Test entries (`search::rule_miner`, `rule_set_kernel_check`, `machine::pages_line`, `driver::env_echo`) become
     `#[test] fn x() { x_task(&Setup::process()) }`, with `x_task(setup: &Arc<Setup>)` holding the body.
-- [ ] **Step 2: the rewriter and its callers.**
+- [x] **Step 2: the rewriter and its callers.**
   - Every function that reads `env_var`, `env_or`, `env_flag`, `ablated`, `nops`, `carry_cap`, `join_visit`,
     `rule_set`, `fixed_rules`, `lemma_cache::*` or `task::result`, directly or through a callee, gains `job: &Job`.
     Functions that already need `&mut Job` in a later task still take `&Job` here; Tasks 4–7 upgrade them.
@@ -337,7 +337,7 @@ The largest commit in the plan, mechanical and compiler-driven.
   - Each thread that rewrites (the miner's main thread, its four `thread::scope` spawn sites, tests that spawn) makes
     its own `Job::new(setup.clone())`.
   - Tests start with `let job = &Job::new(Setup::process());`.
-- [ ] **Step 3: delete.**
+- [x] **Step 3: delete.**
   - In `rewrite.rs`: `ENV`, `env_snapshot`, `env_name` (moves to `job.rs`), `env_var`, `env_or`, `env_flag`,
     `switch_value`, `ablated`'s `SET`, `rule_set`'s `SET`, `fixed_rules`' `RULES` and `RuleTable::new`'s `FIXED`.
   - In `lemma_cache.rs`: `PROCESS`, `RECORDED`, `HITS`, `BUILT`, `SKIPPED` and `recheck`'s `R`. They become
@@ -350,17 +350,50 @@ The largest commit in the plan, mechanical and compiler-driven.
     `take()` two lines on, around one single-threaded `score_laws`) and `search.rs:1474` (`rule_set_kernel_check`, no
     threads), so no spawned thread counts into it. `TRACE_RULES` is set and read on one thread per use; grep its sites
     again before converting.
-- [ ] **Step 4: checks.**
+- [x] **Step 4: checks.**
   - `grep -n 'PerTask\|env_var(\|env_or(\|env_flag(\|task::result\|task_env' tests/church_bv/*.rs`: expected empty
-    (111 sites today, 31 of them in `driver.rs`).
+    (153 lines at 92c3fc2, as at 4ffe2a2: 12 comments and 141 code lines, of which `env_var(` 53, `env_or(` 38,
+    `PerTask` 24, `env_flag(` 20, `task::result` 6, `task_env` 2; 30 code lines in `driver.rs`, 45 in `search.rs`.
+    The 111 first written here was a miscount).
   - `grep -n 'Setup::process()' tests/church_bv/*.rs`: for each site, confirm that no task function reaches it. A
     task that read `Setup::process()` would silently lose its task's env pairs, which the old `ENV` merged in. Allowed:
     the driver's own loop (`sweep`, `LoopCfg`, `write_laws`, `cfg_var`, `machine_state` before it sends a task), the
     `#[test]` wrappers, and tests.
   - Suite: expected 520 minus `per_task_rebuilds_per_task`, so 519.
   - Clippy: no new warnings.
-- [ ] **Step 5: gate.** Expected: equal.
-- [ ] **Step 6: commit:** `C1 step 1: Setup replaces the per-task statics`, listing what was deleted.
+- [x] **Step 5: gate.** Expected: equal. Equal: runs 2026-10-21-t3-miner-snap (0 of 5 differ), t3-gate (15 of 15 loops), t3-threads-s1/s3/s5 (3 of 3 each).
+- [x] **Step 6: commit:** `C1 step 1: Setup replaces the per-task statics`, listing what was deleted.
+
+Rulings made while executing Task 3 (2026-10-21):
+- `RULE_TABLE` is built lazily by `rewrite::with_table(job, f)` from the first reader's `job.setup()` (until then a
+  thread's first `rule_step` built it from the environment); `Job::new` has no side effects. Transitional: Task 4
+  moves the table into the job.
+- Functions that only read configuration take `setup: &Setup`, not `job`: `terms`/`build_terms` (keyed by
+  `setup.nops()`), `family_laws`, `shape_part`, `join_eqs` and `RuleTable::new`. The driver threads one `setup` from
+  `loop_stream`/`sweep` through `LoopCfg::from_env`, `write_laws`, `stream_laws`, `served_laws`, `scope_extras` and
+  `run_loop` instead of calling `Setup::process()` in each; only `joinability_units` (it rewrites) gets a
+  `Job::new(setup.clone())`. Other configuration readers (`carry_cap`, `join_visit`, `MachineBanner::start`) take
+  `job`, as Step 2 says.
+- The pooled stage's `.steps` is a plain read, so the driver calls `setup.or("RULEMINER_STEPS", 200)`;
+  `MinerConfig::new(&Setup)` lives in `miner.rs`.
+- `miner::run(setup)` is itself the worker's task function and `rule_miner`'s body; the others are
+  `rule_set_kernel_check_task`, `pages_line_task` and `env_echo_task`.
+- The miner's three spawn sites (`filter`'s provers, `pick`'s scoring workers, `play`'s speculative provers) and
+  `join_store_workers_read_the_frozen_copy`'s worker each build `Job::new(setup.clone())`; the scoring queue's item,
+  formerly a local named `job`, is `item`. `pick`'s `touched` workers rewrite nothing and take no job.
+- `lemma_cache`: `TaskCache` (file, recorded statements, counters) is `Setup::lemmas`; `lookup`, `record` and
+  `recheck` take `&Setup`; `Save` holds an `Arc<Setup>`.
+- `env_var_reads_the_process_environment` and `a_switch_is_off_only_at_0_...` moved to `job.rs` (as `Setup::var`
+  and `Setup::flag` tests); `switch_value` went with `env_flag`.
+- `sweep`'s `stage_fams` and `srcs` became nested `fn`s: they returned `&'static str` only because the leaked `ENV`
+  was `'static`.
+- The call-site threading was done by a script driven by rustc's JSON errors (add `job` to a reader's enclosing fn,
+  `job` as a call's first argument, `let job = &Job::new(Setup::process());` in a `#[test]`), then reviewed by hand.
+- Step 4 results: the grep is empty; every `Setup::process()` is in the driver's own loop (`machine_state`,
+  `cfg_var`, `loop_stream`, `sweep`), a `#[test]` wrapper or a test; suite 519; clippy has no new warnings (four
+  existing ones renamed, two gone with the deleted code).
+- docs/tier-cycle.md's "A persistent worker" entry got a dated C1 note in this task (asked for 2026-10-21), so
+  Task 8 only extends it for Tasks 4-7.
 
 ### Task 4: `Rules` into the job (`RULE_TABLE`, `RULE_PREFS`, `SCORE_ONLY`, `TRACE_RULES`)
 

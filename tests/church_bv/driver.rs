@@ -1,7 +1,7 @@
 //! The mine-and-serve loop and the sweeps over it (formerly `scripts/loop_stream.sh` and local sweep scripts). Serving
 //! (`search::rule_set_kernel_check`) and mining (`search::rule_miner`) run as tasks of one worker process of this exe (`worker`,
-//! `Worker`): each task gets fresh thread-locals, its own environment and its own log, while the pure memos carry over
-//! (`task.rs`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
+//! `Worker`): each task gets fresh thread-locals, its own `Setup` (environment, results, caches) and its own log, while the
+//! pure memos carry over (`task.rs`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
 //! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
@@ -29,7 +29,7 @@
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules, laws the join closed with no machine proof, terms the join's
 //! searches reached: its cost, which M does not show), mine_<name>.log and serve_<skip>.log, each with a `.results` file
-//! beside it (the task's `key<TAB>value` records from `task::result`, which the driver reads). The last line printed is
+//! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
 //! **A sweep** (the experiments of docs/loop-result.md): `SWEEP_OUT=<dir> [SALT=1] [LIB=<dir>] [SWEEP="mines own cold"] <exe>
@@ -110,20 +110,20 @@ mod stdio {
 }
 
 /// The tests a worker runs as tasks.
-fn task_fn(name: &str) -> Option<fn()> {
+fn task_fn(name: &str) -> Option<fn(&Arc<Setup>)> {
     Some(match name {
-        "search::rule_miner" => crate::search::rule_miner,
-        "search::rule_set_kernel_check" => crate::search::rule_set_kernel_check,
-        "machine::pages_line" => crate::machine::pages_line,
-        "driver::env_echo" => env_echo,
+        "search::rule_miner" => crate::miner::run,
+        "search::rule_set_kernel_check" => crate::search::rule_set_kernel_check_task,
+        "machine::pages_line" => crate::machine::pages_line_task,
+        "driver::env_echo" => env_echo_task,
         _ => return None,
     })
 }
 
 /// A sweep's children as tasks of one process (`Worker` starts it, with `TATIC_WORKER=1`; it returns at once otherwise).
 /// Reads `<test>\t<log>\t<KEY>=<VALUE>...` lines; runs each test on a fresh thread (fresh thread-locals) with the task's
-/// pairs over this process's environment (`task::begin`), its stdout and stderr in the log and its result records
-/// (`task::result`) in `results_path(log)`; answers `WORKER ok` or
+/// pairs over this process's environment (its `Setup`), its stdout and stderr in the log and its result records
+/// (`Setup::result`) in `results_path(log)`; answers `WORKER ok` or
 /// `WORKER fail` on a line of its own, and exits after a failure (a panic can leave a lock poisoned) or at EOF. A task that
 /// starts a process must give it a null stdin, as `Command::output` does: this stdin is the task pipe.
 #[test]
@@ -139,11 +139,11 @@ fn worker() {
         let env = fields.filter_map(|f| f.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let ok = match (std::fs::File::create(&log), std::fs::File::create(results_path(Path::new(&log)))) {
             (Ok(f), Ok(results)) => {
-                crate::task::begin(env, results);
+                let setup = Setup::for_task(env, results);
                 std::io::stdout().flush().unwrap();
                 let saved = stdio::redirect(&f);
                 let ok = match task_fn(&name) {
-                    Some(run) => std::thread::Builder::new().name(name.clone()).spawn(run).unwrap().join().is_ok(),
+                    Some(run) => std::thread::Builder::new().name(name.clone()).spawn(move || run(&setup)).unwrap().join().is_ok(),
                     None => {
                         eprintln!("worker: no task {name}");
                         false
@@ -151,7 +151,6 @@ fn worker() {
                 };
                 std::io::stdout().flush().unwrap();
                 stdio::restore(saved);
-                crate::task::end();
                 ok
             }
             (Err(e), _) | (_, Err(e)) => {
@@ -278,31 +277,31 @@ fn no_extras_without_rounds() {
 }
 
 impl LoopCfg {
-    fn from_env() -> LoopCfg {
-        let mode = env_var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop").to_string();
+    fn from_env(setup: &Setup) -> LoopCfg {
+        let mode = setup.var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop").to_string();
         assert!(["none", "ref", "loop"].contains(&mode.as_str()), "LOOP_MODE must be none, ref or loop, got {mode}");
         let cfg = LoopCfg {
             mode,
-            out: PathBuf::from(env_var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
-            family: env_var("FAMILY").unwrap_or("add3").into(),
-            stride: env_or("STRIDE", 7),
-            sphase: env_or("SPHASE", 0),
-            b: env_or("B", 150),
-            k: env_or("K", 4),
-            offset: env_or("OFFSET", 0),
-            threads: env_or("THREADS", 2),
-            rounds: env_or("ROUNDS", usize::MAX),
-            deep3: env_or("DEEP3", 1),
-            split: env_or("SPLIT", 2),
-            warm: env_var("WARM_RULES").map(PathBuf::from),
-            check_fast: env_flag("CHECK_FAST", false),
+            out: PathBuf::from(setup.var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
+            family: setup.var("FAMILY").unwrap_or("add3").into(),
+            stride: setup.or("STRIDE", 7),
+            sphase: setup.or("SPHASE", 0),
+            b: setup.or("B", 150),
+            k: setup.or("K", 4),
+            offset: setup.or("OFFSET", 0),
+            threads: setup.or("THREADS", 2),
+            rounds: setup.or("ROUNDS", usize::MAX),
+            deep3: setup.or("DEEP3", 1),
+            split: setup.or("SPLIT", 2),
+            warm: setup.var("WARM_RULES").map(PathBuf::from),
+            check_fast: setup.flag("CHECK_FAST", false),
             extras: Default::default(),
             extra_at: vec![],
             env: vec![],
         };
-        if takes_extras(&cfg, ablated("gen")) {
+        if takes_extras(&cfg, setup.ablated("gen")) {
             let mut scope = [cfg];
-            scope_extras(&mut scope, &[], &mut Draw::new()).unwrap_or_else(|e| panic!("{e}"));
+            scope_extras(setup, &mut scope, &[], &mut Draw::new()).unwrap_or_else(|e| panic!("{e}"));
             let [cfg] = scope;
             return cfg;
         }
@@ -353,7 +352,7 @@ impl Worker {
         Worker { proc: std::sync::Mutex::new(None) }
     }
 
-    /// Runs test `name` of this exe with `env` added, output to `log`; returns its result records (`task::result`), or
+    /// Runs test `name` of this exe with `env` added, output to `log`; returns its result records (`Setup::result`), or
     /// `None` if it failed.
     fn run(&self, name: &str, env: &[(String, String)], log: &Path) -> Option<Vec<(String, String)>> {
         // an earlier run's log and records must not survive a task that fails before creating its own
@@ -462,7 +461,7 @@ fn append(path: &Path, text: &str) {
 /// machine-wide, so read here; `lockpriv` and `pages` belong to the children's process and environment, so a worker
 /// task (`machine::pages_line`, with the children's `env`) reports them. `MACHINE_STATE=0` skips it, in a loop or a sweep.
 fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Path) {
-    if !env_flag("MACHINE_STATE", true) {
+    if !Setup::process().flag("MACHINE_STATE", true) {
         return;
     }
     std::fs::create_dir_all(out).unwrap();
@@ -472,19 +471,23 @@ fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Pa
     eprintln!("machine at {when}: machine state: {} {pages}", crate::machine::rtp_cpu());
 }
 
-/// Prints `env_var(k)` for each name in `ECHO` (a comma list), also handing each to the driver as a result record, and a
+/// Prints the task's variable `k` for each name in `ECHO` (a comma list), also handing each to the driver as a result record, and a
 /// nonce unique to this process; panics when `ECHO_PANIC=1`. A task for `worker_runs_tasks`.
 #[test]
 #[ignore]
 fn env_echo() {
+    env_echo_task(&Setup::process())
+}
+
+fn env_echo_task(setup: &Arc<Setup>) {
     static NONCE: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
     let nonce = NONCE.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-    for k in env_var("ECHO").unwrap_or("").split(',').filter(|k| !k.is_empty()) {
-        println!("ECHO {k}={}", env_var(k).unwrap_or("<unset>"));
-        crate::task::result(k, env_var(k).unwrap_or("<unset>"));
+    for k in setup.var("ECHO").unwrap_or("").split(',').filter(|k| !k.is_empty()) {
+        println!("ECHO {k}={}", setup.var(k).unwrap_or("<unset>"));
+        setup.result(k, setup.var(k).unwrap_or("<unset>"));
     }
     println!("ECHO nonce={nonce}");
-    assert!(!env_flag("ECHO_PANIC", false), "env_echo panicked on request");
+    assert!(!setup.flag("ECHO_PANIC", false), "env_echo panicked on request");
 }
 
 /// A worker runs each task with its own environment, log and result records, leaks no variable or record from one task to
@@ -557,20 +560,20 @@ fn worker_never_leaves_a_stale_log() {
 /// `lhs = rhs` lines for `RULEMINER_LAWFILE`/`CHECK_LAWFILE`, and returns the variable that passes them. The driver builds a
 /// family's law pool once (`family_laws` keeps it) where every child used to rebuild it: 35% of a sweep's loops
 /// (docs/tier-cycle.md).
-fn write_laws(family: &str, env: &[(String, String)], path: &Path, var: &str) -> (String, String) {
-    let get = |k: &str, d: usize| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| env_or(k, d), |(_, v)| v.parse().unwrap());
-    std::fs::write(path, laws_text(&family_laws(family, &get, 4, family_vars(family), 7))).unwrap();
+fn write_laws(setup: &Setup, family: &str, env: &[(String, String)], path: &Path, var: &str) -> (String, String) {
+    let get = |k: &str, d: usize| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| setup.or(k, d), |(_, v)| v.parse().unwrap());
+    std::fs::write(path, laws_text(&family_laws(setup, family, &get, 4, family_vars(family), 7))).unwrap();
     (var.to_string(), path.display().to_string())
 }
 
 /// `cfg`'s value of the child variable `k`: its `env`, then this process's, as `run_loop`'s children read it.
 fn cfg_var(cfg: &LoopCfg, k: &str, d: usize) -> usize {
-    cfg.env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| env_or(k, d), |(_, v)| v.parse().unwrap())
+    cfg.env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| Setup::process().or(k, d), |(_, v)| v.parse().unwrap())
 }
 
 /// The laws a child of `cfg` takes at stride phase `phase`: `laws` of them from `skip`, through the variables `run_loop` gives
 /// its children.
-fn stream_laws(cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
+fn stream_laws(setup: &Setup, cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
     let env = |k: &str, d: usize| match k {
         "RULEMINER_DEEP3" => cfg.deep3,
         "RULEMINER_STRIDE" => cfg.stride,
@@ -580,12 +583,12 @@ fn stream_laws(cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Te
         "RULEMINER_LAWS" => laws,
         _ => cfg_var(cfg, k, d),
     };
-    family_laws(&cfg.family, &env, 4, family_vars(&cfg.family), 7).into_iter().map(|(_, a, b)| (a, b)).collect()
+    family_laws(setup, &cfg.family, &env, 4, family_vars(&cfg.family), 7).into_iter().map(|(_, a, b)| (a, b)).collect()
 }
 
 /// The laws `cfg`'s loop serves, and its mines mine: its K batches of B from OFFSET.
-fn served_laws(cfg: &LoopCfg) -> Vec<(Term, Term)> {
-    stream_laws(cfg, cfg.sphase, cfg.offset, cfg.b * cfg.k)
+fn served_laws(setup: &Setup, cfg: &LoopCfg) -> Vec<(Term, Term)> {
+    stream_laws(setup, cfg, cfg.sphase, cfg.offset, cfg.b * cfg.k)
 }
 
 fn law_text((a, b): &(Term, Term)) -> String {
@@ -656,13 +659,13 @@ const GEN_F: f64 = 0.16;
 /// (temporary) caps n at what the filtered stream list fits (`fit_n`), whichever the source, so a grammar arm and its
 /// stream control take the same n: the stream is too short for the control at `GEN_F`'s n. Sets each loop's `extras` and
 /// `extra_at`, or says by how much the list is short.
-fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
-    let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(served_laws).collect();
+fn scope_extras(setup: &Setup, scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
+    let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(|c| served_laws(setup, c)).collect();
     let c = scope[0].clone();
     let grammar = filtered(&draw.grammar(&c), &served, &mut draw.reps);
     let mut n = (GEN_F * grammar.len() as f64) as usize;
-    let source = env_var("GEN_SOURCE").unwrap_or("grammar");
-    let matched = match env_var("GEN_N") {
+    let source = setup.var("GEN_SOURCE").unwrap_or("grammar");
+    let matched = match setup.var("GEN_N") {
         None => false,
         Some("matched") => true,
         Some(s) => panic!("GEN_N must be matched, got {s}"),
@@ -672,7 +675,7 @@ fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Res
         let own: Vec<usize> = scope.iter().map(|c| c.sphase).collect();
         let last = *own.iter().max().unwrap();
         let raw: Vec<(Term, Term)> =
-            (1..=c.stride).map(|i| (last + i) % c.stride).filter(|q| !own.contains(q)).flat_map(|q| stream_laws(&c, q, 0, usize::MAX)).collect();
+            (1..=c.stride).map(|i| (last + i) % c.stride).filter(|q| !own.contains(q)).flat_map(|q| stream_laws(setup, &c, q, 0, usize::MAX)).collect();
         let kept = filtered(&raw, &served, &mut draw.reps);
         println!("GEN {}: stream {} laws, {} after the filter", c.out.display(), raw.len(), kept.len());
         kept
@@ -697,7 +700,7 @@ fn scope_extras(scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Res
 }
 
 /// One loop; its children share the lemma file `lemmas`, which the caller owns (creates nothing, deletes it when done).
-fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
+fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
     let (out, rules) = (&cfg.out, cfg.out.join("rules.txt"));
     std::fs::create_dir_all(out).unwrap();
     let s = |v: usize| v.to_string();
@@ -728,7 +731,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
             ("RULEMINER_LAWS", s(laws)),
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
-        env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
+        env.push(write_laws(setup, &cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
         if let Some(at) = cfg.extra_at.get(slot) {
             let extra: String = cfg.extras[at.clone()].iter().map(|l| law_text(l) + "\n").collect();
             println!("GEN_EXTRA {name}: {} laws", at.len());
@@ -751,7 +754,7 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
     let serve = |skip: usize| {
         let log = out.join(format!("serve_{skip}.log"));
         let mut env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
-        env.push(write_laws(&cfg.family, &env, &out.join(format!("laws_serve_{skip}.txt")), "CHECK_LAWFILE"));
+        env.push(write_laws(setup, &cfg.family, &env, &out.join(format!("laws_serve_{skip}.txt")), "CHECK_LAWFILE"));
         let records = worker.run("search::rule_set_kernel_check", &env, &log).unwrap_or_else(|| panic!("rule_set_kernel_check failed (see {})", log.display()));
         let count = |key: &str| -> usize {
             let v = records.iter().find(|(k, _)| k == key).map(|(_, v)| v).unwrap_or_else(|| panic!("no {key} record (see {})", log.display()));
@@ -790,12 +793,13 @@ fn run_loop(cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Summary {
 #[test]
 #[ignore]
 fn loop_stream() {
+    let setup = &Setup::process();
     let worker = Worker::new();
-    let cfg = LoopCfg::from_env();
+    let cfg = LoopCfg::from_env(setup);
     machine_state("start", &cfg.env, &worker, &cfg.out);
     let lemmas = cfg.out.join("lemmas.bin");
     let _ = std::fs::remove_file(&lemmas);
-    run_loop(&cfg, &lemmas, &worker);
+    run_loop(setup, &cfg, &lemmas, &worker);
     let _ = std::fs::remove_file(&lemmas);
     machine_state("end", &cfg.env, &worker, &cfg.out);
 }
@@ -829,11 +833,12 @@ fn ref_mines_filter_against_every_loop_family() {
 #[test]
 #[ignore]
 fn sweep() {
-    let out = PathBuf::from(env_var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
+    let setup = &Setup::process();
+    let out = PathBuf::from(setup.var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
     std::fs::create_dir_all(&out).unwrap();
-    let salt: usize = env_or("SALT", 1);
-    let lib = env_var("LIB").map(PathBuf::from).unwrap_or_else(|| out.clone());
-    let stages = env_var("SWEEP").unwrap_or("mines own cold");
+    let salt: usize = setup.or("SALT", 1);
+    let lib = setup.var("LIB").map(PathBuf::from).unwrap_or_else(|| out.clone());
+    let stages = setup.var("SWEEP").unwrap_or("mines own cold");
     // Large pages off in the children: most are short, each pays the 64 MiB large-page commit up front, and a sweep with them
     // on cost 0.3-2.9 s more CPU and 60% more peak memory (docs/tier-cycle.md, "How often the large-page stall hits a sweep").
     let env: Vec<(String, String)> = [("RULEMINER_FAST", "1".to_string()), ("RULEMINER_SHUFFLE", salt.to_string()), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0".to_string())]
@@ -851,7 +856,7 @@ fn sweep() {
         offset: 0,
         // LOOP_THREADS: the scoring workers of mines and loops (the miner's choice does not depend on it,
         // docs/runs/2026-10-18/scripts/threads_check.sh)
-        threads: env_or("LOOP_THREADS", 6),
+        threads: setup.or("LOOP_THREADS", 6),
         rounds: usize::MAX,
         deep3: 1,
         split: 2,
@@ -864,13 +869,15 @@ fn sweep() {
     let library = |fam: &str| lib.join(format!("lib_{fam}")).join("rules.txt");
     // `MINES_WARM=<sweep dir>`: each ref mine starts from that sweep's pooled library for its family, where there is one
     // (docs/tier-cycle.md, "Promotion as an iterated sweep": one iteration lowers the best loops 157 to 142, a second adds nothing)
-    let mines_warm = |fam: &str| env_var("MINES_WARM").map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
-    let stage_fams = |stage: &'static str| stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }));
+    let mines_warm = |fam: &str| setup.var("MINES_WARM").map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
+    fn stage_fams(stage: &str) -> (&str, &str) {
+        stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }))
+    }
     let ref_cfg = |fam: &str| {
         let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
         LoopCfg { stride, split, b, k: 4, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) }
     };
-    let srcs = |name: &str, fam: &'static str| -> Vec<&'static str> {
+    fn srcs<'a>(name: &str, fam: &'a str) -> Vec<&'a str> {
         match name {
             "own" => vec![fam],
             "cold" => vec!["none"],
@@ -879,7 +886,7 @@ fn sweep() {
             "mixed" => vec!["u3"],
             _ => panic!("unknown stage {name}"),
         }
-    };
+    }
     let loop_cfgs = |stage: &str, fam: &str, src: &str| -> Vec<LoopCfg> {
         let stride = LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1;
         let warm = match src {
@@ -908,11 +915,11 @@ fn sweep() {
         .collect();
     let (mut draw, mut short) = (Draw::new(), vec![]);
     for scope in &mut scopes {
-        if !scope.iter().all(|c| takes_extras(c, ablated("gen"))) {
+        if !scope.iter().all(|c| takes_extras(c, setup.ablated("gen"))) {
             continue;
         }
         let also = if scope[0].mode == "ref" { &loops[..] } else { &[] };
-        if let Err(e) = scope_extras(scope, also, &mut draw) {
+        if let Err(e) = scope_extras(setup, scope, also, &mut draw) {
             short.push(e);
         }
     }
@@ -925,14 +932,14 @@ fn sweep() {
     // a stage's mines, then its loops, run `SWEEP_LANES` (default 2) at a time: each reads only what earlier stages wrote, and
     // 2 × 6 mining threads fit the 12-thread cap. A lane has its own worker and lemma file (all its processes run this exe, so
     // every statement in it was checked by this build; one shared file would race on its save). SWEEP_LANES=1 for timings.
-    let lanes: usize = env_or("SWEEP_LANES", 2usize).max(1);
+    let lanes: usize = setup.or("SWEEP_LANES", 2usize).max(1);
     let lemmas: Vec<PathBuf> = (0..lanes).map(|l| out.join(format!("lemmas_{l}.bin"))).collect();
     lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));
     let workers: Vec<Worker> = (0..lanes).map(|_| Worker::new()).collect();
     let run = |cfgs: &[LoopCfg]| {
         run_lanes(cfgs, lanes, |cfg, l| {
             let t0 = std::time::Instant::now();
-            let s = run_loop(cfg, &lemmas[l], &workers[l]);
+            let s = run_loop(setup, cfg, &lemmas[l], &workers[l]);
             (s, t0.elapsed().as_secs())
         })
     };
@@ -955,7 +962,7 @@ fn sweep() {
             let text: String = ["cmp3d", "add3", "sbo3"].iter().map(|fam| format!("# library {fam}\n{}\n", std::fs::read_to_string(library(fam)).unwrap().trim_end())).collect();
             std::fs::write(&pooled, &text).unwrap();
             let units = out.join("pooled.units");
-            std::fs::write(&units, units_text(&joinability_units(&text, 4, crate::search::MinerConfig::from_env().steps as i64))).unwrap();
+            std::fs::write(&units, units_text(&joinability_units(&Job::new(setup.clone()), &text, 4, setup.or("RULEMINER_STEPS", 200i64)))).unwrap();
             std::fs::write(out.join("pooled_prefs.tsv"), "").unwrap();
             // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins, and which
             // rules where two libraries' normal forms meet to drop (`drop_units`), on its phase-0 stream: a mine with no rule
