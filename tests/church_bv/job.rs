@@ -66,9 +66,9 @@ impl Setup {
         self.env.get(&*env_name(k)).map(String::as_str)
     }
 
-    /// The environment variable `k` parsed as `T`, or `d` when unset or unparsable.
+    /// The environment variable `k` parsed as `T` (`parsed`).
     pub fn or<T: FromStr>(&self, k: &str, d: T) -> T {
-        self.var(k).and_then(|v| v.parse().ok()).unwrap_or(d)
+        parsed(k, self.var(k), d)
     }
 
     /// The environment variable `k` as a switch: `d` when unset, off at `0`, on at any other value. Every church_bv switch
@@ -114,6 +114,21 @@ impl Setup {
             writeln!(f, "{key}\t{value}").expect("write a task result");
         }
     }
+}
+
+/// The value `v` of the variable `k` parsed as `T`, or `d` when unset. A value that does not parse stops the run: a typo
+/// would otherwise mine under the default unseen.
+pub fn parsed<T: FromStr>(k: &str, v: Option<&str>, d: T) -> T {
+    v.map_or(d, |v| v.parse().unwrap_or_else(|_| panic!("{k}={v}: not a valid {}", std::any::type_name::<T>())))
+}
+
+#[test]
+fn or_reads_a_number_or_its_default_and_stops_at_a_typo() {
+    let s = Setup::from_env(merge_env([("N".to_string(), "12".to_string()), ("BAD".to_string(), "1O".to_string())].into_iter(), None, &[]));
+    assert_eq!((s.or("N", 0usize), s.or("UNSET", 7usize)), (12, 7));
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.or("BAD", 0usize))).expect_err("a typo stops the run");
+    let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(msg.contains("BAD=1O"), "{msg}");
 }
 
 /// `k` as the environment stores it: upper-cased on Windows, where names ignore case.

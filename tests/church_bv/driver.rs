@@ -621,7 +621,7 @@ impl Draw {
 
     /// `grammar_laws` for `cfg`'s family, `deep3` and salt, generated once per sweep.
     fn grammar(&mut self, cfg: &LoopCfg) -> std::sync::Arc<Vec<(Term, Term)>> {
-        let k = (cfg.family.clone(), cfg.deep3, num(cfg_var(cfg, "RULEMINER_SHUFFLE"), 0));
+        let k = (cfg.family.clone(), cfg.deep3, num(&|k| cfg_var(cfg, k), "RULEMINER_SHUFFLE", 0));
         self.laws
             .entry(k)
             .or_insert_with_key(|k| {

@@ -168,9 +168,15 @@ pub fn u3w_window_is_an_equal_mix() {
     assert_eq!(laws(3, 1)[..5], w[1..].iter().step_by(3).take(5).cloned().collect::<Vec<_>>()[..]);
 }
 
-/// A law-sequence variable from `env`, parsed as a number, or `d` when unset or unparsable (as `Setup::or` reads one).
-pub fn num(v: Option<String>, d: usize) -> usize {
-    v.and_then(|v| v.parse().ok()).unwrap_or(d)
+/// The law-sequence variable `k` from `env` as a number, as `Setup::or` reads one (`job::parsed`).
+pub fn num(env: &dyn Fn(&str) -> Option<String>, k: &str, d: usize) -> usize {
+    crate::job::parsed(k, env(k).as_deref(), d)
+}
+
+#[test]
+#[should_panic(expected = "RULEMINER_LAWS=25O")]
+fn num_stops_at_an_unparsable_value() {
+    num(&|_| Some("25O".to_string()), "RULEMINER_LAWS", 250);
 }
 
 /// `family`'s laws, through the law-sequence variables (`RULEMINER_*`) that `env` gives, `None` for unset.
@@ -196,38 +202,38 @@ pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str) -> Option<Str
                 break;
             }
         }
-        mixed.into_iter().skip(num(env("RULEMINER_PHASE"), 0)).step_by(num(env("RULEMINER_STRIDE"), 1)).skip(num(env("RULEMINER_SKIP"), 0)).take(num(env("RULEMINER_LAWS"), 250)).collect()
+        mixed.into_iter().skip(num(env, "RULEMINER_PHASE", 0)).step_by(num(env, "RULEMINER_STRIDE", 1)).skip(num(env, "RULEMINER_SKIP", 0)).take(num(env, "RULEMINER_LAWS", 250)).collect()
     } else if family == "shl" {
         let conj = shl_conjectures(2);
-        let stride = (conj.len() / num(env("RULEMINER_LAWS"), 250)).max(1);
+        let stride = (conj.len() / num(env, "RULEMINER_LAWS", 250)).max(1);
         conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
     } else if family == "shr" {
         // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
         // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
-        let pool = if num(env("RULEMINER_DEEP"), 0) == 1 { terms(setup, 2, true).to_vec() } else { lt_pool(2) };
+        let pool = if num(env, "RULEMINER_DEEP", 0) == 1 { terms(setup, 2, true).to_vec() } else { lt_pool(2) };
         let shr = |a: &Term| Term::op(SHR1, *a, Term::ZERO);
         let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
         pool_conjectures(all, n, nv, 0)
             .into_iter()
             .filter(|(a, b)| a.has_shift() || b.has_shift())
-            .step_by(num(env("RULEMINER_STRIDE"), 1))
-            .take(num(env("RULEMINER_LAWS"), 250))
+            .step_by(num(env, "RULEMINER_STRIDE", 1))
+            .take(num(env, "RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
     } else if let Some(seq) = pool3_sequence(family, env, n) {
         let salt = env("RULEMINER_SHAPE_SALT").unwrap_or_default(); // a different salt gives a different split; unset keeps the original halves
         seq.iter()
-            .filter(|(a, b)| num(env("RULEMINER_SHAPE"), 2) == 2 || shape_part(a, b, &salt) == num(env("RULEMINER_SHAPE"), 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
-            .skip(num(env("RULEMINER_PHASE"), 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
-            .step_by(num(env("RULEMINER_STRIDE"), 1))
-            .skip(num(env("RULEMINER_SKIP"), 0))
-            .take(num(env("RULEMINER_LAWS"), 250))
+            .filter(|(a, b)| num(env, "RULEMINER_SHAPE", 2) == 2 || shape_part(a, b, &salt) == num(env, "RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
+            .skip(num(env, "RULEMINER_PHASE", 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
+            .step_by(num(env, "RULEMINER_STRIDE", 1))
+            .skip(num(env, "RULEMINER_SKIP", 0))
+            .take(num(env, "RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), *a, *b))
             .collect()
     } else if family == "lt" {
         let pool = lt_pool(2);
         let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::op(LT, *a, *b)));
-        pool_conjectures(all, n, nv, num(env("RULEMINER_LAWS"), 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+        pool_conjectures(all, n, nv, num(env, "RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
     } else {
         mul_laws(max)
     }
@@ -241,13 +247,13 @@ pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str) -> Option<Str
 fn pool3_sequence(family: &str, env: &dyn Fn(&str) -> Option<String>, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
     // keyed by every variable it reads; `None` (not a pool3 family) is kept too
     static MEMO: crate::task::SharedMemo<(String, usize, usize, usize), Option<std::sync::Arc<Vec<(Term, Term)>>>> = crate::task::SharedMemo::new();
-    let salt = num(env("RULEMINER_SHUFFLE"), 0);
+    let salt = num(env, "RULEMINER_SHUFFLE", 0);
     let build = || {
         let mut seq = shuffled(pool_conjectures(pool3(family, env)?, n, 3, 0), salt);
         seq.retain(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)));
         Some(std::sync::Arc::new(seq))
     };
-    MEMO.with((family.to_string(), num(env("RULEMINER_DEEP3"), 0), n, salt), build, |c| c.clone())
+    MEMO.with((family.to_string(), num(env, "RULEMINER_DEEP3", 0), n, salt), build, |c| c.clone())
 }
 
 /// A law window written as a law file (`driver::write_laws`) and read back (`read_laws`) gives the same laws, names included.
@@ -965,7 +971,7 @@ pub const THREE_VAR_FAMILIES: [&str; 7] = ["add3", "mix3", "sbo3", "cmp3", "cmp3
 /// reassociation redexes inside the comparison.
 pub fn pool3(family: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<Vec<Term>> {
     let pool: Vec<Term> = match family {
-        "add3" => add3_pool(num(env("RULEMINER_DEEP3"), 0) == 1),
+        "add3" => add3_pool(num(env, "RULEMINER_DEEP3", 0) == 1),
         "mix3" => depth2_pool(&[ADD, AND, OR, XOR, SUB], true, &[ADD]),
         "sbo3" => depth2_pool(&[ADD, SUB, AND, OR], false, &[ADD, SUB]),
         "cmp3" => cmp3_pool(false),
