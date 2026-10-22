@@ -691,12 +691,20 @@ For each of Q1–Q5:
   does (the driver's `cfg_var` and `write_laws` used to panic on one; their values are the driver's own numbers);
   `shape_part(a, b, salt)` replaces `shape_part`/`shape_part_salted`; the ~20 closures were rewritten by script, a
   fallback arm becoming `None` or the setup's `var`.
-- [ ] **Q3:** `Lemmas::tree_laws`' key gains `carry_cap`. Within one process the cap is fixed per task, so expected: no
+- [x] **Q3:** `Lemmas::tree_laws`' key gains `carry_cap`. Within one process the cap is fixed per task, so expected: no
   change.
-- [ ] **Q4:** `proving` gives the proof a fresh `rewrote` and leaves the caller's alone. First add a
+  Ruling 2026-10-22: no code change. Task 7 moved the map into the job, and a job's `Setup` (where `carry_cap` reads
+  `CARRY_CAP`) is private and set only by `Job::new`, so every entry of one map has the same cap; a key field would
+  always be equal. Process-wide `TREE_ENCS` screens on the cap before its lookup and holds cap-independent values.
+- [x] **Q4:** `proving` gives the proof a fresh `rewrote` and leaves the caller's alone. First add a
   `debug_assert!(job.rw.rewrote.is_empty())` at entry and run the debug suite (`cargo test --tests -j 8`; the sweep
   profile has no debug assertions) to learn whether a proof ever starts inside a rewrite. If it never does, the fix
   cannot change outputs.
+  Done 2026-10-22: the debug suite first failed to compile: `check_replay` (`cfg(debug_assertions)`) still had the
+  pre-job signature, broken since the job took `rw` and unseen since every build here uses `sweep`; fixed in the same
+  commit. Then 525 passed with the probe, which never fired. Test `a_proof_leaves_the_callers_rewrote_alone` (RED: the
+  proof saw the caller's list); the probe is removed; gate equal (`2026-10-22-t9-q4-gate-b`; `t9-q4-gate` was killed,
+  launched by mistake on an exe without the fix).
 - [ ] **Q5:** P5's proofs run with `cfg.steps` (or `i64::MAX / 2` with an empty base, as P1 uses). This is a
   behaviour decision if outputs change.
 

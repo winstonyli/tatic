@@ -1812,18 +1812,27 @@ pub fn prove_rule(job: &mut Job, n: usize, k: usize, l: &Term, r: &Term) -> Opti
 
 /// `f` (a proof of a rule by rewriting, with the rules `blocked`) run as a rewriting job of its own: a fresh
 /// `RewriteState` with its own cycle path and a 10 000-step budget, no memo (the job's holds results under all the rules),
-/// no trace, and its machine fallbacks not counted for the caller, whose rewriting it does not change. The one thing it
-/// shares is `rewrote`, the caller's list (Q4).
+/// no trace, its own `rewrote`, and its machine fallbacks not counted for the caller, whose rewriting it does not change.
 fn proving<T>(job: &mut Job, blocked: &[RuleKey], f: impl FnOnce(&mut Job) -> T) -> T {
     let outer = job.blocked.len();
     job.blocked.extend(blocked.iter().cloned());
-    let inner = RewriteState { budget: 10_000, rewrote: std::mem::take(&mut job.rw.rewrote), ..Default::default() };
-    let mut caller = std::mem::replace(&mut job.rw, inner);
+    let caller = std::mem::replace(&mut job.rw, RewriteState { budget: 10_000, ..Default::default() });
     let out = f(job);
     job.blocked.truncate(outer);
-    caller.rewrote = std::mem::take(&mut job.rw.rewrote);
     job.rw = caller;
     out
+}
+
+/// A proof neither sees nor changes the caller's `rewrote` (Q4): before, it took the list over, so the terms the proof
+/// took up joined it, or the proof's last rewrite cleared it.
+#[test]
+fn a_proof_leaves_the_callers_rewrote_alone() {
+    let job = &mut Job::new(Setup::process());
+    let t = parse_term("add(x, y)");
+    job.rw.rewrote.push(t);
+    let seen = proving(job, &[], |job| job.rw.rewrote.len());
+    assert_eq!(seen, 0, "the proof starts with a list of its own");
+    assert!(job.rw.rewrote.len() == 1 && job.rw.rewrote[0] == t, "the caller's list is as it was");
 }
 
 /// The rule order's weight of a term, a polynomial interpretation `c + sum_v a_v * x_v` (`x_v >= 1` is the weight of
@@ -2333,7 +2342,7 @@ fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     };
     if let Some(c) = hit.filter(|c| fits(c)) {
         #[cfg(debug_assertions)]
-        check_replay(t, n, k, &c);
+        check_replay(job, t, n, k, &c);
         job.rw.budget -= c.steps;
         job.rw.fallbacks += c.fallbacks;
         if let Some(v) = job.rw.trace.as_mut() {
@@ -2368,7 +2377,7 @@ fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
 /// Debug builds: a memo hit about to be replayed is redone without the memo, under the same path and budget, and must match it
 /// (the law 168 bug was a replay a fresh rewrite would have cut). Only `Job::conflicts` keeps the redo's counts.
 #[cfg(debug_assertions)]
-fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
+fn check_replay(job: &mut Job, t: &Term, n: usize, k: usize, c: &Rewritten) {
     let memo = std::mem::take(&mut job.rw.memo);
     let trace = std::mem::take(&mut job.rw.trace);
     let (budget, fallbacks, cuts, low, rewrote) = (
@@ -2378,7 +2387,7 @@ fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
         job.rw.cut_low,
         job.rw.rewrote.len(),
     );
-    let fresh = rewrite_uncached(t, n, k);
+    let fresh = rewrite_uncached(job, t, n, k);
     let (steps, fresh_fallbacks) = (budget - job.rw.budget, job.rw.fallbacks - fallbacks);
     job.rw.memo = memo;
     job.rw.trace = trace;
