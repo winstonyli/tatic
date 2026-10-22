@@ -20,13 +20,15 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   `PerTask` statics against `thread_local!` split (`task.rs:126-160`). Status: ruled 2026-10-21: an explicit `&mut Ctx` (a `Setup` plus the current `Job`) threaded
   through every rewrite and miner function, no thread-locals; nested jobs are values, workers get `Ctx::new(setup.clone())`.
   Chosen over a `with_job` swap of thread-locals because it removes the hidden state, not only the lists. Built together
-  with C3 under its own plan.
+  with C3 under its own plan. Refined 2026-10-21 (D1-D5): one `job: &Job` / `&mut Job` parameter, rules replaced only
+  through `Job::with_rules`; plan `docs/superpowers/plans/2026-10-21-rewrite-context.md` (draft).
 - **C2: one `measured(steps, f)` helper** for "set the budget to 200, read the fallback delta" (about 16 sites in
   search.rs and rewrite.rs; `law_cost` at search.rs:2550 already does it). The `200` and `i64::MAX / 2` literals get
   names. Status: todo (after C1).
 - **C3 (D): split `rule_miner`** (search.rs:445, 831 lines, about 60 closures) into a `Miner` struct with methods for
   candidates, scoring, rounds, finish and the preference phase. Status: ruled 2026-10-21: part of C1's plan (the
-  closures must take `ctx`, which forces the split).
+  closures must take `ctx`, which forces the split). Task 1 of `2026-10-21-rewrite-context.md`, done first, before any
+  thread-local moves.
 - **C4: finish `MinerConfig`.** Its doc says it holds every `RULEMINER_*` switch, but about 9 are read inline. Flag parsing
   disagrees (`==1`, `!=0`, `is_some()`, so `NF_TRACE=0` turns tracing on): one `env_flag`. Status: done 30d5a3a (gate 2026-10-21-c4-gate: M 362 = 362, rules same in 15 loops and across threads).
 - **C5 (D): one denote walker in `src/proof/`.** `denote_with_placeholders` (hardening.rs:201) mirrors
