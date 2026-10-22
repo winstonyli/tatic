@@ -18,9 +18,8 @@
 //! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the law
 //! generator's laws (`scope_extras`, a shared 16% slice per loop); off with ABLATE=gen; GEN_SOURCE=stream (the stream control)
-//! and GEN_N=matched (n capped at what the filtered stream fits, for a same-n pair) are temporary. Measured on cold loops
-//! only: ref mines and warm loops take extras too, unmeasured (PARKED.md, the spec's step 4), so until then sweeps with a
-//! `mines` stage or warm loops (the default SWEEP has both) run with ABLATE=gen or after a 1-salt probe.
+//! and GEN_N=matched (n capped at what the filtered stream fits, for a same-n pair) are temporary. Measured on cold loops,
+//! warm loops and ref mines; it pays in each (docs/tier-cycle.md, "The law generator on ref mines and warm loops").
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
 //! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's

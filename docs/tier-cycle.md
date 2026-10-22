@@ -4683,7 +4683,41 @@ its scope serves by value-class twin key (`ClassReps`) and by skeleton. Cold swe
 - **Cost**: s16's loops take 7786 s over 20 salts against off's 9 (the probe's sweep wall time 285 s against 12), all in
   the join's searches ("Where an extras mine's time goes"). Numbers from here on are with the stage on unless they say
   `ABLATE=gen`. Ref mines and warm loops take extras too but are unmeasured (the spec's step 4, `PARKED.md`): until
-  then, sweeps with a `mines` stage or warm loops run with `ABLATE=gen` or after a 1-salt probe.
+  then, sweeps with a `mines` stage or warm loops run with `ABLATE=gen` or after a 1-salt probe. (Measured since: the
+  next section.)
+
+*The law generator on ref mines and warm loops (2026-10-22, plan `docs/superpowers/plans/2026-10-22-generator-warm-ref.md`,
+runs `2026-10-22-gen-warm-probe` (salt 1) and `2026-10-22-gen-warm` (salts 2-10), script
+`docs/runs/2026-10-22/scripts/gen_warm.sh`, table `gen_warm_table.sh`; build 7beda97's tree, CPU 23% for the probe and
+100% from other sessions for the rest, Defender real-time off).* The stage pays in all three regimes, so it stays on
+everywhere. Per salt, the ref mines ran with the generator on (`mon`) and off (`moff`), and the loops (`own cross pooled
+mixed`, plus `cold` in two arms) read those libraries through `LIB=` with their own extras on or off: a 2×2, arms
+`<library>_<loop extras>`. On add3 the split sweeps reproduce one combined sweep (library and loop rules equal). Loop M
+summed over salts 1-10 (total; mined-batch, batches 2-3, in brackets):
+
+| stage | on_on (default) | off_on | on_off | off_off (`ABLATE=gen`) |
+|---|---|---|---|---|
+| own | 4 (4) | 17 (7) | 5 (5) | 26 (16) |
+| cross | 685 (19) | 797 (15) | 849 (183) | 977 (195) |
+| pooled | 21 (9) | 35 (26) | 15 (3) | 36 (27) |
+| mixed | 25 (4) | 25 (10) | 42 (21) | 28 (13) |
+| cold | 1451 (8) | | | 1563 (120) |
+
+- **Ref mines, judged by the loops they seed** (on_on against off_on, salts better / equal / worse): own 5/4/1, cross
+  10/0/0, pooled 7/0/3, mixed 5/2/3. Their own M is 0 in both arms but for u3 (8 against 1 over 10 salts). With the
+  loops' extras off, u3's library loses in mixed (on_off 42 against off_off 28, 2/5/3): the generator's share of a ref
+  mine is smaller (n about 240-800 extras per ref mine against its b × k = 200-400 laws, where a loop mine's 297-757 face its 100), and u3 is
+  the one family where that shows. Ref mines also mine more rules (summed: add3 265 against 29, mix3 290 against 0).
+- **Warm loops' own extras** (on_on against on_off): own 2/7/1, cross 10/0/0, pooled 1/5/4, mixed 5/5/0; over the four
+  stages M 735 against 911. Pooled is the one stage that loses (21 against 15, mined 9 against 3); a guess at why: its library
+  already holds three families' rules, and the extras add mined rules that conflict with them. Weak (4 worse, 1 better; two-sided sign
+  test p ≈ 0.4) and below the regime: turning extras off for one stage would be a per-stage case, so it is parked
+  (`PARKED.md`, "Extras on pooled loops").
+- **Both** (on_on against off_off): own 7/3/0, cross 10/0/0, pooled 5/1/4, mixed 4/3/3, cold 10/0/0.
+- **Cost** (wall over 10 salts, CPU saturated by other sessions, so an upper bound): ref mines 349 s against 29, loops
+  1225 s against 26 (cold included in both), job CPU 1635 + 8721 s against 65 + 71. mix3's generator list (never built
+  before) is 1669 laws in 0.2 s, L 1644; u3's 1877 in 0.3 s; peak job memory 1.9 GB.
+- So the default stays: every mine with rule rounds takes extras. Hidden twins (the spec's step 5) are next.
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost

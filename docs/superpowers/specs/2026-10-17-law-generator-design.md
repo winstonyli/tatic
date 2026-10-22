@@ -267,6 +267,10 @@ are heavy for `cargo test`, so its L, time and coverage are measured in step 4's
      time sets the stated estimate.
    - A regime whose M gets worse runs with the generator off, and the doc says why. `ABLATE=gen_ref` goes after the
      decision.
+   - Done 2026-10-22 (plan `docs/superpowers/plans/2026-10-22-generator-warm-ref.md`, runs `2026-10-22-gen-warm-probe`
+     and `-gen-warm`): the third arm came from `LIB=` (ref mines and loops in separate sweeps, a 2×2), so
+     `ABLATE=gen_ref` was never written. Every regime pays; the stage stays on (`docs/tier-cycle.md`, "The law
+     generator on ref mines and warm loops").
 5. Hidden twins beyond two-leaf nodes: count the generator's laws that twin a served law once any subterm is replaced
    by the least term of equal value up to the pool's depth (which covers `add(t, 0)` over a non-leaf t, and a grown node
    equal to a deeper pool subterm). If the count is material, the filter widens to it.

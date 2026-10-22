@@ -11,9 +11,10 @@ numbers. What v0.3 left open is now v0.2.
 
 - **v0.2 - Does the law generator pay everywhere it runs?** On cold loops the stage cuts mined-batch M 221 to 11 over
   salts 1-20, better on every salt, but its join searches cost 7786 loop seconds against 9 ("The law generator as a
-  stage"; lazy join steps and lanes cut that since). Warm loops and ref mines take extras too but are unmeasured, so
-  sweeps with them run with `ABLATE=gen` (`PARKED.md`, "Law generator on warm loops and ref mines"); after that, hidden
-  twins beyond two-leaf nodes (`PARKED.md`). The milestone: both measured, the stage on or off by default by the result.
+  stage"; lazy join steps and lanes cut that since). Warm loops and ref mines: measured 2026-10-22, the stage pays in
+  both and stays on (salts 1-10: warm-loop M 735 against 1067 with the generator off everywhere and 911 with only the loops' extras off; cross
+  better on 10 salts of 10; pooled the one stage that loses, weakly, `PARKED.md`; "The law generator on ref mines and
+  warm loops"). Left: hidden twins beyond two-leaf nodes (`PARKED.md`, the spec's step 5).
 - **v0.3 - Does a learned proposer, ranking which laws to mine on, beat the hash-ordered stream?** Experiments 1 and 2
   with the custom proposer model in place of the uniform and n-gram baselines.
 - **v0.4 - Does closing the cycle push the frontier?** Experiment 3: train on accepted laws, repeat, and track the
