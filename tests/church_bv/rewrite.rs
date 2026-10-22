@@ -2892,7 +2892,7 @@ fn join_visit(job: &Job) -> usize {
 /// is served from it without a search (77% of a cold:cmp3d mine's searches: docs/tier-cycle.md, "Spike of the join store").
 /// The terms it examined go to `RewriteState::trace` (`Fired::Join`) and, with the result, to `RewriteState::memo`'s `joins`, so the rule
 /// miner reuses it as it does a rewrite: a failed search, all of them (under other rules it is the same search when no rule
-/// in or out touches them); a met one, the terms on its path and their subterms, where the rules its plan used fired (the
+/// in or out touches them), served only while the store has no path for the pair; a met one, the terms on its path and their subterms, where the rules its plan used fired (the
 /// plan stays a proof while no rule it used is removed, so rules added elsewhere keep it). That is inexact where added rules
 /// would push the search over `JOIN_VISIT` before it meets: the
 /// cap makes the join non-monotone in its rules, and no rule-independent cap tried was as strong at the same cost
@@ -2911,19 +2911,29 @@ pub fn join_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<
             v.extend_from_slice(trace.items());
         }
     };
+    let stored = |job: &mut Job| {
+        let t0 = std::time::Instant::now();
+        let s = stored_join(job, *a, *b);
+        job.join_cost.store_nanos += t0.elapsed().as_nanos() as u64;
+        s
+    };
+    let mut from_store = None;
     if memo_on {
         let hit = job.rw.memo.as_ref().and_then(|m| m.joins.get(&key).cloned());
         if let Some(e) = hit.filter(|e| counting || e.0.as_ref().is_none_or(|p| !matches!(**p, Plan::Counting))) {
-            replay(job, &e.1);
-            job.join_cost.hits += 1;
-            return e.0.clone();
+            // a failed search stands only while the store has no path for the pair: the store grows as searches feed it
+            // (`a_cached_failed_join_yields_to_a_stored_path`)
+            from_store = if e.0.is_none() { stored(job) } else { None };
+            if from_store.is_none() {
+                replay(job, &e.1);
+                job.join_cost.hits += 1;
+                return e.0.clone();
+            }
         }
     }
     let mut examined = (memo_on || traced).then(hashbrown::HashSet::<Term>::default);
-    let t0 = std::time::Instant::now();
-    let stored = if memo_on { stored_join(job, *a, *b) } else { None };
+    let stored = if from_store.is_some() { from_store } else if memo_on { stored(job) } else { None };
     job.join_cost.stored += stored.is_some() as u64;
-    job.join_cost.store_nanos += t0.elapsed().as_nanos() as u64;
     let found = match stored {
         // a stored path's result rests on its terms, as a met search's on its path's: they and their subterms
         Some((plan, mut stack)) => {
@@ -4029,6 +4039,31 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
         });
         assert_eq!(join(job).2, 0, "the rule left: no stored path");
         job.join_store = None;
+    })
+}
+
+/// A cached failed search stands only while the join store has no path for its pair: the store grows as searches feed it,
+/// and a failure cached before (in a seeded memo, `RewriteMemo::filtered`) hid a path the miner's scoring workers saw, so a
+/// mine re-chose a rule it had for each round's phantom gain (run 2026-10-22-hidden-twins-2, 8631 rounds).
+#[test]
+fn a_cached_failed_join_yields_to_a_stored_path() {
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let (n, k) = (4, 3);
+        let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
+        let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
+        job.with_mined(vec![rule], |job| {
+            job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
+            job.rw.memo = Some(RewriteMemo::new(k));
+            assert!(join_eq(job, n, k, &a, &b).is_some(), "searched, and the path fed");
+            let mut stale = RewriteMemo::new(k);
+            stale.joins.insert((a, b), std::rc::Rc::new((None, Trace::default())));
+            job.rw.memo = Some(stale);
+            let (plan, spent) = job.spent(|job| join_eq(job, n, k, &a, &b));
+            assert!(plan.is_some() && spent.join.stored == 1, "served from the store over the cached failure");
+            assert!(job.rw.memo.take().unwrap().joins[&(a, b)].0.is_some(), "the memo now holds the met join");
+            job.join_store = None;
+        })
     })
 }
 
