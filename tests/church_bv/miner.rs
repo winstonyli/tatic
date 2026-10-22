@@ -431,9 +431,9 @@ struct Prover {
 }
 
 impl Prover {
-    /// The job's rules with `rules` as the run-time rules and `prefs` as the preferences.
-    fn install(&self, job: &Job) -> Rules {
-        job.rules().with_mined(job.setup(), self.rules.clone()).with_prefs(self.prefs.clone())
+    /// `rules` as the run-time rules and `prefs` as the preferences, with both switches off whatever the caller has on.
+    fn install(&self, setup: &Setup) -> Rules {
+        Rules::new(setup, self.rules.clone()).with_prefs(self.prefs.clone())
     }
 
     fn holds(&self, job: &mut Job, (l, r): &(Term, Term)) -> bool {
@@ -443,7 +443,7 @@ impl Prover {
     /// Proves one rule in an intern scope of its own.
     fn prove(&self, job: &mut Job, rule: &(Term, Term)) -> bool {
         tatic::kernel::scoped(|| {
-            let rules = self.install(job);
+            let rules = self.install(job.setup());
             job.with_rules(rules, |job| self.holds(job, rule))
         })
     }
@@ -453,7 +453,7 @@ impl Prover {
     fn filter(&self, job: &mut Job, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
         let prove = |job: &mut Job, idx: &[usize]| -> Vec<usize> {
             tatic::kernel::scoped(|| {
-                let rules = self.install(job);
+                let rules = self.install(job.setup());
                 job.with_rules(rules, |job| idx.iter().copied().filter(|&i| self.holds(job, &cands[i])).collect())
             })
         };
@@ -1099,7 +1099,16 @@ sub(x, sub(y, z)) -> add(sub(x, y), z)
     let prover = Prover { rules: parse_rules(text), prefs: parse_prefs(text), n: 4 };
     let job = &mut Job::new(Setup::process());
     let t = parse_term("sub(sub(x, y), sub(z, u))");
-    let rules = prover.install(job);
+    let rules = prover.install(job.setup());
     let stepped = job.with_rules(rules, |job| rule_step(job, &t).unwrap().0.show());
     assert_eq!(stepped, parse_term("add(sub(sub(x, y), z), u)").show(), "the preferred rule fires");
+}
+
+#[test]
+fn a_provers_rules_ignore_the_callers_switches() {
+    let prover = Prover { rules: vec![], prefs: vec![], n: 4 };
+    let job = &mut Job::new(Setup::process());
+    let counting = job.rules().counting(true).tracing(true);
+    let installed = job.with_rules(counting, |job| prover.install(job.setup()));
+    assert!(installed.is(&installed.counting(false).tracing(false)), "a prover proves with both switches off");
 }
