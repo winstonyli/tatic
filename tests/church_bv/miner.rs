@@ -98,7 +98,9 @@ pub fn run(setup: &Arc<Setup>) {
         // P0: everything on this thread below runs under the base rules and preferences, apart from what installs its own
         let base_rules = job.rules().with_mined(setup, base.clone()).with_prefs(base_prefs.clone());
         job.with_rules(base_rules, |job| {
-            let (laws, budget) = laws(job, &cfg, base.is_empty(), &clock);
+            // base rules may loop; a step budget per law (and per proof) bounds them (the built-in rules never reach it)
+            let budget = if base.is_empty() { i64::MAX / 2 } else { cfg.steps as i64 };
+            let laws = laws(job, &cfg, budget, &clock);
             let (cands, rivals) = candidates(&laws, &cfg, &base);
             clock.phase("candidate generation");
             // keep candidates whose left side matches a subterm of some straggler's normalized terms
@@ -147,9 +149,9 @@ struct Laws {
     kv: usize,
 }
 
-/// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2). The `i64` is the step budget
-/// this thread is left with (Q5 of docs/superpowers/plans/2026-10-21-rewrite-context.md): the proofs of `Prover` run under it.
-fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (Laws, i64) {
+/// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2), each rewritten under `budget`
+/// steps.
+fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
     let max = cfg.max;
     let family = cfg.family.as_str();
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
@@ -174,8 +176,7 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
             }
             let before = job.rw.fallbacks;
             let t = Instant::now();
-            // base rules may loop; the step budget bounds them (the built-in rules never reach it)
-            job.rw.budget = if base_empty { i64::MAX / 2 } else { cfg.steps as i64 };
+            job.rw.budget = budget;
             let r = rewrite_plan(job, n, kv, &t1, &t2);
             let took = t.elapsed();
             let fell = job.rw.fallbacks - before;
@@ -183,7 +184,7 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
             unproved += r.is_none() as usize;
             let fell = if r.is_none() { fell.max(1) } else { fell };
             if r.is_none() || fell > 0 {
-                job.rw.budget = if base_empty { i64::MAX / 2 } else { cfg.steps as i64 };
+                job.rw.budget = budget;
                 let normal = [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0];
                 println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
                 stragglers.push((name, t1, t2, normal, fell, took));
@@ -192,8 +193,6 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
             }
         }
     });
-    // what the last law's rewriting left, carried to the proofs (nothing until then rewrites on this thread)
-    let left = job.rw.budget;
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
     println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
     clock.phase("laws and stragglers");
@@ -210,7 +209,7 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
         }
         println!("RULEMINER guard: {} machine-free laws scored of {} (weight {guard_w} each)", scored.len() - stragglers.len(), clean.len());
     }
-    (Laws { stragglers, scored, guard_w, n, kv }, left)
+    Laws { stragglers, scored, guard_w, n, kv }
 }
 
 /// The candidate rules for the stragglers (P3, P4), one per left side, and the other right sides of each left side (`rivals`).
@@ -422,8 +421,8 @@ fn renum_placeholders(t: &Term) -> Term {
     }
 }
 
-/// Proves candidate rules against the rules and step budget it copies to each proving thread (the base rules, and the
-/// budget P1 left: Q5).
+/// Proves candidate rules against the rules, preferences and step budget it copies to each proving thread (the base
+/// rules and preferences, and P1's per-law budget).
 struct Prover {
     rules: Vec<(Term, Term)>,
     /// The base preferences, installed on every proving thread.

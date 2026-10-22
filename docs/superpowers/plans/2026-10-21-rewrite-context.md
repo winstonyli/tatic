@@ -705,8 +705,12 @@ For each of Q1–Q5:
   commit. Then 525 passed with the probe, which never fired. Test `a_proof_leaves_the_callers_rewrote_alone` (RED: the
   proof saw the caller's list); the probe is removed; gate equal (`2026-10-22-t9-q4-gate-b`; `t9-q4-gate` was killed,
   launched by mistake on an exe without the fix).
-- [ ] **Q5:** P5's proofs run with `cfg.steps` (or `i64::MAX / 2` with an empty base, as P1 uses). This is a
+- [x] **Q5:** P5's proofs run with `cfg.steps` (or `i64::MAX / 2` with an empty base, as P1 uses). This is a
   behaviour decision if outputs change.
+  Done 2026-10-22: gate equal (`2026-10-22-t9-q5-gate`), so no ruling was needed; suite 526, clippy one warning fewer
+  (Q2's). Ruling: `run` computes the per-law budget once and passes it to `laws` (in place of `base_empty`) and to the
+  `Prover`; `laws` returns `Laws` alone. No unit test: the budget only bounds rewriting the proofs do outside
+  `proving` (which installs its own 10 000), and the gate's base-rule arms run it.
 
 ### Task 10: timing, parked item, close
 
