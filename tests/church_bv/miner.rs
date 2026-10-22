@@ -639,6 +639,18 @@ fn by_bound(provable: &[(Term, Term)], chosen: &[(Term, Term)], bound: impl Fn(u
     order
 }
 
+/// The rival that replaces a round's winner of gain `g`: in the rivals' order, each that gains more than the best so far and
+/// proves; a rival already chosen is passed over, as `by_bound` passes over a chosen candidate.
+fn best_rival(rivals: &[(Term, Term)], gains: &[i64], g: i64, chosen: &[(Term, Term)], mut prove: impl FnMut(&(Term, Term)) -> bool) -> Option<((Term, Term), i64)> {
+    let mut rival: Option<((Term, Term), i64)> = None;
+    for (rv, &rg) in rivals.iter().zip(gains) {
+        if !chosen.contains(rv) && rg > rival.as_ref().map_or(g, |r| r.1) && prove(rv) {
+            rival = Some((*rv, rg));
+        }
+    }
+    rival
+}
+
 impl<'a> Rounds<'a> {
     fn new(scorer: &'a Scorer<'a>, prover: &'a Prover, provable: &'a [(Term, Term)], rivals: &'a hashbrown::HashMap<Term, Vec<(Term, Term)>>, base_prefs: &'a [Pref], cfg: &'a MinerConfig, clock: &'a Clock) -> Self {
         let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, bool)>();
@@ -844,17 +856,12 @@ impl<'a> Rounds<'a> {
             (winner, gains)
         });
         self.scorings += next;
-        self.skipped += provable.len() - next;
+        self.skipped += order.len() - next;
         self.clock.phase(&format!("round over {} of {} candidates", next, provable.len()));
         let Some(i) = winner else { return vec![] };
         let g = results[i].as_ref().unwrap().0;
         // in the rivals' order, as when they were scored one after another here
-        let mut rival: Option<((Term, Term), i64)> = None;
-        for (rv, &rg) in rivals_of(i).iter().zip(&rival_gains) {
-            if rg > rival.as_ref().map_or(g, |r| r.1) && self.prover.prove(job, rv) {
-                rival = Some((*rv, rg));
-            }
-        }
+        let rival = best_rival(rivals_of(i), &rival_gains, g, chosen, |rv| self.prover.prove(job, rv));
         rival.into_iter().chain([(provable[i], g)]).collect()
     }
 
@@ -1095,8 +1102,20 @@ fn prefs_phase(job: &mut Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[
 fn a_round_never_offers_a_chosen_rule() {
     let r = |l: &str, rhs: &str| (parse_term(l), parse_term(rhs));
     let provable = [r("add(0, x)", "x"), r("sub(x, x)", "0"), r("xor(x, x)", "0")];
-    let bounds = [5, 9, 5];
-    assert_eq!(by_bound(&provable, &[provable[1]], |i| bounds[i]), vec![(5, 0), (5, 2)]);
+    let bounds = [5, 9, 7];
+    assert_eq!(by_bound(&provable, &[provable[1]], |i| bounds[i]), vec![(7, 2), (5, 0)]);
+    assert_eq!(by_bound(&provable, &[], |i| if i == 1 { 5 } else { bounds[i] }), vec![(7, 2), (5, 0), (5, 1)]);
+}
+
+/// A winner's rival already chosen is passed over, however much it claims; the next rival that gains more and proves wins.
+#[test]
+fn a_round_never_offers_a_chosen_rival() {
+    let r = |l: &str, rhs: &str| (parse_term(l), parse_term(rhs));
+    let rivals = [r("sub(x, x)", "0"), r("sub(x, x)", "and(x, 0)"), r("sub(x, x)", "xor(x, x)")];
+    let chosen = [rivals[0]];
+    assert!(best_rival(&rivals, &[9, 4, 7], 3, &chosen, |_| true) == Some((rivals[2], 7)));
+    assert!(best_rival(&rivals, &[9, 4, 7], 3, &chosen, |rv| *rv != rivals[2]) == Some((rivals[1], 4)));
+    assert!(best_rival(&rivals, &[9, 2, 1], 3, &chosen, |_| true) == None);
 }
 
 /// A proving worker's fresh job proves under the base preferences (Q1): before, the provable filter's workers installed
