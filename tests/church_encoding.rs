@@ -4,19 +4,15 @@
 // docs/superpowers/specs/2026-09-30-bitvector-interface-design.md, section 12.
 use tatic::kernel::*;
 
-fn report(_name: &str, _ok: &str) {}
-
 fn tc(name: &str, e: &Expr) {
-    match typecheck(e) {
-        Ok(_) => report(name, "typechecks"),
-        Err(m) => panic!("{name}: {}", m.chars().take(300).collect::<String>()),
+    if let Err(m) = typecheck(e) {
+        panic!("{name}: {}", m.chars().take(300).collect::<String>());
     }
 }
 
 fn ck(name: &str, e: &Expr, ty: &Expr) {
-    match check(&Ctx::new(), e, ty) {
-        Ok(()) => report(name, "checks"),
-        Err(m) => panic!("{name}: {}", m.chars().take(300).collect::<String>()),
+    if let Err(m) = check(&Ctx::new(), e, ty) {
+        panic!("{name}: {}", m.chars().take(300).collect::<String>());
     }
 }
 
@@ -126,8 +122,6 @@ fn church_bool_nat_and_good_subtype_compute_by_conv() {
     assert!(!def_eq(&ident, &eta), "no eta: a symbolic Good proof differs from its expansion");
 
     // ---- Empty -> Nat by WRec with a constant motive (empty = W(unit, \_.unit)).
-    let unit = id(nat, zero, zero);
-    let empty = wty(unit, unit);
     let motive = lam(empty, nat);
     // step u f ih = ih tt   ctx [u,f,ih]: ih = var0
     let step = lam(unit, lam(arrow(unit, empty), lam(pi(unit, nat),

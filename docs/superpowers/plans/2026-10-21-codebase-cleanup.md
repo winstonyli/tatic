@@ -114,4 +114,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 ## Not covered by the survey
 
 The scan for public items with no outside users timed out; `tests/rule_match_census.rs`, `tests/proof_scope.rs`,
-`tests/church_lemmas.rs` and `tests/church_encoding.rs` were not read for dead helpers.
+`tests/church_lemmas.rs` and `tests/church_encoding.rs` were not read for dead helpers. Read 2026-10-21: every helper
+in them is used, and `proof_scope.rs`'s two ignored probes are cited in the bitvector design doc (sections on
+`InternScope`). The one dead item was `church_encoding.rs`'s no-op `report`, plus a repeated `unit`/`empty` binding;
+both deleted.
