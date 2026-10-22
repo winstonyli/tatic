@@ -154,8 +154,8 @@ searches 33663 against 33674. With no base preference, the thread count changes 
 make it matter. This is Q1's baseline: P5's prove workers lack the base preferences, and possibly the speculative
 proof workers (`search.rs:1156`) do too, which Task 9's Q1 probe must check.
 
-The gate compares each configuration with its own base snapshot (`diff -r --strip-trailing-cr` over `*.txt`, since git checks the snapshots out as CRLF;
-only), never `pbase1` with `pbase4`.
+The gate compares each configuration with its own base snapshot (`diff -r --strip-trailing-cr` over `*.txt`, since git checks the snapshots out as CRLF),
+never `pbase1` with `pbase4`.
 
 ### Task 1 (C3): split `rule_miner` into named parts, thread-locals unchanged
 
