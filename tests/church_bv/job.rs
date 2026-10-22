@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::rewrite::{Rule, Rules, TableRule, Term};
+use crate::rewrite::{RewriteState, Rule, RuleKey, Rules, TableRule, Term};
 
 type Env = hashbrown::HashMap<String, String>;
 
@@ -150,6 +150,10 @@ pub struct Job {
     setup: Arc<Setup>,
     /// Replaced only by `with_rules`, which puts the outer rules back.
     rules: Rules,
+    /// The rewriting in progress.
+    pub rw: RewriteState,
+    /// Rules being proved by `prove_rule` through the rewriter (`rewrite::proving`); `rule_step` skips them.
+    pub blocked: Vec<RuleKey>,
 }
 
 /// The next `Job::id`: unique in the process, so `Job::with_rules` can tell a job from its replacement.
@@ -159,7 +163,7 @@ impl Job {
     /// A job with the built-in rules of `setup` alone, no preferences, both switches off.
     pub fn new(setup: Arc<Setup>) -> Job {
         let rules = Rules::new(&setup, vec![]);
-        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules }
+        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![] }
     }
 
     pub fn setup(&self) -> &Arc<Setup> {

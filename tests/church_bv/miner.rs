@@ -156,7 +156,6 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
     let family = cfg.family.as_str();
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
     let (n, nv, kv) = (4usize, 2usize, if family_vars(&family) == 3 { 3usize } else { 2 });
-    let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
     // stragglers under the built-in rules
     let mut stragglers: Vec<Scored> = vec![];
     // a lawfile is a proposer's band (docs/tier-cycle.md)
@@ -175,18 +174,18 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
             if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))) {
                 continue;
             }
-            let before = fallbacks();
+            let before = job.rw.fallbacks;
             let t = Instant::now();
             // base rules may loop; the step budget bounds them (the built-in rules never reach it)
-            RULE_BUDGET.with(|b| b.set(if base_empty { i64::MAX / 2 } else { cfg.steps as i64 }));
+            job.rw.budget = if base_empty { i64::MAX / 2 } else { cfg.steps as i64 };
             let r = rewrite_plan(job, n, kv, &t1, &t2);
             let took = t.elapsed();
-            let fell = fallbacks() - before;
+            let fell = job.rw.fallbacks - before;
             // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
             unproved += r.is_none() as usize;
             let fell = if r.is_none() { fell.max(1) } else { fell };
             if r.is_none() || fell > 0 {
-                RULE_BUDGET.with(|b| b.set(if base_empty { i64::MAX / 2 } else { cfg.steps as i64 }));
+                job.rw.budget = if base_empty { i64::MAX / 2 } else { cfg.steps as i64 };
                 let normal = [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0];
                 println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
                 stragglers.push((name, t1, t2, normal, fell, took));
@@ -196,7 +195,7 @@ fn laws(job: &mut Job, cfg: &MinerConfig, base_empty: bool, clock: &Clock) -> (L
         }
     });
     // what the last law's rewriting left, carried to the proofs (nothing until then rewrites on this thread)
-    let left = RULE_BUDGET.with(|b| b.get());
+    let left = job.rw.budget;
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
     println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
     clock.phase("laws and stragglers");
@@ -439,24 +438,25 @@ struct Prover {
 impl Prover {
     /// The job's rules with `rules` as the run-time rules and, if any, `prefs` as the preferences (otherwise the job's
     /// stay: Q1); and `budget` as the step budget.
-    fn install(&self, job: &Job) -> Rules {
+    fn install(&self, job: &mut Job) -> Rules {
         let rules = job.rules().with_mined(job.setup(), self.rules.clone());
-        RULE_BUDGET.with(|b| b.set(self.budget));
+        job.rw.budget = self.budget;
         match &self.prefs {
             Some(prefs) => rules.with_prefs(prefs.clone()),
             None => rules,
         }
     }
 
-    fn holds(&self, job: &Job, (l, r): &(Term, Term)) -> bool {
+    fn holds(&self, job: &mut Job, (l, r): &(Term, Term)) -> bool {
         prove_rule(job, self.n, l.max_var().max(r.max_var()) + 1, l, r).is_some()
     }
 
     /// Proves one rule in an intern scope of its own; leaves the default budget installed after.
     fn prove(&self, job: &mut Job, rule: &(Term, Term)) -> bool {
         tatic::kernel::scoped(|| {
-            let ok = job.with_rules(self.install(job), |job| self.holds(job, rule));
-            RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+            let rules = self.install(job);
+            let ok = job.with_rules(rules, |job| self.holds(job, rule));
+            job.rw.budget = i64::MAX / 2;
             ok
         })
     }
@@ -466,7 +466,10 @@ impl Prover {
     fn filter(&self, job: &mut Job, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
         // carry-over: with one thread, the base preferences `run` installed stay (Q1); a worker's job has none
         let prove = |job: &mut Job, idx: &[usize]| -> Vec<usize> {
-            tatic::kernel::scoped(|| job.with_rules(self.install(job), |job| idx.iter().copied().filter(|&i| self.holds(job, &cands[i])).collect()))
+            tatic::kernel::scoped(|| {
+                let rules = self.install(job);
+                job.with_rules(rules, |job| idx.iter().copied().filter(|&i| self.holds(job, &cands[i])).collect())
+            })
         };
         let threads = threads.clamp(1, 12);
         let mut ok: Vec<usize> = if threads == 1 {
@@ -526,10 +529,8 @@ impl<'a> Scorer<'a> {
     /// `prefs`: the rule preferences in force (`Rules::with_prefs`).
     fn score_laws(&self, job: &mut Job, extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
         let (n, kv, cfg) = (self.laws.n, self.laws.kv, self.cfg);
-        let fallbacks = || MACHINE_FALLBACKS.with(|c| c.get());
-        REWRITE_MEMO.with(|m| *m.borrow_mut() = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv))));
+        job.rw.memo = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv)));
         let steps = cfg.steps as i64;
-        let budget = || RULE_BUDGET.with(|b| b.set(steps));
         // counting only under `RULEMINER_FAST`, or when the caller asked for it (rivals, below). Carry-over: the old code
         // installed these rules and `prefs` and left them installed, which nothing read: every later rewrite on this thread
         // is another `score_laws` or a `Prover::prove`, and each installs its own
@@ -540,14 +541,14 @@ impl<'a> Scorer<'a> {
                 .iter()
                 .map(|&si| {
                     let s = &self.laws.scored[si];
-                    budget();
+                    job.rw.budget = steps;
                     if record {
-                        RULE_TRACE.with(|t| *t.borrow_mut() = Some(vec![]));
+                        job.rw.trace = Some(vec![]);
                     }
-                    let before = fallbacks();
+                    let before = job.rw.fallbacks;
                     let ok = rewrite_plan(job, n, kv, &s.1, &s.2).is_some();
-                    let fixed = ok && fallbacks() - before < s.4;
-                    budget();
+                    let fixed = ok && job.rw.fallbacks - before < s.4;
+                    job.rw.budget = steps;
                     // the rule order's own measure: operator nodes first, then variable occurrences
                     let measure = |t: &Term| {
                         let mut occ = [0usize; 8];
@@ -557,13 +558,13 @@ impl<'a> Scorer<'a> {
                     };
                     let size = if si < self.laws.stragglers.len() { measure(&rewrite(job, &s.1, n, kv).0) + measure(&rewrite(job, &s.2, n, kv).0) } else { 0 };
                     let mut seen: hashbrown::HashSet<(Term, Fired)> = Default::default();
-                    let trace = Trace::new(RULE_TRACE.with(|t| t.borrow_mut().take()).unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect());
+                    let trace = Trace::new(job.rw.trace.take().unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect());
                     (fixed, size, trace)
                 })
                 .collect()
         });
-        let memo = REWRITE_MEMO.with(|m| m.borrow_mut().take()).unwrap();
-        RULE_BUDGET.with(|b| b.set(i64::MAX / 2));
+        let memo = job.rw.memo.take().unwrap();
+        job.rw.budget = i64::MAX / 2;
         (out, memo)
     }
 

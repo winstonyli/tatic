@@ -505,7 +505,7 @@ fn tree_proof(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeE
     let guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
         let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
-        shared_lemma(job, key, || {
+        shared_lemma(job.setup(), key, || {
             let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
             let body = |v: &[Expr]| {
                 let (a, b) = ab(v, None);
@@ -826,7 +826,7 @@ pub fn plain_steps_match_the_kernel_gates() {
 #[test]
 #[ignore]
 pub fn conjecture_miner() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let (n, nvars, deep) = (job.setup().or("MINER_N", 4), job.setup().or("MINER_VARS", 2), job.setup().flag("MINER_DEEP", false));
         let ts = terms(job.setup(), nvars, deep);
@@ -1243,7 +1243,7 @@ pub fn shift_conjecture_miner() {
 
 #[test]
 pub fn large_sums_with_shared_subterms_stay_provable() {
-    let job = &Job::new(Setup::process());
+    let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let add = |a: Term, b: Term| Term::op(ADD, a, b);

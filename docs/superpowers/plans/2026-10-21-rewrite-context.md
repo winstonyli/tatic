@@ -503,7 +503,7 @@ fn with_rules_catches_a_swapped_job() {
 - [x] **Step 5: suite, clippy, gate.** Expected: suite 521, no new warnings, gate equal. Got: 521; no new warnings; run 2026-10-21-t4-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks).
 - [x] **Step 6: commit:** `C1 step 2: the job's rules, replaced only through with_rules`.
 
-### Task 5: `RewriteState` and `blocked` (`REWRITE_PATH`, `REWROTE`, `CUT_LOW`, `CYCLE_CUTS`, `REWRITE_MEMO`, `RULE_TRACE`, `RULE_BUDGET`, `MACHINE_FALLBACKS`, `PROVING`)
+### Task 5: `RewriteState` and `blocked` (`REWRITE_PATH`, `REWROTE`, `CUT_LOW`, `CYCLE_CUTS`, `REWRITE_MEMO`, `RULE_TRACE`, `RULE_BUDGET`, `MACHINE_FALLBACKS`, `PROVING`) (done 2026-10-21)
 
 **Produces:**
 
@@ -516,11 +516,34 @@ impl Default for RewriteState { /* cut_low: usize::MAX, budget: i64::MAX / 2, th
 // Job gains: pub rw: RewriteState, pub blocked: Vec<RuleKey>
 ```
 
-- [ ] **Step 1: failing test** (`rewrite.rs`). A rule proved inside a rewrite does not change the caller's
+**Rulings while building it (2026-10-21):**
+- `&mut Job` reaches exactly the functions that rewrite, prove a rule or touch `rw`/`blocked`, and their callers
+  (compiler-driven: each "behind a `&` reference" error flipped its nearest enclosing signature, nothing further).
+  Pure readers (`Plan` constructors, `step_plan`, `join_visit`, `carry_cap`, …) stay `&Job`.
+- `proving`'s inner state starts from `RewriteState::default()` (`cut_low = usize::MAX`, `cycle_cuts = 0`,
+  `fallbacks = 0`) rather than the caller's values. The old code restored all three after the proof, every read of
+  `cycle_cuts` and `fallbacks` is a before/after delta, and `rewrite_memo` resets `cut_low` before reading it, so
+  neither the proof nor the caller sees a difference; the gate confirms.
+- `rule_step` now clones its `Rules` (`job.rules().clone()`, an `Rc` bump per call), since it writes `job.rw.trace`
+  and `job.rw.budget` while reading the table. Task 4's "no clone needed" held only while those were thread-locals.
+  Timed in Task 10.
+- `join_walk` takes `blocked: &[RuleKey]` beside its table (it read `PROVING`), and so has 8 parameters: allowed with
+  `#[allow(clippy::too_many_arguments)]`, as three other functions in the repo are.
+- `shared_lemma` takes `&Setup` (all it reads) instead of `&Job`, so a builder that proves a rule can borrow the job
+  mutably; callers pass `&job.setup().clone()` (an `Arc` bump) where the builder needs the job.
+- `drop_units`' `meet` is `&mut dyn FnMut`, since `joinability_units`' meet rewrites.
+- Closures that captured the job while it was also used directly now take it as a parameter (`shr_not_law`'s
+  `prove`, `rewrite_uncached`'s `assoc`/`comm`, `join_eq`'s `replay`, tests' `join`); closures over `job.rw.fallbacks` or
+  `job.rw.budget` (`score_laws`, P1, `lt_borrow_bit_probe`) are inlined as field reads and writes.
+- The budget step `replace(budget, budget - 1) <= 0` is now `budget -= 1; if budget < 0`, the same test.
+- Strings the sweeps read from the setup (`SWEEP_FAMILY`) are owned, and `carry_cap`/`SWEEP_RULES` are read once
+  before the loops, so no borrow of the job spans a rewrite.
+
+- [x] **Step 1: failing test** (`rewrite.rs`, `proving_leaves_the_callers_rewrite_state`). A rule proved inside a rewrite does not change the caller's
   budget, trace or fallbacks: run `proving` from a job whose budget is 777, whose trace is `Some(vec![])` and whose
   fallbacks are 5, then assert all three are unchanged and `job.blocked` is back to its length before. Write it
   against the new API. It fails to compile until Step 2.
-- [ ] **Step 2: convert.**
+- [x] **Step 2: convert.**
   - Each `X.with(|c| …)` becomes the field.
   - `proving(blocked, f)` becomes `proving(job, blocked, f: impl FnOnce(&mut Job) -> T)`. It swaps in a fresh
     `RewriteState { budget: 10_000, rewrote: mem::take(&mut job.rw.rewrote), ..Default::default() }` and, after `f`,
@@ -528,8 +551,8 @@ impl Default for RewriteState { /* cut_low: usize::MAX, budget: i64::MAX / 2, th
   - `rewrite_memo` and `check_replay` keep their field-by-field save and restore. They restore subsets, which a
     whole-struct swap would get wrong.
   - Every before/after read of `MACHINE_FALLBACKS` in `search.rs` becomes `job.rw.fallbacks`.
-- [ ] **Step 3: suite, clippy, gate.** Expected: suite 522, gate equal.
-- [ ] **Step 4: commit:** `C1 step 3: the rewrite state in the job`.
+- [x] **Step 3: suite, clippy, gate.** Expected: suite 522, gate equal. Got: 522; no new warnings (4 fewer); run 2026-10-21-t5-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks). The gate exe predates a cosmetic pass (unwrapped blocks, `+=`, the `allow`); the suite reran green after it.
+- [x] **Step 4: commit:** `C1 step 3: the rewrite state in the job`.
 
 ### Task 6: join state and conflicts (`JOIN_STORE`, `JOIN_COST`, `RULE_CONFLICTS`)
 
