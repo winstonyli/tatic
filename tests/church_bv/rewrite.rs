@@ -1655,19 +1655,14 @@ pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)], meet: &mut dyn FnMut
 /// normal forms. They depend only on the file, so `driver::sweep` builds them once (`units_text`) for every family's mine.
 pub fn joinability_units(job: &mut Job, text: &str, n: usize, steps: i64) -> Vec<Vec<(Term, Term)>> {
     let rules = job.rules().with_mined(job.setup(), parse_rules(text)).with_prefs(parse_prefs(text));
-    let units = job.with_rules(rules, |job| {
+    job.with_rules(rules, |job| {
         let mut joins = |a: &Term, b: &Term| {
             let k = a.max_var().max(b.max_var()) + 1;
-            let mut side = |t: &Term| {
-                job.rw.budget = steps;
-                rewrite(job, t, n, k).0
-            };
+            let mut side = |t: &Term| job.measured(steps, |job| rewrite(job, t, n, k).0).0;
             side(a) == side(b)
         };
         drop_units(&library_sections(text), &mut |r, x| critical_pairs(r, x).iter().any(|(a, b)| !joins(a, b)))
-    });
-    job.rw.budget = i64::MAX / 2;
-    units
+    })
 }
 
 /// Drop units as text: a unit's rules one per line, units separated by blank lines (`parse_units`).
@@ -2251,6 +2246,11 @@ impl RewriteMemo {
     }
 }
 
+/// The step budget one law gets in the probes, `law_cost` and the rewriting tests (`Job::measured`).
+pub const LAW_STEPS: i64 = 200;
+/// A budget no rewrite reaches: a job's own outside a measured call.
+pub const UNBOUNDED: i64 = i64::MAX / 2;
+
 /// A job's rewriting in progress (`Job::rw`). `proving` swaps in a fresh one for a rule's proof.
 pub struct RewriteState {
     /// the terms `rewrite` is working on, outermost first
@@ -2276,7 +2276,7 @@ pub struct RewriteState {
 
 impl Default for RewriteState {
     fn default() -> RewriteState {
-        RewriteState { path: vec![], rewrote: vec![], cut_low: usize::MAX, cycle_cuts: 0, memo: None, trace: None, budget: i64::MAX / 2, fallbacks: 0 }
+        RewriteState { path: vec![], rewrote: vec![], cut_low: usize::MAX, cycle_cuts: 0, memo: None, trace: None, budget: UNBOUNDED, fallbacks: 0 }
     }
 }
 
@@ -2543,16 +2543,27 @@ pub struct JoinCost {
 }
 
 impl JoinCost {
-    /// the count from `before` to `now` (a job's `join_cost` at two times), added to `self`
-    pub fn add_since(&mut self, now: JoinCost, before: JoinCost) {
-        self.searches += now.searches - before.searches;
-        self.reached += now.reached - before.reached;
-        self.met += now.met - before.met;
-        self.hits += now.hits - before.hits;
-        self.nanos += now.nanos - before.nanos;
-        self.failed_nanos += now.failed_nanos - before.failed_nanos;
-        self.stored += now.stored - before.stored;
-        self.store_nanos += now.store_nanos - before.store_nanos;
+    /// the counts from `before` to `self` (a job's `join_cost` at two times)
+    pub fn since(self, before: JoinCost) -> JoinCost {
+        self.zip(before, |a, b| a - b)
+    }
+
+    /// `other`'s counts added to these
+    pub fn add(&mut self, other: JoinCost) {
+        *self = self.zip(other, |a, b| a + b);
+    }
+
+    fn zip(self, o: JoinCost, f: impl Fn(u64, u64) -> u64) -> JoinCost {
+        JoinCost {
+            searches: f(self.searches, o.searches),
+            reached: f(self.reached, o.reached),
+            met: f(self.met, o.met),
+            hits: f(self.hits, o.hits),
+            nanos: f(self.nanos, o.nanos),
+            failed_nanos: f(self.failed_nanos, o.failed_nanos),
+            stored: f(self.stored, o.stored),
+            store_nanos: f(self.store_nanos, o.store_nanos),
+        }
     }
 }
 
@@ -3764,12 +3775,9 @@ fn rewrite_cycles_are_cut() {
     let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
-        job.rw.budget = 200;
-        let cuts0 = job.rw.cycle_cuts;
         let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
-        let out = job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2));
-        let (cuts, left) = (job.rw.cycle_cuts - cuts0, job.rw.budget);
-        job.rw.budget = i64::MAX / 2;
+        let (out, spent) = job.measured(LAW_STEPS, |job| job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2)));
+        let (cuts, left) = (spent.cycle_cuts, LAW_STEPS - spent.steps);
         println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
         assert!(cuts > 0, "no cycle cut");
         assert!(left > 0, "the step budget ran out");
@@ -3786,12 +3794,9 @@ fn growing_rewrite_chains_are_cut() {
     let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
-        job.rw.budget = 200;
-        let cuts0 = job.rw.cycle_cuts;
         let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
-        let out = job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2));
-        let (cuts, left) = (job.rw.cycle_cuts - cuts0, job.rw.budget);
-        job.rw.budget = i64::MAX / 2;
+        let (out, spent) = job.measured(LAW_STEPS, |job| job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2)));
+        let (cuts, left) = (spent.cycle_cuts, LAW_STEPS - spent.steps);
         println!("cuts {cuts}, budget left {left}, proved {}", out.is_some());
         assert!(cuts > 0, "no growth cut");
         assert!(left > 0, "the step budget ran out");
@@ -3842,13 +3847,12 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
             terms
                 .iter()
                 .map(|t| {
-                    job.rw.budget = 200;
-                    (rewrite(job, t, n, kv).0.show(), 200 - job.rw.budget)
+                    let (nf, spent) = job.measured(LAW_STEPS, |job| rewrite(job, t, n, kv).0.show());
+                    (nf, spent.steps)
                 })
                 .collect()
         });
         job.rw.trace = None;
-        job.rw.budget = i64::MAX / 2;
         (out, job.rw.memo.take().unwrap())
     };
     let (before, memo) = run(job, &base, RewriteMemo::new(kv));
@@ -4007,11 +4011,9 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
         let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
         let join = |job: &mut Job| {
             job.rw.memo = Some(RewriteMemo::new(k));
-            let c0 = job.join_cost;
-            let plan = join_eq(job, n, k, &a, &b);
+            let (plan, spent) = job.spent(|job| join_eq(job, n, k, &a, &b));
             job.rw.memo.take();
-            let c1 = job.join_cost;
-            (plan, c1.searches - c0.searches, c1.stored - c0.stored)
+            (plan, spent.join.searches, spent.join.stored)
         };
         job.with_mined(vec![rule], |job| {
             assert!(matches!(join(job), (Some(_), 1, 0)), "no store: searched");
@@ -4043,10 +4045,10 @@ fn join_store_workers_read_the_frozen_copy() {
             let (c, d) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
             let join = move |job: &mut Job, x: &Term, y: &Term| {
                 job.rw.memo = Some(RewriteMemo::new(k));
-                let c0 = job.join_cost;
-                assert!(join_eq(job, 4, k, x, y).is_some());
+                let (joined, spent) = job.spent(|job| join_eq(job, 4, k, x, y));
+                assert!(joined.is_some());
                 job.rw.memo.take();
-                job.join_cost.stored - c0.stored
+                spent.join.stored
             };
             job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
             join(job, &a, &b);
@@ -4085,12 +4087,12 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
         ];
         let served = |job: &mut Job, a: &Term, b: &Term| {
             job.rw.memo = Some(RewriteMemo::new(k));
-            let c0 = job.join_cost;
-            let plan = join_eq(job, n, k, a, b).expect("joined");
+            let (plan, spent) = job.spent(|job| join_eq(job, n, k, a, b));
+            let plan = plan.expect("joined");
             job.rw.memo.take();
             let (p, s) = law_proof(job, n, k, a, b, &plan);
             job.lemmas.ck("stored", &p, &s);
-            job.join_cost.stored - c0.stored
+            spent.join.stored
         };
         let before = job.with_mined(vec![rule], |job| {
             job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
@@ -4124,10 +4126,10 @@ fn join_store_is_fed_only_where_it_is_read() {
             let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
             let join = |job: &mut Job, memo: bool| {
                 job.rw.memo = memo.then(|| RewriteMemo::new(k));
-                let c0 = job.join_cost;
-                assert!(join_eq(job, 4, k, &a, &b).is_some());
+                let (joined, spent) = job.spent(|job| join_eq(job, 4, k, &a, &b));
+                assert!(joined.is_some());
                 job.rw.memo.take();
-                job.join_cost.stored - c0.stored
+                spent.join.stored
             };
             job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
             join(job, false);
@@ -4158,8 +4160,8 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
             let out: Vec<(String, i64)> = terms
                 .iter()
                 .map(|t| {
-                    job.rw.budget = 200;
-                    (rewrite(job, t, n, kv).0.show(), 200 - job.rw.budget)
+                    let (nf, spent) = job.measured(LAW_STEPS, |job| rewrite(job, t, n, kv).0.show());
+                    (nf, spent.steps)
                 })
                 .collect();
             job.rw.memo.take();
@@ -4167,7 +4169,6 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
         };
         (run(None), run(Some(RewriteMemo::new(kv))))
     });
-    job.rw.budget = i64::MAX / 2;
     let differ: Vec<_> = terms.iter().zip(fresh.iter().zip(&memo)).filter(|(_, (f, m))| f != m).map(|(t, (f, m))| format!("{}: fresh {f:?} memo {m:?}", t.show())).collect();
     assert!(differ.is_empty(), "{} of {} differ:\n{}", differ.len(), terms.len(), differ.join("\n"));
 }
@@ -4182,12 +4183,9 @@ fn memo_keeps_rewrites_cut_inside_their_own_call() {
     let (t, u) = (parse_term("lt(x, sub(y, z))"), parse_term("lt(x, add(y, z))"));
     let rules = parse_rules("lt(x, sub(y, z)) -> lt(x, add(y, z))\nlt(x, add(y, z)) -> lt(x, or(sub(y, z), y))\nlt(x, or(y, z)) -> lt(x, and(y, z))\n");
     job.rw.memo = Some(RewriteMemo::new(kv));
-    job.rw.budget = 200;
-    let cuts0 = job.rw.cycle_cuts;
-    job.with_mined(rules, |job| rewrite(job, &t, n, kv));
-    let cut = job.rw.cycle_cuts > cuts0;
+    let (_, spent) = job.measured(LAW_STEPS, |job| job.with_mined(rules, |job| rewrite(job, &t, n, kv)));
+    let cut = spent.cycle_cuts > 0;
     let memo = job.rw.memo.take().unwrap();
-    job.rw.budget = i64::MAX / 2;
     assert!(cut, "rewriting t cuts");
     assert!(memo.map.contains_key(&(n, t)), "t's rewrite, cut only against itself, is kept");
     assert!(!memo.map.contains_key(&(n, u)), "u's rewrite inside t's, cut against t, is not");

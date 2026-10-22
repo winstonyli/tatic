@@ -748,7 +748,7 @@ No Critical findings. Two Important ones, both fixed:
   Suite 527/0/51; gate `2026-10-22-review-fix-gate` equal.
 
 Deferred minors:
-- M1: `num` falls back to the default on an unparsable value where the driver used to panic. The Q2 ruling stands.
+- M1: fixed 2026-10-22 (05ee55e): `num` and `Setup::or` both panic on an unparsable value, naming the variable (`job::parsed`).
 - M2: fixed 2026-10-22 after the merge: `install(setup)` builds from `Rules::new`, so both switches are off whatever the caller has on (`a_provers_rules_ignore_the_callers_switches`; gate `2026-10-22-m2-gate` equal, since no caller proves with a switch on).
-- M3: `job_swap` matches only a variable named `job`.
-- M4: the Q2 test fails if the environment sets `RULEMINER_SHAPE_SALT`.
+- M3: fixed 2026-10-22 (86ec2ef): the scan flags any `Job`, `&Job` or `&mut Job` binding not named `job` (`Hidden::JobAlias`).
+- M4: fixed 2026-10-22 (5240c2a): the test no longer asserts the process environment lacks `RULEMINER_SHAPE_SALT`.

@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Codebase cleanup (survey of 2026-10-21)
@@ -27,7 +27,7 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
   within noise (docs/tier-cycle.md, runs `2026-10-22-t10-aa` and `-t10-ab`).
 - **C2: one `measured(steps, f)` helper** for "set the budget to 200, read the fallback delta" (about 16 sites in
   search.rs and rewrite.rs; `law_cost` at search.rs:2550 already does it). The `200` and `i64::MAX / 2` literals get
-  names. Status: todo (after C1).
+  names. Status: done 2026-10-22 on branch `cleanup-tail`: `Job::measured(budget, f) -> (T, Spent)` runs `f` under its own budget and puts the caller's back, `Job::spent(f)` measures without touching the budget; `Spent` holds steps, fallbacks, cycle cuts and join cost; the literals are `rewrite::LAW_STEPS` and `UNBOUNDED` (gate `2026-10-22-c2-gate`).
 - **C3 (D): split `rule_miner`** (search.rs:445, 831 lines, about 60 closures) into a `Miner` struct with methods for
   candidates, scoring, rounds, finish and the preference phase. Status: ruled 2026-10-21: part of C1's plan (the
   closures must take `ctx`, which forces the split). Task 1 of `2026-10-21-rewrite-context.md`, done first, before any

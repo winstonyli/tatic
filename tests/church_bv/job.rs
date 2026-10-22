@@ -244,6 +244,53 @@ impl Job {
         let rules = self.rules.with_mined(&self.setup, mined);
         self.with_rules(rules, f)
     }
+
+    /// `f`, and what it spent from this job's budget and counters.
+    pub fn spent<T>(&mut self, f: impl FnOnce(&mut Job) -> T) -> (T, Spent) {
+        let (budget, fallbacks, cycle_cuts, join) = (self.rw.budget, self.rw.fallbacks, self.rw.cycle_cuts, self.join_cost);
+        let out = f(self);
+        let spent = Spent { steps: budget - self.rw.budget, fallbacks: self.rw.fallbacks - fallbacks, cycle_cuts: self.rw.cycle_cuts - cycle_cuts, join: self.join_cost.since(join) };
+        (out, spent)
+    }
+
+    /// `f` under a step budget of `budget`, and what it spent (`spent`); the caller's budget is put back after.
+    pub fn measured<T>(&mut self, budget: i64, f: impl FnOnce(&mut Job) -> T) -> (T, Spent) {
+        let outer = std::mem::replace(&mut self.rw.budget, budget);
+        let out = self.spent(f);
+        self.rw.budget = outer;
+        out
+    }
+}
+
+/// What a call spent (`Job::spent`): rule applications, whole-term machine proofs, cycle cuts and join work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Spent {
+    pub steps: i64,
+    pub fallbacks: u64,
+    pub cycle_cuts: u64,
+    pub join: JoinCost,
+}
+
+#[test]
+fn spent_counts_what_its_call_used_and_leaves_the_budget_used() {
+    let job = &mut Job::new(Setup::process());
+    job.rw.budget = 100;
+    let ((), spent) = job.spent(|job| {
+        (job.rw.budget, job.rw.fallbacks, job.rw.cycle_cuts, job.join_cost.met) = (93, job.rw.fallbacks + 2, job.rw.cycle_cuts + 1, 3);
+    });
+    assert_eq!(spent, Spent { steps: 7, fallbacks: 2, cycle_cuts: 1, join: JoinCost { met: 3, ..JoinCost::default() } });
+    assert_eq!(job.rw.budget, 93);
+}
+
+#[test]
+fn measured_runs_under_its_budget_and_puts_the_callers_back() {
+    let job = &mut Job::new(Setup::process());
+    job.rw.budget = 1234;
+    let (inside, spent) = job.measured(crate::rewrite::LAW_STEPS, |job| {
+        job.rw.budget -= 7;
+        job.rw.budget
+    });
+    assert_eq!((inside, spent.steps, job.rw.budget), (crate::rewrite::LAW_STEPS - 7, 7, 1234));
 }
 
 #[test]

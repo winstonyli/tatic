@@ -99,7 +99,7 @@ pub fn run(setup: &Arc<Setup>) {
         let base_rules = job.rules().with_mined(setup, base.clone()).with_prefs(base_prefs.clone());
         job.with_rules(base_rules, |job| {
             // base rules may loop; a step budget per law bounds them (the built-in rules never reach it)
-            let budget = if base.is_empty() { i64::MAX / 2 } else { cfg.steps as i64 };
+            let budget = if base.is_empty() { UNBOUNDED } else { cfg.steps as i64 };
             let laws = laws(job, &cfg, budget, &clock);
             let (cands, rivals) = candidates(&laws, &cfg, &base);
             clock.phase("candidate generation");
@@ -131,10 +131,12 @@ pub fn run(setup: &Arc<Setup>) {
             let scorer = Scorer::new(&laws, &cfg, base.clone());
             let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
             // the main job's join work from here on
-            let join_main = job.join_cost;
-            let Chosen { chosen, covered, .. } = rounds.play(job);
-            prefs_phase(job, &scorer, &chosen, &base, &base_prefs, &cfg, &clock);
-            rounds.report(&covered, job.join_cost, join_main);
+            let (covered, main) = job.spent(|job| {
+                let Chosen { chosen, covered, .. } = rounds.play(job);
+                prefs_phase(job, &scorer, &chosen, &base, &base_prefs, &cfg, &clock);
+                covered
+            });
+            rounds.report(&covered, main.join);
         });
     });
 }
@@ -174,18 +176,15 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
             if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))) {
                 continue;
             }
-            let before = job.rw.fallbacks;
             let t = Instant::now();
-            job.rw.budget = budget;
-            let r = rewrite_plan(job, n, kv, &t1, &t2);
+            let (r, spent) = job.measured(budget, |job| rewrite_plan(job, n, kv, &t1, &t2));
             let took = t.elapsed();
-            let fell = job.rw.fallbacks - before;
+            let fell = spent.fallbacks;
             // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
             unproved += r.is_none() as usize;
             let fell = if r.is_none() { fell.max(1) } else { fell };
             if r.is_none() || fell > 0 {
-                job.rw.budget = budget;
-                let normal = [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0];
+                let (normal, _) = job.measured(budget, |job| [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0]);
                 println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
                 stragglers.push((name, t1, t2, normal, fell, took));
             } else {
@@ -527,14 +526,11 @@ impl<'a> Scorer<'a> {
                 .iter()
                 .map(|&si| {
                     let s = &self.laws.scored[si];
-                    job.rw.budget = steps;
                     if record {
                         job.rw.trace = Some(vec![]);
                     }
-                    let before = job.rw.fallbacks;
-                    let ok = rewrite_plan(job, n, kv, &s.1, &s.2).is_some();
-                    let fixed = ok && job.rw.fallbacks - before < s.4;
-                    job.rw.budget = steps;
+                    let (ok, spent) = job.measured(steps, |job| rewrite_plan(job, n, kv, &s.1, &s.2).is_some());
+                    let fixed = ok && spent.fallbacks < s.4;
                     // the rule order's own measure: operator nodes first, then variable occurrences
                     let measure = |t: &Term| {
                         let mut occ = [0usize; 8];
@@ -542,7 +538,8 @@ impl<'a> Scorer<'a> {
                         let (c, a) = rule_weight(t);
                         (c + a.iter().sum::<i64>()) * 16 + occ.iter().sum::<usize>() as i64
                     };
-                    let size = if si < self.laws.stragglers.len() { measure(&rewrite(job, &s.1, n, kv).0) + measure(&rewrite(job, &s.2, n, kv).0) } else { 0 };
+                    let normal = |job: &mut Job| measure(&rewrite(job, &s.1, n, kv).0) + measure(&rewrite(job, &s.2, n, kv).0);
+                    let size = if si < self.laws.stragglers.len() { job.measured(steps, normal).0 } else { 0 };
                     let mut seen: hashbrown::HashSet<(Term, Fired)> = Default::default();
                     let trace = Trace::new(job.rw.trace.take().unwrap_or_default().into_iter().filter(|t| seen.insert(*t)).collect());
                     (fixed, size, trace)
@@ -550,7 +547,6 @@ impl<'a> Scorer<'a> {
                 .collect()
         });
         let memo = job.rw.memo.take().unwrap();
-        job.rw.budget = i64::MAX / 2;
         (out, memo)
     }
 
@@ -785,14 +781,13 @@ impl<'a> Rounds<'a> {
                 let worker = move || {
                     let job = &mut Job::new(setup);
                     job.join_store = frozen.map(JoinStoreUse::Read);
-                    let before = job.join_cost;
-                    tatic::kernel::scoped(|| {
-                        loop {
+                    let ((), spent) = job.spent(|job| {
+                        tatic::kernel::scoped(|| loop {
                             let Ok(item) = queue.lock().unwrap().recv() else { break };
                             done_tx.send((item, score_job(job, item))).unwrap();
-                        }
+                        })
                     });
-                    join_workers.lock().unwrap().add_since(job.join_cost, before);
+                    join_workers.lock().unwrap().add(spent.join);
                 };
                 std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
             }
@@ -1001,8 +996,8 @@ impl<'a> Rounds<'a> {
     }
 
     /// The closing report (P10): the scoring's reuse and skips, lazy proofs, times, the join's work (the workers', and the
-    /// main job's from `join_main` to `join_now`) and the stragglers the final rules `covered` leaves.
-    fn report(&self, covered: &[bool], join_now: JoinCost, join_main: JoinCost) {
+    /// main job's, `join_main`) and the stragglers the final rules `covered` leaves.
+    fn report(&self, covered: &[bool], join_main: JoinCost) {
         let (scorer, stragglers) = (self.scorer, &self.scorer.laws.stragglers);
         println!("RULEMINER scoring reused {} of {} law evaluations", scorer.law_reuses.load(std::sync::atomic::Ordering::Relaxed), scorer.law_evals.load(std::sync::atomic::Ordering::Relaxed));
         println!("RULEMINER the gain bound skipped {} of {} candidate scorings", self.skipped, self.scorings + self.skipped);
@@ -1013,7 +1008,7 @@ impl<'a> Rounds<'a> {
         println!("RULEMINER time in rule-set evaluations: {:.1}s", self.state_time.as_secs_f64());
         println!("RULEMINER time bounding candidates' gains: {:.1}s", self.bound_time.as_secs_f64());
         let mut j = *scorer.join_workers.lock().unwrap();
-        j.add_since(join_now, join_main);
+        j.add(join_main);
         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
         println!("RULEMINER join store: {} joins served, {:.1}s querying", j.stored, j.store_nanos as f64 / 1e9);
         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());

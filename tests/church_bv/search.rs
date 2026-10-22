@@ -70,11 +70,10 @@ pub fn rewrite_rules_over_the_mul_laws() {
                 continue;
             }
             let cs = [&t1, &t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
-            let before = job.rw.fallbacks;
             let t = Instant::now();
-            let r = rewrite_law(job, 4, 2, &t1, &t2);
+            let (r, spent) = job.spent(|job| rewrite_law(job, 4, 2, &t1, &t2));
             let built = t.elapsed();
-            let fell = job.rw.fallbacks - before;
+            let fell = spent.fallbacks;
             match r {
                 Some((p, s)) => {
                     let t = Instant::now();
@@ -525,9 +524,8 @@ pub fn lt_root_rules_close_constant_false_laws() {
         let lt = |a: Term, b: Term| Term::op(LT, a, b);
         let add = |a: Term, b: Term| Term::op(ADD, a, b);
         let falsum = lt(Term::ONES, Term::ONES);
-        let before = job.rw.fallbacks;
-        let r = job.with_mined(vec![(lt(x, x), falsum), (lt(Term::ONES, x), falsum)], |job| rewrite_law(job, 4, 2, &lt(x, x), &lt(Term::ONES, add(x, y))));
-        let fell = job.rw.fallbacks - before;
+        let (r, spent) = job.spent(|job| job.with_mined(vec![(lt(x, x), falsum), (lt(Term::ONES, x), falsum)], |job| rewrite_law(job, 4, 2, &lt(x, x), &lt(Term::ONES, add(x, y)))));
+        let fell = spent.fallbacks;
         let (p, s) = r.expect("proved");
         job.lemmas.ck("lt(x,x) = lt(-1, x+y)", &p, &s);
         assert_eq!(fell, 0, "no whole-term machine proof");
@@ -798,13 +796,10 @@ pub fn lt_borrow_bit_probe() {
         ];
         for (l, r) in laws {
             let (l, r) = (parse_term(l), parse_term(r));
-            let before = job.rw.fallbacks;
-            let direct = rewrite_plan(job, 4, 2, &l, &r).is_some();
-            let direct_fell = job.rw.fallbacks - before;
+            let (direct, direct_spent) = job.spent(|job| rewrite_plan(job, 4, 2, &l, &r).is_some());
             let (bl, br) = (b(1, borrow(&l), top), b(1, borrow(&r), top));
-            let before = job.rw.fallbacks;
-            let via = rewrite_plan(job, 4, 2, &bl, &br).is_some();
-            println!("BORROW {} = {}: lt form proved={direct} machine proofs {direct_fell}; borrow form proved={via} machine proofs {}", l.show(), r.show(), job.rw.fallbacks - before);
+            let (via, via_spent) = job.spent(|job| rewrite_plan(job, 4, 2, &bl, &br).is_some());
+            println!("BORROW {} = {}: lt form proved={direct} machine proofs {}; borrow form proved={via} machine proofs {}", l.show(), r.show(), direct_spent.fallbacks, via_spent.fallbacks);
         }
     })
 }
@@ -882,13 +877,13 @@ pub fn scaling_sweep() {
         for &w in &widths {
             let (mut proved, mut none, mut build, mut check_t, mut worst) = (0, 0, 0f64, 0f64, (0f64, String::new()));
             let mut dags: Vec<usize> = vec![];
-            let fb0 = job.rw.fallbacks;
+            let mut fell = 0;
             for law in &picked {
                 let (name, t1, t2) = &***law;
                 let mut body = || {
-                    job.rw.budget = 200;
                     let t = Instant::now();
-                    let r = rewrite_law(job, w, kv, t1, t2);
+                    let (r, spent) = job.measured(LAW_STEPS, |job| rewrite_law(job, w, kv, t1, t2));
+                    fell += spent.fallbacks;
                     let b = t.elapsed().as_secs_f64();
                     build += b;
                     match r {
@@ -908,7 +903,7 @@ pub fn scaling_sweep() {
                 };
                 if per_law { tatic::kernel::scoped(body) } else { body() }
             }
-            println!("SCALE {family} n={w}: {proved} proved, {none} unproved of {}; build {build:.1}s, check {check_t:.1}s, slowest {:.2}s ({}), {} machine proofs", picked.len(), worst.0, worst.1, job.rw.fallbacks - fb0);
+            println!("SCALE {family} n={w}: {proved} proved, {none} unproved of {}; build {build:.1}s, check {check_t:.1}s, slowest {:.2}s ({}), {fell} machine proofs", picked.len(), worst.0, worst.1);
             dags.sort();
             if let Some(m) = dags.get(dags.len() / 2) {
                 println!("SCALE {family} n={w}: proof dag nodes: median {m}, max {}, total {}", dags[dags.len() - 1], dags.iter().sum::<usize>());
@@ -1379,15 +1374,14 @@ pub fn normal_forms() {
         let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(job.setup().var("NF_RULES").unwrap_or_default()).unwrap_or_default());
         let rules = job.rules().with_mined(job.setup(), rules).tracing(job.setup().flag("NF_TRACE", false));
         job.with_rules(rules, |job| {
-            job.rw.budget = 200;
             let (n, k) = (4, 3);
             for line in std::fs::read_to_string(job.setup().var("NF_LAWS").unwrap()).unwrap().lines().filter(|l| l.contains(" = ")) {
                 let (a, b) = line.split_once(" = ").unwrap();
                 let (a, b) = (parse_term(a), parse_term(b));
                 // each side with its own budget, as in `rewrite_law`; `steps` is what each used (200 or more: it used the budget up)
                 let mut side = |t: &Term| {
-                    job.rw.budget = 200;
-                    (rewrite(job, t, n, k).0, 200 - job.rw.budget)
+                    let (nf, spent) = job.measured(LAW_STEPS, |job| rewrite(job, t, n, k).0);
+                    (nf, spent.steps)
                 };
                 let ((na, sa), (nb, sb)) = (side(&a), side(&b));
                 let carries = |t: &Term| Machine::parse(t).map_or(0, |m| m.carries());
@@ -1412,10 +1406,10 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
             ("shr1(sub(-1, xor(x, y)), 0)", "xor(shr1(y, 0), xor(shr1(-1, 0), shr1(x, 0)))"),
             ("shr1(xor(xor(x, y), -1), 0)", "shr1(xor(sub(-1, x), y), 0)"),
         ] {
-            let before = job.rw.fallbacks;
-            let (p, s) = rewrite_law(job, 4, 2, &parse_term(a), &parse_term(b)).unwrap_or_else(|| panic!("{a} = {b}"));
+            let (proof, spent) = job.spent(|job| rewrite_law(job, 4, 2, &parse_term(a), &parse_term(b)));
+            let (p, s) = proof.unwrap_or_else(|| panic!("{a} = {b}"));
             job.lemmas.ck(a, &p, &s);
-            assert_eq!(job.rw.fallbacks, before, "{a} = {b} needed a machine proof");
+            assert_eq!(spent.fallbacks, 0, "{a} = {b} needed a machine proof");
         }
     })
 }
@@ -1460,26 +1454,29 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
                 job.conflicts = Some(Default::default());
             }
             let (mut proved, mut free, mut none, mut exhausted, mut joined) = (0, 0, 0, 0, 0);
-            let cost0 = job.join_cost;
+            let mut cost = JoinCost::default();
             for (name, t1, t2) in &laws {
-                job.rw.budget = 200;
-                let (before, met0) = (job.rw.fallbacks, job.join_cost.met);
-                let r = rewrite_plan(job, 4, kv, t1, t2);
+                // the proof is built under what the plan left of the budget, and its machine proofs and joins count too
+                let ((r, plan_spent, proof), spent) = job.measured(LAW_STEPS, |job| {
+                    let (r, plan_spent) = job.spent(|job| rewrite_plan(job, 4, kv, t1, t2));
+                    let proof = r.as_ref().filter(|_| !fast).map(|plan| law_proof(job, 4, kv, t1, t2, plan));
+                    (r, plan_spent, proof)
+                });
+                cost.add(spent.join);
                 // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
-                if job.rw.budget <= 0 {
+                if plan_spent.steps >= LAW_STEPS {
                     exhausted += 1;
                     println!("EXHAUSTED {name}");
                 }
+                if let Some((p, s)) = proof {
+                    job.lemmas.ck(name, &p, &s);
+                }
                 match r {
-                    Some(plan) => {
-                        if !fast {
-                            let (p, s) = law_proof(job, 4, kv, t1, t2, &plan);
-                            job.lemmas.ck(name, &p, &s);
-                        }
+                    Some(_) => {
                         proved += 1;
-                        let machine = job.rw.fallbacks - before;
+                        let machine = spent.fallbacks;
                         free += (machine == 0) as u32;
-                        joined += (machine == 0 && job.join_cost.met > met0) as u32;
+                        joined += (machine == 0 && spent.join.met > 0) as u32;
                         if machine > 0 {
                             println!("MACHINE {machine} {name}");
                         }
@@ -1488,8 +1485,6 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
                 }
             }
             println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved, {exhausted} used up the rule budget");
-            let mut cost = JoinCost::default();
-            cost.add_since(job.join_cost, cost0);
             println!("JOINED {joined} of them by the join, {} searches reaching {} terms", cost.searches, cost.reached);
             for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached)]) {
                 job.setup().result(key, v);
@@ -1501,10 +1496,8 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
             // confluence on this law set: both sides of a law reach the same normal form (the check above counts machine-free proofs, which can also come from a middle term)
             let (mut same, mut total) = (0, 0);
             for (_, t1, t2) in &laws {
-                job.rw.budget = 200;
-                let n1 = rewrite(job, t1, 4, kv).0;
-                job.rw.budget = 200;
-                let n2 = rewrite(job, t2, 4, kv).0;
+                let n1 = job.measured(LAW_STEPS, |job| rewrite(job, t1, 4, kv).0).0;
+                let n2 = job.measured(LAW_STEPS, |job| rewrite(job, t2, 4, kv).0).0;
                 total += 1;
                 same += (n1 == n2) as u32;
             }
@@ -1531,16 +1524,15 @@ pub fn proof_cost_split() {
             let mut acc = [Acc::default(), Acc::default(), Acc::default()]; // [rules, joined, machine]
             let mut none = 0;
             for (name, t1, t2) in &laws {
-                job.rw.budget = 200;
-                let (before, met0) = (job.rw.fallbacks, job.join_cost.met);
                 let t = Instant::now();
-                let Some((p, s)) = rewrite_law(job, 4, kv, t1, t2) else { none += 1; continue };
+                let (proof, spent) = job.measured(LAW_STEPS, |job| rewrite_law(job, 4, kv, t1, t2));
+                let Some((p, s)) = proof else { none += 1; continue };
                 let build = t.elapsed();
                 let t = Instant::now();
                 job.lemmas.ck(name, &p, &s);
                 let check = t.elapsed();
                 let (nodes, occ) = tatic::kernel::term_sizes(&p);
-                let a = &mut acc[if job.rw.fallbacks != before { 2 } else { (job.join_cost.met > met0) as usize }];
+                let a = &mut acc[if spent.fallbacks != 0 { 2 } else { (spent.join.met > 0) as usize }];
                 (a.n, a.build, a.check, a.nodes, a.occ) = (a.n + 1, a.build + build, a.check + check, a.nodes + nodes, a.occ + occ);
             }
             let mut ra = Acc::default();
@@ -1589,10 +1581,10 @@ pub fn closed_terms_fold_to_constants() {
     tatic::kernel::scoped(|| {
         for (a, b) in [("sub(-1, add(-1, -1))", "sub(0, -1)"), ("sub(add(0, 0), -1)", "sub(0, -1)"), ("xor(-1, -1)", "0"), ("add(-1, add(-1, sub(0, -1)))", "-1")] {
             let (t1, t2) = (parse_term(a), parse_term(b));
-            let before = job.rw.fallbacks;
-            let (p, ty) = rewrite_law(job, 4, 1, &t1, &t2).unwrap_or_else(|| panic!("{a} = {b} not proved"));
+            let (proof, spent) = job.spent(|job| rewrite_law(job, 4, 1, &t1, &t2));
+            let (p, ty) = proof.unwrap_or_else(|| panic!("{a} = {b} not proved"));
             job.lemmas.ck(a, &p, &ty);
-            assert_eq!(job.rw.fallbacks, before, "{a} = {b} needed a machine proof");
+            assert_eq!(spent.fallbacks, 0, "{a} = {b} needed a machine proof");
         }
     })
 }
@@ -1620,7 +1612,7 @@ fn try_parse(s: &str, kv: usize) -> Option<Term> {
     (0..8).all(|v| v < kv || !t.has_var(v)).then_some(t)
 }
 
-/// The kernel's cost for a true law under the installed rules: whole-term machine proofs and rule steps (of a 200-step budget) that
+/// The kernel's cost for a true law under the installed rules: whole-term machine proofs and rule steps (of a `LAW_STEPS` budget) that
 /// `rewrite_law` used, and whether it proved the law at all. The difficulty grade a proposer is scored by.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Cost {
@@ -1636,12 +1628,10 @@ impl Cost {
     }
 }
 
-/// The `Cost` of `t1 = t2` under the job's rules (a 200-step budget, width 4).
+/// The `Cost` of `t1 = t2` under the job's rules (a `LAW_STEPS` budget, width 4).
 pub fn law_cost(job: &mut Job, kv: usize, t1: &Term, t2: &Term) -> Cost {
-    job.rw.budget = 200;
-    let before = job.rw.fallbacks;
-    let proved = rewrite_plan(job, 4, kv, t1, t2).is_some();
-    Cost { fallbacks: job.rw.fallbacks - before, steps: 200 - job.rw.budget, proved }
+    let (proved, spent) = job.measured(LAW_STEPS, |job| rewrite_plan(job, 4, kv, t1, t2).is_some());
+    Cost { fallbacks: spent.fallbacks, steps: spent.steps, proved }
 }
 
 /// Per-proposal credit for a mined library `rules` (docs/tier-cycle.md). Each rule's held-out gain is how many more `held` laws are hard
