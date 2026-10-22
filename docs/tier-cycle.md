@@ -4705,18 +4705,20 @@ summed over salts 1-10 (total; mined-batch, batches 2-3, in brackets):
 
 - **Ref mines, judged by the loops they seed** (on_on against off_on, salts better / equal / worse): own 5/4/1, cross
   10/0/0, pooled 7/0/3, mixed 5/2/3. Their own M is 0 in both arms but for u3 (8 against 1 over 10 salts). With the
-  loops' extras off, u3's library loses in mixed (on_off 42 against off_off 28, 2/5/3): the generator's share of a ref
-  mine is smaller (n about 240-800 extras per ref mine against its b × k = 200-400 laws, where a loop mine's 297-757 face its 100), and u3 is
-  the one family where that shows. Ref mines also mine more rules (summed: add3 265 against 29, mix3 290 against 0).
+  loops' extras off, the generator's libraries lose in mixed (on_off 42 against off_off 28, 2/5/3), mostly at salt 2 (19
+  against 2). A guess, not tested: the generator's share of a ref mine is smaller (n about 240-800 extras per ref mine
+  against its b × k = 200-400 laws, where loop mines' 290-793, varying by salt, face a batch of 100), and u3, whose ref M
+  is 5 against 0 at salt 2, is where that shows. Ref mines also mine more rules (summed: add3 265 against 29, mix3 290
+  against 0).
 - **Warm loops' own extras** (on_on against on_off): own 2/7/1, cross 10/0/0, pooled 1/5/4, mixed 5/5/0; over the four
-  stages M 735 against 911. Pooled is the one stage that loses (21 against 15, mined 9 against 3); a guess at why: its library
+  stages M 735 against 911, of which cross carries 164 (685 against 849); own ties (4 against 5). Pooled is the one stage that loses (21 against 15, mined 9 against 3); a guess at why: its library
   already holds three families' rules, and the extras add mined rules that conflict with them. Weak (4 worse, 1 better; two-sided sign
   test p ≈ 0.4) and below the regime: turning extras off for one stage would be a per-stage case, so it is parked
   (`PARKED.md`, "Extras on pooled loops").
 - **Both** (on_on against off_off): own 7/3/0, cross 10/0/0, pooled 5/1/4, mixed 4/3/3, cold 10/0/0.
 - **Cost** (wall over 10 salts, CPU saturated by other sessions, so an upper bound): ref mines 349 s against 29, loops
   1225 s against 26 (cold included in both), job CPU 1635 + 8721 s against 65 + 71. mix3's generator list (never built
-  before) is 1669 laws in 0.2 s, L 1644; u3's 1877 in 0.3 s; peak job memory 1.9 GB.
+  before) is 1669 laws in 0.2 s, L 1644; u3's 1877 in 0.3 s; peak job memory 2.1 GB.
 - So the default stays: every mine with rule rounds takes extras. Hidden twins (the spec's step 5) are next.
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
