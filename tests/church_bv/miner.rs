@@ -86,8 +86,8 @@ impl MinerConfig {
 pub fn run(setup: &Arc<Setup>) {
     let job = &mut Job::new(setup.clone());
     tatic::kernel::scoped(|| {
-        // the join store this mine feeds from this thread (`JoinStore`); the scoring workers read a copy of it
-        set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+        // the join store this mine feeds from its main job (`JoinStore`); the scoring workers read a copy of it
+        job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
         let clock = Clock(std::cell::Cell::new(Instant::now()));
         let _banner = MachineBanner::start(job, "RULEMINER");
         let _save = lemma_cache::Save(setup.clone());
@@ -131,11 +131,12 @@ pub fn run(setup: &Arc<Setup>) {
             // the ones every evaluation on this thread left installed, which were these
             let prover = prover(Some(base_prefs.clone()));
             let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
+            // the main job's join work from here on
+            let join_main = job.join_cost;
             let Chosen { chosen, covered, .. } = rounds.play(job);
             prefs_phase(job, &scorer, &chosen, &base, &base_prefs, &cfg, &clock);
-            rounds.report(&covered);
+            rounds.report(&covered, job.join_cost, join_main);
         });
-        set_join_store(None);
     });
 }
 
@@ -642,8 +643,7 @@ struct Rounds<'a> {
     /// trace (`RewriteMemo::filtered`), so each evaluation is seeded with what the rules that changed cannot touch
     state_memo: Option<(Vec<(Term, Term)>, RewriteMemo)>,
     state_time: std::time::Duration,
-    /// the join's work on this thread from here on (`JoinCost`), and the time spent bounding the candidates' gains
-    join_main: JoinCost,
+    /// the time spent bounding the candidates' gains
     bound_time: std::time::Duration,
     scorings: usize,
     skipped: usize,
@@ -671,7 +671,6 @@ impl<'a> Rounds<'a> {
             finished: Default::default(),
             state_memo: None,
             state_time: std::time::Duration::ZERO,
-            join_main: JoinCost::now(),
             bound_time: std::time::Duration::ZERO,
             scorings: 0,
             skipped: 0,
@@ -795,20 +794,20 @@ impl<'a> Rounds<'a> {
             let (work, queue) = std::sync::mpsc::channel::<(usize, Option<usize>)>();
             let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
             // the join store as this round starts, for the workers
-            let frozen = frozen_join_store();
+            let frozen = job.join_store.as_ref().and_then(JoinStoreUse::frozen);
             for _ in 0..threads {
                 let (done_tx, score_job, queue, join_workers, frozen, setup) = (done_tx.clone(), &score_job, queue.clone(), &scorer.join_workers, frozen.clone(), job.setup().clone());
                 let worker = move || {
                     let job = &mut Job::new(setup);
-                    set_join_store(frozen.map(JoinStoreUse::Read));
-                    let before = JoinCost::now();
+                    job.join_store = frozen.map(JoinStoreUse::Read);
+                    let before = job.join_cost;
                     tatic::kernel::scoped(|| {
                         loop {
                             let Ok(item) = queue.lock().unwrap().recv() else { break };
                             done_tx.send((item, score_job(job, item))).unwrap();
                         }
                     });
-                    join_workers.lock().unwrap().add_since(before);
+                    join_workers.lock().unwrap().add_since(job.join_cost, before);
                 };
                 std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
             }
@@ -1016,9 +1015,9 @@ impl<'a> Rounds<'a> {
         })
     }
 
-    /// The closing report (P10): the scoring's reuse and skips, lazy proofs, times, the join's work and the stragglers the
-    /// final rules `covered` leaves.
-    fn report(&self, covered: &[bool]) {
+    /// The closing report (P10): the scoring's reuse and skips, lazy proofs, times, the join's work (the workers', and the
+    /// main job's from `join_main` to `join_now`) and the stragglers the final rules `covered` leaves.
+    fn report(&self, covered: &[bool], join_now: JoinCost, join_main: JoinCost) {
         let (scorer, stragglers) = (self.scorer, &self.scorer.laws.stragglers);
         println!("RULEMINER scoring reused {} of {} law evaluations", scorer.law_reuses.load(std::sync::atomic::Ordering::Relaxed), scorer.law_evals.load(std::sync::atomic::Ordering::Relaxed));
         println!("RULEMINER the gain bound skipped {} of {} candidate scorings", self.skipped, self.scorings + self.skipped);
@@ -1029,7 +1028,7 @@ impl<'a> Rounds<'a> {
         println!("RULEMINER time in rule-set evaluations: {:.1}s", self.state_time.as_secs_f64());
         println!("RULEMINER time bounding candidates' gains: {:.1}s", self.bound_time.as_secs_f64());
         let mut j = *scorer.join_workers.lock().unwrap();
-        j.add_since(self.join_main);
+        j.add_since(join_now, join_main);
         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
         println!("RULEMINER join store: {} joins served, {:.1}s querying", j.stored, j.store_nanos as f64 / 1e9);
         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
@@ -1060,9 +1059,9 @@ fn prefs_phase(job: &mut Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[
     };
     let mut prefs = base_prefs.to_vec();
     while cfg.prefs {
-        RULE_CONFLICTS.with(|c| *c.borrow_mut() = Some(Default::default()));
+        job.conflicts = Some(Default::default());
         let (now, _) = scorer.score_laws(job, chosen, &prefs, all_laws, false, None);
-        let mut conflicts: Vec<Pref> = RULE_CONFLICTS.with(|c| c.borrow_mut().take()).unwrap().into_keys().collect();
+        let mut conflicts: Vec<Pref> = job.conflicts.take().unwrap().into_keys().collect();
         let shown = |(w, l): &Pref| (rule_show(w), rule_show(l));
         conflicts.sort_by_cached_key(shown);
         let (f0, size0) = Scorer::summarize(&now);

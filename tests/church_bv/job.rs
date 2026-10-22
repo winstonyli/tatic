@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::rewrite::{RewriteState, Rule, RuleKey, Rules, TableRule, Term};
+use crate::rewrite::{JoinCost, JoinStoreUse, Pref, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
 
 type Env = hashbrown::HashMap<String, String>;
 
@@ -143,7 +143,7 @@ fn merge_env(process: impl Iterator<Item = (String, String)>, exe_env: Option<&s
     env
 }
 
-/// One rewriting thread's state over its task's `Setup`. Tasks 5-7 of the plan move the rest of the rewriter's
+/// One rewriting thread's state over its task's `Setup`. Task 7 of the plan moves the rest of the rewriter's
 /// thread-locals here.
 pub struct Job {
     id: u64,
@@ -154,6 +154,13 @@ pub struct Job {
     pub rw: RewriteState,
     /// Rules being proved by `prove_rule` through the rewriter (`rewrite::proving`); `rule_step` skips them.
     pub blocked: Vec<RuleKey>,
+    /// The join store this job feeds or reads (`JoinStore`), if any.
+    pub join_store: Option<JoinStoreUse>,
+    /// The join's cost so far, which M does not show (a joined law is free in M).
+    pub join_cost: JoinCost,
+    /// `RULE_CONFLICTS=1` (experiment): while `Some`, for each (rule that rewrote a term, later rule that would also have),
+    /// how many terms; `print_rule_conflicts` lists them.
+    pub conflicts: Option<hashbrown::HashMap<Pref, u64>>,
 }
 
 /// The next `Job::id`: unique in the process, so `Job::with_rules` can tell a job from its replacement.
@@ -163,7 +170,7 @@ impl Job {
     /// A job with the built-in rules of `setup` alone, no preferences, both switches off.
     pub fn new(setup: Arc<Setup>) -> Job {
         let rules = Rules::new(&setup, vec![]);
-        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![] }
+        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), conflicts: None }
     }
 
     pub fn setup(&self) -> &Arc<Setup> {

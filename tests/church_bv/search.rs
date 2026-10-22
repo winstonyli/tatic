@@ -1429,13 +1429,13 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
         let fast = job.setup().flag("CHECK_FAST", false);
         job.with_rules(rules.counting(fast), |job| {
             if job.setup().flag("RULE_CONFLICTS", false) {
-                RULE_CONFLICTS.with(|c| *c.borrow_mut() = Some(Default::default()));
+                job.conflicts = Some(Default::default());
             }
             let (mut proved, mut free, mut none, mut exhausted, mut joined) = (0, 0, 0, 0, 0);
-            let (cost0, met) = (JoinCost::now(), || JoinCost::now().met);
+            let cost0 = job.join_cost;
             for (name, t1, t2) in &laws {
                 job.rw.budget = 200;
-                let (before, met0) = (job.rw.fallbacks, met());
+                let (before, met0) = (job.rw.fallbacks, job.join_cost.met);
                 let r = rewrite_plan(job, 4, kv, t1, t2);
                 // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
                 if job.rw.budget <= 0 {
@@ -1451,7 +1451,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
                         proved += 1;
                         let machine = job.rw.fallbacks - before;
                         free += (machine == 0) as u32;
-                        joined += (machine == 0 && met() > met0) as u32;
+                        joined += (machine == 0 && job.join_cost.met > met0) as u32;
                         if machine > 0 {
                             println!("MACHINE {machine} {name}");
                         }
@@ -1461,12 +1461,12 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
             }
             println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved, {exhausted} used up the rule budget");
             let mut cost = JoinCost::default();
-            cost.add_since(cost0);
+            cost.add_since(job.join_cost, cost0);
             println!("JOINED {joined} of them by the join, {} searches reaching {} terms", cost.searches, cost.reached);
             for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached)]) {
                 job.setup().result(key, v);
             }
-            print_rule_conflicts();
+            print_rule_conflicts(job.conflicts.as_ref());
             if fast {
                 return;
             }
@@ -1502,10 +1502,9 @@ pub fn proof_cost_split() {
             struct Acc { n: u32, build: Duration, check: Duration, nodes: usize, occ: u128 }
             let mut acc = [Acc::default(), Acc::default(), Acc::default()]; // [rules, joined, machine]
             let mut none = 0;
-            let met = || JoinCost::now().met;
             for (name, t1, t2) in &laws {
                 job.rw.budget = 200;
-                let (before, met0) = (job.rw.fallbacks, met());
+                let (before, met0) = (job.rw.fallbacks, job.join_cost.met);
                 let t = Instant::now();
                 let Some((p, s)) = rewrite_law(job, 4, kv, t1, t2) else { none += 1; continue };
                 let build = t.elapsed();
@@ -1513,7 +1512,7 @@ pub fn proof_cost_split() {
                 ck(name, &p, &s);
                 let check = t.elapsed();
                 let (nodes, occ) = tatic::kernel::term_sizes(&p);
-                let a = &mut acc[if job.rw.fallbacks != before { 2 } else { (met() > met0) as usize }];
+                let a = &mut acc[if job.rw.fallbacks != before { 2 } else { (job.join_cost.met > met0) as usize }];
                 (a.n, a.build, a.check, a.nodes, a.occ) = (a.n + 1, a.build + build, a.check + check, a.nodes + nodes, a.occ + occ);
             }
             let mut ra = Acc::default();

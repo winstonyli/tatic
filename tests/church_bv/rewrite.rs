@@ -2045,14 +2045,9 @@ pub fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
     }
 }
 
-thread_local! {
-    /// `RULE_CONFLICTS=1` (experiment): for each (rule that rewrote a term, later rule that would also have), how many terms;
-    /// `print_rule_conflicts` lists them. Armed and read on one thread (the miner's preference phase, `rule_set_kernel_check`).
-    pub static RULE_CONFLICTS: std::cell::RefCell<Option<hashbrown::HashMap<Pref, u64>>> = const { std::cell::RefCell::new(None) };
-}
-
-pub fn print_rule_conflicts() {
-    if let Some(m) = RULE_CONFLICTS.with(|c| c.borrow().clone()).as_ref() {
+/// Lists a job's rule conflicts (`Job::conflicts`), most terms first.
+pub fn print_rule_conflicts(conflicts: Option<&hashbrown::HashMap<Pref, u64>>) {
+    if let Some(m) = conflicts {
         let mut v: Vec<_> = m.iter().map(|((w, l), c)| (rule_show(w), rule_show(l), *c)).collect();
         v.sort_by_key(|(w, l, c)| (std::cmp::Reverse(*c), w.clone(), l.clone()));
         for (w, l, c) in &v {
@@ -2112,13 +2107,11 @@ pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
             None => break,
         }
     }
-    RULE_CONFLICTS.with(|c| {
-        if let Some(m) = c.borrow_mut().as_mut() {
-            for (_, r) in table.candidates(t).filter(|&(j, r)| j > i && fires(r).is_some()) {
-                *m.entry((all[i].key(), r.key())).or_default() += 1;
-            }
+    if let Some(m) = job.conflicts.as_mut() {
+        for (_, r) in table.candidates(t).filter(|&(j, r)| j > i && fires(r).is_some()) {
+            *m.entry((all[i].key(), r.key())).or_default() += 1;
         }
-    });
+    }
     let r = &all[i];
     if rules.trace_rules {
         println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
@@ -2379,7 +2372,7 @@ fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
 }
 
 /// Debug builds: a memo hit about to be replayed is redone without the memo, under the same path and budget, and must match it
-/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `RULE_CONFLICTS` keeps the redo's counts.
+/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `Job::conflicts` keeps the redo's counts.
 #[cfg(debug_assertions)]
 fn check_replay(t: &Term, n: usize, k: usize, c: &Rewritten) {
     let memo = std::mem::take(&mut job.rw.memo);
@@ -2530,11 +2523,6 @@ pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Ter
     }
 }
 
-thread_local! {
-    /// the join's cost, which M does not show (a joined law is free in M); per thread, like `RewriteState::fallbacks`
-    pub static JOIN_COST: std::cell::Cell<JoinCost> = const { std::cell::Cell::new(JoinCost { searches: 0, reached: 0, met: 0, hits: 0, nanos: 0, failed_nanos: 0, stored: 0, store_nanos: 0 }) };
-}
-
 /// The join's searches run (`join_search`), the terms they reached, how many met, the memo hits that ran none, and the
 /// time in the searches, of it in those that failed; the joins `JoinStore` served, and the time in its queries (served
 /// or not).
@@ -2551,13 +2539,8 @@ pub struct JoinCost {
 }
 
 impl JoinCost {
-    /// this thread's count
-    pub fn now() -> JoinCost {
-        JOIN_COST.with(|c| c.get())
-    }
-    /// this thread's count since `before`, added to `self`
-    pub fn add_since(&mut self, before: JoinCost) {
-        let now = JoinCost::now();
+    /// the count from `before` to `now` (a job's `join_cost` at two times), added to `self`
+    pub fn add_since(&mut self, now: JoinCost, before: JoinCost) {
         self.searches += now.searches - before.searches;
         self.reached += now.reached - before.reached;
         self.met += now.met - before.met;
@@ -2604,21 +2587,21 @@ pub enum JoinStoreUse {
     Read(std::sync::Arc<JoinStore>),
 }
 
-thread_local! {
-    static JOIN_STORE: std::cell::RefCell<Option<JoinStoreUse>> = const { std::cell::RefCell::new(None) };
-}
+impl JoinStoreUse {
+    /// A frozen copy of the store this use feeds, for the jobs that read it; `None` for a reader.
+    pub fn frozen(&self) -> Option<std::sync::Arc<JoinStore>> {
+        match self {
+            JoinStoreUse::Feed(store) => Some(std::sync::Arc::new(store.clone())),
+            JoinStoreUse::Read(_) => None,
+        }
+    }
 
-/// Sets this thread's join store, giving back the one it had.
-pub fn set_join_store(store: Option<JoinStoreUse>) -> Option<JoinStoreUse> {
-    JOIN_STORE.with(|s| s.replace(store))
-}
-
-/// A frozen copy of the store this thread feeds, for the threads that read it.
-pub fn frozen_join_store() -> Option<std::sync::Arc<JoinStore>> {
-    JOIN_STORE.with(|s| match &*s.borrow() {
-        Some(JoinStoreUse::Feed(store)) => Some(std::sync::Arc::new(store.clone())),
-        _ => None,
-    })
+    fn store(&self) -> &JoinStore {
+        match self {
+            JoinStoreUse::Feed(store) => store,
+            JoinStoreUse::Read(store) => store,
+        }
+    }
 }
 
 impl JoinStore {
@@ -2663,18 +2646,10 @@ impl JoinStore {
     }
 }
 
-/// The plan of `a = b` from this thread's join store under the current table, and the path's terms.
+/// The plan of `a = b` from the job's join store under the current table, and the path's terms.
 fn stored_join(job: &Job, a: Term, b: Term) -> Option<(PlanRc, Vec<Term>)> {
     let cap = a.size().max(b.size()) + 2;
-    JOIN_STORE.with(|s| {
-        let s = s.borrow();
-        let store = match &*s {
-            Some(JoinStoreUse::Feed(store)) => store,
-            Some(JoinStoreUse::Read(store)) => &**store,
-            None => return None,
-        };
-        store.path(job, a, b, cap)
-    })
+    job.join_store.as_ref()?.store().path(job, a, b, cap)
 }
 
 /// `t` with every occurrence of the subterm `x` replaced by `with`.
@@ -2898,7 +2873,7 @@ fn join_visit(job: &Job) -> usize {
 /// `join_eqs`, through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or more than
 /// `JOIN_VISIT` (1000) terms are reached (5000 left a few laws fewer to the machine proof for 2-3 times the sweep time:
 /// docs/tier-cycle.md, "The bounded join removes the floor"). Only pairs equal on random inputs are searched, so an unequal
-/// pair costs no search. `ABLATE=join` switches it off. With the memo on, a pair this thread's `JoinStore` has a path for
+/// pair costs no search. `ABLATE=join` switches it off. With the memo on, a pair the job's `JoinStore` has a path for
 /// is served from it without a search (77% of a cold:cmp3d mine's searches: docs/tier-cycle.md, "Spike of the join store").
 /// The terms it examined go to `RewriteState::trace` (`Fired::Join`) and, with the result, to `RewriteState::memo`'s `joins`, so the rule
 /// miner reuses it as it does a rewrite: a failed search, all of them (under other rules it is the same search when no rule
@@ -2925,14 +2900,15 @@ pub fn join_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<
         let hit = job.rw.memo.as_ref().and_then(|m| m.joins.get(&key).cloned());
         if let Some(e) = hit.filter(|e| counting || e.0.as_ref().is_none_or(|p| !matches!(**p, Plan::Counting))) {
             replay(job, &e.1);
-            count_join(|c| c.hits += 1);
+            job.join_cost.hits += 1;
             return e.0.clone();
         }
     }
     let mut examined = (memo_on || traced).then(hashbrown::HashSet::<Term>::default);
     let t0 = std::time::Instant::now();
     let stored = if memo_on { stored_join(job, *a, *b) } else { None };
-    count_join(|c| (c.stored, c.store_nanos) = (c.stored + stored.is_some() as u64, c.store_nanos + t0.elapsed().as_nanos() as u64));
+    job.join_cost.stored += stored.is_some() as u64;
+    job.join_cost.store_nanos += t0.elapsed().as_nanos() as u64;
     let found = match stored {
         // a stored path's result rests on its terms, as a met search's on its path's: they and their subterms
         Some((plan, mut stack)) => {
@@ -3238,8 +3214,8 @@ impl Reached {
 /// `sh` and `is_step` before anything is made, so only new terms' rewritten subterms are made (58% of a cmp3d mine's steps
 /// reached a term its side had: docs/tier-cycle.md, "Lazy join steps"); the spine above one is made only when the search
 /// expands it or its path meets (36.8% of new terms were expanded: "What the join's duplicates and term building are"),
-/// and plans only on the path that meets. With `feed`, a met path goes to the store this thread feeds.
-fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>, feed: bool) -> Option<PlanRc> {
+/// and plans only on the path that meets. With `feed`, a met path goes to the store the job feeds.
+fn join_search(job: &mut Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>, feed: bool) -> Option<PlanRc> {
     let (cap, visit, t0) = (a.size().max(b.size()) + 2, join_visit(job), std::time::Instant::now());
     // each reached term by its `sh`
     type Seen = hashbrown::HashTable<(u64, Reached)>;
@@ -3258,6 +3234,7 @@ fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::H
     }
     let mut front = [vec![Reached::Side(*a)], vec![Reached::Side(*b)]];
     let table = &*job.rules().table;
+    let mut met_path: Vec<(Term, StoredStep)> = vec![];
     let found = (|| {
         let mut up = vec![];
         while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
@@ -3289,21 +3266,20 @@ fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::H
                 });
                 let Some((step, u)) = met else { continue };
                 let u = u.make();
-                // the path's steps to the store this thread feeds
-                JOIN_STORE.with(|st| {
-                    let (true, Some(JoinStoreUse::Feed(st))) = (feed, &mut *st.borrow_mut()) else { return };
+                // the path's steps, for the store the job feeds
+                if feed {
                     let kept = |s: &JoinStep| {
                         let e = &table.join[s.eq as usize];
                         StoredStep { from: s.from, path: s.path, law: (e.lhs, e.rhs, e.backward) }
                     };
-                    st.add(u, kept(&step));
+                    met_path.push((u, kept(&step)));
                     for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
                         while let Some(prev) = get(side, p) {
-                            st.add(p, kept(&prev));
+                            met_path.push((p, kept(&prev)));
                             p = prev.from;
                         }
                     }
-                });
+                }
                 // a met search's result rests on its path only: keep what was examined at the path's terms
                 if let Some(x) = examined {
                     x.clear();
@@ -3331,19 +3307,15 @@ fn join_search(job: &Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::H
         None
     })();
     let (reached, nanos) = ((seen[0].len() + seen[1].len()) as u64, t0.elapsed().as_nanos() as u64);
-    count_join(|c| {
-        (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
-        c.failed_nanos += if found.is_some() { 0 } else { nanos };
-    });
+    if let Some(JoinStoreUse::Feed(st)) = job.join_store.as_mut() {
+        for (to, step) in met_path {
+            st.add(to, step);
+        }
+    }
+    let c = &mut job.join_cost;
+    (c.searches, c.reached, c.met, c.nanos) = (c.searches + 1, c.reached + reached, c.met + found.is_some() as u64, c.nanos + nanos);
+    c.failed_nanos += if found.is_some() { 0 } else { nanos };
     found
-}
-
-fn count_join(f: impl FnOnce(&mut JoinCost)) {
-    JOIN_COST.with(|c| {
-        let mut v = c.get();
-        f(&mut v);
-        c.set(v)
-    })
 }
 
 /// `shr1 A = shr1 B` (or `0 = shr1 B`, as `shr1 0`) for machine-expressible `A`, `B`, without a lookahead machine: the
@@ -3984,30 +3956,29 @@ fn filtered_join_entries_hold_under_an_extra_rule() {
     assert_ne!(before, fresh, "the rule joins the first pair");
 }
 
-/// `JOIN_COST` counts the searches run, the terms they reached and the ones that met; a memo hit runs none and counts as a hit.
+/// `Job::join_cost` counts the searches run, the terms they reached and the ones that met; a memo hit runs none and counts as a hit.
 #[test]
 fn join_cost_counts_searches_but_not_memo_hits() {
     let job = &mut Job::new(Setup::process());
     let (a, b) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
-    let cost = JoinCost::now;
-    let c0 = cost();
+    let c0 = job.join_cost;
     job.rw.memo = Some(RewriteMemo::new(3));
     assert!(join_eq(job, 4, 3, &a, &b).is_some());
-    let c1 = cost();
+    let c1 = job.join_cost;
     assert!(join_eq(job, 4, 3, &a, &b).is_some());
     job.rw.memo.take();
     assert_eq!((c1.searches - c0.searches, c1.met - c0.met), (1, 1));
     assert!(c1.reached - c0.reached >= 2, "both sides at least");
-    assert_eq!(cost(), JoinCost { hits: c1.hits + 1, ..c1 }, "the second call was a hit");
+    assert_eq!(job.join_cost, JoinCost { hits: c1.hits + 1, ..c1 }, "the second call was a hit");
     assert!(c1.nanos > c0.nanos && c1.failed_nanos == c0.failed_nanos, "a met search's time counts, not as failed");
     // an equal pair the join cannot close (`failed_join_traces_every_term_it_examines`)
     assert!(join_eq(job, 4, 3, &parse_term("sub(x, y)"), &parse_term("sub(0, sub(y, x))")).is_none());
-    let c2 = cost();
+    let c2 = job.join_cost;
     assert!(c2.met == c1.met && c2.failed_nanos > c1.failed_nanos && c2.nanos - c1.nanos == c2.failed_nanos - c1.failed_nanos);
 }
 
 /// The join store serves a pair it holds a path for, with a plan the kernel accepts (and by counting, `Rules::counting`),
-/// without a search; it serves none once a law on the path leaves the table, and no thread without a store is served.
+/// without a search; it serves none once a law on the path leaves the table, and no job without a store is served.
 #[test]
 fn join_store_serves_a_stored_path_under_its_laws_only() {
     let job = &mut Job::new(Setup::process());
@@ -4017,15 +3988,15 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
         let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
         let join = |job: &mut Job| {
             job.rw.memo = Some(RewriteMemo::new(k));
-            let c0 = JoinCost::now();
+            let c0 = job.join_cost;
             let plan = join_eq(job, n, k, &a, &b);
             job.rw.memo.take();
-            let c1 = JoinCost::now();
+            let c1 = job.join_cost;
             (plan, c1.searches - c0.searches, c1.stored - c0.stored)
         };
         job.with_mined(vec![rule], |job| {
             assert!(matches!(join(job), (Some(_), 1, 0)), "no store: searched");
-            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
             assert!(matches!(join(job), (Some(_), 1, 0)), "an empty store: searched, and the path fed");
             let (plan, searches, stored) = join(job);
             assert_eq!((searches, stored), (0, 1), "served from the store");
@@ -4038,11 +4009,11 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
             assert!(matches!(counted.as_deref(), Some(Plan::Counting)) && stored == 1, "counting is served too");
         });
         assert_eq!(join(job).2, 0, "the rule left: no stored path");
-        set_join_store(None);
+        job.join_store = None;
     })
 }
 
-/// A worker reads the store as it was frozen: what the feeding thread adds later is not in its copy.
+/// A worker reads the store as it was frozen: what the feeding job adds later is not in its copy.
 #[test]
 fn join_store_workers_read_the_frozen_copy() {
     let job = &mut Job::new(Setup::process());
@@ -4053,14 +4024,14 @@ fn join_store_workers_read_the_frozen_copy() {
             let (c, d) = (parse_term("xor(xor(x, y), z)"), parse_term("xor(z, xor(y, x))"));
             let join = move |job: &mut Job, x: &Term, y: &Term| {
                 job.rw.memo = Some(RewriteMemo::new(k));
-                let c0 = JoinCost::now();
+                let c0 = job.join_cost;
                 assert!(join_eq(job, 4, k, x, y).is_some());
                 job.rw.memo.take();
-                JoinCost::now().stored - c0.stored
+                job.join_cost.stored - c0.stored
             };
-            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
             join(job, &a, &b);
-            let frozen = frozen_join_store().expect("this thread feeds a store");
+            let frozen = job.join_store.as_ref().and_then(JoinStoreUse::frozen).expect("the job feeds a store");
             join(job, &c, &d);
             let rules = job.rules().mined().to_vec();
             let setup = job.setup().clone();
@@ -4068,14 +4039,14 @@ fn join_store_workers_read_the_frozen_copy() {
                 let job = &mut Job::new(setup);
                 tatic::kernel::scoped(|| {
                     job.with_mined(rules, |job| {
-                        set_join_store(Some(JoinStoreUse::Read(frozen)));
+                        job.join_store = Some(JoinStoreUse::Read(frozen));
                         (join(job, &a, &b), join(job, &c, &d))
                     })
                 })
             });
             assert_eq!(worker.join().unwrap(), (1, 0), "the pair joined before the freeze is served, the one after is not");
-            assert_eq!(join(job, &c, &d), 1, "the feeding thread reads its own store");
-            set_join_store(None);
+            assert_eq!(join(job, &c, &d), 1, "the feeding job reads its own store");
+            job.join_store = None;
         })
     })
 }
@@ -4095,15 +4066,15 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
         ];
         let served = |job: &mut Job, a: &Term, b: &Term| {
             job.rw.memo = Some(RewriteMemo::new(k));
-            let c0 = JoinCost::now();
+            let c0 = job.join_cost;
             let plan = join_eq(job, n, k, a, b).expect("joined");
             job.rw.memo.take();
             let (p, s) = law_proof(job, n, k, a, b, &plan);
             ck("stored", &p, &s);
-            JoinCost::now().stored - c0.stored
+            job.join_cost.stored - c0.stored
         };
         let before = job.with_mined(vec![rule], |job| {
-            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
             for (a, b) in &pairs {
                 served(job, a, b);
             }
@@ -4118,7 +4089,7 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
                 assert_eq!((served(job, b, a), served(job, a, b)), (1, 1), "served backwards and forwards, the rule moved");
             }
         });
-        set_join_store(None);
+        job.join_store = None;
     })
 }
 
@@ -4134,19 +4105,19 @@ fn join_store_is_fed_only_where_it_is_read() {
             let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
             let join = |job: &mut Job, memo: bool| {
                 job.rw.memo = memo.then(|| RewriteMemo::new(k));
-                let c0 = JoinCost::now();
+                let c0 = job.join_cost;
                 assert!(join_eq(job, 4, k, &a, &b).is_some());
                 job.rw.memo.take();
-                JoinCost::now().stored - c0.stored
+                job.join_cost.stored - c0.stored
             };
-            set_join_store(Some(JoinStoreUse::Feed(JoinStore::default())));
+            job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
             join(job, false);
             job.blocked.push(rule);
             join(job, true);
             job.blocked.clear();
             assert_eq!(join(job, true), 0, "searched without the memo and while proving: neither fed the store");
             assert_eq!(join(job, true), 1, "searched with the memo: fed");
-            set_join_store(None);
+            job.join_store = None;
         })
     })
 }

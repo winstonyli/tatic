@@ -315,7 +315,7 @@ struct Summary {
     ms: Vec<usize>,
     rules: usize,
     exhausted: usize,
-    /// laws served with no machine proof by the join, and the terms its searches reached (`JOIN_COST`, which M does not show)
+    /// laws served with no machine proof by the join, and the terms its searches reached (`Job::join_cost`, which M does not show)
     joined: usize,
     reached: usize,
 }

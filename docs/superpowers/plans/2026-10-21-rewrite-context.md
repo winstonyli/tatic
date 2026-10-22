@@ -554,9 +554,23 @@ impl Default for RewriteState { /* cut_low: usize::MAX, budget: i64::MAX / 2, th
 - [x] **Step 3: suite, clippy, gate.** Expected: suite 522, gate equal. Got: 522; no new warnings (4 fewer); run 2026-10-21-t5-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks). The gate exe predates a cosmetic pass (unwrapped blocks, `+=`, the `allow`); the suite reran green after it.
 - [x] **Step 4: commit:** `C1 step 3: the rewrite state in the job`.
 
-### Task 6: join state and conflicts (`JOIN_STORE`, `JOIN_COST`, `RULE_CONFLICTS`)
+### Task 6: join state and conflicts (`JOIN_STORE`, `JOIN_COST`, `RULE_CONFLICTS`) (done 2026-10-22)
 
-- [ ] **Step 1: convert.**
+**Rulings while building it (2026-10-21):**
+- `frozen` is a method of `JoinStoreUse` (`job.join_store.as_ref().and_then(JoinStoreUse::frozen)`), not `JoinStore`:
+  only a feeding use has a store to freeze, as `frozen_join_store` returned `None` otherwise. A private
+  `JoinStoreUse::store` gives `stored_join` either kind's store.
+- `join_search` takes `&mut Job`. It reads the job through the whole search, so the met path's steps are collected in a
+  local list and added to the store after the search returns: the same steps in the same order, and nothing reads the
+  store during a search.
+- `count_join` is gone: its callers add to `job.join_cost` directly.
+- `JoinCost::add_since(&mut self, now, before)` takes both ends.
+- The miner's `Rounds::join_main` field is gone. `run` takes `join_main = job.join_cost` right after `Rounds::new`
+  (the moment the field was set) and passes it and the cost at report time to `Rounds::report`.
+- `print_rule_conflicts` takes `Option<&HashMap>` (its one caller, `rule_set_kernel_check_task`, passes `job.conflicts.as_ref()`); the miner's preference phase takes the map out of the job.
+- `run`'s closing `set_join_store(None)` is dropped: the job ends with `run`.
+
+- [x] **Step 1: convert.**
   - `Job` gains `pub join_store: Option<JoinStoreUse>`, `pub join_cost: JoinCost` and
     `pub conflicts: Option<HashMap<Pref, u64>>`.
   - `set_join_store` and `frozen_join_store` become field access, plus `JoinStore::frozen(&self)` where a clone is
@@ -565,8 +579,8 @@ impl Default for RewriteState { /* cut_low: usize::MAX, budget: i64::MAX / 2, th
   - `print_rule_conflicts(job)` takes the map.
   - The scoring workers set `job.join_store = Some(Read(frozen))` on their own job. Their join-cost delta is their
     job's whole `join_cost`, since the job is fresh, as the thread was.
-- [ ] **Step 2: suite, clippy, gate.** Expected: suite unchanged, gate equal.
-- [ ] **Step 3: commit:** `C1 step 4: join state and conflict counts in the job`.
+- [x] **Step 2: suite, clippy, gate.** Expected: suite unchanged, gate equal. Got: 522; clippy unchanged; run 2026-10-21-t6-gate equal (miner snapshots same, 5 of 5 salts, 3 of 3 thread checks).
+- [x] **Step 3: commit:** `C1 step 4: join state and conflict counts in the job`.
 
 ### Task 7: lemmas (`PARAMS` and `shared_lemma`'s entries)
 
