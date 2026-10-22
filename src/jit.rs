@@ -18,7 +18,7 @@
 //!    (the reference semantics) on a battery of sample inputs, *and*
 //!    `proof.rs` produced
 //!    a kernel-checked theorem covering every input
-//!    (`ProofStrength::Universal`). Every input means every `Int`: a
+//!    (`kernel_verify`). Every input means every `Int`: a
 //!    theorem that types a parameter as a closure doesn't count (§42). A term that passes only the samples is
 //!    cached as `NoUniversalProof` and served by the interpreter forever
 //!    after -- see `compile_verify_and_apply` for why per-sample
@@ -40,25 +40,19 @@
 //! output. So the pair is strictly stronger than either alone and still
 //! short of end-to-end soundness (`RELATED_WORK.md` 28). Neither half
 //! says anything about types, which is what the typing check is for.
-//! `kernel_verify` below tries `proof.rs`'s strategies in order of
-//! strength, first success wins: a straight-line term gets one `refl`
-//! proof covering every input; a tail-recursive term gets the universal
-//! theorem (`prove_tail_recursive_universal`) if its shape allows one --
-//! also covering every input, from real induction rather than per-sample
-//! checking; only if that doesn't apply does it fall back to a per-sample
-//! relational proof -- one certificate per concrete execution, for the
-//! same battery of samples `verify()` uses. (Per *execution*, not per
-//! compilation: that's why it isn't translation validation in the sense
-//! the literature means, which would cover every input. See `proof.rs`'s
-//! own module docs.)
-//!
-//! Those two classes are not interchangeable, so `is_kernel_verified`
-//! doesn't conflate them: `proof_strength` reports `ProofStrength` below,
-//! and only `Universal` means a theorem covering every input.
-//! `ProofStrength::Samples` -- a per-call certificate at each vector in
-//! `sample_arg_vectors` and nothing else -- reaches exactly as far as
-//! `verify()` already does, so treating it as a guarantee about the
-//! argument a later `apply()` actually arrives with would overstate it.
+//! `kernel_verify` below tries `proof.rs`'s strategies in order, first
+//! success wins: a straight-line term gets one `refl` proof covering every
+//! input; a tail-recursive term gets the universal theorem
+//! (`prove_tail_recursive_universal`) if its shape allows one -- also
+//! covering every input, from real induction rather than per-sample
+//! checking. A term of arity 0 has exactly one possible call, so a
+//! per-execution certificate for it (`prove_tail_recursive_call`,
+//! `prove_closure_expr_instance`) covers every input too. Above arity 0
+//! those certificates reach exactly as far as `verify()`'s samples
+//! already do, so the gate doesn't build them. (Per *execution*, not per
+//! compilation: that's why they aren't translation validation in the
+//! sense the literature means, which would cover every input. See
+//! `proof.rs`'s own module docs.)
 
 use hashbrown::HashMap;
 use wasmtime::{Engine, Instance, Module, Store, Val};
@@ -71,40 +65,12 @@ use crate::term::{Hash, TermStore};
 // alone was 4.6 of a 15.5 ms cold-call total (RELATED_WORK.md §71).
 const SAMPLE_ARGS: &[i64] = &[0, 1, 2, 3, 5, -1, -3, 7, 12];
 
-/// What the kernel proof accompanying a compiled term actually covers.
-///
-/// The distinction matters because `kernel_verify`'s last two strategies
-/// (`prove_tail_recursive_call`, `prove_closure_expr_instance`) build a
-/// certificate *per concrete call*, once for each vector in
-/// `sample_arg_vectors` -- precisely the inputs `verify()` already
-/// checked against the interpreter. Reporting that as the same thing as
-/// a theorem quantified over every input overstates it: it says nothing
-/// about the argument an actual `apply()` call arrives with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProofStrength {
-    /// No kernel proof at all -- sample `verify()` is the only evidence.
-    None,
-    /// A per-call certificate at each sampled input and nothing beyond
-    /// them. Strictly stronger than nothing (each is a real kernel-checked
-    /// `Id` proof), but it covers the same finite set `verify()` does.
-    Samples,
-    /// One theorem covering every input, from `prove_pure_expr`,
-    /// `prove_closure_expr` or `prove_tail_recursive_universal`.
-    Universal,
-}
-
 enum CacheEntry {
     Compiled {
         func: wasmtime::Func,
         arity: usize,
         // Kept alive only so the module backing `func` isn't dropped.
         _module: Module,
-        /// What kernel-checked evidence `proof.rs` additionally produced
-        /// for this term, if any. Sample-based `verify()` below is still
-        /// what actually gates trusting the compiled form regardless;
-        /// this just records the stronger evidence when it exists, and
-        /// how far that evidence actually reaches (`ProofStrength`).
-        proof: ProofStrength,
         /// The exported `"hp"` global (`compile::CompiledFragment`'s
         /// `needs_hp_reset` docs), for a fragment with at least one
         /// capturing closure -- `invoke` resets it to `0` before every
@@ -123,10 +89,8 @@ enum CacheEntry {
     /// Compiled cleanly and agreed with the interpreter on every sample,
     /// but carries no universal theorem -- so it is deliberately *not*
     /// installed, and this term is served by the interpreter from here
-    /// on. The `ProofStrength` is kept only so `proof_strength` can still
-    /// report what evidence did exist (`Samples` or `None`); nothing
-    /// reads it to make a decision.
-    NoUniversalProof(ProofStrength),
+    /// on.
+    NoUniversalProof,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -144,20 +108,6 @@ pub struct Stats {
     /// typed (`typing::well_typed`). Served by the interpreter, so they
     /// also count toward `interpreted` on every call.
     pub declined_ill_typed: u64,
-    /// Of `compiled`, how many additionally got a kernel-checked proof
-    /// (see `kernel_verify`'s strategy order) rather than only sample
-    /// verification.
-    pub kernel_proofs_checked: u64,
-    /// How many concrete calls got their own kernel-checked instance of the
-    /// universal theorem (`proof::prove_tail_recursive_instance`), on top
-    /// of `kernel_proofs_checked`'s single per-term theorem. Additional
-    /// evidence only -- `kernel_verified` doesn't depend on this, so it
-    /// stays `0` for terms the universal proof doesn't apply to at all,
-    /// and always unless `JitEngine::prove_instances` is set.
-    /// Branching recursion (e.g. naive Fibonacci) gets real per-instance
-    /// evidence too now, not a blanket decline -- see
-    /// `build_ev_witness`'s own `memo`-based fix in `proof.rs`.
-    pub universal_instances_checked: u64,
     /// Of `compiled`, how many were compiled from a certificate-checked
     /// specialisation (`compile::compile_specialised`) rather than from the
     /// term itself.
@@ -169,11 +119,6 @@ pub struct JitEngine {
     rt: Store<()>,
     cache: HashMap<Hash, CacheEntry>,
     pub stats: Stats,
-    /// Also prove the universal theorem at a few concrete samples
-    /// (`Stats::universal_instances_checked`). Off by default: installation
-    /// rests on the theorem alone, and the instances cost ~34% of a cold
-    /// call (`RELATED_WORK.md` §71, §73).
-    pub prove_instances: bool,
 }
 
 impl JitEngine {
@@ -185,7 +130,6 @@ impl JitEngine {
             rt,
             cache: HashMap::new(),
             stats: Stats::default(),
-            prove_instances: false,
         }
     }
 
@@ -214,7 +158,7 @@ impl JitEngine {
             Some(CacheEntry::NotCompilable)
             | Some(CacheEntry::IllTyped)
             | Some(CacheEntry::FailedVerification)
-            | Some(CacheEntry::NoUniversalProof(_)) => {
+            | Some(CacheEntry::NoUniversalProof) => {
                 self.stats.interpreted += 1;
                 eval::apply_term(terms, h, args)
             }
@@ -237,7 +181,7 @@ impl JitEngine {
                 if let Some(entry) = declined {
                     match entry {
                         CacheEntry::IllTyped => self.stats.declined_ill_typed += 1,
-                        CacheEntry::NoUniversalProof(_) => self.stats.declined_no_universal_proof += 1,
+                        CacheEntry::NoUniversalProof => self.stats.declined_no_universal_proof += 1,
                         CacheEntry::FailedVerification => self.stats.verification_failures += 1,
                         _ => {}
                     }
@@ -290,17 +234,12 @@ impl JitEngine {
         // `h'`. `h' ≡ h` itself is certificate-checked, not
         // kernel-checked (RELATED_WORK.md §37).
         let (proof_store, proof_term) = specialised.as_ref().map_or((terms, h), |(s, t)| (s, *t));
-        let proof = self.kernel_verify(proof_store, proof_term, frag.arity);
-        if proof != ProofStrength::None {
-            self.stats.kernel_proofs_checked += 1;
-        }
         // The installation gate. `verify()` agreeing on the sample
         // battery is necessary but not sufficient: it is a finite
         // probe of an `i64` domain, and a compiled form installed on
         // that alone goes on to serve arbitrary arguments no evidence
-        // ever covered. `ProofStrength::Samples` doesn't close that --
-        // its certificates sit at exactly the same sampled points --
-        // so only a universal theorem earns installation.
+        // ever covered, so only a theorem covering every input earns
+        // installation.
         //
         // Note this does *not* make the JIT sound end to end: the
         // theorem is about `proof.rs`'s `denote`, which models
@@ -310,8 +249,8 @@ impl JitEngine {
         // code, which is why it stays as the first half of this gate
         // rather than being replaced by the proof. See
         // `RELATED_WORK.md` 28.
-        if proof != ProofStrength::Universal {
-            return Err(Some(CacheEntry::NoUniversalProof(proof)));
+        if !Self::kernel_verify(proof_store, proof_term, frag.arity) {
+            return Err(Some(CacheEntry::NoUniversalProof));
         }
         self.cache.insert(
             h,
@@ -319,7 +258,6 @@ impl JitEngine {
                 func,
                 arity: frag.arity,
                 _module: module,
-                proof,
                 hp_global,
             },
         );
@@ -330,104 +268,51 @@ impl JitEngine {
         Ok(())
     }
 
-    /// Attempts a kernel-checked equivalence proof for `h`, on top of (not
-    /// instead of) the sample-based `verify()` above, trying `proof.rs`'s
-    /// strategies from strongest to weakest and stopping at the first that
+    /// Whether `proof.rs` proves `h` equivalent to its compiled form for
+    /// *every* input, on top of (not instead of) the sample-based `verify()`
+    /// above. Tries the strategies in order and stops at the first that
     /// applies:
     /// 1. `prove_pure_expr` -- a straight-line (non-recursive) term gets
     ///    one proof covering every input.
     /// 2. `prove_closure_expr` -- a closed, non-recursive term built from
     ///    non-capturing ("known-call") closures gets one proof covering
-    ///    every input too, the same way `prove_pure_expr` does for plain
-    ///    arithmetic -- see its own docs for what's in and out of scope
-    ///    (an `If` between two closures, self-recursion combined with
+    ///    every input too -- see its own docs for what's in and out of
+    ///    scope (an `If` between two closures, self-recursion combined with
     ///    closures, ...).
-    /// 3. `prove_tail_recursive_universal` -- a tail-recursive term whose
-    ///    shape it covers gets one universal theorem, also covering every
-    ///    input, via real induction rather than per-sample checking. With
-    ///    `prove_instances` set, it also instantiates that theorem at a few
-    ///    concrete samples in one pass
-    ///    (`proof::prove_tail_recursive_universal_with_instances`), which
-    ///    adds a kernel-checked proof that each of those calls terminates
-    ///    (`Stats::universal_instances_checked`). That is off by default:
-    ///    it costs ~34% of cold JIT time, and `verify()` already runs those
-    ///    inputs (`RELATED_WORK.md` §71, §73). `kernel_verified` is `true`
-    ///    from the theorem alone, so
-    ///    any shape whose instances this step doesn't get (an arity
-    ///    mismatch, a `Clo`-typed top-level parameter -- see
-    ///    `instance_from_scaffold`) is unaffected. Branching recursion
-    ///    (e.g. naive Fibonacci) gets real instances through this step
-    ///    too, not a blanket decline.
-    /// 4. `prove_tail_recursive_call`, once per sample in the same battery
-    ///    `verify()` uses, reporting success only if *every* sample got its
-    ///    own per-call relational proof -- the fallback for tail-recursive
-    ///    shapes the universal proof doesn't (yet) cover.
-    /// 5. `prove_closure_expr_instance`, once per sample, reporting
-    ///    success only if *every* sample gets its own per-instance
-    ///    proof -- the fallback for exactly the shapes none of the above
-    ///    can cover at all: a closure-typed parameter called with
-    ///    genuinely inconsistent arities across call sites (`compile.rs`'s
-    ///    curried-dispatch capability), including one threaded through a
-    ///    *tail*-recursive loop (`proof::eval_dyn_tail_recursive`) -- the
-    ///    recursive use of that capability `RELATED_WORK.md` names as a
-    ///    standing gap. Tried last, not third, precisely because it's
-    ///    weakest (a per-instance certificate, never one theorem covering
-    ///    every input -- see `proof.rs`'s own module docs for why a
-    ///    universal proof is a dead end here without a real dependent sum
-    ///    in the kernel's own type theory) and its widened, closure-aware
-    ///    evaluator happens to also accept plain arithmetic recursion
-    ///    (e.g. gcd) that steps 3-4 already prove more strongly -- trying
-    ///    it first would silently downgrade those to weaker evidence.
+    /// 3. `prove_tail_recursive_universal` -- a recursive term whose shape
+    ///    it covers gets one universal theorem, via real induction rather
+    ///    than per-sample checking. Branching recursion (e.g. naive
+    ///    Fibonacci) included.
+    /// 4. At arity 0 only, where the one possible call is the whole input
+    ///    space, a per-execution certificate for that call:
+    ///    `prove_tail_recursive_call` (tail-recursive shapes step 3 doesn't
+    ///    cover), then `prove_closure_expr_instance` (a closure-typed
+    ///    parameter called with inconsistent arities across call sites,
+    ///    `compile.rs`'s curried-dispatch capability, including one threaded
+    ///    through a recursive loop). Above arity 0 such certificates reach
+    ///    only `verify()`'s own samples, so they aren't built
+    ///    (`RELATED_WORK.md` 28).
     ///
     /// Anything else (e.g. a callee reached only through a captured/
     /// parameter variable whose concrete identity isn't statically known
-    /// at proof-construction time -- see `RELATED_WORK.md` §9) reports
-    /// `false` -- see `proof.rs` for what's in scope and why. Non-tail
-    /// recursion combined with the inconsistent-arity curried-dispatch
-    /// fallback is *not* in that bucket: step 5's own widened,
-    /// `self_ctx`-threaded evaluator covers it too, including branching.
-    fn kernel_verify(&mut self, terms: &TermStore, h: Hash, arity: usize) -> ProofStrength {
+    /// at proof-construction time -- see `RELATED_WORK.md` §9) is `false`
+    /// -- see `proof.rs` for what's in scope and why.
+    fn kernel_verify(terms: &TermStore, h: Hash, arity: usize) -> bool {
         // The compiled entry point is only ever passed `Int`s. The provers
         // type a called parameter as a closure (`Clo_k`), so their theorem
         // for such a term covers no call the JIT makes (RELATED_WORK.md §42).
         if calls_a_parameter(terms, h) {
-            return ProofStrength::None;
+            return false;
         }
-        if proof::prove_pure_expr(terms, h).is_some() {
-            return ProofStrength::Universal;
-        }
-        if proof::prove_closure_expr(terms, h).is_some() {
-            return ProofStrength::Universal;
-        }
-        let samples = sample_arg_vectors(arity);
-        // What a per-sample certificate is actually worth here. At arity 0
-        // the battery *is* the whole input space -- there is exactly one
-        // possible call -- so proving that one call proves every input,
-        // and calling it `Samples` would understate it. At any higher
-        // arity the battery is a finite probe of an `i64` domain and says
-        // nothing about an argument outside it.
-        let per_sample = if arity == 0 { ProofStrength::Universal } else { ProofStrength::Samples };
-        if self.prove_instances {
-            let instance_samples: Vec<Vec<i64>> = samples.iter().take(3).cloned().collect();
-            if let Some((_, instances)) = proof::prove_tail_recursive_universal_with_instances(terms, h, &instance_samples)
-            {
-                self.stats.universal_instances_checked += instances.iter().filter(|i| i.is_some()).count() as u64;
-                return ProofStrength::Universal;
-            }
-        } else if proof::prove_tail_recursive_universal(terms, h).is_some() {
-            return ProofStrength::Universal;
-        }
-        if !samples.is_empty() && samples.iter().all(|sample| proof::prove_tail_recursive_call(terms, h, sample).is_some()) {
-            return per_sample;
-        }
-        if !samples.is_empty()
-            && samples
-                .iter()
-                .all(|sample| proof::prove_closure_expr_instance(terms, h, sample).is_some())
+        if proof::prove_pure_expr(terms, h).is_some()
+            || proof::prove_closure_expr(terms, h).is_some()
+            || proof::prove_tail_recursive_universal(terms, h).is_some()
         {
-            return per_sample;
+            return true;
         }
-        ProofStrength::None
+        arity == 0
+            && (proof::prove_tail_recursive_call(terms, h, &[]).is_some()
+                || proof::prove_closure_expr_instance(terms, h, &[]).is_some())
     }
 
     /// Run the compiled candidate against the interpreter (reference
@@ -449,28 +334,11 @@ impl JitEngine {
         true
     }
 
-    /// Whether the compiled form cached for `h` carries a kernel-checked
-    /// equivalence theorem covering *every* input. `false` for anything
-    /// not yet compiled, not compilable, in the recursive fragment
-    /// `proof.rs` doesn't cover yet, *and* for a term whose only kernel
-    /// evidence is `ProofStrength::Samples` -- a per-call certificate at
-    /// each sampled input says nothing about the argument a later
-    /// `apply()` actually arrives with, so reporting it here as a
-    /// "kernel-checked equivalence proof" for that call would overstate
-    /// it. Use `proof_strength` to see the weaker evidence too.
+    /// Whether `h` is installed: compiled, and carrying a kernel-checked
+    /// equivalence theorem covering *every* input (`kernel_verify`).
+    /// `false` for anything not yet compiled, not compilable, or declined.
     pub fn is_kernel_verified(&self, h: Hash) -> bool {
-        self.proof_strength(h) == ProofStrength::Universal
-    }
-
-    /// What kernel-checked evidence the compiled form cached for `h`
-    /// carries, and how far it reaches. `ProofStrength::None` for
-    /// anything not compiled or with no kernel proof at all.
-    pub fn proof_strength(&self, h: Hash) -> ProofStrength {
-        match self.cache.get(&h) {
-            Some(CacheEntry::Compiled { proof, .. }) => *proof,
-            Some(CacheEntry::NoUniversalProof(proof)) => *proof,
-            _ => ProofStrength::None,
-        }
+        matches!(self.cache.get(&h), Some(CacheEntry::Compiled { .. }))
     }
 
     fn call_compiled(&mut self, h: Hash, args: &[i64]) -> Result<i64, EvalError> {
@@ -555,11 +423,7 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
             // Exactly one possible 0-argument call -- `vec![a; 0]` is `[]`
             // regardless of `a`, so falling through to the `_` arm below
             // would push the same empty sample `SAMPLE_ARGS[..6].len()`
-            // times over. Harmless for `verify()` (repeats the same cheap
-            // interpreted-vs-compiled check), but `kernel_verify`'s
-            // `prove_closure_expr_instance` fallback is expensive per call
-            // (it walks a full concrete execution trace) and gained
-            // nothing from the repeats -- see `RELATED_WORK.md` §9.
+            // times over, repeating the same check (`RELATED_WORK.md` §9).
             out.push(vec![]);
         }
         1 => {
@@ -665,8 +529,7 @@ mod tests {
             let mut s = TermStore::new();
             let h = crate::syntax::parse(&mut s, src).unwrap();
             let arity = crate::compile::peel(&s, h).unwrap().0;
-            let mut jit = JitEngine::new();
-            assert_ne!(jit.kernel_verify(&s, h, arity), ProofStrength::Universal, "{src}");
+            assert!(!JitEngine::kernel_verify(&s, h, arity), "{src}");
         }
     }
 
@@ -710,7 +573,12 @@ mod tests {
         // proof walkers used to compose them anyway, which the kernel
         // rejects (and a debug build panicked on).
         let mut jit = JitEngine::new();
-        assert_eq!(jit.kernel_verify(&s, h, 1), ProofStrength::None);
+        assert!(!JitEngine::kernel_verify(&s, h, 1));
+        // The gate skips the per-sample provers above arity 0, so ask them directly.
+        for sample in sample_arg_vectors(1) {
+            assert!(proof::prove_tail_recursive_call(&s, h, &sample).is_none());
+            assert!(proof::prove_closure_expr_instance(&s, h, &sample).is_none());
+        }
         // The JIT proves the specialisation `\n. 1 + n` instead.
         assert_eq!(jit.apply(&s, h, &[4]), Ok(5));
         assert_eq!(jit.stats.specialised, 1);
@@ -742,8 +610,8 @@ mod tests {
         let h = crate::syntax::parse(&mut s, r"\n. (\g. g) (\x. x + 1) n").unwrap();
         let sp = crate::specialise::specialise(&s, h);
         let mut jit = JitEngine::new();
-        assert_ne!(jit.kernel_verify(&s, h, 1), ProofStrength::Universal);
-        assert_eq!(jit.kernel_verify(&sp.store, sp.term, 1), ProofStrength::Universal);
+        assert!(!JitEngine::kernel_verify(&s, h, 1));
+        assert!(JitEngine::kernel_verify(&sp.store, sp.term, 1));
         for n in [0, 5, -7] {
             assert_eq!(jit.apply(&s, h, &[n]), Ok(n + 1));
         }
@@ -767,8 +635,8 @@ mod tests {
         // its own comment claiming an "all-small-distinct" diagonal too.
         // A compiled-code bug that swaps or misindexes two argument
         // positions is structurally invisible to an all-equal sample
-        // (swapping equal values changes nothing), so `verify()` and
-        // every per-sample `kernel_verify` fallback would have missed
+        // (swapping equal values changes nothing), so `verify()` would
+        // have missed
         // exactly that bug class for every arity->=3 term. Confirm at
         // least one generated sample now has genuinely different values
         // at different positions, for a couple of arities.
@@ -945,38 +813,26 @@ mod tests {
         let straight_line = s.abs(inner);
 
         let mut jit = JitEngine::new();
-        jit.prove_instances = true;
         assert_eq!(jit.apply(&s, straight_line, &[3, 5]).unwrap(), 6);
         assert!(jit.is_kernel_verified(straight_line));
-        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+        assert_eq!(jit.stats.compiled, 1);
 
-        // gcd is Rec-wrapped but *tail*-recursive -- proof.rs's relational,
-        // per-sample proof covers it (every sample verify() tries gets its
-        // own kernel-checked proof), so this is kernel-verified too.
-        // gcd's tail-recursive shape (a single self-call in tail position)
-        // gets the universal proof (strategy 2), not the relational
-        // fallback -- and since that's a linear, single-self-call leaf,
-        // kernel_verify also gets concrete per-call instances out of it
-        // (see kernel_verify's own docs).
+        // gcd is Rec-wrapped and tail-recursive (a single self-call in tail
+        // position): it gets the universal theorem.
         let gcd_term = gcd(&mut s);
         assert_eq!(jit.apply(&s, gcd_term, &[48, 18]).unwrap(), 6);
         assert!(jit.is_kernel_verified(gcd_term));
-        assert_eq!(jit.stats.kernel_proofs_checked, 2);
-        assert!(jit.stats.universal_instances_checked > 0, "gcd's linear shape should get instance evidence too");
+        assert_eq!(jit.stats.compiled, 2);
 
         // factorial is Rec-wrapped and *not* tail-recursive (the self-call
-        // is nested inside a multiplication, not the relational proof's
-        // fragment either -- see proof.rs docs) -- but prove_tail_recursive_universal
-        // now covers leaves with any number of self-calls combined
-        // arithmetically (via kernel::cong_n), not just tail calls, so
-        // this gets the universal proof too -- and, still a single-self-call
-        // (k=1) leaf, instance evidence as well.
+        // is nested inside a multiplication), but prove_tail_recursive_universal
+        // covers leaves with any number of self-calls combined
+        // arithmetically (via kernel::cong_n), so it gets the universal
+        // theorem too.
         let fact = factorial(&mut s);
-        let instances_before_fact = jit.stats.universal_instances_checked;
         assert_eq!(jit.apply(&s, fact, &[5]).unwrap(), 120);
         assert!(jit.is_kernel_verified(fact));
-        assert_eq!(jit.stats.kernel_proofs_checked, 3);
-        assert!(jit.stats.universal_instances_checked > instances_before_fact);
+        assert_eq!(jit.stats.compiled, 3);
     }
 
     fn fib(s: &mut TermStore) -> Hash {
@@ -996,35 +852,17 @@ mod tests {
     }
 
     #[test]
-    fn branching_recursion_gets_instance_evidence_too() {
-        // Naive Fibonacci's else-branch leaf has two self-calls -- the
-        // universal theorem covers it fine (kernel_verified stays true
-        // regardless), and build_ev_witness now instance-witnesses a
-        // branching leaf too (see proof.rs docs: a memo DP cache plus a
-        // congruence-based recast, not just the at-most-one-self-call
-        // shapes from before). kernel_verify tries instances at
-        // SAMPLE_ARGS' first 3 values (0, 1, 2) -- all three now succeed.
-        let mut s = TermStore::new();
-        let fibonacci = fib(&mut s);
-
-        let mut jit = JitEngine::new();
-        jit.prove_instances = true;
-        assert_eq!(jit.apply(&s, fibonacci, &[10]).unwrap(), 55);
-        assert!(jit.is_kernel_verified(fibonacci));
-        assert_eq!(jit.stats.kernel_proofs_checked, 1);
-        assert_eq!(jit.stats.universal_instances_checked, 3);
-    }
-
-    #[test]
-    fn instances_are_off_by_default_and_the_theorem_alone_verifies() {
+    fn branching_recursion_gets_the_universal_theorem() {
+        // Naive Fibonacci's else-branch leaf has two self-calls; the
+        // universal theorem covers it. Its per-call instances are
+        // proof::tests::fibonacci_branching_leaves_get_kernel_checked_instances.
         let mut s = TermStore::new();
         let fibonacci = fib(&mut s);
 
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, fibonacci, &[10]).unwrap(), 55);
         assert!(jit.is_kernel_verified(fibonacci));
-        assert_eq!(jit.stats.kernel_proofs_checked, 1);
-        assert_eq!(jit.stats.universal_instances_checked, 0);
+        assert_eq!(jit.stats.compiled, 1);
     }
 
     #[test]
@@ -1054,7 +892,7 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1);
         assert_eq!(jit.stats.interpreted, 0);
         assert!(jit.is_kernel_verified(applied));
-        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+        assert_eq!(jit.stats.compiled, 1);
     }
 
     #[test]
@@ -1216,7 +1054,7 @@ mod tests {
 
         assert_eq!(jit.apply(&s, h, &[5, 0]).unwrap(), 15); // sum 1..=5
         assert!(jit.is_kernel_verified(h));
-        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+        assert_eq!(jit.stats.compiled, 1);
     }
 
     #[test]
@@ -1355,7 +1193,7 @@ mod tests {
         // `jit.rs`'s own sample-based `verify()` is still the actual
         // trust gate installing the compiled form regardless.
         assert!(jit.is_kernel_verified(top));
-        assert_eq!(jit.stats.kernel_proofs_checked, 1);
+        assert_eq!(jit.stats.compiled, 1);
     }
 
     #[test]
@@ -1739,7 +1577,7 @@ mod tests {
         // isn't even in `SAMPLE_ARGS`: before the gate it was served by
         // compiled code on the strength of `verify()`'s agreement at nine
         // *other* points, which is exactly what the gate exists to stop.
-        assert_eq!(jit.proof_strength(top), ProofStrength::Samples);
+        assert!(!jit.is_kernel_verified(top));
         assert_eq!(jit.stats.declined_no_universal_proof, 1);
         assert_eq!(jit.stats.compiled, 0);
         assert_eq!(jit.stats.interpreted, 2);
@@ -1789,7 +1627,7 @@ mod tests {
         // above for why that's `Samples` rather than `Universal`. Note
         // both arguments here *are* in `SAMPLE_ARGS`; the gate is a
         // property of the term, not of which arguments happen to show up.
-        assert_eq!(jit.proof_strength(top), ProofStrength::Samples);
+        assert!(!jit.is_kernel_verified(top));
         assert_eq!(jit.stats.declined_no_universal_proof, 1);
         assert_eq!(jit.stats.compiled, 0);
         assert_eq!(jit.stats.interpreted, 2);
@@ -1803,6 +1641,6 @@ mod tests {
             assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");
         }
         assert_eq!((jit.stats.compiled, jit.stats.specialised), (1, 1));
-        assert_eq!(jit.proof_strength(h), ProofStrength::Universal);
+        assert!(jit.is_kernel_verified(h));
     }
 }

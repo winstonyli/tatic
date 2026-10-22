@@ -659,31 +659,25 @@ templates) rather than reading its output.
 The pair is strictly stronger than either alone, and still short of
 end-to-end soundness.
 
-What counts as "a theorem covering every input" is reported by
-`JitEngine::proof_strength` as a `ProofStrength`:
+What counts as "a theorem covering every input" (`kernel_verify`,
+reported by `JitEngine::is_kernel_verified`):
 
-- `Universal` — `prove_pure_expr`, `prove_closure_expr` or
+- `prove_pure_expr`, `prove_closure_expr` or
   `prove_tail_recursive_universal`: one theorem covering every input. This
   is genuinely stronger than the sample battery. Every input means every
   `Int`, which is all the JIT passes: a theorem that types a called
   parameter as a closure doesn't count (RELATED_WORK §42).
-- `Samples` — the `prove_tail_recursive_call` /
-  `prove_closure_expr_instance` fallbacks: a real kernel-checked `Id`
-  proof, but built *per concrete call*, once for each vector in
-  `sample_arg_vectors`. That is precisely the finite set `verify()`
-  already checked, so it is not additional input coverage at all — it
-  says nothing about an argument outside the battery. (At arity 0 the
-  battery *is* the entire input space, so a per-call certificate there is
-  classified `Universal`, which it genuinely is.)
-
-`is_kernel_verified` means `Universal` specifically, and so does the
-installation gate. A `Samples`-only term would otherwise serve arbitrary
-`i64` arguments on the strength of certificates covering nine sampled
-points, which is the whole reason the gate exists.
+- At arity 0 only, the `prove_tail_recursive_call` /
+  `prove_closure_expr_instance` per-execution certificates: there the
+  one possible call is the entire input space. Above arity 0 such a
+  certificate covers only the vectors `verify()` already checked, so the
+  gate doesn't build it; a term with nothing better would otherwise serve
+  arbitrary `i64` arguments on the strength of nine sampled points, which
+  is the whole reason the gate exists.
 
 The price is real and worth stating plainly: the JIT is now withdrawn
 from the inconsistent-arity curried-dispatch shapes the `Samples`
-fallbacks exist for — the capability `compile.rs` went to genuine
+certificates exist for — the capability `compile.rs` went to genuine
 trouble to support — whenever they take arguments. A closed (arity-0)
 one still installs, since its one certificate covers its one input, but
 only while its trace fits the 200-step budget. Measured against this
@@ -705,8 +699,7 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   one-time compile+verify cost eats into — `fib`'s cold-compile cost
   includes building its (two-self-call) universal proof. That number,
   29 ms, idle, on 2026-09-25, also included 3 concrete instances of the
-  theorem, which `JitEngine::prove_instances` now leaves off by default
-  (`RELATED_WORK.md` §73; it is 12.8 ms at fbc988b, §74, and 6.1 ms once `verify`
+  theorem, which the JIT no longer builds (`RELATED_WORK.md` §73; it is 12.8 ms at fbc988b, §74, and 6.1 ms once `verify`
   stopped interpreting `fib(20)`, §71; it was about 140 ms
   before `subst_top` substituted in one pass, `RELATED_WORK.md` §53; ~15ms with
   no kernel proof involved at all); the warm (cached) case is unaffected
@@ -1015,8 +1008,8 @@ guards against by hand): caught immediately, at seed 22.
   battery, not what replaces it.
 - **Why the per-execution fallbacks stay anyway**: `prove_tail_recursive_
   call` and `prove_closure_expr_instance` certify one concrete execution
-  each, which the gate treats as no better than the battery itself. They
-  are kept for reporting (`proof_strength`), not for installation. That
+  each, which the gate treats as no better than the battery itself, so it
+  builds them only at arity 0, where one execution is every input. That
   per-execution limit is a property of *these* checks, not of translation
   validation as the literature means it — a genuine per-compilation
   validator's success would cover every input, and building one is a

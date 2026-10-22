@@ -1240,41 +1240,9 @@ pub struct UniversalInstanceProof {
 /// would, an arity mismatch, a call whose trace reaches a leaf with more
 /// than one self-call, or a witness that would exceed
 /// [`WITNESS_NODE_BUDGET`] (see the section docs above for both).
-///
-/// Builds its own scaffold from scratch (`build_universal`, the expensive
-/// part -- see [`UniversalScaffold`]'s docs). A caller that wants several
-/// instances for the same `h` (`jit.rs`'s `kernel_verify`, trying a handful
-/// of samples) should use [`prove_tail_recursive_universal_with_instances`]
-/// instead, which pays that cost once and clones the scaffold per attempt.
 pub fn prove_tail_recursive_instance(store: &TermStore, h: Hash, args: &[i64]) -> Option<UniversalInstanceProof> {
     let scaffold = build_universal(store, h)?;
     instance_from_scaffold(scaffold, args)
-}
-
-/// Builds the universal theorem once and, from a clone of the same
-/// scaffold, attempts a concrete instance (`prove_tail_recursive_instance`)
-/// for each of `args_list` -- see [`UniversalScaffold`]'s docs for why
-/// cloning beats rebuilding. Each entry of the returned `Vec` is `None`
-/// exactly where a standalone `prove_tail_recursive_instance` call would
-/// have been. Returns `None` outright for anything
-/// `prove_tail_recursive_universal` itself would.
-pub fn prove_tail_recursive_universal_with_instances(
-    store: &TermStore,
-    h: Hash,
-    args_list: &[Vec<i64>],
-) -> Option<(UniversalTailProof, Vec<Option<UniversalInstanceProof>>)> {
-    let scaffold = build_universal(store, h)?;
-    let theorem = UniversalTailProof {
-        globals: scaffold.combinators.cp.arith.p.globals.clone(),
-        arity: scaffold.arity,
-        theorem_ty: scaffold.theorem_ty,
-        theorem_proof: scaffold.theorem_proof,
-    };
-    let instances = args_list
-        .iter()
-        .map(|args| instance_from_scaffold(scaffold.clone(), args))
-        .collect();
-    Some((theorem, instances))
 }
 
 pub(super) fn instance_from_scaffold(mut scaffold: UniversalScaffold<'_>, args: &[i64]) -> Option<UniversalInstanceProof> {

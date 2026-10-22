@@ -43,7 +43,7 @@
 //! other argument. That's a result-checking / certifying-computation
 //! regime, not translation validation, and using the latter name for it
 //! would claim precisely the all-inputs guarantee it lacks -- see
-//! `jit::ProofStrength::Samples` and `RELATED_WORK.md` 28. tatic has no
+//! `jit::JitEngine::kernel_verify` and `RELATED_WORK.md` 28. tatic has no
 //! per-compilation validator; the only all-inputs evidence it builds is
 //! the universal theorem below.
 //!

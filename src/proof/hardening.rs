@@ -505,14 +505,6 @@ pub struct UniversalTailProof {
 /// of the theorem's own construction. Witness-building pushes further
 /// postulates onto `arith.p.globals` (fresh literal constants,
 /// `assume_prim_fact` axioms) after this scaffold is built.
-///
-/// Cloneable so a caller that wants several concrete instances (`jit.rs`'s
-/// `kernel_verify`, trying a handful of sample calls) can build this once
-/// and clone it per attempt, instead of paying for `build_universal`'s full
-/// construction -- the expensive part, dominated by `kernel::cong_n`/
-/// `trans_proof` chaining and a `kernel::check` re-verification -- again
-/// for every sample.
-#[derive(Clone)]
 pub(super) struct UniversalScaffold<'a> {
     pub(super) combinators: ClosureCombinators<'a>,
     pub(super) arity: usize,

@@ -18,7 +18,7 @@
 use std::io::{self, BufRead, Write};
 
 use tatic::eval::EvalError;
-use tatic::jit::{JitEngine, ProofStrength};
+use tatic::jit::JitEngine;
 use tatic::syntax;
 use tatic::term::TermStore;
 
@@ -149,15 +149,7 @@ fn main() {
         match jit.apply(&store, h, &[]) {
             Ok(n) => println!(
                 "= {n}  (kernel-checked equivalence proof: {})",
-                match jit.proof_strength(h) {
-                    ProofStrength::Universal => "yes -- covers every input",
-                    // Deliberately not reported as a plain "yes": the
-                    // certificates exist only at `jit.rs`'s sampled
-                    // inputs, which say nothing about this call's own
-                    // arguments.
-                    ProofStrength::Samples => "only at the sampled inputs",
-                    ProofStrength::None => "no",
-                }
+                if jit.is_kernel_verified(h) { "yes -- covers every input" } else { "no" }
             ),
             Err(EvalError::TypeError) => {
                 // Most likely an unapplied function value (this line
