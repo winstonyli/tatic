@@ -1135,8 +1135,9 @@ pub fn grammar_laws_have_no_padding() {
     }
 }
 
-/// The width-4 value classes of the leaves and the two-leaf terms (the law generator's twin filter,
-/// docs/superpowers/specs/2026-10-17-law-generator-design.md §1, `scripts/twin_wide.py`'s `REP`).
+/// The width-4 value classes of the leaves, the two-leaf terms and a pool's subterms (the law generator's twin filter,
+/// docs/superpowers/specs/2026-10-17-law-generator-design.md §1 and step 5; `scripts/twin_wide.py`'s `REP` is the two-leaf
+/// part).
 pub struct ClassReps {
     memo: ValueMemo<u8>,
     /// a class's values to its representative
@@ -1146,44 +1147,65 @@ pub struct ClassReps {
 }
 
 impl ClassReps {
-    pub fn new() -> ClassReps {
+    /// The classes of the leaves, the two-leaf terms and the subterms of `pool` (an `lt` aside: its result is one bit).
+    pub fn new(pool: &[Term]) -> ClassReps {
         let mut memo = ValueMemo::exhaustive(4, 3);
         let leaves = leaves3();
-        let mut two = vec![];
+        let mut ops = hashbrown::HashSet::new();
         for o in [ADD, SUB, XOR, AND, OR] {
             for a in &leaves {
                 for b in &leaves {
-                    two.push(mk(o, a, b));
+                    ops.insert(mk(o, a, b));
                 }
             }
         }
-        two.extend(leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)));
-        two.sort_by_cached_key(|t| {
+        ops.extend(leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)));
+        fn subterms(t: Term, out: &mut hashbrown::HashSet<Term>) {
+            if let Node::Op(o, a, b) = *t.node() {
+                if o != LT {
+                    out.insert(t);
+                }
+                subterms(a, out);
+                subterms(b, out);
+            }
+        }
+        for t in pool {
+            subterms(*t, &mut ops);
+        }
+        let mut ops: Vec<Term> = ops.into_iter().collect();
+        ops.sort_by_cached_key(|t| {
             let s = t.show();
             (s.len(), s)
         });
         let mut rep = hashbrown::HashMap::new();
-        // a leaf where the class has one (the first in x, y, z, 0, -1), else the least two-leaf term by (length, text)
-        for t in leaves.iter().chain(&two) {
+        // a leaf where the class has one (the first in x, y, z, 0, -1), else the least node by (length, text)
+        for t in leaves.iter().chain(&ops) {
             rep.entry(memo.values(t).to_vec()).or_insert(*t);
         }
         ClassReps { memo, rep, done: Default::default() }
     }
 
-    /// `t` with every node over two leaves (an `lt` aside), bottom-up, replaced by its class's representative.
+    /// `t` with every node (an `lt` aside), bottom-up, replaced by its class's representative, or else by a normalized child
+    /// of equal value (`add(t, 0)` to `t`).
     pub fn normalize(&mut self, t: Term) -> Term {
         let Node::Op(o, a, b) = *t.node() else { return t };
-        let (a, b) = (self.normalize(a), self.normalize(b));
-        let n = Term::op(o, a, b);
-        let leaf = |t: Term| !matches!(t.node(), Node::Op(..));
-        if o == LT || !leaf(a) || !leaf(b) {
-            return n;
-        }
-        if let Some(r) = self.done.get(&n) {
+        if let Some(r) = self.done.get(&t) {
             return *r;
         }
-        let r = self.rep.get(self.memo.values(&n)).copied().unwrap_or(n);
-        self.done.insert(n, r);
+        let (a, b) = (self.normalize(a), self.normalize(b));
+        let n = Term::op(o, a, b);
+        let r = if o == LT {
+            n
+        } else {
+            let v = self.memo.values(&n).to_vec();
+            match self.rep.get(&v) {
+                Some(r) => *r,
+                None if self.memo.values(&a) == v.as_slice() => a,
+                None if self.memo.values(&b) == v.as_slice() => b,
+                None => n,
+            }
+        };
+        self.done.insert(t, r);
         r
     }
 
@@ -1219,19 +1241,26 @@ impl ClassReps {
 /// `lt` alone, and the key is the same for two laws that differ by renaming variables.
 #[test]
 pub fn normalize_maps_two_leaf_nodes_to_their_class() {
-    let mut c = ClassReps::new();
+    let mut c = ClassReps::new(&[]);
     let mut n = |s: &str| c.normalize(parse_term(s)).show();
     assert_eq!(n("sub(y, y)"), "0");
     assert_eq!(n("add(x, 0)"), "x");
     assert_eq!(n("xor(x, -1)"), n("sub(-1, x)"));
     let r = n("or(z, x)");
-    assert_eq!(n("add(or(z, x), sub(sub(y, y), 0))"), format!("add({r}, 0)"), "the outer add is over a non-leaf");
+    assert_eq!(n("add(or(z, x), sub(sub(y, y), 0))"), r, "a node equal to its child is the child");
+    assert_eq!(n("add(add(x, y), z)"), "add(add(x, y), z)");
+    assert_eq!(n("add(x, add(y, z))"), "add(x, add(y, z))", "no pool, no class over three leaves");
     assert_eq!(n("lt(x, x)"), "lt(x, x)");
     let p = parse_term;
     let swap = c.key(&p("sub(or(y, x), y)"), &p("and(y, z)"));
     assert_eq!(c.key(&p("sub(or(x, y), x)"), &p("and(x, z)")), swap, "renaming x and y");
     assert!(swap.is_some());
     assert_eq!(c.key(&p("sub(y, y)"), &p("and(x, 0)")), None, "both sides normalize to 0");
+    // a pool's subterms join the classes: a grown node equal to one is it
+    let mut c = ClassReps::new(&[p("lt(add(add(x, y), z), x)")]);
+    assert_eq!(c.normalize(p("add(x, add(y, z))")).show(), "add(add(x, y), z)");
+    assert_eq!(c.normalize(p("lt(add(z, add(x, y)), x)")).show(), "lt(add(add(x, y), z), x)");
+    assert_eq!(c.normalize(p("lt(x, y)")).show(), "lt(x, y)", "an lt is never a class's member");
 }
 
 /// On the probe's fixture (salt 1 of `-gen-cost`'s pad arm, cmp3d: mine 0's extras of phases 1-3 against the served laws of
@@ -1247,10 +1276,59 @@ pub fn normalize_finds_the_probes_twins() {
     let served: Vec<(Term, Term)> = loops.iter().flat_map(|l| [0, 100, 200].map(|s| l.join(format!("laws_serve_{s}.txt")))).flat_map(laws).collect();
     let extras: Vec<(Term, Term)> = loops.iter().flat_map(|l| laws(l.join("laws_extra_0.txt"))).collect();
     assert_eq!((served.len(), extras.len()), (900, 1050));
-    let mut c = ClassReps::new();
+    let mut c = ClassReps::new(&[]);
     let keys: HashSet<String> = served.iter().filter_map(|(a, b)| c.key(a, b)).collect();
     let twins = extras.iter().filter(|(a, b)| c.key(a, b).is_some_and(|k| keys.contains(&k))).count();
-    assert_eq!(twins, 502, "twin_wide.py counts 502; find out which of the two is wrong before going on");
+    let trivial = extras.iter().filter(|(a, b)| c.key(a, b).is_none()).count();
+    // twin_wide.py's two-leaf key counts 502 twins and 260 trivial laws; a node equal to its child (step 5) makes 59 of
+    // those twins and 90 more padding laws trivial
+    assert_eq!((twins, trivial), (443, 409));
+}
+
+/// Step 5's count (spec docs/superpowers/specs/2026-10-17-law-generator-design.md): over a run of `gen_warm.sh`
+/// (`HIDDEN_TWINS_RUN`), the extras each loop scope drew (the two-leaf filter passed them) that twin the scope's served
+/// laws once every node is normalized over the family's pool. Prints `HT <arm> <stage> <family> <extras> <twins>`.
+#[test]
+#[ignore]
+pub fn hidden_twins_in_a_run() {
+    let run = std::path::PathBuf::from(std::env::var("HIDDEN_TWINS_RUN").expect("HIDDEN_TWINS_RUN"));
+    let laws = |p: &std::path::Path| -> Vec<(Term, Term)> { std::fs::read_to_string(p).unwrap().lines().filter_map(|l| parse_law(l, 3)).collect() };
+    let files = |d: &std::path::Path, pre: &str| -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with(pre)).collect();
+        v.sort();
+        v
+    };
+    let mut reps: std::collections::HashMap<String, ClassReps> = Default::default();
+    let mut arms: Vec<_> = std::fs::read_dir(&run).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    arms.sort();
+    for arm in arms {
+        // scopes: a stage's three loops of one family and library source, or one ref mine (`lib_<family>`; its own served
+        // laws only, though the sweep also filtered against the rest of the sweep's)
+        let mut scopes: std::collections::BTreeMap<(String, String, String), Vec<std::path::PathBuf>> = Default::default();
+        for l in std::fs::read_dir(&arm).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+            let name = l.file_name().unwrap().to_str().unwrap().to_string();
+            let parts: Vec<&str> = name.split('_').collect();
+            if files(&l, "laws_extra_").is_empty() {
+                continue;
+            }
+            match parts[..] {
+                [stage, fam, _, src] => scopes.entry((stage.into(), fam.into(), src.into())).or_default().push(l),
+                ["lib", fam] => scopes.entry(("ref".into(), fam.into(), String::new())).or_default().push(l),
+                _ => {}
+            }
+        }
+        for ((stage, fam, _), loops) in scopes {
+            let c = reps.entry(fam.clone()).or_insert_with(|| {
+                let env = |v: &str| (v == "RULEMINER_DEEP3").then(|| "1".to_string());
+                ClassReps::new(&pool3(&fam, &env).unwrap())
+            });
+            let served: Vec<_> = loops.iter().flat_map(|l| files(l, "laws_serve_")).flat_map(|p| laws(&p)).collect();
+            let extras: HashSet<(Term, Term)> = loops.iter().flat_map(|l| files(l, "laws_extra_")).flat_map(|p| laws(&p)).collect();
+            let keys: HashSet<String> = served.iter().filter_map(|(a, b)| c.key(a, b)).collect();
+            let twins = extras.iter().filter(|(a, b)| c.key(a, b).is_some_and(|k| keys.contains(&k))).count();
+            println!("HT {} {stage} {fam} {} {twins}", arm.file_name().unwrap().to_str().unwrap(), extras.len());
+        }
+    }
 }
 
 /// Variables per law of a family: the three-variable families against the two-variable rest.

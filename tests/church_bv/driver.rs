@@ -211,7 +211,7 @@ fn filtered_drops_twins_and_skeletons_only() {
     let other = p("add(add(x, y), z)", "add(x, add(y, z))");
     // `Term` has no `Debug`, so compare texts
     let text = |(a, b): (Term, Term)| format!("{} = {}", a.show(), b.show());
-    let got: Vec<String> = filtered(&[twin, skel, trivial, other], &served, &mut ClassReps::new()).into_iter().map(text).collect();
+    let got: Vec<String> = filtered(&[twin, skel, trivial, other], &served, &mut ClassReps::new(&[])).into_iter().map(text).collect();
     assert_eq!(got, [trivial, other].map(text));
 }
 
@@ -607,15 +607,23 @@ fn skeleton(l: &(Term, Term)) -> String {
     if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
 }
 
-/// What a sweep's scopes share while their extras are drawn: the class representatives and each family's generator laws.
+/// What a sweep's scopes share while their extras are drawn: each family's class representatives and generator laws.
 struct Draw {
-    reps: ClassReps,
+    reps: hashbrown::HashMap<(String, usize), ClassReps>,
     laws: hashbrown::HashMap<(String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>>,
 }
 
 impl Draw {
     fn new() -> Draw {
-        Draw { reps: ClassReps::new(), laws: Default::default() }
+        Draw { reps: Default::default(), laws: Default::default() }
+    }
+
+    /// The classes over `cfg`'s family's pool (with its `deep3`), made once per sweep.
+    fn reps(&mut self, cfg: &LoopCfg) -> &mut ClassReps {
+        self.reps.entry((cfg.family.clone(), cfg.deep3)).or_insert_with_key(|k| {
+            let env = |v: &str| (v == "RULEMINER_DEEP3").then(|| k.1.to_string());
+            ClassReps::new(&pool3(&k.0, &env).unwrap_or_default())
+        })
     }
 
     /// `grammar_laws` for `cfg`'s family, `deep3` and salt, generated once per sweep.
@@ -661,7 +669,7 @@ const GEN_F: f64 = 0.16;
 fn scope_extras(setup: &Setup, scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
     let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(|c| served_laws(setup, c)).collect();
     let c = scope[0].clone();
-    let grammar = filtered(&draw.grammar(&c), &served, &mut draw.reps);
+    let grammar = filtered(&draw.grammar(&c), &served, draw.reps(&c));
     let mut n = (GEN_F * grammar.len() as f64) as usize;
     let source = setup.var("GEN_SOURCE").unwrap_or("grammar");
     let matched = match setup.var("GEN_N") {
@@ -675,7 +683,7 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg], also: &[LoopCfg], draw: &m
         let last = *own.iter().max().unwrap();
         let raw: Vec<(Term, Term)> =
             (1..=c.stride).map(|i| (last + i) % c.stride).filter(|q| !own.contains(q)).flat_map(|q| stream_laws(setup, &c, q, 0, usize::MAX)).collect();
-        let kept = filtered(&raw, &served, &mut draw.reps);
+        let kept = filtered(&raw, &served, draw.reps(&c));
         println!("GEN {}: stream {} laws, {} after the filter", c.out.display(), raw.len(), kept.len());
         kept
     });
