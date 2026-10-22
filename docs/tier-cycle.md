@@ -4742,35 +4742,52 @@ summed over salts 1-10 (total; mined-batch M, batches 1-2 counted from 0, in bra
   stages M 735 against 911, of which cross carries 164 (685 against 849); own ties (4 against 5). Pooled is the one stage that loses (21 against 15, mined 9 against 3); a guess at why: its library
   already holds three families' rules, and the extras add mined rules that conflict with them. Weak (4 worse, 1 better; two-sided sign
   test p ≈ 0.4) and below the regime: turning extras off for one stage would be a per-stage case, so it is parked
-  (`PARKED.md`, "Extras on pooled loops").
+  (`PARKED.md`, "Extras on a warm stage that loses").
 - **Both** (on_on against off_off): own 7/3/0, cross 10/0/0, pooled 5/1/4, mixed 4/3/3, cold 10/0/0.
 - **Cost** (wall over 10 salts, CPU saturated by other sessions, so an upper bound): ref mines 349 s against 29, loops
   1225 s against 26 (cold included in both), job CPU 1635 + 8721 s against 65 + 71. mix3's generator list (never built
   before) is 1669 laws in 0.2 s, L 1644; u3's 1877 in 0.3 s; peak job memory 2.1 GB.
 - So the default stays: every mine with rule rounds takes extras. Hidden twins (the spec's step 5) are next.
 
-*Hidden twins beyond two-leaf nodes (2026-10-22; spec step 5; runs `2026-10-22-hidden-twins` and `-rest`, build
-5d14e65).* The twin filter normalized only nodes over two leaves. `ClassReps` now normalizes every node: to the least
+*Hidden twins beyond two-leaf nodes (2026-10-22; spec step 5; run `2026-10-22-gen-warm-fix` at 199135b, script
+`gen_warm.sh` with `ARMS="on_on off_off"`, salts 1-10, 17 min wall, CPU 26% at launch, Defender real-time off).* The
+twin filter normalized only nodes over two leaves. `ClassReps` now normalizes every node below a law's root: to the least
 term of its width-4 class among the leaves, the two-leaf terms and the family pool's subterms, or else to a child of equal
-value (`add(t, 0)` to `t`); an `lt` stays.
-- **Count** (`hidden_twins_in_a_run`, over the extras step 4's sweeps drew, salts 2-10): cmp3d's loops drew 1790 twins
-  of 20895 (8.6%, 178-242 per scope on every salt), its ref mines 480 of 6965, u3's 79 of 2689; add3, sbo3 and mix3
-  none. They are real, such as `sub(add(x, y), add(x, z))` for `sub(y, z)` and `add(sub(-1, z), z)` for `-1` in a served
-  cmp3d law. Above the 5% bar, so the filter widened.
-- **L moves in every family** (salt 1: cmp3d 4737 to 4352, u3 1872 to 1795, add3 1877 to 1865, sbo3 1860 to 1866, mix3
-  1644 to 1653). It can grow: a law trivial after normalizing is kept, and a served law that turns trivial no longer
-  blocks its twins. The slices move with L, so add3's ref library changed too. The run skipped add3's and sbo3's own and
-  cold loops on the guess that their L would not move; `-rest` ran them.
-- **Effect** (salts 1-10, the generator on everywhere, against step 4's on_on): cold M 1451 to 1474 (cmp3d 751 to 775,
-  better / equal / worse 1/3/6; mined-batch M 8 to 31), warm M 735 to 788 (cross cmp3d 572 to 609, 0/1/9). add3's loops
-  other than pooled have the same M on every salt. The twins were served laws in disguise, and part of the generator's cmp3d gain came from
-  them: step 4's and "The law generator as a stage"'s cmp3d numbers overstate it.
-- **The generator still pays** (against step 4's off_off, which draws no extras, so the filter cannot touch it): cold
-  1474 against 1563, better on 9 salts of 10; warm 788 against 1067, 10 of 10.
-- The probe fixture's two-leaf count (502 twins, `twin_wide.py`) is now 443: 59 of those twins and 90 more padding laws
-  normalize to trivial. Cost: 28 min wall for the generator-on arms plus 3 min for `-rest`, CPU 15-41% at launch.
-- So the wider filter stays, and v0.2 is answered: the law generator pays everywhere it runs, measured with no served law
-  in disguise among its extras.
+value (`add(t, 0)` to `t`); the root and an `lt` stay. The filter drops an extra whose key is a served law's (a twin) and
+an extra whose sides are equal once normalized (trivial).
+- **Count** (`hidden_twins_in_a_run`, over the extras step 4's on_on and mon arms drew, salts 1-10): 11.0% of the loops'
+  extras twin a served law (add3 11.5%, sbo3 17.0%, cmp3d 8.5%) and 8.6% of the ref mines' (6.9% cmp3d to 12.2% mix3),
+  in every family, such as `sub(add(x, y), add(x, z))` for `sub(y, z)` in a served cmp3d law. A further 30% of the loops'
+  extras are trivial (cmp3d 40%). Over the new run's extras the count is 0 twins and 0 trivial, as it should be. Of the
+  served laws 27-69% are trivial (cmp3d's most), so they block no twins.
+- **L halves** (salt 1, loops: cmp3d 4737 to 2359, add3 1885 to 1422, sbo3 1862 to 1151; ref mines: u3 1872 to 975, mix3
+  1644 to 996), so n = ⌊0.16 L⌋ halves too: the loops mine on half as many extras, not only on different ones.
+- **Effect** (salts 1-10, the generator on everywhere, against step 4's on_on, better / equal / worse): warm M 735 to 754
+  (4/1/5), cold 1451 to 1475 (1/5/4); mined-batch M rises in each (warm 36 to 69, cold 8 to 32). Per stage: own 4 to 3,
+  cross 685 to 707, pooled 21 to 8 (6/4/0), mixed 25 to 36 (3/3/4). Twins removed and n halved are not separated
+  (`PARKED.md`, "The generator's n after the wider filter").
+- **The generator still pays** (on_on against off_off, both on this build): warm 754 against 1067, better on 10 salts of
+  10 (own 6/4/0, cross 10/0/0, pooled 8/1/1); cold 1475 against 1563, 9/0/1. Mixed is the one stage that loses, 36
+  against 28 (0/7/3, sign test p ≈ 0.25). Ref mines' own M is 0 in both arms but for u3 (1 against 1).
+- **Cost** (wall over 10 salts): ref mines 217 s against 27, loops 617 s against 28, job CPU 4769 s against 62; loop
+  seconds warm 404 against 0, cold 546 against 14. Step 4 took 1225 s for its on_on loops, at 100% CPU from other
+  sessions, so the halving is not timed.
+- **A miner hang, found on the way** (run `2026-10-22-hidden-twins-2`, cc2cab5, killed): on_on salt 10's
+  `mixed_cmp3d` mine 1 re-chose `add(0, x) -> x`, a rule it already had, 8631 times at +0 fixed. A memo hit on a failed
+  join returned the failure without asking the join store, which grows as searches feed it; `state`'s seeded memo kept
+  such failures while the scoring workers, reading the round's store, met the pairs. Claimed gains then exceeded
+  realized ones (2065 against 1065 in that mine's round 3), and a chosen rule, which changes nothing, won every round.
+  Fixed in `join_eq` (60d8116: a cached failure yields to a stored path; the mine then ends in 2 s with an unseeded
+  state's choices, every claimed gain realized), and a round no longer offers a chosen rule (199135b, `by_bound`). The
+  fix changes no M elsewhere: off_off equals step 4's on every salt and stage, on_on equals that run's on salts 1-9.
+- **What was wrong before** (b5e03cd, run `2026-10-22-hidden-twins`): its key normalized the root too, so a pool law's
+  two sides fell in one class and most served laws became trivial; trivial laws were kept and blocked nothing, so the
+  filter barely filtered (cmp3d 8.6% dropped, add3, sbo3 and mix3 none). Its numbers (cold 1474, warm 788) and its
+  "none of add3's, sbo3's or mix3's" are void; cc2cab5 keeps the root and drops trivial laws.
+- The probe fixture's count (`normalize_finds_the_probes_twins`) is 443 twins and 409 trivial laws against
+  `twin_wide.py`'s two-leaf 502 and 260.
+- So the wider filter stays, and v0.2 is answered: the law generator pays on cold loops, warm loops and ref mines,
+  measured with no served law in disguise among its extras; mixed loops are the open exception.
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
@@ -5570,6 +5587,8 @@ per mine, loop wall time best 46 to 38 s (two runs each, alternated, the machine
 reproduce every own, cold and pooled row at both salts (times not comparable: CPU at start 27% against 14%). Keeping the
 candidate scorers' memos across picks too would need worker threads that live for the whole mine (the memos hold thread-interned
 expressions); not done, since scoring already reuses 87% of law evaluations across rounds (89868 of 103100 on cmp3d).
+Not exact for joins until 2026-10-22: a kept failed join stayed failed after the join store gained a path for its pair,
+which made a mine loop forever (60d8116; "Hidden twins beyond two-leaf nodes", "A miner hang").
 
 **Salt 2's pooled add3 loss is two chain normal forms meeting.** With rivals, add3's own loops at salt 2 gain (33 to 22) but its
 pooled loops lose (33 to 43), and sbo3's pooled loops too (38 to 46, own 40); at salt 1 pooling costs nothing (add3 14 own, 13

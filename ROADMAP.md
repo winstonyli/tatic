@@ -14,9 +14,10 @@ numbers. What v0.3 left open is now v0.2.
   stage"; lazy join steps and lanes cut that since). Warm loops and ref mines: measured 2026-10-22, the stage pays in
   both and stays on (salts 1-10: warm-loop M 735 against 1067 with the generator off everywhere and 911 with only the loops' extras off; cross
   better on 10 salts of 10; pooled the one stage that loses, weakly, `PARKED.md`; "The law generator on ref mines and
-  warm loops"). Hidden twins, 2026-10-22: the filter now normalizes every node, which drops 8.6% of cmp3d's extras as
-  served laws in disguise; M rises to cold 1474 and warm 788, still better than the generator off on 9 and 10 salts of
-  10 ("Hidden twins beyond two-leaf nodes"). Answered yes; its control switches `GEN_SOURCE`/`GEN_N` are deleted.
+  warm loops"). Hidden twins, 2026-10-22: the filter now normalizes every node below a law's root, which drops 11% of
+  the loops' extras as served laws in disguise and 30% as trivial, in every family; M rises to cold 1475 and warm 754,
+  still better than the generator off on 9 and 10 salts of 10, mixed loops the one stage that loses ("Hidden twins
+  beyond two-leaf nodes"). Answered yes; its control switches `GEN_SOURCE`/`GEN_N` are deleted.
 - **v0.3 - Does a learned proposer, ranking which laws to mine on, beat the hash-ordered stream?** Experiments 1 and 2
   with the custom proposer model in place of the uniform and n-gram baselines.
 - **v0.4 - Does closing the cycle push the frontier?** Experiment 3: train on accepted laws, repeat, and track the
