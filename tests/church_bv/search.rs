@@ -1209,11 +1209,20 @@ impl ClassReps {
         r
     }
 
+    /// A law's side with its root kept and its children normalized. Normalizing the root too would make every law trivial
+    /// whose sides are of one class, as both sides of every pool law are once the pool's subterms are class members.
+    fn side(&mut self, t: Term) -> Term {
+        match *t.node() {
+            Node::Op(o, a, b) => Term::op(o, self.normalize(a), self.normalize(b)),
+            _ => t,
+        }
+    }
+
     /// A law's twin key: the least `a = b` text, over the six renamings of x, y, z and both side orders, of the law renamed
-    /// then normalized (renaming first, since a representative is not preserved by renaming); `None` if the law's sides
-    /// normalize to one term.
+    /// then its sides normalized below their roots (renaming first, since a representative is not preserved by renaming);
+    /// `None` if the sides are then one term (the law is trivial).
     pub fn key(&mut self, a: &Term, b: &Term) -> Option<String> {
-        if self.normalize(*a) == self.normalize(*b) {
+        if self.side(*a) == self.side(*b) {
             return None;
         }
         const PERMS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
@@ -1227,7 +1236,7 @@ impl ClassReps {
         let mut best: Option<String> = None;
         for p in &PERMS {
             for (l, r) in [(a, b), (b, a)] {
-                let s = format!("{} = {}", self.normalize(renamed(*l, p)).show(), self.normalize(renamed(*r, p)).show());
+                let s = format!("{} = {}", self.side(renamed(*l, p)).show(), self.side(renamed(*r, p)).show());
                 if best.as_ref().is_none_or(|k| s < *k) {
                     best = Some(s);
                 }
@@ -1255,12 +1264,16 @@ pub fn normalize_maps_two_leaf_nodes_to_their_class() {
     let swap = c.key(&p("sub(or(y, x), y)"), &p("and(y, z)"));
     assert_eq!(c.key(&p("sub(or(x, y), x)"), &p("and(x, z)")), swap, "renaming x and y");
     assert!(swap.is_some());
-    assert_eq!(c.key(&p("sub(y, y)"), &p("and(x, 0)")), None, "both sides normalize to 0");
+    assert_eq!(c.key(&p("add(sub(y, y), x)"), &p("add(0, x)")), None, "sides equal below their roots");
+    assert!(c.key(&p("sub(y, y)"), &p("and(x, 0)")).is_some(), "a side's root stays: both sides are 0, but as different nodes");
     // a pool's subterms join the classes: a grown node equal to one is it
     let mut c = ClassReps::new(&[p("lt(add(add(x, y), z), x)")]);
     assert_eq!(c.normalize(p("add(x, add(y, z))")).show(), "add(add(x, y), z)");
     assert_eq!(c.normalize(p("lt(add(z, add(x, y)), x)")).show(), "lt(add(add(x, y), z), x)");
     assert_eq!(c.normalize(p("lt(x, y)")).show(), "lt(x, y)", "an lt is never a class's member");
+    // a law between two pool terms of one class is no trivial law
+    let mut c = ClassReps::new(&[p("add(add(x, y), z)"), p("add(x, add(y, z))")]);
+    assert!(c.key(&p("add(add(x, y), z)"), &p("add(x, add(y, z))")).is_some(), "the pool's own law");
 }
 
 /// On the probe's fixture (salt 1 of `-gen-cost`'s pad arm, cmp3d: mine 0's extras of phases 1-3 against the served laws of
@@ -1287,7 +1300,7 @@ pub fn normalize_finds_the_probes_twins() {
 
 /// Step 5's count (spec docs/superpowers/specs/2026-10-17-law-generator-design.md): over a run of `gen_warm.sh`
 /// (`HIDDEN_TWINS_RUN`), the extras each loop scope drew (the two-leaf filter passed them) that twin the scope's served
-/// laws once every node is normalized over the family's pool. Prints `HT <arm> <stage> <family> <extras> <twins>`.
+/// laws once every node is normalized over the family's pool. Prints `HT <arm> <stage> <family> <extras> <twins> <trivial extras> <served> <trivial served>`.
 #[test]
 #[ignore]
 pub fn hidden_twins_in_a_run() {
@@ -1326,7 +1339,8 @@ pub fn hidden_twins_in_a_run() {
             let extras: HashSet<(Term, Term)> = loops.iter().flat_map(|l| files(l, "laws_extra_")).flat_map(|p| laws(&p)).collect();
             let keys: HashSet<String> = served.iter().filter_map(|(a, b)| c.key(a, b)).collect();
             let twins = extras.iter().filter(|(a, b)| c.key(a, b).is_some_and(|k| keys.contains(&k))).count();
-            println!("HT {} {stage} {fam} {} {twins}", arm.file_name().unwrap().to_str().unwrap(), extras.len());
+            let trivial = (extras.iter().filter(|(a, b)| c.key(a, b).is_none()).count(), served.iter().filter(|(a, b)| c.key(a, b).is_none()).count());
+            println!("HT {} {stage} {fam} {} {twins} {} {} {}", arm.file_name().unwrap().to_str().unwrap(), extras.len(), trivial.0, served.len(), trivial.1);
         }
     }
 }

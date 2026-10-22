@@ -200,19 +200,19 @@ fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<
 }
 
 /// The filter drops a twin of a served law (here through `sub(y, 0)`, which normalizes to `y`) and a law with a served
-/// law's skeleton, and keeps a law trivial after normalizing and an unrelated law, in order.
+/// law's skeleton and a law trivial after normalizing (its sides equal below their roots), and keeps an unrelated law.
 #[test]
-fn filtered_drops_twins_and_skeletons_only() {
+fn filtered_drops_twins_skeletons_and_trivial_laws() {
     let p = |a: &str, b: &str| (parse_term(a), parse_term(b));
     let served = [p("and(or(x, y), z)", "or(and(x, z), and(y, z))")];
     let twin = p("and(or(x, sub(y, 0)), z)", "or(and(x, z), and(y, z))");
     let skel = p("and(or(x, y), y)", "or(and(x, y), and(y, y))");
-    let trivial = p("sub(x, x)", "and(y, 0)");
+    let trivial = p("add(sub(x, x), y)", "add(0, y)");
     let other = p("add(add(x, y), z)", "add(x, add(y, z))");
     // `Term` has no `Debug`, so compare texts
     let text = |(a, b): (Term, Term)| format!("{} = {}", a.show(), b.show());
     let got: Vec<String> = filtered(&[twin, skel, trivial, other], &served, &mut ClassReps::new(&[])).into_iter().map(text).collect();
-    assert_eq!(got, [trivial, other].map(text));
+    assert_eq!(got, [other].map(text));
 }
 
 /// Whether a mine of `cfg` takes extras: it mines (not `none`) with rule rounds, and `ABLATE=gen` is off.
@@ -625,14 +625,15 @@ impl Draw {
     }
 }
 
-/// The filter chain (spec §1): the laws of `source` that, against `served`, are no twin after normalizing (a law trivial
-/// after normalizing is kept) and have no served law's skeleton, in `source`'s order.
+/// The filter chain (spec §1): the laws of `source` that, against `served`, are neither a twin nor trivial after normalizing
+/// (a trivial law follows from equalities of its subterms, which may be served laws) and have no served law's skeleton, in
+/// `source`'s order.
 fn filtered(source: &[(Term, Term)], served: &[(Term, Term)], reps: &mut ClassReps) -> Vec<(Term, Term)> {
     let keys: hashbrown::HashSet<String> = served.iter().filter_map(|(a, b)| reps.key(a, b)).collect();
     let skels: hashbrown::HashSet<String> = served.iter().map(skeleton).collect();
     let mut out = vec![];
     for l in source {
-        if !reps.key(&l.0, &l.1).is_some_and(|k| keys.contains(&k)) && !skels.contains(&skeleton(l)) {
+        if reps.key(&l.0, &l.1).is_some_and(|k| !keys.contains(&k)) && !skels.contains(&skeleton(l)) {
             out.push(*l);
         }
     }
