@@ -19,6 +19,34 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
 - The explorer is not learned: a hash-ordered stream of a fixed family, and the miner's greedy candidate pool.
 - Rule libraries plateau at about 25 rules on the current families: the fixed vocabulary saturates.
 
+## Metrics
+How the results below are measured (code: `tests/church_bv/driver.rs`, its module doc and `loop_stream`).
+- **Serving and mining.** A family's law stream is cut into batches. Each batch is served (every law checked) under the
+  rules in force *before* it is mined, so its M is what the stream costs as rules arrive.
+- **M** (per batch, lower is better): the laws the rules did not settle by rewriting alone, i.e. those that needed a
+  whole-term machine proof plus those not proved (proved − free + not proved, the `serve` closure).
+- **total M:** a loop's M summed over its batches. **mined-batch M:** M of the batches served after a mine (in a sweep's
+  K=3 loops, batches 1 and 2 counted from 0); batch 0 is served before any mining, so it says nothing about mining.
+- **exhausted:** laws that used up the rule budget. **joined:** laws the
+  bounded join closed with no machine proof. **reached:** terms the join's searches reached, its cost, which M does not
+  show. **rules:** rules in force at the end.
+- **Loop seconds** (`secs`): each loop's own time, summed in the tables; sweeps run in two lanes, so the sum exceeds wall.
+- **Regimes.** A cold loop starts with no rules. A warm loop starts from a library: own (its family's ref library), cross
+  (another family's), pooled (three families' merged), mixed (u3's, mined on a mixed stream). A ref mine mines once on all
+  its batches, then serves them, and makes a family's library (`lib_<family>`); its own M is nearly always 0, so it is
+  judged by the loops it seeds. Sweep loops serve K=3 batches of B=100 on phases 1-3; ref mines K=4 (`MINES`, `LOOPS`).
+- **Salt:** reshuffles the stream's order (and the generator's sample); salts 1-10 are ten independent samples.
+- **Paired counts** (better / equal / worse): per salt, the first arm's total M against the second's; 9/0/1 means lower
+  on 9 salts of 10. A sign test p is given for weak splits.
+- **The law generator's extras.** Laws a mine also mines on, drawn from the generator, not the stream. L is the
+  generator's list for a scope after the filter; n = ⌊0.16 L⌋ is each loop's share, in slices shared within the scope. The
+  filter drops a twin (an extra whose normalized key is a served law's: a served law in disguise), a trivial law (sides
+  equal once normalized below their roots) and a law with a served law's skeleton (variables written `v`).
+- **Arms** (`gen_warm.sh`): `<ref>_<loop>`, whether the ref mines and the loops took extras (on/off, `ABLATE=gen`);
+  `mon`/`moff` are the ref-mine sweeps.
+- **Cost** (`tools/runs`, a run's `result.txt`): wall, jobcpu (CPU seconds of the sweep's process tree), peakjob (its peak
+  memory); the run record adds CPU load and Defender's real-time protection at launch. Compare wall only at similar load.
+
 ## Interface (to settle)
 - Syntax across the boundary: the `show` syntax (`op(a, b)`, `0`, `-1`, variables `x y z`), parsed by `parse_term`. A law is
   `lhs = rhs`, a rule `lhs -> rhs`.
@@ -4693,7 +4721,7 @@ runs `2026-10-22-gen-warm-probe` (salt 1) and `2026-10-22-gen-warm` (salts 2-10)
 everywhere. Per salt, the ref mines ran with the generator on (`mon`) and off (`moff`), and the loops (`own cross pooled
 mixed`, plus `cold` in two arms) read those libraries through `LIB=` with their own extras on or off: a 2×2, arms
 `<library>_<loop extras>`. On add3 the split sweeps reproduce one combined sweep (library and loop rules equal). Loop M
-summed over salts 1-10 (total; mined-batch, batches 2-3, in brackets):
+summed over salts 1-10 (total; mined-batch M, batches 1-2 counted from 0, in brackets):
 
 | stage | on_on (default) | off_on | on_off | off_off (`ABLATE=gen`) |
 |---|---|---|---|---|

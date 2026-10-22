@@ -2,7 +2,7 @@
 # Task 3), over every salt the run dirs hold. Arms: mon/moff (ref mines with the generator on/off), and loops <lib>_<gen>
 # (lib: which ref mines' libraries they start from; gen: their own extras). Prints:
 # - ref mines, mon against moff: per family the summed M and rules, and the extras' share (n over the mine's b x k laws);
-# - per stage (own, cross, pooled, mixed, cold) and loop arm: total M and mined-batch M (batches 2-3), summed over salts;
+# - per stage (own, cross, pooled, mixed, cold) and loop arm: total M and mined-batch M (batches 1-2, counted from 0), summed over salts;
 # - paired counts on each stage's total M per salt, first arm against second: salts better / equal / worse.
 #   loop extras: off_on vs off_off, on_on vs on_off; ref extras on the loops: on_off vs off_off, on_on vs off_on; both:
 #   on_on vs off_off (cold: only on_on and off_off run it).

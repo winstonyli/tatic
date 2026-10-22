@@ -4,7 +4,7 @@
 # (SWEEP=$LOOP_SWEEP) as <lib>_<gen>_<s>: lib on/off reads mon_<s>/moff_<s> through LIB=, gen on/off is the loops' own
 # extras (off: ABLATE=gen). Cold loops read no library, so only on_on and off_off add $COLD_SWEEP. ARMS picks the loop
 # arms (default all four). Each sweep is a `runs run` (wall, job CPU); a watchdog stops the exe past 8 GB. Prints one line
-# per sweep: ref mines' M per family, or per stage total M and mined-batch M (batches 2-3); a sweep with a non-zero exit
+# per sweep: ref mines' M per family, or per stage total M and mined-batch M (batches 1-2, counted from 0); a sweep with a non-zero exit
 # or a missing tsv prints FAILED and counts. Last line: sweeps failed; exits 1 if any did.
 exe=$1; shift
 d=$(bash "$(dirname "$0")/../../2026-10-12/scripts/kk.sh")
