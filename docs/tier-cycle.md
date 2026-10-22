@@ -4778,8 +4778,9 @@ an extra whose sides are equal once normalized (trivial).
   such failures while the scoring workers, reading the round's store, met the pairs. Claimed gains then exceeded
   realized ones (2065 against 1065 in that mine's round 3), and a chosen rule, which changes nothing, won every round.
   Fixed in `join_eq` (60d8116: a cached failure yields to a stored path; the mine then ends in 2 s with an unseeded
-  state's choices, every claimed gain realized), and a round no longer offers a chosen rule (199135b, `by_bound`). The
-  fix changes no M elsewhere: off_off equals step 4's on every salt and stage, on_on equals that run's on salts 1-9.
+  state's choices, every claimed gain realized), and a round no longer offers a chosen rule (199135b, `by_bound`), nor a
+  chosen rival (c59107a, `best_rival`: under exact scoring a chosen rule gains 0, so neither guard moves M). The fix
+  changes no M elsewhere: off_off equals step 4's on every salt and stage, on_on equals that run's on salts 1-9.
 - **What was wrong before** (b5e03cd, run `2026-10-22-hidden-twins`): its key normalized the root too, so a pool law's
   two sides fell in one class and most served laws became trivial; trivial laws were kept and blocked nothing, so the
   filter barely filtered (cmp3d 8.6% dropped, add3, sbo3 and mix3 none). Its numbers (cold 1474, warm 788) and its
