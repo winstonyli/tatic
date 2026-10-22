@@ -1,0 +1,495 @@
+RULEMINER time law building: T
+RULEMINER straggler lt(add(x, -1), add(add(x, y), y)) = lt(shl1(y, 0), sub(sub(z, z), x)): lt(add(-1, x), add(shl1(y, 0), x)) = lt(shl1(y, 0), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, z), add(sub(x, y), x)) = lt(add(z, z), sub(x, sub(y, x))): lt(shl1(z, 0), sub(shl1(x, 0), y)) = lt(shl1(z, 0), sub(x, sub(y, x))) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(x, add(z, z))) = lt(add(y, 0), sub(sub(x, z), z)): lt(y, sub(x, shl1(z, 0))) = lt(y, sub(sub(x, z), z)) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(z, x)) = lt(y, add(x, sub(y, z))): lt(y, sub(z, x)) = lt(y, add(sub(y, z), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(sub(x, z), y)) = lt(sub(y, z), sub(sub(z, z), x)): lt(add(-1, x), add(sub(x, z), y)) = lt(sub(y, z), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, y), sub(x, add(z, z))) = lt(sub(-1, y), sub(sub(x, z), z)): lt(xor(y, -1), sub(x, shl1(z, 0))) = lt(xor(y, -1), sub(sub(x, z), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, x), add(sub(x, y), z)) = lt(sub(-1, x), sub(x, sub(y, z))): lt(xor(x, -1), add(sub(x, y), z)) = lt(xor(x, -1), sub(x, sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), y) = lt(add(x, z), sub(x, sub(y, z))): lt(add(x, z), y) = lt(add(x, z), sub(x, sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), add(sub(y, x), y)) = lt(add(-1, z), sub(y, sub(x, y))): lt(add(-1, z), sub(shl1(y, 0), x)) = lt(add(-1, z), sub(y, sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, z), add(sub(x, y), x)) = lt(shl1(z, 0), sub(x, sub(y, x))): lt(shl1(z, 0), sub(shl1(x, 0), y)) = lt(shl1(z, 0), sub(x, sub(y, x))) (1 machine proofs, T)
+RULEMINER straggler lt(z, sub(x, add(y, y))) = lt(add(z, 0), sub(sub(x, y), y)): lt(z, sub(x, shl1(y, 0))) = lt(z, sub(sub(x, y), y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, x), add(sub(y, z), y)) = lt(sub(y, x), sub(z, add(y, x))): lt(sub(y, x), sub(shl1(y, 0), z)) = lt(sub(y, x), sub(z, add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(0, z)) = lt(add(z, -1), sub(sub(y, x), y)): lt(add(-1, x), sub(0, z)) = lt(add(-1, z), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), add(sub(x, y), z)) = lt(add(y, x), sub(y, sub(z, y))): lt(add(x, y), add(sub(x, y), z)) = lt(add(x, y), sub(y, sub(z, y))) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(z, x)) = lt(add(y, 0), sub(x, sub(z, y))): lt(y, sub(z, x)) = lt(y, sub(x, sub(z, y))) (1 machine proofs, T)
+RULEMINER straggler lt(y, add(x, z)) = lt(add(y, 0), sub(sub(y, x), z)): lt(y, add(x, z)) = lt(y, sub(sub(y, x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, y), sub(x, add(z, z))) = lt(shl1(y, 0), sub(sub(x, z), z)): lt(shl1(y, 0), sub(x, shl1(z, 0))) = lt(shl1(y, 0), sub(sub(x, z), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, x), add(sub(x, y), z)) = lt(shl1(x, 0), sub(y, sub(z, x))): lt(shl1(x, 0), add(sub(x, y), z)) = lt(shl1(x, 0), sub(y, sub(z, x))) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(x, z)) = lt(sub(y, 0), sub(z, sub(x, y))): lt(y, sub(x, z)) = lt(y, sub(z, sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, y), add(sub(x, z), y)) = lt(shl1(y, 0), add(sub(z, x), y)): lt(shl1(y, 0), add(sub(x, z), y)) = lt(shl1(y, 0), add(sub(z, x), y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(sub(x, y), x)) = lt(sub(x, y), sub(sub(z, x), z)): lt(add(-1, x), sub(shl1(x, 0), y)) = lt(sub(x, y), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, y), add(sub(x, y), z)) = lt(sub(0, y), sub(x, sub(y, z))): lt(sub(0, y), add(sub(x, y), z)) = lt(sub(0, y), sub(x, sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(z, sub(x, y)) = lt(add(z, 0), add(y, sub(z, x))): lt(z, sub(x, y)) = lt(z, add(sub(z, x), y)) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(z, x)) = lt(sub(y, 0), sub(add(x, y), z)): lt(y, sub(z, x)) = lt(y, sub(add(x, y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), add(add(x, y), y)) = lt(add(x, z), sub(z, add(y, y))): lt(add(x, z), add(shl1(y, 0), x)) = lt(add(x, z), sub(z, shl1(y, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), add(sub(z, x), z)) = lt(add(x, y), sub(z, sub(x, z))): lt(add(x, y), sub(shl1(z, 0), x)) = lt(add(x, y), sub(z, sub(x, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), add(sub(x, z), y)) = lt(sub(x, z), sub(y, sub(z, x))): lt(add(-1, y), add(sub(x, z), y)) = lt(sub(x, z), sub(y, sub(z, x))) (2 machine proofs, T)
+RULEMINER straggler lt(add(x, z), sub(0, y)) = lt(add(y, -1), add(add(x, z), y)): lt(add(x, z), sub(0, y)) = lt(add(-1, y), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), add(x, -1)) = lt(sub(0, x), sub(sub(y, y), z)): lt(add(-1, z), add(-1, x)) = lt(sub(0, x), sub(0, z)) (1 machine proofs, T)
+RULEMINER straggler lt(x, add(sub(z, y), z)) = lt(add(z, sub(x, z)), sub(z, sub(y, z))): lt(x, sub(shl1(z, 0), y)) = lt(x, sub(z, sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(x, sub(y, add(z, z))) = lt(sub(x, 0), add(add(sub(z, y), x), z)): lt(x, sub(y, shl1(z, 0))) = lt(x, add(sub(z, y), add(x, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(x, add(y, z))) = lt(sub(0, add(z, y)), sub(z, add(x, z))): lt(add(-1, x), sub(x, add(y, z))) = lt(sub(0, add(y, z)), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), sub(z, x)) = lt(add(-1, y), sub(x, sub(z, add(-1, y)))): lt(add(-1, y), sub(z, x)) = lt(add(-1, y), sub(x, sub(z, add(-1, y)))) (1 machine proofs, T)
+RULEMINER straggler lt(x, add(sub(y, x), z)) = lt(add(sub(x, -1), -1), sub(y, sub(x, z))): lt(x, add(sub(y, x), z)) = lt(x, sub(y, sub(x, z))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, y), sub(y, z)) = lt(sub(x, y), sub(sub(x, sub(z, y)), x)): lt(sub(x, y), sub(y, z)) = lt(sub(x, y), sub(0, sub(z, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), add(x, -1)) = lt(add(-1, y), sub(add(z, y), add(z, x))): lt(add(-1, y), add(-1, x)) = lt(add(-1, y), sub(y, x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, x), sub(x, z)) = lt(sub(add(-1, z), x), add(sub(x, y), y)): lt(xor(x, -1), sub(x, z)) = lt(sub(add(-1, z), x), x) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, y), add(x, z)) = lt(sub(x, y), add(add(y, z), sub(x, y))): lt(sub(x, y), add(x, z)) = lt(sub(x, y), sub(0, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, z), sub(x, z)) = lt(sub(y, z), sub(y, add(z, sub(x, z)))): lt(sub(y, z), sub(x, z)) = lt(sub(y, z), sub(y, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), x) = lt(sub(0, sub(z, x)), add(y, sub(x, y))): lt(add(-1, z), x) = lt(sub(0, sub(z, x)), x) (1 machine proofs, T)
+RULEMINER straggler lt(0, sub(sub(sub(-1, z), y), y)) = lt(sub(x, x), add(add(y, z), sub(y, -1))): lt(0, sub(sub(xor(z, -1), y), y)) = lt(0, add(sub(y, -1), add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, z), sub(z, y)) = lt(sub(x, z), sub(x, add(x, sub(y, z)))): lt(sub(x, z), sub(z, y)) = lt(sub(x, z), sub(0, sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(0, add(sub(y, x), z)) = lt(add(0, 0), add(sub(sub(0, y), z), x)): lt(0, add(sub(y, x), z)) = lt(0, add(sub(sub(0, y), z), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, add(z, -1)), add(x, sub(y, z))) = lt(sub(sub(y, z), z), sub(add(y, x), z)): lt(add(-1, add(x, z)), add(sub(y, z), x)) = lt(sub(sub(y, z), z), sub(add(x, y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, add(z, y)), sub(x, add(x, z))) = lt(add(-1, z), add(add(y, add(z, y)), z)): lt(add(shl1(y, 0), z), sub(0, z)) = lt(add(-1, z), add(shl1(y, 0), shl1(z, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(y, add(x, add(z, -1)))) = lt(sub(-1, -1), sub(sub(y, x), add(-1, z))): lt(0, sub(y, add(-1, add(x, z)))) = lt(0, sub(sub(y, x), add(-1, z))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, z), sub(x, y)) = lt(sub(add(y, -1), x), sub(add(y, z), y)): lt(xor(z, -1), sub(x, y)) = lt(sub(add(-1, y), x), z) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, add(x, -1)), sub(sub(z, z), z)) = lt(add(-1, z), sub(y, add(x, add(y, x)))): lt(add(-1, shl1(x, 0)), sub(0, z)) = lt(add(-1, z), sub(0, shl1(x, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), sub(0, z)) = lt(sub(-1, sub(0, z)), add(add(x, z), y)): lt(add(x, y), sub(0, z)) = lt(add(-1, z), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), add(x, z)) = lt(add(x, y), sub(y, add(sub(z, x), x))): lt(add(x, y), add(x, z)) = lt(add(x, y), sub(y, z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, z), sub(sub(x, z), sub(y, x))) = lt(shl1(z, 0), sub(x, add(z, sub(y, x)))): lt(shl1(z, 0), sub(sub(x, z), sub(y, x))) = lt(shl1(z, 0), sub(x, add(sub(y, x), z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), sub(-1, y)) = lt(add(y, 0), add(add(x, y), sub(z, -1))): lt(add(x, z), xor(y, -1)) = lt(y, add(sub(z, -1), add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(x, x) = lt(sub(z, add(x, y)), sub(sub(z, x), y)): lt(-1, -1) = lt(sub(z, add(x, y)), sub(sub(z, x), y)) (1 machine proofs, T)
+RULEMINER straggler lt(x, add(x, y)) = lt(add(y, -1), add(z, sub(y, sub(z, x)))): lt(x, sub(0, y)) = lt(add(-1, y), add(sub(y, sub(z, x)), z)) (1 machine proofs, T)
+RULEMINER straggler lt(x, x) = lt(sub(sub(x, z), y), sub(x, add(y, z))): lt(-1, -1) = lt(sub(sub(x, z), y), sub(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(y, -1), z), add(x, add(x, z))) = lt(sub(add(x, x), y), add(x, add(z, x))): lt(add(-1, add(y, z)), add(shl1(x, 0), z)) = lt(sub(shl1(x, 0), y), add(shl1(x, 0), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, y), z) = lt(sub(0, sub(y, x)), sub(z, sub(x, x))): lt(sub(x, y), z) = lt(sub(0, sub(y, x)), z) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, z), add(x, y)) = lt(add(z, add(-1, x)), add(y, x)): lt(sub(y, z), add(x, y)) = lt(add(-1, add(x, z)), add(x, y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), add(sub(x, y), z)) = lt(add(-1, z), add(y, sub(-1, x))): lt(add(-1, z), add(sub(x, y), z)) = lt(add(-1, z), add(xor(x, -1), y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, -1), add(sub(x, z), y)) = lt(add(sub(0, -1), x), sub(x, sub(z, y))): lt(sub(x, -1), add(sub(x, z), y)) = lt(sub(x, -1), sub(x, sub(z, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), add(x, z)) = lt(sub(z, sub(y, x)), sub(x, add(x, y))): lt(add(-1, y), add(x, z)) = lt(sub(z, sub(y, x)), sub(0, y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, z), add(z, add(add(x, y), x))) = lt(add(z, z), sub(sub(z, y), add(x, x))): lt(shl1(z, 0), add(shl1(x, 0), add(y, z))) = lt(shl1(z, 0), sub(sub(z, y), shl1(x, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, add(x, y)), add(add(z, y), y)) = lt(sub(y, sub(x, -1)), add(add(z, y), y)): lt(add(x, add(y, z)), add(shl1(y, 0), z)) = lt(sub(y, sub(x, -1)), add(shl1(y, 0), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, add(-1, -1)), sub(sub(y, y), z)) = lt(add(z, -1), sub(sub(x, z), add(-1, x))): lt(add(shl1(-1, 0), z), sub(0, z)) = lt(add(-1, z), sub(sub(x, z), add(-1, x))) (1 machine proofs, T)
+RULEMINER straggler lt(z, sub(y, add(x, add(x, -1)))) = lt(sub(z, 0), sub(sub(y, -1), add(x, x))): lt(z, sub(y, add(-1, shl1(x, 0)))) = lt(z, sub(sub(y, -1), shl1(x, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, y), add(x, y)) = lt(shl1(y, 0), add(sub(z, z), sub(y, x))): lt(shl1(y, 0), add(x, y)) = lt(shl1(y, 0), sub(y, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(y, add(x, add(z, -1)))) = lt(add(0, 0), sub(add(z, x), sub(y, -1))): lt(0, sub(y, add(-1, add(x, z)))) = lt(0, sub(add(x, z), sub(y, -1))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(add(x, x), z)) = lt(add(z, y), sub(y, sub(x, sub(0, x)))): lt(add(y, z), add(shl1(x, 0), z)) = lt(add(y, z), sub(y, shl1(x, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, -1), sub(y, add(x, z))) = lt(sub(y, -1), add(x, sub(z, -1))): lt(sub(y, -1), sub(y, add(x, z))) = lt(sub(y, -1), add(sub(z, -1), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(x, sub(sub(z, y), y))) = lt(add(-1, x), sub(sub(x, y), sub(y, z))): lt(add(-1, x), add(sub(sub(z, y), y), x)) = lt(add(-1, x), sub(sub(x, y), sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, add(x, y)), add(y, y)) = lt(add(z, add(x, y)), add(x, sub(z, y))): lt(add(x, add(y, z)), shl1(y, 0)) = lt(add(x, add(y, z)), add(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), sub(add(y, add(x, y)), z)) = lt(add(y, -1), sub(sub(-1, x), sub(y, z))): lt(add(-1, y), sub(add(shl1(y, 0), x), z)) = lt(add(-1, y), sub(xor(x, -1), sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(z, add(add(x, y), z)) = lt(add(-1, add(y, x)), add(z, add(y, x))): lt(z, add(x, add(y, z))) = lt(add(-1, add(x, y)), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(x, sub(z, add(x, y))) = lt(sub(0, sub(0, x)), sub(sub(z, y), x)): lt(x, sub(z, add(x, y))) = lt(x, sub(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, sub(z, y)), sub(add(z, x), y)) = lt(sub(y, sub(z, x)), add(sub(z, y), x)): lt(sub(x, sub(z, y)), sub(add(x, z), y)) = lt(sub(y, sub(z, x)), add(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, sub(-1, x)), sub(sub(z, y), x)) = lt(sub(shl1(x, 0), -1), sub(z, add(x, y))): lt(sub(x, xor(x, -1)), sub(sub(z, y), x)) = lt(sub(shl1(x, 0), -1), sub(z, add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(x, add(z, add(y, z)))) = lt(sub(x, x), add(add(z, sub(z, x)), y)): lt(0, sub(x, add(shl1(z, 0), y))) = lt(0, add(sub(shl1(z, 0), x), y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(0, z)) = lt(add(-1, z), sub(add(sub(0, y), y), x)): lt(add(-1, x), sub(0, z)) = lt(add(-1, z), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(x, sub(sub(z, y), y))) = lt(add(-1, x), sub(add(y, y), sub(z, -1))): lt(add(-1, x), add(sub(sub(z, y), y), x)) = lt(add(-1, x), sub(shl1(y, 0), sub(z, -1))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, 0), sub(sub(z, y), add(-1, -1))) = lt(add(0, x), sub(z, add(y, shl1(-1, 0)))): lt(x, sub(sub(z, y), shl1(-1, 0))) = lt(x, sub(z, add(shl1(-1, 0), y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(z, z)) = lt(add(y, z), sub(sub(y, sub(z, x)), x)): lt(add(y, z), shl1(z, 0)) = lt(add(y, z), sub(sub(y, sub(z, x)), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(y, z)) = lt(add(-1, x), sub(x, sub(y, add(-1, z)))): lt(add(-1, x), sub(y, z)) = lt(add(-1, x), sub(x, sub(y, add(-1, z)))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, y), sub(sub(z, y), -1)) = lt(sub(z, x), sub(z, add(-1, y))): lt(sub(x, y), sub(sub(z, y), -1)) = lt(sub(z, x), sub(z, add(-1, y))) (2 machine proofs, T)
+RULEMINER straggler lt(shl1(add(z, z), 0), add(x, sub(x, y))) = lt(shl1(add(z, z), 0), sub(x, sub(y, x))): lt(shl1(shl1(z, 0), 0), sub(shl1(x, 0), y)) = lt(shl1(shl1(z, 0), 0), sub(x, sub(y, x))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, -1), sub(z, add(x, y))) = lt(sub(x, add(-1, x)), sub(sub(z, y), x)): lt(sub(0, -1), sub(z, add(x, y))) = lt(sub(0, -1), sub(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(x, sub(z, add(x, y))) = lt(x, add(y, add(sub(x, z), x))): lt(x, sub(z, add(x, y))) = lt(x, add(sub(shl1(x, 0), z), y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, sub(z, x)), add(add(y, z), z)) = lt(add(z, add(-1, x)), add(add(z, z), y)): lt(add(sub(z, x), y), add(shl1(z, 0), y)) = lt(add(-1, add(x, z)), add(shl1(z, 0), y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(x, add(z, add(y, z)))) = lt(sub(x, x), add(sub(z, x), add(y, z))): lt(0, sub(x, add(shl1(z, 0), y))) = lt(0, add(sub(z, x), add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(sub(x, y), z)) = lt(sub(y, sub(0, z)), sub(x, sub(y, z))): lt(add(y, z), add(sub(x, y), z)) = lt(add(y, z), sub(x, sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(sub(y, z), z), sub(z, sub(z, x))) = lt(sub(-1, x), add(sub(z, sub(y, -1)), z)): lt(sub(sub(y, z), z), x) = lt(xor(x, -1), sub(shl1(z, 0), sub(y, -1))) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(y, add(x, add(z, -1)))) = lt(sub(sub(y, z), x), sub(-1, 0)): lt(0, sub(y, add(-1, add(x, z)))) = lt(sub(sub(y, z), x), -1) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), sub(0, y)) = lt(add(0, add(-1, y)), add(add(y, x), z)): lt(add(x, z), sub(0, y)) = lt(add(-1, y), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), add(x, -1)) = lt(add(y, x), sub(z, sub(add(z, -1), y))): lt(add(x, y), add(-1, x)) = lt(add(x, y), sub(z, sub(add(-1, z), y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(y, -1), -1), sub(x, add(z, x))) = lt(add(z, -1), add(z, add(y, shl1(-1, 0)))): lt(add(shl1(-1, 0), y), sub(0, z)) = lt(add(-1, z), add(shl1(-1, 0), add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(x, add(z, add(y, z)))) = lt(sub(-1, -1), sub(sub(x, z), add(z, y))): lt(0, sub(x, add(shl1(z, 0), y))) = lt(0, sub(sub(x, z), add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), sub(x, z)) = lt(add(y, z), sub(z, sub(sub(x, y), z))): lt(add(y, z), sub(x, z)) = lt(add(y, z), sub(z, sub(sub(x, y), z))) (1 machine proofs, T)
+RULEMINER straggler lt(y, add(x, z)) = lt(sub(y, 0), sub(y, sub(sub(y, x), z))): lt(y, add(x, z)) = lt(y, sub(y, sub(sub(y, x), z))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, y), sub(z, x)) = lt(sub(z, sub(x, y)), sub(y, 0)): lt(xor(y, -1), sub(z, x)) = lt(sub(z, sub(x, y)), y) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(z, y)) = lt(add(x, -1), add(sub(add(-1, y), z), x)): lt(add(-1, x), sub(z, y)) = lt(add(-1, x), add(sub(add(-1, y), z), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(z, sub(z, add(x, x)))) = lt(add(z, y), add(sub(add(y, x), z), x)): lt(add(y, z), sub(shl1(z, 0), shl1(x, 0))) = lt(add(y, z), add(sub(add(x, y), z), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), sub(x, z)) = lt(add(-1, sub(z, x)), sub(0, y)): lt(add(-1, y), sub(x, z)) = lt(add(-1, sub(z, x)), sub(0, y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), sub(z, add(x, y))) = lt(add(-1, z), add(x, add(-1, y))): lt(add(-1, z), sub(z, add(x, y))) = lt(add(-1, z), add(-1, add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(sub(-1, y), z), sub(x, add(y, y))) = lt(sub(-1, add(y, z)), sub(sub(x, y), y)): lt(sub(xor(y, -1), z), sub(x, shl1(y, 0))) = lt(sub(-1, add(y, z)), sub(sub(x, y), y)) (2 machine proofs, T)
+RULEMINER straggler lt(z, sub(y, add(x, x))) = lt(add(z, 0), sub(add(x, z), sub(y, x))): lt(z, sub(y, shl1(x, 0))) = lt(z, sub(add(x, z), sub(y, x))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, add(x, x)), sub(add(z, x), x)) = lt(sub(sub(y, x), x), add(x, sub(z, x))): lt(sub(y, shl1(x, 0)), z) = lt(sub(sub(y, x), x), z) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, add(z, y)), add(sub(y, x), x)) = lt(sub(sub(x, z), y), sub(add(y, x), x)): lt(sub(x, add(y, z)), y) = lt(sub(sub(x, z), y), y) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, -1), sub(x, add(y, z))) = lt(add(0, sub(y, -1)), sub(sub(x, y), z)): lt(sub(y, -1), sub(x, add(y, z))) = lt(sub(y, -1), sub(sub(x, y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(z, z), -1), sub(z, sub(x, y))) = lt(add(-1, shl1(z, 0)), add(sub(z, x), y)): lt(add(-1, shl1(z, 0)), sub(z, sub(x, y))) = lt(add(-1, shl1(z, 0)), add(sub(z, x), y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), add(z, add(sub(-1, y), z))) = lt(add(x, z), add(y, sub(x, add(-1, z)))): lt(add(x, z), add(shl1(z, 0), xor(y, -1))) = lt(add(x, z), add(sub(x, add(-1, z)), y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, z), add(sub(y, x), y)) = lt(add(sub(0, z), x), sub(y, sub(x, y))): lt(sub(x, z), sub(shl1(y, 0), x)) = lt(sub(x, z), sub(y, sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, add(z, y)), sub(sub(x, x), z)) = lt(add(-1, z), add(add(z, y), add(z, x))): lt(add(x, add(y, z)), sub(0, z)) = lt(add(-1, z), add(shl1(z, 0), add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, x), sub(x, y)) = lt(add(sub(y, x), -1), add(x, sub(z, z))): lt(xor(x, -1), sub(x, y)) = lt(add(-1, sub(y, x)), x) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(sub(x, z), y)) = lt(add(-1, x), sub(z, add(y, sub(0, -1)))): lt(add(-1, x), add(sub(x, z), y)) = lt(add(-1, x), sub(z, sub(y, -1))) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(sub(z, x), add(x, y))) = lt(sub(y, 0), sub(sub(sub(z, x), x), y)): lt(y, sub(sub(z, x), add(x, y))) = lt(y, sub(sub(sub(z, x), x), y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(z, y), add(x, y)) = lt(sub(0, sub(y, z)), add(y, x)): lt(sub(z, y), add(x, y)) = lt(sub(0, sub(y, z)), add(x, y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(z, add(y, -1)), add(x, -1)) = lt(sub(0, x), sub(add(add(-1, -1), y), z)): lt(sub(z, add(-1, y)), add(-1, x)) = lt(sub(0, x), sub(add(shl1(-1, 0), y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(y, add(x, add(z, -1)))) = lt(sub(y, y), sub(x, sub(sub(y, -1), z))): lt(0, sub(y, add(-1, add(x, z)))) = lt(0, sub(x, sub(sub(y, -1), z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(-1, -1), add(sub(z, add(-1, y)), x)) = lt(shl1(-1, 0), sub(z, sub(add(y, -1), x))): lt(shl1(-1, 0), add(sub(z, add(-1, y)), x)) = lt(shl1(-1, 0), sub(z, sub(add(-1, y), x))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, x), add(y, -1)) = lt(sub(y, x), sub(sub(sub(z, -1), x), z)): lt(sub(y, x), add(-1, y)) = lt(sub(y, x), sub(sub(sub(z, -1), x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(y, add(sub(z, x), z)) = lt(add(0, y), sub(sub(y, z), sub(z, x))): lt(y, sub(shl1(z, 0), x)) = lt(y, sub(sub(y, z), sub(z, x))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(y, z)) = lt(sub(y, sub(x, z)), sub(sub(z, z), x)): lt(add(-1, x), add(y, z)) = lt(sub(y, sub(x, z)), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), add(sub(z, y), sub(z, y))) = lt(sub(x, x), add(y, sub(y, add(z, z)))): lt(0, sub(shl1(z, 0), shl1(y, 0))) = lt(0, sub(shl1(y, 0), shl1(z, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(-1, z), x), sub(0, y)) = lt(add(y, -1), add(y, add(x, add(-1, z)))): lt(add(-1, add(x, z)), sub(0, y)) = lt(add(-1, y), add(-1, add(x, add(y, z)))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), add(sub(x, z), x)) = lt(add(add(y, x), 0), sub(z, sub(x, y))): lt(add(x, y), sub(shl1(x, 0), z)) = lt(add(x, y), sub(z, sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), sub(-1, z)) = lt(z, add(add(y, x), sub(z, -1))): lt(add(x, y), xor(z, -1)) = lt(z, add(sub(z, -1), add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(x, add(z, add(y, z)))) = lt(sub(y, y), sub(sub(x, z), add(y, z))): lt(0, sub(x, add(shl1(z, 0), y))) = lt(0, sub(sub(x, z), add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), sub(y, add(shl1(x, 0), z))) = lt(add(y, x), sub(sub(y, x), add(x, z))): lt(add(x, y), sub(y, add(shl1(x, 0), z))) = lt(add(x, y), sub(sub(y, x), add(x, z))) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(x, add(y, z))) = lt(add(y, 0), add(sub(add(y, y), x), z)): lt(y, sub(x, add(y, z))) = lt(y, add(sub(shl1(y, 0), x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, y), add(add(x, z), z)) = lt(sub(x, y), sub(sub(0, y), add(z, z))): lt(sub(x, y), add(shl1(z, 0), x)) = lt(sub(x, y), sub(sub(0, y), shl1(z, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), sub(y, x)) = lt(add(-1, z), sub(x, sub(sub(y, -1), z))): lt(add(-1, z), sub(y, x)) = lt(add(-1, z), sub(x, sub(sub(y, -1), z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, z), add(sub(x, y), z)) = lt(add(shl1(z, 0), 0), sub(y, sub(x, z))): lt(shl1(z, 0), add(sub(x, y), z)) = lt(shl1(z, 0), sub(y, sub(x, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(add(x, y), z)) = lt(add(add(y, z), 0), sub(0, x)): lt(add(-1, x), add(x, add(y, z))) = lt(add(y, z), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, add(-1, y)), add(x, sub(y, x))) = lt(sub(sub(x, -1), y), sub(add(z, y), z)): lt(sub(x, add(-1, y)), y) = lt(sub(sub(x, -1), y), y) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), sub(z, add(x, y))) = lt(sub(sub(0, x), y), sub(y, add(y, z))): lt(add(-1, z), sub(z, add(x, y))) = lt(sub(sub(0, x), y), sub(0, z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(sub(-1, x), z), add(y, add(z, x))) = lt(sub(-1, add(x, z)), add(y, add(x, z))): lt(sub(xor(x, -1), z), add(x, add(y, z))) = lt(sub(-1, add(x, z)), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(x, sub(y, add(x, z))) = lt(add(x, 0), sub(sub(0, z), sub(x, y))): lt(x, sub(y, add(x, z))) = lt(x, sub(sub(0, z), sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(x, -1)) = lt(sub(x, y), add(sub(x, add(z, -1)), z)): lt(y, sub(x, -1)) = lt(sub(x, y), add(sub(x, add(-1, z)), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, y), add(sub(x, z), y)) = lt(sub(x, y), sub(z, sub(y, sub(0, y)))): lt(sub(x, y), add(sub(x, z), y)) = lt(sub(x, y), sub(z, shl1(y, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(x, add(add(y, z), z)) = lt(x, sub(sub(sub(x, z), y), z)): lt(x, add(shl1(z, 0), y)) = lt(x, sub(sub(sub(x, z), y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, z), sub(y, x)) = lt(sub(y, add(y, z)), sub(sub(x, y), z)): lt(sub(0, z), sub(y, x)) = lt(sub(0, z), sub(sub(x, y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), sub(add(x, add(x, -1)), z)) = lt(sub(z, add(x, x)), sub(0, y)): lt(add(-1, y), sub(add(-1, shl1(x, 0)), z)) = lt(sub(z, shl1(x, 0)), sub(0, y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), sub(add(sub(z, -1), z), y)) = lt(sub(sub(z, -1), y), sub(x, add(z, x))): lt(add(-1, z), sub(sub(shl1(z, 0), -1), y)) = lt(sub(sub(z, -1), y), sub(0, z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(z, add(y, y)), sub(sub(x, z), x)) = lt(sub(sub(z, y), y), sub(sub(y, y), z)): lt(sub(z, shl1(y, 0)), sub(0, z)) = lt(sub(sub(z, y), y), sub(0, z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), add(y, -1)) = lt(add(-1, z), sub(add(x, z), add(x, y))): lt(add(-1, z), add(-1, y)) = lt(add(-1, z), sub(z, y)) (1 machine proofs, T)
+RULEMINER straggler lt(x, x) = lt(add(z, x), add(sub(z, y), add(x, y))): lt(-1, -1) = lt(add(x, z), add(sub(z, y), add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(0, sub(z, sub(add(x, y), z))) = lt(shl1(0, 0), sub(add(sub(x, z), y), z)): lt(0, sub(z, sub(add(x, y), z))) = lt(0, sub(add(sub(x, z), y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), sub(x, add(add(y, z), y))) = lt(add(z, x), add(add(z, y), add(y, z))): lt(add(x, z), sub(x, add(shl1(y, 0), z))) = lt(add(x, z), add(shl1(y, 0), shl1(z, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(x, x) = lt(add(-1, y), add(sub(y, sub(z, -1)), z)): lt(-1, -1) = lt(add(-1, y), add(sub(y, sub(z, -1)), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(-1, -1), sub(y, x)) = lt(shl1(-1, 0), sub(z, add(z, sub(x, y)))): lt(shl1(-1, 0), sub(y, x)) = lt(shl1(-1, 0), sub(0, sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(y, z), -1), add(sub(y, x), y)) = lt(sub(sub(y, x), z), add(sub(y, x), y)): lt(add(-1, add(y, z)), sub(shl1(y, 0), x)) = lt(sub(sub(y, x), z), sub(shl1(y, 0), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), add(y, z)) = lt(add(-1, sub(y, x)), add(y, z)): lt(add(x, z), add(y, z)) = lt(add(-1, sub(y, x)), add(y, z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(x, y)) = lt(add(z, y), add(y, sub(sub(z, y), x))): lt(add(y, z), add(x, y)) = lt(add(y, z), add(sub(sub(z, y), x), y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, z), add(sub(x, y), z)) = lt(sub(z, sub(0, z)), add(z, sub(y, x))): lt(shl1(z, 0), add(sub(x, y), z)) = lt(shl1(z, 0), add(sub(y, x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(sub(x, z), y)) = lt(add(z, y), add(add(sub(0, x), z), z)): lt(add(y, z), add(sub(x, z), y)) = lt(add(y, z), sub(shl1(z, 0), x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, z), add(x, y)) = lt(sub(x, z), sub(sub(z, add(y, z)), z)): lt(sub(x, z), add(x, y)) = lt(sub(x, z), sub(sub(0, y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, y), add(add(x, y), z)) = lt(add(y, y), sub(add(sub(0, z), y), x)): lt(shl1(y, 0), add(x, add(y, z))) = lt(shl1(y, 0), sub(sub(y, z), x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, -1), sub(x, add(y, z))) = lt(add(sub(x, -1), 0), sub(sub(x, z), y)): lt(sub(x, -1), sub(x, add(y, z))) = lt(sub(x, -1), sub(sub(x, z), y)) (1 machine proofs, T)
+RULEMINER straggler lt(0, sub(x, z)) = lt(sub(x, x), sub(z, sub(add(x, y), y))): lt(0, sub(x, z)) = lt(0, sub(z, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(sub(x, z), x), add(y, add(x, x))) = lt(add(z, add(y, -1)), add(x, add(y, x))): lt(sub(shl1(x, 0), z), add(shl1(x, 0), y)) = lt(add(-1, add(y, z)), add(shl1(x, 0), y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(-1, -1), sub(add(sub(y, -1), z), x)) = lt(add(-1, -1), sub(z, add(sub(-1, y), x))): lt(shl1(-1, 0), sub(add(sub(y, -1), z), x)) = lt(shl1(-1, 0), sub(z, add(x, xor(y, -1)))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, add(x, y)), add(add(z, y), y)) = lt(add(-1, sub(y, x)), add(add(y, y), z)): lt(add(x, add(y, z)), add(shl1(y, 0), z)) = lt(add(-1, sub(y, x)), add(shl1(y, 0), z)) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, sub(-1, z)), z)): lt(y, sub(x, -1)) = lt(sub(x, y), sub(sub(x, xor(z, -1)), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, add(x, z)), add(sub(x, y), z)) = lt(sub(-1, add(z, y)), add(sub(z, y), x)): lt(add(shl1(z, 0), x), add(sub(x, y), z)) = lt(sub(-1, add(y, z)), add(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(x, add(add(x, y), z)) = lt(add(z, add(y, -1)), add(add(y, z), x)): lt(x, sub(0, add(y, z))) = lt(add(-1, add(y, z)), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), sub(x, sub(y, shl1(-1, 0)))) = lt(sub(y, add(x, -1)), sub(0, z)): lt(add(-1, z), sub(x, sub(y, shl1(-1, 0)))) = lt(sub(y, add(-1, x)), sub(0, z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, -1), add(sub(y, x), z)) = lt(sub(0, sub(-1, y)), sub(z, sub(x, y))): lt(sub(y, -1), add(sub(y, x), z)) = lt(sub(y, -1), sub(z, sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, add(x, y)), add(add(y, z), x)) = lt(sub(add(-1, z), x), add(add(z, y), x)): lt(add(shl1(x, 0), y), add(x, add(y, z))) = lt(sub(add(-1, z), x), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, z), add(x, x)) = lt(sub(y, z), sub(z, sub(sub(z, x), x))): lt(sub(y, z), shl1(x, 0)) = lt(sub(y, z), sub(z, sub(sub(z, x), x))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, z), sub(add(y, shl1(z, 0)), x)) = lt(sub(0, z), sub(z, sub(sub(x, y), z))): lt(sub(0, z), sub(add(shl1(z, 0), y), x)) = lt(sub(0, z), sub(z, sub(sub(x, y), z))) (1 machine proofs, T)
+RULEMINER straggler lt(z, sub(x, add(y, y))) = lt(add(0, z), add(z, add(sub(y, x), y))): lt(z, sub(x, shl1(y, 0))) = lt(z, add(sub(shl1(y, 0), x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(y, x), -1), add(y, add(z, z))) = lt(sub(add(z, z), x), add(add(z, z), y)): lt(add(-1, add(x, y)), add(shl1(z, 0), y)) = lt(sub(shl1(z, 0), x), add(shl1(z, 0), y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, x), sub(z, add(y, y))) = lt(sub(0, x), sub(y, sub(x, sub(y, z)))): lt(sub(0, x), sub(z, shl1(y, 0))) = lt(sub(0, x), sub(y, sub(x, sub(y, z)))) (1 machine proofs, T)
+RULEMINER straggler lt(y, add(sub(x, z), x)) = lt(add(y, 0), sub(z, sub(shl1(x, 0), y))): lt(y, sub(shl1(x, 0), z)) = lt(y, sub(z, sub(shl1(x, 0), y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), sub(x, y)) = lt(add(z, y), sub(z, sub(sub(x, y), y))): lt(add(y, z), sub(x, y)) = lt(add(y, z), sub(z, sub(sub(x, y), y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(z, y)) = lt(add(x, -1), sub(x, sub(z, add(-1, y)))): lt(add(-1, x), sub(z, y)) = lt(add(-1, x), sub(x, sub(z, add(-1, y)))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(z, add(x, add(x, y)))) = lt(add(add(z, x), y), sub(sub(z, z), x)): lt(add(-1, x), add(shl1(x, 0), add(y, z))) = lt(add(x, add(y, z)), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(x, x) = lt(shl1(-1, 0), add(add(sub(z, y), y), z)): lt(-1, -1) = lt(shl1(-1, 0), shl1(z, 0)) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, z), add(add(y, y), sub(z, x))) = lt(shl1(z, 0), add(sub(x, y), sub(z, y))): lt(shl1(z, 0), add(shl1(y, 0), sub(z, x))) = lt(shl1(z, 0), add(sub(x, y), sub(z, y))) (1 machine proofs, T)
+RULEMINER straggler lt(y, add(add(x, y), z)) = lt(add(add(-1, x), z), add(y, add(x, z))): lt(y, add(x, add(y, z))) = lt(add(-1, add(x, z)), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(z, sub(sub(x, -1), y))) = lt(add(y, z), sub(y, sub(sub(x, -1), y))): lt(add(y, z), add(sub(sub(x, -1), y), z)) = lt(add(y, z), sub(y, sub(sub(x, -1), y))) (1 machine proofs, T)
+RULEMINER straggler lt(y, sub(x, add(y, z))) = lt(y, sub(add(sub(0, z), x), y)): lt(y, sub(x, add(y, z))) = lt(y, sub(sub(x, z), y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, y), add(add(x, x), z)) = lt(sub(0, sub(y, x)), add(add(x, x), z)): lt(sub(x, y), add(shl1(x, 0), z)) = lt(sub(0, sub(y, x)), add(shl1(x, 0), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, add(z, -1)), sub(add(z, x), z)) = lt(sub(-1, x), sub(sub(sub(x, z), y), x)): lt(add(-1, add(y, z)), x) = lt(sub(sub(x, z), y), x) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, y), sub(y, x)) = lt(sub(add(x, -1), y), add(y, sub(z, z))): lt(xor(y, -1), sub(y, x)) = lt(sub(add(-1, x), y), y) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), add(y, -1)) = lt(add(x, y), add(sub(sub(x, -1), z), z)): lt(add(x, y), add(-1, y)) = lt(add(x, y), add(sub(sub(x, -1), z), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, y), sub(y, add(x, z))) = lt(sub(y, shl1(y, 0)), sub(sub(y, x), z)): lt(sub(0, y), sub(y, add(x, z))) = lt(sub(0, y), sub(sub(y, x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), add(z, sub(add(z, z), y))) = lt(add(z, x), sub(x, add(sub(z, y), z))): lt(add(x, z), add(sub(shl1(z, 0), y), z)) = lt(add(x, z), sub(x, sub(shl1(z, 0), y))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(-1, x), sub(y, z)) = lt(sub(add(z, -1), y), sub(z, sub(z, x))): lt(xor(x, -1), sub(y, z)) = lt(sub(add(-1, z), y), x) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, add(x, z)), add(sub(x, z), z)) = lt(sub(sub(y, z), x), sub(add(x, z), z)): lt(sub(y, add(x, z)), x) = lt(sub(sub(y, z), x), x) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), sub(y, add(x, z))) = lt(sub(0, add(z, x)), sub(z, add(z, y))): lt(add(-1, y), sub(y, add(x, z))) = lt(sub(0, add(x, z)), sub(0, y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), add(sub(x, z), y)) = lt(add(sub(0, z), x), sub(z, add(z, y))): lt(add(-1, y), add(sub(x, z), y)) = lt(sub(x, z), sub(0, y)) (1 machine proofs, T)
+RULEMINER straggler lt(add(-1, -1), sub(x, add(y, z))) = lt(add(add(-1, -1), 0), sub(sub(x, y), z)): lt(shl1(-1, 0), sub(x, add(y, z))) = lt(shl1(-1, 0), sub(sub(x, y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(x, add(z, add(y, z)))) = lt(sub(0, 0), sub(add(y, shl1(z, 0)), x)): lt(0, sub(x, add(shl1(z, 0), y))) = lt(0, sub(add(shl1(z, 0), y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(-1, z), z), sub(z, sub(y, x))) = lt(add(z, add(-1, z)), add(sub(z, y), x)): lt(add(-1, shl1(z, 0)), sub(z, sub(y, x))) = lt(add(-1, shl1(z, 0)), add(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(sub(x, z), add(y, x))) = lt(sub(add(y, x), z), sub(sub(x, x), x)): lt(add(-1, x), add(sub(x, z), add(x, y))) = lt(sub(add(x, y), z), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), sub(y, add(sub(x, -1), x))) = lt(add(x, z), sub(sub(-1, x), sub(x, y))): lt(add(x, z), sub(y, sub(shl1(x, 0), -1))) = lt(add(x, z), sub(xor(x, -1), sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, y), sub(sub(y, add(x, x)), z)) = lt(shl1(y, 0), add(add(shl1(x, 0), y), z)): lt(shl1(y, 0), sub(sub(y, shl1(x, 0)), z)) = lt(shl1(y, 0), add(shl1(x, 0), add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(z, x)) = lt(sub(x, sub(z, -1)), sub(sub(y, x), y)): lt(add(-1, x), sub(z, x)) = lt(sub(x, sub(z, -1)), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), sub(0, z)) = lt(sub(add(-1, z), 0), add(y, add(z, x))): lt(add(x, y), sub(0, z)) = lt(add(-1, z), add(x, add(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, -1), add(sub(x, y), z)) = lt(sub(sub(x, y), 0), add(z, sub(x, y))): lt(add(-1, z), add(sub(x, y), z)) = lt(sub(x, y), sub(0, z)) (1 machine proofs, T)
+RULEMINER straggler lt(0, sub(y, z)) = lt(sub(y, y), sub(sub(add(x, z), y), x)): lt(0, sub(y, z)) = lt(0, sub(sub(add(x, z), y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, y), sub(z, x)) = lt(sub(add(-1, x), z), sub(sub(x, y), z)): lt(sub(0, y), sub(z, x)) = lt(sub(add(-1, x), z), sub(sub(x, y), z)) (1 machine proofs, T)
+RULEMINER straggler lt(0, add(sub(add(y, x), z), y)) = lt(add(0, 0), sub(y, sub(z, add(x, y)))): lt(0, add(sub(add(x, y), z), y)) = lt(0, sub(y, sub(z, add(x, y)))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), sub(y, add(add(z, z), z))) = lt(add(x, -1), sub(sub(y, z), shl1(z, 0))): lt(add(-1, x), sub(y, add(shl1(z, 0), z))) = lt(add(-1, x), sub(sub(y, z), shl1(z, 0))) (1 machine proofs, T)
+RULEMINER straggler lt(0, sub(sub(x, z), add(y, y))) = lt(sub(-1, -1), sub(add(y, add(z, y)), x)): lt(0, sub(sub(x, z), shl1(y, 0))) = lt(0, sub(add(shl1(y, 0), z), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(add(add(x, z), z), y)) = lt(add(z, add(y, z)), sub(sub(z, z), x)): lt(add(-1, x), add(shl1(z, 0), add(x, y))) = lt(add(shl1(z, 0), y), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(z, sub(y, add(x, z))) = lt(sub(z, 0), add(sub(0, z), sub(y, x))): lt(z, sub(y, add(x, z))) = lt(z, sub(sub(y, x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), add(sub(x, z), y)) = lt(sub(x, z), sub(sub(-1, y), -1)): lt(add(-1, y), add(sub(x, z), y)) = lt(sub(x, z), sub(0, y)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, z), sub(x, add(y, y))) = lt(sub(0, z), sub(sub(y, sub(x, y)), z)): lt(sub(0, z), sub(x, shl1(y, 0))) = lt(sub(0, z), sub(sub(y, sub(x, y)), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, z), add(x, -1)) = lt(sub(0, x), sub(sub(y, z), add(y, -1))): lt(sub(x, z), add(-1, x)) = lt(sub(0, x), sub(sub(y, z), add(-1, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), add(z, sub(sub(z, -1), x))) = lt(add(-1, y), sub(z, add(sub(-1, z), x))): lt(add(-1, y), add(sub(sub(z, -1), x), z)) = lt(add(-1, y), sub(z, add(x, xor(z, -1)))) (1 machine proofs, T)
+RULEMINER straggler lt(add(-1, -1), add(z, add(sub(-1, x), y))) = lt(add(-1, -1), sub(z, sub(x, add(y, -1)))): lt(shl1(-1, 0), add(xor(x, -1), add(y, z))) = lt(shl1(-1, 0), sub(z, sub(x, add(-1, y)))) (1 machine proofs, T)
+RULEMINER straggler lt(x, sub(z, y)) = lt(add(y, sub(x, y)), add(sub(y, z), x)): lt(x, sub(z, y)) = lt(x, add(sub(y, z), x)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(x, -1), sub(z, y)) = lt(sub(x, -1), sub(add(x, y), add(-1, z))): lt(sub(x, -1), sub(z, y)) = lt(sub(x, -1), sub(0, sub(y, z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(z, add(-1, x)), sub(z, add(x, y))) = lt(add(-1, add(x, z)), sub(sub(z, y), x)): lt(add(-1, add(x, z)), sub(z, add(x, y))) = lt(add(-1, add(x, z)), sub(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(z, sub(x, y)) = lt(sub(y, sub(y, z)), add(sub(y, x), z)): lt(z, sub(x, y)) = lt(z, add(sub(y, x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, sub(-1, z)), sub(z, sub(y, x))) = lt(sub(y, sub(z, -1)), add(x, sub(z, y))): lt(add(xor(z, -1), y), sub(z, sub(y, x))) = lt(sub(y, sub(z, -1)), add(sub(z, y), x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, add(-1, -1)), sub(0, z)) = lt(add(-1, z), sub(sub(y, -1), add(x, y))): lt(add(shl1(-1, 0), x), sub(0, z)) = lt(add(-1, z), sub(sub(y, -1), add(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, y), add(add(z, sub(z, y)), x)) = lt(add(x, y), sub(x, sub(sub(y, z), z))): lt(add(x, y), add(sub(shl1(z, 0), y), x)) = lt(add(x, y), sub(x, sub(sub(y, z), z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(y, add(x, add(z, -1)))) = lt(sub(z, z), add(sub(-1, y), add(x, z))): lt(0, sub(y, add(-1, add(x, z)))) = lt(0, add(x, add(xor(y, -1), z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, y), add(y, z)) = lt(add(y, y), add(sub(x, x), sub(y, z))): lt(shl1(y, 0), add(y, z)) = lt(shl1(y, 0), sub(y, z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, -1), add(z, add(x, add(x, y)))) = lt(add(y, add(z, x)), sub(sub(z, x), z)): lt(add(-1, x), add(shl1(x, 0), add(y, z))) = lt(add(x, add(y, z)), sub(0, x)) (1 machine proofs, T)
+RULEMINER straggler lt(x, x) = lt(shl1(-1, 0), sub(add(add(y, z), z), y)): lt(-1, -1) = lt(shl1(-1, 0), shl1(z, 0)) (1 machine proofs, T)
+RULEMINER straggler lt(y, add(sub(x, z), x)) = lt(add(y, 0), sub(sub(y, sub(x, z)), x)): lt(y, sub(shl1(x, 0), z)) = lt(y, sub(sub(y, sub(x, z)), x)) (1 machine proofs, T)
+RULEMINER straggler lt(0, sub(x, z)) = lt(sub(y, y), sub(sub(y, sub(z, x)), y)): lt(0, sub(x, z)) = lt(0, sub(0, sub(z, x))) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, sub(x, y)), sub(add(y, z), z)) = lt(sub(x, sub(y, x)), sub(x, sub(x, y))): lt(sub(shl1(x, 0), y), y) = lt(sub(x, sub(y, x)), y) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, z), add(y, z)) = lt(add(x, z), sub(add(sub(z, y), x), z)): lt(add(x, z), add(y, z)) = lt(add(x, z), sub(add(sub(z, y), x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, sub(y, x)), add(y, add(z, y))) = lt(add(add(-1, x), z), add(add(y, z), y)): lt(sub(shl1(y, 0), x), add(shl1(y, 0), z)) = lt(add(-1, add(x, z)), add(shl1(y, 0), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, z), add(x, z)) = lt(add(y, z), sub(sub(add(y, z), z), x)): lt(add(y, z), add(x, z)) = lt(add(y, z), sub(y, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(0, 0), sub(y, add(x, add(z, -1)))) = lt(sub(y, y), add(add(x, z), sub(-1, y))): lt(0, sub(y, add(-1, add(x, z)))) = lt(0, add(x, add(xor(y, -1), z))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, -1), sub(y, add(x, z))) = lt(add(add(y, -1), 0), sub(sub(y, x), z)): lt(add(-1, y), sub(y, add(x, z))) = lt(add(-1, y), sub(sub(y, x), z)) (1 machine proofs, T)
+RULEMINER straggler lt(sub(y, z), sub(x, z)) = lt(add(sub(z, x), -1), sub(y, x)): lt(sub(y, z), sub(x, z)) = lt(add(-1, sub(z, x)), sub(y, x)) (1 machine proofs, T)
+RULEMINER straggler lt(add(sub(y, z), x), sub(y, sub(z, y))) = lt(add(sub(y, z), x), sub(add(y, y), z)): lt(add(sub(y, z), x), sub(y, sub(z, y))) = lt(add(sub(y, z), x), sub(shl1(y, 0), z)) (1 machine proofs, T)
+RULEMINER straggler lt(add(add(x, -1), z), add(y, 0)) = lt(sub(sub(y, x), z), sub(z, sub(z, y))): lt(add(-1, add(x, z)), y) = lt(sub(sub(y, x), z), y) (1 machine proofs, T)
+RULEMINER straggler lt(y, add(sub(z, x), z)) = lt(add(0, y), sub(x, sub(add(z, z), y))): lt(y, sub(shl1(z, 0), x)) = lt(y, sub(x, sub(shl1(z, 0), y))) (1 machine proofs, T)
+RULEMINER straggler lt(add(y, add(z, y)), add(y, x)) = lt(sub(-1, add(x, y)), sub(z, sub(x, y))): lt(add(shl1(y, 0), z), add(x, y)) = lt(sub(-1, add(x, y)), sub(z, sub(x, y))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(z, add(x, -1)), sub(y, sub(y, y))) = lt(sub(-1, y), sub(x, sub(z, add(-1, -1)))): lt(sub(z, add(-1, x)), y) = lt(xor(y, -1), sub(x, sub(z, shl1(-1, 0)))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(0, x), add(y, -1)) = lt(sub(0, y), sub(add(-1, z), sub(z, x))): lt(sub(0, x), add(-1, y)) = lt(sub(0, y), sub(add(-1, z), sub(z, x))) (1 machine proofs, T)
+RULEMINER straggler lt(sub(sub(z, x), x), add(z, sub(y, z))) = lt(sub(z, add(x, x)), sub(y, sub(x, x))): lt(sub(sub(z, x), x), y) = lt(sub(z, shl1(x, 0)), y) (1 machine proofs, T)
+RULEMINER straggler lt(add(x, sub(z, y)), sub(sub(y, y), z)) = lt(add(-1, z), sub(add(z, x), sub(y, z))): lt(add(sub(z, y), x), sub(0, z)) = lt(add(-1, z), sub(add(x, z), sub(y, z))) (1 machine proofs, T)
+RULEMINER cmp3d: 240 stragglers of 857 laws, T base (0 unproved)
+RULEMINER time laws and stragglers: T
+RULEMINER guard: 103 machine-free laws scored of 617 (weight 5990 each)
+RULEMINER pool of 5804 terms, 617 distinct functions
+RULEMINER dropped 0 candidates whose left side is already in force
+RULEMINER 452 oriented candidates (one per left side)
+RULEMINER time candidate generation: T
+RULEMINER 400 applicable candidates (cap 400)
+RULEMINER 400 provable candidates of 400 proposed
+RULEMINER time provable filter: T
+RULEMINER time round over 35 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER time round over 111 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER time round over 163 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER time round over 148 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+146 fixed, -909 size): sub(x, sub(y, z)) -> add(sub(x, y), z)
+RULEMINER time round over 192 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+53 fixed, -34 size): lt(add(x, y), sub(x, z)) -> lt(add(x, y), add(z, y))
+RULEMINER time round over 208 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+15 fixed, -396 size): lt(add(-1, x), add(y, x)) -> lt(y, sub(0, x))
+RULEMINER time round over 231 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+11 fixed, -15 size): lt(add(-1, add(x, y)), add(z, x)) -> lt(sub(z, y), add(z, x))
+RULEMINER time round over 215 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+4 fixed, -99 size): lt(sub(x, y), sub(z, y)) -> lt(sub(x, y), sub(x, z))
+RULEMINER time round over 235 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+3 fixed, -0 size): add(-1, sub(x, y)) -> add(x, sub(-1, y))
+RULEMINER time round over 243 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+2 fixed, -66 size): lt(shl1(-1, 0), shl1(x, 0)) -> lt(-1, -1)
+RULEMINER time round over 223 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+2 fixed, -33 size): lt(x, add(sub(x, -1), add(y, z))) -> lt(add(y, z), xor(x, -1))
+RULEMINER time round over 322 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+1 fixed, -543 size): lt(x, sub(y, add(z, u))) -> lt(x, sub(sub(y, u), z))
+RULEMINER time round over 321 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+1 fixed, -134 size): lt(add(x, y), add(sub(y, z), add(x, z))) -> lt(-1, -1)
+RULEMINER time round over 337 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+1 fixed, --16 size): lt(add(shl1(x, 0), y), add(sub(y, z), x)) -> lt(sub(-1, add(z, x)), add(sub(x, z), y))
+RULEMINER time round over 360 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -322 size): sub(sub(x, y), y) -> sub(x, add(y, y))
+RULEMINER time round over 365 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -297 size): lt(x, add(sub(y, z), x)) -> lt(x, sub(z, y))
+RULEMINER time round over 365 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -292 size): lt(add(-1, x), add(-1, add(y, z))) -> lt(add(-1, x), sub(x, add(y, z)))
+RULEMINER time round over 365 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -231 size): lt(add(-1, x), add(sub(x, y), z)) -> lt(sub(z, y), sub(0, x))
+RULEMINER time round over 365 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -162 size): lt(add(-1, add(x, y)), add(x, z)) -> lt(sub(z, y), add(x, z))
+RULEMINER time round over 365 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -150 size): lt(add(x, y), add(z, x)) -> lt(add(x, y), sub(y, z))
+RULEMINER time round over 365 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -100 size): lt(0, add(sub(x, y), z)) -> lt(0, sub(y, add(x, z)))
+RULEMINER time round over 365 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -99 size): lt(x, add(sub(x, y), z)) -> lt(x, sub(y, z))
+RULEMINER time round over 363 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -99 size): lt(add(-1, x), add(y, add(x, z))) -> lt(add(y, z), sub(0, x))
+RULEMINER time round over 359 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -99 size): lt(add(-1, x), add(y, add(z, x))) -> lt(add(y, z), sub(0, x))
+RULEMINER time round over 357 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -83 size): lt(0, sub(add(x, y), z)) -> lt(0, sub(sub(z, y), x))
+RULEMINER time round over 357 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -68 size): lt(add(x, y), add(sub(z, x), y)) -> lt(add(x, y), sub(x, sub(z, x)))
+RULEMINER time round over 357 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -66 size): add(sub(x, y), y) -> x
+RULEMINER time round over 357 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -66 size): lt(0, sub(sub(x, y), z)) -> lt(0, sub(add(z, y), x))
+RULEMINER time round over 356 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -66 size): lt(add(x, y), sub(add(sub(y, z), x), y)) -> lt(add(x, y), add(z, y))
+RULEMINER time round over 356 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -64 size): lt(0, add(x, add(xor(y, -1), z))) -> lt(0, sub(y, add(-1, add(x, z))))
+RULEMINER time round over 356 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -64 size): lt(add(-1, sub(x, y)), sub(0, z)) -> lt(add(-1, z), sub(y, x))
+RULEMINER time round over 356 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -61 size): lt(add(x, y), add(x, z)) -> lt(add(x, y), sub(y, z))
+RULEMINER time round over 356 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -50 size): lt(x, add(sub(y, z), add(x, y))) -> lt(x, sub(z, shl1(y, 0)))
+RULEMINER time round over 355 of 400 candidates: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -50 size): lt(x, sub(sub(sub(x, y), z), y)) -> lt(x, add(shl1(y, 0), z))
+RULEMINER time round over 355 of 400 candidates: T
+RULEMINER chosen (+0 fixed, -48 size): lt(add(-1, add(x, y)), add(z, y)) -> lt(sub(z, x), add(z, y))
+RULEMINER chosen (+0 fixed, -48 size): lt(add(-1, x), add(shl1(x, 0), y)) -> lt(add(x, y), sub(0, x))
+RULEMINER chosen (+0 fixed, -34 size): sub(x, xor(x, -1)) -> sub(shl1(x, 0), -1)
+RULEMINER time round over 355 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 352 of 400 candidates: T
+RULEMINER time round over 341 of 400 candidates: T
+RULEMINER time round over 186 of 400 candidates: T
+RULEMINER time round over 348 of 400 candidates: T
+RULEMINER time round over 351 of 400 candidates: T
+RULEMINER time round over 351 of 400 candidates: T
+RULEMINER time round over 351 of 400 candidates: T
+RULEMINER time round over 351 of 400 candidates: T
+RULEMINER time round over 351 of 400 candidates: T
+RULEMINER time round over 349 of 400 candidates: T
+RULEMINER time round over 349 of 400 candidates: T
+RULEMINER time round over 346 of 400 candidates: T
+RULEMINER time round over 346 of 400 candidates: T
+RULEMINER time round over 345 of 400 candidates: T
+RULEMINER time round over 345 of 400 candidates: T
+RULEMINER time round over 342 of 400 candidates: T
+RULEMINER time round over 341 of 400 candidates: T
+RULEMINER time round over 342 of 400 candidates: T
+RULEMINER time round over 340 of 400 candidates: T
+RULEMINER time round over 337 of 400 candidates: T
+RULEMINER time round over 337 of 400 candidates: T
+RULEMINER time round over 337 of 400 candidates: T
+RULEMINER time round over 335 of 400 candidates: T
+RULEMINER time round over 353 of 400 candidates: T
+RULEMINER time round over 353 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 339 of 400 candidates: T
+RULEMINER time round over 186 of 400 candidates: T
+RULEMINER time round over 347 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 350 of 400 candidates: T
+RULEMINER time round over 348 of 400 candidates: T
+RULEMINER time round over 345 of 400 candidates: T
+RULEMINER time round over 345 of 400 candidates: T
+RULEMINER time round over 344 of 400 candidates: T
+RULEMINER time round over 344 of 400 candidates: T
+RULEMINER time round over 341 of 400 candidates: T
+RULEMINER time round over 340 of 400 candidates: T
+RULEMINER time round over 341 of 400 candidates: T
+RULEMINER time round over 339 of 400 candidates: T
+RULEMINER time round over 336 of 400 candidates: T
+RULEMINER time round over 336 of 400 candidates: T
+RULEMINER time round over 336 of 400 candidates: T
+RULEMINER time round over 334 of 400 candidates: T
+RULEMINER lookahead: keep sub(sub(sub(x, -1), y), x) -> sub(sub(0, -1), y) (+66) finishes at 796954
+RULEMINER lookahead:      sub(sub(sub(x, -1), y), x) -> sub(0, add(-1, y)) (+34) finishes at 796954
+RULEMINER time rule-set evaluation: T
+RULEMINER time rule-set evaluation: T
+RULEMINER time rule-set evaluation: T
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -66 size): sub(sub(sub(x, -1), y), x) -> sub(sub(0, -1), y)
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -34 size): sub(sub(x, y), add(y, z)) -> sub(sub(sub(x, y), y), z)
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -34 size): lt(add(x, y), add(sub(add(z, x), y), z)) -> lt(add(x, y), sub(shl1(y, 0), shl1(z, 0)))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -33 size): lt(add(-1, x), add(x, y)) -> lt(y, sub(0, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -33 size): lt(x, sub(add(y, x), z)) -> lt(x, sub(z, y))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -33 size): lt(x, sub(sub(x, y), z)) -> lt(x, add(y, z))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -33 size): lt(x, add(sub(y, -1), add(z, x))) -> lt(add(z, y), xor(x, -1))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): sub(xor(x, -1), y) -> sub(-1, add(x, y))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(0, add(sub(x, -1), y)) -> lt(add(x, y), -1)
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): sub(sub(0, x), sub(y, z)) -> sub(z, add(y, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(add(-1, sub(x, y)), add(x, z)) -> lt(add(y, z), add(x, z))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(add(-1, sub(x, y)), sub(z, y)) -> lt(sub(z, x), sub(y, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -233 size): lt(x, add(sub(y, z), u)) -> lt(x, sub(u, sub(z, y)))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+1 fixed, -0 size): lt(sub(-1, x), y) -> lt(sub(-1, y), x)
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -200 size): lt(x, sub(sub(y, z), u)) -> lt(x, sub(y, add(u, z)))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -33 size): lt(x, add(sub(shl1(y, 0), z), x)) -> lt(x, sub(z, shl1(y, 0)))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(add(-1, x), sub(0, y)) -> lt(add(-1, y), sub(0, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(add(-1, x), add(xor(y, -1), z)) -> lt(add(-1, x), add(sub(y, z), x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(add(-1, x), sub(add(-1, y), z)) -> lt(sub(z, y), sub(0, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(add(-1, x), sub(shl1(x, 0), y)) -> lt(sub(x, y), sub(0, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(sub(x, y), sub(sub(0, y), z)) -> lt(sub(x, y), add(z, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(x, add(sub(shl1(x, 0), y), z)) -> lt(x, sub(y, add(x, z)))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -32 size): lt(add(-1, x), add(sub(add(-1, y), z), x)) -> lt(add(-1, x), sub(z, y))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -31 size): lt(sub(x, y), sub(x, add(-1, z))) -> lt(sub(y, z), sub(sub(x, z), -1))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -17 size): sub(x, sub(y, x)) -> sub(shl1(x, 0), y)
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -17 size): lt(sub(x, y), add(sub(x, z), y)) -> lt(sub(x, y), sub(z, shl1(y, 0)))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -16 size): lt(add(-1, x), add(y, shl1(x, 0))) -> lt(add(x, y), sub(0, x))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -16 size): lt(shl1(-1, 0), add(xor(x, -1), y)) -> lt(sub(x, y), sub(0, -1))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -16 size): lt(add(-1, x), sub(add(shl1(x, 0), y), z)) -> lt(add(-1, x), sub(xor(y, -1), sub(x, z)))
+RULEMINER time rule-set evaluation: T
+RULEMINER chosen (+0 fixed, -3 size): lt(sub(x, -1), sub(x, add(y, z))) -> lt(sub(x, -1), add(sub(z, -1), y))
+RULEMINER chosen (+0 fixed, -2 size): lt(sub(sub(x, y), z), x) -> lt(add(-1, add(y, z)), x)
+RULEMINER chosen (+0 fixed, -2 size): lt(add(x, add(y, z)), add(shl1(y, 0), z)) -> lt(add(-1, sub(y, x)), add(shl1(y, 0), z))
+RULEMINER chosen (+0 fixed, -1 size): lt(add(sub(x, y), z), add(shl1(x, 0), z)) -> lt(add(-1, add(y, x)), add(shl1(x, 0), z))
+RULEMINER scoring reused 10889306 of 11510394 law evaluations
+RULEMINER the gain bound skipped 7308 of 40400 candidate scorings
+RULEMINER time in rule-set evaluations: T
+RULEMINER time bounding candidates' gains: T
+RULEMINER join: 111822 searches reaching 47596235 terms, 72962 met, 44032 memo hits, T searching (T in failed searches)
+RULEMINER join store: 364643 joins served, T querying
+RULEMINER 240 of 240 stragglers covered by the chosen rules

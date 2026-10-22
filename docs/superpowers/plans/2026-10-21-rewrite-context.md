@@ -127,43 +127,35 @@ below. That section is binding; where a task's text disagrees with it, the decis
 
 ---
 
-### Task 0: a miner gate for the paths the sweep gate skips
+### Task 0: a miner gate for the paths the sweep gate skips (done 2026-10-21)
 
-**Files:** Create `docs/runs/2026-10-21/scripts/miner_snap.sh`.
+**Files:** `docs/runs/2026-10-21/scripts/miner_snap.sh`, its inputs in `docs/runs/2026-10-21/miner_snap_inputs/`, the
+base snapshots in `docs/runs/2026-10-21/miner_snap_base/`.
 
-The sweep gate runs only `RULEMINER_FAST=1`, never the preference phase, and always through the driver. This task
-adds direct runs of the `search::rule_miner` test under three configurations:
+The sweep gate runs only `RULEMINER_FAST=1`, reaches the preference phase (P9) never, and always runs through the
+driver. `miner_snap.sh <exe> <outdir>` adds five configurations, about 5 minutes in all, each written as a
+timing-free snapshot `<outdir>/<config>.txt` (lines `RULEMINER …`, timings replaced by `T`, `machine at` lines
+dropped):
 
-| config | env |
+| config | what it runs |
 |---|---|
-| `nonfast1` | `RULEMINER_FAMILY=cmp3d RULEMINER_THREADS=1 RULEMINER_TRIALS=<T>` |
-| `nonfast4` | same with `RULEMINER_THREADS=4` |
-| `pooled` | the driver, `SWEEP=pooled:cmp3d LIB=docs/runs/2026-10-21/miner_snap_inputs` (the sweep's own env: `RULEMINER_FAST=1`, salt 1) |
+| `nonfast1`, `nonfast4` | the non-fast miner (P5's kernel proofs) on 1 and 4 threads: the env of a cold cmp3d loop's first mine, with its law file (`laws_cmp3d_1.txt`, from the c7 gate's `s1_A`) and an empty base. 400 candidates, 67 chosen, about 73 s each |
+| `pbase1`, `pbase4` | the same on `prefs_base.rules`, a pooled library that carries one preference (Q1 can only show with a base preference) |
+| `pooled` | `driver::sweep` with `SWEEP=pooled:cmp3d SALT=1 LIB=miner_snap_inputs`: pooled units, then a mine whose only phase is P9. It learns one preference (gain +3001), about 18 s |
 
-The `pooled` stage (`driver.rs:953-975`) writes `pooled.rules` and `pooled.units` (`joinability_units`) from the
-`lib_{cmp3d,add3,sbo3}/rules.txt` under `LIB`. It then runs a mine with no rule rounds, with `RULEMINER_PREFS=1` and
-`RULEMINER_UNITS`, which is the only path into P9. The c7 gate's folders hold no libraries, since `cold` makes none.
+The libraries and `prefs_base.rules` come from `claude-runs\tatic\2026-10-17-join-cap\v1000_1`. The 2026-10-18
+`lazy-join` libraries the draft named learned no preference in P9, so P9 chose nothing and its gain path went
+untested. The draft's `RULEMINER_TRIALS` sizing is moot: a real law file already fills the 400-candidate cap.
 
-- [ ] **Step 1: the inputs.**
-  - Copy `lib_cmp3d`, `lib_add3` and `lib_sbo3` (only their `rules.txt`, keeping the `lib_<fam>/rules.txt` layout) from
-    `%LOCALAPPDATA%\claude-runs\tatic\2026-10-18-lazy-join\all_1` into `docs/runs/2026-10-21/miner_snap_inputs/`. The
-    content only has to be fixed, not current.
-  - Pick `<T>` so that each non-fast run takes 1–3 minutes, by timing one run at `RULEMINER_TRIALS=400`.
-- [ ] **Step 2: write the script.** `miner_snap.sh <exe> <outdir>`:
-  - runs `nonfast1` and `nonfast4` directly
-    (`MACHINE_STATE=0 <env> <exe> search::rule_miner --exact --ignored --nocapture < /dev/null`), keeping the lines that
-    start with `RULEMINER `, with timing fields removed (`sed -E 's/[0-9]+(\.[0-9]+)? ?(ms|s|µs)\b//g'`, plus any other
-    timing field Step 3 finds), into `<outdir>/<config>.txt`;
-  - runs `pooled` (`SWEEP=pooled:cmp3d SALT=1 LIB=… SWEEP_OUT=<outdir>/pooled <exe> driver::sweep --exact --ignored
-    --nocapture`, `driver.rs:831-836`), and keeps `pooled.units`,
-    `pooled_cmp3d/rules.txt` and `pooled_prefs.tsv` without its seconds column.
-- [ ] **Step 3: A/A.**
-  - Run the script twice on the base exe into two directories. Expected: `diff -r` is empty. If not, extend the
-    normalisation, but only over timing fields, and repeat. A non-timing difference means the miner is
-    nondeterministic in that configuration: stop and report.
-  - Record the base snapshots under `docs/runs/2026-10-21/miner_snap_base/`.
-  - Also record whether `nonfast1` and `nonfast4` chose the same rules. This is Q1's baseline.
-- [ ] **Step 4: commit:** `miner_snap: a gate for the non-fast and preference paths`.
+**A/A on the base exe (main at 92b4be4, run `2026-10-21-t0-miner-snap-aa`):** 5/5 snapshots byte-equal across two
+runs. `nonfast1` equals `nonfast4`. `pbase1` and `pbase4` choose the same 28 rules, but differ in work counts: 7
+rounds score 1 more candidate (`round over 63 of 100` against 64), law evaluations 1060617 against 1063456, join
+searches 33663 against 33674. With no base preference, the thread count changes nothing, so preferences are what
+make it matter. This is Q1's baseline: P5's prove workers lack the base preferences, and possibly the speculative
+proof workers (`search.rs:1156`) do too, which Task 9's Q1 probe must check.
+
+The gate compares each configuration with its own base snapshot (`diff -r <outdir> miner_snap_base`, `*.txt`
+only), never `pbase1` with `pbase4`.
 
 ### Task 1 (C3): split `rule_miner` into named parts, thread-locals unchanged
 

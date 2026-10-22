@@ -1,0 +1,4 @@
+add(sub(x, y), z) -> sub(z, sub(y, x))
+sub(x, add(y, z)) -> sub(sub(x, y), z)
+sub(add(x, y), or(y, z)) -> add(and(y, z), sub(x, z))
+sub(sub(x, y), and(z, x)) -> sub(or(z, x), add(z, y))
