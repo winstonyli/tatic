@@ -168,6 +168,10 @@ rounds score 1 more candidate (`round over 63 of 100` against 64), law evaluatio
 searches 33663 against 33674. With no base preference, the thread count changes nothing, so preferences are what
 make it matter. This is Q1's baseline: P5's prove workers lack the base preferences. The speculative proof workers
 do not: they run `prove_any`, which installs them (read in Task 1; see Q1).
+Corrected 2026-10-22 (final review): Q1 is not the cause. After Q1's fix `pbase4` still equals its old snapshot, and
+every difference is a `round over N of 100` count, never lower on 4 threads: `Rounds::pick` scores in chunks of
+`threads * 4` before it re-checks the floor, so more threads score a few candidates past it. Counts change, choices
+do not. The gate therefore never exercised Q1; its test is `miner::a_provers_fresh_job_rewrites_under_the_base_preferences`.
 
 The gate compares each configuration with its own base snapshot (`diff -r --strip-trailing-cr` over `*.txt`, since git checks the snapshots out as CRLF),
 never `pbase1` with `pbase4`.
@@ -682,6 +686,9 @@ For each of Q1–Q5:
   decided a proof here; suite 524. Ruling: with both provers installing the base preferences, `Prover::prefs` is a
   plain `Vec<Pref>` and one `Prover` serves the filter and the rounds (the `None` branch and the second construction
   are deleted). No unit test: the gate's `pbase1`/`pbase4` pair is the check.
+  Corrected after the final review: that pair never exercised Q1 (see Task 0's correction), so the fix went in untested.
+  Test `a_provers_fresh_job_rewrites_under_the_base_preferences` now pins it: a `Prover`'s fresh job steps under the
+  base preference; with `install` dropping the preferences (the old workers) it fails.
 - [x] **Q2:** `family_laws`'s closure returns `usize` and cannot carry a salt string. It becomes
   `env: &dyn Fn(&str) -> Option<String>`, with the numeric reads parsed at the call, and `shape_part` takes the salt
   from it. Expected: no change, since no stage sets `RULEMINER_SHAPE_SALT` today (grep `driver.rs` to confirm).
@@ -711,6 +718,10 @@ For each of Q1–Q5:
   (Q2's). Ruling: `run` computes the per-law budget once and passes it to `laws` (in place of `base_empty`) and to the
   `Prover`; `laws` returns `Laws` alone. No unit test: the budget only bounds rewriting the proofs do outside
   `proving` (which installs its own 10 000), and the gate's base-rule arms run it.
+  Corrected after the final review: no proof rewrites outside `proving`. `prove_rule`'s other branches
+  (`bitwise_law_k`, `add_tree_law`) never rewrite, and `shr_not_law` rewrites only inside `proving`. So the leftover
+  budget was never read: Q5 was unobservable, which is why the gate was equal. `Prover::budget`, its write in `install`
+  and the reset in `prove` are deleted; `run` keeps the per-law budget for `laws`.
 
 ### Task 10: timing, parked item, close
 
@@ -725,3 +736,19 @@ For each of Q1–Q5:
   count after Task 5. Done: 14 fallback, 4 cycle-cut and 11 join-cost snapshot sites.
 - [x] **Step 3:** set this plan's `status: done`, update the cleanup plan's C1 and C3 lines, and ask about merging.
   Done; C3's line already said done on this branch, so only C1's changed.
+
+### Final review (2026-10-22, Opus)
+
+No Critical findings. Two Important ones, both fixed:
+- **I1:** the gate cannot show Q1, since pbase1 and pbase4 differ only in `Rounds::pick`'s chunk size. The test
+  `a_provers_fresh_job_rewrites_under_the_base_preferences` pins Q1 now. Its RED came from a mutation: without
+  `with_prefs` in `install` it fails with `sub(x, add(y, sub(z, u)))`.
+- **I2:** `Prover::budget` was dead, because every rewrite in `prove_rule` runs inside `proving`, which installs its
+  own budget. It is deleted, `install` takes `&Job`, and the docs that called Q5 a behaviour change are corrected.
+  Suite 527/0/51; gate `2026-10-22-review-fix-gate` equal.
+
+Deferred minors:
+- M1: `num` falls back to the default on an unparsable value where the driver used to panic. The Q2 ruling stands.
+- M2: `Prover::install` inherits the caller's `score_only`/`trace_rules`. It could build from `Rules::new`.
+- M3: `job_swap` matches only a variable named `job`.
+- M4: the Q2 test fails if the environment sets `RULEMINER_SHAPE_SALT`.

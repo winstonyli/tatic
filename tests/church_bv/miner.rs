@@ -98,7 +98,7 @@ pub fn run(setup: &Arc<Setup>) {
         // P0: everything on this thread below runs under the base rules and preferences, apart from what installs its own
         let base_rules = job.rules().with_mined(setup, base.clone()).with_prefs(base_prefs.clone());
         job.with_rules(base_rules, |job| {
-            // base rules may loop; a step budget per law (and per proof) bounds them (the built-in rules never reach it)
+            // base rules may loop; a step budget per law bounds them (the built-in rules never reach it)
             let budget = if base.is_empty() { i64::MAX / 2 } else { cfg.steps as i64 };
             let laws = laws(job, &cfg, budget, &clock);
             let (cands, rivals) = candidates(&laws, &cfg, &base);
@@ -120,11 +120,11 @@ pub fn run(setup: &Arc<Setup>) {
                     println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
                 }
             }
-            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules, preferences and step
-            // budget of this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
+            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and preferences of
+            // this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
             // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
             let rules = job.rules().mined().to_vec();
-            let prover = Prover { rules, prefs: base_prefs.clone(), budget, n: laws.n };
+            let prover = Prover { rules, prefs: base_prefs.clone(), n: laws.n };
             let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover.filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
             println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
             clock.phase("provable filter");
@@ -421,20 +421,18 @@ fn renum_placeholders(t: &Term) -> Term {
     }
 }
 
-/// Proves candidate rules against the rules, preferences and step budget it copies to each proving thread (the base
-/// rules and preferences, and P1's per-law budget).
+/// Proves candidate rules against the rules and preferences it copies to each proving thread (the base ones). The step
+/// budget is `proving`'s own: every rewrite of `prove_rule` runs under it.
 struct Prover {
     rules: Vec<(Term, Term)>,
     /// The base preferences, installed on every proving thread.
     prefs: Vec<Pref>,
-    budget: i64,
     n: usize,
 }
 
 impl Prover {
-    /// The job's rules with `rules` as the run-time rules and `prefs` as the preferences; and `budget` as the step budget.
-    fn install(&self, job: &mut Job) -> Rules {
-        job.rw.budget = self.budget;
+    /// The job's rules with `rules` as the run-time rules and `prefs` as the preferences.
+    fn install(&self, job: &Job) -> Rules {
         job.rules().with_mined(job.setup(), self.rules.clone()).with_prefs(self.prefs.clone())
     }
 
@@ -442,13 +440,11 @@ impl Prover {
         prove_rule(job, self.n, l.max_var().max(r.max_var()) + 1, l, r).is_some()
     }
 
-    /// Proves one rule in an intern scope of its own; leaves the default budget installed after.
+    /// Proves one rule in an intern scope of its own.
     fn prove(&self, job: &mut Job, rule: &(Term, Term)) -> bool {
         tatic::kernel::scoped(|| {
             let rules = self.install(job);
-            let ok = job.with_rules(rules, |job| self.holds(job, rule));
-            job.rw.budget = i64::MAX / 2;
-            ok
+            job.with_rules(rules, |job| self.holds(job, rule))
         })
     }
 
@@ -1089,4 +1085,21 @@ fn prefs_phase(job: &mut Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[
             }
         }
     }
+}
+
+/// A proving worker's fresh job proves under the base preferences (Q1): before, the provable filter's workers installed
+/// none, while one thread proved under the ones `run` had installed. The rules and preference are
+/// `rewrite::preferences_choose_between_rules_that_both_match`'s.
+#[test]
+fn a_provers_fresh_job_rewrites_under_the_base_preferences() {
+    let text = "sub(sub(x, y), z) -> sub(x, add(y, z))
+sub(x, sub(y, z)) -> add(sub(x, y), z)
+                sub(x, sub(y, z)) -> add(sub(x, y), z)  OVER  sub(sub(x, y), z) -> sub(x, add(y, z))
+";
+    let prover = Prover { rules: parse_rules(text), prefs: parse_prefs(text), n: 4 };
+    let job = &mut Job::new(Setup::process());
+    let t = parse_term("sub(sub(x, y), sub(z, u))");
+    let rules = prover.install(job);
+    let stepped = job.with_rules(rules, |job| rule_step(job, &t).unwrap().0.show());
+    assert_eq!(stepped, parse_term("add(sub(sub(x, y), z), u)").show(), "the preferred rule fires");
 }

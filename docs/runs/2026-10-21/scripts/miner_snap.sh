@@ -3,7 +3,7 @@
 # against a base exe's (docs/superpowers/plans/2026-10-21-rewrite-context.md, Task 0). The sweep forces RULEMINER_FAST=1
 # and reaches the preference phase only in its pooled stage, so this runs:
 #   nonfast1, nonfast4  the non-fast miner (the provable filter's kernel proofs) on 1 and 4 threads, empty base
-#   pbase1, pbase4      the same on a base library that carries a preference (Q1: workers prove without it)
+#   pbase1, pbase4      the same on a base library that carries a preference (their work counts differ by `Rounds::pick`'s chunk size, not Q1)
 #   pooled              driver::sweep's pooled:cmp3d stage: pooled units, then a mine whose only phase is preferences
 # Inputs (../miner_snap_inputs): laws_cmp3d_1.txt is the c7 gate's s1_A cold cmp3d loop-1 first mine's law file;
 # lib_* and prefs_base.rules are from claude-runs/tatic/2026-10-17-join-cap/v1000_1 (fixed inputs, not current).
