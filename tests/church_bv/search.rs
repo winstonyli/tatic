@@ -370,11 +370,11 @@ fn shape_halves_partition(job: &Job, family: &str) {
 }
 
 /// `family_laws` takes `RULEMINER_SHAPE_SALT` from the `env` it is given, as it does `RULEMINER_SHAPE` (Q2): before, it read
-/// the salt from the task's environment, so a driver child's salt was never seen.
+/// the salt from the task's environment, so a driver child's salt was never seen. Holds whatever the process sets: a
+/// `family_laws` that read the process's salt would give both halves the same one.
 #[test]
 pub fn family_laws_takes_the_shape_salt_from_its_env() {
     let job = &Job::new(Setup::process());
-    assert!(job.setup().var("RULEMINER_SHAPE_SALT").is_none(), "run without RULEMINER_SHAPE_SALT");
     let half = |salt: Option<&str>| {
         let env = move |k: &str| match k {
             "RULEMINER_SHAPE" => Some("0".to_string()),
