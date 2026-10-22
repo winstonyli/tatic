@@ -118,7 +118,7 @@ extras exist to be mined into rules.
   - It goes through the same filter chain (which subsumes today's text twin-free filter), then takes the generator's n
     per family by the same slice rule. Its arm takes n laws, where `-gen-wide`'s filtered stream arm took only the
     survivors of 350, so its M and time will differ from that run's 29 and 40 s.
-  - Delete it when v0.2 is tagged or answered against, whichever comes first.
+  - Delete it when v0.2 is tagged or answered against, whichever comes first. Deleted 2026-10-22 with `GEN_N=matched`, once v0.2 was answered.
 
 ### 2. One count rule, tied to the filtered list
 

@@ -16,7 +16,7 @@ numbers. What v0.3 left open is now v0.2.
   better on 10 salts of 10; pooled the one stage that loses, weakly, `PARKED.md`; "The law generator on ref mines and
   warm loops"). Hidden twins, 2026-10-22: the filter now normalizes every node, which drops 8.6% of cmp3d's extras as
   served laws in disguise; M rises to cold 1474 and warm 788, still better than the generator off on 9 and 10 salts of
-  10 ("Hidden twins beyond two-leaf nodes"). Answered yes; left for the tag: deleting `GEN_SOURCE`/`GEN_N` (`PARKED.md`).
+  10 ("Hidden twins beyond two-leaf nodes"). Answered yes; its control switches `GEN_SOURCE`/`GEN_N` are deleted.
 - **v0.3 - Does a learned proposer, ranking which laws to mine on, beat the hash-ordered stream?** Experiments 1 and 2
   with the custom proposer model in place of the uniform and n-gram baselines.
 - **v0.4 - Does closing the cycle push the frontier?** Experiment 3: train on accepted laws, repeat, and track the

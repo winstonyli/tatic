@@ -80,7 +80,7 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 - `scripts/gen_round.sh <exe> <salt>...`: the law generator's extras stage (its plan, Tasks 6-7), cold sweeps per arm of
   `$ARMS`: `off` (`ABLATE=gen`), `plain` (an old build), `legacy` (`GEN_COUNTS=legacy`), `f04`/`f08` (fresh, `GEN_F`),
   `s08`/`s16` (`GEN_SHARED=1`), `m08` (`GEN_N=matched`) and `stream_<arm>` (`GEN_SOURCE=stream`). Prints M per family,
-  rules and summed loop seconds. After the default (2026-10-18) `GEN_F`, `GEN_SHARED` and `GEN_COUNTS` are gone: every arm but `off`, `m08` and `stream_*` runs as s16, and `m08` and `stream_m08` take shared slices capped at the stream's fit, a larger n than the measured pair's fresh ones. `scripts/same_arms.sh <dir a> <dir b>`: `same`, or the cold-stage files that differ
+  rules and summed loop seconds. After the default (2026-10-18) `GEN_F`, `GEN_SHARED` and `GEN_COUNTS` are gone: every arm but `off`, `m08` and `stream_*` runs as s16, and `m08` and `stream_m08` take shared slices capped at the stream's fit, a larger n than the measured pair's fresh ones. Since 2026-10-22 `GEN_SOURCE` and `GEN_N` are gone too: every arm but `off` runs as s16. `scripts/same_arms.sh <dir a> <dir b>`: `same`, or the cold-stage files that differ
   (time columns aside).
 - `scripts/gen_pairs.py [--best <arm>] <run dir>...`: per arm, M per family, rules and loop seconds summed over its salts,
   and its paired count (better, equal, worse) against the best generator arm (or `--best`). Run as `python -P <script>
