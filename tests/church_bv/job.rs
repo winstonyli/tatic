@@ -301,6 +301,9 @@ enum Hidden<'a> {
     /// a whole job swapped or assigned (`mem::swap/replace/take(&mut job, ..)`, `*job = ..`), which would get past
     /// `with_rules`' identity check
     JobSwap,
+    /// a job bound under another name than `job` (a parameter or field typed `Job`, `&Job` or `&mut Job`, or a `let` of
+    /// `Job::new`), which `job_swap` could not follow
+    JobAlias(&'a str),
 }
 
 /// The `static` declared on `line`: whether `mut`, its name and its type.
@@ -323,6 +326,29 @@ fn job_swap(line: &str) -> bool {
         })
     });
     assigned || moved
+}
+
+/// The name a job is bound to on `line` when it is not `job`: a parameter or field typed `Job`, `&Job` or `&mut Job`, or a
+/// `let` of `Job::new` (the whole pattern, for a tuple).
+fn job_alias(line: &str) -> Option<&str> {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    for ty in [": &mut Job", ": &Job", ": Job"] {
+        for (i, _) in line.match_indices(ty) {
+            if line[i + ty.len()..].starts_with(ident) {
+                continue;
+            }
+            let name = line[..i].rsplit(|c: char| !ident(c)).next().unwrap_or_default();
+            if name != "job" {
+                return Some(name);
+            }
+        }
+    }
+    let (pat, value) = line.trim_start().strip_prefix("let ")?.split_once('=')?;
+    let value = value.trim_start().trim_start_matches('(');
+    let value = value.strip_prefix("&mut").or_else(|| value.strip_prefix('&')).map_or(value, str::trim_start);
+    let pat = pat.split(':').next()?.trim();
+    let name = pat.strip_prefix("mut ").unwrap_or(pat);
+    (value.starts_with("Job::new(") && name != "job").then_some(name)
 }
 
 /// What `text` (one source file) holds or does that `hidden_state_is_classified` checks, by line number. A static inside a
@@ -355,6 +381,9 @@ fn hidden(text: &str) -> Vec<(usize, Hidden<'_>)> {
         if job_swap(line) {
             out.push((i + 1, Hidden::JobSwap));
         }
+        if let Some(name) = job_alias(line) {
+            out.push((i + 1, Hidden::JobAlias(name)));
+        }
     }
     out
 }
@@ -377,11 +406,24 @@ fn hidden_finds_thread_locals_process_wide_statics_and_job_swaps() {
     for field in ["std::mem::take(&mut job.lemmas)", "mem::replace(&mut job.rw, inner)", "*job == other", "*jobs = vec![]"] {
         assert_eq!(hidden(field), vec![], "{field}");
     }
+    for (alias, name) in [
+        ("fn f(j: &mut Job) {", "j"),
+        ("fn g(&self, other: &Job, n: usize)", "other"),
+        ("    owned: Job,", "owned"),
+        ("    let (mut a, mut b) = (Job::new(s.clone()), Job::new(s));", "(mut a, mut b)"),
+        ("    let mut fresh = Job::new(s);", "fresh"),
+        ("    let other = &mut Job::new(s);", "other"),
+    ] {
+        assert_eq!(hidden(alias), vec![(1, JobAlias(name))], "{alias}");
+    }
+    for named in ["fn f(job: &mut Job, jobs: Vec<Job>) -> Job {", "let job = &mut Job::new(Setup::process());", "let out = run(&mut Job::new(s));", "kind: JobKind,"] {
+        assert_eq!(hidden(named), vec![], "{named}");
+    }
 }
 
 /// Every piece of hidden state in church_bv is classified: a thread-local is a pure memo on `THREAD_LOCAL` (D3 of
 /// docs/superpowers/plans/2026-10-21-rewrite-context.md), a process-wide mutable static is a `SharedMemo` or on
-/// `PROCESS_WIDE`, and only `job.rs` replaces a whole job. Everything else a task or a rewrite carries lives in its `Setup`
+/// `PROCESS_WIDE`, and only `job.rs` replaces a whole job or names one other than `job` (so the swap scan sees every job). Everything else a task or a rewrite carries lives in its `Setup`
 /// or `Job`, so a `driver::worker` task never sees another task's state, nor a job another job's.
 #[test]
 fn hidden_state_is_classified() {
@@ -415,7 +457,7 @@ fn hidden_state_is_classified() {
             let ok = match h {
                 Hidden::ThreadLocal(name) => listed(&THREAD_LOCAL, name),
                 Hidden::ProcessWide(name) => listed(&PROCESS_WIDE, name),
-                Hidden::JobSwap => file == "job.rs",
+                Hidden::JobSwap | Hidden::JobAlias(_) => file == "job.rs",
             };
             if !ok {
                 bad.push(format!("{file}:{line} {h:?}"));
