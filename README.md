@@ -384,7 +384,7 @@ This is stated precisely because it would be easy to overclaim here.
   a tree-walking evaluation of side-effect-free code compute the same
   value by construction, not a shortcut.
 - **Recursive terms, tail or not** (`gcd`'s `loop`, factorial's or naive
-  Fibonacci's plain `call`): proven two ways. `prove_tail_recursive_call`
+  Fibonacci's plain `call`): proven two ways. `prove_closure_expr_instance`
   validates one *execution* — for one specific call, the proof follows
   the interpreter's actual execution trace, symbolically composing each
   step's new parameters (recursing into non-tail self-calls too, wherever
@@ -667,8 +667,8 @@ reported by `JitEngine::is_kernel_verified`):
   is genuinely stronger than the sample battery. Every input means every
   `Int`, which is all the JIT passes: a theorem that types a called
   parameter as a closure doesn't count (RELATED_WORK §42).
-- At arity 0 only, the `prove_tail_recursive_call` /
-  `prove_closure_expr_instance` per-execution certificates: there the
+- At arity 0 only, `prove_closure_expr_instance`'s per-execution
+  certificate: there the
   one possible call is the entire input space. Above arity 0 such a
   certificate covers only the vectors `verify()` already checked, so the
   gate doesn't build it; a term with nothing better would otherwise serve

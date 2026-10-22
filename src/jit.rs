@@ -46,8 +46,8 @@
 //! (`prove_tail_recursive_universal`) if its shape allows one -- also
 //! covering every input, from real induction rather than per-sample
 //! checking. A term of arity 0 has exactly one possible call, so a
-//! per-execution certificate for it (`prove_tail_recursive_call`,
-//! `prove_closure_expr_instance`) covers every input too. Above arity 0
+//! per-execution certificate for it (`prove_closure_expr_instance`)
+//! covers every input too. Above arity 0
 //! those certificates reach exactly as far as `verify()`'s samples
 //! already do, so the gate doesn't build them. (Per *execution*, not per
 //! compilation: that's why they aren't translation validation in the
@@ -284,10 +284,9 @@ impl JitEngine {
     ///    than per-sample checking. Branching recursion (e.g. naive
     ///    Fibonacci) included.
     /// 4. At arity 0 only, where the one possible call is the whole input
-    ///    space, a per-execution certificate for that call:
-    ///    `prove_tail_recursive_call` (tail-recursive shapes step 3 doesn't
-    ///    cover), then `prove_closure_expr_instance` (a closure-typed
-    ///    parameter called with inconsistent arities across call sites,
+    ///    space, a per-execution certificate for that call,
+    ///    `prove_closure_expr_instance` (recursive shapes step 3 doesn't
+    ///    cover, such as a closure-typed parameter called with inconsistent arities across call sites,
     ///    `compile.rs`'s curried-dispatch capability, including one threaded
     ///    through a recursive loop). Above arity 0 such certificates reach
     ///    only `verify()`'s own samples, so they aren't built
@@ -310,9 +309,7 @@ impl JitEngine {
         {
             return true;
         }
-        arity == 0
-            && (proof::prove_tail_recursive_call(terms, h, &[]).is_some()
-                || proof::prove_closure_expr_instance(terms, h, &[]).is_some())
+        arity == 0 && proof::prove_closure_expr_instance(terms, h, &[]).is_some()
     }
 
     /// Run the compiled candidate against the interpreter (reference
@@ -574,9 +571,8 @@ mod tests {
         // rejects (and a debug build panicked on).
         let mut jit = JitEngine::new();
         assert!(!JitEngine::kernel_verify(&s, h, 1));
-        // The gate skips the per-sample provers above arity 0, so ask them directly.
+        // The gate skips the per-execution prover above arity 0, so ask it directly.
         for sample in sample_arg_vectors(1) {
-            assert!(proof::prove_tail_recursive_call(&s, h, &sample).is_none());
             assert!(proof::prove_closure_expr_instance(&s, h, &sample).is_none());
         }
         // The JIT proves the specialisation `\n. 1 + n` instead.

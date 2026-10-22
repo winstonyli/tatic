@@ -604,7 +604,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
     // new_params_for(call_args, params): one self-call occurrence's own
     // argument expressions denoted in terms of `params`, reindexed from
     // application order to by-`Var` order (matching
-    // `prove_tail_recursive_call`'s convention exactly) -- closure-aware
+    // `prove_closure_expr_instance`'s convention exactly) -- closure-aware
     // via `denote_closure` (a loop-carried `Clo`-typed argument, or a
     // plain `Int` one possibly computed by calling one), each checked
     // against `param_types[i]`, the *target* slot's own type.

@@ -23,7 +23,7 @@
 //! the same value by construction, and a kernel-checked `refl` is an
 //! accurate, honest witness of exactly that fact -- no more, no less.
 //!
-//! ## Tail recursion: relational, per-execution proofs (`prove_tail_recursive_call`)
+//! ## Recursion: per-execution proofs (`prove_closure_expr_instance`)
 //!
 //! `compile.rs` also turns *tail* self-recursion into a `loop`/`br`
 //! (recursion -> iteration) -- the actually interesting transformation.
@@ -38,7 +38,7 @@
 //! verified validators in CompCert) validates one **compilation**. The
 //! checker runs once per compiled program, and when it succeeds the
 //! compiled program is correct *for every input*. What
-//! `prove_tail_recursive_call` validates is one **execution**: a single
+//! `prove_closure_expr_instance` validates is one **execution**: a single
 //! concrete `(term, args)` trace, saying nothing whatever about any
 //! other argument. That's a result-checking / certifying-computation
 //! regime, not translation validation, and using the latter name for it
@@ -48,7 +48,7 @@
 //! the universal theorem below.
 //!
 //! Mechanically, for a concrete `(term, args)`,
-//! `prove_tail_recursive_call` follows the interpreter's own concrete trace
+//! `prove_closure_expr_instance` follows the interpreter's own concrete trace
 //! (which branch is taken at each unrolling, using the same shape
 //! `build_node` classifies bodies with), and at each tail-call step,
 //! symbolically composes the new parameters via `denote` -- i.e. it relates
@@ -60,7 +60,7 @@
 //! verification's `==` (it proves the compiled and interpreted readings are
 //! the *same expression*, not just that their outputs happened to match),
 //! but it's a certificate per call, not a theorem -- `jit::JitEngine` uses
-//! it per sample point, not as a one-time replacement for sampling.
+//! it only at arity 0, where the one possible call is every input.
 //!
 //! ## A universal proof for recursion, tail or not (`prove_tail_recursive_universal`)
 //!
@@ -99,7 +99,7 @@
 //! only needs each premise as an explicit argument any actual witness must
 //! supply, exactly how a big-step evaluation relation is conventionally
 //! formalized; for *concrete* `params` each premise is `refl`, the same
-//! way `prove_tail_recursive_call`'s trace-following already works.
+//! way `prove_closure_expr_instance`'s trace-following already works.
 //!
 //! Each leaf also gets a `combine` function -- its own arithmetic
 //! expression with each self-call occurrence replaced by a placeholder
@@ -124,7 +124,7 @@
 //! own: it's a *reusable lemma*, proved once regardless of `params`, not
 //! itself a per-input guarantee -- instantiating it at a concrete `params`
 //! still needs an actual `e : Ev(params, v)` witness (built by following
-//! `cond`'s real value at each step, same as `prove_tail_recursive_call`
+//! `cond`'s real value at each step, same as `prove_closure_expr_instance`
 //! already does), which this function doesn't build.
 //!
 //! Scope: every `If` on the way to a leaf (i.e. one `classify_tree` pulls
@@ -142,7 +142,7 @@
 //! the same way `denote_closure` already does (no branch is ever resolved
 //! concretely at this, the universal, all-inputs level; a self-call
 //! inside either branch just becomes one more placeholder of the leaf's
-//! `combine` function). `prove_tail_recursive_call` already handles
+//! `combine` function). `prove_closure_expr_instance` already handles
 //! arbitrary branching *and* arbitrary self-call placement on its own (it
 //! just follows one concrete path per call, denoting whatever it finds
 //! along the way), so neither of those needed widening.
@@ -424,7 +424,7 @@ pub(super) struct Frame<'f> {
 /// A kernel-checked witness that a term's compiled and interpreted
 /// readings agree: either for *every* input (`prove_pure_expr`, the
 /// straight-line fragment) or for one specific call
-/// (`prove_tail_recursive_call`, the tail-recursive fragment) -- both
+/// (`prove_closure_expr_instance`) -- both
 /// always `Int`-typed, unlike `prove_closure_expr`'s own use of this same
 /// struct, where `result_ty` may be `Int` or a `Clo_k` (a closure-typed
 /// top-level result, e.g. `\x. \y. x+y` used bare).

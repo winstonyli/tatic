@@ -406,10 +406,8 @@ quietly unifying; that's the entire soundness gain, no more, no less.
   concrete execution trace, mirroring `classify_step`'s own discipline
   for tail recursion, extended to closures), specifically because there
   is no honest way to widen `Γ` itself to cover it. `jit.rs`'s own
-  `kernel_verify` tries it as a fallback once the universal strategies
-  (`prove_closure_expr`, `prove_tail_recursive_universal`) and tail
-  recursion's own relational fallback (`prove_tail_recursive_call`) all
-  decline. A recursive (`Rec`-wrapped) use of this capability is covered
+  `kernel_verify` tries it, at arity 0 only, once the universal strategies
+  (`prove_closure_expr`, `prove_tail_recursive_universal`) decline. A recursive (`Rec`-wrapped) use of this capability is covered
   too now, for *tail*-recursive shapes (`eval_dyn_tail_recursive`,
   reusing `classify_step` to follow the loop's own concrete self-calls) —
   still per instance, never universal, for the same reason as above (the

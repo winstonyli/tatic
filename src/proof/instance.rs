@@ -1232,8 +1232,8 @@ pub struct UniversalInstanceProof {
 /// witness, giving a genuine kernel-checked fact about *this* call rather
 /// than only the theorem's abstract shape -- the payoff `prove_tail_recursive_universal`'s
 /// own docs describe as still missing. Building the witness reuses the
-/// one-time theorem instead of `prove_tail_recursive_call`'s from-scratch
-/// `cong1`/`trans_proof` chaining, so it's cheap per call once the theorem
+/// one-time theorem instead of `prove_closure_expr_instance`'s from-scratch
+/// trace-following, so it's cheap per call once the theorem
 /// exists.
 ///
 /// Returns `None` for anything `prove_tail_recursive_universal` itself

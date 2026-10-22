@@ -59,7 +59,7 @@ use super::*;
 // further nested `If`, purely arithmetic or choosing between two
 // `Clo`-typed values (`find_self_calls`/placeholder-mode `denote_closure` both
 // recurse into one, embedding it opaquely via `ite_ref`/`ite_clo_ref`,
-// same as `denote_closure` always has). `prove_tail_recursive_call`
+// same as `denote_closure` always has). `prove_closure_expr_instance`
 // already handles arbitrary branching
 // *and* arbitrary self-call placement on its own (it just follows one
 // concrete path through the tree per call, denoting whatever it finds

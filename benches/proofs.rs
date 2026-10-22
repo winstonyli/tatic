@@ -1,14 +1,14 @@
 //! Cost of building kernel-checked proofs in `proof.rs`: the straight-line
-//! case (one `refl`), a single per-execution relational
+//! case (one `refl`), a single per-execution (`prove_closure_expr_instance`)
 //! proof, and the one-time universal proof -- plus a direct comparison
-//! between N relational proofs and one universal proof, since that
+//! between N per-execution proofs and one universal proof, since that
 //! crossover is the whole argument for building the universal proof at
 //! all (see `proof.rs`'s module docs).
 
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
 use tatic::proof::{
-    prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_call, prove_tail_recursive_instance,
+    prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_instance,
     prove_tail_recursive_universal,
 };
 use tatic::term::TermStore;
@@ -28,11 +28,11 @@ fn straight_line_proof(c: &mut Criterion) {
     });
 }
 
-fn relational_per_call_proof(c: &mut Criterion) {
+fn per_execution_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
     let h = common::gcd(&mut store);
-    c.bench_function("gcd_relational_proof_single_call", |b| {
-        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_call(&store, black_box(h), black_box(&[270, 192])).unwrap()); }))
+    c.bench_function("gcd_per_execution_proof_single_call", |b| {
+        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr_instance(&store, black_box(h), black_box(&[270, 192])).unwrap()); }))
     });
 }
 
@@ -55,10 +55,10 @@ fn universal_proof(c: &mut Criterion) {
 }
 
 /// The crossover this project's whole "universal vs per-call" argument
-/// rests on: N relational proofs (one per sample point `jit.rs` verifies
+/// rests on: N per-execution proofs (one per sample point `jit.rs` verifies
 /// against) versus the single fixed cost of the universal theorem.
-fn relational_scaling_vs_universal(c: &mut Criterion) {
-    let mut group = c.benchmark_group("gcd_relational_scaling_vs_universal");
+fn per_execution_scaling_vs_universal(c: &mut Criterion) {
+    let mut group = c.benchmark_group("gcd_per_execution_scaling_vs_universal");
     let mut store = TermStore::new();
     let h = common::gcd(&mut store);
     let sample_points: [(i64, i64); 10] = [
@@ -75,10 +75,10 @@ fn relational_scaling_vs_universal(c: &mut Criterion) {
     ];
 
     for n in [1usize, 5, 10] {
-        group.bench_function(format!("relational_x{n}"), |b| {
+        group.bench_function(format!("per_execution_x{n}"), |b| {
             b.iter(|| tatic::kernel::scoped(|| {
                 for &(a, bb) in &sample_points[..n] {
-                    prove_tail_recursive_call(&store, black_box(h), black_box(&[a, bb])).unwrap();
+                    prove_closure_expr_instance(&store, black_box(h), black_box(&[a, bb])).unwrap();
                 }
             }))
         });
@@ -234,9 +234,9 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
 /// consistent with `trans_proof`'s own cumulative composition: each new
 /// step's proof necessarily references the *entire* accumulated chain so
 /// far, the same reason repeatedly appending to a growing structure by
-/// copy is inherently superlinear. `gcd_relational_proof_single_call`'s
-/// own ~24us is not
-/// a fair comparison against this -- it proves one *relational* step,
+/// copy is inherently superlinear. `gcd_per_execution_proof_single_call`'s
+/// own ~24us (measured as the relational prover it replaced) is not
+/// a fair comparison against this -- it proves one gcd execution,
 /// never unrolling a growing chain, while this benchmark measures a
 /// fully-unrolled *instance* proof's own amortized per-iteration cost,
 /// a structurally different (and inherently more expensive) proof
@@ -264,9 +264,9 @@ fn over_application_instance_proof(c: &mut Criterion) {
 criterion_group!(
     benches,
     straight_line_proof,
-    relational_per_call_proof,
+    per_execution_proof,
     universal_proof,
-    relational_scaling_vs_universal,
+    per_execution_scaling_vs_universal,
     closures_fragment_proof,
     closure_typed_recursion_universal_proof,
     over_application_instance_proof,

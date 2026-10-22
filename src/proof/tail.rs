@@ -1,6 +1,6 @@
 use super::*;
 
-// --- tail recursion: relational, per-call proofs ------------------------
+// --- concrete evaluation of the tail-call fragment, shared by the per-execution provers ---
 
 /// A small, self-contained *concrete* evaluator over the same fragment
 /// `denote` covers (`Var`/`Lit`/`Prim`/`If`, no `App`/`Abs`/`Rec`), used
@@ -84,59 +84,4 @@ pub(super) fn classify_step(
         Shape::SelfCall(args) => Some(StepOutcome::TailCall(args)),
         _ => Some(StepOutcome::Base(h)),
     }
-}
-
-/// Attempts to build a kernel-checked equivalence proof for one specific
-/// call `h(args)`, where `h` is a `Rec`-wrapped, *tail*-recursive function
-/// (the fragment `compile.rs` turns into a `loop`/`br`). See the module
-/// docs ("Tail recursion") for what this does and doesn't establish.
-///
-/// Returns `None` for: non-recursive or zero-arity `h`; an arity mismatch;
-/// non-tail recursion anywhere in the body (e.g. naive Fibonacci, which
-/// `compile.rs` itself handles via a plain `call`, not a loop -- proving
-/// that case needs a different argument, not this one); or a trace that
-/// doesn't reach a base case within a generous step bound (guards against
-/// a non-terminating or pathologically long call blowing up proof size).
-pub fn prove_tail_recursive_call(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
-    // A cost bound, shared with the closure-capable sibling of this loop
-    // -- see `DynBudget::new` for why it is 200 and what that was sized
-    // against.
-    const MAX_STEPS: usize = 200;
-
-    let (arity, body, is_rec) = compile::peel(store, h)?;
-    if !is_rec || arity == 0 || arity != args.len() {
-        return None;
-    }
-    let self_idx = arity as u32;
-
-    let (arith, mut symbolic) = setup(store, body, arity, Some(self_idx))?;
-    // By-`Var`-index concrete params (`Var(0)` = last-applied), matching
-    // `symbolic`'s (and `denote`'s) convention; `args` itself is in
-    // application order.
-    let mut concrete: Vec<i64> = (0..arity).map(|i| args[arity - 1 - i]).collect();
-
-    let mut denotation = None;
-    for _ in 0..MAX_STEPS {
-        match classify_step(store, body, arity, self_idx, &concrete)? {
-            StepOutcome::Base(leaf) => {
-                denotation = Some(denote(store, leaf, &arith, &symbolic)?);
-                break;
-            }
-            StepOutcome::TailCall(arg_exprs) => {
-                if arg_exprs.len() != arity {
-                    return None;
-                }
-                let mut new_symbolic = Vec::with_capacity(arity);
-                let mut new_concrete = Vec::with_capacity(arity);
-                for i in 0..arity {
-                    let expr = arg_exprs[arity - 1 - i];
-                    new_symbolic.push(denote(store, expr, &arith, &symbolic)?);
-                    new_concrete.push(eval_concrete(store, expr, &concrete)?);
-                }
-                symbolic = new_symbolic;
-                concrete = new_concrete;
-            }
-        }
-    }
-    finish(arith, arity, denotation?)
 }

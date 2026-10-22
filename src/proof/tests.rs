@@ -208,13 +208,13 @@ fn gcd(s: &mut TermStore) -> Hash {
 }
 
 #[test]
-fn tail_recursive_call_gets_a_relational_proof() {
+fn tail_recursive_call_gets_a_per_execution_proof() {
     let mut s = TermStore::new();
     let g = gcd(&mut s);
 
     for (a, b) in [(48, 18), (270, 192), (17, 5), (0, 7)] {
-        let proof = prove_tail_recursive_call(&s, g, &[a, b])
-            .unwrap_or_else(|| panic!("gcd({a},{b}) should get a relational proof"));
+        let proof = prove_closure_expr_instance(&s, g, &[a, b])
+            .unwrap_or_else(|| panic!("gcd({a},{b}) should get a per-execution proof"));
         assert_eq!(proof.arity, 2);
         kernel::check_in(
             &proof.globals,
@@ -1652,37 +1652,15 @@ fn a_clo_typed_nested_if_as_an_ad_hoc_closures_own_argument_gets_a_universal_pro
         .expect("the recorded theorem should independently re-typecheck");
 }
 
-#[test]
-fn non_tail_recursion_is_out_of_scope_for_the_relational_proof() {
-    // factorial's self-call is nested inside a multiplication (n *
-    // f(n-1)), not a bare tail call -- compile.rs itself compiles this
-    // via a plain `call`, not a loop, so this proof (which specifically
-    // targets the loop transformation) correctly doesn't apply either.
-    let mut s = TermStore::new();
-    let n = s.var(0);
-    let fv = s.var(1);
-    let one = s.lit(1);
-    let cond = s.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(fv, n_minus_1);
-    let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-    let body = s.if_(cond, one, else_branch);
-    let abs = s.abs(body);
-    let fact = s.rec(abs);
-
-    assert!(prove_tail_recursive_call(&s, fact, &[5]).is_none());
-}
-
 /// A long-running tail recursion used to take the *process* down.
 ///
-/// `prove_tail_recursive_call` accumulates an expression that deepens
+/// `prove_closure_expr_instance` accumulates an expression that deepens
 /// a couple of levels per trace step, and both the kernel's recursive
 /// traversals and the recursive `Drop` of the resulting `Expr`
 /// chain have finite stack. With the old 10,000-step budget a loop
 /// like this built a ~40,000-level expression and died with
 /// `STATUS_STACK_OVERFLOW` -- not a failed proof, a crashed process,
-/// reachable from `jit::JitEngine::apply` through the sibling
-/// `prove_closure_expr_instance`. See `RELATED_WORK.md` §30.
+/// reachable from `jit::JitEngine::apply`. See `RELATED_WORK.md` §30.
 ///
 /// Declining is the correct outcome here; surviving to decline is the
 /// point of the test.
@@ -1707,71 +1685,12 @@ fn a_long_running_trace_declines_instead_of_overflowing_the_stack() {
     let h = s.rec(outer);
 
     assert_eq!(eval::apply_term(&s, h, &[20_000, 0]).unwrap(), 20_000);
-    assert!(prove_tail_recursive_call(&s, h, &[20_000, 0]).is_none());
+    assert!(prove_closure_expr_instance(&s, h, &[20_000, 0]).is_none());
 
     // And a trace short enough to stay under every ceiling still
     // proves, so the bound above isn't simply switching the strategy
     // off.
-    assert!(prove_tail_recursive_call(&s, h, &[10, 0]).is_some());
-}
-
-#[test]
-fn non_recursive_term_is_out_of_scope_for_the_relational_proof() {
-    let mut s = TermStore::new();
-    let a = s.var(1);
-    let b = s.var(0);
-    let sum = s.prim(PrimOp::Add, a, b);
-    let inner = s.abs(sum);
-    let f = s.abs(inner);
-    assert!(prove_tail_recursive_call(&s, f, &[1, 2]).is_none());
-}
-
-/// Pins *why* `jit::JitEngine::kernel_verify`'s `prove_tail_recursive_call`
-/// step is never the winning strategy in practice (measured: zero
-/// firings across the whole lib suite, against six for the
-/// `prove_closure_expr_instance` step -- see `RELATED_WORK.md` 28).
-///
-/// The one place it is genuinely more permissive than
-/// `prove_tail_recursive_universal` is the `If` condition:
-/// `classify_tree` requires a direct comparison, while `classify_step`
-/// just evaluates whatever is there on the concrete arguments. But
-/// `compile::build_node`'s `If` arm imposes exactly `classify_tree`'s
-/// restriction, so a term in that gap never compiles, and
-/// `kernel_verify` never runs on it at all.
-///
-/// That makes the two restrictions load-bearing *as a pair*. This test
-/// fails the moment either is relaxed without the other -- which is
-/// precisely when the relational step would start being reachable
-/// again, and when the "it's unreached, consider deleting it" note in
-/// `RELATED_WORK.md` 28 would stop being true.
-#[test]
-fn the_relational_steps_extra_reach_lies_entirely_outside_the_compilable_fragment() {
-    // rec f n = if (n - 1) then f(n - 1) else 42
-    //
-    // Tail-recursive and terminating (n=3: 2 -> 1 -> 0 -> 42), but the
-    // condition is a `Sub`, not a comparison.
-    let mut s = TermStore::new();
-    let n = s.var(0);
-    let f = s.var(1);
-    let one = s.lit(1);
-    let base = s.lit(42);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(f, n_minus_1);
-    let body = s.if_(n_minus_1, rec_call, base);
-    let abs = s.abs(body);
-    let h = s.rec(abs);
-
-    // It really does compute what the shape says.
-    assert_eq!(eval::apply_term(&s, h, &[3]).unwrap(), 42);
-
-    // The relational (per-execution) proof accepts it...
-    assert!(prove_tail_recursive_call(&s, h, &[3]).is_some());
-    // ...the universal one doesn't, because `classify_tree` rejects a
-    // non-comparison condition...
-    assert!(prove_tail_recursive_universal(&s, h).is_none());
-    // ...and none of that matters, because `build_node`'s `If` arm rejects the
-    // same condition, so the term never reaches the JIT's cascade.
-    assert!(compile::try_compile(&s, h).is_none());
+    assert!(prove_closure_expr_instance(&s, h, &[10, 0]).is_some());
 }
 
 #[test]
@@ -2985,9 +2904,8 @@ fn one_closure_terms_proof_is_rejected_against_anothers_type() {
 
 /// Independently re-typechecks `proof` from scratch (not just
 /// trusting the `.ok()?` inside `prove_closure_expr_instance`) --
-/// the same discipline `tail_recursive_call_gets_a_relational_proof`
-/// already applies to `prove_tail_recursive_call`'s own per-instance
-/// proofs, which this function's own methodology mirrors.
+/// the same discipline `tail_recursive_call_gets_a_per_execution_proof`
+/// applies.
 fn check_instance_proof(proof: &EquivalenceProof) {
     kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty, proof.denotation, proof.denotation))
         .expect("the recorded per-instance proof should independently re-typecheck");

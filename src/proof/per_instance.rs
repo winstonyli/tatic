@@ -12,17 +12,15 @@ use super::*;
 // type for "either `Clo_1` or `Clo_2`"), a separate, larger research
 // question. Instead this follows *one concrete execution trace*: an
 // `If`'s own condition is resolved concretely and only the taken branch
-// is ever denoted (the same discipline `classify_step`/
-// `prove_tail_recursive_call` already use for tail recursion, extended
-// to closures), and a closure-typed variable's own call is resolved
+// is ever denoted (the same discipline `classify_step` applies, extended to
+// closures), and a closure-typed variable's own call is resolved
 // against whatever concrete literal lambda is *actually* bound there
 // right now, dispatched at that call site's own concrete argument
 // count -- never a statically-assigned one, since nothing here needs two
 // different call sites for the same variable to agree on anything (a
 // single concrete trace only ever reaches one of them). This makes the
 // resulting proof a certificate for *one instance*, not a theorem
-// covering every input -- the same honesty `prove_tail_recursive_call`
-// already has, stated plainly rather than hidden.
+// covering every input, stated plainly rather than hidden.
 //
 // The one place this needs more than reading a postulate off a frame is
 // *inlining*: when a literal-lambda-headed call's own declared parameter
@@ -203,7 +201,7 @@ pub(super) struct DynBudget {
 }
 
 impl DynBudget {
-    /// `steps` (and `prove_tail_recursive_call`'s `MAX_STEPS`, kept equal)
+    /// `steps`
     /// was cut from 10,000 to 200 against two native-stack ceilings
     /// (`RELATED_WORK.md` §30): `kernel::check`'s recursion, and the
     /// recursive `Drop` of a discarded deep `Rc<Expr>` chain, which is
@@ -220,9 +218,8 @@ impl DynBudget {
 
 /// Follows one concrete trace through a `Rec`-wrapped, *tail*-recursive
 /// `body` (`arity` params plus the self-reference at `Var(arity)`,
-/// matching `peel`'s own convention), starting from `frame` -- the
-/// per-instance, closure-capable sibling of `prove_tail_recursive_call`'s
-/// own `classify_step` loop, reusing `classify_step` itself unchanged
+/// matching `peel`'s own convention), starting from `frame` -- a
+/// closure-capable `classify_step` loop, reusing `classify_step` itself unchanged
 /// (it only ever needs concrete `i64`s to pick a branch or recognize a
 /// self-call, which `dyn_frame_concrete_ints` already projects `frame`
 /// down to). This is what lets `eval_dyn_direct_call` inline a `root`
@@ -664,7 +661,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
     }
 
     // By-`Var`-index concrete params (`Var(0)` = last-applied), matching
-    // `denote_closure`'s/`prove_tail_recursive_call`'s own convention.
+    // `denote_closure`'s own convention.
     let mut frame = Vec::with_capacity(arity);
     for i in 0..arity {
         let n = args[arity - 1 - i];
