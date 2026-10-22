@@ -1,9 +1,12 @@
 # salts_ab.sh <exe A> <exe B> <salts...>: per salt, SWEEP=cold:cmp3d (extras on, 2 lanes, 6 scoring workers) with A and
 # B, A first on odd salts and B first on even ones, each a `runs run` (job CPU and wall) into $RUN_DIR/s<salt>_<A|B>;
 # a watchdog stops an exe past 8 GB. Then per loop the M of each arm and whether their rules agree, and per arm the
-# totals of M, wall and job CPU.
+# totals of M, wall and job CPU. Last line: loops with the same rules, and arms that failed (non-zero exit or no M);
+# exits 1 if any arm failed. Differing rules are reported, not failed: a behavior change may mean to change them.
 a=$1; b=$2; shift 2
 runs="$(dirname "$0")/../../../../tools/runs/target/release/runs.exe"
+[ -x "$runs" ] || { echo "salts_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
+failed=0; same_n=0; loops=0
 for s in "$@"; do
   [ $((s % 2)) = 1 ] && order="A B" || order="B A"
   for arm in $order; do
@@ -16,11 +19,13 @@ for s in "$@"; do
       ping -n 6 127.0.0.1 > /dev/null
     done
     echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
+    [ "$(cat "$o/exit")" = 0 ] && cut -f4 "$o/cold_cmp3d.tsv" 2>/dev/null | grep -qE '^[0-9]+$' || failed=$((failed + 1))
   done
   for l in 1 2 3; do
     m() { grep "15-$l" "$RUN_DIR/s${s}_$1/cold_cmp3d.tsv" 2>/dev/null | cut -f4; }
     f="cold_cmp3d_cmp3d_${l}_none/rules.txt"
     cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same=same || same=differ
+    loops=$((loops + 1)); [ $same = same ] && same_n=$((same_n + 1))
     echo "salt $s loop $l: M A $(m A) B $(m B), rules $same"
   done
 done
@@ -29,3 +34,5 @@ for arm in A B; do
   for s in "$@"; do for v in $(cut -f4 "$RUN_DIR/s${s}_$arm/cold_cmp3d.tsv" 2>/dev/null | grep -E '^[0-9]+$'); do m=$((m + v)); done; done
   echo "total $arm: M $m; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}')"
 done
+echo "salts_ab: rules same in $same_n of $loops loops; $failed of $(($# * 2)) arms failed"
+[ $failed = 0 ]

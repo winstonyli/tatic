@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# miner_snap.sh <exe> <outdir>: the miner paths the sweep gate (salts_ab.sh) skips, as timing-free snapshots to diff
+# miner_snap.sh <exe> <outdir> [<base snapshots>]: the miner paths the sweep gate (salts_ab.sh) skips, as timing-free snapshots to diff
 # against a base exe's (docs/superpowers/plans/2026-10-21-rewrite-context.md, Task 0). The sweep forces RULEMINER_FAST=1
 # and reaches the preference phase only in its pooled stage, so this runs:
 #   nonfast1, nonfast4  the non-fast miner (the provable filter's kernel proofs) on 1 and 4 threads, empty base
@@ -40,3 +40,12 @@ MACHINE_STATE=0 SWEEP=pooled:cmp3d SALT=1 LIB="$in" SWEEP_OUT="$out/pooled" \
 } > "$out/pooled.txt"
 echo "pooled: $(grep -c '^RULEMINER prefer' "$out/pooled.txt") preferences"
 echo "headline: miner_snap $(ls "$out"/*.txt | wc -l) snapshots in $out"
+# with a third argument, compares each snapshot with the base's (git checks the base out as CRLF) and fails on a difference
+[ -n "${3:-}" ] || exit 0
+differ=0
+for f in "$3"/*.txt; do
+    c=$(basename "$f" .txt)
+    if diff -q --strip-trailing-cr "$f" "$out/$c.txt" > /dev/null; then echo "$c same"; else echo "$c DIFFERS"; differ=$((differ + 1)); fi
+done
+echo "miner_snap: $differ of $(ls "$3"/*.txt | wc -l) snapshots differ from $3" | tee "${RUN_DIR:-$out}/headline.txt"
+[ "$differ" -eq 0 ]

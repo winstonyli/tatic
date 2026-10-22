@@ -28,7 +28,8 @@ Status per item: `todo`, `ruling`, `done <commit>`, `decided against`, `parked`.
 - **C3 (D): split `rule_miner`** (search.rs:445, 831 lines, about 60 closures) into a `Miner` struct with methods for
   candidates, scoring, rounds, finish and the preference phase. Status: ruled 2026-10-21: part of C1's plan (the
   closures must take `ctx`, which forces the split). Task 1 of `2026-10-21-rewrite-context.md`, done first, before any
-  thread-local moves.
+  thread-local moves. Status: done on branch `rewrite-context` (`tests/church_bv/miner.rs`: `laws`, `candidates`,
+  `Prover`, `Scorer`, `Rounds`, `prefs_phase`; gates 2026-10-21-t1-miner-snap 5/5 same, t1-gate2 + t1-threads-s5 rules same 15/15, t1-threads-s1/3/5 same).
 - **C4: finish `MinerConfig`.** Its doc says it holds every `RULEMINER_*` switch, but about 9 are read inline. Flag parsing
   disagrees (`==1`, `!=0`, `is_some()`, so `NF_TRACE=0` turns tracing on): one `env_flag`. Status: done 30d5a3a (gate 2026-10-21-c4-gate: M 362 = 362, rules same in 15 loops and across threads).
 - **C5 (D): one denote walker in `src/proof/`.** `denote_with_placeholders` (hardening.rs:201) mirrors

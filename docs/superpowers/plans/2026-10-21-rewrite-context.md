@@ -50,23 +50,28 @@ below. That section is binding; where a task's text disagrees with it, the decis
 
 ## Quirks (preserved through Task 8, fixed in Task 9)
 
-- **Q1:** with `RULEMINER_THREADS` > 1, `prove`'s worker threads run `prove_rule` with no rule preferences. With one
-  thread, `prove` runs inline under the base preferences that P0 installed (`search.rs:761-780` against `:492`).
+- **Q1:** with `RULEMINER_THREADS` > 1, the provable filter's worker threads run `prove_rule` with no rule
+  preferences. With one thread, the filter runs inline under the base preferences that P0 installed
+  (`Prover::filter`, `miner.rs:392`, with `prefs: None`, against `miner.rs:31`). The winners' proofs (`Prover::prove`
+  with `Some(base_prefs)`, also on the speculative threads) install the base preferences, so Q1 is the filter's only.
 - **Q2:** `shape_part` (`search.rs:308`) reads `RULEMINER_SHAPE_SALT` from the task's environment, while its caller
   `family_laws` (`:168`, `:210`) reads `RULEMINER_SHAPE` from the `env` closure it is given. In the driver, which
   passes a stage's env pairs through that closure (`write_laws`), a stage's own `RULEMINER_SHAPE_SALT` is ignored.
 - **Q3:** `TREE_LAWS` (`machine.rs:382`) is keyed without `carry_cap`, which comes from the environment.
 - **Q4:** `proving` (`rewrite.rs:1865`) does not save `REWROTE`. A proof's outermost `rewrite` therefore clears its
   caller's list, and the caller sees the proof's leftovers.
-- **Q5:** the budget that P5's proofs run under (`search.rs:757`) is whatever the main thread's `RULE_BUDGET` holds
-  there, not a configured value: what P1's last law left, unless P2–P4 rewrite on the main thread (Task 1 checks).
+- **Q5:** the budget that P5's proofs run under is whatever the main thread's `RULE_BUDGET` holds after P1, not a
+  configured value: what P1's last law left. Task 1 checked that P2–P4 do not rewrite (they evaluate terms only), and
+  writes it out as `laws`' returned `i64` (`miner.rs:126`), the `Prover`s' `budget`.
 - Not a quirk: `check_replay` keeping the redo's `RULE_CONFLICTS` counts is documented as intended
   (`rewrite.rs:2423`) and stays.
 
 ## Global Constraints
 
 - **Equality gate, after Tasks 1, 3, 4, 5, 6, 7 and each Task 9 fix:**
-  1. `docs/runs/2026-10-18/scripts/salts_ab.sh <base exe> <new exe> 1 2 3 4 5`, rules `same` in all 15 loops.
+  1. `docs/runs/2026-10-18/scripts/salts_ab.sh <base exe> <new exe> 1 2 3 4 5`, rules `same` in all 15 loops (its
+     last line: `rules same in 15 of 15 loops; 0 of 10 arms failed`). It needs `tools/runs` built in the checkout it
+     runs from (`cargo build --release` there); since Task 1 it refuses to start without it and exits 1 on a failed arm.
   2. `threads_check.sh <new exe> {1,3,5}` passes.
   3. `miner_snap.sh` (Task 0) matches the base snapshots exactly.
 
@@ -112,8 +117,9 @@ below. That section is binding; where a task's text disagrees with it, the decis
 
 - `tests/church_bv/job.rs` (new): `Setup`, `Job`, `RewriteState`, `Lemmas`, `NEXT_JOB`, and the scoped mutator
   `with_rules`. Holds `D1`'s guarantee, so it stays small (about 250 lines).
-- `tests/church_bv/miner.rs` (new): `rule_miner`'s body as `Laws`, `Candidates`, `Scorer`, `Prover`, `Rounds`,
-  `prefs_phase` and `Report`. `search.rs` keeps the `#[test] #[ignore] fn rule_miner()` entry, now a two-line wrapper.
+- `tests/church_bv/miner.rs` (new, Task 1): `rule_miner`'s body as `laws`, `candidates`, `Prover`, `Scorer`,
+  `Rounds` (with `report`) and `prefs_phase`. `search.rs` keeps the `#[test] #[ignore] fn rule_miner()` entry, now a
+  one-line wrapper.
 - `tests/church_bv/rewrite.rs`: `Rules` (next to `RuleTable`, whose fields stay private). Every state-touching
   function gains `job`.
 - `tests/church_bv/{search,machine,encoding,wasm,lemma_cache,driver}.rs`: callers.
@@ -151,13 +157,13 @@ untested. The draft's `RULEMINER_TRIALS` sizing is moot: a real law file already
 runs. `nonfast1` equals `nonfast4`. `pbase1` and `pbase4` choose the same 28 rules, but differ in work counts: 7
 rounds score 1 more candidate (`round over 63 of 100` against 64), law evaluations 1060617 against 1063456, join
 searches 33663 against 33674. With no base preference, the thread count changes nothing, so preferences are what
-make it matter. This is Q1's baseline: P5's prove workers lack the base preferences, and possibly the speculative
-proof workers (`search.rs:1156`) do too, which Task 9's Q1 probe must check.
+make it matter. This is Q1's baseline: P5's prove workers lack the base preferences. The speculative proof workers
+do not: they run `prove_any`, which installs them (read in Task 1; see Q1).
 
 The gate compares each configuration with its own base snapshot (`diff -r --strip-trailing-cr` over `*.txt`, since git checks the snapshots out as CRLF),
 never `pbase1` with `pbase4`.
 
-### Task 1 (C3): split `rule_miner` into named parts, thread-locals unchanged
+### Task 1 (C3): split `rule_miner` into named parts, thread-locals unchanged (done 2026-10-21)
 
 **Files:** Create `tests/church_bv/miner.rs`. Modify `search.rs:465-1300` (the body moves out), `main.rs`
 (`mod miner;`).
@@ -166,22 +172,48 @@ never `pbase1` with `pbase4`.
 - `pub fn run()` in `miner.rs`, the whole miner. `search::rule_miner()` becomes `#[test] #[ignore] pub fn
   rule_miner() { crate::miner::run() }`. The driver's `task_fn` table still names `search::rule_miner`.
 - Structs, from the census grouping. Fields are the cross-phase locals; their names stay as in the census table:
-  - `struct Laws { stragglers, clean, scored, guard_w, kv, n }`, built by `fn laws(cfg: &MinerConfig, base_empty:
-    bool) -> (Laws, i64)`. The `i64` is the budget P1 leaves behind (Q5), written out.
+  - `struct Laws { stragglers, scored, guard_w, n, kv }`, built by `fn laws(cfg: &MinerConfig, base_empty: bool,
+    clock: &Clock) -> (Laws, i64)`. The `i64` is the budget P1 leaves behind (Q5), written out.
   - `fn candidates(laws: &Laws, cfg, base) -> (Vec<(Term, Term)>, HashMap<Term, Vec<(Term, Term)>>)` for P3–P4. The
     nested `abstractions`, `renum`, `bare` and the second `renum` become private free functions with distinct names
     (`renum_vars` and `renum_placeholders`).
   - `struct Prover { rules: Vec<(Term, Term)>, prefs: Option<Vec<Pref>>, budget: i64, n: usize }` with `fn
-    prove(&self, rule) -> bool`. `prefs: None` means "install none" (`prove`'s workers, Q1). Inline at threads == 1
-    it is also `None`, so it inherits what the thread has, which is the base preferences (Q1, written out in a
-    comment). `prove_any` uses `Some(base_prefs)`.
+    prove(&self, rule) -> bool` (the old `prove_any`: an intern scope per rule, clears the rules and budget after)
+    and `fn filter(&self, cands, threads) -> Vec<usize>` (the old `prove`: one intern scope per worker, clears
+    nothing). `prefs: None` means "install none": the filter's prover (Q1). Inline at threads == 1 it inherits what
+    the thread has, which is the base preferences (Q1, written out in a comment). The winners' prover uses
+    `Some(base_prefs)`.
   - `struct Scorer` holds `score_laws`, `summarize`, `count`, `guarded`, `value`, `all_laws`, `base_now`
-    (`Mutex`), and the atomics `law_evals`/`law_reuses`. It is `Sync`, and the scoring workers borrow `&Scorer`.
-  - `struct Rounds` holds `proofs`, `pending`, `assumed`, `speculate`, `spawn_req`, `picks`, `finished`,
-    `state_memo`, `state_time`, `bound_time`, `scorings` and `skipped`, as plain fields under `&mut self`. Methods
-    `pick`, `pick_kept`, `finish`, `settle` and `resolve`. `finish` takes `spawn: &dyn Fn(usize)` as today.
-    `provable` becomes `Vec<usize>`, indices into an owned `cands`.
-  - `fn prefs_phase(...)` for P9, and `struct Report` for P10.
+    (`Mutex`), the atomics `law_evals`/`law_reuses` and `join_workers` (`Mutex`). It is `Sync`, and the scoring
+    workers borrow `&Scorer`.
+  - `struct Rounds` holds `proofs`, the proof channel, `pending`, `assumed`, `speculate`, `spawn_req`, `picks`,
+    `finished`, `state_memo`, `state_time`, `join_main`, `bound_time`, `scorings` and `skipped`, as plain fields
+    under `&mut self`. Methods `resolve`, `prove_one`, `state`, `pick`, `then`, `pick_kept`, `finish`, `settle`,
+    `play` (P8) and `report` (P10). `finish` takes `spawn: &dyn Fn(usize)` as before. `provable` is an owned
+    `Vec<(Term, Term)>` (`Term` is `Copy`) that `Rounds` borrows.
+  - `fn prefs_phase(...)` for P9. `struct Clock` is the phase clock.
+
+**Rulings while building it (2026-10-21):**
+- `provable` is an owned `Vec<(Term, Term)>`, not indices into `cands`: the rules are `Copy`, and every use wants
+  the rule, so indices only added a lookup.
+- `Prover` has two methods, `prove` and `filter`, because the old `prove` and `prove_any` differ in more than
+  preferences: the filter opens one intern scope per worker and leaves its rules and budget installed, `prove_any`
+  one scope per rule and clears them. Unifying them would change the main thread's state after an inline filter.
+- `clean` is not a field of `Laws`: only P2, inside `laws`, reads it.
+- `laws` takes the `Clock`: two phase marks fall inside it.
+- P10 is `Rounds::report`, not a `struct Report`: it owns no data, and every value it prints is already a field of
+  `Rounds` or `Scorer`.
+- `join_workers` sits in `Scorer`, since the scoring workers write it while the main thread holds `&mut Rounds`.
+- `miner_snap.sh` takes an optional third argument, the base snapshots, and compares them itself (writes the
+  headline, fails on a difference), so each gate is one run.
+- The first salts gate (2026-10-21-t1-gate) ran nothing: `runs.exe` was not built in the worktree, every arm exited
+  127, and the script still exited 0. `salts_ab.sh` now checks for `runs.exe` up front, counts failed arms (non-zero
+  exit or no M) and exits 1 on any, and ends on a one-line summary. The rerun, 2026-10-21-t1-gate2, gave rules `same` in 12 of 12 loops for salts 1–4. It
+  was lost in salt 5 B when the session ended, and so was its salt-5 rerun t1-gate3. Salt 5 is covered by comparing
+  t1-gate3's base arm with t1-threads-s5's `t6` and `t1` arms (the new exe at the same configuration): rules `same` in
+  3 of 3 loops, M 26 23 21 in both. Task 1's gate: rules `same` in 15 of 15 loops, miner snapshots 5 of 5, threads
+  checks on salts 1, 3 and 5 all `same`. The earlier salts
+  gates, 2026-10-21-c4-gate and c7-gate, ran from the main checkout: all 10 arms exited 0 with M 362, so they stand.
 
 - [ ] **Step 1: move, don't rewrite.** Each closure becomes a method or free function with the same body. A
   captured variable becomes a field or a parameter. `Cell` and `RefCell` locals that existed only because closures
@@ -287,7 +319,10 @@ The largest commit in the plan, mechanical and compiler-driven.
     `rule_set`, `fixed_rules`, `lemma_cache::*` or `task::result`, directly or through a callee, gains `job: &Job`.
     Functions that already need `&mut Job` in a later task still take `&Job` here; Tasks 4–7 upgrade them.
   - Functions outside any job take `setup: &Setup` instead: `MinerConfig::from_env` becomes
-    `MinerConfig::new(&Setup)`, and the same goes for `family_laws`'s env closure.
+    `MinerConfig::new(&Setup)`, and the same goes for `family_laws`'s env closure. `MinerConfig` moves from
+    `search.rs` to `miner.rs` in the same edit (only the miner reads it since Task 1; ruled 2026-10-21). Its one
+    outside reader, `driver.rs`'s pooled stage, takes only `.steps`: read that through `Setup` if it is a plain env
+    read, rather than building a whole `MinerConfig`; record the ruling either way.
   - Each thread that rewrites (the miner's main thread, its four `thread::scope` spawn sites, tests that spawn) makes
     its own `Job::new(setup.clone())`.
   - Tests start with `let job = &Job::new(Setup::process());`.
@@ -300,8 +335,8 @@ The largest commit in the plan, mechanical and compiler-driven.
     `per_task_rebuilds_per_task`.
   - `TRACE_RULES` and `RULE_CONFLICTS` are job state, so they stay until Tasks 4 and 6, but no longer as `PerTask`:
     for this one commit they become `thread_local!`. That matches what a fresh task thread sees today, except across
-    the miner's threads. Verified 2026-10-21: `RULE_CONFLICTS` is armed only at `search.rs:1240` (P9, disarmed by the
-    `take()` two lines on, around one single-threaded `score_laws`) and `search.rs:2305` (`rule_set_kernel_check`, no
+    the miner's threads. Verified 2026-10-21: `RULE_CONFLICTS` is armed only at `miner.rs:990` (P9, disarmed by the
+    `take()` two lines on, around one single-threaded `score_laws`) and `search.rs:1474` (`rule_set_kernel_check`, no
     threads), so no spawned thread counts into it. `TRACE_RULES` is set and read on one thread per use; grep its sites
     again before converting.
 - [ ] **Step 4: checks.**
@@ -387,13 +422,13 @@ fn with_rules_catches_a_swapped_job() {
     a local `&Rules` copied out before the mutations. Prefer the borrow; measure in Task 10 if the clone was needed.
   - `set_extra_rules`, `set_rule_prefs`, `RULE_TABLE`, `RULE_PREFS`, `SCORE_ONLY` and `TRACE_RULES` are deleted.
 - [ ] **Step 4: the miner's carry-overs.** For each main-thread call that rewrites (P1's `rewrite_plan` and
-  `rewrite`, `state`/`score_laws`, inline `prove`/`prove_any`, P9's `gain`), write in a comment which rules,
-  preferences and switches the thread-locals held at that point in today's code, and install exactly those. Known
-  cases:
+  `rewrite`, `Rounds::state`/`Scorer::score_laws`, inline `Prover::filter`/`Prover::prove`, P9's `gain`), write in a
+  comment which rules, preferences and switches the thread-locals held at that point in today's code, and install
+  exactly those. Known cases:
   - P1 runs under base rules and base prefs.
-  - Inline `prove` (threads == 1) runs under base rules and base prefs (Q1).
-  - The workers' `prove` runs under base rules and no prefs (Q1).
-  - `prove_any` runs under base rules and base prefs.
+  - Inline `Prover::filter` (threads == 1) runs under base rules and base prefs (Q1).
+  - The workers' `Prover::filter` runs under base rules and no prefs (Q1).
+  - `Prover::prove` (the old `prove_any`) runs under base rules and base prefs.
   - `score_laws` runs under `base_now + extra` with its `prefs`. Its "leaves prefs installed" has no reader after it,
     since every later main-thread rewrite goes through `score_laws` or `prove_any`, which install their own. Verify
     this by listing the calls.
@@ -491,8 +526,9 @@ For each of Q1–Q5:
 4. If mined rules change, write the difference (which loops, M before and after) into `docs/tier-cycle.md` and stop
    for a ruling before committing.
 
-- [ ] **Q1:** `prove` passes the base preferences on every thread (`Prover.prefs = Some(base_prefs)`). Expected:
-  `nonfast4` changes only if the preferences matter to proofs. `nonfast1` is unchanged.
+- [ ] **Q1:** the provable filter's `Prover` gets `prefs: Some(base_prefs)`, so every thread proves under the base
+  preferences. Expected: `nonfast1`, `nonfast4` (empty base, no preferences) and `pbase1` unchanged; `pbase4` changes
+  only if the preferences matter to proofs, and then towards `pbase1` (Task 0's A/A difference).
 - [ ] **Q2:** `family_laws`'s closure returns `usize` and cannot carry a salt string. It becomes
   `env: &dyn Fn(&str) -> Option<String>`, with the numeric reads parsed at the call, and `shape_part` takes the salt
   from it. Expected: no change, since no stage sets `RULEMINER_SHAPE_SALT` today (grep `driver.rs` to confirm).

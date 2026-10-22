@@ -9,6 +9,7 @@ mod wasm;
 mod lemma_cache;
 mod rewrite;
 mod machine;
+mod miner;
 mod search;
 mod task;
 #[allow(unused_imports)]
