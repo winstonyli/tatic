@@ -6,7 +6,7 @@ status: active
 
 Date: 2026-10-17. Evidence: `docs/tier-cycle.md`, "A law generator", "Why padding laws pay", "One filter for every
 source" and "Where an extras mine's time goes" (runs `2026-10-17-gen-src`, `-gen-cost`, `-gen-salts`, `-gen-twin`,
-`-gen-wide`), and "What kind of new law pays most". Roadmap: v0.3 ("Can the kernel itself propose the laws that pay?").
+`-gen-wide`), and "What kind of new law pays most". Roadmap: v0.3 ("Can the kernel itself propose the laws that pay?"), since 2026-10-22 v0.2 ("Does the law generator pay everywhere it runs?"); the numbers below are the new ones.
 
 ## Why
 
@@ -61,14 +61,14 @@ Chosen by the user on 2026-10-17: option 1, the non-padding laws.
    21 against 9. At equal count, half its laws are padding laws, which filtered pay less than the stream's. Option 1
    at a smaller f may reach the same cost with lower M; round A's f 0.04 arm tests that.
 3. **Padding laws.** Cheap (51 s), but filtered they lose to the stream (40 against 29, worse on 6 salts of 10). A
-   generator that does worse than the stream it replaces does not answer v0.3.
+   generator that does worse than the stream it replaces does not answer v0.2.
 
 The rest of this spec builds option 1. Option 3 becomes a `decided against` line (§5); option 2 is held until round
 A's f 0.04 arm, and becomes `decided against` if that arm costs no more than 359 loop seconds over salts 1-10 at lower M.
 
 **Acceptance:** the stage is on by default only if its chosen arm beats the stream control at the same n, over salts
 1-20, paired (more salts better than worse). If it only ties or loses, the default is `ABLATE=gen` and the note says
-so: v0.3's answer is then "a stream-blind source matches the stream's unseen laws, at a cost".
+so: v0.2's answer is then "a stream-blind source matches the stream's unseen laws, at a cost".
 
 ## Design
 
@@ -113,12 +113,12 @@ extras exist to be mined into rules.
   - Being on by default moves every baseline: notes after the change say which side of `ABLATE=gen` their numbers are on.
   - Children also receive `ABLATE=gen`; they ignore it.
 - **Source:** the non-padding grammar laws (the decision above).
-- **Stream source:** kept as `GEN_SOURCE=stream`, only as the control arm while v0.3 is open. It reads the test stream,
+- **Stream source:** kept as `GEN_SOURCE=stream`, only as the control arm while v0.2 is open. It reads the test stream,
   so it is no generator.
   - It goes through the same filter chain (which subsumes today's text twin-free filter), then takes the generator's n
     per family by the same slice rule. Its arm takes n laws, where `-gen-wide`'s filtered stream arm took only the
     survivors of 350, so its M and time will differ from that run's 29 and 40 s.
-  - Delete it when v0.3 is tagged or answered against, whichever comes first.
+  - Delete it when v0.2 is tagged or answered against, whichever comes first.
 
 ### 2. One count rule, tied to the filtered list
 
@@ -277,6 +277,6 @@ are heavy for `cargo test`, so its L, time and coverage are measured in step 4's
   It changes this stage's cost, not its design.
 - Deeper growth (two grown leaves, depth-2 terms).
 - Enumo-style full enumeration.
-- Ranking the generator's laws: that is v0.4's learned proposer, which would take this stage's output as its candidates.
+- Ranking the generator's laws: that is v0.3's learned proposer, which would take this stage's output as its candidates.
 - The sbo3 split: at today's counts every grammar arm left sbo3's mined-batch M at 0 or 1 unfiltered, against 40 plain.
   Whether sbo3 has headroom left is a separate question.
