@@ -5389,6 +5389,13 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   of a five-salt gate's 15 builds. The values are most of it: `zip`'s per-element calls through `OP_INFO[o].word` (with
   each element's own width mask) and a fresh vector per candidate take about 905 ms, 65%. The rest, about 350 ms, is the
   map, `Term::op` and `Machine::parse`.
+- **The build zips a width at a time: a build 0.58-0.65 s, job CPU +19%, timed** (08adb24; run `2026-10-23-ct-zip-gate`,
+  `-Timed`, quiet: total 6.3%, CPUs 8 and 9 0.4%). The build calls `rewrite::zip_op` (the operator dispatch `ValueMemo::fill`
+  had, now shared) once per key width with that width's mask, into one reused buffer copied out only for a new class.
+  `the_full_table_is_pinned` holds the table to its counts and a fingerprint of every pair, unchanged. A build went from
+  1.39-1.48 s to 0.58-0.65 s. Gate, A with `ABLATE=classes`: M 377 to 233; job CPU 459 s to 545 s (+19%), wall 60 s to
+  74 s; the largest `peakproc` 626 MB to 695 MB. Per salt the change in CPU spans -10% (salt 2) to +73% (salt 3). The
+  phase-1 gates before this one were untimed. Hashing, about 150 ms, is now about a quarter of a build.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
