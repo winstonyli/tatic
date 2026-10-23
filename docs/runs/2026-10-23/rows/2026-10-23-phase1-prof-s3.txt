@@ -1,0 +1,98 @@
+# run 2026-10-23-phase1-prof-s3: samply, salt 3 cold:cmp3d sweep, all processes, 47826fa + patches/sweep_prof_salt.patch (debug info);
+# arm on (class table) vs off (ABLATE=classes); counts from prof_named.py's shares (0.1% steps) x busy samples; script phase1_prof_salt.sh
+busy samples: on 142290, off 81693, diff +60597
+== self (leaf, inlined frames expanded)  (on off diff; shares are rounded to 0.1%)
+     6118    2859   +3259  church_bv::rewrite::impl$43::eq
+     3984    1797   +2187  ::find
+     5122    3023   +2099  church_bv::rewrite::impl$2::op::closure$0
+     6688    4820   +1868  church_bv::rewrite::match_pat
+     2277     817   +1460  _mi_page_malloc_zero
+     1423       0   +1423  church_bv::rewrite::embeds
+     4126    2778   +1348  core::core_arch::x86::sse2::_mm_movemask_epi8
+     1138       0   +1138  church_bv::rewrite::rule_weight
+     5122    4085   +1037  church_bv::rewrite::impl$19::get::closure$1
+     2561    1552   +1009  hashbrown::raw::RawTableInner::is_bucket_full
+      996       0    +996  mi_theap_malloc_aligned_at
+     2846    1879    +967  core::ptr::write
+     3130    2206    +924  church_bv::rewrite::subst_sig
+      854       0    +854  _mi_page_free_collect(struct mi_page_s *, bool)
+      854       0    +854  hashbrown::raw::RawTableInner::probe_seq
+      854       0    +854  mi_free
+     1565     735    +830  fun_1c010
+     1850    1062    +788  church_bv::rewrite::subst_pat
+     2561    1797    +764  core::num::impl$9::wrapping_add
+     1138     408    +730  ::occurrences
+     1138     408    +730  mi_theap_realloc_zero_aligned
+        0     654    -654  church_bv::rewrite::Spine::down
+     1707    1062    +645  core::ptr::copy_nonoverlapping
+        0     572    -572  core::tuple::impl$14::le
+        0     572    -572  church_bv::rewrite::impl$19::get::closure$0
+     1707    1144    +563  hashbrown::control::bitmask::BitMask::lowest_set_bit
+     1281     735    +546  hashbrown::util::likely
+        0     490    -490  church_bv::rewrite::Need::skips
+        0     490    -490  ::insert (.llvm.18436552142012461950)
+     1138     654    +484  hashbrown::raw::RawTableInner::bucket_ptr
+== inclusive (church_bv/tatic frames)  (on off diff; shares are rounded to 0.1%)
+   123365   70664  +52701  tatic::kernel::scoped
+   119950   69194  +50756  church_bv::miner::impl$4::pick::closure$9::closure$0
+   119666   69112  +50554  church_bv::miner::impl$4::pick::closure$9::closure$0::closure$0
+   118954   68867  +50087  church_bv::miner::impl$4::pick::closure$8
+   118954   68867  +50087  church_bv::miner::impl$4::pick::closure$6
+   110132   64619  +45513  church_bv::job::Job::spent
+   110844   66416  +44428  church_bv::miner::impl$3::score_laws::closure$1
+   110844   66416  +44428  church_bv::miner::impl$3::score_laws::closure$1::closure$0
+   105579   62822  +42757  church_bv::rewrite::rewrite_plan
+   104014   62659  +41355  church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$0
+    79398   55878  +23520  church_bv::rewrite::join_or_machine
+    76979   54489  +22490  church_bv::rewrite::join_eq
+    70434   50813  +19621  church_bv::rewrite::join_search
+    70291   50731  +19560  church_bv::rewrite::join_search::closure$3
+    62465   44604  +17861  church_bv::rewrite::join_walk
+    22340    7026  +15314  church_bv::rewrite::rewrite
+    22197    7026  +15171  church_bv::rewrite::rewrite_memo
+    38134   23936  +14198  church_bv::rewrite::join_search::closure$3::closure$1
+    19636    5964  +13672  church_bv::rewrite::rewrite_uncached
+    20490   10538   +9952  church_bv::rewrite::Term::op
+    17502    8823   +8679  church_bv::rewrite::impl$2::op::closure$0
+    15367    7107   +8260  church_bv::rewrite::subst_pat
+     5976       0   +5976  church_bv::driver::worker::closure$2
+     5122       0   +5122  church_bv::_::__rust_alloc
+     5122       0   +5122  church_bv::rewrite::RuleTable::new
+    11525    6617   +4908  tatic::kernel::scoped::
+     4838       0   +4838  church_bv::rewrite::rule_step
+     7968    3349   +4619  church_bv::rewrite::impl$2::op::closure$0::closure$1
+     4553       0   +4553  church_bv::miner::run
+     4553       0   +4553  church_bv::miner::run::closure$0::closure$1
+== inside church_bv::rewrite::prove_eq  (on off diff; shares are rounded to 0.1%)
+     1423       0   +1423  church_bv::classes::Classes::get
+     1423      82   +1341  (leaf)
+      427       0    +427  church_bv::task::SharedMemo::lock
+      427       0    +427  church_bv::classes::verdict
+     2277    2369     -92  church_bv::rewrite::join_or_machine
+        0      82     -82  church_bv::rewrite::abstract_atoms
+      142      82     +60  church_bv::rewrite::prove_eq::closure$0
+        0       0      +0  church_bv::job::Setup::ablated
+        0       0      +0  church_bv::rewrite::shr_mask_eq
+== inside church_bv::rewrite::rewrite_plan  (on off diff; shares are rounded to 0.1%)
+    77263   53509  +23754  church_bv::rewrite::join_or_machine
+    21344    6617  +14727  church_bv::rewrite::rewrite
+     6830    2614   +4216  church_bv::rewrite::prove_eq
+      285      82    +203  (leaf)
+        0       0      +0  church_bv::rewrite::impl$14::new::COUNTING::constant$0::closure$0
+== inside church_bv::driver::worker::closure$2  (on off diff; shares are rounded to 0.1%)
+     4553    2042   +2511  church_bv::miner::run
+     1565       0   +1565  church_bv::search::rule_set_kernel_check_task
+== inside church_bv::job::Job::spent  (on off diff; shares are rounded to 0.1%)
+   104014   62659  +41355  church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$0
+     2846    1062   +1784  church_bv::miner::run::closure$0::closure$1::closure$3
+     1423       0   +1423  church_bv::search::rule_set_kernel_check_task::closure$0::closure$0::closure$0::closure$0
+     1565     654    +911  church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$2
+      142     163     -21  church_bv::miner::laws::closure$1::closure$1
+        0       0      +0  (leaf)
+== the main mine (mine_0.log) per loop, off then on: scoring rounds, candidates scored, rule-set evaluations, lookahead decisions
+off loop 1: 54 rounds, 11265 candidates, 53 evaluations, 0 lookaheads
+off loop 2: 60 rounds, 12627 candidates, 59 evaluations, 0 lookaheads
+off loop 3: 60 rounds, 12742 candidates, 59 evaluations, 0 lookaheads
+on loop 1: 61 rounds, 11828 candidates, 60 evaluations, 0 lookaheads
+on loop 2: 268 rounds, 48017 candidates, 74 evaluations, 3 lookaheads
+on loop 3: 209 rounds, 38840 candidates, 66 evaluations, 3 lookaheads

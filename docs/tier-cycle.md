@@ -5402,6 +5402,17 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   (`the_full_table_is_pinned`, whose fingerprint now covers representatives only) and the build where it was: alternating
   five runs each, SipHash 604-721 ms, foldhash 594-624 ms. The isolated loop's 150 ms to 31 ms does not show in the
   build, likely because hashing overlaps the map's cache misses. SipHash stays.
+- **Salt 3's +73% is the miner's lookahead, not the table** (run `2026-10-23-phase1-prof-s3`, samply over salt 3's whole
+  sweep, both arms, 47826fa plus `docs/runs/2026-10-23/patches/sweep_prof_salt.patch`, script `phase1_prof_salt.sh`;
+  frames and the miner's counts in `docs/runs/2026-10-23/rows/2026-10-23-phase1-prof-s3.txt`). Both arms reproduce the
+  gate's salt 3 (M 73 and 41). Busy samples 81693 off, 142290 on (+74%). The table's own work is small: `prove_eq`
+  +4216 (a build 1423, the verdict memo's lock 427), the kernel-check task's build 1565. The rest is the miner scoring
+  more: `score_laws` +44428, inside it the join +23754 and the rewriter +14727. In loops 2 and 3 the main mine meets a
+  winner whose rival gains more in its round 3 times each (none off, none in loop 1), and each such choice finishes both
+  greedy paths (`play`'s lookahead, "The cold loss is a greedy path loss"): 268 and 209 scoring rounds for 74 and 66
+  rule-set evaluations, against 60 and 60 for 59 each off; 2.7x the candidates scored over the three loops (98685
+  against 36634). So the table changes which rules the mine meets, and on this salt that switches the lookahead on;
+  phase 1's own cost here is about a tenth of the added samples.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
