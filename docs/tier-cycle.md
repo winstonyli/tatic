@@ -5448,6 +5448,16 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   inside the table's domain, the table subsumes the mined rules, and the gate stops measuring mining: phase 2 needs
   laws past the table's domain (above SIZE 9) for the miner to have work. Five rewrite tests built on rule cycles
   failed under the spike, since the table settles their terms first.
+- **The table leaves 2-12% of grown laws open** (throwaway probe `search::open_law_counts`, patch
+  `docs/runs/2026-10-23/patches/open_law_counts.patch`, script `docs/runs/2026-10-23/scripts/open_laws.sh`, on c201b40,
+  reverted; run `2026-10-23-open-laws`, salt 1, 9 s). Each family's pool grown 1-3 times (one leaf into an operator over
+  two leaves, padding dropped, about 20000 terms per level), laws as `grammar_laws` makes them, up to 300 per (level,
+  size) normalized by `Classes::normalize`; open when the normal forms differ. No law of size 9 or less is open, at any
+  level. Above it, the table still settles 88-98%: through `rep` on terms larger than its SIZE, verdict-gated. Estimated
+  open laws (open share times the bucket's laws), growth up to 2 / up to 3 levels: add3 360 / 856, sbo3 93 / 377, mix3
+  115 / 307, cmp3d 640 / 1767; largest buckets size 13 (add3 478, cmp3d level 2 459) and cmp3d's size 15 (1044 of 8467).
+  So a stream of open laws filters about 20 grown laws per law kept, and only add3 and cmp3d reach a few hundred
+  within two growths.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
