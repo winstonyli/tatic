@@ -5212,6 +5212,34 @@ width 4 or on the screen.)
 - **Limits.** The claims are enumeration merges over three variables up to size 9, not laws from a stream, so the
   numbers hold for that distribution only. Differences were measured at width 8; the proofs are generic.
 
+*A key refined by counterexamples (2026-10-22; run `2026-10-22-key-refine`, 4.5 min, CPU 24% at launch; exe 9607129
+plus `docs/runs/2026-10-22/patches/key_refine.patch`, reverted; script `docs/runs/2026-10-22/scripts/key_refine.sh`).*
+The table's key learns its inputs from the merges it gets wrong. Each round builds the table to size 9 under the
+current key and samples 20000 of the merges it proposes. It refutes them on 4096 random width-8 inputs, every width-4
+input and the screen. For each refuted merge that the inputs added this round do not already separate, it adds one
+refuting input to the key. It stops when a round's sample has no refuted merge. Then the held-out laws are normalised by
+the final table, as in the two sections above, and its replacements are proved.
+
+| starting key | rounds | final key (bytes per class) | classes (`lt`) | build | law meets, replacements |
+|---|---|---|---|---|---|
+| 8 tuples of 0s and 1s | 16 | 208 at width 8, 108 at width 4 (316) | 236109 (69902) | 1.5 s | as the exhaustive key: 3203, 0 suspect, all proved |
+| plus 64 random | 19 | 262 at width 8, 114 at width 4 (376) | 236140 (69933) | 2.2 s | the same |
+| exhaustive widths 3 and 4 | 3 | plus 4 at width 8 (4612) | 236160 (69957) | 12 s | the same |
+
+- **A key of 316 inputs does what the exhaustive key's 4608 do here.** It meets the same laws through the same 3203
+  replacements, all proved and kernel-checked (2820 by `add_tree_law`, 383 by `bitwise_law_k`). It is 15 times smaller
+  per class, and its table builds about 7 times faster. After the first round, 759 of the 763 refuted merges from the
+  0/1 key and all 391 from the 64-input key are `lt`, as the calibration above predicts: a wrong `lt` merge differs on
+  rare inputs, so the key has to be told them.
+- **The refinement took 52 s from the 0/1 key and 31 s from the 64-input key** (the rounds alone), mostly table builds.
+  The exhaustive key needed 4 width-8 inputs for its wrong merges (`shl1` ones in the calibration above).
+- **No key here is exact.** Stopping on a clean sample of 20000 bounds the rate of wrong merges to a few in 20000 (at
+  95%), not to zero. The refined 0/1 key has 55 fewer `lt` classes than the refined exhaustive key, and the refined
+  exhaustive key 4 fewer bit-vector classes than the refined random keys, so each still merges what another keeps
+  apart. The refuter never
+  tests width 3, so merges wrong only there go unseen. None of these merges was used by the laws (0 suspects). So a
+  table's replacements still need their proofs, as everywhere else, and a failed proof is one more counterexample.
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
