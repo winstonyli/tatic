@@ -1,0 +1,85 @@
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index 274fa26..384eb92 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -351,18 +351,27 @@ impl Classes {
+     /// The representative of `t`'s class when the table knows it and it is not `t`; `None` otherwise, and for a term over a
+     /// variable other than x, y, z. Pure: no proof.
+     pub fn rep(&self, t: &Term) -> Option<Term> {
++        self.lookup(t).filter(|r| r != t)
++    }
++
++    /// SPIKE: the representative of `t`'s class, `t` itself included, when the table knows the class.
++    pub fn lookup(&self, t: &Term) -> Option<Term> {
+         if t.max_var() >= 3 {
+             return None;
+         }
+         let (values, reps) = &mut *self.memos.lock().unwrap_or_else(|e| e.into_inner());
+-        *reps.entry(*t).or_insert_with(|| {
++        let n = reps.len();
++        let r = *reps.entry(*t).or_insert_with(|| {
+             let mut vals = vec![];
+             for m in values.iter_mut() {
+                 vals.extend_from_slice(m.values(t));
+             }
+-            let r = *self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..))))?;
+-            (r != *t).then_some(r)
+-        })
++            self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..)))).copied()
++        });
++        if reps.len() > n && reps.len() % 50000 == 0 {
++            println!("SPIKE_MEMO {} terms", reps.len());
++        }
++        r
+     }
+ 
+     /// `t` with every node, bottom-up, replaced by its class's representative where the table knows it (no proof: the law
+@@ -387,6 +396,7 @@ struct Verdict {
+ 
+ /// Replacements' verdicts by (width, carry cap, u, r). Pure: a verdict depends only on its key (`tree_encoding` reads the
+ /// carry cap before its own memo).
++static SPIKE_VERDICTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+ static VERDICTS: SharedMemo<(usize, usize, Term, Term), Option<Verdict>> = SharedMemo::new();
+ 
+ /// The verdict on `u -> r` at width `n`: `Bitwise` when neither side has `add`, `sub` or `lt` and they agree at widths
+@@ -438,9 +448,16 @@ impl Classes {
+             Some(v) => v,
+             None => {
+                 let v = verdict(job, n, t, &r);
+-                if VERDICTS.insert(key, v.clone()) && v.is_none() {
++                let fresh = VERDICTS.insert(key, v.clone());
++                if fresh && v.is_none() {
+                     println!("CLASS_UNUSABLE {} = {}", t.show(), r.show());
+                 }
++                if fresh {
++                    let c = SPIKE_VERDICTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
++                    if c % 1000 == 0 {
++                        println!("SPIKE_VERDICTS {c}");
++                    }
++                }
+                 v
+             }
+         }?;
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index e3df109..4d51104 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2418,6 +2418,18 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
+     let ((a2, pa), (b2, pb)) = (rewrite(job, &a, n, k), rewrite(job, &b, n, k));
+     let cong = Plan::cong(job, o, pa, pb);
+     let t1 = Term::op(o, a2, b2);
++    // SPIKE (phase 2): a node the table knows is final: its representative, or the proved step to it
++    if !job.setup().ablated("classes") {
++        let c = crate::classes::Classes::get();
++        if let Some(r) = c.lookup(&t1) {
++            if r == t1 {
++                return (t1, cong);
++            }
++            if let Some((r, p)) = c.step(job, n, k, &t1) {
++                return (r, Plan::trans(job, cong, p));
++            }
++        }
++    }
+     if o != ADD {
+         // the library rules first (`shldist`, ...)
+         if let Some((target, step)) = rule_step(job, &t1) {

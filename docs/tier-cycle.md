@@ -5437,6 +5437,17 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   a678745, untimed after two `-Timed` refusals on a busy machine): M 377 to 233, mine rounds 1308 to 1931, and all 30
   rule files the same as the zip gate's, so the 903 never reached a mined law either; the `classes` column, now counted
   right, is 542 (above, "Replacements per batch").
+- **Phase 2 leaves the miner nothing to learn on the gate** (throwaway spike, patch
+  `docs/runs/2026-10-23/patches/phase2_spike.patch`, on e38e94b, reverted; run `2026-10-23-phase2-spike`, `-Timed`,
+  quiet). The spike looks up every node in `rewrite_uncached` after its children: a node the table knows is final, either
+  its own representative or the verdict-gated step to it, and rules run only on unknown nodes. Against A
+  (`ABLATE=classes`, so no table at all): M 377 to 0; stragglers before mining 2314 to 229; mine rounds 1308 to 194,
+  lookaheads 7 to 0; job CPU 451 to 26 s, wall 58 to 10 s. Every served law is proved in both arms (4500), all of them
+  free in B (4123 in A), with 5323 table steps and no join. The lookup memo stayed under 50000 terms and new verdict
+  pairs under 2000 per process; no `CLASS_UNUSABLE`; largest peakproc 609 MB (A 555). So on the gate's laws, nearly all within
+  inside the table's domain, the table subsumes the mined rules, and the gate stops measuring mining: phase 2 needs
+  laws past the table's domain (above SIZE 9) for the miner to have work. Five rewrite tests built on rule cycles
+  failed under the spike, since the table settles their terms first.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

@@ -101,7 +101,9 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   (largest `peakproc` +133 MB with the memo, +69 MB after the build's zip; short 3-loop gates). Trigger: a long sweep, or
   phase 2's step on every rewritten node, with peak commit past that stop or `Shared`/commit still climbing late in a
   run. Evidence: `tests/church_bv/classes.rs` (`Classes::rep`), runs `2026-10-23-ct-memo-gate` and `-ct-zip-gate`
-  (2026-10-23, final review I2). Status: parked.
+  (2026-10-23, final review I2); phase 2's spike (run `2026-10-23-phase2-spike`) kept the memo under 50000 terms per
+  process, largest `peakproc` 609 MB, but its miner did almost nothing (`docs/tier-cycle.md`, "Phase 2 leaves the miner
+  nothing to learn on the gate"), so a run that mines past the table's domain is still unmeasured. Status: parked.
 - **The class table's lookup beyond its domain, and under one lock** — what: `Classes::rep` answers for nodes larger than
   the table's size or with an `lt` operand, by key values never refined to separate them; `step`'s verdict guards it,
   `canonical` (the twin filter) does not, so a false match can mark a law twin or trivial. And `rep` computes a new term's
