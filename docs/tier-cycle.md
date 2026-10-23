@@ -5244,7 +5244,7 @@ the final table, as in the two sections above, and its replacements are proved.
 75 s, CPU 17% at launch, and `2026-10-23-class-atoms-c`, 128 s, CPU 68% at launch; exes ddf1eba plus
 `docs/runs/2026-10-23/patches/class_mem_shr1.patch` and 73724df plus `class_atoms.patch`, reverted; scripts
 `class_mem_shr1.sh` and `class_atoms.sh` in `docs/runs/2026-10-23/scripts/`; the growth of repeated builds:
-`2026-10-23-class-growth-c`. Runs `-class-mem-shr1`, `-class-atoms` and
+`2026-10-23-class-growth-c`; parse-first representatives: `2026-10-23-class-rep`. Runs `-class-mem-shr1`, `-class-atoms` and
 `-class-atoms-b` stopped on probe bugs: a pair over `add` sent to `bitwise_law_k`, a pair false over atoms sent to it
 with a panicking check (the kernel refused it), and too many screen tries.)* The unmeasured risks of the class-table
 spec (`docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`). The probe above, with `shl1` and `shr1`
@@ -5269,8 +5269,9 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
 - **The held-out laws meet as before**: the same counts as the refined keys without `shr1` (15 of 15 residue laws,
   189-200 per set), through 3193 replacements, 0 suspect, 2804 proved by `add_tree_law`, 383 by `bitwise_law_k`. The 6
   without a proof are all one shape, `lt(sub(0, -1), s) = lt(0, shr1(s, 0))` with `s` a sum (`add(x, y)`,
-  `sub(y, add(x, z))`, ...): `shr1` made a representative one node smaller than the `lt(1, s)` it replaces, and the pair
-  is false over atoms. The laws that met only through them are an upper bound.
+  `sub(y, add(x, z))`, ...): both sides are the same size, and the `shr1` one is enumerated first (its left operand,
+  `0`, is smaller), so it became the representative; the pair is false over atoms. The laws that met only through
+  them are an upper bound. (Corrected 2026-10-23: this said the `shr1` side was a node smaller.)
 - **One build commits 257 MB** in a fresh process (1.6-1.9 s), of which the structures it keeps are about 50 MB,
   computed from counts: 431494 interned nodes (56 B each before allocator overhead, about 30 MB), the interner's 1048576
   cells (8 MB) and the class map's 458752 slots (about 11 MB). The rest fits the value vectors of the build (387 B per
@@ -5286,6 +5287,14 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   321 MB is that memo. Value blocks of 1 MB, which bypass the heap, change nothing, so the heap does not fragment. A
   worker builds once and screens anyway, so the table adds no growth of its own. The screen memo stores `u128` at every
   width, 16 times what width 8 needs.
+- **Representatives the prover can parse remove the 6 unproved held-out replacements** (run `2026-10-23-class-rep`,
+  8ff0c06 plus `class_rep.patch`, script `class_rep.sh`; one build each from the class-atoms-c key, the last table
+  kept though its fresh sample refutes 4 `lt` merges). A class's representative becomes its smallest member that
+  `Machine::parse` takes, else its smallest. 796 of 341740 representatives move. Held-out laws: the same counts meet in
+  every set, through 3187 replacements, all proved (2804 by `add_tree_law`, 383 by `bitwise_law_k`), against 6
+  unproved of 3193 with the smallest member. The sampled `shr1` merges are not helped: 632 of 5243 unusable (629 false
+  over atoms, 3 unproved) against 642 of 5272, since their own terms contain `shr1`. Those need a prover that knows
+  what `shr1` means (`PARKED.md`).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

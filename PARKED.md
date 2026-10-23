@@ -56,6 +56,13 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Compile hot transformations, with learned compilations (lowering rules mined by target cost)** — why: not built; the base was probed twice (lowering templates are provable as kernel laws; M-scored and size-scored mining pick different rules), and the mined rules do not fire on the JIT's programs (option A's result, 2026-10-17). Goals 1 and 2 of `ROADMAP.md` meet here; `README.md`, "Future work", has the summary. Trigger: workloads with arithmetic depth, or the specialiser producing it by inlining. Evidence: `docs/tier-cycle.md` ("Compiling hot transformations, with learnable compilations"). Status: parked (not built).
 - **Native ISA semantics below wasm (option D: Sail models of Arm-A and RISC-V)** — why: ISA models are large and the native code is Cranelift's; Crocus already verifies Cranelift's lowering rules, so this is not a part to rebuild. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Formalizing the target machine"). Status: parked.
 - **Strict against lazy evaluation in the closure specialiser** — why: lazy evaluation changes what programs mean, touches every layer and costs thunks on numeric loops. Trigger: when C (a kernel builder that consumes the trace) starts, or if the corpus gains terms with expensive unused arguments. Evidence: `docs/superpowers/specs/2026-09-24-closure-specialisation-design.md:307`. Status: parked.
+- **A prover that knows what `shr1` means** (a right-shift-aware carry encoding: `Machine::parse` refuses `shr1`, since a
+  right shift reads a later position) — the end state of the class table's representative choice (spec
+  `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`, decision 7). Why parked: its own project; the
+  table's parse-first representatives already prove every held-out replacement. Trigger: the table's serve logs report
+  unusable `shr1` replacements that cost laws (about 12% of sampled `shr1` merges are unusable). Evidence:
+  `docs/tier-cycle.md`, "`shr1` in the class table, its proofs over atoms, and a table's memory" (2026-10-23).
+  Status: parked (by decision, 2026-10-23).
 - **Boolean combinations of comparisons (`lt` results under `and`/`or`/`not`)** — why: machine side is cheap (spike passed) but the gain is capped at about 17% of M in the head start and the rule side is untouched. Trigger: the cmp3d library becomes the limiting factor, or the kernel extending its own vocabulary (now milestone v0.4, `ROADMAP.md`); restart from the spike patch and a half-day `prove_rule` probe. Evidence: `docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md:47`. Status: parked.
 
 ## Kernel memos, footprint and allocation

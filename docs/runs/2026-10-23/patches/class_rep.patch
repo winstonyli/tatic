@@ -1,0 +1,523 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 6c2bf5c..b9f8139 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -4485,3 +4485,518 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++/// A class table's key inputs: per width, tuples of the three variables (docs/tier-cycle.md, "A learned table of
++/// representatives").
++type CtSets = Vec<(usize, Vec<[u128; 3]>)>;
++/// A term's values on each set of a key, one byte per input.
++type CtVals = Vec<Vec<u8>>;
++
++fn ct_leaf(sets: &CtSets, t: &Term) -> CtVals {
++    sets.iter()
++        .map(|(w, ins)| {
++            ins.iter()
++                .map(|x| match *t.node() {
++                    Node::V(v) => x[v] as u8,
++                    Node::Zero => 0,
++                    Node::Ones => low_bits(*w) as u8,
++                    _ => unreachable!(),
++                })
++                .collect()
++        })
++        .collect()
++}
++
++fn ct_zip(sets: &CtSets, o: usize, a: &CtVals, b: &CtVals) -> CtVals {
++    let f = OP_INFO[o].word;
++    sets.iter().zip(a.iter().zip(b)).map(|((w, _), (x, y))| x.iter().zip(y).map(|(p, q)| f(*p as u128, *q as u128, low_bits(*w)) as u8).collect()).collect()
++}
++
++fn ct_hash(v: &CtVals, bool_sort: bool) -> (u64, u64) {
++    use std::hash::{Hash, Hasher};
++    let (mut h1, mut h2) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());
++    (bool_sort, v).hash(&mut h1);
++    (0xa5u8, v, bool_sort).hash(&mut h2);
++    (h1.finish(), h2.finish())
++}
++
++fn ct_vals(sets: &CtSets, t: Term, memo: &mut hashbrown::HashMap<Term, CtVals>) -> CtVals {
++    if let Some(v) = memo.get(&t) {
++        return v.clone();
++    }
++    let v = match *t.node() {
++        Node::Op(o, a, b) => {
++            let (va, vb) = (ct_vals(sets, a, memo), ct_vals(sets, b, memo));
++            ct_zip(sets, o, &va, &vb)
++        }
++        _ => ct_leaf(sets, &t),
++    };
++    memo.insert(t, v.clone());
++    v
++}
++
++/// `t` at one width-`w` input.
++fn ct_eval(t: Term, w: usize, x: &[u128; 3]) -> u128 {
++    match *t.node() {
++        Node::V(v) => x[v],
++        Node::Zero => 0,
++        Node::Ones => low_bits(w),
++        Node::Op(o, a, b) => (OP_INFO[o].word)(ct_eval(a, w, x), ct_eval(b, w, x), low_bits(w)),
++    }
++}
++
++/// The process's commit now and at its peak, in MB (`K32GetProcessMemoryInfo`).
++fn ct_commit_mb() -> (usize, usize) {
++    #[repr(C)]
++    #[derive(Default)]
++    struct Pmc {
++        cb: u32,
++        faults: u32,
++        peak_ws: usize,
++        ws: usize,
++        qpp_peak: usize,
++        qpp: usize,
++        qnp_peak: usize,
++        qnp: usize,
++        pagefile: usize,
++        peak_pagefile: usize,
++    }
++    unsafe extern "system" {
++        fn GetCurrentProcess() -> isize;
++        fn K32GetProcessMemoryInfo(h: isize, p: *mut Pmc, cb: u32) -> i32;
++    }
++    let mut p = Pmc { cb: std::mem::size_of::<Pmc>() as u32, ..Default::default() };
++    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut p, p.cb) };
++    (p.pagefile >> 20, p.peak_pagefile >> 20)
++}
++
++
++/// Interned `Op` nodes so far, and the interner's cells (probe: the class table's memory).
++fn ct_interned() -> (usize, usize) {
++    (0..SHARDS).map(|s| (*TABLE[s].1.lock().unwrap(), cells(s).map_or(0, |c| c.cells.len()))).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
++}
++
++/// A replacement's verdict as the spec (decision 3) would decide it: at width 4 over x, y, z; else over atoms, each
++/// `shr1` node (outermost) a fresh variable from 3 on, the same on both sides.
++fn ct_verdict(job: &mut Job, u: &Term, r: &Term) -> &'static str {
++    fn plain(job: &mut Job, k: usize, u: &Term, r: &Term) -> bool {
++        match prove_checked(job, 4, k, "replacement", u, r).verdict {
++            crate::machine::Verdict::Proved => true,
++            crate::machine::Verdict::CarryFree if u.add_free() && r.add_free() => {
++                // the kernel decides: over atoms a carry-free pair may be false
++                let (p, s) = bitwise_law_k(4, k, u, r);
++                job.lemmas.holds(&p, &s).is_ok()
++            }
++            _ => false,
++        }
++    }
++    fn atomize(t: Term, atoms: &mut Vec<Term>) -> Term {
++        match *t.node() {
++            Node::Op(SHR1, ..) => {
++                let i = atoms.iter().position(|a| *a == t).unwrap_or_else(|| {
++                    atoms.push(t);
++                    atoms.len() - 1
++                });
++                Term::v(3 + i)
++            }
++            Node::Op(o, a, b) => Term::op(o, atomize(a, atoms), atomize(b, atoms)),
++            _ => t,
++        }
++    }
++    if plain(job, 3, u, r) {
++        return "plain";
++    }
++    let mut atoms = vec![];
++    let (u2, r2) = (atomize(*u, &mut atoms), atomize(*r, &mut atoms));
++    if atoms.is_empty() {
++        "none (no shr1)"
++    } else if u2 == r2 {
++        "atoms: equal terms"
++    } else if u2.differs_in(&r2, 4, 3 + atoms.len(), SCREEN_INPUTS) {
++        "none: false over atoms"
++    } else if plain(job, 3 + atoms.len(), &u2, &r2) {
++        "atoms: proved"
++    } else {
++        "none over atoms"
++    }
++}
++struct CtTable {
++    map: hashbrown::HashMap<(u64, u64), Term>,
++    /// per size, the bit-vector representatives (`lt` ones are a second sort no operator consumes)
++    reps: Vec<Vec<Term>>,
++    lts: usize,
++    truncated: bool,
++    /// merges the key proposed (a new term whose key a representative already has), and a uniform sample of them
++    merges: usize,
++    sample: Vec<(Term, Term)>,
++    /// representatives replaced by a later member the machine parses (`PROBE_REP=parse`)
++    displaced: usize,
++}
++
++/// The table to `max_size` under `sets`: terms over x, y, z, 0, -1 and add, and, or, xor, sub, shl1, plus `lt`, built from
++/// representatives only; the first (smallest) of a class is its representative.
++fn ct_build(sets: &CtSets, max_size: usize, max_classes: usize, sample_n: usize, mut seed: u128) -> CtTable {
++    // shl1 and shr1 are unary: enumerated only with the second operand 0
++    const OPS: [usize; 8] = [ADD, AND, OR, XOR, SUB, SHL1, SHR1, LT];
++    let mut t = CtTable { map: Default::default(), reps: vec![vec![]; max_size + 1], lts: 0, truncated: false, merges: 0, sample: vec![], displaced: 0 };
++    // PROBE_REP=parse: a class's representative is its smallest member `Machine::parse` takes, else its smallest
++    let parse_first = std::env::var("PROBE_REP").as_deref() == Ok("parse");
++    let mut moved: hashbrown::HashMap<Term, Term> = Default::default();
++    let mut vals: Vec<Vec<CtVals>> = vec![vec![]; max_size + 1];
++    for leaf in [Term::v(0), Term::v(1), Term::v(2), Term::ZERO, Term::ONES] {
++        let v = ct_leaf(sets, &leaf);
++        if t.map.insert(ct_hash(&v, false), leaf).is_none() {
++            t.reps[1].push(leaf);
++            vals[1].push(v);
++        }
++    }
++    'sizes: for s in (3..=max_size).step_by(2) {
++        for sa in (1..s - 1).step_by(2) {
++            let sb = s - 1 - sa;
++            for i in 0..t.reps[sa].len() {
++                for j in 0..t.reps[sb].len() {
++                    for o in OPS {
++                        if (o == SHL1 || o == SHR1) && t.reps[sb][j] != Term::ZERO {
++                            continue;
++                        }
++                        let v = ct_zip(sets, o, &vals[sa][i], &vals[sb][j]);
++                        let k = ct_hash(&v, o == LT);
++                        let (ra, rb) = (t.reps[sa][i], t.reps[sb][j]);
++                        let term = || Term::op(o, ra, rb);
++                        if let Some(&rep) = t.map.get(&k) {
++                            if parse_first && Machine::parse(&rep).is_none() && Machine::parse(&term()).is_some() {
++                                t.map.insert(k, term());
++                                moved.insert(rep, term());
++                                t.displaced += 1;
++                            }
++                            t.merges += 1;
++                            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                            let slot = if t.sample.len() < sample_n { Some(t.sample.len()) } else { Some((seed >> 64) as usize % t.merges).filter(|&x| x < sample_n) };
++                            if let Some(x) = slot {
++                                let c = (term(), rep);
++                                if x == t.sample.len() {
++                                    t.sample.push(c);
++                                } else {
++                                    t.sample[x] = c;
++                                }
++                            }
++                        } else {
++                            let n = term();
++                            t.map.insert(k, n);
++                            if o == LT {
++                                t.lts += 1;
++                            } else {
++                                t.reps[s].push(n);
++                                vals[s].push(v);
++                            }
++                            if t.map.len() >= max_classes {
++                                t.truncated = true;
++                                break 'sizes;
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++    // a sampled pair's representative as the table ends; a displaced representative is now a member
++    for (u, r) in t.sample.iter_mut() {
++        if let Some(&n) = moved.get(r) {
++            (*u, *r) = if *u == n { (*r, n) } else { (*u, n) };
++        }
++    }
++    t
++}
++
++/// The refuter: 4096 random width-8 inputs, every width-4 input, the screen's width-8 inputs, in that order.
++struct CtRefuter {
++    tvars: Vec<Box<[u8]>>,
++    r8: ValueMemo<u8>,
++    e4: ValueMemo<u8>,
++}
++
++impl CtRefuter {
++    const TESTS: usize = 4096;
++    fn new() -> Self {
++        let mut seed = 0x6a09_e667_f3bc_c908u128;
++        let tvars: Vec<Box<[u8]>> = (0..3)
++            .map(|_| {
++                (0..Self::TESTS)
++                    .map(|_| {
++                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                        (seed >> 40) as u8
++                    })
++                    .collect()
++            })
++            .collect();
++        let r8 = ValueMemo::<u8>::new(8, Self::TESTS, tvars.clone());
++        CtRefuter { tvars, r8, e4: ValueMemo::exhaustive(4, 3) }
++    }
++    /// Drop the memos' vectors (they grow with every term seen).
++    fn clear(&mut self) {
++        self.r8 = ValueMemo::<u8>::new(8, Self::TESTS, self.tvars.clone());
++        self.e4 = ValueMemo::exhaustive(4, 3);
++    }
++    /// An input on which `a` and `b` differ: (width, tuple).
++    fn refute(&mut self, a: &Term, b: &Term) -> Option<(usize, [u128; 3])> {
++        let tuple = |v: Vec<u128>| [v[0], v[1], v[2]];
++        if let Some(i) = self.r8.first_difference(a, b, Self::TESTS) {
++            return Some((8, tuple(self.r8.input(i))));
++        }
++        if let Some(i) = self.e4.first_difference(a, b, 1 << 12) {
++            return Some((4, tuple(self.e4.input(i))));
++        }
++        with_screen(8, 3, |m| m.first_difference(a, b, SCREEN_INPUTS).map(|i| (8, tuple(m.input(i)))))
++    }
++}
++
++/// Probe (docs/tier-cycle.md, "A key refined by counterexamples"): start the class table's key from `PROBE_KEY` (`exh`:
++/// every input at widths 3 and 4; a count: that many pseudo-random width-8 tuples plus the 8 tuples of 0s and 1s), then per
++/// round build the table to `PROBE_SIZE`, sample `PROBE_CLAIMS` of the merges it proposes, refute them (`CtRefuter`), and
++/// add to the key, greedily, one refuting input per refuted merge that the inputs added this round do not already
++/// separate; stop when a round's sample has no refuted merge or after `PROBE_ROUNDS`. Then normalise the laws in
++/// `PROBE_LAWFILES` by the final table, count suspect replacements and, with `PROBE_PROVE=1`, prove the others.
++#[test]
++#[ignore]
++fn key_refine_probe() {
++    let env = |k: &str| std::env::var(k).ok();
++    let max_size: usize = env("PROBE_SIZE").map_or(9, |v| v.parse().unwrap());
++    let max_classes: usize = env("PROBE_MAX").map_or(400000, |v| v.parse().unwrap());
++    let claims_n: usize = env("PROBE_CLAIMS").map_or(20000, |v| v.parse().unwrap());
++    let rounds: usize = env("PROBE_ROUNDS").map_or(20, |v| v.parse().unwrap());
++    let start = env("PROBE_KEY").unwrap_or("0".into());
++    let mut sets: CtSets = if start == "file" {
++        // PROBE_KEYIN: one input per line, `<width> <x> <y> <z>`
++        let text = std::fs::read_to_string(env("PROBE_KEYIN").unwrap()).unwrap();
++        let mut sets: CtSets = vec![];
++        for l in text.lines().filter(|l| !l.trim().is_empty()) {
++            let f: Vec<u128> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
++            let (w, x) = (f[0] as usize, [f[1], f[2], f[3]]);
++            match sets.iter_mut().find(|s| s.0 == w) {
++                Some(s) => s.1.push(x),
++                None => sets.push((w, vec![x])),
++            }
++        }
++        sets
++    } else if start == "exh" {
++        [3usize, 4].iter().map(|&w| (w, (0..1usize << (3 * w)).map(|i| [0, 1, 2].map(|v| (i >> (w * v) & ((1 << w) - 1)) as u128)).collect())).collect()
++    } else {
++        let mut seed = 0x2545_f491_4f6c_dd1du128;
++        let mut ins: Vec<[u128; 3]> = (0..8).map(|i| [0, 1, 2].map(|v| (i >> v & 1) as u128)).collect();
++        for _ in 0..start.parse::<usize>().unwrap() {
++            ins.push([0, 1, 2].map(|_| {
++                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                (seed >> 40) & 0xff
++            }));
++        }
++        vec![(8, ins)]
++    };
++    let describe = |sets: &CtSets| sets.iter().map(|(w, ins)| format!("{} at width {w}", ins.len())).collect::<Vec<_>>().join(", ");
++    println!("MEM start: commit {} MB, interned {:?}", ct_commit_mb().0, ct_interned());
++    let mut refuter = CtRefuter::new();
++    let mut table = None;
++    // PROBE_ADD: `refuted` (default) adds refuting inputs; `none` keeps the key; a count adds that many random width-8
++    // inputs per round. PROBE_REFUTE=0 skips the refutation loop. Either change means no early stop.
++    let add_mode = env("PROBE_ADD").unwrap_or("refuted".into());
++    let do_refute = env("PROBE_REFUTE").map_or(true, |v| v != "0");
++    let mut gseed = 0x9e37_79b9_7f4a_7c15u128;
++    for round in 0..rounds {
++        let (before, nodes0) = (ct_commit_mb().0, ct_interned());
++        let t0 = Instant::now();
++        let t = ct_build(&sets, max_size, max_classes, claims_n, 0x51ed_270b_27a3_c1f5 + round as u128);
++        let build_ms = t0.elapsed().as_millis();
++        let (now, peak) = ct_commit_mb();
++        let nodes1 = ct_interned();
++        let bv: usize = t.reps.iter().map(|r| r.len()).sum();
++        let key_bytes: usize = sets.iter().map(|s| s.1.len()).sum();
++        println!(
++            "MEM detail round {round}: commit {before} MB before build; interned nodes {} -> {} (cells {} -> {}); map capacity {}; bit-vector reps {bv}; value bytes per rep {key_bytes} in {} vectors",
++            nodes0.0, nodes1.0, nodes0.1, nodes1.1, t.map.capacity(), sets.len()
++        );
++        println!("MEM round {round}: commit {now} MB after build, peak {peak} MB");
++        let (mut refuted, mut refuted_lt) = (0usize, 0usize);
++        let mut added: Vec<(usize, [u128; 3])> = vec![];
++        for (n, (u, r)) in t.sample.iter().enumerate().filter(|_| do_refute) {
++            if n % 1000 == 0 {
++                refuter.clear();
++            }
++            if let Some(cex) = refuter.refute(u, r) {
++                refuted += 1;
++                refuted_lt += matches!(*u.node(), Node::Op(LT, ..)) as usize;
++                if !added.iter().any(|(w, x)| ct_eval(*u, *w, x) != ct_eval(*r, *w, x)) {
++                    added.push(cex);
++                }
++            }
++        }
++        let bytes: usize = sets.iter().map(|s| s.1.len()).sum();
++        println!(
++            "ROUND {round}: key {} ({bytes} bytes per class), classes {} ({} lt) truncated {}, merges {}, sampled {}, refuted {refuted} ({refuted_lt} lt), inputs added {} (width 8: {}), build {build_ms} ms, round {} ms",
++            describe(&sets),
++            t.map.len(),
++            t.lts,
++            t.truncated,
++            t.merges,
++            t.sample.len(),
++            added.len(),
++            added.iter().filter(|a| a.0 == 8).count(),
++            t0.elapsed().as_millis()
++        );
++        println!(
++            "MEM after refutation round {round}: commit {} MB, interned {:?}, screen memo vectors {} ({} MB)",
++            ct_commit_mb().0,
++            ct_interned(),
++            with_screen(8, 3, |m| m.ids.len()),
++            with_screen(8, 3, |m| m.blocks.len() * VALUE_BLOCK) >> 20
++        );
++        // PROBE_KEEP=1: the last round's table is the final one even if its sample is refuted
++        if env("PROBE_KEEP").as_deref() == Some("1") && round + 1 == rounds {
++            table = Some(t);
++            break;
++        }
++        if add_mode != "refuted" || !do_refute {
++            added = match add_mode.parse::<usize>() {
++                Ok(k) => (0..k)
++                    .map(|_| {
++                        (8, [0, 1, 2].map(|_| {
++                            gseed = gseed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                            (gseed >> 40) & 0xff
++                        }))
++                    })
++                    .collect(),
++                Err(_) => vec![],
++            };
++        } else if refuted == 0 {
++            table = Some(t);
++            break;
++        }
++        for (w, x) in added {
++            match sets.iter_mut().find(|s| s.0 == w) {
++                Some(s) => s.1.push(x),
++                None => sets.push((w, vec![x])),
++            }
++        }
++    }
++    let Some(table) = table else {
++        println!("NOT CONVERGED after {rounds} rounds");
++        return;
++    };
++    println!("FINAL key {}", describe(&sets));
++    if let Some(out) = env("PROBE_KEYOUT") {
++        let lines: String = sets.iter().flat_map(|(w, ins)| ins.iter().map(move |x| format!("{w} {} {} {}\n", x[0], x[1], x[2]))).collect();
++        std::fs::write(out, lines).unwrap();
++    }
++    // the final round's sampled merges that involve shr1: refuted on the refuter, then proved as the replacements are
++    fn has_shr(t: Term) -> bool {
++        match *t.node() {
++            Node::Op(o, a, b) => o == SHR1 || has_shr(a) || has_shr(b),
++            _ => false,
++        }
++    }
++    let shr: Vec<(Term, Term)> = table.sample.iter().filter(|(u, r)| has_shr(*u) || has_shr(*r)).cloned().collect();
++    let reps_shr = table.reps.iter().flatten().filter(|t| has_shr(**t)).count();
++    println!(
++        "REP displaced {}; class representatives with shr1 {} of {}",
++        table.displaced,
++        table.map.values().filter(|t| has_shr(**t)).count(),
++        table.map.len()
++    );
++    println!("SHR classes {reps_shr} bit-vector reps with shr1 of {}; sampled merges with shr1 {} of {}", table.reps.iter().map(|r| r.len()).sum::<usize>(), shr.len(), table.sample.len());
++    if env("PROBE_SHR").as_deref() == Some("1") {
++        refuter.clear();
++        let job = &mut Job::new(Setup::process());
++        tatic::kernel::scoped(|| {
++            let (mut none, mut wrong) = (0, 0);
++            let mut tally: hashbrown::HashMap<&str, usize> = Default::default();
++            let t0 = Instant::now();
++            for (n, (u, r)) in shr.iter().enumerate() {
++                if n % 1000 == 0 {
++                    refuter.clear();
++                }
++                if refuter.refute(u, r).is_some() {
++                    wrong += 1;
++                    continue;
++                }
++                let v = ct_verdict(job, u, r);
++                *tally.entry(v).or_insert(0usize) += 1;
++                if v.starts_with("none") {
++                    none += 1;
++                    if none <= 20 {
++                        println!("SHR {v}: {} = {}", u.show(), r.show());
++                    }
++                }
++            }
++            let mut tally: Vec<_> = tally.into_iter().collect();
++            tally.sort();
++            println!("SHR VERDICTS {tally:?}, refuted {wrong}, {} ms", t0.elapsed().as_millis());
++        });
++    }
++    // bottom-up normalisation by the final table
++    let mut vals: hashbrown::HashMap<Term, CtVals> = Default::default();
++    let mut memo: hashbrown::HashMap<Term, Term> = Default::default();
++    let mut pairs: Vec<(Term, Term)> = vec![];
++    let mut seen: hashbrown::HashSet<(Term, Term)> = Default::default();
++    fn norm(t: Term, memo: &mut hashbrown::HashMap<Term, Term>, f: &mut dyn FnMut(Term) -> Term) -> Term {
++        if let Some(n) = memo.get(&t) {
++            return *n;
++        }
++        let u = match *t.node() {
++            Node::Op(o, a, b) => {
++                let (na, nb) = (norm(a, memo, f), norm(b, memo, f));
++                f(Term::op(o, na, nb))
++            }
++            _ => f(t),
++        };
++        memo.insert(t, u);
++        u
++    }
++    let mut lookup = |u: Term| -> Term {
++        let v = ct_vals(&sets, u, &mut vals);
++        match table.map.get(&ct_hash(&v, matches!(*u.node(), Node::Op(LT, ..)))) {
++            Some(r) if *r != u => {
++                if seen.insert((u, *r)) {
++                    pairs.push((u, *r));
++                }
++                *r
++            }
++            _ => u,
++        }
++    };
++    for path in env("PROBE_LAWFILES").unwrap_or_default().split(';').filter(|p| !p.is_empty()) {
++        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
++        let (mut laws, mut met) = (0usize, 0usize);
++        for line in text.lines().filter(|l| l.contains(" = ")) {
++            let (l, r) = line.split_once(" = ").unwrap();
++            let (nl, nr) = (norm(parse_term(l.trim()), &mut memo, &mut lookup), norm(parse_term(r.trim()), &mut memo, &mut lookup));
++            laws += 1;
++            met += (nl == nr) as usize;
++        }
++        println!("LAWS {path}: {met} of {laws} meet");
++    }
++    refuter.clear();
++    let suspect: Vec<bool> = pairs.iter().map(|(u, r)| refuter.refute(u, r).is_some()).collect();
++    println!("MERGES {} distinct replacements, {} suspect", pairs.len(), suspect.iter().filter(|s| **s).count());
++    if env("PROBE_PROVE").as_deref() == Some("1") {
++        let job = &mut Job::new(Setup::process());
++        tatic::kernel::scoped(|| {
++            let (mut machine, mut bitwise, mut none) = (0, 0, 0);
++            for ((u, r), sus) in pairs.iter().zip(&suspect) {
++                if *sus {
++                    continue;
++                }
++                match prove_checked(job, 4, 3, "replacement", u, r).verdict {
++                    crate::machine::Verdict::Proved => machine += 1,
++                    crate::machine::Verdict::CarryFree if u.add_free() && r.add_free() => {
++                        let (p, s) = bitwise_law_k(4, 3, u, r);
++                        job.lemmas.ck("replacement", &p, &s);
++                        bitwise += 1;
++                    }
++                    _ => {
++                        none += 1;
++                        println!("UNPROVED {} = {} (over atoms: {})", u.show(), r.show(), ct_verdict(job, u, r));
++                    }
++                }
++            }
++            println!("PROVED machine {machine}, bitwise {bitwise}, no proof {none}");
++        });
++    }
++}

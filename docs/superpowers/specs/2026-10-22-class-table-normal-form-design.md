@@ -14,7 +14,7 @@ Date: 2026-10-22. Evidence: `docs/tier-cycle.md`, "Canonical forms: hand-coded o
 
 A table of class representatives, learned by enumeration, makes held-out laws meet with no rules. Terms over x, y, z, 0
 and -1 are enumerated by size from representatives only. Each term is keyed by its values on a set of inputs and its
-sort, and the first (smallest) term of a class is its representative. Each node of a law is then replaced, bottom-up, by
+sort, and the first (smallest) term of a class is its representative (decision 7 refines this). Each node of a law is then replaced, bottom-up, by
 its class's representative. The table built to size 9 under a key of 316 learned inputs:
 
 - meets 189-200 of 200 of each family's held-out laws at sizes 9-13 (add3, sbo3, mix3, cmp3d) and all 15 laws the ref
@@ -50,6 +50,16 @@ the rewriter now fixes by hand, the most load-bearing of which is the operand or
    adding the refuting input to the process's key mid-run (the first form of decision 1). That would change normal
    forms partway through a task, and threads that share a process would see the change at different points, so a run's
    results would depend on timing.
+7. **A class's representative is its smallest member that `Machine::parse` takes**, else its smallest member
+   (2026-10-23). Enumeration keeps the first member of a class unless a later member parses and the kept one does
+   not. The signal is the prover's own (decision 3's), not a list of operators. A term the prover can parse then maps
+   to a representative it can parse. On the held-out laws every replacement is then proved, as without `shr1`: 0
+   unproved against 6, the same laws meet, and 796 of 341740 representatives move (run
+   `2026-10-23-class-rep`). Replacements of terms that contain `shr1` are unchanged (about 12% of the sampled ones
+   stay unusable); the end state is a prover that knows what `shr1` means (`PARKED.md`, "A prover that knows what
+   `shr1` means"). Rejected: the smallest member provable equal to the rest, chosen at build time (a proof per merge,
+   647795 merges at about 7 ms, about 75 min a build); falling back per pair to the next member at use time (classes
+   keep their members).
 
 ## Design
 
@@ -106,7 +116,8 @@ the probe's 20 ms each was search, proof and check together; how much is search,
 touches, is measured in phase 1. `tree_encoding` does not take `shr1` (`Machine::parse` refuses it), so a `shr1`
 replacement over `add` or `sub` has no prover as it stands: 4599 of 5265 sampled ones. Over atoms (decision 3) 4015
 of those are proved; 584 (11% of the sample) are false over atoms or unproved, since they need what `shr1` means, and
-are unusable (decision 6). Among them are the 6 held-out replacements `lt(1, s) = lt(0, shr1(s, 0))` (`docs/tier-cycle.md`,
+are unusable (decision 6). With the smallest member as representative, 6 held-out replacements, `lt(1, s) =
+lt(0, shr1(s, 0))`, were among them; parse-first representatives (decision 7) remove all 6 (`docs/tier-cycle.md`,
 "`shr1` in the class table, its proofs over atoms, and a table's memory").
 
 ### 4. Phase 1: a step in `prove_eq`
@@ -155,7 +166,8 @@ build time and size once per process, and any unusable replacement.
 - **Key file:** a written and re-read key is equal; a header with another operator set or size fails with the
   regeneration message.
 - **Table:** built from the key file to size 5, it maps `sub(y, y)` to `0`, `add(x, 0)` to `x`, `xor(x, -1)` and
-  `sub(-1, x)` to one representative (the cases of `ClassReps`'s test), and `shr1(x, y)` to `shr1(x, 0)`.
+  `sub(-1, x)` to one representative (the cases of `ClassReps`'s test), `shr1(x, y)` to `shr1(x, 0)`, and
+  `lt(0, shr1(x, 0))` to `lt(sub(0, -1), x)` (decision 7: both are size 5 and the `shr1` one is enumerated first).
 - **Proofs:** every replacement the size-9 table uses on the held-out sets of run `2026-10-22-key-refine` has a
   verdict, and its plan compiles and kernel-checks (an ignored test, run at each phase).
 - **Counting and compiling agree:** a law closed by the step in counting mode compiles to a checked proof.
