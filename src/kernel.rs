@@ -412,8 +412,10 @@ const STACK_PER_RECURSION: usize = 1024 * 1024;
 /// Size of the one segment a large `check_in` runs on. On Windows stacker builds a fiber per
 /// segment and frees it on return, so a deep recursion that straddles a segment boundary pays that
 /// cost at every crossing (65k+ times at n=512, a third of the CPU in page faults, doc section 76).
-/// Starting the check on a segment big enough that it never reaches the end avoids it; reserving it
-/// costs nothing until touched, and a deeper recursion still chains further segments.
+/// Starting the check on a segment big enough that it never reaches the end avoids it, and a deeper
+/// recursion still chains further segments. Its pages cost no RAM until touched, but stacker's
+/// `CreateFiber` commits all of it: about 150 MB of a sweep worker's peak commit (PARKED.md, "Large
+/// `check_in` segments that commit only what they touch").
 const CHECK_SEGMENT: usize = 64 * 1024 * 1024;
 
 thread_local! {

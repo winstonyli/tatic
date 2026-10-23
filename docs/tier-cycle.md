@@ -3494,7 +3494,7 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     can return (439-494 MB), and the miner threads' own stacks (44-60 KB each). Found: the kernel's large `check_in` runs
     on a 64 MB stacker segment (`CHECK_SEGMENT`, src/kernel.rs), and stacker's `CreateFiber(size)` commits the whole
     size. With 4 MB, peak commit falls to 312-395 MB. Those pages are commit charge only, never touched, so they cost no
-    RAM; the kernel.rs comment "reserving it costs nothing until touched" holds for RAM, not for commit. The 100-200 MB
+    RAM (the kernel.rs comment said "costs nothing until touched"; corrected). Parked: PARKED.md, "Large `check_in` segments that commit only what they touch". The 100-200 MB
     still between live and commit is mimalloc's per-thread retention over 6 scoring threads plus speculative provers; not
     split further. Not a limit today: two lanes peak at about 1.15 GB of commit.
 - **The rule table filters on operand classes (2026-10-15, branch `rule-index`): identical outputs, `rule_step_in` 6.6% → 5.7% of busy samples; timing a tie.** `rule_step_in` tried 16.7 rules a call, most failing on an operand's operator. Each entry of a root operator's rule list now carries one class mask per operand (its operator, `0`, `-1` or a variable; a pattern variable sets every bit), and `RuleTable::candidates` skips entries whose masks miss the term's operand classes before calling `match_pat`. Test: `rule_table_lists_every_matching_rule_in_order` (a mutation that drops a pattern variable's other classes fails it).
