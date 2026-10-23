@@ -1,0 +1,356 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 6c2bf5c..a391f66 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -4485,3 +4485,351 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++/// Probe (docs/tier-cycle.md, "A learned table of representatives"): enumerate terms over x, y, z, 0, -1 and add, and, or,
++/// xor, sub, shl1 by size from representatives only, plus `lt` of two representatives as a second sort (one-bit, consumed
++/// by no operator). A term's key is its values on the key inputs and its sort, hashed to 128 bits: `PROBE_KEY=exh`
++/// (default) every input at widths 3 and 4, `PROBE_KEY=<count>` that many pseudo-random width-8 tuples plus the 8 tuples
++/// of 0s and 1s. The first (smallest) of a class is its representative. Each law in `PROBE_LAWFILES` (`;`-separated) is
++/// normalised bottom-up, each node to its class's representative, and the laws whose sides meet are counted. Each
++/// distinct replacement is checked against every width-4 input and the screen's width-8 inputs (a "suspect" fails one);
++/// with `PROBE_PROVE=1` each non-suspect one is proved at width 4 (`prove_checked`, then `bitwise_law_k` for carry-free
++/// ones) and kernel-checked, until `PROBE_PROVE_SECS` (default 600) runs out.
++#[test]
++#[ignore]
++fn class_table_probe() {
++    use std::hash::{Hash, Hasher};
++    let env = |k: &str| std::env::var(k).ok();
++    let max_size: usize = env("PROBE_SIZE").map_or(7, |v| v.parse().unwrap());
++    let max_classes: usize = env("PROBE_MAX").map_or(60000, |v| v.parse().unwrap());
++    let key_kind = env("PROBE_KEY").unwrap_or("exh".into());
++    const OPS: [usize; 6] = [ADD, AND, OR, XOR, SUB, SHL1];
++    // the key's input sets: (width, tuples of the three variables)
++    let sets: Vec<(usize, Vec<[u128; 3]>)> = if key_kind == "exh" {
++        [3usize, 4].iter().map(|&w| (w, (0..1usize << (3 * w)).map(|i| [0, 1, 2].map(|v| (i >> (w * v) & ((1 << w) - 1)) as u128)).collect())).collect()
++    } else {
++        let count: usize = key_kind.parse().unwrap();
++        let mut seed = 0x2545_f491_4f6c_dd1du128;
++        let mut ins: Vec<[u128; 3]> = (0..8).map(|i| [0, 1, 2].map(|v| (i >> v & 1) as u128)).collect();
++        for _ in 0..count {
++            ins.push([0, 1, 2].map(|_| {
++                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                (seed >> 40) & 0xff
++            }));
++        }
++        vec![(8, ins)]
++    };
++    let bytes: usize = sets.iter().map(|s| s.1.len()).sum();
++    type Vals = Vec<Vec<u8>>;
++    let leaf_vals = |t: &Term| -> Vals {
++        sets.iter()
++            .map(|(w, ins)| {
++                let mask = (1u128 << w) - 1;
++                ins.iter()
++                    .map(|x| match *t.node() {
++                        Node::V(v) => x[v] as u8,
++                        Node::Zero => 0,
++                        Node::Ones => mask as u8,
++                        _ => unreachable!(),
++                    })
++                    .collect()
++            })
++            .collect()
++    };
++    let zip = |o: usize, a: &Vals, b: &Vals| -> Vals {
++        let f = OP_INFO[o].word;
++        sets.iter().zip(a.iter().zip(b)).map(|((w, _), (x, y))| {
++            let mask = (1u128 << w) - 1;
++            x.iter().zip(y).map(|(p, q)| f(*p as u128, *q as u128, mask) as u8).collect()
++        }).collect()
++    };
++    let key = |v: &Vals, bool_sort: bool| -> (u64, u64) {
++        let (mut h1, mut h2) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());
++        (bool_sort, v).hash(&mut h1);
++        (0xa5u8, v, bool_sort).hash(&mut h2);
++        (h1.finish(), h2.finish())
++    };
++    // enumeration from representatives; `lt` terms are a second sort that no operator consumes
++    let t0 = Instant::now();
++    let mut table: hashbrown::HashMap<(u64, u64), Term> = Default::default();
++    let mut reps: Vec<Vec<(Term, Vals)>> = vec![vec![]; max_size + 1];
++    let mut lts = vec![0usize; max_size + 1];
++    for t in [Term::v(0), Term::v(1), Term::v(2), Term::ZERO, Term::ONES] {
++        let v = leaf_vals(&t);
++        if table.insert(key(&v, false), t).is_none() {
++            reps[1].push((t, v));
++        }
++    }
++    let mut truncated = false;
++    let claims_n: usize = env("PROBE_CLAIMS").map_or(0, |v| v.parse().unwrap());
++    let (mut claims, mut collisions, mut claim_seed): (Vec<(Term, Term)>, usize, u128) = (vec![], 0, 0x51ed_270b_27a3_c1f5);
++    'sizes: for s in (3..=max_size).step_by(2) {
++        for sa in (1..s - 1).step_by(2) {
++            let sb = s - 1 - sa;
++            for i in 0..reps[sa].len() {
++                for j in 0..reps[sb].len() {
++                    for o in OPS.into_iter().chain([LT]) {
++                        let (a, b) = (&reps[sa][i], &reps[sb][j]);
++                        let v = zip(o, &a.1, &b.1);
++                        let k = key(&v, o == LT);
++                        if !table.contains_key(&k) {
++                            let t = Term::op(o, a.0, b.0);
++                            table.insert(k, t);
++                            if o == LT {
++                                lts[s] += 1;
++                            } else {
++                                reps[s].push((t, v));
++                            }
++                            if table.len() >= max_classes {
++                                truncated = true;
++                                break 'sizes;
++                            }
++                        } else if claims_n > 0 {
++                            // a merge the key proposes: a uniform sample of them (reservoir)
++                            collisions += 1;
++                            claim_seed = claim_seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                            let slot = if claims.len() < claims_n { Some(claims.len()) } else { Some((claim_seed >> 64) as usize % collisions).filter(|&x| x < claims_n) };
++                            if let Some(x) = slot {
++                                let c = (Term::op(o, a.0, b.0), table[&k]);
++                                if x == claims.len() {
++                                    claims.push(c);
++                                } else {
++                                    claims[x] = c;
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++    let counts: Vec<String> = (1..=max_size).step_by(2).map(|s| format!("{s}:{}+{}lt", reps[s].len(), lts[s])).collect();
++    println!(
++        "TABLE size<={max_size} key {key_kind} ({bytes} bytes per class) classes {} ({}) truncated {truncated} ms {}",
++        table.len(),
++        counts.join(" "),
++        t0.elapsed().as_millis()
++    );
++    if claims_n > 0 {
++        // Calibration (docs/tier-cycle.md, "How much random testing is worth"): label each sampled merge by counterexample
++        // (4096 fresh random width-8 inputs, every width-4 input, the screen) or by proof; record how many of the 4096 it
++        // differs on, so P(passes n more random tests | false) = (1 - d/4096)^n.
++        drop(table);
++        drop(reps);
++        const TESTS: usize = 4096;
++        let mut seed = 0x6a09_e667_f3bc_c908u128;
++        let tvars: Vec<Box<[u8]>> = (0..3)
++            .map(|_| {
++                (0..TESTS)
++                    .map(|_| {
++                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                        (seed >> 40) as u8
++                    })
++                    .collect()
++            })
++            .collect();
++        fn ops_in(t: Term, acc: &mut u32) {
++            if let Node::Op(o, a, b) = *t.node() {
++                *acc |= 1 << o;
++                ops_in(a, acc);
++                ops_in(b, acc);
++            }
++        }
++        const GROUPS: [&str; 4] = ["bitwise", "add/sub", "shl1", "lt"];
++        let group = |u: &Term, r: &Term| -> usize {
++            let mut m = 0u32;
++            ops_in(*u, &mut m);
++            ops_in(*r, &mut m);
++            if matches!(*u.node(), Node::Op(LT, ..)) {
++                3
++            } else if m & 1 << SHL1 != 0 {
++                2
++            } else if m & (1 << ADD | 1 << SUB) != 0 {
++                1
++            } else {
++                0
++            }
++        };
++        // per claim: group, and Some(d) when refuted (d = differing tests of 4096), else proved / unresolved / untried
++        #[derive(Clone, Copy, PartialEq)]
++        enum Label {
++            Refuted(usize),
++            Proved,
++            Unresolved,
++            Untried,
++        }
++        let secs: u64 = env("PROBE_PROVE_SECS").map_or(600, |v| v.parse().unwrap());
++        let deadline = Instant::now() + std::time::Duration::from_secs(secs);
++        let job = &mut Job::new(Setup::process());
++        let mut labels: Vec<(usize, Label)> = vec![];
++        tatic::kernel::scoped(|| {
++            for chunk in claims.chunks(1000) {
++                let mut r8 = ValueMemo::<u8>::new(8, TESTS, tvars.clone());
++                let mut e4 = ValueMemo::exhaustive(4, 3);
++                for (u, r) in chunk {
++                    let x = r8.values(u).to_vec();
++                    let d = x.iter().zip(r8.values(r)).filter(|(p, q)| p != q).count();
++                    let refuted = d > 0
++                        || e4.first_difference(u, r, 1 << 12).is_some()
++                        || with_screen(8, 3, |m| m.first_difference(u, r, SCREEN_INPUTS)).is_some();
++                    let label = if refuted {
++                        Label::Refuted(d)
++                    } else if Instant::now() > deadline {
++                        Label::Untried
++                    } else {
++                        match prove_checked(job, 4, 3, "claim", u, r).verdict {
++                            crate::machine::Verdict::Proved => Label::Proved,
++                            crate::machine::Verdict::CarryFree => {
++                                let (p, s) = bitwise_law_k(4, 3, u, r);
++                                job.lemmas.ck("claim", &p, &s);
++                                Label::Proved
++                            }
++                            _ => Label::Unresolved,
++                        }
++                    };
++                    labels.push((group(u, r), label));
++                }
++            }
++        });
++        println!("CLAIMS {} sampled of {collisions} merges the key proposed", claims.len());
++        const NS: [usize; 10] = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256];
++        for g in (0..GROUPS.len()).map(Some).chain([None]) {
++            let ls: Vec<Label> = labels.iter().filter(|(h, _)| g.is_none_or(|g| g == *h)).map(|l| l.1).collect();
++            let name = g.map_or("all", |g| GROUPS[g]);
++            let count = |f: &dyn Fn(&Label) -> bool| ls.iter().filter(|l| f(l)).count();
++            let (proved, unres, untried) = (count(&|l| *l == Label::Proved), count(&|l| *l == Label::Unresolved), count(&|l| *l == Label::Untried));
++            let ds: Vec<usize> = ls.iter().filter_map(|l| if let Label::Refuted(d) = l { Some(*d) } else { None }).collect();
++            let bins = [(0, 0), (1, 40), (41, 409), (410, 2047), (2048, TESTS)].map(|(lo, hi)| ds.iter().filter(|d| (lo..=hi).contains(*d)).count());
++            println!(
++                "LABEL {name}: {} claims, proved {proved}, unresolved {unres}, untried {untried}, refuted {} (differ on 0 | 1-40 | 41-409 | 410-2047 | 2048+ of 4096: {:?})",
++                ls.len(),
++                ds.len(),
++                bins
++            );
++            let cal: Vec<String> = NS
++                .iter()
++                .map(|&n| {
++                    let false_w: f64 = ds.iter().map(|&d| (1.0 - d as f64 / TESTS as f64).powi(n as i32)).sum();
++                    let p_lo = proved as f64 / (proved as f64 + unres as f64 + false_w);
++                    let p_hi = (proved + unres) as f64 / (proved as f64 + unres as f64 + false_w);
++                    if unres == 0 { format!("{n}:{p_lo:.4}") } else { format!("{n}:{p_lo:.4}-{p_hi:.4}") }
++                })
++                .collect();
++            println!("CAL {name}: P(proved | passed n more tests) {}", cal.join(" "));
++        }
++        return;
++    }
++    // bottom-up normalisation by the table
++    let mut vals: hashbrown::HashMap<Term, Vals> = Default::default();
++    fn vals_rec(t: Term, vals: &mut hashbrown::HashMap<Term, Vals>, leafv: &dyn Fn(&Term) -> Vals, zip: &dyn Fn(usize, &Vals, &Vals) -> Vals) -> Vals {
++        if let Some(v) = vals.get(&t) {
++            return v.clone();
++        }
++        let v = match *t.node() {
++            Node::Op(o, a, b) => {
++                let (va, vb) = (vals_rec(a, vals, leafv, zip), vals_rec(b, vals, leafv, zip));
++                zip(o, &va, &vb)
++            }
++            _ => leafv(&t),
++        };
++        vals.insert(t, v.clone());
++        v
++    }
++    fn norm(t: Term, memo: &mut hashbrown::HashMap<Term, Term>, f: &mut dyn FnMut(Term) -> Term) -> Term {
++        if let Some(n) = memo.get(&t) {
++            return *n;
++        }
++        let u = match *t.node() {
++            Node::Op(o, a, b) => {
++                let (na, nb) = (norm(a, memo, f), norm(b, memo, f));
++                f(Term::op(o, na, nb))
++            }
++            _ => f(t),
++        };
++        memo.insert(t, u);
++        u
++    }
++    let mut pairs: Vec<(Term, Term)> = vec![];
++    let mut seen_pairs: hashbrown::HashSet<(Term, Term)> = Default::default();
++    let mut norm_memo: hashbrown::HashMap<Term, Term> = Default::default();
++    let mut lookup = |u: Term| -> Term {
++        let v = vals_rec(u, &mut vals, &leaf_vals, &zip);
++        let is_lt = matches!(*u.node(), Node::Op(LT, ..));
++        match table.get(&key(&v, is_lt)) {
++            Some(r) if *r != u => {
++                if seen_pairs.insert((u, *r)) {
++                    pairs.push((u, *r));
++                }
++                *r
++            }
++            _ => u,
++        }
++    };
++    for path in env("PROBE_LAWFILES").unwrap_or_default().split(';').filter(|p| !p.is_empty()) {
++        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
++        let (mut laws, mut met) = (0usize, 0usize);
++        for line in text.lines().filter(|l| l.contains(" = ")) {
++            let (l, r) = line.split_once(" = ").unwrap();
++            let (nl, nr) = (norm(parse_term(l.trim()), &mut norm_memo, &mut lookup), norm(parse_term(r.trim()), &mut norm_memo, &mut lookup));
++            laws += 1;
++            met += (nl == nr) as usize;
++        }
++        println!("LAWS {path}: {met} of {laws} meet");
++    }
++    // each distinct replacement: every width-4 input, then the screen's width-8 inputs
++    let mut exh4 = ValueMemo::exhaustive(4, 3);
++    let suspect: Vec<bool> = pairs
++        .iter()
++        .map(|(u, r)| exh4.first_difference(u, r, 1 << 12).is_some() || with_screen(8, 3, |m| m.first_difference(u, r, SCREEN_INPUTS)).is_some())
++        .collect();
++    println!("MERGES {} distinct replacements, {} suspect (differ at width 4 or on the screen's width-8 inputs)", pairs.len(), suspect.iter().filter(|s| **s).count());
++    if env("PROBE_PROVE").as_deref() == Some("1") {
++        let secs: u64 = env("PROBE_PROVE_SECS").map_or(600, |v| v.parse().unwrap());
++        let deadline = Instant::now() + std::time::Duration::from_secs(secs);
++        let job = &mut Job::new(Setup::process());
++        tatic::kernel::scoped(|| {
++            let (mut tried, mut machine, mut bitwise, mut over_cap, mut no_proof, mut not_generic) = (0, 0, 0, 0, 0, 0);
++            let (mut law_t, mut check_t) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
++            let mut worst: Vec<(std::time::Duration, String)> = vec![];
++            for ((u, r), sus) in pairs.iter().zip(&suspect) {
++                if *sus {
++                    continue;
++                }
++                if Instant::now() > deadline {
++                    break;
++                }
++                tried += 1;
++                let t = Instant::now();
++                let tr = prove_checked(job, 4, 3, "replacement", u, r);
++                law_t += tr.law;
++                check_t += tr.check;
++                match tr.verdict {
++                    crate::machine::Verdict::Proved => machine += 1,
++                    crate::machine::Verdict::CarryFree => {
++                        let t1 = Instant::now();
++                        let (p, s) = bitwise_law_k(4, 3, u, r);
++                        job.lemmas.ck("replacement", &p, &s);
++                        check_t += t1.elapsed();
++                        bitwise += 1;
++                    }
++                    crate::machine::Verdict::OverCap => over_cap += 1,
++                    crate::machine::Verdict::NoProof { generic } => {
++                        no_proof += 1;
++                        not_generic += (!generic) as usize;
++                    }
++                }
++                worst.push((t.elapsed(), format!("{} = {}", u.show(), r.show())));
++            }
++            worst.sort_by(|a, b| b.0.cmp(&a.0));
++            println!(
++                "PROVED tried {tried} of {}: machine {machine}, bitwise {bitwise}, over carry cap {over_cap}, no proof {no_proof} ({not_generic} not generic); add_tree_law {} ms, checks {} ms",
++                pairs.len() - suspect.iter().filter(|s| **s).count(),
++                law_t.as_millis(),
++                check_t.as_millis()
++            );
++            for (d, law) in worst.iter().take(3) {
++                println!("  slowest {} ms: {law}", d.as_millis());
++            }
++        });
++    }
++}

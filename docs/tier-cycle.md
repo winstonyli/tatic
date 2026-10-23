@@ -5168,6 +5168,50 @@ width-4 input and the screen's width-8 inputs; one failing either is a suspect. 
 - **At ≤ 11 the table meets 2203 of the 2204 laws**, an upper bound as above. Its 4M classes (capped partway through size
   11) took 8.6 s.
 
+*How much random testing is worth (2026-10-22; run `2026-10-22-claim-calibration`, 38 min, CPU 49% at launch from
+other sessions; exe 1962b46 plus `docs/runs/2026-10-22/patches/claim_calibration.patch`, reverted; script
+`docs/runs/2026-10-22/scripts/claim_calibration.sh`).* A first calibration point for a probabilistic layer between the
+kernel and a proposer: how likely a claimed equality is to be proved, given the random tests it passed. The claims are
+the merges a key proposes while the table above is enumerated to size 9: 20000 sampled uniformly per key. Each is
+refuted by a difference on 4096 fresh random width-8 inputs, on every width-4 input or on the screen, or else proved as
+above. For a refuted claim, the share d of the 4096 inputs it differs on gives its chance of passing n more random tests,
+(1 − d)^n. That gives P(proved | passed n more) for each kind of claim. Proving stopped at 10 minutes per key, so 40-53% of
+the last three keys' unrefuted claims were not tried. They are counted as proved: of the 39664 unrefuted claims that
+were tried, 39645 were proved and 19 (all `lt`) found no proof.
+
+| key (merges proposed) | kind | claims | refuted (differ on ≤ 1% / ≤ 10% / more) | P(proved), n = 0 / 8 / 64 / 256 more tests |
+|---|---|---|---|---|
+| 8 Boolean tuples (370270) | bitwise | 309 | 0 | 1 |
+| | add/sub | 10149 | 4972 (0 / 5 / 4967) | 0.510 / 0.997 / 1.000 / 1.000 |
+| | shl1 | 6389 | 2098 (0 / 0 / 2098) | 0.672 / 1.000 / 1.000 / 1.000 |
+| | `lt` | 3153 | 2697 (234 / 61 / 2402) | 0.145 / 0.569 / 0.727 / 0.878 |
+| | all | 20000 | 9767 | 0.512 / 0.966 / 0.984 / 0.994 |
+| plus 4 random (652823) | all | 20000 | 3585 (358 / 192 / 3035), 2671 of them `lt` | 0.821 / 0.961 / 0.983 / 0.993 |
+| plus 64 random (598918) | add/sub | 10510 | 1 (0 / 1 / 0) | 1.000 |
+| | `lt` | 2055 | 836 (601 / 233 / 2) | 0.592 / 0.610 / 0.704 / 0.855 |
+| | all | 20000 | 837 | 0.958 / 0.961 / 0.974 / 0.989 |
+| exhaustive widths 3 and 4 (585766) | shl1 | 7293 | 36 (0 / 0 / 36) | 0.995 / 1.000 / 1.000 / 1.000 |
+| | `lt` | 1610 | 0 | 0.994 (10 without a proof) |
+| | all | 20000 | 36 | 0.998 / 0.9995 / 0.9995 / 0.9995 |
+
+("≤ 1%" counts claims that differ on 0-40 of the 4096 inputs; the 5, 10 and 21 that differ on none of them were caught at
+width 4 or on the screen.)
+
+- **What a test is worth depends on the kind of claim.** A wrong arithmetic merge (add/sub or shl1) differs on most
+  inputs, so 8 random tests take P from 0.51-0.67 to 0.997-1.000. A wrong `lt` merge differs on few inputs, its result
+  being one bit: 256 more tests take it only to 0.85-0.88. A 64-input key has already removed every `lt` merge that
+  testing catches easily, so for its `lt` claims further testing is worth almost nothing (0.59 to 0.61 after 8).
+- **Bitwise merges were never wrong, under any key.** On the 8 tuples of 0s and 1s a pure bitwise term's values are its
+  truth table, which decides it at every width. That is a decision, not a probability.
+- **The exhaustive small widths are the right evidence for `lt`, and random width-8 tests for what they miss.** The
+  exhaustive key refutes no `lt` claim, and its only wrong merges are 36 shl1 claims (presumably shifts that lose bits at widths 3 and
+  4), each differing on at least 10% of width-8 inputs, so 8 random tests leave P at 1.000.
+- **So one calibrated layer, with the claim's shape as a feature and proof outcomes as labels, would learn these
+  differences**, rather than hand-set test counts per kind. The labels cost little: 39645 claims were proved, and the 19
+  without a proof are all `lt`.
+- **Limits.** The claims are enumeration merges over three variables up to size 9, not laws from a stream, so the
+  numbers hold for that distribution only. Differences were measured at width 8; the proofs are generic.
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
