@@ -5421,6 +5421,14 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   190 to 313 (+19%); 1308 to 1931 in all (+48%), lookahead decisions 7 to 18. So most of phase 1's +19% is the miner
   playing more rounds on the rules the table lets it meet, not the table's own lookups; a gate comparing phase-1 changes
   should read rounds beside CPU.
+- **Displaced representatives stay inside stored ones** (throwaway probe, patch
+  `docs/runs/2026-10-23/patches/probe_rep_fixpoints.patch`, on 299a68d, reverted; final review M1). Of the 798
+  displacements 69 are bit-vector classes (the rest `lt`, which no operator takes). 903 of 341866 stored representatives
+  (186 of them `lt`) hold a proper subterm the table itself replaces, over 42 distinct replacements; the 8 printed are
+  each a displaced `shl1(…shr1(…, 0)…, 0)` term whose successor is a larger `add`/`and(…, shl1(-1, 0))` form, e.g. `or(x, shl1(xor(x,
+  shr1(y, 0)), 0))` holds `shl1(xor(x, shr1(y, 0)), 0)`, which steps to `xor(add(x, x), and(y, shl1(-1, 0)))`. So spec
+  §5's premise that a representative is a fixpoint fails for 0.26% of the table; phase 1 is unaffected (it stops where
+  no verdict exists), phase 2 needs the fix in `PARKED.md`, "Displaced representatives inside stored ones".
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

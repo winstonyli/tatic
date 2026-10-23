@@ -1,0 +1,60 @@
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index 5ff8789..08c9ab9 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -130,6 +130,45 @@ fn the_size_5_table_maps_terms_to_their_representatives() {
+     assert_eq!(rep("add(u, 0)"), None, "a fourth variable");
+ }
+ 
++static PROBE_BV_DISPLACED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++
++/// Throwaway probe (final review M1): is every stored representative a fixpoint below its root?
++#[test]
++#[ignore]
++fn probe_rep_fixpoints() {
++    let (c, st) = Classes::build(&Key::parse(KEY_FILE).unwrap(), SIZE, 0, 0);
++    let bv = PROBE_BV_DISPLACED.load(std::sync::atomic::Ordering::Relaxed);
++    println!("PROBE displaced {} ({bv} not lt), {} classes", st.displaced, c.len());
++    fn subs(t: &Term, out: &mut Vec<Term>) {
++        if let Node::Op(_, a, b) = *t.node() {
++            for s in [a, b] {
++                out.push(s);
++                subs(&s, out);
++            }
++        }
++    }
++    let reps: Vec<Term> = c.map.values().copied().collect();
++    let (mut bad, mut bad_lt, mut pairs) = (0, 0, hashbrown::HashSet::new());
++    let mut shown = 0;
++    for r in &reps {
++        let mut v = vec![];
++        subs(r, &mut v);
++        let hit: Vec<(Term, Term)> = v.iter().filter_map(|u| c.rep(u).map(|n| (*u, n))).collect();
++        if !hit.is_empty() {
++            bad += 1;
++            if matches!(*r.node(), Node::Op(LT, ..)) {
++                bad_lt += 1;
++            }
++            if shown < 8 {
++                println!("PROBE {} has {} -> {}", r.show(), hit[0].0.show(), hit[0].1.show());
++                shown += 1;
++            }
++            pairs.extend(hit);
++        }
++    }
++    println!("PROBE {bad} of {} representatives ({bad_lt} lt) hold a subterm the table replaces; {} distinct subterm replacements", reps.len(), pairs.len());
++}
++
+ /// The full table from the key file, pinned: its counts and a fingerprint of its representatives (not of `class_hash`'s
+ /// keys), so a change to how the build computes or hashes values (not what they are) leaves the table as it was.
+ #[test]
+@@ -240,6 +279,9 @@ impl Classes {
+                             match map.get_mut(&h) {
+                                 Some(rep) => {
+                                     if Machine::parse(rep).is_none() && Machine::parse(&term()).is_some() {
++                                        if o != LT {
++                                            PROBE_BV_DISPLACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                                        }
+                                         moved.insert(*rep, term());
+                                         *rep = term();
+                                         st.displaced += 1;

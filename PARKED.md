@@ -105,11 +105,13 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Displaced representatives inside stored ones (class table)** — what: when the build displaces a class's representative
   (decision 7, 798 of them), representatives already enumerated over it keep the old subterm, so a stored representative
   need not be a fixpoint below its root (spec §5's premise), and phase 2's step at every node could oscillate there.
-  Inferred from `Classes::build`, not measured. Why parked: phase 1 steps only at the root of each rebuilt node and stops
-  where no verdict exists, so it is sound and terminates. Trigger: before phase 2; first count non-`lt` displacements and
-  stored representatives with a non-representative subterm. Fix if real: substitute the new representative when
-  displacing, and re-pin `the_full_table_is_pinned`. Evidence: `tests/church_bv/classes.rs` (`Classes::build`'s
-  displacement), final review M1 (2026-10-23). Status: parked.
+  Measured: real, 903 representatives (`docs/tier-cycle.md`, "Displaced representatives stay inside stored ones"). Why
+  parked: phase 1 steps only at the root of each rebuilt node and stops where no verdict exists, so it is sound and
+  terminates. Trigger: phase 2. Fix: substituting at displacement cannot work (the new representative is larger than
+  the old, so terms already built at smaller sizes cannot take it); after the build, substitute each displaced
+  representative's successor into every stored representative holding it (values unchanged, terms may pass `SIZE`),
+  then re-pin `the_full_table_is_pinned`. Evidence: `tests/church_bv/classes.rs` (`Classes::build`'s displacement),
+  final review M1, probe 2026-10-23. Status: parked.
 - **The class table's lookup beyond its domain, and under one lock** — what: `Classes::rep` answers for nodes larger than
   the table's size or with an `lt` operand, by key values never refined to separate them; `step`'s verdict guards it,
   `canonical` (the twin filter) does not, so a false match can mark a law twin or trivial. And `rep` computes a new term's
