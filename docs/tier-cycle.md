@@ -4863,6 +4863,24 @@ with the family's salt-1 ref library (`gen-warm-fix`, `mon_1`). Free share (free
   laws per cell: the per-family steps are a few points to tens of points, so differences under about 5 points are
   noise.
 
+*Does the choice of extras move the frontier? (2026-10-22; run `2026-10-22-draw-band`, 64 s, CPU 42% at launch,
+script `draw_band.sh`.)* The size-band laws (salt 11, less every law any draw's salt-1 ref mine mined on, so one set
+for all) served under the salt-1 ref library of each draw (0: `gen-warm-fix`, 1-3: `gen-draw1` to `3`). The laws are
+the same in every column, so a difference is the libraries'. Free share at size 11 (cmp3d also 13), draws 0 to 3:
+
+| family | draw 0 | draw 1 | draw 2 | draw 3 | best over the mean |
+|---|---|---|---|---|---|
+| add3 | .795 | .820 | .850 | .835 | +2.5 points |
+| sbo3 | .820 | .790 | .810 | .825 | +1.4 |
+| mix3 | .775 | .800 | .785 | .785 | +1.4 |
+| cmp3d 11 / 13 | .985 / .925 | .985 / .950 | .980 / .925 | .990 / .910 | +0.5 / +2.7 |
+
+- **A few points.** The spread at sizes 9-13 is 1-5.5 points; the best draw beats the mean draw by 0.5-2.7. Having a
+  library at all is worth 7-37 points at these sizes (size-band, above), so which extras it was mined on is about a
+  tenth of what the library buys. Size 7 (21-184 laws) is noisier: cmp3d .857 against 1.000 is 3 laws of 21.
+- So re-targeting the ranker from stream M to the frontier does not open a larger lever: at this n, choosing the
+  generator's laws moves stream M by a few percent (above) and the free share by a few points.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
