@@ -17,7 +17,8 @@ impl Clock {
 }
 
 /// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `new`), except the law window's (`RULEMINER_LAWS`,
-/// `_SHAPE`, `_SHAPE_SALT`, `_PHASE`, `_STRIDE` and the like), which `family_laws` reads through the `env` it is given.
+/// `_STRIDE`, `_DEEP`), which `family_laws` reads through the `env` it is given; three-variable laws come only through
+/// `RULEMINER_LAWFILE` (family `streams`).
 pub struct MinerConfig {
     /// `MULMINER_MAX`: largest constant in the mul family.
     pub max: u32,
@@ -38,7 +39,7 @@ pub struct MinerConfig {
     pub any_op: bool,
     pub show: bool,
     pub fast: bool,
-    /// `RULEMINER_FAMILY`: the law family (default `mul`); with `lawfile` it still sets the variable count.
+    /// `RULEMINER_FAMILY`: the law family (default `mul`; `streams` with `lawfile`, which it gives the variable count).
     pub family: String,
     /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) and their preferences in force throughout (section 74).
     pub base: Option<String>,

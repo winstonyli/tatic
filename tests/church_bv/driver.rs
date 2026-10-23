@@ -4,26 +4,27 @@
 //! while the pure memos carry over (`task.rs`, `job::hidden_state_is_classified`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
 //! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
+//! The laws come from the streams (spec docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §9):
+//! `search::stream_sequence(salt)`, the operator-set streams round-robin, and a phase is its residue class mod
+//! `STREAM_STRIDE` (`search::residue`). Phase 0 feeds the mines' extras, phases 1-3 the loops.
+//!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
-//! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of the family's sequence (residue class SPHASE of stride STRIDE). It is served under
-//! the rules in force *before* it is mined, so M is what the stream costs when rules arrive as it does. `ref` mines once on all K
-//! batches before serving them; `loop` mines each batch after serving it (not the last, which could not change any M); `none` only
-//! serves.
-//! Options (env, defaults in brackets): FAMILY [add3] (add3|mix3|sbo3|cmp3|cmp3d|u3|u3w, THREE_VAR_FAMILIES in search.rs), STRIDE [7],
-//! SPHASE [0], B [150], K [4], OFFSET [0], THREADS [2] (miner pool), ROUNDS [no cap], DEEP3 [1] (add3 only), SPLIT [2] (0|1 restricts
-//! everything to one structure-based half of the laws; RULEMINER_SHAPE_SALT picks another split), WARM_RULES=<file> (start with those
-//! rules in force), CHECK_FAST [0] (serve without proof building or kernel checks; M is unchanged), MACHINE_STATE [1] (a machine-state
-//! line at start and end, about 2 s each). Other variables pass through to the children: RULEMINER_FAST=1 (exact counts without
-//! proving every candidate, docs/tier-cycle.md "Miner speedups"), RULEMINER_SHUFFLE=<salt> (hash-ordered law sequence, so batches and
-//! phases are random samples), RULEMINER_STEPS (default 200, serving's budget).
-//! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the law
-//! generator's laws (`scope_extras`, a shared 16% slice per loop); off with ABLATE=gen. Measured on cold loops, warm loops and
-//! ref mines; it pays in each (docs/tier-cycle.md, "The law generator on ref mines and warm loops", "Hidden twins beyond
-//! two-leaf nodes").
+//! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of phase SPHASE of the stream sequence at salt RULEMINER_SHUFFLE. It is
+//! served under the rules in force *before* it is mined, so M is what the stream costs when rules arrive as it does. `ref`
+//! mines once on all K batches before serving them; `loop` mines each batch after serving it (not the last, which could not
+//! change any M); `none` only serves.
+//! Options (env, defaults in brackets): SPHASE [0], B [150], K [4], OFFSET [0], THREADS [2] (miner pool), ROUNDS [no cap],
+//! WARM_RULES=<file> (start with those rules in force), CHECK_FAST [0] (serve without proof building or kernel checks; M is
+//! unchanged), MACHINE_STATE [1] (a machine-state line at start and end, about 2 s each). Other variables pass through to the
+//! children: RULEMINER_FAST=1 (exact counts without proving every candidate, docs/tier-cycle.md "Miner speedups"),
+//! RULEMINER_SHUFFLE=<salt> (the stream sequence's salt), RULEMINER_STEPS (default 200, serving's budget).
+//! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the
+//! first `STREAM_EXTRAS` laws of phase 0 that the filter keeps (`scope_extras`, a shared 16% slice per loop); off with
+//! ABLATE=gen; GEN_DRAW=d draws them from the sequence at salt + 1000 d instead.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
-//! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the family's
-//! sequence, built once per family) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
+//! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the stream sequence, built once
+//! per process and salt) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
 //! `CHECK_LAWFILE`).
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules, laws the join closed with no machine proof, terms the join's
@@ -32,16 +33,11 @@
 //! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
-//! **A sweep** (the experiments of docs/loop-result.md): `SWEEP_OUT=<dir> [SALT=1] [LIB=<dir>] [SWEEP="mines own cold"] <exe>
-//! driver::sweep --exact --ignored --nocapture` (`MACHINE_STATE=0` skips its two machine-state lines too). Every stage uses `RULEMINER_FAST=1` and `RULEMINER_SHUFFLE=$SALT`. Stages, in order:
-//! - `mines`, optionally `:<family>,..` (default sbo3,add3,mix3,cmp3d; u3 only when named): one ref mine per family on its phase-0
-//!   stream (`MINES`) -> `lib_<family>/`, summary rows in `<stage>.tsv` (family, seconds, total M, rules, exhausted, joined, reached).
-//! - `own`, `cold`, `cross`, `pooled`, `mixed`, optionally `:<family>,<family>` (default cmp3d,add3,sbo3): loops (`LOOPS` settings) on
-//!   phases 1-3, seeded with the family's own library, nothing, each other family's library, the pooled library (cmp3d's, add3's and
-//!   sbo3's, `pooled.rules`, plus the preferences and rule drops the family learns on it on its phase-0 stream, `pooled_<family>/`; rows in
-//!   `pooled_prefs.tsv` as for mines), or the library mined on u3. Libraries are read from `LIB/lib_<family>/rules.txt`
-//!   (default LIB = SWEEP_OUT). One row per loop in `<stage>.tsv` (`:` becomes `_`): family, stride-phase, from_<source>, total M,
-//!   per-batch M, rules at the end, seconds, exhausted, joined, reached (as in m.tsv, summed over the batches).
+//! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] [SWEEP=cold:streams] <exe> driver::sweep
+//! --exact --ignored --nocapture` (`MACHINE_STATE=0` skips its two machine-state lines too). It uses `RULEMINER_FAST=1` and
+//! `RULEMINER_SHUFFLE=$SALT`. Its one stage, `cold` (or `cold:streams`): three loops on phases 1-3 from no rules, in
+//! `cold_streams_streams_<phase>_none/`, one row each in `cold_streams.tsv` (`:` becomes `_`): family, stride-phase,
+//! from_none, total M, per-batch M, rules at the end, seconds, exhausted, joined, reached (as in m.tsv, summed over the batches).
 
 use super::*;
 use std::io::Write;
@@ -173,16 +169,12 @@ struct LoopCfg {
     /// none|ref|loop
     mode: String,
     out: PathBuf,
-    family: String,
-    stride: usize,
     sphase: usize,
     b: usize,
     k: usize,
     offset: usize,
     threads: usize,
     rounds: usize,
-    deep3: usize,
-    split: usize,
     warm: Option<PathBuf>,
     check_fast: bool,
     /// the extras list of this loop's scope (`scope_extras`), shared by the scope's loops
@@ -264,7 +256,7 @@ fn stream_phases_are_disjoint_residue_classes() {
     assert_eq!(family_vars("streams"), 3);
 }
 
-/// Extras exist to be mined into rules: a mine with no rule rounds (the pooled stage's preference mines), a loop that only
+/// Extras exist to be mined into rules: a mine with no rule rounds, a loop that only
 /// serves, and any mine under `ABLATE=gen` take none; loop mines and ref mines with rounds take them.
 #[test]
 fn no_extras_without_rounds() {
@@ -284,16 +276,12 @@ impl LoopCfg {
         let cfg = LoopCfg {
             mode,
             out: PathBuf::from(setup.var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
-            family: setup.var("FAMILY").unwrap_or("add3").into(),
-            stride: setup.or("STRIDE", 7),
             sphase: setup.or("SPHASE", 0),
             b: setup.or("B", 150),
             k: setup.or("K", 4),
             offset: setup.or("OFFSET", 0),
             threads: setup.or("THREADS", 2),
             rounds: setup.or("ROUNDS", usize::MAX),
-            deep3: setup.or("DEEP3", 1),
-            split: setup.or("SPLIT", 2),
             warm: setup.var("WARM_RULES").map(PathBuf::from),
             check_fast: setup.flag("CHECK_FAST", false),
             extras: Default::default(),
@@ -302,7 +290,7 @@ impl LoopCfg {
         };
         if takes_extras(&cfg, setup.ablated("gen")) {
             let mut scope = [cfg];
-            scope_extras(setup, &mut scope, &[], &mut Draw::new(setup.or("GEN_DRAW", 0))).unwrap_or_else(|e| panic!("{e}"));
+            scope_extras(setup, &mut scope).unwrap_or_else(|e| panic!("{e}"));
             let [cfg] = scope;
             return cfg;
         }
@@ -557,13 +545,12 @@ fn worker_never_leaves_a_stale_log() {
     assert!(ran.is_err(), "run returned {ran:?} with the earlier log still in place");
 }
 
-/// Writes to `path` the laws a child with `env` (over this process's environment) would take from `family`'s sequence, as
-/// `lhs = rhs` lines for `RULEMINER_LAWFILE`/`CHECK_LAWFILE`, and returns the variable that passes them. The driver builds a
-/// family's law pool once (`family_laws` keeps it) where every child used to rebuild it: 35% of a sweep's loops
-/// (docs/tier-cycle.md).
-fn write_laws(setup: &Setup, family: &str, env: &[(String, String)], path: &Path, var: &str) -> (String, String) {
+/// Writes to `path` the laws a child with `env` (over this process's environment) would take from the stream sequence, as
+/// `lhs = rhs` lines for `RULEMINER_LAWFILE`/`CHECK_LAWFILE`, and returns the variable that passes them. The sequence is
+/// built once per process and salt (`stream_sequence`), where children would each rebuild it.
+fn write_laws(setup: &Setup, env: &[(String, String)], path: &Path, var: &str) -> (String, String) {
     let get = |k: &str| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| setup.var(k).map(str::to_owned), |(_, v)| Some(v.clone()));
-    let laws: Vec<(String, Term, Term)> = window(setup, family, &get).into_iter().map(|(a, b)| (String::new(), a, b)).collect();
+    let laws: Vec<(String, Term, Term)> = window(&get).into_iter().map(|(a, b)| (String::new(), a, b)).collect();
     std::fs::write(path, laws_text(&laws)).unwrap();
     (var.to_string(), path.display().to_string())
 }
@@ -572,14 +559,11 @@ fn write_laws(setup: &Setup, family: &str, env: &[(String, String)], path: &Path
 /// gate (L 1644, docs/tier-cycle.md), so a mine sees as many extras as it did there (plan R2).
 const STREAM_EXTRAS: usize = 1650;
 
-/// The law window `get`'s `RULEMINER_*` variables select from `family`'s sequence: for `streams`, phase
-/// `RULEMINER_PHASE`'s residue class of `stream_sequence(RULEMINER_SHUFFLE)` (spec §9, plan R1); otherwise `family_laws`.
-fn window(setup: &Setup, family: &str, get: &dyn Fn(&str) -> Option<String>) -> Vec<(Term, Term)> {
-    if family == "streams" {
-        let seq = stream_sequence(num(get, "RULEMINER_SHUFFLE", 0));
-        return residue(&seq, num(get, "RULEMINER_PHASE", 0), num(get, "RULEMINER_SKIP", 0), num(get, "RULEMINER_LAWS", 250));
-    }
-    family_laws(setup, family, get, 4, family_vars(family), 7).into_iter().map(|(_, a, b)| (a, b)).collect()
+/// The law window `get`'s `RULEMINER_*` variables select: phase `RULEMINER_PHASE`'s residue class of
+/// `stream_sequence(RULEMINER_SHUFFLE)` (spec §9, plan R1).
+fn window(get: &dyn Fn(&str) -> Option<String>) -> Vec<(Term, Term)> {
+    let seq = stream_sequence(num(get, "RULEMINER_SHUFFLE", 0));
+    residue(&seq, num(get, "RULEMINER_PHASE", 0), num(get, "RULEMINER_SKIP", 0), num(get, "RULEMINER_LAWS", 250))
 }
 
 /// `cfg`'s value of the child variable `k`: its `env`, then this process's, as `run_loop`'s children read it.
@@ -589,22 +573,19 @@ fn cfg_var(cfg: &LoopCfg, k: &str) -> Option<String> {
 
 /// The laws a child of `cfg` takes at phase `phase`: `laws` of them from `skip`, through the variables `run_loop` gives its
 /// children.
-fn window_laws(setup: &Setup, cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
+fn window_laws(cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
     let env = |k: &str| match k {
-        "RULEMINER_DEEP3" => Some(cfg.deep3.to_string()),
-        "RULEMINER_STRIDE" => Some(cfg.stride.to_string()),
         "RULEMINER_PHASE" => Some(phase.to_string()),
-        "RULEMINER_SHAPE" => Some(cfg.split.to_string()),
         "RULEMINER_SKIP" => Some(skip.to_string()),
         "RULEMINER_LAWS" => Some(laws.to_string()),
         _ => cfg_var(cfg, k),
     };
-    window(setup, &cfg.family, &env)
+    window(&env)
 }
 
 /// The laws `cfg`'s loop serves, and its mines mine: its K batches of B from OFFSET.
-fn served_laws(setup: &Setup, cfg: &LoopCfg) -> Vec<(Term, Term)> {
-    window_laws(setup, cfg, cfg.sphase, cfg.offset, cfg.b * cfg.k)
+fn served_laws(cfg: &LoopCfg) -> Vec<(Term, Term)> {
+    window_laws(cfg, cfg.sphase, cfg.offset, cfg.b * cfg.k)
 }
 
 fn law_text((a, b): &(Term, Term)) -> String {
@@ -622,35 +603,6 @@ fn skeleton(l: &(Term, Term)) -> String {
         .collect();
     let (a, c) = e.split_once(" = ").unwrap();
     if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
-}
-
-/// What a sweep's scopes share while their extras are drawn: each family's generator laws, and which draw of the
-/// generator (`GEN_DRAW`, default 0: draw d samples and orders with the stream's salt + 1000 d, so the stream stays and
-/// only the generator's laws change).
-struct Draw {
-    laws: hashbrown::HashMap<(String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>>,
-    draw: usize,
-}
-
-impl Draw {
-    fn new(draw: usize) -> Draw {
-        Draw { laws: Default::default(), draw }
-    }
-
-    /// `grammar_laws` for `cfg`'s family, `deep3` and salt (the draw's), or for `streams` the first `STREAM_EXTRAS` laws of
-    /// phase 0 at that salt; generated once per sweep.
-    fn grammar(&mut self, cfg: &LoopCfg) -> std::sync::Arc<Vec<(Term, Term)>> {
-        let k = (cfg.family.clone(), cfg.deep3, num(&|k| cfg_var(cfg, k), "RULEMINER_SHUFFLE", 0) + 1000 * self.draw);
-        self.laws
-            .entry(k)
-            .or_insert_with_key(|k| {
-                let t0 = std::time::Instant::now();
-                let l = if k.0 == "streams" { residue(&stream_sequence(k.2), 0, 0, STREAM_EXTRAS) } else { grammar_laws(&k.0, k.1, k.2) };
-                println!("GEN_LAWS {}: {} laws in {:.1}s", k.0, l.len(), t0.elapsed().as_secs_f64());
-                std::sync::Arc::new(l)
-            })
-            .clone()
-    }
 }
 
 /// The filter chain (spec §1): the laws of `source` that, against `served`, are neither a twin nor trivial after normalizing
@@ -673,18 +625,21 @@ fn filtered(source: &[(Term, Term)], served: &[(Term, Term)]) -> Vec<(Term, Term
 /// `GEN_F` overrides it.
 const GEN_F: f64 = 0.16;
 
-/// Draws one scope's extras (spec §1-3): `scope`'s loops (a stage's 3 loops of one family and source, or one ref mine)
-/// against the laws they serve and those of `also` (for a ref mine, every loop the sweep runs). n = ⌊f × L⌋ (f: `GEN_F`) with L
-/// the generator's filtered list, in shared slices. Sets each loop's `extras` and `extra_at`, or says by how much the list
-/// is short.
-fn scope_extras(setup: &Setup, scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
-    let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(|c| served_laws(setup, c)).collect();
+/// Draws one scope's extras (spec §1-3): the first `STREAM_EXTRAS` laws of phase 0 of the stream sequence at the scope's salt
+/// (+ 1000 × `GEN_DRAW`, default 0), filtered against the laws `scope`'s loops serve; n = ⌊f × L⌋ (f: `GEN_F`) with L the
+/// filtered list, in shared slices. Sets each loop's `extras` and `extra_at`, or says by how much the list is short.
+fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
+    let served: Vec<(Term, Term)> = scope.iter().flat_map(served_laws).collect();
     let c = scope[0].clone();
-    let laws = filtered(&draw.grammar(&c), &served);
+    let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
+    // the sequence is built once per process (its `STREAMS` line gives the time); the loops' windows usually built it first
+    let source = residue(&stream_sequence(salt), 0, 0, STREAM_EXTRAS);
+    println!("GEN_LAWS streams: {} laws", source.len());
+    let laws = filtered(&source, &served);
     let n = (setup.or("GEN_F", GEN_F) * laws.len() as f64) as usize;
     let mines = mines_of(&c);
     let at = extra_slices(laws.len(), scope.len(), mines, n)
-        .map_err(|short| format!("{}: generator list of {} laws is {short} short of {} loops x {n}", c.out.display(), laws.len(), scope.len()))?;
+        .map_err(|short| format!("{}: extras list of {} laws is {short} short of {} loops x {n}", c.out.display(), laws.len(), scope.len()))?;
     println!("GEN {}: L {} n {n}", c.out.display(), laws.len());
     let laws = std::sync::Arc::new(laws);
     for (i, cfg) in scope.iter_mut().enumerate() {
@@ -700,12 +655,9 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
     std::fs::create_dir_all(out).unwrap();
     let s = |v: usize| v.to_string();
     let mut common: Vec<(String, String)> = [
-        ("RULEMINER_FAMILY", cfg.family.clone()),
-        ("CHECK_FAMILY", cfg.family.clone()),
-        ("RULEMINER_DEEP3", s(cfg.deep3)),
-        ("RULEMINER_STRIDE", s(cfg.stride)),
+        ("RULEMINER_FAMILY", "streams".to_string()),
+        ("CHECK_FAMILY", "streams".to_string()),
         ("RULEMINER_PHASE", s(cfg.sphase)),
-        ("RULEMINER_SHAPE", s(cfg.split)),
         // one machine-state line per loop or sweep instead of one per child
         ("MACHINE_BANNER", "0".to_string()),
         ("LEMMA_CACHE", lemmas.display().to_string()),
@@ -726,7 +678,7 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
             ("RULEMINER_LAWS", s(laws)),
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
-        env.push(write_laws(setup, &cfg.family, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
+        env.push(write_laws(setup, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
         if let Some(at) = cfg.extra_at.get(slot) {
             let extra: String = cfg.extras[at.clone()].iter().map(|l| law_text(l) + "\n").collect();
             println!("GEN_EXTRA {name}: {} laws", at.len());
@@ -749,7 +701,7 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
     let serve = |skip: usize| {
         let log = out.join(format!("serve_{skip}.log"));
         let mut env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
-        env.push(write_laws(setup, &cfg.family, &env, &out.join(format!("laws_serve_{skip}.txt")), "CHECK_LAWFILE"));
+        env.push(write_laws(setup, &env, &out.join(format!("laws_serve_{skip}.txt")), "CHECK_LAWFILE"));
         let records = worker.run("search::rule_set_kernel_check", &env, &log).unwrap_or_else(|| panic!("rule_set_kernel_check failed (see {})", log.display()));
         let count = |key: &str| -> usize {
             let v = records.iter().find(|(k, _)| k == key).map(|(_, v)| v).unwrap_or_else(|| panic!("no {key} record (see {})", log.display()));
@@ -799,32 +751,6 @@ fn loop_stream() {
     machine_state("end", &cfg.env, &worker, &cfg.out);
 }
 
-/// The ref mines: (family, stride, split, B); each mines K=4 batches of its phase-0 stream (6 threads, no round cap, full serving check).
-/// u3 (the union of add3, sbo3 and cmp3d) is mined only when named (`mines:u3`).
-const MINES: [(&str, usize, usize, usize); 5] =
-    [("sbo3", 11, 2, 50), ("add3", 7, 2, 50), ("mix3", 1, 1, 50), ("cmp3d", 15, 2, 100), ("u3", 11, 2, 100)];
-/// The loops' stride per family; each loop serves K=3 batches of B=100 on phases 1-3 (6 threads, no round cap, CHECK_FAST).
-const LOOPS: [(&str, usize); 4] = [("cmp3d", 15), ("add3", 7), ("sbo3", 11), ("mix3", 7)];
-
-/// The loops (family, stride, phase) whose served laws every ref mine's extras are filtered against (spec §1): phases 1-3 of
-/// each loop family, fixed rather than taken from the stages a sweep runs.
-fn served_by_loops() -> Vec<(&'static str, usize, usize)> {
-    LOOPS.iter().flat_map(|&(fam, stride)| (1..=3).map(move |p| (fam, stride, p))).collect()
-}
-
-/// Every ref mine filters its extras against these loops (family, stride, phase), whatever stages the sweep runs: phases 1-3
-/// of every loop family, so a library a `SWEEP=mines` run builds is filtered against the loops a later `LIB=` sweep serves.
-#[test]
-fn ref_mines_filter_against_every_loop_family() {
-    let served = served_by_loops();
-    assert_eq!(served.len(), 3 * LOOPS.len());
-    for (fam, stride) in LOOPS {
-        for p in 1..=3 {
-            assert!(served.contains(&(fam, stride, p)), "{fam} phase {p} missing: {served:?}");
-        }
-    }
-}
-
 #[test]
 #[ignore]
 fn sweep() {
@@ -832,159 +758,65 @@ fn sweep() {
     let out = PathBuf::from(setup.var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
     std::fs::create_dir_all(&out).unwrap();
     let salt: usize = setup.or("SALT", 1);
-    let lib = setup.var("LIB").map(PathBuf::from).unwrap_or_else(|| out.clone());
-    let stages = setup.var("SWEEP").unwrap_or("mines own cold");
+    let stages = setup.var("SWEEP").unwrap_or("cold:streams");
     // Large pages off in the children: most are short, each pays the 64 MiB large-page commit up front, and a sweep with them
     // on cost 0.3-2.9 s more CPU and 60% more peak memory (docs/tier-cycle.md, "How often the large-page stall hits a sweep").
     let env: Vec<(String, String)> = [("RULEMINER_FAST", "1".to_string()), ("RULEMINER_SHUFFLE", salt.to_string()), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0".to_string())]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-    let base = |mode: &str, out: PathBuf, family: &str| LoopCfg {
-        mode: mode.into(),
+    let base = |out: PathBuf, sphase: usize| LoopCfg {
+        mode: "loop".into(),
         out,
-        family: family.into(),
-        stride: 1,
-        sphase: 0,
+        sphase,
         b: 100,
         k: 3,
         offset: 0,
-        // LOOP_THREADS: the scoring workers of mines and loops (the miner's choice does not depend on it,
+        // LOOP_THREADS: the scoring workers of the loops (the miner's choice does not depend on it,
         // docs/runs/2026-10-18/scripts/threads_check.sh)
         threads: setup.or("LOOP_THREADS", 6),
         rounds: usize::MAX,
-        deep3: 1,
-        split: 2,
         warm: None,
         check_fast: true,
         extras: Default::default(),
         extra_at: vec![],
         env: env.clone(),
     };
-    let library = |fam: &str| lib.join(format!("lib_{fam}")).join("rules.txt");
-    // `MINES_WARM=<sweep dir>`: each ref mine starts from that sweep's pooled library for its family, where there is one
-    // (docs/tier-cycle.md, "Promotion as an iterated sweep": one iteration lowers the best loops 157 to 142, a second adds nothing)
-    let mines_warm = |fam: &str| setup.var("MINES_WARM").map(|d| PathBuf::from(d).join(format!("pooled_{fam}")).join("rules.txt")).filter(|p| p.exists());
-    fn stage_fams(stage: &str) -> (&str, &str) {
-        stage.split_once(':').unwrap_or((stage, if stage == "mines" { "sbo3,add3,mix3,cmp3d" } else { "cmp3d,add3,sbo3" }))
-    }
-    let ref_cfg = |fam: &str| {
-        let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
-        LoopCfg { stride, split, b, k: 4, check_fast: false, warm: mines_warm(fam), ..base("ref", out.join(format!("lib_{fam}")), fam) }
-    };
-    fn srcs<'a>(name: &str, fam: &'a str) -> Vec<&'a str> {
-        match name {
-            "own" => vec![fam],
-            "cold" => vec!["none"],
-            "cross" => ["cmp3d", "add3", "sbo3"].into_iter().filter(|s| *s != fam).collect(),
-            "pooled" => vec!["pooled"],
-            "mixed" => vec!["u3"],
-            _ => panic!("unknown stage {name}"),
-        }
-    }
-    let loop_cfgs = |stage: &str, fam: &str, src: &str| -> Vec<LoopCfg> {
-        // the streams' windows ignore `stride` (`window`); it is set so the child env's `RULEMINER_STRIDE` is not a family's
-        let stride = if fam == "streams" { STREAM_STRIDE } else { LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1 };
-        let warm = match src {
-            "none" => None,
-            "pooled" => Some(out.join(format!("pooled_{fam}")).join("rules.txt")),
-            s => Some(library(s)),
-        };
-        (1..=3).map(|p| LoopCfg { stride, sphase: p, warm: warm.clone(), ..base("loop", out.join(format!("{}_{fam}_{p}_{src}", stage.replace(':', "_"))), fam) }).collect()
+    // the one stage: three cold loops on phases 1-3 of the streams (spec §10)
+    let loop_cfgs = |stage: &str| -> Vec<LoopCfg> {
+        assert!(stage == "cold" || stage == "cold:streams", "unknown stage {stage}: the sweep runs cold:streams (spec §10)");
+        (1..=3).map(|p| base(out.join(format!("{}_streams_{p}_none", stage.replace(':', "_"))), p)).collect()
     };
     // every scope's extras, drawn before the first stage, so a list too short for its slices stops the sweep before any work
-    let mut scopes: Vec<Vec<LoopCfg>> = vec![];
-    for stage in stages.split_whitespace() {
-        let (name, fams) = stage_fams(stage);
-        for fam in fams.split(',') {
-            if name == "mines" {
-                scopes.push(vec![ref_cfg(fam)]);
-            } else {
-                scopes.extend(srcs(name, fam).into_iter().map(|src| loop_cfgs(stage, fam, src)));
+    let mut scopes: Vec<Vec<LoopCfg>> = stages.split_whitespace().map(loop_cfgs).collect();
+    let mut short = vec![];
+    for scope in &mut scopes {
+        if scope.iter().all(|c| takes_extras(c, setup.ablated("gen"))) {
+            if let Err(e) = scope_extras(setup, scope) {
+                short.push(e);
             }
         }
     }
-    // a ref mine's library may be served on any loop, in this sweep or a later `LIB=` one (`served_by_loops`)
-    let loops: Vec<LoopCfg> = served_by_loops()
-        .into_iter()
-        .map(|(fam, stride, p)| LoopCfg { stride, sphase: p, ..base("loop", out.join(format!("served_{fam}_{p}")), fam) })
-        .collect();
-    let (mut draw, mut short) = (Draw::new(setup.or("GEN_DRAW", 0)), vec![]);
-    for scope in &mut scopes {
-        if !scope.iter().all(|c| takes_extras(c, setup.ablated("gen"))) {
-            continue;
-        }
-        let also = if scope[0].mode == "ref" { &loops[..] } else { &[] };
-        if let Err(e) = scope_extras(setup, scope, also, &mut draw) {
-            short.push(e);
-        }
-    }
     assert!(short.is_empty(), "extras lists too short for their slices:\n{}", short.join("\n"));
-    let drawn: hashbrown::HashMap<PathBuf, LoopCfg> = scopes.into_iter().flatten().map(|c| (c.out.clone(), c)).collect();
-    let with_extras = |cfg: LoopCfg| match drawn.get(&cfg.out) {
-        Some(d) => LoopCfg { extras: d.extras.clone(), extra_at: d.extra_at.clone(), ..cfg },
-        None => cfg,
-    };
-    // a stage's mines, then its loops, run `SWEEP_LANES` (default 2) at a time: each reads only what earlier stages wrote, and
-    // 2 × 6 mining threads fit the 12-thread cap. A lane has its own worker and lemma file (all its processes run this exe, so
-    // every statement in it was checked by this build; one shared file would race on its save). SWEEP_LANES=1 for timings.
+    // a stage's loops run `SWEEP_LANES` (default 2) at a time; 2 × 6 mining threads fit the 12-thread cap. A lane has its own
+    // worker and lemma file (all its processes run this exe, so every statement in it was checked by this build; one shared
+    // file would race on its save). SWEEP_LANES=1 for timings.
     let lanes: usize = setup.or("SWEEP_LANES", 2usize).max(1);
     let lemmas: Vec<PathBuf> = (0..lanes).map(|l| out.join(format!("lemmas_{l}.bin"))).collect();
     lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));
     let workers: Vec<Worker> = (0..lanes).map(|_| Worker::new()).collect();
-    let run = |cfgs: &[LoopCfg]| {
-        run_lanes(cfgs, lanes, |cfg, l| {
+    machine_state("start", &env, &workers[0], &out);
+    for (stage, cfgs) in stages.split_whitespace().zip(&scopes) {
+        let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
+        std::fs::write(&tsv, "").unwrap();
+        let ran = run_lanes(cfgs, lanes, |cfg, l| {
             let t0 = std::time::Instant::now();
             let s = run_loop(setup, cfg, &lemmas[l], &workers[l]);
             (s, t0.elapsed().as_secs())
-        })
-    };
-    machine_state("start", &env, &workers[0], &out);
-    for stage in stages.split_whitespace() {
-        let (name, fams) = stage_fams(stage);
-        let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
-        std::fs::write(&tsv, "").unwrap();
-        if name == "mines" {
-            let cfgs: Vec<LoopCfg> = fams.split(',').map(|fam| with_extras(ref_cfg(fam))).collect();
-            for (cfg, (s, secs)) in cfgs.iter().zip(run(&cfgs)) {
-                append(&tsv, &format!("{}\t{secs}\t{}\t{}\t{}\t{}\t{}\n", cfg.family, s.total, s.rules, s.exhausted, s.joined, s.reached));
-            }
-            continue;
-        }
-        let pooled = out.join("pooled.rules");
-        let pooled_for = |fam: &str| out.join(format!("pooled_{fam}")).join("rules.txt");
-        if name == "pooled" {
-            // a section per library (`library_sections`; `parse_rules` reads a rule two libraries share once)
-            let text: String = ["cmp3d", "add3", "sbo3"].iter().map(|fam| format!("# library {fam}\n{}\n", std::fs::read_to_string(library(fam)).unwrap().trim_end())).collect();
-            std::fs::write(&pooled, &text).unwrap();
-            let units = out.join("pooled.units");
-            std::fs::write(&units, units_text(&joinability_units(&mut Job::new(setup.clone()), &text, 4, setup.or("RULEMINER_STEPS", 200i64)))).unwrap();
-            std::fs::write(out.join("pooled_prefs.tsv"), "").unwrap();
-            // the libraries' rules can conflict (two right sides for one left side, say); each family learns which wins, and which
-            // rules where two libraries' normal forms meet to drop (`drop_units`), on its phase-0 stream: a mine with no rule
-            // rounds, only preferences (`RULEMINER_PREFS`), on the pooled library
-            let cfgs: Vec<LoopCfg> = fams
-                .split(',')
-                .map(|fam| {
-                    let &(fam, stride, split, b) = MINES.iter().find(|m| m.0 == fam).unwrap_or_else(|| panic!("no ref mine for {fam}"));
-                    let mut cfg = LoopCfg { stride, split, b, k: 4, rounds: 0, warm: Some(pooled.clone()), ..base("ref", pooled_for(fam).parent().unwrap().into(), fam) };
-                    cfg.env.push(("RULEMINER_PREFS".into(), "1".into()));
-                    cfg.env.push(("RULEMINER_UNITS".into(), units.display().to_string()));
-                    cfg
-                })
-                .collect();
-            for (cfg, (s, secs)) in cfgs.iter().zip(run(&cfgs)) {
-                append(&out.join("pooled_prefs.tsv"), &format!("{}\t{secs}\t{}\t{}\t{}\t{}\t{}\n", cfg.family, s.total, s.rules, s.exhausted, s.joined, s.reached));
-            }
-        }
-        let (srcs_of, cfgs): (Vec<&str>, Vec<LoopCfg>) = fams
-            .split(',')
-            .flat_map(|fam| srcs(name, fam).into_iter().flat_map(move |src| loop_cfgs(stage, fam, src).into_iter().map(move |c| (src, c))))
-            .map(|(src, c)| (src, with_extras(c)))
-            .unzip();
-        for ((cfg, src), (s, secs)) in cfgs.iter().zip(srcs_of).zip(run(&cfgs)) {
+        });
+        for (cfg, (s, secs)) in cfgs.iter().zip(ran) {
             let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
-            append(&tsv, &format!("{}\t{}-{}\tfrom_{src}\t{}\t{}\t{}\t{secs}\t{}\t{}\t{}\n", cfg.family, cfg.stride, cfg.sphase, s.total, ms.join(","), s.rules, s.exhausted, s.joined, s.reached));
+            append(&tsv, &format!("streams\t{STREAM_STRIDE}-{}\tfrom_none\t{}\t{}\t{}\t{secs}\t{}\t{}\t{}\n", cfg.sphase, s.total, ms.join(","), s.rules, s.exhausted, s.joined, s.reached));
         }
     }
     lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));

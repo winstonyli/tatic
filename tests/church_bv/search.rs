@@ -122,49 +122,16 @@ pub fn shuffled(mut laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
     laws
 }
 
-/// `RULEMINER_SHUFFLE`: a permutation of the sorted sequence, fixed per salt, different between salts, and the batches of a shuffled
-/// stream differ from the lexicographic ones.
+/// `shuffled`: a permutation of the given order, fixed per salt, different between salts; salt 0 keeps the order.
 #[test]
 pub fn shuffle_is_a_fixed_permutation() {
-    let job = &Job::new(Setup::process());
-    let laws = |salt: usize, take: usize| {
-        let env = move |k: &str| match k {
-            "RULEMINER_SHUFFLE" => Some(salt.to_string()),
-            "RULEMINER_LAWS" => Some(take.to_string()),
-            "RULEMINER_STRIDE" => Some(1.to_string()),
-            "RULEMINER_DEEP3" => Some(1.to_string()),
-            _ => None,
-        };
-        family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
-    };
-    let (sorted, a, a2, b) = (laws(0, 100000), laws(1, 100000), laws(1, 100000), laws(2, 100000));
-    assert_eq!(a, a2, "same salt, same order");
-    assert_ne!(a, sorted);
-    assert_ne!(a, b);
-    let set = |v: &Vec<String>| v.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    let laws: Vec<(Term, Term)> = (0..50).map(|i| (Term::v(0), (0..i).fold(Term::v(1), |t, _| Term::op(ADD, t, Term::v(2))))).collect();
+    let (sorted, a, a2, b) = (shuffled(laws.clone(), 0), shuffled(laws.clone(), 1), shuffled(laws.clone(), 1), shuffled(laws.clone(), 2));
+    assert!(sorted == laws, "salt 0 keeps the order");
+    assert!(a == a2, "same salt, same order");
+    assert!(a != sorted && a != b);
+    let set = |v: &Vec<(Term, Term)>| v.iter().cloned().collect::<hashbrown::HashSet<_>>();
     assert!(set(&a) == set(&sorted) && set(&b) == set(&sorted) && a.len() == sorted.len(), "a permutation");
-    let first_char = |v: &[String]| v.iter().take(50).map(|s| s.chars().next().unwrap()).collect::<std::collections::BTreeSet<_>>();
-    println!("first 50 laws, leading characters: sorted {:?}, shuffled {:?}", first_char(&sorted), first_char(&a));
-}
-
-/// `u3w` interleaves its three families in equal parts: a window of 30 laws holds 10 comparison laws (cmp3d), and its stride and
-/// phase windows are subsequences of the same sequence.
-#[test]
-pub fn u3w_window_is_an_equal_mix() {
-    let job = &Job::new(Setup::process());
-    let laws = |stride: usize, phase: usize| {
-        let env = move |k: &str| match k {
-            "RULEMINER_LAWS" => Some(30.to_string()),
-            "RULEMINER_STRIDE" => Some(stride.to_string()),
-            "RULEMINER_PHASE" => Some(phase.to_string()),
-            _ => None,
-        };
-        family_laws(job.setup(), "u3w", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
-    };
-    let w = laws(1, 0);
-    assert_eq!(w.len(), 30);
-    assert_eq!(w.iter().filter(|s| s.contains("lt(")).count(), 10);
-    assert_eq!(laws(3, 1)[..5], w[1..].iter().step_by(3).take(5).cloned().collect::<Vec<_>>()[..]);
 }
 
 /// The law-sequence variable `k` from `env` as a number, as `Setup::or` reads one (`job::parsed`).
@@ -180,29 +147,7 @@ fn num_stops_at_an_unparsable_value() {
 
 /// `family`'s laws, through the law-sequence variables (`RULEMINER_*`) that `env` gives, `None` for unset.
 pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str) -> Option<String>, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
-    if family == "u3w" {
-        // u3 with equal shares: the add3, sbo3 and cmp3d sequences (each shuffled as `RULEMINER_SHUFFLE` says) interleaved round-robin,
-        // so a window holds the three families in equal parts instead of in proportion to their sizes (cmp3d has 4x add3's laws)
-        let whole = |f: &str| {
-            let e = |k: &str| match k {
-                "RULEMINER_STRIDE" => Some(1.to_string()),
-                "RULEMINER_PHASE" | "RULEMINER_SKIP" => Some(0.to_string()),
-                "RULEMINER_LAWS" => Some(usize::MAX.to_string()),
-                _ => env(k),
-            };
-            family_laws(setup, f, &e, n, nv, max).into_iter()
-        };
-        let mut seqs: Vec<_> = ["add3", "sbo3", "cmp3d"].iter().map(|f| whole(f)).collect();
-        let mut mixed = Vec::new();
-        loop {
-            let before = mixed.len();
-            mixed.extend(seqs.iter_mut().filter_map(|s| s.next()));
-            if mixed.len() == before {
-                break;
-            }
-        }
-        mixed.into_iter().skip(num(env, "RULEMINER_PHASE", 0)).step_by(num(env, "RULEMINER_STRIDE", 1)).skip(num(env, "RULEMINER_SKIP", 0)).take(num(env, "RULEMINER_LAWS", 250)).collect()
-    } else if family == "shl" {
+    if family == "shl" {
         let conj = shl_conjectures(2);
         let stride = (conj.len() / num(env, "RULEMINER_LAWS", 250)).max(1);
         conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
@@ -219,62 +164,29 @@ pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str) -> Option<Str
             .take(num(env, "RULEMINER_LAWS", 250))
             .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
             .collect()
-    } else if let Some(seq) = pool3_sequence(family, env, n) {
-        let salt = env("RULEMINER_SHAPE_SALT").unwrap_or_default(); // a different salt gives a different split; unset keeps the original halves
-        seq.iter()
-            .filter(|(a, b)| num(env, "RULEMINER_SHAPE", 2) == 2 || shape_part(a, b, &salt) == num(env, "RULEMINER_SHAPE", 2)) // `RULEMINER_SHAPE=0|1`: one of two structure-based halves
-            .skip(num(env, "RULEMINER_PHASE", 0)) // with a stride, the phase picks the residue class: phases 0..stride tile the sequence
-            .step_by(num(env, "RULEMINER_STRIDE", 1))
-            .skip(num(env, "RULEMINER_SKIP", 0))
-            .take(num(env, "RULEMINER_LAWS", 250))
-            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), *a, *b))
-            .collect()
     } else if family == "lt" {
         let pool = lt_pool(2);
         let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::op(LT, *a, *b)));
         pool_conjectures(all, n, nv, num(env, "RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-    } else {
+    } else if family == "mul" {
         mul_laws(max)
+    } else {
+        panic!("family {family}: three-variable laws come from stream law files (RULEMINER_LAWFILE, CHECK_LAWFILE)")
     }
-}
-
-/// A three-variable family's law sequence: its pool's (`pool3`) conjectures that use all three variables, shuffled by
-/// `RULEMINER_SHUFFLE=<salt>` (0 = off; a hash of each law, so a window of it, a batch or a stride phase, samples the whole family
-/// instead of one lexicographic range). Built once per process for each family, `RULEMINER_DEEP3`, width and salt: the driver
-/// takes every child's law window from it (`driver::write_laws`), where each child used to rebuild the pool (35% of a sweep's
-/// loops) and the driver to clone and reshuffle it per child (6% of a sweep, docs/tier-cycle.md).
-fn pool3_sequence(family: &str, env: &dyn Fn(&str) -> Option<String>, n: usize) -> Option<std::sync::Arc<Vec<(Term, Term)>>> {
-    // keyed by every variable it reads; `None` (not a pool3 family) is kept too
-    static MEMO: crate::task::SharedMemo<(String, usize, usize, usize), Option<std::sync::Arc<Vec<(Term, Term)>>>> = crate::task::SharedMemo::new();
-    let salt = num(env, "RULEMINER_SHUFFLE", 0);
-    let build = || {
-        let mut seq = shuffled(pool_conjectures(pool3(family, env)?, n, 3, 0), salt);
-        seq.retain(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)));
-        Some(std::sync::Arc::new(seq))
-    };
-    MEMO.with((family.to_string(), num(env, "RULEMINER_DEEP3", 0), n, salt), build, |c| c.clone())
 }
 
 /// A law window written as a law file (`driver::write_laws`) and read back (`read_laws`) gives the same laws, names included.
 #[test]
 pub fn law_windows_survive_a_law_file() {
     let job = &Job::new(Setup::process());
-    let env = |k: &str| match k {
-        "RULEMINER_SKIP" => Some(40.to_string()),
-        "RULEMINER_LAWS" => Some(60.to_string()),
-        "RULEMINER_SHUFFLE" => Some(1.to_string()),
-        "RULEMINER_DEEP3" => Some(1.to_string()),
-        _ => None,
-    };
-    for family in ["add3", "cmp3d"] {
-        let laws = family_laws(job.setup(), family, &env, 4, 3, 7);
-        assert_eq!(laws.len(), 60);
-        let path = std::env::temp_dir().join(format!("law_window_{family}_{}.txt", std::process::id()));
-        std::fs::write(&path, laws_text(&laws)).unwrap();
-        let back = read_named_laws(path.to_str().unwrap());
-        std::fs::remove_file(&path).unwrap();
-        assert!(back == laws, "{family}");
-    }
+    let window = |take: usize| family_laws(job.setup(), "lt", &move |k: &str| (k == "RULEMINER_LAWS").then(|| take.to_string()), 4, 2, 7);
+    let laws = window(60);
+    assert_eq!(laws.len(), window(usize::MAX).len().min(60));
+    let path = std::env::temp_dir().join(format!("law_window_lt_{}.txt", std::process::id()));
+    std::fs::write(&path, laws_text(&laws)).unwrap();
+    let back = read_named_laws(path.to_str().unwrap());
+    std::fs::remove_file(&path).unwrap();
+    assert!(back == laws);
 }
 
 /// Laws as the `lhs = rhs` lines `read_laws` reads.
@@ -282,29 +194,6 @@ pub fn laws_text(laws: &[(String, Term, Term)]) -> String {
     laws.iter().map(|(_, a, b)| format!("{} = {}\n", a.show(), b.show())).collect()
 }
 
-/// `RULEMINER_SKIP` windows: consecutive windows tile the law sequence, and a window past the end is empty.
-#[test]
-pub fn family_law_windows_tile_the_sequence() {
-    let job = &Job::new(Setup::process());
-    let laws = |skip: usize, take: usize| {
-        let env = move |k: &str| match k {
-            "RULEMINER_SKIP" => Some(skip.to_string()),
-            "RULEMINER_LAWS" => Some(take.to_string()),
-            "RULEMINER_STRIDE" => Some(1.to_string()),
-            _ => None,
-        };
-        family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
-    };
-    let whole = laws(0, 12);
-    assert_eq!(whole.len(), 12);
-    let mut tiled = laws(0, 5);
-    tiled.extend(laws(5, 7));
-    assert_eq!(tiled, whole);
-    assert!(laws(usize::MAX / 2, 5).is_empty());
-}
-
-/// Which of two halves a law belongs to, by the shape of its two sides with variables erased (constants and operators kept):
-/// laws that differ only in which variables appear share a half, so near-variants never straddle a split.
 /// `RULEMINER_GUARD`: from `clean` machine-free laws, score about `k`: every `step`-th, each standing for `clean / sampled` laws (weight in
 /// units of 1000 per straggler), so the sample's net gain estimates the whole window's.
 pub fn guard_plan(clean: usize, k: usize) -> (usize, i64) {
@@ -320,108 +209,6 @@ pub fn guard_plan_samples_and_weights() {
     let (step, w) = guard_plan(7, 3);
     assert_eq!((step, w), (3, 2333)); // laws 0, 3, 6: three laws for seven
     assert_eq!(guard_plan(0, 5).0, 1); // no clean laws: nothing to sample (the caller skips the guard)
-}
-
-pub fn shape_part(a: &Term, b: &Term, salt: &str) -> usize {
-    fn skeleton(t: &Term, out: &mut String) {
-        match *t.node() {
-            Node::V(_) => out.push('v'),
-            Node::Zero => out.push('0'),
-            Node::Ones => out.push('1'),
-            Node::Op(o, x, y) => {
-                out.push_str(&format!("({o} "));
-                skeleton(&x, out);
-                out.push(' ');
-                skeleton(&y, out);
-                out.push(')');
-            }
-        }
-    }
-    let mut s = salt.to_string();
-    skeleton(a, &mut s);
-    s.push('=');
-    skeleton(b, &mut s);
-    // FNV-1a: deterministic across runs and platforms
-    let h = s.bytes().fold(0xcbf29ce484222325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100000001b3));
-    (h >> 32) as usize & 1
-}
-
-/// `RULEMINER_SHAPE`: the two shape halves are disjoint, together are the whole sequence, and renaming variables keeps a law in its half.
-#[test]
-pub fn family_law_shape_halves_partition() {
-    let job = &Job::new(Setup::process());
-    for family in THREE_VAR_FAMILIES {
-        shape_halves_partition(job, family);
-    }
-}
-
-fn shape_halves_partition(job: &Job, family: &str) {
-    let laws = |shape: usize| {
-        let env = move |k: &str| match k {
-            "RULEMINER_SHAPE" => Some(shape.to_string()),
-            "RULEMINER_LAWS" => Some(100000.to_string()),
-            "RULEMINER_STRIDE" => Some(1.to_string()),
-            "RULEMINER_DEEP3" => Some(1.to_string()),
-            _ => None,
-        };
-        family_laws(job.setup(), family, &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<std::collections::BTreeSet<_>>()
-    };
-    let (whole, h0, h1) = (laws(2), laws(0), laws(1));
-    println!("shape halves {family}: {} + {} = {}", h0.len(), h1.len(), whole.len());
-    assert!(h0.is_disjoint(&h1) && h0.len() + h1.len() == whole.len(), "{} {} {}", h0.len(), h1.len(), whole.len());
-    assert!(!h0.is_empty() && !h1.is_empty());
-    let (x, y, z) = (parse_term("add(x, y)"), parse_term("add(y, z)"), parse_term("sub(x, z)"));
-    assert_eq!(shape_part(&x, &z, ""), shape_part(&y, &z, ""));
-}
-
-/// `family_laws` takes `RULEMINER_SHAPE_SALT` from the `env` it is given, as it does `RULEMINER_SHAPE` (Q2): before, it read
-/// the salt from the task's environment, so a driver child's salt was never seen. Holds whatever the process sets: a
-/// `family_laws` that read the process's salt would give both halves the same one.
-#[test]
-pub fn family_laws_takes_the_shape_salt_from_its_env() {
-    let job = &Job::new(Setup::process());
-    let half = |salt: Option<&str>| {
-        let env = move |k: &str| match k {
-            "RULEMINER_SHAPE" => Some("0".to_string()),
-            "RULEMINER_LAWS" => Some("100000".to_string()),
-            "RULEMINER_DEEP3" => Some("1".to_string()),
-            "RULEMINER_SHAPE_SALT" => salt.map(str::to_owned),
-            _ => None,
-        };
-        family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
-    };
-    assert_ne!(half(None), half(Some("7")));
-}
-
-/// A different salt re-splits the laws (so the split is not one fixed key), and each salt still keeps variable renamings together.
-#[test]
-pub fn shape_salt_changes_the_split() {
-    let laws = ["add(x, y)", "sub(add(x, y), z)", "add(sub(x, y), z)", "sub(x, sub(y, z))", "add(x, sub(y, z))", "sub(xor(x, -1), y)", "add(shl1(x, 0), y)", "sub(add(x, y), xor(z, -1))"];
-    let rhs = parse_term("sub(x, y)");
-    let half = |salt: &str| laws.iter().map(|l| shape_part(&parse_term(l), &rhs, salt)).collect::<Vec<_>>();
-    assert_ne!(half(""), half("a"));
-    for salt in ["", "a"] {
-        assert_eq!(shape_part(&parse_term("add(x, y)"), &rhs, salt), shape_part(&parse_term("add(y, z)"), &rhs, salt));
-    }
-}
-
-/// `RULEMINER_PHASE`: with stride 2 the two phases are disjoint and together are the stride-1 sequence.
-#[test]
-pub fn family_law_phases_are_disjoint() {
-    let job = &Job::new(Setup::process());
-    let laws = |stride: usize, phase: usize, take: usize| {
-        let env = move |k: &str| match k {
-            "RULEMINER_STRIDE" => Some(stride.to_string()),
-            "RULEMINER_PHASE" => Some(phase.to_string()),
-            "RULEMINER_LAWS" => Some(take.to_string()),
-            _ => None,
-        };
-        family_laws(job.setup(), "add3", &env, 4, 3, 7).into_iter().map(|(name, _, _)| name).collect::<Vec<_>>()
-    };
-    let (even, odd, whole) = (laws(2, 0, 6), laws(2, 1, 6), laws(1, 0, 12));
-    assert_eq!(even.len() + odd.len(), 12);
-    let woven: Vec<String> = even.iter().zip(&odd).flat_map(|(a, b)| [a.clone(), b.clone()]).collect();
-    assert_eq!(woven, whole);
 }
 
 /// Rule miner (search note section 36): candidate rules are the equal pairs of the `shl1` pool (two variables, width 4,
@@ -928,210 +715,17 @@ pub fn scaling_sweep() {
     if !per_law { tatic::kernel::scoped(|| job.with_rules(rules, body)) } else { job.with_rules(rules, body) }
 }
 
-/// The pool of the `add3` family: terms over `x`, `y`, `z` with at most one sum or difference above depth-1 terms.
-///
-/// `deep`: also the sums and differences of two depth-1 terms built from `add`, `sub` and `xor` (about 2^15 more terms).
-pub fn add3_pool(deep: bool) -> Vec<Term> {
-    let leaves = leaves3();
-    let d1 = depth1(&[ADD, AND, OR, XOR, SUB], false);
-    let mut p = d1.clone();
-    // one more level: a sum or difference of a depth-1 term and a leaf
-    for o in [ADD, SUB] {
-        for a in &d1 {
-            for b in &leaves {
-                p.push(mk(o, a, b));
-            }
-        }
-    }
-    if deep {
-        let arith: Vec<Term> = d1.iter().filter(|t| matches!(*t.node(), Node::Op(ADD | XOR | SUB, ..))).cloned().collect();
-        for o in [ADD, SUB] {
-            for a in &arith {
-                for b in &arith {
-                    p.push(mk(o, a, b));
-                }
-            }
-        }
-    }
-    p
-}
-
-/// The three-variable families, by name. `pool3` is the single place that maps one to its term pool; everything else (law selection,
-/// `family_vars`, the shape-halves test) follows from it.
-pub const THREE_VAR_FAMILIES: [&str; 7] = ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3", "u3w"];
-
-/// The term pool of a three-variable family (`None` for any other family). add3: the add/sub/xor reassociation family (`RULEMINER_DEEP3=1`
-/// for the deeper pool); mix3: bit-trick laws, arithmetic and bitwise operators and `shl1` mixed (section 73); sbo3: add, sub, and, or only,
-/// a leaf on either side at every level; cmp3: `lt` of two small add/sub/shl1 terms (laws about comparisons); cmp3d: cmp3 with
-/// reassociation redexes inside the comparison.
-pub fn pool3(family: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<Vec<Term>> {
-    let pool: Vec<Term> = match family {
-        "add3" => add3_pool(num(env, "RULEMINER_DEEP3", 0) == 1),
-        "mix3" => depth2_pool(&[ADD, AND, OR, XOR, SUB], true, &[ADD]),
-        "sbo3" => depth2_pool(&[ADD, SUB, AND, OR], false, &[ADD, SUB]),
-        "cmp3" => cmp3_pool(false),
-        "cmp3d" => cmp3_pool(true),
-        // u3: the union of the add3, sbo3 and cmp3d pools (a mixed stream for mining one library over several families)
-        "u3" => ["add3", "sbo3", "cmp3d"].iter().flat_map(|f| pool3(f, env).unwrap()).collect(),
-        _ => return None,
-    };
-    // each term once: the builders make some small terms at more than one depth, and a repeat pairs a term with its own copy (a
-    // trivial law) or repeats a law (docs/tier-cycle.md, pool duplicates; law sequences before this dedup differ)
-    let mut seen = hashbrown::HashSet::new();
-    Some(pool.into_iter().filter(|t| seen.insert(*t)).collect())
-}
-
-/// `show_cmp` is the order of the `show()` text, on every pair of a pool's first 300 terms (which include constants and variables).
+/// `show_cmp` is the order of the `show()` text, on every pair of the class table's first 2000 representatives in that
+/// order, constants and variables included.
 #[test]
 pub fn show_cmp_is_the_text_order() {
-    let pool = pool3("cmp3d", &|k: &str| (k == "RULEMINER_DEEP3").then(|| 1.to_string())).unwrap();
-    let ts: Vec<&Term> = pool.iter().take(300).chain([&Term::ZERO, &Term::ONES]).collect();
+    let mut reps: Vec<Term> = crate::classes::Classes::get().reps().collect();
+    reps.sort_by_cached_key(|t| t.show());
+    let ts: Vec<Term> = reps.into_iter().take(2000).chain([Term::ZERO, Term::ONES, Term::v(0), Term::v(2)]).collect();
     for a in &ts {
         for b in &ts {
             assert_eq!(a.show_cmp(b), a.show().cmp(&b.show()), "{} vs {}", a.show(), b.show());
         }
-    }
-}
-
-/// No three-variable pool repeats a term (a repeat makes trivial and repeated laws).
-#[test]
-pub fn pools_have_no_repeated_terms() {
-    for f in ["add3", "mix3", "sbo3", "cmp3", "cmp3d", "u3"] {
-        let pool = pool3(f, &|k: &str| (k == "RULEMINER_DEEP3").then(|| 1.to_string())).unwrap();
-        let distinct: HashSet<&Term> = pool.iter().collect();
-        assert_eq!(distinct.len(), pool.len(), "{f}");
-    }
-}
-
-/// The law generator's source (docs/superpowers/specs/2026-10-17-law-generator-design.md): `grammar_sample`'s terms
-/// grouped with the pool by their width-4 values (`pool_conjectures`). Its laws are the pairs with a grown side that use all
-/// three variables and have no padded grown side, shuffled by `salt`. Pools are closed under renaming variables, so no law
-/// here is a stream law or shares a stream law's skeleton.
-pub fn grammar_laws(family: &str, deep3: usize, salt: usize) -> Vec<(Term, Term)> {
-    let Some((pool, sample)) = grammar_sample(family, deep3, salt) else { return vec![] };
-    let in_pool: HashSet<Term> = pool.iter().cloned().collect();
-    let padded: HashSet<Term> = sample.iter().filter(|s| s.1).map(|s| s.0).collect();
-    // the pool first, so a group's first member (each law's left side) is a pool term where the group has one
-    let laws = pool_conjectures(pool.iter().cloned().chain(sample.iter().map(|s| s.0)), 4, 3, 0)
-        .into_iter()
-        .filter(|(a, b)| !in_pool.contains(a) || !in_pool.contains(b))
-        .filter(|(a, b)| (0..3).all(|v| a.has_var(v) || b.has_var(v)))
-        .filter(|(a, b)| !padded.contains(a) && !padded.contains(b))
-        .collect();
-    shuffled(laws, salt)
-}
-
-/// The generator's term budget: about this many grown terms are sampled per family (the value every probe run used).
-pub const GEN_TERMS: usize = 20000;
-
-/// A three-variable family's pool and the generator's sample of grown terms: the pool with one leaf of a pool term grown
-/// into a depth-1 term over the pool's own operators, about `GEN_TERMS` of those drawn by a hash of `salt`, each once and
-/// with whether its grown leaf was padding (grew into a term equal to a leaf, such as `sub(y, y)`; the first way it was
-/// grown). `None` for a family with no pool.
-pub fn grammar_sample(family: &str, deep3: usize, salt: usize) -> Option<(Vec<Term>, Vec<(Term, bool)>)> {
-    let env = |k: &str| (k == "RULEMINER_DEEP3").then(|| deep3.to_string());
-    let pool = pool3(family, &env)?;
-    let in_pool: HashSet<Term> = pool.iter().cloned().collect();
-    // the operators the pool uses below a comparison (an `lt` result is one bit wide and is never an argument)
-    fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
-        if let Node::Op(o, a, b) = *t.node() {
-            if o != LT {
-                out.insert(o);
-            }
-            ops_of(a, out);
-            ops_of(b, out);
-        }
-    }
-    let mut ops = std::collections::BTreeSet::new();
-    pool.iter().for_each(|t| ops_of(*t, &mut ops));
-    let leaves = leaves3();
-    let grow: Vec<Term> = ops
-        .iter()
-        .flat_map(|&o| if o == SHL1 { leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
-        .collect();
-    // the leaf positions of a term (`shl1`'s second argument is not one), and the term with leaf `k` replaced by `g`
-    fn leaf_count(t: Term) -> usize {
-        match *t.node() {
-            Node::Op(SHL1, a, _) => leaf_count(a),
-            Node::Op(_, a, b) => leaf_count(a) + leaf_count(b),
-            _ => 1,
-        }
-    }
-    fn replaced(t: Term, k: &mut Option<usize>, g: Term) -> Term {
-        match *t.node() {
-            Node::Op(SHL1, a, b) => Term::op(SHL1, replaced(a, k, g), b),
-            Node::Op(o, a, b) => {
-                let a = replaced(a, k, g);
-                Term::op(o, a, replaced(b, k, g))
-            }
-            _ => match *k {
-                Some(0) => {
-                    *k = None;
-                    g
-                }
-                Some(i) => {
-                    *k = Some(i - 1);
-                    t
-                }
-                None => t,
-            },
-        }
-    }
-    let total: usize = pool.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
-    let mix = tatic::rng::mix64;
-    let mut memo = ValueMemo::exhaustive(4, 3);
-    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
-    let padding: Vec<bool> = grow.iter().map(|g| leaf_values.contains(&memo.values(g).to_vec())).collect();
-    // each grown term, and whether its grown leaf was padding (the first way it was grown)
-    let (mut sample, mut seen) = (vec![], HashSet::new());
-    let mut i = 0u64;
-    for t in &pool {
-        for p in 0..leaf_count(*t) {
-            for (gi, g) in grow.iter().enumerate() {
-                i += 1;
-                if (mix(i ^ mix(salt as u64)) % total as u64) < GEN_TERMS as u64 {
-                    let w = replaced(*t, &mut Some(p), *g);
-                    if !in_pool.contains(&w) && seen.insert(w) {
-                        sample.push((w, padding[gi]));
-                    }
-                }
-            }
-        }
-    }
-    Some((pool, sample))
-}
-
-/// The grammar source's laws hold at width 4, each has a side outside the family's pool (so none is a stream law or shares
-/// a stream law's skeleton), uses all three variables, and the same salt gives the same laws.
-#[test]
-pub fn grammar_laws_lie_outside_the_pool() {
-    let env = |k: &str| (k == "RULEMINER_DEEP3").then(|| 1.to_string());
-    for f in ["add3", "sbo3", "cmp3d"] {
-        let pool: HashSet<Term> = pool3(f, &env).unwrap().into_iter().collect();
-        let laws = grammar_laws(f, 1, 1);
-        assert!(laws.len() > 100, "{f}: {} laws", laws.len());
-        assert!(laws == grammar_laws(f, 1, 1), "{f}: same salt, other laws");
-        println!("{f}: {} laws, e.g. {}", laws.len(), laws.iter().take(3).map(|(a, b)| format!("{} = {}", a.show(), b.show())).collect::<Vec<_>>().join("; "));
-        let mut memo = ValueMemo::exhaustive(4, 3);
-        for (a, b) in &laws {
-            assert!(!pool.contains(a) || !pool.contains(b), "{f}: {} = {} is a stream law", a.show(), b.show());
-            assert!((0..3).all(|v| a.has_var(v) || b.has_var(v)), "{f}: {} = {}", a.show(), b.show());
-            assert_eq!(memo.values(a).to_vec(), memo.values(b).to_vec(), "{f}: {} = {}", a.show(), b.show());
-        }
-    }
-}
-
-/// The generator takes no padding law: no side of its laws is a sample term whose grown leaf was padding, and the sample
-/// has such terms (so the check bites).
-#[test]
-pub fn grammar_laws_have_no_padding() {
-    for f in ["add3", "cmp3d"] {
-        let (_, sample) = grammar_sample(f, 1, 1).unwrap();
-        let padded: HashSet<Term> = sample.iter().filter(|s| s.1).map(|s| s.0).collect();
-        assert!(!padded.is_empty(), "{f}: no padding term in the sample");
-        let laws = grammar_laws(f, 1, 1);
-        let bad = laws.iter().filter(|(a, b)| padded.contains(a) || padded.contains(b)).count();
-        assert_eq!(bad, 0, "{f}: {bad} of {} laws have a padded side", laws.len());
     }
 }
 
@@ -1408,130 +1002,9 @@ pub fn twin_keys_rename_normalize_below_roots_and_keep_them() {
     assert_eq!(twin_key(&p("and(or(x, sub(y, 0)), z)"), &p("z")), twin_key(&p("and(or(x, y), z)"), &p("z")), "padding below the root");
 }
 
-/// On the probe's fixture (salt 1 of `-gen-cost`'s pad arm, cmp3d: mine 0's extras of phases 1-3 against the served laws of
-/// phases 1-3), the extras whose twin key (on the class table) is a served law's key, and the trivial ones.
-#[test]
-pub fn normalize_finds_the_probes_twins() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/runs/2026-10-17/fixtures/pad_1");
-    let laws = |p: std::path::PathBuf| -> Vec<(Term, Term)> {
-        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display())).lines().filter_map(|l| parse_law(l, 3)).collect()
-    };
-    let loops: Vec<std::path::PathBuf> = (1..=3).map(|p| dir.join(format!("cold_cmp3d_{p}_none"))).collect();
-    let served: Vec<(Term, Term)> = loops.iter().flat_map(|l| [0, 100, 200].map(|s| l.join(format!("laws_serve_{s}.txt")))).flat_map(laws).collect();
-    let extras: Vec<(Term, Term)> = loops.iter().flat_map(|l| laws(l.join("laws_extra_0.txt"))).collect();
-    assert_eq!((served.len(), extras.len()), (900, 1050));
-    let keys: HashSet<String> = served.iter().filter_map(|(a, b)| twin_key(a, b)).collect();
-    let twins = extras.iter().filter(|(a, b)| twin_key(a, b).is_some_and(|k| keys.contains(&k))).count();
-    let trivial = extras.iter().filter(|(a, b)| twin_key(a, b).is_none()).count();
-    // on the class table (plan 2026-10-23, Task 5): 251 twins and 710 trivial laws; `ClassReps` (two-leaf nodes and a
-    // child of equal value) found 443 and 409
-    assert_eq!((twins, trivial), (251, 710));
-}
-
-/// Step 5's count (spec docs/superpowers/specs/2026-10-17-law-generator-design.md): over a run of `gen_warm.sh`
-/// (`HIDDEN_TWINS_RUN`), the extras each loop scope drew (the two-leaf filter passed them) that twin the scope's served
-/// laws once every node below a side's root is made canonical by the class table. Prints `HT <arm> <stage> <family> <extras> <twins> <trivial extras> <served> <trivial served>`.
-#[test]
-#[ignore]
-pub fn hidden_twins_in_a_run() {
-    let run = std::path::PathBuf::from(std::env::var("HIDDEN_TWINS_RUN").expect("HIDDEN_TWINS_RUN"));
-    let laws = |p: &std::path::Path| -> Vec<(Term, Term)> { std::fs::read_to_string(p).unwrap().lines().filter_map(|l| parse_law(l, 3)).collect() };
-    let files = |d: &std::path::Path, pre: &str| -> Vec<std::path::PathBuf> {
-        let mut v: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with(pre)).collect();
-        v.sort();
-        v
-    };
-    let mut arms: Vec<_> = std::fs::read_dir(&run).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
-    arms.sort();
-    for arm in arms {
-        // scopes: a stage's three loops of one family and library source, or one ref mine (`lib_<family>`; its own served
-        // laws only, though the sweep also filtered against the rest of the sweep's)
-        let mut scopes: std::collections::BTreeMap<(String, String, String), Vec<std::path::PathBuf>> = Default::default();
-        for l in std::fs::read_dir(&arm).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
-            let name = l.file_name().unwrap().to_str().unwrap().to_string();
-            let parts: Vec<&str> = name.split('_').collect();
-            if files(&l, "laws_extra_").is_empty() {
-                continue;
-            }
-            match parts[..] {
-                [stage, fam, _, src] => scopes.entry((stage.into(), fam.into(), src.into())).or_default().push(l),
-                ["lib", fam] => scopes.entry(("ref".into(), fam.into(), String::new())).or_default().push(l),
-                _ => {}
-            }
-        }
-        for ((stage, fam, _), loops) in scopes {
-            let served: Vec<_> = loops.iter().flat_map(|l| files(l, "laws_serve_")).flat_map(|p| laws(&p)).collect();
-            let extras: HashSet<(Term, Term)> = loops.iter().flat_map(|l| files(l, "laws_extra_")).flat_map(|p| laws(&p)).collect();
-            let keys: HashSet<String> = served.iter().filter_map(|(a, b)| twin_key(a, b)).collect();
-            let twins = extras.iter().filter(|(a, b)| twin_key(a, b).is_some_and(|k| keys.contains(&k))).count();
-            let trivial = (extras.iter().filter(|(a, b)| twin_key(a, b).is_none()).count(), served.iter().filter(|(a, b)| twin_key(a, b).is_none()).count());
-            println!("HT {} {stage} {fam} {} {twins} {} {} {}", arm.file_name().unwrap().to_str().unwrap(), extras.len(), trivial.0, served.len(), trivial.1);
-        }
-    }
-}
-
-/// Variables per law of a family: the three-variable families against the two-variable rest.
+/// Variables of a law family: three for the streams (their laws come through law files), two for `family_laws`' own.
 pub fn family_vars(family: &str) -> usize {
-    if family == "streams" || THREE_VAR_FAMILIES.contains(&family) { 3 } else { 2 }
-}
-
-/// Terms of the `cmp3` family: `lt` of two arithmetic terms (add, sub, `shl1` over three variables, depth one: an operator over two
-/// leaves, `shl1` of a leaf, or a leaf), so each law is a statement about a comparison. `lt` is never nested under arithmetic: the
-/// encoding types its result differently.
-pub fn cmp3_pool(deep: bool) -> Vec<Term> {
-    let op = mk;
-    let d1 = depth1(&[ADD, SUB], true);
-    if deep {
-        // cmp3d: the right argument may also be a sum or difference of a variable-only depth-1 term and a variable, so a comparison
-        // can contain a reassociation redex (cmp3d mixes the comparison and the add/sub structures)
-        let vars: Vec<Term> = (0..3).map(Term::v).collect();
-        let mut v1 = vars.clone();
-        for o in [ADD, SUB] {
-            for a in &vars {
-                for b in &vars {
-                    v1.push(op(o, a, b));
-                }
-            }
-        }
-        let mut e = d1.clone();
-        for o in [ADD, SUB] {
-            for a in &v1 {
-                for b in &vars {
-                    e.push(op(o, a, b));
-                    e.push(op(o, b, a));
-                }
-            }
-        }
-        return d1.iter().flat_map(|a| e.iter().map(|b| op(LT, a, b)).collect::<Vec<_>>()).collect();
-    }
-    d1.iter().flat_map(|a| d1.iter().map(|b| op(LT, a, b)).collect::<Vec<_>>()).collect()
-}
-
-/// Terms of the depth-2 families (sbo3, mix3): the depth-1 terms, each of `ops` over a depth-1 term and a leaf (both orders), `shl1` of
-/// each depth-1 term when `shl`, and each of `sums` over two depth-1 terms.
-pub fn depth2_pool(ops: &[usize], shl: bool, sums: &[usize]) -> Vec<Term> {
-    let leaves = leaves3();
-    let d1 = depth1(ops, shl);
-    let mut p = d1.clone();
-    for &o in ops {
-        for a in &d1 {
-            for b in &leaves {
-                p.push(mk(o, a, b));
-                p.push(mk(o, b, a));
-            }
-        }
-    }
-    if shl {
-        p.extend(d1.iter().map(|a| mk(SHL1, a, &Term::ZERO)));
-    }
-    for &o in sums {
-        for a in &d1 {
-            for b in &d1 {
-                p.push(mk(o, a, b));
-            }
-        }
-    }
-    p
+    if family == "streams" { 3 } else { 2 }
 }
 
 /// `x`, `y`, `z`, `0` and `-1`.
@@ -1541,23 +1014,6 @@ fn leaves3() -> Vec<Term> {
 
 fn mk(o: usize, a: &Term, b: &Term) -> Term {
     Term::op(o, *a, *b)
-}
-
-/// The depth-1 terms: the leaves, each of `ops` over two leaves, and, with `shl`, `shl1` of a leaf.
-fn depth1(ops: &[usize], shl: bool) -> Vec<Term> {
-    let leaves = leaves3();
-    let mut d1 = leaves.clone();
-    for &o in ops {
-        for a in &leaves {
-            for b in &leaves {
-                d1.push(mk(o, a, b));
-            }
-        }
-    }
-    if shl {
-        d1.extend(leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)));
-    }
-    d1
 }
 
 #[test]
@@ -1631,12 +1087,13 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
     })
 }
 
-/// The setup of the rule-set check tests: the `CHECK_RULES` as the job's rules to install (with their preferences) and in file
-/// order, `CHECK_FAMILY`'s variable count, and the laws of the family (sized by the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as
-/// the driver passes them) that are plausible at widths 1-6.
+/// The setup of the rule-set check tests: the `CHECK_RULES` (none when unset) as the job's rules to install (with their
+/// preferences) and in file order, `CHECK_FAMILY`'s variable count (default `streams`), and the laws of the family (sized by
+/// the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as the driver passes them) that are plausible at
+/// widths 1-6.
 fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
-    let family = job.setup().var("CHECK_FAMILY").unwrap_or("add3");
-    let text = std::fs::read_to_string(job.setup().var("CHECK_RULES").unwrap()).unwrap();
+    let family = job.setup().var("CHECK_FAMILY").unwrap_or("streams");
+    let text = job.setup().var("CHECK_RULES").map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
     let rules = parse_rules(&text);
     let kv = family_vars(&family);
     let laws = match job.setup().var("CHECK_LAWFILE") {
@@ -2139,85 +1596,6 @@ pub fn mutants_are_well_formed() {
             }
         }
     }
-}
-
-/// `YIELD_FAMILY` (default add3), the proposer `PROPOSER=ngram|pool|stream|mutate` (or `YIELD_FILE`, one `lhs = rhs` per line) and `YIELD_N`
-/// samples (default 2000); the family window the proposer is shown is the usual `RULEMINER_*` one (`STRIDE`, `PHASE`, `LAWS`). `stream`
-/// replays the family's own sequence from `YIELD_SKIP` (default 1000) instead: the hash-ordered stream as a proposer, whose hard count is
-/// M. With `CHECK_RULES` the rules in force decide cheap against hard. `YIELD_OUT` saves the proposed lines, `BAND_OUT` the hard ones
-/// (`Cost::hard`, known or novel), as a stream for the loop. Prints a `YIELD` and a `BAND` line.
-#[test]
-#[ignore]
-pub fn proposal_yield() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        std::panic::set_hook(Box::new(|_| {}));
-        let family = job.setup().var("YIELD_FAMILY").unwrap_or("add3").to_string();
-        let kv = family_vars(&family);
-        let n = job.setup().or("YIELD_N", 2000usize);
-        let mut rules = job.rules().counting(true);
-        if let Some(path) = job.setup().var("CHECK_RULES") {
-            rules = rules.with_mined(job.setup(), parse_rules(&std::fs::read_to_string(path).unwrap()));
-        }
-        job.with_rules(rules, |job| {
-            let strings = |laws: Vec<(String, Term, Term)>| -> Vec<String> { laws.into_iter().filter(|(_, a, b)| a.is_law(b, kv)).map(|(s, _, _)| s).collect() };
-            let train_lines = strings(family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, 7));
-            let whole = |k: &str| match k {
-                "RULEMINER_STRIDE" => Some(1.to_string()),
-                "RULEMINER_PHASE" | "RULEMINER_SKIP" => Some(0.to_string()),
-                "RULEMINER_LAWS" => Some(1_000_000.to_string()),
-                _ => job.setup().var(k).map(str::to_owned),
-            };
-            let known_lines = strings(family_laws(job.setup(), &family, &whole, 4, kv, 7));
-            let lines: Vec<String> = match (job.setup().var("YIELD_FILE"), job.setup().var("PROPOSER")) {
-                (Some(path), _) => std::fs::read_to_string(path).unwrap().lines().map(String::from).collect(),
-                (_, Some("ngram")) => ngram_lines(&train_lines.join("\n"), job.setup().or("YIELD_ORDER", 8usize), n, 1),
-                (_, Some("pool")) => {
-                    let pool = pool3(&family, &|k: &str| job.setup().var(k).map(str::to_owned)).expect("pool proposer needs a three-variable family");
-                    let mut s = 7u64;
-                    (0..n).map(|_| format!("{} = {}", pool[lcg(&mut s) as usize % pool.len()].show(), pool[lcg(&mut s) as usize % pool.len()].show())).collect()
-                }
-                (_, Some("stream")) => {
-                    let held_out = |k: &str| match k {
-                        "RULEMINER_SKIP" => Some(job.setup().or("YIELD_SKIP", 1000usize).to_string()),
-                        "RULEMINER_LAWS" => Some(n.to_string()),
-                        _ => job.setup().var(k).map(str::to_owned),
-                    };
-                    strings(family_laws(job.setup(), &family, &held_out, 4, kv, 7))
-                }
-                (_, Some("mutate")) => {
-                    let seeds = read_laws(&job.setup().var("MUTATE_SEEDS").expect("the mutate proposer needs MUTATE_SEEDS (a BAND_OUT file)"));
-                    mutate_laws(&seeds, kv, &job.setup().var("MUTATE_KIND").unwrap_or("mix"), n, 11)
-                }
-                _ => panic!("set YIELD_FILE or PROPOSER=ngram|pool|stream|mutate"),
-            };
-            if let Some(out) = job.setup().var("YIELD_OUT") {
-                std::fs::write(out, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
-            }
-            let laws = |lines: Vec<String>| lines.iter().filter_map(|l| parse_law(l, kv)).collect::<HashSet<_>>();
-            let (train, known) = (laws(train_lines), laws(known_lines));
-            let verdicts = classify_proposals(job, &lines, kv, &train, &known);
-            let mut count: std::collections::BTreeMap<Verdict, usize> = Default::default();
-            for (v, _) in &verdicts {
-                *count.entry(*v).or_default() += 1;
-            }
-            println!("YIELD family={family} samples={} train={} known={} {count:?}", lines.len(), train.len(), known.len());
-            let band: Vec<(&String, Cost)> = lines.iter().zip(&verdicts).filter_map(|(l, (_, c))| c.filter(Cost::hard).map(|c| (l, c))).collect();
-            let mut steps: Vec<i64> = band.iter().map(|(_, c)| c.steps).collect();
-            steps.sort();
-            println!(
-                "BAND {} hard of {} scored: {} not proved, {} machine proofs, median rule steps {}",
-                band.len(),
-                verdicts.iter().filter(|(_, c)| c.is_some()).count(),
-                band.iter().filter(|(_, c)| !c.proved).count(),
-                band.iter().map(|(_, c)| c.fallbacks).sum::<u64>(),
-                steps.get(steps.len() / 2).copied().unwrap_or(0)
-            );
-            if let Some(out) = job.setup().var("BAND_OUT") {
-                std::fs::write(out, band.iter().map(|(l, _)| format!("{l}\n")).collect::<String>()).unwrap();
-            }
-        })
-    })
 }
 
 /// The verdicts separate the cases they name.

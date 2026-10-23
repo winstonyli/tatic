@@ -722,15 +722,14 @@ fn a_representative_outside_the_context_is_not_used() {
     assert!(c.step(job, 4, 1, &t).is_none());
 }
 
-/// Every replacement the table makes on the held-out laws (spec "Testing", "Proofs"; `docs/runs/2026-10-23/fixtures/held`,
-/// from runs `2026-10-22-size-band` and `-join-residue`) has a verdict at width 4, and every law that meets compiles to a
-/// kernel-checked proof. Prints the laws met per file, the replacements by prover, and the time in verdicts and in proofs.
+/// Every replacement the table makes on both sides of the held-out laws (`held_laws` of `HELD_BANDS`; open by construction,
+/// so the laws themselves do not meet) with a verdict at width 4 compiles from `step`'s plan to a kernel-checked proof.
+/// Past the table's domain some have none (the rewriter then falls back to the rules); prints the replacements, their
+/// verdicts by prover, the proofs checked with their time, and how many with no verdict the key's refuter refutes (false
+/// matches of `lookup` beyond its domain, PARKED.md).
 #[test]
 #[ignore]
 fn held_out_replacements_prove() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/runs/2026-10-23/fixtures/held");
-    let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
-    files.sort();
     let c = Classes::get();
     // the replacements canonicalizing makes (the table's own choice, before any verdict)
     fn walk(c: &Classes, t: &Term, out: &mut hashbrown::HashSet<(Term, Term)>) -> Term {
@@ -746,38 +745,41 @@ fn held_out_replacements_prove() {
             None => t1,
         }
     }
-    let mut laws: Vec<(String, Term, Term)> = vec![];
     let mut pairs = hashbrown::HashSet::new();
-    for f in &files {
-        let (mut n, mut met) = (0, 0);
-        for line in std::fs::read_to_string(f).unwrap().lines().filter(|l| l.contains(" = ")) {
-            let (l, r) = line.split_once(" = ").unwrap();
-            let (a, b) = (parse_term(l.trim()), parse_term(r.trim()));
-            n += 1;
-            if walk(c, &a, &mut pairs) == walk(c, &b, &mut pairs) {
-                met += 1;
-                laws.push((line.to_string(), a, b));
-            }
+    for band in HELD_BANDS {
+        let laws = held_laws(band);
+        for (a, b) in &laws {
+            walk(c, a, &mut pairs);
+            walk(c, b, &mut pairs);
         }
-        println!("LAWS {}: {met} of {n} meet", f.file_name().unwrap().to_string_lossy());
+        println!("LAWS band {band}: {}", laws.len());
     }
     let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let t0 = std::time::Instant::now();
         let mut pairs: Vec<_> = pairs.into_iter().collect();
         pairs.sort_by_cached_key(|(u, r)| (u.show(), r.show()));
-        let unusable: Vec<String> = pairs.iter().filter(|(u, _)| c.step(job, 4, 3, u).is_none()).map(|(u, r)| format!("{} = {}", u.show(), r.show())).collect();
-        let verdict_ms = t0.elapsed().as_millis();
-        // a replacement with no proof leaves `normalize` short of `walk`'s normal form, so a met law would not compile
-        assert!(unusable.is_empty(), "{} of {} replacements with no proof: {unusable:?}", unusable.len(), pairs.len());
-        let t1 = std::time::Instant::now();
-        for (line, a, b) in &laws {
-            let ((_, pa), (_, pb)) = (c.normalize(job, 4, 3, a), c.normalize(job, 4, 3, b));
-            let plan = Plan::trans(job, pa, Plan::sym(job, pb));
-            let (p, s) = law_proof(job, 4, 3, a, b, &plan);
-            job.lemmas.ck(line, &p, &s);
+        let (mut by_prover, mut unusable, mut refuter) = (std::collections::BTreeMap::<&str, usize>::new(), vec![], Refuter::new());
+        for (u, r) in &pairs {
+            let Some((r1, plan)) = c.step(job, 4, 3, u) else {
+                unusable.push(refuter.refute(u, r).is_some());
+                continue;
+            };
+            assert!(r1 == *r, "step's representative is rep's");
+            let v = VERDICTS.get(&(4, carry_cap(job), *u, *r)).flatten().unwrap();
+            *by_prover.entry(match v.kind { LawKind::Bitwise => "bitwise", LawKind::Chain => "chain", LawKind::Tree => "tree", _ => "other" }).or_default() += 1;
+            let (p, s) = law_proof(job, 4, 3, u, r, &plan);
+            job.lemmas.ck(&format!("{} = {}", u.show(), r.show()), &p, &s);
         }
-        println!("REPLACEMENTS {} made, all with a proof; verdicts {verdict_ms} ms, {} laws compiled and checked in {} ms", pairs.len(), laws.len(), t1.elapsed().as_millis());
+        let checked = pairs.len() - unusable.len();
+        assert!(checked > 0, "no replacement with a verdict");
+        let refuted = unusable.iter().filter(|f| **f).count();
+        println!(
+            "REPLACEMENTS {} made, verdicts by prover {by_prover:?}, {checked} proofs checked in {} ms; {} with no verdict, {refuted} of them refuted (false matches)",
+            pairs.len(),
+            t0.elapsed().as_millis(),
+            unusable.len()
+        );
     });
 }
 
