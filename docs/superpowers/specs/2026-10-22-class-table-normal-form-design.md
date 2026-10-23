@@ -76,6 +76,11 @@ is a learned replacement for parts the rewriter now fixes by hand, the most load
    whole table as seed (its grown terms grow apart and few pair); one best set (2348 functions against 8847 for the 21
    pairs at the same budget). Open: per-stream budget (the triples' yield rose faster than their budget), and
    whether growth should stay inside the stream's set.
+9. **Phase 2's ablations are judged on laws past the table's domain** (2026-10-23). On the gate the table meets every
+   law (M 377 to 0 in the spike), so every fixed part would look free there and be deleted. Each part is ablated alone,
+   one switch per run, against a held-out set of decision 8's open laws, in this order: `promoted`; `assoc`, `tree`,
+   `chain`; `comm`; `eq_truth`, `eq_pos`; phase 1's step. Rejected: the current gate (it cannot tell the parts apart);
+   every part off at once, restoring what breaks (a break would not say which part pays).
 
 ## Design
 
