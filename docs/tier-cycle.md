@@ -5240,6 +5240,32 @@ the final table, as in the two sections above, and its replacements are proved.
   tests width 3, so merges wrong only there go unseen. None of these merges was used by the laws (0 suspects). So a
   table's replacements still need their proofs, as everywhere else, and a failed proof is one more counterexample.
 
+*`shr1` in the class table, and a table's memory (2026-10-23; run `2026-10-23-class-mem-shr1-b`, 75 s, CPU 17% at
+launch; exe ddf1eba plus `docs/runs/2026-10-23/patches/class_mem_shr1.patch`, reverted; script
+`docs/runs/2026-10-23/scripts/class_mem_shr1.sh`; the first run, `-class-mem-shr1`, panicked as below).* The two
+unmeasured risks of the class-table spec (`docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`). The
+probe above, with `shl1` and `shr1` enumerated as unary operators (second operand `0`), refines a key from the 8 tuples
+of 0s and 1s, proves the final sample's merges that contain `shr1`, and writes the key; a second process then builds
+the table once from that key and reports its commit (`K32GetProcessMemoryInfo`).
+
+- **`shr1` grows the table by 45% and the key by 22%.** 16 rounds to a clean sample; the key is 262 inputs at width 8
+  and 125 at width 4 (387, against 316 without `shr1`), and the table 341740 classes (95490 `lt`), 80112 of its 246250
+  bit-vector representatives containing `shr1`. A fresh sample on the final key still refutes 4 `lt` merges, as
+  expected of a key that is not exact.
+- **Most `shr1` replacements have no prover.** Of the 5265 sampled merges that contain `shr1` (none refuted), 666 are
+  proved, all by `bitwise_law_k` (add-free); the other 4599 mix `shr1` with `add` or `sub`, which `add_tree_law` cannot
+  take: `Machine::parse` refuses `shr1` (a right shift reads a later bit position). Most of the 10 printed are a
+  commutation or identity around a subterm with a `shr1` in it (`xor(A, -1) = xor(-1, A)`, `add(A, 0) = A`), which an
+  abstraction of those subterms to atoms would prove; one (`shl1(and(x, shr1(sub(x, z), 0)), 0) = and(add(x, x), sub(x,
+  z))`) relates `shr1(s)` to `s` and would not.
+- **The held-out laws meet as before**: the same counts as the refined keys without `shr1` (15 of 15 residue laws,
+  189-200 per set), through 3193 replacements, 0 suspect, 2804 proved by `add_tree_law`, 383 by `bitwise_law_k`, and 6
+  with no proof (not printed; `shr1` representatives are the likely cause, unchecked). Those 6 meets are an upper bound.
+- **One build commits 257 MB** in a fresh process (1.7-1.9 s), several times the 316 B of values per class alone
+  suggest. How much of it is the value vectors freed at the end of the build, kept by the allocator, and how much is
+  interned terms, is not separated. A process that builds repeatedly grows by about 128 MB per build (1.4 GB after 16
+  in the refinement), which fits interned terms never being freed, also unchecked.
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost

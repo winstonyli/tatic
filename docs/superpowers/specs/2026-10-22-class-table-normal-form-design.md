@@ -38,7 +38,10 @@ the rewriter now fixes by hand, the most load-bearing of which is the operand or
 2. **M does not count the table's proofs.** M stays the number of laws that need a whole-term machine proof. The
    distinct table replacements proved are counted apart, as a learning cost, like the proofs of mined rules.
 3. **`shr1` enters the table** as a unary operator: enumerated with its ignored second operand fixed to `0`. Looked up
-   by value, any `shr1(a, b)` then maps to the representative.
+   by value, any `shr1(a, b)` then maps to the representative. Reopened (2026-10-23): most `shr1` replacements have no
+   prover (§3). Options: (a) prove replacements over atoms, abstracting each subterm the machine refuses (a `shr1`
+   node) to a fresh variable, one mechanism for every operator the machine lacks; (b) keep `shr1` and let decision 6
+   drop the unprovable classes; (c) take `shr1` out of the table. Not decided.
 4. **Size 9.** Larger tables (size 11 under a 64-input key: 4M classes, capped, 8.6 s) are a later measurement.
 5. **Phase 1's place in `prove_eq`:** after the truth-table and per-position steps (cheap decisions), before
    `shr_mask_eq` and the join.
@@ -98,8 +101,9 @@ Compiling the plan's law goes through `shared_lemma` and `add_tree_law` as any `
 shares its statement across a loop's processes. Counting mode decides the verdict the same way but builds no proof: it
 runs the encoding search, so counting cannot claim a replacement that has no proof. That search is the cost to watch:
 the probe's 20 ms each was search, proof and check together; how much is search, and how many new replacements a loop
-touches, is measured in phase 1. `shr1`'s replacements (decision 3) were not in the probe; `tree_encoding` takes
-`shr1`, but whether all of them get encodings is measured in build step 1.
+touches, is measured in phase 1. `tree_encoding` does not take `shr1` (`Machine::parse` refuses it), so a `shr1`
+replacement over `add` or `sub` has no prover: 4599 of 5265 sampled ones (`docs/tier-cycle.md`, "`shr1` in the class
+table, and a table's memory"); decision 3 is reopened there.
 
 ### 4. Phase 1: a step in `prove_eq`
 
@@ -170,7 +174,8 @@ Each step ends with `docs/tier-cycle.md` and `docs/learned-vs-fixed.md` updated.
 
 - **Counting-mode verdicts may be slow.** Each new replacement runs an encoding search; if loops touch thousands, the
   step costs more than the joins it saves. Phase 1's gate shows it (job CPU).
-- **Memory per worker.** Every worker holds its own table; a sweep runs several workers per lane.
+- **Memory per worker.** Every worker holds its own table: one build with `shr1` commits 257 MB (`docs/tier-cycle.md`,
+  "`shr1` in the class table, and a table's memory"), and a sweep runs several workers per lane.
 - **The key is not exact.** A clean sample of 20000 bounds wrong merges to a few in 20000 (at 95%); a wrong merge costs
   a failed verdict and that class's coverage (decision 6), never soundness.
 - **Laws beyond the table's range** (more variables, larger roots) still need rules and the join; how much of a law's
