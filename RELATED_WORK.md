@@ -6063,6 +6063,45 @@ Both fixed, each doubling costs about 2x. In release, 100 to 400 deep doubles to
 - `infer_memo_skips_unused_inner_binders` now times 800 deep against 100 deep and asserts under 30x, like §79's linear-range guards. Now it runs about 11x. With cause 1 restored it fails at about 180x (2.0 s against 11 ms). With only cause 2 restored it runs about 21x and passes: that quadratic's constant (one array read per step) is below this guard's resolution at these sizes.
 - `infer_cache_skip_matches_a_parent_walk` checks `skip` against the walk it replaced. The test builds a random tree of 3,000 contexts with runs over 300 deep and some `fresh` binders, and checks boundary and random `lo` for every context. It fails when `skip` ignores the run (`saturating_sub` for `checked_sub`). It checks answers, not the step count.
 
+## 81. Canonical forms for bitwise and mixed Boolean-arithmetic terms, and learning them (2026-10-22)
+
+Asked because the joins' leftover laws need pure-bitwise identities (`and(x, and(y, x)) = and(x, y)`,
+`xor(y, or(x, y)) = and(x, not y)`) and bridges (`or(x, y) - xor(x, y) = and(x, y)`), which the miner cannot propose
+(`docs/tier-cycle.md`, "Canonical forms: hand-coded or learned"). Fetched 2026-10-22: SiMBA (ar5iv HTML), GAMBA and
+Ruler (abstract; Ruler's method from its ar5iv HTML), CoBRA (blog). From search summaries only, not read: MBA-Blast,
+MBA-Solver, Enumo, Knuth's 4-input tables, null polynomials. From general knowledge, no source fetched: ANF and ROBDDs.
+
+- **Pure bitwise.** Bitwise operators act on each bit alone, so a bitwise term over t atoms is fixed by its 2^t-row
+  truth table. Canonical term forms: algebraic normal form (xor of ands; `or` becomes three monomials, up to 2^t in
+  all), ROBDDs (canonical per variable order, not term-shaped), and a table of smallest formulas per function (Knuth
+  enumerated minimum chains for 4 and 5 inputs). A smallest-formula table is canonical only with a fixed tie-break, and
+  the smallest form of a composite is not built from its parts' smallest forms.
+- **Linear MBA** (a sum of integer coefficients times bitwise functions of the variables, mod 2^n). SiMBA (Reichenwallner
+  and Meerwald-Stadler, CheckMATE workshop at CCS 2022), Theorem 2: two linear MBAs are equal at width n if and only if
+  they agree on the 2^t inputs in which each variable is 0 or 1. It solves for coefficients over the basis of conjunctions of the variables
+  in order of their variable count, which never gets stuck; the paper calls the result "valid, but not necessarily
+  optimal" and claims no uniqueness (it follows: the system is triangular with unit diagonal). Shifts are not discussed;
+  `shl1` is 2x and so linear, `shr1` and `lt` are not.
+- **Nonlinear MBA.** GAMBA (2023) extends SiMBA by algebraic rewriting and recovers the ground truth "in most cases", with
+  no completeness claim. CoBRA (Trail of Bits, 2026): 36 passes over linear, semilinear, polynomial and mixed classes,
+  72,960 of 73,066 benchmark expressions simplified; 106 "carry-sensitive mixed-domain" cases unsupported; each result
+  checked on random 64-bit inputs or by Z3.
+- **Polynomials mod 2^n** have canonical forms by null-polynomial reduction (Singmaster 1974), but cover add, sub, mul
+  and shifts only; nothing combines them with bitwise operators canonically. They matter here only if `mul` arrives.
+- **Learning the rules.** Ruler (Nandi et al., 2021) enumerates terms into an e-graph and gives each e-class a
+  characteristic vector, its values on fixed inputs (operators act on vectors element-wise); classes with equal vectors
+  give candidate rules. Its domains are booleans, 4- and 32-bit bit-vectors and rationals. Validation: exhaustive
+  vectors are sound for booleans and bv4, Z3 for bv32, sampling for rationals. Enumo (Pal et al., OOPSLA 2023) makes the
+  enumeration programmable.
+- **Proofs.** None of the MBA tools emits a checkable proof; they test or call Z3. Here the kernel already proves both
+  layers: `bitwise_law_k` (`tests/church_bv/rewrite.rs`) any pure-bitwise identity per bit, and `add_tree_law`
+  (`tests/church_bv/machine.rs`) equal sum trees of add-free leaves by a carry encoding, up to `CARRY_CAP` carries.
+  `pool_conjectures` (`machine.rs`) already groups a pool by its exhaustive values, Ruler's characteristic vector.
+
+What it means here: the hand-coded option is SiMBA's form (conjunction-basis coefficients over the atoms); the learned one
+is Ruler's grouping with the smallest member of each class as its representative, kernel-proved. The options and the
+choice are in `docs/tier-cycle.md`, "Canonical forms: hand-coded or learned".
+
 ## Sources
 
 - [I am not a number: I am a free variable (McBride and McKinna, Haskell Workshop 2004)](https://doi.org/10.1145/1017472.1017477)
@@ -6172,3 +6211,12 @@ Both fixed, each doubling costs about 2x. In release, 100 to 400 deep doubles to
 - [Agda `Reduce.Fast`](https://hackage-content-origin.haskell.org/package/Agda-2.6.1.3/docs/Agda-TypeChecking-Reduce-Fast.html)
 - [Rocq `cClosure.ml`](https://github.com/rocq-prover/rocq/blob/master/kernel/cClosure.ml)
 - [Checking dependent types with normalization by evaluation: a tutorial (Christiansen)](https://davidchristiansen.dk/tutorials/nbe/)
+- [SiMBA: efficient deobfuscation of linear mixed Boolean-arithmetic expressions (Reichenwallner and Meerwald-Stadler, CheckMATE 2022)](https://ar5iv.labs.arxiv.org/html/2209.06335)
+- [Efficient deobfuscation of linear mixed Boolean-arithmetic expressions, GAMBA (Reichenwallner and Meerwald-Stadler, 2023)](https://arxiv.org/abs/2305.06763)
+- [Simplifying MBA obfuscation with CoBRA (Trail of Bits, 2026)](https://blog.trailofbits.com/2026/04/03/simplifying-mba-obfuscation-with-cobra/)
+- [MBA-Blast (Liu et al., USENIX Security 2021)](https://www.usenix.org/conference/usenixsecurity21/presentation/liu-binbin)
+- [Boosting SMT solver performance on mixed-bitwise-arithmetic expressions, MBA-Solver (Xu et al., PLDI 2021)](https://pldi21.sigplan.org/details/pldi-2021-papers/43/Boosting-SMT-Solver-Performance-on-Mixed-Bitwise-Arithmetic-Expressions)
+- [Rewrite rule inference using equality saturation, Ruler (Nandi et al., 2021)](https://ar5iv.labs.arxiv.org/html/2108.10436)
+- [Equality saturation theory exploration à la carte, Enumo (Pal et al., OOPSLA 2023)](https://2023.splashcon.org/details/splash-2023-oopsla/68/Equality-Saturation-Theory-Exploration-la-Carte)
+- [Null polynomials modulo m (Li)](https://arxiv.org/abs/math/0510217)
+- [Knuth, fchains4x.w (minimum chains for 4-input functions)](https://www-cs-staff.stanford.edu/~knuth/programs/fchains4x.w)

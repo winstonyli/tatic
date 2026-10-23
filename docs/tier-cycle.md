@@ -5053,6 +5053,58 @@ budget to `JOIN_VISIT` at cap 11 (`JOIN_VISIT_AT`), doubling per node of cap and
 - Reverted: the join keeps a fixed `JOIN_VISIT` 1000. A budget for serving apart from mining is parked (`PARKED.md`,
   "The join's breadth").
 
+*What the join can't reach (2026-10-22; run `2026-10-22-join-residue`, 14 s, CPU 16% at launch; exe dabc018 plus
+`docs/runs/2026-10-22/patches/join_cap.patch`, env `JOIN_CAP`, reverted; script
+`docs/runs/2026-10-22/scripts/join_residue.sh`).* Of add3's 200 size-11 held-out laws, 15 still need a machine proof at
+`JOIN_VISIT` 20000 with the salt-1 ref library. Served again:
+
+| arm (on the 15) | budget | cap over the larger side | free | terms reached |
+|---|---|---|---|---|
+| ref library | 20000 | +2 | 0 | 86499 |
+| ref library | 2^17 | +2 (+3 the same: sizes are odd) | 0 | 140942 |
+| ref library | 2^17 | +4 (+5 the same) | 2 | 1123792 |
+| the four families' ref libraries pooled | 20000 | +2 | 3 | 126807 |
+| pooled | 2^17 | +4 | 5 | 1111417 |
+| ref + and-idempotence (3 rules) | 20000 | +2 | 4 | 92617 |
+| ref + bridges (4 rules) | 20000 | +2 | 5 | 20786 |
+| ref + both | 20000 | +2 | 9 | 27426 |
+
+- **Not budget.** At 2^17 every search runs out of terms under its cap (about 9.4k each), not out of budget. A cap of +4
+  frees 2 for 8 times the terms.
+- **Missing rules.** Idempotence is `and(x, and(y, x)) -> and(x, y)`, `and(x, and(x, y)) -> and(x, y)`,
+  `and(x, x) -> x`; the bridges are `sub(or(x, y), xor(x, y)) -> and(x, y)`, `sub(or(x, y), and(x, y)) -> xor(x, y)`,
+  `add(xor(x, y), and(x, y)) -> or(x, y)`, `add(or(x, y), and(x, y)) -> add(x, y)`. With both, the full size-11 set at
+  2000 goes from 177 free to 183 and size 9 stays at 196: they cost nothing elsewhere.
+- **The 6 left** need, by eye, a xor of a term with a part of itself as arithmetic: `xor(x, and(y, x)) = x - and(x, y)`,
+  `xor(x, and(sub(-1, x), z)) = x + and(sub(-1, x), z)` (disjoint), `xor(y, or(x, y)) = x - and(x, y)`. All are linear
+  MBA identities; none is in any library.
+- **Why the miner misses them.** Its candidates come from subterms that use add or sub (`miner.rs`, `candidates`), so
+  pure-bitwise rules are never proposed. The bridges could be proposed in principle; that they never are, because no
+  straggler has the subterm, is a guess, not checked.
+
+*Canonical forms: hand-coded or learned (survey, 2026-10-22; literature in `RELATED_WORK.md` §81).* The laws the join
+cannot reach at any budget ("What the join can't reach") need pure-bitwise identities and bitwise-arithmetic bridges.
+The miner cannot propose the first kind: its candidates come from subterms that use add or sub
+(`miner.rs`, `candidates`), and the bitwise collapse (`rewrite.rs`, `abstract_atoms` and the `LawKind::Bitwise` step)
+maps a bitwise node only to 0, -1 or one of its atoms. One normal form for a whole region of add, sub, shl1 and bitwise
+operators over atoms (subterms rooted at `lt` or `shr1`) would replace the collapse, `notsub`, the root-only operand order
+and the hand rules, each rewrite one law the kernel proves (`bitwise_law_k`, or `add_tree_law` within `CARRY_CAP`).
+Options, by end state:
+
+| option | covers | learned or fixed | limit |
+|---|---|---|---|
+| a. linear-MBA form: coefficients over conjunctions of atoms (SiMBA) | pure-bitwise laws, bridges, `notsub`, operand order | fixed theory | 2^k in atoms; laws across carry-sensitive atoms |
+| b. smallest term per truth table | pure-bitwise laws only | fixed | no bridges; a subset of c's table |
+| c. learned table: enumerate terms over k ≤ 3 atoms, group by values at several widths (`pool_conjectures`), the smallest member of each class is its representative, rewrite each node bottom-up to it | what a and b cover, within the enumerated sizes, and every mined rule inside that range | classes and representatives learned; evaluation and the order fixed | classes past the enumeration, unless children reduce into range; small-width collisions fail their proofs and are dropped |
+| d. learned structure on c: integer relations among the class values mod 2^n, a basis of smallest terms as coordinates | a without coding it, past c's sizes | learned | speculative; needs a solver mod 2^n; carry cap |
+| e. complete the mined rules (critical pairs, `rewrite::critical_pairs`) | what the rules' overlaps imply | learned | in-sample: cmp3d's floor 72 to 30, add3's and sbo3's unmoved ("Completion on the floor"); blind where the miner is |
+| f. the GPU model as a learned signature or proposer | proposals only | learned | not canonical alone; a later layer on c |
+
+Not decided; leaning c, with d as its additive extension, for the goal of a kernel that improves itself; a stays the fallback if
+c's range is too small. ANF (bitwise only, `or` grows to three monomials) is out: a covers it and more.
+Polynomials mod 2^n and the nonlinear MBA tools are out: no bitwise operators, or no canonical form and no proofs. The
+cheapest test of c is in the next paragraph.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
