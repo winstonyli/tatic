@@ -5427,8 +5427,12 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   (186 of them `lt`) hold a proper subterm the table itself replaces, over 42 distinct replacements; the 8 printed are
   each a displaced `shl1(…shr1(…, 0)…, 0)` term whose successor is a larger `add`/`and(…, shl1(-1, 0))` form, e.g. `or(x, shl1(xor(x,
   shr1(y, 0)), 0))` holds `shl1(xor(x, shr1(y, 0)), 0)`, which steps to `xor(add(x, x), and(y, shl1(-1, 0)))`. So spec
-  §5's premise that a representative is a fixpoint fails for 0.26% of the table; phase 1 is unaffected (it stops where
-  no verdict exists), phase 2 needs the fix in `PARKED.md`, "Displaced representatives inside stored ones".
+  §5's premise that a representative is a fixpoint failed for 0.26% of the table (phase 1 was unaffected: it stops where
+  no verdict exists). **Fixed:** after the build, `Classes::build` puts each displaced representative's successor into
+  every stored representative holding it (substituting at displacement could not work: the successor is larger, so
+  terms already built at smaller sizes could not take it). `representatives_are_fixpoints_below_the_root` (903 before,
+  none after); the table's counts unchanged, its pin re-taken; the held-out laws unchanged (2174 of 2204 met, 3187
+  replacements, all proved: they never reached the 903).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

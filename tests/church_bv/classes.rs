@@ -130,6 +130,31 @@ fn the_size_5_table_maps_terms_to_their_representatives() {
     assert_eq!(rep("add(u, 0)"), None, "a fourth variable");
 }
 
+/// Every stored representative is a fixpoint below its root (spec §5): no proper subterm is one the table replaces, a
+/// displaced representative included (docs/tier-cycle.md, "Displaced representatives stay inside stored ones").
+#[test]
+fn representatives_are_fixpoints_below_the_root() {
+    fn subterms(t: &Term, out: &mut Vec<Term>) {
+        if let Node::Op(_, a, b) = *t.node() {
+            for s in [a, b] {
+                out.push(s);
+                subterms(&s, out);
+            }
+        }
+    }
+    let (c, _) = Classes::build(&Key::parse(KEY_FILE).unwrap(), SIZE, 0, 0);
+    let reps: Vec<Term> = c.map.values().copied().collect();
+    let held: Vec<String> = reps
+        .iter()
+        .filter_map(|r| {
+            let mut s = vec![];
+            subterms(r, &mut s);
+            s.iter().find_map(|u| c.rep(u).map(|n| format!("{} holds {} -> {}", r.show(), u.show(), n.show())))
+        })
+        .collect();
+    assert!(held.is_empty(), "{} representatives hold a replaced subterm, e.g. {:?}", held.len(), &held[..held.len().min(3)]);
+}
+
 /// The full table from the key file, pinned: its counts and a fingerprint of its representatives (not of `class_hash`'s
 /// keys), so a change to how the build computes or hashes values (not what they are) leaves the table as it was.
 #[test]
@@ -141,7 +166,7 @@ fn the_full_table_is_pinned() {
         r.show().hash(&mut h);
         acc ^ h.finish()
     });
-    assert_eq!((c.len(), st.lts, st.merges, st.displaced, print), (341866, 95616, 647669, 798, 15575413362263879076));
+    assert_eq!((c.len(), st.lts, st.merges, st.displaced, print), (341866, 95616, 647669, 798, 6359512567973285473));
 }
 
 /// A class's key: a term's values on the key's inputs (all widths end to end) and whether it is an `lt` (a second sort),
@@ -271,11 +296,31 @@ impl Classes {
             }
         }
         drop(reps);
+        // a displaced representative stays inside the representatives built over it, at sizes its successor (larger) could
+        // not reach: put the successor there, so each is a fixpoint below its root (spec §5; values unchanged, a term may
+        // pass `size`; docs/tier-cycle.md, "Displaced representatives stay inside stored ones"). A successor holds no
+        // displaced term (it parses, so its subterms do), so one pass is enough.
+        fn subst(t: Term, moved: &hashbrown::HashMap<Term, Term>) -> Term {
+            if let Some(&n) = moved.get(&t) {
+                return n;
+            }
+            match *t.node() {
+                Node::Op(o, a, b) => {
+                    let (a1, b1) = (subst(a, moved), subst(b, moved));
+                    if (a1, b1) == (a, b) { t } else { Term::op(o, a1, b1) }
+                }
+                _ => t,
+            }
+        }
+        for r in map.values_mut() {
+            *r = subst(*r, &moved);
+        }
         // a sampled pair's representative as the build ends: a displaced one is now a member
         for (u, r) in st.sample.iter_mut() {
             if let Some(&n) = moved.get(r) {
                 (*u, *r) = if *u == n { (*r, n) } else { (*u, n) };
             }
+            *r = subst(*r, &moved);
         }
         let memos = key.sets.iter().map(|(w, ins)| ValueMemo::new(*w, ins.len(), (0..3).map(|v| ins.iter().map(|x| x[v] as u8).collect()).collect())).collect();
         st.millis = t0.elapsed().as_millis();
