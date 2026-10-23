@@ -5243,7 +5243,8 @@ the final table, as in the two sections above, and its replacements are proved.
 *`shr1` in the class table, its proofs over atoms, and a table's memory (2026-10-23; runs `2026-10-23-class-mem-shr1-b`,
 75 s, CPU 17% at launch, and `2026-10-23-class-atoms-c`, 128 s, CPU 68% at launch; exes ddf1eba plus
 `docs/runs/2026-10-23/patches/class_mem_shr1.patch` and 73724df plus `class_atoms.patch`, reverted; scripts
-`class_mem_shr1.sh` and `class_atoms.sh` in `docs/runs/2026-10-23/scripts/`. Runs `-class-mem-shr1`, `-class-atoms` and
+`class_mem_shr1.sh` and `class_atoms.sh` in `docs/runs/2026-10-23/scripts/`; the growth of repeated builds:
+`2026-10-23-class-growth-c`. Runs `-class-mem-shr1`, `-class-atoms` and
 `-class-atoms-b` stopped on probe bugs: a pair over `add` sent to `bitwise_law_k`, a pair false over atoms sent to it
 with a panicking check (the kernel refused it), and too many screen tries.)* The unmeasured risks of the class-table
 spec (`docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`). The probe above, with `shl1` and `shr1`
@@ -5275,8 +5276,16 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   cells (8 MB) and the class map's 458752 slots (about 11 MB). The rest fits the value vectors of the build (387 B per
   bit-vector representative in two vectors inside a third, about 500 B with their headers, about 125 MB), dropped when the
   build returns while the commit stays at its peak, so the allocator keeps them. Not measured directly.
-- **Repeated builds grow the commit by about 128 MB each** (1.4 GB after 16 in the refinement), while the interner
-  grows by 12-330 thousand nodes (a few MB) per round. So interned terms are not the growth; what is, is not known.
+- **Repeated builds do not grow the commit; the refuter's screen memo does** (run `2026-10-23-class-growth-c`, 9730ff8
+  plus `class_growth.patch` and `class_growth_1m.patch`, script `class_growth.sh`; 5 builds a process from the
+  class-atoms-c key). The refinement's commit rose about 128 MB a round (1.4 GB after 16), while the interner grew only
+  a few MB. Built 5 times with the same key and no refutation, the commit settles at 321 MB from the third build on; with
+  4 inputs added a build it does the same, so a growing key is not the cause either. With the refutation loop it climbs
+  to 769 MB, and the process-wide screen memo (`SCREENS`, never cleared) then holds 147027 vectors, 459 MB: 3264 B each,
+  204 inputs of `u128` words for a width-8 term. Each round's sample screens 25-40 thousand new terms. The 448 MB above
+  321 MB is that memo. Value blocks of 1 MB, which bypass the heap, change nothing, so the heap does not fragment. A
+  worker builds once and screens anyway, so the table adds no growth of its own. The screen memo stores `u128` at every
+  width, 16 times what width 8 needs.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
