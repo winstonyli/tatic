@@ -5474,6 +5474,14 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   count argument predicted (falsified). The new laws are mostly ones the table settles. False open laws appear at the
   larger budgets (2 of 60 open in one bucket at 40000, 1 of 26 at 80000; excluded from the counts), so a stream must
   check open laws at width 8 before using them.
+- **More seeds give fewer open laws** (same probe; run `2026-10-23-open-laws-seeds`, budget 20000, 20149 / 80513 /
+  341866 seeds, the last every representative). Laws grow (level 1: 564 / 849 / 2062) but the open share falls (level
+  1 size 11: 24% / 15% / 3%): open laws within two growths 314 / 295 / 225, within three 492 / 448 / 327. A law pairs a
+  grown term with its width-4 group's first member, a seed when the group has one; the more seeds, the likelier that
+  seed is the grown term's own representative, which the table steps to. False open laws rise with the seeds (6 of 61
+  open across all representatives' buckets, 4 of 24 in one). So neither lever scales the table-seeded stream past a few
+  hundred open laws per salt: an open law needs a side the table does not reach, and pairing with a seed supplies the
+  other side from inside the table.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
