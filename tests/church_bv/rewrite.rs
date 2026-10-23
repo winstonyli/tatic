@@ -563,6 +563,13 @@ fn zip_word<W: Word, const O: usize>(out: &mut [W], x: &[W], y: &[W], mask: u128
     }
 }
 
+/// `out[i] = op(x[i], y[i])` for operator `o` at one width's `mask`: `zip_word` picked once per call.
+pub fn zip_op<W: Word>(o: usize, out: &mut [W], x: &[W], y: &[W], mask: u128) {
+    let zips: [fn(&mut [W], &[W], &[W], u128); OP_INFO.len()] =
+        [zip_word::<W, 0>, zip_word::<W, 1>, zip_word::<W, 2>, zip_word::<W, 3>, zip_word::<W, 4>, zip_word::<W, 5>, zip_word::<W, 6>, zip_word::<W, 7>];
+    zips[o](out, x, y, mask);
+}
+
 /// A `ValueMemo` block's size in bytes (one vector when a vector is larger).
 const VALUE_BLOCK: usize = 1 << 16;
 
@@ -626,9 +633,7 @@ impl<W: Word> ValueMemo<W> {
                     let block: &[W] = if id / per == last { before } else { &done[id / per] };
                     &block[id % per * len..][..len]
                 };
-                let zips: [fn(&mut [W], &[W], &[W], u128); OP_INFO.len()] =
-                    [zip_word::<W, 0>, zip_word::<W, 1>, zip_word::<W, 2>, zip_word::<W, 3>, zip_word::<W, 4>, zip_word::<W, 5>, zip_word::<W, 6>, zip_word::<W, 7>];
-                zips[o](out, at(a), at(b), mask);
+                zip_op(o, out, at(a), at(b), mask);
             }
         }
         self.ids.insert(t, id);

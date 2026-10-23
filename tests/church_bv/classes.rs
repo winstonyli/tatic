@@ -5,7 +5,7 @@
 //! proof (§3).
 
 use super::*;
-use super::rewrite::Node;
+use super::rewrite::{zip_op, Node};
 use std::sync::{Mutex, OnceLock};
 use crate::task::SharedMemo;
 
@@ -130,6 +130,20 @@ fn the_size_5_table_maps_terms_to_their_representatives() {
     assert_eq!(rep("add(u, 0)"), None, "a fourth variable");
 }
 
+/// The full table from the key file, pinned: its counts and a fingerprint of every (key, representative) pair, so a change
+/// to how the build computes values (not what) leaves the table as it was.
+#[test]
+fn the_full_table_is_pinned() {
+    use std::hash::{Hash, Hasher};
+    let (c, st) = Classes::build(&Key::parse(KEY_FILE).unwrap(), SIZE, 0, 0);
+    let print = c.map.iter().fold(0u64, |acc, (k, r)| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (k, r.show()).hash(&mut h);
+        acc ^ h.finish()
+    });
+    assert_eq!((c.len(), st.lts, st.merges, st.displaced, print), (341866, 95616, 647669, 798, 15700303306209021114));
+}
+
 /// A class's key: a term's values on the key's inputs (all widths end to end) and whether it is an `lt` (a second sort),
 /// hashed to 128 bits.
 fn class_hash(vals: &[u8], lt: bool) -> (u64, u64) {
@@ -166,26 +180,35 @@ impl Classes {
     /// drives it). The terms' values live only while it builds.
     pub fn build(key: &Key, size: usize, sample_n: usize, mut seed: u128) -> (Classes, BuildStats) {
         let t0 = std::time::Instant::now();
-        let (mut masks, mut cols) = (vec![], [vec![], vec![], vec![]]);
+        // the key's inputs end to end, one run per width: (where it starts, its mask), then the end
+        let (mut runs, mut cols) = (vec![], [vec![], vec![], vec![]]);
         for (w, ins) in &key.sets {
+            runs.push((cols[0].len(), low_bits(*w)));
             for x in ins {
-                masks.push(low_bits(*w));
                 for v in 0..3 {
                     cols[v].push(x[v] as u8);
                 }
             }
         }
+        let len = cols[0].len();
+        runs.push((len, 0));
         let leaf = |t: &Term| -> Vec<u8> {
             match *t.node() {
                 Node::V(v) => cols[v].clone(),
-                Node::Zero => vec![0; masks.len()],
-                _ => masks.iter().map(|m| *m as u8).collect(),
+                Node::Zero => vec![0; len],
+                _ => runs.windows(2).flat_map(|r| std::iter::repeat_n(r[0].1 as u8, r[1].0 - r[0].0)).collect(),
             }
         };
-        let zip = |o: usize, a: &[u8], b: &[u8]| -> Vec<u8> {
-            let f = OP_INFO[o].word;
-            a.iter().zip(b).zip(&masks).map(|((&p, &q), &m)| f(p as u128, q as u128, m) as u8).collect()
+        // a run at a time, so each loop has its operator and mask fixed (called per element through `OP_INFO[o].word` it
+        // was 65% of a build: docs/tier-cycle.md, "What a build spends")
+        let zip = |o: usize, out: &mut [u8], a: &[u8], b: &[u8]| {
+            for r in runs.windows(2) {
+                let s = r[0].0..r[1].0;
+                zip_op(o, &mut out[s.clone()], &a[s.clone()], &b[s], r[0].1);
+            }
         };
+        // a candidate's values, copied out only for a new class
+        let mut buf = vec![0u8; len];
         let mut map: hashbrown::HashMap<(u64, u64), Term> = Default::default();
         let mut st = BuildStats { merges: 0, sample: vec![], displaced: 0, lts: 0, millis: 0 };
         // representatives a later member displaced, to the member: the sample's pairs are fixed up from it at the end
@@ -210,8 +233,8 @@ impl Classes {
                             if OP_INFO[o].shift && *rb != Term::ZERO {
                                 continue;
                             }
-                            let v = zip(o, va, vb);
-                            let h = class_hash(&v, o == LT);
+                            zip(o, &mut buf, va, vb);
+                            let h = class_hash(&buf, o == LT);
                             // made only when needed: most candidates are merges, and interned terms are never freed
                             let term = || Term::op(o, *ra, *rb);
                             match map.get_mut(&h) {
@@ -238,7 +261,7 @@ impl Classes {
                                     if o == LT {
                                         st.lts += 1;
                                     } else {
-                                        new.push((term(), v));
+                                        new.push((term(), buf.clone()));
                                     }
                                 }
                             }
