@@ -38,10 +38,10 @@ the rewriter now fixes by hand, the most load-bearing of which is the operand or
 2. **M does not count the table's proofs.** M stays the number of laws that need a whole-term machine proof. The
    distinct table replacements proved are counted apart, as a learning cost, like the proofs of mined rules.
 3. **`shr1` enters the table** as a unary operator: enumerated with its ignored second operand fixed to `0`. Looked up
-   by value, any `shr1(a, b)` then maps to the representative. Reopened (2026-10-23): most `shr1` replacements have no
-   prover (§3). Options: (a) prove replacements over atoms, abstracting each subterm the machine refuses (a `shr1`
-   node) to a fresh variable, one mechanism for every operator the machine lacks; (b) keep `shr1` and let decision 6
-   drop the unprovable classes; (c) take `shr1` out of the table. Not decided.
+   by value, any `shr1(a, b)` then maps to the representative. Its replacements are proved over atoms (2026-10-23,
+   after most turned out to have no prover, §3): each subterm the machine refuses (a `shr1` node) becomes a fresh
+   variable on both sides, one mechanism for every operator the machine lacks. Rejected: keeping `shr1` and letting
+   decision 6 drop its unprovable classes (most would be dead weight in memory); taking `shr1` out of the table.
 4. **Size 9.** Larger tables (size 11 under a 64-input key: 4M classes, capped, 8.6 s) are a later measurement.
 5. **Phase 1's place in `prove_eq`:** after the truth-table and per-position steps (cheap decisions), before
    `shr_mask_eq` and the join.
@@ -91,7 +91,9 @@ the probe proved all 3203 at width 4). Its verdict is decided on first use and k
 `(u, r, n, k)`:
 
 - `Bitwise` when neither side has an `add` or `sub` and their truth tables agree (`bitwise_law_k`, which takes shifts);
-- else `Tree` when `tree_encoding` finds a carry encoding (already process-wide, `TREE_ENCS`);
+- else `Tree` when `tree_encoding` finds a carry encoding (already process-wide, `TREE_ENCS`), the sides taken over
+  atoms first: each subterm `Machine::parse` refuses (a `shr1` node) becomes one fresh variable, the same on both
+  sides (decision 3);
 - else unusable (decision 6), including a pair over `CARRY_CAP`.
 
 The probe tried the encoding first and fell back to `bitwise_law_k` (`prove_checked`, then 383 carry-free pairs); the
@@ -102,8 +104,10 @@ shares its statement across a loop's processes. Counting mode decides the verdic
 runs the encoding search, so counting cannot claim a replacement that has no proof. That search is the cost to watch:
 the probe's 20 ms each was search, proof and check together; how much is search, and how many new replacements a loop
 touches, is measured in phase 1. `tree_encoding` does not take `shr1` (`Machine::parse` refuses it), so a `shr1`
-replacement over `add` or `sub` has no prover: 4599 of 5265 sampled ones (`docs/tier-cycle.md`, "`shr1` in the class
-table, and a table's memory"); decision 3 is reopened there.
+replacement over `add` or `sub` has no prover as it stands: 4599 of 5265 sampled ones. Over atoms (decision 3) 4015
+of those are proved; 584 (11% of the sample) are false over atoms or unproved, since they need what `shr1` means, and
+are unusable (decision 6). Among them are the 6 held-out replacements `lt(1, s) = lt(0, shr1(s, 0))` (`docs/tier-cycle.md`,
+"`shr1` in the class table, its proofs over atoms, and a table's memory").
 
 ### 4. Phase 1: a step in `prove_eq`
 
@@ -174,8 +178,11 @@ Each step ends with `docs/tier-cycle.md` and `docs/learned-vs-fixed.md` updated.
 
 - **Counting-mode verdicts may be slow.** Each new replacement runs an encoding search; if loops touch thousands, the
   step costs more than the joins it saves. Phase 1's gate shows it (job CPU).
-- **Memory per worker.** Every worker holds its own table: one build with `shr1` commits 257 MB (`docs/tier-cycle.md`,
-  "`shr1` in the class table, and a table's memory"), and a sweep runs several workers per lane.
+- **Memory per worker.** Every worker holds its own table, and a sweep runs several workers per lane. One build with
+  `shr1` commits 257 MB, of which the kept structures are about 50 MB (computed from counts) and the rest fits the
+  build's value vectors, freed but kept by the allocator (`docs/tier-cycle.md`, "`shr1` in the class table, its proofs
+  over atoms, and a table's memory"). Build step 1 stores the values so they return to the system (one allocation per
+  size, for example) and measures the commit again.
 - **The key is not exact.** A clean sample of 20000 bounds wrong merges to a few in 20000 (at 95%); a wrong merge costs
   a failed verdict and that class's coverage (decision 6), never soundness.
 - **Laws beyond the table's range** (more variables, larger roots) still need rules and the join; how much of a law's

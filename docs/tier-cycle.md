@@ -5240,31 +5240,43 @@ the final table, as in the two sections above, and its replacements are proved.
   tests width 3, so merges wrong only there go unseen. None of these merges was used by the laws (0 suspects). So a
   table's replacements still need their proofs, as everywhere else, and a failed proof is one more counterexample.
 
-*`shr1` in the class table, and a table's memory (2026-10-23; run `2026-10-23-class-mem-shr1-b`, 75 s, CPU 17% at
-launch; exe ddf1eba plus `docs/runs/2026-10-23/patches/class_mem_shr1.patch`, reverted; script
-`docs/runs/2026-10-23/scripts/class_mem_shr1.sh`; the first run, `-class-mem-shr1`, panicked as below).* The two
-unmeasured risks of the class-table spec (`docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`). The
-probe above, with `shl1` and `shr1` enumerated as unary operators (second operand `0`), refines a key from the 8 tuples
-of 0s and 1s, proves the final sample's merges that contain `shr1`, and writes the key; a second process then builds
-the table once from that key and reports its commit (`K32GetProcessMemoryInfo`).
+*`shr1` in the class table, its proofs over atoms, and a table's memory (2026-10-23; runs `2026-10-23-class-mem-shr1-b`,
+75 s, CPU 17% at launch, and `2026-10-23-class-atoms-c`, 128 s, CPU 68% at launch; exes ddf1eba plus
+`docs/runs/2026-10-23/patches/class_mem_shr1.patch` and 73724df plus `class_atoms.patch`, reverted; scripts
+`class_mem_shr1.sh` and `class_atoms.sh` in `docs/runs/2026-10-23/scripts/`. Runs `-class-mem-shr1`, `-class-atoms` and
+`-class-atoms-b` stopped on probe bugs: a pair over `add` sent to `bitwise_law_k`, a pair false over atoms sent to it
+with a panicking check (the kernel refused it), and too many screen tries.)* The unmeasured risks of the class-table
+spec (`docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`). The probe above, with `shl1` and `shr1`
+enumerated as unary operators (second operand `0`), refines a key from the 8 tuples of 0s and 1s, proves the final
+sample's merges that contain `shr1`, normalises the held-out laws and proves their replacements, and writes the key; a
+second process then builds the table once from that key and reports its commit (`K32GetProcessMemoryInfo`) and the
+interner's node count. A replacement the machine cannot prove is retried over atoms (decision 3 of the spec): each
+`shr1` node, outermost, becomes a fresh variable, the same on both sides; a pair that the screen refutes over atoms is
+counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` with the kernel deciding.
 
 - **`shr1` grows the table by 45% and the key by 22%.** 16 rounds to a clean sample; the key is 262 inputs at width 8
   and 125 at width 4 (387, against 316 without `shr1`), and the table 341740 classes (95490 `lt`), 80112 of its 246250
   bit-vector representatives containing `shr1`. A fresh sample on the final key still refutes 4 `lt` merges, as
   expected of a key that is not exact.
-- **Most `shr1` replacements have no prover.** Of the 5265 sampled merges that contain `shr1` (none refuted), 666 are
-  proved, all by `bitwise_law_k` (add-free); the other 4599 mix `shr1` with `add` or `sub`, which `add_tree_law` cannot
-  take: `Machine::parse` refuses `shr1` (a right shift reads a later bit position). Most of the 10 printed are a
-  commutation or identity around a subterm with a `shr1` in it (`xor(A, -1) = xor(-1, A)`, `add(A, 0) = A`), which an
-  abstraction of those subterms to atoms would prove; one (`shl1(and(x, shr1(sub(x, z), 0)), 0) = and(add(x, x), sub(x,
-  z))`) relates `shr1(s)` to `s` and would not.
+- **Over x, y and z, most `shr1` replacements have no prover; over atoms, 89% of them do.** Of the 5265 sampled merges
+  that contain `shr1` (none refuted), 666 are proved as they stand, all by `bitwise_law_k` (add-free). The other 4599
+  mix `shr1` with `add` or `sub`, which `add_tree_law` cannot take: `Machine::parse` refuses `shr1` (a right shift reads
+  a later bit position). Over atoms 4015 of them are proved, 582 are false and 2 have no proof (35 s for all 5265, about
+  7 ms each, under load). So 584 (11%) stay unprovable. All 20 printed need what `shr1` means: a constant
+  (`shr1(-1, 0)`, the top bit clear), a shift undone (`shl1(shr1(a, 0), 0) = and(a, -2)` in effect), or a comparison
+  with a halved value (`lt(1, s) = lt(0, shr1(s, 0))`).
 - **The held-out laws meet as before**: the same counts as the refined keys without `shr1` (15 of 15 residue laws,
-  189-200 per set), through 3193 replacements, 0 suspect, 2804 proved by `add_tree_law`, 383 by `bitwise_law_k`, and 6
-  with no proof (not printed; `shr1` representatives are the likely cause, unchecked). Those 6 meets are an upper bound.
-- **One build commits 257 MB** in a fresh process (1.7-1.9 s), several times the 316 B of values per class alone
-  suggest. How much of it is the value vectors freed at the end of the build, kept by the allocator, and how much is
-  interned terms, is not separated. A process that builds repeatedly grows by about 128 MB per build (1.4 GB after 16
-  in the refinement), which fits interned terms never being freed, also unchecked.
+  189-200 per set), through 3193 replacements, 0 suspect, 2804 proved by `add_tree_law`, 383 by `bitwise_law_k`. The 6
+  without a proof are all one shape, `lt(sub(0, -1), s) = lt(0, shr1(s, 0))` with `s` a sum (`add(x, y)`,
+  `sub(y, add(x, z))`, ...): `shr1` made a representative one node smaller than the `lt(1, s)` it replaces, and the pair
+  is false over atoms. The laws that met only through them are an upper bound.
+- **One build commits 257 MB** in a fresh process (1.6-1.9 s), of which the structures it keeps are about 50 MB,
+  computed from counts: 431494 interned nodes (56 B each before allocator overhead, about 30 MB), the interner's 1048576
+  cells (8 MB) and the class map's 458752 slots (about 11 MB). The rest fits the value vectors of the build (387 B per
+  bit-vector representative in two vectors inside a third, about 500 B with their headers, about 125 MB), dropped when the
+  build returns while the commit stays at its peak, so the allocator keeps them. Not measured directly.
+- **Repeated builds grow the commit by about 128 MB each** (1.4 GB after 16 in the refinement), while the interner
+  grows by 12-330 thousand nodes (a few MB) per round. So interned terms are not the growth; what is, is not known.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
