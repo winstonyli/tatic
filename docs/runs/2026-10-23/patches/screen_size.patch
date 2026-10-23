@@ -1,0 +1,64 @@
+diff --git a/tests/church_bv/driver.rs b/tests/church_bv/driver.rs
+index 8199830..dae19a3 100644
+--- a/tests/church_bv/driver.rs
++++ b/tests/church_bv/driver.rs
+@@ -157,6 +157,19 @@ fn worker() {
+                 false
+             }
+         };
++        if let Some(p) = std::env::var_os("PROBE_SCREEN_LOG") {
++            #[repr(C)]
++            #[derive(Default)]
++            struct Pmc { cb: u32, faults: u32, peak_ws: usize, ws: usize, qpp: usize, qp: usize, qpnp: usize, qnp: usize, pagefile: usize, peak_pagefile: usize }
++            unsafe extern "system" {
++                fn GetCurrentProcess() -> isize;
++                fn K32GetProcessMemoryInfo(h: isize, p: *mut Pmc, cb: u32) -> i32;
++            }
++            let mut m = Pmc { cb: std::mem::size_of::<Pmc>() as u32, ..Default::default() };
++            unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut m, m.cb) };
++            let line = format!("{} {name} commit {} MB peak {} MB {}\n", std::process::id(), m.pagefile >> 20, m.peak_pagefile >> 20, crate::rewrite::screen_stats());
++            std::fs::OpenOptions::new().create(true).append(true).open(p).and_then(|mut f| f.write_all(line.as_bytes())).ok();
++        }
+         println!("\nWORKER {}", if ok { "ok" } else { "fail" });
+         if !ok {
+             return;
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 6c2bf5c..ae44e46 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -574,6 +574,18 @@ const SCREEN_INPUTS: usize = 204;
+ /// fixed pseudo-random inputs.
+ static SCREENS: crate::task::SharedMemo<(usize, usize), ValueMemo<u128>> = crate::task::SharedMemo::new();
+ 
++/// Probe: the screen memos' vectors and bytes, per (width, variables) and in all.
++pub fn screen_stats() -> String {
++    let (mut parts, mut total) = (vec![], 0usize);
++    SCREENS.each(|(n, k), m| {
++        let bytes = m.blocks.iter().map(|b| b.capacity() * 16).sum::<usize>();
++        total += bytes;
++        parts.push(format!("w{n}k{k} {} vectors {} MB", m.ids.len(), bytes >> 20));
++    });
++    parts.sort();
++    format!("screen {} MB [{}]", total >> 20, parts.join(", "))
++}
++
+ /// `f` on the screen's value memo for width `n` and `k` variables.
+ fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R) -> R {
+     SCREENS.with((n, k), || ValueMemo::screen(n, k), f)
+diff --git a/tests/church_bv/task.rs b/tests/church_bv/task.rs
+index 66468db..31a486c 100644
+--- a/tests/church_bv/task.rs
++++ b/tests/church_bv/task.rs
+@@ -30,6 +30,12 @@ impl<K: Eq + std::hash::Hash, V> SharedMemo<K, V> {
+     {
+         self.lock().as_ref()?.get(key).cloned()
+     }
++    /// Probe: `f` on every entry.
++    pub fn each(&self, mut f: impl FnMut(&K, &V)) {
++        if let Some(m) = self.lock().as_ref() {
++            m.iter().for_each(|(k, v)| f(k, v));
++        }
++    }
+     pub fn insert(&self, key: K, v: V) {
+         self.lock().get_or_insert_with(Default::default).insert(key, v);
+     }

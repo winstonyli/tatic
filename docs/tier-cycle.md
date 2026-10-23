@@ -3480,6 +3480,12 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
   - Outputs: identical to 083a956 on salts 1 and 2 (416 files each, no difference at all). church_bv tests: 82 pass.
   - Timing, twelve alternating salt-1 sweeps against 083a956 (load 7-16%, RTP off): job CPU median 13.25 s against 13.6 s (-2.6%), new won 5 of 6 pairs; wall 16.9 s both. Wall not moving with CPU may be the lock (workers waiting on each other's screen calls rather than recomputing); not measured. The sweep runs 6 miner threads; contention at more is untested.
   - Profile at c7e815b, with this and the miner's stack bindings merged (samply, one salt-1 sweep, load 8%, RTP off): busy samples 10,511; `tatic::kernel` 27.4%, `rewrite_memo` 19.7%, mimalloc 12.6%, `rule_step_in` 6.6% inclusive, `match_pat` 4.7% self, `set_extra_rules` 1.8%.
+  - **Its size in a sweep (2026-10-23, run `2026-10-23-screen-size`, 230bc3b plus `screen_size.patch`, script
+    `screen_size.sh`; one cold:cmp3d sweep at salt 1, 2 workers, 15 tasks).** Each worker's peak commit, 493-501 MB,
+    comes in its first `rule_miner` task, when the screen memo is 56 MB (11%). At the sweep's end the memo is 62 and
+    105 MB of 214 and 305 MB committed, and still growing by 3-5 MB a task. Most of it is `is_law`'s widths 1-6 over
+    3 variables (about 3200-4500 vectors each) and width 4 over 3 variables (7000-12100 vectors, 21-37 MB). Every
+    vector is 204 `u128`s, 3264 B, where width 4 needs 4 bits a value.
 - **The rule table filters on operand classes (2026-10-15, branch `rule-index`): identical outputs, `rule_step_in` 6.6% → 5.7% of busy samples; timing a tie.** `rule_step_in` tried 16.7 rules a call, most failing on an operand's operator. Each entry of a root operator's rule list now carries one class mask per operand (its operator, `0`, `-1` or a variable; a pattern variable sets every bit), and `RuleTable::candidates` skips entries whose masks miss the term's operand classes before calling `match_pat`. Test: `rule_table_lists_every_matching_rule_in_order` (a mutation that drops a pattern variable's other classes fails it).
   - Outputs: identical to c7e815b on salts 1 and 2 (416 files each, no difference at all). church_bv tests: 83 pass.
   - Profile (one salt-1 sweep, load 19-29%, RTP off): busy samples 10,906 against 10,511; `rule_step_in` 5.7% inclusive against 6.6%, `match_pat` self 3.7% against 4.7%, `set_extra_rules` 1.8% both. About 1% of busy samples, below what a timing round resolves here, so it was not timed.
@@ -5244,7 +5250,8 @@ the final table, as in the two sections above, and its replacements are proved.
 75 s, CPU 17% at launch, and `2026-10-23-class-atoms-c`, 128 s, CPU 68% at launch; exes ddf1eba plus
 `docs/runs/2026-10-23/patches/class_mem_shr1.patch` and 73724df plus `class_atoms.patch`, reverted; scripts
 `class_mem_shr1.sh` and `class_atoms.sh` in `docs/runs/2026-10-23/scripts/`; the growth of repeated builds:
-`2026-10-23-class-growth-c`; parse-first representatives: `2026-10-23-class-rep`. Runs `-class-mem-shr1`, `-class-atoms` and
+`2026-10-23-class-growth-c`; parse-first representatives: `2026-10-23-class-rep`; the allocator:
+`2026-10-23-class-collect-b`; the screen memo in a sweep: `2026-10-23-screen-size`. Runs `-class-mem-shr1`, `-class-atoms` and
 `-class-atoms-b` stopped on probe bugs: a pair over `add` sent to `bitwise_law_k`, a pair false over atoms sent to it
 with a panicking check (the kernel refused it), and too many screen tries.)* The unmeasured risks of the class-table
 spec (`docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`). The probe above, with `shl1` and `shr1`
@@ -5272,11 +5279,16 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   `sub(y, add(x, z))`, ...): both sides are the same size, and the `shr1` one is enumerated first (its left operand,
   `0`, is smaller), so it became the representative; the pair is false over atoms. The laws that met only through
   them are an upper bound. (Corrected 2026-10-23: this said the `shr1` side was a node smaller.)
-- **One build commits 257 MB** in a fresh process (1.6-1.9 s), of which the structures it keeps are about 50 MB,
-  computed from counts: 431494 interned nodes (56 B each before allocator overhead, about 30 MB), the interner's 1048576
+- **One build commits 257 MB with large OS pages, peaks at about 215 MB without, and keeps about 95 MB** in a fresh
+  process (1.6-1.9 s). Computed from counts, the structures it keeps are about 50 MB: 431494 interned nodes (56 B each before allocator overhead, about 30 MB), the interner's 1048576
   cells (8 MB) and the class map's 458752 slots (about 11 MB). The rest fits the value vectors of the build (387 B per
   bit-vector representative in two vectors inside a third, about 500 B with their headers, about 125 MB), dropped when the
-  build returns while the commit stays at its peak, so the allocator keeps them. Not measured directly.
+  build returns while the commit stays at its peak. The probes run on mimalloc (`tests/church_bv/main.rs`) with large
+  OS pages allowed, which commit up front (65 MB at start) and are never returned. With them off, as a sweep's
+  children run them (`MIMALLOC_ALLOW_LARGE_OS_PAGES=0`), a build peaks at 211-221 MB from 4 MB at start, and
+  `mi_collect(true)` after it brings the commit to 95-98 MB (run `2026-10-23-class-collect-b`, 230bc3b plus
+  `class_collect.patch`, script `class_collect.sh`). So mimalloc returns the freed values; about 90 MB stays, the kept
+  structures and what mimalloc holds.
 - **Repeated builds do not grow the commit; the refuter's screen memo does** (run `2026-10-23-class-growth-c`, 9730ff8
   plus `class_growth.patch` and `class_growth_1m.patch`, script `class_growth.sh`; 5 builds a process from the
   class-atoms-c key). The refinement's commit rose about 128 MB a round (1.4 GB after 16), while the interner grew only
@@ -5284,7 +5296,8 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   4 inputs added a build it does the same, so a growing key is not the cause either. With the refutation loop it climbs
   to 769 MB, and the process-wide screen memo (`SCREENS`, never cleared) then holds 147027 vectors, 459 MB: 3264 B each,
   204 inputs of `u128` words for a width-8 term. Each round's sample screens 25-40 thousand new terms. The 448 MB above
-  321 MB is that memo. Value blocks of 1 MB, which bypass the heap, change nothing, so the heap does not fragment. A
+  321 MB is that memo. Value blocks of 1 MB change nothing either (the allocator is mimalloc, with large OS pages, so
+  nothing freed is returned in these probes; see the bullet above). A
   worker builds once and screens anyway, so the table adds no growth of its own. The screen memo stores `u128` at every
   width, 16 times what width 8 needs.
 - **Representatives the prover can parse remove the 6 unproved held-out replacements** (run `2026-10-23-class-rep`,

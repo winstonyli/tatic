@@ -85,11 +85,11 @@ It holds the key, the table, lookup, normalisation with plans, and the replaceme
   bottom-up, with `Cong` per node and `Trans` per replacement.
 
 Lookup computes a node's key from its children's representatives through `ValueMemo`, the evaluator the screen uses.
-The built table keeps only key hash to representative. While building, the values of each size's representatives
-(387 B each, 246250 bit-vector representatives) sit in one flat allocation per size, not a vector per class, so they
-go back to the system when the build returns: the large sizes' allocations are far above the heap's
-direct-allocation threshold (512 KB). The probe kept them per class, and a build committed 257 MB, of which about
-50 MB is what the table keeps. The probes' code
+The built table keeps only key hash to representative; the build's values (387 B per bit-vector representative,
+246250 of them) are dropped when it returns. Under mimalloc with large OS pages off, as a sweep's children run, a
+build peaks at about 215 MB and `mi_collect(true)` after it brings the commit to about 95 MB (from 4 MB): the allocator
+returns the values, so they need no special storage. Build step 1 measures the commit after a build in a worker, with
+and without that `mi_collect`, and keeps the call only if it pays. The probes' code
 (`docs/runs/2026-10-22/patches/key_refine.patch`) is the starting point; the probes stay patches.
 
 ### 2. The key file
@@ -185,9 +185,9 @@ build time and size once per process, and any unusable replacement.
 
 ## Build order
 
-1. `classes.rs`: key file, table (with `shr1`, parse-first representatives, values in one allocation per size), `rep`,
-   verdicts and `regenerate_key`; generate the key file; the size-5 tests; the `shr1` verdicts and the commit after
-   a build measured.
+1. `classes.rs`: key file, table (with `shr1` and parse-first representatives), `rep`, verdicts and `regenerate_key`;
+   generate the key file; the size-5 tests; the `shr1` verdicts and the commit after a build in a worker measured
+   (§1).
 2. Replace `ClassReps` with it; measure the generator stage.
 3. Phase 1 in `prove_eq`; the gate.
 4. Phase 2 in `rewrite`; the gate; then one ablation at a time, each gated, deleting what costs nothing.
@@ -200,11 +200,9 @@ Each step ends with `docs/tier-cycle.md` and `docs/learned-vs-fixed.md` updated.
 - **Counting-mode verdicts may be slow.** Each new replacement runs an encoding search; if loops touch thousands, the
   step costs more than the joins it saves. Phase 1's gate shows it (job CPU).
 - **Memory per worker.** Every worker holds its own table, and a sweep runs several workers per lane. One build with
-  `shr1` commits 257 MB, of which the kept structures are about 50 MB (computed from counts) and the rest fits the
-  build's value vectors, freed but kept by the allocator (`docs/tier-cycle.md`, "`shr1` in the class table, its proofs
-  over atoms, and a table's memory"). Build step 1 stores the values in one allocation per size (§1) and measures the
-  commit after a build again; about 50 MB is expected. The screen memo, which every worker already has, grows apart
-  from the table (same section).
+  `shr1` peaks at about 215 MB and keeps about 90 MB once mimalloc has returned the rest (§1; `docs/tier-cycle.md`,
+  "`shr1` in the class table, its proofs over atoms, and a table's memory"). A worker's peak today is about 500 MB
+  (`docs/tier-cycle.md`, "One screen memo and candidate index per process", its size in a sweep).
 - **The key is not exact.** A clean sample of 20000 bounds wrong merges to a few in 20000 (at 95%); a wrong merge costs
   a failed verdict and that class's coverage (decision 6), never soundness.
 - **Laws beyond the table's range** (more variables, larger roots) still need rules and the join; how much of a law's
