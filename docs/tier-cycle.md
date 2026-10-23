@@ -5461,7 +5461,7 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
 - **Seeded from the table instead of a family** (same probe with a `table` seed, patch
   `docs/runs/2026-10-23/patches/open_law_counts_table.patch` (adds `Classes::reps` and unary `shr1` growth), reverted;
   run `2026-10-23-open-laws-table`, 11 s). Seeds: 20149 of the 341866 representatives drawn by salt 1, grown over all
-  seven operators. Laws are fewer but more often open: 545 / 935 / 876 laws at levels 1 / 2 / 3 (families: 4600-15000),
+  seven operators. Laws are fewer but more often open: 564 / 939 / 876 laws at levels 1 / 2 / 3 (families: 4600-15000),
   of which 20-24% open (families 2-12%): about 129 open laws within one growth, 314 within two, 492 within three, at
   sizes 11, 13 and 15 (a seed is mostly size 9, each growth adds 2). Distinct representatives rarely meet at width 4, so
   a law needs a grown term to land in a seed's group; the count follows the growth budget (`GEN_TERMS`), not the seeds.
