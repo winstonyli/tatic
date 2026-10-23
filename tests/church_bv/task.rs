@@ -23,15 +23,16 @@ impl<K: Eq + std::hash::Hash, V> SharedMemo<K, V> {
     pub fn with<R>(&self, key: K, init: impl FnOnce() -> V, f: impl FnOnce(&mut V) -> R) -> R {
         f(self.lock().get_or_insert_with(Default::default).entry(key).or_insert_with(init))
     }
-    /// `key`'s value, if built: with `insert`, for a value built unlocked.
+    /// `key`'s value, if built: with `insert`, for a value built unlocked; `insert` says whether the key was new (two
+    /// threads may build the same value, and only one inserts it first).
     pub fn get(&self, key: &K) -> Option<V>
     where
         V: Clone,
     {
         self.lock().as_ref()?.get(key).cloned()
     }
-    pub fn insert(&self, key: K, v: V) {
-        self.lock().get_or_insert_with(Default::default).insert(key, v);
+    pub fn insert(&self, key: K, v: V) -> bool {
+        self.lock().get_or_insert_with(Default::default).insert(key, v).is_none()
     }
 }
 
@@ -49,7 +50,8 @@ fn shared_memo_builds_each_key_once() {
     assert_eq!(builds.get(), 1);
     assert_eq!(m.get(&1), Some(vec![1, 2]));
     assert_eq!(m.get(&3), None);
-    m.insert(3, vec![3]);
+    assert!(m.insert(3, vec![3]), "a new key");
+    assert!(!m.insert(3, vec![3]), "a key already built");
     assert_eq!(m.with(3, || build(3), |v| v.clone()), vec![3]);
     assert_eq!(builds.get(), 1);
 }

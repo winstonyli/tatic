@@ -106,7 +106,7 @@ is written only when the loop stops on a clean sample.
 
 A replacement `u -> r` is used only with a proof at the job's width `n` (4 in the loops, `miner.rs`'s `(n, nv, kv)`;
 the probes proved all 3203 at width 4, and all 3187 with `shr1` and decision 7). Its verdict is decided on first use and kept in a process-wide map keyed by
-`(u, r, n, k)`:
+`(n, carry cap, u, r)` (the context's `k` does not change a verdict; `tree_encoding` reads the carry cap):
 
 - `Bitwise` when neither side has an `add` or `sub` and their truth tables agree (`bitwise_law_k`, which takes shifts);
 - else `Tree` when `tree_encoding` finds a carry encoding (already process-wide, `TREE_ENCS`), the sides taken over
