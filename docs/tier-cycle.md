@@ -5040,6 +5040,19 @@ laws reach their count at 20000:
   a machine proof saved. The cost seen before (5000 at 2-3 times the sweep time, "The bounded join removes the floor")
   was the mines' failed searches under breadth-first, not measured with depth plus size.
 
+*A budget relative to law size: serving gains, mining can't afford it (2026-10-22; runs `2026-10-22-join-budget-rel`,
+`-rel-sweep-2000`; exe aa07033 plus `docs/runs/2026-10-22/patches/join_visit_rel.patch`, reverted).* The probe set the
+budget to `JOIN_VISIT` at cap 11 (`JOIN_VISIT_AT`), doubling per node of cap and halving below, capped at 2^17.
+- **Serving: base 2000 matches a fixed 20000.** Every held-out cell above is within 0-2 free laws of fixed 20000 (base
+  4000 within 1). Base 1000 under-serves small normal forms (sbo3 size 9: 169 vs 174 at fixed 1000), since halving
+  below cap 11 cuts the budget the smaller laws had.
+- **Mining: 3-12 times the job CPU, M no lower.** On the depth-plus-size sweep (`on_on`, salts 1-10) the relative budget
+  ran 8 of 30 sweeps before it was stopped: salt 2's `on_on` took 6406 s of job CPU against 526 s at fixed 1000
+  (`-jsf-sweep-2`), and salt 1's cross M was 71 against 69. The mines' joins are over candidate rules, whose larger
+  sides get the doubled budget, and most of them fail.
+- Reverted: the join keeps a fixed `JOIN_VISIT` 1000. A budget for serving apart from mining is parked (`PARKED.md`,
+  "The join's breadth").
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
