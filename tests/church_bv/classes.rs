@@ -140,10 +140,11 @@ fn class_hash(vals: &[u8], lt: bool) -> (u64, u64) {
     (h1.finish(), h2.finish())
 }
 
-/// The table: each class's key to its representative, and the lookup's value memos (one per key width, in key order).
+/// The table: each class's key to its representative, and the lookup's memos: values (one per key width, in key order)
+/// and `rep`'s answers, so a term's 432 values are gathered and hashed once per process (run 2026-10-23-phase1-prof).
 pub struct Classes {
     map: hashbrown::HashMap<(u64, u64), Term>,
-    memos: Mutex<Vec<ValueMemo<u8>>>,
+    memos: Mutex<(Vec<ValueMemo<u8>>, hashbrown::HashMap<Term, Option<Term>>)>,
 }
 
 /// What a build saw besides the table: the merges the key proposed (a new term whose key a class already has), a uniform
@@ -255,7 +256,7 @@ impl Classes {
         }
         let memos = key.sets.iter().map(|(w, ins)| ValueMemo::new(*w, ins.len(), (0..3).map(|v| ins.iter().map(|x| x[v] as u8).collect()).collect())).collect();
         st.millis = t0.elapsed().as_millis();
-        (Classes { map, memos: Mutex::new(memos) }, st)
+        (Classes { map, memos: Mutex::new((memos, Default::default())) }, st)
     }
 
     /// The process's table, built from `KEY_FILE` on first use; a key learned for another table fails the process.
@@ -285,12 +286,15 @@ impl Classes {
         if t.max_var() >= 3 {
             return None;
         }
-        let mut vals = vec![];
-        for m in self.memos.lock().unwrap_or_else(|e| e.into_inner()).iter_mut() {
-            vals.extend_from_slice(m.values(t));
-        }
-        let r = *self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..))))?;
-        (r != *t).then_some(r)
+        let (values, reps) = &mut *self.memos.lock().unwrap_or_else(|e| e.into_inner());
+        *reps.entry(*t).or_insert_with(|| {
+            let mut vals = vec![];
+            for m in values.iter_mut() {
+                vals.extend_from_slice(m.values(t));
+            }
+            let r = *self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..))))?;
+            (r != *t).then_some(r)
+        })
     }
 
     /// `t` with every node, bottom-up, replaced by its class's representative where the table knows it (no proof: the law
