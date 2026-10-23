@@ -1135,150 +1135,58 @@ pub fn grammar_laws_have_no_padding() {
     }
 }
 
-/// The width-4 value classes of the leaves, the two-leaf terms and a pool's subterms (the law generator's twin filter,
-/// docs/superpowers/specs/2026-10-17-law-generator-design.md §1 and step 5; `scripts/twin_wide.py`'s `REP` is the two-leaf
-/// part).
-pub struct ClassReps {
-    memo: ValueMemo<u8>,
-    /// a class's values to its representative
-    rep: hashbrown::HashMap<Vec<u8>, Term>,
-    /// two-leaf nodes already looked up
-    done: hashbrown::HashMap<Term, Term>,
-}
-
-impl ClassReps {
-    /// The classes of the leaves, the two-leaf terms and the subterms of `pool` (an `lt` aside: its result is one bit).
-    pub fn new(pool: &[Term]) -> ClassReps {
-        let mut memo = ValueMemo::exhaustive(4, 3);
-        let leaves = leaves3();
-        let mut ops = hashbrown::HashSet::new();
-        for o in [ADD, SUB, XOR, AND, OR] {
-            for a in &leaves {
-                for b in &leaves {
-                    ops.insert(mk(o, a, b));
-                }
-            }
-        }
-        ops.extend(leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)));
-        fn subterms(t: Term, out: &mut hashbrown::HashSet<Term>) {
-            if let Node::Op(o, a, b) = *t.node() {
-                if o != LT {
-                    out.insert(t);
-                }
-                subterms(a, out);
-                subterms(b, out);
-            }
-        }
-        for t in pool {
-            subterms(*t, &mut ops);
-        }
-        let mut ops: Vec<Term> = ops.into_iter().collect();
-        ops.sort_by_cached_key(|t| {
-            let s = t.show();
-            (s.len(), s)
-        });
-        let mut rep = hashbrown::HashMap::new();
-        // a leaf where the class has one (the first in x, y, z, 0, -1), else the least node by (length, text)
-        for t in leaves.iter().chain(&ops) {
-            rep.entry(memo.values(t).to_vec()).or_insert(*t);
-        }
-        ClassReps { memo, rep, done: Default::default() }
+/// A law's twin key (the law generator's twin filter, docs/superpowers/specs/2026-10-17-law-generator-design.md §1; on
+/// the class table since docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §6): the least `a = b` text,
+/// over the six renamings of x, y, z and both side orders, of the law renamed and then each side's children made
+/// canonical (renaming first, since a representative is not preserved by renaming). A side's root is kept: canonicalizing
+/// it too would make every law trivial whose sides are of one class, which every true law within the table's size is.
+/// `None` if the sides are then one term (the law is trivial).
+pub fn twin_key(a: &Term, b: &Term) -> Option<String> {
+    let c = crate::classes::Classes::get();
+    let side = |t: Term| match *t.node() {
+        Node::Op(o, x, y) => Term::op(o, c.canonical(&x), c.canonical(&y)),
+        _ => t,
+    };
+    if side(*a) == side(*b) {
+        return None;
     }
-
-    /// `t` with every node (an `lt` aside), bottom-up, replaced by its class's representative, or else by a normalized child
-    /// of equal value (`add(t, 0)` to `t`).
-    pub fn normalize(&mut self, t: Term) -> Term {
-        let Node::Op(o, a, b) = *t.node() else { return t };
-        if let Some(r) = self.done.get(&t) {
-            return *r;
-        }
-        let (a, b) = (self.normalize(a), self.normalize(b));
-        let n = Term::op(o, a, b);
-        let r = if o == LT {
-            n
-        } else {
-            let v = self.memo.values(&n).to_vec();
-            match self.rep.get(&v) {
-                Some(r) => *r,
-                None if self.memo.values(&a) == v.as_slice() => a,
-                None if self.memo.values(&b) == v.as_slice() => b,
-                None => n,
-            }
-        };
-        self.done.insert(t, r);
-        r
-    }
-
-    /// A law's side with its root kept and its children normalized. Normalizing the root too would make every law trivial
-    /// whose sides are of one class, as both sides of every pool law are once the pool's subterms are class members.
-    fn side(&mut self, t: Term) -> Term {
+    const PERMS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    fn renamed(t: Term, to: &[usize; 3]) -> Term {
         match *t.node() {
-            Node::Op(o, a, b) => Term::op(o, self.normalize(a), self.normalize(b)),
+            Node::V(i) => Term::v(to[i]),
+            Node::Op(o, a, b) => Term::op(o, renamed(a, to), renamed(b, to)),
             _ => t,
         }
     }
-
-    /// A law's twin key: the least `a = b` text, over the six renamings of x, y, z and both side orders, of the law renamed
-    /// then its sides normalized below their roots (renaming first, since a representative is not preserved by renaming);
-    /// `None` if the sides are then one term (the law is trivial).
-    pub fn key(&mut self, a: &Term, b: &Term) -> Option<String> {
-        if self.side(*a) == self.side(*b) {
-            return None;
-        }
-        const PERMS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
-        fn renamed(t: Term, to: &[usize; 3]) -> Term {
-            match *t.node() {
-                Node::V(i) => Term::v(to[i]),
-                Node::Op(o, a, b) => Term::op(o, renamed(a, to), renamed(b, to)),
-                _ => t,
+    let mut best: Option<String> = None;
+    for p in &PERMS {
+        for (l, r) in [(a, b), (b, a)] {
+            let s = format!("{} = {}", side(renamed(*l, p)).show(), side(renamed(*r, p)).show());
+            if best.as_ref().is_none_or(|k| s < *k) {
+                best = Some(s);
             }
         }
-        let mut best: Option<String> = None;
-        for p in &PERMS {
-            for (l, r) in [(a, b), (b, a)] {
-                let s = format!("{} = {}", self.side(renamed(*l, p)).show(), self.side(renamed(*r, p)).show());
-                if best.as_ref().is_none_or(|k| s < *k) {
-                    best = Some(s);
-                }
-            }
-        }
-        best
     }
+    best
 }
 
-/// Normalization maps padding to its leaf, puts value-equal two-leaf nodes in one class, leaves nodes over a non-leaf and
-/// `lt` alone, and the key is the same for two laws that differ by renaming variables.
+/// The twin key is the same for two laws that differ by renaming variables, is `None` for a law whose sides are equal
+/// below their roots, keeps each side's root (both sides of `sub(y, y) = and(x, 0)` are `0`), and leaves a law between
+/// two members of one class (associativity) nontrivial.
 #[test]
-pub fn normalize_maps_two_leaf_nodes_to_their_class() {
-    let mut c = ClassReps::new(&[]);
-    let mut n = |s: &str| c.normalize(parse_term(s)).show();
-    assert_eq!(n("sub(y, y)"), "0");
-    assert_eq!(n("add(x, 0)"), "x");
-    assert_eq!(n("xor(x, -1)"), n("sub(-1, x)"));
-    let r = n("or(z, x)");
-    assert_eq!(n("add(or(z, x), sub(sub(y, y), 0))"), r, "a node equal to its child is the child");
-    assert_eq!(n("add(add(x, y), z)"), "add(add(x, y), z)");
-    assert_eq!(n("add(x, add(y, z))"), "add(x, add(y, z))", "no pool, no class over three leaves");
-    assert_eq!(n("lt(x, x)"), "lt(x, x)");
+pub fn twin_keys_rename_normalize_below_roots_and_keep_them() {
     let p = parse_term;
-    let swap = c.key(&p("sub(or(y, x), y)"), &p("and(y, z)"));
-    assert_eq!(c.key(&p("sub(or(x, y), x)"), &p("and(x, z)")), swap, "renaming x and y");
+    let swap = twin_key(&p("sub(or(y, x), y)"), &p("and(y, z)"));
+    assert_eq!(twin_key(&p("sub(or(x, y), x)"), &p("and(x, z)")), swap, "renaming x and y");
     assert!(swap.is_some());
-    assert_eq!(c.key(&p("add(sub(y, y), x)"), &p("add(0, x)")), None, "sides equal below their roots");
-    assert!(c.key(&p("sub(y, y)"), &p("and(x, 0)")).is_some(), "a side's root stays: both sides are 0, but as different nodes");
-    // a pool's subterms join the classes: a grown node equal to one is it
-    let mut c = ClassReps::new(&[p("lt(add(add(x, y), z), x)")]);
-    assert_eq!(c.normalize(p("add(x, add(y, z))")).show(), "add(add(x, y), z)");
-    assert_eq!(c.normalize(p("lt(add(z, add(x, y)), x)")).show(), "lt(add(add(x, y), z), x)");
-    assert_eq!(c.normalize(p("lt(x, y)")).show(), "lt(x, y)", "an lt is never a class's member");
-    // a law between two pool terms of one class is no trivial law
-    let mut c = ClassReps::new(&[p("add(add(x, y), z)"), p("add(x, add(y, z))")]);
-    assert!(c.key(&p("add(add(x, y), z)"), &p("add(x, add(y, z))")).is_some(), "the pool's own law");
+    assert_eq!(twin_key(&p("add(sub(y, y), x)"), &p("add(0, x)")), None, "sides equal below their roots");
+    assert!(twin_key(&p("sub(y, y)"), &p("and(x, 0)")).is_some(), "a side's root stays");
+    assert!(twin_key(&p("add(add(x, y), z)"), &p("add(x, add(y, z))")).is_some(), "a law within one class");
+    assert_eq!(twin_key(&p("and(or(x, sub(y, 0)), z)"), &p("z")), twin_key(&p("and(or(x, y), z)"), &p("z")), "padding below the root");
 }
 
 /// On the probe's fixture (salt 1 of `-gen-cost`'s pad arm, cmp3d: mine 0's extras of phases 1-3 against the served laws of
-/// phases 1-3), the extras whose key is a served law's key are as many as `scripts/twin_wide.py` counts (`class`, trivial
-/// laws not counted).
+/// phases 1-3), the extras whose twin key (on the class table) is a served law's key, and the trivial ones.
 #[test]
 pub fn normalize_finds_the_probes_twins() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/runs/2026-10-17/fixtures/pad_1");
@@ -1289,18 +1197,17 @@ pub fn normalize_finds_the_probes_twins() {
     let served: Vec<(Term, Term)> = loops.iter().flat_map(|l| [0, 100, 200].map(|s| l.join(format!("laws_serve_{s}.txt")))).flat_map(laws).collect();
     let extras: Vec<(Term, Term)> = loops.iter().flat_map(|l| laws(l.join("laws_extra_0.txt"))).collect();
     assert_eq!((served.len(), extras.len()), (900, 1050));
-    let mut c = ClassReps::new(&[]);
-    let keys: HashSet<String> = served.iter().filter_map(|(a, b)| c.key(a, b)).collect();
-    let twins = extras.iter().filter(|(a, b)| c.key(a, b).is_some_and(|k| keys.contains(&k))).count();
-    let trivial = extras.iter().filter(|(a, b)| c.key(a, b).is_none()).count();
-    // twin_wide.py's two-leaf key counts 502 twins and 260 trivial laws; a node equal to its child (step 5) makes 59 of
-    // those twins and 90 more padding laws trivial
-    assert_eq!((twins, trivial), (443, 409));
+    let keys: HashSet<String> = served.iter().filter_map(|(a, b)| twin_key(a, b)).collect();
+    let twins = extras.iter().filter(|(a, b)| twin_key(a, b).is_some_and(|k| keys.contains(&k))).count();
+    let trivial = extras.iter().filter(|(a, b)| twin_key(a, b).is_none()).count();
+    // on the class table (plan 2026-10-23, Task 5): 251 twins and 710 trivial laws; `ClassReps` (two-leaf nodes and a
+    // child of equal value) found 443 and 409
+    assert_eq!((twins, trivial), (251, 710));
 }
 
 /// Step 5's count (spec docs/superpowers/specs/2026-10-17-law-generator-design.md): over a run of `gen_warm.sh`
 /// (`HIDDEN_TWINS_RUN`), the extras each loop scope drew (the two-leaf filter passed them) that twin the scope's served
-/// laws once every node is normalized over the family's pool. Prints `HT <arm> <stage> <family> <extras> <twins> <trivial extras> <served> <trivial served>`.
+/// laws once every node below a side's root is made canonical by the class table. Prints `HT <arm> <stage> <family> <extras> <twins> <trivial extras> <served> <trivial served>`.
 #[test]
 #[ignore]
 pub fn hidden_twins_in_a_run() {
@@ -1311,7 +1218,6 @@ pub fn hidden_twins_in_a_run() {
         v.sort();
         v
     };
-    let mut reps: std::collections::HashMap<String, ClassReps> = Default::default();
     let mut arms: Vec<_> = std::fs::read_dir(&run).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     arms.sort();
     for arm in arms {
@@ -1331,15 +1237,11 @@ pub fn hidden_twins_in_a_run() {
             }
         }
         for ((stage, fam, _), loops) in scopes {
-            let c = reps.entry(fam.clone()).or_insert_with(|| {
-                let env = |v: &str| (v == "RULEMINER_DEEP3").then(|| "1".to_string());
-                ClassReps::new(&pool3(&fam, &env).unwrap())
-            });
             let served: Vec<_> = loops.iter().flat_map(|l| files(l, "laws_serve_")).flat_map(|p| laws(&p)).collect();
             let extras: HashSet<(Term, Term)> = loops.iter().flat_map(|l| files(l, "laws_extra_")).flat_map(|p| laws(&p)).collect();
-            let keys: HashSet<String> = served.iter().filter_map(|(a, b)| c.key(a, b)).collect();
-            let twins = extras.iter().filter(|(a, b)| c.key(a, b).is_some_and(|k| keys.contains(&k))).count();
-            let trivial = (extras.iter().filter(|(a, b)| c.key(a, b).is_none()).count(), served.iter().filter(|(a, b)| c.key(a, b).is_none()).count());
+            let keys: HashSet<String> = served.iter().filter_map(|(a, b)| twin_key(a, b)).collect();
+            let twins = extras.iter().filter(|(a, b)| twin_key(a, b).is_some_and(|k| keys.contains(&k))).count();
+            let trivial = (extras.iter().filter(|(a, b)| twin_key(a, b).is_none()).count(), served.iter().filter(|(a, b)| twin_key(a, b).is_none()).count());
             println!("HT {} {stage} {fam} {} {twins} {} {} {}", arm.file_name().unwrap().to_str().unwrap(), extras.len(), trivial.0, served.len(), trivial.1);
         }
     }

@@ -111,8 +111,8 @@ fn a_key_with_another_header_names_the_regeneration() {
     assert!(Key::parse(&format!("{head}\n9 0 0 0\n")).is_err(), "width 9");
 }
 
-/// Built from the key file to size 5 (spec "Testing"): padding maps to its leaf, `ClassReps`'s value-equal two-leaf
-/// nodes share a representative, a unary operator's ignored operand becomes `0`, and an `lt` whose first member the
+/// Built from the key file to size 5 (spec "Testing"): padding maps to its leaf, value-equal two-leaf nodes (the
+/// old twin filter's classes) share a representative, a unary operator's ignored operand becomes `0`, and an `lt` whose first member the
 /// machine refuses is represented by a later one it takes (decision 7: both size 5, the `shr1` one enumerated first).
 #[test]
 fn the_size_5_table_maps_terms_to_their_representatives() {

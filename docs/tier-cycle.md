@@ -5339,6 +5339,15 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   257 MB and returns nothing. So `Classes::get` now calls `mi_collect(true)` after the build (plan R9: kept when it
   frees at least 50 MB in a sweep child's setting, large pages off). The probe's 95-98 MB after collecting ("`shr1` in
   the class table ...") was on an older table and key; the numbers here are the module's.
+- **The twin filter on the table** (plan Task 5; run `2026-10-23-ct-twins-gate-u`, arms acf1f24 and its Task 5 change,
+  salts 1-5 of `cold:cmp3d`, untimed: `-Timed` refused for 90 minutes while another session's job kept CPU 2 busy, so
+  wall and CPU are contended). `search::twin_key` makes each side's children canonical by the class table, replacing
+  `ClassReps` (two-leaf classes, the family pool's subterms and a child of equal value). On the probe's fixture it finds
+  251 twins and 710 trivial laws of 1050 extras, against `ClassReps`'s 443 and 409: fewer twins but more dropped (961
+  against 852), since nodes the table merges below a root make laws trivial that were twins. M is 377 in both arms, equal
+  in every one of the 15 loops, though no loop's rules are the same (the extras differ); L per scope (`GEN_LAWS`, before
+  the filter) is unchanged, 4730-4868. Wall 83 s against 71 s, job CPU 656 s against 509 s, the largest `peakproc`
+  528 MB against 603 MB (each B worker builds the table once).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

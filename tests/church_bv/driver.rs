@@ -211,7 +211,7 @@ fn filtered_drops_twins_skeletons_and_trivial_laws() {
     let other = p("add(add(x, y), z)", "add(x, add(y, z))");
     // `Term` has no `Debug`, so compare texts
     let text = |(a, b): (Term, Term)| format!("{} = {}", a.show(), b.show());
-    let got: Vec<String> = filtered(&[twin, skel, trivial, other], &served, &mut ClassReps::new(&[])).into_iter().map(text).collect();
+    let got: Vec<String> = filtered(&[twin, skel, trivial, other], &served).into_iter().map(text).collect();
     assert_eq!(got, [other].map(text));
 }
 
@@ -591,26 +591,17 @@ fn skeleton(l: &(Term, Term)) -> String {
     if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
 }
 
-/// What a sweep's scopes share while their extras are drawn: each family's class representatives and generator laws, and
-/// which draw of the generator (`GEN_DRAW`, default 0: draw d samples and orders with the stream's salt + 1000 d, so the
-/// stream stays and only the generator's laws change).
+/// What a sweep's scopes share while their extras are drawn: each family's generator laws, and which draw of the
+/// generator (`GEN_DRAW`, default 0: draw d samples and orders with the stream's salt + 1000 d, so the stream stays and
+/// only the generator's laws change).
 struct Draw {
-    reps: hashbrown::HashMap<(String, usize), ClassReps>,
     laws: hashbrown::HashMap<(String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>>,
     draw: usize,
 }
 
 impl Draw {
     fn new(draw: usize) -> Draw {
-        Draw { reps: Default::default(), laws: Default::default(), draw }
-    }
-
-    /// The classes over `cfg`'s family's pool (with its `deep3`), made once per sweep.
-    fn reps(&mut self, cfg: &LoopCfg) -> &mut ClassReps {
-        self.reps.entry((cfg.family.clone(), cfg.deep3)).or_insert_with_key(|k| {
-            let env = |v: &str| (v == "RULEMINER_DEEP3").then(|| k.1.to_string());
-            ClassReps::new(&pool3(&k.0, &env).unwrap_or_default())
-        })
+        Draw { laws: Default::default(), draw }
     }
 
     /// `grammar_laws` for `cfg`'s family, `deep3` and salt (the draw's), generated once per sweep.
@@ -631,12 +622,12 @@ impl Draw {
 /// The filter chain (spec §1): the laws of `source` that, against `served`, are neither a twin nor trivial after normalizing
 /// (a trivial law follows from equalities of its subterms, which may be served laws) and have no served law's skeleton, in
 /// `source`'s order.
-fn filtered(source: &[(Term, Term)], served: &[(Term, Term)], reps: &mut ClassReps) -> Vec<(Term, Term)> {
-    let keys: hashbrown::HashSet<String> = served.iter().filter_map(|(a, b)| reps.key(a, b)).collect();
+fn filtered(source: &[(Term, Term)], served: &[(Term, Term)]) -> Vec<(Term, Term)> {
+    let keys: hashbrown::HashSet<String> = served.iter().filter_map(|(a, b)| twin_key(a, b)).collect();
     let skels: hashbrown::HashSet<String> = served.iter().map(skeleton).collect();
     let mut out = vec![];
     for l in source {
-        if reps.key(&l.0, &l.1).is_some_and(|k| !keys.contains(&k)) && !skels.contains(&skeleton(l)) {
+        if twin_key(&l.0, &l.1).is_some_and(|k| !keys.contains(&k)) && !skels.contains(&skeleton(l)) {
             out.push(*l);
         }
     }
@@ -655,7 +646,7 @@ const GEN_F: f64 = 0.16;
 fn scope_extras(setup: &Setup, scope: &mut [LoopCfg], also: &[LoopCfg], draw: &mut Draw) -> Result<(), String> {
     let served: Vec<(Term, Term)> = scope.iter().chain(also).flat_map(|c| served_laws(setup, c)).collect();
     let c = scope[0].clone();
-    let laws = filtered(&draw.grammar(&c), &served, draw.reps(&c));
+    let laws = filtered(&draw.grammar(&c), &served);
     let n = (setup.or("GEN_F", GEN_F) * laws.len() as f64) as usize;
     let mines = mines_of(&c);
     let at = extra_slices(laws.len(), scope.len(), mines, n)

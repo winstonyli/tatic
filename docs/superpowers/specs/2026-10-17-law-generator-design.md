@@ -283,6 +283,9 @@ are heavy for `cargo test`, so its L, time and coverage are measured in step 4's
      cold 1460 and mixed no longer loses ("The generator's n after the wider filter").
      The first attempt (b5e03cd, runs `2026-10-22-hidden-twins` and `-rest`) normalized the root too, so most served
      laws turned trivial and the filter barely filtered; its numbers are void.
+   - Since 2026-10-23 the filter's classes are the class table's (`search::twin_key`, spec
+     `2026-10-22-class-table-normal-form-design.md` §6); `ClassReps` and its per-family pools are gone
+     (`docs/tier-cycle.md`, "The class table as a module ...").
 
 ## Not in scope
 
