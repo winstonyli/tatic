@@ -5320,6 +5320,26 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   over atoms, 3 unproved) against 642 of 5272, since their own terms contain `shr1`. Those need a prover that knows
   what `shr1` means (`PARKED.md`).
 
+*The class table as a module: the learned key, held-out proofs and a build's memory (2026-10-23; runs
+`2026-10-23-class-key`, `-class-held`, `-class-commit`; scripts `class_key.sh`, `class_held.sh`, `class_commit.sh` in
+`docs/runs/2026-10-23/scripts/`, the last on d5ea1aa plus `patches/class_commit.patch`; held-out laws in
+`docs/runs/2026-10-23/fixtures/held`).* Plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, Tasks 1-4:
+`tests/church_bv/classes.rs` builds the table once per process from a key baked into the test binary
+(`tests/church_bv/class_key.txt`), with parse-first representatives and a verdict (bitwise, or a carry encoding over
+`shr1` atoms) for each replacement it makes.
+- **The key: 432 inputs in 26 rounds** (283 at width 8, 133 at width 4, 16 at width 3), against the probe's 387 in 16
+  rounds. The refuter now also tries every width-3 input, which the probe never did ("A key refined by
+  counterexamples"); its 16 width-3 inputs split merges wrong only at width 3, and the key's 45 extra inputs split the
+  table into 341866 classes (95616 `lt`), 126 more than the probe's 341740. A build takes 1.7-2.1 s.
+- **Every held-out replacement has a proof.** The laws meet as the probe's did (15 of 15 residue laws; 189-200 of 200
+  in each family's size-11 and size-13 sets, all at sizes 7 and 9): 2174 of 2204 laws, through 3187 replacements, none
+  unusable, their verdicts in 570 ms; the 2174 laws compile to kernel-checked proofs in 88 s (about 40 ms each, CPU 29%
+  at launch).
+- **A build commits 191 MB with large OS pages off, and `mi_collect(true)` returns it to 72 MB**; with them on it commits
+  257 MB and returns nothing. So `Classes::get` now calls `mi_collect(true)` after the build (plan R9: kept when it
+  frees at least 50 MB in a sweep child's setting, large pages off). The probe's 95-98 MB after collecting ("`shr1` in
+  the class table ...") was on an older table and key; the numbers here are the module's.
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost

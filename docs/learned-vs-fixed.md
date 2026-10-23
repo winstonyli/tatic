@@ -49,5 +49,7 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    as a second sort, it makes 189-200 of 200 of each family's held-out laws meet with no rules, and every one of its 3203
    replacements is proved and kernel-checked (tier-cycle.md, "A learned table of representatives: the probe", "The table
    with `lt` as a second sort, its proofs, and smaller keys"). A key of 316 inputs refined by counterexamples does the
-   same at 1.5 s per build ("A key refined by counterexamples"). How it enters the rewriter: the draft spec
-   `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`.
+   same at 1.5 s per build ("A key refined by counterexamples"). How it enters the rewriter: the spec
+   `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`. It is being built as a module
+   (`tests/church_bv/classes.rs`, plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`; tier-cycle.md,
+   "The class table as a module ...").

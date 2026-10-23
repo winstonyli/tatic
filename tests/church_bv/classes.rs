@@ -264,6 +264,12 @@ impl Classes {
             let key = Key::parse(KEY_FILE).unwrap_or_else(|e| panic!("{e}"));
             let (c, st) = Classes::build(&key, SIZE, 0, 0);
             println!("CLASSES {} classes ({} lt) to size {SIZE} under {} key inputs, built in {} ms", c.len(), st.lts, key.len(), st.millis);
+            // the build's values go back to the system (spec §1, plan R9: commit 191 MB to 72 MB with large OS pages off,
+            // as sweep children run; none returned with them on, 257 MB; run 2026-10-23-class-commit)
+            unsafe extern "C" {
+                fn mi_collect(force: bool);
+            }
+            unsafe { mi_collect(true) };
             c
         })
     }
@@ -526,4 +532,63 @@ fn a_representative_outside_the_context_is_not_used() {
     let t = parse_term("add(y, 0)");
     assert_eq!(c.step(job, 4, 2, &t).map(|(r, _)| r.show()).as_deref(), Some("y"));
     assert!(c.step(job, 4, 1, &t).is_none());
+}
+
+/// Every replacement the table makes on the held-out laws (spec "Testing", "Proofs"; `docs/runs/2026-10-23/fixtures/held`,
+/// from runs `2026-10-22-size-band` and `-join-residue`) has a verdict at width 4, and every law that meets compiles to a
+/// kernel-checked proof. Prints the laws met per file, the replacements by prover, and the time in verdicts and in proofs.
+#[test]
+#[ignore]
+fn held_out_replacements_prove() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/runs/2026-10-23/fixtures/held");
+    let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+    files.sort();
+    let c = Classes::get();
+    // the replacements canonicalizing makes (the table's own choice, before any verdict)
+    fn walk(c: &Classes, t: &Term, out: &mut hashbrown::HashSet<(Term, Term)>) -> Term {
+        let t1 = match *t.node() {
+            Node::Op(o, a, b) => Term::op(o, walk(c, &a, out), walk(c, &b, out)),
+            _ => *t,
+        };
+        match c.rep(&t1) {
+            Some(r) => {
+                out.insert((t1, r));
+                r
+            }
+            None => t1,
+        }
+    }
+    let mut laws: Vec<(String, Term, Term)> = vec![];
+    let mut pairs = hashbrown::HashSet::new();
+    for f in &files {
+        let (mut n, mut met) = (0, 0);
+        for line in std::fs::read_to_string(f).unwrap().lines().filter(|l| l.contains(" = ")) {
+            let (l, r) = line.split_once(" = ").unwrap();
+            let (a, b) = (parse_term(l.trim()), parse_term(r.trim()));
+            n += 1;
+            if walk(c, &a, &mut pairs) == walk(c, &b, &mut pairs) {
+                met += 1;
+                laws.push((line.to_string(), a, b));
+            }
+        }
+        println!("LAWS {}: {met} of {n} meet", f.file_name().unwrap().to_string_lossy());
+    }
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let t0 = std::time::Instant::now();
+        let mut pairs: Vec<_> = pairs.into_iter().collect();
+        pairs.sort_by_cached_key(|(u, r)| (u.show(), r.show()));
+        let unusable: Vec<String> = pairs.iter().filter(|(u, _)| c.step(job, 4, 3, u).is_none()).map(|(u, r)| format!("{} = {}", u.show(), r.show())).collect();
+        let verdict_ms = t0.elapsed().as_millis();
+        // a replacement with no proof leaves `normalize` short of `walk`'s normal form, so a met law would not compile
+        assert!(unusable.is_empty(), "{} of {} replacements with no proof: {unusable:?}", unusable.len(), pairs.len());
+        let t1 = std::time::Instant::now();
+        for (line, a, b) in &laws {
+            let ((_, pa), (_, pb)) = (c.normalize(job, 4, 3, a), c.normalize(job, 4, 3, b));
+            let plan = Plan::trans(job, pa, Plan::sym(job, pb));
+            let (p, s) = law_proof(job, 4, 3, a, b, &plan);
+            job.lemmas.ck(line, &p, &s);
+        }
+        println!("REPLACEMENTS {} made, all with a proof; verdicts {verdict_ms} ms, {} laws compiled and checked in {} ms", pairs.len(), laws.len(), t1.elapsed().as_millis());
+    });
 }

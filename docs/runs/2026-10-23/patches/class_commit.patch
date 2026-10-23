@@ -1,0 +1,34 @@
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index 35f3015..413e27d 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -586,3 +586,29 @@ fn held_out_replacements_prove() {
+         println!("REPLACEMENTS {} made, all with a proof; verdicts {verdict_ms} ms, {} laws compiled and checked in {} ms", pairs.len(), laws.len(), t1.elapsed().as_millis());
+     });
+ }
++
++/// Probe (plan Task 4, R9): the process's commit before the table's build, after it, and after `mi_collect(true)`.
++#[test]
++#[ignore]
++fn build_commit_probe() {
++    #[repr(C)]
++    #[derive(Default)]
++    struct Pmc { cb: u32, faults: u32, peak_ws: usize, ws: usize, qpp_peak: usize, qpp: usize, qnp_peak: usize, qnp: usize, pagefile: usize, peak_pagefile: usize }
++    unsafe extern "system" {
++        fn GetCurrentProcess() -> isize;
++        fn K32GetProcessMemoryInfo(h: isize, p: *mut Pmc, cb: u32) -> i32;
++    }
++    unsafe extern "C" {
++        fn mi_collect(force: bool);
++    }
++    let mb = || {
++        let mut p = Pmc { cb: std::mem::size_of::<Pmc>() as u32, ..Default::default() };
++        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut p, p.cb) };
++        (p.pagefile >> 20, p.peak_pagefile >> 20, p.ws >> 20)
++    };
++    println!("COMMIT before {:?}", mb());
++    let c = Classes::get();
++    println!("COMMIT after build {:?} ({} classes)", mb(), c.len());
++    unsafe { mi_collect(true) };
++    println!("COMMIT after mi_collect {:?}", mb());
++}
