@@ -4,7 +4,7 @@ status: active
 
 # The learned class table as the rewriter's normal form
 
-Date: 2026-10-22; revised 2026-10-23 for phase 2 (decisions 8-11, §5, §9, §10). Evidence: `docs/tier-cycle.md`, "Canonical forms: hand-coded or learned" (the options; this is c),
+Date: 2026-10-22; revised 2026-10-23 for phase 2 (decisions 8-11, §5, §9, §10) and again while planning it (§9's phases, `collapse`, §10's list). Evidence: `docs/tier-cycle.md`, "Canonical forms: hand-coded or learned" (the options; this is c),
 "A learned table of representatives: the probe", "The table with `lt` as a second sort, its proofs, and smaller keys",
 "How much random testing is worth" and "A key refined by counterexamples" (runs `2026-10-22-class-table`,
 `-class-table2`, `-claim-calibration`, `-key-refine`). Roadmap goal 2 ("A kernel that improves itself"); candidate 4 in
@@ -80,7 +80,7 @@ is a learned replacement for parts the rewriter now fixes by hand, the most load
 9. **Phase 2's ablations are judged on laws past the table's domain** (2026-10-23). On the gate the table meets every
    law (M 377 to 0 in the spike), so every fixed part would look free there and be deleted. Each part is ablated alone,
    one switch per run, against a held-out set of decision 8's open laws, in this order: `promoted`; `assoc`, `tree`,
-   `chain`; `comm`; `eq_truth`, `eq_pos`; phase 1's step. Rejected: the current gate (it cannot tell the parts apart);
+   `chain`; `comm`; `collapse`; `eq_truth`, `eq_pos`; phase 1's step. Rejected: the current gate (it cannot tell the parts apart);
    every part off at once, restoring what breaks (a break would not say which part pays).
 10. **That held-out set is frozen fixture files** (2026-10-23), written once by an ignored command like
     `classes::regenerate_key`. It runs decision 8's 56 streams on a salt the mining streams never use, keeps the laws
@@ -199,8 +199,9 @@ Then each fixed part the table may subsume is ablated alone by its existing swit
 1. the promoted rules (`promoted`);
 2. the built-in `add` steps (`assoc`, `tree`, `chain`);
 3. the operand order (`comm`, by `show()` text);
-4. the truth-table and per-position steps of `prove_eq` (`eq_truth`, `eq_pos`);
-5. phase 1's step in `prove_eq` (§4, `eq_classes`), which phase 2 may subsume.
+4. the built-in bitwise collapse steps (`collapse`);
+5. the truth-table and per-position steps of `prove_eq` (`eq_truth`, `eq_pos`);
+6. phase 1's step in `prove_eq` (§4, `eq_classes`), which phase 2 may subsume.
 
 "Costs nothing" means: on salts 1-10 of the new gate, M on decision 10's held-out set, the loop's own M and job CPU
 each stay within the A/A spread measured when the new gate's baseline is set. A part that still pays is
@@ -237,8 +238,10 @@ Decision 8's streams become the loops' law source, and the gate runs on them.
   width-4 values as `pool_conjectures` does, kept when the table leaves them open (normal forms differ) and they agree
   on the probe's 4096 width-8 inputs; refuted ones are dropped and counted.
 - **The rotation:** every set of two and three of the seven bit-vector operators (56), at `budget` 20000 and two
-  growths, the probe's settings. A loop's phase draws its laws across the 56 streams in turn, by a salt per phase; the
-  stride per family goes. The sweep names it `cold:streams`. Per-stream budget is decision 8's open question, measured
+  growths, the probe's settings. The 56 streams are generated once per sweep salt and interleaved round-robin into one
+  sequence (`search::stream_sequence`, memoized per process); phase p takes its residue class at stride 4 (phase 0 the
+  ref mine's, 1-3 the loops'), so phases are disjoint and the streams cost one generation per sweep. Rejected: a salt
+  per phase (3-4 generations per sweep, and phases can share laws). The per-family stride goes. The sweep names it `cold:streams`. Per-stream budget is decision 8's open question, measured
   once the gate stands.
 - **The held-out files (decision 10):** an ignored command, `classes::regenerate_held`, run like `regenerate_key`,
   writes `tests/church_bv/held_11.txt` and `held_13.txt`: 1000 laws per size band, drawn evenly across the streams at a
@@ -256,6 +259,19 @@ caller of these moves onto `stream_laws` or is deleted with them; the plan lists
 `grammar_sample` and `grammar_laws` are replaced by `stream_laws` (it generalizes them), so the mines' extras
 (`driver::Draw::grammar`, generated once per sweep) draw from it; the yield code's proposers `pool` and `stream`; the
 warm starts from family libraries (`MINES_WARM`'s `pooled_<family>`); the families' tests.
+
+Decided while planning (2026-10-23):
+
+- **Stages:** only `cold:streams` stays. `mines`, `own`, `cross`, `pooled` and `mixed` go with their libraries, and with
+  them the pooled stage's machinery (`library_sections`, `drop_units`, `joinability_units`, the miner's
+  `RULEMINER_PREFS`/`RULEMINER_UNITS` phase). `WARM_RULES` on `loop_stream` stays as the generic warm start.
+- **Two-variable sources stay:** `mul`, `shl`, `shr` and `lt` in `family_laws` (the miner's default, `soundness_sweep`,
+  `scaling_sweep`). `family_laws` loses its pool3, `u3w` and shape-half branches; the loops take the streams through
+  law files the driver writes from `stream_sequence`, not through `family_laws`.
+- **Reference libraries** include the `RULESET` files (`scripts/data/{add3,mix3}_{mm,nl}_rules.txt`) and their switch,
+  and `cmp3d_own_rules.txt` with `law_time`; `tools/runs`' arms move to `cold:streams` and `held_11.txt`.
+- **Yield code:** `proposal_yield` is deleted whole (its other proposers train on family laws); `proof_cost_split` and
+  `proposal_credit_report` then require `CHECK_LAWFILE`.
 
 ## Testing
 
@@ -279,7 +295,8 @@ warm starts from family libraries (`MINES_WARM`'s `pooled_<family>`); the famili
 - **Streams:** `stream_laws` is deterministic per salt; its seeds lie in its operator set; every law it returns is
   open under the table and agrees at width 8.
 - **Held-out files:** re-read equal; a header with another key hash or size fails with the regeneration message.
-  `held_out_replacements_prove` moves onto them when the family fixtures go (§10).
+  `held_out_replacements_prove` moves onto them when the family fixtures go (§10); their laws are open by
+  construction, so it compiles each replacement's own law (`u = r`) to a checked proof instead of the laws that meet.
 - **Gate, per step:** before the new gate stands, `docs/runs/2026-10-18/scripts/salts_ab.sh` (cold:cmp3d, A/B per
   salt; salts 1-5): M, rule agreement, job CPU and wall. From then on the new gate (§9) on salts 1-5, and salts 1-10
   for phase 2's ablations.
