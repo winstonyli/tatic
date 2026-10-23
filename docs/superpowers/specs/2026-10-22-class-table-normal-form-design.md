@@ -15,7 +15,7 @@ Date: 2026-10-22. Evidence: `docs/tier-cycle.md`, "Canonical forms: hand-coded o
 A table of class representatives, learned by enumeration, makes held-out laws meet with no rules. Terms over x, y, z, 0
 and -1 are enumerated by size from representatives only. Each term is keyed by its values on a set of inputs and its
 sort, and the first (smallest) term of a class is its representative (decision 7 refines this). Each node of a law is then replaced, bottom-up, by
-its class's representative. The table built to size 9 under a key of 316 learned inputs:
+its class's representative. The table built to size 9 under a key of 316 learned inputs (without `shr1`):
 
 - meets 189-200 of 200 of each family's held-out laws at sizes 9-13 (add3, sbo3, mix3, cmp3d) and all 15 laws the ref
   library's join left at 20000 visits; the ref library at a visit budget of 1000 meets 153-198;
@@ -23,15 +23,20 @@ its class's representative. The table built to size 9 under a key of 316 learned
   383 by `bitwise_law_k`, about 20 ms each);
 - builds in about 1.5 s, against 10.8 s for a key of every width-3 and width-4 input (4608 inputs).
 
+With `shr1` in the table (decision 3) and parse-first representatives (decision 7), the key is 387 inputs (262 at
+width 8, 125 at width 4), the table 341740 classes, a build 1.6-1.9 s, and the same held-out laws meet through 3187
+replacements, all proved (2804 by `add_tree_law`, 383 by `bitwise_law_k`; runs `2026-10-23-class-mem-shr1-b`,
+`-class-rep`).
+
 The key is learned too. Starting from the 8 tuples of 0s and 1s, 16 rounds of refuting a sample of the merges it
-proposes and adding a refuting input converge to those 316 inputs (52 s). The table is a learned replacement for parts
-the rewriter now fixes by hand, the most load-bearing of which is the operand order (ablating `comm`: M 106 to 880,
-`docs/tier-cycle.md`'s ablation table, summarised in `docs/learned-vs-fixed.md`).
+proposes and adding a refuting input converge to those 316 inputs (52 s), or to 387 with `shr1` (16 rounds, 27 s). The table
+is a learned replacement for parts the rewriter now fixes by hand, the most load-bearing of which is the operand order
+(ablating `comm`: M 106 to 880, `docs/tier-cycle.md`'s ablation table, summarised in `docs/learned-vs-fixed.md`).
 
 ## Decisions (2026-10-22)
 
-1. **What persists: the learned key, in the repo.** A key file of about 316 inputs (a few KB) sits beside the code like
-   `PROMOTED`: learned once, then frozen. Each process builds the table from it once, when first used (about 1.5 s; a
+1. **What persists: the learned key, in the repo.** A key file of about 387 inputs (a few KB) sits beside the code like
+   `PROMOTED`: learned once, then frozen. Each process builds the table from it once, when first used (about 1.7 s; a
    sweep's workers are long-lived, so once per worker). A command regenerates the file (§2). Caching the built table is
    parked (`PARKED.md`, "Cache the built class table"). Rejected: refining in every process (31-52 s each); classes made
    lazily, without enumeration (a class's representative would depend on the order terms are seen).
@@ -80,8 +85,11 @@ It holds the key, the table, lookup, normalisation with plans, and the replaceme
   bottom-up, with `Cong` per node and `Trans` per replacement.
 
 Lookup computes a node's key from its children's representatives through `ValueMemo`, the evaluator the screen uses.
-The built table keeps only key hash to representative; its peak memory while building is measured in build step 1 (the
-probe stored 316 B of values per class, about 75 MB at 236109 classes). The probes' code
+The built table keeps only key hash to representative. While building, the values of each size's representatives
+(387 B each, 246250 bit-vector representatives) sit in one flat allocation per size, not a vector per class, so they
+go back to the system when the build returns: the large sizes' allocations are far above the heap's
+direct-allocation threshold (512 KB). The probe kept them per class, and a build committed 257 MB, of which about
+50 MB is what the table keeps. The probes' code
 (`docs/runs/2026-10-22/patches/key_refine.patch`) is the starting point; the probes stay patches.
 
 ### 2. The key file
@@ -97,7 +105,7 @@ is written only when the loop stops on a clean sample.
 ### 3. Verdicts: only a proved replacement is used
 
 A replacement `u -> r` is used only with a proof at the job's width `n` (4 in the loops, `miner.rs`'s `(n, nv, kv)`;
-the probe proved all 3203 at width 4). Its verdict is decided on first use and kept in a process-wide map keyed by
+the probes proved all 3203 at width 4, and all 3187 with `shr1` and decision 7). Its verdict is decided on first use and kept in a process-wide map keyed by
 `(u, r, n, k)`:
 
 - `Bitwise` when neither side has an `add` or `sub` and their truth tables agree (`bitwise_law_k`, which takes shifts);
@@ -177,8 +185,9 @@ build time and size once per process, and any unusable replacement.
 
 ## Build order
 
-1. `classes.rs`: key file, table (with `shr1`), `rep`, verdicts and `regenerate_key`; generate the key file; the
-   size-5 tests; the `shr1` verdicts and peak memory measured.
+1. `classes.rs`: key file, table (with `shr1`, parse-first representatives, values in one allocation per size), `rep`,
+   verdicts and `regenerate_key`; generate the key file; the size-5 tests; the `shr1` verdicts and the commit after
+   a build measured.
 2. Replace `ClassReps` with it; measure the generator stage.
 3. Phase 1 in `prove_eq`; the gate.
 4. Phase 2 in `rewrite`; the gate; then one ablation at a time, each gated, deleting what costs nothing.
@@ -193,8 +202,9 @@ Each step ends with `docs/tier-cycle.md` and `docs/learned-vs-fixed.md` updated.
 - **Memory per worker.** Every worker holds its own table, and a sweep runs several workers per lane. One build with
   `shr1` commits 257 MB, of which the kept structures are about 50 MB (computed from counts) and the rest fits the
   build's value vectors, freed but kept by the allocator (`docs/tier-cycle.md`, "`shr1` in the class table, its proofs
-  over atoms, and a table's memory"). Build step 1 stores the values so they return to the system (one allocation per
-  size, for example) and measures the commit again.
+  over atoms, and a table's memory"). Build step 1 stores the values in one allocation per size (§1) and measures the
+  commit after a build again; about 50 MB is expected. The screen memo, which every worker already has, grows apart
+  from the table (same section).
 - **The key is not exact.** A clean sample of 20000 bounds wrong merges to a few in 20000 (at 95%); a wrong merge costs
   a failed verdict and that class's coverage (decision 6), never soundness.
 - **Laws beyond the table's range** (more variables, larger roots) still need rules and the join; how much of a law's
