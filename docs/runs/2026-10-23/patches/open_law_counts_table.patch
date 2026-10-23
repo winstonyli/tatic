@@ -1,8 +1,8 @@
 diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
-index 274fa26..59e8cde 100644
+index 274fa26..c78bb42 100644
 --- a/tests/church_bv/classes.rs
 +++ b/tests/church_bv/classes.rs
-@@ -350,6 +350,19 @@ impl Classes {
+@@ -350,6 +350,23 @@ impl Classes {
  
      /// The representative of `t`'s class when the table knows it and it is not `t`; `None` otherwise, and for a term over a
      /// variable other than x, y, z. Pure: no proof.
@@ -16,17 +16,21 @@ index 274fa26..59e8cde 100644
 +        if t.max_var() >= 3 {
 +            return None;
 +        }
-+        self.rep(t).or_else(|| self.map.values().any(|r| r == t).then_some(*t))
++        let mut vals = vec![];
++        for m in self.memos.lock().unwrap_or_else(|e| e.into_inner()).0.iter_mut() {
++            vals.extend_from_slice(m.values(t));
++        }
++        self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..)))).copied()
 +    }
 +
      pub fn rep(&self, t: &Term) -> Option<Term> {
          if t.max_var() >= 3 {
              return None;
 diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
-index c79eabd..89538a9 100644
+index c79eabd..e0a9b16 100644
 --- a/tests/church_bv/search.rs
 +++ b/tests/church_bv/search.rs
-@@ -1121,6 +1121,176 @@ pub fn grammar_laws_lie_outside_the_pool() {
+@@ -1121,6 +1121,178 @@ pub fn grammar_laws_lie_outside_the_pool() {
      }
  }
  
@@ -122,8 +126,10 @@ index c79eabd..89538a9 100644
 +                }
 +            }
 +        }
-+        println!("TERMS {family} level {l}: {}", next.len());
-+        base = next;
++        // `OL_FRONTIER=1`: the next level grows only this level's terms whose class the table does not store
++        let unknown: Vec<Term> = next.iter().filter(|t| c.class_of(t).is_none()).cloned().collect();
++        println!("TERMS {family} level {l}: {} ({} unknown to the table)", next.len(), unknown.len());
++        base = if var("OL_FRONTIER").as_deref() == Some("1") { unknown } else { next };
 +    }
 +    let mut terms: Vec<Term> = level.keys().cloned().collect();
 +    terms.sort_by_key(|t| (level[t], t.show()));

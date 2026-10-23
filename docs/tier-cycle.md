@@ -5506,6 +5506,16 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
     growth from the table's representatives mostly lands in functions the table has, where an open law is a refused
     verdict or a false law. A stream for the miner wants the `unknown` signal (the class is not stored), not only
     "open", and a check over the key's widths, not a width-8 sample.
+- **Growing from beyond the table does not help the table seed** (same probe, `OL_FRONTIER=1`: each level grows only
+  the previous level's terms whose class the table does not store; run `2026-10-23-open-laws-frontier`, budget 80000,
+  2000 laws per bucket). Most grown terms are already beyond the table (table seed: 60055 of 79606 at level 1, 76265
+  of 80369 at level 3 with the frontier; cmp3d: 12856 of 73417 at level 1), so reaching new functions is not the cap.
+  Pairing is: the table seed's 80000 terms per level make 2967-4305 laws, cmp3d's 31137-47874, so its open laws are
+  ten times as many (cmp3d, within three growths, estimated from 2000 per bucket: about 11600 without the frontier,
+  15300 with; the table seed about 1100 without and 760 with, unknown+unknown 151 / 177 of 581 / 529 classified). The 300-law
+  samples above at budget 20000 had put cmp3d at 1767, so the families' streams do scale with the budget; only the
+  table seed's does not. A family pool is a few operators with many syntactic variants of each function (reassociation
+  inside `lt`), so its grown terms keep meeting each other; random representatives over seven operators grow apart.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
