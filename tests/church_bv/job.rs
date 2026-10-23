@@ -179,6 +179,9 @@ pub struct Job {
     pub conflicts: Option<hashbrown::HashMap<Pref, u64>>,
     /// The lemmas bound as parameters so far, and the proofs that mention them.
     pub lemmas: Lemmas,
+    /// The distinct class-table replacements `classes::Classes::step` used, each with a proof (spec decision 2: counted
+    /// apart from M, as a learning cost).
+    pub table_steps: hashbrown::HashSet<(Term, Term)>,
 }
 
 /// A job's lemmas: each is checked once and bound as a parameter of its statement (`rewrite::shared_lemma`), so a law
@@ -217,7 +220,7 @@ impl Job {
     /// A job with the built-in rules of `setup` alone, no preferences, both switches off.
     pub fn new(setup: Arc<Setup>) -> Job {
         let rules = Rules::new(&setup, vec![]);
-        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), conflicts: None, lemmas: Lemmas::default() }
+        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), conflicts: None, lemmas: Lemmas::default(), table_steps: Default::default() }
     }
 
     pub fn setup(&self) -> &Arc<Setup> {

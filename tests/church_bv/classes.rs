@@ -7,6 +7,7 @@
 use super::*;
 use super::rewrite::Node;
 use std::sync::{Mutex, OnceLock};
+use crate::task::SharedMemo;
 
 /// The operators in enumeration order; `shl1` and `shr1` are unary, enumerated with the second operand `0`.
 pub const OPS: [usize; 8] = [ADD, AND, OR, XOR, SUB, SHL1, SHR1, LT];
@@ -297,6 +298,95 @@ impl Classes {
     }
 }
 
+/// How a replacement `u -> r` is proved (spec §3, R2, R3): its prover, the law's sides over `V(0..)` and its arguments.
+#[derive(Clone)]
+struct Verdict {
+    kind: LawKind,
+    lhs: Term,
+    rhs: Term,
+    args: Vec<Term>,
+}
+
+/// Replacements' verdicts by (width, carry cap, u, r). Pure: a verdict depends only on its key (`tree_encoding` reads the
+/// carry cap before its own memo).
+static VERDICTS: SharedMemo<(usize, usize, Term, Term), Option<Verdict>> = SharedMemo::new();
+
+/// The verdict on `u -> r` at width `n`: `Bitwise` when neither side has `add`, `sub` or `lt` and they agree at widths
+/// 1..=5; else `Tree` when `tree_encoding` finds a carry encoding with each `shr1` node a fresh variable (decision 3);
+/// else none (decision 6).
+fn verdict(job: &Job, n: usize, u: &Term, r: &Term) -> Option<Verdict> {
+    let kv = 1 + u.max_var().max(r.max_var());
+    let vars = (0..kv).map(Term::v);
+    if u.add_free() && r.add_free() {
+        // a position reads only a few neighbours, so these widths hold every case (`prove_eq`'s per-position step)
+        let holds = (1..=5usize).all(|w| {
+            (0..1u128 << (w * kv)).all(|i| {
+                let x: Vec<u128> = (0..kv).map(|v| (i >> (w * v)) & low_bits(w)).collect();
+                u.interp(w, &x) == r.interp(w, &x)
+            })
+        });
+        return holds.then(|| Verdict { kind: LawKind::Bitwise, lhs: *u, rhs: *r, args: vars.collect() });
+    }
+    fn atomize(t: Term, kv: usize, atoms: &mut Vec<Term>) -> Term {
+        match *t.node() {
+            Node::Op(SHR1, ..) => {
+                let i = atoms.iter().position(|a| *a == t).unwrap_or_else(|| {
+                    atoms.push(t);
+                    atoms.len() - 1
+                });
+                Term::v(kv + i)
+            }
+            Node::Op(o, a, b) => Term::op(o, atomize(a, kv, atoms), atomize(b, kv, atoms)),
+            _ => t,
+        }
+    }
+    let mut atoms = vec![];
+    let (lhs, rhs) = (atomize(*u, kv, &mut atoms), atomize(*r, kv, &mut atoms));
+    let args: Vec<Term> = vars.chain(atoms).collect();
+    tree_encoding(job, n, args.len(), &lhs, &rhs)?;
+    Some(Verdict { kind: LawKind::Tree, lhs, rhs, args })
+}
+
+impl Classes {
+    /// `rep(t)` when that replacement has a proof at width `n` and its representative is over the context's `k` variables,
+    /// with its plan (`Plan::Law`, or the shared `Plan::Counting` while counting); counted in `job.table_steps`.
+    pub fn step(&self, job: &mut Job, n: usize, k: usize, t: &Term) -> Option<(Term, PlanRc)> {
+        let r = self.rep(t)?;
+        if r.max_var() >= k {
+            return None;
+        }
+        let key = (n, carry_cap(job), *t, r);
+        let v = match VERDICTS.get(&key) {
+            Some(v) => v,
+            None => {
+                let v = verdict(job, n, t, &r);
+                if v.is_none() {
+                    println!("CLASS_UNUSABLE {} = {}", t.show(), r.show());
+                }
+                VERDICTS.insert(key, v.clone());
+                v
+            }
+        }?;
+        job.table_steps.insert((*t, r));
+        Some((r, Plan::law(job, v.kind, v.lhs, v.rhs, v.args)))
+    }
+
+    /// `t` with `step` taken at every node, bottom-up, and its plan: `Cong` per changed node, `Trans` per replacement.
+    pub fn normalize(&self, job: &mut Job, n: usize, k: usize, t: &Term) -> (Term, PlanRc) {
+        let (t1, p1) = match *t.node() {
+            Node::Op(o, a, b) => {
+                let ((a1, pa), (b1, pb)) = (self.normalize(job, n, k, &a), self.normalize(job, n, k, &b));
+                if (a1, b1) == (a, b) { (*t, Plan::refl(job, t)) } else { (Term::op(o, a1, b1), Plan::cong(job, o, pa, pb)) }
+            }
+            _ => (*t, Plan::refl(job, t)),
+        };
+        match self.step(job, n, k, &t1) {
+            Some((r, p)) => (r, Plan::trans(job, p1, p)),
+            None => (t1, p1),
+        }
+    }
+}
+
 /// The key refinement's refuter (R8 of the plan): 4096 pseudo-random width-8 inputs, every width-4 input, every width-3
 /// input, then the screen's width-8 inputs.
 struct Refuter {
@@ -384,4 +474,56 @@ fn regenerate_key() {
         }
     }
     panic!("the key did not converge in 30 rounds; class_key.txt is unchanged");
+}
+
+/// A step's replacement has a plan that compiles to a kernel-checked proof at width 4: an `add` law (`Tree`), a bitwise
+/// law (`Bitwise`), one over a `shr1` atom, and `shr1` with a nonzero ignored operand.
+#[test]
+fn steps_compile_to_checked_proofs() {
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let c = Classes::get();
+        for (s, want) in [("sub(add(x, y), y)", "x"), ("and(x, or(x, y))", "x"), ("add(shr1(x, 0), 0)", "shr1(x, 0)"), ("shr1(x, y)", "shr1(x, 0)")] {
+            let t = parse_term(s);
+            let (r, plan) = c.step(job, 4, 3, &t).unwrap_or_else(|| panic!("{s}: no step"));
+            assert_eq!(r.show(), want);
+            let (p, st) = law_proof(job, 4, 3, &t, &r, &plan);
+            job.lemmas.ck(s, &p, &st);
+        }
+        assert_eq!(job.table_steps.len(), 4);
+    });
+}
+
+/// Counting takes the same steps (the verdict is decided the same way, R3) and builds no plan; the law it closes then
+/// compiles to a checked proof (spec "Testing": counting and compiling agree).
+#[test]
+fn counting_and_compiling_agree() {
+    let (a, b) = (parse_term("add(sub(add(x, y), y), and(z, or(z, x)))"), parse_term("add(and(x, or(x, y)), z)"));
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let c = Classes::get();
+        let rules = job.rules().counting(true);
+        let (na, nb, plan) = job.with_rules(rules, |job| {
+            let ((na, pa), (nb, _)) = (c.normalize(job, 4, 3, &a), c.normalize(job, 4, 3, &b));
+            (na, nb, pa)
+        });
+        assert!(matches!(*plan, Plan::Counting));
+        assert_eq!(na.show(), nb.show(), "the law meets while counting");
+        let ((ma, pa), (mb, pb)) = (c.normalize(job, 4, 3, &a), c.normalize(job, 4, 3, &b));
+        assert_eq!((ma.show(), mb.show()), (na.show(), nb.show()));
+        let plan = Plan::trans(job, pa, Plan::sym(job, pb));
+        let (p, s) = law_proof(job, 4, 3, &a, &b, &plan);
+        job.lemmas.ck("counted law", &p, &s);
+    });
+}
+
+/// A representative over a variable the context lacks is not used (R2): `add(y, 0)` steps to `y` with two variables, not
+/// with one.
+#[test]
+fn a_representative_outside_the_context_is_not_used() {
+    let job = &mut Job::new(Setup::process());
+    let c = Classes::get();
+    let t = parse_term("add(y, 0)");
+    assert_eq!(c.step(job, 4, 2, &t).map(|(r, _)| r.show()).as_deref(), Some("y"));
+    assert!(c.step(job, 4, 1, &t).is_none());
 }
