@@ -5532,8 +5532,16 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   one of shr1, and, or, shl1 (263-273; add,shr1 4624 open laws), and add,and,shr1 (274), against 314 open laws for the
   whole table and 640 for the cmp3d pool at the same budget. Sets with many open laws but few functions are refused
   verdicts (and,shr1,lt: 3126 open, 217 of 260 refused, 36 functions); sets of bitwise operators alone or of shl1,shr1
-  give none. Across all sets 11555 of 15297 classified are unknown+unknown. Not measured: how much the sets' functions
-  overlap, so whether a mixed stream over several pairs beats one pair at the same total budget is open.
+  give none. Across all sets 11555 of 15297 classified are unknown+unknown. The function counts here are of the sampled
+  laws only (300 per bucket), so they cap near the sample: counted over every law (next bullet, budget 20000 each), add,shr1 has 1011
+  functions, add,and 1550 and add,or 1564.
+- **Rotating over every operator pair beats the best pair** (run `2026-10-23-open-laws-mix`, `scripts/mix_streams.sh`,
+  every law checked rather than sampled, two growths). The 21 pairs of the seven operators as separate table-seeded
+  streams at budget 20000 each: 8847 distinct functions over 28927 open laws, against 8966 summed over the streams, so
+  they overlap by about 1%. add,shr1 alone at the same total budget (420000): 2348 functions over 61196 open laws, about
+  26 laws per function against 3.3. So each pair finds functions of its own, and one pair's larger budget mostly
+  restates the same functions. Pairs vary: add with and/or about 1550 each; and,or and shl1,shr1 none; and,xor and
+  or,xor 7 and 17.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

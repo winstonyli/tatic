@@ -27,10 +27,10 @@ index 274fa26..c78bb42 100644
          if t.max_var() >= 3 {
              return None;
 diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
-index c79eabd..7244b18 100644
+index c79eabd..b77c3b1 100644
 --- a/tests/church_bv/search.rs
 +++ b/tests/church_bv/search.rs
-@@ -1121,6 +1121,190 @@ pub fn grammar_laws_lie_outside_the_pool() {
+@@ -1121,6 +1121,205 @@ pub fn grammar_laws_lie_outside_the_pool() {
      }
  }
  
@@ -41,6 +41,17 @@ index c79eabd..7244b18 100644
 +#[test]
 +#[ignore]
 +pub fn open_law_counts() {
++    // `OL_OPS` sets separated by `;` run as separate streams; MIX counts the functions of their open laws together
++    let sets: Vec<Option<String>> = std::env::var("OL_OPS").map_or(vec![None], |s| s.split(';').map(|x| Some(x.to_string())).collect());
++    let mut all = hashbrown::HashMap::new();
++    let mut sum = 0;
++    for s in &sets {
++        sum += open_law_stream(s.clone(), &mut all);
++    }
++    println!("MIX {} streams: {} distinct functions (sum over streams {sum}) over {} open laws", sets.len(), all.len(), all.values().sum::<usize>());
++}
++
++fn open_law_stream(ops_var: Option<String>, all: &mut hashbrown::HashMap<(Vec<u8>, bool), usize>) -> usize {
 +    let var = |k: &str| std::env::var(k).ok();
 +    let family = var("OL_FAMILY").unwrap();
 +    let salt: usize = var("OL_SALT").map_or(1, |s| s.parse().unwrap());
@@ -54,7 +65,7 @@ index c79eabd..7244b18 100644
 +    let pool: Vec<Term> = if family == "table" {
 +        let mut r = c.reps();
 +        // `OL_OPS`: only representatives whose operators all lie in this comma-separated set
-+        if let Some(s) = var("OL_OPS").filter(|s| s != "all") {
++        if let Some(s) = ops_var.filter(|s| s != "all") {
 +            let names = ["add", "and", "or", "xor", "sub", "lt", "shl1", "shr1"];
 +            let allowed: Vec<usize> = s.split(',').map(|n| names.iter().position(|x| *x == n).unwrap()).collect();
 +            fn within(t: Term, a: &[usize]) -> bool {
@@ -213,9 +224,13 @@ index c79eabd..7244b18 100644
 +    let mut os: Vec<(String, usize)> = opsets.into_iter().collect();
 +    os.sort_by(|a, b| b.1.cmp(&a.1));
 +    println!("OPSETS {family}: {:?}", &os[..os.len().min(20)]);
++    for (k, n) in &funcs {
++        *all.entry(k.clone()).or_insert(0) += n;
++    }
 +    for e in &examples {
 +        println!("EXAMPLE {e}");
 +    }
++    funcs.len()
 +}
 +
  /// The generator takes no padding law: no side of its laws is a sample term whose grown leaf was padding, and the sample
