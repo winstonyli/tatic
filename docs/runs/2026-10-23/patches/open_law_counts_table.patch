@@ -27,10 +27,10 @@ index 274fa26..c78bb42 100644
          if t.max_var() >= 3 {
              return None;
 diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
-index c79eabd..e0a9b16 100644
+index c79eabd..7244b18 100644
 --- a/tests/church_bv/search.rs
 +++ b/tests/church_bv/search.rs
-@@ -1121,6 +1121,178 @@ pub fn grammar_laws_lie_outside_the_pool() {
+@@ -1121,6 +1121,190 @@ pub fn grammar_laws_lie_outside_the_pool() {
      }
  }
  
@@ -53,6 +53,18 @@ index c79eabd..e0a9b16 100644
 +    // `table`: about `OL_SEEDS` of the class table's representatives, drawn by the salt, in place of a family's pool
 +    let pool: Vec<Term> = if family == "table" {
 +        let mut r = c.reps();
++        // `OL_OPS`: only representatives whose operators all lie in this comma-separated set
++        if let Some(s) = var("OL_OPS").filter(|s| s != "all") {
++            let names = ["add", "and", "or", "xor", "sub", "lt", "shl1", "shr1"];
++            let allowed: Vec<usize> = s.split(',').map(|n| names.iter().position(|x| *x == n).unwrap()).collect();
++            fn within(t: Term, a: &[usize]) -> bool {
++                match *t.node() {
++                    Node::Op(o, x, y) => a.contains(&o) && within(x, a) && within(y, a),
++                    _ => true,
++                }
++            }
++            r.retain(|t| within(*t, &allowed));
++        }
 +        r.sort_by_cached_key(|t| t.show());
 +        let n = r.len() as u64;
 +        r.into_iter().enumerate().filter(|(i, _)| tatic::rng::mix64(*i as u64 ^ tatic::rng::mix64(salt as u64 + 99)) % n < seeds as u64).map(|(_, t)| t).collect()
@@ -186,7 +198,7 @@ index c79eabd..e0a9b16 100644
 +                let mut os = std::collections::BTreeSet::new();
 +                ops_of(na, &mut os);
 +                ops_of(nb, &mut os);
-+                let name = |o: &usize| ["add", "and", "or", "xor", "sub", "shl1", "shr1"].get(*o).copied().unwrap_or("?").to_string();
++                let name = |o: &usize| ["add", "and", "or", "xor", "sub", "lt", "shl1", "shr1"].get(*o).copied().unwrap_or("?").to_string();
 +                *opsets.entry(format!("{}{}", if lt { "lt:" } else { "" }, os.iter().map(name).collect::<Vec<_>>().join(","))).or_insert(0usize) += 1;
 +                if examples.len() < 12 && examples.len() < 3 * (*l) {
 +                    examples.push(format!("L{l} s{k} [{}+{}] {} = {}  =>  {} | {}", w[0], w[1], a.show(), b.show(), na.show(), nb.show()));

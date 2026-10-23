@@ -5516,6 +5516,14 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   samples above at budget 20000 had put cmp3d at 1767, so the families' streams do scale with the budget; only the
   table seed's does not. A family pool is a few operators with many syntactic variants of each function (reassociation
   inside `lt`), so its grown terms keep meeting each other; random representatives over seven operators grow apart.
+- **An operator set over the table matches the cmp3d pool** (same probe, `OL_OPS`: the seeds are every representative
+  whose operators lie in a set; run `2026-10-23-open-laws-opsets`, budget 80000, 2000 laws per bucket). cmp3d's set
+  {add, sub, shl1, lt}: 6448 seeds, about 13950 open laws within three growths (the cmp3d pool about 11600), 1345 of
+  1347 classified unknown+unknown over 1194 functions; 32 open laws refuted at width 8 (excluded), none rep+rep. add3's
+  set {add, and, or, xor, sub}: 133420 seeds but about 655 open laws (all unknown+unknown, 154 functions), below the
+  add3 pool's 856 at budget 20000. So the narrow arithmetic set pairs as well as the hand pool without it, while a set of
+  five operators is broad enough that grown terms grow apart, as with all seven: what pairs is a small operator set,
+  not a hand-written pool.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
