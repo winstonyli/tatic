@@ -5367,6 +5367,15 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   twin filter). The rest is phase 1's normalizing and proofs, and different rules and laws mined; this run does not
   separate them. The CPU is past the plan's 25% stop, so phase 2 waits for a decision (`PARKED.md`, "Phase 1's CPU
   cost").
+- **Where the added CPU goes** (run `2026-10-23-phase1-prof`, samply over salt 1's whole sweep, both arms, 83f698b plus
+  `docs/runs/2026-10-23/patches/phase1_prof.patch`, script `phase1_prof.sh`, CPU 5% at launch; frames in
+  `docs/runs/2026-10-23/rows/2026-10-23-phase1-prof.txt`; busy samples, not weighted by CPU). Both arms reproduce the
+  gate's salt 1 (M 49 and 76). Busy samples 105058 off, 119370 on (+14312, +13.6%; the gate's salt 1 +15%).
+  `prove_eq` adds 7759 net: the table's lookups cost about 7000 (`class_hash` 2984, code with no `church_bv` frame
+  below `prove_eq` 3581, reallocation and the memo's lock 835), and the machine work inside `prove_eq` falls by 3281
+  (`join_or_machine` 4832 to 1551). The workers' builds (`Classes::get`) are 4177, about 29%; in the kernel-check task
+  the build is all the samples it has. The rest, about 2400 net, is the different work the different rules bring (the
+  rewriter +3790). So hashing values for lookups and building the table per worker are most of the cost.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

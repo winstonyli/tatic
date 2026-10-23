@@ -1,0 +1,118 @@
+# run 2026-10-23-phase1-prof: samply, salt 1 cold:cmp3d sweep, all processes, 83f698b + patches/phase1_prof.patch (debug info);
+# arm on (class table) vs off (ABLATE=classes); busy samples (idle leaves dropped), not CPU-weighted; script phase1_prof.sh, frames prof_named.py
+busy samples: on 119370, off 105058
+== inclusive samples: on off diff frame (top 60 per arm; a frame absent from an arm's top 60 reads 0)
+ 102658   89614  +13044  tatic::kernel::scoped
+  97764   88038   +9726  church_bv::miner::impl$4::pick::closure$9::closure$0
+  97525   87828   +9697  church_bv::miner::impl$4::pick::closure$9::closure$0::closure$0
+  96928   87303   +9625  church_bv::miner::impl$4::pick::closure$8
+  96928   87303   +9625  church_bv::miner::impl$4::pick::closure$6
+  92631   79633  +12998  church_bv::job::Job::spent
+  90959   81630   +9329  church_bv::miner::impl$3::score_laws::closure$1::closure$0
+  90959   81630   +9329  church_bv::miner::impl$3::score_laws::closure$1
+  89408   76482  +12926  church_bv::rewrite::rewrite_plan
+  86304   76272  +10032  church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$0
+  51209   50427    +782  church_bv::rewrite::join_walk
+  31155   27210   +3945  church_bv::rewrite::join_search::closure$3::closure$1
+  16592   13447   +3145  church_bv::rewrite::Term::op
+  14921   11031   +3890  church_bv::rewrite::rewrite
+  14801   10926   +3875  church_bv::rewrite::rewrite_memo
+  14205   11556   +2649  church_bv::rewrite::impl$2::op::closure$0
+  13011    9350   +3661  church_bv::rewrite::rewrite_uncached
+  13011    5252   +7759  church_bv::rewrite::prove_eq
+  12533    9034   +3499  church_bv::rewrite::subst_pat
+  10385    9034   +1351  tatic::kernel::scoped::
+   7400    6618    +782  tatic::kernel::grow
+   6804    3361   +3443  church_bv::driver::worker::closure$2
+   6445    5778    +667  church_bv::rewrite::prove_rule
+   6445    5778    +667  church_bv::miner::impl$4::play::closure$0::closure$0::closure$0
+   6445    5778    +667  church_bv::miner::impl$2::prove::closure$0::closure$0
+   6445    5778    +667  church_bv::miner::impl$2::prove::closure$0
+   6445    5778    +667  church_bv::miner::Prover::prove
+   6445    5778    +667  church_bv::miner::Prover::holds
+   6445    5778    +667  church_bv::machine::add_tree_law
+   6326    5673    +653  church_bv::machine::tree_proof
+   6326    5673    +653  church_bv::machine::add_tree_law::closure$1
+   6326    5147   +1179  church_bv::rewrite::impl$2::op::closure$0::closure$1
+   5371    5357     +14  church_bv::rewrite::subst_sig
+   5252    4412    +840  tatic::kernel::Checker::infer_node
+   5252    4307    +945  tatic::kernel::Checker::check
+   5132    4202    +930  tatic::kernel::impl$17::check::closure$0::closure$0
+   5132    4202    +930  church_bv::rewrite::impl$43::eq
+   5132    4097   +1035  tatic::kernel::with_infer_cache::
+   5013    3992   +1021  tatic::kernel::check_in::closure$0::closure$0::closure$0::closure$0
+   5013    3992   +1021  tatic::kernel::check_in::closure$0::closure$0::closure$0
+   4894    4412    +482  tatic::kernel::with_spaces
+   4655    3677    +978  church_bv::machine::tree_proof::{closure#8} (.llvm.5723646184736173878)
+   4536    3677    +859  church_bv::rewrite::shared_lemma::
+   4416    3571    +845  church_bv::machine::tree_proof::closure$9::closure$0
+   4416    3571    +845  church_bv::machine::tree_proof::closure$9
+   4177    3887    +290  church_bv::rewrite::RuleTable::new
+   4177       0   +4177  church_bv::classes::impl$1::get::closure$0
+   4177       0   +4177  church_bv::classes::Classes::get
+   3939    3361    +578  church_bv::miner::run::{closure#0} (.llvm.6573383614708954289)
+   3939    3361    +578  church_bv::miner::run::closure$0::closure$1
+   3939    3361    +578  church_bv::miner::run
+   3939       0   +3939  tatic::kernel::whnf_in
+   3819       0   +3819  tatic::kernel::def_eq_in
+  57536   57676    -140  church_bv::rewrite::join_search
+  57297   57466    -169  church_bv::rewrite::join_search::closure$3
+   4655    5252    -597  church_bv::rewrite::Spine::make
+   5491    6093    -602  church_bv::rewrite::match_pat
+   5491    6198    -707  church_bv::rewrite::impl$19::get::closure$1
+  63624   65556   -1932  church_bv::rewrite::join_or_machine
+  61833   63770   -1937  church_bv::rewrite::join_eq
+      0    3256   -3256  church_bv::rewrite::stored_join
+      0    3361   -3361  church_bv::rewrite::join_eq::closure$2
+      0    3466   -3466  church_bv::rewrite::sh_op
+      0    3992   -3992  church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$3
+#### on: the church_bv frame directly inside each (samples)
+== inside church_bv::rewrite::prove_eq
+     3581 (leaf)
+     2984 church_bv::classes::class_hash
+     2864 church_bv::classes::Classes::get
+     1551 church_bv::rewrite::join_or_machine
+      477 church_bv::_::__rust_realloc
+      358 church_bv::task::SharedMemo::lock
+== inside church_bv::rewrite::rewrite_plan
+    61953 church_bv::rewrite::join_or_machine
+    14085 church_bv::rewrite::rewrite
+    13011 church_bv::rewrite::prove_eq
+      238 (leaf)
+        0 church_bv::rewrite::impl$14::new::COUNTING::constant$0::closure$0
+== inside church_bv::driver::worker::closure$2
+     3939 church_bv::miner::run
+     2864 church_bv::search::rule_set_kernel_check_task
+        0 (leaf)
+== inside church_bv::job::Job::spent
+    86304 church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$0
+     2864 church_bv::search::rule_set_kernel_check_task::closure$0::closure$0::closure$0::closure$0
+     2148 church_bv::miner::run::closure$0::closure$1::closure$3
+     1074 church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$2
+      119 church_bv::miner::laws::closure$1::closure$1
+        0 (leaf)
+#### off: the church_bv frame directly inside each (samples)
+== inside church_bv::rewrite::prove_eq
+     4832 church_bv::rewrite::join_or_machine
+      105 church_bv::rewrite::prove_eq::closure$0
+      105 church_bv::rewrite::abstract_atoms
+      105 (leaf)
+        0 church_bv::rewrite::shr_mask_eq
+        0 church_bv::job::Setup::ablated
+== inside church_bv::rewrite::rewrite_plan
+    60723 church_bv::rewrite::join_or_machine
+    10295 church_bv::rewrite::rewrite
+     5252 church_bv::rewrite::prove_eq
+      210 (leaf)
+        0 church_bv::rewrite::impl$14::new::COUNTING::constant$0::closure$0
+== inside church_bv::driver::worker::closure$2
+     3361 church_bv::miner::run
+        0 church_bv::search::rule_set_kernel_check_task
+        0 (leaf)
+== inside church_bv::job::Job::spent
+    76272 church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$0
+     2101 church_bv::miner::run::closure$0::closure$1::closure$3
+     1155 church_bv::miner::impl$3::score_laws::closure$1::closure$0::closure$2
+      105 church_bv::miner::laws::closure$1::closure$1
+        0 (leaf)
+        0 church_bv::search::rule_set_kernel_check_task::closure$0::closure$0::closure$0::closure$0
