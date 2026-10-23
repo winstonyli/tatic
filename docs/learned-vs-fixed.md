@@ -52,4 +52,5 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    same at 1.5 s per build ("A key refined by counterexamples"). How it enters the rewriter: the spec
    `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`. As phase 1 in `prove_eq`
    (`tests/church_bv/classes.rs`) it cuts M 38% (377 to 233 over salts 1-5) at 19% more job CPU (tier-cycle.md, "The
-   class table in `prove_eq`: phase 1").
+   class table in `prove_eq`: phase 1"). As phase 2, a step in the rewriter, it takes M on the old gate from 233 to 0 at
+   a seventeenth of the job CPU, leaving the miner nothing to learn there (tier-cycle.md, "Phase 2 in the rewriter").

@@ -5550,6 +5550,22 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   than their budget (x1.67 budget, x1.85 functions). So the set size is not what matters; rotating over small operator
   sets is.
 
+*Phase 2 in the rewriter (2026-10-23; plan docs/superpowers/plans/2026-10-23-class-table-phase-2.md; runs
+`2026-10-23-p2-restore-3`, `2026-10-23-p2-gate-8`).* Built as the spike had it: `rewrite_uncached` asks
+`Classes::lookup` after a node's children; a known node is final, as its own representative or through the proved step,
+and rules run only on unknown nodes. `ABLATE=classes` switches it off, `eq_classes` switches off phase 1.
+- **Restore check** (untimed: it compares rules and M only): the build before phase 2 against this build with
+  `ABLATE=classes`, salt 1: rules the same in 3 of 3 loops, M 19, 14, 16 and mine rounds equal in both. So the switch
+  gives phase 1 exactly.
+- **The gate** (`salts_ab.sh`, salts 1-5, `-Timed`, quiet at start; others' load rose to 60-96% from salt 3 on, so
+  later walls are contended): A the build before phase 2 (phase 1 on), B with phase 2. M 233 to 0, 0 in every one of
+  the 15 loops (A 19 14 16, 20 7 19, 19 15 7, 14 23 17, 18 13 12); rules differ in all 15 (B mines almost nothing);
+  mine rounds 1931 to 194, lookaheads 18 to 0; job CPU 746 to 42 s, wall 170 to 31 s; no arm failed. The lookup memo's
+  peak 1690 terms in a worker process (`CLASS_MEMO`, after each task), no `CLASS_UNUSABLE`; largest peakproc A 663 MB, B 621 MB. Against the spike
+  (A there had no table: M 377 to 0, job CPU 451 to 26 s, memo under 50000, peakproc 609 MB) the built phase 2 matches:
+  on the old gate's laws, nearly all inside the table's domain, the table leaves the miner nothing to learn
+  ("Phase 2 leaves the miner nothing to learn on the gate"), which is why the gate moves to the streams (spec §9).
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
