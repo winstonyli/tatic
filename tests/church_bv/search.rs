@@ -1480,7 +1480,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
             }
             println!("CHECKED {proved} laws kernel-checked ({free} with no whole-term machine proof), {none} not proved, {exhausted} used up the rule budget");
             println!("JOINED {joined} of them by the join, {} searches reaching {} terms", cost.searches, cost.reached);
-            for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached)]) {
+            for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached), ("classes", job.table_steps.len() as u64)]) {
                 job.setup().result(key, v);
             }
             print_rule_conflicts(job.conflicts.as_ref());

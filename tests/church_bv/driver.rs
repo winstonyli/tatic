@@ -27,7 +27,8 @@
 //! `CHECK_LAWFILE`).
 //! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules, laws the join closed with no machine proof, terms the join's
-//! searches reached: its cost, which M does not show), mine_<name>.log and serve_<skip>.log, each with a `.results` file
+//! searches reached: its cost, which M does not show, and the distinct class-table replacements the batch used, each with
+//! a proof (spec decision 2: apart from M)), mine_<name>.log and serve_<skip>.log, each with a `.results` file
 //! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
 //! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
@@ -711,7 +712,7 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
         let chosen: String = records.iter().filter(|(k, _)| k == "chosen" || k == "prefer").map(|(_, r)| format!("{r}\n")).collect();
         append(&rules, &chosen);
     };
-    // (M, laws, laws that used up the rule budget, laws joined, terms the join reached) of the batch at `skip`
+    // (M, laws, laws that used up the rule budget, laws joined, terms the join reached, class-table replacements used) of the batch at `skip`
     let serve = |skip: usize| {
         let log = out.join(format!("serve_{skip}.log"));
         let mut env = with(&[("CHECK_FAST", s(cfg.check_fast as usize)), ("RULEMINER_SKIP", s(skip)), ("RULEMINER_LAWS", s(cfg.b)), ("CHECK_RULES", rules.display().to_string())]);
@@ -722,8 +723,8 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
             v.parse().unwrap_or_else(|_| panic!("record {key} is not a count: {v}"))
         };
         // laws kernel-checked (`free` of them with no whole-term machine proof), not proved, out of rule budget, joined
-        let (n, k, p, x, j, r) = (count("proved"), count("free"), count("none"), count("exhausted"), count("joined"), count("reached"));
-        (n - k + p, n + p, x, j, r)
+        let (n, k, p, x, j, r, cl) = (count("proved"), count("free"), count("none"), count("exhausted"), count("joined"), count("reached"), count("classes"));
+        (n - k + p, n + p, x, j, r, cl)
     };
     match &cfg.warm {
         Some(w) => {
@@ -738,8 +739,8 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
     let (mut ms, mut exhausted, mut joined, mut reached) = (vec![], 0, 0, 0);
     for r in 0..cfg.k {
         let (skip, t0) = (cfg.offset + r * cfg.b, std::time::Instant::now());
-        let (m, laws, ex, j, rc) = serve(skip);
-        append(&out.join("m.tsv"), &format!("{r}\t{m}\t{laws}\t{}\t{}\t{ex}\t{j}\t{rc}\n", count(), t0.elapsed().as_secs()));
+        let (m, laws, ex, j, rc, cl) = serve(skip);
+        append(&out.join("m.tsv"), &format!("{r}\t{m}\t{laws}\t{}\t{}\t{ex}\t{j}\t{rc}\t{cl}\n", count(), t0.elapsed().as_secs()));
         ms.push(m);
         (exhausted, joined, reached) = (exhausted + ex, joined + j, reached + rc);
         if cfg.mode == "loop" && r + 1 < cfg.k {

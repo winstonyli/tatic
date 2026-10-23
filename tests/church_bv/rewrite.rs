@@ -2679,13 +2679,14 @@ pub fn replace_term(t: &Term, x: &Term, with: &Term) -> Term {
 }
 
 /// The plan of `a = b` (over `k` variables) for rewritten terms: `refl`; the bitwise law over atoms (when it holds on all
-/// bit values, so the kernel check cannot fail); the per-position law; the bit-0 mask reduction; or the whole-term machine
+/// bit values, so the kernel check cannot fail); the per-position law; the class table's normal forms (when both sides
+/// meet); the bit-0 mask reduction; or the whole-term machine
 /// proof. `None` otherwise.
 pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     if a == b {
         return Some(Plan::refl(job, a));
     }
-    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,shrmask`
+    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,classes,shrmask`
     let mut atoms = vec![];
     if let (false, Some(a1), Some(a2)) = (job.setup().ablated("eq_truth"), abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
         let holds = (0..1usize << k).all(|m| {
@@ -2706,6 +2707,15 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
         }));
         if holds {
             return Some(Plan::law(job, LawKind::Bitwise, *a, *b, vars(k)));
+        }
+    }
+    // the learned class table (docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §4): both sides
+    // normalized by its proved replacements; if they meet, the law is closed with no rule
+    if !job.setup().ablated("classes") {
+        let c = crate::classes::Classes::get();
+        let ((na, pa), (nb, pb)) = (c.normalize(job, n, k, a), c.normalize(job, n, k, b));
+        if na == nb {
+            return Some(Plan::trans(job, pa, Plan::sym(job, pb)));
         }
     }
     // congruence on equal operators and generalizing a shared subterm into a variable were removed: neither decided a law

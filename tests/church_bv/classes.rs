@@ -592,3 +592,23 @@ fn held_out_replacements_prove() {
         println!("REPLACEMENTS {} made, all with a proof; verdicts {verdict_ms} ms, {} laws compiled and checked in {} ms", pairs.len(), laws.len(), t1.elapsed().as_millis());
     });
 }
+
+/// Phase 1 (spec §4): the table closes a law the join left at 20000 visits (run `2026-10-22-join-residue`) with no
+/// machine proof, and the proof checks; with `ABLATE=classes` the law takes the old path (a machine proof, or none).
+#[test]
+fn prove_eq_closes_a_residue_law_by_the_table() {
+    let (a, b) = (parse_term("add(and(z, xor(x, -1)), y)"), parse_term("add(xor(x, and(xor(x, -1), z)), sub(y, x))"));
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let plan = prove_eq(job, 4, 3, &a, &b).expect("closed by the table");
+        assert_eq!(job.rw.fallbacks, 0);
+        assert!(!job.table_steps.is_empty());
+        let (p, s) = law_proof(job, 4, 3, &a, &b, &plan);
+        job.lemmas.ck("residue law", &p, &s);
+    });
+    let results = std::fs::File::create(std::env::temp_dir().join("classes_ablated.results")).unwrap();
+    let job = &mut Job::new(Setup::for_task(vec![("ABLATE".into(), "classes".into())], results));
+    let r = prove_eq(job, 4, 3, &a, &b);
+    assert!(job.table_steps.is_empty(), "the ablated path takes no table step");
+    assert!(r.is_none() || job.rw.fallbacks > 0, "without the table the law needs the machine or stays open");
+}
