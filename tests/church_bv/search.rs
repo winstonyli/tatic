@@ -1135,6 +1135,229 @@ pub fn grammar_laws_have_no_padding() {
     }
 }
 
+/// The rotation (spec decision 8): every set of two and three of the seven bit-vector operators, none with `lt`.
+#[test]
+pub fn stream_sets_are_the_pairs_and_triples() {
+    let sets = stream_sets();
+    assert_eq!(sets.len(), 56);
+    assert_eq!(sets.iter().filter(|s| s.len() == 2).count(), 21);
+    assert!(sets.iter().all(|s| (2..=3).contains(&s.len()) && !s.contains(&LT)));
+}
+
+/// Review Focus 3: a stream is the same laws in the same order on every call (two direct calls, not the memo); another
+/// salt gives other laws; every law's sides use only the set's operators, the table leaves it open, and it agrees on
+/// the 4096 width-8 inputs.
+#[test]
+pub fn stream_laws_are_deterministic_and_open() {
+    let ops = [ADD, SHR1];
+    let (a, b) = (stream_laws(&ops, 1, 2000, 2), stream_laws(&ops, 1, 2000, 2));
+    assert!(a.len() > 20, "{} laws", a.len());
+    assert!(a == b, "same salt, other laws or order");
+    assert!(a != stream_laws(&ops, 2, 2000, 2), "another salt, the same laws");
+    fn within(t: &Term, ops: &[usize]) -> bool {
+        match *t.node() {
+            Node::Op(o, x, y) => ops.contains(&o) && within(&x, ops) && within(&y, ops),
+            _ => true,
+        }
+    }
+    let c = crate::classes::Classes::get();
+    let job = &mut Job::new(Setup::process());
+    let mut r8 = width8();
+    tatic::kernel::scoped(|| {
+        for (x, y) in &a {
+            assert!(within(x, &ops) && within(y, &ops), "{} = {}", x.show(), y.show());
+            assert!(c.normalize(job, 4, 3, x).0 != c.normalize(job, 4, 3, y).0, "closed: {} = {}", x.show(), y.show());
+            let vx = r8.values(x).to_vec();
+            assert_eq!(vx, r8.values(y).to_vec(), "{} = {}", x.show(), y.show());
+        }
+    });
+}
+
+/// Phases are residue classes at `STREAM_STRIDE`, windowed by skip and count.
+#[test]
+pub fn residue_takes_a_phase_window() {
+    let seq: Vec<(Term, Term)> = (0..40).map(|i| (Term::v(0), (0..i).fold(Term::v(1), |t, _| Term::op(ADD, t, Term::v(2))))).collect();
+    let at = |w: Vec<(Term, Term)>| w.iter().map(|l| seq.iter().position(|s| s == l).unwrap()).collect::<Vec<_>>();
+    assert_eq!(at(residue(&seq, 1, 0, 3)), [1, 5, 9]);
+    assert_eq!(at(residue(&seq, 2, 1, 2)), [6, 10]);
+    assert_eq!(at(residue(&seq, 3, 9, 5)), [39]);
+}
+
+/// The streams' operator sets (spec decision 8): every set of two and three of the seven bit-vector operators, in the
+/// order of their bit masks over `[ADD, AND, OR, XOR, SUB, SHL1, SHR1]` (as `docs/runs/2026-10-23/scripts/mix_streams.sh`).
+pub fn stream_sets() -> Vec<Vec<usize>> {
+    let ops = [ADD, AND, OR, XOR, SUB, SHL1, SHR1];
+    (1u32..128).filter(|m| matches!(m.count_ones(), 2 | 3)).map(|m| (0..7).filter(|i| m >> i & 1 == 1).map(|i| ops[i]).collect()).collect()
+}
+
+/// Terms grown per level of a stream (the probe's budget, docs/tier-cycle.md "Triples match pairs per grown term").
+pub const STREAM_BUDGET: usize = 20000;
+/// Growth levels of a stream.
+pub const STREAM_LEVELS: usize = 2;
+/// Phases of the stream sequence: phase 0 feeds the mines' extras, 1-3 the loops (spec §9).
+pub const STREAM_STRIDE: usize = 4;
+
+/// The 4096 pseudo-random width-8 inputs an open law must agree on (the probe's): width 4 only conjectured it.
+fn width8() -> ValueMemo<u8> {
+    let mut seed = 0x6a09_e667_f3bc_c908u128;
+    let vars: Vec<Box<[u8]>> = (0..3)
+        .map(|_| {
+            (0..4096)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    (seed >> 40) as u8
+                })
+                .collect()
+        })
+        .collect();
+    ValueMemo::new(8, 4096, vars)
+}
+
+/// One stream (spec §9; the probe `open_law_counts`, `docs/runs/2026-10-23/patches/open_law_counts_table.patch`): seeds
+/// are the class table's representatives whose operators lie in `ops`; `levels` times, one leaf of a term is grown into
+/// one of the seeds' operators over two leaves (`shl1` and `shr1` over one), padding dropped, about `budget` terms per
+/// level drawn by `salt`. Laws are grouped by width-4 values as `pool_conjectures` does, have a grown side, use all three
+/// variables, and are shuffled by `salt`; kept when the table leaves them open (normal forms differ) and they agree on
+/// `width8`'s inputs. Prints the laws kept and refuted.
+pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> Vec<(Term, Term)> {
+    let c = crate::classes::Classes::get();
+    fn within(t: Term, ops: &[usize]) -> bool {
+        match *t.node() {
+            Node::Op(o, a, b) => ops.contains(&o) && within(a, ops) && within(b, ops),
+            _ => true,
+        }
+    }
+    let mut seeds: Vec<Term> = c.reps().filter(|t| within(*t, ops)).collect();
+    seeds.sort_by_cached_key(|t| t.show());
+    fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
+        if let Node::Op(o, a, b) = *t.node() {
+            out.insert(o);
+            ops_of(a, out);
+            ops_of(b, out);
+        }
+    }
+    // the leaf positions of a term (a shift's second operand is not one), and the term with leaf `k` replaced by `g`
+    fn leaf_count(t: Term) -> usize {
+        match *t.node() {
+            Node::Op(SHL1 | SHR1, a, _) => leaf_count(a),
+            Node::Op(_, a, b) => leaf_count(a) + leaf_count(b),
+            _ => 1,
+        }
+    }
+    fn replaced(t: Term, k: &mut Option<usize>, g: Term) -> Term {
+        match *t.node() {
+            Node::Op(o @ (SHL1 | SHR1), a, b) => Term::op(o, replaced(a, k, g), b),
+            Node::Op(o, a, b) => {
+                let a = replaced(a, k, g);
+                Term::op(o, a, replaced(b, k, g))
+            }
+            _ => match *k {
+                Some(0) => {
+                    *k = None;
+                    g
+                }
+                Some(i) => {
+                    *k = Some(i - 1);
+                    t
+                }
+                None => t,
+            },
+        }
+    }
+    let mut grown_ops = std::collections::BTreeSet::new();
+    seeds.iter().for_each(|t| ops_of(*t, &mut grown_ops));
+    let leaves = leaves3();
+    let mut memo = ValueMemo::exhaustive(4, 3);
+    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
+    let grow: Vec<Term> = grown_ops
+        .iter()
+        .flat_map(|&o| if o == SHL1 || o == SHR1 { leaves.iter().map(|a| mk(o, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
+        .filter(|g| !leaf_values.contains(&memo.values(g).to_vec()))
+        .collect();
+    let mut level: hashbrown::HashMap<Term, usize> = seeds.iter().map(|t| (*t, 0)).collect();
+    let (mut base, mut i) = (seeds.clone(), 0u64);
+    for l in 1..=levels {
+        let total: usize = base.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
+        let mut next = vec![];
+        for t in &base {
+            for p in 0..leaf_count(*t) {
+                for g in &grow {
+                    i += 1;
+                    if (tatic::rng::mix64(i ^ tatic::rng::mix64(salt as u64 + 13 * l as u64)) % total.max(1) as u64) < budget as u64 {
+                        let w = replaced(*t, &mut Some(p), *g);
+                        if !level.contains_key(&w) {
+                            level.insert(w, l);
+                            next.push(w);
+                        }
+                    }
+                }
+            }
+        }
+        base = next;
+    }
+    // sorted, so the order owes nothing to the map's
+    let mut terms: Vec<Term> = level.keys().cloned().collect();
+    terms.sort_by_cached_key(|t| (level[t], t.show()));
+    let laws: Vec<(Term, Term)> =
+        pool_conjectures(terms, 4, 3, 0).into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
+    let job = &mut Job::new(Setup::process());
+    let mut r8 = width8();
+    let (mut out, mut refuted) = (vec![], 0usize);
+    tatic::kernel::scoped(|| {
+        for (a, b) in shuffled(laws, salt) {
+            if c.normalize(job, 4, 3, &a).0 == c.normalize(job, 4, 3, &b).0 {
+                continue;
+            }
+            let va = r8.values(&a).to_vec();
+            if va != r8.values(&b) {
+                refuted += 1;
+                continue;
+            }
+            out.push((a, b));
+        }
+    });
+    let names: Vec<&str> = ops.iter().map(|o| OP_INFO[*o].name).collect();
+    println!("STREAM {} salt {salt}: {} open laws, {refuted} refuted at width 8", names.join(","), out.len());
+    out
+}
+
+/// The loops' law sequence for `salt` (spec §9): the 56 streams (`stream_sets`, `STREAM_BUDGET`, `STREAM_LEVELS`)
+/// interleaved round-robin, a law kept at its first appearance. Built once per process and salt.
+pub fn stream_sequence(salt: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
+    static MEMO: crate::task::SharedMemo<usize, std::sync::Arc<Vec<(Term, Term)>>> = crate::task::SharedMemo::new();
+    let build = || {
+        let t0 = std::time::Instant::now();
+        let streams: Vec<Vec<(Term, Term)>> = stream_sets().iter().map(|ops| stream_laws(ops, salt, STREAM_BUDGET, STREAM_LEVELS)).collect();
+        let (mut seen, mut seq) = (HashSet::new(), vec![]);
+        for i in 0..streams.iter().map(Vec::len).max().unwrap_or(0) {
+            for s in &streams {
+                if let Some(l) = s.get(i) {
+                    if seen.insert(*l) {
+                        seq.push(*l);
+                    }
+                }
+            }
+        }
+        println!("STREAMS salt {salt}: {} laws from {} streams in {:.1}s", seq.len(), streams.len(), t0.elapsed().as_secs_f64());
+        std::sync::Arc::new(seq)
+    };
+    MEMO.with(salt, build, |s| s.clone())
+}
+
+/// Phase `phase`'s window of a sequence: its residue class at `STREAM_STRIDE`, `laws` of them from `skip`.
+pub fn residue(seq: &[(Term, Term)], phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
+    seq.iter().skip(phase).step_by(STREAM_STRIDE).skip(skip).take(laws).cloned().collect()
+}
+
+/// Builds `stream_sequence(STREAMS_SALT)` (default 1) and prints its size and time: what a sweep pays once (spec §9, Risks).
+#[test]
+#[ignore]
+pub fn stream_sequence_cost() {
+    let salt = Setup::process().or("STREAMS_SALT", 1usize);
+    let seq = stream_sequence(salt);
+    println!("SEQUENCE salt {salt}: {} laws; phase 1 window of 300: {}", seq.len(), residue(&seq, 1, 0, 300).len());
+}
+
 /// A law's twin key (the law generator's twin filter, docs/superpowers/specs/2026-10-17-law-generator-design.md §1; on
 /// the class table since docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §6): the least `a = b` text,
 /// over the six renamings of x, y, z and both side orders, of the law renamed and then each side's children made
