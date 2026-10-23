@@ -65,6 +65,17 @@ is a learned replacement for parts the rewriter now fixes by hand, the most load
    `shr1` means"). Rejected: the smallest member provable equal to the rest, chosen at build time (a proof per merge,
    647795 merges at about 7 ms, about 75 min a build); falling back per pair to the next member at use time (classes
    keep their members).
+8. **The laws mined after phase 2 come from table-seeded streams rotated over every set of two and three operators**
+   (2026-10-23). Each stream seeds from the table's representatives whose operators lie in its set, grows them past the
+   table's size, and keeps the laws the table leaves open; it replaces the hand-written family pools as the source of
+   laws. On the gate the table already meets every law (`docs/tier-cycle.md`, "Phase 2 leaves the miner nothing to
+   learn on the gate"), so mining needs laws past its domain. Measured: the 56 streams find about 22300 distinct open
+   functions within two growths, about 20-24 per 1000 grown terms for pairs and triples alike, and one stream's larger
+   budget mostly restates its functions (`docs/tier-cycle.md`, "Rotating over every operator pair beats the best pair"
+   and "Triples match pairs per grown term"). Rejected: family pools (one law per function, capped by their size); the
+   whole table as seed (its grown terms grow apart and few pair); one best set (2348 functions against 8847 for the 21
+   pairs at the same budget). Open: per-stream budget (the triples' yield rose faster than their budget), and
+   whether growth should stay inside the stream's set.
 
 ## Design
 
