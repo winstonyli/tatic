@@ -130,22 +130,22 @@ fn the_size_5_table_maps_terms_to_their_representatives() {
     assert_eq!(rep("add(u, 0)"), None, "a fourth variable");
 }
 
-/// The full table from the key file, pinned: its counts and a fingerprint of every (key, representative) pair, so a change
-/// to how the build computes values (not what) leaves the table as it was.
+/// The full table from the key file, pinned: its counts and a fingerprint of its representatives (not of `class_hash`'s
+/// keys), so a change to how the build computes or hashes values (not what they are) leaves the table as it was.
 #[test]
 fn the_full_table_is_pinned() {
     use std::hash::{Hash, Hasher};
     let (c, st) = Classes::build(&Key::parse(KEY_FILE).unwrap(), SIZE, 0, 0);
-    let print = c.map.iter().fold(0u64, |acc, (k, r)| {
+    let print = c.map.values().fold(0u64, |acc, r| {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (k, r.show()).hash(&mut h);
+        r.show().hash(&mut h);
         acc ^ h.finish()
     });
-    assert_eq!((c.len(), st.lts, st.merges, st.displaced, print), (341866, 95616, 647669, 798, 15700303306209021114));
+    assert_eq!((c.len(), st.lts, st.merges, st.displaced, print), (341866, 95616, 647669, 798, 15575413362263879076));
 }
 
 /// A class's key: a term's values on the key's inputs (all widths end to end) and whether it is an `lt` (a second sort),
-/// hashed to 128 bits.
+/// hashed to 128 bits (SipHash: foldhash on fixed seeds built no faster, docs/tier-cycle.md, "What a build spends").
 fn class_hash(vals: &[u8], lt: bool) -> (u64, u64) {
     use std::hash::{Hash, Hasher};
     let (mut h1, mut h2) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());

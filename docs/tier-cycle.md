@@ -5395,7 +5395,13 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   `the_full_table_is_pinned` holds the table to its counts and a fingerprint of every pair, unchanged. A build went from
   1.39-1.48 s to 0.58-0.65 s. Gate, A with `ABLATE=classes`: M 377 to 233; job CPU 459 s to 545 s (+19%), wall 60 s to
   74 s; the largest `peakproc` 626 MB to 695 MB. Per salt the change in CPU spans -10% (salt 2) to +73% (salt 3). The
-  phase-1 gates before this one were untimed. Hashing, about 150 ms, is now about a quarter of a build.
+  phase-1 gates before this one were untimed.
+- **foldhash for `class_hash`: no faster in the build (negative; patch `docs/runs/2026-10-23/patches/class_hash_foldhash.patch`,
+  reverted).** On 1fe8f57, two foldhash passes on fixed seeds (`foldhash` 0.2 as a dev-dependency, already in the lock
+  file through hashbrown, which seeds it per process and does not expose fixed seeds) left the table unchanged
+  (`the_full_table_is_pinned`, whose fingerprint now covers representatives only) and the build where it was: alternating
+  five runs each, SipHash 604-721 ms, foldhash 594-624 ms. The isolated loop's 150 ms to 31 ms does not show in the
+  build, likely because hashing overlaps the map's cache misses. SipHash stays.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

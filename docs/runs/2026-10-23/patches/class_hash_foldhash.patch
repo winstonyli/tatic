@@ -1,0 +1,69 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index fd7e9d3..f47ef04 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1449,6 +1449,7 @@ version = "0.2.0"
+ dependencies = [
+  "blake3",
+  "criterion",
++ "foldhash 0.2.0",
+  "hashbrown 0.16.1",
+  "im",
+  "mimalloc",
+diff --git a/Cargo.toml b/Cargo.toml
+index 8c91438..2423be6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -22,6 +22,8 @@ wat = "1.245.1"
+ 
+ [dev-dependencies]
+ criterion = "0.5"
++# hashbrown's own hasher, reached directly for its fixed seeds (hashbrown seeds it per process): church_bv's class keys
++foldhash = "0.2.0"
+ 
+ # Release with fat LTO, for sweeps, timing and other long runs (`cargo test --profile sweep ...`): about 9% less
+ # sweep CPU than `release` with identical outputs, but an incremental rebuild of the church_bv test binary takes
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index df3459b..f5ffb49 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -130,28 +130,28 @@ fn the_size_5_table_maps_terms_to_their_representatives() {
+     assert_eq!(rep("add(u, 0)"), None, "a fourth variable");
+ }
+ 
+-/// The full table from the key file, pinned: its counts and a fingerprint of every (key, representative) pair, so a change
+-/// to how the build computes values (not what) leaves the table as it was.
++/// The full table from the key file, pinned: its counts and a fingerprint of its representatives (not of `class_hash`'s
++/// keys), so a change to how the build computes or hashes values (not what they are) leaves the table as it was.
+ #[test]
+ fn the_full_table_is_pinned() {
+     use std::hash::{Hash, Hasher};
+     let (c, st) = Classes::build(&Key::parse(KEY_FILE).unwrap(), SIZE, 0, 0);
+-    let print = c.map.iter().fold(0u64, |acc, (k, r)| {
++    let print = c.map.values().fold(0u64, |acc, r| {
+         let mut h = std::collections::hash_map::DefaultHasher::new();
+-        (k, r.show()).hash(&mut h);
++        r.show().hash(&mut h);
+         acc ^ h.finish()
+     });
+-    assert_eq!((c.len(), st.lts, st.merges, st.displaced, print), (341866, 95616, 647669, 798, 15700303306209021114));
++    assert_eq!((c.len(), st.lts, st.merges, st.displaced, print), (341866, 95616, 647669, 798, 15575413362263879076));
+ }
+ 
+ /// A class's key: a term's values on the key's inputs (all widths end to end) and whether it is an `lt` (a second sort),
+-/// hashed to 128 bits.
++/// hashed to 128 bits with foldhash on fixed seeds (SipHash took about 150 ms of a 0.6 s build: docs/tier-cycle.md,
++/// "What a build spends").
+ fn class_hash(vals: &[u8], lt: bool) -> (u64, u64) {
+-    use std::hash::{Hash, Hasher};
+-    let (mut h1, mut h2) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());
+-    (lt, vals).hash(&mut h1);
+-    (0xa5u8, vals, lt).hash(&mut h2);
+-    (h1.finish(), h2.finish())
++    use std::hash::BuildHasher;
++    const H: (foldhash::fast::FixedState, foldhash::fast::FixedState) =
++        (foldhash::fast::FixedState::with_seed(0x243f_6a88_85a3_08d3), foldhash::fast::FixedState::with_seed(0x1319_8a2e_0370_7344));
++    (H.0.hash_one((lt, vals)), H.1.hash_one((0xa5u8, vals, lt)))
+ }
+ 
+ /// The table: each class's key to its representative, and the lookup's memos: values (one per key width, in key order)
