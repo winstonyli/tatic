@@ -279,6 +279,8 @@ are heavy for `cargo test`, so its L, time and coverage are measured in step 4's
      extras 11.0% of the loops' and 8.6% of the ref mines' were hidden twins, in every family, and 30% of the loops'
      trivial; the filter widened. M rises with them gone (warm 735 to 754, cold 1451 to 1475), and the generator still
      pays against the generator off but on mixed loops (`docs/tier-cycle.md`, "Hidden twins beyond two-leaf nodes").
+     The rise is mostly n halving with L: at f = 0.32 (run `2026-10-22-gen-f32`), about the old n, M is warm 729 and
+     cold 1460 and mixed no longer loses ("The generator's n after the wider filter").
      The first attempt (b5e03cd, runs `2026-10-22-hidden-twins` and `-rest`) normalized the root too, so most served
      laws turned trivial and the filter barely filtered; its numbers are void.
 

@@ -4764,8 +4764,8 @@ an extra whose sides are equal once normalized (trivial).
   1644 to 996), so n = ⌊0.16 L⌋ halves too: the loops mine on half as many extras, not only on different ones.
 - **Effect** (salts 1-10, the generator on everywhere, against step 4's on_on, better / equal / worse): warm M 735 to 754
   (4/1/5), cold 1451 to 1475 (1/5/4); mined-batch M rises in each (warm 36 to 69, cold 8 to 32). Per stage: own 4 to 3,
-  cross 685 to 707, pooled 21 to 8 (6/4/0), mixed 25 to 36 (3/3/4). Twins removed and n halved are not separated
-  (`PARKED.md`, "The generator's n after the wider filter").
+  cross 685 to 707, pooled 21 to 8 (6/4/0), mixed 25 to 36 (3/3/4). Twins removed and n halved are
+  separated below ("The generator's n after the wider filter"): the rise is mostly the halved n.
 - **The generator still pays** (on_on against off_off, both on this build): warm 754 against 1067, better on 10 salts of
   10 (own 6/4/0, cross 10/0/0, pooled 8/1/1); cold 1475 against 1563, 9/0/1. Mixed is the one stage that loses, 36
   against 28 (0/7/3, sign test p ≈ 0.25). Ref mines' own M is 0 in both arms but for u3 (1 against 1).
@@ -4789,6 +4789,25 @@ an extra whose sides are equal once normalized (trivial).
   `twin_wide.py`'s two-leaf 502 and 260.
 - So the wider filter stays, and v0.2 is answered: the law generator pays on cold loops, warm loops and ref mines,
   measured with no served law in disguise among its extras; mixed loops are the open exception.
+
+*The generator's n after the wider filter (2026-10-22; run `2026-10-22-gen-f32` at 708cd43, `gen_warm.sh` with
+`ARMS=on_on GEN_F=0.32`, salts 1-10, 49 min wall, CPU 60% at launch, Defender real-time off).* The wider filter halved
+L and so n; this arm doubles f (the variable `GEN_F`, 488307b) to separate the two. Against the two-leaf filter's n
+(salt 1) the new n is 1.0x on cmp3d (754 against 757), 1.24x on sbo3 and 1.51x on add3: at or above the old n.
+- **Against f = 0.16** (run `2026-10-22-gen-warm-fix`, better / equal / worse): warm M 754 to 729 (7/1/2), cold 1475
+  to 1460 (6/2/2); mined-batch M 69 to 54 and 32 to 17. Own 3 to 4, cross 707 to 692, pooled 8 to 7, mixed 36 to 26.
+  Neither count is strong alone (sign test p ≈ 0.18 and 0.29), but every stage but own moves the same way.
+- **Against step 4** (two-leaf filter at its own n): warm 735 to 729 (7/0/3), cold 1451 to 1460 (2/2/6). At about the
+  old n, removing the twins is near neutral; step 5's rise in M was mostly the halved n. Mined-batch M stays above
+  step 4's (warm 54 against 36, cold 17 against 8).
+- **Against the generator off** (off_off of `gen-warm-fix`): warm 729 against 1067 and cold 1460 against 1563, both
+  better on 10 salts of 10; mixed 26 against 28 (3/5/2), so mixed no longer loses at this n. Ref mines' own M is 0 in
+  every family.
+- **Cost** (loops, 10 salts): wall 2296 s against 617, job CPU 15547 s against 4769, loop seconds warm 1844 against 404
+  and cold 2200 against 546; ref mines' wall 546 s against 216. The load was 60% against 26%, so job CPU (3.3x) is the
+  fairer ratio.
+- So removing the twins is near neutral, and the halved n cost 1-3% of M (warm 3.3%, cold 1.0%) at a third of the CPU.
+  `GEN_F`'s default stays 0.16 for now (`PARKED.md`, "The generator's n after the wider filter").
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost

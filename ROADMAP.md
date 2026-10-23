@@ -17,7 +17,8 @@ numbers. What v0.3 left open is now v0.2.
   warm loops"). Hidden twins, 2026-10-22: the filter now normalizes every node below a law's root, which drops 11% of
   the loops' extras as served laws in disguise and 30% as trivial, in every family; M rises to cold 1475 and warm 754,
   still better than the generator off on 9 and 10 salts of 10, mixed loops the one stage that loses ("Hidden twins
-  beyond two-leaf nodes"). Answered yes; its control switches `GEN_SOURCE`/`GEN_N` are deleted.
+  beyond two-leaf nodes"). That rise is mostly the filter halving n: at f = 0.32, about the old n, M is warm 729 and
+  cold 1460, near step 4's, and mixed no longer loses ("The generator's n after the wider filter"). Answered yes; its control switches `GEN_SOURCE`/`GEN_N` are deleted.
 - **v0.3 - Does a learned proposer, ranking which laws to mine on, beat the hash-ordered stream?** Experiments 1 and 2
   with the custom proposer model in place of the uniform and n-gram baselines.
 - **v0.4 - Does closing the cycle push the frontier?** Experiment 3: train on accepted laws, repeat, and track the
