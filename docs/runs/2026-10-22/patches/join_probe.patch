@@ -1,0 +1,82 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index c04dd1c..5e34084 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -2799,11 +2799,16 @@ fn join_eqs(setup: &Setup, rules: &[TableRule]) -> Vec<JoinEq> {
+         laws.push((LawKind::Bitwise, op(o, op(o, x, y), z), op(o, x, op(o, y, z)), true));
+         laws.push((LawKind::Bitwise, op(o, x, y), op(o, y, x), false));
+     }
++    // probe: JOIN_BACK=1 drops a rule's backward step whose pattern is one operator over two distinct variables (it
++    // matches every node of that operator); =2 drops every backward step of a rule that grows the term
++    let back = setup.or("JOIN_BACK", 0);
++    let generic = |p: &Term| matches!(*p.node(), Node::Op(_, l, r) if matches!(*l.node(), Node::V(_)) && matches!(*r.node(), Node::V(_)) && l != r);
+     let mut eqs = vec![];
+     for (kind, lhs, rhs, both) in laws {
+         let vars = lhs.max_var().max(rhs.max_var()) + 1;
+         for (from, to, backward) in [(lhs, rhs, false), (rhs, lhs, true)] {
+-            if (both || !backward) && join_usable(&from, &to) {
++            let dropped = backward && matches!(kind, LawKind::Rule(_)) && (back == 1 && generic(&from) || back == 2 && to.size() > from.size());
++            if (both || !backward) && !dropped && join_usable(&from, &to) {
+                 eqs.push(JoinEq::new(from, to, vars, kind, lhs, rhs, backward));
+             }
+         }
+@@ -3258,13 +3263,34 @@ fn join_search(job: &mut Job, a: &Term, b: &Term, examined: &mut Option<hashbrow
+         seen[side].insert_unique(t.sh(), (t.sh(), Reached::Side(*t)), |e| e.0);
+     }
+     let mut front = [vec![Reached::Side(*a)], vec![Reached::Side(*b)]];
++    // probe: with JOIN_SIZE_FIRST=1, each side expands its smallest reached term first (one at a time) instead of a layer;
++    // with 2, the one with the least depth plus size (a growing step costs 2, a same-size step 1, a shrinking one 0)
++    let mode = job.setup().or("JOIN_SIZE_FIRST", 0);
++    let by_size = mode != 0;
++    use std::{cmp::Reverse, collections::BinaryHeap};
++    let mut heap: [BinaryHeap<Reverse<(usize, usize)>>; 2] = [BinaryHeap::from([Reverse((a.size(), 0))]), BinaryHeap::from([Reverse((b.size(), 0))])];
++    let mut store = [vec![Reached::Side(*a)], vec![Reached::Side(*b)]];
++    let mut depth: [Vec<usize>; 2] = [vec![0], vec![0]];
++    let mut cur_depth = 0;
++    let mut new: Vec<(Reached, usize)> = vec![];
+     let table = &*job.rules().table;
+     let mut met_path: Vec<(Term, StoredStep)> = vec![];
+     let found = (|| {
+         let mut up = vec![];
+-        while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
+-            let s = (front[0].len() > front[1].len()) as usize;
+-            for r in std::mem::take(&mut front[s]) {
++        loop {
++            let (n0, n1) = if by_size { (heap[0].len(), heap[1].len()) } else { (front[0].len(), front[1].len()) };
++            if n0 == 0 || n1 == 0 || seen[0].len() + seen[1].len() > visit {
++                break;
++            }
++            let s = (n0 > n1) as usize;
++            let batch = if by_size {
++                let Reverse((_, i)) = heap[s].pop().expect("pending");
++                cur_depth = depth[s][i];
++                vec![store[s][i]]
++            } else {
++                std::mem::take(&mut front[s])
++            };
++            for r in batch {
+                 let t = r.make();
+                 let mut met = None;
+                 let (here, there) = seen.split_at_mut(1);
+@@ -3285,10 +3311,20 @@ fn join_search(job: &mut Job, a: &Term, b: &Term, examined: &mut Option<hashbrow
+                     if mine.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)).is_none() {
+                         let r = Reached::Step(step, subst_pat(&e.to, sub));
+                         mine.insert_unique(h, (h, r), |c| c.0);
+-                        front[s].push(r);
++                        new.push((r, t.size() + size - x.size()));
+                     }
+                     true
+                 });
++                for (r, z) in new.drain(..) {
++                    if by_size {
++                        let key = if mode == 2 { z + cur_depth + 1 } else { z };
++                        heap[s].push(Reverse((key, store[s].len())));
++                        store[s].push(r);
++                        depth[s].push(cur_depth + 1);
++                    } else {
++                        front[s].push(r);
++                    }
++                }
+                 let Some((step, u)) = met else { continue };
+                 let u = u.make();
+                 // the path's steps, for the store the job feeds

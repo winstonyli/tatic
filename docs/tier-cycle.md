@@ -4985,8 +4985,38 @@ laws at `JOIN_VISIT` 1000, add3 / sbo3 / mix3 / cmp3d:
 - **Neither order removes add3's rule 4's cost in general.** Without the rule add3 frees 10 more laws breadth-first and
   5 more with either order on A, but 7 more breadth-first and 9 more with either order on B.
 - So ordering is not the budget's substitute. Depth plus size is a candidate refinement of the join (fewer terms, a
-  few more laws). Keeping it needs its stream M and loop seconds on a sweep, since wall time here was within noise at
-  21-52% CPU load.
+  few more laws). Keeping it needed its stream M and loop seconds on a sweep, since wall time here was within noise at
+  21-52% CPU load; the sweep is in the next section.
+
+*Depth plus size on the sweep; dropping backward steps (2026-10-22; runs `2026-10-22-jsf-sweep-0` and `-jsf-sweep-2`,
+34 and 19 min, CPU 22% and 62% at launch, another session's rustc on about 7 cores and a game during the first;
+`-join-back-1` and `-join-back-2`, 2 min each, CPU 24-25%; probe `docs/runs/2026-10-22/patches/join_probe.patch` on
+a3b1a4e, `join_size_first.patch` plus a `JOIN_BACK` switch in `join_eqs`, reverted; scripts `gen_warm.sh` with
+`ARMS=on_on`, salts 1-10, and `join_order.sh` at `JOIN_VISIT` 1000).*
+- **Depth plus size lowers stream M and costs less.** Breadth-first on the probe exe reproduces `-gen-warm-fix`'s on_on
+  exactly (warm M 754, of it the mined batches 69; cold M 1475, mined 32), so the comparison is like for like. Depth
+  plus size (`JOIN_SIZE_FIRST=2`): warm M 732 (mixed 36 to 19, pooled 8 to 3, own and cross unchanged), mined 57; cold
+  M 1475, unchanged; the ref mines' M (u3 only) 1 with the generator and 0 without, against 1 and 1. Job CPU: the loops 6460 to 4082 s (-37%), the ref
+  mines 1397 to 992 s (-29%), in line with the 12-34% fewer terms reached per search above. Loop seconds fell 1240 to
+  451 (warm) and 1409 to 760 (cold), but the breadth-first arm ran beside other sessions' load, so wall time is not
+  claimed; job CPU is less exposed to it, not immune (SMT siblings, cache). Rule counts move a few percent (cross 11527
+  to 11152; cmp3d's ablated ref mine 291 to 185).
+- **Dropping backward steps by shape loses far more than rule 4 costs.** `JOIN_BACK=1` drops a rule's backward step
+  when its pattern is one operator over two distinct variables (it matches every node of that operator): mined rules
+  (add3 2, among them rule 4; sbo3 2; mix3 1; cmp3d 1) and five promoted ones (`-> add(x, y)` twice, `-> lt(y, x)`
+  twice, `-> sub(y, x)`). `=2` drops every backward step that grows the term. Free laws, breadth-first (depth plus size
+  within 9):
+
+| backward steps | A (held-out) | B (held-out) | mine's own laws |
+|---|---|---|---|
+| all (now) | 1407 | 1386 | 1932 |
+| none onto `op(x, y)` | 1169 | 1181 | 1660 |
+| none that grow | 1044 | 1047 | 1561 |
+
+  With `=1` add3 frees as many laws with rule 4 as without (282 and 281 on A), so its cost is gone, but add3 itself
+  loses 68 (350 to 282). The joins need backward steps; which ones cannot be read off a rule's shape.
+- So depth plus size is a better join order on every count measured (held-out free laws, stream M, job CPU), and
+  rule 4's cost stays with the budget.
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
