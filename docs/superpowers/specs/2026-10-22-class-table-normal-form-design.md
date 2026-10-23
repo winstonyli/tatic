@@ -88,6 +88,14 @@ is a learned replacement for parts the rewriter now fixes by hand, the most load
     baseline; the files are regenerated when the key file or the table's size changes. Parked as later options
     (`PARKED.md`, "Other ways to build the past-domain held-out set"): generating the set at run time from a held-out
     salt; stratifying it per stream instead of per size band.
+11. **The families are replaced once phase 2 lands** (2026-10-23). The gate moves onto decision 8's streams and
+    decision 10's held-out files, and the families are deleted with what only they used: `pool3`'s families (add3,
+    mix3, sbo3, cmp3, cmp3d, u3, u3w), the per-family tuning tables `MINES` and `LOOPS`, `family_laws`, the reference
+    libraries, the family baselines and the family fixtures (`docs/runs/2026-10-23/fixtures/held`). The gate's history
+    breaks at that commit: M and CPU after it are compared with baselines measured fresh on the new gate, not with
+    earlier rows. Docs and run scripts that name families stay as records. Rejected: keeping the families as a frozen
+    regression check (a second law source, kept only as a test); deferring until after the ablations (two gates side
+    by side).
 
 ## Design
 
