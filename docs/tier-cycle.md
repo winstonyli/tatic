@@ -4882,6 +4882,40 @@ the same in every column, so a difference is the libraries'. Free share at size 
 - So re-targeting the ranker from stream M to the frontier does not open a larger lever: at this n, choosing the
   generator's laws moves stream M by a few percent (above) and the free share by a few points.
 
+*Does the miner's score rank rules by held-out value? Leave-one-out over the ref libraries (2026-10-22; run
+`2026-10-22-rule-ablation`, 6 min, CPU 51% at launch; scripts `rule_ablation.sh`, `rule_ablation_stats.py`).* The
+falsifier for rewarding a rule by its gain on held-out laws under shift (the frontier's signal) instead of in-sample:
+if the miner's ranking already agrees with held-out value, that reward changes nothing. Each family's salt-1 ref library
+(`gen-warm-fix`, mon_1) is served whole and less one rule at a time, on its own mine laws (in) and on the size-band's
+held-out laws of sizes 9 and 11 (held, 400 per family; salt 11). A rule's drop is the free laws lost when it is
+removed; its gain is the miner's logged `+N fixed` when it chose it. The whole libraries reproduce the size-band's
+counts exactly.
+
+| family | rules | library's held gain (none to whole) | summed held drops | ρ gain~held | ρ in~held | held drop > 0 | removal helps held |
+|---|---|---|---|---|---|---|---|
+| add3 | 28 | 263 to 350 (+87) | 2 | .28 | .39 | 10 | 2 |
+| sbo3 | 21 | 267 to 339 (+72) | 17 | .58 | .61 | 8 | 2 |
+| mix3 | 19 | 288 to 323 (+35) | 32 | .55 | .45 | 8 | 1 |
+| cmp3d | 58 | 290 to 395 (+105) | 9 | .22 | .10 | 6 | 4 |
+
+(ρ is Spearman's, with ties ranked by their mean; ρ gain~in is .41-.71. cmp3d's held set is near its ceiling, 395 of
+400, so its ρ says little.)
+- **The rankings agree at the top and little below it.** The rule with the largest gain also has the largest held drop
+  in sbo3 and cmp3d, and ties for it in add3 (2 laws, with three others). Below it most drops are 0-3 laws with many
+  ties, so ρ is noisy, but in-sample and held drops correlate only .10-.61 even on the same counterfactual.
+- **Some rules are misjudged by far.** mix3's `add(0, x) -> x` was chosen at +4 and costs 2 in-sample laws when removed,
+  but 15 held out: a general identity the mine laws barely need. add3's `sub(x, xor(y, 0)) -> sub(x, y)` was chosen at
+  +3, yet removing it raises the free count by 2 in-sample and 10 held out. In all, 9 of 126 rules raise held-out free
+  laws when removed (a rule that fires first can lead the join away; not traced).
+- **Leave-one-out sees little of a library's value.** Except in mix3, summed held drops (2-17) are a small part of what
+  the library adds held out (72-105): rules cover for each other. A held-out reward has to score a rule against the
+  rules chosen before it, as the greedy miner does, not one at a time against the rest.
+- So rewarding held-out gain is a lever, though not a large one per rule: it would promote general rules the mine laws
+  under-use and could prune harmful ones. The cheapest test is a held-out backward pass after a mine (drop a rule if
+  the held set does not lose by it), scored on stream M and on a frontier set disjoint from the one that pruned
+  (`PARKED.md`, "A held-out backward pass after each mine"). The shift here is law size within each family; the held
+  laws come from the same generator.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
