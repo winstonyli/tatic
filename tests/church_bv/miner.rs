@@ -1,6 +1,6 @@
 //! The rule miner (`search::rule_miner`, search note section 36) in named parts: the laws and their stragglers (`laws`), the
 //! candidates (`candidates`), their proofs (`Prover`), the evaluation of rule sets (`Scorer`), the greedy rounds and their
-//! lookahead (`Rounds`), the preference phase (`prefs_phase`) and the closing report (`Rounds::report`).
+//! lookahead (`Rounds`) and the closing report (`Rounds::report`).
 use super::rewrite::Node;
 use super::*;
 
@@ -51,10 +51,6 @@ pub struct MinerConfig {
     pub extra: Option<String>,
     /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
     pub no_dup_lhs: bool,
-    /// `RULEMINER_PREFS` (switch, off by default): run the preference phase.
-    pub prefs: bool,
-    /// `RULEMINER_UNITS=<file>`: the base's drop units, read only with `prefs`.
-    pub units: Option<String>,
 }
 
 impl MinerConfig {
@@ -78,8 +74,6 @@ impl MinerConfig {
             guard: s.or("RULEMINER_GUARD", 120),
             extra: path("RULEMINER_EXTRA"),
             no_dup_lhs: s.flag("RULEMINER_NODUPLHS", true),
-            prefs: flag("RULEMINER_PREFS"),
-            units: path("RULEMINER_UNITS"),
         }
     }
 }
@@ -133,8 +127,7 @@ pub fn run(setup: &Arc<Setup>) {
             let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
             // the main job's join work from here on
             let (covered, main) = job.spent(|job| {
-                let Chosen { chosen, covered, .. } = rounds.play(job);
-                prefs_phase(job, &scorer, &chosen, &base, &base_prefs, &cfg, &clock);
+                let Chosen { covered, .. } = rounds.play(job);
                 covered
             });
             rounds.report(&covered, main.join);
@@ -481,8 +474,8 @@ impl Prover {
 struct Scorer<'a> {
     laws: &'a Laws,
     cfg: &'a MinerConfig,
-    /// the base rules in force, all of them until the preference phase drops some
-    base_now: std::sync::Mutex<Vec<(Term, Term)>>,
+    /// the base rules in force
+    base: Vec<(Term, Term)>,
     all_laws: Vec<usize>,
     law_evals: std::sync::atomic::AtomicUsize,
     law_reuses: std::sync::atomic::AtomicUsize,
@@ -495,7 +488,7 @@ impl<'a> Scorer<'a> {
         Scorer {
             laws,
             cfg,
-            base_now: std::sync::Mutex::new(base),
+            base,
             all_laws: (0..laws.scored.len()).collect(),
             law_evals: std::sync::atomic::AtomicUsize::new(0),
             law_reuses: std::sync::atomic::AtomicUsize::new(0),
@@ -520,7 +513,7 @@ impl<'a> Scorer<'a> {
         // counting only under `RULEMINER_FAST`, or when the caller asked for it (rivals, below). Carry-over: the old code
         // installed these rules and `prefs` and left them installed, which nothing read: every later rewrite on this thread
         // is another `score_laws` or a `Prover::prove`, and each installs its own
-        let rules = job.rules().with_mined(job.setup(), self.base_now.lock().unwrap().iter().chain(extra).cloned().collect()).with_prefs(prefs.to_vec());
+        let rules = job.rules().with_mined(job.setup(), self.base.iter().chain(extra).cloned().collect()).with_prefs(prefs.to_vec());
         let rules = rules.counting(cfg.fast || rules.score_only());
         let out = job.with_rules(rules, |job| {
             which
@@ -721,7 +714,7 @@ impl<'a> Rounds<'a> {
         // preference makes it a winner (the trace was made without the candidate)
         // the run-time order of every rule in play, ranked once (`run_order` builds strings)
         let t0 = Instant::now();
-        let mut ranked: Vec<(Term, Term)> = scorer.base_now.lock().unwrap().iter().chain(chosen).chain(provable.iter()).cloned().collect();
+        let mut ranked: Vec<(Term, Term)> = scorer.base.iter().chain(chosen).chain(provable.iter()).cloned().collect();
         ranked.sort_by_cached_key(|(l, r)| run_order(l, r));
         let rank: hashbrown::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
         // every law's trace at once (`TraceIndex`: a term shared by many laws' traces is matched once), the candidates split
@@ -1031,68 +1024,6 @@ impl<'a> Rounds<'a> {
         for (st, c) in stragglers.iter().zip(covered) {
             if !c {
                 println!("RULEMINER uncovered: {}", st.0);
-            }
-        }
-    }
-}
-
-/// learned preferences (docs/tier-cycle.md, "Rule order"): where two rules in force both rewrite a term of the scored laws, the
-/// first one in order does; each round tries letting the other win, one pair at a time, and dropping each unit of a pooled base
-/// (`drop_units`: the rules where one library's normal forms meet another's), and keeps the move with the largest gain (the
-/// rule rounds' gain), until none gains. Only with `RULEMINER_PREFS=1`: a family's own rules rarely conflict, so the phase pays
-/// off on a pooled library (`driver::sweep`) and barely in a loop's mines, where it doubled the mine time ("Preferences and
-/// rival orientations in the miner") (P9)
-fn prefs_phase(job: &mut Job, scorer: &Scorer, chosen: &[(Term, Term)], base: &[(Term, Term)], base_prefs: &[Pref], cfg: &MinerConfig, clock: &Clock) {
-    let (all_laws, guard_w) = (&scorer.all_laws, scorer.laws.guard_w);
-    // `RULEMINER_UNITS=<file>`: the base's drop units (`joinability_units`, built once per pooled library by `driver::sweep`)
-    let units = cfg.units.as_ref().filter(|_| cfg.prefs).map_or(vec![], |f| parse_units(&std::fs::read_to_string(f).unwrap()));
-    for (u, rules) in units.iter().enumerate() {
-        println!("RULEMINER drop unit {u}: {}", rules.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect::<Vec<_>>().join("; "));
-    }
-    let mut dropped: Vec<usize> = vec![];
-    let set_base = |dropped: &[usize]| {
-        *scorer.base_now.lock().unwrap() = base.iter().filter(|r| !dropped.iter().any(|&u| units[u].contains(r))).cloned().collect();
-    };
-    let mut prefs = base_prefs.to_vec();
-    while cfg.prefs {
-        job.conflicts = Some(Default::default());
-        let (now, _) = scorer.score_laws(job, chosen, &prefs, all_laws, false, None);
-        let mut conflicts: Vec<Pref> = job.conflicts.take().unwrap().into_keys().collect();
-        let shown = |(w, l): &Pref| (rule_show(w), rule_show(l));
-        conflicts.sort_by_cached_key(shown);
-        let (f0, size0) = Scorer::summarize(&now);
-        // through `score_laws`, which installs its own rules and preferences (carry-over: as before)
-        let mut gain = |prefs: &[Pref]| {
-            let (f, sz) = Scorer::summarize(&scorer.score_laws(job, chosen, prefs, all_laws, false, None).0);
-            (scorer.count(&f) - scorer.count(&f0)) * 1000 + (scorer.guarded(&f) - scorer.guarded(&f0)) * guard_w + (size0 - sz)
-        };
-        // a flip's move key is the pair it makes (winner, loser); a drop's is its unit's index
-        let flipped = |(w, l): &Pref| prefs.iter().filter(|p| (&p.0, &p.1) != (l, w)).cloned().chain([(*w, *l)]).collect::<Vec<_>>();
-        let mut moves: Vec<(i64, Result<Pref, usize>)> = conflicts.iter().map(|(w, l)| (*l, *w)).map(|f| (gain(&flipped(&f)), Ok(f))).collect();
-        for u in (0..units.len()).filter(|u| !dropped.contains(u)) {
-            set_base(&[&dropped[..], &[u]].concat());
-            moves.push((gain(&prefs), Err(u)));
-        }
-        set_base(&dropped);
-        // a drop removes many rules at once, so it needs two laws' worth of gain: on one law it overfit (salt 1's sbo3)
-        // ties to the first move in text order
-        let text = |m: &Result<Pref, usize>| m.as_ref().map(shown).map_err(|u| *u);
-        let best = moves.into_iter().filter(|(g, m)| *g > if m.is_err() { 1999 } else { 0 }).max_by(|a, b| a.0.cmp(&b.0).then_with(|| text(&b.1).cmp(&text(&a.1))));
-        clock.phase(&format!("preference round over {} conflicts and {} drop units", conflicts.len(), units.len() - dropped.len()));
-        match best {
-            None => break,
-            Some((g, Ok((w, l)))) => {
-                println!("RULEMINER prefer (+{g} gain): {}  OVER  {}", rule_show(&w), rule_show(&l));
-                job.setup().result("prefer", format!("{}  OVER  {}", rule_show(&w), rule_show(&l)));
-                prefs = flipped(&(w, l));
-            }
-            Some((g, Err(u))) => {
-                for (l, r) in &units[u] {
-                    println!("RULEMINER drop (+{g} gain): {} -> {}", l.show(), r.show());
-                    job.setup().result("drop", format!("{} -> {}", l.show(), r.show()));
-                }
-                dropped.push(u);
-                set_base(&dropped);
             }
         }
     }

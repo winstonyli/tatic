@@ -1464,25 +1464,9 @@ fn rule_order_does_not_change_rewriting() {
     assert!(ia.last().unwrap().starts_with("sub(x, y)"), "the general rule goes after the specific ones: {ia:?}");
 }
 
-/// The mined rule set selected by `RULESET` (`add3_mm`, `mix3_mm`, `add3_nl`, `mix3_nl`, the files in `scripts/data`; sections 84 and 87), in force
-/// after the built-in rules; empty when unset. `ABLATE=ruleset` removes it again. The two sets were mined without
-/// `ABLATE=subdist`.
-/// (`Setup::rule_set` keeps it per task.)
-pub fn build_rule_set(name: Option<&str>) -> Vec<(Term, Term)> {
-    let text = match name {
-        Some("add3_mm") => include_str!("../../scripts/data/add3_mm_rules.txt"),
-        Some("mix3_mm") => include_str!("../../scripts/data/mix3_mm_rules.txt"),
-        Some("add3_nl") => include_str!("../../scripts/data/add3_nl_rules.txt"),
-        Some("mix3_nl") => include_str!("../../scripts/data/mix3_nl_rules.txt"),
-        Some(other) => panic!("unknown RULESET {other}"),
-        None => "",
-    };
-    parse_rules(text)
-}
-
-/// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins, the promoted rules, the
-/// `RULESET` rules; the mined ones (`Rules`) come after them. `Setup::fixed_rules` keeps them per task.
-pub fn build_fixed_rules(setup: &Setup) -> Vec<Rule> {
+/// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins, then the promoted rules;
+/// the mined ones (`Rules`) come after them. `Setup::fixed_rules` keeps them per task.
+pub fn build_fixed_rules() -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
     let v = Term::v;
     let shl = |a: Term| Term::op(SHL1, a, Term::ZERO);
@@ -1514,7 +1498,6 @@ pub fn build_fixed_rules(setup: &Setup) -> Vec<Rule> {
         Rule { name: "subdist", lhs: op(4, op(0, v(0), v(1)), op(0, v(2), v(3))), rhs: op(0, op(4, v(0), v(2)), op(4, v(1), v(3))) },
     ];
     all.extend(promoted_rules().iter().map(|(l, r)| Rule { name: "promoted", lhs: *l, rhs: *r }));
-    all.extend(setup.rule_set().iter().map(|(l, r)| Rule { name: "ruleset", lhs: *l, rhs: *r }));
     all
 }
 
@@ -1563,146 +1546,6 @@ pub const PROMOTED: &[(&str, &str)] = &[
 pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
     let mut seen = hashbrown::HashSet::new();
     text.lines().filter(|l| !l.contains("  OVER  ")).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).filter(|r| seen.insert(*r)).collect()
-}
-
-/// A pooled rules file has a section per library (a `# library <name>` line, then its rules; `driver::sweep`); a rule two
-/// libraries share is in both. The sections, in order, with their rules.
-pub fn library_sections(text: &str) -> Vec<(String, Vec<(Term, Term)>)> {
-    let (mut out, mut open): (Vec<(String, Vec<(Term, Term)>)>, bool) = (vec![], false);
-    for l in text.lines() {
-        if let Some(n) = l.strip_prefix("# library ") {
-            out.push((n.trim().to_string(), vec![]));
-            open = true;
-        } else if l.contains("  OVER  ") || (!l.trim().is_empty() && !l.contains(" -> ")) {
-            // a section holds only rule lines (and blank ones)
-            open = false;
-        } else if let Some(s) = out.last_mut().filter(|_| open) {
-            s.1.extend(parse_rules(l));
-        }
-    }
-    out
-}
-
-/// The critical pairs of two rules: for each non-variable position of either left side where the other's (variables renamed
-/// apart) unifies, the two results of rewriting that most general instance once by each rule. Variables are renumbered from 0 in
-/// order of appearance.
-pub fn critical_pairs(r1: &(Term, Term), r2: &(Term, Term)) -> Vec<(Term, Term)> {
-    fn shift(t: &Term, k: usize) -> Term {
-        match *t.node() {
-            Node::V(i) => Term::v(i + k),
-            Node::Op(o, a, b) => Term::op(o, shift(&a, k), shift(&b, k)),
-            _ => *t,
-        }
-    }
-    // `t` with one non-variable position unified with `l` and replaced by `r`, and the unifier
-    fn at(t: &Term, l: &Term, r: &Term, nv: usize) -> Vec<(Vec<Option<Term>>, Term)> {
-        let mut out = vec![];
-        if let Node::Op(o, a, b) = *t.node() {
-            let mut s = vec![None; nv];
-            if unify(t, l, &mut s) {
-                out.push((s, *r));
-            }
-            out.extend(at(&a, l, r, nv).into_iter().map(|(s, a2)| (s, Term::op(o, a2, b))));
-            out.extend(at(&b, l, r, nv).into_iter().map(|(s, b2)| (s, Term::op(o, a, b2))));
-        }
-        out
-    }
-    fn apply(t: &Term, s: &[Option<Term>]) -> Term {
-        match *t.node() {
-            Node::V(i) => s[i].as_ref().map_or_else(|| *t, |b| apply(b, s)),
-            Node::Op(o, a, b) => Term::op(o, apply(&a, s), apply(&b, s)),
-            _ => *t,
-        }
-    }
-    fn renumber(t: &Term, seen: &mut Vec<usize>) -> Term {
-        match *t.node() {
-            Node::V(i) => Term::v(seen.iter().position(|j| *j == i).unwrap_or_else(|| {
-                seen.push(i);
-                seen.len() - 1
-            })),
-            Node::Op(o, a, b) => Term::op(o, renumber(&a, seen), renumber(&b, seen)),
-            _ => *t,
-        }
-    }
-    let mut out = vec![];
-    for (p, q) in [(r1, r2), (r2, r1)] {
-        let k = p.0.max_var().max(p.1.max_var()) + 1;
-        let (lq, rq) = (shift(&q.0, k), shift(&q.1, k));
-        let nv = k + lq.max_var().max(rq.max_var()) + 1;
-        for (s, inner) in at(&p.0, &lq, &rq, nv) {
-            let mut seen = vec![];
-            let (x, y) = (renumber(&apply(&p.1, &s), &mut seen), renumber(&apply(&inner, &s), &mut seen));
-            out.push((x, y));
-        }
-    }
-    out
-}
-
-/// The units a pooled library's rules can be dropped in: for each two libraries A and B, B's rules (not also A's) that `meet` a
-/// rule of A's (the miner: a critical pair that does not join). Where two families orient rules into different normal forms,
-/// those are the rules that meet (docs/tier-cycle.md, "Salt 2's pooled add3 loss", "Drop units"); a single rule or a whole
-/// library is the wrong size.
-pub fn drop_units(sections: &[(String, Vec<(Term, Term)>)], meet: &mut dyn FnMut(&(Term, Term), &(Term, Term)) -> bool) -> Vec<Vec<(Term, Term)>> {
-    let mut units: Vec<Vec<(Term, Term)>> = vec![];
-    for (a, (_, ra)) in sections.iter().enumerate() {
-        for (_, rb) in sections.iter().enumerate().filter(|&(b, _)| b != a).map(|(_, s)| s) {
-            let unit: Vec<(Term, Term)> = rb.iter().filter(|r| !ra.contains(r) && ra.iter().any(|x| meet(r, x))).cloned().collect();
-            if !unit.is_empty() && !units.contains(&unit) {
-                units.push(unit);
-            }
-        }
-    }
-    units
-}
-
-/// The drop units of a pooled rules file (`library_sections`), where two rules meet when a critical pair of theirs does not
-/// join: rewritten (over `n` bits, `steps` per side) under all the file's rules and preferences, its two sides reach different
-/// normal forms. They depend only on the file, so `driver::sweep` builds them once (`units_text`) for every family's mine.
-pub fn joinability_units(job: &mut Job, text: &str, n: usize, steps: i64) -> Vec<Vec<(Term, Term)>> {
-    let rules = job.rules().with_mined(job.setup(), parse_rules(text)).with_prefs(parse_prefs(text));
-    job.with_rules(rules, |job| {
-        let mut joins = |a: &Term, b: &Term| {
-            let k = a.max_var().max(b.max_var()) + 1;
-            let mut side = |t: &Term| job.measured(steps, |job| rewrite(job, t, n, k).0).0;
-            side(a) == side(b)
-        };
-        drop_units(&library_sections(text), &mut |r, x| critical_pairs(r, x).iter().any(|(a, b)| !joins(a, b)))
-    })
-}
-
-/// Drop units as text: a unit's rules one per line, units separated by blank lines (`parse_units`).
-pub fn units_text(units: &[Vec<(Term, Term)>]) -> String {
-    units.iter().map(|u| u.iter().map(|(l, r)| format!("{} -> {}\n", l.show(), r.show())).collect::<String>()).collect::<Vec<_>>().join("\n")
-}
-
-pub fn parse_units(text: &str) -> Vec<Vec<(Term, Term)>> {
-    text.split("\n\n").map(parse_rules).filter(|u| !u.is_empty()).collect()
-}
-
-#[test]
-fn drop_units_are_the_rules_meeting_another_library() {
-    let text = "# library a\nsub(sub(x, y), z) -> sub(x, add(y, z))\nor(x, x) -> x\n# library b\nsub(sub(x, y), z) -> sub(sub(x, z), y)\nsub(x, sub(y, z)) -> add(sub(x, y), z)\nor(x, x) -> x\nand(x, 0) -> 0\nsub(x, 0) -> x  OVER  or(x, x) -> x\n";
-    let s = library_sections(text);
-    assert_eq!(s.iter().map(|s| (s.0.as_str(), s.1.len())).collect::<Vec<_>>(), [("a", 2), ("b", 4)]);
-    assert_eq!(parse_rules(text).len(), 5, "a rule two libraries share is one rule");
-    // here two rules meet when they overlap at all (the miner asks for a critical pair that does not join)
-    let u = drop_units(&s, &mut |r, a| !critical_pairs(r, a).is_empty());
-    let shown = |u: &[(Term, Term)]| u.iter().map(|(l, r)| format!("{} -> {}", l.show(), r.show())).collect::<Vec<_>>();
-    // both of b's sub rules unify with a's sub(sub(x, y), z) at the root; the shared or rule and b's and rule meet nothing of a's
-    assert_eq!(shown(&u[0]), ["sub(sub(x, y), z) -> sub(sub(x, z), y)", "sub(x, sub(y, z)) -> add(sub(x, y), z)"]);
-    assert_eq!(shown(&u[1]), ["sub(sub(x, y), z) -> sub(x, add(y, z))"]);
-    assert_eq!(u.len(), 2);
-}
-
-#[test]
-fn critical_pairs_of_two_orientations() {
-    let r = parse_rules("sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(sub(x, y), z) -> sub(sub(x, z), y)\nor(x, x) -> x\n");
-    let shown: Vec<String> = critical_pairs(&r[0], &r[1]).iter().map(|(a, b)| format!("{} | {}", a.show(), b.show())).collect();
-    // at the root, both ways; and each left side's inner sub(x, y) under the other's
-    assert!(shown.contains(&"sub(x, add(y, z)) | sub(sub(x, z), y)".to_string()), "{shown:?}");
-    assert!(shown.contains(&"sub(sub(x, y), z) | sub(x, add(z, y))".to_string()), "{shown:?}");
-    assert_eq!(shown.len(), 4, "{shown:?}");
-    assert!(critical_pairs(&r[0], &r[2]).is_empty());
 }
 
 /// A `Term` from its `show` syntax: `0`, `-1`, a variable name, or `op(a, b)`.
@@ -4286,35 +4129,6 @@ pub fn refute_returns_a_witness_for_false_laws_and_none_for_true_ones() {
     }
 }
 
-/// Check time of one rule's law alone: rule `LAW_RULE` (default 33) of the cmp3d own-rules file at `LAW_N` bits
-/// (default 8), `LAW_REPS` times (default 5) after one warm-up. Each rep builds the proof and checks it in its own
-/// `scoped`, one region, and times only the check. Prints `LAWT rule=.. n=.. reps=.. min=.. med=..`. The id arena's
-/// A/B harness (plan docs/superpowers/plans/2026-10-14-id-arena-stage3.md; `scripts/law_ab.sh`).
-#[test]
-#[ignore]
-pub fn law_time() {
-    let job = &mut Job::new(Setup::process());
-    let env = |k: &str, d: usize| job.setup().var(k).map_or(d, |v| v.parse().unwrap());
-    let (i, n, reps) = (env("LAW_RULE", 33), env("LAW_N", 8), env("LAW_REPS", 5).max(1));
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/runs/2026-10-12/scripts/cmp3d_own_rules.txt");
-    let rules = parse_rules(&std::fs::read_to_string(path).unwrap());
-    let (l, r) = &rules[i];
-    let k = l.max_var().max(r.max_var()) + 1;
-    let mut once = || {
-        tatic::kernel::scoped(|| {
-            let (lp, ls) = prove_rule(job, n, k, l, r).expect("the rule proves");
-            let t = Instant::now();
-            let ok = job.lemmas.params.as_ref().map_or_else(|| Postulates::new().check_open(&lp, &ls), |(p, _)| p.check_open(&lp, &ls));
-            let took = t.elapsed();
-            ok.expect("the law checks");
-            took
-        })
-    };
-    once();
-    let mut ts: Vec<_> = (0..reps).map(|_| once()).collect();
-    ts.sort();
-    println!("LAWT rule={i} n={n} reps={reps} min={:?} med={:?}", ts[0], ts[reps / 2]);
-}
 #[test]
 fn term_interning() {
     let (x, y) = (Term::v(0), Term::v(1));

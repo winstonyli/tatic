@@ -74,20 +74,18 @@ pub fn subst(s: &str, r: usize, arm: &str, dir: &Path) -> String {
 /// `--sweep`: `hc_rounds.ps1`'s experiment, full salt-1 sweeps on normal pages, with the sweep's machine-state checks
 /// moved out of the job (`runs` records the machine itself).
 pub fn sweep_arms(old: &str, new: &str) -> Vec<Arm> {
-    let env: Vec<(String, String)> = [("MACHINE_STATE", "0"), ("SALT", "1"), ("SWEEP", "mines own cold pooled"), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0"), ("SWEEP_OUT", "{dir}/{arm}.{r}")]
+    let env: Vec<(String, String)> = [("MACHINE_STATE", "0"), ("SALT", "1"), ("SWEEP", crate::gate::SWEEP), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0"), ("SWEEP_OUT", "{dir}/{arm}.{r}")]
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .to_vec();
     [("old", old), ("new", new)].map(|(name, exe)| Arm { name: name.into(), env: env.clone(), exe: exe.into(), args: crate::gate::sweep_args() }).to_vec()
 }
 
-/// `--pcs`: `cpu_ab.ps1`'s and `cpu_arms.ps1`'s experiment, `proof_cost_split` on cmp3d with its own library
-/// (`<scripts>/cmp3d_own_rules.txt`) and 300 laws. With one exe the arms come from `arm_envs` (`NAME:VAR=val,...`;
-/// `NAME:` for none); with two exes they are `old` and `new`.
-pub fn pcs_arms(scripts: &Path, exes: &[String], arm_envs: &[String]) -> Result<Vec<Arm>, String> {
+/// `--pcs`: `proof_cost_split` on the held-out band 11 (1000 laws) with no mined rules (`<root>` is the checkout). With one
+/// exe the arms come from `arm_envs` (`NAME:VAR=val,...`; `NAME:` for none); with two exes they are `old` and `new`.
+pub fn pcs_arms(root: &Path, exes: &[String], arm_envs: &[String]) -> Result<Vec<Arm>, String> {
     let base = vec![
-        ("CHECK_FAMILY".to_string(), "cmp3d".to_string()),
-        ("CHECK_RULES".to_string(), scripts.join("cmp3d_own_rules.txt").display().to_string()),
-        ("RULEMINER_LAWS".to_string(), "300".to_string()),
+        ("CHECK_FAMILY".to_string(), "streams".to_string()),
+        ("CHECK_LAWFILE".to_string(), root.join(r"tests\church_bv\held_11.txt").display().to_string()),
     ];
     let args: Vec<String> = ["search::proof_cost_split", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec();
     let arm = |name: &str, exe: &str, extra: Vec<(String, String)>| Arm { name: name.into(), env: [base.clone(), extra].concat(), exe: exe.into(), args: args.clone() };
@@ -442,7 +440,7 @@ mod tests {
         let one = pcs_arms(s, &["bf.exe".into()], &["old:".into(), "new:NO_PREFETCH=1,X=2".into()]).unwrap();
         assert_eq!(one.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["old", "new"]);
         assert_eq!(one[1].env.last().unwrap(), &("X".to_string(), "2".to_string()));
-        assert!(one[0].env.contains(&("CHECK_RULES".to_string(), r"C:\s\cmp3d_own_rules.txt".to_string())));
+        assert!(one[0].env.contains(&("CHECK_LAWFILE".to_string(), r"C:\s\tests\church_bv\held_11.txt".to_string())));
         let two = pcs_arms(s, &["a.exe".into(), "b.exe".into()], &[]).unwrap();
         assert_eq!((two[0].exe.as_str(), two[1].exe.as_str()), ("a.exe", "b.exe"));
         assert!(pcs_arms(s, &["bf.exe".into()], &[]).is_err());

@@ -22,9 +22,8 @@ pub struct Setup {
     nops: usize,
     /// The task's result file (`result`); `None` in a process that runs one test.
     results: Mutex<Option<std::fs::File>>,
-    /// `RULESET`'s rules, the fixed rules and their table rows, built at first use (the driver process builds a `Setup`
-    /// only to read configuration).
-    rule_set: OnceLock<Vec<(Term, Term)>>,
+    /// The fixed rules and their table rows, built at first use (the driver process builds a `Setup` only to read
+    /// configuration).
     fixed: OnceLock<Vec<Rule>>,
     fixed_table: OnceLock<Vec<TableRule>>,
     /// The lemma cache's file and counters (`lemma_cache`).
@@ -57,7 +56,6 @@ impl Setup {
             ablate,
             nops: 0,
             results: Mutex::new(None),
-            rule_set: OnceLock::new(),
             fixed: OnceLock::new(),
             fixed_table: OnceLock::new(),
             lemmas: Default::default(),
@@ -83,7 +81,7 @@ impl Setup {
     }
 
     /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, chain, tree, collapse, join,
-    /// promoted, ruleset, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
+    /// promoted, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
     /// eq_classes, shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
     /// environment each time was 11% of a mine (docs/tier-cycle.md).
     pub fn ablated(&self, name: &str) -> bool {
@@ -95,14 +93,9 @@ impl Setup {
         self.nops
     }
 
-    /// The mined rule set `RULESET` selects (`rewrite::build_rule_set`).
-    pub fn rule_set(&self) -> &[(Term, Term)] {
-        self.rule_set.get_or_init(|| crate::rewrite::build_rule_set(self.var("RULESET")))
-    }
-
     /// The rules that do not change during the task (`rewrite::build_fixed_rules`).
     pub fn fixed_rules(&self) -> &[Rule] {
-        self.fixed.get_or_init(|| crate::rewrite::build_fixed_rules(self))
+        self.fixed.get_or_init(|| crate::rewrite::build_fixed_rules())
     }
 
     /// `fixed_rules` as the rule table's rows.

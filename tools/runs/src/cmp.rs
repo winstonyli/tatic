@@ -7,7 +7,7 @@ use regex::bytes::{NoExpand, Regex};
 use std::path::Path;
 
 /// The 1-based tab-separated field dropped from each stage file (its seconds).
-const CUT: [(&str, usize); 6] = [("cold.tsv", 7), ("own.tsv", 7), ("pooled.tsv", 7), ("mines.tsv", 2), ("pooled_prefs.tsv", 2), ("m.tsv", 5)];
+const CUT: [(&str, usize); 3] = [("cold.tsv", 7), ("cold_streams.tsv", 7), ("m.tsv", 5)];
 
 struct Norm {
     time: Regex,

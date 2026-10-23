@@ -6,6 +6,9 @@
 use crate::{append, cmp, job};
 use std::path::Path;
 
+/// The sweep's stage (`SWEEP`): the cold mine on the streams (spec §10).
+pub const SWEEP: &str = "cold:streams";
+
 /// A sweep's arguments to the church_bv exe.
 pub fn sweep_args() -> Vec<String> {
     ["driver::sweep", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec()
@@ -31,7 +34,7 @@ pub fn gate(dir: &Path, tag: &str, old: &Path, new: &Path) -> Result<bool, Strin
         let out = dir.join(format!("{tag}_{arm}_{s}"));
         std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
         let mut spec = job::RunSpec::new(exe, sweep_args(), job::Output::Both(out.join("log.txt")));
-        spec.env = [("MACHINE_STATE", "0".to_string()), ("SWEEP_OUT", out.display().to_string()), ("SALT", s.to_string()), ("SWEEP", "mines own cold pooled".to_string())]
+        spec.env = [("MACHINE_STATE", "0".to_string()), ("SWEEP_OUT", out.display().to_string()), ("SALT", s.to_string()), ("SWEEP", SWEEP.to_string())]
             .map(|(k, v)| (k.to_string(), v))
             .to_vec();
         match job::run(&spec) {

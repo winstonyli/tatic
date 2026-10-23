@@ -1,5 +1,6 @@
 use super::rewrite::Node;
 use super::*;
+use hashbrown::HashSet;
 
 /// The gate operations shared by the proof-term builder (`GoodOps`, over `Gb`) and plain evaluation (`Bools`).
 pub trait Gates {
@@ -1180,7 +1181,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
     });
 }
 
-/// Where the kernel's work goes under a rule set: like `rule_set_kernel_check` (same `CHECK_FAMILY`, `CHECK_RULES`, `RULEMINER_*` vars), but
+/// Where the kernel's work goes under a rule set: like `rule_set_kernel_check` (same `CHECK_FAMILY` and `CHECK_RULES`; laws from `CHECK_LAWFILE`, required: the streams' laws come through files), but
 /// reports, for the laws proved by rules alone ("rules"), by rules and the join with no whole-term machine proof ("joined"), and
 /// for those that needed one ("machine"), the count, the
 /// time to build the proof, the time for the kernel to check it, and its size (unique nodes / nodes per occurrence); then the same
@@ -1229,24 +1230,6 @@ pub fn proof_cost_split() {
     });
 }
 
-/// Each rule of the promoted sets parses, is a true law at widths 1-4, and is proved (and kernel-checked) at width 4.
-#[test]
-pub fn promoted_rule_sets_are_proved() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        for text in [include_str!("../../scripts/data/add3_mm_rules.txt"), include_str!("../../scripts/data/mix3_mm_rules.txt"), include_str!("../../scripts/data/add3_nl_rules.txt"), include_str!("../../scripts/data/mix3_nl_rules.txt")] {
-            let rs: Vec<(Term, Term)> = parse_rules(text);
-            assert!(rs.len() >= 7);
-            for (l, r) in rs {
-                let k = l.max_var().max(r.max_var()) + 1;
-                assert!((1..=4).all(|w| l.plausibly_equals(&r, w, k)), "{} -> {}", l.show(), r.show());
-                let (p, t) = prove_rule(job, 4, k, &l, &r).unwrap_or_else(|| panic!("{} -> {} not provable", l.show(), r.show()));
-                job.lemmas.ck(&l.show(), &p, &t);
-            }
-        }
-    })
-}
-
 /// Closed terms equal to 0, -1 or 1 normalize to `0`, `-1`, `sub(0, -1)` with no machine proof (by the rules and `tree_step`; a
 /// constant-folding step of its own was removed as redundant).
 #[test]
@@ -1264,27 +1247,6 @@ pub fn closed_terms_fold_to_constants() {
 }
 
 // --- Proposal yield (docs/tier-cycle.md): what a proposer's samples are worth to the kernel ---
-
-/// What the kernel makes of one proposed `lhs = rhs` line. `Cheap` laws are proved with no whole-term machine proof under the rules in
-/// force; `Hard` laws needed one (or were not proved within the rewrite budget).
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
-pub enum Verdict {
-    Unparsed,
-    Trivial,
-    Refuted,
-    Duplicate,
-    Memorised,
-    KnownCheap,
-    KnownHard,
-    NovelCheap,
-    NovelHard,
-}
-
-/// A `Term` from `show` syntax over at most `kv` variables, or `None` for text that does not parse (`parse_term` panics on bad input).
-fn try_parse(s: &str, kv: usize) -> Option<Term> {
-    let t = std::panic::catch_unwind(|| parse_term(s)).ok()?;
-    (0..8).all(|v| v < kv || !t.has_var(v)).then_some(t)
-}
 
 /// The kernel's cost for a true law under the installed rules: whole-term machine proofs and rule steps (of a `LAW_STEPS` budget) that
 /// `rewrite_law` used, and whether it proved the law at all. The difficulty grade a proposer is scored by.
@@ -1332,7 +1294,7 @@ pub fn proposal_credit(job: &mut Job, rules: &[(Term, Term)], kv: usize, held: &
 }
 
 /// Credit for the proposals in `CREDIT_LAWS` (`lhs = rhs` lines) from the library `CHECK_RULES` mined on them, against the held-out
-/// window of `CHECK_FAMILY` (the `RULEMINER_*` vars: `SKIP`, `LAWS`, `SHUFFLE`). Prints a `CREDIT rule` line per rule (held-out gain,
+/// laws of `CHECK_FAMILY` (laws from `CHECK_LAWFILE`, required: the streams' laws come through files). Prints a `CREDIT rule` line per rule (held-out gain,
 /// users) and a `CREDIT total` line; `CREDIT_OUT` saves `credit<TAB>law` per proposal.
 #[test]
 #[ignore]
@@ -1384,79 +1346,6 @@ pub fn proposal_credit_goes_to_rule_users() {
     })
 }
 
-/// A law line `lhs = rhs` over `kv` variables, `None` when it does not parse.
-pub fn parse_law(line: &str, kv: usize) -> Option<(Term, Term)> {
-    let (a, b) = line.split_once(" = ")?;
-    Some((try_parse(a, kv)?, try_parse(b, kv)?))
-}
-
-/// Classify proposed lines (`lhs = rhs`). `train` holds the laws the proposer was shown, `known` every law of the family (either
-/// orientation); the other classes follow from parsing, the width 1-6 screen and `rewrite_law` under the
-/// installed rules, which also gives each true, unmemorised law its `Cost`.
-pub fn classify_proposals(job: &mut Job, lines: &[String], kv: usize, train: &HashSet<(Term, Term)>, known: &HashSet<(Term, Term)>) -> Vec<(Verdict, Option<Cost>)> {
-    let mut seen: HashSet<(Term, Term)> = HashSet::new();
-    lines
-        .iter()
-        .map(|line| {
-            let Some((t1, t2)) = parse_law(line, kv) else { return (Verdict::Unparsed, None) };
-            if t1 == t2 {
-                return (Verdict::Trivial, None);
-            }
-            let (fwd, rev) = ((t1, t2), (t2, t1));
-            if !t1.is_law(&t2, kv) {
-                return (Verdict::Refuted, None);
-            }
-            if !seen.insert(fwd) || seen.contains(&rev) {
-                return (Verdict::Duplicate, None);
-            }
-            if train.contains(&fwd) || train.contains(&rev) {
-                return (Verdict::Memorised, None);
-            }
-            let cost = law_cost(job, kv, &t1, &t2);
-            let verdict = match (known.contains(&fwd) || known.contains(&rev), cost.hard()) {
-                (true, false) => Verdict::KnownCheap,
-                (true, true) => Verdict::KnownHard,
-                (false, false) => Verdict::NovelCheap,
-                (false, true) => Verdict::NovelHard,
-            };
-            (verdict, Some(cost))
-        })
-        .collect()
-}
-
-use hashbrown::HashSet;
-
-fn lcg(s: &mut u64) -> u64 {
-    *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    *s >> 33
-}
-
-/// A character n-gram model of `text` (context of `order` bytes), sampled into `n` lines: the stand-in proposer a language model replaces.
-pub fn ngram_lines(text: &str, order: usize, n: usize, seed: u64) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let mut table: hashbrown::HashMap<&[u8], Vec<u8>> = Default::default();
-    for i in 0..bytes.len() {
-        table.entry(&bytes[i.saturating_sub(order)..i]).or_default().push(bytes[i]);
-    }
-    let mut s = seed;
-    (0..n)
-        .map(|_| {
-            let mut out: Vec<u8> = Vec::new();
-            while out.len() < 160 {
-                let ctx = &out[out.len().saturating_sub(order)..];
-                // back off to shorter contexts until one was seen
-                let Some(next) = (0..=ctx.len()).find_map(|k| table.get(&ctx[k..])) else { break };
-                let c = next[lcg(&mut s) as usize % next.len()];
-                if c == b'\n' {
-                    break;
-                }
-                out.push(c);
-            }
-            String::from_utf8_lossy(&out).into_owned()
-        })
-        .collect()
-}
-
 /// The `lhs = rhs` lines of a file as term pairs.
 pub fn read_laws(path: &str) -> Vec<(Term, Term)> {
     std::fs::read_to_string(path).unwrap().lines().filter_map(|l| l.split_once(" = ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
@@ -1465,176 +1354,4 @@ pub fn read_laws(path: &str) -> Vec<(Term, Term)> {
 /// `read_laws` with each law named as `family_laws` names it.
 pub fn read_named_laws(path: &str) -> Vec<(String, Term, Term)> {
     read_laws(path).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-}
-
-/// `t` with variable `v` replaced by `r`.
-fn subst(t: &Term, v: usize, r: &Term) -> Term {
-    match *t.node() {
-        Node::V(i) if i == v => *r,
-        Node::Op(o, a, b) => Term::op(o, subst(&a, v, r), subst(&b, v, r)),
-        _ => *t,
-    }
-}
-
-fn nodes(t: &Term) -> usize {
-    match *t.node() {
-        Node::Op(_, a, b) => 1 + nodes(&a) + nodes(&b),
-        _ => 1,
-    }
-}
-
-/// `t` with its `k`-th node in preorder replaced by `r` (`k` counts down, `None` once replaced).
-fn replace_node(t: &Term, k: &mut Option<usize>, r: &Term) -> Term {
-    match *k {
-        Some(0) => {
-            *k = None;
-            return *r;
-        }
-        Some(j) => *k = Some(j - 1),
-        None => return *t,
-    }
-    match *t.node() {
-        Node::Op(o, a, b) => {
-            let a2 = replace_node(&a, k, r);
-            Term::op(o, a2, replace_node(&b, k, r))
-        }
-        _ => *t,
-    }
-}
-
-fn ops_in(t: &Term, out: &mut std::collections::BTreeSet<usize>) {
-    if let Node::Op(o, a, b) = *t.node() {
-        out.insert(o);
-        ops_in(&a, out);
-        ops_in(&b, out);
-    }
-}
-
-/// Mutants of the seed laws, `n` of them, by `kind`: `subst` (a variable replaced by a small term on both sides) and `wrap` (both sides
-/// put under the same operator with a small term) are true by construction; `edit` (one node of one side replaced by a small term) mostly
-/// is not; `mix` cycles through the three. Small terms are a leaf or one operator of the seeds over leaves; `lt` stays at the root.
-pub fn mutate_laws(seeds: &[(Term, Term)], kv: usize, kind: &str, n: usize, seed: u64) -> Vec<String> {
-    let mut ops = std::collections::BTreeSet::new();
-    for (a, b) in seeds {
-        ops_in(a, &mut ops);
-        ops_in(b, &mut ops);
-    }
-    let inner: Vec<usize> = ops.iter().copied().filter(|&o| o != LT).collect();
-    let mut s = seed;
-    let mut pick = |m: usize| lcg(&mut s) as usize % m.max(1);
-    let mut out = vec![];
-    for i in 0..n {
-        let leaf = |p: &mut dyn FnMut(usize) -> usize| match p(kv + 2) {
-            j if j < kv => Term::v(j),
-            j if j == kv => Term::ZERO,
-            _ => Term::ONES,
-        };
-        let small = |p: &mut dyn FnMut(usize) -> usize| {
-            if inner.is_empty() || p(2) == 0 {
-                leaf(p)
-            } else {
-                let o = inner[p(inner.len())];
-                Term::op(o, leaf(p), leaf(p))
-            }
-        };
-        let (a, b) = &seeds[pick(seeds.len())];
-        let k = match kind {
-            "mix" => ["subst", "wrap", "edit"][i % 3],
-            k => k,
-        };
-        let (a2, b2) = match k {
-            "subst" => {
-                let v = pick(kv);
-                let r = small(&mut pick);
-                (subst(a, v, &r), subst(b, v, &r))
-            }
-            "wrap" => {
-                let rooted = matches!(*a.node(), Node::Op(LT, ..)) || matches!(*b.node(), Node::Op(LT, ..));
-                let o = if rooted || inner.is_empty() { continue } else { inner[pick(inner.len())] };
-                let (r, left) = (small(&mut pick), pick(2) == 0);
-                let w = |t: &Term| if left { Term::op(o, *t, r) } else { Term::op(o, r, *t) };
-                (w(a), w(b))
-            }
-            "edit" => {
-                let r = small(&mut pick);
-                let side = pick(2);
-                let t = if side == 0 { a } else { b };
-                // the root of an `lt` side stays (`lt` only at the root); other nodes may be replaced
-                let lo = matches!(*t.node(), Node::Op(LT, ..)) as usize;
-                let mut k = Some(lo + pick(nodes(t) - lo));
-                let e = replace_node(t, &mut k, &r);
-                if side == 0 { (e, *b) } else { (*a, e) }
-            }
-            _ => panic!("MUTATE_KIND is subst, wrap, edit or mix"),
-        };
-        out.push(format!("{} = {}", a2.show(), b2.show()));
-    }
-    out
-}
-
-/// Mutants keep `lt` at the root, and the true-by-construction kinds stay laws.
-#[test]
-pub fn mutants_are_well_formed() {
-    let seeds: Vec<(Term, Term)> = ["lt(x, sub(x, y)) = lt(x, y)", "sub(x, add(y, z)) = sub(sub(x, y), z)"]
-        .iter()
-        .map(|l| l.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap())
-        .collect();
-    let lt_inside = |t: &Term| -> bool {
-        fn any_lt(t: &Term) -> bool {
-            matches!(*t.node(), Node::Op(LT, ..)) || matches!(*t.node(), Node::Op(_, a, b) if any_lt(&a) || any_lt(&b))
-        }
-        matches!(*t.node(), Node::Op(_, a, b) if any_lt(&a) || any_lt(&b))
-    };
-    for kind in ["subst", "wrap", "edit"] {
-        let laws = mutate_laws(&seeds, 3, kind, 60, 5);
-        assert!(!laws.is_empty(), "{kind}");
-        for l in &laws {
-            let (a, b) = l.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap();
-            assert!(!lt_inside(&a) && !lt_inside(&b), "{kind}: {l}");
-            if kind != "edit" {
-                assert!(a.is_law(&b, 3), "{kind}: {l}");
-            }
-        }
-    }
-}
-
-/// The verdicts separate the cases they name.
-#[test]
-pub fn classify_proposals_separates_cases() {
-    let job = &mut Job::new(Setup::process());
-    let line = |s: &str| s.to_string();
-    let lines = vec![
-        line("add(x, y) = add(y, x)"),                 // a law, not in either set
-        line("add(x, y) = sub(x, y)"),                 // refuted by the screen
-        line("add(x, y"),                              // does not parse
-        line("add(x, y) = add(x, y)"),                 // trivial
-        line("add(y, x) = add(x, y)"),                 // the first one again, reversed
-        line("add(x, z) = add(z, x)"),                 // in the training set
-        line("add(x, add(y, z)) = add(add(x, y), z)"), // known to the family
-        line("add(x, w) = add(w, x)"),                 // a variable outside the family
-    ];
-    let train: HashSet<(Term, Term)> = parse_law("add(x, z) = add(z, x)", 3).into_iter().collect();
-    let known: HashSet<(Term, Term)> = parse_law("add(x, add(y, z)) = add(add(x, y), z)", 3).into_iter().collect();
-    let scored = classify_proposals(job, &lines, 3, &train, &known);
-    // a cost exactly for the laws that reach the kernel, and it agrees with the verdict
-    for (v, c) in &scored {
-        let graded = matches!(v, Verdict::KnownCheap | Verdict::KnownHard | Verdict::NovelCheap | Verdict::NovelHard);
-        assert_eq!(c.is_some(), graded, "{v:?}");
-        assert!(c.is_none_or(|c| c.hard() == matches!(v, Verdict::KnownHard | Verdict::NovelHard)), "{v:?} {c:?}");
-    }
-    let v: Vec<Verdict> = scored.iter().map(|(v, _)| *v).collect();
-    assert!(matches!(v[0], Verdict::NovelCheap | Verdict::NovelHard), "{:?}", v[0]);
-    assert_eq!(v[1..6], [Verdict::Refuted, Verdict::Unparsed, Verdict::Trivial, Verdict::Duplicate, Verdict::Memorised]);
-    assert!(matches!(v[6], Verdict::KnownCheap | Verdict::KnownHard), "{:?}", v[6]);
-    assert_eq!(v[7], Verdict::Unparsed);
-}
-
-/// The n-gram proposer reproduces its text's line shapes and is deterministic.
-#[test]
-pub fn ngram_lines_are_deterministic_and_line_shaped() {
-    let text = "add(x, y) = add(y, x)\nsub(x, y) = sub(x, y)\nadd(x, add(y, z)) = add(add(x, y), z)";
-    let (a, b) = (ngram_lines(text, 6, 20, 3), ngram_lines(text, 6, 20, 3));
-    assert_eq!(a, b);
-    assert!(a.iter().all(|l| l.len() <= 160 && !l.contains('\n')));
-    assert!(a.iter().any(|l| l.contains(" = ")));
 }

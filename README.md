@@ -67,129 +67,35 @@ still need a whole-term machine proof. The measured results are in
 `docs/loop-result.md` and `docs/tier-cycle.md`, with raw rows and the scripts
 that produced them under `docs/runs/`.
 
+- The laws come from the streams: `search::stream_sequence(salt)`, the operator-set
+  streams round-robin, built once per process and salt; a phase is a residue class
+  mod `STREAM_STRIDE`. Held-out laws are in `tests/church_bv/held_*.txt`. The
+  design is in the spec
+  [`2026-10-22-class-table-normal-form-design.md`](docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md),
+  §9.
 - The driver is the ignored test `driver::loop_stream` (`tests/church_bv/driver.rs`):
   `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> <church_bv test exe> driver::loop_stream --exact --ignored --nocapture`.
   `none` only serves, `ref` mines once on the whole stream, `loop` mines after
-  each batch. It writes `<dir>/m.tsv` (round, M, laws, rules in force, seconds,
-  laws that used up the rule budget). The module comment documents all options:
-  `B`, `K`, `OFFSET`, `STRIDE`, `SPHASE`, `FAMILY=add3|mix3|sbo3|cmp3|cmp3d|u3|u3w`,
-  `WARM_RULES=<file>` (start with rules in force; `scripts/rules/reassoc.txt`
-  holds six general reassociation rules that cut machine proofs on add3, mix3
-  and sbo3 streams), and `SPLIT=0|1` (one structure-based half of the laws).
-  `driver::sweep` runs the experiments of `docs/loop-result.md` (ref mines,
-  then own, cold, cross-family and pooled loops) with `SWEEP_OUT=<dir>`, a
-  stage's mines, then its loops, `SWEEP_LANES` (default 2; 1 for timings) at a
-  time.
+  each batch. It writes `<dir>/m.tsv` (one row per batch: M, laws, rules in
+  force, seconds and the join's counts). The module comment documents all
+  options (`B`, `K`, `OFFSET`, `SPHASE`, `WARM_RULES=<file>`, ...).
+  `driver::sweep` with `SWEEP=cold:streams` (the only stage) runs three cold
+  loops on phases 1-3 into `SWEEP_OUT=<dir>`; `scripts/streams_ab.sh` is the gate
+  built on it (A/B per salt, plus held-out M under each loop's rules).
 - The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
-  settings from `RULEMINER_*` environment variables. Options added for this
-  experiment, off by default unless noted: `PHASE` (residue class of a strided law
-  sequence), `SHAPE` and `SHAPE_SALT` (structure-based split of the laws),
-  `NODUPLHS` (no candidate whose left side already has a rule in force; on by
-  default, `0` turns it off), and `GUARD=<k>` (also score k laws that are
-  already machine-free, so a rule that fixes stragglers but breaks those is not
-  chosen; default 120, `0` turns it off).
+  settings from `RULEMINER_*` environment variables; the driver passes its laws
+  as a file (`RULEMINER_LAWFILE`). Two options: `NODUPLHS` (no candidate whose left side
+  already has a rule in force; on by default, `0` turns it off) and `GUARD=<k>`
+  (also score k laws that are already machine-free, so a rule that fixes
+  stragglers but breaks those is not chosen; default 120, `0` turns it off).
 - Which parts of the rewriter, prover, miner and loop are learned and which are
   fixed by hand, with the evidence per part: `docs/learned-vs-fixed.md`.
-- Unit tests for the split and the guard sampling: `shape_halves_partition`,
-  `shape_salt_changes_the_split`, `guard_plan_samples_and_weights` in
-  `tests/church_bv/search.rs`.
 
-Headline result (machine proofs M; `none` = no rules, `ref` = rules mined once
-on the whole stream; single runs, no noise estimate). A loop started from the
-six rules in `scripts/rules/reassoc.txt` recovered 83-92% of `ref`'s gain: add3
-194 / 62 / 51 for none / seeded loop / ref, sbo3 181 / 56 / 31, mix3 (offset
-600) 136 / 22 / 6. A loop started cold recovered 37-48% on add3 and sbo3 (add3
-125, sbo3 126). The first four rules were mined on add3; the fifth and sixth
-(`sub(sub(x,y),z) -> sub(sub(x,z),y)` and `sub(xor(x,-1),y) -> sub(-1,add(x,y))`)
-were picked from add3 and sbo3 runs, so sbo3 (built from similar operators) is
-a related family, not an independent test. Served statically, the sixth rule
-lowers M on five of six streams and never raises it, including two streams
-disjoint from the ones it was picked on (add3 77 to 63, sbo3 68 to 65). A
-seventh rule from the same mining runs changed M by at most 1 on five streams,
-so the library appears to stop helping at six.
-Over six disjoint samples of each stream the six rules gave M = 32-35 on add3
-(four rules 44-53, none 86-109) and 48-59 on sbo3 (four rules 54-65, none
-122-141), so differences of one or two proofs on a single stream are within
-the sample-to-sample spread. On the shl, shr and lt families the rules change
-nothing.
-Loops on four disjoint samples: seeded 31-34 on add3 and 46-55 on sbo3, cold
-60-73 and 93-112, so seeded beats cold on every sample; mining on top of the
-seeded start adds 1 proof on add3 and 3-6 on sbo3 over the static six rules.
-The library is specific to add/sub structure: on `cmp3` (comparisons `lt` of
-small arithmetic terms; 308 laws) the six rules change nothing (21 proofs with
-or without them) while three comparison-specific rules, found by `ref` or by a
-loop after its first batch, take it to 3 (`ref`) or 19 (loops, which pay the
-first batch in full).
-On a family mixing both structures (`cmp3d`, 6194 laws; the comparison rules, in
-`scripts/rules/cmp.txt`, were mined on a subset of it, so not independent) the six rules plus the three
-comparison rules gave 69 against 130 with no rules, a loop seeded with them 54,
-a cold loop 78 and `ref` 39; the comparison rules alone gave 124. Neither set
-changed the two-variable `lt` family. (`cmp.txt` has since gained a fourth rule,
-`lt(0, sub(0, x)) -> lt(0, x)`, found by the loops; the numbers above and in the
-next paragraph are for the first three. With it, static M on phases 0/1/2 of the
-stride-15 sequence is 66/83/85 instead of 69/84/88.)
-Over six disjoint `cmp3d` streams (stride 15, four batches of 100, approximate
-`RULEMINER_FAST` mining) the seeded loop beat the cold loop every time, by 17-31
-proofs (cold 74-93, seeded 43-73). Almost all of that is the first batch, served
-before a cold loop has mined anything (gap 13-29); from the second batch on the two
-are within a few proofs, so the library is a head start, not a lasting advantage.
-The comparison rules never fire on add3, sbo3 or mix3 and never raise M there.
-
-Shuffled streams and transfer between families. Sorted batches are lexicographic
-ranges of the law sequence, which mixes learning with batch structure, so
-`RULEMINER_SHUFFLE=<salt>` (exported; 0 = off) reorders the three-variable
-families by a hash and makes each batch a random sample. All numbers below are
-single runs with `RULEMINER_FAST`, `B=100 K=3`, three disjoint streams per family
-(stride 15 cmp3d, 7 add3, 11 sbo3, mix3 7), total M summed over the three
-streams, salt 1; libraries are mined on the shuffled phase-0 stream
-of their family with no round cap (`FAMILY=u3` is the union of the add3, sbo3 and
-cmp3d pools, for mining one library on a mixed stream). Current numbers (2026-10-11,
-`driver::sweep` stages `mines mines:u3 own cold cross pooled mixed cold:mix3 pooled:mix3 mixed:mix3`):
-
-Salt 1 / salt 2, with the run-time rules served most specific first (any order of a library serves the same; see
-`docs/tier-cycle.md`, "Rule order"):
-
-| target | cold | own library | other family's library | pooled (merged) | mined on u3 (35 / 29 rules) |
-|---|---|---|---|---|---|
-| cmp3d | 163 / 167 | 33 / 40 | 98-106 / 94-106 | 36 / 43 | 42 / 47 |
-| add3 | 167 / 154 | 30 / 33 | 38-108 / 39-100 | 27 / 33 | 30 / 56 |
-| sbo3 | 117 / 130 | 27 / 40 | 51-91 / 42-105 | 24 / 38 | 32 / 73 |
-| mix3 (held out) | 61 / 69 | n/a | n/a | 7 / 17 | 14 / 41 |
-
-The pooled library is best or within 3 of best everywhere (the family's own is best on cmp3d). The high ends of the foreign
-ranges are cmp3d's 31-rule library on add3 and sbo3. Before the canonical order (rules in mined order):
-
-| target | cold | own library | other family's library | pooled (merged) | mined on u3 (17 / 18 rules) |
-|---|---|---|---|---|---|
-| cmp3d | 167 / 159 | 60 / 61 | 110-113 / 97 | 60 / 61 | 42 / 55 |
-| add3 | 183 / 161 | 60 / 46 | 46-57 / 43-87 | 42 / 36 | 57 / 52 |
-| sbo3 | 123 / 132 | 31 / 48 | 47-58 / 55-82 | 32 / 41 | 41 / 67 |
-| mix3 (held out) | 60 / 70 | n/a | n/a | 10 / 17 | 17 / 40 |
-
-The rest of this section is the earlier miner (8-round cap, 40-step mining budget), kept as history:
-
-| target | cold | own library | other family's library | pooled (merged) | mined on u3, 8 rules | mined on u3, 25 rules |
-|---|---|---|---|---|---|---|
-| cmp3d | 231 (190) | 109 (80) | 139-140 (118-119) | 113 (82) | 138 (137) | 67 (54) |
-| add3 | 183 (183) | 62 (62) | 47-67 (56-65) | 51 (51) | 72 (72) | 66 (66) |
-| sbo3 | 128 (126) | 41 (46) | 53-69 (52-66) | 49 (45) | 58 (54) | 57 (54) |
-| mix3 (held out) | 58 (66) | n/a | n/a | 8 (13) | 16 (20) | 16 (20) |
-
-Numbers are after the dedup of the term pools (`pool3`, commit `bd00e69`); in parentheses, the same cell before it. The pools had
-built some small terms at more than one depth, which put 2-6% trivial or repeated laws into the streams and shifted every family's law
-sequence. All libraries were re-mined after the dedup; both u3 libraries came out identical to the pre-dedup ones. Seeding with any library beat cold on all 45 seeded streams. Salt-2 numbers (pre-dedup) are in
-[docs/loop-result.md](docs/loop-result.md).
-
-A library from another family recovers most of the gain except for cmp3d,
-which needs its comparison rules, and a library pooled from the other families
-transfers to mix3 although mix3 contributed none of its rules. After the dedup the 25-rule u3 library beats the family's own on cmp3d
-by more (67 vs 109), and the merged library stays close to cmp3d's own (113 vs 109). The rest of this paragraph is
-pre-dedup. The pooled library
-is the union of the three families' libraries with add3's `sub`/`sub`
-orientation dropped (the orientations conflict and a plain union would cycle); a
-library mined directly on the mixed stream is a little worse than the merged one
-(at 8 rules, the miner's default cap; with `RULEMINER_ROUNDS=16` the mixed-stream library gives cmp3d 65, better than the merged 82, and leaves the other families unchanged, since the extra rules are all comparison rules). Lifting the cap lets the miner stop by itself (25 rules on salt 1, 28 on salt 2): cmp3d 54 and 60 (own library 80 and 96), add3 66 and 66, sbo3 54 and 72, mix3 20 and 39, so one mixed-stream library beats the family's own on cmp3d on both salts and is within a few proofs of it on sbo3 on three of four salts (sbo3 total M cold / own / mixed: 126/46/54, 117/47/72, 133/50/52, 142/54/52). Exact mining gave the identical 25-rule library. Interleaving the three families in equal parts (`FAMILY=u3w`) did not help (10 rules; cmp3d 82, add3 70, sbo3 58, mix3 24). The pooled rules do not change the two-variable shl, shr or lt families (machine-free laws 274/279, 65/65, 220 vs 221 of 248); mix3, which contains shl1 terms, still transferred. Exact (non-FAST) mining
-reproduced the FAST totals on two cmp3d streams.
+Results on the streams, with their A/A baseline, are in `docs/tier-cycle.md`
+("The gate on the streams and its A/A baseline"). The earlier results on the
+hand-built three-variable families (`add3`, `sbo3`, `cmp3d`, `mix3`, the pooled
+and cross-family libraries) are in `docs/loop-result.md`; the code that ran them
+was deleted with the families (tag `v0.2.0` has it).
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).

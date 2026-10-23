@@ -129,7 +129,7 @@ fn cmd_time(words: &[String]) -> Result<i32, String> {
         ([[old, new]], []) if p.rest.is_empty() => (time::sweep_arms(old, new), Some(6)),
         ([], [exes]) if p.rest.is_empty() => {
             greps.extend(time::pcs_greps());
-            (time::pcs_arms(&checkout()?.join(r"docs\runs\2026-10-12\scripts"), exes, &arm_envs)?, None)
+            (time::pcs_arms(&checkout()?, exes, &arm_envs)?, None)
         }
         _ => return Err("give arms after --, or one of --sweep <old> <new> and --pcs <exe> [<new exe>]".into()),
     };

@@ -26,7 +26,7 @@
 //! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the stream sequence, built once
 //! per process and salt) and passes them as a file, LOOP_OUT/laws_<mine|serve>_<name>.txt (`RULEMINER_LAWFILE`,
 //! `CHECK_LAWFILE`).
-//! Output in LOOP_OUT: rules.txt (the rules in force at the end, then their learned preferences, `winner  OVER  loser` lines), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
+//! Output in LOOP_OUT: rules.txt (the rules in force at the end), m.tsv (batch, M, laws, rules in force, serve seconds, laws that used
 //! up the rule budget: nonzero means a rewrite cycle or growing rules, laws the join closed with no machine proof, terms the join's
 //! searches reached: its cost, which M does not show, and the distinct class-table replacements the batch used, each with
 //! a proof (spec decision 2: apart from M)), mine_<name>.log and serve_<skip>.log, each with a `.results` file
@@ -686,15 +686,8 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
             append(Path::new(&env.last().unwrap().1), &extra);
         }
         let records = worker.run("search::rule_miner", &env, &log).unwrap_or_else(|| panic!("rule_miner failed (see {})", log.display()));
-        // the base rules a preference phase dropped leave the file
-        let rule = |l: &str| (!l.contains("  OVER  ")).then(|| l.trim().split_once(" -> ")).flatten().map(|(a, b)| (parse_term(a.trim()), parse_term(b.trim())));
-        let dropped: hashbrown::HashSet<RuleKey> = records.iter().filter(|(k, _)| k == "drop").filter_map(|(_, r)| rule(r)).collect();
-        if !dropped.is_empty() {
-            let kept: String = std::fs::read_to_string(&rules).unwrap().lines().filter(|l| !rule(l).is_some_and(|r| dropped.contains(&r))).map(|l| format!("{l}\n")).collect();
-            std::fs::write(&rules, kept).unwrap();
-        }
-        // the chosen rules, then the learned preferences (`winner  OVER  loser` lines; the library file carries both)
-        let chosen: String = records.iter().filter(|(k, _)| k == "chosen" || k == "prefer").map(|(_, r)| format!("{r}\n")).collect();
+        // the chosen rules
+        let chosen: String = records.iter().filter(|(k, _)| k == "chosen").map(|(_, r)| format!("{r}\n")).collect();
         append(&rules, &chosen);
     };
     // (M, laws, laws that used up the rule budget, laws joined, terms the join reached, class-table replacements used) of the batch at `skip`
