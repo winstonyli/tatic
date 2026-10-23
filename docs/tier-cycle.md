@@ -5134,6 +5134,41 @@ sides meet are counted. Against the ref library at `JOIN_VISIT` 1000 (free laws,
   family's laws. It is over three variables. Terms with more, or with non-table operators below a node, would need
   `abstract_atoms`' abstraction first.
 
+*The table with `lt` as a second sort, its proofs, and smaller keys (2026-10-22; run `2026-10-22-class-table2`, 87 s,
+CPU 36% at launch; exe dabc018 plus `docs/runs/2026-10-22/patches/class_table2.patch`, reverted; script
+`docs/runs/2026-10-22/scripts/class_table2.sh`).* The table now also has `shl1`, and `lt` of two representatives as a
+one-bit sort that no operator consumes (its key carries the sort). Each distinct replacement is checked against every
+width-4 input and the screen's width-8 inputs; one failing either is a suspect. The others are proved at width 4
+(`prove_checked`, then `bitwise_law_k` for carry-free ones) and kernel-checked.
+
+| held-out set | ref library, `JOIN_VISIT` 1000 | ≤ 9, exhaustive key | ≤ 9, 64-input key | ≤ 11, 64-input key, capped at 4M classes |
+|---|---|---|---|---|
+| add3's 15 left at 20000 | 0 | 15 | 15 | 15 |
+| add3 size 9 / 11 | 191 / 169 | 200 / 189 | 200 / 189 | 200 / 200 |
+| sbo3 size 9 / 11 | 174 / 164 | 200 / 198 | 200 / 198 | 200 / 200 |
+| mix3 size 9 / 11 | 169 / 153 | 200 / 195 | 200 / 195 | 200 / 200 |
+| cmp3d size 9 / 11 / 13 | 198 / 198 / 190 | 200 / 197 / 191 | 200 / 198 / 192 | 200 / 200 / 199 |
+| classes (of them `lt`) | | 235899 (69955) | 222747 (56544) | 4000000 (879633) |
+| enumeration | | 10.8 s, 4608 B per class | 0.45 s, 72 B per class | 8.6 s |
+| distinct replacements, suspect | | 3203, 0 | 3240, 68 | 3298, 70 |
+
+- **One mechanism covers both sorts.** With `lt` as a second sort, cmp3d goes from 143 / 133 / 122 to 200 / 197 / 191,
+  and `lt` needs no code of its own beyond its sort.
+- **Every replacement has a proof.** All 3203 of the exhaustive key's replacements are proved and kernel-checked at
+  width 4: 2820 by `add_tree_law` (carry encodings), 383 by `bitwise_law_k`. None is over `CARRY_CAP` or without a
+  proof. Proving took 52 s and checking 12 s, about 20 ms each; the slowest took 1.1 s
+  (`add(y, add(x, add(z, and(x, y)))) = add(x, add(y, add(z, and(x, y))))`, a permutation).
+- **A smaller key is about 64 times smaller and 24 times faster, but merges wrongly.** On 64 pseudo-random width-8 tuples
+  plus the 8 tuples of 0s and 1s, 68 of 3240 replacements are suspect (103 with 16 tuples); which functions collide is
+  not looked at. That key has 13411 fewer `lt` classes but 259 more bit-vector classes at size 9: the exhaustive key's
+  widths 3 and 4 also merge some terms that differ at width 8. None of those merges was used here (0 suspects), but
+  neither key is sound alone. The meets in the random-key columns include laws normalised through a suspect
+  replacement, so they are an upper bound. Every replacement needs a proof anyway, so a wrong merge would cost a failed
+  proof and that class's coverage, not soundness.
+- **At ≤ 11 the table meets 2203 of the 2204 laws**, an upper bound as above. Its 4M classes (capped partway through size
+  11) took 8.6 s.
+
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
