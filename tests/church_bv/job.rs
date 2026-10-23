@@ -45,6 +45,11 @@ impl Setup {
         Arc::new(s)
     }
 
+    /// The process's setup with `pairs` over its environment and no result file: a test's job with a switch set.
+    pub fn with_env(pairs: Vec<(String, String)>) -> Arc<Setup> {
+        Arc::new(Setup::from_env(merge_env(process_env(), exe_env().as_deref(), &pairs)))
+    }
+
     fn from_env(env: Env) -> Setup {
         let ablate = env.get("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default();
         let mut s = Setup {
@@ -248,6 +253,18 @@ impl Job {
         self.with_rules(rules, f)
     }
 
+    /// Runs `f` with the class-table steps it takes counted apart, and keeps them (in `table_steps`) only when `f` returns
+    /// `Some`: the replacements a closed law used (spec decision 2), whichever phase took them.
+    pub fn steps_if_closed<R>(&mut self, f: impl FnOnce(&mut Job) -> Option<R>) -> Option<R> {
+        let kept = std::mem::take(&mut self.table_steps);
+        let r = f(self);
+        let used = std::mem::replace(&mut self.table_steps, kept);
+        if r.is_some() {
+            self.table_steps.extend(used);
+        }
+        r
+    }
+
     /// `f`, and what it spent from this job's budget and counters.
     pub fn spent<T>(&mut self, f: impl FnOnce(&mut Job) -> T) -> (T, Spent) {
         let (budget, fallbacks, cycle_cuts, join) = (self.rw.budget, self.rw.fallbacks, self.rw.cycle_cuts, self.join_cost);
@@ -339,6 +356,33 @@ fn with_rules_puts_the_outer_rules_back() {
     let inner = Rules::new(&s, vec![(parse_term("add(x, 0)"), parse_term("x"))]);
     let seen = job.with_rules(inner.clone(), |job| job.rules().is(&inner));
     assert!(seen && job.rules().is(&outer));
+}
+
+/// A test's switch: `with_env` lays its pairs over the process's environment.
+#[test]
+fn with_env_sets_a_switch() {
+    let s = Setup::with_env(vec![("ABLATE".into(), "classes,eq_classes".into())]);
+    assert!(s.ablated("classes") && s.ablated("eq_classes") && !s.ablated("comm"));
+}
+
+/// Table steps taken inside `steps_if_closed` are kept only when it returns `Some` (spec decision 2: a closed law's
+/// steps), and the steps counted before it stay either way.
+#[test]
+fn steps_are_kept_only_for_a_closed_law() {
+    use crate::rewrite::parse_term;
+    let job = &mut Job::new(Setup::process());
+    let (p, q) = ((parse_term("x"), parse_term("y")), (parse_term("y"), parse_term("x")));
+    job.table_steps.insert(p);
+    let open = job.steps_if_closed(|job| {
+        job.table_steps.insert(q);
+        None::<()>
+    });
+    assert!(open.is_none() && job.table_steps.len() == 1 && job.table_steps.contains(&p));
+    let closed = job.steps_if_closed(|job| {
+        job.table_steps.insert(q);
+        Some(())
+    });
+    assert!(closed.is_some() && job.table_steps.contains(&p) && job.table_steps.contains(&q));
 }
 
 #[test]

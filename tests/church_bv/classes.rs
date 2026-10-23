@@ -677,8 +677,7 @@ fn prove_eq_closes_a_residue_law_by_the_table() {
         let (p, s) = law_proof(job, 4, 3, &a, &b, &plan);
         job.lemmas.ck("residue law", &p, &s);
     });
-    let results = std::fs::File::create(std::env::temp_dir().join(format!("classes_ablated_{}.results", std::process::id()))).unwrap();
-    let job = &mut Job::new(Setup::for_task(vec![("ABLATE".into(), "classes".into())], results));
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
     let r = prove_eq(job, 4, 3, &a, &b);
     assert!(job.table_steps.is_empty(), "the ablated path takes no table step");
     assert!(r.is_none() || job.rw.fallbacks > 0, "without the table the law needs the machine or stays open");
