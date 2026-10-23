@@ -48,7 +48,7 @@ How the results below are measured (code: `tests/church_bv/driver.rs`, its modul
 - **Arms** (`gen_warm.sh`): `<ref>_<loop>`, whether the ref mines and the loops took extras (on/off, `ABLATE=gen`);
   `mon`/`moff` are the ref-mine sweeps.
 - **Cost** (`tools/runs`, a run's `result.txt`): wall, jobcpu (CPU seconds of the sweep's process tree), peakjob (its peak
-  memory); the run record adds CPU load and Defender's real-time protection at launch. Compare wall only at similar load.
+  commit), peakws (the largest peak working set of any of its processes, from 2026-10-23); the run record adds CPU load and Defender's real-time protection at launch. Compare wall only at similar load.
 
 ## Interface (to settle)
 - Syntax across the boundary: the `show` syntax (`op(a, b)`, `0`, `-1`, variables `x y z`), parsed by `parse_term`. A law is

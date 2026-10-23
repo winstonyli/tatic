@@ -170,13 +170,14 @@ fn apply_limits(spec: &mut job::RunSpec, p: &Parsed) -> Result<(), String> {
 /// The one line per run that `run` prints and `time` logs, with units as `sweep_job.ps1` wrote them.
 fn result_line(label: &str, r: &job::RunResult, rtp: Option<bool>) -> String {
     format!(
-        "{label} wall={:.1}s jobcpu={:.2}s procs={} stragglers={} peakproc={:.0}MB peakjob={:.0}MB other={:.0}% others={} rtp={} exit={}",
+        "{label} wall={:.1}s jobcpu={:.2}s procs={} stragglers={} peakproc={:.0}MB peakjob={:.0}MB peakws={:.0}MB other={:.0}% others={} rtp={} exit={}",
         r.wall,
         r.job_cpu,
         r.procs,
         r.stragglers,
         r.peak_proc_mb,
         r.peak_job_mb,
+        r.peak_ws_mb,
         r.other_pct,
         r.others,
         state::rtp_text(rtp),
@@ -388,10 +389,10 @@ mod tests {
 
     #[test]
     fn the_result_line() {
-        let r = job::RunResult { exit: 0, wall: 12.34, job_cpu: 10.411, procs: 5, stragglers: 0, peak_proc_mb: 279.4, peak_job_mb: 412.6, other_pct: 3.2, others: 0 };
+        let r = job::RunResult { exit: 0, wall: 12.34, job_cpu: 10.411, procs: 5, stragglers: 0, peak_proc_mb: 279.4, peak_job_mb: 412.6, peak_ws_mb: 221.3, other_pct: 3.2, others: 0 };
         assert_eq!(
             result_line("old.1", &r, Some(false)),
-            "old.1 wall=12.3s jobcpu=10.41s procs=5 stragglers=0 peakproc=279MB peakjob=413MB other=3% others=0 rtp=False exit=0"
+            "old.1 wall=12.3s jobcpu=10.41s procs=5 stragglers=0 peakproc=279MB peakjob=413MB peakws=221MB other=3% others=0 rtp=False exit=0"
         );
     }
 

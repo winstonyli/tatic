@@ -173,7 +173,7 @@ All of them print progress to stdout as they go, and write their records under t
 
 `run` prints, and `time` logs to stdout, one line per run:
 
-`<label> wall=<s>s jobcpu=<s>s procs=<n> stragglers=<n> peakproc=<MB>MB peakjob=<MB>MB other=<%>% others=<n> rtp=<True|False|?> exit=<code>`, with the units written as `sweep_job.ps1` wrote them (`wall=12.3s jobcpu=10.41s peakproc=279MB`).
+`<label> wall=<s>s jobcpu=<s>s procs=<n> stragglers=<n> peakproc=<MB>MB peakjob=<MB>MB peakws=<MB>MB other=<%>% others=<n> rtp=<True|False|?> exit=<code>` (`peakws`, the largest peak working set of any process in the job, added 2026-10-23), with the units written as `sweep_job.ps1` wrote them (`wall=12.3s jobcpu=10.41s peakproc=279MB`).
 
 - **Dropped from `sweep_job.ps1`'s line:** `kernel=` and `faults=`. The kernel split is unreliable here (LONG_RUNS.md), and faults were never used in a conclusion. Ruling; cost if wrong: one field back.
 - **Different baseline:** `sweep_job.ps1`'s job held its own PowerShell. So its `procs` was one higher, and its `peakjob` included that PowerShell's commit (the machine-state PowerShells too). Numbers from the two tools are not compared directly.

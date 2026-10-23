@@ -127,7 +127,7 @@ struct Row {
 }
 
 fn tsv_header(greps: &[Grep]) -> String {
-    let mut h = "arm\tround\tposition\tstart\twall_s\tjobcpu_s\tprocs\tstragglers\tpeakproc_mb\tpeakjob_mb\tother_pct\tothers\trtp\texit\tclean".to_string();
+    let mut h = "arm\tround\tposition\tstart\twall_s\tjobcpu_s\tprocs\tstragglers\tpeakproc_mb\tpeakjob_mb\tpeakws_mb\tother_pct\tothers\trtp\texit\tclean".to_string();
     for g in greps {
         h.push('\t');
         h.push_str(&g.name);
@@ -138,8 +138,8 @@ fn tsv_header(greps: &[Grep]) -> String {
 fn tsv_row(w: &Row) -> String {
     let r = &w.r;
     let mut s = format!(
-        "{}\t{}\t{}\t{}\t{:.2}\t{:.3}\t{}\t{}\t{:.0}\t{:.0}\t{:.1}\t{}\t{}\t{}\t{}",
-        w.arm, w.round, w.pos, w.start, r.wall, r.job_cpu, r.procs, r.stragglers, r.peak_proc_mb, r.peak_job_mb, r.other_pct, r.others, state::rtp_text(w.rtp), r.exit, w.clean
+        "{}\t{}\t{}\t{}\t{:.2}\t{:.3}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{:.1}\t{}\t{}\t{}\t{}",
+        w.arm, w.round, w.pos, w.start, r.wall, r.job_cpu, r.procs, r.stragglers, r.peak_proc_mb, r.peak_job_mb, r.peak_ws_mb, r.other_pct, r.others, state::rtp_text(w.rtp), r.exit, w.clean
     );
     for g in &w.greps {
         s.push('\t');
@@ -573,7 +573,7 @@ mod tests {
             // AB, BA, AB as `order` runs them
             pos: 1 + ((arm == "new") != (round == 2)) as usize,
             start: 0,
-            r: job::RunResult { exit: 0, wall: 1.0, job_cpu: cpu, procs: 1, stragglers: 0, peak_proc_mb: 0.0, peak_job_mb: 0.0, other_pct: 0.0, others: 0 },
+            r: job::RunResult { exit: 0, wall: 1.0, job_cpu: cpu, procs: 1, stragglers: 0, peak_proc_mb: 0.0, peak_job_mb: 0.0, peak_ws_mb: 0.0, other_pct: 0.0, others: 0 },
             rtp: None,
             clean: true,
             greps: vec![],

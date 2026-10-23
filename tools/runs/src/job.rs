@@ -1,7 +1,8 @@
 //! One measured run (`run`). The exe starts suspended, joins a new job object, then resumes, so every process it starts
 //! is in the job with no race (`pin.ps1` assigned after the start, and `sweep_job.ps1` put its own PowerShell in the
 //! job). The job sets priority, affinity and kill-on-close for all of them, and its accounting gives the run's CPU,
-//! process count and peak commit. Meanwhile a sampler thread counts other jobs' processes, and `GetSystemTimes` at both
+//! process count and peak commit; its completion port names each process it takes in, opened to read its peak working
+//! set afterwards (`Watcher`). Meanwhile a sampler thread counts other jobs' processes, and `GetSystemTimes` at both
 //! ends gives the load the rest of the machine added.
 
 use crate::state;
@@ -17,14 +18,18 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD,
     THREADENTRY32, Thread32First, Thread32Next,
 };
+use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_AFFINITY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_AFFINITY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOBOBJECT_ASSOCIATE_COMPLETION_PORT,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     SetInformationJobObject,
 };
+use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, NORMAL_PRIORITY_CLASS, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+    BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, INFINITE, NORMAL_PRIORITY_CLASS, OpenProcess, OpenThread,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, THREAD_SUSPEND_RESUME,
 };
 
 /// Where a run's output goes: one file for both streams through one handle (as `> log.txt 2>&1`), or two files.
@@ -104,8 +109,12 @@ pub struct RunResult {
     pub procs: u32,
     /// Processes still running when the straggler wait ran out; closing the job killed them.
     pub stragglers: u32,
+    /// The most commit any one process had, and the job's (its processes' at once).
     pub peak_proc_mb: f64,
     pub peak_job_mb: f64,
+    /// The largest peak working set of any process the job held (`Watcher`): the RAM one process held at most, where
+    /// `peak_proc_mb` is what it reserved. There is no job-wide working set: Windows keeps none.
+    pub peak_ws_mb: f64,
     /// Other processes' share of the machine during the run (`other_pct`).
     pub other_pct: f64,
     /// The most other jobs' processes seen at once.
@@ -120,8 +129,15 @@ impl Drop for Handle {
     }
 }
 
-/// A job object with the run's limits; closing it kills whatever is still in it.
-struct Job(Handle);
+/// A job object with the run's limits, and the completion port its notices arrive on; closing it kills whatever is
+/// still in it.
+struct Job(Handle, Handle);
+
+/// The completion keys on a job's port: the job's own notices, and `Watcher`'s stop.
+const JOB_KEY: usize = 1;
+const STOP_KEY: usize = 2;
+/// winnt.h's notice of a process joining a job (windows-sys has it only under the large `SystemServices` feature).
+const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
 
 impl Job {
     fn new(priority: Priority, affinity: usize) -> Result<Job, String> {
@@ -129,7 +145,11 @@ impl Job {
         if h.is_null() {
             return Err(last_error("CreateJobObjectW"));
         }
-        let job = Job(Handle(h));
+        let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        if port.is_null() {
+            return Err(last_error("CreateIoCompletionPort"));
+        }
+        let job = Job(Handle(h), Handle(port));
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_AFFINITY | JOB_OBJECT_LIMIT_PRIORITY_CLASS;
         info.BasicLimitInformation.Affinity = affinity;
@@ -137,6 +157,11 @@ impl Job {
         let ok = unsafe { SetInformationJobObject(h, JobObjectExtendedLimitInformation, (&raw const info).cast(), size_of_val(&info) as u32) };
         if ok == 0 {
             return Err(last_error("SetInformationJobObject"));
+        }
+        let assoc = JOBOBJECT_ASSOCIATE_COMPLETION_PORT { CompletionKey: JOB_KEY as *mut _, CompletionPort: port };
+        let ok = unsafe { SetInformationJobObject(h, JobObjectAssociateCompletionPortInformation, (&raw const assoc).cast(), size_of_val(&assoc) as u32) };
+        if ok == 0 {
+            return Err(last_error("SetInformationJobObject (completion port)"));
         }
         Ok(job)
     }
@@ -151,6 +176,64 @@ impl Job {
         let mut e: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         unsafe { QueryInformationJobObject(self.0.0, JobObjectExtendedLimitInformation, (&raw mut e).cast(), size_of_val(&e) as u32, std::ptr::null_mut()) };
         e
+    }
+}
+
+/// Opens each process the job takes in as its notice arrives, so that its peak working set can be read after it exits
+/// (the job's accounting has peak commit, not working set). A process that exits, and whose last handle closes, before
+/// its notice is read is missed; a pid reused by then is refused by `IsProcessInJob`.
+struct Watcher {
+    port: usize,
+    thread: Option<std::thread::JoinHandle<Vec<usize>>>,
+}
+
+impl Watcher {
+    fn new(job: &Job) -> Watcher {
+        let (port, jh) = (job.1.0 as usize, job.0.0 as usize);
+        let thread = std::thread::spawn(move || {
+            let mut opened = Vec::new();
+            loop {
+                let (mut msg, mut key, mut ov) = (0u32, 0usize, std::ptr::null_mut::<OVERLAPPED>());
+                if unsafe { GetQueuedCompletionStatus(port as HANDLE, &mut msg, &mut key, &mut ov, INFINITE) } == 0 || key == STOP_KEY {
+                    return opened;
+                }
+                if key == JOB_KEY && msg == JOB_OBJECT_MSG_NEW_PROCESS {
+                    // the notice's "overlapped" pointer is the new process's id
+                    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, ov as usize as u32) };
+                    let mut inside = 0;
+                    if !h.is_null() && unsafe { IsProcessInJob(h, jh as HANDLE, &mut inside) } != 0 && inside != 0 {
+                        opened.push(h as usize);
+                    } else if !h.is_null() {
+                        unsafe { CloseHandle(h) };
+                    }
+                }
+            }
+        });
+        Watcher { port, thread: Some(thread) }
+    }
+
+    /// Stops the watch: the processes it opened, closed when dropped.
+    fn stop(&mut self) -> Vec<Handle> {
+        let Some(t) = self.thread.take() else { return Vec::new() };
+        // after every notice already queued: the port is first in, first out
+        unsafe { PostQueuedCompletionStatus(self.port as HANDLE, 0, STOP_KEY, std::ptr::null()) };
+        t.join().unwrap_or_default().into_iter().map(|h| Handle(h as HANDLE)).collect()
+    }
+
+    /// The largest peak working set of the processes it opened, in MB.
+    fn peak_ws_mb(mut self) -> f64 {
+        let peak = |h: &Handle| {
+            let mut c: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+            c.cb = size_of_val(&c) as u32;
+            if unsafe { K32GetProcessMemoryInfo(h.0, &mut c, c.cb) } == 0 { 0 } else { c.PeakWorkingSetSize }
+        };
+        self.stop().iter().map(peak).max().unwrap_or(0) as f64 / 1048576.0
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -276,6 +359,8 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
         }
     }
     let job = Job::new(spec.priority, spec.affinity)?;
+    // before the child joins the job, so its own notice is seen; stopped on every return path
+    let watcher = Watcher::new(&job);
     // The sampler ends when `stop` is dropped, on every return path.
     let (stop, stopped) = mpsc::channel::<()>();
     let patterns = spec.others.clone();
@@ -311,6 +396,7 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
         basic = job.basic();
     }
     let ext = job.extended();
+    let peak_ws_mb = watcher.peak_ws_mb();
     let t1 = state::times();
     drop(stop);
     let others = sampler.join().unwrap_or(0);
@@ -325,6 +411,7 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
         stragglers: basic.ActiveProcesses,
         peak_proc_mb: mb(ext.PeakProcessMemoryUsed),
         peak_job_mb: mb(ext.PeakJobMemoryUsed),
+        peak_ws_mb,
         other_pct: other_pct(busy, total, job_cpu),
         others,
     })
@@ -343,6 +430,14 @@ mod tests {
         match mode.as_str() {
             "spin" => spin(Duration::from_millis(500)),
             "env" => println!("OS={}", std::env::var("OS").unwrap_or_else(|_| "unset".into())),
+            // brings 128 MB into its working set, then exits
+            "touch" => {
+                let mut v = vec![0u8; 128 << 20];
+                for i in (0..v.len()).step_by(4096) {
+                    v[i] = 1;
+                }
+                std::hint::black_box(&v);
+            }
             "sleep" => {
                 std::fs::write(std::env::var("RUNS_PID_FILE").unwrap(), std::process::id().to_string()).unwrap();
                 std::thread::sleep(Duration::from_secs(30));
@@ -411,6 +506,17 @@ mod tests {
         let r = run(&helper_spec("orphan_spin", &d)).unwrap();
         assert_eq!((r.exit, r.stragglers), (0, 0), "{r:?}");
         assert!(r.procs >= 2 && r.job_cpu >= 0.4, "{r:?}");
+    }
+
+    /// The peak working set is the largest of any process the job held, including one that exited before the run did.
+    #[test]
+    fn the_peak_working_set_counts_every_process() {
+        for mode in ["touch", "orphan_touch"] {
+            let d = scratch(mode);
+            let r = run(&helper_spec(mode, &d)).unwrap();
+            assert_eq!(r.exit, 0, "{r:?}");
+            assert!(r.peak_ws_mb >= 128.0, "{mode}: {r:?}");
+        }
     }
 
     #[test]
