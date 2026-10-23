@@ -5361,7 +5361,8 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   45716): the table closes pairs the join closed before, and many the join and the machine did not.
 - **Replacements per batch** (`m.tsv`'s ninth column): 8-50 in B, 1068 in all over 45 batches; 0 in A. An over-count:
   until the final review's fix it also counted the steps of pairs the table left open, which no proof used
-  (`classes::steps_of_a_pair_left_open_are_not_counted`); later gates count only closed pairs' steps. 5 distinct
+  (`classes::steps_of_a_pair_left_open_are_not_counted`). Counted right (run `2026-10-23-ct-fix-gate-u`, same rules
+  and M): 1-29 per batch, 542 in all, about half. 5 distinct
   replacements were met with no proof (`CLASS_UNUSABLE`), all over large `add`/`sub`/`shl1` terms, so normalizing stopped
   short there.
 - **Cost: job CPU +29% (508 s to 655 s), wall 71 s to 96 s, the largest `peakproc` 577 MB to 684 MB (+107 MB).** Each
@@ -5432,7 +5433,10 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   every stored representative holding it (substituting at displacement could not work: the successor is larger, so
   terms already built at smaller sizes could not take it). `representatives_are_fixpoints_below_the_root` (903 before,
   none after); the table's counts unchanged, its pin re-taken; the held-out laws unchanged (2174 of 2204 met, 3187
-  replacements, all proved: they never reached the 903).
+  replacements, all proved: they never reached the 903). The gate is unchanged too (run `2026-10-23-ct-fix-gate-u`,
+  a678745, untimed after two `-Timed` refusals on a busy machine): M 377 to 233, mine rounds 1308 to 1931, and all 30
+  rule files the same as the zip gate's, so the 903 never reached a mined law either; the `classes` column, now counted
+  right, is 542 (above, "Replacements per batch").
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
