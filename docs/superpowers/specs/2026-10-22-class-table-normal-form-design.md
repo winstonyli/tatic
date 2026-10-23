@@ -42,11 +42,11 @@ the rewriter now fixes by hand, the most load-bearing of which is the operand or
 4. **Size 9.** Larger tables (size 11 under a 64-input key: 4M classes, capped, 8.6 s) are a later measurement.
 5. **Phase 1's place in `prove_eq`:** after the truth-table and per-position steps (cheap decisions), before
    `shr_mask_eq` and the join.
-6. **Open: a replacement that fails its proof in a run.** Decision 1 said a refuting input found in a run joins that
-   process's key. Rebuilding the table mid-run would change normal forms partway through a task, and threads that share
-   a process would see the change at different points, so a run's results would depend on timing. Recommended instead:
-   such a replacement is not used (the node is treated as if its class were unknown) and the pair is reported, for the
-   next regeneration of the key file. Not decided.
+6. **A replacement that fails its proof in a run is not used.** The node is treated as if its class were unknown, and
+   the pair is reported, for the next regeneration of the key file. The key never changes during a run. Rejected:
+   adding the refuting input to the process's key mid-run (the first form of decision 1). That would change normal
+   forms partway through a task, and threads that share a process would see the change at different points, so a run's
+   results would depend on timing.
 
 ## Design
 
