@@ -498,8 +498,9 @@ fn hidden_state_is_classified() {
         ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
         ("encoding.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
     ];
-    const PROCESS_WIDE: [(&str, &str, &str); 6] = [
+    const PROCESS_WIDE: [(&str, &str, &str); 7] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
+        ("classes.rs", "CLASSES", "the class table: built once from the baked-in key, pure"),
         ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
         ("lemma_cache.rs", "ID", "the running exe's identity"),
         ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),

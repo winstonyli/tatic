@@ -580,7 +580,7 @@ fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R)
 }
 
 impl<W: Word> ValueMemo<W> {
-    fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
+    pub fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
         let per = (VALUE_BLOCK / (len * std::mem::size_of::<W>())).max(1);
         ValueMemo { mask: low_bits(n), len, vars, ids: Default::default(), per, blocks: vec![] }
     }
