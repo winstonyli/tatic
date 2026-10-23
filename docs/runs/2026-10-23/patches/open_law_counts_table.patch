@@ -1,8 +1,8 @@
 diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
-index 274fa26..a4a08d6 100644
+index 274fa26..59e8cde 100644
 --- a/tests/church_bv/classes.rs
 +++ b/tests/church_bv/classes.rs
-@@ -350,6 +350,11 @@ impl Classes {
+@@ -350,6 +350,19 @@ impl Classes {
  
      /// The representative of `t`'s class when the table knows it and it is not `t`; `None` otherwise, and for a term over a
      /// variable other than x, y, z. Pure: no proof.
@@ -11,14 +11,22 @@ index 274fa26..a4a08d6 100644
 +        self.map.values().cloned().collect()
 +    }
 +
++    /// PROBE (throwaway): the stored representative of `t`'s class, `t` itself included; `None` for a class not stored.
++    pub fn class_of(&self, t: &Term) -> Option<Term> {
++        if t.max_var() >= 3 {
++            return None;
++        }
++        self.rep(t).or_else(|| self.map.values().any(|r| r == t).then_some(*t))
++    }
++
      pub fn rep(&self, t: &Term) -> Option<Term> {
          if t.max_var() >= 3 {
              return None;
 diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
-index c79eabd..49b38ea 100644
+index c79eabd..89538a9 100644
 --- a/tests/church_bv/search.rs
 +++ b/tests/church_bv/search.rs
-@@ -1121,6 +1121,140 @@ pub fn grammar_laws_lie_outside_the_pool() {
+@@ -1121,6 +1121,176 @@ pub fn grammar_laws_lie_outside_the_pool() {
      }
  }
  
@@ -143,6 +151,7 @@ index c79eabd..49b38ea 100644
 +        })
 +        .collect();
 +    let mut r8 = ValueMemo::new(8, 4096, tvars);
++    let (mut cats, mut funcs, mut opsets, mut examples) = (std::collections::BTreeMap::new(), hashbrown::HashMap::new(), hashbrown::HashMap::new(), vec![]);
 +    let job = &mut Job::new(Setup::process());
 +    tatic::kernel::scoped(|| {
 +        for ((l, k), ls) in &by {
@@ -152,8 +161,43 @@ index c79eabd..49b38ea 100644
 +            let wrong = open.iter().filter(|(a, b)| r8.values(a).to_vec() != r8.values(b).to_vec()).count();
 +            let held = open.len() - wrong;
 +            println!("OPEN {family} level {l} size {k}: laws {} sampled {} open {} false {wrong} est {} ({:.1}s)", ls.len(), sample.len(), open.len(), held * ls.len() / sample.len().max(1), t0.elapsed().as_secs_f64());
++            // why each side stays open: its normal form's class is unknown to the table, known but not stepped to (the
++            // verdict refused), or the normal form is the class's representative
++            let held_laws: Vec<&&(Term, Term)> = open.iter().filter(|(a, b)| r8.values(a).to_vec() == r8.values(b).to_vec()).collect();
++            for (a, b) in held_laws {
++                let (na, nb) = (c.normalize(job, 4, 3, a).0, c.normalize(job, 4, 3, b).0);
++                let why = |n: &Term| match c.class_of(n) {
++                    None => "unknown",
++                    Some(r) if r == *n => "rep",
++                    Some(_) => "refused",
++                };
++                let mut w = [why(&na), why(&nb)];
++                w.sort();
++                *cats.entry(format!("{}+{}", w[0], w[1])).or_insert(0usize) += 1;
++                let f = r8.values(a).to_vec();
++                let lt = matches!(*a.node(), Node::Op(LT, ..));
++                *funcs.entry((f, lt)).or_insert(0usize) += 1;
++                let mut os = std::collections::BTreeSet::new();
++                ops_of(na, &mut os);
++                ops_of(nb, &mut os);
++                let name = |o: &usize| ["add", "and", "or", "xor", "sub", "shl1", "shr1"].get(*o).copied().unwrap_or("?").to_string();
++                *opsets.entry(format!("{}{}", if lt { "lt:" } else { "" }, os.iter().map(name).collect::<Vec<_>>().join(","))).or_insert(0usize) += 1;
++                if examples.len() < 12 && examples.len() < 3 * (*l) {
++                    examples.push(format!("L{l} s{k} [{}+{}] {} = {}  =>  {} | {}", w[0], w[1], a.show(), b.show(), na.show(), nb.show()));
++                }
++            }
 +        }
 +    });
++    println!("WHY {family}: {cats:?}");
++    let mut fs: Vec<usize> = funcs.values().cloned().collect();
++    fs.sort_unstable_by(|a, b| b.cmp(a));
++    println!("FUNCS {family}: {} distinct functions over {} open laws; top counts {:?}; lt functions {}", fs.len(), fs.iter().sum::<usize>(), &fs[..fs.len().min(15)], funcs.keys().filter(|k| k.1).count());
++    let mut os: Vec<(String, usize)> = opsets.into_iter().collect();
++    os.sort_by(|a, b| b.1.cmp(&a.1));
++    println!("OPSETS {family}: {:?}", &os[..os.len().min(20)]);
++    for e in &examples {
++        println!("EXAMPLE {e}");
++    }
 +}
 +
  /// The generator takes no padding law: no side of its laws is a sample term whose grown leaf was padding, and the sample

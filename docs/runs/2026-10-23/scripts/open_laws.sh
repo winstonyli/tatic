@@ -8,7 +8,7 @@ for s in ${SEEDS:-20000}; do
 for g in ${BUDGETS:-20000}; do
   for f in ${FAMS:-table add3 sbo3 mix3 cmp3d}; do
     echo "SEEDS $s BUDGET $g $f"
-    OL_PAIR=${PAIR:-seed} OL_SEEDS=$s OL_GEN=$g OL_FAMILY=$f OL_SALT=1 OL_PER=300 OL_LEVELS=3 "$EXE" search::open_law_counts --exact --ignored --nocapture < /dev/null 2>&1 | grep -E "^(TERMS|OPEN)|panic"
+    OL_PAIR=${PAIR:-seed} OL_SEEDS=$s OL_GEN=$g OL_FAMILY=$f OL_SALT=1 OL_PER=${PER:-300} OL_LEVELS=3 "$EXE" search::open_law_counts --exact --ignored --nocapture < /dev/null 2>&1 | grep -E "^(TERMS|OPEN|WHY|FUNCS|OPSETS|EXAMPLE)|panic"
   done
 done
 done

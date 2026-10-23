@@ -5488,6 +5488,24 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   explanation in the bullet above is falsified: what caps the stream is how many grown terms fall in classes the table
   does not reach, not which member a law pairs them with. The table-seeded stream gives about 1170 open laws per
   salt at budget 80000 within three growths, 40% of them (470) of size 15.
+- **What the open laws are** (same probe, each open law that holds on 4096 random width-8 inputs classified, with
+  a throwaway `Classes::class_of`; run `2026-10-23-open-laws-cap`, budget 80000, up to 2000 laws per bucket, seeds:
+  the table's 20149, cmp3d, add3). Each side's normal form is `unknown` (its class is not in the table: a function no
+  term of size 9 or less computes), `refused` (the class is stored but the verdict refused the step to it) or `rep` (it
+  is its class's representative).
+  - cmp3d: 931 of 932 open laws are unknown+unknown, over 781 distinct functions. add3: all 627, over 560 functions.
+    So a family's open laws are new functions, nearly one law per function.
+  - Table seed: of 581, 364 refused+rep and 35 refused+refused: the table knows the function but the step is refused
+    (laws the table would close if its proof did); only 151 are unknown+unknown. 31 are rep+rep: two stored classes, so
+    the key separates the sides at some width from 1 to 8 although width 4 and 4096 width-8 inputs agree, i.e. false
+    laws that a width-8 sample misses. 581 laws hold 363 functions, the top two 61 and 43 (one-bit `lt` results).
+  - Operators of the families' open laws: cmp3d `lt` over add, sub with xor (321) or `shl1` (192) or both (158); add3
+    add with xor and sub (168), with or (103), and (72), both (72). (The probe's printed names are off by one past
+    `sub`: its `shr1` is `shl1`, its `?` is `shr1`.)
+  - So the cap is how many grown terms compute functions beyond size 9. Arithmetic-heavy family pools reach them;
+    growth from the table's representatives mostly lands in functions the table has, where an open law is a refused
+    verdict or a false law. A stream for the miner wants the `unknown` signal (the class is not stored), not only
+    "open", and a check over the key's widths, not a width-8 sample.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
