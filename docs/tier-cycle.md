@@ -16,8 +16,11 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
 ## What exists (kernel side)
 - The mine-and-serve loop (`driver::loop_stream`, `search::rule_miner`): laws are served in batches, rules are mined from them, M
   (laws still needing a whole-term machine proof) falls. Results and limits are in `docs/loop-result.md`.
-- The explorer is not learned: a hash-ordered stream of a fixed family, and the miner's greedy candidate pool.
-- Rule libraries plateau at about 25 rules on the current families: the fixed vocabulary saturates.
+- The explorer is not learned: a hash-ordered stream of a fixed family, the law generator's extras (a filtered,
+  salt-hashed sample of the family's grammar; `v0.2.0`) and the miner's greedy candidate pool.
+- The fixed vocabulary saturates. Ref libraries hold 11-28 rules on add3, sbo3 and mix3, 33-54 on u3 and 52-79 on cmp3d
+  (salts 1-10, run `2026-10-22-gen-warm-fix`), and the batches served after a mine are nearly free (mined-batch M warm
+  54 and cold 17 over salts 1-10, "The generator's n after the wider filter").
 
 ## Metrics
 How the results below are measured (code: `tests/church_bv/driver.rs`, its module doc and `loop_stream`).
@@ -57,11 +60,13 @@ How the results below are measured (code: `tests/church_bv/driver.rs`, its modul
 
 ## Experiments
 1. **Proposer yield** (kernel side done, see below). Given a proposer, what fraction of its samples parse, survive the screen, are
-   new, and are hard? Baselines: uniform pool pairs and a character n-gram trained on verified laws. Swap a scratchtape LM in later.
-2. **Does an LM-proposed stream mine better rules?** Feed accepted proposals into the loop and compare the mined rules' M reduction
-   against the hash-ordered stream.
-3. **Close the cycle.** Train on accepted laws, repeat, and track the frontier (hardest law provable within a fixed budget), not just
-   M on a fixed stream.
+   new, and are hard? Baselines: uniform pool pairs and a character n-gram trained on verified laws. The model that replaces
+   them is a custom ranker, not scratchtape's LM (below).
+2. **Does a ranked choice of laws mine better rules?** Originally an LM-proposed stream against the hash-ordered stream; since
+   `v0.2.0` the loops also mine on the law generator's extras, so the baseline is a random draw of the generator at the same n
+   (`ROADMAP.md`, v0.3).
+3. **Close the cycle.** Train on accepted laws, repeat, and track the frontier, not just M on a fixed stream. The frontier is
+   not in the code yet; its proposed definition is in `ROADMAP.md`, v0.5.
 
 **The proposer model's target: ranking (decided 2026-10-17; design open).** The proposer will be a custom model architecture
 built for this, not scratchtape's LM used directly. Its main job is (b) ranking which laws and candidates to try, ahead of (a)
@@ -116,8 +121,9 @@ laws beyond 5 nodes and (c) new definitions:
 - Soundness: only kernel-checked rules may enter the library. Machine-proved laws are checked; the ring-theory spike's lemmas are
   not (value screen only).
 - Fixed vocabulary: more rules stop helping. Growth needs new operators or definitions, proposed by the model and checked
-  conservatively (see the Boolean-comparison spec, local).
-- Evidence so far is single runs on related add/sub/bitwise/comparison families.
+  conservatively (`docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md`; milestone v0.4 in `ROADMAP.md`).
+- Evidence is paired counts over salts 1-10 (some 1-20), but on related add/sub/bitwise/comparison families only
+  (`PARKED.md`, "Transfer to families with different operator structure").
 
 ## Results
 Raw rows, run scripts and the patches of reverted switches are kept per day under `docs/runs/<date>/` (from 2026-10-12).

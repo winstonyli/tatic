@@ -3,6 +3,8 @@
 `kind: experiment` (see VERSIONING.md). Version field: `Cargo.toml` (`0.1.0`, no tags yet); no changelog: tag messages are
 the history (`git tag -n99`).
 
+- Main goals, in `ROADMAP.md` ("Goals"): a JIT on proved equivalence; a kernel that improves itself (mined rules, its
+  own vocabulary); the KR&R tier of a cycle with a GPU model. Check new work and proposals against them.
 - Findings and their measurements: `docs/tier-cycle.md`. Parked and deferred work: `PARKED.md`. Milestones: `ROADMAP.md`.
 - Specs and plans (`docs/superpowers/`, tracked from 2026-10-17) start with front matter
   `status: draft | active | done | "superseded-by: <file>"`; it overrides any older "Status:" line in the body.

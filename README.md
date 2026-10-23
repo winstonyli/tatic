@@ -1034,6 +1034,17 @@ guards against by hand): caught immediately, at seed 22.
 
 ## Future work
 
+- Mined rules on the JIT's programs, and learned compilations: where the
+  JIT meets the rule miner (`ROADMAP.md`, "Goals" 1 and 2). The two share
+  no term language yet. A probe found that the mined `add`/`sub` rules
+  fire on one node of the JIT's benchmark terms and save no instructions:
+  the JIT's programs are loops and closures without arithmetic depth
+  (`docs/tier-cycle.md`, "Other ways to join the JIT and the loop", option
+  A's result, 2026-10-17). Lowering templates can be stated and proved as
+  kernel laws, so compilations could be mined by target cost (same doc,
+  "Compiling hot transformations, with learnable compilations"; parked in
+  `PARKED.md`). Trigger: workloads with arithmetic depth, or the
+  specialiser producing it by inlining.
 - Combining closures with self-recursion more fully in one proof.
   `prove_tail_recursive_universal` now covers a closure-typed *parameter*
   threaded through recursion, *and* a closure genuinely created and
