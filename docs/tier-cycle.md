@@ -5524,6 +5524,16 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   add3 pool's 856 at budget 20000. So the narrow arithmetic set pairs as well as the hand pool without it, while a set of
   five operators is broad enough that grown terms grow apart, as with all seven: what pairs is a small operator set,
   not a hand-written pool.
+- **Two operators pair best; `lt` and breadth hurt** (run `2026-10-23-open-laws-sweep`, `scripts/opset_sweep.sh`: every
+  set of 2-4 of the seven bit-vector operators, with and without `lt`, 182 sets, budget 20000, two growths, 300 laws
+  per bucket; open laws exclude the 485 of 15782 sampled that width 8 refutes). Means by set size: two operators about
+  1410 open laws over 93 functions (1094 seeds), three 902 over 103, four 365 over 62; `lt` lowers each (863/621/291
+  open) and raises functions in only 8 of 91 sets, its open laws mostly refused verdicts. Best by functions: add with
+  one of shr1, and, or, shl1 (263-273; add,shr1 4624 open laws), and add,and,shr1 (274), against 314 open laws for the
+  whole table and 640 for the cmp3d pool at the same budget. Sets with many open laws but few functions are refused
+  verdicts (and,shr1,lt: 3126 open, 217 of 260 refused, 36 functions); sets of bitwise operators alone or of shl1,shr1
+  give none. Across all sets 11555 of 15297 classified are unknown+unknown. Not measured: how much the sets' functions
+  overlap, so whether a mixed stream over several pairs beats one pair at the same total budget is open.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
