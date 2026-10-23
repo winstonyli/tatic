@@ -1,6 +1,6 @@
 #!/bin/bash
 # class_mem_shr1.sh <exe>: the class table with shr1 (spec docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md,
-# decision 3 and build step 1). The exe is 42521dc plus patches/class_mem_shr1.patch (key_refine.patch, plus shr1 as a
+# decision 3 and build step 1). The exe is ddf1eba plus patches/class_mem_shr1.patch (key_refine.patch, plus shr1 as a
 # unary operator, commit after each build, the key written to and read from a file, and proofs of the final sample's
 # shr1 merges). Run 1 refines a key from the 8 tuples of 0s and 1s with shr1 in the table, normalises the held-out laws,
 # proves their replacements and the sampled shr1 merges, and writes the key. Run 2 builds once from that key in a fresh
