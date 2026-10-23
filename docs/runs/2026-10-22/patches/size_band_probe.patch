@@ -1,0 +1,103 @@
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 5d5b14d..3cefc60 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1135,6 +1135,98 @@ pub fn grammar_laws_have_no_padding() {
+     }
+ }
+ 
++/// PROBE (throwaway, frontier falsifier, 2026-10-22): laws by size. The pool, grown once (`grammar_sample`) and again
++/// (one leaf of a grown term into an operator over two leaves), padding growths dropped, about `GEN_TERMS` per level
++/// drawn by `SB_SALT`; laws as `grammar_laws` makes them (equal width-4 values, all three variables, a side outside the
++/// pool). Writes up to `SB_PER` laws per size (the larger side's nodes) to `SB_OUT/size_<k>.txt`.
++#[test]
++#[ignore]
++pub fn size_band_laws() {
++    let var = |k: &str| std::env::var(k).ok();
++    let family = var("SB_FAMILY").unwrap();
++    let salt: usize = var("SB_SALT").map_or(1, |s| s.parse().unwrap());
++    let per: usize = var("SB_PER").map_or(200, |s| s.parse().unwrap());
++    let out = std::path::PathBuf::from(var("SB_OUT").unwrap());
++    let (pool, g1) = grammar_sample(&family, 1, salt).unwrap();
++    let g1: Vec<Term> = g1.into_iter().filter(|s| !s.1).map(|s| s.0).collect();
++    fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
++        if let Node::Op(o, a, b) = *t.node() {
++            if o != LT {
++                out.insert(o);
++            }
++            ops_of(a, out);
++            ops_of(b, out);
++        }
++    }
++    fn leaf_count(t: Term) -> usize {
++        match *t.node() {
++            Node::Op(SHL1, a, _) => leaf_count(a),
++            Node::Op(_, a, b) => leaf_count(a) + leaf_count(b),
++            _ => 1,
++        }
++    }
++    fn replaced(t: Term, k: &mut Option<usize>, g: Term) -> Term {
++        match *t.node() {
++            Node::Op(SHL1, a, b) => Term::op(SHL1, replaced(a, k, g), b),
++            Node::Op(o, a, b) => {
++                let a = replaced(a, k, g);
++                Term::op(o, a, replaced(b, k, g))
++            }
++            _ => match *k {
++                Some(0) => {
++                    *k = None;
++                    g
++                }
++                Some(i) => {
++                    *k = Some(i - 1);
++                    t
++                }
++                None => t,
++            },
++        }
++    }
++    let mut ops = std::collections::BTreeSet::new();
++    pool.iter().for_each(|t| ops_of(*t, &mut ops));
++    let leaves = leaves3();
++    let mut memo = ValueMemo::exhaustive(4, 3);
++    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
++    let grow: Vec<Term> = ops
++        .iter()
++        .flat_map(|&o| if o == SHL1 { leaves.iter().map(|a| mk(SHL1, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
++        .filter(|g| !leaf_values.contains(&memo.values(g).to_vec()))
++        .collect();
++    let seen0: HashSet<Term> = pool.iter().chain(&g1).cloned().collect();
++    let total: usize = g1.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
++    let (mut g2, mut seen, mut i) = (vec![], HashSet::new(), 0u64);
++    for t in &g1 {
++        for p in 0..leaf_count(*t) {
++            for g in &grow {
++                i += 1;
++                if (tatic::rng::mix64(i ^ tatic::rng::mix64(salt as u64 + 7)) % total as u64) < GEN_TERMS as u64 {
++                    let w = replaced(*t, &mut Some(p), *g);
++                    if !seen0.contains(&w) && seen.insert(w) {
++                        g2.push(w);
++                    }
++                }
++            }
++        }
++    }
++    let in_pool: HashSet<Term> = pool.iter().cloned().collect();
++    let laws = pool_conjectures(pool.iter().chain(&g1).chain(&g2).cloned(), 4, 3, 0);
++    let laws: Vec<(Term, Term)> = laws.into_iter().filter(|(a, b)| (!in_pool.contains(a) || !in_pool.contains(b)) && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
++    let mut by_size: std::collections::BTreeMap<usize, Vec<(Term, Term)>> = Default::default();
++    for l in shuffled(laws, salt) {
++        by_size.entry(l.0.size().max(l.1.size())).or_default().push(l);
++    }
++    std::fs::create_dir_all(&out).unwrap();
++    for (k, ls) in &by_size {
++        let text: String = ls.iter().take(per).map(|(a, b)| format!("{} = {}\n", a.show(), b.show())).collect();
++        std::fs::write(out.join(format!("size_{k}.txt")), text).unwrap();
++        println!("SIZE {family} {k}: {} laws, wrote {}", ls.len(), ls.len().min(per));
++    }
++    println!("TERMS {family}: pool {} grown once {} twice {}", pool.len(), g1.len(), g2.len());
++}
++
+ /// The width-4 value classes of the leaves, the two-leaf terms and a pool's subterms (the law generator's twin filter,
+ /// docs/superpowers/specs/2026-10-17-law-generator-design.md §1 and step 5; `scripts/twin_wide.py`'s `REP` is the two-leaf
+ /// part).

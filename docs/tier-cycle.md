@@ -4815,6 +4815,54 @@ L and so n; this arm doubles f (the variable `GEN_F`, 488307b) to separate the t
 - So removing the twins is near neutral, and the halved n cost 1-3% of M (warm 3.3%, cold 1.0%) at a third of the CPU.
   `GEN_F`'s default stays 0.16 for now (`PARKED.md`, "The generator's n after the wider filter").
 
+*How much choosing the extras can gain: redrawn generator lists (2026-10-22; runs `2026-10-22-gen-draw1` to `3`,
+`gen_warm.sh` with `ARMS=on_on GEN_DRAW=1..3`, exe at 6d9e004, salts 1-10; draw 0 is `gen-warm-fix`'s on_on).*
+`GEN_DRAW=d` hashes the generator with salt + 1000·d, so the sample and its order are redrawn (L moves a few percent;
+salt 1 cmp3d 2346 to 2485) while the stream, the miner and the loops keep salt s; the ref mines (`mon`) take the draw's
+extras too. n stays at f = 0.16. The spread across draws bounds what a ranker over the generator's laws could gain at
+this n (ROADMAP v0.3's gate).
+- **Totals** (warm M with mined-batch M in brackets; cold the same): draw 0 754 (69) and 1475 (32); draw 1 749 (69) and
+  1467 (24); draw 2 766 (80) and 1473 (30); draw 3 739 (58) and 1462 (19).
+- **Batch 0 does not move.** Cold batch 0 is 1443 in every draw (no rules, as it must be); warm batch 0 is 680-686
+  although the ref libraries were mined on each draw's extras. A choice of laws barely changes what a ref library is
+  worth on the next family's first batch.
+- **The spread is all in the mined batches.** The best draw per salt, chosen by its own test batches (an oracle over
+  four draws), gives mined-batch M 38 against 69 (warm) and 12 against 32 (cold): about half of mined-batch M, 51
+  laws of about 2230 in total M. Summed per-salt spread (worst minus best) is 89 warm and 35 cold. Not a strict bound:
+  a ranker could compose a set better than any of the four draws.
+- **Cost does not move.** Job CPU of draws 1-3 is 6285-6582 s (within 2.5%). Loop seconds spread 1.7x (warm 404-676,
+  cold 546-986), but they follow the load at launch (26% for draw 0 against 35-63%), not the draw.
+- So at this n a ranker over which generated laws to mine on can gain at most a few percent of M and no cost; the
+  levers left are a smaller n at equal M (not tested here) and new vocabulary (`ROADMAP.md`, v0.4).
+
+*Free proofs by law size: a gradient for the frontier (2026-10-22; run `2026-10-22-size-band`, 49 s, CPU 51% at
+launch; probe `docs/runs/2026-10-22/patches/size_band_probe.patch`, reverted).* Serving never fails to prove a law:
+the whole-term machine proof closes whatever rewriting and the join leave, and all 194 serves of `gen-warm-fix`'s salt-1
+loops and ref mine report 0 not proved. So a frontier ("the hardest law provable within a budget", ROADMAP v0.5) has to count proofs with no
+machine proof. The probe (`search::size_band_laws`) grows each family's pool twice, one leaf at a time into an
+operator over two leaves (padding growths dropped, about 20000 terms per level, salt 11), pairs terms by width-4
+values as `grammar_laws` does, and keeps up to 200 laws per size (the larger side's nodes; odd, since every operator
+is binary). Laws the salt-1 ref mine had mined on are dropped. `size_band.sh` serves each size with no mined rules and
+with the family's salt-1 ref library (`gen-warm-fix`, `mon_1`). Free share (free / proved), none and ref:
+
+| family | size 7 | size 9 | size 11 | size 13 |
+|---|---|---|---|---|
+| add3 | .77 / .91 (57 laws) | .76 / .95 | .56 / .80 | |
+| sbo3 | .83 / .96 (126) | .70 / .88 | .64 / .82 | |
+| mix3 | .90 / .92 (184) | .73 / .84 | .71 / .78 | |
+| cmp3d | .82 / .86 (22) | .79 / .99 | .67 / .98 | .56 / .93 |
+
+- **Not falsified: there is a gradient.** On add3, sbo3 and mix3 the free share under the ref library falls by 14-15
+  points from its best size (7 or 9) to 11; cmp3d stays at .93-.99 to size 13. No law used up the rule budget and none went
+  unproved.
+- **The rules' worth grows with size.** The ref library's gain over no rules is 2-14 points at size 7 and 7-37 at
+  sizes 11-13 (cmp3d 4, 20, 31, 37 points). The size axis measures what the rules buy, which is what a frontier
+  should track.
+- **The 50% line is beyond the sizes tried.** Every family stays at or above .78 under its library at size 11 (13 for
+  cmp3d), so a threshold frontier needs laws grown three or more times. One salt, one library salt and at most 200
+  laws per cell: the per-family steps are a few points to tens of points, so differences under about 5 points are
+  noise.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
