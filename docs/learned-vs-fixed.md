@@ -45,11 +45,11 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    3215+, so the floor separates two classes rather than being tuned (salt 3 pooled 74 with it, 80 without; salts 4-5 never
    reach it; "The floor is still needed").
 4. The normal form itself: a table of class representatives learned by enumeration (the smallest term of each class of
-   equal values, Ruler-style) instead of the rewrite strategy and rules. Probe only, not wired in. Up to size 9 with `lt`
+   equal values, Ruler-style) instead of the rewrite strategy and rules. Wired in as `prove_eq`'s phase 1 (below). Up to size 9 with `lt`
    as a second sort, it makes 189-200 of 200 of each family's held-out laws meet with no rules, and every one of its 3203
    replacements is proved and kernel-checked (tier-cycle.md, "A learned table of representatives: the probe", "The table
    with `lt` as a second sort, its proofs, and smaller keys"). A key of 316 inputs refined by counterexamples does the
    same at 1.5 s per build ("A key refined by counterexamples"). How it enters the rewriter: the spec
-   `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`. It is being built as a module
-   (`tests/church_bv/classes.rs`, plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`; tier-cycle.md,
-   "The class table as a module ...").
+   `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`. As phase 1 in `prove_eq`
+   (`tests/church_bv/classes.rs`) it cuts M 38% (377 to 233 over salts 1-5) at 29% more job CPU (tier-cycle.md, "The
+   class table in `prove_eq`: phase 1").

@@ -5349,6 +5349,25 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   the filter) is unchanged, 4730-4868. Wall 83 s against 71 s, job CPU 656 s against 509 s, the largest `peakproc`
   528 MB against 603 MB (each B worker builds the table once).
 
+*The class table in `prove_eq`: phase 1 (2026-10-23; plan docs/superpowers/plans/2026-10-23-class-table-normal-form.md,
+Task 6; runs `2026-10-23-ct-phase1-restore` and `-ct-phase1-gate`, 9a2d456, salts of `cold:cmp3d`, untimed: another
+session's job kept CPU 2 busy, so wall and CPU are contended, though arm A's job CPU, 508 s, matches the same build's
+509 s in `-ct-twins-gate-u`).* After the per-position step, `prove_eq` normalizes both sides by the table's proved
+replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
+- **The switch restores the old answers**: the build with `ABLATE=classes` in its `.env` against the build before it,
+  salt 1: M 76 and 76, rules the same in 3 of 3 loops.
+- **M falls 38%: 377 to 233** (A the build ablated, B with phase 1; salts 1-5), lower in every one of the 15 loops (by
+  3-14), every rule file different. Laws joined fall from 851 to 533 and the join's reached terms barely move (46190 to
+  45716): the table closes pairs the join closed before, and many the join and the machine did not.
+- **Replacements per batch** (`m.tsv`'s ninth column): 8-50 in B, 1068 in all over 45 batches; 0 in A. 5 distinct
+  replacements were met with no proof (`CLASS_UNUSABLE`), all over large `add`/`sub`/`shl1` terms, so normalizing stopped
+  short there.
+- **Cost: job CPU +29% (508 s to 655 s), wall 71 s to 96 s, the largest `peakproc` 577 MB to 684 MB (+107 MB).** Each
+  B process builds the table once (15 builds, 1.6-1.7 s, 24 s of the 147 s added; the 5 in A are the sweep's own, for the
+  twin filter). The rest is phase 1's normalizing and proofs, and different rules and laws mined; this run does not
+  separate them. The CPU is past the plan's 25% stop, so phase 2 waits for a decision (`PARKED.md`, "Phase 1's CPU
+  cost").
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
