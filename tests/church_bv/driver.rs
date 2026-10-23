@@ -250,6 +250,20 @@ fn extra_slices_refuse_a_short_list() {
     assert!(extra_slices(30, 3, 2, 10).is_ok());
 }
 
+/// Review Focus 4: the stream phases are disjoint residue classes, so phase 0 (the mines' extras) shares no law with
+/// the loops' phases 1-3, and their windows tile each class.
+#[test]
+fn stream_phases_are_disjoint_residue_classes() {
+    let seq: Vec<(Term, Term)> = (0..200).map(|i| (Term::v(0), (0..i).fold(Term::v(1), |t, _| Term::op(ADD, t, Term::v(2))))).collect();
+    let phase = |p: usize| residue(&seq, p, 0, usize::MAX);
+    let all: Vec<_> = (0..STREAM_STRIDE).flat_map(phase).collect();
+    assert_eq!(all.len(), seq.len());
+    let distinct: hashbrown::HashSet<_> = all.iter().collect();
+    assert_eq!(distinct.len(), seq.len(), "a law in two phases");
+    assert!(residue(&seq, 1, 0, 10) == phase(1)[..10] && residue(&seq, 1, 10, 10) == phase(1)[10..20]);
+    assert_eq!(family_vars("streams"), 3);
+}
+
 /// Extras exist to be mined into rules: a mine with no rule rounds (the pooled stage's preference mines), a loop that only
 /// serves, and any mine under `ABLATE=gen` take none; loop mines and ref mines with rounds take them.
 #[test]
@@ -549,8 +563,23 @@ fn worker_never_leaves_a_stale_log() {
 /// (docs/tier-cycle.md).
 fn write_laws(setup: &Setup, family: &str, env: &[(String, String)], path: &Path, var: &str) -> (String, String) {
     let get = |k: &str| env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| setup.var(k).map(str::to_owned), |(_, v)| Some(v.clone()));
-    std::fs::write(path, laws_text(&family_laws(setup, family, &get, 4, family_vars(family), 7))).unwrap();
+    let laws: Vec<(String, Term, Term)> = window(setup, family, &get).into_iter().map(|(a, b)| (String::new(), a, b)).collect();
+    std::fs::write(path, laws_text(&laws)).unwrap();
     (var.to_string(), path.display().to_string())
+}
+
+/// Laws in a stream mine's extras: the first this many of phase 0, about the size of cmp3d's generator list on the old
+/// gate (L 1644, docs/tier-cycle.md), so a mine sees as many extras as it did there (plan R2).
+const STREAM_EXTRAS: usize = 1650;
+
+/// The law window `get`'s `RULEMINER_*` variables select from `family`'s sequence: for `streams`, phase
+/// `RULEMINER_PHASE`'s residue class of `stream_sequence(RULEMINER_SHUFFLE)` (spec §9, plan R1); otherwise `family_laws`.
+fn window(setup: &Setup, family: &str, get: &dyn Fn(&str) -> Option<String>) -> Vec<(Term, Term)> {
+    if family == "streams" {
+        let seq = stream_sequence(num(get, "RULEMINER_SHUFFLE", 0));
+        return residue(&seq, num(get, "RULEMINER_PHASE", 0), num(get, "RULEMINER_SKIP", 0), num(get, "RULEMINER_LAWS", 250));
+    }
+    family_laws(setup, family, get, 4, family_vars(family), 7).into_iter().map(|(_, a, b)| (a, b)).collect()
 }
 
 /// `cfg`'s value of the child variable `k`: its `env`, then this process's, as `run_loop`'s children read it.
@@ -558,9 +587,9 @@ fn cfg_var(cfg: &LoopCfg, k: &str) -> Option<String> {
     cfg.env.iter().rev().find(|(kk, _)| kk == k).map_or_else(|| Setup::process().var(k).map(str::to_owned), |(_, v)| Some(v.clone()))
 }
 
-/// The laws a child of `cfg` takes at stride phase `phase`: `laws` of them from `skip`, through the variables `run_loop` gives
-/// its children.
-fn stream_laws(setup: &Setup, cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
+/// The laws a child of `cfg` takes at phase `phase`: `laws` of them from `skip`, through the variables `run_loop` gives its
+/// children.
+fn window_laws(setup: &Setup, cfg: &LoopCfg, phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
     let env = |k: &str| match k {
         "RULEMINER_DEEP3" => Some(cfg.deep3.to_string()),
         "RULEMINER_STRIDE" => Some(cfg.stride.to_string()),
@@ -570,12 +599,12 @@ fn stream_laws(setup: &Setup, cfg: &LoopCfg, phase: usize, skip: usize, laws: us
         "RULEMINER_LAWS" => Some(laws.to_string()),
         _ => cfg_var(cfg, k),
     };
-    family_laws(setup, &cfg.family, &env, 4, family_vars(&cfg.family), 7).into_iter().map(|(_, a, b)| (a, b)).collect()
+    window(setup, &cfg.family, &env)
 }
 
 /// The laws `cfg`'s loop serves, and its mines mine: its K batches of B from OFFSET.
 fn served_laws(setup: &Setup, cfg: &LoopCfg) -> Vec<(Term, Term)> {
-    stream_laws(setup, cfg, cfg.sphase, cfg.offset, cfg.b * cfg.k)
+    window_laws(setup, cfg, cfg.sphase, cfg.offset, cfg.b * cfg.k)
 }
 
 fn law_text((a, b): &(Term, Term)) -> String {
@@ -608,14 +637,15 @@ impl Draw {
         Draw { laws: Default::default(), draw }
     }
 
-    /// `grammar_laws` for `cfg`'s family, `deep3` and salt (the draw's), generated once per sweep.
+    /// `grammar_laws` for `cfg`'s family, `deep3` and salt (the draw's), or for `streams` the first `STREAM_EXTRAS` laws of
+    /// phase 0 at that salt; generated once per sweep.
     fn grammar(&mut self, cfg: &LoopCfg) -> std::sync::Arc<Vec<(Term, Term)>> {
         let k = (cfg.family.clone(), cfg.deep3, num(&|k| cfg_var(cfg, k), "RULEMINER_SHUFFLE", 0) + 1000 * self.draw);
         self.laws
             .entry(k)
             .or_insert_with_key(|k| {
                 let t0 = std::time::Instant::now();
-                let l = grammar_laws(&k.0, k.1, k.2);
+                let l = if k.0 == "streams" { residue(&stream_sequence(k.2), 0, 0, STREAM_EXTRAS) } else { grammar_laws(&k.0, k.1, k.2) };
                 println!("GEN_LAWS {}: {} laws in {:.1}s", k.0, l.len(), t0.elapsed().as_secs_f64());
                 std::sync::Arc::new(l)
             })
@@ -853,7 +883,8 @@ fn sweep() {
         }
     }
     let loop_cfgs = |stage: &str, fam: &str, src: &str| -> Vec<LoopCfg> {
-        let stride = LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1;
+        // the streams' windows ignore `stride` (`window`); it is set so the child env's `RULEMINER_STRIDE` is not a family's
+        let stride = if fam == "streams" { STREAM_STRIDE } else { LOOPS.iter().find(|l| l.0 == fam).unwrap_or_else(|| panic!("no loop stride for {fam}")).1 };
         let warm = match src {
             "none" => None,
             "pooled" => Some(out.join(format!("pooled_{fam}")).join("rules.txt")),

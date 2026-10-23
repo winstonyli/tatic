@@ -1472,7 +1472,7 @@ pub fn hidden_twins_in_a_run() {
 
 /// Variables per law of a family: the three-variable families against the two-variable rest.
 pub fn family_vars(family: &str) -> usize {
-    if THREE_VAR_FAMILIES.contains(&family) { 3 } else { 2 }
+    if family == "streams" || THREE_VAR_FAMILIES.contains(&family) { 3 } else { 2 }
 }
 
 /// Terms of the `cmp3` family: `lt` of two arithmetic terms (add, sub, `shl1` over three variables, depth one: an operator over two
