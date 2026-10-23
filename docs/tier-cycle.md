@@ -5020,6 +5020,26 @@ a3b1a4e, `join_size_first.patch` plus a `JOIN_BACK` switch in `join_eqs`, revert
   after 45afcbe): one heap per side by depth plus size, earliest reached first among equals; it frees and reaches the
   same as the probe's `JOIN_SIZE_FIRST=2` on all 15 held-out cells (run `2026-10-22-join-ds-check-3`).
 
+*The visit budget a law needs, by its size (2026-10-22; run `2026-10-22-join-budget`, 2 min, CPU 43% at launch; exe
+e0c7b58, depth plus size; script `docs/runs/2026-10-22/scripts/join_budget.sh`).* Each family's salt-1 ref library
+serves the size-band's held-out laws (salt 11) one size at a time at `JOIN_VISIT` 250 to 20000. The budget at which free
+laws reach their count at 20000:
+
+| family | size 7 | size 9 | size 11 | size 13 |
+|---|---|---|---|---|
+| add3 | 250 | 5000 | 20000 | |
+| sbo3 | 500 | 5000 | 5000 | |
+| mix3 | 500 | 20000 | still rising at 20000 | |
+| cmp3d | 250 | 1000 | 2000 | 5000 |
+
+- **The budget a law needs grows about twofold per node.** From 1000 to 20000 size 7 gains nothing, size 9 0-7 laws per
+  family (of 200), size 11 1-16, cmp3d's size 13 5; 55 of 2589 in all. A fixed budget therefore under-serves exactly the
+  larger laws the frontier (ROADMAP v0.5) compares.
+- **Serving does not cost more with a larger budget.** Terms reached grow about threefold (add3 size 11: 48063 to
+  146479), but serve wall time stays flat or falls (1319 to 1114 ms; cmp3d size 13 3803 to 3018 ms): each law joined is
+  a machine proof saved. The cost seen before (5000 at 2-3 times the sweep time, "The bounded join removes the floor")
+  was the mines' failed searches under breadth-first, not measured with depth plus size.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
