@@ -5105,6 +5105,35 @@ c's range is too small. ANF (bitwise only, `or` grows to three monomials) is out
 Polynomials mod 2^n and the nonlinear MBA tools are out: no bitwise operators, or no canonical form and no proofs. The
 cheapest test of c is in the next paragraph.
 
+*A learned table of representatives: the probe (2026-10-22; runs `2026-10-22-class-table`, 6 s, CPU 32% at launch, and
+`-class-table-400k`, 22 s; exe dabc018 plus `docs/runs/2026-10-22/patches/class_table.patch`, test
+`rewrite::class_table_probe`, reverted; script `docs/runs/2026-10-22/scripts/class_table.sh`).* Terms over x, y, z, 0,
+-1 and add, and, or, xor, sub are enumerated by size from representatives only. Each is keyed by its exhaustive values at
+widths 3 and 4, hashed to 128 bits, and the first (smallest) of a class is its representative. Each law's two sides are
+normalised bottom-up, each node to its class's representative, with no rules, no join and no proofs, and the laws whose
+sides meet are counted. Against the ref library at `JOIN_VISIT` 1000 (free laws, kernel-checked, join included; run
+`2026-10-22-join-budget`):
+
+| held-out set | ref library | table ≤ 7 (7547 classes) | table ≤ 9 (140596 classes, 7.7 s) | ≤ 11, capped at 400000 classes |
+|---|---|---|---|---|
+| add3's 15 left at 20000 ("What the join can't reach") | 0 | 13 | 15 | 15 |
+| add3 size 9 / 11 | 191 / 169 | 165 / 150 | 200 / 186 | 200 / 191 |
+| sbo3 size 9 / 11 | 174 / 164 | 189 / 151 | 200 / 195 | 200 / 199 |
+| mix3 size 9 / 11 | 169 / 153 | 187 / 154 | 200 / 194 | 200 / 196 |
+| cmp3d size 9 / 11 / 13 | 198 / 198 / 190 | 143 / 131 / 118 | 143 / 133 / 122 | 143 / 133 / 122 |
+
+- **Within its operators, the table alone beats the mined rules and the join.** At ≤ 9 every size-9 law of add3, sbo3
+  and mix3 meets. At size 11 the table meets 186-195 laws per family, against the library's 153-169.
+- **cmp3d stays where the table can't reach.** `lt` is not among the table's operators. Its one-bit result is a second
+  sort and would get its own classes (the signature already tells the sorts apart in `pool_conjectures`).
+- **No merge was wrong where checked.** All 3967 replacements at ≤ 9 agree at width 8 on the screen's 204 inputs. So
+  normalising keeps each side's value there, and unequal sides could not meet. Equal values at widths 3 and 4 are still
+  only a conjecture: each replacement needs its kernel proof, whose cost and carry cap are not measured.
+- **Cost.** ≤ 9 is 140596 classes, 7.7 s and about 650 MB of value vectors (4.6 KB each). Size 11 adds over 259404
+  classes before the cap, so a full ≤ 11 would take several GB. The table depends only on the operators, not on a
+  family's laws. It is over three variables. Terms with more, or with non-table operators below a node, would need
+  `abstract_atoms`' abstraction first.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.

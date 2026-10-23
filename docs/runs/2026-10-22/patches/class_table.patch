@@ -1,0 +1,165 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index 6c2bf5c..9380a05 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -4485,3 +4485,160 @@ const PINNED: [&str; 38] = [
+     "shl1(add(x, y), x)",
+     "shr1(y, y)",
+ ];
++
++/// Probe (docs/tier-cycle.md, "A learned table of representatives"): enumerate terms over x, y, z, 0, -1 and add, and, or,
++/// xor, sub by size, from representatives only; group by exhaustive values at widths 3 and 4 (hashed to 128 bits); the
++/// first (smallest) member of a class is its representative. Then normalise both sides of each law in `PROBE_LAWFILES`
++/// (`;`-separated) bottom-up, each node to its class's representative when the class is known, and count the laws whose
++/// sides meet. No proofs: a replacement whose sides differ at width 8 on the screen's inputs counts as a suspect merge.
++#[test]
++#[ignore]
++fn class_table_probe() {
++    use std::hash::{Hash, Hasher};
++    let env = |k: &str| std::env::var(k).ok();
++    let max_size: usize = env("PROBE_SIZE").map_or(7, |v| v.parse().unwrap());
++    let max_classes: usize = env("PROBE_MAX").map_or(60000, |v| v.parse().unwrap());
++    const OPS: [usize; 5] = [ADD, AND, OR, XOR, SUB];
++    // exhaustive inputs of 3 variables at width w: variable v is bits w*v.. of the input's index
++    let inputs = |w: usize| -> Vec<[u128; 3]> {
++        (0..1usize << (3 * w)).map(|i| [0, 1, 2].map(|v| (i >> (w * v) & ((1 << w) - 1)) as u128)).collect()
++    };
++    let (in3, in4) = (inputs(3), inputs(4));
++    let leaf = |t: &Term, x: &[u128; 3], mask: u128| -> u128 {
++        match *t.node() {
++            Node::V(v) => x[v],
++            Node::Zero => 0,
++            Node::Ones => mask,
++            _ => unreachable!(),
++        }
++    };
++    type Vals = (Vec<u8>, Vec<u8>);
++    let vals_of = |t: &Term| -> Vals {
++        let go = |ins: &[[u128; 3]], w: usize| -> Vec<u8> {
++            let mask = (1u128 << w) - 1;
++            ins.iter().map(|x| leaf(t, x, mask) as u8).collect()
++        };
++        (go(&in3, 3), go(&in4, 4))
++    };
++    let zip = |o: usize, a: &Vals, b: &Vals| -> Vals {
++        let f = OP_INFO[o].word;
++        (
++            a.0.iter().zip(&b.0).map(|(x, y)| f(*x as u128, *y as u128, 7) as u8).collect(),
++            a.1.iter().zip(&b.1).map(|(x, y)| f(*x as u128, *y as u128, 15) as u8).collect(),
++        )
++    };
++    let key = |v: &Vals| -> (u64, u64) {
++        let (mut h1, mut h2) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());
++        v.0.hash(&mut h1);
++        v.1.hash(&mut h1);
++        0xa5u8.hash(&mut h2);
++        v.1.hash(&mut h2);
++        v.0.hash(&mut h2);
++        (h1.finish(), h2.finish())
++    };
++    // enumeration from representatives
++    let t0 = std::time::Instant::now();
++    let mut table: hashbrown::HashMap<(u64, u64), Term> = Default::default();
++    let mut reps: Vec<Vec<(Term, Vals)>> = vec![vec![]; max_size + 1];
++    for t in [Term::v(0), Term::v(1), Term::v(2), Term::ZERO, Term::ONES] {
++        let v = vals_of(&t);
++        if table.insert(key(&v), t).is_none() {
++            reps[1].push((t, v));
++        }
++    }
++    let mut truncated = false;
++    'sizes: for s in (3..=max_size).step_by(2) {
++        for sa in (1..s - 1).step_by(2) {
++            let sb = s - 1 - sa;
++            for i in 0..reps[sa].len() {
++                for j in 0..reps[sb].len() {
++                    for o in OPS {
++                        let (a, b) = (&reps[sa][i], &reps[sb][j]);
++                        let v = zip(o, &a.1, &b.1);
++                        let k = key(&v);
++                        if !table.contains_key(&k) {
++                            let t = Term::op(o, a.0, b.0);
++                            table.insert(k, t);
++                            reps[s].push((t, v));
++                            if table.len() >= max_classes {
++                                truncated = true;
++                                break 'sizes;
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++    let counts: Vec<String> = (1..=max_size).step_by(2).map(|s| format!("{s}:{}", reps[s].len())).collect();
++    println!("TABLE size<={max_size} classes {} ({}) truncated {truncated} ms {}", table.len(), counts.join(" "), t0.elapsed().as_millis());
++    // bottom-up normalisation by the table
++    let mut vals: hashbrown::HashMap<Term, Vals> = Default::default();
++    fn vals_rec(t: Term, vals: &mut hashbrown::HashMap<Term, Vals>, leafv: &dyn Fn(&Term) -> Vals, zip: &dyn Fn(usize, &Vals, &Vals) -> Vals) -> Vals {
++        if let Some(v) = vals.get(&t) {
++            return v.clone();
++        }
++        let v = match *t.node() {
++            Node::Op(o, a, b) => {
++                let (va, vb) = (vals_rec(a, vals, leafv, zip), vals_rec(b, vals, leafv, zip));
++                zip(o, &va, &vb)
++            }
++            _ => leafv(&t),
++        };
++        vals.insert(t, v.clone());
++        v
++    }
++    let (mut merges, mut suspects) = (0usize, 0usize);
++    let mut norm_memo: hashbrown::HashMap<Term, Term> = Default::default();
++    fn norm(
++        t: Term,
++        memo: &mut hashbrown::HashMap<Term, Term>,
++        f: &mut dyn FnMut(Term) -> Term,
++    ) -> Term {
++        if let Some(n) = memo.get(&t) {
++            return *n;
++        }
++        let u = match *t.node() {
++            Node::Op(o, a, b) => {
++                let (na, nb) = (norm(a, memo, f), norm(b, memo, f));
++                f(Term::op(o, na, nb))
++            }
++            _ => f(t),
++        };
++        memo.insert(t, u);
++        u
++    }
++    let mut lookup = |u: Term| -> Term {
++        let v = vals_rec(u, &mut vals, &vals_of, &zip);
++        match table.get(&key(&v)) {
++            Some(r) if *r != u => {
++                merges += 1;
++                if with_screen(8, 3, |m| m.first_difference(&u, r, SCREEN_INPUTS)).is_some() {
++                    suspects += 1;
++                }
++                *r
++            }
++            _ => u,
++        }
++    };
++    for path in env("PROBE_LAWFILES").unwrap_or_default().split(';').filter(|p| !p.is_empty()) {
++        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
++        let (mut laws, mut met) = (0usize, 0usize);
++        let mut apart = vec![];
++        for line in text.lines().filter(|l| l.contains(" = ")) {
++            let (l, r) = line.split_once(" = ").unwrap();
++            let (nl, nr) = (norm(parse_term(l.trim()), &mut norm_memo, &mut lookup), norm(parse_term(r.trim()), &mut norm_memo, &mut lookup));
++            laws += 1;
++            if nl == nr {
++                met += 1;
++            } else {
++                apart.push(format!("  {}  vs  {}", nl.show(), nr.show()));
++            }
++        }
++        println!("LAWS {path}: {met} of {laws} meet");
++        if laws <= 20 {
++            apart.iter().for_each(|a| println!("{a}"));
++        }
++    }
++    println!("MERGES {merges} replacements, {suspects} differ at width 8 on the screen's inputs");
++}
