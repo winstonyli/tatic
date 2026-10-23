@@ -94,6 +94,15 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **A lemma library that outlives the sweep (`LEMMA_KEEP`)** — why: speeds up nothing the benchmark measures (timings must stay cold), and `gate_cmp.py` removed the larger workflow cost; the survey recommends against. Trigger: many-salt studies of one build become routine. Evidence: `docs/tier-cycle.md` ("Survey: a lemma library kept across sweeps"). Status: decided against (the survey recommends not).
 - **Smaller kernel-check levers: binder wrapping per law (about 1%); `InferCache` kept across `ck` calls (at most 4.3%, needs context-keyed entries in the trusted kernel); `CHECK_FAST` in cold loops and mines serving** — why: small, or changes what a sweep proves. Trigger: none stated ("last" for the cache). Evidence: `docs/tier-cycle.md` ("Survey: the kernel check's levers"). Status: parked (not built).
 - **PGO on top of LTO** — why: gain over LTO (about -4%) is within noise; -6% against the default build and needs an instrumented build and training sweep on every code change. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Build flags: LTO, target-cpu=native, PGO"). Status: parked.
+- **Bit-sliced screen vectors** (a term's screen values as n bit-planes of 204 bits instead of 204 `u128`s: 128 B at
+  width 4 against 3264 B, one representation for every width; and/or/xor per plane, add and sub as a ripple carry over
+  the planes; the tree-candidate index keyed by the planes). The memo is process-wide and never cleared. Why parked: it
+  is about 11% of a worker's peak (56 of about 500 MB; the peak is set elsewhere in the first `rule_miner` task), though
+  up to a third of its final commit (105 of 305 MB). A word chosen by width (`u8` up to width 8) was rejected as a
+  per-width branch. Trigger: worker memory becomes a limit (more workers per lane, or the class table's per-worker
+  memory), or `ValueMemo::fill`'s CPU share (8.8% in the last profile) is worth a sliced evaluator. Evidence:
+  `docs/tier-cycle.md`, "One screen memo and candidate index per process", its size in a sweep (2026-10-23). Status:
+  parked (by decision, 2026-10-23).
 - **Contention in the shared screen memo at more than 6 miner threads** — why: wall did not move with CPU; the lock may be the cause, not measured. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("One screen memo and candidate index per process"). Status: parked (untested).
 - **Other exhaustive `interp` loops (`eq_pos` in `prove_eq`, `conjecture_miner`, the shift check in machine.rs) still evaluate per tuple** — why: cold. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("`ValueMemo::fill` one loop per operator"). Status: parked (not built).
 - **Native Defender real-time-protection check when the service is running** — why: the `Component[2].fEnable` offset was not verified; the service is stopped on this machine, so the tool falls back to one PowerShell. Trigger: verify the offset against `Get-MpComputerStatus` on a machine with the service up (the user's call). Evidence: `docs/tier-cycle.md` ("Survey: workflow time outside the sweep"). Status: parked (untested).
