@@ -1452,7 +1452,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
             for (name, t1, t2) in &laws {
                 // the proof is built under what the plan left of the budget, and its machine proofs and joins count too
                 let ((r, plan_spent, proof), spent) = job.measured(LAW_STEPS, |job| {
-                    let (r, plan_spent) = job.spent(|job| rewrite_plan(job, 4, kv, t1, t2));
+                    let (r, plan_spent) = job.spent(|job| job.steps_if_closed(|job| rewrite_plan(job, 4, kv, t1, t2)));
                     let proof = r.as_ref().filter(|_| !fast).map(|plan| law_proof(job, 4, kv, t1, t2, plan));
                     (r, plan_spent, proof)
                 });

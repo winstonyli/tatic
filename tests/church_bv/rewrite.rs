@@ -2418,6 +2418,20 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
     let ((a2, pa), (b2, pb)) = (rewrite(job, &a, n, k), rewrite(job, &b, n, k));
     let cong = Plan::cong(job, o, pa, pb);
     let t1 = Term::op(o, a2, b2);
+    // the class table's normal form (docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §5): a node the
+    // table knows is final, as its own representative or through the proved step to it; any other node goes on to the
+    // rules (over a fourth variable, a class not stored, or a replacement with no proof)
+    if !job.setup().ablated("classes") {
+        let c = crate::classes::Classes::get();
+        if let Some(r) = c.lookup(&t1) {
+            if r == t1 {
+                return (t1, cong);
+            }
+            if let Some((r, p)) = c.step(job, n, k, &t1) {
+                return (r, Plan::trans(job, cong, p));
+            }
+        }
+    }
     if o != ADD {
         // the library rules first (`shldist`, ...)
         if let Some((target, step)) = rule_step(job, &t1) {
@@ -2691,7 +2705,7 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
     if a == b {
         return Some(Plan::refl(job, a));
     }
-    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,classes,shrmask`
+    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,eq_classes,shrmask`
     let mut atoms = vec![];
     if let (false, Some(a1), Some(a2)) = (job.setup().ablated("eq_truth"), abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
         let holds = (0..1usize << k).all(|m| {
@@ -2716,15 +2730,15 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
     }
     // the learned class table (docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §4): both sides
     // normalized by its proved replacements; if they meet, the law is closed with no rule, and only then are its steps
-    // counted in `job.table_steps`
-    if !job.setup().ablated("classes") {
+    // counted (`Job::steps_if_closed`)
+    if !job.setup().ablated("eq_classes") {
         let c = crate::classes::Classes::get();
-        let kept = std::mem::take(&mut job.table_steps);
-        let ((na, pa), (nb, pb)) = (c.normalize(job, n, k, a), c.normalize(job, n, k, b));
-        let used = std::mem::replace(&mut job.table_steps, kept);
-        if na == nb {
-            job.table_steps.extend(used);
-            return Some(Plan::trans(job, pa, Plan::sym(job, pb)));
+        let closed = job.steps_if_closed(|job| {
+            let ((na, pa), (nb, pb)) = (c.normalize(job, n, k, a), c.normalize(job, n, k, b));
+            (na == nb).then(|| Plan::trans(job, pa, Plan::sym(job, pb)))
+        });
+        if closed.is_some() {
+            return closed;
         }
     }
     // congruence on equal operators and generalizing a shared subterm into a variable were removed: neither decided a law
@@ -3805,9 +3819,11 @@ fn proving_leaves_the_callers_rewrite_state() {
 /// sbo3's rewrite cycle (docs/tier-cycle.md, "Why ordered sbo3 still cycled"): two rules and a permutative one bring
 /// `sub(sub(z, x), sub(y, z))` back to itself. `rewrite` cuts it, so the law is proved without using up the step budget, and the
 /// proof checks.
+/// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
+/// Testing).
 #[test]
 fn rewrite_cycles_are_cut() {
-    let job = &mut Job::new(Setup::process());
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
     tatic::kernel::scoped(|| {
         let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
         let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
@@ -3824,9 +3840,11 @@ fn rewrite_cycles_are_cut() {
 /// cmp3d's growing chain (docs/tier-cycle.md, "Growth cut"): the two rules rewrite into each other and each lap copies the first
 /// argument in, so no term repeats. The term on the path embeds in its larger copy, and the cut ends the chain there instead of at
 /// the budget (which it runs out with only the repeat cut).
+/// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
+/// Testing).
 #[test]
 fn growing_rewrite_chains_are_cut() {
-    let job = &mut Job::new(Setup::process());
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
     tatic::kernel::scoped(|| {
         let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
         let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
@@ -3867,9 +3885,11 @@ fn shapes_hold_every_bit_a_matching_pattern_needs() {
     assert_ne!(t.shape() & l.needs(), l.needs(), "an or child is needed and missing");
 }
 
+/// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
+/// Testing).
 #[test]
 fn filtered_memo_entries_hold_under_an_extra_rule() {
-    let job = &mut Job::new(Setup::process());
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
     let (n, kv) = (4, 3);
     let terms: Vec<Term> =
         ["sub(sub(z, x), sub(y, z))", "add(sub(x, y), sub(add(y, z), x))", "sub(add(x, y), sub(z, x))", "or(sub(x, y), and(sub(x, y), z))"].iter().map(|s| parse_term(s)).collect();
@@ -3951,9 +3971,11 @@ fn met_join_traces_its_path_only() {
 
 /// `TraceIndex::touched` gives the traces `Trace::touched_by` accepts, for rules matching forward, backward and nowhere, and
 /// for a condition on the fired rule.
+/// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
+/// Testing).
 #[test]
 fn trace_index_agrees_with_touched_by() {
-    let job = &mut Job::new(Setup::process());
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
     let (n, kv) = (4, 3);
     let mut traces: Vec<Trace> = [("sub(x, y)", "sub(0, sub(y, x))"), ("add(add(z, y), sub(x, -1))", "add(sub(add(x, y), -1), z)"), ("xor(xor(x, y), z)", "xor(z, xor(y, x))")]
         .iter()
@@ -4233,9 +4255,11 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
 
 /// A rewrite whose cuts were all against terms its own call took up is kept: any replay cuts them again. One cut against a
 /// term further out is not (docs/tier-cycle.md, "Survey: `rewrite_memo`'s 17.4% of CPU").
+/// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
+/// Testing).
 #[test]
 fn memo_keeps_rewrites_cut_inside_their_own_call() {
-    let job = &mut Job::new(Setup::process());
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
     let (n, kv) = (4, 3);
     // rewriting t goes t -> u -> v, where t embeds in v: the cut is against t itself; u's own call, inside t's, is cut by t
     let (t, u) = (parse_term("lt(x, sub(y, z))"), parse_term("lt(x, add(y, z))"));

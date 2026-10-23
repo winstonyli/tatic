@@ -1,7 +1,7 @@
 //! The learned class table (docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md): terms over x, y, z, 0
 //! and -1 to size `SIZE`, enumerated from representatives only and keyed by their values on a learned key
 //! (`class_key.txt`, baked in) and their sort. A class's representative is its smallest member `Machine::parse` takes,
-//! else its smallest (decision 7). `rep` looks a term's class up; `step` and `normalize` use a replacement only with a
+//! else its smallest (decision 7). `lookup` and `rep` look a term's class up; `step` and `normalize` use a replacement only with a
 //! proof (§3).
 
 use super::*;
@@ -348,9 +348,9 @@ impl Classes {
         self.map.len()
     }
 
-    /// The representative of `t`'s class when the table knows it and it is not `t`; `None` otherwise, and for a term over a
-    /// variable other than x, y, z. Pure: no proof.
-    pub fn rep(&self, t: &Term) -> Option<Term> {
+    /// The representative of `t`'s class, `t` itself included, when the table knows the class; `None` otherwise, and for
+    /// a term over a variable other than x, y, z. Pure: no proof. One memo holds every term asked (spec §5).
+    pub fn lookup(&self, t: &Term) -> Option<Term> {
         if t.max_var() >= 3 {
             return None;
         }
@@ -360,9 +360,24 @@ impl Classes {
             for m in values.iter_mut() {
                 vals.extend_from_slice(m.values(t));
             }
-            let r = *self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..))))?;
-            (r != *t).then_some(r)
+            self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..)))).copied()
         })
+    }
+
+    /// The representative of `t`'s class when the table knows it and it is not `t` (`lookup`, the term itself left out).
+    pub fn rep(&self, t: &Term) -> Option<Term> {
+        self.lookup(t).filter(|r| r != t)
+    }
+
+    /// Every stored representative (the streams' seeds, spec §9).
+    pub fn reps(&self) -> impl Iterator<Item = Term> + '_ {
+        self.map.values().copied()
+    }
+
+    /// Terms in the process's lookup memo, or `None` before the table is built (it is not built here): the worker prints
+    /// it after each task, so a gate reads the memo's peak (spec §9).
+    pub fn memo_len() -> Option<usize> {
+        CLASSES.get().map(|c| c.memos.lock().unwrap_or_else(|e| e.into_inner()).1.len())
     }
 
     /// `t` with every node, bottom-up, replaced by its class's representative where the table knows it (no proof: the law
@@ -665,7 +680,7 @@ fn held_out_replacements_prove() {
 }
 
 /// Phase 1 (spec §4): the table closes a law the join left at 20000 visits (run `2026-10-22-join-residue`) with no
-/// machine proof, and the proof checks; with `ABLATE=classes` the law takes the old path (a machine proof, or none).
+/// machine proof, and the proof checks; with `ABLATE=classes,eq_classes` the law takes the old path (a machine proof, or none).
 #[test]
 fn prove_eq_closes_a_residue_law_by_the_table() {
     let (a, b) = (parse_term("add(and(z, xor(x, -1)), y)"), parse_term("add(xor(x, and(xor(x, -1), z)), sub(y, x))"));
@@ -677,14 +692,14 @@ fn prove_eq_closes_a_residue_law_by_the_table() {
         let (p, s) = law_proof(job, 4, 3, &a, &b, &plan);
         job.lemmas.ck("residue law", &p, &s);
     });
-    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes,eq_classes".into())]));
     let r = prove_eq(job, 4, 3, &a, &b);
     assert!(job.table_steps.is_empty(), "the ablated path takes no table step");
     assert!(r.is_none() || job.rw.fallbacks > 0, "without the table the law needs the machine or stays open");
 }
 
-/// A pair whose normal forms differ counts none of their steps (the `classes` column counts replacements a closed law
-/// used): `sub(add(x, y), y)` steps to `x`, which does not meet `y`.
+/// A pair whose normal forms differ keeps none of the table steps taken on it (`Job::steps_if_closed`, as the
+/// kernel-check task counts): `sub(add(x, y), y)` steps to `x`, which does not meet `y`.
 #[test]
 fn steps_of_a_pair_left_open_are_not_counted() {
     let (a, b) = (parse_term("sub(add(x, y), y)"), parse_term("y"));
@@ -692,7 +707,74 @@ fn steps_of_a_pair_left_open_are_not_counted() {
     tatic::kernel::scoped(|| {
         assert!(Classes::get().step(job, 4, 3, &a).is_some());
         job.table_steps.clear();
-        prove_eq(job, 4, 3, &a, &b);
+        assert!(job.steps_if_closed(|job| prove_eq(job, 4, 3, &a, &b)).is_none());
         assert!(job.table_steps.is_empty(), "{} steps counted", job.table_steps.len());
+    });
+}
+
+/// `lookup` answers a known class with its representative, the term itself included; `rep` only when it differs; a
+/// term over a fourth variable is unknown.
+#[test]
+fn lookup_includes_the_term_itself() {
+    let (c, _) = Classes::build(&Key::parse(KEY_FILE).unwrap(), 5, 0, 0);
+    let show = |t: Option<Term>| t.map(|t| t.show());
+    let x = parse_term("x");
+    assert_eq!(show(c.lookup(&x)), Some("x".to_string()));
+    assert_eq!(show(c.rep(&x)), None);
+    assert_eq!(show(c.lookup(&parse_term("sub(y, y)"))), Some("0".to_string()));
+    assert_eq!(show(c.lookup(&parse_term("add(x, u)"))), None);
+}
+
+/// Phase 2 (spec §5): a node the table knows is final in `rewrite`. `sub(add(x, y), y)` rewrites to `x` with no rule
+/// tried (the rule trace stays empty) and a table step counted; with `ABLATE=classes,eq_classes` rules are tried and
+/// no table step is taken.
+#[test]
+fn rewrite_takes_the_table_before_any_rule() {
+    let t = parse_term("sub(add(x, y), y)");
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        job.rw.trace = Some(vec![]);
+        let (r, _) = rewrite(job, &t, 4, 3);
+        assert_eq!(r.show(), "x");
+        assert_eq!(job.rw.trace.as_ref().unwrap().len(), 0, "a rule was tried");
+        assert!(!job.table_steps.is_empty());
+    });
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes,eq_classes".into())]));
+    tatic::kernel::scoped(|| {
+        job.rw.trace = Some(vec![]);
+        rewrite(job, &t, 4, 3);
+        assert!(!job.rw.trace.as_ref().unwrap().is_empty(), "no rule was tried");
+        assert!(job.table_steps.is_empty());
+    });
+}
+
+/// A node over a fourth variable is unknown to the table: `sub(add(x, u), u)` goes to the rules (the trace records
+/// them) and no table step is taken at a node with `u`.
+#[test]
+fn rewrite_leaves_a_fourth_variable_to_the_rules() {
+    let t = parse_term("sub(add(x, u), u)");
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        job.rw.trace = Some(vec![]);
+        let (r, _) = rewrite(job, &t, 4, 4);
+        assert_eq!(r.show(), "x");
+        assert!(!job.rw.trace.as_ref().unwrap().is_empty());
+        assert!(job.table_steps.iter().all(|(u, _)| !u.has_var(3)));
+    });
+}
+
+/// Review Focus 1: a node past the table's size whose values match a stored class is replaced only through `step`'s
+/// verdict. `add(add(add(x, y), z), add(add(x, z), y))` (size 11, children normal) has the class of a term within size
+/// 9; it is replaced, and the replacement is a counted (proved) step from a node larger than `SIZE`.
+#[test]
+fn rewrite_replaces_a_node_past_the_table_only_with_a_proof() {
+    let t = parse_term("add(add(add(x, y), z), add(add(x, z), y))");
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let (r, plan) = rewrite(job, &t, 4, 3);
+        assert!(r.size() <= SIZE, "{}", r.show());
+        assert!(job.table_steps.iter().any(|(u, _)| u.size() > SIZE), "no counted step from a node past the table's size");
+        let (p, s) = law_proof(job, 4, 3, &t, &r, &plan);
+        job.lemmas.ck("past the table's size", &p, &s);
     });
 }

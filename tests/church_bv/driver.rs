@@ -149,6 +149,9 @@ fn worker() {
                         false
                     }
                 };
+                if let Some(n) = crate::classes::Classes::memo_len() {
+                    println!("CLASS_MEMO {n}");
+                }
                 std::io::stdout().flush().unwrap();
                 stdio::restore(saved);
                 ok
