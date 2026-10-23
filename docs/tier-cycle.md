@@ -3486,6 +3486,17 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
     105 MB of 214 and 305 MB committed, and still growing by 3-5 MB a task. Most of it is `is_law`'s widths 1-6 over
     3 variables (about 3200-4500 vectors each) and width 4 over 3 variables (7000-12100 vectors, 21-37 MB). Every
     vector is 204 `u128`s, 3264 B, where width 4 needs 4 bits a value.
+  - **What the rest of that peak is (2026-10-23, runs `2026-10-23-miner-mem` to `-miner-ws`, d97d418 plus
+    `miner_*.patch`, script `miner_mem.sh`; the same sweep).** A counting global allocator (mimalloc underneath) logs live
+    bytes and commit at every `rule_miner` phase. Live bytes peak at 96-233 MB, and the peak working set is 221-304 MB,
+    but peak commit is 446-490 MB. It jumps as the first parallel round starts (71 to 276 MB while live goes 51 to 87 MB).
+    Ruled out: mimalloc's delayed purging (`MIMALLOC_PURGE_DELAY=0`: 444-486 MB), what `mi_collect(true)` at phase ends
+    can return (439-494 MB), and the miner threads' own stacks (44-60 KB each). Found: the kernel's large `check_in` runs
+    on a 64 MB stacker segment (`CHECK_SEGMENT`, src/kernel.rs), and stacker's `CreateFiber(size)` commits the whole
+    size. With 4 MB, peak commit falls to 312-395 MB. Those pages are commit charge only, never touched, so they cost no
+    RAM; the kernel.rs comment "reserving it costs nothing until touched" holds for RAM, not for commit. The 100-200 MB
+    still between live and commit is mimalloc's per-thread retention over 6 scoring threads plus speculative provers; not
+    split further. Not a limit today: two lanes peak at about 1.15 GB of commit.
 - **The rule table filters on operand classes (2026-10-15, branch `rule-index`): identical outputs, `rule_step_in` 6.6% → 5.7% of busy samples; timing a tie.** `rule_step_in` tried 16.7 rules a call, most failing on an operand's operator. Each entry of a root operator's rule list now carries one class mask per operand (its operator, `0`, `-1` or a variable; a pattern variable sets every bit), and `RuleTable::candidates` skips entries whose masks miss the term's operand classes before calling `match_pat`. Test: `rule_table_lists_every_matching_rule_in_order` (a mutation that drops a pattern variable's other classes fails it).
   - Outputs: identical to c7e815b on salts 1 and 2 (416 files each, no difference at all). church_bv tests: 83 pass.
   - Profile (one salt-1 sweep, load 19-29%, RTP off): busy samples 10,906 against 10,511; `rule_step_in` 5.7% inclusive against 6.6%, `match_pat` self 3.7% against 4.7%, `set_extra_rules` 1.8% both. About 1% of busy samples, below what a timing round resolves here, so it was not timed.

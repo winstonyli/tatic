@@ -1,0 +1,97 @@
+diff --git a/tests/church_bv/main.rs b/tests/church_bv/main.rs
+index 61464d2..3eeabf7 100644
+--- a/tests/church_bv/main.rs
++++ b/tests/church_bv/main.rs
+@@ -33,4 +33,63 @@ type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
+ // The allocator `main.rs` ships with: the lib's own `#[global_allocator]` is
+ // `#[cfg(test)]`, so without this these timings ran on the system heap.
+ #[global_allocator]
+-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
++static GLOBAL: Counting = Counting;
++
++/// Probe: mimalloc, counting live bytes and their peak since the last `mem_line`.
++pub struct Counting;
++static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++fn grew(n: usize) {
++    let now = LIVE.fetch_add(n, std::sync::atomic::Ordering::Relaxed) + n;
++    PEAK.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
++}
++unsafe impl std::alloc::GlobalAlloc for Counting {
++    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
++        let p = unsafe { mimalloc::MiMalloc.alloc(l) };
++        if !p.is_null() {
++            grew(l.size());
++        }
++        p
++    }
++    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
++        let p = unsafe { mimalloc::MiMalloc.alloc_zeroed(l) };
++        if !p.is_null() {
++            grew(l.size());
++        }
++        p
++    }
++    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
++        unsafe { mimalloc::MiMalloc.dealloc(p, l) };
++        LIVE.fetch_sub(l.size(), std::sync::atomic::Ordering::Relaxed);
++    }
++    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, new: usize) -> *mut u8 {
++        let q = unsafe { mimalloc::MiMalloc.realloc(p, l, new) };
++        if !q.is_null() {
++            LIVE.fetch_sub(l.size(), std::sync::atomic::Ordering::Relaxed);
++            grew(new);
++        }
++        q
++    }
++}
++
++/// Probe: live MB now, their peak since the last call, and the process's commit and peak commit.
++pub fn mem_line() -> String {
++    #[repr(C)]
++    #[derive(Default)]
++    struct Pmc { cb: u32, faults: u32, peak_ws: usize, ws: usize, qpp: usize, qp: usize, qpnp: usize, qnp: usize, pagefile: usize, peak_pagefile: usize }
++    unsafe extern "system" {
++        fn GetCurrentProcess() -> isize;
++        fn K32GetProcessMemoryInfo(h: isize, p: *mut Pmc, cb: u32) -> i32;
++    }
++    let mut m = Pmc { cb: std::mem::size_of::<Pmc>() as u32, ..Default::default() };
++    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut m, m.cb) };
++    let live = LIVE.load(std::sync::atomic::Ordering::Relaxed);
++    let peak = PEAK.swap(live, std::sync::atomic::Ordering::Relaxed);
++    let before = m.pagefile >> 20;
++    unsafe extern "C" {
++        fn mi_collect(force: bool);
++    }
++    unsafe { mi_collect(true) };
++    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut m, m.cb) };
++    format!("live {} MB, phase peak {} MB, commit {before} MB, after mi_collect {} MB, peak commit {} MB", live >> 20, peak >> 20, m.pagefile >> 20, m.peak_pagefile >> 20)
++}
+diff --git a/tests/church_bv/miner.rs b/tests/church_bv/miner.rs
+index 9ec3b1e..9e9546a 100644
+--- a/tests/church_bv/miner.rs
++++ b/tests/church_bv/miner.rs
+@@ -13,6 +13,7 @@ struct Clock(std::cell::Cell<Instant>);
+ impl Clock {
+     fn phase(&self, label: &str) {
+         println!("RULEMINER time {label}: {:.1}s", self.0.replace(Instant::now()).elapsed().as_secs_f64());
++        println!("RULEMINER mem {label}: {}", crate::mem_line());
+     }
+ }
+ 
+@@ -90,6 +91,7 @@ pub fn run(setup: &Arc<Setup>) {
+         job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
+         let clock = Clock(std::cell::Cell::new(Instant::now()));
+         let _banner = MachineBanner::start(job, "RULEMINER");
++        println!("RULEMINER mem start: {}", crate::mem_line());
+         let _save = lemma_cache::Save(setup.clone());
+         let cfg = MinerConfig::new(setup);
+         // the stragglers are the laws left with the base's rules
+@@ -137,6 +139,7 @@ pub fn run(setup: &Arc<Setup>) {
+                 covered
+             });
+             rounds.report(&covered, main.join);
++            clock.phase("rounds and preferences");
+         });
+     });
+ }

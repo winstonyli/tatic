@@ -1,0 +1,158 @@
+diff --git a/tests/church_bv/main.rs b/tests/church_bv/main.rs
+index 61464d2..2e20a22 100644
+--- a/tests/church_bv/main.rs
++++ b/tests/church_bv/main.rs
+@@ -33,4 +33,89 @@ type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
+ // The allocator `main.rs` ships with: the lib's own `#[global_allocator]` is
+ // `#[cfg(test)]`, so without this these timings ran on the system heap.
+ #[global_allocator]
+-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
++static GLOBAL: Counting = Counting;
++
++/// Probe: mimalloc, counting live bytes and their peak since the last `mem_line`.
++pub struct Counting;
++static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++fn grew(n: usize) {
++    let now = LIVE.fetch_add(n, std::sync::atomic::Ordering::Relaxed) + n;
++    PEAK.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
++}
++unsafe impl std::alloc::GlobalAlloc for Counting {
++    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
++        let p = unsafe { mimalloc::MiMalloc.alloc(l) };
++        if !p.is_null() {
++            grew(l.size());
++        }
++        p
++    }
++    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
++        let p = unsafe { mimalloc::MiMalloc.alloc_zeroed(l) };
++        if !p.is_null() {
++            grew(l.size());
++        }
++        p
++    }
++    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
++        unsafe { mimalloc::MiMalloc.dealloc(p, l) };
++        LIVE.fetch_sub(l.size(), std::sync::atomic::Ordering::Relaxed);
++    }
++    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, new: usize) -> *mut u8 {
++        let q = unsafe { mimalloc::MiMalloc.realloc(p, l, new) };
++        if !q.is_null() {
++            LIVE.fetch_sub(l.size(), std::sync::atomic::Ordering::Relaxed);
++            grew(new);
++        }
++        q
++    }
++}
++
++/// Probe: live MB now, their peak since the last call, and the process's commit and peak commit.
++pub fn mem_line() -> String {
++    #[repr(C)]
++    #[derive(Default)]
++    struct Pmc { cb: u32, faults: u32, peak_ws: usize, ws: usize, qpp: usize, qp: usize, qpnp: usize, qnp: usize, pagefile: usize, peak_pagefile: usize }
++    unsafe extern "system" {
++        fn GetCurrentProcess() -> isize;
++        fn K32GetProcessMemoryInfo(h: isize, p: *mut Pmc, cb: u32) -> i32;
++    }
++    let mut m = Pmc { cb: std::mem::size_of::<Pmc>() as u32, ..Default::default() };
++    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut m, m.cb) };
++    let live = LIVE.load(std::sync::atomic::Ordering::Relaxed);
++    let peak = PEAK.swap(live, std::sync::atomic::Ordering::Relaxed);
++    let (sum, max, n) = (STACK_SUM.swap(0, std::sync::atomic::Ordering::Relaxed), STACK_MAX.swap(0, std::sync::atomic::Ordering::Relaxed), STACK_N.swap(0, std::sync::atomic::Ordering::Relaxed));
++    format!("live {} MB, phase peak {} MB, commit {} MB, peak commit {} MB, stacks of {n} exited threads {} KB (max {} KB)", live >> 20, peak >> 20, m.pagefile >> 20, m.peak_pagefile >> 20, sum >> 10, max >> 10)
++}
++
++static STACK_SUM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++static STACK_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++static STACK_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++
++/// Probe: the committed bytes of this thread's stack, added to the next `mem_line`; call as a thread ends.
++pub fn note_stack() {
++    #[repr(C)]
++    #[derive(Default)]
++    struct Mbi { base: usize, alloc_base: usize, alloc_protect: u32, partition: u16, _p: u16, size: usize, state: u32, protect: u32, ty: u32, _q: u32 }
++    unsafe extern "system" {
++        fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
++        fn VirtualQuery(a: usize, m: *mut Mbi, n: usize) -> usize;
++    }
++    let (mut low, mut high) = (0usize, 0usize);
++    unsafe { GetCurrentThreadStackLimits(&mut low, &mut high) };
++    let (mut a, mut committed) = (low, 0usize);
++    while a < high {
++        let mut m = Mbi::default();
++        if unsafe { VirtualQuery(a, &mut m, std::mem::size_of::<Mbi>()) } == 0 || m.size == 0 {
++            break;
++        }
++        if m.state == 0x1000 {
++            committed += m.size.min(high - a);
++        }
++        a = m.base + m.size;
++    }
++    STACK_SUM.fetch_add(committed, std::sync::atomic::Ordering::Relaxed);
++    STACK_MAX.fetch_max(committed, std::sync::atomic::Ordering::Relaxed);
++    STACK_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++}
+diff --git a/tests/church_bv/miner.rs b/tests/church_bv/miner.rs
+index 9ec3b1e..2e23757 100644
+--- a/tests/church_bv/miner.rs
++++ b/tests/church_bv/miner.rs
+@@ -13,6 +13,7 @@ struct Clock(std::cell::Cell<Instant>);
+ impl Clock {
+     fn phase(&self, label: &str) {
+         println!("RULEMINER time {label}: {:.1}s", self.0.replace(Instant::now()).elapsed().as_secs_f64());
++        println!("RULEMINER mem {label}: {}", crate::mem_line());
+     }
+ }
+ 
+@@ -90,6 +91,7 @@ pub fn run(setup: &Arc<Setup>) {
+         job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
+         let clock = Clock(std::cell::Cell::new(Instant::now()));
+         let _banner = MachineBanner::start(job, "RULEMINER");
++        println!("RULEMINER mem start: {}", crate::mem_line());
+         let _save = lemma_cache::Save(setup.clone());
+         let cfg = MinerConfig::new(setup);
+         // the stragglers are the laws left with the base's rules
+@@ -137,6 +139,7 @@ pub fn run(setup: &Arc<Setup>) {
+                 covered
+             });
+             rounds.report(&covered, main.join);
++            clock.phase("rounds and preferences");
+         });
+     });
+ }
+@@ -465,7 +468,7 @@ impl Prover {
+                     .map(|t| {
+                         let idx: Vec<usize> = (t..cands.len()).step_by(threads).collect();
+                         let (prove, setup) = (&prove, job.setup().clone());
+-                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || prove(&mut Job::new(setup), &idx)).unwrap()
++                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || { let r = prove(&mut Job::new(setup), &idx); crate::note_stack(); r }).unwrap()
+                     })
+                     .collect();
+                 handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+@@ -736,7 +739,7 @@ impl<'a> Rounds<'a> {
+             let handles: Vec<_> = (0..threads)
+                 .map(|t| {
+                     let touched = &touched;
+-                    sc.spawn(move || (t..provable.len()).step_by(threads).map(|i| touched(&provable[i])).collect::<Vec<_>>())
++                    sc.spawn(move || { let r = (t..provable.len()).step_by(threads).map(|i| touched(&provable[i])).collect::<Vec<_>>(); crate::note_stack(); r })
+                 })
+                 .collect();
+             let mut parts: Vec<_> = handles.into_iter().map(|h| h.join().unwrap().into_iter()).collect();
+@@ -808,6 +811,7 @@ impl<'a> Rounds<'a> {
+                         })
+                     });
+                     join_workers.lock().unwrap().add(spent.join);
++                    crate::note_stack();
+                 };
+                 std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
+             }
+@@ -946,7 +950,7 @@ impl<'a> Rounds<'a> {
+         std::thread::scope(|sc| {
+             let spawn = |i: usize| {
+                 let (tx, rule, setup) = (tx.clone(), &provable[i], setup.clone());
+-                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prover.prove(&mut Job::new(setup), rule))).unwrap()).unwrap();
++                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || { let r = prover.prove(&mut Job::new(setup), rule); crate::note_stack(); tx.send((i, r)).unwrap() }).unwrap();
+             };
+             let (mut s, mut round, mut open) = (self.state(job, vec![]), 0, Vec::<Open>::new());
+             loop {
