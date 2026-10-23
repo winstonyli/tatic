@@ -51,5 +51,5 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    with `lt` as a second sort, its proofs, and smaller keys"). A key of 316 inputs refined by counterexamples does the
    same at 1.5 s per build ("A key refined by counterexamples"). How it enters the rewriter: the spec
    `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`. As phase 1 in `prove_eq`
-   (`tests/church_bv/classes.rs`) it cuts M 38% (377 to 233 over salts 1-5) at 29% more job CPU (tier-cycle.md, "The
+   (`tests/church_bv/classes.rs`) it cuts M 38% (377 to 233 over salts 1-5) at 22% more job CPU (tier-cycle.md, "The
    class table in `prove_eq`: phase 1").

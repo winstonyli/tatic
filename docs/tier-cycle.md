@@ -5365,8 +5365,8 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
 - **Cost: job CPU +29% (508 s to 655 s), wall 71 s to 96 s, the largest `peakproc` 577 MB to 684 MB (+107 MB).** Each
   B process builds the table once (15 builds, 1.6-1.7 s, 24 s of the 147 s added; the 5 in A are the sweep's own, for the
   twin filter). The rest is phase 1's normalizing and proofs, and different rules and laws mined; this run does not
-  separate them. The CPU is past the plan's 25% stop, so phase 2 waits for a decision (`PARKED.md`, "Phase 1's CPU
-  cost").
+  separate them. This was past the plan's 25% stop; with `rep` memoized (below) it is under it (`PARKED.md`, "Phase 1's
+  CPU cost").
 - **Where the added CPU goes** (run `2026-10-23-phase1-prof`, samply over salt 1's whole sweep, both arms, 83f698b plus
   `docs/runs/2026-10-23/patches/phase1_prof.patch`, script `phase1_prof.sh`, CPU 5% at launch; frames in
   `docs/runs/2026-10-23/rows/2026-10-23-phase1-prof.txt`; busy samples, not weighted by CPU). Both arms reproduce the
@@ -5376,6 +5376,13 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   (`join_or_machine` 4832 to 1551). The workers' builds (`Classes::get`) are 4177, about 29%; in the kernel-check task
   the build is all the samples it has. The rest, about 2400 net, is the different work the different rules bring (the
   rewriter +3790). So hashing values for lookups and building the table per worker are most of the cost.
+- **`rep` memoized: job CPU +22%** (run `2026-10-23-ct-memo-gate`, 5565cfa, both arms that build, A with
+  `ABLATE=classes`; untimed, the other session's job still on CPU 2, CPU 5% at launch). `Classes::rep` keeps its
+  answer per term under the value memos' lock, so a term's values are gathered and hashed once per process. M is
+  unchanged, 377 to 233; job CPU 462 s to 565 s (+22%, was +29%), wall 64 s to 83 s; the largest `peakproc` 568 MB to
+  701 MB (+133 MB, was +107 MB: the memo's map, or noise). Per salt the change in CPU spans -5% (salt 2) to +78%
+  (salt 3). Not profiled again; the profile's other large item was the builds per worker (`PARKED.md`, "Cache the
+  built class table"), and each build hashes every candidate with the same SipHash.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
