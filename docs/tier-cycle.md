@@ -4971,7 +4971,7 @@ laws at `JOIN_VISIT` 1000, add3 / sbo3 / mix3 / cmp3d:
 
 | order | A (held-out, salt 11) | B (held-out, salt 21) | mine's own laws |
 |---|---|---|---|
-| breadth-first (now) | 350 / 339 / 323 / 395 = 1407 | 347 / 338 / 311 / 390 = 1386 | 418 / 381 / 358 / 775 |
+| breadth-first (then) | 350 / 339 / 323 / 395 = 1407 | 347 / 338 / 311 / 390 = 1386 | 418 / 381 / 358 / 775 |
 | size-first | 363 / 335 / 312 / 397 = 1407 | 354 / 338 / 301 / 388 = 1381 | 419 / 376 / 357 / 773 |
 | depth plus size | 360 / 338 / 322 / 396 = 1416 | 354 / 340 / 312 / 388 = 1394 | 419 / 380 / 358 / 773 |
 | breadth-first at 5000 | 377 / 348 / 334 / 397 = 1456 | 378 / 351 / 327 / 390 = 1446 | 420 / 381 / 359 / 775 |
@@ -5016,7 +5016,9 @@ a3b1a4e, `join_size_first.patch` plus a `JOIN_BACK` switch in `join_eqs`, revert
   With `=1` add3 frees as many laws with rule 4 as without (282 and 281 on A), so its cost is gone, but add3 itself
   loses 68 (350 to 282). The joins need backward steps; which ones cannot be read off a rule's shape.
 - So depth plus size is a better join order on every count measured (held-out free laws, stream M, job CPU), and
-  rule 4's cost stays with the budget.
+  rule 4's cost stays with the budget. It replaced breadth-first as the join's only order (`join_search`, the commit
+  after 45afcbe): one heap per side by depth plus size, earliest reached first among equals; it frees and reaches the
+  same as the probe's `JOIN_SIZE_FIRST=2` on all 15 held-out cells (run `2026-10-22-join-ds-check-3`).
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost

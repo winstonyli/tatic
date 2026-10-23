@@ -1,5 +1,5 @@
 use super::*;
-use std::rc::Rc;
+use std::{cmp::Reverse, collections::BinaryHeap, rc::Rc};
 
 /// A hash-consed term: a pointer to its one node. Leaves are statics, `Op` nodes are interned (`Term::op`) and never
 /// freed, so equal terms are the same pointer: `==` and `Hash` take the address, and clone is a copy. Each node also
@@ -2633,7 +2633,7 @@ impl JoinStore {
         let table = &*job.rules().table;
         let mut prev: hashbrown::HashMap<Term, Option<(Term, StoredStep, bool, u32)>> = [(a, None)].into_iter().collect();
         let (mut front, visit) = (vec![a], join_visit(job));
-        // bounded once a layer, as the search is
+        // bounded by the terms reached, as the search is (here checked once a layer)
         while !front.is_empty() && prev.len() <= visit {
             for t in std::mem::take(&mut front) {
                 for &StoredEdge { to: u, step, back } in self.edges.get(&t).into_iter().flatten() {
@@ -2884,9 +2884,11 @@ fn join_visit(job: &Job) -> usize {
     job.setup().or("JOIN_VISIT", 1000)
 }
 
-/// The plan of `a = b` by joining them: breadth-first from both at once (one layer of the smaller frontier at a time) over
-/// `join_eqs`, through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or more than
-/// `JOIN_VISIT` (1000) terms are reached (5000 left a few laws fewer to the machine proof for 2-3 times the sweep time:
+/// The plan of `a = b` by joining them: from both at once over `join_eqs`, the side with fewer pending terms expanding its
+/// one with the least depth plus size (a step that grows the term by a node costs 2, a same-size one 1, one that shrinks
+/// it by a node 0; against breadth-first, a lower stream M for about a third less CPU: docs/tier-cycle.md, "Depth plus
+/// size on the sweep"), through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or
+/// more than `JOIN_VISIT` (1000) terms are reached (5000 left a few laws fewer to the machine proof for 2-3 times the sweep time:
 /// docs/tier-cycle.md, "The bounded join removes the floor"). Only pairs equal on random inputs are searched, so an unequal
 /// pair costs no search. `ABLATE=join` switches it off. With the memo on, a pair the job's `JoinStore` has a path for
 /// is served from it without a search (77% of a cold:cmp3d mine's searches: docs/tier-cycle.md, "Spike of the join store").
@@ -3257,77 +3259,81 @@ fn join_search(job: &mut Job, a: &Term, b: &Term, examined: &mut Option<hashbrow
     for (side, t) in [(0, a), (1, b)] {
         seen[side].insert_unique(t.sh(), (t.sh(), Reached::Side(*t)), |e| e.0);
     }
-    let mut front = [vec![Reached::Side(*a)], vec![Reached::Side(*b)]];
+    // each side's reached terms with their depth, and those not yet expanded by (depth plus size, index): least first, in
+    // the order reached among equals
+    let mut store = [vec![(Reached::Side(*a), 0)], vec![(Reached::Side(*b), 0)]];
+    let mut pending: [BinaryHeap<Reverse<(usize, usize)>>; 2] = [BinaryHeap::from([Reverse((a.size(), 0))]), BinaryHeap::from([Reverse((b.size(), 0))])];
     let table = &*job.rules().table;
     let mut met_path: Vec<(Term, StoredStep)> = vec![];
     let found = (|| {
         let mut up = vec![];
-        while !front[0].is_empty() && !front[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
-            let s = (front[0].len() > front[1].len()) as usize;
-            for r in std::mem::take(&mut front[s]) {
-                let t = r.make();
-                let mut met = None;
-                let (here, there) = seen.split_at_mut(1);
-                let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
-                let order = r.step().and_then(|s| s.order(t));
-                join_walk(t, order, table, &job.blocked, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
-                    let e = &table.join[eq];
-                    let (h, size) = subst_sig(&e.to, sub);
-                    if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
-                        return true;
-                    }
-                    let h = place_sh(up, h);
-                    let step = JoinStep::new(t, up, eq);
-                    if let Some(&(_, u)) = other.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)) {
-                        met = Some((step, u));
-                        return false;
-                    }
-                    if mine.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)).is_none() {
-                        let r = Reached::Step(step, subst_pat(&e.to, sub));
-                        mine.insert_unique(h, (h, r), |c| c.0);
-                        front[s].push(r);
-                    }
-                    true
-                });
-                let Some((step, u)) = met else { continue };
-                let u = u.make();
-                // the path's steps, for the store the job feeds
-                if feed {
-                    let kept = |s: &JoinStep| {
-                        let e = &table.join[s.eq as usize];
-                        StoredStep { from: s.from, path: s.path, law: (e.lhs, e.rhs, e.backward) }
-                    };
-                    met_path.push((u, kept(&step)));
-                    for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
-                        while let Some(prev) = get(side, p) {
-                            met_path.push((p, kept(&prev)));
-                            p = prev.from;
-                        }
+        while !pending[0].is_empty() && !pending[1].is_empty() && seen[0].len() + seen[1].len() <= visit {
+            let s = (pending[0].len() > pending[1].len()) as usize;
+            let Reverse((_, i)) = pending[s].pop().expect("pending");
+            let (r, depth) = store[s][i];
+            let t = r.make();
+            let mut met = None;
+            let (here, there) = seen.split_at_mut(1);
+            let (mine, other) = if s == 0 { (&mut here[0], &there[0]) } else { (&mut there[0], &here[0]) };
+            let order = r.step().and_then(|s| s.order(t));
+            join_walk(t, order, table, &job.blocked, cap, &mut up, examined, &mut |up, x, eq, sub, cap| {
+                let e = &table.join[eq];
+                let (h, size) = subst_sig(&e.to, sub);
+                if size > cap || h == x.sh() && is_subst(x, &e.to, sub) {
+                    return true;
+                }
+                let h = place_sh(up, h);
+                let step = JoinStep::new(t, up, eq);
+                if let Some(&(_, u)) = other.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)) {
+                    met = Some((step, u));
+                    return false;
+                }
+                if mine.find(h, |c| c.0 == h && c.1.is_step(up, &e.to, sub)).is_none() {
+                    let r = Reached::Step(step, subst_pat(&e.to, sub));
+                    mine.insert_unique(h, (h, r), |c| c.0);
+                    pending[s].push(Reverse((depth + 1 + t.size() + size - x.size(), store[s].len())));
+                    store[s].push((r, depth + 1));
+                }
+                true
+            });
+            let Some((step, u)) = met else { continue };
+            let u = u.make();
+            // the path's steps, for the store the job feeds
+            if feed {
+                let kept = |s: &JoinStep| {
+                    let e = &table.join[s.eq as usize];
+                    StoredStep { from: s.from, path: s.path, law: (e.lhs, e.rhs, e.backward) }
+                };
+                met_path.push((u, kept(&step)));
+                for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
+                    while let Some(prev) = get(side, p) {
+                        met_path.push((p, kept(&prev)));
+                        p = prev.from;
                     }
                 }
-                // a met search's result rests on its path only: keep what was examined at the path's terms
-                if let Some(x) = examined {
-                    x.clear();
-                    let mut stack = vec![u];
-                    for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
-                        stack.push(p);
-                        while let Some(prev) = get(side, p) {
-                            p = prev.from;
-                            stack.push(p);
-                        }
-                    }
-                    // with their subterms
-                    while let Some(q) = stack.pop() {
-                        if let (true, Node::Op(_, l, r)) = (x.insert(q), *q.node()) {
-                            stack.extend([l, r]);
-                        }
-                    }
-                }
-                // `this side = u` and `other side = u`
-                let (here, there) = (Plan::trans(job, path(&seen[s], t), step_plan(job, &step)), path(&seen[1 - s], u));
-                let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
-                return Some(Plan::trans(job, pa, Plan::sym(job, pb)));
             }
+            // a met search's result rests on its path only: keep what was examined at the path's terms
+            if let Some(x) = examined {
+                x.clear();
+                let mut stack = vec![u];
+                for (side, mut p) in [(&seen[s], t), (&seen[1 - s], u)] {
+                    stack.push(p);
+                    while let Some(prev) = get(side, p) {
+                        p = prev.from;
+                        stack.push(p);
+                    }
+                }
+                // with their subterms
+                while let Some(q) = stack.pop() {
+                    if let (true, Node::Op(_, l, r)) = (x.insert(q), *q.node()) {
+                        stack.extend([l, r]);
+                    }
+                }
+            }
+            // `this side = u` and `other side = u`
+            let (here, there) = (Plan::trans(job, path(&seen[s], t), step_plan(job, &step)), path(&seen[1 - s], u));
+            let (pa, pb) = if s == 0 { (here, there) } else { (there, here) };
+            return Some(Plan::trans(job, pa, Plan::sym(job, pb)));
         }
         None
     })();
