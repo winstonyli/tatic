@@ -1,7 +1,7 @@
 #!/bin/bash
 # streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, SWEEP=cold:streams (extras
 # on, 2 lanes, 6 scoring workers) with A and B, A first on odd salts and B first on even ones, each a `runs run` (job
-# CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an exe past 8 GB. Then per loop the held-out M under the
+# CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (tests/church_bv/held_{11,13}.txt, CHECK_FAST: the laws that still need a whole-term machine
 # proof). Per salt: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
 # lookup memo's peak (CLASS_MEMO) and the largest peakproc. Last line: loops with the same rules, and arms that failed
@@ -25,11 +25,11 @@ for s in "$@"; do
   [ $((s % 2)) = 1 ] && order="A B" || order="B A"
   for arm in $order; do
     [ $arm = A ] && exe=$a || exe=$b
-    name=$(basename "$exe" | sed 's/\.[Ee][Xx][Ee]$//'); o="$RUN_DIR/s${s}_$arm"; mkdir -p "$o"; rm -f "$o/exit"
+    o="$RUN_DIR/s${s}_$arm"; mkdir -p "$o"; rm -f "$o/exit"
     ( "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams SALT=$s "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
     while [ ! -f "$o/exit" ]; do
-      mb=$(powershell -NoProfile -Command "[int]((Get-Process $name -EA 0 | Measure-Object WorkingSet64 -Sum).Sum/1MB)" < /dev/null | tr -d '\r')
-      [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; taskkill //F //IM "$name.exe" > /dev/null; }
+      mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
+      [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }
       ping -n 6 127.0.0.1 > /dev/null
     done
     echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
