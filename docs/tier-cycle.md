@@ -64,7 +64,8 @@ How the results below are measured (code: `tests/church_bv/driver.rs`, its modul
    them is a custom ranker, not scratchtape's LM (below).
 2. **Does a ranked choice of laws mine better rules?** Originally an LM-proposed stream against the hash-ordered stream; since
    `v0.2.0` the loops also mine on the law generator's extras, so the baseline is a random draw of the generator at the same n
-   (`ROADMAP.md`, v0.3).
+   (`ROADMAP.md`, v0.3). Answered no at this n (2026-10-22): redrawn lists move M by a few percent and the frontier by a
+   few points ("How much choosing the extras can gain", "Does the choice of extras move the frontier?").
 3. **Close the cycle.** Train on accepted laws, repeat, and track the frontier, not just M on a fixed stream. The frontier is
    not in the code yet; its proposed definition is in `ROADMAP.md`, v0.5.
 

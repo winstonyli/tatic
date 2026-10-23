@@ -24,21 +24,22 @@ the JIT and the loop", option A's result, 2026-10-17).
 
 ## Milestones
 
-- **v0.3 - Does ranking which laws to mine on beat a random draw of the generator?** (goal 3) The baseline is the
-  generator's own draw at the same n (`v0.2.0`), not the hash-ordered stream. Mined-batch M is nearly exhausted (at
-  f = 0.32 over salts 1-10: warm 54, cold 17; `docs/tier-cycle.md`, "The generator's n after the wider filter"), so a
-  win is the same M at a smaller n, or a lower warm batch 0 (about 675 over the same salts and the four warm
-  stages; it measures the ref libraries). Gate: the spread of M
-  and loop seconds across redrawn generator lists (`GEN_DRAW`, runs `2026-10-22-gen-draw1` to `3`) bounds what any
-  ranker can gain; if it is flat, this milestone closes as decided against and the proposer's job moves to v0.4. The
-  ranker is a custom model (decided 2026-10-17) on the GPU tier; laws cross the boundary in the `show` syntax
-  (proposed, `docs/tier-cycle.md`, "Interface (to settle)"), and its labels are what each law's mine gained (per-law
-  credit, `scripts/transfer_score.sh`, the miner's gains).
+- **v0.3 - Does ranking which laws to mine on beat a random draw of the generator?** Answered no (2026-10-22), awaiting
+  the tag; its sentence: "Choosing which generated laws to mine on moves M by a few percent, the frontier by a few
+  points, and cost by nothing." Redrawn generator lists (`GEN_DRAW`) leave batch 0 and job CPU unchanged; the best of
+  four draws per salt saves 51 laws of about 2230 in M, and lifts the free share at size 11 by 0.5-2.7 points over the
+  mean draw, against 7-37 points for having a library at all (`docs/tier-cycle.md`, "How much choosing the extras can
+  gain" and "Does the choice of extras move the frontier?"; `PARKED.md`, "A learned ranker over the generator's
+  laws"). The model planned for it (goal 3: a custom model on the GPU tier, decided 2026-10-17, speaking the `show`
+  syntax) takes its first job in v0.4 instead.
 - **v0.4 - Can the kernel extend its own vocabulary?** (goal 2, and goal 3 once the model proposes) A proposed
   definition enters only if checked conservative. Seeds: `PARKED.md`, "Proposer targets beyond ranking" (c) and
   "Boolean combinations of comparisons" (its machine side passed a spike).
 - **v0.5 - Does closing the cycle push the frontier?** (goals 2 and 3) Experiment 3: train on accepted laws, repeat,
-  and track the frontier, not only M on a fixed stream. The frontier is not in the code yet. Proposed definition, to
-  settle before building: on a fixed held-out set of laws larger than the families serve (so it needs
-  `PARKED.md`'s laws beyond 5 nodes, "Proposer targets beyond ranking" (a)), the share proved within a
-  fixed budget (the rule budget and the join's visit cap), and the largest law proved.
+  and track the frontier, not only M on a fixed stream. The frontier: on a fixed held-out set of laws larger than the
+  families serve, the share proved free (with no whole-term machine proof, within the rule budget and the join's cap)
+  by law size, and the largest size still above a threshold. Serving proves every law, so the share proved at all
+  would always be 1. Measured by a throwaway probe (`docs/tier-cycle.md`, "Free proofs by law size"): under the ref
+  libraries the free share falls from .91-.96 to .78-.82 between sizes 7-9 and 11 on add3, sbo3 and mix3, and the
+  libraries' gain over no rules grows with size. The 50% line lies beyond size 13, so the metric needs laws grown three
+  or more times (`PARKED.md`, "Proposer targets beyond ranking" (a)).
