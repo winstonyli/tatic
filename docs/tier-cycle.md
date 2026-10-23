@@ -4913,8 +4913,52 @@ counts exactly.
 - So rewarding held-out gain is a lever, though not a large one per rule: it would promote general rules the mine laws
   under-use and could prune harmful ones. The cheapest test is a held-out backward pass after a mine (drop a rule if
   the held set does not lose by it), scored on stream M and on a frontier set disjoint from the one that pruned
-  (`PARKED.md`, "A held-out backward pass after each mine"). The shift here is law size within each family; the held
-  laws come from the same generator.
+  (`PARKED.md`, "A held-out backward pass after each mine"; tried below on the frontier: no gain). The shift here is
+  law size within each family; the held laws come from the same generator.
+
+*A held-out backward pass, frontier side (2026-10-22; run `2026-10-22-held-prune`, 9 min, CPU 26% at launch; script
+`held_prune.sh`; throwaway, no source change).* Each ref library above is pruned in one pass, last-chosen rule first:
+a rule goes if the pruning set A (the held-out laws above, sizes 9 and 11) keeps as many free laws without it. Arm
+`held` looks at A only; arm `both` also requires the mine's own laws not to lose any. The libraries are then scored on
+a set B drawn at salt 21 (sizes 9 and 11, about 400 per family, less every line of A and of the mine's laws). Free laws
+(B9 + B11; the mine's laws in brackets):
+
+| family | no rules | whole library | `held` (rules kept) | `both` (rules kept) |
+|---|---|---|---|---|
+| add3 | 275 (347) | 347 (418), 28 rules | 345 (416), 12 | 345 (419), 15 |
+| sbo3 | 274 (313) | 338 (381), 21 | 336 (375), 9 | 337 (381), 13 |
+| mix3 | 290 (336) | 311 (358), 19 | 306 (352), 9 | 311 (358), 14 |
+| cmp3d | 293 (507) | 390 (775), 58 | 386 (768), 16 | 384 (775), 18 |
+
+- **Pruning does not raise the frontier.** It gained at most 2 laws on A, the set it pruned on, and none on B, where
+  the pruned libraries are 0-6 laws below the whole ones.
+- **But a third to three quarters of each library carries all its value.** `both` keeps 13-18 rules of 19-58 (cmp3d
+  18 of 58) with no in-sample loss and B within 0-6 laws. The rest are covered by other rules on these laws. Whether
+  the stream's later laws need them (M) was not measured: it needs loops served by the pruned libraries.
+
+*Why a sound rule costs the join: the visit budget (2026-10-22; runs `2026-10-22-join-visit-2`, 41 s, CPU 32% at
+launch, superseding `-join-visit`, whose search columns were misread; script `join_visit_trace.sh`).* Removing add3's
+`sub(x, xor(y, 0)) -> sub(x, y)` frees 10 held-out laws (leave-one-out, above). None of the 10 has an `xor(_, 0)`;
+they are laws the join meets at a larger budget. Free laws on the held-out sizes 9 and 11 (400 per family) by
+`JOIN_VISIT`:
+
+| library | 1000 (default) | 5000 | 20000 |
+|---|---|---|---|
+| add3 | 350 | 377 | 383 |
+| add3 without the rule | 360 | 380 | 383 |
+| sbo3 | 339 | 348 | 348 |
+| mix3 | 323 | 334 | 337 |
+| cmp3d | 395 | 397 | 397 |
+
+- **The rule's cost is search breadth.** `join_eqs` adds every rule backward too, and `join_usable` admits this one:
+  `sub(x, y) -> sub(x, xor(y, 0))` applies at every `sub` node and adds one node, inside the cap of the larger side
+  plus 2. With it the add3 searches reach 391 terms each on average against 355 without it, and 12 fewer meet within
+  the 1000 budget. At 20000 the gap is gone. So a rule that pays forward (it normalises) can cost more backward. The
+  per-node count is from the code; the share of the extra terms from this rule's backward steps was not counted.
+- **The budget is a frontier lever of its own.** 5000 instead of 1000 frees 2-27 more laws per family at sizes 9-11
+  (add3 +27, as much as a third of what its library adds), at 1.8 times the reached terms in add3. At the stream's
+  sizes, 5000 left only a few laws fewer to the machine proof for 2-3 times the sweep time ("The bounded join removes
+  the floor"). So the frontier's definition has to fix the budget, and a cheaper wider search would move it.
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
