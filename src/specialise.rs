@@ -8,7 +8,7 @@
 
 use crate::spec_check::{MAX_NODES, MAX_STEPS, Step};
 use crate::term::{Hash, Term, TermStore};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 pub struct Specialised {
     /// Holds `term` and everything it reaches. Hashes are content hashes,

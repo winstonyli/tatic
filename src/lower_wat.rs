@@ -190,9 +190,7 @@
 //! still open: a universal (not just per-instance) proof for either
 //! shape needs a real dependent sum in the kernel's own type theory.
 
-use std::collections::HashSet;
-
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 use crate::compile::CompiledFragment;
 use crate::ir::{Combinator, Dispatch, Func, Module, Node, Read};

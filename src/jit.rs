@@ -639,7 +639,7 @@ mod tests {
         for arity in [3, 4, 5] {
             let samples = sample_arg_vectors(arity);
             assert!(
-                samples.iter().any(|s| s.iter().collect::<std::collections::HashSet<_>>().len() > 1),
+                samples.iter().any(|s| s.iter().collect::<hashbrown::HashSet<_>>().len() > 1),
                 "arity {arity}: no sample has distinct argument values: {samples:?}"
             );
         }

@@ -20,7 +20,7 @@
 //! mirrored here.
 
 use crate::term::{Hash, Term, TermStore};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 /// The longest trace `check` accepts. The specialiser stops here too.
 pub const MAX_STEPS: usize = 256;

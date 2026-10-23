@@ -283,7 +283,7 @@ mod tests {
     }
 
     use crate::ir::check;
-    use std::collections::HashSet;
+    use hashbrown::HashSet;
 
     const KINDS: [&str; 12] = [
         "swap arguments 0,1",

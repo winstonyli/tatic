@@ -32,7 +32,7 @@
 
 use crate::eval;
 use crate::term::{Hash, Term, TermStore};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 enum Ty {

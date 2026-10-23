@@ -4,7 +4,7 @@
 //! Reading goes through the public constructors, so a term read inside `scoped` is interned.
 
 use super::*;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 /// The children of `n` in field order.
 fn children(n: &Node<Expr>) -> Vec<Expr> {
