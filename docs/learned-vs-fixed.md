@@ -5,7 +5,7 @@ Which parts of the reasoning pipeline (rewriter, prover, miner, loop) are learne
 
 **Keep this current.** Update the row when a part becomes learned, when an experiment measures a fixed part (put the number and a
 pointer in "Evidence"), and when a part is added or removed. Experiments' details stay in docs/tier-cycle.md; this page holds the
-verdicts. Last updated 2026-10-17.
+verdicts. Last updated 2026-10-22.
 
 Columns: *learned in the run*: changes from data while the loop runs. *Learned once*: came from data, then frozen in code.
 *Fixed*: written by hand, possibly tuned by experiments (tuning is not learning).
@@ -44,3 +44,9 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    overfit; held-out gain in its place lost (salt 2 103 to 106). On three salts harmful drops gain 1000-1033 and helpful ones
    3215+, so the floor separates two classes rather than being tuned (salt 3 pooled 74 with it, 80 without; salts 4-5 never
    reach it; "The floor is still needed").
+4. The normal form itself: a table of class representatives learned by enumeration (the smallest term of each class of
+   equal values, Ruler-style) instead of the rewrite strategy and rules. Probe only, not wired in. Up to size 9 with `lt`
+   as a second sort, it makes 189-200 of 200 of each family's held-out laws meet with no rules, and every one of its 3203
+   replacements is proved and kernel-checked (tier-cycle.md, "A learned table of representatives: the probe", "The table
+   with `lt` as a second sort, its proofs, and smaller keys"). Open: how it enters the rewriter, and a key cheap enough for
+   larger sizes that does not merge wrongly.
