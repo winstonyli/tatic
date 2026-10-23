@@ -94,6 +94,14 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   not shorten them: `docs/tier-cycle.md`, "foldhash for `class_hash`"). Why parked: under the plan's 25% stop now. Trigger:
   phase 2's gate past its stop, or a sweep where the builds dominate. Evidence: `docs/tier-cycle.md`, "The class table
   in `prove_eq`: phase 1" (2026-10-23). Status: parked.
+- **Bound the class table's lookup memo** — what: `Classes::rep`'s memo (values per term, and its answer) is a pure
+  process-wide memo kept across a worker's tasks, like every `SharedMemo`, so it grows with every distinct term looked up
+  (about 432 B of values each, plus subterms). Options: clear it per task, cap it, or key it per job. Why parked: the
+  persistent worker keeps pure memos by design (`task.rs`), and growth measured so far is under the plan's 150 MB stop
+  (largest `peakproc` +133 MB with the memo, +69 MB after the build's zip; short 3-loop gates). Trigger: a long sweep, or
+  phase 2's step on every rewritten node, with peak commit past that stop or `Shared`/commit still climbing late in a
+  run. Evidence: `tests/church_bv/classes.rs` (`Classes::rep`), runs `2026-10-23-ct-memo-gate` and `-ct-zip-gate`
+  (2026-10-23, final review I2). Status: parked.
 - **Two sweeps at a time in the multi-arm scripts (`gen_cost.sh`, `gen_twin.sh`)** — background jobs plus `wait`, two arms or salts at once. Each sweep now runs 2 lanes of 6 mining threads, so two sweeps would be 24 threads against the 12-thread cap. Trigger: none. Evidence: `driver::sweep` (`SWEEP_LANES`, 397dcf2). Status: decided against (lanes take the same parallelism inside a sweep).
 - **Skip replay arms that only confirm determinism** — a `*_full` file replay once one replay has matched its source run; saves about 30% of a replay probe. Why parked: by decision (2026-10-17). Trigger: a replay probe with more than about 3 arms. Evidence: `2026-10-17-gen-twin` (full replay reproduced all 90 rule files). Status: parked.
 - **Reuse threads across tasks (a pool for the miner's prover threads)** — why: ceiling about 2-4%, below whole-sweep timing resolution; needs a scoped pool crate or unsafe code and a reset of task-local state. Trigger: none stated; smallest step is a pool for the miner's prover threads. Evidence: `docs/tier-cycle.md` ("Survey: reusing threads across tasks"). Status: parked (not started).

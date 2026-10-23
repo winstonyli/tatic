@@ -2715,11 +2715,15 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
         }
     }
     // the learned class table (docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §4): both sides
-    // normalized by its proved replacements; if they meet, the law is closed with no rule
+    // normalized by its proved replacements; if they meet, the law is closed with no rule, and only then are its steps
+    // counted in `job.table_steps`
     if !job.setup().ablated("classes") {
         let c = crate::classes::Classes::get();
+        let kept = std::mem::take(&mut job.table_steps);
         let ((na, pa), (nb, pb)) = (c.normalize(job, n, k, a), c.normalize(job, n, k, b));
+        let used = std::mem::replace(&mut job.table_steps, kept);
         if na == nb {
+            job.table_steps.extend(used);
             return Some(Plan::trans(job, pa, Plan::sym(job, pb)));
         }
     }

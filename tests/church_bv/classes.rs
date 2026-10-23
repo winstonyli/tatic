@@ -639,3 +639,17 @@ fn prove_eq_closes_a_residue_law_by_the_table() {
     assert!(job.table_steps.is_empty(), "the ablated path takes no table step");
     assert!(r.is_none() || job.rw.fallbacks > 0, "without the table the law needs the machine or stays open");
 }
+
+/// A pair whose normal forms differ counts none of their steps (the `classes` column counts replacements a closed law
+/// used): `sub(add(x, y), y)` steps to `x`, which does not meet `y`.
+#[test]
+fn steps_of_a_pair_left_open_are_not_counted() {
+    let (a, b) = (parse_term("sub(add(x, y), y)"), parse_term("y"));
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        assert!(Classes::get().step(job, 4, 3, &a).is_some());
+        job.table_steps.clear();
+        prove_eq(job, 4, 3, &a, &b);
+        assert!(job.table_steps.is_empty(), "{} steps counted", job.table_steps.len());
+    });
+}

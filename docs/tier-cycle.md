@@ -5359,7 +5359,9 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
 - **M falls 38%: 377 to 233** (A the build ablated, B with phase 1; salts 1-5), lower in every one of the 15 loops (by
   3-14), every rule file different. Laws joined fall from 851 to 533 and the join's reached terms barely move (46190 to
   45716): the table closes pairs the join closed before, and many the join and the machine did not.
-- **Replacements per batch** (`m.tsv`'s ninth column): 8-50 in B, 1068 in all over 45 batches; 0 in A. 5 distinct
+- **Replacements per batch** (`m.tsv`'s ninth column): 8-50 in B, 1068 in all over 45 batches; 0 in A. An over-count:
+  until the final review's fix it also counted the steps of pairs the table left open, which no proof used
+  (`classes::steps_of_a_pair_left_open_are_not_counted`); later gates count only closed pairs' steps. 5 distinct
   replacements were met with no proof (`CLASS_UNUSABLE`), all over large `add`/`sub`/`shl1` terms, so normalizing stopped
   short there.
 - **Cost: job CPU +29% (508 s to 655 s), wall 71 s to 96 s, the largest `peakproc` 577 MB to 684 MB (+107 MB).** Each
