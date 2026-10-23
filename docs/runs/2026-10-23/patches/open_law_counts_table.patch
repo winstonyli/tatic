@@ -15,10 +15,10 @@ index 274fa26..a4a08d6 100644
          if t.max_var() >= 3 {
              return None;
 diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
-index c79eabd..18a8988 100644
+index c79eabd..49b38ea 100644
 --- a/tests/church_bv/search.rs
 +++ b/tests/church_bv/search.rs
-@@ -1121,6 +1121,137 @@ pub fn grammar_laws_lie_outside_the_pool() {
+@@ -1121,6 +1121,140 @@ pub fn grammar_laws_lie_outside_the_pool() {
      }
  }
  
@@ -119,6 +119,9 @@ index c79eabd..18a8988 100644
 +    }
 +    let mut terms: Vec<Term> = level.keys().cloned().collect();
 +    terms.sort_by_key(|t| (level[t], t.show()));
++    // `OL_PAIR=grown`: laws among grown terms only (a group's first grown member, not a seed)
++    let grown_only = var("OL_PAIR").as_deref() == Some("grown");
++    let terms: Vec<Term> = terms.into_iter().filter(|t| !grown_only || level[t] > 0).collect();
 +    let laws: Vec<(Term, Term)> = pool_conjectures(terms, 4, 3, 0)
 +        .into_iter()
 +        .filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v)))

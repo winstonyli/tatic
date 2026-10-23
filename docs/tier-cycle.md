@@ -5482,6 +5482,12 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   open across all representatives' buckets, 4 of 24 in one). So neither lever scales the table-seeded stream past a few
   hundred open laws per salt: an open law needs a side the table does not reach, and pairing with a seed supplies the
   other side from inside the table.
+- **Pairing grown terms with each other changes nothing** (same probe, `OL_PAIR=grown`: seeds left out of the
+  grouping, so both sides of every law are grown; run `2026-10-23-open-laws-grown`, 20149 seeds). Open laws within two
+  growths 292 / 678 at budgets 20000 / 80000 (seed pairing 314 / 589), within three 464 / 1165 (492 / 1180). So the
+  explanation in the bullet above is falsified: what caps the stream is how many grown terms fall in classes the table
+  does not reach, not which member a law pairs them with. The table-seeded stream gives about 1170 open laws per
+  salt at budget 80000 within three growths, 40% of them (470) of size 15.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
