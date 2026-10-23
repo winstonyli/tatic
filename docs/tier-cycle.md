@@ -4960,6 +4960,34 @@ they are laws the join meets at a larger budget. Free laws on the held-out sizes
   sizes, 5000 left only a few laws fewer to the machine proof for 2-3 times the sweep time ("The bounded join removes
   the floor"). So the frontier's definition has to fix the budget, and a cheaper wider search would move it.
 
+*Ordering the join by term size (2026-10-22; runs `2026-10-22-join-order-2` and `-join-order-b`, 2 and 1 min, CPU 31%
+and 21% at launch; `-join-order` was the first patch's subset, same counts; probe
+`docs/runs/2026-10-22/patches/join_size_first.patch` on 93c148a, reverted; script `join_order.sh`).* Can a search order
+buy what the larger budget buys, without the budget? The patch keeps a heap per side and expands one term at a time:
+`JOIN_SIZE_FIRST=1` takes the smallest reached term, `=2` the least depth plus size (a growing step costs 2, a
+same-size step 1, a shrinking one 0); off, the search is unchanged. Depth plus size was chosen after seeing size-first
+on A, so B (salt 21, disjoint from A and the mine's laws; "A held-out backward pass, frontier side") is its check. Free
+laws at `JOIN_VISIT` 1000, add3 / sbo3 / mix3 / cmp3d:
+
+| order | A (held-out, salt 11) | B (held-out, salt 21) | mine's own laws |
+|---|---|---|---|
+| breadth-first (now) | 350 / 339 / 323 / 395 = 1407 | 347 / 338 / 311 / 390 = 1386 | 418 / 381 / 358 / 775 |
+| size-first | 363 / 335 / 312 / 397 = 1407 | 354 / 338 / 301 / 388 = 1381 | 419 / 376 / 357 / 773 |
+| depth plus size | 360 / 338 / 322 / 396 = 1416 | 354 / 340 / 312 / 388 = 1394 | 419 / 380 / 358 / 773 |
+| breadth-first at 5000 | 377 / 348 / 334 / 397 = 1456 | 378 / 351 / 327 / 390 = 1446 | 420 / 381 / 359 / 775 |
+
+- **Size-first trades families.** It frees 13 more add3 laws on A but loses 11 in mix3 and 4 in sbo3, net 0 on A and
+  -5 on B. A guess, not traced: mix3's joins need growing steps that size-first defers behind same-size rewrites
+  (commutativity and associativity of and, or and xor).
+- **Depth plus size is a small, steady gain.** +9 on A and +8 on B (add3 +10 and +7; the others -2 to +2), -2 on the
+  mine's own laws, with 12-34% fewer terms reached on A and 14-30% on B (searches meet sooner). At 5000 it adds 4-5 to
+  breadth-first's count on both sets. It buys 13-18% of what raising the budget to 5000 buys (+49 on A, +60 on B).
+- **Neither order removes add3's rule 4's cost in general.** Without the rule add3 frees 10 more laws breadth-first and
+  5 more with either order on A, but 7 more breadth-first and 9 more with either order on B.
+- So ordering is not the budget's substitute. Depth plus size is a candidate refinement of the join (fewer terms, a
+  few more laws). Keeping it needs its stream M and loop seconds on a sweep, since wall time here was within noise at
+  21-52% CPU load.
+
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
