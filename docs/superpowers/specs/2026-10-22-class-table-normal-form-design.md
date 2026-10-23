@@ -4,7 +4,7 @@ status: active
 
 # The learned class table as the rewriter's normal form
 
-Date: 2026-10-22. Evidence: `docs/tier-cycle.md`, "Canonical forms: hand-coded or learned" (the options; this is c),
+Date: 2026-10-22; revised 2026-10-23 for phase 2 (decisions 8-11, §5, §9, §10). Evidence: `docs/tier-cycle.md`, "Canonical forms: hand-coded or learned" (the options; this is c),
 "A learned table of representatives: the probe", "The table with `lt` as a second sort, its proofs, and smaller keys",
 "How much random testing is worth" and "A key refined by counterexamples" (runs `2026-10-22-class-table`,
 `-class-table2`, `-claim-calibration`, `-key-refine`). Roadmap goal 2 ("A kernel that improves itself"); candidate 4 in
@@ -74,8 +74,9 @@ is a learned replacement for parts the rewriter now fixes by hand, the most load
    budget mostly restates its functions (`docs/tier-cycle.md`, "Rotating over every operator pair beats the best pair"
    and "Triples match pairs per grown term"). Rejected: family pools (one law per function, capped by their size); the
    whole table as seed (its grown terms grow apart and few pair); one best set (2348 functions against 8847 for the 21
-   pairs at the same budget). Open: per-stream budget (the triples' yield rose faster than their budget), and
-   whether growth should stay inside the stream's set.
+   pairs at the same budget). Growth uses the seeds' own operators, so a stream's terms stay inside its set; other
+   operators in its laws' normal forms come from the table's representatives. Open: per-stream budget (the triples'
+   yield rose faster than their budget).
 9. **Phase 2's ablations are judged on laws past the table's domain** (2026-10-23). On the gate the table meets every
    law (M 377 to 0 in the spike), so every fixed part would look free there and be deleted. Each part is ablated alone,
    one switch per run, against a held-out set of decision 8's open laws, in this order: `promoted`; `assoc`, `tree`,
@@ -163,23 +164,48 @@ lt(0, shr1(s, 0))`, were among them; parse-first representatives (decision 7) re
 
 After the per-position step, both sides are normalised by the table. If they meet, the step returns
 `Trans(pa, Sym(pb))`; if not, the cascade goes on with the original sides (`shr_mask_eq`, the join, the machine
-fallback). Ablation name `classes`. This is additive and measures the table on the real loop before anything is
+fallback). Ablation name `classes` while phase 1 stands alone; `eq_classes` from phase 2 on (§5). This is additive and measures the table on the real loop before anything is
 removed.
 
 ### 5. Phase 2: the normal form
 
-`rewrite` applies `step` to every node it produces, children first and rule results included, before trying rules on
-it. A representative is a fixpoint of the table, so rules then act only on nodes the table does not know (larger than
-its size, over a fourth variable, or with an unusable replacement). Then each fixed part the table may subsume is
-ablated by its existing switch (`ABLATE=...`), and deleted with what only it used when removing it costs nothing on the
-gate:
+In `rewrite_uncached`, after a node's children are rewritten and before any rule, the node is looked up in the table
+(the throwaway spike's shape, `docs/runs/2026-10-23/patches/phase2_spike.patch`):
 
-- the operand order (`comm`, by `show()` text);
-- the built-in `add` steps (`assoc`, `tree`, `chain`);
-- the promoted rules (`promoted`);
-- the truth-table and per-position steps of `prove_eq` (`eq_truth`, `eq_pos`).
+- **known, and its own representative:** final; no rule is tried (a representative is a fixpoint of the table);
+- **known, with a usable verdict (§3):** `step`'s replacement is taken, `Trans` after the node's `Cong`, and is final;
+- **known, with an unusable verdict, or unknown** (over a fourth variable, or its key values match no stored class,
+  as for most nodes larger than the table's size): rules act as today.
 
-A part that still pays is kept, with the measurement recorded in `docs/learned-vs-fixed.md`.
+A node larger than the table's size whose key values do match a stored class is known too, and replaced only through
+`step`'s verdict, which keeps that sound (`PARKED.md`, "The class table's lookup beyond its domain, and under one
+lock"); being its own representative needs a node within the table's size.
+
+This needs one new call, `Classes::lookup(&self, t: &Term) -> Option<Term>`: the representative of `t`'s class, `t`
+itself included, when the table knows the class. `rep` becomes `lookup(t)` filtered to differ from `t`; both share the
+one memo. Ablation `classes` now names phase 2, the normal form; phase 1's step in `prove_eq` is renamed `eq_classes`,
+beside `eq_truth` and `eq_pos`, so decision 9 can ablate it alone. No table at all is `ABLATE=classes,eq_classes`; the
+one test that sets `classes` today (`classes::prove_eq_closes_a_residue_law_by_the_table`) sets both.
+
+Measured on the old gate by the spike: M 377 to 0, job CPU 451 to 26 s, wall 58 to 10 s, every served law proved; the
+lookup memo stayed under 50000 terms and new verdicts under 2000 per process; no unusable replacement; largest
+`peakproc` 609 MB against 555 (`docs/tier-cycle.md`, "Phase 2 leaves the miner nothing to learn on the gate"). The
+memo stays unbounded (`PARKED.md`, "Bound the class table's lookup memo"); the new gate (§9) measures it on laws past
+the table's domain, and that entry's trigger decides.
+
+Then each fixed part the table may subsume is ablated alone by its existing switch (`ABLATE=...`), on the new gate
+(§9, decision 9), in this order, and deleted with what only it used when removing it costs nothing:
+
+1. the promoted rules (`promoted`);
+2. the built-in `add` steps (`assoc`, `tree`, `chain`);
+3. the operand order (`comm`, by `show()` text);
+4. the truth-table and per-position steps of `prove_eq` (`eq_truth`, `eq_pos`);
+5. phase 1's step in `prove_eq` (§4, `eq_classes`), which phase 2 may subsume.
+
+"Costs nothing" means: on salts 1-10 of the new gate, M on decision 10's held-out set, the loop's own M and job CPU
+each stay within the A/A spread measured when the new gate's baseline is set. A part that still pays is
+kept, with the measurement recorded in `docs/learned-vs-fixed.md`. Each ablation runs against the state the previous
+ones left, so a later part is measured without the earlier deleted ones.
 
 ### 6. `ClassReps` is replaced
 
@@ -192,13 +218,44 @@ after (`docs/tier-cycle.md`, "The law generator on ref mines and warm loops").
 
 ### 7. Phase 3: mining on what is left
 
-Mines see the laws normalised by the table, so mined rules target only what it leaves. Measured: rules mined, M, and
-the frontier (`ROADMAP.md`, v0.5) by law size.
+Mines see the laws normalised by the table, so mined rules target only what it leaves: on the new gate (§9), laws past
+the table's domain. Measured there: rules mined, M, and the frontier (`ROADMAP.md`, v0.5) by law size.
 
 ### 8. Counts
 
 `m.tsv` gains a column, the distinct table replacements proved in the batch (decision 2). Serve logs report the table's
 build time and size once per process, and any unusable replacement.
+
+### 9. The new gate: laws from the streams
+
+Decision 8's streams become the loops' law source, and the gate runs on them.
+
+- **`search::stream_laws(ops, salt, budget, levels) -> Vec<(Term, Term)>`** generalizes `grammar_sample` (the probe
+  `search::open_law_counts`, `docs/runs/2026-10-23/patches/open_law_counts_table.patch`, is its starting point). Seeds:
+  the table's representatives whose operators lie in `ops`. Growth: `levels` times, one leaf into one of the seeds'
+  operators over two leaves (or `shl1`/`shr1` over one), padding dropped, about `budget` terms per level drawn by `salt`. Laws: grouped by
+  width-4 values as `pool_conjectures` does, kept when the table leaves them open (normal forms differ) and they agree
+  on the probe's 4096 width-8 inputs; refuted ones are dropped and counted.
+- **The rotation:** every set of two and three of the seven bit-vector operators (56), at `budget` 20000 and two
+  growths, the probe's settings. A loop's phase draws its laws across the 56 streams in turn, by a salt per phase; the
+  stride per family goes. The sweep names it `cold:streams`. Per-stream budget is decision 8's open question, measured
+  once the gate stands.
+- **The held-out files (decision 10):** an ignored command, `classes::regenerate_held`, run like `regenerate_key`,
+  writes `tests/church_bv/held_11.txt` and `held_13.txt`: 1000 laws per size band, drawn evenly across the streams at a
+  salt no loop uses. Each file's header names the key file's hash and the table's size; a mismatch fails with the
+  regeneration message, as the key file's header does.
+- **The gate script:** `salts_ab.sh`'s A/B per salt on `cold:streams`, plus M on the held-out files under each loop's
+  final rules (the laws that still need a whole-term machine proof). Its baseline is an A/A on salts 1-10 at the
+  commit that adds it, which also sets the spread decision 9's "costs nothing" uses (salts 1-10, as the ablations).
+
+### 10. The families are deleted
+
+Once the new gate stands (decision 11): `pool3`'s families, `MINES`, `LOOPS`, `served_by_loops` and the ref mines,
+`family_laws`, the reference libraries, the family baselines, and `docs/runs/2026-10-23/fixtures/held`. Every other
+caller of these moves onto `stream_laws` or is deleted with them; the plan lists each one from a grep. Known now:
+`grammar_sample` and `grammar_laws` are replaced by `stream_laws` (it generalizes them), so the mines' extras
+(`driver::Draw::grammar`, generated once per sweep) draw from it; the yield code's proposers `pool` and `stream`; the
+warm starts from family libraries (`MINES_WARM`'s `pooled_<family>`); the families' tests.
 
 ## Testing
 
@@ -210,19 +267,39 @@ build time and size once per process, and any unusable replacement.
 - **Proofs:** every replacement the size-9 table uses on the held-out sets of run `2026-10-22-key-refine` has a
   verdict, and its plan compiles and kernel-checks (an ignored test, run at each phase).
 - **Counting and compiling agree:** a law closed by the step in counting mode compiles to a checked proof.
-- **Phase 1:** the step closes a law the join needs today, and `ABLATE=classes` restores the old answers.
-- **Gate, per phase:** `docs/runs/2026-10-18/scripts/salts_ab.sh` (cold:cmp3d, A/B per salt; salts 1-5): M, rule
-  agreement, job CPU and wall; then the held-out sets and the sweep's own M on salts 1-10 for phase 2's ablations.
+- **Phase 1:** the step closes a law the join needs today, and `ABLATE=classes,eq_classes` restores the old answers.
+- **Phase 2:** a law whose sides fall in one class meets in `rewrite` with no rule tried; a node over a fourth variable
+  (unknown to the table) is still rewritten by a rule; `ABLATE=classes,eq_classes` restores the old answers.
+- **Tests on rule cycles:** five rewrite tests (`rewrite_cycles_are_cut`, `growing_rewrite_chains_are_cut`,
+  `trace_index_agrees_with_touched_by`, `filtered_memo_entries_hold_under_an_extra_rule`,
+  `memo_keeps_rewrites_cut_inside_their_own_call`) fail under the spike, since the table settles their terms before
+  the rules cycle. They test the rules' cuts and memo, which act only where the table does not, so they run with
+  `classes` ablated (`Setup::for_task` with `ABLATE`). `job::hidden_state_is_classified` failed under the spike only
+  for its counter, a new static; phase 2 adds none.
+- **Streams:** `stream_laws` is deterministic per salt; its seeds lie in its operator set; every law it returns is
+  open under the table and agrees at width 8.
+- **Held-out files:** re-read equal; a header with another key hash or size fails with the regeneration message.
+  `held_out_replacements_prove` moves onto them when the family fixtures go (§10).
+- **Gate, per step:** before the new gate stands, `docs/runs/2026-10-18/scripts/salts_ab.sh` (cold:cmp3d, A/B per
+  salt; salts 1-5): M, rule agreement, job CPU and wall. From then on the new gate (§9) on salts 1-5, and salts 1-10
+  for phase 2's ablations.
 
 ## Build order
+
+Steps 1-3 are done (plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`).
 
 1. `classes.rs`: key file, table (with `shr1` and parse-first representatives), `rep`, verdicts and `regenerate_key`;
    generate the key file; the size-5 tests; the `shr1` verdicts and the commit after a build in a worker measured
    (§1).
 2. Replace `ClassReps` with it; measure the generator stage.
 3. Phase 1 in `prove_eq`; the gate.
-4. Phase 2 in `rewrite`; the gate; then one ablation at a time, each gated, deleting what costs nothing.
-5. Phase 3: the miner on the residue; M and the frontier.
+4. Phase 2 in `rewrite` (§5): `lookup`, the switch renamed, the tests above; the old gate once, against the spike's
+   numbers.
+5. The new gate (§9): `stream_laws`, `cold:streams`, `regenerate_held` and its files, the gate script, the A/A
+   baseline on salts 1-10, and the lookup memo's peak measured.
+6. The families deleted (§10), every caller moved or deleted.
+7. The ablations of §5, one at a time in its order, each gated, deleting what costs nothing.
+8. Phase 3: the miner on the residue; M and the frontier.
 
 Each step ends with `docs/tier-cycle.md` and `docs/learned-vs-fixed.md` updated.
 
@@ -240,10 +317,20 @@ Each step ends with `docs/tier-cycle.md` and `docs/learned-vs-fixed.md` updated.
   bulk the table normalises at larger sizes is measured, not assumed.
 - **Normal forms change.** Mined rules, preferences and the promoted rules were learned under the old normal form; the
   gate's M compares whole loops, which re-mine, so rules will differ between arms.
+- **The gate's history breaks** at step 5 (decision 11): M and CPU from then on are compared only with the new gate's
+  A/A baseline.
+- **Generating the streams costs time.** In the probe the 56 streams, every law normalized, took about 1.5-2 min. The
+  sweep already generates its extras once per sweep (`driver::Draw`); the streams go through the same cache, and step 5
+  measures what a sweep then pays.
+- **Held-out laws may overlap the loops' laws.** Different salts can still draw the same law. `regenerate_held` reports
+  how many of its laws salt 1's phases 1-3 serve; a material overlap is dropped from the files.
+- **Laws past the domain may grow the lookup memo** beyond the spike's 50000 terms (§5); step 5 measures it against
+  the parked entry's stop.
 
 ## Not in scope
 
 - The belief layer (`ROADMAP.md`, goal 3).
 - Tables over more than three variables, or beyond size 9.
 - Caching the built table (parked, decision 1).
+- The held-out set built at run time or per stream (parked, decision 10).
 - Postulates in the kernel.
