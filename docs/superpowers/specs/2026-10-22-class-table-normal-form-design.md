@@ -240,7 +240,7 @@ Decision 8's streams become the loops' law source, and the gate runs on them.
 - **The rotation:** every set of two and three of the seven bit-vector operators (56), at `budget` 20000 and two
   growths, the probe's settings. The 56 streams are generated once per sweep salt and interleaved round-robin into one
   sequence (`search::stream_sequence`, memoized per process); phase p takes its residue class at stride 4 (phase 0 the
-  ref mine's, 1-3 the loops'), so phases are disjoint and the streams cost one generation per sweep. Rejected: a salt
+  mines' extras, its first 1650 laws; 1-3 the loops'), so phases are disjoint and the streams cost one generation per sweep. Rejected: a salt
   per phase (3-4 generations per sweep, and phases can share laws). The per-family stride goes. The sweep names it `cold:streams`. Per-stream budget is decision 8's open question, measured
   once the gate stands.
 - **The held-out files (decision 10):** an ignored command, `classes::regenerate_held`, run like `regenerate_key`,
