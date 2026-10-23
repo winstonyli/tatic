@@ -568,6 +568,108 @@ fn regenerate_key() {
     panic!("the key did not converge in 30 rounds; class_key.txt is unchanged");
 }
 
+/// The held-out set's size bands (a law's band: its larger side's size), its laws per band, and its salt, which no
+/// sweep salt or draw shift reaches (spec decision 10, plan R6).
+pub const HELD_BANDS: [usize; 2] = [11, 13];
+pub const HELD_PER_BAND: usize = 1000;
+pub const HELD_SALT: usize = 7_777_777;
+const REGENERATE_HELD: &str = "<exe> classes::regenerate_held --exact --ignored --nocapture";
+
+/// FNV-1a 64 of a text's trimmed lines joined by `\n`: the same for any line endings.
+fn text_hash(text: &str) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in text.lines().map(str::trim).collect::<Vec<_>>().join("\n").bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+fn held_header(band: usize) -> String {
+    format!("held laws of size {band}, class key fnv {:016x}, table size {SIZE}", text_hash(KEY_FILE))
+}
+
+/// A held-out file's text: its header, then `lhs = rhs` lines.
+pub fn held_text(band: usize, laws: &[(Term, Term)]) -> String {
+    let mut s = held_header(band) + "\n";
+    for (a, b) in laws {
+        s += &format!("{} = {}\n", a.show(), b.show());
+    }
+    s
+}
+
+/// `tests/church_bv/held_<band>.txt`.
+pub fn held_path(band: usize) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/church_bv/held_{band}.txt"))
+}
+
+/// A held-out file's laws; an error when its header is not this build's (another key, size or band).
+pub fn parse_held(band: usize, text: &str) -> Result<Vec<(Term, Term)>, String> {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let head = lines.next().unwrap_or("");
+    if head != held_header(band) {
+        return Err(format!("held-out header {head:?} is not {:?}: regenerate the held-out files ({REGENERATE_HELD})", held_header(band)));
+    }
+    Ok(lines.filter_map(|l| l.split_once(" = ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect())
+}
+
+/// The committed held-out laws of `band`; a file for another key fails the process.
+pub fn held_laws(band: usize) -> Vec<(Term, Term)> {
+    let text = std::fs::read_to_string(held_path(band)).unwrap_or_else(|e| panic!("{}: {e} ({REGENERATE_HELD})", held_path(band).display()));
+    parse_held(band, &text).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Regenerates `held_11.txt` and `held_13.txt` (spec decision 10): the stream sequence at `HELD_SALT`, laws salt 1's
+/// loops serve dropped (phases 1-3, their first 300 laws: the gate's first salt; counted), each band's first
+/// `HELD_PER_BAND` laws in sequence order (round-robin over the streams). Run when the key or the table's size changes.
+#[test]
+#[ignore]
+fn regenerate_held() {
+    let seq = crate::search::stream_sequence(HELD_SALT);
+    let s1 = crate::search::stream_sequence(1);
+    let served: hashbrown::HashSet<(Term, Term)> = (1..=3).flat_map(|p| crate::search::residue(&s1, p, 0, 300)).collect();
+    for band in HELD_BANDS {
+        let all: Vec<(Term, Term)> = seq.iter().filter(|(a, b)| a.size().max(b.size()) == band).cloned().collect();
+        let overlap = all.iter().filter(|l| served.contains(*l)).count();
+        let laws: Vec<(Term, Term)> = all.iter().filter(|l| !served.contains(*l)).take(HELD_PER_BAND).cloned().collect();
+        assert_eq!(laws.len(), HELD_PER_BAND, "band {band}: {} laws in the band", all.len());
+        std::fs::write(held_path(band), held_text(band, &laws)).unwrap();
+        println!("HELD {band}: {} of {} laws in the band; {overlap} served by salt 1's loops, dropped", laws.len(), all.len());
+    }
+}
+
+/// A held-out file's text reads back as its laws, and its header names this build's key and size.
+#[test]
+fn held_text_round_trips() {
+    let laws = vec![(parse_term("add(x, y)"), parse_term("add(y, x)"))];
+    let back = parse_held(11, &held_text(11, &laws)).unwrap();
+    assert_eq!(back.len(), 1);
+    assert!(back[0] == laws[0]);
+}
+
+/// Review Focus 2: a header for another key, size or band fails with the regeneration message.
+#[test]
+fn a_held_header_for_another_key_fails() {
+    let e = parse_held(11, "held laws of size 11, class key fnv 0000000000000000, table size 9\n").err().expect("another key's header read");
+    assert!(e.contains("regenerate_held"), "{e}");
+    assert!(parse_held(13, &held_text(11, &[])).is_err());
+}
+
+/// Review Focus 2: the key's hash ignores line endings, so a CRLF checkout of the same key reads the same files.
+#[test]
+fn held_header_ignores_line_endings() {
+    assert_eq!(text_hash(KEY_FILE), text_hash(&KEY_FILE.replace("\r\n", "\n").replace('\n', "\r\n")));
+}
+
+/// The committed held-out files match this build's key and size, and hold 1000 laws of their band each.
+#[test]
+fn held_files_match_the_key() {
+    for band in HELD_BANDS {
+        let laws = held_laws(band);
+        assert_eq!(laws.len(), HELD_PER_BAND, "band {band}");
+        assert!(laws.iter().all(|(a, b)| a.size().max(b.size()) == band), "band {band}");
+    }
+}
+
 /// A step's replacement has a plan that compiles to a kernel-checked proof at width 4: an `add` law (`Tree`), a bitwise
 /// law (`Bitwise`), one over a `shr1` atom, and `shr1` with a nonzero ignored operand.
 #[test]
