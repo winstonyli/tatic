@@ -5566,6 +5566,26 @@ and rules run only on unknown nodes. `ABLATE=classes` switches it off, `eq_class
   on the old gate's laws, nearly all inside the table's domain, the table leaves the miner nothing to learn
   ("Phase 2 leaves the miner nothing to learn on the gate"), which is why the gate moves to the streams (spec §9).
 
+*The gate on the streams and its A/A baseline (2026-10-23; plan docs/superpowers/plans/2026-10-23-class-table-phase-2.md;
+runs `2026-10-23-held-regen`, `-cold-streams`, `-stream-sequence-mem`, `-streams-gate-check`, `-streams-aa-1-2-3`,
+`-streams-aa-3-4`, `-streams-aa-5-6`, `-streams-aa-7-8`, `-streams-aa-9-10-2`).* The gate is now `scripts/streams_ab.sh`:
+per salt and arm, one `cold:streams` sweep (three loops from no rules on phases 1-3 of the stream sequence, extras from
+phase 0), then held-out M: each loop's rules run on `held_11.txt` and `held_13.txt` (1000 open laws each, from a salt no
+sweep reaches; 64 of band 11's 19769 and 47 of band 13's 37996 laws were served by salt 1's loops and dropped).
+- **The sequence**: 57928-58628 laws per salt from the 56 streams. Each sweep process builds it once, in 81-119 s, about
+  half of an arm's wall. Built alone it peaks at 1537 MB commit (`-stream-sequence-mem`, 89.5 s), so every arm's
+  peakproc (1538 MB) is the generation's, not the lookup memo's. Salt 1's extras: L 1429, n 228.
+- **Held-out M** costs about 1.3 s per band per loop (band 11 on a `-cold-streams` loop: 973 proved, 941 free, 27 not
+  proved).
+- **A/A** (the phase 2 build against a copy of itself, salts 1-10, `-Timed`, quiet at each start, others' load 18-45%
+  during): M per salt 176, 181, 167, 166, 171, 179, 168, 166, 169, 175 (total 1718); held-out M 809, 890, 884, 865, 880,
+  908, 874, 898, 847, 866 (total 8721); both identical in the two arms on every salt. Job CPU A/B 389/393, 606/623,
+  461/467, 819/823, 538/514, 294/293, 418/420, 693/656, 584/615, 1059/1033 s. Spreads (|B-A|/mean, maximum over the
+  salts): M 0%, held-out M 0%, job CPU 5.4% (salt 8). Rules the same in 30 of 30 loops; no arm failed; no
+  `CLASS_UNUSABLE`. The lookup memo peaks at 8857-9712 terms (1690 on the old gate); largest peakproc 1538 MB against
+  663 MB on the old gate (Task 3), all of it the generation. So on these salts any move in M or held-out M is real; job
+  CPU needs more than about 5% to count.
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost

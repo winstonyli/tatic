@@ -104,18 +104,20 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   run. Evidence: `tests/church_bv/classes.rs` (`Classes::lookup`), runs `2026-10-23-ct-memo-gate` and `-ct-zip-gate`
   (2026-10-23, final review I2); phase 2 built, on the old gate (run `2026-10-23-p2-gate-8`): memo peak 1690 terms in a
   worker process, largest `peakproc` 621 MB against 663 MB without phase 2, but its miner did almost nothing
-  (`docs/tier-cycle.md`, "Phase 2 in the rewriter"), so a run that mines past the table's domain is still unmeasured;
-  the streams gate reports the memo's peak per arm. Status: parked.
+  (`docs/tier-cycle.md`, "Phase 2 in the rewriter"); past the domain, on the streams gate (runs
+  `2026-10-23-streams-aa-*`, salts 1-10): memo peak 8857-9712 terms, largest `peakproc` 1538 MB, all of it the stream
+  sequence's generation (1537 MB alone, run `2026-10-23-stream-sequence-mem`; `docs/tier-cycle.md`, "The gate on the
+  streams and its A/A baseline"), so the memo's share is still under the stop. Status: parked.
 - **The class table's lookup beyond its domain, and under one lock** — what: `Classes::lookup` answers for nodes larger
   than the table's size or with an `lt` operand, by key values never refined to separate them; `step`'s verdict guards
   it, `canonical` (the twin filter) does not, so a false match can mark a law twin or trivial. And `lookup` computes a
   new term's values under the one process-wide lock, serializing the miner's threads. Why parked: both are small today
-  (the lock is inside 835 profile samples with reallocation). Trigger: phase 2 (now built), or a twin-filter gate
-  showing wrong merges; first count false matches on the held-out fixture. Evidence: `tests/church_bv/classes.rs`
-  (`Classes::lookup`, `canonical`), final review M2, M3 (2026-10-23); phase 2 on the old gate (run
-  `2026-10-23-p2-gate-8`): no `CLASS_UNUSABLE`, job CPU 746 to 42 s, so the lock did not show there; past the table's
-  domain it is unmeasured. Status: held for the streams gate (plan docs/superpowers/plans/2026-10-23-class-table-phase-2.md,
-  Task 7).
+  (the lock is inside 835 profile samples with reallocation). Trigger: a twin-filter gate showing wrong merges, or a
+  profile of a streams sweep showing the lock; first count false matches on the held-out files. Evidence:
+  `tests/church_bv/classes.rs` (`Classes::lookup`, `canonical`), final review M2, M3 (2026-10-23); phase 2 on the old
+  gate (run `2026-10-23-p2-gate-8`): no `CLASS_UNUSABLE`, job CPU 746 to 42 s, so the lock did not show there; past the
+  table's domain, on the streams gate (runs `2026-10-23-streams-aa-*`, salts 1-10): no `CLASS_UNUSABLE` in 60 loops
+  (20 sweeps), but false matches in `canonical` and the lock's share are not yet counted. Status: parked.
 - **Two sweeps at a time in the multi-arm scripts (`gen_cost.sh`, `gen_twin.sh`)** — background jobs plus `wait`, two arms or salts at once. Each sweep now runs 2 lanes of 6 mining threads, so two sweeps would be 24 threads against the 12-thread cap. Trigger: none. Evidence: `driver::sweep` (`SWEEP_LANES`, 397dcf2). Status: decided against (lanes take the same parallelism inside a sweep).
 - **Skip replay arms that only confirm determinism** — a `*_full` file replay once one replay has matched its source run; saves about 30% of a replay probe. Why parked: by decision (2026-10-17). Trigger: a replay probe with more than about 3 arms. Evidence: `2026-10-17-gen-twin` (full replay reproduced all 90 rule files). Status: parked.
 - **Reuse threads across tasks (a pool for the miner's prover threads)** — why: ceiling about 2-4%, below whole-sweep timing resolution; needs a scoped pool crate or unsafe code and a reset of task-local state. Trigger: none stated; smallest step is a pool for the miner's prover threads. Evidence: `docs/tier-cycle.md` ("Survey: reusing threads across tasks"). Status: parked (not started).

@@ -247,9 +247,10 @@ Decision 8's streams become the loops' law source, and the gate runs on them.
   writes `tests/church_bv/held_11.txt` and `held_13.txt`: 1000 laws per size band, drawn evenly across the streams at a
   salt no loop uses. Each file's header names the key file's hash and the table's size; a mismatch fails with the
   regeneration message, as the key file's header does.
-- **The gate script:** `salts_ab.sh`'s A/B per salt on `cold:streams`, plus M on the held-out files under each loop's
-  final rules (the laws that still need a whole-term machine proof). Its baseline is an A/A on salts 1-10 at the
-  commit that adds it, which also sets the spread decision 9's "costs nothing" uses (salts 1-10, as the ablations).
+- **The gate script:** `scripts/streams_ab.sh` (`salts_ab.sh`'s shape): A/B per salt on `cold:streams`, plus M on
+  the held-out files under each loop's final rules (the laws that still need a whole-term machine proof). Its baseline
+  is an A/A on salts 1-10 at the commit that adds it, which also sets the spread decision 9's "costs nothing" uses
+  (salts 1-10, as the ablations).
 
 ### 10. The families are deleted
 
@@ -298,8 +299,8 @@ Decided while planning (2026-10-23):
   `held_out_replacements_prove` moves onto them when the family fixtures go (§10); their laws are open by
   construction, so it compiles each replacement's own law (`u = r`) to a checked proof instead of the laws that meet.
 - **Gate, per step:** before the new gate stands, `docs/runs/2026-10-18/scripts/salts_ab.sh` (cold:cmp3d, A/B per
-  salt; salts 1-5): M, rule agreement, job CPU and wall. From then on the new gate (§9) on salts 1-5, and salts 1-10
-  for phase 2's ablations.
+  salt; salts 1-5): M, rule agreement, job CPU and wall. From then on the new gate (§9, `scripts/streams_ab.sh`) on
+  salts 1-5, and salts 1-10 for phase 2's ablations.
 
 ## Build order
 
