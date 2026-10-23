@@ -5466,7 +5466,14 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   sizes 11, 13 and 15 (a seed is mostly size 9, each growth adds 2). Distinct representatives rarely meet at width 4, so
   a law needs a grown term to land in a seed's group; the count follows the growth budget (`GEN_TERMS`), not the seeds.
   None of the open laws, here or in the families' rerun (the same counts as above), differs on 4096 random width-8
-  inputs, so width-4 grouping made no false open law.
+  inputs, so width-4 grouping made no false open law at this budget.
+- **A larger growth budget gives fewer open laws per term** (same probe with the budget a knob; run
+  `2026-10-23-open-laws-budget`, table seed, budgets 20000 / 40000 / 80000 terms per level). Laws grow faster than
+  the budget (level 1: 564 / 1374 / 3362), but the open share falls (level 1 size 11: 24% / 15% / 6%), so the open laws
+  within two growths are 314 / 435 / 589 and within three 492 / 834 / 1180: ×4 budget gives ×1.9, not the ×4 the seed
+  count argument predicted (falsified). The new laws are mostly ones the table settles. False open laws appear at the
+  larger budgets (2 of 60 open in one bucket at 40000, 1 of 26 at 80000; excluded from the counts), so a stream must
+  check open laws at width 8 before using them.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
