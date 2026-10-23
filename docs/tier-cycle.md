@@ -5542,6 +5542,13 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   26 laws per function against 3.3. So each pair finds functions of its own, and one pair's larger budget mostly
   restates the same functions. Pairs vary: add with and/or about 1550 each; and,or and shl1,shr1 none; and,xor and
   or,xor 7 and 17.
+- **Triples match pairs per grown term** (run `2026-10-23-open-laws-triples`, `scripts/set_sizes.sh`, same probe). The
+  35 triples at the pairs' total budget (12000 each, 420000 in all): 8962 distinct functions against the pairs' 8847.
+  At 20000 each (700000): 16547 functions over 32262 open laws, every triple some (18 to 1181). Pairs and triples
+  together at 20000 each: 22292, against 25394 for the two summed, so a triple stream mostly adds functions the pairs
+  miss. About 20-24 new functions per 1000 grown terms for pairs, triples or both, and the triples' yield rose faster
+  than their budget (x1.67 budget, x1.85 functions). So the set size is not what matters; rotating over small operator
+  sets is.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
