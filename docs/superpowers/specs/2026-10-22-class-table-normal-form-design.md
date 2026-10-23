@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # The learned class table as the rewriter's normal form

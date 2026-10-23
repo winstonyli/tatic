@@ -1,0 +1,9 @@
+ops add and or xor sub shl1 shr1 lt size 9
+8 0 0 0
+8 1 0 0
+8 0 1 0
+8 1 1 0
+8 0 0 1
+8 1 0 1
+8 0 1 1
+8 1 1 1

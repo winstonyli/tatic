@@ -5,6 +5,7 @@ use tatic::kernel::*;
 use std::sync::Arc;
 use job::{Job, Setup};
 
+mod classes;
 mod driver;
 mod encoding;
 mod job;
