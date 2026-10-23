@@ -81,6 +81,13 @@ is a learned replacement for parts the rewriter now fixes by hand, the most load
    one switch per run, against a held-out set of decision 8's open laws, in this order: `promoted`; `assoc`, `tree`,
    `chain`; `comm`; `eq_truth`, `eq_pos`; phase 1's step. Rejected: the current gate (it cannot tell the parts apart);
    every part off at once, restoring what breaks (a break would not say which part pays).
+10. **That held-out set is frozen fixture files** (2026-10-23), written once by an ignored command like
+    `classes::regenerate_key`. It runs decision 8's 56 streams on a salt the mining streams never use, keeps the laws
+    the table leaves open and that hold at width 8, and samples 1000 per size band (11 and 13) evenly across the
+    streams, one file per band. Every ablation run then sees the same laws, and a change to growth code cannot move the
+    baseline; the files are regenerated when the key file or the table's size changes. Parked as later options
+    (`PARKED.md`, "Other ways to build the past-domain held-out set"): generating the set at run time from a held-out
+    salt; stratifying it per stream instead of per size band.
 
 ## Design
 
