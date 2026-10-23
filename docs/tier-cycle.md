@@ -5561,7 +5561,7 @@ and rules run only on unknown nodes. `ABLATE=classes` switches it off, `eq_class
   later walls are contended): A the build before phase 2 (phase 1 on), B with phase 2. M 233 to 0, 0 in every one of
   the 15 loops (A 19 14 16, 20 7 19, 19 15 7, 14 23 17, 18 13 12); rules differ in all 15 (B mines almost nothing);
   mine rounds 1931 to 194, lookaheads 18 to 0; job CPU 746 to 42 s, wall 170 to 31 s; no arm failed. The lookup memo's
-  peak 1690 terms in a worker process (`CLASS_MEMO`, after each task), no `CLASS_UNUSABLE`; largest peakproc A 663 MB, B 621 MB. Against the spike
+  peak 1690 terms in a worker process (`CLASS_MEMO`, after each task), no `CLASS_UNUSABLE` in B (5 in A, from phase 1); largest peakproc A 663 MB, B 621 MB. Against the spike
   (A there had no table: M 377 to 0, job CPU 451 to 26 s, memo under 50000, peakproc 609 MB) the built phase 2 matches:
   on the old gate's laws, nearly all inside the table's domain, the table leaves the miner nothing to learn
   ("Phase 2 leaves the miner nothing to learn on the gate"), which is why the gate moves to the streams (spec §9).
@@ -5581,8 +5581,13 @@ sweep reaches; 64 of band 11's 19769 and 47 of band 13's 37996 laws were served 
   during): M per salt 176, 181, 167, 166, 171, 179, 168, 166, 169, 175 (total 1718); held-out M 809, 890, 884, 865, 880,
   908, 874, 898, 847, 866 (total 8721); both identical in the two arms on every salt. Job CPU A/B 389/393, 606/623,
   461/467, 819/823, 538/514, 294/293, 418/420, 693/656, 584/615, 1059/1033 s. Spreads (|B-A|/mean, maximum over the
-  salts): M 0%, held-out M 0%, job CPU 5.4% (salt 8). Rules the same in 30 of 30 loops; no arm failed; no
-  `CLASS_UNUSABLE`. The lookup memo peaks at 8857-9712 terms (1690 on the old gate); largest peakproc 1538 MB against
+  salts): M 0%, held-out M 0%, job CPU 5.4% (salt 8). Rules the same in 30 of 30 loops; no arm failed. Past the table's domain
+  `step` finds no proof for 4757-5272 distinct replacements per sweep (`CLASS_UNUSABLE`, the same in both arms), every
+  one with a shift in it; those nodes fall back to the rules. On the held-out files (`held_out_replacements_prove`) 1588 of
+  1743 replacements have a verdict (408 bitwise, 1180 tree) and their proofs check, and the key's refuter refutes none
+  of the other 155: they are true laws `verdict` cannot prove (it treats a shift subterm as a free atom, so
+  `add(sub(y, z), shr1(-1, 0)) = add(y, xor(z, shr1(-1, 0)))` fails though `shr1(-1, 0)` is a constant), not false
+  matches of `lookup`. The lookup memo peaks at 8857-9712 terms (1690 on the old gate); largest peakproc 1538 MB against
   663 MB on the old gate (Task 3), all of it the generation. So on these salts any move in M or held-out M is real; job
   CPU needs more than about 5% to count.
 
