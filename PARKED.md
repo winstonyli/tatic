@@ -89,8 +89,9 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **A worker pool inside a loop (its mines and serves in parallel)** — why: within a loop each step reads files the earlier ones wrote. Across loops it is built: a sweep runs each stage's mines, then its loops, `SWEEP_LANES` (default 2) at a time (397dcf2; salt 1 cold 386 to 199-236 s, `docs/tier-cycle.md`, "Lazy join steps, and sweeps in lanes"). Trigger: none stated. Evidence: `docs/tier-cycle.md` ("A persistent worker for the sweep's children"); `docs/superpowers/specs/2026-10-15-sweep-worker-design.md:293-294`. Status: parked.
 - **Phase 1's CPU cost** — what: the class table in `prove_eq` costs 22% more job CPU (462 s to 565 s over salts 1-5,
   with `rep` memoized; 29% before) and about 130 MB more peak per process for 38% less M. Left to cut: the workers'
-  builds (about 29% of the added samples before the memo; "Cache the built class table") and the build's SipHash on
-  every candidate (a faster hash changes build and lookup together). Why parked: under the plan's 25% stop now. Trigger:
+  builds (about 29% of the added samples before the memo; "Cache the built class table"). Inside a build, `zip`'s
+  per-element calls through a function pointer are about 65% and hashing about 11% (`docs/tier-cycle.md`, "What a build
+  spends"). Why parked: under the plan's 25% stop now. Trigger:
   phase 2's gate past its stop, or a sweep where the builds dominate. Evidence: `docs/tier-cycle.md`, "The class table
   in `prove_eq`: phase 1" (2026-10-23). Status: parked.
 - **Two sweeps at a time in the multi-arm scripts (`gen_cost.sh`, `gen_twin.sh`)** — background jobs plus `wait`, two arms or salts at once. Each sweep now runs 2 lanes of 6 mining threads, so two sweeps would be 24 threads against the 12-thread cap. Trigger: none. Evidence: `driver::sweep` (`SWEEP_LANES`, 397dcf2). Status: decided against (lanes take the same parallelism inside a sweep).

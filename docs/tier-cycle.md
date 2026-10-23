@@ -5382,7 +5382,13 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   unchanged, 377 to 233; job CPU 462 s to 565 s (+22%, was +29%), wall 64 s to 83 s; the largest `peakproc` 568 MB to
   701 MB (+133 MB, was +107 MB: the memo's map, or noise). Per salt the change in CPU spans -5% (salt 2) to +78%
   (salt 3). Not profiled again; the profile's other large item was the builds per worker (`PARKED.md`, "Cache the
-  built class table"), and each build hashes every candidate with the same SipHash.
+  built class table").
+- **What a build spends (throwaway probe, 644e37e, reverted; untimed, single thread).** A build takes 1.39-1.48 s and
+  hashes 989535 candidates (341866 classes, 647669 merges). Hashing them all with `class_hash` (two SipHash passes over
+  432 bytes) takes about 150 ms; two foldhash passes take 31 ms, so a faster hash saves about 8% of a build, about 1.7 s
+  of a five-salt gate's 15 builds. The values are most of it: `zip`'s per-element calls through `OP_INFO[o].word` (with
+  each element's own width mask) and a fresh vector per candidate take about 905 ms, 65%. The rest, about 350 ms, is the
+  map, `Term::op` and `Machine::parse`.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
