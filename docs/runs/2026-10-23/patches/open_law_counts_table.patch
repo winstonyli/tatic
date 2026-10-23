@@ -1,0 +1,157 @@
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index 274fa26..a4a08d6 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -350,6 +350,11 @@ impl Classes {
+ 
+     /// The representative of `t`'s class when the table knows it and it is not `t`; `None` otherwise, and for a term over a
+     /// variable other than x, y, z. Pure: no proof.
++    /// PROBE (throwaway): every stored representative.
++    pub fn reps(&self) -> Vec<Term> {
++        self.map.values().cloned().collect()
++    }
++
+     pub fn rep(&self, t: &Term) -> Option<Term> {
+         if t.max_var() >= 3 {
+             return None;
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index c79eabd..d1d99f7 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -1121,6 +1121,136 @@ pub fn grammar_laws_lie_outside_the_pool() {
+     }
+ }
+ 
++/// PROBE (throwaway, phase 2's stream, 2026-10-23): laws the class table leaves open, by growth level and size. The
++/// pool grown `OL_LEVELS` times (one leaf into an operator over two leaves, padding dropped, about `GEN_TERMS` per level
++/// drawn by `OL_SALT`), laws as `grammar_laws` makes them; per (level of the newer side, larger side's size) up to
++/// `OL_PER` laws are normalized by the table and counted open when the normal forms differ.
++#[test]
++#[ignore]
++pub fn open_law_counts() {
++    let var = |k: &str| std::env::var(k).ok();
++    let family = var("OL_FAMILY").unwrap();
++    let salt: usize = var("OL_SALT").map_or(1, |s| s.parse().unwrap());
++    let per: usize = var("OL_PER").map_or(300, |s| s.parse().unwrap());
++    let levels: usize = var("OL_LEVELS").map_or(3, |s| s.parse().unwrap());
++    let env = |k: &str| (k == "RULEMINER_DEEP3").then(|| 1.to_string());
++    let c = crate::classes::Classes::get();
++    let seeds: usize = var("OL_SEEDS").map_or(20000, |s| s.parse().unwrap());
++    // `table`: about `OL_SEEDS` of the class table's representatives, drawn by the salt, in place of a family's pool
++    let pool: Vec<Term> = if family == "table" {
++        let mut r = c.reps();
++        r.sort_by_cached_key(|t| t.show());
++        let n = r.len() as u64;
++        r.into_iter().enumerate().filter(|(i, _)| tatic::rng::mix64(*i as u64 ^ tatic::rng::mix64(salt as u64 + 99)) % n < seeds as u64).map(|(_, t)| t).collect()
++    } else {
++        pool3(&family, &env).unwrap()
++    };
++    println!("TERMS {family} seeds: {}", pool.len());
++    fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
++        if let Node::Op(o, a, b) = *t.node() {
++            if o != LT {
++                out.insert(o);
++            }
++            ops_of(a, out);
++            ops_of(b, out);
++        }
++    }
++    fn leaf_count(t: Term) -> usize {
++        match *t.node() {
++            Node::Op(SHL1 | SHR1, a, _) => leaf_count(a),
++            Node::Op(_, a, b) => leaf_count(a) + leaf_count(b),
++            _ => 1,
++        }
++    }
++    fn replaced(t: Term, k: &mut Option<usize>, g: Term) -> Term {
++        match *t.node() {
++            Node::Op(o @ (SHL1 | SHR1), a, b) => Term::op(o, replaced(a, k, g), b),
++            Node::Op(o, a, b) => {
++                let a = replaced(a, k, g);
++                Term::op(o, a, replaced(b, k, g))
++            }
++            _ => match *k {
++                Some(0) => {
++                    *k = None;
++                    g
++                }
++                Some(i) => {
++                    *k = Some(i - 1);
++                    t
++                }
++                None => t,
++            },
++        }
++    }
++    let mut ops = std::collections::BTreeSet::new();
++    pool.iter().for_each(|t| ops_of(*t, &mut ops));
++    let leaves = leaves3();
++    let mut memo = ValueMemo::exhaustive(4, 3);
++    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
++    let grow: Vec<Term> = ops
++        .iter()
++        .flat_map(|&o| if o == SHL1 || o == SHR1 { leaves.iter().map(|a| mk(o, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
++        .filter(|g| !leaf_values.contains(&memo.values(g).to_vec()))
++        .collect();
++    let mut level: hashbrown::HashMap<Term, usize> = pool.iter().map(|t| (*t, 0)).collect();
++    let mut base = pool.clone();
++    let mut i = 0u64;
++    for l in 1..=levels {
++        let total: usize = base.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
++        let mut next = vec![];
++        for t in &base {
++            for p in 0..leaf_count(*t) {
++                for g in &grow {
++                    i += 1;
++                    if (tatic::rng::mix64(i ^ tatic::rng::mix64(salt as u64 + 13 * l as u64)) % total as u64) < GEN_TERMS as u64 {
++                        let w = replaced(*t, &mut Some(p), *g);
++                        if !level.contains_key(&w) {
++                            level.insert(w, l);
++                            next.push(w);
++                        }
++                    }
++                }
++            }
++        }
++        println!("TERMS {family} level {l}: {}", next.len());
++        base = next;
++    }
++    let mut terms: Vec<Term> = level.keys().cloned().collect();
++    terms.sort_by_key(|t| (level[t], t.show()));
++    let laws: Vec<(Term, Term)> = pool_conjectures(terms, 4, 3, 0)
++        .into_iter()
++        .filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v)))
++        .collect();
++    let mut by: std::collections::BTreeMap<(usize, usize), Vec<(Term, Term)>> = Default::default();
++    for law in shuffled(laws, salt) {
++        by.entry((level[&law.0].max(level[&law.1]), law.0.size().max(law.1.size()))).or_default().push(law);
++    }
++    // 4096 pseudo-random width-8 inputs: an open law that differs on one is false (width 4 only conjectured it)
++    let mut seed = 0x6a09_e667_f3bc_c908u128;
++    let tvars: Vec<Box<[u8]>> = (0..3)
++        .map(|_| {
++            (0..4096)
++                .map(|_| {
++                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++                    (seed >> 40) as u8
++                })
++                .collect()
++        })
++        .collect();
++    let mut r8 = ValueMemo::new(8, 4096, tvars);
++    let job = &mut Job::new(Setup::process());
++    tatic::kernel::scoped(|| {
++        for ((l, k), ls) in &by {
++            let t0 = std::time::Instant::now();
++            let sample = &ls[..ls.len().min(per)];
++            let open: Vec<&(Term, Term)> = sample.iter().filter(|(a, b)| c.normalize(job, 4, 3, a).0 != c.normalize(job, 4, 3, b).0).collect();
++            let wrong = open.iter().filter(|(a, b)| r8.values(a).to_vec() != r8.values(b).to_vec()).count();
++            let held = open.len() - wrong;
++            println!("OPEN {family} level {l} size {k}: laws {} sampled {} open {} false {wrong} est {} ({:.1}s)", ls.len(), sample.len(), open.len(), held * ls.len() / sample.len().max(1), t0.elapsed().as_secs_f64());
++        }
++    });
++}
++
+ /// The generator takes no padding law: no side of its laws is a sample term whose grown leaf was padding, and the sample
+ /// has such terms (so the check bites).
+ #[test]

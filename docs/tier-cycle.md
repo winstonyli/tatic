@@ -5458,6 +5458,15 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   115 / 307, cmp3d 640 / 1767; largest buckets size 13 (add3 478, cmp3d level 2 459) and cmp3d's size 15 (1044 of 8467).
   So a stream of open laws filters about 20 grown laws per law kept, and only add3 and cmp3d reach a few hundred
   within two growths.
+- **Seeded from the table instead of a family** (same probe with a `table` seed, patch
+  `docs/runs/2026-10-23/patches/open_law_counts_table.patch` (adds `Classes::reps` and unary `shr1` growth), reverted;
+  run `2026-10-23-open-laws-table`, 11 s). Seeds: 20149 of the 341866 representatives drawn by salt 1, grown over all
+  seven operators. Laws are fewer but more often open: 545 / 935 / 876 laws at levels 1 / 2 / 3 (families: 4600-15000),
+  of which 20-24% open (families 2-12%): about 129 open laws within one growth, 314 within two, 492 within three, at
+  sizes 11, 13 and 15 (a seed is mostly size 9, each growth adds 2). Distinct representatives rarely meet at width 4, so
+  a law needs a grown term to land in a seed's group; the count follows the growth budget (`GEN_TERMS`), not the seeds.
+  None of the open laws, here or in the families' rerun (the same counts as above), differs on 4096 random width-8
+  inputs, so width-4 grouping made no false open law.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
