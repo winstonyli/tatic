@@ -284,7 +284,7 @@ impl LoopCfg {
         };
         if takes_extras(&cfg, setup.ablated("gen")) {
             let mut scope = [cfg];
-            scope_extras(setup, &mut scope, &[], &mut Draw::new()).unwrap_or_else(|e| panic!("{e}"));
+            scope_extras(setup, &mut scope, &[], &mut Draw::new(setup.or("GEN_DRAW", 0))).unwrap_or_else(|e| panic!("{e}"));
             let [cfg] = scope;
             return cfg;
         }
@@ -591,15 +591,18 @@ fn skeleton(l: &(Term, Term)) -> String {
     if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
 }
 
-/// What a sweep's scopes share while their extras are drawn: each family's class representatives and generator laws.
+/// What a sweep's scopes share while their extras are drawn: each family's class representatives and generator laws, and
+/// which draw of the generator (`GEN_DRAW`, default 0: draw d samples and orders with the stream's salt + 1000 d, so the
+/// stream stays and only the generator's laws change).
 struct Draw {
     reps: hashbrown::HashMap<(String, usize), ClassReps>,
     laws: hashbrown::HashMap<(String, usize, usize), std::sync::Arc<Vec<(Term, Term)>>>,
+    draw: usize,
 }
 
 impl Draw {
-    fn new() -> Draw {
-        Draw { reps: Default::default(), laws: Default::default() }
+    fn new(draw: usize) -> Draw {
+        Draw { reps: Default::default(), laws: Default::default(), draw }
     }
 
     /// The classes over `cfg`'s family's pool (with its `deep3`), made once per sweep.
@@ -610,9 +613,9 @@ impl Draw {
         })
     }
 
-    /// `grammar_laws` for `cfg`'s family, `deep3` and salt, generated once per sweep.
+    /// `grammar_laws` for `cfg`'s family, `deep3` and salt (the draw's), generated once per sweep.
     fn grammar(&mut self, cfg: &LoopCfg) -> std::sync::Arc<Vec<(Term, Term)>> {
-        let k = (cfg.family.clone(), cfg.deep3, num(&|k| cfg_var(cfg, k), "RULEMINER_SHUFFLE", 0));
+        let k = (cfg.family.clone(), cfg.deep3, num(&|k| cfg_var(cfg, k), "RULEMINER_SHUFFLE", 0) + 1000 * self.draw);
         self.laws
             .entry(k)
             .or_insert_with_key(|k| {
@@ -880,7 +883,7 @@ fn sweep() {
         .into_iter()
         .map(|(fam, stride, p)| LoopCfg { stride, sphase: p, ..base("loop", out.join(format!("served_{fam}_{p}")), fam) })
         .collect();
-    let (mut draw, mut short) = (Draw::new(), vec![]);
+    let (mut draw, mut short) = (Draw::new(setup.or("GEN_DRAW", 0)), vec![]);
     for scope in &mut scopes {
         if !scope.iter().all(|c| takes_extras(c, setup.ablated("gen"))) {
             continue;
