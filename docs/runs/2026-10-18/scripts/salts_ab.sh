@@ -7,6 +7,13 @@ a=$1; b=$2; shift 2
 runs="$(dirname "$0")/../../../../tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "salts_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
 failed=0; same_n=0; loops=0
+# the mines' greedy rounds and lookahead decisions (`miner.rs` `play`: a winner with rivals finishes each greedy path),
+# summed over every mine's log: a rule change that switches the lookahead on costs CPU apart from the change itself
+# (docs/tier-cycle.md, "Salt 3's +73% is the miner's lookahead")
+ROUND='RULEMINER time round over'; AHEAD='RULEMINER lookahead: keep'
+mines() { # <arm> <salt dir glob> <loop glob> <pattern>: lines matching in the mine logs
+  cat "$RUN_DIR"/$2_$1/cold_cmp3d_cmp3d_$3_none/mine_*.log 2>/dev/null | grep -c "$4"
+}
 for s in "$@"; do
   [ $((s % 2)) = 1 ] && order="A B" || order="B A"
   for arm in $order; do
@@ -26,13 +33,13 @@ for s in "$@"; do
     f="cold_cmp3d_cmp3d_${l}_none/rules.txt"
     cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same=same || same=differ
     loops=$((loops + 1)); [ $same = same ] && same_n=$((same_n + 1))
-    echo "salt $s loop $l: M A $(m A) B $(m B), rules $same"
+    echo "salt $s loop $l: M A $(m A) B $(m B), rules $same, mine rounds A $(mines A "s$s" "$l" "$ROUND") B $(mines B "s$s" "$l" "$ROUND"), lookaheads A $(mines A "s$s" "$l" "$AHEAD") B $(mines B "s$s" "$l" "$AHEAD")"
   done
 done
 for arm in A B; do
   m=0
   for s in "$@"; do for v in $(cut -f4 "$RUN_DIR/s${s}_$arm/cold_cmp3d.tsv" 2>/dev/null | grep -E '^[0-9]+$'); do m=$((m + v)); done; done
-  echo "total $arm: M $m; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}')"
+  echo "total $arm: M $m; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}'); mine rounds $(mines $arm 's*' '*' "$ROUND"), lookaheads $(mines $arm 's*' '*' "$AHEAD")"
 done
 echo "salts_ab: rules same in $same_n of $loops loops; $failed of $(($# * 2)) arms failed"
 [ $failed = 0 ]

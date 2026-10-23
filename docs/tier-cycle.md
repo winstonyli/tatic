@@ -5415,6 +5415,12 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   rule-set evaluations, against 60 and 60 for 59 each off; 2.7x the candidates scored over the three loops (98685
   against 36634). So the table changes which rules the mine meets, and on this salt that switches the lookahead on;
   phase 1's own cost here is about a tenth of the added samples.
+- **The mines' rounds follow the CPU on every salt** (the zip gate's logs, `2026-10-23-ct-zip-gate`, re-read; `salts_ab.sh`
+  now prints mine rounds and lookahead decisions per loop and per arm, over every mine's log). Rounds A to B and job CPU:
+  salt 1 382 to 440 (+10% CPU), salt 2 353 to 362 (-10%), salt 3 187 to 543 (+73%), salt 4 196 to 273 (+22%), salt 5
+  190 to 313 (+19%); 1308 to 1931 in all (+48%), lookahead decisions 7 to 18. So most of phase 1's +19% is the miner
+  playing more rounds on the rules the table lets it meet, not the table's own lookups; a gate comparing phase-1 changes
+  should read rounds beside CPU.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

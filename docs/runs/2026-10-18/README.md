@@ -58,7 +58,7 @@ morning's generator rounds are in `docs/runs/2026-10-17/README.md`.
   round kept only while others' load is low), then which runs' files agree with the first's.
 - `scripts/salts_ab.sh <exe A> <exe B> <salts...>`: `SWEEP=cold:cmp3d` per salt with A and B (A first on odd salts),
   each a `runs run`; per loop the M of each and whether their rules agree, then per arm the totals of M, wall and job
-  CPU. A was `bv_old` (dc2102c, before the memo per candidate), B `bv_both`.
+  CPU; since 2026-10-23 also the mines' rounds and lookahead decisions, per loop and per arm. A was `bv_old` (dc2102c, before the memo per candidate), B `bv_both`.
 - `scripts/prof_timeline.py <dir>`: a samply profile's wall by how many threads are busy at once, split into the miner's
   main thread and its scoring pool, and cores busy per second. `prof_named.py` takes `PROF_THREAD=<name>` to keep one
   thread name's samples (table in `named_<name>.txt`), and `PROF_PARENTS=<frame>,...` to list what each named frame calls
