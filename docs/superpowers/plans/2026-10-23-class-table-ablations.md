@@ -32,7 +32,10 @@ order and "costs nothing"), and decision 9.
 - **D2, deletion check.** The deleted build (A) runs against the ablated build (B = the previous A plus `.env`) on
   salts 1-2. M and held-out M must be equal per salt, and the rules the same in 6 of 6 loops. Job CPU is not compared.
 - **D3, one driver** runs the switches in order. Each salt pair goes through `run.ps1 -Timed`. A load refusal
-  (exit 3) waits for total CPU under 25% (30 min deadline), then retries, up to 8 attempts per pair. The driver
+  (exit 3) waits until total CPU is under 25% and CPUs 8 and 9 are each under 4% (30 min deadline), then retries,
+  up to 8 attempts per pair. (The first driver waited on total CPU alone. A game held CPU 8 at 5-16% with the total
+  at 22%, so all 8 tries of one pair were spent within minutes: run `2026-10-23-ablations-1`.) A relaunch with
+  `RESUME_FROM=<the earlier driver run folder>` reuses that run's finished pairs. The driver
   exits at a free verdict, an error, or the end of its list. The session arms a Monitor on the driver's log and
   sends a notification per verdict line.
 - **D4, ask before cutting.** A part that pays gets a row in `docs/learned-vs-fixed.md` and the driver goes on. When a
@@ -112,6 +115,7 @@ What this shows:
 #                                          scripts/streams_ab.sh through run.ps1 -Timed; stops a switch at the first
 #                                          M or held-out rise (pays); exits after a free verdict
 #   driver.sh <deleted exe> check <ablated-from exe> <switch>   salts 1-2, deleted against ablated: identical or differs
+# RESUME_FROM=<an earlier driver run folder>: reuse its finished pairs (same A exe build only)
 set -u
 [ -z "${ABLATE:-}" ] || { echo "driver: ABLATE=$ABLATE is set in the environment; it would reach both arms"; exit 2; }
 [ -f scripts/streams_ab.sh ] || { echo "driver: run from the repo root"; exit 2; }
@@ -123,17 +127,22 @@ cp "$1" "$here/A.exe" || exit 2
 mode=$2; shift 2
 salt_pairs=("1 2" "3 4" "5 6" "7 8" "9 10")
 
-wait_quiet() { # until total CPU < 25% (10 s samples) or 30 min
-  powershell -NoProfile -Command "\$d = (Get-Date).AddMinutes(30); do { \$v = (Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 10 -MaxSamples 1).CounterSamples[0].CookedValue } until (\$v -lt 25 -or (Get-Date) -gt \$d)" < /dev/null > /dev/null 2>&1
+wait_quiet() { # until total CPU < 25% and CPUs 8 and 9 each < 4% (the -Timed check: 30% and 5%), 10 s samples, or 30 min
+  powershell -NoProfile -Command "\$d = (Get-Date).AddMinutes(30); do { \$c = (Get-Counter '\Processor(_Total)\% Processor Time', '\Processor(8)\% Processor Time', '\Processor(9)\% Processor Time' -SampleInterval 10 -MaxSamples 1).CounterSamples.CookedValue } until ((\$c[0] -lt 25 -and \$c[1] -lt 4 -and \$c[2] -lt 4) -or (Get-Date) -gt \$d)" < /dev/null > /dev/null 2>&1
 }
 pair() { # <name> <A exe> <B exe> <salt> <salt>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed
   local name=$1 a b try rc dir
+  # a pair a killed or failed driver run already finished (RESUME_FROM: that run's folder) is reused, not rerun
+  if [ -n "${RESUME_FROM:-}" ] && grep -q ' 0 of 4 arms failed' "$(cygpath "$RESUME_FROM")/$name.txt" 2>/dev/null; then
+    cp "$(cygpath "$RESUME_FROM")/$name.txt" "$here/$name.txt"; echo "pair $name: reused from $RESUME_FROM"; cat "$here/$name.txt"; return 0
+  fi
   a=$(cygpath -d "$2"); b=$(cygpath -d "$3")
   for try in 1 2 3 4 5 6 7 8; do
     powershell -NoProfile -File "$wrap" -Kind gate -Name "$name-t$try" -Timed -WaitSec 1800 -HoldMin 40 \
       -Command "bash scripts/streams_ab.sh $a $b $4 $5" < /dev/null > /dev/null 2>&1
     rc=$?
-    dir=$(ls -d "$runs_root"/*-"$name-t$try" 2>/dev/null | tail -1)
+    # the newest folder of this name: run.ps1 appends -2, -3 to a name an earlier driver run already used
+    dir=$(ls -dt "$runs_root"/*-"$name-t$try" "$runs_root"/*-"$name-t$try"-[0-9]* 2>/dev/null | head -1)
     echo "pair $name try $try: exit $rc, $dir"
     if [ $rc = 3 ]; then wait_quiet; continue; fi
     grep -E '^salt [0-9]+:|^streams_ab' "$dir/out.log" > "$here/$name.txt" 2>/dev/null
@@ -222,7 +231,8 @@ Expected: exit 2 each time, each with its own message.
      this one;
   5. on `differs`, stop and report: the switch removed more than the deleted code, or the deletion removed more
      than the switch.
-- **error:** read the pair's `out.log` and `err.log` and report. Relaunch only after the cause is known.
+- **error:** read the pair's `out.log` and `err.log` and report. Relaunch only after the cause is known, with
+  `RESUME_FROM` set to the failed driver run's folder (same A exe) so its finished pairs are not rerun.
 
 ### Task 4: Close
 
