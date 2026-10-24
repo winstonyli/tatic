@@ -761,7 +761,7 @@ impl<'a> Rounds<'a> {
         };
         // the winner's left side with another right side: same affected laws, proved only if it would win
         // rivals are not proved before scoring, so they are scored by counting only (`Rules::counting`); scoring compiles no plans, so an
-        // unprovable rival (such as `sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)`) is never proved
+        // unprovable rival (`sub(x, shl1(x, 0)) -> sub(shr1(0, 0), x)` once the promoted rules are out) is never proved
         let rivals_of = |i: usize| rivals.get(&provable[i].0).map_or(&[][..], |v| &v[..]);
         // a job: candidate `i`, or with `Some(k)` the `k`th rival of the winner `i`
         let score_job = |job: &mut Job, (i, k): (usize, Option<usize>)| match k {

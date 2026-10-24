@@ -5611,18 +5611,22 @@ salts may still overlap, equally for both arms: spec, "Risks").
   rules now fire most specific first (`Rules::new`) alone. `RULE_CONFLICTS=1` still counts conflicts, printed `CONFLICT <terms> <fired>  WITH
   <later>`. The record of what they gained stays above ("Learned preferences", "Preferences and rival orientations in the miner").
 
-*Ablations of the class table (2026-10-23; plan docs/superpowers/plans/2026-10-23-class-table-ablations.md; runs
-`2026-10-23-ablate-switch-check`, `-ablations-1`, `-ablations-3` and its `abl-promoted-*` pairs).* The fixed parts the
-table may make redundant, one at a time on the streams gate (B = A's exe with `ABLATE=<switch>` in its `.env`), timed
-salt pairs. A part is free when M and held-out M match on all ten salts and job CPU is within the A/A's 5.4%.
+*Ablations of the class table (2026-10-23/24; plan docs/superpowers/plans/2026-10-23-class-table-ablations.md; runs
+`2026-10-23-ablate-switch-check`, `-ablations-1`, `-ablations-3`, `-ablations-check-promoted-2`).* The fixed parts the
+table may make redundant, one at a time on the streams gate (B = A's exe with `ABLATE=<switch>` in its `.env`).
 - **Which switches take effect** (held-out M with no mined rules, the plan's table): 8 of 9 change it. `tree`,
-  `collapse` and `eq_classes` do so only with the class step off; `chain` changes nothing in any setting tried.
-- **The promoted rules are free, and deleted.** Salts 1-10: M 1718 in both arms, held-out M 8721 in both, rules the
-  same in 30 of 30 loops, no arm failed. Job CPU 5534 s against 5595 s (+1.1% in total). Per salt it ranged from −8.1%
-  (salt 8) to +7.5% (salt 10), past the A/A's 5.4% both ways, so it reads as load, not cost. With no mined rules the
-  35 rules were worth 73 held-out M (545 against 618); the miner relearns all of it. So `PROMOTED`, `promoted_rules`
-  and its test went. The join tests that relied on two of the rules now pass them in (`JOIN_RULES`, `rewrite.rs`), and
-  `rule_admission_refuses_wrong_rules` pairs the 21 built-in rules instead (140 wrong rules refused of 152 tried).
+  `collapse` and `eq_classes` do so only with the class step off; `chain` changes nothing in any setting tried. This
+  check is valid: its script shortened only the folder, so each exe kept its long name.
+- **The driver's verdicts were void: no B arm was ablated.** The driver passes exes as 8.3 short paths (`cygpath -d`,
+  for the space in the profile path). `exe_env` looked for `<current_exe>.env`, and `current_exe` then names the short
+  file (`B_PROM~1.EXE`), so `B_promoted.exe.env` was never read. `ablations-3` therefore compared one build with itself:
+  M 1718 in both arms, held-out M 8721 in both, rules the same in 30 of 30 loops. Its "free" verdict for the promoted
+  rules was wrong, and their deletion (ebae480) was reverted on 2026-10-24.
+- **The promoted rules pay.** The deletion check `ablations-check-promoted-2` was given the undeleted build as its A
+  by mistake, and its B was named `B.exe` (its own short name), so the switch did apply. Salts 1-2: M 176 against 180
+  and 181 against 192 (lower is better), held-out M 809 against 859 and 890 against 880, rules differ in 6 of 6 loops.
+  A rise on any salt decides pays (plan D1). Pending: the driver with the fixed build (`ablations-4`).
+- **The fix:** `exe_env` canonicalizes the exe's path first (`job.rs`; test `exe_env_is_found_from_a_short_path`).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
