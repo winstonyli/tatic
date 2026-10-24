@@ -2,7 +2,7 @@
 
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
-file. Only the user tags. Tagged so far: `v0.1.0` and `v0.2.0` (2026-10-22; `git tag -n99`). Deferred work is in
+file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22) and `v0.3.0` (2026-10-23; `git tag -n99`). Deferred work is in
 `PARKED.md`.
 
 ## Goals
@@ -33,14 +33,6 @@ the JIT and the loop", option A's result, 2026-10-17).
 
 ## Milestones
 
-- **v0.3 - Does ranking which laws to mine on beat a random draw of the generator?** Answered no (2026-10-22), awaiting
-  the tag; its sentence: "Choosing which generated laws to mine on moves M by a few percent, the frontier by a few
-  points, and cost by nothing." Redrawn generator lists (`GEN_DRAW`) leave batch 0 and job CPU unchanged; the best of
-  four draws per salt saves 51 laws of about 2230 in M, and lifts the free share at size 11 by 0.5-2.7 points over the
-  mean draw, against 7-37 points for having a library at all (`docs/tier-cycle.md`, "How much choosing the extras can
-  gain" and "Does the choice of extras move the frontier?"; `PARKED.md`, "A learned ranker over the generator's
-  laws"). The model planned for it (goal 3: a custom model on the GPU tier, decided 2026-10-17, speaking the `show`
-  syntax) takes its first job in v0.4 instead.
 - **v0.4 - Can the kernel extend its own vocabulary?** (goal 2, and goal 3 once the model proposes) A proposed
   definition enters only if checked conservative. Seeds: `PARKED.md`, "Proposer targets beyond ranking" (c) and
   "Boolean combinations of comparisons" (its machine side passed a spike).
