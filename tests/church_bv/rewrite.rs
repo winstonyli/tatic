@@ -968,8 +968,6 @@ pub enum LawKind {
     Comm,
     /// `bitwise_law_k`
     Bitwise,
-    /// `carry_chain_law`
-    Chain,
     /// `add_tree_law`
     Tree,
 }
@@ -1058,7 +1056,6 @@ impl Compiler {
                     LawKind::Assoc => "assoc".into(),
                     LawKind::Comm => "comm".into(),
                     LawKind::Bitwise => "bitwise".into(),
-                    LawKind::Chain => "chain".into(),
                     LawKind::Tree => "tree".into(),
                 };
                 let law = shared_lemma(job, format!("{prover}_{}_{}_{n}_{k}", l.show(), r.show()), |job| match kind {
@@ -1066,7 +1063,6 @@ impl Compiler {
                     LawKind::Assoc => add_assoc_proof(n, false),
                     LawKind::Comm => add_comm_proof(n, false),
                     LawKind::Bitwise => bitwise_law_k(n, k, l, r),
-                    LawKind::Chain => carry_chain_law(n, l, r).expect("a constant carry"),
                     LawKind::Tree => add_tree_law(job, n, k, l, r).expect("a carry encoding"),
                 })
                 .0;
@@ -1077,24 +1073,6 @@ impl Compiler {
             }
         }
     }
-}
-
-/// A sum of two (atom-abstracted) bitwise operands that a constant carry reduces to 0, -1 or one of its atoms (`x + 0`,
-/// `x + ~x`, ...): the rewritten term and the plan, `carry_chain_law` at the atoms. Ablation name `chain`; it and a step for
-/// `x + 0` alone covered each other (docs/tier-cycle.md, "Ablating the fixed rewriter and prover parts").
-pub fn chain_step(job: &Job, a: &Term, b: &Term) -> Option<(Term, PlanRc)> {
-    if job.setup().ablated("chain") {
-        return None;
-    }
-    let mut atoms = vec![];
-    let (a1, b1) = (abstract_atoms(a, &mut atoms, 2)?, abstract_atoms(b, &mut atoms, 2)?);
-    // `carry_chain_law` proves every pair this finds: the atoms are add-free and at most two
-    let cand = [Term::ZERO, Term::ONES, Term::v(0), Term::v(1)]
-        .into_iter()
-        .find(|cand| !matches!(*cand.node(), Node::V(i) if i >= atoms.len()) && find_constant_carry(&a1, &b1, cand).is_some())?;
-    let target = if let Node::V(i) = *cand.node() { atoms[i] } else { cand };
-    let args = (0..2).map(|i| atoms.get(i).cloned().unwrap_or(Term::v(0))).collect();
-    Some((target, Plan::law(job, LawKind::Chain, Term::op(ADD, a1, b1), cand, args)))
 }
 
 /// A library law used as a left-to-right rewrite rule: `lhs = rhs` over the pattern variables `V(0)..`, each instance
@@ -2237,10 +2215,8 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
     let (x, y, z) = (Term::v(0), Term::v(1), Term::v(2));
     let assoc = |job: &Job, p: &Term, q: &Term, r: &Term| Plan::law(job, LawKind::Assoc, sum(&sum(&x, &y), &z), sum(&x, &sum(&y, &z)), vec![*p, *q, *r]);
     let comm = |job: &Job, p: &Term, q: &Term| Plan::law(job, LawKind::Comm, sum(&x, &y), sum(&y, &x), vec![*p, *q]);
-    // `x + 0` and `x + ~x` are constant-carry sums (`chain_step`); steps of their own were removed as redundant
+    // `x + 0` and `x + ~x` are the class table's (a constant-carry step, `chain`, was deleted as free with it on)
     let step = if let Some(r) = rule_step(job, &t1) {
-        Some(r)
-    } else if let Some(r) = chain_step(job, &a2, &b2) {
         Some(r)
     } else if let (false, Node::Op(ADD, p, q)) = (job.setup().ablated("assoc"), *a2.node()) {
         // (p + q) + r = p + (q + r)

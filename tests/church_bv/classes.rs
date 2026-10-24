@@ -768,7 +768,7 @@ fn held_out_replacements_prove() {
             };
             assert!(r1 == *r, "step's representative is rep's");
             let v = VERDICTS.get(&(4, carry_cap(job), *u, *r)).flatten().unwrap();
-            *by_prover.entry(match v.kind { LawKind::Bitwise => "bitwise", LawKind::Chain => "chain", LawKind::Tree => "tree", _ => "other" }).or_default() += 1;
+            *by_prover.entry(match v.kind { LawKind::Bitwise => "bitwise", LawKind::Tree => "tree", _ => "other" }).or_default() += 1;
             let (p, s) = law_proof(job, 4, 3, u, r, &plan);
             job.lemmas.ck(&format!("{} = {}", u.show(), r.show()), &p, &s);
         }
