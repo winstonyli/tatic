@@ -5646,6 +5646,11 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   sweep's loop to the next free lane, and a lane's worker carries its lemma file and memos into its next loop, so loop 3
   could see 283 or 447 lemmas (`work-assoc-1-2`, salt 1). Since a4eda36 loop i runs on lane i mod lanes: in the A/A
   `work-aa-lanes-1-2` every loop loaded the same lemmas in both arms, and the counts differ by at most 6 ppm (match).
+- **Under load too.** An A/A with 4 arms at once (`streams_ab.sh` `JOBS=4`, salts 1-4, run `work-aa-jobs4-1-4`): M,
+  held-out M and rules equal, the same lemmas per loop, counts within 14 ppm (match). Each arm took about 1.8x its wall
+  time alone and about 50% more job CPU, so 4 at once gave about 1.85x throughput (8 arms in 12.5 min against about
+  23 min one at a time). The ablations driver runs `JOBS=4` and keeps finished arms in `streams_ab.sh`'s `ARM_CACHE`,
+  so A runs once per build (plan `docs/superpowers/plans/2026-10-23-class-table-ablations.md`, D3).
 - **Overhead: none measurable** once `interp` and `match_pat` sum their nodes in a local and add them once per call
   (`count_n`, 4d1a74f): job CPU against the uncounted f0390df build -1.5% and -6.0% on salts 1-2. A thread-local add per
   node had cost +6.8% and +8.2%.

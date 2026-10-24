@@ -1,6 +1,6 @@
 #!/bin/bash
 # streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, SWEEP=cold:streams (extras
-# on, 2 lanes, 6 scoring workers) with A and B, A first on odd salts and B first on even ones, each a `runs run` (job
+# on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (tests/church_bv/held_{11,13}.txt, CHECK_FAST: the laws that still need a whole-term machine
 # proof). Per salt: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
@@ -25,24 +25,48 @@ held() { # <exe> <rules file>: held-out M over both bands
 work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> match=<n> op=<n>`; empty if none
   grep -rh '^WORK ' "$@" 2>/dev/null | awk '{for (i = 2; i <= NF; i++) {split($i, kv, "="); if (!(kv[1] in t)) o[++n] = kv[1]; t[kv[1]] += kv[2]}} END {for (i = 1; i <= n; i++) printf "%s%s=%.0f", (i > 1 ? " " : ""), o[i], t[o[i]]}'
 }
+arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
+  local s=$1 arm=$2 exe o mb h l v f=0 c=
+  [ $arm = A ] && exe=$a || exe=$b
+  o="$RUN_DIR/s${s}_$arm"
+  # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env and this
+  # script, and an arm with the same hash and salt is copied, not run: the gate's results repeat (counts to a few ppm,
+  # docs/tier-cycle.md, "Work counts as the gate's cost"). Off by default: an A/A of one exe would otherwise run once.
+  if [ -n "${ARM_CACHE:-}" ]; then
+    c="$(cygpath "$ARM_CACHE")/$(cat "$(cygpath "$exe")" "$(cygpath "$exe").env" "$0" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
+    if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ]; then
+      rm -rf "$o"; cp -r "$c" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; return
+    fi
+  fi
+  mkdir -p "$o"; rm -f "$o/exit"
+  ( "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams SALT=$s "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
+  while [ ! -f "$o/exit" ]; do
+    mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
+    [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }
+    ping -n 6 127.0.0.1 > /dev/null
+  done
+  echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
+  [ "$(cat "$o/exit")" = 0 ] && cut -f4 "$o/cold_streams.tsv" 2>/dev/null | grep -qE '^[0-9]+$' || f=1
+  h=0
+  for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt"); [ "$v" = x ] && f=1 || h=$((h + v)); done
+  echo $h > "$o/held.txt"
+  grep -rqs '^WORK ' "$o" || f=1
+  echo $f > "$o/failed"
+  # into the cache through a temporary copy, so a reader never sees half an arm
+  [ -n "$c" ] && [ $f = 0 ] && { mkdir -p "${c%/*}"; rm -rf "$c.$$"; cp -r "$o" "$c.$$" && echo "$o" > "$c.$$/from" && rm -rf "$c" && mv "$c.$$" "$c"; }
+}
+# JOBS arms at a time (default 1: an arm's job CPU is then clean enough to compare, timed runs keep it); in the order A
+# first on odd salts, B first on even ones
 for s in "$@"; do
   [ $((s % 2)) = 1 ] && order="A B" || order="B A"
-  for arm in $order; do
-    [ $arm = A ] && exe=$a || exe=$b
-    o="$RUN_DIR/s${s}_$arm"; mkdir -p "$o"; rm -f "$o/exit"
-    ( "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams SALT=$s "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
-    while [ ! -f "$o/exit" ]; do
-      mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
-      [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }
-      ping -n 6 127.0.0.1 > /dev/null
-    done
-    echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
-    [ "$(cat "$o/exit")" = 0 ] && cut -f4 "$o/cold_streams.tsv" 2>/dev/null | grep -qE '^[0-9]+$' || failed=$((failed + 1))
-    h=0
-    for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt"); [ "$v" = x ] && failed=$((failed + 1)) || h=$((h + v)); done
-    echo $h > "$o/held.txt"
-    grep -rqs '^WORK ' "$o" || failed=$((failed + 1))
+  for x in $order; do
+    while [ "$(jobs -rp | wc -l)" -ge "${JOBS:-1}" ]; do wait -n; done
+    arm $s $x &
   done
+done
+wait
+for s in "$@"; do
+  for x in A B; do failed=$((failed + $(cat "$RUN_DIR/s${s}_$x/failed" 2>/dev/null || echo 1))); done
   for l in 1 2 3; do
     f="cold_streams_streams_${l}_none/rules.txt"
     cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same_n=$((same_n + 1)) || echo "salt $s loop $l: rules differ"

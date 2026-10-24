@@ -12,7 +12,7 @@ and delete each part whose removal costs nothing.
 
 **Architecture:** There is no new code in the kernel. Arm B of each comparison is arm A's exe plus a `<exe>.env` file
 holding `ABLATE=<switch>`. `Setup` reads that file (`job.rs`, `exe_env`), so the sweep workers and the held-out check
-see the switch too. A driver outside the repo runs `scripts/streams_ab.sh` in salt pairs through
+see the switch too. A driver outside the repo runs `scripts/streams_ab.sh` once per switch, salts 1-10, through
 `run.ps1` (untimed; D3), prints one verdict per switch, and stops at every "free" or "mixed" verdict. A deletion is a code change that
 gets its own approval. A deletion check then shows the deleted build matches the ablated one, and the driver resumes
 from the deleted build.
@@ -30,14 +30,16 @@ order and "costs nothing"), and decision 9.
   5.4%): *costs* when some counter rises and none falls (the part saves work: it pays, and the driver goes on), *free*
   when none rises, *mixed* when some rise and some fall. A drop in M counts as free and is reported. M and held-out M were identical in both arms of the A/A on every salt
   (`docs/tier-cycle.md`, "The gate on the streams and its A/A baseline"). A rise on any one salt therefore already
-  decides "pays", and the driver stops that switch at the first pair that shows one.
+  decides "pays", and the driver names every salt that shows one.
 - **D2, deletion check.** The deleted build (A) runs against the ablated build (B = the previous A plus `.env`) on
   salts 1-2. M and held-out M must be equal per salt, and the rules the same in 6 of 6 loops. Job CPU is not compared.
-- **D3, one driver** runs the switches in order. Every salt pair goes through `run.ps1` untimed, pinned to CFF at
+- **D3, one driver** runs the switches in order. Every gate run goes through `run.ps1` untimed, pinned to CFF at
   below-normal priority: no verdict reads job CPU (amended 2026-10-24, plan
   `docs/superpowers/plans/2026-10-23-work-counts.md` D2; timed pairs had been refused for load again and again, runs
-  `2026-10-23-ablations-1` and `2026-10-24-ablations-4`). A relaunch with
-  `RESUME_FROM=<the earlier driver run folder>` reuses that run's finished pairs. The driver
+  `2026-10-23-ablations-1` and `2026-10-24-ablations-4`).
+  `streams_ab.sh` runs 4 arms at a time and keeps each finished arm in `arm-cache` (amended 2026-10-24: A runs once
+  per build, and a relaunch reuses every arm a stopped run finished; `RESUME_FROM` and the salt pairs were deleted;
+  4 arms at once cost about 50% more job CPU per arm and gave about 1.8x throughput, run `2026-10-24-work-aa-jobs4-1-4`). The driver
   exits at a free or mixed verdict, an error, or the end of its list. The session arms a Monitor on the driver's log and
   sends a notification per verdict line.
 - **D4, ask before cutting.** A part that pays gets a row in `docs/learned-vs-fixed.md` and the driver goes on. When a
@@ -95,7 +97,7 @@ What this shows:
 - `chain` changed nothing in any setting tried. Its only caller is the `add` step list (`rewrite.rs`, after
   `rule_step`), and no held-out law reaches it. The loops' own M may still use it, and the gate decides.
 - With no mined rules, `promoted`, `assoc`, `comm`, `eq_truth` and `eq_pos` raise held-out M, so they will probably
-  pay. Expected: about 5 pays (one pair each, 13-20 min) and 4 free verdicts (5 pairs plus a deletion check, about
+  pay. Expected (before the arm cache): about 5 pays (one pair each, 13-20 min) and 4 free verdicts (5 pairs plus a deletion check, about
   105 min each), so about 8 h of runs. Wait time for deletion approvals comes on top.
 
 ---
@@ -116,12 +118,13 @@ What this shows:
 ```bash
 #!/bin/bash
 # The class-table ablations (docs/superpowers/plans/2026-10-23-class-table-ablations.md). Run from the repo root.
-#   driver.sh <A exe> ablate <switch>...   per switch: B = A + B.exe.env ABLATE=<switch>; salt pairs 1-2 .. 9-10 of
-#                                          scripts/streams_ab.sh; stops a switch at the first M or held-out rise (pays);
+#   driver.sh <A exe> ablate <switch>...   per switch: B = A + B.exe.env ABLATE=<switch>; salts 1-10 of
+#                                          scripts/streams_ab.sh in one run; pays at an M or held-out rise on any salt;
 #                                          else by the work counts: costs goes on to the next switch, mixed and free exit
 #   driver.sh <deleted exe> check <ablated-from exe> <switch>   salts 1-2, deleted against ablated: identical or differs
-# Every pair runs untimed through run.ps1, pinned to CFF at below-normal priority: no verdict reads job CPU.
-# RESUME_FROM=<an earlier driver run folder>: reuse its finished pairs (same A exe build only)
+# Every run is untimed through run.ps1, pinned to CFF at below-normal priority, 4 arms at a time: no verdict reads job
+# CPU. Arms are kept in $runs_root/arm-cache (streams_ab.sh's ARM_CACHE): A runs once per build, and a rerun after a
+# stopped driver reuses every arm that finished.
 set -u
 [ -z "${ABLATE:-}" ] || { echo "driver: ABLATE=$ABLATE is set in the environment; it would reach both arms"; exit 2; }
 [ -f scripts/streams_ab.sh ] || { echo "driver: run from the repo root"; exit 2; }
@@ -131,26 +134,19 @@ wrap="$(cygpath -w "$USERPROFILE/.claude/runs/run.ps1")"
 here=$(cygpath "$RUN_DIR")
 cp "$1" "$here/A.exe" || exit 2
 mode=$2; shift 2
-salt_pairs=("1 2" "3 4" "5 6" "7 8" "9 10")
 
-pair() { # <name> <A exe> <B exe> <salt> <salt>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed
+gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed
   local name=$1 a b rc dir
-  # a pair a killed or failed driver run already finished (RESUME_FROM: that run's folder) is reused, not rerun; one from
-  # before the work counts (no "; work A") is rerun
-  if [ -n "${RESUME_FROM:-}" ] && grep -q ' 0 of 4 arms failed' "$(cygpath "$RESUME_FROM")/$name.txt" 2>/dev/null \
-    && grep -q '; work A ' "$(cygpath "$RESUME_FROM")/$name.txt"; then
-    cp "$(cygpath "$RESUME_FROM")/$name.txt" "$here/$name.txt"; echo "pair $name: reused from $RESUME_FROM"; cat "$here/$name.txt"; return 0
-  fi
-  a=$(cygpath -d "$2"); b=$(cygpath -d "$3")
-  powershell -NoProfile -File "$wrap" -Kind gate -Name "$name" \
-    -Command "start /b /wait /belownormal /affinity CFF bash scripts/streams_ab.sh $a $b $4 $5" < /dev/null > /dev/null 2>&1
+  a=$(cygpath -d "$2"); b=$(cygpath -d "$3"); shift 3
+  ARM_CACHE=$(cygpath -w "$runs_root/arm-cache") JOBS=4 powershell -NoProfile -File "$wrap" -Kind gate -Name "$name" \
+    -Command "start /b /wait /belownormal /affinity CFF bash scripts/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1
   rc=$?
   # the newest folder of this name: run.ps1 appends -2, -3 to a name an earlier driver run already used
   dir=$(ls -dt "$runs_root"/*-"$name" "$runs_root"/*-"$name"-[0-9]* 2>/dev/null | head -1)
-  echo "pair $name: exit $rc, $dir"
+  echo "gate $name: exit $rc, $dir"
   grep -E '^salt [0-9]+:|^streams_ab' "$dir/out.log" > "$here/$name.txt" 2>/dev/null
   cat "$here/$name.txt"
-  [ $rc = 0 ] && grep -q ' 0 of 4 arms failed' "$here/$name.txt"
+  [ $rc = 0 ] && grep -qE ' 0 of [0-9]+ arms failed' "$here/$name.txt" && parsed "$here/$name.txt"
 }
 # per salt line, one row per counter: salt name A B
 wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | awk -F'|' '{na = split($2, x, " "); split($3, y, " "); for (i = 1; i <= na; i++) {split(x[i], p, "="); split(y[i], q, "="); print $1, p[1], p[2], q[2]}}'; }
@@ -169,7 +165,7 @@ parsed() {
 
 if [ "$mode" = check ]; then
   sw=$2; cp "$1" "$here/B.exe" || exit 2; echo "ABLATE=$sw" > "$here/B.exe.env"
-  pair "check-$sw" "$here/A.exe" "$here/B.exe" 1 2 && parsed "$here/check-$sw.txt" || { echo "VERDICT $sw check error"; exit 1; }
+  gate "check-$sw" "$here/A.exe" "$here/B.exe" 1 2 || { echo "VERDICT $sw check error"; exit 1; }
   same=$(cols "$here/check-$sw.txt" | awk '$2 != $3 || $4 != $5 {d++} END {print d + 0}')
   if [ "$same" = 0 ] && grep -q 'rules same in 6 of 6 loops' "$here/check-$sw.txt"; then echo "VERDICT $sw check identical"
   else echo "VERDICT $sw check differs"; fi
@@ -178,21 +174,14 @@ fi
 
 for sw in "$@"; do
   cp "$here/A.exe" "$here/B_$sw.exe"; echo "ABLATE=$sw" > "$here/B_$sw.exe.env"
-  done_pairs=()
-  for p in "${salt_pairs[@]}"; do
-    set -- $p
-    pair "abl-$sw-s$1-$2" "$here/A.exe" "$here/B_$sw.exe" $1 $2 || { echo "VERDICT $sw error at salts $p"; exit 1; }
-    done_pairs+=("$here/abl-$sw-s$1-$2.txt")
-    parsed "$here/abl-$sw-s$1-$2.txt" || { echo "VERDICT $sw error: a salt line of salts $p does not parse"; exit 1; }
-    rise=$(cols "${done_pairs[@]}" | awk '$3 > $2 || $5 > $4 {print "salt " $1}' | head -1)
-    [ -n "$rise" ] && break
-  done
-  sum=$(cols "${done_pairs[@]}" | awk '{mA+=$2; mB+=$3; hA+=$4; hB+=$5; cA+=$6; cB+=$7} END {printf "M A %d B %d; held A %d B %d; jobcpu A %.0f B %.0f (%+.1f%%)", mA, mB, hA, hB, cA, cB, 100*(cB-cA)/cA}')
-  last=$(cols "${done_pairs[@]}" | tail -1 | cut -d' ' -f1)
-  if [ -n "$rise" ]; then echo "VERDICT $sw pays ($rise first): $sum, salts 1-$last"; continue; fi
+  f="$here/abl-$sw.txt"
+  gate "abl-$sw" "$here/A.exe" "$here/B_$sw.exe" 1 2 3 4 5 6 7 8 9 10 || { echo "VERDICT $sw error"; exit 1; }
+  sum=$(cols "$f" | awk '{mA+=$2; mB+=$3; hA+=$4; hB+=$5; cA+=$6; cB+=$7} END {printf "M A %d B %d; held A %d B %d; jobcpu A %.0f B %.0f (%+.1f%%)", mA, mB, hA, hB, cA, cB, 100*(cB-cA)/cA}')
+  rise=$(cols "$f" | awk '$3 > $2 || $5 > $4 {printf "%s salt %s", (n++ ? "," : ""), $1}')
+  if [ -n "$rise" ]; then echo "VERDICT $sw pays (rise on$rise): $sum, salts 1-10"; continue; fi
   # the counters (spec docs/superpowers/specs/2026-10-23-work-counts-design.md, decision 6(d)): each summed over the
   # salts, against its tolerance
-  v=$(wcols "${done_pairs[@]}" | awk -v tols="$tols" 'BEGIN {n = split(tols, t, " "); for (i = 1; i <= n; i++) {split(t[i], kv, "="); tol[kv[1]] = kv[2]}}
+  v=$(wcols "$f" | awk -v tols="$tols" 'BEGIN {n = split(tols, t, " "); for (i = 1; i <= n; i++) {split(t[i], kv, "="); tol[kv[1]] = kv[2]}}
       {if (!($2 in a)) o[++k] = $2; a[$2] += $3; b[$2] += $4}
       END {for (i = 1; i <= k; i++) {c = o[i]; d = a[c] ? (b[c] - a[c]) / a[c] : (b[c] ? 1 : 0); s = s sprintf(" %s %+.2f%%", c, 100 * d)
            if (d > tol[c]) up = 1; else if (d < -tol[c]) dn = 1}
@@ -250,8 +239,8 @@ Expected: exit 2 each time, each with its own message.
      this one;
   5. on `differs`, stop and report: the switch removed more than the deleted code, or the deletion removed more
      than the switch.
-- **error:** read the pair's `out.log` and `err.log` and report. Relaunch only after the cause is known, with
-  `RESUME_FROM` set to the failed driver run's folder (same A exe) so its finished pairs are not rerun.
+- **error:** read the gate run's `out.log` and `err.log` and report. Relaunch only after the cause is known, with
+  the same command: the arm cache skips every arm that finished.
 
 ### Task 4: Close
 
@@ -264,12 +253,14 @@ Expected: exit 2 each time, each with its own message.
 
 ## Review Focus
 
-1. The driver killed mid-pair. That pair has no `.txt`, and its verdict must come out `error`, never "free" from the
-   pairs that did finish. The driver only reaches "free" after all five pairs pass.
+1. The driver killed mid-run. Its gate run has no `.txt`, and the verdict must come out `error`, never "free"; a
+   relaunch reuses the arms that finished (arm cache). The driver only reaches "free" when all 20 arms pass.
 2. (Deleted 2026-10-24: job CPU no longer decides a verdict.)
 3. A deleted part whose code other switches' paths also use (`tree_step` is reached from the `sub` branch too). The
    deletion check (D2) catches a difference only on salts 1-2.
 4. A failed arm: an over-8 GB stop, a non-zero exit, or `held` printing `x` for a loop. `streams_ab.sh` counts
-   each of these as a failed arm (checked: its `held` loop adds 1 to `failed` on `x`). The driver's
-   `0 of 4 arms failed` grep then turns the pair into an `error`, so a B arm that breaks never reads as "free".
+   each of these as a failed arm (checked: `arm` writes 1 to its `failed` file on `x`). The driver's
+   `0 of N arms failed` grep then turns the run into an `error`, so a B arm that breaks never reads as "free".
 5. Midnight: run folders are named `<date>-<name>`, so the driver looks them up by `*-<name>`, never by date.
+6. A stale cached arm. The cache key hashes the exe, its `.exe.env` and `streams_ab.sh`, so a rebuild or a script
+   edit misses, and a failed arm is never stored (fixtures: an env change misses, the cache off runs both arms).
