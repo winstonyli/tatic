@@ -5639,7 +5639,10 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
 - **Determinism: within a few ppm, not exact.** A/A over salts 1-10, max spread per salt: interp 14.9 ppm, walk 0,
   match 11.8 ppm, op 0.08 ppm; job CPU 10.9% on the same quiet runs (twice the 5.4% of the earlier baseline). Only the
   mining tasks differ: the miner's scoring queue and its proofs run alongside the rounds, so how much speculative work is
-  done depends on timing, though the result does not. Tolerance per counter: max(spread, 1%) = 1%.
+  done depends on timing, though the result does not. Tolerance per counter: max(spread, 1%) = 1%. These runs gave a
+  sweep's loop to the next free lane, and a lane's worker carries its lemma file and memos into its next loop, so loop 3
+  could see 283 or 447 lemmas (`work-assoc-1-2`, salt 1). Since a4eda36 loop i runs on lane i mod lanes: in the A/A
+  `work-aa-lanes-1-2` every loop loaded the same lemmas in both arms, and the counts differ by at most 6 ppm (match).
 - **Overhead: none measurable** once `interp` and `match_pat` sum their nodes in a local and add them once per call
   (`count_n`, 4d1a74f): job CPU against the uncounted f0390df build -1.5% and -6.0% on salts 1-2. A thread-local add per
   node had cost +6.8% and +8.2%.
@@ -5674,7 +5677,8 @@ falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
   cache evictions, so fewer shared-table lookups and lock waits under the mine's 6 threads.
 - **Lanes** (397dcf2). The driver ran a sweep's loops one at a time, though each stage reads only what earlier stages
   wrote. `sweep` now runs a stage's mines, then its loops, `SWEEP_LANES` (default 2) at a time (`run_lanes`), each lane
-  with its own worker and lemma file, rows in the old order. Salt 1 cold, eager join: 386 s at 1 lane, 236, 223 and 199
+  with its own worker and lemma file, rows in the old order (since a4eda36, loop i on lane i mod lanes: a loop's rules
+  take no history from its lane, below, but its lemma loads and work counts do; "Work counts as the gate's cost"). Salt 1 cold, eager join: 386 s at 1 lane, 236, 223 and 199
   s at 2; the default sweep (`ABLATE=gen`) takes 5 s either way. The lazy join at 2 lanes: cold 99 s (`-lazy-lanes2`).
   Timings use `SWEEP_LANES=1`.
 - **A timing one-off.** One of the three 2-lane cold sweeps (`-lanes-check`) differed in one loop (cmp3d 15-2: rules

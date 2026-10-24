@@ -135,8 +135,10 @@ salt_pairs=("1 2" "3 4" "5 6" "7 8" "9 10")
 
 pair() { # <name> <A exe> <B exe> <salt> <salt>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed
   local name=$1 a b rc dir
-  # a pair a killed or failed driver run already finished (RESUME_FROM: that run's folder) is reused, not rerun
-  if [ -n "${RESUME_FROM:-}" ] && grep -q ' 0 of 4 arms failed' "$(cygpath "$RESUME_FROM")/$name.txt" 2>/dev/null; then
+  # a pair a killed or failed driver run already finished (RESUME_FROM: that run's folder) is reused, not rerun; one from
+  # before the work counts (no "; work A") is rerun
+  if [ -n "${RESUME_FROM:-}" ] && grep -q ' 0 of 4 arms failed' "$(cygpath "$RESUME_FROM")/$name.txt" 2>/dev/null \
+    && grep -q '; work A ' "$(cygpath "$RESUME_FROM")/$name.txt"; then
     cp "$(cygpath "$RESUME_FROM")/$name.txt" "$here/$name.txt"; echo "pair $name: reused from $RESUME_FROM"; cat "$here/$name.txt"; return 0
   fi
   a=$(cygpath -d "$2"); b=$(cygpath -d "$3")
@@ -157,10 +159,17 @@ wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | 
 tols="interp=0.01 walk=0.01 match=0.01 op=0.01"
 # columns of "salt N: M A a B b; held A a B b; jobcpu A a B b": salt mA mB hA hB cA cB
 cols() { sed -nE 's/^salt ([0-9]+): M A ([0-9]+) B ([0-9]+); held A ([0-9x]+) B ([0-9x]+); jobcpu A ([0-9.]+) B ([0-9.]+).*/\1 \2 \3 \4 \5 \6 \7/p' "$@"; }
+# every salt line parses, in cols and in wcols with an A and a B count per counter: a line either drops would leave its
+# salt out of the verdict, and a counter missing on one side would read as a change of 100%
+parsed() {
+  local n; n=$(cat "$@" | grep -c '^salt ')
+  [ "$(cols "$@" | wc -l)" = "$n" ] || return 1
+  wcols "$@" | awk -v n="$n" 'NF != 4 || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ {bad = 1} {s[$1]} END {for (k in s) m++; exit bad || m != n}'
+}
 
 if [ "$mode" = check ]; then
   sw=$2; cp "$1" "$here/B.exe" || exit 2; echo "ABLATE=$sw" > "$here/B.exe.env"
-  pair "check-$sw" "$here/A.exe" "$here/B.exe" 1 2 || { echo "VERDICT $sw check error"; exit 1; }
+  pair "check-$sw" "$here/A.exe" "$here/B.exe" 1 2 && parsed "$here/check-$sw.txt" || { echo "VERDICT $sw check error"; exit 1; }
   same=$(cols "$here/check-$sw.txt" | awk '$2 != $3 || $4 != $5 {d++} END {print d + 0}')
   if [ "$same" = 0 ] && grep -q 'rules same in 6 of 6 loops' "$here/check-$sw.txt"; then echo "VERDICT $sw check identical"
   else echo "VERDICT $sw check differs"; fi
@@ -174,6 +183,7 @@ for sw in "$@"; do
     set -- $p
     pair "abl-$sw-s$1-$2" "$here/A.exe" "$here/B_$sw.exe" $1 $2 || { echo "VERDICT $sw error at salts $p"; exit 1; }
     done_pairs+=("$here/abl-$sw-s$1-$2.txt")
+    parsed "$here/abl-$sw-s$1-$2.txt" || { echo "VERDICT $sw error: a salt line of salts $p does not parse"; exit 1; }
     rise=$(cols "${done_pairs[@]}" | awk '$3 > $2 || $5 > $4 {print "salt " $1}' | head -1)
     [ -n "$rise" ] && break
   done

@@ -84,7 +84,9 @@ whatever the load (up to the miner's speculation, a few ppm; § Gate for the cou
   used the way CPU's is. *Measured 2026-10-24 (`work-aa-s1-2`): they differ, only in the mining tasks: max A/A spread
   interp 3.0 ppm, walk 0, match 8.7 ppm, op 0.02 ppm (job CPU 25% on salt 2). The miner's scoring queue and its proofs
   run alongside the rounds, so how much speculative work is done depends on timing, though the result does not. The
-  spread is used the way CPU's is (decision 5(a)), so the 1% floor applies.*
+  spread is used the way CPU's is (decision 5(a)), so the 1% floor applies. A second source, found in review: a sweep
+  gave each loop to the next free lane, whose worker carries its lemma file and memos into the next loop; since a4eda36
+  the lanes are fixed and an A/A loads the same lemmas per loop in both arms (`work-aa-lanes-1-2`).*
 - **Proxy quality:** on a quiet machine, counts and job CPU should move together. Per arm over salts 1-10 of the
   A/A and one ablation that changes work, report the ratio of job CPU to each counter. The test passes when two
   things hold. First, on the quiet salts each ratio varies by no more than twice CPU's own A/A spread (11%); a count
