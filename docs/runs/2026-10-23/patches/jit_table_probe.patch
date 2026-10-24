@@ -1,0 +1,123 @@
+diff --git a/tests/church_bv/jit_probe.rs b/tests/church_bv/jit_probe.rs
+new file mode 100644
+index 0000000..ee707a6
+--- /dev/null
++++ b/tests/church_bv/jit_probe.rs
+@@ -0,0 +1,105 @@
++// Throwaway probe (docs/tier-cycle.md, "Other ways to join the JIT and the loop", option A, with the class table in
++// place of the mined rules): each maximal add/sub tree of the JIT corpus becomes a table term (Lit 0 and -1 as the
++// constants, any other subterm, literals included, an atom x, y or z by identity; more than three atoms: skipped),
++// and the table's canonical form is compared by operator count.
++#[path = "../../benches/common.rs"]
++mod common;
++
++use crate::rewrite::{Node, Term, ADD, SUB};
++use std::collections::HashMap;
++use tatic::term::{Hash, PrimOp, Term as J, TermStore};
++
++fn ops(t: &Term) -> usize {
++    match *t.node() {
++        Node::Op(_, a, b) => 1 + ops(&a) + ops(&b),
++        _ => 0,
++    }
++}
++
++fn is_addsub(s: &TermStore, h: Hash) -> bool {
++    matches!(s.resolve(h), J::Prim(PrimOp::Add | PrimOp::Sub, _, _))
++}
++
++fn to_table(s: &TermStore, h: Hash, atoms: &mut HashMap<Hash, usize>) -> Term {
++    match s.resolve(h) {
++        J::Prim(o @ (PrimOp::Add | PrimOp::Sub), a, b) => {
++            let o = if *o == PrimOp::Add { ADD } else { SUB };
++            let (a, b) = (*a, *b);
++            Term::op(o, to_table(s, a, atoms), to_table(s, b, atoms))
++        }
++        J::Lit(0) => Term::ZERO,
++        J::Lit(-1) => Term::ONES,
++        _ => {
++            let n = atoms.len();
++            Term::v(*atoms.entry(h).or_insert(n))
++        }
++    }
++}
++
++#[test]
++#[ignore]
++fn class_table_on_the_jit_corpus() {
++    let c = crate::classes::Classes::get();
++    type B = fn(&mut TermStore) -> Hash;
++    let corpus: Vec<(&str, B)> = vec![
++        ("factorial", common::factorial),
++        ("fib", common::fib),
++        ("redundant_arithmetic_recursion", common::redundant_arithmetic_recursion),
++        ("gcd", common::gcd),
++        ("gcd_with_two_base_cases", common::gcd_with_two_base_cases),
++        ("capturing_closure_loop", common::capturing_closure_loop),
++        ("partial_application_loop", common::partial_application_loop),
++        ("straight_line", common::straight_line),
++        ("twice_inc_5", common::twice_inc_5),
++        ("a_capturing_closure_call", common::a_capturing_closure_call),
++        ("a_pap_non_capturing", common::a_pap_non_capturing),
++        ("a_pap_capturing", common::a_pap_capturing),
++        ("iterate", common::iterate),
++        ("non_tail_closure_carrying_recursion", common::non_tail_closure_carrying_recursion),
++        ("branching_non_tail_closure_carrying_recursion", common::branching_non_tail_closure_carrying_recursion),
++        ("over_application_if_between_closures", common::over_application_if_between_closures),
++        ("over_application_pap_producing_root", common::over_application_pap_producing_root),
++        ("tail_recursive_loop_with_if_between_closures_self_call_arg", common::tail_recursive_loop_with_if_between_closures_self_call_arg),
++        ("tail_recursive_loop_with_pap_producing_root_self_call_arg", common::tail_recursive_loop_with_pap_producing_root_self_call_arg),
++    ];
++    let (mut nodes, mut trees, mut skipped, mut changed, mut saved) = (0, 0, 0, 0, 0i64);
++    for (name, b) in &corpus {
++        let mut s = TermStore::new();
++        let root = b(&mut s);
++        let mut seen = std::collections::HashSet::new();
++        // (node, whether its parent is an add/sub: only maximal trees are asked)
++        let mut stack = vec![(root, false)];
++        while let Some((h, inner)) = stack.pop() {
++            if !seen.insert((h, inner)) {
++                continue;
++            }
++            nodes += 1;
++            let here = is_addsub(&s, h);
++            if here && !inner {
++                let mut atoms = HashMap::new();
++                let t = to_table(&s, h, &mut atoms);
++                trees += 1;
++                if atoms.len() > 3 {
++                    skipped += 1;
++                    println!("PROBE skipped {name}: {} ({} atoms)", t.show(), atoms.len());
++                } else {
++                    let r = c.canonical(&t);
++                    let gain = ops(&t) as i64 - ops(&r) as i64;
++                    if r != t {
++                        changed += 1;
++                        saved += gain;
++                    }
++                    println!("PROBE tree {name}: {} -> {} (operators saved {gain})", t.show(), r.show());
++                }
++            }
++            match s.resolve(h).clone() {
++                J::Prim(_, a, b2) => stack.extend([(a, here), (b2, here)]),
++                J::If(x, t, e) => stack.extend([(x, false), (t, false), (e, false)]),
++                J::Abs(x) | J::Rec(x) => stack.push((x, false)),
++                J::App(f, x) => stack.extend([(f, false), (x, false)]),
++                _ => {}
++            }
++        }
++    }
++    println!("PROBE corpus: nodes={nodes} maximal add/sub trees={trees} skipped (over 3 atoms)={skipped} changed by the table={changed} operators saved={saved}");
++}
+diff --git a/tests/church_bv/main.rs b/tests/church_bv/main.rs
+index a7eb305..529e236 100644
+--- a/tests/church_bv/main.rs
++++ b/tests/church_bv/main.rs
+@@ -8,6 +8,7 @@ use job::{Job, Setup};
+ mod classes;
+ mod driver;
+ mod encoding;
++mod jit_probe;
+ mod job;
+ mod wasm;
+ mod lemma_cache;

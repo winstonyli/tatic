@@ -28,8 +28,9 @@ Every milestone serves at least one of these; work that serves none needs a stat
    depends on the kind of claim.
 
 Goals 1 and 2 meet in compiled hot transformations with learned compilations (`README.md`, "Future work"). That is
-not a milestone yet: the mined rules do not fire on the JIT's programs (`docs/tier-cycle.md`, "Other ways to join
-the JIT and the loop", option A's result, 2026-10-17).
+not a milestone yet: neither the mined rules nor the class table find work in the JIT's programs, whose add/sub
+trees are one operator over leaves (`docs/tier-cycle.md`, "Other ways to join the JIT and the loop", option A's
+results, 2026-10-17 and 2026-10-23).
 
 ## Milestones
 

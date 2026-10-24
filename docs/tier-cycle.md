@@ -1978,6 +1978,14 @@ miner's laws are about deeper word arithmetic. So A's cycle needs workloads with
 specialiser to produce it, by inlining) before its rules can pay; unifying the term languages stands on concept count
 alone, not on measured gain.
 
+*With the class table in place of the rules (2026-10-23, probe reverted; `docs/runs/2026-10-23/patches/jit_table_probe.patch`):
+the same answer.* Each maximal add/sub tree of the same 19 builders became a table term (literals 0 and -1 as the
+constants; every other subterm, other literals included, an atom by identity) and was replaced by `Classes::canonical`.
+There are 28 such trees, none with more than three atoms; the table changes 4 and saves 1 operator in all: the planted
+`add(add(x, 0), y)` to `add(x, y)`, which no mined rule rewrote. The other three only reassociate (`add(sub(x, y), z)` to
+`sub(x, sub(y, z))`, `add(add(x, y), z)` twice). A normal form cannot help where the trees are one operator over leaves;
+option A still needs workloads with arithmetic depth.
+
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.
 Of three ways to trust compiled code (trust the compiler, as `native_compute` does; a certificate per output; prove each

@@ -943,10 +943,11 @@ guards against by hand): caught immediately, at seed 22.
 - Mined rules on the JIT's programs, and learned compilations: where the
   JIT meets the rule miner (`ROADMAP.md`, "Goals" 1 and 2). The two share
   no term language yet. A probe found that the mined `add`/`sub` rules
-  fire on one node of the JIT's benchmark terms and save no instructions:
-  the JIT's programs are loops and closures without arithmetic depth
+  fire on one node of the JIT's benchmark terms and save no instructions,
+  and the class table saves one operator (a planted `x + 0`): the JIT's
+  programs are loops and closures without arithmetic depth
   (`docs/tier-cycle.md`, "Other ways to join the JIT and the loop", option
-  A's result, 2026-10-17). Lowering templates can be stated and proved as
+  A's results, 2026-10-17 and 2026-10-23). Lowering templates can be stated and proved as
   kernel laws, so compilations could be mined by target cost (same doc,
   "Compiling hot transformations, with learnable compilations"; parked in
   `PARKED.md`). Trigger: workloads with arithmetic depth, or the
