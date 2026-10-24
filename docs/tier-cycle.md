@@ -5590,6 +5590,12 @@ sweep reaches; 64 of band 11's 19769 and 47 of band 13's 37996 laws were served 
   matches of `lookup`. The lookup memo peaks at 8857-9712 terms (1690 on the old gate); largest peakproc 1538 MB against
   663 MB on the old gate (Task 3), all of it the generation. So on these salts any move in M or held-out M is real; job
   CPU needs more than about 5% to count.
+- **The families deleted (2026-10-23, run `2026-10-23-streams-deletion-1-2-2`):** the hand-written family pools, their
+  sweep stages (mines, own, cross, pooled, mixed), the preference phase and drop units, `RULESET` and its rule files, and
+  the yield proposers went (spec §10; commits 093ffc1, b63d5ed). Before (2571ee7's exe) against after (b63d5ed's), salts
+  1-2: M 176 and 181 and held-out M 809 and 890 in both arms, the A/A's numbers; rules the same in 6 of 6 loops; no arm
+  failed. Job CPU on salt 1 325.7 s against 335.3 s (−2.9%, inside the A/A's 5.4%); salt 2's arms ran under 50-83% other
+  load and are not compared.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

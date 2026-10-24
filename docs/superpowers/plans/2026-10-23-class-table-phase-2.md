@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # The class table as the rewriter's normal form, build steps 4-6 Implementation Plan

@@ -304,7 +304,7 @@ Decided while planning (2026-10-23):
 
 ## Build order
 
-Steps 1-3 are done (plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`).
+Steps 1-6 are done (plans `docs/superpowers/plans/2026-10-23-class-table-normal-form.md` and `docs/superpowers/plans/2026-10-23-class-table-phase-2.md`).
 
 1. `classes.rs`: key file, table (with `shr1` and parse-first representatives), `rep`, verdicts and `regenerate_key`;
    generate the key file; the size-5 tests; the `shr1` verdicts and the commit after a build in a worker measured

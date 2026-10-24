@@ -46,8 +46,7 @@ the JIT and the loop", option A's result, 2026-10-17).
   "Boolean combinations of comparisons" (its machine side passed a spike).
 - **v0.5 - Does closing the cycle push the frontier?** (goals 2 and 3) Experiment 3: train on accepted laws, repeat,
   and track the frontier, not only M on a fixed stream. The frontier: on a fixed held-out set of laws larger than the
-  loops serve (the families' laws today; the class-table spec's decision 11 moves the loops onto operator-set
-  streams), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
+  loops serve (the loops run on operator-set streams, the class-table spec's decision 11), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
   and visit budget, which must be fixed: from 1000 to 5000 it moves by up to 27 of 400 laws, `docs/tier-cycle.md`,
   "Why a sound rule costs the join") by law size, and the largest size still above a threshold. Serving proves every law, so the share proved at all
   would always be 1. Measured by a throwaway probe (`docs/tier-cycle.md`, "Free proofs by law size"): under the ref
