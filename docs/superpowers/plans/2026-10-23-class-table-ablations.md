@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Class-table ablations (spec step 7) Implementation Plan
@@ -116,7 +116,7 @@ What this shows:
   starting `VERDICT <switch> pays|costs|mixed|free|error` or `VERDICT <switch> check identical|differs|error`. Exit 0 on a verdict
   that ends the run (free, mixed, a check, or the end of the list), 1 on an error, 2 on a refused start.
 
-- [ ] **Step 1: Write the driver**
+- [x] **Step 1: Write the driver**
 
 ```bash
 #!/bin/bash
@@ -227,7 +227,7 @@ done
 echo "DRIVER done: no switch left"
 ```
 
-- [ ] **Step 2: Check the parser on the A/A's logs (A/A means free on every count)**
+- [x] **Step 2: Check the parser on the A/A's logs (A/A means free on every count)**
 
 Write `$TEMP/aa_check.sh`. It runs `cols` (copied from the driver) and the verdict arithmetic over the five A/A
 `out.log` files (`%LOCALAPPDATA%\claude-runs\tatic\2026-10-23-streams-aa-{1-2-3,3-4,5-6,7-8,9-10-2}`). Then run it.
@@ -235,27 +235,27 @@ Write `$TEMP/aa_check.sh`. It runs `cols` (copied from the driver) and the verdi
 Expected: 10 rows; `M A 1718 B 1718; held A 8721 B 8721; jobcpu A 5865 B 5842 (-0.4%)`; no rise; cpu `within`.
 (Checked while writing this plan, 2026-10-23.)
 
-- [ ] **Step 3: Check the parser's "pays" path.** Feed one A/A file through `sed 's/M A 176 B 176/M A 176 B 177/'`.
+- [x] **Step 3: Check the parser's "pays" path.** Feed one A/A file through `sed 's/M A 176 B 176/M A 176 B 177/'`.
 
 Expected: the rise is found at salt 1. (Checked while writing this plan.)
 
-- [ ] **Step 4: Check the refusals.** Start it with `ABLATE=x` in the environment, from `tests/`, and with no
+- [x] **Step 4: Check the refusals.** Start it with `ABLATE=x` in the environment, from `tests/`, and with no
   `RUN_DIR`.
 
 Expected: exit 2 each time, each with its own message.
 
 ### Task 2: Build A and launch
 
-- [ ] **Step 1:** `git switch -c ablations`. Run `cargo test --release -j 4`; the suite must be green before
+- [x] **Step 1:** `git switch -c ablations`. Run `cargo test --release -j 4`; the suite must be green before
   anything is ablated. Build the arms' exe with the sweep profile (fat LTO, what README prescribes for sweeps and
   timing): `cargo test --profile sweep -j 4 --test church_bv --no-run`, then take the path from cargo's "Executable"
   line (`target\sweep\build\tatic\<hash>\out\church_bv-<hash>.exe`). Check that `tools/runs/target/release/runs.exe` exists
   (`streams_ab.sh` needs it).
-- [ ] **Step 2:** Check for live CPU leases and others' load. Then launch the driver detached, through the wrapper
+- [x] **Step 2:** Check for live CPU leases and others' load. Then launch the driver detached, through the wrapper
   as its own non-timed row:
   `cmd //c start "" //b powershell -NoProfile -File "$USERPROFILE/.claude/runs/run.ps1" -Kind sweep -Name ablations-1 -Command "bash <driver.sh short path> <A exe short path> ablate promoted assoc tree chain comm collapse eq_truth eq_pos eq_classes"`.
   Annotate its `docs/runs.md` row.
-- [ ] **Step 3:** Arm a Monitor on the driver's `out.log`, with an exiting loop that ends when `run.json` has an
+- [x] **Step 3:** Arm a Monitor on the driver's `out.log`, with an exiting loop that ends when `run.json` has an
   `exit`. It prints each `VERDICT` and `DRIVER` line. Send a push notification per verdict.
 
 ### Task 3: Per verdict
@@ -279,12 +279,12 @@ Expected: exit 2 each time, each with its own message.
 
 ### Task 4: Close
 
-- [ ] `docs/tier-cycle.md`: a step-7 section with each verdict, the numbers, and the run ids.
-- [ ] Spec §5: note what was deleted. The spec's status stays as it is: step 8 (§6, `ClassReps` moves onto the
+- [x] `docs/tier-cycle.md`: a step-7 section with each verdict, the numbers, and the run ids.
+- [x] Spec §5: note what was deleted. The spec's status stays as it is: step 8 (§6, `ClassReps` moves onto the
   table) comes next and has its own plan.
-- [ ] Fix stale claims that name deleted switches or parts: `ROADMAP.md`, `PARKED.md`, `README.md`,
+- [x] Fix stale claims that name deleted switches or parts: `ROADMAP.md`, `PARKED.md`, `README.md`,
   `docs/learned-vs-fixed.md`, and `CLAUDE.md` if it names a deleted part.
-- [ ] Set this plan's front matter to `status: done`. Leftovers go to `PARKED.md` first.
+- [x] Set this plan's front matter to `status: done`. Leftovers go to `PARKED.md` first.
 
 ## Review Focus
 

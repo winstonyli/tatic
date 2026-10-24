@@ -5656,7 +5656,9 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   and job CPU 807 s to 739 s (-10.5% and -7.0% per salt; the A/A's spread is up to 10.9%, so this leans to cheaper
   without it, not proved). Every arm the cache reused was A's from A, B's from B. With the class step in the
   rewriter, both sides of a law reach `prove_eq` already in the table's normal form, so its second normalization there
-  closes nothing new.
+  closes nothing new. Deleted (2026-10-24, 25db9c3): the table step in `prove_eq` (phase 1); its tests now go through
+  `rewrite_plan`. The check (`-check-eq_classes`, against 328e3c1 with `ABLATE=eq_classes`, salts 1-2): M, held-out M
+  and rules equal, counts within 3 ppm.
 
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
 `2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,

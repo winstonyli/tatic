@@ -209,6 +209,11 @@ each stay within the A/A spread measured when the new gate's baseline is set. A 
 kept, with the measurement recorded in `docs/learned-vs-fixed.md`. Each ablation runs against the state the previous
 ones left, so a later part is measured without the earlier deleted ones.
 
+Done (2026-10-24; plan `docs/superpowers/plans/2026-10-23-class-table-ablations.md`, verdicts by work counts as in
+`docs/superpowers/specs/2026-10-23-work-counts-design.md`): `promoted`, `assoc`, `comm`, `collapse`, `eq_truth` and
+`eq_pos` pay and stay; `tree`, `chain` and `eq_classes` (phase 1, §4) were free and are deleted, so phase 2 is the
+table's one step and `classes` its only switch. Numbers: `docs/tier-cycle.md`, "Ablations of the class table".
+
 ### 6. `ClassReps` is replaced
 
 The law generator's twin filter (`search::ClassReps`) is a smaller, hand-built class table, keyed on every width-4
@@ -305,7 +310,7 @@ Decided while planning (2026-10-23):
 
 ## Build order
 
-Steps 1-6 are done (plans `docs/superpowers/plans/2026-10-23-class-table-normal-form.md` and `docs/superpowers/plans/2026-10-23-class-table-phase-2.md`).
+Steps 1-7 are done (plans `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, `docs/superpowers/plans/2026-10-23-class-table-phase-2.md` and `docs/superpowers/plans/2026-10-23-class-table-ablations.md`).
 
 1. `classes.rs`: key file, table (with `shr1` and parse-first representatives), `rep`, verdicts and `regenerate_key`;
    generate the key file; the size-5 tests; the `shr1` verdicts and the commit after a build in a worker measured

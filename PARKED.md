@@ -88,13 +88,6 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 
 - **In-memory lemma cache in the worker (the file goes)** — why: ceiling about 3% of busy CPU, about 0.4 s per sweep; recommended only "if any change is made". Trigger: measure what the reload costs first; none other stated. Evidence: `docs/tier-cycle.md` ("A persistent worker for the sweep's children"); `docs/superpowers/specs/2026-10-15-sweep-worker-design.md:288`. Status: parked.
 - **A worker pool inside a loop (its mines and serves in parallel)** — why: within a loop each step reads files the earlier ones wrote. Across loops it is built: a sweep runs each stage's mines, then its loops, `SWEEP_LANES` (default 2) at a time (397dcf2; salt 1 cold 386 to 199-236 s, `docs/tier-cycle.md`, "Lazy join steps, and sweeps in lanes"). Trigger: none stated. Evidence: `docs/tier-cycle.md` ("A persistent worker for the sweep's children"); `docs/superpowers/specs/2026-10-15-sweep-worker-design.md:293-294`. Status: parked.
-- **Phase 1's CPU cost** — what: the class table in `prove_eq` costs 19% more job CPU (459 s to 545 s over salts 1-5,
-  timed, with `rep` memoized and the build's zip per width; 29% at first) and about 70 MB more peak per process for 38%
-  less M. Salt 3's outlier (+73%) is mostly the miner's lookahead switched on by different rules, not the table
-  (`docs/tier-cycle.md`, "Salt 3's +73% is the miner's lookahead"). Left to cut: the workers' builds, now 0.58-0.65 s each ("Cache the built class table"; a faster hash did
-  not shorten them: `docs/tier-cycle.md`, "foldhash for `class_hash`"). Why parked: under the plan's 25% stop now. Trigger:
-  phase 2's gate past its stop, or a sweep where the builds dominate. Evidence: `docs/tier-cycle.md`, "The class table
-  in `prove_eq`: phase 1" (2026-10-23); phase 2's gate cut job CPU 746 to 42 s ("Phase 2 in the rewriter"), not past the stop. Status: parked.
 - **Bound the class table's lookup memo** — what: `Classes::lookup`'s memo (values per term, and its answer) is a pure
   process-wide memo kept across a worker's tasks, like every `SharedMemo`, so it grows with every distinct term looked up
   (about 432 B of values each, plus subterms). Options: clear it per task, cap it, or key it per job. Why parked: the
