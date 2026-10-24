@@ -1,5 +1,5 @@
-//! Counts of the work a process does at four sites, the gate's cost signal: the same on a busy machine as on a quiet one
-//! (docs/superpowers/specs/2026-10-23-work-counts-design.md).
+//! Counts of the work a process does at four sites, the gate's cost signal: the same on a busy machine as on a quiet one,
+//! up to the miner's speculative work (a few ppm; docs/superpowers/specs/2026-10-23-work-counts-design.md).
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
