@@ -26,14 +26,17 @@ work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> 
   grep -rh '^WORK ' "$@" 2>/dev/null | awk '{for (i = 2; i <= NF; i++) {split($i, kv, "="); if (!(kv[1] in t)) o[++n] = kv[1]; t[kv[1]] += kv[2]}} END {for (i = 1; i <= n; i++) printf "%s%s=%.0f", (i > 1 ? " " : ""), o[i], t[o[i]]}'
 }
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
-  local s=$1 arm=$2 exe o mb h l v f=0 c=
+  local s=$1 arm=$2 exe o mb h l v f=0 c= long
   [ $arm = A ] && exe=$a || exe=$b
   o="$RUN_DIR/s${s}_$arm"
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env and this
   # script, and an arm with the same hash and salt is copied, not run: the gate's results repeat (counts to a few ppm,
   # docs/tier-cycle.md, "Work counts as the gate's cost"). Off by default: an A/A of one exe would otherwise run once.
+  # The exe by its long name: the .exe.env of a short (8.3) name like B_COLL~1.EXE does not exist, so B hashed as A
+  # (the exe itself reads `<its canonical path>.env`).
   if [ -n "${ARM_CACHE:-}" ]; then
-    c="$(cygpath "$ARM_CACHE")/$(cat "$(cygpath "$exe")" "$(cygpath "$exe").env" "$0" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
+    long=$(cygpath -u "$(cygpath -w -l "$exe")")
+    c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
     if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ]; then
       rm -rf "$o"; cp -r "$c" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; return
     fi

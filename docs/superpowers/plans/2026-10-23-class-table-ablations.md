@@ -39,8 +39,11 @@ order and "costs nothing"), and decision 9.
   `2026-10-23-ablations-1` and `2026-10-24-ablations-4`).
   `streams_ab.sh` runs 4 arms at a time and keeps each finished arm in `arm-cache` (amended 2026-10-24: A runs once
   per build, and a relaunch reuses every arm a stopped run finished; `RESUME_FROM` and the salt pairs were deleted;
-  4 arms at once cost about 50% more job CPU per arm and gave about 1.8x throughput, run `2026-10-24-work-aa-jobs4-1-4`). The driver
-  exits at a free or mixed verdict, an error, or the end of its list. The session arms a Monitor on the driver's log and
+  4 arms at once cost about 50% more job CPU per arm and gave about 1.8x throughput, run `2026-10-24-work-aa-jobs4-1-4`).
+  The driver stops a gate at the first salt whose B rises: one rise settles "pays" (amended 2026-10-24; free, costs and
+  mixed still read all 10 salts). The cache key hashes the exe by its long name: by the 8.3 short name the driver passes,
+  `B_collapse.exe.env` was not found, so `collapse`'s B arms were copied from A (run `2026-10-24-abl-collapse`, its verdict
+  void; fixed in `streams_ab.sh`). The driver exits at a free or mixed verdict, an error, or the end of its list. The session arms a Monitor on the driver's log and
   sends a notification per verdict line.
 - **D4, ask before cutting.** A part that pays gets a row in `docs/learned-vs-fixed.md` and the driver goes on. When a
   part is free, the session first runs one timed pair, salts 1-2 (`run.ps1 -Timed`), A against B, since some cost is
@@ -119,8 +122,8 @@ What this shows:
 #!/bin/bash
 # The class-table ablations (docs/superpowers/plans/2026-10-23-class-table-ablations.md). Run from the repo root.
 #   driver.sh <A exe> ablate <switch>...   per switch: B = A + B.exe.env ABLATE=<switch>; salts 1-10 of
-#                                          scripts/streams_ab.sh in one run; pays at an M or held-out rise on any salt;
-#                                          else by the work counts: costs goes on to the next switch, mixed and free exit
+#                                          scripts/streams_ab.sh in one run; pays at an M or held-out rise on any salt, the gate
+#                                          stopped at the first; else by the work counts: costs goes on, mixed and free exit
 #   driver.sh <deleted exe> check <ablated-from exe> <switch>   salts 1-2, deleted against ablated: identical or differs
 # Every run is untimed through run.ps1, pinned to CFF at below-normal priority, 4 arms at a time: no verdict reads job
 # CPU. Arms are kept in $runs_root/arm-cache (streams_ab.sh's ARM_CACHE): A runs once per build, and a rerun after a
@@ -135,18 +138,50 @@ here=$(cygpath "$RUN_DIR")
 cp "$1" "$here/A.exe" || exit 2
 mode=$2; shift 2
 
-gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed
-  local name=$1 a b rc dir
+gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed,
+  # 2 stopped at the first salt whose B rises (M or held-out M), with a line per finished salt (M, held, jobcpu; no work)
+  local name=$1 a b rc dir pid before rise=
   a=$(cygpath -d "$2"); b=$(cygpath -d "$3"); shift 3
+  # run.ps1 names the folder <date>-<name>, adding -2, -3 to a name an earlier driver run already used: ours is the new one
+  folders() { ls -d "$runs_root"/*-"$name" "$runs_root"/*-"$name"-[0-9]* 2>/dev/null; }
+  before=$(folders)
   ARM_CACHE=$(cygpath -w "$runs_root/arm-cache") JOBS=4 powershell -NoProfile -File "$wrap" -Kind gate -Name "$name" \
-    -Command "start /b /wait /belownormal /affinity CFF bash scripts/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1
-  rc=$?
-  # the newest folder of this name: run.ps1 appends -2, -3 to a name an earlier driver run already used
-  dir=$(ls -dt "$runs_root"/*-"$name" "$runs_root"/*-"$name"-[0-9]* 2>/dev/null | head -1)
+    -Command "start /b /wait /belownormal /affinity CFF bash scripts/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1 &
+  pid=$!
+  while kill -0 $pid 2>/dev/null; do
+    ping -n 31 127.0.0.1 > /dev/null
+    dir=$(folders | grep -vxF "$before" | head -1)
+    [ -n "$dir" ] && rise=$(risen "$dir" "$@") && [ -n "$rise" ] || continue
+    # a rise settles the verdict (pays): stop the gate's streams_ab (not run.ps1, which then closes its row); finished arms
+    # are already in the arm cache
+    echo "gate $name: B rises on salt $rise, stopping it"
+    powershell -NoProfile -Command "Get-CimInstance Win32_Process | ? { \$_.Name -ne 'powershell.exe' -and \$_.CommandLine -like '*streams_ab.sh*$b*' } | % { taskkill /T /F /PID \$_.ProcessId }" < /dev/null > /dev/null 2>&1
+    break
+  done
+  wait $pid; rc=$?
+  dir=$(folders | grep -vxF "$before" | head -1)
   echo "gate $name: exit $rc, $dir"
+  if [ -n "$rise" ]; then
+    for s in "$@"; do done_salt "$dir" $s && echo "salt $s: M A $(m "$dir/s${s}_A") B $(m "$dir/s${s}_B"); held A $(cat "$dir/s${s}_A/held.txt") B $(cat "$dir/s${s}_B/held.txt"); jobcpu A $(c "$dir/s${s}_A") B $(c "$dir/s${s}_B")"; done > "$here/$name.txt"
+    cat "$here/$name.txt"; return 2
+  fi
   grep -E '^salt [0-9]+:|^streams_ab' "$dir/out.log" > "$here/$name.txt" 2>/dev/null
   cat "$here/$name.txt"
   [ $rc = 0 ] && grep -qE ' 0 of [0-9]+ arms failed' "$here/$name.txt" && parsed "$here/$name.txt"
+}
+# an arm's M and job CPU, as streams_ab.sh reads them
+m() { cut -f4 "$1/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$' | awk '{s += $1} END {print s + 0}'; }
+c() { grep -oE 'jobcpu=[0-9.]+' "$1/result.txt" | cut -d= -f2; }
+# whether both arms of salt <s> in <gate dir> finished without failing (an arm writes `failed` last; a cached arm is
+# copied in any order, so its held.txt is checked too)
+done_salt() { [ "$(cat "$1/s$2_A/failed" "$1/s$2_B/failed" 2>/dev/null | tr -d '\n')" = 00 ] && [ -s "$1/s$2_A/held.txt" ] && [ -s "$1/s$2_B/held.txt" ]; }
+# <gate dir> <salts...>: the first finished salt whose B has more M or held-out M than its A
+risen() {
+  local d=$1 s; shift
+  for s in "$@"; do
+    done_salt "$d" $s || continue
+    if [ $(m "$d/s${s}_B") -gt $(m "$d/s${s}_A") ] || [ $(cat "$d/s${s}_B/held.txt") -gt $(cat "$d/s${s}_A/held.txt") ]; then echo $s; return; fi
+  done
 }
 # per salt line, one row per counter: salt name A B
 wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | awk -F'|' '{na = split($2, x, " "); split($3, y, " "); for (i = 1; i <= na; i++) {split(x[i], p, "="); split(y[i], q, "="); print $1, p[1], p[2], q[2]}}'; }
@@ -165,7 +200,7 @@ parsed() {
 
 if [ "$mode" = check ]; then
   sw=$2; cp "$1" "$here/B.exe" || exit 2; echo "ABLATE=$sw" > "$here/B.exe.env"
-  gate "check-$sw" "$here/A.exe" "$here/B.exe" 1 2 || { echo "VERDICT $sw check error"; exit 1; }
+  gate "check-$sw" "$here/A.exe" "$here/B.exe" 1 2; [ $? = 1 ] && { echo "VERDICT $sw check error"; exit 1; }
   same=$(cols "$here/check-$sw.txt" | awk '$2 != $3 || $4 != $5 {d++} END {print d + 0}')
   if [ "$same" = 0 ] && grep -q 'rules same in 6 of 6 loops' "$here/check-$sw.txt"; then echo "VERDICT $sw check identical"
   else echo "VERDICT $sw check differs"; fi
@@ -175,10 +210,10 @@ fi
 for sw in "$@"; do
   cp "$here/A.exe" "$here/B_$sw.exe"; echo "ABLATE=$sw" > "$here/B_$sw.exe.env"
   f="$here/abl-$sw.txt"
-  gate "abl-$sw" "$here/A.exe" "$here/B_$sw.exe" 1 2 3 4 5 6 7 8 9 10 || { echo "VERDICT $sw error"; exit 1; }
+  gate "abl-$sw" "$here/A.exe" "$here/B_$sw.exe" 1 2 3 4 5 6 7 8 9 10; [ $? = 1 ] && { echo "VERDICT $sw error"; exit 1; }
   sum=$(cols "$f" | awk '{mA+=$2; mB+=$3; hA+=$4; hB+=$5; cA+=$6; cB+=$7} END {printf "M A %d B %d; held A %d B %d; jobcpu A %.0f B %.0f (%+.1f%%)", mA, mB, hA, hB, cA, cB, 100*(cB-cA)/cA}')
   rise=$(cols "$f" | awk '$3 > $2 || $5 > $4 {printf "%s salt %s", (n++ ? "," : ""), $1}')
-  if [ -n "$rise" ]; then echo "VERDICT $sw pays (rise on$rise): $sum, salts 1-10"; continue; fi
+  if [ -n "$rise" ]; then echo "VERDICT $sw pays (rise on$rise): $sum, salts $(cols "$f" | awk '{printf "%s%s", (NR > 1 ? "," : ""), $1}')"; continue; fi
   # the counters (spec docs/superpowers/specs/2026-10-23-work-counts-design.md, decision 6(d)): each summed over the
   # salts, against its tolerance
   v=$(wcols "$f" | awk -v tols="$tols" 'BEGIN {n = split(tols, t, " "); for (i = 1; i <= n; i++) {split(t[i], kv, "="); tol[kv[1]] = kv[2]}}

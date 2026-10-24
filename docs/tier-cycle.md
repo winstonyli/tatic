@@ -5642,6 +5642,11 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   785 s in both arms; per salt -9.2% and +7.3%, wider than `tree`'s pair, so other load came and went. Deleted
   (2026-10-24): `chain_step`, `LawKind::Chain` and its arms; `x + 0` and `x + ~x` are the class table's now.
   `carry_chain_law` and `find_constant_carry` stay (`conjecture_miner` and their test).
+- **`comm` pays** (`2026-10-24-ablations-9`, on 328e3c1): without it M rises on 9 of 10 salts (not salt 2), 1718 to
+  1784, and held-out M 8721 to 9000. The same run's `collapse` verdict is void: the arm cache keyed each exe by the 8.3
+  short name the driver passes, under which `B_collapse.exe.env` does not exist, so every B arm was A's (fixed in
+  `streams_ab.sh`; names that fit 8.3, such as `B_comm.exe` and `B_chain.exe`, were keyed right, and no other gate copied
+  an arm across exes).
 
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
 `2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,
