@@ -5612,7 +5612,7 @@ salts may still overlap, equally for both arms: spec, "Risks").
   <later>`. The record of what they gained stays above ("Learned preferences", "Preferences and rival orientations in the miner").
 
 *Ablations of the class table (2026-10-23/24; plan docs/superpowers/plans/2026-10-23-class-table-ablations.md; runs
-`2026-10-23-ablate-switch-check`, `-ablations-1`, `-ablations-3`, `-ablations-check-promoted-2`).* The fixed parts the
+`2026-10-23-ablate-switch-check`, `-ablations-1`, `-ablations-3`, `-ablations-check-promoted-2`, `2026-10-24-promoted-untimed`).* The fixed parts the
 table may make redundant, one at a time on the streams gate (B = A's exe with `ABLATE=<switch>` in its `.env`).
 - **Which switches take effect** (held-out M with no mined rules, the plan's table): 8 of 9 change it. `tree`,
   `collapse` and `eq_classes` do so only with the class step off; `chain` changes nothing in any setting tried. This
@@ -5625,7 +5625,8 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
 - **The promoted rules pay.** The deletion check `ablations-check-promoted-2` was given the undeleted build as its A
   by mistake, and its B was named `B.exe` (its own short name), so the switch did apply. Salts 1-2: M 176 against 180
   and 181 against 192 (lower is better), held-out M 809 against 859 and 890 against 880, rules differ in 6 of 6 loops.
-  A rise on any salt decides pays (plan D1). Pending: the driver with the fixed build (`ablations-4`).
+  A rise on any salt decides pays (plan D1). The fixed build gives the same numbers on both salts (`promoted-untimed`,
+  untimed; `ablations-4`, the driver's timed re-run, was stopped after load refusals).
 - **The fix:** `exe_env` canonicalizes the exe's path first (`job.rs`; test `exe_env_is_found_from_a_short_path`).
 
 
