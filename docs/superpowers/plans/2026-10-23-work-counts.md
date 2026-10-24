@@ -317,9 +317,8 @@ Expected: `salt 1: ... ; work A interp=<n> walk=<n> match=<n> op=<n> B <the same
 - Modify: `docs/runs.md` (the rows' notes)
 
 Each run goes through the wrapper as its own row; timed ones with `-Timed`. Pairs of salts, as the driver runs them,
-so a lease is held at most ~15 minutes. The uncounted exe is the deleted-promoted build,
-`%LOCALAPPDATA%\claude-runs\tatic\2026-10-23-ablations-check-promoted-2\A.exe` (built at ebae480; the commits after it
-change docs only). The counted exe is Task 3's.
+so a lease is held at most ~15 minutes. The uncounted exe is the build at f0390df (the `exe_env` fix and the promoted
+rules restored), `%LOCALAPPDATA%\claude-runs\tatic\2026-10-24-ablations-4\A.exe`. The counted exe is Task 3's.
 
 Commands (exe paths as 8.3 short paths, `cygpath -d`, as the driver passes them; an arm B with a switch is a copy of
 the exe with `<exe>.env` holding `ABLATE=<switch>`):
