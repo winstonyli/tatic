@@ -56,15 +56,24 @@ whatever the load. It shows an *amount* of cost only after calibration.
      race moves counts. If it does, the spread is measured like CPU's.
    - (b) Count `verdict`'s visits into a local and add them only when `insert` reports the key as new. The counter
      then reports work needed, not done. That is one special case at one call site.
-6. **How the counters decide "free".** *Open.* The counters measure different units (a node evaluated, a subterm
-   walked), so they are not summed as they are.
-   - (a, recommended) Each counter is compared on its own, summed over the ten salts. A part is free when no
-     counter rises by more than its tolerance. The tolerance is the larger of that counter's A/A spread and 1%, the
-     level at which the ablations plan already flags job CPU. No weights are needed, and a rise shows which phase
-     paid for it.
-   - (b) One weighted sum, with weights fitted to job CPU on quiet A/A salts (the 2026-10-10 NNLS fit). It gives one
-     number in seconds, but the weights are another fit to keep current.
-   - (c) As (a), but with tolerance 0. Strict, but every deletion that moves a few walks then counts as a cost.
+6. **How the counters decide "free".** *Decided 2026-10-23: (d).* The counters measure different units (a node
+   evaluated, a subterm walked), so they are not summed as they are. They are compared only once M and held-out M
+   match on all ten salts (a rise in either already means the part pays). Each counter is summed over the ten salts and
+   compared on its own, against a tolerance: the larger of that counter's A/A spread and 1%. The 1% is a size that
+   matters, not noise, since the counts should repeat exactly; the ablations plan already flags job CPU at 1%.
+   - (a) Free when no counter rises past its tolerance. Prior art: gungraun's per-metric limits, which fail on any
+     one metric past its limit.
+   - (b) One weighted sum, with weights fitted to job CPU on quiet A/A salts. Prior art: KCachegrind's cycle
+     estimate; this repo's 2026-10-10 NNLS fit, whose 18% error is over 3x CPU's own A/A spread and whose weights
+     were tied to the machine. Rejected for that reason.
+   - (c) As (a) with tolerance 0. Rejected: every deletion that moves a few walks would count as a cost.
+   - (d, chosen) As (a), with a third outcome from rustc-perf's "mixed" label. The verdict is **free** when no counter
+     rises past its tolerance, **costs** when one rises and none falls past its tolerance, and **mixed** when one
+     rises and another falls. Mixed stops the driver as pays and costs do, and the session brings it to the user.
+   - Also surveyed and rejected: one primary counter (rustc-perf and gungraun decide by instructions alone), since
+     none of the four counts all the work (`interp`, the largest, is 33% of an arm); a fence over past changes
+     (rustc-perf), which has width 0 for counts that repeat exactly and so becomes (c). Sources: gungraun's
+     `docs/src/regressions.md`, rustc-perf's `docs/comparison-analysis.md`, both read 2026-10-23.
 
 ## Gate for the counts themselves
 
@@ -123,8 +132,8 @@ overhead the gate's overhead check matters most for.
   prints `WORK`, or its work is missing from the line.
 - **The four sites:** one increment each, in `Term::interp`, `join_walk`, `match_pat` and `Term::op`.
 - **`scripts/streams_ab.sh`:** sums each arm's `WORK` lines per salt and prints `work A <k=n ...> B <k=n ...>`.
-- **The ablations driver** (outside the repo; its one home is Task 1 of the ablations plan): the free test follows
-  decision 6, and job CPU is printed but no longer decides.
+- **The ablations driver** (outside the repo; its one home is Task 1 of the ablations plan): the verdict follows
+  decision 6 (free, costs or mixed; mixed stops it), and job CPU is printed but no longer decides.
 
 ## Determinism risk found in the code
 
