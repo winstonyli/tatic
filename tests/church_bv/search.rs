@@ -147,32 +147,34 @@ fn num_stops_at_an_unparsable_value() {
 }
 
 /// `family`'s laws, through the law-sequence variables (`RULEMINER_*`) that `env` gives, `None` for unset.
-pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str) -> Option<String>, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
-    if family == "shl" {
-        let conj = shl_conjectures(2);
-        let stride = (conj.len() / num(env, "RULEMINER_LAWS", 250)).max(1);
-        conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-    } else if family == "shr" {
-        // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
-        // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
-        let pool = if num(env, "RULEMINER_DEEP", 0) == 1 { terms(setup, 2, true).to_vec() } else { lt_pool(2) };
-        let shr = |a: &Term| Term::op(SHR1, *a, Term::ZERO);
-        let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
-        pool_conjectures(all, n, nv, 0)
-            .into_iter()
-            .filter(|(a, b)| a.has_shift() || b.has_shift())
-            .step_by(num(env, "RULEMINER_STRIDE", 1))
-            .take(num(env, "RULEMINER_LAWS", 250))
-            .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
-            .collect()
-    } else if family == "lt" {
-        let pool = lt_pool(2);
-        let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::op(LT, *a, *b)));
-        pool_conjectures(all, n, nv, num(env, "RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-    } else if family == "mul" {
-        mul_laws(max)
-    } else {
-        panic!("family {family}: three-variable laws come from stream law files (RULEMINER_LAWFILE, CHECK_LAWFILE)")
+pub fn family_laws(setup: &Setup, family: Family, env: &dyn Fn(&str) -> Option<String>, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
+    match family {
+        Family::Shl => {
+            let conj = shl_conjectures(2);
+            let stride = (conj.len() / num(env, "RULEMINER_LAWS", 250)).max(1);
+            conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+        }
+        Family::Shr => {
+            // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
+            // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
+            let pool = if num(env, "RULEMINER_DEEP", 0) == 1 { terms(setup, 2, true).to_vec() } else { lt_pool(2) };
+            let shr = |a: &Term| Term::op(SHR1, *a, Term::ZERO);
+            let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
+            pool_conjectures(all, n, nv, 0)
+                .into_iter()
+                .filter(|(a, b)| a.has_shift() || b.has_shift())
+                .step_by(num(env, "RULEMINER_STRIDE", 1))
+                .take(num(env, "RULEMINER_LAWS", 250))
+                .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
+                .collect()
+        }
+        Family::Lt => {
+            let pool = lt_pool(2);
+            let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::op(LT, *a, *b)));
+            pool_conjectures(all, n, nv, num(env, "RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+        }
+        Family::Mul => mul_laws(max),
+        Family::Streams => panic!("family streams: three-variable laws come from stream law files (RULEMINER_LAWFILE, CHECK_LAWFILE)"),
     }
 }
 
@@ -180,7 +182,7 @@ pub fn family_laws(setup: &Setup, family: &str, env: &dyn Fn(&str) -> Option<Str
 #[test]
 pub fn law_windows_survive_a_law_file() {
     let job = &Job::new(Setup::process());
-    let window = |take: usize| family_laws(job.setup(), "lt", &move |k: &str| (k == "RULEMINER_LAWS").then(|| take.to_string()), 4, 2, 7);
+    let window = |take: usize| family_laws(job.setup(), Family::Lt, &move |k: &str| (k == "RULEMINER_LAWS").then(|| take.to_string()), 4, 2, 7);
     let laws = window(60);
     assert_eq!(laws.len(), window(usize::MAX).len().min(60));
     let path = std::env::temp_dir().join(format!("law_window_lt_{}.txt", std::process::id()));
@@ -602,10 +604,10 @@ pub fn soundness_sweep() {
     let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
         let _banner = MachineBanner::start(job, "SWEEP");
-        let family = job.setup().var("SWEEP_FAMILY").unwrap_or("mul").to_string();
+        let family = Family::parse(job.setup().var("SWEEP_FAMILY").unwrap_or("mul"));
         let widths: Vec<usize> = job.setup().var("SWEEP_WIDTHS").unwrap_or("3,4").split(',').map(|w| w.parse().unwrap()).collect();
-        let kv = family_vars(&family);
-        let laws = family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
+        let kv = family.vars();
+        let laws = family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
         let cap = carry_cap(job);
         let capped = |t: &Term, w: usize| Machine::parse(t).is_some_and(|m| m.carries() > cap) && w > 0;
         let (mut checked, mut unproved, mut refused, mut false_laws) = (0usize, 0usize, 0usize, 0usize);
@@ -652,10 +654,10 @@ pub fn scaling_sweep() {
     let per_law = job.setup().var("SWEEP_SCOPE").is_some_and(|v| v == "law");
     let body = |job: &mut Job| {
         let _banner = MachineBanner::start(job, "SCALE");
-        let family = job.setup().var("SWEEP_FAMILY").unwrap_or("mul").to_string();
+        let family = Family::parse(job.setup().var("SWEEP_FAMILY").unwrap_or("mul"));
         let widths: Vec<usize> = job.setup().var("SWEEP_WIDTHS").unwrap_or("4,8,16,32").split(',').map(|w| w.parse().unwrap()).collect();
-        let kv = family_vars(&family);
-        let all = family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
+        let kv = family.vars();
+        let all = family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
         let ok: Vec<&(String, Term, Term)> = all
             .iter()
             .filter(|(_, a, b)| a.is_law(b, kv) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))))
@@ -1003,9 +1005,51 @@ pub fn twin_keys_rename_normalize_below_roots_and_keep_them() {
     assert_eq!(twin_key(&p("and(or(x, sub(y, 0)), z)"), &p("z")), twin_key(&p("and(or(x, y), z)"), &p("z")), "padding below the root");
 }
 
-/// Variables of a law family: three for the streams (their laws come through law files), two for `family_laws`' own.
-pub fn family_vars(family: &str) -> usize {
-    if family == "streams" { 3 } else { 2 }
+/// A law family, by its `RULEMINER_FAMILY` / `CHECK_FAMILY` / `SWEEP_FAMILY` name: the two-variable ones `family_laws`
+/// builds, and the streams, whose three-variable laws come only through law files.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Family {
+    Mul,
+    Shl,
+    Shr,
+    Lt,
+    Streams,
+}
+
+impl Family {
+    const NAMES: [(&'static str, Family); 5] = [("mul", Family::Mul), ("shl", Family::Shl), ("shr", Family::Shr), ("lt", Family::Lt), ("streams", Family::Streams)];
+
+    /// The family named `name`; any other name panics, listing the five.
+    pub fn parse(name: &str) -> Family {
+        let names: Vec<&str> = Self::NAMES.iter().map(|(n, _)| *n).collect();
+        Self::NAMES.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).unwrap_or_else(|| panic!("unknown family {name}: one of {}", names.join(", ")))
+    }
+
+    /// Its name, as `parse` reads it.
+    pub fn name(self) -> &'static str {
+        Self::NAMES.iter().find(|(_, f)| *f == self).unwrap().0
+    }
+
+    /// Its laws' variables.
+    pub fn vars(self) -> usize {
+        match self {
+            Family::Streams => 3,
+            Family::Mul | Family::Shl | Family::Shr | Family::Lt => 2,
+        }
+    }
+}
+impl std::fmt::Display for Family {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A family name outside the five is refused by name, before any law is built or filtered (the miner once mined nothing
+/// for `add3` with a law file, its laws dropped as two-variable ones).
+#[test]
+#[should_panic(expected = "unknown family add3")]
+fn an_unknown_family_is_refused() {
+    Family::parse("add3");
 }
 
 /// `x`, `y`, `z`, `0` and `-1`.
@@ -1088,18 +1132,24 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
     })
 }
 
-/// The setup of the rule-set check tests: the `CHECK_RULES` (none when unset) as the job's rules to install (with their
-/// preferences) and in file order, `CHECK_FAMILY`'s variable count (default `streams`), and the laws of the family (sized by
+/// The setup of the rule-set check tests: the `CHECK_RULES` (none when unset, printed as `CHECK_RULES none`) as the job's
+/// rules to install, in file order, `CHECK_FAMILY`'s variable count (default `streams`), and the laws of the family (sized by
 /// the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as the driver passes them) that are plausible at
 /// widths 1-6.
 fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
-    let family = job.setup().var("CHECK_FAMILY").unwrap_or("streams");
-    let text = job.setup().var("CHECK_RULES").map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
+    let family = Family::parse(job.setup().var("CHECK_FAMILY").unwrap_or("streams"));
+    let text = match job.setup().var("CHECK_RULES") {
+        Some(f) => std::fs::read_to_string(f).unwrap(),
+        None => {
+            println!("CHECK_RULES none");
+            String::new()
+        }
+    };
     let rules = parse_rules(&text);
-    let kv = family_vars(&family);
+    let kv = family.vars();
     let laws = match job.setup().var("CHECK_LAWFILE") {
         Some(f) => read_named_laws(&f),
-        None => family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, 7),
+        None => family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, 7),
     };
     let laws = laws.into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
     let installed = job.rules().with_mined(job.setup(), rules.clone()).with_prefs(parse_prefs(&text));

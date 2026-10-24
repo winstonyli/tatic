@@ -253,7 +253,7 @@ fn stream_phases_are_disjoint_residue_classes() {
     let distinct: hashbrown::HashSet<_> = all.iter().collect();
     assert_eq!(distinct.len(), seq.len(), "a law in two phases");
     assert!(residue(&seq, 1, 0, 10) == phase(1)[..10] && residue(&seq, 1, 10, 10) == phase(1)[10..20]);
-    assert_eq!(family_vars("streams"), 3);
+    assert_eq!(Family::parse("streams").vars(), 3);
 }
 
 /// Extras exist to be mined into rules: a mine with no rule rounds, a loop that only

@@ -40,7 +40,7 @@ pub struct MinerConfig {
     pub show: bool,
     pub fast: bool,
     /// `RULEMINER_FAMILY`: the law family (default `mul`; `streams` with `lawfile`, which it gives the variable count).
-    pub family: String,
+    pub family: Family,
     /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) and their preferences in force throughout (section 74).
     pub base: Option<String>,
     /// `RULEMINER_LAWFILE=<file>`: mine from these `lhs = rhs` lines (a proposer's band) instead of the family's window.
@@ -68,7 +68,7 @@ impl MinerConfig {
             any_op: flag("RULEMINER_ANY"),
             show: flag("RULEMINER_SHOW"),
             fast: flag("RULEMINER_FAST"),
-            family: s.var("RULEMINER_FAMILY").unwrap_or("mul").into(),
+            family: Family::parse(s.var("RULEMINER_FAMILY").unwrap_or("mul")),
             base: path("RULEMINER_BASE"),
             lawfile: path("RULEMINER_LAWFILE"),
             guard: s.or("RULEMINER_GUARD", 120),
@@ -149,15 +149,15 @@ struct Laws {
 /// steps.
 fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
     let max = cfg.max;
-    let family = cfg.family.as_str();
+    let family = cfg.family;
     // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
-    let (n, nv, kv) = (4usize, 2usize, if family_vars(&family) == 3 { 3usize } else { 2 });
+    let (n, nv, kv) = (4usize, 2usize, family.vars());
     // stragglers under the built-in rules
     let mut stragglers: Vec<Scored> = vec![];
     // a lawfile is a proposer's band (docs/tier-cycle.md)
     let laws = match &cfg.lawfile {
         Some(f) => read_named_laws(f),
-        None => family_laws(job.setup(), &family, &|k: &str| job.setup().var(k).map(str::to_owned), n, nv, max),
+        None => family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), n, nv, max),
     };
     clock.phase("law building");
     let mut unproved = 0usize;

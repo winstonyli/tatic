@@ -726,7 +726,8 @@ fn a_representative_outside_the_context_is_not_used() {
 /// so the laws themselves do not meet) with a verdict at width 4 compiles from `step`'s plan to a kernel-checked proof.
 /// Past the table's domain some have none (the rewriter then falls back to the rules); prints the replacements, their
 /// verdicts by prover, the proofs checked with their time, and how many with no verdict the key's refuter refutes (false
-/// matches of `lookup` beyond its domain, PARKED.md).
+/// matches of `lookup` beyond its domain, PARKED.md). Fails if any is refuted, or if one with no verdict has no shift on
+/// either side (the shifts are what leave the table's domain).
 #[test]
 #[ignore]
 fn held_out_replacements_prove() {
@@ -762,7 +763,7 @@ fn held_out_replacements_prove() {
         let (mut by_prover, mut unusable, mut refuter) = (std::collections::BTreeMap::<&str, usize>::new(), vec![], Refuter::new());
         for (u, r) in &pairs {
             let Some((r1, plan)) = c.step(job, 4, 3, u) else {
-                unusable.push(refuter.refute(u, r).is_some());
+                unusable.push((u, r, refuter.refute(u, r).is_some()));
                 continue;
             };
             assert!(r1 == *r, "step's representative is rep's");
@@ -773,13 +774,17 @@ fn held_out_replacements_prove() {
         }
         let checked = pairs.len() - unusable.len();
         assert!(checked > 0, "no replacement with a verdict");
-        let refuted = unusable.iter().filter(|f| **f).count();
+        let refuted = unusable.iter().filter(|(_, _, f)| *f).count();
         println!(
             "REPLACEMENTS {} made, verdicts by prover {by_prover:?}, {checked} proofs checked in {} ms; {} with no verdict, {refuted} of them refuted (false matches)",
             pairs.len(),
             t0.elapsed().as_millis(),
             unusable.len()
         );
+        assert_eq!(refuted, 0, "a replacement the table makes is false");
+        for (u, r, _) in &unusable {
+            assert!(u.has_shift() || r.has_shift(), "{} -> {} has no verdict and no shift", u.show(), r.show());
+        }
     });
 }
 
