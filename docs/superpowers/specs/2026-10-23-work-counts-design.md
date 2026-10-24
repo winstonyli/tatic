@@ -34,7 +34,7 @@ whatever the load. It shows an *amount* of cost only after calibration.
 1. **What is counted.** *Decided 2026-10-23: (a).*
    - (a, chosen) A few counters at function granularity in the phases that take a sweep's CPU. Which phases,
      and how big each one's share is, come from a profile of one streams arm. The profile and the counters it
-     suggests are in § Where an arm's CPU goes and § Proposed counters.
+     gave are in § Where an arm's CPU goes and § The counters.
    - (b) One count, the number of `mk` calls (every node built, kernel and `Term` alike). Simplest, but it misses
      the walks that build nothing.
    - (c) Bring back the per-site probes (`git revert 306a968`). The most detail, but they were removed for their
@@ -51,8 +51,8 @@ whatever the load. It shows an *amount* of cost only after calibration.
    - (a, chosen) Counts take the place of job CPU in the cost check, with an A/A spread of their own (expected
      0 where the code is deterministic). Job CPU stays in the output and is compared only on a quiet machine.
    - (b) Counts only beside CPU, for information.
-5. **Counts of duplicated work** (see § Determinism risk). *Open.*
-   - (a, recommended) Count every visit, so a counter reports work done. The A/A of the gate then shows whether the
+5. **Counts of duplicated work** (see § Determinism risk). *Decided 2026-10-23: (a).*
+   - (a, chosen) Count every visit, so a counter reports work done. The A/A of the gate then shows whether the
      race moves counts. If it does, the spread is measured like CPU's.
    - (b) Count `verdict`'s visits into a local and add them only when `insert` reports the key as new. The counter
      then reports work needed, not done. That is one special case at one call site.
@@ -92,7 +92,7 @@ In the sweep, `interp` is reached from two exhaustive checks at widths 1-5: `cla
 `Classes::step`) and `prove_eq`'s per-position step. Its other callers are tests. No other function has more than
 4% self.
 
-## Proposed counters (decision 1(a); not yet approved)
+## The counters (decision 1(a); approved 2026-10-23)
 
 One counter per site, incremented on entry:
 - `interp`: each node `Term::interp` visits (it recurses, so this counts nodes, not calls).

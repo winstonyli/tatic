@@ -1424,15 +1424,15 @@ fn rule_order_does_not_change_rewriting() {
     assert!(ia.last().unwrap().starts_with("sub(x, y)"), "the general rule goes after the specific ones: {ia:?}");
 }
 
-/// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins, then the promoted rules;
-/// the mined ones (`Rules`) come after them. `Setup::fixed_rules` keeps them per task.
+/// The rules that do not change during a run, in the order `rule_step` tries them: the built-ins; the mined ones
+/// (`Rules`) come after them. `Setup::fixed_rules` keeps them per task.
 pub fn build_fixed_rules() -> Vec<Rule> {
     let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
     let v = Term::v;
     let shl = |a: Term| Term::op(SHL1, a, Term::ZERO);
     let shr = |a: Term| Term::op(SHR1, a, Term::ZERO);
     let lt = |a: Term, b: Term| Term::op(LT, a, b);
-    let mut all = vec![
+    vec![
         Rule { name: "shldist", lhs: shl(op(0, v(0), v(1))), rhs: op(0, shl(v(0)), shl(v(1))) },
         Rule { name: "shldistsub", lhs: shl(op(4, v(0), v(1))), rhs: op(4, shl(v(0)), shl(v(1))) },
         Rule { name: "shldistand", lhs: shl(op(1, v(0), v(1))), rhs: op(1, shl(v(0)), shl(v(1))) },
@@ -1456,51 +1456,8 @@ pub fn build_fixed_rules() -> Vec<Rule> {
         Rule { name: "cancelr", lhs: op(4, op(0, v(0), v(1)), v(1)), rhs: v(0) },
         Rule { name: "cancell", lhs: op(4, op(0, v(0), v(1)), v(0)), rhs: v(1) },
         Rule { name: "subdist", lhs: op(4, op(0, v(0), v(1)), op(0, v(2), v(3))), rhs: op(0, op(4, v(0), v(2)), op(4, v(1), v(3))) },
-    ];
-    all.extend(promoted_rules().iter().map(|(l, r)| Rule { name: "promoted", lhs: *l, rhs: *r }));
-    all
+    ]
 }
-
-/// Rules chosen by `rule_miner` (search note section 60), promoted into the library as `lhs -> rhs` in `Term::show` syntax.
-/// `ABLATE=promoted` removes them all; `promoted_rules_are_ordered_and_provable` checks order and proof.
-pub const PROMOTED: &[(&str, &str)] = &[
-    ("sub(shl1(x, 0), x)", "x"),
-    ("sub(add(shl1(x, 0), y), x)", "add(x, y)"),
-    ("sub(shl1(shl1(x, 0), 0), x)", "add(add(x, x), x)"),
-    ("sub(x, 0)", "x"),
-    ("sub(x, shl1(x, 0))", "sub(0, x)"),
-    ("xor(shl1(-1, 0), shl1(shl1(-1, 0), 0))", "shl1(sub(0, -1), 0)"),
-    ("sub(shl1(shl1(-1, 0), 0), -1)", "add(-1, add(-1, -1))"),
-    ("lt(sub(x, y), x)", "lt(add(-1, y), x)"),
-    ("lt(0, xor(x, -1))", "lt(x, -1)"),
-    ("lt(xor(x, -1), -1)", "lt(0, x)"),
-    ("lt(add(x, y), x)", "lt(sub(-1, x), y)"),
-    ("lt(add(x, y), y)", "lt(sub(-1, x), y)"),
-    ("lt(xor(x, -1), sub(y, x))", "lt(y, x)"),
-    ("lt(xor(x, -1), xor(y, -1))", "lt(y, x)"),
-    ("lt(0, sub(x, -1))", "lt(x, -1)"),
-    ("lt(xor(x, -1), add(-1, x))", "lt(sub(0, x), x)"),
-    ("lt(shl1(x, 0), -1)", "lt(0, -1)"),
-    ("lt(xor(x, -1), shl1(-1, 0))", "lt(sub(0, -1), x)"),
-    ("lt(x, add(-1, x))", "lt(x, sub(0, -1))"),
-    ("lt(x, add(x, y))", "lt(x, sub(0, y))"),
-    // from the shr family, second round (section 60)
-    ("sub(x, sub(0, y))", "add(x, y)"),
-    ("sub(x, add(x, y))", "sub(0, y)"),
-    ("sub(sub(x, y), x)", "sub(0, y)"),
-    ("add(sub(0, x), y)", "sub(y, x)"),
-    ("sub(0, xor(x, -1))", "sub(x, -1)"),
-    ("add(sub(x, y), x)", "sub(shl1(x, 0), y)"),
-    ("sub(xor(x, -1), x)", "sub(-1, shl1(x, 0))"),
-    ("sub(sub(x, -1), -1)", "sub(x, shl1(-1, 0))"),
-    ("sub(x, add(y, x))", "sub(0, y)"),
-    ("add(-1, xor(x, -1))", "sub(shl1(-1, 0), x)"),
-    ("sub(xor(x, -1), -1)", "sub(0, x)"),
-    ("sub(or(x, y), x)", "and(sub(-1, x), y)"),
-    ("sub(or(x, y), y)", "and(sub(-1, y), x)"),
-    ("sub(sub(0, x), x)", "sub(0, shl1(x, 0))"),
-    ("sub(-1, sub(x, -1))", "sub(shl1(-1, 0), x)"),
-];
 
 /// The rules of a rule file: one `lhs -> rhs` per line, repeats once, other lines ignored.
 pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
@@ -1537,11 +1494,6 @@ pub fn parse_term(s: &str) -> Term {
     let t = go(s.as_bytes(), &mut i);
     assert_eq!(i, s.len(), "trailing input in {s}");
     t
-}
-
-pub fn promoted_rules() -> &'static Vec<(Term, Term)> {
-    static CACHE: std::sync::OnceLock<Vec<(Term, Term)>> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| PROMOTED.iter().map(|(l, r)| (parse_term(l), parse_term(r))).collect())
 }
 
 /// First-order match of the pattern `p` against `t`, binding pattern variables in `sub` (a repeated variable must see equal terms).
@@ -2611,7 +2563,7 @@ fn join_usable(from: &Term, to: &Term) -> bool {
     !matches!(*from.node(), Node::V(_)) && (0..RULE_VARS).all(|v| !to.has_var(v) || from.has_var(v)) && is_lt(from) == is_lt(to)
 }
 
-/// The join's steps: every rule not ablated (built-in, promoted and mined), add's associativity and commutativity and those of
+/// The join's steps: every rule not ablated (built-in and mined), add's associativity and commutativity and those of
 /// and, or and xor, each rule and associativity both ways where `join_usable`.
 fn join_eqs(setup: &Setup, rules: &[TableRule]) -> Vec<JoinEq> {
     let (x, y, z) = (Term::v(0), Term::v(1), Term::v(2));
@@ -3714,6 +3666,13 @@ fn filtered_memo_entries_hold_under_an_extra_rule() {
     }
 }
 
+/// The rules the join examples below need: two that were promoted until 2026-10-23, when the promoted rules were deleted
+/// (docs/tier-cycle.md, "Ablations of the class table"). `sub(x, y) = sub(0, sub(y, x))` reaches `xor(sub(y, x), -1)` through
+/// the second; `add(add(z, y), sub(x, -1)) = add(sub(add(x, y), -1), z)` meets through the first.
+const JOIN_RULES: &str = "add(sub(0, x), y) -> sub(y, x)
+sub(xor(x, -1), -1) -> sub(0, x)
+";
+
 /// The join's trace under `rules`: the terms `join_eq` recorded (`Fired::Join`) and whether it met.
 fn join_trace(job: &mut Job, a: &str, b: &str, rules: &str) -> (bool, Trace) {
     job.rw.trace = Some(vec![]);
@@ -3727,7 +3686,7 @@ fn join_trace(job: &mut Job, a: &str, b: &str, rules: &str) -> (bool, Trace) {
 fn failed_join_traces_every_term_it_examines() {
     let job = &mut Job::new(Setup::process());
     let (a, b) = ("sub(x, y)", "sub(0, sub(y, x))");
-    let (met, joined) = join_trace(job, a, b, "");
+    let (met, joined) = join_trace(job, a, b, JOIN_RULES);
     assert!(!met);
     // ~(y - x) = x - y - 1, at `xor(sub(y, x), -1)`, a step from `sub(0, sub(y, x))`
     let rule = parse_rules("xor(sub(x, y), -1) -> add(sub(y, x), -1)\n")[0];
@@ -3747,7 +3706,7 @@ fn failed_join_traces_every_term_it_examines() {
 fn met_join_traces_its_path_only() {
     let job = &mut Job::new(Setup::process());
     let (a, b) = ("add(add(z, y), sub(x, -1))", "add(sub(add(x, y), -1), z)");
-    let (met, joined) = join_trace(job, a, b, "");
+    let (met, joined) = join_trace(job, a, b, JOIN_RULES);
     assert!(met);
     for t in [a, b] {
         assert!(joined.items().iter().any(|(u, _)| *u == parse_term(t)), "{t} is on the path");
@@ -3770,7 +3729,7 @@ fn trace_index_agrees_with_touched_by() {
     let (n, kv) = (4, 3);
     let mut traces: Vec<Trace> = [("sub(x, y)", "sub(0, sub(y, x))"), ("add(add(z, y), sub(x, -1))", "add(sub(add(x, y), -1), z)"), ("xor(xor(x, y), z)", "xor(z, xor(y, x))")]
         .iter()
-        .map(|(a, b)| join_trace(job, a, b, "").1)
+        .map(|(a, b)| join_trace(job, a, b, JOIN_RULES).1)
         .collect();
     for t in ["sub(sub(x, y), and(x, y))", "or(and(x, y), xor(x, -1))", "add(x, sub(0, x))", "xor(or(x, y), and(x, y))"] {
         job.rw.trace = Some(vec![]);
@@ -3993,7 +3952,7 @@ fn join_store_is_fed_only_where_it_is_read() {
     tatic::kernel::scoped(|| {
         let k = 3;
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
-        job.with_mined(vec![rule], |job| {
+        job.with_mined([vec![rule], parse_rules(JOIN_RULES)].concat(), |job| {
             let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
             let join = |job: &mut Job, memo: bool| {
                 job.rw.memo = memo.then(|| RewriteMemo::new(k));

@@ -519,34 +519,23 @@ pub fn rule_admissible(job: &mut Job, l: &Term, r: &Term) -> bool {
     rule_order_ok(l, r) && [3usize, 4].iter().all(|&n| prove_rule(job, n, l.max_var().max(r.max_var()) + 1, l, r).is_some())
 }
 
-#[test]
-pub fn promoted_rules_are_ordered_and_provable() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        for (l, r) in promoted_rules() {
-            assert_eq!(parse_term(&l.show()).show(), l.show());
-            assert!(rule_admissible(job, l, r), "{} -> {} is not decreasing in the rule order or not provable at widths 3 and 4", l.show(), r.show());
-        }
-    })
-}
-
-/// The admission test refuses wrong rules: every promoted rule with its right side replaced by another promoted rule's
+/// The admission test refuses wrong rules: every built-in rule with its right side replaced by another built-in rule's
 /// right side over the same variables (so it stays well-formed and, where the order allows, decreasing) is refused unless
 /// it happens to be a true law.
 #[test]
 pub fn rule_admission_refuses_wrong_rules() {
     let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
-        let rs = promoted_rules();
+        let rs: Vec<(Term, Term)> = build_fixed_rules().iter().map(|r| (r.lhs, r.rhs)).collect();
         let (mut refused, mut tried) = (0, 0);
-        for (l, _) in rs {
-            for (_, r) in rs {
+        for (l, _) in &rs {
+            for (_, r) in &rs {
                 let vars = |t: &Term| (0..8).filter(|v| t.has_var(*v)).collect::<Vec<_>>();
                 if vars(r).iter().any(|v| !vars(l).contains(v)) || l.size() <= r.size() {
                     continue;
                 }
                 tried += 1;
-                let true_law = l.is_law(r, 2);
+                let true_law = l.is_law(r, l.max_var().max(r.max_var()) + 1);
                 if !true_law {
                     assert!(!rule_admissible(job, l, r), "wrong rule admitted: {} -> {}", l.show(), r.show());
                     refused += 1;
@@ -644,8 +633,8 @@ pub fn soundness_sweep() {
 }
 
 /// Scaling probe (search note section 65): a sample of each family's laws (`SWEEP_SAMPLE`, default 30, evenly spaced among the
-/// true laws within the carry cap) proved by `rewrite_law` and kernel-checked at each of `SWEEP_WIDTHS` (default `4,8,16,32`),
-/// then every promoted rule via `prove_rule`. Per width: proofs, unproved, build and check seconds (sum and max), flushed as it goes.
+/// true laws within the carry cap) proved by `rewrite_law` and kernel-checked at each of `SWEEP_WIDTHS` (default `4,8,16,32`).
+/// Per width: proofs, unproved, build and check seconds (sum and max), flushed as it goes.
 #[test]
 #[ignore]
 pub fn scaling_sweep() {
@@ -699,16 +688,6 @@ pub fn scaling_sweep() {
                 println!("SCALE {family} n={w}: proof dag nodes: median {m}, max {}, total {}", dags[dags.len() - 1], dags.iter().sum::<usize>());
             }
         }
-        let t = Instant::now();
-        let sweep_rules = job.setup().var("SWEEP_RULES").is_some();
-        for &w in widths.iter().filter(|_| !sweep_rules) {
-            let t = Instant::now();
-            for (l, r) in promoted_rules() {
-                assert!(prove_rule(job, w, l.max_var().max(r.max_var()) + 1, l, r).is_some(), "promoted rule not provable at width {w}");
-            }
-            println!("SCALE promoted rules n={w}: {:.1}s for {}", t.elapsed().as_secs_f64(), promoted_rules().len());
-        }
-        let _ = t;
     };
     // SWEEP_RULES: mined rules to sweep under, besides the built-in ones
     let rules = match job.setup().var("SWEEP_RULES") {

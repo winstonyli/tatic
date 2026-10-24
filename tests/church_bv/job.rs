@@ -81,7 +81,7 @@ impl Setup {
     }
 
     /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, chain, tree, collapse, join,
-    /// promoted, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
+    /// a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
     /// eq_classes, shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
     /// environment each time was 11% of a mine (docs/tier-cycle.md).
     pub fn ablated(&self, name: &str) -> bool {
@@ -539,10 +539,9 @@ fn hidden_state_is_classified() {
         ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
         ("encoding.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
     ];
-    const PROCESS_WIDE: [(&str, &str, &str); 7] = [
+    const PROCESS_WIDE: [(&str, &str, &str); 6] = [
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("classes.rs", "CLASSES", "the class table: built once from the baked-in key, pure"),
-        ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
         ("lemma_cache.rs", "ID", "the running exe's identity"),
         ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
         ("job.rs", "PROCESS_SETUP", "the one-test process's Setup; tasks build their own"),
