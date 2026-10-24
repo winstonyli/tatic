@@ -141,9 +141,45 @@ fn process_env() -> impl Iterator<Item = (String, String)> {
 }
 
 /// `<exe>.env`'s text (lines `KEY=VALUE`), so a profiler launcher that cannot pass env (the elevated Samply task) runs the
-/// same configuration.
+/// same configuration. The exe's path is canonical first: started by its 8.3 short path, `current_exe` names the short
+/// file, and `<short>.env` does not exist.
 fn exe_env() -> Option<String> {
-    std::env::current_exe().map(|mut p| { p.as_mut_os_string().push(".env"); p }).and_then(std::fs::read_to_string).ok()
+    std::env::current_exe().and_then(std::fs::canonicalize).map(|mut p| { p.as_mut_os_string().push(".env"); p }).and_then(std::fs::read_to_string).ok()
+}
+
+/// `<exe>.env` is read when the exe is started by its 8.3 short path, as the ablations driver starts it. `current_exe`
+/// then names the short file (`B_PROM~1.EXE`), whose `.env` does not exist: every B arm of the driver's ablations ran
+/// unablated until 2026-10-24 (docs/tier-cycle.md, "Ablations of the class table").
+#[cfg(windows)]
+#[test]
+fn exe_env_is_found_from_a_short_path() {
+    use std::os::windows::process::CommandExt;
+    let dir = std::env::temp_dir().join(format!("exe_env_short_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("long_exe_name.exe");
+    std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+    std::fs::write(dir.join("long_exe_name.exe.env"), "EXE_ENV_PROBE=found\n").unwrap();
+    let short = std::process::Command::new("cmd").raw_arg(format!("/c for %I in (\"{}\") do @echo %~sI", exe.display())).output().unwrap();
+    let short = String::from_utf8_lossy(&short.stdout).trim().to_string();
+    assert!(short.ends_with("LONG_E~1.EXE"), "no 8.3 name for {}: {short:?}", exe.display());
+    let out = std::process::Command::new(&short)
+        .args(["job::exe_env_probe", "--exact", "--ignored", "--nocapture"])
+        .env("EXE_ENV_PROBE_RUN", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(text.lines().any(|l| l == "EXE_ENV_PROBE found"), "{text}");
+}
+
+/// `exe_env_is_found_from_a_short_path`'s child: prints what its `.env` set.
+#[test]
+#[ignore]
+fn exe_env_probe() {
+    if std::env::var_os("EXE_ENV_PROBE_RUN").is_some() {
+        println!("EXE_ENV_PROBE {}", Setup::process().var("EXE_ENV_PROBE").unwrap_or("<unset>"));
+    }
 }
 
 /// The task's environment from its three sources, later ones over earlier: the process's, `<exe>.env` for names the
