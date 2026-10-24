@@ -1,0 +1,8 @@
+A/A salts [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; ablation salts [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+interp: A/A spread 14.93 ppm; cpu/count over 40 arm-salts max/min-1 24.2%
+walk: A/A spread 0.00 ppm; cpu/count over 40 arm-salts max/min-1 37.6%
+match: A/A spread 11.79 ppm; cpu/count over 40 arm-salts max/min-1 46.4%
+op: A/A spread 0.08 ppm; cpu/count over 40 arm-salts max/min-1 44.7%
+job cpu: A/A spread 10.9%
+ablation B against A, summed: interp +7.80%, walk +5.71%, match +8.27%, op +9.10%, sum +7.81%, job cpu +8.61%
+M A/B per salt: 1: 176/189 held 809/883, 2: 181/188 held 890/974, 3: 167/186 held 884/954, 4: 166/181 held 865/955, 5: 171/182 held 880/938, 6: 179/192 held 908/971, 7: 168/175 held 874/993, 8: 166/177 held 898/964, 9: 169/178 held 847/899, 10: 175/188 held 866/965

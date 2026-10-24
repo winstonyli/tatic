@@ -5628,6 +5628,29 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   A rise on any salt decides pays (plan D1). The fixed build gives the same numbers on both salts (`promoted-untimed`,
   untimed; `ablations-4`, the driver's timed re-run, was stopped after load refusals).
 - **The fix:** `exe_env` canonicalizes the exe's path first (`job.rs`; test `exe_env_is_found_from_a_short_path`).
+- **`assoc` pays** (the driver's next switch, run as Step 3 of "Work counts as the gate's cost" below): with
+  `ABLATE=assoc`, M rises on all 10 salts (176 to 189 on salt 1; summed 1718 to 1836), held-out M on all 10, rules
+  differ in 30 of 30 loops (`2026-10-24-work-assoc-1-2` ... `-9-10`, timed).
+
+*Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
+`2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,
+`-work-assoc-{1-2,...,9-10}`; scripts and outputs in `docs/runs/2026-10-24/`).* Counts at four sites (`interp` and
+`match_pat` nodes, `join_walk` calls, `Term::op` builds; `tests/church_bv/work.rs`), summed per arm by `streams_ab.sh`.
+- **Determinism: within a few ppm, not exact.** A/A over salts 1-10, max spread per salt: interp 14.9 ppm, walk 0,
+  match 11.8 ppm, op 0.08 ppm; job CPU 10.9% on the same quiet runs (twice the 5.4% of the earlier baseline). Only the
+  mining tasks differ: the miner's scoring queue and its proofs run alongside the rounds, so how much speculative work is
+  done depends on timing, though the result does not. Tolerance per counter: max(spread, 1%) = 1%.
+- **Overhead: none measurable** once `interp` and `match_pat` sum their nodes in a local and add them once per call
+  (`count_n`, 4d1a74f): job CPU against the uncounted f0390df build -1.5% and -6.0% on salts 1-2. A thread-local add per
+  node had cost +6.8% and +8.2%.
+- **Co-movement holds.** `ABLATE=assoc` against A, summed over salts 1-10: interp +7.8%, walk +5.7%, match +8.3%,
+  op +9.1%, their sum +7.8%, job CPU +8.6%.
+- **Proxy quality fails.** Job CPU per count varies over the 40 arm-salts by 24% (interp), 38% (walk), 46% (match) and
+  45% (op), against the plan's 11%. Fitted by least squares as a weighted sum (`work_fit.py`), job CPU / fit still
+  varies 18.4%, and the weights are unstable (op -24 ns per count over the 40 arm-salts, match -3.8 over the A/A's 20):
+  the counters move together. Some of it is CPU's own noise (10.9% A/A); the rest is cost the counters do not see
+  (hash-consing's cache misses, kernel proofs). The counts show that the work did not change, and which way it moved;
+  they do not give its amount.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
