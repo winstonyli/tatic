@@ -148,6 +148,7 @@ fn worker() {
                 if let Some(n) = crate::classes::Classes::memo_len() {
                     println!("CLASS_MEMO {n}");
                 }
+                println!("{}", crate::work::line(crate::work::take()));
                 std::io::stdout().flush().unwrap();
                 stdio::restore(saved);
                 ok
@@ -510,7 +511,7 @@ fn worker_runs_tasks() {
     assert_eq!(records[1], Some(pairs(&[("A", "<unset>"), ("B", "2")])), "no record leaks from task 1");
     assert_eq!(records[9], Some(pairs(&[("B", "3")])), "task 10, on task 9's log, has only its own records");
     let text = |i: usize| std::fs::read_to_string(log(i)).unwrap();
-    let echoes = |i: usize| text(i).lines().filter(|l| !l.starts_with("ECHO nonce=")).map(String::from).collect::<Vec<_>>();
+    let echoes = |i: usize| text(i).lines().filter(|l| !l.starts_with("ECHO nonce=") && !l.starts_with("WORK ")).map(String::from).collect::<Vec<_>>();
     let nonce = |i: usize| text(i).lines().find_map(|l| l.strip_prefix("ECHO nonce=").map(String::from)).unwrap();
     assert_eq!(echoes(1), ["ECHO A=1", "ECHO B=<unset>", "ECHO C=x=y"]);
     assert_eq!(echoes(2), ["ECHO A=<unset>", "ECHO B=2"], "no variable leaks from task 1");
@@ -521,7 +522,9 @@ fn worker_runs_tasks() {
     assert_eq!(nonce(7), nonce(8), "tasks with the same process-start variables share a worker");
     assert_ne!(nonce(8), nonce(9), "a different RUST_BACKTRACE gets a fresh worker");
     for i in [1, 2, 4, 7, 8, 9] {
-        assert!(text(i).lines().all(|l| l.starts_with("ECHO ")), "{i}.log holds only its task's lines: {}", text(i));
+        let log = text(i);
+        let lines: Vec<&str> = log.lines().filter(|l| !l.starts_with("ECHO ")).collect();
+        assert_eq!(lines, ["WORK interp=0 walk=0 match=0 op=0"], "{i}.log holds its task's lines and one WORK line: {log}");
     }
     drop(w);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -814,4 +817,6 @@ fn sweep() {
     }
     lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));
     machine_state("end", &env, &workers[0], &out);
+    // this thread's own work (the stream sequence, the extras lists) and the lanes' (their tasks' lines are in their logs)
+    println!("{}", crate::work::line(crate::work::take()));
 }
