@@ -5635,7 +5635,12 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   held-out M 8721 in both arms, every counter within 0.01%. The timed pair on salts 1-2 (`-tree-timed-1-2`, quiet)
   agrees: job CPU -0.3% and -0.1%, rules the same in 6 of 6 loops. Deleted (2026-10-24): `tree_step`, its candidate
   index (`TREE_CANDS`, `CandIndex`, `tree_candidates`) and its test; a `sub` node the rules leave is now final. The class
-  table's `tree` laws (`tree_encoding`, `add_tree_law`, `LawKind::Tree`) stay.
+  table's `tree` laws (`tree_encoding`, `add_tree_law`, `LawKind::Tree`) stay. The check (`-check-tree`, d5d8c0a against
+  a4eda36 with `ABLATE=tree`, salts 1-2): M, held-out M and rules equal, counts within 11 ppm.
+- **`chain` is free** too (`2026-10-24-ablations-8`, on d5d8c0a): over salts 1-10 M 1718 and held-out M 8721 in both
+  arms, every counter within 0.01%. The timed pair (`-chain-timed-1-2-2`) has rules the same in 6 of 6 loops and job CPU
+  785 s in both arms; per salt -9.2% and +7.3%, wider than `tree`'s pair, so other load came and went. Deletion waits on
+  the user (ablations plan D4).
 
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
 `2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,
