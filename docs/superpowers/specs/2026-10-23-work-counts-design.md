@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Work counts: a load-independent cost signal for the gate
@@ -40,13 +40,12 @@ whatever the load (up to the miner's speculation, a few ppm; § Gate for the cou
    - (c) Bring back the per-site probes (`git revert 306a968`). The most detail, but they were removed for their
      cost and clutter in the trusted kernel.
 2. **Always on, or behind a feature.** *Decided 2026-10-23: (a).*
-   - (a, chosen) Always on: thread-local `Cell<u64>` counters, added into process-wide atomics when their
-     thread ends and printed at exit. The overhead is a few register adds per counted call. It is measured (see
-     Gate), not assumed.
+   - (a, chosen) Always on: per-thread counters, summed by `take` when a `WORK` line is printed (§ What changes).
+     The overhead is measured (see Gate), not assumed: none measurable once the recursive sites add once per call.
    - (b) A cargo feature. That is two builds, and the timed build is not the counted one, which is the problem
      `record-defeq` had.
-3. **How counts are reported.** *Decided 2026-10-23.* Each process prints one `WORK k=v ...` line when it exits, as `CLASS_MEMO` does
-   now (`driver.rs`, `worker`). `streams_ab.sh` sums them per arm and adds `work A <k=n ...> B <k=n ...>`, one total per counter, to each salt line.
+3. **How counts are reported.** *Decided 2026-10-23.* A `WORK k=v ...` line per worker task, in its log, as `CLASS_MEMO`
+   is (`driver.rs`, `worker`), and one per sweep at its end, for the sweep's own thread and its lanes (plan D4). `streams_ab.sh` sums them per arm and adds `work A <k=n ...> B <k=n ...>`, one total per counter, to each salt line.
 4. **What a verdict uses.** *Decided 2026-10-23: (a).*
    - (a, chosen) Counts take the place of job CPU in the cost check, with an A/A spread of their own (expected
      0 where the code is deterministic). Job CPU stays in the output and is compared only on a quiet machine.
@@ -60,7 +59,7 @@ whatever the load (up to the miner's speculation, a few ppm; § Gate for the cou
    evaluated, a subterm walked), so they are not summed as they are. They are compared only once M and held-out M
    match on all ten salts (a rise in either already means the part pays). Each counter is summed over the ten salts and
    compared on its own, against a tolerance: the larger of that counter's A/A spread and 1%. The 1% is a size that
-   matters, not noise, since the counts should repeat exactly; the ablations plan already flags job CPU at 1%.
+   matters, not noise, since the counts repeat to a few ppm; the ablations plan already flags job CPU at 1%.
    - (a) Free when no counter rises past its tolerance. Prior art: gungraun's per-metric limits, which fail on any
      one metric past its limit.
    - (b) One weighted sum, with weights fitted to job CPU on quiet A/A salts. Prior art: KCachegrind's cycle
@@ -69,7 +68,8 @@ whatever the load (up to the miner's speculation, a few ppm; § Gate for the cou
    - (c) As (a) with tolerance 0. Rejected: every deletion that moves a few walks would count as a cost.
    - (d, chosen) As (a), with a third outcome from rustc-perf's "mixed" label. The verdict is **free** when no counter
      rises past its tolerance, **costs** when one rises and none falls past its tolerance, and **mixed** when one
-     rises and another falls. Mixed stops the driver as pays and costs do, and the session brings it to the user.
+     rises and another falls. Costs means the part saves work, so it pays and the driver goes on; free and mixed stop
+     the driver, and the session brings them to the user (a free one after one timed pair: the ablations plan's D4).
    - Also surveyed and rejected: one primary counter (rustc-perf and gungraun decide by instructions alone), since
      none of the four counts all the work (`interp`, the largest, is 33% of an arm); a fence over past changes
      (rustc-perf), which has width 0 for counts that repeat exactly and so becomes (c). Sources: gungraun's
@@ -90,6 +90,10 @@ whatever the load (up to the miner's speculation, a few ppm; § Gate for the cou
   things hold. First, on the quiet salts each ratio varies by no more than twice CPU's own A/A spread (11%); a count
   cannot be steadier against CPU than CPU is against itself. Second, the ablation moves CPU and the summed counters
   the same way. If it fails, decision 6(b)'s fitted weights are the fallback, brought back as a decision.
+  *Measured 2026-10-24 (`docs/tier-cycle.md`, "Work counts as the gate's cost"): the ablation moved every counter and
+  job CPU the same way, but job CPU per count varied 24-46% over salts, and a fitted weighted sum 18.4%. Decided
+  2026-10-24: the counts give the direction of a change, not its amount, and decision 6(d) needs only the direction,
+  so proxy quality is the co-movement test; a free verdict is checked by one timed pair before it reaches the user.*
 - **Overhead:** the counted build against the uncounted build, timed on salts 1-2. Job CPU must stay within the
   A/A's 5.4%. Results (M, held-out M, rules) must be identical.
 
@@ -130,13 +134,17 @@ overhead the gate's overhead check matters most for.
 
 ## What changes
 
-- **The counters:** one small module with the four thread-local counters, the flush into process-wide atomics, and
-  the `WORK` line. Worker threads flush when they end. The main thread flushes its own counters just before it
-  prints `WORK`, or its work is missing from the line.
-- **The four sites:** one increment each, in `Term::interp`, `join_walk`, `match_pat` and `Term::op`.
-- **`scripts/streams_ab.sh`:** sums each arm's `WORK` lines per salt and prints `work A <k=n ...> B <k=n ...>`.
+- **The counters** (`tests/church_bv/work.rs`): each thread's slot of four atomics, registered in a process-wide
+  list; `take` sums every slot and zeroes it, and the `WORK` line prints the sum. Slots are read by `take` rather than
+  flushed when their thread ends, since `thread::scope` returns before its threads' thread-local destructors run (plan
+  `docs/superpowers/plans/2026-10-23-work-counts.md` D1).
+- **The four sites:** `Term::interp` and `match_pat` sum their nodes in a local and add them once per call
+  (`count_n`; one add per node cost 7-8% job CPU), `join_walk` and `Term::op` add one per call.
+- **`scripts/streams_ab.sh`:** sums each arm's `WORK` lines per salt and prints `work A <k=n ...> B <k=n ...>`; an
+  arm with none failed.
 - **The ablations driver** (outside the repo; its one home is Task 1 of the ablations plan): the verdict follows
-  decision 6 (free, costs or mixed; mixed stops it), and job CPU is printed but no longer decides.
+  decision 6 (costs goes on; free and mixed stop it), every pair is untimed, and job CPU is printed but no longer
+  decides.
 
 ## Determinism risk found in the code
 
