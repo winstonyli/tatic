@@ -3,7 +3,7 @@
 # on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (tests/church_bv/held_{11,13}.txt, CHECK_FAST: the laws that still need a whole-term machine
-# proof). Per salt: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
+# proof). Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
 # lookup memo's peak (CLASS_MEMO) and the largest peakproc; per salt and per arm the work counts (the summed WORK lines,
 # spec docs/superpowers/specs/2026-10-23-work-counts-design.md). Last line: loops with the same rules, and arms that
 # failed (non-zero exit, no M or no WORK line); exits 1 if any arm failed. Differing rules are reported, not failed.
@@ -25,6 +25,20 @@ held() { # <exe> <rules file>: held-out M over both bands
 work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> match=<n> op=<n>`; empty if none
   grep -rh '^WORK ' "$@" 2>/dev/null | awk '{for (i = 2; i <= NF; i++) {split($i, kv, "="); if (!(kv[1] in t)) o[++n] = kv[1]; t[kv[1]] += kv[2]}} END {for (i = 1; i <= n; i++) printf "%s%s=%.0f", (i > 1 ? " " : ""), o[i], t[o[i]]}'
 }
+# an arm's M and job CPU: <arm dir>
+m() { cut -f4 "$1/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$' | awk '{s += $1} END {print s + 0}'; }
+c() { grep -oE 'jobcpu=[0-9.]+' "$1/result.txt" | cut -d= -f2; }
+# <salt>: its lines once both arms are done (an arm writes `failed` last; the second arm to finish prints, and the
+# `mkdir` makes that one arm): the loops whose rules differ, then M, held-out M, job CPU and work of each arm, or which
+# arm failed. Printed as each salt finishes, so a reader of the log (the ablations driver) can act before the gate ends.
+salt_line() {
+  local s=$1 d="$RUN_DIR/s$1" l f fa fb
+  fa=$(cat "${d}_A/failed" 2>/dev/null); fb=$(cat "${d}_B/failed" 2>/dev/null)
+  [ -n "$fa" ] && [ -n "$fb" ] && mkdir "$RUN_DIR/.s$s.line" 2>/dev/null || return 0
+  for l in 1 2 3; do f="cold_streams_streams_${l}_none/rules.txt"; cmp -s "${d}_A/$f" "${d}_B/$f" || echo "salt $s loop $l: rules differ"; done
+  [ "$fa$fb" = 00 ] || { echo "salt $s: failed (A $fa B $fb)"; return 0; }
+  echo "salt $s: M A $(m "${d}_A") B $(m "${d}_B"); held A $(cat "${d}_A/held.txt") B $(cat "${d}_B/held.txt"); jobcpu A $(c "${d}_A") B $(c "${d}_B"); work A $(work "${d}_A") B $(work "${d}_B")"
+}
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
   local s=$1 arm=$2 exe o mb h l v f=0 c= long
   [ $arm = A ] && exe=$a || exe=$b
@@ -38,10 +52,11 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
     long=$(cygpath -u "$(cygpath -w -l "$exe")")
     c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
     if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ]; then
-      rm -rf "$o"; cp -r "$c" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; return
+      # through a temporary copy, so the other arm never sees this one's `failed` before the rest of it
+      rm -rf "$o" "$o.$$"; cp -r "$c" "$o.$$" && mv "$o.$$" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; salt_line $s; return
     fi
   fi
-  mkdir -p "$o"; rm -f "$o/exit"
+  mkdir -p "$o"; rm -f "$o/exit" "$o/failed"
   ( "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams SALT=$s "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
   while [ ! -f "$o/exit" ]; do
     mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
@@ -57,6 +72,7 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   echo $f > "$o/failed"
   # into the cache through a temporary copy, so a reader never sees half an arm
   [ -n "$c" ] && [ $f = 0 ] && { mkdir -p "${c%/*}"; rm -rf "$c.$$"; cp -r "$o" "$c.$$" && echo "$o" > "$c.$$/from" && rm -rf "$c" && mv "$c.$$" "$c"; }
+  salt_line $s
 }
 # JOBS arms at a time (default 1: an arm's job CPU is then clean enough to compare, timed runs keep it); in the order A
 # first on odd salts, B first on even ones
@@ -72,12 +88,9 @@ for s in "$@"; do
   for x in A B; do failed=$((failed + $(cat "$RUN_DIR/s${s}_$x/failed" 2>/dev/null || echo 1))); done
   for l in 1 2 3; do
     f="cold_streams_streams_${l}_none/rules.txt"
-    cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same_n=$((same_n + 1)) || echo "salt $s loop $l: rules differ"
+    cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same_n=$((same_n + 1))
     loops=$((loops + 1))
   done
-  m() { cut -f4 "$RUN_DIR/s${s}_$1/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$' | awk '{s += $1} END {print s + 0}'; }
-  c() { grep -oE 'jobcpu=[0-9.]+' "$RUN_DIR/s${s}_$1/result.txt" | cut -d= -f2; }
-  echo "salt $s: M A $(m A) B $(m B); held A $(cat "$RUN_DIR/s${s}_A/held.txt") B $(cat "$RUN_DIR/s${s}_B/held.txt"); jobcpu A $(c A) B $(c B); work A $(work "$RUN_DIR/s${s}_A") B $(work "$RUN_DIR/s${s}_B")"
 done
 for arm in A B; do
   m=0; h=0
