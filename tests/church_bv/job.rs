@@ -561,12 +561,12 @@ fn hidden_finds_thread_locals_process_wide_statics_and_job_swaps() {
 }
 
 /// Every piece of hidden state in church_bv is classified: a thread-local is a pure memo on `THREAD_LOCAL` (D3 of
-/// docs/superpowers/plans/2026-10-21-rewrite-context.md), a process-wide mutable static is a `SharedMemo` or on
+/// docs/superpowers/plans/2026-10-21-rewrite-context.md) or the work counts, which no task reads, a process-wide mutable static is a `SharedMemo` or on
 /// `PROCESS_WIDE`, and only `job.rs` replaces a whole job or names one other than `job` (so the swap scan sees every job). Everything else a task or a rewrite carries lives in its `Setup`
 /// or `Job`, so a `driver::worker` task never sees another task's state, nor a job another job's.
 #[test]
 fn hidden_state_is_classified() {
-    const THREAD_LOCAL: [(&str, &str, &str); 7] = [
+    const THREAD_LOCAL: [(&str, &str, &str); 8] = [
         ("rewrite.rs", "OP_CACHE", "op results by operator and operand values"),
         ("rewrite.rs", "BUFS", "scratch buffers, emptied before each use"),
         ("rewrite.rs", "TERMS", "enumerated terms by size and shape"),
@@ -574,8 +574,10 @@ fn hidden_state_is_classified() {
         ("rewrite.rs", "COUNTING", "the one Counting plan, shared"),
         ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
         ("encoding.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
+        ("work.rs", "SLOT", "this thread's work counts: no task reads them, the worker prints them after it"),
     ];
-    const PROCESS_WIDE: [(&str, &str, &str); 7] = [
+    const PROCESS_WIDE: [(&str, &str, &str); 8] = [
+        ("work.rs", "SLOTS", "every thread's work counts, read only by take"),
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("classes.rs", "CLASSES", "the class table: built once from the baked-in key, pure"),
         ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),

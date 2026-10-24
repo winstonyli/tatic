@@ -16,6 +16,7 @@ mod machine;
 mod miner;
 mod search;
 mod task;
+mod work;
 #[allow(unused_imports)]
 use encoding::*;
 #[allow(unused_imports)]

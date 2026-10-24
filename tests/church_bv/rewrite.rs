@@ -138,6 +138,7 @@ impl Term {
     /// `OP_CACHE` slot (bits 44..60, its node `tagged` with the low 16) is tried first: nodes are never freed, so a cached
     /// node stays the term's one node.
     pub fn op(o: usize, a: Term, b: Term) -> Term {
+        crate::work::count(crate::work::Site::Op);
         let (h, n) = (op_hash(o, a, b), Node::Op(o, a, b));
         OP_CACHE.with(|c| {
             let slot = &c[(h >> 44) as usize % OP_CACHE_SLOTS];
@@ -440,6 +441,7 @@ impl Term {
     }
     /// The value on the width-`n` operands `vals`, in plain integers (a cheap screen for false laws).
     pub fn interp(&self, n: usize, vals: &[u128]) -> u128 {
+        crate::work::count(crate::work::Site::Interp);
         let mask = low_bits(n);
         match *self.node() {
             Node::V(i) => vals[i],
@@ -1727,6 +1729,7 @@ pub fn matches(p: &Term, t: &Term) -> bool {
 }
 
 pub fn match_pat(p: &Term, t: &Term, sub: &mut [Option<Term>]) -> bool {
+    crate::work::count(crate::work::Site::Match);
     match (*p.node(), *t.node()) {
         (Node::V(i), _) => match &sub[i] {
             Some(b) => b == t,
@@ -2940,6 +2943,7 @@ fn join_walk(
     examined: &mut Option<hashbrown::HashSet<Term>>,
     visit: &mut impl FnMut(&JoinPlace, Term, usize, &[Option<Term>; RULE_VARS], usize) -> bool,
 ) -> bool {
+    crate::work::count(crate::work::Site::Walk);
     if let Some(x) = examined {
         x.insert(t);
     }
