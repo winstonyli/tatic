@@ -46,7 +46,7 @@ whatever the load. It shows an *amount* of cost only after calibration.
    - (b) A cargo feature. That is two builds, and the timed build is not the counted one, which is the problem
      `record-defeq` had.
 3. **How counts are reported.** *Decided 2026-10-23.* Each process prints one `WORK k=v ...` line when it exits, as `CLASS_MEMO` does
-   now (`driver.rs`, `worker`). `streams_ab.sh` sums them per arm and adds `work A <n> B <n>` to each salt line.
+   now (`driver.rs`, `worker`). `streams_ab.sh` sums them per arm and adds `work A <k=n ...> B <k=n ...>`, one total per counter, to each salt line.
 4. **What a verdict uses.** *Decided 2026-10-23: (a).*
    - (a, chosen) Counts take the place of job CPU in the cost check, with an A/A spread of their own (expected
      0 where the code is deterministic). Job CPU stays in the output and is compared only on a quiet machine.
@@ -56,6 +56,15 @@ whatever the load. It shows an *amount* of cost only after calibration.
      race moves counts. If it does, the spread is measured like CPU's.
    - (b) Count `verdict`'s visits into a local and add them only when `insert` reports the key as new. The counter
      then reports work needed, not done. That is one special case at one call site.
+6. **How the counters decide "free".** *Open.* The counters measure different units (a node evaluated, a subterm
+   walked), so they are not summed as they are.
+   - (a, recommended) Each counter is compared on its own, summed over the ten salts. A part is free when no
+     counter rises by more than its tolerance. The tolerance is the larger of that counter's A/A spread and 1%, the
+     level at which the ablations plan already flags job CPU. No weights are needed, and a rise shows which phase
+     paid for it.
+   - (b) One weighted sum, with weights fitted to job CPU on quiet A/A salts (the 2026-10-10 NNLS fit). It gives one
+     number in seconds, but the weights are another fit to keep current.
+   - (c) As (a), but with tolerance 0. Strict, but every deletion that moves a few walks then counts as a cost.
 
 ## Gate for the counts themselves
 
@@ -65,8 +74,10 @@ whatever the load. It shows an *amount* of cost only after calibration.
   differ, either the counted sites move to work that does not depend on those caches, or the spread is measured and
   used the way CPU's is.
 - **Proxy quality:** on a quiet machine, counts and job CPU should move together. Per arm over salts 1-10 of the
-  A/A and one ablation that changes work, report the ratio CPU/count. A fitted weight per counter is the fallback
-  if one count does not track CPU.
+  A/A and one ablation that changes work, report the ratio of job CPU to each counter. The test passes when two
+  things hold. First, on the quiet salts each ratio varies by no more than twice CPU's own A/A spread (11%); a count
+  cannot be steadier against CPU than CPU is against itself. Second, the ablation moves CPU and the summed counters
+  the same way. If it fails, decision 6(b)'s fitted weights are the fallback, brought back as a decision.
 - **Overhead:** the counted build against the uncounted build, timed on salts 1-2. Job CPU must stay within the
   A/A's 5.4%. Results (M, held-out M, rules) must be identical.
 
@@ -104,6 +115,16 @@ The four sites sit inside all three big phases (scoring, stream generation, the 
 track job CPU is not assumed; the proxy-quality gate measures it. Hashing and allocation (about 10% self) are counted
 only through the sites that cause them. `interp` is the hottest function (26% self), so its one add per node is the
 overhead the gate's overhead check matters most for.
+
+## What changes
+
+- **The counters:** one small module with the four thread-local counters, the flush into process-wide atomics, and
+  the `WORK` line. Worker threads flush when they end. The main thread flushes its own counters just before it
+  prints `WORK`, or its work is missing from the line.
+- **The four sites:** one increment each, in `Term::interp`, `join_walk`, `match_pat` and `Term::op`.
+- **`scripts/streams_ab.sh`:** sums each arm's `WORK` lines per salt and prints `work A <k=n ...> B <k=n ...>`.
+- **The ablations driver** (outside the repo; its one home is Task 1 of the ablations plan): the free test follows
+  decision 6, and job CPU is printed but no longer decides.
 
 ## Determinism risk found in the code
 
