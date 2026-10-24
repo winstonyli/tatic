@@ -5647,6 +5647,16 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   short name the driver passes, under which `B_collapse.exe.env` does not exist, so every B arm was A's (fixed in
   `streams_ab.sh`; names that fit 8.3, such as `B_comm.exe` and `B_chain.exe`, were keyed right, and no other gate copied
   an arm across exes).
+- **`collapse`, `eq_truth` and `eq_pos` pay** (`2026-10-24-ablations-10`, on 328e3c1, the fixed cache key; the driver
+  now stops a gate at the first salt whose B rises). `collapse`: M 861 to 862 over salts 1-5, the rise on salt 5,
+  held-out M equal. `eq_truth`: on salt 1 M 176 to 229, held-out M 809 to 1025, job CPU +64%. `eq_pos`: on salt 3 M 167
+  to 192, held-out M 884 to 1055.
+- **`eq_classes` is free** (same run): over salts 1-10 M 1718 and held-out M 8721 in both arms, every counter within
+  0.01%, job CPU +2.3% (untimed). The timed pair (`-eq_classes-timed-1-2`, quiet) has M, held-out M and rules equal
+  and job CPU 807 s to 739 s (-10.5% and -7.0% per salt; the A/A's spread is up to 10.9%, so this leans to cheaper
+  without it, not proved). Every arm the cache reused was A's from A, B's from B. With the class step in the
+  rewriter, both sides of a law reach `prove_eq` already in the table's normal form, so its second normalization there
+  closes nothing new.
 
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
 `2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,
