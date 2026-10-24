@@ -290,9 +290,9 @@ Decided while planning (2026-10-23):
 - **Proofs:** every replacement the size-9 table uses on the held-out sets of run `2026-10-22-key-refine` has a
   verdict, and its plan compiles and kernel-checks (an ignored test, run at each phase).
 - **Counting and compiling agree:** a law closed by the step in counting mode compiles to a checked proof.
-- **Phase 1:** the step closes a law the join needs today, and `ABLATE=classes,eq_classes` restores the old answers.
+- **Phase 1:** the step closes a law the join needs today, and `ABLATE=classes,eq_classes` restores the old answers (phase 1 was deleted in step 7, so the test now goes through `rewrite_plan` and `ABLATE=classes`).
 - **Phase 2:** a law whose sides fall in one class meets in `rewrite` with no rule tried; a node over a fourth variable
-  (unknown to the table) is still rewritten by a rule; `ABLATE=classes,eq_classes` restores the old answers.
+  (unknown to the table) is still rewritten by a rule; `ABLATE=classes` restores the old answers (`classes,eq_classes` before step 7).
 - **Tests on rule cycles:** five rewrite tests (`rewrite_cycles_are_cut`, `growing_rewrite_chains_are_cut`,
   `trace_index_agrees_with_touched_by`, `filtered_memo_entries_hold_under_an_extra_rule`,
   `memo_keeps_rewrites_cut_inside_their_own_call`) fail under the spike, since the table settles their terms before

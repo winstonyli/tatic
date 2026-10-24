@@ -5641,7 +5641,8 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   arms, every counter within 0.01%. The timed pair (`-chain-timed-1-2-2`) has rules the same in 6 of 6 loops and job CPU
   785 s in both arms; per salt -9.2% and +7.3%, wider than `tree`'s pair, so other load came and went. Deleted
   (2026-10-24): `chain_step`, `LawKind::Chain` and its arms; `x + 0` and `x + ~x` are the class table's now.
-  `carry_chain_law` and `find_constant_carry` stay (`conjecture_miner` and their test).
+  `carry_chain_law` and `find_constant_carry` stay (`conjecture_miner` and their test). The check (`-check-chain`,
+  328e3c1 against d5d8c0a with `ABLATE=chain`, salts 1-2): M, held-out M and rules equal, counts within 11 ppm.
 - **`comm` pays** (`2026-10-24-ablations-9`, on 328e3c1): without it M rises on 9 of 10 salts (not salt 2), 1718 to
   1784, and held-out M 8721 to 9000. The same run's `collapse` verdict is void: the arm cache keyed each exe by the 8.3
   short name the driver passes, under which `B_collapse.exe.env` does not exist, so every B arm was A's (fixed in
