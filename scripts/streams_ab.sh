@@ -1,7 +1,7 @@
 #!/bin/bash
 # streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, SWEEP=cold:streams (extras
 # on, 2 lanes, 6 scoring workers) with A and B, A first on odd salts and B first on even ones, each a `runs run` (job
-# CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
+# CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (tests/church_bv/held_{11,13}.txt, CHECK_FAST: the laws that still need a whole-term machine
 # proof). Per salt: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
 # lookup memo's peak (CLASS_MEMO) and the largest peakproc. Last line: loops with the same rules, and arms that failed
