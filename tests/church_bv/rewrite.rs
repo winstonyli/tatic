@@ -2421,7 +2421,7 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
     if a == b {
         return Some(Plan::refl(job, a));
     }
-    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,eq_classes,shrmask`
+    // each step below can be switched off: `ABLATE=eq_truth,eq_pos,shrmask`
     let mut atoms = vec![];
     if let (false, Some(a1), Some(a2)) = (job.setup().ablated("eq_truth"), abstract_atoms(a, &mut atoms, k), abstract_atoms(b, &mut atoms, k)) {
         let holds = (0..1usize << k).all(|m| {
@@ -2444,19 +2444,9 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
             return Some(Plan::law(job, LawKind::Bitwise, *a, *b, vars(k)));
         }
     }
-    // the learned class table (docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §4): both sides
-    // normalized by its proved replacements; if they meet, the law is closed with no rule, and only then are its steps
-    // counted (`Job::steps_if_closed`)
-    if !job.setup().ablated("eq_classes") {
-        let c = crate::classes::Classes::get();
-        let closed = job.steps_if_closed(|job| {
-            let ((na, pa), (nb, pb)) = (c.normalize(job, n, k, a), c.normalize(job, n, k, b));
-            (na == nb).then(|| Plan::trans(job, pa, Plan::sym(job, pb)))
-        });
-        if closed.is_some() {
-            return closed;
-        }
-    }
+    // the class table's normal form of both sides was a step here (spec 2026-10-22-class-table-normal-form-design.md
+    // §4); with the table's step in the rewriter, the sides arrive normalized, so it closed nothing and was deleted
+    // (docs/tier-cycle.md, "Ablations of the class table")
     // congruence on equal operators and generalizing a shared subterm into a variable were removed: neither decided a law
     // (docs/tier-cycle.md, "Ablating the fixed rewriter and prover parts")
     if let Some(p) = shr_mask_eq(job, n, k, a, b) {

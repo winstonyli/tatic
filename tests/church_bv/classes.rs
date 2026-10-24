@@ -788,21 +788,21 @@ fn held_out_replacements_prove() {
     });
 }
 
-/// Phase 1 (spec §4): the table closes a law the join left at 20000 visits (run `2026-10-22-join-residue`) with no
-/// machine proof, and the proof checks; with `ABLATE=classes,eq_classes` the law takes the old path (a machine proof, or none).
+/// The table closes a law the join left at 20000 visits (run `2026-10-22-join-residue`) with no
+/// machine proof, and the proof checks; with `ABLATE=classes` the law takes the old path (a machine proof, or none).
 #[test]
-fn prove_eq_closes_a_residue_law_by_the_table() {
+fn rewrite_plan_closes_a_residue_law_by_the_table() {
     let (a, b) = (parse_term("add(and(z, xor(x, -1)), y)"), parse_term("add(xor(x, and(xor(x, -1), z)), sub(y, x))"));
     let job = &mut Job::new(Setup::process());
     tatic::kernel::scoped(|| {
-        let plan = prove_eq(job, 4, 3, &a, &b).expect("closed by the table");
+        let plan = rewrite_plan(job, 4, 3, &a, &b).expect("closed by the table");
         assert_eq!(job.rw.fallbacks, 0);
         assert!(!job.table_steps.is_empty());
         let (p, s) = law_proof(job, 4, 3, &a, &b, &plan);
         job.lemmas.ck("residue law", &p, &s);
     });
-    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes,eq_classes".into())]));
-    let r = prove_eq(job, 4, 3, &a, &b);
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
+    let r = rewrite_plan(job, 4, 3, &a, &b);
     assert!(job.table_steps.is_empty(), "the ablated path takes no table step");
     assert!(r.is_none() || job.rw.fallbacks > 0, "without the table the law needs the machine or stays open");
 }
@@ -816,7 +816,7 @@ fn steps_of_a_pair_left_open_are_not_counted() {
     tatic::kernel::scoped(|| {
         assert!(Classes::get().step(job, 4, 3, &a).is_some());
         job.table_steps.clear();
-        assert!(job.steps_if_closed(|job| prove_eq(job, 4, 3, &a, &b)).is_none());
+        assert!(job.steps_if_closed(|job| rewrite_plan(job, 4, 3, &a, &b)).is_none());
         assert!(job.table_steps.is_empty(), "{} steps counted", job.table_steps.len());
     });
 }
@@ -835,7 +835,7 @@ fn lookup_includes_the_term_itself() {
 }
 
 /// Phase 2 (spec §5): a node the table knows is final in `rewrite`. `sub(add(x, y), y)` rewrites to `x` with no rule
-/// tried (the rule trace stays empty) and a table step counted; with `ABLATE=classes,eq_classes` rules are tried and
+/// tried (the rule trace stays empty) and a table step counted; with `ABLATE=classes` rules are tried and
 /// no table step is taken.
 #[test]
 fn rewrite_takes_the_table_before_any_rule() {
@@ -848,7 +848,7 @@ fn rewrite_takes_the_table_before_any_rule() {
         assert_eq!(job.rw.trace.as_ref().unwrap().len(), 0, "a rule was tried");
         assert!(!job.table_steps.is_empty());
     });
-    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes,eq_classes".into())]));
+    let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
     tatic::kernel::scoped(|| {
         job.rw.trace = Some(vec![]);
         rewrite(job, &t, 4, 3);

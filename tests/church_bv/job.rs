@@ -82,7 +82,7 @@ impl Setup {
 
     /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, collapse, join,
     /// promoted, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
-    /// eq_classes, shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
+    /// shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
     /// environment each time was 11% of a mine (docs/tier-cycle.md).
     pub fn ablated(&self, name: &str) -> bool {
         self.ablate.iter().any(|x| x == name)
@@ -391,8 +391,8 @@ fn with_rules_puts_the_outer_rules_back() {
 /// A test's switch: `with_env` lays its pairs over the process's environment.
 #[test]
 fn with_env_sets_a_switch() {
-    let s = Setup::with_env(vec![("ABLATE".into(), "classes,eq_classes".into())]);
-    assert!(s.ablated("classes") && s.ablated("eq_classes") && !s.ablated("comm"));
+    let s = Setup::with_env(vec![("ABLATE".into(), "classes,comm".into())]);
+    assert!(s.ablated("classes") && s.ablated("comm") && !s.ablated("assoc"));
 }
 
 /// Table steps taken inside `steps_if_closed` are kept only when it returns `Some` (spec decision 2: a closed law's
