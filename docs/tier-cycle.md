@@ -3936,7 +3936,8 @@ node, so an inner overlap goes to the inner rule. A switch that tried the librar
 served the salt-1 pooled library at cmp3d / add3 / sbo3 205 / 71 / 34, against 43 / 34 / 29.
 
 **Conflicts that happen.** `RULE_CONFLICTS=1` makes serving (`search::rule_set_kernel_check`) count, per term rewritten, each later
-rule that would also have rewritten it, and print `CONFLICT <terms> <winner>  OVER  <loser>`. Serving the salt-1 pooled library
+rule that would also have rewritten it, and print `CONFLICT <terms> <winner>  OVER  <loser>` (`WITH` since preferences
+went, 2026-10-23). Serving the salt-1 pooled library
 hits 63 distinct pairs on phase 0 and 62 on phases 1-3, some with built-in and promoted rules (the static count covers only the
 library's own rules).
 The most frequent (252 terms on phases 1-3) is between two pooled rules with the same left side, `sub(x, sub(y, z))` rewritten to
@@ -5571,7 +5572,8 @@ runs `2026-10-23-held-regen`, `-cold-streams`, `-stream-sequence-mem`, `-streams
 `-streams-aa-3-4`, `-streams-aa-5-6`, `-streams-aa-7-8`, `-streams-aa-9-10-2`).* The gate is now `scripts/streams_ab.sh`:
 per salt and arm, one `cold:streams` sweep (three loops from no rules on phases 1-3 of the stream sequence, extras from
 phase 0), then held-out M: each loop's rules run on `held_11.txt` and `held_13.txt` (1000 open laws each, from a salt no
-sweep reaches; 64 of band 11's 19769 and 47 of band 13's 37996 laws were served by salt 1's loops and dropped).
+sweep reaches; 64 of band 11's 19769 and 47 of band 13's 37996 laws were served by salt 1's loops and dropped; exact matches against salt 1 only, so other
+salts may still overlap, equally for both arms: spec, "Risks").
 - **The sequence**: 57928-58628 laws per salt from the 56 streams. Each sweep process builds it once, in 81-119 s, about
   half of an arm's wall. Built alone it peaks at 1537 MB commit (`-stream-sequence-mem`, 89.5 s), so every arm's
   peakproc (1538 MB) is the generation's, not the lookup memo's. Salt 1's extras: L 1429, n 228.
@@ -5596,6 +5598,10 @@ sweep reaches; 64 of band 11's 19769 and 47 of band 13's 37996 laws were served 
   1-2: M 176 and 181 and held-out M 809 and 890 in both arms, the A/A's numbers; rules the same in 6 of 6 loops; no arm
   failed. Job CPU on salt 1 325.7 s against 335.3 s (−2.9%, inside the A/A's 5.4%); salt 2's arms ran under 50-83% other
   load and are not compared.
+- **Preferences deleted (2026-10-23).** With the preference phase gone nothing learned `winner  OVER  loser` lines and no
+  live rules file had one, so `parse_prefs`, `Rules::with_prefs` and `rule_step`'s hop to a winner went; a rules file's
+  rules now fire most specific first (`Rules::new`) alone. `RULE_CONFLICTS=1` still counts conflicts, printed `CONFLICT <terms> <fired>  WITH
+  <later>`. The record of what they gained stays above ("Learned preferences", "Preferences and rival orientations in the miner").
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

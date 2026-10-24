@@ -41,7 +41,7 @@ pub struct MinerConfig {
     pub fast: bool,
     /// `RULEMINER_FAMILY`: the law family (default `mul`; `streams` with `lawfile`, which it gives the variable count).
     pub family: Family,
-    /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) and their preferences in force throughout (section 74).
+    /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) in force throughout (section 74).
     pub base: Option<String>,
     /// `RULEMINER_LAWFILE=<file>`: mine from these `lhs = rhs` lines (a proposer's band) instead of the family's window.
     pub lawfile: Option<String>,
@@ -89,9 +89,9 @@ pub fn run(setup: &Arc<Setup>) {
         let cfg = MinerConfig::new(setup);
         // the stragglers are the laws left with the base's rules
         let base_text = cfg.base.as_ref().map(|f| std::fs::read_to_string(f).unwrap()).unwrap_or_default();
-        let (base, base_prefs) = (parse_rules(&base_text), parse_prefs(&base_text));
-        // P0: everything on this thread below runs under the base rules and preferences, apart from what installs its own
-        let base_rules = job.rules().with_mined(setup, base.clone()).with_prefs(base_prefs.clone());
+        let base = parse_rules(&base_text);
+        // P0: everything on this thread below runs under the base rules, apart from what installs its own
+        let base_rules = job.rules().with_mined(setup, base.clone());
         job.with_rules(base_rules, |job| {
             // base rules may loop; a step budget per law bounds them (the built-in rules never reach it)
             let budget = if base.is_empty() { UNBOUNDED } else { cfg.steps as i64 };
@@ -115,16 +115,16 @@ pub fn run(setup: &Arc<Setup>) {
                     println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
                 }
             }
-            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules and preferences of
+            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules of
             // this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
             // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
             let rules = job.rules().mined().to_vec();
-            let prover = Prover { rules, prefs: base_prefs.clone(), n: laws.n };
+            let prover = Prover { rules, n: laws.n };
             let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover.filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
             println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
             clock.phase("provable filter");
             let scorer = Scorer::new(&laws, &cfg, base.clone());
-            let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &base_prefs, &cfg, &clock);
+            let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &cfg, &clock);
             // the main job's join work from here on
             let (covered, main) = job.spent(|job| {
                 let Chosen { covered, .. } = rounds.play(job);
@@ -163,7 +163,7 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
     // `RULEMINER_FAST` counts the base rules' machine proofs the way it scores candidates: without building them. Carry-over:
-    // P1 runs under the base rules and preferences P0 installed
+    // P1 runs under the base rules P0 installed
     let counting = job.rules().counting(cfg.fast);
     job.with_rules(counting, |job| {
         for (name, t1, t2) in laws.iter().cloned() {
@@ -414,19 +414,17 @@ fn renum_placeholders(t: &Term) -> Term {
     }
 }
 
-/// Proves candidate rules against the rules and preferences it copies to each proving thread (the base ones). The step
+/// Proves candidate rules against the rules it copies to each proving thread (the base ones). The step
 /// budget is `proving`'s own: every rewrite of `prove_rule` runs under it.
 struct Prover {
     rules: Vec<(Term, Term)>,
-    /// The base preferences, installed on every proving thread.
-    prefs: Vec<Pref>,
     n: usize,
 }
 
 impl Prover {
-    /// `rules` as the run-time rules and `prefs` as the preferences, with both switches off whatever the caller has on.
+    /// `rules` as the run-time rules, with both switches off whatever the caller has on.
     fn install(&self, setup: &Setup) -> Rules {
-        Rules::new(setup, self.rules.clone()).with_prefs(self.prefs.clone())
+        Rules::new(setup, self.rules.clone())
     }
 
     fn holds(&self, job: &mut Job, (l, r): &(Term, Term)) -> bool {
@@ -505,15 +503,14 @@ impl<'a> Scorer<'a> {
     /// matches none of the terms where it would come first (`Fired::preempted_by`: the run-time rules are tried most specific first,
     /// not in the order added), and that is a join step at none of the join's terms (`Trace::touched_by`), cannot change a law's
     /// rewriting or join, so its laws keep the result under the rules chosen so far.
-    /// `prefs`: the rule preferences in force (`Rules::with_prefs`).
-    fn score_laws(&self, job: &mut Job, extra: &[(Term, Term)], prefs: &[Pref], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
+    fn score_laws(&self, job: &mut Job, extra: &[(Term, Term)], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
         let (n, kv, cfg) = (self.laws.n, self.laws.kv, self.cfg);
         job.rw.memo = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv)));
         let steps = cfg.steps as i64;
         // counting only under `RULEMINER_FAST`, or when the caller asked for it (rivals, below). Carry-over: the old code
-        // installed these rules and `prefs` and left them installed, which nothing read: every later rewrite on this thread
+        // installed these rules and left them installed, which nothing read: every later rewrite on this thread
         // is another `score_laws` or a `Prover::prove`, and each installs its own
-        let rules = job.rules().with_mined(job.setup(), self.base.iter().chain(extra).cloned().collect()).with_prefs(prefs.to_vec());
+        let rules = job.rules().with_mined(job.setup(), self.base.iter().chain(extra).cloned().collect());
         let rules = rules.counting(cfg.fast || rules.score_only());
         let out = job.with_rules(rules, |job| {
             which
@@ -595,7 +592,6 @@ struct Rounds<'a> {
     prover: &'a Prover,
     provable: &'a [(Term, Term)],
     rivals: &'a hashbrown::HashMap<Term, Vec<(Term, Term)>>,
-    base_prefs: &'a [Pref],
     cfg: &'a MinerConfig,
     clock: &'a Clock,
     /// under `RULEMINER_FAST` the candidates are proved here, once each, against the base rules as the eager filter would
@@ -646,14 +642,13 @@ fn best_rival(rivals: &[(Term, Term)], gains: &[i64], g: i64, chosen: &[(Term, T
 }
 
 impl<'a> Rounds<'a> {
-    fn new(scorer: &'a Scorer<'a>, prover: &'a Prover, provable: &'a [(Term, Term)], rivals: &'a hashbrown::HashMap<Term, Vec<(Term, Term)>>, base_prefs: &'a [Pref], cfg: &'a MinerConfig, clock: &'a Clock) -> Self {
+    fn new(scorer: &'a Scorer<'a>, prover: &'a Prover, provable: &'a [(Term, Term)], rivals: &'a hashbrown::HashMap<Term, Vec<(Term, Term)>>, cfg: &'a MinerConfig, clock: &'a Clock) -> Self {
         let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, bool)>();
         Rounds {
             scorer,
             prover,
             provable,
             rivals,
-            base_prefs,
             cfg,
             clock,
             proofs: vec![if cfg.fast { None } else { Some(true) }; provable.len()],
@@ -694,7 +689,7 @@ impl<'a> Rounds<'a> {
             let changed: Vec<&(Term, Term)> = was.iter().chain(&chosen).filter(|r| was.contains(*r) != chosen.contains(*r)).collect();
             memo.filtered(|tr| !changed.iter().any(|r| tr.touched_by(r, |_| true)))
         });
-        let (eval, grown) = self.scorer.score_laws(job, &chosen, self.base_prefs, &self.scorer.all_laws, true, seed);
+        let (eval, grown) = self.scorer.score_laws(job, &chosen, &self.scorer.all_laws, true, seed);
         self.state_memo = Some((chosen.clone(), grown));
         let (covered, size) = Scorer::summarize(&eval);
         self.state_time += t0.elapsed();
@@ -704,14 +699,14 @@ impl<'a> Rounds<'a> {
     /// one round on top of `s`: its alternatives with their gains, largest first: a rival orientation of the winner that gains
     /// more, if one is proved, then the winner
     fn pick(&mut self, job: &mut Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
-        let (scorer, provable, rivals, base_prefs, cfg) = (self.scorer, self.provable, self.rivals, self.base_prefs, self.cfg);
+        let (scorer, provable, rivals, cfg) = (self.scorer, self.provable, self.rivals, self.cfg);
         let (stragglers, guard_w) = (&scorer.laws.stragglers, scorer.laws.guard_w);
         let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
         // a candidate changes only the laws whose rewriting asked about a term its left side matches, or whose join examined a
         // term it is a step at (`affected`, `Trace::touched_by`), so its gain is at most
         // 1000 per affected uncovered straggler, `guard_w` per affected uncovered guard law and the affected stragglers' whole size
-        // a candidate can only rewrite a term where it comes before the rule that fired (`Fired::preempted_by`), unless a
-        // preference makes it a winner (the trace was made without the candidate)
+        // a candidate can only rewrite a term where it comes before the rule that fired (`Fired::preempted_by`; the trace was
+        // made without the candidate)
         // the run-time order of every rule in play, ranked once (`run_order` builds strings)
         let t0 = Instant::now();
         let mut ranked: Vec<(Term, Term)> = scorer.base.iter().chain(chosen).chain(provable.iter()).cloned().collect();
@@ -721,9 +716,8 @@ impl<'a> Rounds<'a> {
         // over the scoring threads; each candidate's laws are the same whichever thread finds them
         let index = TraceIndex::new(base_eval.iter().map(|e| &e.2));
         let touched = |rule: &(Term, Term)| {
-            let anywhere = base_prefs.iter().any(|(w, _)| w == rule);
             let before = |fired: &(Term, Term)| rank.get(fired).is_none_or(|&f| rank[rule] < f);
-            index.touched(rule, |fired| anywhere || fired.preempted_by(before))
+            index.touched(rule, |fired| fired.preempted_by(before))
         };
         let threads = cfg.threads.clamp(1, 12);
         let affected: Vec<Vec<usize>> = std::thread::scope(|sc| {
@@ -755,7 +749,7 @@ impl<'a> Rounds<'a> {
         let score_rule = |job: &mut Job, rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
             let mut with = chosen.clone();
             with.push(*rule);
-            let (fresh, _) = scorer.score_laws(job, &with, base_prefs, aff, true, None);
+            let (fresh, _) = scorer.score_laws(job, &with, aff, true, None);
             scorer.law_evals.fetch_add(scorer.all_laws.len(), std::sync::atomic::Ordering::Relaxed);
             scorer.law_reuses.fetch_add(scorer.all_laws.len() - aff.len(), std::sync::atomic::Ordering::Relaxed);
             let mut ev: Vec<(bool, i64)> = base_eval.iter().map(|e| (e.0, e.1)).collect();
@@ -1050,26 +1044,9 @@ fn a_round_never_offers_a_chosen_rival() {
     assert!(best_rival(&rivals, &[9, 2, 1], 3, &chosen, |_| true) == None);
 }
 
-/// A proving worker's fresh job proves under the base preferences (Q1): before, the provable filter's workers installed
-/// none, while one thread proved under the ones `run` had installed. The rules and preference are
-/// `rewrite::preferences_choose_between_rules_that_both_match`'s.
-#[test]
-fn a_provers_fresh_job_rewrites_under_the_base_preferences() {
-    let text = "sub(sub(x, y), z) -> sub(x, add(y, z))
-sub(x, sub(y, z)) -> add(sub(x, y), z)
-                sub(x, sub(y, z)) -> add(sub(x, y), z)  OVER  sub(sub(x, y), z) -> sub(x, add(y, z))
-";
-    let prover = Prover { rules: parse_rules(text), prefs: parse_prefs(text), n: 4 };
-    let job = &mut Job::new(Setup::process());
-    let t = parse_term("sub(sub(x, y), sub(z, u))");
-    let rules = prover.install(job.setup());
-    let stepped = job.with_rules(rules, |job| rule_step(job, &t).unwrap().0.show());
-    assert_eq!(stepped, parse_term("add(sub(sub(x, y), z), u)").show(), "the preferred rule fires");
-}
-
 #[test]
 fn a_provers_rules_ignore_the_callers_switches() {
-    let prover = Prover { rules: vec![], prefs: vec![], n: 4 };
+    let prover = Prover { rules: vec![], n: 4 };
     let job = &mut Job::new(Setup::process());
     let counting = job.rules().counting(true).tracing(true);
     let installed = job.with_rules(counting, |job| prover.install(job.setup()));

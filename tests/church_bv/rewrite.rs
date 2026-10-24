@@ -1156,15 +1156,12 @@ pub struct Rule {
     pub rhs: Term,
 }
 
-/// What a job rewrites with (`Job::rules`, replaced only through `Job::with_rules`): the rule table, the preferences
-/// between its rules, and two switches. Values, cheap to copy: the table and preferences are shared.
+/// What a job rewrites with (`Job::rules`, replaced only through `Job::with_rules`): the rule table and two switches.
+/// Values, cheap to copy: the table is shared.
 #[derive(Clone)]
 pub struct Rules {
     /// The rules `rule_step` tries: the built-in ones, then those added at run time (by the rule miner) in `run_order`.
     table: Rc<RuleTable>,
-    /// Learned rule preferences, (winner, loser): where both rules would rewrite a term, the winner does, whatever the order
-    /// (docs/tier-cycle.md, "Rule order").
-    prefs: Rc<hashbrown::HashSet<Pref>>,
     /// Set where a plan is only counted: by the rule miner's scoring rounds, by its rule-set evaluations under
     /// `RULEMINER_FAST=1` or when the caller asks, and by tests that count. `prove_eq` then takes a machine fallback when a
     /// few tuples agree, without searching for its carry encoding, so a plan made under it may not compile.
@@ -1177,25 +1174,14 @@ impl Rules {
     /// The built-in rules of `setup` and the run-time rules `mined`, most specific first: larger left sides first, ties by
     /// text. `rule_step` applies the first rule that matches, so a library's order would otherwise change its normal forms:
     /// the same pooled library served in six orders gave total M 47-62 on add3 (docs/tier-cycle.md, "Rule order"). Any
-    /// order of the same rules now serves identically. No preferences, both switches off.
+    /// order of the same rules now serves identically. Both switches off.
     pub fn new(setup: &Setup, mined: Vec<(Term, Term)>) -> Rules {
-        Rules { table: Rc::new(RuleTable::sorted(setup, mined)), prefs: Default::default(), score_only: false, trace_rules: false }
+        Rules { table: Rc::new(RuleTable::sorted(setup, mined)), score_only: false, trace_rules: false }
     }
 
-    /// These rules with the run-time rules `mined` instead; the preferences and switches stay.
+    /// These rules with the run-time rules `mined` instead; the switches stay.
     pub fn with_mined(&self, setup: &Setup, mined: Vec<(Term, Term)>) -> Rules {
         Rules { table: Rc::new(RuleTable::sorted(setup, mined)), ..self.clone() }
-    }
-
-    /// These rules with the preferences `prefs`, in order: a later preference replaces an earlier one for the same pair the
-    /// other way round.
-    pub fn with_prefs(&self, prefs: Vec<Pref>) -> Rules {
-        let mut p = hashbrown::HashSet::new();
-        for (w, l) in prefs {
-            p.remove(&(l, w));
-            p.insert((w, l));
-        }
-        Rules { prefs: Rc::new(p), ..self.clone() }
     }
 
     /// These rules, counting only (`score_only`) or not.
@@ -1217,46 +1203,20 @@ impl Rules {
         self.score_only
     }
 
-    /// Whether `other` is these same rules: the same table and preferences (not equal copies), and the same switches.
+    /// Whether `other` is these same rules: the same table (not an equal copy), and the same switches.
     pub(crate) fn is(&self, other: &Rules) -> bool {
-        Rc::ptr_eq(&self.table, &other.table) && Rc::ptr_eq(&self.prefs, &other.prefs) && (self.score_only, self.trace_rules) == (other.score_only, other.trace_rules)
+        Rc::ptr_eq(&self.table, &other.table) && (self.score_only, self.trace_rules) == (other.score_only, other.trace_rules)
     }
 }
 
-/// A rule as its two sides, and a preference (winner, loser) between two rules.
+/// A rule as its two sides, and a conflict between two rules (`Job::conflicts`): the one that rewrote a term, and a later
+/// one that also matched it.
 pub type RuleKey = (Term, Term);
-pub type Pref = (RuleKey, RuleKey);
+pub type Conflict = (RuleKey, RuleKey);
 
 /// `lhs -> rhs`, the spelling of rule files and logs.
 pub fn rule_show((l, r): &RuleKey) -> String {
     format!("{} -> {}", l.show(), r.show())
-}
-
-/// The preference lines of a rules file, `winner  OVER  loser` with each side a rule `lhs -> rhs` (`parse_rules` skips them).
-pub fn parse_prefs(text: &str) -> Vec<Pref> {
-    let rule = |r: &str| r.split_once(" -> ").map(|(l, r)| (parse_term(l.trim()), parse_term(r.trim())));
-    text.lines().filter_map(|l| l.split_once("  OVER  ")).filter_map(|(w, l)| Some((rule(w)?, rule(l)?))).collect()
-}
-
-#[test]
-fn preferences_choose_between_rules_that_both_match() {
-    let job = &mut Job::new(Setup::process());
-    let text = "sub(sub(x, y), z) -> sub(x, add(y, z))\nsub(x, sub(y, z)) -> add(sub(x, y), z)\n\
-                sub(x, sub(y, z)) -> add(sub(x, y), z)  OVER  sub(sub(x, y), z) -> sub(x, add(y, z))\n";
-    assert_eq!(parse_rules(text).len(), 2, "a preference line is not a rule");
-    let t = parse_term("sub(sub(x, y), sub(z, u))");
-    let mut step = |prefs: Vec<Pref>| {
-        let rules = job.rules().with_mined(job.setup(), parse_rules(text)).with_prefs(prefs);
-        job.with_rules(rules, |job| rule_step(job, &t).unwrap().0.show())
-    };
-    // same size, so specific first falls to the text order; the preference overrides it, and a later reverse line undoes it
-    let prefs = parse_prefs(text);
-    assert_eq!(prefs.len(), 1);
-    let (plain, preferred) = (step(vec![]), step(prefs.clone()));
-    assert_ne!(plain, preferred);
-    assert_eq!(preferred, parse_term("add(sub(sub(x, y), z), u)").show());
-    let reverse = (prefs[0].1, prefs[0].0);
-    assert_eq!(step(vec![prefs[0], reverse]), plain);
 }
 
 /// A rule as `rule_step` tries it, with what does not depend on the term decided when the rule set is installed (deciding
@@ -1442,7 +1402,7 @@ pub enum Fired {
 
 impl Fired {
     /// A run-time rule added to the rules that made this trace comes first on the term, `before(r)` saying whether it comes
-    /// before run-time rule `r` (`run_order`): it rewrites the term if it matches it (and no preference makes another rule win).
+    /// before run-time rule `r` (`run_order`): it rewrites the term if it matches it.
     pub fn preempted_by(&self, before: impl Fn(&(Term, Term)) -> bool) -> bool {
         match self {
             Fired::None | Fired::Join => true,
@@ -1542,10 +1502,10 @@ pub const PROMOTED: &[(&str, &str)] = &[
     ("sub(-1, sub(x, -1))", "sub(shl1(-1, 0), x)"),
 ];
 
-/// The rules of a rule file: one `lhs -> rhs` per line, repeats once, other lines (and preference lines, `parse_prefs`) ignored.
+/// The rules of a rule file: one `lhs -> rhs` per line, repeats once, other lines ignored.
 pub fn parse_rules(text: &str) -> Vec<(Term, Term)> {
     let mut seen = hashbrown::HashSet::new();
-    text.lines().filter(|l| !l.contains("  OVER  ")).filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).filter(|r| seen.insert(*r)).collect()
+    text.lines().filter_map(|l| l.split_once(" -> ")).map(|(a, b)| (parse_term(a), parse_term(b))).filter(|r| seen.insert(*r)).collect()
 }
 
 /// A `Term` from its `show` syntax: `0`, `-1`, a variable name, or `op(a, b)`.
@@ -1892,12 +1852,12 @@ pub fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
 }
 
 /// Lists a job's rule conflicts (`Job::conflicts`), most terms first.
-pub fn print_rule_conflicts(conflicts: Option<&hashbrown::HashMap<Pref, u64>>) {
+pub fn print_rule_conflicts(conflicts: Option<&hashbrown::HashMap<Conflict, u64>>) {
     if let Some(m) = conflicts {
         let mut v: Vec<_> = m.iter().map(|((w, l), c)| (rule_show(w), rule_show(l), *c)).collect();
         v.sort_by_key(|(w, l, c)| (std::cmp::Reverse(*c), w.clone(), l.clone()));
         for (w, l, c) in &v {
-            println!("CONFLICT {c} {w}  OVER  {l}");
+            println!("CONFLICT {c} {w}  WITH  {l}");
         }
         println!("CONFLICTS {} pairs, {} terms", v.len(), v.iter().map(|x| x.2).sum::<u64>());
     }
@@ -1940,19 +1900,7 @@ pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
             },
         ));
     }
-    let (mut i, mut sub) = first?;
-    // follow preferences from the first rule that fires; at most one hop per rule, so a preference cycle stops (with none,
-    // the first hop finds no winners)
-    for _ in 0..all.len() {
-        let winners: Vec<&RuleKey> = rules.prefs.iter().filter(|(_, l)| all[i].is(l)).map(|(w, _)| w).collect();
-        if winners.is_empty() {
-            break;
-        }
-        match table.candidates(t).find_map(|(j, r)| if j != i && winners.iter().any(|w| r.is(w)) { fires(r).map(|s| (j, s)) } else { None }) {
-            Some(next) => (i, sub) = next,
-            None => break,
-        }
-    }
+    let (i, sub) = first?;
     if let Some(m) = job.conflicts.as_mut() {
         for (_, r) in table.candidates(t).filter(|&(j, r)| j > i && fires(r).is_some()) {
             *m.entry((all[i].key(), r.key())).or_default() += 1;
@@ -2112,7 +2060,7 @@ pub struct RewriteState {
     pub memo: Option<RewriteMemo>,
     /// While `Some`, `rule_step` records every term it is asked to rewrite, and whether a rule fired on it: a rule added anywhere
     /// in the rule list can change a rewriting only if its left side matches one of them, and one added last only if it matches
-    /// one where no rule fired (unless a preference makes it a winner).
+    /// one where no rule fired.
     pub trace: Option<Vec<(Term, Fired)>>,
     /// How many more rule applications `rule_step` may make; the rule miner sets it per trial so that a candidate that
     /// undoes a built-in rule cannot loop. Soundness is unaffected: a refused step only leaves the term less normalized.

@@ -84,8 +84,9 @@ is a learned replacement for parts the rewriter now fixes by hand, the most load
    every part off at once, restoring what breaks (a break would not say which part pays).
 10. **That held-out set is frozen fixture files** (2026-10-23), written once by an ignored command like
     `classes::regenerate_key`. It runs decision 8's 56 streams on a salt the mining streams never use, keeps the laws
-    the table leaves open and that hold at width 8, and samples 1000 per size band (11 and 13) evenly across the
-    streams, one file per band. Every ablation run then sees the same laws, and a change to growth code cannot move the
+    the table leaves open and that hold at width 8, and takes each size band's (11 and 13) first 1000 in the
+    sequence's round-robin order over the streams, one file per band: close to even across the streams, short only
+    where a stream has few laws in the band (a fixed quota per stream is option (b) below). Every ablation run then sees the same laws, and a change to growth code cannot move the
     baseline; the files are regenerated when the key file or the table's size changes. Parked as later options
     (`PARKED.md`, "Other ways to build the past-domain held-out set"): generating the set at run time from a held-out
     salt; stratifying it per stream instead of per size band.
@@ -244,8 +245,8 @@ Decision 8's streams become the loops' law source, and the gate runs on them.
   per phase (3-4 generations per sweep, and phases can share laws). The per-family stride goes. The sweep names it `cold:streams`. Per-stream budget is decision 8's open question, measured
   once the gate stands.
 - **The held-out files (decision 10):** an ignored command, `classes::regenerate_held`, run like `regenerate_key`,
-  writes `tests/church_bv/held_11.txt` and `held_13.txt`: 1000 laws per size band, drawn evenly across the streams at a
-  salt no loop uses. Each file's header names the key file's hash and the table's size; a mismatch fails with the
+  writes `tests/church_bv/held_11.txt` and `held_13.txt`: each size band's first 1000 laws in round-robin order over
+  the streams (decision 10) at a salt no loop uses. Each file's header names the key file's hash and the table's size; a mismatch fails with the
   regeneration message, as the key file's header does.
 - **The gate script:** `scripts/streams_ab.sh` (`salts_ab.sh`'s shape): A/B per salt on `cold:streams`, plus M on
   the held-out files under each loop's final rules (the laws that still need a whole-term machine proof). Its baseline
@@ -341,7 +342,9 @@ Each step ends with `docs/tier-cycle.md` and `docs/learned-vs-fixed.md` updated.
   sweep already generates its extras once per sweep (`driver::Draw`); the streams go through the same cache, and step 5
   measures what a sweep then pays.
 - **Held-out laws may overlap the loops' laws.** Different salts can still draw the same law. `regenerate_held` reports
-  how many of its laws salt 1's phases 1-3 serve; a material overlap is dropped from the files.
+  how many of its laws salt 1's phases 1-3 serve (their first 300 laws each) and drops them from the files. The
+  filter covers salt 1 only and exact matches only: other salts' loops may still serve a held-out law, or the same law with its
+  sides swapped or its variables renamed. Either is the same for both arms of a gate, so it can lower held-out M but not favour an arm.
 - **Laws past the domain may grow the lookup memo** beyond the spike's 50000 terms (§5); step 5 measures it against
   the parked entry's stop.
 

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tatic::kernel::{Expr, PExpr, Postulates, Scope};
 
-use crate::rewrite::{JoinCost, JoinStoreUse, Pref, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
+use crate::rewrite::{Conflict, JoinCost, JoinStoreUse, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
 
 type Env = hashbrown::HashMap<String, String>;
 
@@ -175,7 +175,7 @@ pub struct Job {
     pub join_cost: JoinCost,
     /// `RULE_CONFLICTS=1` (experiment): while `Some`, for each (rule that rewrote a term, later rule that would also have),
     /// how many terms; `print_rule_conflicts` lists them.
-    pub conflicts: Option<hashbrown::HashMap<Pref, u64>>,
+    pub conflicts: Option<hashbrown::HashMap<Conflict, u64>>,
     /// The lemmas bound as parameters so far, and the proofs that mention them.
     pub lemmas: Lemmas,
     /// The distinct class-table replacements `classes::Classes::step` used, each with a proof (spec decision 2: counted
@@ -216,7 +216,7 @@ impl Lemmas {
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
 impl Job {
-    /// A job with the built-in rules of `setup` alone, no preferences, both switches off.
+    /// A job with the built-in rules of `setup` alone, both switches off.
     pub fn new(setup: Arc<Setup>) -> Job {
         let rules = Rules::new(&setup, vec![]);
         Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), conflicts: None, lemmas: Lemmas::default(), table_steps: Default::default() }
@@ -241,7 +241,7 @@ impl Job {
         out
     }
 
-    /// `f` with `mined` in place of the job's mined rules, its preferences and switches kept (`with_rules`).
+    /// `f` with `mined` in place of the job's mined rules, its switches kept (`with_rules`).
     pub fn with_mined<T>(&mut self, mined: Vec<(Term, Term)>, f: impl FnOnce(&mut Job) -> T) -> T {
         let rules = self.rules.with_mined(&self.setup, mined);
         self.with_rules(rules, f)

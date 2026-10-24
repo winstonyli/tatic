@@ -1152,7 +1152,7 @@ fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term,
         None => family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, 7),
     };
     let laws = laws.into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
-    let installed = job.rules().with_mined(job.setup(), rules.clone()).with_prefs(parse_prefs(&text));
+    let installed = job.rules().with_mined(job.setup(), rules.clone());
     (installed, rules, kv, laws)
 }
 

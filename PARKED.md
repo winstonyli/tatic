@@ -111,7 +111,8 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **The class table's lookup beyond its domain, and under one lock** — what: `Classes::lookup` answers for nodes larger
   than the table's size or with an `lt` operand, by key values never refined to separate them; `step`'s verdict guards
   it, `canonical` (the twin filter) does not, so a false match can mark a law twin or trivial. And `lookup` computes a
-  new term's values under the one process-wide lock, serializing the miner's threads. Why parked: both are small today
+  new term's values under the one process-wide lock, serializing the miner's threads; a known node that is not its own
+  representative takes the lock twice (`rewrite_uncached`'s `lookup`, then `step`'s `rep`). Why parked: both are small today
   (the lock is inside 835 profile samples with reallocation). Trigger: a twin-filter gate showing wrong merges, or a
   profile of a streams sweep showing the lock. Evidence:
   `tests/church_bv/classes.rs` (`Classes::lookup`, `canonical`), final review M2, M3 (2026-10-23); phase 2 on the old
