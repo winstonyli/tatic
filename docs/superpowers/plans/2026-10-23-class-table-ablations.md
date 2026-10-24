@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Class-table ablations (spec step 7) Implementation Plan
@@ -197,7 +197,7 @@ Expected: exit 2 each time, each with its own message.
 - [ ] **Step 1:** `git switch -c ablations`. Run `cargo test --release -j 4`; the suite must be green before
   anything is ablated. Build the arms' exe with the sweep profile (fat LTO, what README prescribes for sweeps and
   timing): `cargo test --profile sweep -j 4 --test church_bv --no-run`, then take the path from cargo's "Executable"
-  line (`target\sweep\deps\church_bv-*.exe`). Check that `tools/runs/target/release/runs.exe` exists
+  line (`target\sweep\build\tatic\<hash>\out\church_bv-<hash>.exe`). Check that `tools/runs/target/release/runs.exe` exists
   (`streams_ab.sh` needs it).
 - [ ] **Step 2:** Check for live CPU leases and others' load. Then launch the driver detached, through the wrapper
   as its own non-timed row:
