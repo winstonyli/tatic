@@ -80,7 +80,7 @@ impl Setup {
         self.var(k).map_or(d, |v| v != "0")
     }
 
-    /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, chain, tree, collapse, join,
+    /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, chain, collapse, join,
     /// promoted, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
     /// eq_classes, shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
     /// environment each time was 11% of a mine (docs/tier-cycle.md).

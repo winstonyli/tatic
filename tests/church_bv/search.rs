@@ -1280,7 +1280,7 @@ pub fn proof_cost_split() {
     });
 }
 
-/// Closed terms equal to 0, -1 or 1 normalize to `0`, `-1`, `sub(0, -1)` with no machine proof (by the rules and `tree_step`; a
+/// Closed terms equal to 0, -1 or 1 normalize to `0`, `-1`, `sub(0, -1)` with no machine proof (by the rules and the class table; a
 /// constant-folding step of its own was removed as redundant).
 #[test]
 pub fn closed_terms_fold_to_constants() {

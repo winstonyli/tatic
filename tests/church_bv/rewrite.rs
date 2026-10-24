@@ -1097,65 +1097,6 @@ pub fn chain_step(job: &Job, a: &Term, b: &Term) -> Option<(Term, PlanRc)> {
     Some((target, Plan::law(job, LawKind::Chain, Term::op(ADD, a1, b1), cand, args)))
 }
 
-/// A sum tree of add-free leaves that the carry-encoding search shows equal to a constant, a variable or one
-/// bitwise operation on two of them (so `-1 - x` becomes `x ^ -1`): that value and
-/// the plan (`add_tree_law` over the `k` variables). Ablation name `tree`.
-pub fn tree_step(job: &Job, n: usize, t1: &Term, k: usize) -> Option<(Term, PlanRc)> {
-    if job.setup().ablated("tree") {
-        return None;
-    }
-    // `tree_encoding` refuses a candidate whose screen values differ from `t1`'s, so only those with `t1`'s vector are tried
-    let index = TREE_CANDS.with((n, k, job.setup().nops()), || tree_candidates(job, n, k), |c| c.clone());
-    let cand = *with_screen(n, k, |m| index.get(m.values(t1)))?.iter().find(|cand| tree_encoding(job, n, k, t1, cand).is_some())?;
-    Some((cand, Plan::law(job, LawKind::Tree, *t1, cand, vars(k))))
-}
-
-/// `tree_step`'s candidates by their screen vector, per width, variable count and operator count (`tree_candidates`), shared
-/// by a process's threads: the rule miner's scoped workers each rebuilt them (docs/tier-cycle.md, "Per-thread refills").
-static TREE_CANDS: crate::task::SharedMemo<(usize, usize, usize), std::sync::Arc<CandIndex>> = crate::task::SharedMemo::new();
-
-/// Candidates by screen vector, each list in candidate order. Hashed on eight of the vector's pseudo-random rows, not all
-/// 204: hashing the whole 3.3 KB on every `tree_step` was 1.3% of a sweep (docs/tier-cycle.md, "Profile at 2ff4c44").
-#[derive(Default)]
-struct CandIndex {
-    table: hashbrown::HashTable<(Box<[u128]>, Vec<Term>)>,
-    hasher: hashbrown::DefaultHashBuilder,
-}
-
-impl CandIndex {
-    /// rows 0 and 1 are all zeros and all ones, the same for many candidates
-    fn hash(hasher: &hashbrown::DefaultHashBuilder, v: &[u128]) -> u64 {
-        std::hash::BuildHasher::hash_one(hasher, &v[2..10])
-    }
-
-    fn get(&self, v: &[u128]) -> Option<&Vec<Term>> {
-        self.table.find(Self::hash(&self.hasher, v), |e| *e.0 == *v).map(|e| &e.1)
-    }
-
-    fn push(&mut self, v: &[u128], t: Term) {
-        let Self { table, hasher } = self;
-        let entry = table.entry(Self::hash(hasher, v), |e| *e.0 == *v, |e| Self::hash(hasher, &e.0));
-        entry.or_insert_with(|| (v.into(), vec![])).into_mut().1.push(t);
-    }
-}
-
-/// `tree_step`'s candidates, the constants, the variables, then every operator applied to two of them, indexed by their
-/// screen vector: one lookup finds those `t1` could equal, where trying each took ~79 screen comparisons a step
-/// (docs/tier-cycle.md, "What the screen does in a sweep").
-fn tree_candidates(job: &Job, n: usize, k: usize) -> std::sync::Arc<CandIndex> {
-    let mut index = CandIndex::default();
-    with_screen(n, k, |m| {
-        for cand in [Term::ZERO, Term::ONES]
-            .into_iter()
-            .chain((0..k).map(Term::v))
-            .chain(terms(job.setup(), k, false).iter().copied().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
-        {
-            index.push(m.values(&cand), cand);
-        }
-    });
-    index.into()
-}
-
 /// A library law used as a left-to-right rewrite rule: `lhs = rhs` over the pattern variables `V(0)..`, each instance
 /// proved from the law `add_tree_law` proves once (per width) for the patterns themselves. `name` is the `ABLATE` key.
 pub struct Rule {
@@ -2246,14 +2187,7 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
             let (t3, p3) = rewrite(job, &target, n, k);
             return (t3, Plan::trans(job, Plan::trans(job, cong, step), p3));
         }
-        if o == SUB {
-            // a difference: then the carry-encoding search
-            return match tree_step(job, n, &t1, k) {
-                Some((target, law)) => (target, Plan::trans(job, cong, law)),
-                None => (t1, cong),
-            };
-        }
-        if matches!(o, LT | SHL1 | SHR1) {
+        if matches!(o, SUB | LT | SHL1 | SHR1) {
             return (t1, cong);
         }
         // bitwise and shift terms only: a node equal to 0, -1 or one of its own subterms collapses to it, by the
@@ -2307,8 +2241,6 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
     let step = if let Some(r) = rule_step(job, &t1) {
         Some(r)
     } else if let Some(r) = chain_step(job, &a2, &b2) {
-        Some(r)
-    } else if let Some(r) = tree_step(job, n, &t1, k) {
         Some(r)
     } else if let (false, Node::Op(ADD, p, q)) = (job.setup().ablated("assoc"), *a2.node()) {
         // (p + q) + r = p + (q + r)
@@ -4184,27 +4116,6 @@ fn pat_index_offers_only_matches_down_to_grandchildren() {
         }
     }
     assert!(matched.iter().all(|&m| m > 0) && matched.iter().sum::<usize>() > 1000, "matched {matched:?}");
-}
-
-#[test]
-fn tree_step_index_matches_scan() {
-    let job = &Job::new(Setup::process());
-    // `tree_step` as it was before `tree_candidates`: every candidate tried in order
-    for (n, k) in [(3, 1), (4, 2), (8, 2), (4, 3)] {
-        let cands: Vec<Term> = [Term::ZERO, Term::ONES]
-            .into_iter()
-            .chain((0..k).map(Term::v))
-            .chain(terms(job.setup(), k, false).iter().copied().filter(|c| matches!(*c.node(), Node::Op(o, ..) if (1..=3).contains(&o))))
-            .collect();
-        let (mut found, mut tried) = (0, 0);
-        for t1 in terms(job.setup(), k, true).iter().step_by(5) {
-            let scan = cands.iter().copied().find(|c| crate::machine::tree_encoding(job, n, k, t1, c).is_some());
-            assert!(tree_step(job, n, t1, k).map(|r| r.0) == scan, "n={n} {}", t1.show());
-            tried += 1;
-            found += scan.is_some() as usize;
-        }
-        assert!(found > 0 && found < tried, "n={n} k={k}: {found} of {tried}");
-    }
 }
 
 #[test]
