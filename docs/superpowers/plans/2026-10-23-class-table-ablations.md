@@ -158,7 +158,7 @@ pair() { # <name> <A exe> <B exe> <salt> <salt> [untimed]: the "salt N:" and str
   echo "pair $name: refused 8 times"; return 1
 }
 # columns of "salt N: M A a B b; held A a B b; jobcpu A a B b": salt mA mB hA hB cA cB
-cols() { sed -nE 's/^salt ([0-9]+): M A ([0-9]+) B ([0-9]+); held A ([0-9x]+) B ([0-9x]+); jobcpu A ([0-9.]+) B ([0-9.]+)$/\1 \2 \3 \4 \5 \6 \7/p' "$@"; }
+cols() { sed -nE 's/^salt ([0-9]+): M A ([0-9]+) B ([0-9]+); held A ([0-9x]+) B ([0-9x]+); jobcpu A ([0-9.]+) B ([0-9.]+).*/\1 \2 \3 \4 \5 \6 \7/p' "$@"; }
 
 if [ "$mode" = check ]; then
   sw=$2; cp "$1" "$here/B.exe" || exit 2; echo "ABLATE=$sw" > "$here/B.exe.env"

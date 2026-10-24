@@ -4,8 +4,9 @@
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (tests/church_bv/held_{11,13}.txt, CHECK_FAST: the laws that still need a whole-term machine
 # proof). Per salt: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
-# lookup memo's peak (CLASS_MEMO) and the largest peakproc. Last line: loops with the same rules, and arms that failed
-# (non-zero exit or no M); exits 1 if any arm failed. Differing rules are reported, not failed.
+# lookup memo's peak (CLASS_MEMO) and the largest peakproc; per salt and per arm the work counts (the summed WORK lines,
+# spec docs/superpowers/specs/2026-10-23-work-counts-design.md). Last line: loops with the same rules, and arms that
+# failed (non-zero exit, no M or no WORK line); exits 1 if any arm failed. Differing rules are reported, not failed.
 a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
@@ -20,6 +21,9 @@ held() { # <exe> <rules file>: held-out M over both bands
     m=$((m + p - f + n))
   done
   echo $m
+}
+work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> match=<n> op=<n>`; empty if none
+  grep -rh '^WORK ' "$@" 2>/dev/null | awk '{for (i = 2; i <= NF; i++) {split($i, kv, "="); if (!(kv[1] in t)) o[++n] = kv[1]; t[kv[1]] += kv[2]}} END {for (i = 1; i <= n; i++) printf "%s%s=%.0f", (i > 1 ? " " : ""), o[i], t[o[i]]}'
 }
 for s in "$@"; do
   [ $((s % 2)) = 1 ] && order="A B" || order="B A"
@@ -37,6 +41,7 @@ for s in "$@"; do
     h=0
     for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt"); [ "$v" = x ] && failed=$((failed + 1)) || h=$((h + v)); done
     echo $h > "$o/held.txt"
+    grep -rqs '^WORK ' "$o" || failed=$((failed + 1))
   done
   for l in 1 2 3; do
     f="cold_streams_streams_${l}_none/rules.txt"
@@ -45,7 +50,7 @@ for s in "$@"; do
   done
   m() { cut -f4 "$RUN_DIR/s${s}_$1/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$' | awk '{s += $1} END {print s + 0}'; }
   c() { grep -oE 'jobcpu=[0-9.]+' "$RUN_DIR/s${s}_$1/result.txt" | cut -d= -f2; }
-  echo "salt $s: M A $(m A) B $(m B); held A $(cat "$RUN_DIR/s${s}_A/held.txt") B $(cat "$RUN_DIR/s${s}_B/held.txt"); jobcpu A $(c A) B $(c B)"
+  echo "salt $s: M A $(m A) B $(m B); held A $(cat "$RUN_DIR/s${s}_A/held.txt") B $(cat "$RUN_DIR/s${s}_B/held.txt"); jobcpu A $(c A) B $(c B); work A $(work "$RUN_DIR/s${s}_A") B $(work "$RUN_DIR/s${s}_B")"
 done
 for arm in A B; do
   m=0; h=0
@@ -55,7 +60,7 @@ for arm in A B; do
   done
   memo=$(grep -rh '^CLASS_MEMO' "$RUN_DIR"/s*_$arm 2>/dev/null | awk '{if ($2 > x) x = $2} END {print x + 0}')
   peak=$(grep -h -oE 'peakproc=[0-9]+' "$RUN_DIR"/s*_$arm/result.txt 2>/dev/null | cut -d= -f2 | sort -n | tail -1)
-  echo "total $arm: M $m; held $h; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}'); memo peak $memo terms; peakproc max $peak"
+  echo "total $arm: M $m; held $h; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}'); memo peak $memo terms; peakproc max $peak; work $(work "$RUN_DIR"/s*_$arm)"
 done
 echo "streams_ab: rules same in $same_n of $loops loops; $failed of $(($# * 2)) arms failed"
 [ $failed = 0 ]
