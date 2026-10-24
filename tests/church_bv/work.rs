@@ -42,7 +42,8 @@ pub fn count_n(site: Site, n: u64) {
 }
 
 /// The work counted since the last `take`, summed over this process's threads, with every counter set back to 0. Call it
-/// only when no other thread is counting (after a task's threads are joined): a count made during the call may be lost.
+/// only when no other thread is counting (after a task's threads are joined): a count made during the call may be lost, or,
+/// as `count_n` adds by load and store, counted twice.
 pub fn take() -> [u64; 4] {
     let mut slots = SLOTS.lock().unwrap();
     let mut out = [0; 4];

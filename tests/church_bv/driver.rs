@@ -403,25 +403,28 @@ impl Drop for Worker {
     }
 }
 
-/// `f(item, lane)` for every item on `lanes` threads, each lane taking the next item when its last is done; the results in
-/// `items`' order.
+/// `f(item, lane)` for every item on `lanes` threads, item `i` on lane `i % lanes`; the results in `items`' order. Fixed,
+/// not the next free lane: a lane's worker carries its lemma file and memos into its next item, so a timing-picked lane
+/// made an item's work counts depend on which items ran before it (2026-10-24 review, `work-assoc-*`: loop 3 changed
+/// lanes in 4 of 10 salts).
 fn run_lanes<T: Sync, R: Send>(items: &[T], lanes: usize, f: impl Fn(&T, usize) -> R + Sync) -> Vec<R> {
-    let next = std::sync::atomic::AtomicUsize::new(0);
+    let lanes = lanes.max(1);
     let out: Vec<std::sync::Mutex<Option<R>>> = items.iter().map(|_| std::sync::Mutex::new(None)).collect();
     std::thread::scope(|s| {
-        for lane in 0..lanes.max(1) {
-            let (next, out, f) = (&next, &out, &f);
-            s.spawn(move || loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(item) = items.get(i) else { break };
-                *out[i].lock().unwrap() = Some(f(item, lane));
+        for lane in 0..lanes {
+            let (out, f) = (&out, &f);
+            s.spawn(move || {
+                for i in (lane..items.len()).step_by(lanes) {
+                    *out[i].lock().unwrap() = Some(f(&items[i], lane));
+                }
             });
         }
     });
     out.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
 }
 
-/// Every item runs once, its result lands at its own index, and the lanes run items at once.
+/// Every item runs once, its result lands at its own index, item `i` runs on lane `i % lanes` whatever the timing, and
+/// the lanes run items at once.
 #[test]
 fn run_lanes_keeps_order_and_overlaps() {
     let busy = std::sync::atomic::AtomicUsize::new(0);
@@ -438,7 +441,7 @@ fn run_lanes_keeps_order_and_overlaps() {
         (i * 10, lane)
     });
     assert_eq!(out.iter().map(|r| r.0).collect::<Vec<_>>(), items.iter().map(|i| i * 10).collect::<Vec<_>>());
-    assert!(out.iter().all(|r| r.1 < 3), "{out:?}");
+    assert_eq!(out.iter().map(|r| r.1).collect::<Vec<_>>(), items.iter().map(|i| i % 3).collect::<Vec<_>>());
     assert!(peak.into_inner() >= 2, "lanes never overlapped");
     assert_eq!(run_lanes(&[] as &[usize], 2, |&i, _| i), Vec::<usize>::new());
 }
@@ -462,7 +465,7 @@ fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Pa
 }
 
 /// Prints the task's variable `k` for each name in `ECHO` (a comma list), also handing each to the driver as a result record, and a
-/// nonce unique to this process; panics when `ECHO_PANIC=1`. A task for `worker_runs_tasks`.
+/// nonce unique to this process; counts one `op` when `ECHO_WORK=1` and panics when `ECHO_PANIC=1`. A task for `worker_runs_tasks`.
 #[test]
 #[ignore]
 fn env_echo() {
@@ -477,11 +480,14 @@ fn env_echo_task(setup: &Arc<Setup>) {
         setup.result(k, setup.var(k).unwrap_or("<unset>"));
     }
     println!("ECHO nonce={nonce}");
+    if setup.flag("ECHO_WORK", false) {
+        crate::work::count(crate::work::Site::Op);
+    }
     assert!(!setup.flag("ECHO_PANIC", false), "env_echo panicked on request");
 }
 
 /// A worker runs each task with its own environment, log and result records, leaks no variable or record from one task to
-/// the next (task 10 reuses task 9's log), starts afresh
+/// the next (task 10 reuses task 9's log; task 1's count is not in task 2's WORK line), starts afresh
 /// after a failed task, and is replaced when a task's process-start variables differ. Starts processes:
 /// `cargo test --release --test church_bv driver::worker_runs_tasks -- --exact --ignored --nocapture`.
 #[test]
@@ -493,7 +499,7 @@ fn worker_runs_tasks() {
     let log = |i: usize| dir.join(format!("{i}.log"));
     let w = Worker::new();
     let records = [
-        w.run("driver::env_echo", &[kv("ECHO", "A,B,C"), kv("A", "1"), kv("C", "x=y")], &log(1)),
+        w.run("driver::env_echo", &[kv("ECHO", "A,B,C"), kv("A", "1"), kv("C", "x=y"), kv("ECHO_WORK", "1")], &log(1)),
         w.run("driver::env_echo", &[kv("ECHO", "A,B"), kv("B", "2")], &log(2)),
         w.run("driver::env_echo", &[kv("ECHO_PANIC", "1")], &log(3)),
         w.run("driver::env_echo", &[kv("ECHO", "A")], &log(4)),
@@ -524,7 +530,8 @@ fn worker_runs_tasks() {
     for i in [1, 2, 4, 7, 8, 9] {
         let log = text(i);
         let lines: Vec<&str> = log.lines().filter(|l| !l.starts_with("ECHO ")).collect();
-        assert_eq!(lines, ["WORK interp=0 walk=0 match=0 op=0"], "{i}.log holds its task's lines and one WORK line: {log}");
+        let work = if i == 1 { "WORK interp=0 walk=0 match=0 op=1" } else { "WORK interp=0 walk=0 match=0 op=0" };
+        assert_eq!(lines, [work], "{i}.log holds its task's lines and one WORK line, with only its own counts: {log}");
     }
     drop(w);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -794,7 +801,7 @@ fn sweep() {
         }
     }
     assert!(short.is_empty(), "extras lists too short for their slices:\n{}", short.join("\n"));
-    // a stage's loops run `SWEEP_LANES` (default 2) at a time; 2 × 6 mining threads fit the 12-thread cap. A lane has its own
+    // a stage's loops run on `SWEEP_LANES` (default 2) lanes, loop i on lane i % lanes (`run_lanes`); 2 × 6 mining threads fit the 12-thread cap. A lane has its own
     // worker and lemma file (all its processes run this exe, so every statement in it was checked by this build; one shared
     // file would race on its save). SWEEP_LANES=1 for timings.
     let lanes: usize = setup.or("SWEEP_LANES", 2usize).max(1);
