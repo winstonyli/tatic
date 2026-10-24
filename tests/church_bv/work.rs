@@ -28,9 +28,16 @@ thread_local! {
 /// One unit of work at `site`, on this thread.
 #[inline]
 pub fn count(site: Site) {
+    count_n(site, 1);
+}
+
+/// `n` units of work at `site`, on this thread. A recursive site sums its nodes in a local and adds them once per call:
+/// a thread-local add per node cost 7-8% job CPU (`interp` and `match_pat`, run `2026-10-24-work-overhead-1-2`).
+#[inline]
+pub fn count_n(site: Site, n: u64) {
     let _ = SLOT.try_with(|s| {
         let c = &s[site as usize];
-        c.store(c.load(Relaxed) + 1, Relaxed);
+        c.store(c.load(Relaxed) + n, Relaxed);
     });
 }
 
@@ -71,7 +78,7 @@ fn take_sees_scoped_threads() {
 }
 
 /// `take_sees_scoped_threads`' child: three scoped threads each build `add(x, y)` (1 op), evaluate it (3 nodes) and match
-/// it against itself (3 calls); then two `WORK` lines.
+/// it against itself (3 pattern nodes); then two `WORK` lines.
 #[test]
 #[ignore]
 fn probe() {

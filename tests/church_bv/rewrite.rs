@@ -441,14 +441,20 @@ impl Term {
     }
     /// The value on the width-`n` operands `vals`, in plain integers (a cheap screen for false laws).
     pub fn interp(&self, n: usize, vals: &[u128]) -> u128 {
-        crate::work::count(crate::work::Site::Interp);
-        let mask = low_bits(n);
+        let mut nodes = 0;
+        let v = self.interp_in(low_bits(n), vals, &mut nodes);
+        crate::work::count_n(crate::work::Site::Interp, nodes);
+        v
+    }
+    /// `interp` under `mask`, adding the nodes it evaluates to `nodes`.
+    fn interp_in(&self, mask: u128, vals: &[u128], nodes: &mut u64) -> u128 {
+        *nodes += 1;
         match *self.node() {
             Node::V(i) => vals[i],
             Node::Zero => 0,
             Node::Ones => mask,
             Node::Op(o, a, b) => {
-                let (x, y) = (a.interp(n, vals), b.interp(n, vals));
+                let (x, y) = (a.interp_in(mask, vals, nodes), b.interp_in(mask, vals, nodes));
                 (OP_INFO[o].word)(x, y, mask)
             }
         }
@@ -1729,7 +1735,15 @@ pub fn matches(p: &Term, t: &Term) -> bool {
 }
 
 pub fn match_pat(p: &Term, t: &Term, sub: &mut [Option<Term>]) -> bool {
-    crate::work::count(crate::work::Site::Match);
+    let mut nodes = 0;
+    let m = match_in(p, t, sub, &mut nodes);
+    crate::work::count_n(crate::work::Site::Match, nodes);
+    m
+}
+
+/// `match_pat`, adding the pattern nodes it visits to `nodes`.
+fn match_in(p: &Term, t: &Term, sub: &mut [Option<Term>], nodes: &mut u64) -> bool {
+    *nodes += 1;
     match (*p.node(), *t.node()) {
         (Node::V(i), _) => match &sub[i] {
             Some(b) => b == t,
@@ -1739,7 +1753,7 @@ pub fn match_pat(p: &Term, t: &Term, sub: &mut [Option<Term>]) -> bool {
             }
         },
         (Node::Zero, Node::Zero) | (Node::Ones, Node::Ones) => true,
-        (Node::Op(o, a, b), Node::Op(o2, c, d)) => o == o2 && match_pat(&a, &c, sub) && match_pat(&b, &d, sub),
+        (Node::Op(o, a, b), Node::Op(o2, c, d)) => o == o2 && match_in(&a, &c, sub, nodes) && match_in(&b, &d, sub, nodes),
         _ => false,
     }
 }
