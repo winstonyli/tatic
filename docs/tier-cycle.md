@@ -5631,6 +5631,9 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
 - **`assoc` pays** (the driver's next switch, run as Step 3 of "Work counts as the gate's cost" below): with
   `ABLATE=assoc`, M rises on all 10 salts (176 to 189 on salt 1; summed 1718 to 1836), held-out M on all 10, rules
   differ in 30 of 30 loops (`2026-10-24-work-assoc-1-2` ... `-9-10`, timed).
+- **`tree` is free** with the class table on (`2026-10-24-ablations-6`, untimed, on a4eda36): over salts 1-10 M 1718 and
+  held-out M 8721 in both arms, every counter within 0.01%. The timed pair on salts 1-2 (`-tree-timed-1-2`, quiet)
+  agrees: job CPU -0.3% and -0.1%, rules the same in 6 of 6 loops. Deletion waits on the user (ablations plan D4).
 
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
 `2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,
