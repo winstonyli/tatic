@@ -5663,7 +5663,7 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
 - **Each arm now proves its switches took effect** (2026-10-24, the final review's I3): `Setup::ablated` prints
   `ABLATED <name>` the first time a name switches something off in a setup, and `streams_ab.sh` fails an arm whose
   `.exe.env` names a switch with no such line anywhere in the arm (task logs, the sweep's own output, the held-out
-  check's lines in `held_ablated.txt`). The 8.3-name bug above would have failed every B arm instead of passing them
+  check's lines in `held_lines.txt`). The 8.3-name bug above would have failed every B arm instead of passing them
   as A. Overhead (`2026-10-24-ablated-overhead`, salt 1, `ABLATE=comm`, the build before against the build with it,
   untimed): M 183 in both, interp and walk equal, match +2.8 ppm and op +5 ppm, inside the A/A's few ppm; 15
   `ABLATED comm` lines, none from the old build.
@@ -5688,6 +5688,12 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   time alone and about 50% more job CPU, so 4 at once gave about 1.85x throughput (8 arms in 12.5 min against about
   23 min one at a time). The ablations driver runs `JOBS=4` and keeps finished arms in `streams_ab.sh`'s `ARM_CACHE`,
   so A runs once per build (plan `docs/superpowers/plans/2026-10-23-class-table-ablations.md`, D3).
+- **A cached arm is reused only where its inputs are unchanged** (2026-10-24). The key also hashes `runs.exe` and the
+  held-out laws, and the exe reports each name it reads from the environment (`ENV <name>=<value>` or `ENV <name>
+  unset`, once per setup, `Setup::var`); a hit needs each to read the same now, except the names the gate sets itself.
+  Before, a variable such as `JOIN_VISIT` set in the shell would have reused arms run without it. The record costs
+  nothing measurable: over 12 held checks each, instructions -0.07% against the build without it, inside its own 0.06%
+  spread (runs `env-record-icount2-A`/`-B`; it is counted, not timed, as the read sits on per-join paths).
 - **Overhead: none measurable** once `interp` and `match_pat` sum their nodes in a local and add them once per call
   (`count_n`, 4d1a74f): job CPU against the uncounted f0390df build -1.5% and -6.0% on salts 1-2. A thread-local add per
   node had cost +6.8% and +8.2%.

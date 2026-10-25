@@ -5,17 +5,21 @@
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tatic::kernel::{Expr, PExpr, Postulates, Scope};
 
 use crate::rewrite::{Conflict, JoinCost, JoinStoreUse, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
 
-type Env = hashbrown::HashMap<String, String>;
+/// Each name with its value and whether its read has been reported (`Setup::var`); a name the task's pairs set starts
+/// reported.
+type Env = hashbrown::HashMap<String, (String, AtomicBool)>;
 
 /// A task's configuration, read once when it is built: its environment, and the values parsed from it on hot paths.
 pub struct Setup {
     env: Env,
+    /// The names read and not set, each reported once (`var`).
+    unset: RwLock<hashbrown::HashSet<String>>,
     /// `ABLATE`'s comma list, each name with whether it has switched something off (`ablated`).
     ablate: Vec<(String, AtomicBool)>,
     /// `nops()`: how many of `OP_INFO` the miner enumerates.
@@ -50,23 +54,43 @@ impl Setup {
     }
 
     fn from_env(env: Env) -> Setup {
-        let ablate = env.get("ABLATE").map(|v| v.split(',').map(|n| (n.to_string(), AtomicBool::new(false))).collect()).unwrap_or_default();
         let mut s = Setup {
             env,
-            ablate,
+            unset: Default::default(),
+            ablate: Vec::new(),
             nops: 0,
             results: Mutex::new(None),
             fixed: OnceLock::new(),
             fixed_table: OnceLock::new(),
             lemmas: Default::default(),
         };
+        s.ablate = s.var("ABLATE").map(|v| v.split(',').map(|n| (n.to_string(), AtomicBool::new(false))).collect()).unwrap_or_default();
         s.nops = if s.flag("MINER_SUB", false) { 5 } else { 4 };
         s
     }
 
-    /// The environment variable `k`, or `None` when unset.
+    /// The environment variable `k`, or `None` when unset. The first read of a name the task's pairs do not set prints
+    /// `ENV <name>=<value>` or `ENV <name> unset`, once per setup: `streams_ab.sh`'s arm cache reuses an arm only where
+    /// the environment it read is unchanged. A repeated read costs an atomic load, or a shared lock when unset: some
+    /// readers run once per join or per lookup (`JOIN_VISIT`, `CARRY_CAP`).
     pub fn var(&self, k: &str) -> Option<&str> {
-        self.env.get(&*env_name(k)).map(String::as_str)
+        let name = env_name(k);
+        match self.env.get(&*name) {
+            Some((v, seen)) => {
+                if !seen.load(Relaxed) && !seen.swap(true, Relaxed) {
+                    println!("ENV {name}={v}");
+                }
+                Some(v)
+            }
+            None => {
+                if !self.unset.read().unwrap_or_else(|e| e.into_inner()).contains(&*name)
+                    && self.unset.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string())
+                {
+                    println!("ENV {name} unset");
+                }
+                None
+            }
+        }
     }
 
     /// The environment variable `k` parsed as `T` (`parsed`).
@@ -189,14 +213,15 @@ fn exe_env_probe() {
 }
 
 /// The task's environment from its three sources, later ones over earlier: the process's, `<exe>.env` for names the
-/// process does not set, then the task's pairs. Names are upper-cased on Windows.
+/// process does not set, then the task's pairs (marked reported: `Setup::var` reports only what the first two decided).
+/// Names are upper-cased on Windows.
 fn merge_env(process: impl Iterator<Item = (String, String)>, exe_env: Option<&str>, task: &[(String, String)]) -> Env {
-    let mut env: Env = process.map(|(k, v)| (env_name(&k).into_owned(), v)).collect();
+    let mut env: Env = process.map(|(k, v)| (env_name(&k).into_owned(), (v, AtomicBool::new(false)))).collect();
     for (k, v) in exe_env.into_iter().flat_map(str::lines).filter_map(|l| l.split_once('=')) {
-        env.entry(env_name(k.trim()).into_owned()).or_insert_with(|| v.trim().to_string());
+        env.entry(env_name(k.trim()).into_owned()).or_insert_with(|| (v.trim().to_string(), AtomicBool::new(false)));
     }
     for (k, v) in task {
-        env.insert(env_name(k).into_owned(), v.clone());
+        env.insert(env_name(k).into_owned(), (v.clone(), AtomicBool::new(true)));
     }
     env
 }
@@ -353,7 +378,7 @@ fn measured_runs_under_its_budget_and_puts_the_callers_back() {
 fn task_pairs_override_the_process_and_exe_env_fills_only_unset_names() {
     let p = [("A".to_string(), "proc".to_string()), ("B".to_string(), "proc".to_string())];
     let env = merge_env(p.into_iter(), Some("B=file\nC=file\n"), &[("A".into(), "task".into())]);
-    assert_eq!((env["A"].as_str(), env["B"].as_str(), env["C"].as_str()), ("task", "proc", "file"));
+    assert_eq!((env["A"].0.as_str(), env["B"].0.as_str(), env["C"].0.as_str()), ("task", "proc", "file"));
 }
 
 #[test]
@@ -427,6 +452,41 @@ fn ablated_probe() {
     for _ in 0..2 {
         let s = Setup::with_env(vec![("ABLATE".into(), "comm,gen".into())]);
         assert!(s.ablated("comm") && s.ablated("comm") && !s.ablated("assoc"));
+    }
+}
+
+/// Each name a setup reads from the process environment or `<exe>.env` says so once per setup: `ENV <name>=<value>`, or
+/// `ENV <name> unset`, on stdout at its first read, so the gate's arm cache can tell whether a cached arm read the same
+/// environment. A name the task's pairs set is not reported (the sweep sets those itself). It runs `env_probe` in a child
+/// process with `ENV_PROBE_X=a` set; only the probe's names are compared (the setup reads others, such as `MINER_SUB`).
+#[test]
+fn a_read_of_the_environment_says_so_once() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["job::env_probe", "--exact", "--ignored", "--nocapture"])
+        .env("ENV_PROBE", "1")
+        .env("ENV_PROBE_X", "a")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("ENV ENV_PROBE_")).collect();
+    let one = ["ENV ENV_PROBE_X=a", "ENV ENV_PROBE_U unset"];
+    assert_eq!(lines, [one, one].concat(), "{text}");
+}
+
+/// `a_read_of_the_environment_says_so_once`' child: two setups with the task pair `ENV_PROBE_T=t`; each reads X, the unset
+/// U and T twice.
+#[test]
+#[ignore]
+fn env_probe() {
+    if std::env::var_os("ENV_PROBE").is_none() {
+        return;
+    }
+    for _ in 0..2 {
+        let s = Setup::with_env(vec![("ENV_PROBE_T".into(), "t".into())]);
+        for _ in 0..2 {
+            assert_eq!((s.var("ENV_PROBE_X"), s.var("ENV_PROBE_U"), s.var("ENV_PROBE_T")), (Some("a"), None, Some("t")));
+        }
     }
 }
 

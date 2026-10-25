@@ -135,9 +135,10 @@ fn worker() {
         let env = fields.filter_map(|f| f.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let ok = match (std::fs::File::create(&log), std::fs::File::create(results_path(Path::new(&log)))) {
             (Ok(f), Ok(results)) => {
-                let setup = Setup::for_task(env, results);
                 std::io::stdout().flush().unwrap();
                 let saved = stdio::redirect(&f);
+                // after the redirect: the setup's reads as it is built print ENV lines (`Setup::var`), which go in the log
+                let setup = Setup::for_task(env, results);
                 let ok = match task_fn(&name) {
                     Some(run) => std::thread::Builder::new().name(name.clone()).spawn(move || run(&setup)).unwrap().join().is_ok(),
                     None => {
@@ -517,9 +518,11 @@ fn worker_runs_tasks() {
     assert_eq!(records[1], Some(pairs(&[("A", "<unset>"), ("B", "2")])), "no record leaks from task 1");
     assert_eq!(records[9], Some(pairs(&[("B", "3")])), "task 10, on task 9's log, has only its own records");
     let text = |i: usize| std::fs::read_to_string(log(i)).unwrap();
-    let echoes = |i: usize| text(i).lines().filter(|l| !l.starts_with("ECHO nonce=") && !l.starts_with("WORK ")).map(String::from).collect::<Vec<_>>();
+    let echoes = |i: usize| text(i).lines().filter(|l| !l.starts_with("ECHO nonce=") && !l.starts_with("WORK ") && !l.starts_with("ENV ")).map(String::from).collect::<Vec<_>>();
     let nonce = |i: usize| text(i).lines().find_map(|l| l.strip_prefix("ECHO nonce=").map(String::from)).unwrap();
     assert_eq!(echoes(1), ["ECHO A=1", "ECHO B=<unset>", "ECHO C=x=y"]);
+    // the setup's own reads, made as it is built (`Setup::var`'s ENV lines), are in the task's log, not on the task pipe
+    assert!(text(1).lines().any(|l| l.starts_with("ENV MINER_SUB")), "1.log: {}", text(1));
     assert_eq!(echoes(2), ["ECHO A=<unset>", "ECHO B=2"], "no variable leaks from task 1");
     assert!(text(3).contains("env_echo panicked on request"), "3.log: {}", text(3));
     assert!(text(5).contains("no task driver::no_such_task"), "5.log: {}", text(5));
@@ -529,7 +532,7 @@ fn worker_runs_tasks() {
     assert_ne!(nonce(8), nonce(9), "a different RUST_BACKTRACE gets a fresh worker");
     for i in [1, 2, 4, 7, 8, 9] {
         let log = text(i);
-        let lines: Vec<&str> = log.lines().filter(|l| !l.starts_with("ECHO ")).collect();
+        let lines: Vec<&str> = log.lines().filter(|l| !l.starts_with("ECHO ") && !l.starts_with("ENV ")).collect();
         let work = if i == 1 { "WORK interp=0 walk=0 match=0 op=1" } else { "WORK interp=0 walk=0 match=0 op=0" };
         assert_eq!(lines, [work], "{i}.log holds its task's lines and one WORK line, with only its own counts: {log}");
     }

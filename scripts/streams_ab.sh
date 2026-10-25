@@ -11,11 +11,11 @@ a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "streams_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
-held() { # <exe> <rules file> <arm dir>: held-out M over both bands; the check's ABLATED lines go to <arm dir>/held_ablated.txt
+held() { # <exe> <rules file> <arm dir>: held-out M over both bands; the check's ABLATED and ENV lines go to <arm dir>/held_lines.txt
   local m=0 band out line p f n
   for band in 11 13; do
     out=$(MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams CHECK_RULES="$(cygpath -w "$2")" CHECK_LAWFILE="$(cygpath -w "$root/tests/church_bv/held_$band.txt")" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null 2>&1)
-    grep '^ABLATED ' <<< "$out" >> "$3/held_ablated.txt"; line=$(grep '^CHECKED ' <<< "$out")
+    grep -E '^(ABLATED|ENV) ' <<< "$out" >> "$3/held_lines.txt"; line=$(grep '^CHECKED ' <<< "$out")
     p=$(echo "$line" | sed -E 's/^CHECKED ([0-9]+) .*/\1/'); f=$(echo "$line" | sed -E 's/.*\(([0-9]+) with.*/\1/'); n=$(echo "$line" | sed -E 's/.*\), ([0-9]+) not proved.*/\1/')
     [ -n "$line" ] || { echo "held: no CHECKED line for $2 band $band" >&2; echo x; return; }
     m=$((m + p - f + n))
@@ -45,6 +45,29 @@ untaken() {
   local v
   for v in $(sed -nE 's/^ *ABLATE *= *//p' "$1" 2>/dev/null | tr -d ' \r' | tr ',' ' '); do grep -rqsx "ABLATED $v" "$2" || echo "$v"; done
 }
+# the names the gate sets itself, in the sweep's and the held-out check's environments above and below: a cached arm's
+# reads of them don't count in `changed`
+gate_set="MACHINE_STATE SWEEP SALT SWEEP_OUT CHECK_FAST CHECK_FAMILY CHECK_RULES CHECK_LAWFILE"
+# <exe>.env <cache entry>: the first name the cached arm read from its environment (its ENV lines, job.rs `Setup::var`)
+# whose value now differs, as `<name>=<then>, now <now>` or `<name> unset, now <now>`; empty when all agree. A value is
+# the process's, else its .exe.env's (trimmed, names upper-cased, the first line for a name), as job.rs's merge_env reads
+# them; a name bash cannot hold counts as changed
+changed() {
+  local l n was now
+  while IFS= read -r l; do
+    l=${l#ENV }
+    if [[ $l =~ ^([^=\ ]+)=(.*)$ ]]; then n=${BASH_REMATCH[1]}; was="=${BASH_REMATCH[2]}"; else n=${l% unset}; was=" unset"; fi
+    [[ " $gate_set " = *" $n "* ]] && continue
+    if ! [[ $n =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then now="=?"
+    elif [ -n "${!n+x}" ]; then now="=${!n}"
+    else
+      now=$(cat "$1" 2>/dev/null | tr -d '\r' | awk -v n="$n" 'index($0, "=") {k = $0; sub(/=.*/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", k)
+        if (toupper(k) == n) {sub(/^[^=]*=/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); print "=" $0; exit}}')
+      now=${now:- unset}
+    fi
+    [ "$now" = "$was" ] || { echo "$n$was, now ${now#[= ]}"; return; }
+  done < <(grep -rh '^ENV ' "$2" 2>/dev/null | tr -d '\r' | sort -u)
+}
 # <arm dir> <cache entry>: store a finished arm through a temporary copy, so a reader never sees half an arm. The copy
 # is named by the storing arm's own pid ($$ is the script's, shared by the arms of one key in an A/A), and moved with
 # `mv -T`, so an entry another writer stored first is kept, not nested into.
@@ -69,23 +92,25 @@ tally() {
   [ $n = 0 ]
 }
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
-  local s=$1 arm=$2 exe o mb h l v f=0 c= long
+  local s=$1 arm=$2 exe o mb h l v= f=0 c= long
   [ $arm = A ] && exe=$a || exe=$b
   o="$RUN_DIR/s${s}_$arm"
-  # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env and this
-  # script, and an arm with the same hash and salt is copied, not run: the gate's results repeat (counts to a few ppm,
-  # docs/tier-cycle.md, "Work counts as the gate's cost"). Off by default: an A/A of one exe would otherwise run once.
+  # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env, this
+  # script, runs.exe and the held-out laws, and an arm with the same hash and salt is copied, not run, if the environment
+  # it read is unchanged (`changed`): the gate's results repeat (counts to a few ppm, docs/tier-cycle.md, "Work counts
+  # as the gate's cost"). Off by default: an A/A of one exe would otherwise run once.
   # The exe by its long name (here and in the ABLATED check below): the .exe.env of a short (8.3) name like
   # B_COLL~1.EXE does not exist, so B hashed as A (the exe itself reads `<its canonical path>.env`).
   long=$(cygpath -u "$(cygpath -w -l "$exe")")
   if [ -n "${ARM_CACHE:-}" ]; then
-    c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
-    if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ]; then
+    c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" "$runs" "$root"/tests/church_bv/held_{11,13}.txt 2>/dev/null | sha256sum | cut -c1-16)/s$s"
+    [ "$(cat "$c/failed" 2>/dev/null)" = 0 ] && v=$(changed "$long.env" "$c") && [ -n "$v" ] && echo "salt $s $arm: cached arm read $v"
+    if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ] && [ -z "$v" ]; then
       # through a temporary copy, so the other arm never sees this one's `failed` before the rest of it
       rm -rf "$o" "$o.$BASHPID"; cp -r "$c" "$o.$BASHPID" && mv -T "$o.$BASHPID" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; salt_line $s; return
     fi
   fi
-  mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_ablated.txt"
+  mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_lines.txt"
   ( "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams SALT=$s "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
   while [ ! -f "$o/exit" ]; do
     mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')

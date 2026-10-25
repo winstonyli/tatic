@@ -11,11 +11,12 @@ ok() { # <case> <got> <want>
 }
 
 # --- the gate: a root with its scripts and a fake runs.exe (any arm that runs fails), two exes and a cache of arms
-mkdir -p "$T/root/scripts" "$T/root/tools/runs/target/release"
+mkdir -p "$T/root/scripts" "$T/root/tools/runs/target/release" "$T/root/tests/church_bv"
 cp scripts/streams_ab.sh scripts/tree_mem.ps1 "$T/root/scripts/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
+echo 11 > "$T/root/tests/church_bv/held_11.txt"; echo 13 > "$T/root/tests/church_bv/held_13.txt"
 echo fake > "$T/A.exe"; echo fake > "$T/B.exe"; echo ABLATE=x > "$T/B.exe.env"
-# the key streams_ab.sh gives an exe: its bytes, its .exe.env and the script
-key() { cat "$1" "$1.env" "$T/root/scripts/streams_ab.sh" 2>/dev/null | sha256sum | cut -c1-16; }
+# the key streams_ab.sh gives an exe: its bytes, its .exe.env, the script, runs.exe and the held-out laws
+key() { cat "$1" "$1.env" "$T/root/scripts/streams_ab.sh" "$T/root/tools/runs/target/release/runs.exe" "$T/root/tests/church_bv/held_11.txt" "$T/root/tests/church_bv/held_13.txt" 2>/dev/null | sha256sum | cut -c1-16; }
 mkarm() { # <dir> <M> <held> <jobcpu> <from>: a finished arm
   local l; mkdir -p "$1"
   for l in 1 2 3; do mkdir -p "$1/cold_streams_streams_${l}_none"; echo "rule $l" > "$1/cold_streams_streams_${l}_none/rules.txt"; done
@@ -23,6 +24,9 @@ mkarm() { # <dir> <M> <held> <jobcpu> <from>: a finished arm
   echo "WORK interp=7 walk=1 match=1 op=1" > "$1/out.txt"; echo 0 > "$1/failed"; echo "$5" > "$1/from"
 }
 mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"; mkarm "$T/cache/$(key "$T/B.exe")/s1" 100 500 11 "arm B"
+# what B's cached arm read (job.rs `Setup::var`'s ENV lines, one with CRLF): a name from the environment, an unset one,
+# one the gate sets itself
+printf 'ENV GATE_T_X=1\r\nENV GATE_T_U unset\nENV SALT=7\n' > "$T/cache/$(key "$T/B.exe")/s1/task.log"; export GATE_T_X=1
 gate() { # <run> <B as passed> <salts...>: the gate's output, with the environment the caller sets
   mkdir -p "$T/$1"
   (cd "$T/root" && RUN_DIR=$(cygpath -w "$T/$1") bash scripts/streams_ab.sh "$(cygpath -w "$T/A.exe")" "$2" "${@:3}" < /dev/null 2>/dev/null)
@@ -32,6 +36,21 @@ out=$(ARM_CACHE=$(cygpath -w "$T/cache") gate hit "$B" 1)
 ok "cache hit: the salt line" "$(echo "$out" | grep '^salt 1:')" "salt 1: M A 100 B 100; held A 500 B 500; jobcpu A 10 B 11; work A $w B $w"
 ok "cache hit: both arms reused" "$(echo "$out" | grep -c 'reused from arm')" 2
 ok "cache hit: the last line" "$(echo "$out" | tail -1)" "streams_ab: rules same in 3 of 3 loops; 0 of 2 arms failed"
+# B's arm is reused only where the environment it read is unchanged (the names the gate sets don't count), and only
+# under the same runs.exe and held-out laws
+hitb() { ARM_CACHE=$(cygpath -w "$T/cache") gate "$1" "$B" 1 | grep '^salt 1 B:' | head -1; }
+ok "a changed variable misses" "$(GATE_T_X=2 hitb envx)" "salt 1 B: cached arm read GATE_T_X=1, now 2"
+ok "an unset variable now set misses" "$(GATE_T_U=0 hitb envu)" "salt 1 B: cached arm read GATE_T_U unset, now 0"
+ok "a variable read now unset misses" "$(unset GATE_T_X; hitb envgone)" "salt 1 B: cached arm read GATE_T_X=1, now unset"
+echo 11b > "$T/root/tests/church_bv/held_11.txt"; ok "changed held-out laws miss" "$(hitb envheld | grep -c reused)" 0
+echo 11 > "$T/root/tests/church_bv/held_11.txt"; echo fake2 > "$T/root/tools/runs/target/release/runs.exe"
+ok "a changed runs.exe misses" "$(hitb envruns | grep -c reused)" 0; echo fake > "$T/root/tools/runs/target/release/runs.exe"
+# a name its .exe.env sets is read from there (trimmed, and upper-cased as on Windows), where the process doesn't set it
+printf 'ABLATE=x\n gate_t_x = 1 \n' > "$T/B.exe.env"; mkarm "$T/cache/$(key "$T/B.exe")/s1" 100 500 11 "arm B"
+printf 'ENV GATE_T_X=1\nENV GATE_T_U unset\n' > "$T/cache/$(key "$T/B.exe")/s1/task.log"
+ok "a variable its .exe.env sets counts" "$(unset GATE_T_X; hitb envfile)" "salt 1 B: reused from arm B"
+ok "the process's value goes over its .exe.env's" "$(GATE_T_X=3 hitb envover)" "salt 1 B: cached arm read GATE_T_X=1, now 3"
+echo ABLATE=x > "$T/B.exe.env"
 echo ABLATE=y > "$T/B.exe.env"
 ok "a changed .exe.env misses" "$(ARM_CACHE=$(cygpath -w "$T/cache") gate env "$B" 1 | grep '^salt 1:')" "salt 1: failed (A 0 B 1)"
 echo ABLATE=x > "$T/B.exe.env"
@@ -60,7 +79,7 @@ ok "a store after another writer's keeps its entry" "$(cat "$T/put/cache/k/s1/fr
 # an arm's switches: each named in its .exe.env must have an ABLATED line somewhere in the arm (a task log, the
 # held-out check's lines); spaces and CRLF in the .exe.env are read as job.rs's merge_env reads them
 source <(sed -n '/^untaken() {/,/^}/p' scripts/streams_ab.sh)
-mkdir -p "$T/abl/arm/task"; echo "ABLATED comm" > "$T/abl/arm/task/1.log"; echo "ABLATED eq_pos" > "$T/abl/arm/held_ablated.txt"
+mkdir -p "$T/abl/arm/task"; echo "ABLATED comm" > "$T/abl/arm/task/1.log"; echo "ABLATED eq_pos" > "$T/abl/arm/held_lines.txt"
 printf ' ABLATE = comm,eq_pos\r\n' > "$T/abl/x.env"; ok "every switch took effect" "$(untaken "$T/abl/x.env" "$T/abl/arm")" ""
 echo "ABLATE=comm,eq_pos,typo,eq" > "$T/abl/x.env"; ok "a switch with no ABLATED line" "$(untaken "$T/abl/x.env" "$T/abl/arm" | paste -sd' ')" "typo eq"
 ok "no .exe.env: nothing to check" "$(untaken "$T/abl/none.env" "$T/abl/arm")" ""
