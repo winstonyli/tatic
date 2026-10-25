@@ -5765,6 +5765,34 @@ M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 a
   spread between loops (salt 6: 3-4 points at 15 and 17), so the gain at the largest bands is the frontier's measure;
   no band nears 50% (decision D2 of the plan: no threshold).
 
+*Where a loop's definitions should come from (2026-10-25; v0.4 design; run `2026-10-25-held-unsettled`, about 1 min,
+throwaway scripts `defprobe.py` and `held_unsettled.sh` with their output in the run folder).* v0.4 builds
+definitions as a vocabulary of the enumerators, mined per loop (decided 2026-10-25; the alternatives are parked in
+`PARKED.md`, "A library of mined definitions that outlives the loop" and "Defined operators inside `Term`"). The probe
+asks which laws a loop should compress into definitions: (1) the served laws its rules left to a whole-term machine
+proof, or (2) every law it served. A definition is a fragment of 2-4 operators cut from a subterm, its holes the cut
+subterms and variables (one hole per distinct subterm); one use saves its operators less one; each loop keeps its top
+5 by total saving. Corpora: the 30 loops of arm A of `2026-10-24-phase3-baseline` (300 laws served per loop, 39.1 left
+to a machine proof on average; laws not proved at all print no line and are left out). The held-out laws each loop
+leaves to a machine proof were recovered by rerunning the gate's held-out check on salts 1-3 (9 loops) with its
+`MACHINE` lines kept; its counts equal the baseline's.
+- **Source (1) is not noise.** 4.97 of its 5 definitions per loop occur in at least 3 of the loop's ~39 laws.
+- **Source (2) finds what the rules already settle.** Its lists are nearly the same in every loop: association chains
+  (`add(□, add(□, □))` and `add(add(□, □), □)` in 30 of 30 loops, `xor(□, xor(□, □))` 30, `xor(xor(□, □), □)` 21), shapes
+  the fixed `assoc` rules normalize, plus `sub(□, sub(□, □))` (28). Source (1)'s lists vary by loop and are mostly
+  `sub` under other operators (`sub(□, sub(□, □))` 29 loops, `and(□, sub(□, □))` 22, `sub(sub(□, □), □)` 12,
+  `shl1(sub(□, □), □)` 9). The two lists share 1.4 of 5.
+- **Source (1)'s definitions carry to larger held-out laws, and to the unsettled ones more than the rest.** Share of
+  held-out laws holding one of the loop's definitions, on those left to a machine proof against all of the band
+  (salts 1-3): (1) .45/.37 at 11, .56/.35 at 13, .52/.37 at 15, .53/.38 at 17; (2) .63/.69, .62/.64, .64/.68,
+  .71/.69. Saving per unsettled held-out law: (1) 1.06, 1.82, 1.74, 1.98; (2) 1.11, 1.59, 1.76, 2.33. So (2) touches
+  more held-out laws and saves as much on the unsettled ones, but evenly on settled and unsettled laws, with shapes
+  the rules already handle; (1) is enriched 1.2-1.6 times in the unsettled laws.
+- **What the probe cannot see.** Saving is a proxy: a definition pays only if the miner finds a rule over it that
+  settles laws, and an association chain's rules exist already. All but 28 of the 300 top definitions have 2 operators (27 of the 28 in source
+  (1)). `shl1`'s unused second argument shows as a hole (`shl1(sub(□, □), □)`); a definition of it would take one
+  argument fewer.
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
