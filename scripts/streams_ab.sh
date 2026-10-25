@@ -39,8 +39,16 @@ salt_line() {
   [ "$fa$fb" = 00 ] || { echo "salt $s: failed (A $fa B $fb)"; return 0; }
   echo "salt $s: M A $(m "${d}_A") B $(m "${d}_B"); held A $(cat "${d}_A/held.txt") B $(cat "${d}_B/held.txt"); jobcpu A $(c "${d}_A") B $(c "${d}_B"); work A $(work "${d}_A") B $(work "${d}_B")"
 }
+# <arm dir> <cache entry>: store a finished arm through a temporary copy, so a reader never sees half an arm. The copy
+# is named by the storing arm's own pid ($$ is the script's, shared by the arms of one key in an A/A), and moved with
+# `mv -T`, so an entry another writer stored first is kept, not nested into.
+cache_put() {
+  local t="$2.$BASHPID"
+  mkdir -p "${2%/*}"; rm -rf "$t"
+  cp -r "$1" "$t" && echo "$1" > "$t/from" && rm -rf "$2" && mv -T "$t" "$2" 2>/dev/null || rm -rf "$t"
+}
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
-  local s=$1 arm=$2 exe o mb h l v f=0 c= long t
+  local s=$1 arm=$2 exe o mb h l v f=0 c= long
   [ $arm = A ] && exe=$a || exe=$b
   o="$RUN_DIR/s${s}_$arm"
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env and this
@@ -70,9 +78,7 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   echo $h > "$o/held.txt"
   grep -rqs '^WORK ' "$o" || f=1
   echo $f > "$o/failed"
-  # into the cache through a temporary copy, so a reader never sees half an arm: named by this arm's own pid ($$ is the
-  # script's, shared by arms of one key in an A/A), and `mv -T` so a copy another writer stored first is kept, not nested into
-  [ -n "$c" ] && [ $f = 0 ] && { mkdir -p "${c%/*}"; t="$c.$BASHPID"; rm -rf "$t"; cp -r "$o" "$t" && echo "$o" > "$t/from" && rm -rf "$c" && mv -T "$t" "$c" 2>/dev/null || rm -rf "$t"; }
+  [ -n "$c" ] && [ $f = 0 ] && cache_put "$o" "$c"
   salt_line $s
 }
 # JOBS arms at a time (default 1: an arm's job CPU is then clean enough to compare, timed runs keep it); in the order A

@@ -12,7 +12,7 @@ and delete each part whose removal costs nothing.
 
 **Architecture:** There is no new code in the kernel. Arm B of each comparison is arm A's exe plus a `<exe>.env` file
 holding `ABLATE=<switch>`. `Setup` reads that file (`job.rs`, `exe_env`), so the sweep workers and the held-out check
-see the switch too. A driver outside the repo runs `scripts/streams_ab.sh` once per switch, salts 1-10, through
+see the switch too. A driver (`scripts/ablations.sh`) runs `scripts/streams_ab.sh` once per switch, salts 1-10, through
 `run.ps1` (untimed; D3), prints one verdict per switch, and stops at every "free" or "mixed" verdict. A deletion is a code change that
 gets its own approval. A deletion check then shows the deleted build matches the ablated one, and the driver resumes
 from the deleted build.
@@ -50,10 +50,10 @@ order and "costs nothing"), and decision 9.
   invisible to the counters (hash-consing's cache misses, kernel proofs; `docs/tier-cycle.md`, "Work counts as the
   gate's cost"). It then brings that pair's job CPU and the deletion's scope (what goes, every caller, tests and docs)
   to the user and waits. A mixed verdict goes to the user the same way.
-- **D5 (new), where the driver lives:** outside the repo, at
-  `%LOCALAPPDATA%\claude-runs\tatic\ablations\driver.sh`. Its full text is in Task 1 below, and that is its one
-  home. It calls `run.ps1`, which is outside repo code (lease checks stay in `~/.claude/runs`). The alternative,
-  `scripts/ablate.sh`, would put a `~/.claude` path into the repo.
+- **D5, where the driver lives:** `scripts/ablations.sh`, checked by `scripts/test_gate.sh` (amended 2026-10-24,
+  the final review's I2: outside the repo it had no tests and its one home was a code block in this plan). It launches
+  `run.ps1` by path (the first repo script to; CLAUDE.md routes long runs through it); lease and load checks stay in `~/.claude/runs`. It first copies itself
+  into its run folder and runs from there, so an edit or a checkout mid-run cannot change it.
 
 ## Global Constraints
 
@@ -108,110 +108,17 @@ What this shows:
 ### Task 1: The driver
 
 **Files:**
-- Create: `%LOCALAPPDATA%\claude-runs\tatic\ablations\driver.sh` (outside the repo)
+- Create: `scripts/ablations.sh` (first at `%LOCALAPPDATA%\claude-runs\tatic\ablations\driver.sh`; D5)
 
 **Interfaces:**
-- Produces: `driver.sh <A exe> ablate <switch>...` and `driver.sh <deleted exe> check <ablated-from exe> <switch>`.
+- Produces: `ablations.sh <A exe> ablate <switch>...` and `ablations.sh <deleted exe> check <ablated-from exe> <switch>`.
   It runs in the current directory, which must be the repo root. Its log is stdout. Each verdict is one line,
   starting `VERDICT <switch> pays|costs|mixed|free|error` or `VERDICT <switch> check identical|differs|error`. Exit 0 on a verdict
   that ends the run (free, mixed, a check, or the end of the list), 1 on an error, 2 on a refused start.
 
 - [x] **Step 1: Write the driver**
 
-```bash
-#!/bin/bash
-# The class-table ablations (docs/superpowers/plans/2026-10-23-class-table-ablations.md). Run from the repo root.
-#   driver.sh <A exe> ablate <switch>...   per switch: B = A + B.exe.env ABLATE=<switch>; salts 1-10 of
-#                                          scripts/streams_ab.sh in one run; pays at an M or held-out rise on any salt, the gate
-#                                          stopped at the first; else by the work counts: costs goes on, mixed and free exit
-#   driver.sh <deleted exe> check <ablated-from exe> <switch>   salts 1-2, deleted against ablated: identical or differs
-# Every run is untimed through run.ps1, pinned to CFF at below-normal priority, 4 arms at a time: no verdict reads job
-# CPU. Arms are kept in $runs_root/arm-cache (streams_ab.sh's ARM_CACHE): A runs once per build, and a rerun after a
-# stopped driver reuses every arm that finished.
-set -u
-[ -z "${ABLATE:-}" ] || { echo "driver: ABLATE=$ABLATE is set in the environment; it would reach both arms"; exit 2; }
-[ -f scripts/streams_ab.sh ] || { echo "driver: run from the repo root"; exit 2; }
-runs_root="$(cygpath "$LOCALAPPDATA")/claude-runs/tatic"
-wrap="$(cygpath -w "$USERPROFILE/.claude/runs/run.ps1")"
-[ -n "${RUN_DIR:-}" ] || { echo "driver: launch through run.ps1 (no RUN_DIR)"; exit 2; }
-here=$(cygpath "$RUN_DIR")
-cp "$1" "$here/A.exe" || exit 2
-mode=$2; shift 2
-
-gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed,
-  # 2 stopped at the first salt whose B rises (M or held-out M), with the lines of the salts finished by then
-  local name=$1 a b rc dir pid before rise=
-  a=$(cygpath -d "$2"); b=$(cygpath -d "$3"); shift 3
-  # run.ps1 names the folder <date>-<name>, adding -2, -3 to a name an earlier driver run already used: ours is the new one
-  folders() { ls -d "$runs_root"/*-"$name" "$runs_root"/*-"$name"-[0-9]* 2>/dev/null; }
-  before=$(folders)
-  ARM_CACHE=$(cygpath -w "$runs_root/arm-cache") JOBS=4 powershell -NoProfile -File "$wrap" -Kind gate -Name "$name" \
-    -Command "start /b /wait /belownormal /affinity CFF bash scripts/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1 &
-  pid=$!
-  while kill -0 $pid 2>/dev/null; do
-    ping -n 31 127.0.0.1 > /dev/null
-    dir=$(folders | grep -vxF "$before" | head -1)
-    [ -n "$dir" ] && rise=$(risen "$dir/out.log") && [ -n "$rise" ] || continue
-    # a rise settles the verdict (pays): stop the gate's streams_ab (not run.ps1, which then closes its row); finished arms
-    # are already in the arm cache
-    echo "gate $name: B rises on salt $rise, stopping it"
-    powershell -NoProfile -Command "Get-CimInstance Win32_Process | ? { \$_.Name -ne 'powershell.exe' -and \$_.CommandLine -like '*streams_ab.sh*$b*' } | % { taskkill /T /F /PID \$_.ProcessId }" < /dev/null > /dev/null 2>&1
-    break
-  done
-  wait $pid; rc=$?
-  dir=$(folders | grep -vxF "$before" | head -1)
-  echo "gate $name: exit $rc, $dir"
-  grep -E '^salt [0-9]+:|^streams_ab' "$dir/out.log" > "$here/$name.txt" 2>/dev/null
-  cat "$here/$name.txt"
-  [ -n "$rise" ] && return 2
-  [ $rc = 0 ] && grep -qE ' 0 of [0-9]+ arms failed' "$here/$name.txt" && parsed "$here/$name.txt"
-}
-# <gate log>: the first salt, in the order the gate finished them, whose B has more M or held-out M than its A
-# (streams_ab.sh prints a salt's line once both its arms are done; a failed salt's line does not parse)
-risen() { cols "$1" | awk '$3 > $2 || $5 > $4 {print $1; exit}'; }
-# per salt line, one row per counter: salt name A B
-wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | awk -F'|' '{na = split($2, x, " "); split($3, y, " "); for (i = 1; i <= na; i++) {split(x[i], p, "="); split(y[i], q, "="); print $1, p[1], p[2], q[2]}}'; }
-# each counter's tolerance: max(its A/A spread, 1%); the spreads are a few ppm (docs/tier-cycle.md, "Work counts as the
-# gate's cost")
-tols="interp=0.01 walk=0.01 match=0.01 op=0.01"
-# columns of "salt N: M A a B b; held A a B b; jobcpu A a B b": salt mA mB hA hB cA cB
-cols() { sed -nE 's/^salt ([0-9]+): M A ([0-9]+) B ([0-9]+); held A ([0-9x]+) B ([0-9x]+); jobcpu A ([0-9.]+) B ([0-9.]+).*/\1 \2 \3 \4 \5 \6 \7/p' "$@"; }
-# every salt line parses, in cols and in wcols with an A and a B count per counter: a line either drops would leave its
-# salt out of the verdict, and a counter missing on one side would read as a change of 100%
-parsed() {
-  local n; n=$(cat "$@" | grep -c '^salt ')
-  [ "$(cols "$@" | wc -l)" = "$n" ] || return 1
-  wcols "$@" | awk -v n="$n" 'NF != 4 || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ {bad = 1} {s[$1]} END {for (k in s) m++; exit bad || m != n}'
-}
-
-if [ "$mode" = check ]; then
-  sw=$2; cp "$1" "$here/B.exe" || exit 2; echo "ABLATE=$sw" > "$here/B.exe.env"
-  gate "check-$sw" "$here/A.exe" "$here/B.exe" 1 2; [ $? = 1 ] && { echo "VERDICT $sw check error"; exit 1; }
-  same=$(cols "$here/check-$sw.txt" | awk '$2 != $3 || $4 != $5 {d++} END {print d + 0}')
-  if [ "$same" = 0 ] && grep -q 'rules same in 6 of 6 loops' "$here/check-$sw.txt"; then echo "VERDICT $sw check identical"
-  else echo "VERDICT $sw check differs"; fi
-  exit 0
-fi
-
-for sw in "$@"; do
-  cp "$here/A.exe" "$here/B_$sw.exe"; echo "ABLATE=$sw" > "$here/B_$sw.exe.env"
-  f="$here/abl-$sw.txt"
-  gate "abl-$sw" "$here/A.exe" "$here/B_$sw.exe" 1 2 3 4 5 6 7 8 9 10; [ $? = 1 ] && { echo "VERDICT $sw error"; exit 1; }
-  sum=$(cols "$f" | awk '{mA+=$2; mB+=$3; hA+=$4; hB+=$5; cA+=$6; cB+=$7} END {printf "M A %d B %d; held A %d B %d; jobcpu A %.0f B %.0f (%+.1f%%)", mA, mB, hA, hB, cA, cB, 100*(cB-cA)/cA}')
-  rise=$(cols "$f" | awk '$3 > $2 || $5 > $4 {printf "%s salt %s", (n++ ? "," : ""), $1}')
-  if [ -n "$rise" ]; then echo "VERDICT $sw pays (rise on$rise): $sum, salts $(cols "$f" | awk '{printf "%s%s", (NR > 1 ? "," : ""), $1}')"; continue; fi
-  # the counters (spec docs/superpowers/specs/2026-10-23-work-counts-design.md, decision 6(d)): each summed over the
-  # salts, against its tolerance
-  v=$(wcols "$f" | awk -v tols="$tols" 'BEGIN {n = split(tols, t, " "); for (i = 1; i <= n; i++) {split(t[i], kv, "="); tol[kv[1]] = kv[2]}}
-      {if (!($2 in a)) o[++k] = $2; a[$2] += $3; b[$2] += $4}
-      END {for (i = 1; i <= k; i++) {c = o[i]; d = a[c] ? (b[c] - a[c]) / a[c] : (b[c] ? 1 : 0); s = s sprintf(" %s %+.2f%%", c, 100 * d)
-           if (d > tol[c]) up = 1; else if (d < -tol[c]) dn = 1}
-           print (up ? (dn ? "mixed" : "costs") : "free") ":" s}')
-  echo "VERDICT $sw ${v%%:*}: $sum; work${v#*:}, salts 1-10"
-  case "${v%%:*}" in costs) continue ;; *) exit 0 ;; esac
-done
-echo "DRIVER done: no switch left"
-```
+The driver is `scripts/ablations.sh` (moved into the repo 2026-10-24, D5), its checks `scripts/test_gate.sh`.
 
 - [x] **Step 2: Check the parser on the A/A's logs (A/A means free on every count)**
 
@@ -239,7 +146,7 @@ Expected: exit 2 each time, each with its own message.
   (`streams_ab.sh` needs it).
 - [x] **Step 2:** Check for live CPU leases and others' load. Then launch the driver detached, through the wrapper
   as its own non-timed row:
-  `cmd //c start "" //b powershell -NoProfile -File "$USERPROFILE/.claude/runs/run.ps1" -Kind sweep -Name ablations-1 -Command "bash <driver.sh short path> <A exe short path> ablate promoted assoc tree chain comm collapse eq_truth eq_pos eq_classes"`.
+  `cmd //c start "" //b powershell -NoProfile -File "$USERPROFILE/.claude/runs/run.ps1" -Kind sweep -Name ablations-1 -Command "bash scripts/ablations.sh <A exe short path> ablate promoted assoc tree chain comm collapse eq_truth eq_pos eq_classes"`.
   Annotate its `docs/runs.md` row.
 - [x] **Step 3:** Arm a Monitor on the driver's `out.log`, with an exiting loop that ends when `run.json` has an
   `exit`. It prints each `VERDICT` and `DRIVER` line. Send a push notification per verdict.
@@ -254,7 +161,7 @@ Expected: exit 2 each time, each with its own message.
   Bring the list to the user and wait (D4). On approval:
   1. delete, build, and run `cargo test --release -j 4 --test church_bv`; the suite must be green;
   2. commit;
-  3. build the deleted exe (sweep profile), then run `driver.sh <deleted exe> check <previous A> <switch>` through
+  3. build the deleted exe (sweep profile), then run `scripts/ablations.sh <deleted exe> check <previous A> <switch>` through
      the wrapper (row `ablations-check-<switch>`). `<previous A>` is `A.exe` in the last driver run's folder;
   4. on `identical`, relaunch the driver (row `ablations-<n+1>`) with the deleted exe as A and the switches after
      this one;
