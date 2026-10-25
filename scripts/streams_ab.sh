@@ -3,7 +3,7 @@
 # on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (every tests/church_bv/held_<band>.txt, HELD_BANDS; CHECK_FAST: the laws that still need a
-# whole-term machine proof), and under no mined rules (the table alone), per band to the arm's held_bands.txt. Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
+# whole-term machine proof), and under no mined rules (the table alone), per band to the arm's held_bands.txt. Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm, over its salts that passed, the totals, the
 # lookup memo's peak (CLASS_MEMO), the largest peakproc, and per band the loops' and the table's free share and M per
 # 1000 laws (`bands`; the held-out M of the totals and salt lines is the loops' over every band); per salt and per arm the work counts (the summed WORK lines,
 # spec docs/superpowers/specs/2026-10-23-work-counts-design.md). Last line: loops with the same rules, and arms that
@@ -37,6 +37,8 @@ work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> 
 # an arm's M and job CPU: <arm dir>
 m() { cut -f4 "$1/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$' | awk '{s += $1} END {print s + 0}'; }
 c() { grep -oE 'jobcpu=[0-9.]+' "$1/result.txt" | cut -d= -f2; }
+# <arm dir> passed: its `failed` holds 0 (an empty one is an arm stopped mid-write)
+passed() { [ "$(cat "$1/failed" 2>/dev/null)" = 0 ]; }
 # <salt>: its lines once both arms are done (an arm writes `failed` last; the second arm to finish prints, and the
 # `mkdir` makes that one arm): the loops whose rules differ, then M, held-out M, job CPU and work of each arm, or which
 # arm failed. Printed as each salt finishes, so a reader of the log (the ablations driver) can act before the gate ends.
@@ -89,7 +91,7 @@ cache_put() {
 tally() {
   local s x l f n=0 same=0 loops=0
   for s; do
-    for x in A B; do [ "$(cat "$RUN_DIR/s${s}_$x/failed" 2>/dev/null)" = 0 ] || n=$((n + 1)); done
+    for x in A B; do passed "$RUN_DIR/s${s}_$x" || n=$((n + 1)); done
     for l in 1 2 3; do
       f="cold_streams_streams_${l}_none/rules.txt"
       cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same=$((same + 1))
@@ -113,8 +115,8 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   if [ -n "${ARM_CACHE:-}" ]; then
     mapfile -t hf < <(bands)
     c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" "$runs" "${hf[@]}" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
-    [ "$(cat "$c/failed" 2>/dev/null)" = 0 ] && v=$(changed "$long.env" "$c") && [ -n "$v" ] && echo "salt $s $arm: cached arm read $v"
-    if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ] && [ -z "$v" ]; then
+    passed "$c" && v=$(changed "$long.env" "$c") && [ -n "$v" ] && echo "salt $s $arm: cached arm read $v"
+    if passed "$c" && [ -z "$v" ]; then
       # through a temporary copy, so the other arm never sees this one's `failed` before the rest of it
       rm -rf "$o" "$o.$BASHPID"; cp -r "$c" "$o.$BASHPID" && mv -T "$o.$BASHPID" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; salt_line $s; return
     fi
@@ -150,16 +152,18 @@ for s in "$@"; do
 done
 wait
 for arm in A B; do
+  # the arms that passed: a failed arm's files would count a salt it never finished
+  d=(); for s in "$@"; do passed "$RUN_DIR/s${s}_$arm" && d+=("$RUN_DIR/s${s}_$arm"); done
+  [ ${#d[@]} = 0 ] && { echo "total $arm: no arm passed"; echo "bands $arm: no arm passed"; continue; }
   m=0; h=0
-  for s in "$@"; do
-    for v in $(cut -f4 "$RUN_DIR/s${s}_$arm/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$'); do m=$((m + v)); done
-    v=$(cat "$RUN_DIR/s${s}_$arm/held.txt" 2>/dev/null); h=$((h + ${v:-0}))
+  for a in "${d[@]}"; do
+    m=$((m + $(m "$a"))); v=$(cat "$a/held.txt" 2>/dev/null); h=$((h + ${v:-0}))
   done
-  memo=$(grep -rh '^CLASS_MEMO' "$RUN_DIR"/s*_$arm 2>/dev/null | awk '{if ($2 > x) x = $2} END {print x + 0}')
-  peak=$(grep -h -oE 'peakproc=[0-9]+' "$RUN_DIR"/s*_$arm/result.txt 2>/dev/null | cut -d= -f2 | sort -n | tail -1)
-  echo "total $arm: M $m; held $h; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}'); memo peak $memo terms; peakproc max $peak; work $(work "$RUN_DIR"/s*_$arm)"
+  memo=$(grep -rh '^CLASS_MEMO' "${d[@]}" 2>/dev/null | awk '{if ($2 > x) x = $2} END {print x + 0}')
+  peak=$(grep -h -oE 'peakproc=[0-9]+' "${d[@]/%//result.txt}" 2>/dev/null | cut -d= -f2 | sort -n | tail -1)
+  echo "total $arm: M $m; held $h; $(cat "${d[@]/%//result.txt}" | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}'); memo peak $memo terms; peakproc max $peak; work $(work "${d[@]}")"
   # per band, pooled over salts: the loops' free share and M per 1000 laws, then the table alone's
-  echo "bands $arm: $(cat "$RUN_DIR"/s*_$arm/held_bands.txt 2>/dev/null | awk '
+  echo "bands $arm: $(cat "${d[@]/%//held_bands.txt}" 2>/dev/null | awk '
     function r(a, b, fmt) { return b ? sprintf(fmt, a / b) : "-" }
     {k = ($1 == "none") ? "t" : "l"; if (!($2 in seen)) {seen[$2]; o[++n] = $2}; laws[k, $2] += $3; free[k, $2] += $4; m[k, $2] += $5}
     END {if (!n) {printf "no band lines"; exit}

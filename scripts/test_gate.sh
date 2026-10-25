@@ -58,9 +58,12 @@ mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"
 # CHECKED: the arm passes) against G.exe (the table alone's check at band 15 prints none)
 printf '#!/bin/bash\nd=$(cygpath -u "$2"); printf "x\\tx\\tx\\t5\\n" > "$d/cold_streams.tsv"; echo "WORK interp=1 walk=1 match=1 op=1"; echo "wall=1s jobcpu=1"\n' > "$T/root/tools/runs/target/release/runs.exe"
 sed 's/^echo "CHECKED/[ -s "$(cygpath -u "$CHECK_RULES")" ] || [ "$b" != 15 ] \&\& echo "CHECKED/' "$T/F.exe" > "$T/G.exe"
-for x in F G; do for l in 1 2 3; do mkdir -p "$T/ok$x/s1_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/ok$x/s1_B/cold_streams_streams_${l}_none/rules.txt"; done; gate ok$x "$(cygpath -w "$T/$x.exe")" 1 > /dev/null; done
+for x in F G; do for l in 1 2 3; do mkdir -p "$T/ok$x/s1_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/ok$x/s1_B/cold_streams_streams_${l}_none/rules.txt"; done; gate ok$x "$(cygpath -w "$T/$x.exe")" 1 > "$T/ok$x.out"; done
 ok "every band checked: the arm passes" "$(cat "$T/okF/s1_B/failed")" 0
 ok "a band with no CHECKED line fails the arm" "$(cat "$T/okG/s1_B/failed")" 1
+# the total and bands lines count only the arms that passed: a failed arm's files would count a salt it never finished
+ok "a passed arm counts" "$(grep -oE '^total B: M [0-9]+; held [0-9]+' "$T/okF.out")" "total B: M 5; held $((3 * (890 + 870 + 850 + 830)))"
+ok "a failed arm counts nowhere" "$(grep -E '^(total|bands) B:' "$T/okG.out" | paste -sd'|')" "total B: no arm passed|bands B: no arm passed"
 echo fake > "$T/root/tools/runs/target/release/runs.exe"
 # B's arm is reused only where the environment it read is unchanged (the names the gate sets don't count), and only
 # under the same runs.exe and held-out laws
@@ -116,7 +119,7 @@ echo "ABLATE=comm,eq_pos,typo,eq" > "$T/abl/x.env"; ok "a switch with no ABLATED
 ok "no .exe.env: nothing to check" "$(untaken "$T/abl/none.env" "$T/abl/arm")" ""
 # the last line: an arm whose `failed` is anything but 0 failed, an empty one (an arm stopped mid-write) included; an
 # empty one once ended the count early, so the line read "0 of 4 arms failed" and the gate exited 0
-source <(sed -n '/^tally() {/,/^}/p' scripts/streams_ab.sh)
+source <(sed -n '/^passed() {/p; /^tally() {/,/^}/p' scripts/streams_ab.sh)
 for a in s1_A s1_B s2_A s2_B; do mkarm "$T/tally/$a" 1 1 1 x; done; : > "$T/tally/s1_A/failed"
 out=$(RUN_DIR=$T/tally tally 1 2); ok "an empty failed file is a failed arm" "$out, exit $?" "streams_ab: rules same in 6 of 6 loops; 1 of 4 arms failed, exit 1"
 echo 0 > "$T/tally/s1_A/failed"; out=$(RUN_DIR=$T/tally tally 1 2); ok "no arm failed" "$out, exit $?" "streams_ab: rules same in 6 of 6 loops; 0 of 4 arms failed, exit 0"
