@@ -2,7 +2,7 @@
 # scripts/test_gate.sh: checks of scripts/streams_ab.sh (the gate) and scripts/ablations.sh (its driver), in a sandbox
 # under $TEMP; nothing real runs. The gate's arms come from a made-up arm cache, or fail on a fake exe; the driver's
 # gates are a fake streams_ab.sh behind a fake run.ps1. Run from the repo root: PASS or FAIL per case, exit 1 on any
-# FAIL. About 4 min.
+# FAIL. About 15-25 min with other jobs running (2026-10-25; main before the bands took 10).
 set -u
 [ -f scripts/streams_ab.sh ] || { echo "test_gate: run from the repo root"; exit 2; }
 repo=$(pwd); T=$(mktemp -d "$TEMP/test_gate.XXXXXX"); fails=0
