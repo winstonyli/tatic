@@ -5802,6 +5802,11 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   the cross-side route (subterms and patterns up to 13 nodes, `RULEMINER_VARS` 4), not the pool. So a vocabulary in
   the pool would buy about 1%; if definitions buy reach, it is in the cross-side route's caps, or in what the 386
   uncovered stragglers lack.
+- **Nor are the cross-side caps (run `2026-10-25-cross-caps`, about 12 min).** The same stragglers mined with the
+  cross-side route's caps at 17 nodes and 4 variables cover 373 of 741 (355 now); at 25 and 6, about no cap, 375. The
+  candidate cap (400) is never reached (at most 133 a loop). So no reach a vocabulary could give the miner covers more
+  than 20 of the 741 (2.7%); 366 stay uncovered with every size cap lifted. Reach through definitions has no lever
+  in the miner as it stands; the deficit is in what the 366 lack.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
