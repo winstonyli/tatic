@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Proof search blended with execution (exploration note, 2026-10-01)

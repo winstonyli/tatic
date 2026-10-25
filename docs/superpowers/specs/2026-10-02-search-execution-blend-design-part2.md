@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Proof search blended with execution, part 2 (sections 37 onward)

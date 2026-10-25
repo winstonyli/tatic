@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Bit-vector interface for the formalized target machine (design)
