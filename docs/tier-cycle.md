@@ -5660,6 +5660,17 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   closes nothing new. Deleted (2026-10-24, 25db9c3): the table step in `prove_eq` (phase 1); its tests now go through
   `rewrite_plan`. The check (`-check-eq_classes`, against 328e3c1 with `ABLATE=eq_classes`, salts 1-2): M, held-out M
   and rules equal, counts within 3 ppm.
+- **Each arm now proves its switches took effect** (2026-10-24, the final review's I3): `Setup::ablated` prints
+  `ABLATED <name>` the first time a name switches something off in a setup, and `streams_ab.sh` fails an arm whose
+  `.exe.env` names a switch with no such line anywhere in the arm (task logs, the sweep's own output, the held-out
+  check's lines in `held_ablated.txt`). The 8.3-name bug above would have failed every B arm instead of passing them
+  as A. Overhead (`2026-10-24-ablated-overhead`, salt 1, `ABLATE=comm`, the build before against the build with it,
+  untimed): M 183 in both, interp and walk equal, match +2.8 ppm and op +5 ppm, inside the A/A's few ppm; 15
+  `ABLATED comm` lines, none from the old build.
+- **The driver's stop could miss** (found by `scripts/test_gate.sh`, 2026-10-24): `taskkill /T` stops children first,
+  and in about 1 stop in 4 the gate's script went on to its next command after its child was stopped and before its
+  own stop. `scripts/ablations.sh` now lists the tree first and stops parents first: 24 of 24 stops held. No real
+  verdict was affected: a gate that ran on only added salts after the deciding rise.
 
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
 `2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,

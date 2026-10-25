@@ -4,7 +4,7 @@
 
 use std::fmt::Display;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tatic::kernel::{Expr, PExpr, Postulates, Scope};
@@ -16,8 +16,8 @@ type Env = hashbrown::HashMap<String, String>;
 /// A task's configuration, read once when it is built: its environment, and the values parsed from it on hot paths.
 pub struct Setup {
     env: Env,
-    /// `ABLATE`'s comma list.
-    ablate: Vec<String>,
+    /// `ABLATE`'s comma list, each name with whether it has switched something off (`ablated`).
+    ablate: Vec<(String, AtomicBool)>,
     /// `nops()`: how many of `OP_INFO` the miner enumerates.
     nops: usize,
     /// The task's result file (`result`); `None` in a process that runs one test.
@@ -50,7 +50,7 @@ impl Setup {
     }
 
     fn from_env(env: Env) -> Setup {
-        let ablate = env.get("ABLATE").map(|v| v.split(',').map(String::from).collect()).unwrap_or_default();
+        let ablate = env.get("ABLATE").map(|v| v.split(',').map(|n| (n.to_string(), AtomicBool::new(false))).collect()).unwrap_or_default();
         let mut s = Setup {
             env,
             ablate,
@@ -83,9 +83,15 @@ impl Setup {
     /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, collapse, join,
     /// promoted, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
     /// shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
-    /// environment each time was 11% of a mine (docs/tier-cycle.md).
+    /// environment each time was 11% of a mine (docs/tier-cycle.md). The first time a name is switched off, this prints
+    /// `ABLATED <name>`, once per setup: `streams_ab.sh` fails an arm whose `.exe.env` names a switch that never took
+    /// effect, a misspelled or deleted one, or one the arm never reached.
     pub fn ablated(&self, name: &str) -> bool {
-        self.ablate.iter().any(|x| x == name)
+        let Some((_, hit)) = self.ablate.iter().find(|(x, _)| x == name) else { return false };
+        if !hit.load(Relaxed) && !hit.swap(true, Relaxed) {
+            println!("ABLATED {name}");
+        }
+        true
     }
 
     /// How many of `OP_INFO` the miner enumerates: `sub` only with `MINER_SUB=1`.
@@ -393,6 +399,35 @@ fn with_rules_puts_the_outer_rules_back() {
 fn with_env_sets_a_switch() {
     let s = Setup::with_env(vec![("ABLATE".into(), "classes,comm".into())]);
     assert!(s.ablated("classes") && s.ablated("comm") && !s.ablated("assoc"));
+}
+
+/// A switch that takes effect says so once per setup: `ABLATED <name>` on stdout the first time `ablated(name)` is
+/// true, and nothing for a listed name never asked about, so the gate can fail an arm whose switch did nothing. It runs
+/// `ablated_probe` in a child process, whose stdout holds only the probe's lines.
+#[test]
+fn a_switch_that_takes_effect_says_so_once() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["job::ablated_probe", "--exact", "--ignored", "--nocapture"])
+        .env("ABLATED_PROBE", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("ABLATED ")).collect();
+    assert_eq!(lines, ["ABLATED comm", "ABLATED comm"], "{text}");
+}
+
+/// `a_switch_that_takes_effect_says_so_once`' child: two setups listing comm and gen; each asks comm twice and assoc once.
+#[test]
+#[ignore]
+fn ablated_probe() {
+    if std::env::var_os("ABLATED_PROBE").is_none() {
+        return;
+    }
+    for _ in 0..2 {
+        let s = Setup::with_env(vec![("ABLATE".into(), "comm,gen".into())]);
+        assert!(s.ablated("comm") && s.ablated("comm") && !s.ablated("assoc"));
+    }
 }
 
 /// Table steps taken inside `steps_if_closed` are kept only when it returns `Some` (spec decision 2: a closed law's

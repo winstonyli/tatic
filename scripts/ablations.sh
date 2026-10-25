@@ -36,9 +36,14 @@ gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines
     dir=$(folders | grep -vxF "$before" | head -1)
     [ -n "$dir" ] && rise=$(risen "$dir/out.log") && [ -n "$rise" ] || continue
     # a rise settles the verdict (pays): stop the gate's streams_ab (not run.ps1, which then closes its row); finished arms
-    # are already in the arm cache
+    # are already in the arm cache. Its whole tree is listed first and stopped parents first: `taskkill /T` stops children
+    # first, and a script whose child was stopped went on to its next command before its own stop (about 1 stop in 4 in test_gate.sh)
     echo "gate $name: B rises on salt $rise, stopping it"
-    powershell -NoProfile -Command "Get-CimInstance Win32_Process | ? { \$_.Name -ne 'powershell.exe' -and \$_.CommandLine -like '*streams_ab.sh*$b*' } | % { taskkill /T /F /PID \$_.ProcessId }" < /dev/null > /dev/null 2>&1
+    powershell -NoProfile -Command "\$all = @(Get-CimInstance Win32_Process)
+      \$hit = @(\$all | ? { \$_.Name -ne 'powershell.exe' -and \$_.CommandLine -like '*streams_ab.sh*$b*' })
+      \$tree = @(\$hit | ? { \$hit.ProcessId -notcontains \$_.ParentProcessId })
+      for (\$i = 0; \$i -lt \$tree.Count; \$i++) { \$tree += @(\$all | ? { \$_.ParentProcessId -eq \$tree[\$i].ProcessId -and \$tree.ProcessId -notcontains \$_.ProcessId }) }
+      \$tree | % { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" < /dev/null > /dev/null 2>&1
     break
   done
   wait $pid; rc=$?

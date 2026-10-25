@@ -57,6 +57,13 @@ rm -rf "$T/put/cache"; cache_put "$T/put/o1" "$T/put/cache/k/s1"
 rm() { [ "$*" = "-rf $T/put/cache/k/s1" ] || command rm "$@"; }
 cache_put "$T/put/o2" "$T/put/cache/k/s1"; unset -f rm
 ok "a store after another writer's keeps its entry" "$(cat "$T/put/cache/k/s1/from") $(find "$T/put/cache" -name 's1*' | wc -l)" "$T/put/o1 1"
+# an arm's switches: each named in its .exe.env must have an ABLATED line somewhere in the arm (a task log, the
+# held-out check's lines); spaces and CRLF in the .exe.env are read as job.rs's merge_env reads them
+source <(sed -n '/^untaken() {/,/^}/p' scripts/streams_ab.sh)
+mkdir -p "$T/abl/arm/task"; echo "ABLATED comm" > "$T/abl/arm/task/1.log"; echo "ABLATED eq_pos" > "$T/abl/arm/held_ablated.txt"
+printf ' ABLATE = comm,eq_pos\r\n' > "$T/abl/x.env"; ok "every switch took effect" "$(untaken "$T/abl/x.env" "$T/abl/arm")" ""
+echo "ABLATE=comm,eq_pos,typo,eq" > "$T/abl/x.env"; ok "a switch with no ABLATED line" "$(untaken "$T/abl/x.env" "$T/abl/arm" | paste -sd' ')" "typo eq"
+ok "no .exe.env: nothing to check" "$(untaken "$T/abl/none.env" "$T/abl/arm")" ""
 
 # --- the driver: a fake run.ps1 runs its command with scripts/streams_ab.sh swapped for a fake gate, which prints the
 # salt lines of a VARIANT

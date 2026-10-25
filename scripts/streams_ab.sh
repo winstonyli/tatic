@@ -6,16 +6,17 @@
 # proof). Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
 # lookup memo's peak (CLASS_MEMO) and the largest peakproc; per salt and per arm the work counts (the summed WORK lines,
 # spec docs/superpowers/specs/2026-10-23-work-counts-design.md). Last line: loops with the same rules, and arms that
-# failed (non-zero exit, no M or no WORK line); exits 1 if any arm failed. Differing rules are reported, not failed.
+# failed (non-zero exit, no M, no WORK line, or a switch of its .exe.env that never took effect); exits 1 if any arm failed. Differing rules are reported, not failed.
 a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "streams_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
 failed=0; same_n=0; loops=0
-held() { # <exe> <rules file>: held-out M over both bands
-  local m=0 band line p f n
+held() { # <exe> <rules file> <arm dir>: held-out M over both bands; the check's ABLATED lines go to <arm dir>/held_ablated.txt
+  local m=0 band out line p f n
   for band in 11 13; do
-    line=$(MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams CHECK_RULES="$(cygpath -w "$2")" CHECK_LAWFILE="$(cygpath -w "$root/tests/church_bv/held_$band.txt")" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null 2>&1 | grep '^CHECKED ')
+    out=$(MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams CHECK_RULES="$(cygpath -w "$2")" CHECK_LAWFILE="$(cygpath -w "$root/tests/church_bv/held_$band.txt")" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null 2>&1)
+    grep '^ABLATED ' <<< "$out" >> "$3/held_ablated.txt"; line=$(grep '^CHECKED ' <<< "$out")
     p=$(echo "$line" | sed -E 's/^CHECKED ([0-9]+) .*/\1/'); f=$(echo "$line" | sed -E 's/.*\(([0-9]+) with.*/\1/'); n=$(echo "$line" | sed -E 's/.*\), ([0-9]+) not proved.*/\1/')
     [ -n "$line" ] || { echo "held: no CHECKED line for $2 band $band" >&2; echo x; return; }
     m=$((m + p - f + n))
@@ -39,6 +40,12 @@ salt_line() {
   [ "$fa$fb" = 00 ] || { echo "salt $s: failed (A $fa B $fb)"; return 0; }
   echo "salt $s: M A $(m "${d}_A") B $(m "${d}_B"); held A $(cat "${d}_A/held.txt") B $(cat "${d}_B/held.txt"); jobcpu A $(c "${d}_A") B $(c "${d}_B"); work A $(work "${d}_A") B $(work "${d}_B")"
 }
+# <exe>.env <arm dir>: the switches its ABLATE names that never took effect in the arm (no `ABLATED <name>` line, job.rs
+# `Setup::ablated`): a misspelled, deleted or unreached switch would make B an unablated copy of A
+untaken() {
+  local v
+  for v in $(sed -nE 's/^ *ABLATE *= *//p' "$1" 2>/dev/null | tr -d ' \r' | tr ',' ' '); do grep -rqsx "ABLATED $v" "$2" || echo "$v"; done
+}
 # <arm dir> <cache entry>: store a finished arm through a temporary copy, so a reader never sees half an arm. The copy
 # is named by the storing arm's own pid ($$ is the script's, shared by the arms of one key in an A/A), and moved with
 # `mv -T`, so an entry another writer stored first is kept, not nested into.
@@ -54,17 +61,17 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env and this
   # script, and an arm with the same hash and salt is copied, not run: the gate's results repeat (counts to a few ppm,
   # docs/tier-cycle.md, "Work counts as the gate's cost"). Off by default: an A/A of one exe would otherwise run once.
-  # The exe by its long name: the .exe.env of a short (8.3) name like B_COLL~1.EXE does not exist, so B hashed as A
-  # (the exe itself reads `<its canonical path>.env`).
+  # The exe by its long name (here and in the ABLATED check below): the .exe.env of a short (8.3) name like
+  # B_COLL~1.EXE does not exist, so B hashed as A (the exe itself reads `<its canonical path>.env`).
+  long=$(cygpath -u "$(cygpath -w -l "$exe")")
   if [ -n "${ARM_CACHE:-}" ]; then
-    long=$(cygpath -u "$(cygpath -w -l "$exe")")
     c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
     if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ]; then
       # through a temporary copy, so the other arm never sees this one's `failed` before the rest of it
       rm -rf "$o" "$o.$BASHPID"; cp -r "$c" "$o.$BASHPID" && mv -T "$o.$BASHPID" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; salt_line $s; return
     fi
   fi
-  mkdir -p "$o"; rm -f "$o/exit" "$o/failed"
+  mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_ablated.txt"
   ( "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams SALT=$s "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
   while [ ! -f "$o/exit" ]; do
     mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
@@ -74,9 +81,10 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
   [ "$(cat "$o/exit")" = 0 ] && cut -f4 "$o/cold_streams.tsv" 2>/dev/null | grep -qE '^[0-9]+$' || f=1
   h=0
-  for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt"); [ "$v" = x ] && f=1 || h=$((h + v)); done
+  for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt" "$o"); [ "$v" = x ] && f=1 || h=$((h + v)); done
   echo $h > "$o/held.txt"
   grep -rqs '^WORK ' "$o" || f=1
+  for v in $(untaken "$long.env" "$o"); do echo "salt $s $arm: ABLATE=$v never took effect"; f=1; done
   echo $f > "$o/failed"
   [ -n "$c" ] && [ $f = 0 ] && cache_put "$o" "$c"
   salt_line $s
