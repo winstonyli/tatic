@@ -5709,6 +5709,36 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   (hash-consing's cache misses, kernel proofs). The counts show that the work did not change, and which way it moved;
   they do not give its amount.
 
+*The frontier past the loops' sizes (2026-10-24; run `2026-10-24-frontier-probe`, 7.7 min; throwaway probe
+`classes::probe_frontier`, `docs/runs/2026-10-24/patches/frontier_probe.patch` on 8d190d9, reverted; scripts
+`docs/runs/2026-10-24/scripts/frontier_probe.sh`, `frontier_watch.sh`).* Class-table spec §7 (phase 3) asks for the
+frontier by law size; the loops serve laws up to size 13 (two growths of representatives up to size 9, two nodes per
+growth), and ROADMAP v0.5 wants held-out laws larger than they serve. The probe grows the 56 streams at `HELD_SALT`
+three and four times (`stream_laws`, budget 20000 per level, interleaved as `stream_sequence`), takes each odd band's
+first 1000 laws, and runs the held-out check (`CHECK_FAST`) on each under salt 6's three loop rule sets (run
+`cache-check-1`) and under no mined rules (the table alone). Free share = laws proved with no whole-term machine proof,
+of 1000; best loop / worst loop / none:
+
+| growths | band 11 | band 13 | band 15 | band 17 |
+|---|---|---|---|---|
+| 3 | .93 / .91 / .79 | .79 / .76 / .69 | .76 / .72 / .63 | |
+| 4 | .93 / .91 / .79 | .79 / .76 / .68 | .75 / .72 / .62 | .69 / .66 / .60 |
+
+- **Cheap, once.** Three growths: 132428 laws in 137 s; four: 229415 laws in 212 s (band 15 77296, band 17 84279),
+  peak commit about 3.3 GB. Held-out files are written once (`regenerate_held`), so a sweep pays none of it; each extra
+  band costs the gate about 1.3 s per loop. (The probe script's own watchdog matched nothing, since the output path
+  reached the exe through the environment, so only the four-growth run's peak was measured.)
+- **The 50% line is past size 17.** The free share falls 14 points from band 11 to 13, then 4-6 points per band: about
+  .69 at 17 with the loops' rules and .60 without. A threshold at 50% would read "beyond the largest band" for every
+  arm, so it cannot be the headline; the per-band shares are.
+- **Mined rules carry to sizes the loops never served.** Over the table alone, the loops' rules free 12-14 points at
+  band 11, 8-11 at 13, 9-13 at 15 and 6-9 at 17: mining's gain shrinks slowly with size and stays well above the
+  spread between loops (2-4 points).
+- **Bands 11-15 do not depend on the growth count.** Three and four growths give the same shares within 1 point, so
+  the extra growth only adds band 17.
+- About 3-13% of each band is not proved at all under `CHECK_FAST` (27-130 laws, most with no rules); M counts them
+  with the machine proofs, as the gate does.
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost

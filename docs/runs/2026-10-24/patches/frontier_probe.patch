@@ -1,0 +1,46 @@
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index 7840a8f..3454b1e 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -637,6 +637,41 @@ fn regenerate_held() {
+     }
+ }
+ 
++/// Throwaway probe (frontier, 2026-10-24): the 56 streams at `HELD_SALT` grown `PROBE_LEVELS` times, interleaved as
++/// `stream_sequence` does; prints the time, the laws per size, and writes each odd band's first `HELD_PER_BAND` laws
++/// from 11 to `PROBE_OUT/held_<band>.txt`.
++#[test]
++#[ignore]
++fn probe_frontier() {
++    let setup = Setup::process();
++    let levels = setup.or("PROBE_LEVELS", 3usize);
++    let out = std::path::PathBuf::from(setup.var("PROBE_OUT").expect("PROBE_OUT").to_string());
++    let t0 = std::time::Instant::now();
++    let streams: Vec<Vec<(Term, Term)>> = crate::search::stream_sets()
++        .iter()
++        .map(|ops| crate::search::stream_laws(ops, HELD_SALT, crate::search::STREAM_BUDGET, levels))
++        .collect();
++    let (mut seen, mut seq) = (hashbrown::HashSet::new(), vec![]);
++    for i in 0..streams.iter().map(Vec::len).max().unwrap_or(0) {
++        for s in &streams {
++            if let Some(l) = s.get(i) {
++                if seen.insert(*l) {
++                    seq.push(*l);
++                }
++            }
++        }
++    }
++    println!("PROBE levels {levels}: {} laws in {:.1}s", seq.len(), t0.elapsed().as_secs_f64());
++    let mut sizes = std::collections::BTreeMap::new();
++    seq.iter().for_each(|(a, b)| *sizes.entry(a.size().max(b.size())).or_insert(0usize) += 1);
++    println!("PROBE sizes {sizes:?}");
++    for band in (11..=9 + 2 * levels).step_by(2) {
++        let laws: Vec<(Term, Term)> = seq.iter().filter(|(a, b)| a.size().max(b.size()) == band).take(HELD_PER_BAND).cloned().collect();
++        std::fs::write(out.join(format!("held_{band}.txt")), held_text(band, &laws)).unwrap();
++        println!("PROBE band {band}: {} laws written", laws.len());
++    }
++}
++
+ /// A held-out file's text reads back as its laws, and its header names this build's key and size.
+ #[test]
+ fn held_text_round_trips() {
