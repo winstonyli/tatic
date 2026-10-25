@@ -5693,7 +5693,10 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   unset`, once per setup, `Setup::var`); a hit needs each to read the same now, except the names the gate sets itself.
   Before, a variable such as `JOIN_VISIT` set in the shell would have reused arms run without it. The record costs
   nothing measurable: over 12 held checks each, instructions -0.07% against the build without it, inside its own 0.06%
-  spread (runs `env-record-icount2-A`/`-B`; it is counted, not timed, as the read sits on per-join paths).
+  spread (runs `env-record-icount2-A`/`-B`; it is counted, not timed, as the read sits on per-join paths). On the real
+  gate (salt 6, A/A, JOBS=1, runs `cache-check-1`..`-3`): the second arm reuses the first's (2.5 min against ~4 for two
+  sweeps), a rerun reuses both (21 s), and `SWEEP_LANES=2` (its default, but unset when cached) reruns one arm, whose
+  entry then replaces the stale one for the other; M 179 and held-out 908 in all three, work counts within 15 ppm.
 - **Overhead: none measurable** once `interp` and `match_pat` sum their nodes in a local and add them once per call
   (`count_n`, 4d1a74f): job CPU against the uncounted f0390df build -1.5% and -6.0% on salts 1-2. A thread-local add per
   node had cost +6.8% and +8.2%.
