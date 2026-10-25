@@ -21,8 +21,9 @@ here=$(cygpath "$RUN_DIR")
 cp "$1" "$here/A.exe" || exit 2
 mode=$2; shift 2
 
-gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed,
-  # 2 stopped at the first salt whose B rises (M or held-out M), with the lines of the salts finished by then
+gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines in $here/<name>.txt; 0 ok, 1 failed
+  # (or a salt asked for has no line), 2 stopped at the first salt whose B rises (M or held-out M), with the lines of the
+  # salts finished by then
   local name=$1 a b rc dir pid before rise=
   a=$(cygpath -d "$2"); b=$(cygpath -d "$3"); shift 3
   # run.ps1 names the folder <date>-<name>, adding -2, -3 to a name an earlier driver run already used: ours is the new one
@@ -52,11 +53,15 @@ gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines
   grep -E '^salt [0-9]+:|^streams_ab' "$dir/out.log" > "$here/$name.txt" 2>/dev/null
   cat "$here/$name.txt"
   [ -n "$rise" ] && return 2
-  [ $rc = 0 ] && grep -qE ' 0 of [0-9]+ arms failed' "$here/$name.txt" && parsed "$here/$name.txt"
+  [ $rc = 0 ] && grep -qE ' 0 of [0-9]+ arms failed' "$here/$name.txt" && parsed "$here/$name.txt" &&
+    [ "$(salts "$here/$name.txt")" = "$(printf '%s\n' "$@" | sort -n | paste -sd,)" ]
 }
 # <gate log>: the first salt, in the order the gate finished them, whose B has more M or held-out M than its A
 # (streams_ab.sh prints a salt's line once both its arms are done; a failed salt's line does not parse)
 risen() { cols "$1" | awk '$3 > $2 || $5 > $4 {print $1; exit}'; }
+# <gate lines>: the salts whose line parses, sorted, comma-separated: what a verdict read. A gate run to its end must
+# have one for every salt it was asked for (a missing line would leave its salt out of the verdict unseen)
+salts() { cols "$1" | awk '{print $1}' | sort -n | paste -sd,; }
 # per salt line, one row per counter: salt name A B
 wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | awk -F'|' '{na = split($2, x, " "); split($3, y, " "); for (i = 1; i <= na; i++) {split(x[i], p, "="); split(y[i], q, "="); print $1, p[1], p[2], q[2]}}'; }
 # each counter's tolerance: max(its A/A spread, 1%); the spreads are a few ppm (docs/tier-cycle.md, "Work counts as the
@@ -87,7 +92,7 @@ for sw in "$@"; do
   gate "abl-$sw" "$here/A.exe" "$here/B_$sw.exe" 1 2 3 4 5 6 7 8 9 10; [ $? = 1 ] && { echo "VERDICT $sw error"; exit 1; }
   sum=$(cols "$f" | awk '{mA+=$2; mB+=$3; hA+=$4; hB+=$5; cA+=$6; cB+=$7} END {printf "M A %d B %d; held A %d B %d; jobcpu A %.0f B %.0f (%+.1f%%)", mA, mB, hA, hB, cA, cB, 100*(cB-cA)/cA}')
   rise=$(cols "$f" | awk '$3 > $2 || $5 > $4 {printf "%s salt %s", (n++ ? "," : ""), $1}')
-  if [ -n "$rise" ]; then echo "VERDICT $sw pays (rise on$rise): $sum, salts $(cols "$f" | awk '{printf "%s%s", (NR > 1 ? "," : ""), $1}')"; continue; fi
+  if [ -n "$rise" ]; then echo "VERDICT $sw pays (rise on$rise): $sum, salts $(salts "$f")"; continue; fi
   # the counters (spec docs/superpowers/specs/2026-10-23-work-counts-design.md, decision 6(d)): each summed over the
   # salts, against its tolerance
   v=$(wcols "$f" | awk -v tols="$tols" 'BEGIN {n = split(tols, t, " "); for (i = 1; i <= n; i++) {split(t[i], kv, "="); tol[kv[1]] = kv[2]}}
@@ -95,7 +100,7 @@ for sw in "$@"; do
       END {for (i = 1; i <= k; i++) {c = o[i]; d = a[c] ? (b[c] - a[c]) / a[c] : (b[c] ? 1 : 0); s = s sprintf(" %s %+.2f%%", c, 100 * d)
            if (d > tol[c]) up = 1; else if (d < -tol[c]) dn = 1}
            print (up ? (dn ? "mixed" : "costs") : "free") ":" s}')
-  echo "VERDICT $sw ${v%%:*}: $sum; work${v#*:}, salts 1-10"
+  echo "VERDICT $sw ${v%%:*}: $sum; work${v#*:}, salts $(salts "$f")"
   case "${v%%:*}" in costs) continue ;; *) exit 0 ;; esac
 done
 echo "DRIVER done: no switch left"

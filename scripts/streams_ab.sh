@@ -11,7 +11,6 @@ a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "streams_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
-failed=0; same_n=0; loops=0
 held() { # <exe> <rules file> <arm dir>: held-out M over both bands; the check's ABLATED lines go to <arm dir>/held_ablated.txt
   local m=0 band out line p f n
   for band in 11 13; do
@@ -53,6 +52,21 @@ cache_put() {
   local t="$2.$BASHPID"
   mkdir -p "${2%/*}"; rm -rf "$t"
   cp -r "$1" "$t" && echo "$1" > "$t/from" && rm -rf "$2" && mv -T "$t" "$2" 2>/dev/null || rm -rf "$t"
+}
+# <salts...>: the last line, loops whose rules agree and arms that failed; status 1 if any did. An arm failed unless its
+# `failed` holds 0: an empty one (an arm stopped mid-write) once ended the count early, and the line read none failed
+tally() {
+  local s x l f n=0 same=0 loops=0
+  for s; do
+    for x in A B; do [ "$(cat "$RUN_DIR/s${s}_$x/failed" 2>/dev/null)" = 0 ] || n=$((n + 1)); done
+    for l in 1 2 3; do
+      f="cold_streams_streams_${l}_none/rules.txt"
+      cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same=$((same + 1))
+      loops=$((loops + 1))
+    done
+  done
+  echo "streams_ab: rules same in $same of $loops loops; $n of $(($# * 2)) arms failed"
+  [ $n = 0 ]
 }
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
   local s=$1 arm=$2 exe o mb h l v f=0 c= long
@@ -99,23 +113,14 @@ for s in "$@"; do
   done
 done
 wait
-for s in "$@"; do
-  for x in A B; do failed=$((failed + $(cat "$RUN_DIR/s${s}_$x/failed" 2>/dev/null || echo 1))); done
-  for l in 1 2 3; do
-    f="cold_streams_streams_${l}_none/rules.txt"
-    cmp -s "$RUN_DIR/s${s}_A/$f" "$RUN_DIR/s${s}_B/$f" && same_n=$((same_n + 1))
-    loops=$((loops + 1))
-  done
-done
 for arm in A B; do
   m=0; h=0
   for s in "$@"; do
     for v in $(cut -f4 "$RUN_DIR/s${s}_$arm/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$'); do m=$((m + v)); done
-    h=$((h + $(cat "$RUN_DIR/s${s}_$arm/held.txt" 2>/dev/null || echo 0)))
+    v=$(cat "$RUN_DIR/s${s}_$arm/held.txt" 2>/dev/null); h=$((h + ${v:-0}))
   done
   memo=$(grep -rh '^CLASS_MEMO' "$RUN_DIR"/s*_$arm 2>/dev/null | awk '{if ($2 > x) x = $2} END {print x + 0}')
   peak=$(grep -h -oE 'peakproc=[0-9]+' "$RUN_DIR"/s*_$arm/result.txt 2>/dev/null | cut -d= -f2 | sort -n | tail -1)
   echo "total $arm: M $m; held $h; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}'); memo peak $memo terms; peakproc max $peak; work $(work "$RUN_DIR"/s*_$arm)"
 done
-echo "streams_ab: rules same in $same_n of $loops loops; $failed of $(($# * 2)) arms failed"
-[ $failed = 0 ]
+tally "$@"

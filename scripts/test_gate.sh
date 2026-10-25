@@ -64,6 +64,12 @@ mkdir -p "$T/abl/arm/task"; echo "ABLATED comm" > "$T/abl/arm/task/1.log"; echo 
 printf ' ABLATE = comm,eq_pos\r\n' > "$T/abl/x.env"; ok "every switch took effect" "$(untaken "$T/abl/x.env" "$T/abl/arm")" ""
 echo "ABLATE=comm,eq_pos,typo,eq" > "$T/abl/x.env"; ok "a switch with no ABLATED line" "$(untaken "$T/abl/x.env" "$T/abl/arm" | paste -sd' ')" "typo eq"
 ok "no .exe.env: nothing to check" "$(untaken "$T/abl/none.env" "$T/abl/arm")" ""
+# the last line: an arm whose `failed` is anything but 0 failed, an empty one (an arm stopped mid-write) included; an
+# empty one once ended the count early, so the line read "0 of 4 arms failed" and the gate exited 0
+source <(sed -n '/^tally() {/,/^}/p' scripts/streams_ab.sh)
+for a in s1_A s1_B s2_A s2_B; do mkarm "$T/tally/$a" 1 1 1 x; done; : > "$T/tally/s1_A/failed"
+out=$(RUN_DIR=$T/tally tally 1 2); ok "an empty failed file is a failed arm" "$out, exit $?" "streams_ab: rules same in 6 of 6 loops; 1 of 4 arms failed, exit 1"
+echo 0 > "$T/tally/s1_A/failed"; out=$(RUN_DIR=$T/tally tally 1 2); ok "no arm failed" "$out, exit $?" "streams_ab: rules same in 6 of 6 loops; 0 of 4 arms failed, exit 0"
 
 # --- the driver: a fake run.ps1 runs its command with scripts/streams_ab.sh swapped for a fake gate, which prints the
 # salt lines of a VARIANT
@@ -80,7 +86,8 @@ exit $LASTEXITCODE
 EOF
 cat > "$T/fake/streams_ab.sh" <<'EOF'
 #!/bin/bash
-# the fake gate: salt lines by VARIANT; rise, held and stopfail print theirs, then hang until stopped
+# the fake gate: salt lines by VARIANT; rise, held and stopfail print theirs, then hang until stopped; the others print
+# all at once
 shift 2
 hang() { ping -n 299 127.0.0.1 > /dev/null; l 9 100 500; } # a gate not stopped adds salt 9 to the verdict
 w() { echo "work A interp=$1 walk=100 match=50 op=$3 B interp=$2 walk=$4 match=50 op=$5"; }
@@ -91,7 +98,8 @@ case $VARIANT in
   stopfail) echo "salt 1: failed (A 0 B 1)"; l 2 101 500; hang ;;
   check) for s in "$@"; do echo "salt $s: M A 176 B 176; held A 900 B 900; jobcpu A 1 B 1; work A op=1 B op=1"; done
          echo "streams_ab: rules same in 6 of 6 loops; 0 of 4 arms failed" ;;
-  *) for s in "$@"; do
+  *) lines=$(for s in "$@"; do
+       [ $VARIANT = missing ] && [ $s = 4 ] && continue
        mb=176; ib=1000; wb=100; oa=10; held="held A 900 B 900"; work="; $(w 1000 $ib 10 100 10)"
        case $VARIANT in
          costs) [ $s = 1 ] && ib=1300 ;;
@@ -104,9 +112,9 @@ case $VARIANT in
        [ $VARIANT = nowork ] && work=""
        [ $VARIANT = badwork ] && [ $s = 7 ] && work="; work A interp=1000 walk=100 match=50 op=10 B interp=1000 walk=100 match=50"
        echo "salt $s: M A 176 B $mb; $held; jobcpu A 430.0 B 431.0$work"
-     done
-     [ $VARIANT = failed ] && { echo "streams_ab: rules same in 30 of 30 loops; 1 of 20 arms failed"; exit 1; }
-     echo "streams_ab: rules same in 30 of 30 loops; 0 of 20 arms failed" ;;
+     done) # one write, so the driver reads none of them or all
+     n=0; [ $VARIANT = failed ] && n=1
+     printf '%s\nstreams_ab: rules same in 30 of 30 loops; %s of 20 arms failed\n' "$lines" $n; [ $n = 0 ] ;;
 esac
 EOF
 driver() { # <variant> <mode args...>: the driver's VERDICT and DRIVER lines, joined by " | "
@@ -114,13 +122,13 @@ driver() { # <variant> <mode args...>: the driver's VERDICT and DRIVER lines, jo
   (cd "$repo" && VARIANT=$1 POLL_S=1 USERPROFILE=$(cygpath -w "$T/home") LOCALAPPDATA=$(cygpath -w "$T/lad") FIXTURE=$(cygpath -w "$T/fake") \
     RUN_DIR=$(cygpath -w "$out") bash scripts/ablations.sh "$T/A.exe" "${@:2}" < /dev/null 2>&1) | grep -E '^(VERDICT|DRIVER)' | paste -sd'|' | sed 's/|/ | /g'
 }
-free="M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +0.00% walk +0.00% match +0.00% op +0.00%, salts 1-10"
+free="M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +0.00% walk +0.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
 ok "driver: free" "$(driver free ablate x)" "VERDICT x free: $free"
 ok "driver: zero counts are free" "$(driver zero ablate x)" "VERDICT x free: $free"
-ok "driver: costs goes on" "$(driver costs ablate x)" "VERDICT x costs: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +3.00% walk +0.00% match +0.00% op +0.00%, salts 1-10 | DRIVER done: no switch left"
-ok "driver: mixed" "$(driver mixed ablate x)" "VERDICT x mixed: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +3.00% walk -20.00% match +0.00% op +0.00%, salts 1-10"
+ok "driver: costs goes on" "$(driver costs ablate x)" "VERDICT x costs: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +3.00% walk +0.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10 | DRIVER done: no switch left"
+ok "driver: mixed" "$(driver mixed ablate x)" "VERDICT x mixed: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +3.00% walk -20.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
 ok "driver: pays" "$(driver pays ablate x)" "VERDICT x pays (rise on salt 3): M A 1760 B 1761; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%), salts 1,2,3,4,5,6,7,8,9,10 | DRIVER done: no switch left"
-for v in nowork badline badwork failed; do ok "driver: $v is an error" "$(driver $v ablate x)" "VERDICT x error"; done
+for v in nowork badline badwork failed missing; do ok "driver: $v is an error" "$(driver $v ablate x)" "VERDICT x error"; done
 ok "driver: check" "$(driver check check "$T/A.exe" x)" "VERDICT x check identical"
 ok "driver: stops at an M rise" "$(driver rise ablate x)" "VERDICT x pays (rise on salt 2): M A 200 B 201; held A 1000 B 1000; jobcpu A 20 B 22 (+10.0%), salts 1,2 | DRIVER done: no switch left"
 ok "driver: stops at a held-out rise" "$(driver held ablate x)" "VERDICT x pays (rise on salt 1): M A 100 B 100; held A 500 B 501; jobcpu A 10 B 11 (+10.0%), salts 1 | DRIVER done: no switch left"
