@@ -2,9 +2,10 @@
 # streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, SWEEP=cold:streams (extras
 # on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
-# loop's final rules (tests/church_bv/held_{11,13}.txt, CHECK_FAST: the laws that still need a whole-term machine
-# proof). Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
-# lookup memo's peak (CLASS_MEMO) and the largest peakproc; per salt and per arm the work counts (the summed WORK lines,
+# loop's final rules (every tests/church_bv/held_<band>.txt, HELD_BANDS; CHECK_FAST: the laws that still need a
+# whole-term machine proof), and under no mined rules (the table alone), per band to the arm's held_bands.txt. Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm the totals, the
+# lookup memo's peak (CLASS_MEMO), the largest peakproc, and per band the loops' and the table's free share and M per
+# 1000 laws (`bands`; the held-out M of the totals and salt lines is the loops' over every band); per salt and per arm the work counts (the summed WORK lines,
 # spec docs/superpowers/specs/2026-10-23-work-counts-design.md). Last line: loops with the same rules, and arms that
 # failed (non-zero exit, no M, no WORK line, or a switch of its .exe.env that never took effect); exits 1 if any arm failed. Differing rules are reported, not failed.
 a=$1; b=$2; shift 2
@@ -15,16 +16,19 @@ runs="$root/tools/runs/target/release/runs.exe"
 # (<rules file> <law file>, Windows paths); `changed` skips their names
 sweep_env() { printf '%s\n' MACHINE_STATE=0 SWEEP=cold:streams "SALT=$1" "SWEEP_OUT=$2"; }
 held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
-held() { # <exe> <rules file> <arm dir>: held-out M over both bands; the check's ABLATED and ENV lines go to <arm dir>/held_lines.txt
-  local m=0 band out line p f n e
-  for band in 11 13; do
-    mapfile -t e < <(held_env "$(cygpath -w "$2")" "$(cygpath -w "$root/tests/church_bv/held_$band.txt")")
+# the held-out files in band order (tests/church_bv/held_<band>.txt; the bands are HELD_BANDS in classes.rs)
+bands() { local b; for b in $(ls "$root/tests/church_bv" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$root/tests/church_bv/held_$b.txt"; done; }
+held() { # <exe> <rules file> <arm dir> <label>: held-out M over every band; per band `<label> <band> <laws> <free> <M>` to <arm dir>/held_bands.txt, the check's ABLATED and ENV lines to <arm dir>/held_lines.txt
+  local m=0 hf band out line p f n e
+  while read -r hf; do
+    band=${hf##*held_}; band=${band%.txt}
+    mapfile -t e < <(held_env "$(cygpath -w "$2")" "$(cygpath -w "$hf")")
     out=$(env "${e[@]}" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null 2>&1)
     grep -E '^(ABLATED|ENV) ' <<< "$out" >> "$3/held_lines.txt"; line=$(grep '^CHECKED ' <<< "$out")
-    p=$(echo "$line" | sed -E 's/^CHECKED ([0-9]+) .*/\1/'); f=$(echo "$line" | sed -E 's/.*\(([0-9]+) with.*/\1/'); n=$(echo "$line" | sed -E 's/.*\), ([0-9]+) not proved.*/\1/')
     [ -n "$line" ] || { echo "held: no CHECKED line for $2 band $band" >&2; echo x; return; }
-    m=$((m + p - f + n))
-  done
+    p=$(echo "$line" | sed -E 's/^CHECKED ([0-9]+) .*/\1/'); f=$(echo "$line" | sed -E 's/.*\(([0-9]+) with.*/\1/'); n=$(echo "$line" | sed -E 's/.*\), ([0-9]+) not proved.*/\1/')
+    echo "$4 $band $((p + n)) $f $((p - f + n))" >> "$3/held_bands.txt"; m=$((m + p - f + n))
+  done < <(bands)
   echo $m
 }
 work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> match=<n> op=<n>`; empty if none
@@ -96,7 +100,7 @@ tally() {
   [ $n = 0 ]
 }
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
-  local s=$1 arm=$2 exe o mb h l v= f=0 c= long e
+  local s=$1 arm=$2 exe o mb h l v= f=0 c= long e hf
   [ $arm = A ] && exe=$a || exe=$b
   o="$RUN_DIR/s${s}_$arm"
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env, this
@@ -107,14 +111,15 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   # B_COLL~1.EXE does not exist, so B hashed as A (the exe itself reads `<its canonical path>.env`).
   long=$(cygpath -u "$(cygpath -w -l "$exe")")
   if [ -n "${ARM_CACHE:-}" ]; then
-    c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" "$runs" "$root"/tests/church_bv/held_{11,13}.txt 2>/dev/null | sha256sum | cut -c1-16)/s$s"
+    mapfile -t hf < <(bands)
+    c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" "$runs" "${hf[@]}" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
     [ "$(cat "$c/failed" 2>/dev/null)" = 0 ] && v=$(changed "$long.env" "$c") && [ -n "$v" ] && echo "salt $s $arm: cached arm read $v"
     if [ "$(cat "$c/failed" 2>/dev/null)" = 0 ] && [ -z "$v" ]; then
       # through a temporary copy, so the other arm never sees this one's `failed` before the rest of it
       rm -rf "$o" "$o.$BASHPID"; cp -r "$c" "$o.$BASHPID" && mv -T "$o.$BASHPID" "$o"; echo "salt $s $arm: reused from $(cat "$o/from")"; salt_line $s; return
     fi
   fi
-  mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_lines.txt"
+  mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_lines.txt" "$o/held_bands.txt"
   mapfile -t e < <(sweep_env $s "$(cygpath -w "$o")")
   ( "$runs" run "$(cygpath -w "$o")" -- "${e[@]}" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
   while [ ! -f "$o/exit" ]; do
@@ -125,7 +130,8 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
   [ "$(cat "$o/exit")" = 0 ] && cut -f4 "$o/cold_streams.tsv" 2>/dev/null | grep -qE '^[0-9]+$' || f=1
   h=0
-  for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt" "$o"); [ "$v" = x ] && f=1 || h=$((h + v)); done
+  for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt" "$o" $l); [ "$v" = x ] && f=1 || h=$((h + v)); done
+  : > "$o/no_rules.txt"; [ "$(held "$exe" "$o/no_rules.txt" "$o" none)" = x ] && f=1   # the table alone
   echo $h > "$o/held.txt"
   grep -rqs '^WORK ' "$o" || f=1
   for v in $(untaken "$long.env" "$o"); do echo "salt $s $arm: ABLATE=$v never took effect"; f=1; done
@@ -152,5 +158,12 @@ for arm in A B; do
   memo=$(grep -rh '^CLASS_MEMO' "$RUN_DIR"/s*_$arm 2>/dev/null | awk '{if ($2 > x) x = $2} END {print x + 0}')
   peak=$(grep -h -oE 'peakproc=[0-9]+' "$RUN_DIR"/s*_$arm/result.txt 2>/dev/null | cut -d= -f2 | sort -n | tail -1)
   echo "total $arm: M $m; held $h; $(cat "$RUN_DIR"/s*_$arm/result.txt | grep -oE '(wall|jobcpu)=[0-9.]+' | awk -F= '{t[$1]+=$2} END {printf "wall %.0f s, job cpu %.0f s", t["wall"], t["jobcpu"]}'); memo peak $memo terms; peakproc max $peak; work $(work "$RUN_DIR"/s*_$arm)"
+  # per band, pooled over salts: the loops' free share and M per 1000 laws, then the table alone's
+  echo "bands $arm: $(cat "$RUN_DIR"/s*_$arm/held_bands.txt 2>/dev/null | awk '
+    function r(a, b, fmt) { return b ? sprintf(fmt, a / b) : "-" }
+    {k = ($1 == "none") ? "t" : "l"; if (!($2 in seen)) {seen[$2]; o[++n] = $2}; laws[k, $2] += $3; free[k, $2] += $4; m[k, $2] += $5}
+    END {if (!n) {printf "no band lines"; exit}
+      for (i = 1; i <= n; i++) {b = o[i]; printf "%s%s free %s table %s M %s table %s", (i > 1 ? "; " : ""), b,
+        r(free["l", b], laws["l", b], "%.3f"), r(free["t", b], laws["t", b], "%.3f"), r(1000 * m["l", b], laws["l", b], "%.1f"), r(1000 * m["t", b], laws["t", b], "%.1f")}}' | sed 's/ 0\./ ./g')"
 done
 tally "$@"

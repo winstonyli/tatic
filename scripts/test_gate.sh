@@ -13,14 +13,16 @@ ok() { # <case> <got> <want>
 # --- the gate: a root with its scripts and a fake runs.exe (any arm that runs fails), two exes and a cache of arms
 mkdir -p "$T/root/scripts" "$T/root/tools/runs/target/release" "$T/root/tests/church_bv"
 cp scripts/streams_ab.sh scripts/tree_mem.ps1 "$T/root/scripts/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
-echo 11 > "$T/root/tests/church_bv/held_11.txt"; echo 13 > "$T/root/tests/church_bv/held_13.txt"
+for b in 11 13 15 17; do echo $b > "$T/root/tests/church_bv/held_$b.txt"; done
 echo fake > "$T/A.exe"; echo fake > "$T/B.exe"; echo ABLATE=x > "$T/B.exe.env"
-# the key streams_ab.sh gives an exe: its bytes, its .exe.env, the script, runs.exe and the held-out laws
-key() { cat "$1" "$1.env" "$T/root/scripts/streams_ab.sh" "$T/root/tools/runs/target/release/runs.exe" "$T/root/tests/church_bv/held_11.txt" "$T/root/tests/church_bv/held_13.txt" 2>/dev/null | sha256sum | cut -c1-16; }
+# the key streams_ab.sh gives an exe: its bytes, its .exe.env, the script, runs.exe and the held-out laws (in band
+# order, as streams_ab.sh's `bands` lists them)
+hfiles() { local b; for b in $(ls "$T/root/tests/church_bv" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$T/root/tests/church_bv/held_$b.txt"; done; }
+key() { { cat "$1" "$1.env" "$T/root/scripts/streams_ab.sh" "$T/root/tools/runs/target/release/runs.exe"; hfiles | while read -r f; do cat "$f"; done; } 2>/dev/null | sha256sum | cut -c1-16; }
 mkarm() { # <dir> <M> <held> <jobcpu> <from>: a finished arm
   local l; mkdir -p "$1"
   for l in 1 2 3; do mkdir -p "$1/cold_streams_streams_${l}_none"; echo "rule $l" > "$1/cold_streams_streams_${l}_none/rules.txt"; done
-  printf 'x\tx\tx\t%s\n' "$2" > "$1/cold_streams.tsv"; echo "$3" > "$1/held.txt"; echo "wall=1s jobcpu=$4" > "$1/result.txt"
+  printf 'x\tx\tx\t%s\n' "$2" > "$1/cold_streams.tsv"; echo "$3" > "$1/held.txt"; printf '%s\n' "1 11 1000 900 100" "none 11 1000 800 200" > "$1/held_bands.txt"; echo "wall=1s jobcpu=$4" > "$1/result.txt"
   echo "WORK interp=7 walk=1 match=1 op=1" > "$1/out.txt"; echo 0 > "$1/failed"; echo "$5" > "$1/from"
 }
 mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"; mkarm "$T/cache/$(key "$T/B.exe")/s1" 100 500 11 "arm B"
@@ -36,6 +38,22 @@ out=$(ARM_CACHE=$(cygpath -w "$T/cache") gate hit "$B" 1)
 ok "cache hit: the salt line" "$(echo "$out" | grep '^salt 1:')" "salt 1: M A 100 B 100; held A 500 B 500; jobcpu A 10 B 11; work A $w B $w"
 ok "cache hit: both arms reused" "$(echo "$out" | grep -c 'reused from arm')" 2
 ok "cache hit: the last line" "$(echo "$out" | tail -1)" "streams_ab: rules same in 3 of 3 loops; 0 of 2 arms failed"
+ok "cache hit: the bands line" "$(echo "$out" | grep '^bands A:')" "bands A: 11 free .900 table .800 M 100.0 table 200.0"
+# a fake exe that prints a CHECKED line from its CHECK_LAWFILE's band and its rules file (empty: the table alone); bands
+# 9, 11, 15 and 17, so a glob's order (11 before 9) would show
+printf '#!/bin/bash\nb=$(head -1 "$(cygpath -u "$CHECK_LAWFILE")"); [ -s "$(cygpath -u "$CHECK_RULES")" ] && f=$((b * 10)) || f=$b\necho "CHECKED 990 laws kernel-checked ($f with no whole-term machine proof), 10 not proved, 0 used up the rule budget"\n' > "$T/F.exe"
+mv "$T/root/tests/church_bv/held_13.txt" "$T/root/tests/church_bv/held_9.txt"; echo 9 > "$T/root/tests/church_bv/held_9.txt"
+# the loops' rules files, which the failed sweep (fake runs.exe) never writes and the arm does not delete
+for l in 1 2 3; do mkdir -p "$T/fake/s1_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/fake/s1_B/cold_streams_streams_${l}_none/rules.txt"; done
+gate fake "$(cygpath -w "$T/F.exe")" 1 > /dev/null
+ok "held: a line per rule set and band, bands in numeric order" "$(paste -sd'|' "$T/fake/s1_B/held_bands.txt" 2>/dev/null)" \
+  "1 9 1000 90 910|1 11 1000 110 890|1 15 1000 150 850|1 17 1000 170 830|2 9 1000 90 910|2 11 1000 110 890|2 15 1000 150 850|2 17 1000 170 830|3 9 1000 90 910|3 11 1000 110 890|3 15 1000 150 850|3 17 1000 170 830|none 9 1000 9 991|none 11 1000 11 989|none 15 1000 15 985|none 17 1000 17 983"
+ok "held: the total is the loops' M" "$(cat "$T/fake/s1_B/held.txt")" $((3 * (910 + 890 + 850 + 830)))
+mv "$T/root/tests/church_bv/held_9.txt" "$T/root/tests/church_bv/held_13.txt"; echo 13 > "$T/root/tests/church_bv/held_13.txt"
+# an arm with no band lines (cached before the bands) leaves the summary readable
+rm "$T/cache/$(key "$T/A.exe")/s1/held_bands.txt"
+ok "an arm with no band lines" "$(ARM_CACHE=$(cygpath -w "$T/cache") gate nobands "$B" 1 | grep '^bands A:')" "bands A: no band lines"
+mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"
 # B's arm is reused only where the environment it read is unchanged (the names the gate sets don't count), and only
 # under the same runs.exe and held-out laws
 hitb() { ARM_CACHE=$(cygpath -w "$T/cache") gate "$1" "$B" 1 | grep '^salt 1 B:' | head -1; }
