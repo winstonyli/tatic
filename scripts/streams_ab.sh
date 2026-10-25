@@ -37,7 +37,8 @@ work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> 
 # an arm's M and job CPU: <arm dir>
 m() { cut -f4 "$1/cold_streams.tsv" 2>/dev/null | grep -E '^[0-9]+$' | awk '{s += $1} END {print s + 0}'; }
 c() { grep -oE 'jobcpu=[0-9.]+' "$1/result.txt" | cut -d= -f2; }
-# <arm dir> passed: its `failed` holds 0 (an empty one is an arm stopped mid-write)
+# <arm dir> passed: its `failed` holds 0. An empty one (an arm stopped mid-write) is a failure: read as a pass, it once
+# ended the tally's count early, and the last line read none failed
 passed() { [ "$(cat "$1/failed" 2>/dev/null)" = 0 ]; }
 # <salt>: its lines once both arms are done (an arm writes `failed` last; the second arm to finish prints, and the
 # `mkdir` makes that one arm): the loops whose rules differ, then M, held-out M, job CPU and work of each arm, or which
@@ -86,8 +87,8 @@ cache_put() {
   mkdir -p "${2%/*}"; rm -rf "$t"
   cp -r "$1" "$t" && echo "$1" > "$t/from" && rm -rf "$2" && mv -T "$t" "$2" 2>/dev/null || rm -rf "$t"
 }
-# <salts...>: the last line, loops whose rules agree and arms that failed; status 1 if any did. An arm failed unless its
-# `failed` holds 0: an empty one (an arm stopped mid-write) once ended the count early, and the line read none failed
+# <salts...>: the last line, loops whose rules agree and arms that failed; status 1 if any did (an arm
+# failed unless it `passed`)
 tally() {
   local s x l f n=0 same=0 loops=0
   for s; do
