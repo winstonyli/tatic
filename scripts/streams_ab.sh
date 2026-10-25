@@ -71,9 +71,10 @@ changed() {
     [ "$now" = "$was" ] || { echo "$n$was, now ${now#[= ]}"; return; }
   done < <(grep -rh '^ENV ' "$2" 2>/dev/null | tr -d '\r' | sort -u)
 }
-# <arm dir> <cache entry>: store a finished arm through a temporary copy, so a reader never sees half an arm. The copy
-# is named by the storing arm's own pid ($$ is the script's, shared by the arms of one key in an A/A), and moved with
-# `mv -T`, so an entry another writer stored first is kept, not nested into.
+# <arm dir> <cache entry>: store a finished arm through a temporary copy, so a reader never sees half an arm. It
+# replaces the entry (an arm rerun because its cached copy read another environment supersedes that copy). The copy is
+# named by the storing arm's own pid ($$ is the script's, shared by the arms of one key in an A/A), and moved with
+# `mv -T`: of two writers racing between the `rm` and the move, the first one's entry is kept, not nested into.
 cache_put() {
   local t="$2.$BASHPID"
   mkdir -p "${2%/*}"; rm -rf "$t"
