@@ -5792,6 +5792,16 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   settles laws, and an association chain's rules exist already. All but 28 of the 300 top definitions have 2 operators (27 of the 28 in source
   (1)). `shl1`'s unused second argument shows as a hole (`shl1(sub(□, □), □)`); a definition of it would take one
   argument fewer.
+- **The miner's pool is not where reach is short (run `2026-10-25-pool-bottleneck`, about 9 min; patch, script and
+  totals in its folder).** Each loop's 300 served laws under its final rules leave 741 stragglers over the 30 loops
+  (24.7 a loop; fewer than the 39.1 served with a machine proof, since later batches' rules settle earlier laws).
+  Mined again on those stragglers (as the loop mines: `RULEMINER_FAST=1`), a pool of right sides up to 7 nodes instead
+  of 5 (415,788 terms instead of 5,804, more than a vocabulary of 2-operator definitions at size 5 would add) covers
+  358 instead of 355. Every straggler already has a candidate from the size-5 pool; the 9-node pattern cap cuts 300
+  patterns, 171 of which have a right side. 302 of the 355 laws covered are covered by rules over 3 or 4 variables:
+  the cross-side route (subterms and patterns up to 13 nodes, `RULEMINER_VARS` 4), not the pool. So a vocabulary in
+  the pool would buy about 1%; if definitions buy reach, it is in the cross-side route's caps, or in what the 386
+  uncovered stragglers lack.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
