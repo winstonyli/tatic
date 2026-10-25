@@ -54,6 +54,14 @@ mv "$T/root/tests/church_bv/held_9.txt" "$T/root/tests/church_bv/held_13.txt"; e
 rm "$T/cache/$(key "$T/A.exe")/s1/held_bands.txt"
 ok "an arm with no band lines" "$(ARM_CACHE=$(cygpath -w "$T/cache") gate nobands "$B" 1 | grep '^bands A:')" "bands A: no band lines"
 mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"
+# a failed band check fails the arm: a runs.exe whose sweep succeeds (M, a WORK line), then F.exe (every check prints
+# CHECKED: the arm passes) against G.exe (the table alone's check at band 15 prints none)
+printf '#!/bin/bash\nd=$(cygpath -u "$2"); printf "x\\tx\\tx\\t5\\n" > "$d/cold_streams.tsv"; echo "WORK interp=1 walk=1 match=1 op=1"; echo "wall=1s jobcpu=1"\n' > "$T/root/tools/runs/target/release/runs.exe"
+sed 's/^echo "CHECKED/[ -s "$(cygpath -u "$CHECK_RULES")" ] || [ "$b" != 15 ] \&\& echo "CHECKED/' "$T/F.exe" > "$T/G.exe"
+for x in F G; do for l in 1 2 3; do mkdir -p "$T/ok$x/s1_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/ok$x/s1_B/cold_streams_streams_${l}_none/rules.txt"; done; gate ok$x "$(cygpath -w "$T/$x.exe")" 1 > /dev/null; done
+ok "every band checked: the arm passes" "$(cat "$T/okF/s1_B/failed")" 0
+ok "a band with no CHECKED line fails the arm" "$(cat "$T/okG/s1_B/failed")" 1
+echo fake > "$T/root/tools/runs/target/release/runs.exe"
 # B's arm is reused only where the environment it read is unchanged (the names the gate sets don't count), and only
 # under the same runs.exe and held-out laws
 hitb() { ARM_CACHE=$(cygpath -w "$T/cache") gate "$1" "$B" 1 | grep '^salt 1 B:' | head -1; }

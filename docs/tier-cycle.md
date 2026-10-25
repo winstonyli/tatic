@@ -5745,7 +5745,8 @@ of 1000; best loop / worst loop / none:
 11 and 13 are unchanged and 15 and 17 are byte for byte the probe's above. Every arm checks each band under its three
 loops' rules and under the table alone (no mined rules), and the gate prints one `bands` line per arm. The baseline,
 an A/A of 489cdd7 on salts 1-10 (untimed, 2 arms at a time, 57 min), pooled over salts and loops (free share; M per
-1000 laws):
+1000 laws checked: the check keeps the laws plausible at widths 1-6, 1000, 999, 997 and 994 per band, so 30 loops'
+M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 and 9385):
 
 | band | loops' free share | table's | gain (points) | loops' M | table's M |
 |---|---|---|---|---|---|
