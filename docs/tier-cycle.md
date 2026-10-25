@@ -5807,6 +5807,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   candidate cap (400) is never reached (at most 133 a loop). So no reach a vocabulary could give the miner covers more
   than 20 of the 741 (2.7%); 366 stay uncovered with every size cap lifted. Reach through definitions has no lever
   in the miner as it stands; the deficit is in what the 366 lack.
+- **What the uncovered stragglers lack: a prover for `shr1` (run `2026-10-25-uncovered`, about 3 min; classifier patch,
+  `classify.py` and `classes.txt` in its folder).** Of the 386 stragglers left uncovered under the current caps, 355
+  are laws the rewriter never closes (`UNPROVED`), and all 355 have `shr1` (322 with both arithmetic and bitwise
+  operators, 33 arithmetic only). `Machine::parse` refuses `shr1`, so nothing proves them; that is 48% of all 741
+  stragglers. The other 31 are machine-proved laws, 28 of them with no equal pair of subterms across the sides short
+  of the whole sides (only a whole-law rule covers them). All but one uncovered straggler has candidates; 149 have a
+  proper equal pair. Median 10 operators a law. The parked prover is `PARKED.md`, "A prover that knows what `shr1`
+  means".
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

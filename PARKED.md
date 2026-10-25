@@ -91,7 +91,10 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   table's parse-first representatives already prove every held-out replacement. Trigger: the table's serve logs report
   unusable `shr1` replacements that cost laws (about 12% of sampled `shr1` merges are unusable). Evidence:
   `docs/tier-cycle.md`, "`shr1` in the class table, its proofs over atoms, and a table's memory" (2026-10-23).
-  Status: parked (by decision, 2026-10-23).
+  Second symptom, 2026-10-25: 355 of the 386 stragglers the miner leaves uncovered over the baseline's 30 loops are
+  laws the rewriter never closes, and every one has `shr1` (`docs/tier-cycle.md`, "Where a loop's definitions should
+  come from"; run `2026-10-25-uncovered`). Status: parked (by decision, 2026-10-23); trigger met 2026-10-25, decision
+  pending.
 - **Boolean combinations of comparisons (`lt` results under `and`/`or`/`not`)** — why: machine side is cheap (spike passed) but the gain is capped at about 17% of M in the head start and the rule side is untouched. Trigger: the cmp3d library becomes the limiting factor, or the kernel extending its own vocabulary (now milestone v0.4, `ROADMAP.md`); restart from the spike patch and a half-day `prove_rule` probe. Evidence: `docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md:47`. Status: parked.
 
 ## Kernel memos, footprint and allocation
