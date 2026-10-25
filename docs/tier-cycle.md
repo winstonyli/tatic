@@ -5815,6 +5815,12 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   of the whole sides (only a whole-law rule covers them). All but one uncovered straggler has candidates; 149 have a
   proper equal pair. Median 10 operators a law. The parked prover is `PARKED.md`, "A prover that knows what `shr1`
   means".
+- **A third of the gate's M is `shr1` laws nothing proves (run `2026-10-25-m-shr1`, about 4 min).** The serve check
+  replayed on each of the 90 batches of arm A under the rules that batch had (every batch's M equal to its `m.tsv`
+  row), patched to name the laws it does not prove: M 1718, of which 545 are unproved and all 545 have `shr1`; only 4
+  of the 1173 machine-proved laws have it. The share is the same in every batch (32%, 33%, 31% for batches 0-2):
+  mined rules cut the `shr1` laws (253, 151, 141) as fast as the rest (549, 305, 315), not faster. A prover that
+  closes `shr1` laws would cut M by up to a third; nothing in vocabulary or the miner's caps reaches them.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
