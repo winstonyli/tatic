@@ -569,11 +569,18 @@ fn regenerate_key() {
 }
 
 /// The held-out set's size bands (a law's band: its larger side's size), its laws per band, and its salt, which no
-/// sweep salt or draw shift reaches (spec decision 10, plan R6).
-pub const HELD_BANDS: [usize; 2] = [11, 13];
+/// sweep salt or draw shift reaches (spec decision 10, plan R6). Bands 15 and 17 lie past the loops' sizes (class-table
+/// phase 3 plan, D1); the gate reads the files, and `held_files_are_the_bands` keeps them equal to this list.
+pub const HELD_BANDS: [usize; 4] = [11, 13, 15, 17];
 pub const HELD_PER_BAND: usize = 1000;
 pub const HELD_SALT: usize = 7_777_777;
 const REGENERATE_HELD: &str = "<exe> classes::regenerate_held --exact --ignored --nocapture";
+
+/// The growths of the table's representatives (size `SIZE`, two nodes per growth) a band's laws come from: the fewest
+/// that reach it, and at least the loops' `STREAM_LEVELS` (phase 3 plan, R1).
+pub fn held_levels(band: usize) -> usize {
+    crate::search::STREAM_LEVELS.max(band.saturating_sub(SIZE).div_ceil(2))
+}
 
 /// FNV-1a 64 of a text's trimmed lines joined by `\n`: the same for any line endings.
 fn text_hash(text: &str) -> u64 {
@@ -618,22 +625,23 @@ pub fn held_laws(band: usize) -> Vec<(Term, Term)> {
     parse_held(band, &text).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// Regenerates `held_11.txt` and `held_13.txt` (spec decision 10): the stream sequence at `HELD_SALT`, laws salt 1's
-/// loops serve dropped (phases 1-3, their first 300 laws: the gate's first salt; counted), each band's first
-/// `HELD_PER_BAND` laws in sequence order (round-robin over the streams). Run when the key or the table's size changes.
+/// Regenerates the `held_<band>.txt` files (spec decision 10): each band from the stream sequence at `HELD_SALT` grown
+/// `held_levels(band)` times, laws salt 1's loops serve dropped (phases 1-3, their first 300 laws: the gate's first
+/// salt; counted), each band's first `HELD_PER_BAND` laws in sequence order (round-robin over the streams). Run when
+/// the key or the table's size changes.
 #[test]
 #[ignore]
 fn regenerate_held() {
-    let seq = crate::search::stream_sequence(HELD_SALT);
-    let s1 = crate::search::stream_sequence(1);
+    let s1 = crate::search::stream_sequence(1, crate::search::STREAM_LEVELS);
     let served: hashbrown::HashSet<(Term, Term)> = (1..=3).flat_map(|p| crate::search::residue(&s1, p, 0, 300)).collect();
     for band in HELD_BANDS {
+        let seq = crate::search::stream_sequence(HELD_SALT, held_levels(band));
         let all: Vec<(Term, Term)> = seq.iter().filter(|(a, b)| a.size().max(b.size()) == band).cloned().collect();
         let overlap = all.iter().filter(|l| served.contains(*l)).count();
         let laws: Vec<(Term, Term)> = all.iter().filter(|l| !served.contains(*l)).take(HELD_PER_BAND).cloned().collect();
         assert_eq!(laws.len(), HELD_PER_BAND, "band {band}: {} laws in the band", all.len());
         std::fs::write(held_path(band), held_text(band, &laws)).unwrap();
-        println!("HELD {band}: {} of {} laws in the band; {overlap} served by salt 1's loops, dropped", laws.len(), all.len());
+        println!("HELD {band}: {} of {} laws in the band from {} growths; {overlap} served by salt 1's loops, dropped", laws.len(), all.len(), held_levels(band));
     }
 }
 
@@ -668,6 +676,25 @@ fn held_files_match_the_key() {
         assert_eq!(laws.len(), HELD_PER_BAND, "band {band}");
         assert!(laws.iter().all(|(a, b)| a.size().max(b.size()) == band), "band {band}");
     }
+}
+
+/// Each band comes from the fewest growths of the table's representatives (two nodes each) that reach it, and never
+/// fewer than the loops' own (`STREAM_LEVELS`), so bands 11 and 13 are the loops' sequence (phase 3 plan, R1).
+#[test]
+fn held_bands_take_the_fewest_growths() {
+    assert_eq!(HELD_BANDS.map(held_levels), [2, 2, 3, 4]);
+}
+
+/// The held-out files present are `HELD_BANDS`' exactly: the gate reads whatever `held_*.txt` exist.
+#[test]
+fn held_files_are_the_bands() {
+    let dir = held_path(HELD_BANDS[0]).parent().unwrap().to_path_buf();
+    let mut found: Vec<usize> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().to_str()?.strip_prefix("held_")?.strip_suffix(".txt")?.parse().ok())
+        .collect();
+    found.sort();
+    assert_eq!(found, HELD_BANDS.to_vec(), "held_*.txt in {}: regenerate ({REGENERATE_HELD})", dir.display());
 }
 
 /// A step's replacement has a plan that compiles to a kernel-checked proof at width 4: an `add` law (`Tree`), a bitwise

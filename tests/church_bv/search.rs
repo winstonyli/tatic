@@ -918,13 +918,14 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
     out
 }
 
-/// The loops' law sequence for `salt` (spec §9): the 56 streams (`stream_sets`, `STREAM_BUDGET`, `STREAM_LEVELS`)
-/// interleaved round-robin, a law kept at its first appearance. Built once per process and salt.
-pub fn stream_sequence(salt: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
-    static MEMO: crate::task::SharedMemo<usize, std::sync::Arc<Vec<(Term, Term)>>> = crate::task::SharedMemo::new();
+/// The law sequence for `salt` with the table's representatives grown `levels` times (spec §9; the loops use
+/// `STREAM_LEVELS`): the 56 streams (`stream_sets`, `STREAM_BUDGET`) interleaved round-robin, a law kept at its first
+/// appearance. Built once per process, salt and growth count.
+pub fn stream_sequence(salt: usize, levels: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
+    static MEMO: crate::task::SharedMemo<(usize, usize), std::sync::Arc<Vec<(Term, Term)>>> = crate::task::SharedMemo::new();
     let build = || {
         let t0 = std::time::Instant::now();
-        let streams: Vec<Vec<(Term, Term)>> = stream_sets().iter().map(|ops| stream_laws(ops, salt, STREAM_BUDGET, STREAM_LEVELS)).collect();
+        let streams: Vec<Vec<(Term, Term)>> = stream_sets().iter().map(|ops| stream_laws(ops, salt, STREAM_BUDGET, levels)).collect();
         let (mut seen, mut seq) = (HashSet::new(), vec![]);
         for i in 0..streams.iter().map(Vec::len).max().unwrap_or(0) {
             for s in &streams {
@@ -935,10 +936,10 @@ pub fn stream_sequence(salt: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
                 }
             }
         }
-        println!("STREAMS salt {salt}: {} laws from {} streams in {:.1}s", seq.len(), streams.len(), t0.elapsed().as_secs_f64());
+        println!("STREAMS salt {salt}, {levels} growths: {} laws from {} streams in {:.1}s", seq.len(), streams.len(), t0.elapsed().as_secs_f64());
         std::sync::Arc::new(seq)
     };
-    MEMO.with(salt, build, |s| s.clone())
+    MEMO.with((salt, levels), build, |s| s.clone())
 }
 
 /// Phase `phase`'s window of a sequence: its residue class at `STREAM_STRIDE`, `laws` of them from `skip`.
@@ -951,7 +952,7 @@ pub fn residue(seq: &[(Term, Term)], phase: usize, skip: usize, laws: usize) -> 
 #[ignore]
 pub fn stream_sequence_cost() {
     let salt = Setup::process().or("STREAMS_SALT", 1usize);
-    let seq = stream_sequence(salt);
+    let seq = stream_sequence(salt, STREAM_LEVELS);
     println!("SEQUENCE salt {salt}: {} laws; phase 1 window of 300: {}", seq.len(), residue(&seq, 1, 0, 300).len());
 }
 

@@ -5,8 +5,8 @@
 //! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
 //! The laws come from the streams (spec docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §9):
-//! `search::stream_sequence(salt)`, the operator-set streams round-robin, and a phase is its residue class mod
-//! `STREAM_STRIDE` (`search::residue`). Phase 0 feeds the mines' extras, phases 1-3 the loops.
+//! `search::stream_sequence(salt, STREAM_LEVELS)`, the operator-set streams round-robin, and a phase is its residue
+//! class mod `STREAM_STRIDE` (`search::residue`). Phase 0 feeds the mines' extras, phases 1-3 the loops.
 //!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
 //! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of phase SPHASE of the stream sequence at salt RULEMINER_SHUFFLE. It is
@@ -575,7 +575,7 @@ const STREAM_EXTRAS: usize = 1650;
 /// The law window `get`'s `RULEMINER_*` variables select: phase `RULEMINER_PHASE`'s residue class of
 /// `stream_sequence(RULEMINER_SHUFFLE)` (spec §9, plan R1).
 fn window(get: &dyn Fn(&str) -> Option<String>) -> Vec<(Term, Term)> {
-    let seq = stream_sequence(num(get, "RULEMINER_SHUFFLE", 0));
+    let seq = stream_sequence(num(get, "RULEMINER_SHUFFLE", 0), STREAM_LEVELS);
     residue(&seq, num(get, "RULEMINER_PHASE", 0), num(get, "RULEMINER_SKIP", 0), num(get, "RULEMINER_LAWS", 250))
 }
 
@@ -646,7 +646,7 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let c = scope[0].clone();
     let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
     // the sequence is built once per process (its `STREAMS` line gives the time); the loops' windows usually built it first
-    let source = residue(&stream_sequence(salt), 0, 0, STREAM_EXTRAS);
+    let source = residue(&stream_sequence(salt, STREAM_LEVELS), 0, 0, STREAM_EXTRAS);
     println!("GEN_LAWS streams: {} laws", source.len());
     let laws = filtered(&source, &served);
     let n = (setup.or("GEN_F", GEN_F) * laws.len() as f64) as usize;
