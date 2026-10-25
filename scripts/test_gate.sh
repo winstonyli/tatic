@@ -76,6 +76,11 @@ rm -rf "$T/put/cache"; cache_put "$T/put/o1" "$T/put/cache/k/s1"
 rm() { [ "$*" = "-rf $T/put/cache/k/s1" ] || command rm "$@"; }
 cache_put "$T/put/o2" "$T/put/cache/k/s1"; unset -f rm
 ok "a store after another writer's keeps its entry" "$(cat "$T/put/cache/k/s1/from") $(find "$T/put/cache" -name 's1*' | wc -l)" "$T/put/o1 1"
+# every name the gate sets, in the sweep's and the held-out check's environments, is skipped by `changed`: the names
+# come from the same functions that set them, so a new one can't miss the list
+source <(sed -n '/^sweep_env() {/,/^}/p;/^held_env() {/,/^}/p;/^changed() {/,/^}/p' scripts/streams_ab.sh)
+mkdir -p "$T/set"; { sweep_env 1 o; held_env r l; } | sed 's/=.*/=other/; s/^/ENV /' > "$T/set/task.log"
+ok "the names the gate sets are skipped" "$(wc -l < "$T/set/task.log") [$(changed "$T/none.env" "$T/set")]" "9 []"
 # an arm's switches: each named in its .exe.env must have an ABLATED line somewhere in the arm (a task log, the
 # held-out check's lines); spaces and CRLF in the .exe.env are read as job.rs's merge_env reads them
 source <(sed -n '/^untaken() {/,/^}/p' scripts/streams_ab.sh)

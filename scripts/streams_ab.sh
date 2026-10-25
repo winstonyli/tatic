@@ -11,10 +11,15 @@ a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "streams_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
+# the environments the gate sets, one NAME=value per line: the sweep's (<salt> <out dir>) and the held-out check's
+# (<rules file> <law file>, Windows paths); `changed` skips their names
+sweep_env() { printf '%s\n' MACHINE_STATE=0 SWEEP=cold:streams "SALT=$1" "SWEEP_OUT=$2"; }
+held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
 held() { # <exe> <rules file> <arm dir>: held-out M over both bands; the check's ABLATED and ENV lines go to <arm dir>/held_lines.txt
-  local m=0 band out line p f n
+  local m=0 band out line p f n e
   for band in 11 13; do
-    out=$(MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams CHECK_RULES="$(cygpath -w "$2")" CHECK_LAWFILE="$(cygpath -w "$root/tests/church_bv/held_$band.txt")" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null 2>&1)
+    mapfile -t e < <(held_env "$(cygpath -w "$2")" "$(cygpath -w "$root/tests/church_bv/held_$band.txt")")
+    out=$(env "${e[@]}" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null 2>&1)
     grep -E '^(ABLATED|ENV) ' <<< "$out" >> "$3/held_lines.txt"; line=$(grep '^CHECKED ' <<< "$out")
     p=$(echo "$line" | sed -E 's/^CHECKED ([0-9]+) .*/\1/'); f=$(echo "$line" | sed -E 's/.*\(([0-9]+) with.*/\1/'); n=$(echo "$line" | sed -E 's/.*\), ([0-9]+) not proved.*/\1/')
     [ -n "$line" ] || { echo "held: no CHECKED line for $2 band $band" >&2; echo x; return; }
@@ -45,19 +50,17 @@ untaken() {
   local v
   for v in $(sed -nE 's/^ *ABLATE *= *//p' "$1" 2>/dev/null | tr -d ' \r' | tr ',' ' '); do grep -rqsx "ABLATED $v" "$2" || echo "$v"; done
 }
-# the names the gate sets itself, in the sweep's and the held-out check's environments above and below: a cached arm's
-# reads of them don't count in `changed`
-gate_set="MACHINE_STATE SWEEP SALT SWEEP_OUT CHECK_FAST CHECK_FAMILY CHECK_RULES CHECK_LAWFILE"
 # <exe>.env <cache entry>: the first name the cached arm read from its environment (its ENV lines, job.rs `Setup::var`)
 # whose value now differs, as `<name>=<then>, now <now>` or `<name> unset, now <now>`; empty when all agree. A value is
 # the process's, else its .exe.env's (trimmed, names upper-cased, the first line for a name), as job.rs's merge_env reads
-# them; a name bash cannot hold counts as changed
+# them; a name bash cannot hold counts as changed. The names the gate sets itself (`sweep_env`, `held_env`) are skipped
 changed() {
-  local l n was now
+  local l n was now set
+  set=" $({ sweep_env x x; held_env x x; } | sed 's/=.*//' | paste -sd' ') "
   while IFS= read -r l; do
     l=${l#ENV }
     if [[ $l =~ ^([^=\ ]+)=(.*)$ ]]; then n=${BASH_REMATCH[1]}; was="=${BASH_REMATCH[2]}"; else n=${l% unset}; was=" unset"; fi
-    [[ " $gate_set " = *" $n "* ]] && continue
+    [[ $set = *" $n "* ]] && continue
     if ! [[ $n =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then now="=?"
     elif [ -n "${!n+x}" ]; then now="=${!n}"
     else
@@ -92,7 +95,7 @@ tally() {
   [ $n = 0 ]
 }
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
-  local s=$1 arm=$2 exe o mb h l v= f=0 c= long
+  local s=$1 arm=$2 exe o mb h l v= f=0 c= long e
   [ $arm = A ] && exe=$a || exe=$b
   o="$RUN_DIR/s${s}_$arm"
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env, this
@@ -111,7 +114,8 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
     fi
   fi
   mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_lines.txt"
-  ( "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams SALT=$s "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
+  mapfile -t e < <(sweep_env $s "$(cygpath -w "$o")")
+  ( "$runs" run "$(cygpath -w "$o")" -- "${e[@]}" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
   while [ ! -f "$o/exit" ]; do
     mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
     [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }
