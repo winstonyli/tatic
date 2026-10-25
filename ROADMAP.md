@@ -41,8 +41,7 @@ results, 2026-10-17 and 2026-10-23).
   and track the frontier, not only M on a fixed stream. The frontier: on a fixed held-out set of laws larger than the
   loops serve (the loops run on operator-set streams, the class-table spec's decision 11), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
   and visit budget, which must be fixed: from 1000 to 5000 it moves by up to 27 of 400 laws, `docs/tier-cycle.md`,
-  "Why a sound rule costs the join") by law size, and the largest size still above a threshold. Serving proves every law, so the share proved at all
-  would always be 1. Measured by a throwaway probe (`docs/tier-cycle.md`, "Free proofs by law size"): under the ref
-  libraries the free share falls from .91-.96 to .78-.82 between sizes 7-9 and 11 on add3, sbo3 and mix3, and the
-  libraries' gain over no rules grows with size. The 50% line lies beyond size 13, so the metric needs laws grown three
-  or more times (`PARKED.md`, "Proposer targets beyond ranking" (a)).
+  "Why a sound rule costs the join") by law size, against the table alone. Serving proves every law, so the share proved at all
+  would always be 1. The gate prints it per arm for bands 11-17 (`docs/tier-cycle.md`, "The frontier on the gate":
+  .92 to .69 with mined rules, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
+  "The frontier past the loops' sizes").

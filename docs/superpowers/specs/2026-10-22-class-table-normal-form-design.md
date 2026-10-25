@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # The learned class table as the rewriter's normal form
@@ -228,6 +228,10 @@ after (`docs/tier-cycle.md`, "The law generator on ref mines and warm loops").
 Mines see the laws normalised by the table, so mined rules target only what it leaves: on the new gate (§9), laws past
 the table's domain. Measured there: rules mined, M, and the frontier (`ROADMAP.md`, v0.5) by law size.
 
+Built (plan `docs/superpowers/plans/2026-10-24-class-table-phase-3.md`): held-out bands 15 and 17 beside 11 and 13,
+and the gate's `bands` line, each band's free share and M under the loops' rules and under the table alone; the
+baseline is in `docs/tier-cycle.md`, "The frontier on the gate".
+
 ### 8. Counts
 
 `m.tsv` gains a column, the distinct table replacements proved in the batch (decision 2). Serve logs report the table's
@@ -250,7 +254,7 @@ Decision 8's streams become the loops' law source, and the gate runs on them.
   per phase (3-4 generations per sweep, and phases can share laws). The per-family stride goes. The sweep names it `cold:streams`. Per-stream budget is decision 8's open question, measured
   once the gate stands.
 - **The held-out files (decision 10):** an ignored command, `classes::regenerate_held`, run like `regenerate_key`,
-  writes `tests/church_bv/held_11.txt` and `held_13.txt`: each size band's first 1000 laws in round-robin order over
+  writes `tests/church_bv/held_11.txt` and `held_13.txt` (and bands 15 and 17 from phase 3, §7): each size band's first 1000 laws in round-robin order over
   the streams (decision 10) at a salt no loop uses. Each file's header names the key file's hash and the table's size; a mismatch fails with the
   regeneration message, as the key file's header does.
 - **The gate script:** `scripts/streams_ab.sh` (`salts_ab.sh`'s shape): A/B per salt on `cold:streams`, plus M on
@@ -310,7 +314,7 @@ Decided while planning (2026-10-23):
 
 ## Build order
 
-Steps 1-7 are done (plans `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, `docs/superpowers/plans/2026-10-23-class-table-phase-2.md` and `docs/superpowers/plans/2026-10-23-class-table-ablations.md`).
+Steps 1-8 are done (plans `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, `docs/superpowers/plans/2026-10-23-class-table-phase-2.md`, `docs/superpowers/plans/2026-10-23-class-table-ablations.md` and `docs/superpowers/plans/2026-10-24-class-table-phase-3.md`).
 
 1. `classes.rs`: key file, table (with `shr1` and parse-first representatives), `rep`, verdicts and `regenerate_key`;
    generate the key file; the size-5 tests; the `shr1` verdicts and the commit after a build in a worker measured

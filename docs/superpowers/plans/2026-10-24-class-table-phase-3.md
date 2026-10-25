@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # The class table, build step 8 (phase 3: the frontier) Implementation Plan

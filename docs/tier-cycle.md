@@ -5739,6 +5739,31 @@ of 1000; best loop / worst loop / none:
 - About 3-13% of each band is not proved at all under `CHECK_FAST` (27-130 laws, most with no rules); M counts them
   with the machine proofs, as the gate does.
 
+*The frontier on the gate (2026-10-25; plan docs/superpowers/plans/2026-10-24-class-table-phase-3.md; runs
+`2026-10-24-held-15-17-2`, `2026-10-24-phase3-baseline`).* The held-out set has four bands now: `held_15.txt` and
+`held_17.txt` beside 11 and 13, each band drawn from the fewest growths that reach it (`held_levels`: 2, 2, 3, 4), so
+11 and 13 are unchanged and 15 and 17 are byte for byte the probe's above. Every arm checks each band under its three
+loops' rules and under the table alone (no mined rules), and the gate prints one `bands` line per arm. The baseline,
+an A/A of 489cdd7 on salts 1-10 (untimed, 2 arms at a time, 57 min), pooled over salts and loops (free share; M per
+1000 laws):
+
+| band | loops' free share | table's | gain (points) | loops' M | table's M |
+|---|---|---|---|---|---|
+| 11 | .923 | .762 | 16.1 | 76.9 | 238.0 |
+| 13 | .786 | .693 | 9.3 | 214.0 | 307.3 |
+| 15 | .747 | .635 | 11.2 | 253.1 | 365.1 |
+| 17 | .685 | .602 | 8.3 | 314.7 | 398.4 |
+
+- **Repeats.** A and B agree on every number; M 1718, rules the same in 30 of 30 loops. The table's lines are
+  identical in all 20 arms (it does not depend on the salt), and salt 6's lines for 15 and 17 equal the probe's
+  (same rules). The loops mined 45-73 rules each (mean 57.9).
+- **The held total changed scope.** `held` in the salt and total lines is now the loops' M over all four bands
+  (25675 here); the old two-band total is bands 11 and 13 of the per-band sums, 2307 + 6414 = 8721, the 2026-10-23
+  baseline's exactly. The ablations driver's "held-out rise" now guards bands 15 and 17 too.
+- **What a change must move.** Mining's gain falls from 16 points at band 11 to 8 at band 17 but stays well above the
+  spread between loops (salt 6: 3-4 points at 15 and 17), so the gain at the largest bands is the frontier's measure;
+  no band nears 50% (decision D2 of the plan: no threshold).
+
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
 (`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
