@@ -1,6 +1,6 @@
 //! The rule miner (`search::rule_miner`, search note section 36) in named parts: the laws and their stragglers (`laws`), the
-//! candidates (`candidates`), their proofs (`Prover`), the evaluation of rule sets (`Scorer`), the greedy rounds and their
-//! lookahead (`Rounds`) and the closing report (`Rounds::report`).
+//! candidates (`candidates`), their proofs (`Prover`), the evaluation of rule sets (`Scorer`), the greedy rounds
+//! (`Rounds`) and the closing report (`Rounds::report`).
 use super::rewrite::Node;
 use super::*;
 
@@ -302,9 +302,8 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
     cands.retain(|(l, r)| l != r);
     cands.sort_by_cached_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
     cands.dedup();
-    // rivals: the other right sides of each left side; a round's winner gives way to a rival that gains more on the same laws,
-    // unless the mine finished with the winner is worth more (the lookahead after the rounds' `pick`)
-    // (docs/tier-cycle.md, "Preferences and rival orientations in the miner")
+    // rivals: the other right sides of each left side; a round's winner gives way to a rival that gains more on the same laws
+    // (`Rounds::pick`; docs/tier-cycle.md, "Preferences and rival orientations in the miner")
     let mut rivals: hashbrown::HashMap<Term, Vec<(Term, Term)>> = Default::default();
     for (l, r) in &cands {
         rivals.entry(*l).or_default().push((*l, *r));
@@ -574,11 +573,6 @@ impl<'a> Scorer<'a> {
     fn guarded(&self, f: &[bool]) -> i64 {
         f.iter().skip(self.laws.stragglers.len()).filter(|c| **c).count() as i64
     }
-
-    /// what a round's gain measures, as a total: a rule's gain is the value it adds
-    fn value(&self, s: &Chosen) -> i64 {
-        self.count(&s.covered) * 1000 + self.guarded(&s.covered) * self.laws.guard_w - s.size
-    }
 }
 
 /// the rules chosen so far and, under them, each law's evaluation, the stragglers and guard laws they cover and the total size
@@ -598,14 +592,7 @@ struct Open {
     rule: String,
 }
 
-/// A rule set as a key: a round depends only on the set of rules chosen so far (`RuleTable::sorted` sorts them).
-fn key(c: &[(Term, Term)]) -> Vec<(Term, Term)> {
-    let mut v = c.to_vec();
-    v.sort();
-    v
-}
-
-/// The greedy rounds over the provable candidates, their lookahead and the proofs of their winners (P6-P8), all on this
+/// The greedy rounds over the provable candidates and the proofs of their winners (P6-P8), all on this
 /// thread; the scoring workers share only the `Scorer`.
 struct Rounds<'a> {
     scorer: &'a Scorer<'a>,
@@ -616,20 +603,14 @@ struct Rounds<'a> {
     clock: &'a Clock,
     /// under `RULEMINER_FAST` the candidates are proved here, once each, against the base rules as the eager filter would
     proofs: Vec<Option<bool>>,
-    /// a round's winner is proved on a thread of its own while the next round is scored (`speculate`, set for the main path's
-    /// rounds and lookahead's greedy paths): the round takes it as provable (`assumed`) and is committed when its proof is in,
-    /// and a failed proof rolls the rounds back to it (`play`). Any other proof of a pending candidate waits for its result
+    /// a round's winner is proved on a thread of its own while the next round is scored (`speculate`, set for the rounds'
+    /// picks): the round takes it as provable and is committed when its proof is in, and a failed proof rolls the rounds back
+    /// to it (`play`). Any other proof of a pending candidate waits for its result
     proof_tx: std::sync::mpsc::Sender<(usize, Result<bool, WorkerPanicked>)>,
     proof_rx: std::sync::mpsc::Receiver<(usize, Result<bool, WorkerPanicked>)>,
     pending: hashbrown::HashSet<usize>,
     speculate: bool,
     spawn_req: Option<usize>,
-    assumed: Vec<usize>,
-    /// a round depends only on the set of rules chosen so far, and alternatives' greedy paths often reach the same set in
-    /// another order, so picks and finished values are kept by set; the kept alternative's path is also the next rounds' own
-    picks: hashbrown::HashMap<Vec<(Term, Term)>, Vec<((Term, Term), i64)>>,
-    /// a set's finished value and the rounds finishing took, valid under any cap of at least that many rounds
-    finished: hashbrown::HashMap<Vec<(Term, Term)>, (i64, usize)>,
     /// the last evaluation's memo, under its rules: an entry holds under other rules when no rule in or out touches a term of its
     /// trace (`RewriteMemo::filtered`), so each evaluation is seeded with what the rules that changed cannot touch
     state_memo: Option<(Vec<(Term, Term)>, RewriteMemo)>,
@@ -694,9 +675,6 @@ impl<'a> Rounds<'a> {
             pending: Default::default(),
             speculate: false,
             spawn_req: None,
-            assumed: vec![],
-            picks: Default::default(),
-            finished: Default::default(),
             state_memo: None,
             state_time: std::time::Duration::ZERO,
             bound_time: std::time::Duration::ZERO,
@@ -734,9 +712,9 @@ impl<'a> Rounds<'a> {
         Chosen { chosen, eval, covered, size }
     }
 
-    /// one round on top of `s`: its alternatives with their gains, largest first: a rival orientation of the winner that gains
-    /// more, if one is proved, then the winner
-    fn pick(&mut self, job: &mut Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
+    /// one round on top of `s`: the rule it takes, with its gain: the winner, or a rival orientation of it that gains more and
+    /// proves (docs/tier-cycle.md, "With small rules, the lookahead buys nothing: take the rival")
+    fn pick(&mut self, job: &mut Job, s: &Chosen) -> Option<((Term, Term), i64)> {
         let (scorer, provable, rivals, cfg) = (self.scorer, self.provable, self.rivals, self.cfg);
         let (stragglers, guard_w) = (&scorer.laws.stragglers, scorer.laws.guard_w);
         let (chosen, base_eval, covered, size) = (&s.chosen, &s.eval, &s.covered, s.size);
@@ -847,7 +825,6 @@ impl<'a> Rounds<'a> {
                     let ok = match known {
                         Some(ok) => ok,
                         None if self.speculate => {
-                            self.assumed.push(i);
                             if self.pending.insert(i) {
                                 self.spawn_req = Some(i);
                             }
@@ -886,66 +863,15 @@ impl<'a> Rounds<'a> {
         self.scorings += next;
         self.skipped += order.len() - next;
         self.clock.phase(&format!("round over {} of {} candidates", next, provable.len()));
-        let Some(i) = winner else { return vec![] };
+        let Some(i) = winner else { return None };
         let g = results[i].as_ref().unwrap().0;
         // in the rivals' order, as when they were scored one after another here
         let rival = best_rival(rivals_of(i), &rival_gains, g, chosen, |rv| self.prover.prove(job, rv));
-        rival.into_iter().chain([(provable[i], g)]).collect()
-    }
-
-    /// a rival's larger round gain can lead to a worse finished set (docs/tier-cycle.md, "The cold loss is a greedy path loss"), so
-    /// both are finished greedily (rivals taken, no lookahead) and the better finished set's choice is kept, ties to the rival.
-    /// Looking ahead over runners-up too lost ("Lookahead on rival swaps")
-    fn then(&mut self, job: &mut Job, s: &Chosen, rule: &(Term, Term)) -> Chosen {
-        self.state(job, s.chosen.iter().chain([rule]).cloned().collect())
-    }
-
-    fn pick_kept(&mut self, job: &mut Job, s: &Chosen) -> Vec<((Term, Term), i64)> {
-        let kk = key(&s.chosen);
-        if let Some(v) = self.picks.get(&kk) {
-            return v.clone();
-        }
-        let v = self.pick(job, s);
-        self.picks.insert(kk, v.clone());
-        v
-    }
-
-    /// the value of `chosen` finished greedily (each round's first alternative) in at most `rounds` more rounds; while
-    /// speculating, each pick's assumed winner is proved on a thread of its own (`spawn`)
-    fn finish(&mut self, job: &mut Job, mut chosen: Vec<(Term, Term)>, rounds: usize, spawn: &dyn Fn(usize)) -> i64 {
-        let (mut path, mut left) = (vec![], rounds);
-        let (v, mut d) = loop {
-            let kk = key(&chosen);
-            if let Some(&(v, d)) = self.finished.get(&kk).filter(|e| e.1 <= left) {
-                break (v, d);
-            }
-            let s = self.state(job, chosen);
-            if left == 0 {
-                return self.scorer.value(&s); // cut by the round cap: not kept
-            }
-            let alts = self.pick_kept(job, &s);
-            if let Some(j) = self.spawn_req.take() {
-                spawn(j);
-            }
-            let Some((rule, _)) = alts.into_iter().next() else {
-                let v = self.scorer.value(&s);
-                self.finished.insert(kk, (v, 0));
-                break (v, 0);
-            };
-            path.push(kk);
-            chosen = s.chosen;
-            chosen.push(rule);
-            left -= 1;
-        };
-        for kk in path.into_iter().rev() {
-            d += 1;
-            self.finished.insert(kk, (v, d));
-        }
-        v
+        Some(rival.unwrap_or((provable[i], g)))
     }
 
     /// commits the open rounds whose proofs hold, oldest first, until `keep` are left; at a failed proof, voids the rounds built
-    /// on it (their picks too, as the failed winner is never picked again) and returns it, to be played again
+    /// on it and returns it, to be played again (its failed winner is never picked again)
     fn settle(&mut self, job: &mut Job, open: &mut Vec<Open>, keep: usize) -> Option<Open> {
         while open.len() > keep {
             let o = open.remove(0);
@@ -955,9 +881,6 @@ impl<'a> Rounds<'a> {
                 continue;
             }
             println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(&self.provable[i])));
-            for v in std::iter::once(&o).chain(open.iter()) {
-                self.picks.remove(&key(&v.before.chosen));
-            }
             for v in open.drain(..) {
                 if let Some(i) = v.proof {
                     self.resolve(i);
@@ -979,52 +902,18 @@ impl<'a> Rounds<'a> {
             let (mut s, mut round, mut open) = (self.state(job, vec![]), 0, Vec::<Open>::new());
             loop {
                 self.speculate = true;
-                let alts = if round < self.cfg.rounds { self.pick_kept(job, &s) } else { vec![] };
+                let picked = if round < self.cfg.rounds { self.pick(job, &s) } else { None };
                 self.speculate = false;
-                // the main path's assumption is the round's own pending proof (`proof`)
-                self.assumed.clear();
                 let proof = self.spawn_req.take();
                 proof.map(spawn);
-                let Some(mut rule) = alts.first().map(|a| a.0) else {
+                let Some((rule, _)) = picked else {
                     match self.settle(job, &mut open, 0) {
                         Some(o) => (s, round) = (o.before, o.round),
                         None => break s,
                     }
                     continue;
                 };
-                if alts.len() > 1 {
-                    // lookahead plays whole greedy paths from settled rounds, taking each pick's winner as provable while it is proved
-                    // in the background; a path that took an unprovable winner voids the picks that offered it and the finished values
-                    // (any may rest on it), and the paths are played again
-                    if let Some(o) = self.settle(job, &mut open, 0) {
-                        (s, round) = (o.before, o.round);
-                        continue;
-                    }
-                    if !proof.is_none_or(|i| self.resolve(i)) {
-                        println!("RULEMINER rolled back to round {round}: its winner {} is not provable", proof.map_or(String::new(), |i| rule_show(&provable[i])));
-                        self.picks.remove(&key(&s.chosen));
-                        continue;
-                    }
-                    let rest = self.cfg.rounds - round - 1;
-                    let values = loop {
-                        self.speculate = true;
-                        let values: Vec<i64> = alts.iter().map(|(r, _)| self.finish(job, s.chosen.iter().chain([r]).cloned().collect(), rest, &spawn)).collect();
-                        self.speculate = false;
-                        let failed: Vec<usize> = std::mem::take(&mut self.assumed).into_iter().filter(|&i| !self.resolve(i)).collect();
-                        if failed.is_empty() {
-                            break values;
-                        }
-                        println!("RULEMINER lookahead played again: {} is not provable", failed.iter().map(|&i| rule_show(&provable[i])).collect::<Vec<_>>().join(", "));
-                        self.picks.retain(|_, v| !v.iter().any(|(r, _)| failed.iter().any(|&i| provable[i] == *r)));
-                        self.finished.clear();
-                    };
-                    let best = (0..alts.len()).max_by_key(|&a| (values[a], std::cmp::Reverse(a))).unwrap();
-                    for (a, ((l, r), g)) in alts.iter().enumerate() {
-                        println!("RULEMINER lookahead: {} {} -> {} (+{g}) finishes at {}", if a == best { "keep" } else { "    " }, l.show(), r.show(), values[a]);
-                    }
-                    rule = alts[best].0;
-                }
-                let next = self.then(job, &s, &rule);
+                let next = self.state(job, s.chosen.iter().chain([&rule]).cloned().collect());
                 let line = format!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", self.scorer.count(&next.covered) - self.scorer.count(&s.covered), s.size - next.size, rule.0.show(), rule.1.show());
                 self.clock.phase("rule-set evaluation");
                 open.push(Open { before: s, round, proof, line, rule: rule_show(&rule) });
