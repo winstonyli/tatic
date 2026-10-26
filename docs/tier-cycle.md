@@ -5847,9 +5847,19 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   `shr1` against the rest, by band 11/13/15/17: arm A .65/.33/.41/.36 against .70/.31/.28/.19; arm B .84/.56/.56/.48
   against .70/.31/.28/.19. Held-out M per loop, A to B: `shr1` 251.5 to 179.1 (-29%), the rest 604.4 to 607.1 (the
   totals 855.9 and 786.2 match the gate's). So a `shr1` prover's rules would carry; but most held-out M is laws without
-  `shr1` that the rules leave to a machine proof (604 of 856), and those carry worst as laws grow (.19 at band 17). In
-  passing: the class table rejects mined `shr1` rules (`CLASS_UNUSABLE` lines in the check's output, e.g.
-  `shr1(add(x, x), 0) = and(x, shr1(-1, 0))`).
+  `shr1` that the rules leave to a machine proof (604 of 856), and those carry worst as laws grow (.19 at band 17). The
+  check's `CLASS_UNUSABLE` lines (e.g. `shr1(add(x, x), 0) = and(x, shr1(-1, 0))`) are class-table replacements
+  `verdict` cannot prove, as it takes a `shr1` subterm for an atom, not mined rules refused: those nodes fall back to
+  the rules (`PARKED.md`, "Verdicts for replacements with a shift subterm").
+- **Laws without `shr1` take about a rule each, and at band 17 half stay out of reach even when seen (run
+  `2026-10-25-held-seen`, 111 min).** For each arm-A loop, the held-out laws without `shr1` its final rules leave to a
+  machine proof (run `2026-10-25-held-shr1-2`), mined under those rules as the loop mines (HEAD build): band 11, 1434 of
+  1437 covered with 1127 rules (0.79 a law); band 17 (29 of 30 loops, the 30th's mine hung after a worker panic),
+  3451 of 6892 covered (50%) with 2696 rules (0.78 a covered law), and the 400-candidate cap hit in 12 of the 29 mines
+  (band 11: 139 candidates a mine). The rules are small (mean left side 4.5 and 4.3 operators) and 86% and 69% have 3+
+  variables; the same rules recur across loops, as the loops see the same held-out laws (157 and 472 distinct). So a
+  rule mined on one law rarely closes another: what carries poorly to unseen laws is rules in general, not `shr1`
+  rules, and at band 17 the miner's candidates also run out.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
