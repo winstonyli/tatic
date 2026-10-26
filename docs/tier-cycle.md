@@ -5908,6 +5908,13 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   sides of 1 to 3 operators over three or more variables 146 to 267, of 5 or 6 operators 1070 to 922 (mean 4.31 to
   4.09 operators). The cost: job CPU 5451 to 10019 s (1.84x). Against the `shr1` oracle's ceiling (held-out M -8.2%,
   run `2026-10-25-shr1-oracle`) this is most of that size at no new prover. Throwaway: keeping it is its own change.
+  Where the CPU goes (the mines' `RULEMINER time` lines, summed over the 60 mines of each arm): candidate generation
+  stays at about 1 s; the scoring rounds take 1554 to 3136 s and the rule-set evaluations 737 to 1080 s. Rounds 7602 to
+  11211, with the main path's (a winner or a rollback each) 2183 to 1981, so the lookahead's greedy paths
+  ("Preferences and rival orientations in the miner") take about 5400 to 9200: a round's winner now has a rival on the
+  same laws in 63 rounds against 21, and the lookahead keeps the rival in 11 against 2. Each round also scans more
+  candidates (163 to 205; the gain bound skips 39% of scorings against 43%). So the cost is small rules competing with
+  the law-sized fragments for the same stragglers, settled by whole greedy paths.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
