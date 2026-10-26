@@ -11,19 +11,21 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 
 ## Proposer and loop
 
-- **Proposer targets beyond ranking: laws beyond 5 nodes, and new definitions** — why: the floor turned out not to be about size; (c) waits on a way to check conservative definitions. Trigger: none stated for (a); (c) when conservative definitions can be checked (v0.4's definitions lever, `ROADMAP.md`). Evidence: `docs/tier-cycle.md` ("The proposer model's target: ranking"). Status: parked; (c) seeds v0.4's definitions lever.
+- **Proposer targets beyond ranking: laws beyond 5 nodes, and new definitions** — why: the floor turned out not to be about size; (c) waits on a way to check conservative definitions. Trigger: none stated for (a); (c) when conservative definitions can be checked and add expressiveness (v0.4's enumerator vocabulary did not pay: "Definitions as an enumerator vocabulary"). Evidence: `docs/tier-cycle.md` ("The proposer model's target: ranking"). Status: parked; (c) seeded v0.4's definitions lever, decided against 2026-10-26 ("Definitions as an enumerator vocabulary").
 - **A library of mined definitions that outlives the loop** — what: definitions one loop mines are kept and seed later
   loops (DreamCoder-style), instead of each loop mining its own and dropping them at its end. Why parked: by decision
   (2026-10-25, v0.4 design): definitions, one of v0.4's levers, are tested per loop
   on the gate's A/B as it stands; a library needs a stored format, a keep-and-forget policy and an order across
-  loops, and makes the gate's A/A path-dependent. Trigger: v0.4 shows per-loop definitions pay, and v0.5 (closing the
-  cycle) needs vocabulary to compound across iterations. Evidence: `ROADMAP.md` v0.4, v0.5. Status: parked.
+  loops, and makes the gate's A/A path-dependent. Trigger: per-loop definitions shown to pay (v0.4 found the enumerator
+  vocabulary does not: "Definitions as an enumerator vocabulary"), and v0.5 (closing the cycle) needs vocabulary to
+  compound across iterations. Evidence: `ROADMAP.md` v0.4, v0.5. Status: parked.
 - **Defined operators inside `Term`, and normal forms that fold them** — what: (a) a defined operator as a real `Term`
   operator (index 8 and up in a run-time operator table), unfolded at the prover boundary, so rules print and weigh in
   the defined vocabulary; (b) on top of (a), the rewriter folding a definition's body back into its operator, so normal
-  forms carry it. Why parked: by decision (2026-10-25, v0.4 design): v0.4 builds definitions, if it tries them, as a vocabulary of the
+  forms carry it. Why parked: by decision (2026-10-25, v0.4 design): v0.4 was to build definitions as a vocabulary of the
   enumerators, expanded to base operators as terms are built, since an abbreviation changes no match and reach is
-  counted only where enumerators count size. (a) touches six subsystems: the shape and `PatIndex` bit layout
+  counted only where enumerators count size (that lever was then decided against: "Definitions as an enumerator
+  vocabulary"). (a) touches six subsystems: the shape and `PatIndex` bit layout
   (`1 << o`, `CLASSES`), `rewrite_uncached`'s per-operator branches (an unknown operator falls into the bitwise one),
   the machine prover (`Machine::step` compiles an operator index of 4 or more as a subtractor, `machine.rs`),
   `witnessed`, `Compiler::ty` and the class table's key header; a missed site misproves silently. (b) adds a fold rule
@@ -31,6 +33,13 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   (a) when a consumer needs the named form (the GPU model reading rules, or a rule order that should weigh a defined
   operator as 1); (b) when a definition must appear in normal forms. Evidence: operator-site survey, 2026-10-25
   (`tests/church_bv/rewrite.rs` shape bits and `rewrite_uncached`, `machine.rs` `Machine::step`). Status: parked.
+- **Definitions as an enumerator vocabulary (v0.4's definitions lever)** — what: definitions the miner's enumerators
+  build terms from, expanded to base operators, so a candidate reaches larger terms within the same size caps. Why
+  decided against (2026-10-26): an abbreviation adds only reach past the size caps, and that reach does not transfer.
+  Mining half of each held-out band at the cross-side cap of 17 nodes instead of 13 cuts the mined half's M 652 to 219
+  but the other half's only 1614 to 1610 (of 1951); the transfer is the multi-law rules cap 13 already finds.
+  Definitions that add expressiveness (new operators in normal forms, comparisons under `and`/`or`) were not tested
+  and stay with their own entries. Evidence: `docs/tier-cycle.md`, "They do not transfer". Status: decided against.
 - **Search alongside execution, and laws uniform in the width (goal D)** — what: proof search running concurrently with execution and fed by what it observes (`../renno`'s gradual checks, effects and run-time hints), and laws proved for every width `n`, not one width at a time. Why: the first was never built; the second needs an induction principle over Church encodings that the kernel lacks (surveyed in §53-57, nothing built). Trigger: the belief layer (`ROADMAP.md`, goal 3) wants run-time evidence, or a law has to hold at all widths. Evidence: `docs/superpowers/specs/2026-10-01-search-execution-blend-design.md:91` (§6, question 4) and `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md:384` (§53), verified 2026-10-24. Status: parked (not built).
 - **Port the loop to rings (table refactor, instance builder, metric E)** — why: estimated at 2-3 days; the spike branch `ring-spikes` (8a1df7d) is not merged. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Ring-theory spikes"). Status: parked.
 - **Percentile difficulty band for the proposer** — why: only the fixed band was built. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Related work"). Status: parked (not built).

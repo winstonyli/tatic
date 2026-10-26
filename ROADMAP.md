@@ -41,9 +41,9 @@ results, 2026-10-17 and 2026-10-23).
   as general as still proves; tried 2026-10-25, held-out M -0.1%, same section); smaller rules (the cross-side cap at 9 or 7, tried 2026-10-26,
   held-out M +31%, same section); the pool route over three variables (tried 2026-10-26, held-out M -6.9%, job CPU
   1.84x, same section; with the lookahead off and rivals taken, -6.6% at 0.74x HEAD's CPU; kept 2026-10-26, the lookahead
-  deleted); the `shr1` prover (at width 4 an every-input fallback in `prove_rule`, kept 2026-10-26, held-out M -8.7%; wider, `PARKED.md`, "A prover that knows what `shr1` means"); definitions,
-  a vocabulary the kernel grows, entering only if checked conservative (seeds: `PARKED.md`, "Proposer targets beyond
-  ranking" (c) and "Boolean combinations of comparisons"). Rescoped 2026-10-25 from "Can the kernel extend its own
+  deleted); the `shr1` prover (at width 4 an every-input fallback in `prove_rule`, kept 2026-10-26, held-out M -8.7%; wider, `PARKED.md`, "A prover that knows what `shr1` means"); definitions
+  as a vocabulary of the enumerators (decided against 2026-10-26: the reach past the size caps they add does not
+  transfer to unseen laws, `PARKED.md`, "Definitions as an enumerator vocabulary"). Rescoped 2026-10-25 from "Can the kernel extend its own
   vocabulary?", after the probes in that section found no reach a vocabulary gives the miner.
 - **v0.5 - Does closing the cycle push the frontier?** (goals 2 and 3) Experiment 3: train on accepted laws, repeat,
   and track the frontier, not only M on a fixed stream. The frontier: on a fixed held-out set of laws larger than the
