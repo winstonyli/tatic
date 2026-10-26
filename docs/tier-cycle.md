@@ -5781,8 +5781,8 @@ M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 a
   part of the cache key).
 
 *Where a loop's definitions should come from (2026-10-25; v0.4 design; run `2026-10-25-held-unsettled`, about 1 min,
-throwaway scripts `defprobe.py` and `held_unsettled.sh` with their output in the run folder).* v0.4 builds
-definitions as a vocabulary of the enumerators, mined per loop (decided 2026-10-25; since the rescope that day one of v0.4's levers, `ROADMAP.md`; the alternatives are parked in
+throwaway scripts `defprobe.py` and `held_unsettled.sh` with their output in the run folder).* v0.4 was to build
+definitions as a vocabulary of the enumerators, mined per loop (decided 2026-10-25; since the rescope that day one of v0.4's levers, `ROADMAP.md`; decided against 2026-10-26, "They do not transfer" below; the alternatives are parked in
 `PARKED.md`, "A library of mined definitions that outlives the loop" and "Defined operators inside `Term`"). The probe
 asks which laws a loop should compress into definitions: (1) the served laws its rules left to a whole-term machine
 proof, or (2) every law it served. A definition is a fragment of 2-4 operators cut from a subterm, its holes the cut
@@ -5990,6 +5990,13 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   (4974 of 6400) is now machine-proved laws, 62 of them with `shr1`: the mined rules' reach on laws without `shr1`,
   not a prover, is most of what is left. The probe's sources (1) and (2) predate this split; the size-cap probes
   above (pool, cross-side caps) measured loop stragglers, not held-out laws.
+  The laws not proved (run `2026-10-26-unproved-kinds`, seconds; `unproved_kinds.py` in its folder, classing the
+  straggler lines of `2026-10-26-held-oracle`, below, by why `machine_fallback` fails): 1424 of the 1426 keep `shr1` in
+  their normal form, each beside `add` or `sub`, so `Machine::parse` refuses them; the other 2 (band 17, `shl1` over
+  sums, 4 and 7 and 5 and 8 carries) fail the carry-encoding search, and none is over the carry cap. They are 251
+  distinct laws (17/69/75/90 per band, 85 of them unproved in all 9 loops) of the held-out files' 1302 laws with `shr1`
+  (265/347/354/336). A prover that knows `shr1` would turn them into machine-proved laws and leave M as it is, since M
+  counts both; only rules that settle them lower it.
 - **Rules mined on the held-out laws themselves (run `2026-10-26-held-oracle`, 51 min; `oracle.sh` in its folder).**
   For the same 9 loops and every band, the miner as the loop runs it (`RULEMINER_FAST=1`) on the whole held-out band
   file with the loop's final rules as base; its stragglers are exactly each loop's held-out M (478/1592/1872/2458).
