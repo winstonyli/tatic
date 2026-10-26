@@ -5767,7 +5767,7 @@ M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 a
 
 *Where a loop's definitions should come from (2026-10-25; v0.4 design; run `2026-10-25-held-unsettled`, about 1 min,
 throwaway scripts `defprobe.py` and `held_unsettled.sh` with their output in the run folder).* v0.4 builds
-definitions as a vocabulary of the enumerators, mined per loop (decided 2026-10-25; the alternatives are parked in
+definitions as a vocabulary of the enumerators, mined per loop (decided 2026-10-25; since the rescope that day one of v0.4's levers, `ROADMAP.md`; the alternatives are parked in
 `PARKED.md`, "A library of mined definitions that outlives the loop" and "Defined operators inside `Term`"). The probe
 asks which laws a loop should compress into definitions: (1) the served laws its rules left to a whole-term machine
 proof, or (2) every law it served. A definition is a fragment of 2-4 operators cut from a subterm, its holes the cut

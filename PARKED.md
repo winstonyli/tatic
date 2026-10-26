@@ -11,17 +11,17 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 
 ## Proposer and loop
 
-- **Proposer targets beyond ranking: laws beyond 5 nodes, and new definitions** — why: the floor turned out not to be about size; (c) waits on a way to check conservative definitions. Trigger: none stated for (a); (c) when conservative definitions can be checked, which is milestone v0.4 (`ROADMAP.md`). Evidence: `docs/tier-cycle.md` ("The proposer model's target: ranking"). Status: parked; (c) is v0.4's seed.
+- **Proposer targets beyond ranking: laws beyond 5 nodes, and new definitions** — why: the floor turned out not to be about size; (c) waits on a way to check conservative definitions. Trigger: none stated for (a); (c) when conservative definitions can be checked (v0.4's definitions lever, `ROADMAP.md`). Evidence: `docs/tier-cycle.md` ("The proposer model's target: ranking"). Status: parked; (c) seeds v0.4's definitions lever.
 - **A library of mined definitions that outlives the loop** — what: definitions one loop mines are kept and seed later
   loops (DreamCoder-style), instead of each loop mining its own and dropping them at its end. Why parked: by decision
-  (2026-10-25, v0.4 design): v0.4 asks whether self-grown vocabulary pushes reach, which per-loop definitions answer
+  (2026-10-25, v0.4 design): definitions, one of v0.4's levers, are tested per loop
   on the gate's A/B as it stands; a library needs a stored format, a keep-and-forget policy and an order across
   loops, and makes the gate's A/A path-dependent. Trigger: v0.4 shows per-loop definitions pay, and v0.5 (closing the
   cycle) needs vocabulary to compound across iterations. Evidence: `ROADMAP.md` v0.4, v0.5. Status: parked.
 - **Defined operators inside `Term`, and normal forms that fold them** — what: (a) a defined operator as a real `Term`
   operator (index 8 and up in a run-time operator table), unfolded at the prover boundary, so rules print and weigh in
   the defined vocabulary; (b) on top of (a), the rewriter folding a definition's body back into its operator, so normal
-  forms carry it. Why parked: by decision (2026-10-25, v0.4 design): v0.4 builds definitions as a vocabulary of the
+  forms carry it. Why parked: by decision (2026-10-25, v0.4 design): v0.4 builds definitions, if it tries them, as a vocabulary of the
   enumerators, expanded to base operators as terms are built, since an abbreviation changes no match and reach is
   counted only where enumerators count size. (a) touches six subsystems: the shape and `PatIndex` bit layout
   (`1 << o`, `CLASSES`), `rewrite_uncached`'s per-operator branches (an unknown operator falls into the bitwise one),
@@ -97,7 +97,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   miner proposes, M falls only 1718 to 1620 (run `2026-10-25-shr1-oracle`, same section), so a prover alone is worth
   about 100 of M; batch 0's share is out of any rule's reach, and the rest are laws first seen at serve, which the
   miner closes once seen (run `2026-10-25-why-uncovered`, same section). Status: parked (by decision,
-  2026-10-23); trigger met 2026-10-25, decision pending.
+  2026-10-23); trigger met 2026-10-25: since then a lever of v0.4 (`ROADMAP.md`).
 - **Boolean combinations of comparisons (`lt` results under `and`/`or`/`not`)** — why: machine side is cheap (spike passed) but the gain is capped at about 17% of M in the head start and the rule side is untouched. Trigger: the cmp3d library becomes the limiting factor, or the kernel extending its own vocabulary (now milestone v0.4, `ROADMAP.md`); restart from the spike patch and a half-day `prove_rule` probe. Evidence: `docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md:47`. Status: parked.
 
 ## Kernel memos, footprint and allocation

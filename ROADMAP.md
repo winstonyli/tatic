@@ -34,9 +34,14 @@ results, 2026-10-17 and 2026-10-23).
 
 ## Milestones
 
-- **v0.4 - Can the kernel extend its own vocabulary?** (goal 2, and goal 3 once the model proposes) A proposed
-  definition enters only if checked conservative. Seeds: `PARKED.md`, "Proposer targets beyond ranking" (c) and
-  "Boolean combinations of comparisons" (its machine side passed a spike).
+- **v0.4 - Do mined rules carry to laws the loop has not seen?** (goal 2) Measured by the held-out free share by band
+  (11-17) and held-out M. Most held-out M is laws without `shr1` that the rules leave to a machine proof, and rules
+  carry worst as laws grow: about one rule per law even among laws mined together (`docs/tier-cycle.md`, "Where a
+  loop's definitions should come from"). Candidate levers, each tested on that measure: rule lifting (each rule made
+  as general as still proves); the `shr1` prover (`PARKED.md`, "A prover that knows what `shr1` means"); definitions,
+  a vocabulary the kernel grows, entering only if checked conservative (seeds: `PARKED.md`, "Proposer targets beyond
+  ranking" (c) and "Boolean combinations of comparisons"). Rescoped 2026-10-25 from "Can the kernel extend its own
+  vocabulary?", after the probes in that section found no reach a vocabulary gives the miner.
 - **v0.5 - Does closing the cycle push the frontier?** (goals 2 and 3) Experiment 3: train on accepted laws, repeat,
   and track the frontier, not only M on a fixed stream. The frontier: on a fixed held-out set of laws larger than the
   loops serve (the loops run on operator-set streams, the class-table spec's decision 11), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
