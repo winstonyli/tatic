@@ -216,44 +216,10 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
         _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
     };
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
-    // at most two variables (cutting subterms into variables), and look for a smaller term over the same variables
-    // with the same values at width 4 (a pool of all terms up to 5 nodes, indexed by value)
-    let psize = 5;
-    let mut by_size: Vec<Vec<Term>> = vec![vec![]; psize + 1];
-    by_size[1] = vec![Term::v(0), Term::v(1), Term::ZERO, Term::ONES];
-    for sz in 2..=psize {
-        let mut level = vec![];
-        for x in &by_size[sz - 1] {
-            level.push(Term::op(SHL1, *x, Term::ZERO));
-            level.push(Term::op(SHR1, *x, Term::ZERO));
-        }
-        for i in 1..sz - 1 {
-            for l in &by_size[i] {
-                for r in &by_size[sz - 1 - i] {
-                    for o in [0usize, 1, 2, 3, 4] {
-                        level.push(Term::op(o, *l, *r));
-                    }
-                }
-            }
-        }
-        by_size[sz] = level;
-    }
-    // the pool's terms and the patterns looked up in it use at most two variables (`abstractions(sub, 2)`), so signatures over
-    // two give the same equalities as over `kv`, at 256 bytes instead of 4096 for the three-variable families
-    let mut memo = ValueMemo::exhaustive(n, 2);
-    let mut index: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
-    for t in by_size.iter().flatten() {
-        index.entry(memo.values(t).to_vec()).or_default().push(*t);
-    }
-    // `lt` terms (one-bit values) only as roots, indexed apart: their 0/1 values must not meet the n-bit constants
-    let mut index_lt: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
-    for a in by_size.iter().take(4).flatten() {
-        for b in by_size.iter().take(4).flatten() {
-            let t = Term::op(LT, *a, *b);
-            index_lt.entry(memo.values(&t).to_vec()).or_default().push(t);
-        }
-    }
-    println!("RULEMINER pool of {} terms, {} distinct functions", by_size.iter().map(|v| v.len()).sum::<usize>(), index.len());
+    // at most `POOL_VARS` variables (cutting subterms into variables), and look for a smaller term over the same variables
+    // with the same values (`Pool`)
+    let mut pool = Pool::new(n);
+    println!("RULEMINER pool of {} terms, {} distinct functions", pool.terms, pool.index.len());
     // RULEMINER_ANY=1: also abstract subterms without add/sub (constant folding inside shifts and bitwise nodes)
     let any_op = cfg.any_op;
     // patterns seen (`None`), and cross-side rules seen (`Some(rhs)`)
@@ -264,16 +230,12 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
         st.3[0].subterms(&mut subs);
         st.3[1].subterms(&mut subs);
         for sub in subs.iter().filter(|t| matches!(*t.node(), Node::Op(LT, ..)) || (any_op || t.uses_add()) && t.size() >= if any_op { 2 } else { 3 }) {
-            for (pat, _) in abstractions(sub, 2) {
+            for (pat, _) in abstractions(sub, POOL_VARS) {
                 let Node::Op(..) = *pat.node() else { continue };
                 if !seen_pat.insert((pat, None)) || pat.size() > 9 {
                     continue;
                 }
-                let is_lt = matches!(*pat.node(), Node::Op(LT, ..));
-                let Some(group) = (if is_lt { &index_lt } else { &index }).get(memo.values(&pat)) else { continue };
-                let uses = |t: &Term, v: usize| t.has_var(v);
-                let _ = is_lt;
-                for r in group.iter().filter(|r| ok_order(&pat, r) && (0..2).all(|v| !uses(r, v) || uses(&pat, v))) {
+                for r in pool.equal(&pat).iter().filter(|r| ok_order(&pat, r) && (0..POOL_VARS).all(|v| !r.has_var(v) || pat.has_var(v))) {
                     cands.push((pat, *r));
                 }
             }
@@ -295,7 +257,7 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
                     for (pat, cuts) in abstractions(x, cross_cap) {
                         let Node::Op(..) = *pat.node() else { continue };
                         if cuts.len() <= 2 || pat.size() > 13 {
-                            continue; // up to two variables is the pool route's job
+                            continue; // up to two variables is the pool route's job; at three both routes look (the pool's right sides are up to 5 nodes, these any size)
                         }
                         // express y with the same cuts, through placeholders V(4+j)
                         let mut yy = *y;
@@ -353,6 +315,64 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
     cands.dedup_by(|a, b| a.0 == b.0);
     println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
     (cands, rivals)
+}
+
+/// The pool route's variables: over three the miner finds small rules that carry to unseen laws (held-out M -6.9% against
+/// two, docs/tier-cycle.md, "A pool route over three variables finds them").
+const POOL_VARS: usize = 3;
+
+/// The pool route's terms: every term of up to 5 nodes over `POOL_VARS` variables and the constants, by their values on every
+/// width-n input (4096 bytes a term over three variables at width 4); `lt` terms (one-bit values) only as roots over two terms
+/// of up to 3 nodes, indexed apart so their 0/1 values never meet the n-bit constants.
+struct Pool {
+    memo: ValueMemo<u8>,
+    index: hashbrown::HashMap<Vec<u8>, Vec<Term>>,
+    index_lt: hashbrown::HashMap<Vec<u8>, Vec<Term>>,
+    /// The terms outside `lt`.
+    terms: usize,
+}
+
+impl Pool {
+    fn new(n: usize) -> Pool {
+        let size = 5;
+        let mut by_size: Vec<Vec<Term>> = vec![vec![]; size + 1];
+        by_size[1] = (0..POOL_VARS).map(Term::v).chain([Term::ZERO, Term::ONES]).collect();
+        for sz in 2..=size {
+            let mut level = vec![];
+            for x in &by_size[sz - 1] {
+                level.push(Term::op(SHL1, *x, Term::ZERO));
+                level.push(Term::op(SHR1, *x, Term::ZERO));
+            }
+            for i in 1..sz - 1 {
+                for l in &by_size[i] {
+                    for r in &by_size[sz - 1 - i] {
+                        for o in [0usize, 1, 2, 3, 4] {
+                            level.push(Term::op(o, *l, *r));
+                        }
+                    }
+                }
+            }
+            by_size[sz] = level;
+        }
+        let mut pool = Pool { memo: ValueMemo::exhaustive(n, POOL_VARS), index: Default::default(), index_lt: Default::default(), terms: 0 };
+        for t in by_size.iter().flatten() {
+            pool.index.entry(pool.memo.values(t).to_vec()).or_default().push(*t);
+            pool.terms += 1;
+        }
+        for a in by_size.iter().take(4).flatten() {
+            for b in by_size.iter().take(4).flatten() {
+                let t = Term::op(LT, *a, *b);
+                pool.index_lt.entry(pool.memo.values(&t).to_vec()).or_default().push(t);
+            }
+        }
+        pool
+    }
+
+    /// The pool's terms equal to `pat` (over at most `POOL_VARS` variables) on every input.
+    fn equal(&mut self, pat: &Term) -> &[Term] {
+        let index = if matches!(*pat.node(), Node::Op(LT, ..)) { &self.index_lt } else { &self.index };
+        index.get(self.memo.values(pat)).map_or(&[], |g| g.as_slice())
+    }
 }
 
 /// The patterns obtained from `t` by cutting subterms into variables: (pattern, cut subterms in variable order).
@@ -1071,6 +1091,17 @@ fn a_provers_rules_ignore_the_callers_switches() {
     let counting = job.rules().counting(true).tracing(true);
     let installed = job.with_rules(counting, |job| prover.install(job.setup()));
     assert!(installed.is(&installed.counting(false).tracing(false)), "a prover proves with both switches off");
+}
+
+/// The pool route looks patterns up over three variables, `lt` roots too: a pattern's group is the pool's terms equal to it on
+/// every input (docs/tier-cycle.md, "A pool route over three variables finds them").
+#[test]
+fn the_pool_finds_terms_over_three_variables() {
+    let mut pool = Pool::new(4);
+    let p = parse_term;
+    assert!(pool.equal(&p("sub(add(x, z), add(y, z))")).contains(&p("sub(x, y)")));
+    assert!(!pool.equal(&p("sub(add(x, z), add(y, z))")).contains(&p("sub(x, z)")));
+    assert!(pool.equal(&p("lt(x, and(and(y, z), y))")).contains(&p("lt(x, and(y, z))")));
 }
 
 /// A worker that panics fails the thread waiting for its result instead of hanging it: the waiter keeps a sender, so the
