@@ -5862,6 +5862,17 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   variables; the same rules recur across loops, as the loops see the same held-out laws (157 and 472 distinct). So a
   rule mined on one law rarely closes another: what carries poorly to unseen laws is rules in general, not `shr1`
   rules, and at band 17 the miner's candidates also run out.
+- **Lifting the rules to their most general provable form carries nothing further (run `2026-10-25-rule-lift`, 6 min
+  untimed; v0.4's first lever).** Every distinct rule of arm A's 30 final rule sets (1287) made as general as still
+  proves, greedily: a left-side constant to a fresh variable (alone or with the same constant on the right), or one
+  occurrence of a repeated left-side variable to a fresh one, each step screened (`is_law`) and proved by the miner's
+  `Prover` (built-in rules only, width 4; `lift.patch`, `miner::lift_probe`). 460 lift (433 constant steps, 174 of them
+  on both sides, and 1 split), 284 of them only by freeing `shl1`'s unused second argument. Each loop's rules with its
+  rules lifted, through the gate's held-out check, against the originals' (run `2026-10-25-held-shr1-2`; an A/A on s1
+  l1 b17 matched): free share 11 .923 to .922, 13 .786 to .786, 15 .747 to .748, 17 .685 to .686; held-out M 25675 to
+  25652 (-0.1%), loops better and worse about evenly at 11 and 13 and 2 to 1 at 15 and 17; exhausted laws at 17 71 to
+  35. Most constants cannot be freed (827 rules lift not at all, and 284 of the 460 only free `shl1`'s unused
+  argument), and where one can, reach does not move: what a rule lacks to carry is its shape, not its generality.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

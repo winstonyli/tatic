@@ -38,7 +38,7 @@ results, 2026-10-17 and 2026-10-23).
   (11-17) and held-out M. Most held-out M is laws without `shr1` that the rules leave to a machine proof, and rules
   carry worst as laws grow: about one rule per law even among laws mined together (`docs/tier-cycle.md`, "Where a
   loop's definitions should come from"). Candidate levers, each tested on that measure: rule lifting (each rule made
-  as general as still proves); the `shr1` prover (`PARKED.md`, "A prover that knows what `shr1` means"); definitions,
+  as general as still proves; tried 2026-10-25, held-out M -0.1%, same section); the `shr1` prover (`PARKED.md`, "A prover that knows what `shr1` means"); definitions,
   a vocabulary the kernel grows, entering only if checked conservative (seeds: `PARKED.md`, "Proposer targets beyond
   ranking" (c) and "Boolean combinations of comparisons"). Rescoped 2026-10-25 from "Can the kernel extend its own
   vocabulary?", after the probes in that section found no reach a vocabulary gives the miner.
