@@ -5840,6 +5840,16 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   with), every one has candidates matching its normal forms that prove, and no candidate closes it alone. So what M
   measures in batches 1-2 is how far rules mined from earlier batches carry to laws not yet seen, not the miner's reach
   on what it has seen.
+- **`shr1` rules carry to unseen laws as well as the rest, and better with the oracle (run `2026-10-25-held-shr1-2`,
+  12 min).** The held-out check of every band under no rules and under each loop's final rules, arms A and B, naming the
+  unproved laws (`probe.patch` in the run folder). With no rules nearly every held-out `shr1` law is unproved (81-123 a
+  band, 1-5 machine-proved) and no other law is (155-280 machine-proved). Share of those laws the final rules make free,
+  `shr1` against the rest, by band 11/13/15/17: arm A .65/.33/.41/.36 against .70/.31/.28/.19; arm B .84/.56/.56/.48
+  against .70/.31/.28/.19. Held-out M per loop, A to B: `shr1` 251.5 to 179.1 (-29%), the rest 604.4 to 607.1 (the
+  totals 855.9 and 786.2 match the gate's). So a `shr1` prover's rules would carry; but most held-out M is laws without
+  `shr1` that the rules leave to a machine proof (604 of 856), and those carry worst as laws grow (.19 at band 17). In
+  passing: the class table rejects mined `shr1` rules (`CLASS_UNUSABLE` lines in the check's output, e.g.
+  `shr1(add(x, x), 0) = and(x, shr1(-1, 0))`).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
