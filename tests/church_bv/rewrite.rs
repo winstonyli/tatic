@@ -1525,7 +1525,55 @@ pub fn shr_not_law(job: &mut Job, n: usize) -> Option<(Expr, Expr)> {
 }
 
 /// The law behind a rule: bitwise/shift rules by the per-position prover, the rest by the carry machines.
+/// The most input bits (`n * k`) an every-input proof takes on: at 12, 4096 cases a position, about 0.4 s a rule to build
+/// and check, and 16x that for each 4 bits more (docs/tier-cycle.md, "At the loops' width, every-input proofs").
+pub const EVERY_INPUT_BITS: usize = 12;
+
+/// Proof of `t1 = t2` over `k` vectors at width `n` for any operators, by every input: per output position (`n`, or one
+/// for a root `lt`), a case split over all `n * k` input bits whose leaves the kernel checks by evaluation (a Bool claim:
+/// the split's motive is Type1, and a vector equality is Type2), then `cong_n` joins the positions.
+pub fn every_input_law(n: usize, k: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
+    let m = if matches!(*t1.node(), Node::Op(LT, ..)) { 1 } else { n };
+    let ops = ops_for(n);
+    let sides = |args: &[Expr]| (t1.eval(&ops, n, args), t2.eval(&ops, n, args));
+    let tuples = |vs: &[Expr]| (0..k).map(|v| church_tuple(&vs[v * n..(v + 1) * n])).collect::<Vec<_>>();
+    // bit `i` of a vector: the vector applied to Bool and the `i`th projection
+    let proj = |v: Expr, i: usize| {
+        let mut f = var((m - 1 - i) as u32);
+        for _ in 0..m {
+            f = lam(bool0(), f);
+        }
+        app2(v, bool0(), f)
+    };
+    let lemmas: Vec<Expr> = (0..m)
+        .map(|i| {
+            let body = |vs: &[Expr]| {
+                let (l, r) = sides(&tuples(vs));
+                id(bool0(), proj(l, i), proj(r, i))
+            };
+            lemma_n(n * k, &body, &|bits| refl(proj(sides(&tuples(&bits.iter().map(|b| bit(*b)).collect::<Vec<_>>())).0, i))).0
+        })
+        .collect();
+    k_var_law_to(n, k, &bv_ty(m), &sides, &|bits, goods| {
+        let at: Vec<(usize, usize)> = (0..k).flat_map(|v| (0..n).map(move |i| (v, i))).collect();
+        let vs: Vec<Expr> = at.iter().map(|&(v, i)| bits(v, i)).collect();
+        let args: Vec<Expr> = vs.iter().cloned().chain(at.iter().map(|&(v, i)| goods(v, i))).collect();
+        let (l, r) = sides(&tuples(&vs));
+        let (s1, s2): (Vec<Expr>, Vec<Expr>) = (0..m).map(|i| (proj(l, i), proj(r, i))).unzip();
+        cong_n(&bool0(), &bv_ty(m), &bits_to_bv(m), &s1, &s2, lemmas.iter().map(|lm| apps(*lm, args.clone())).collect())
+    })
+}
+
+/// Proof of the rule `l -> r` over `k` variables at width `n`: by its own route (the bitwise case split, `shr1` roots by
+/// rewriting, the carry encoding), and past them over every input, up to `EVERY_INPUT_BITS` input bits.
 pub fn prove_rule(job: &mut Job, n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
+    routed_rule(job, n, k, l, r).or_else(|| {
+        let law = (n * k <= EVERY_INPUT_BITS).then(|| every_input_law(n, k, l, r))?;
+        job.lemmas.holds(&law.0, &law.1).ok().map(|_| law)
+    })
+}
+
+fn routed_rule(job: &mut Job, n: usize, k: usize, l: &Term, r: &Term) -> Option<(Expr, Expr)> {
     if (l, r) == (&shrnot_rule().0, &shrnot_rule().1) {
         shr_not_law(job, n)
     } else if l.add_free() && r.add_free() {
@@ -1538,6 +1586,24 @@ pub fn prove_rule(job: &mut Job, n: usize, k: usize, l: &Term, r: &Term) -> Opti
     } else {
         add_tree_law(job, n, k, l, r)
     }
+}
+
+/// A rule no other route proves, with `shr1` under `add` (a carry machine refuses `shr1`), is proved over every input
+/// when it has at most `EVERY_INPUT_BITS` input bits; a false one is not, nor a true one past the cap (docs/tier-cycle.md,
+/// "At the loops' width, every-input proofs").
+#[test]
+fn a_rule_past_every_route_is_proved_over_every_input() {
+    let job = &mut Job::new(Setup::process());
+    let rule = |l: &str, r: &str| (parse_term(l), parse_term(r));
+    let k = |(l, r): &(Term, Term)| l.max_var().max(r.max_var()) + 1;
+    let shr = rule("add(and(add(x, shr1(-1, 0)), shr1(y, 0)), z)", "add(z, and(add(x, -1), shr1(y, 0)))");
+    assert!(prove_rule(job, 4, k(&shr), &shr.0, &shr.1).is_some());
+    let lt = rule("lt(shr1(x, 0), x)", "lt(0, x)");
+    assert!(prove_rule(job, 4, k(&lt), &lt.0, &lt.1).is_some());
+    let wrong = rule("add(and(add(x, shr1(-1, 0)), shr1(y, 0)), z)", "add(z, and(add(x, -1), shr1(z, 0)))");
+    assert!(prove_rule(job, 4, k(&wrong), &wrong.0, &wrong.1).is_none());
+    let wide = rule("add(and(add(x, shr1(-1, 0)), shr1(y, 0)), add(z, u))", "add(add(z, u), and(add(x, -1), shr1(y, 0)))");
+    assert!(prove_rule(job, 4, k(&wide), &wide.0, &wide.1).is_none(), "16 input bits is past the cap");
 }
 
 /// `f` (a proof of a rule by rewriting, with the rules `blocked`) run as a rewriting job of its own: a fresh
