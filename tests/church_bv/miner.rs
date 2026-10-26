@@ -599,8 +599,8 @@ struct Rounds<'a> {
     /// a round's winner is proved on a thread of its own while the next round is scored (`speculate`, set for the main path's
     /// rounds and lookahead's greedy paths): the round takes it as provable (`assumed`) and is committed when its proof is in,
     /// and a failed proof rolls the rounds back to it (`play`). Any other proof of a pending candidate waits for its result
-    proof_tx: std::sync::mpsc::Sender<(usize, bool)>,
-    proof_rx: std::sync::mpsc::Receiver<(usize, bool)>,
+    proof_tx: std::sync::mpsc::Sender<(usize, Result<bool, WorkerPanicked>)>,
+    proof_rx: std::sync::mpsc::Receiver<(usize, Result<bool, WorkerPanicked>)>,
     pending: hashbrown::HashSet<usize>,
     speculate: bool,
     spawn_req: Option<usize>,
@@ -641,9 +641,26 @@ fn best_rival(rivals: &[(Term, Term)], gains: &[i64], g: i64, chosen: &[(Term, T
     rival
 }
 
+
+/// A worker thread's result sent to the thread waiting on it: the worker panicked.
+#[derive(Debug)]
+struct WorkerPanicked;
+
+/// Runs a worker's `f` and `send`s its result, or that it panicked, then lets the panic go on to the worker's scope. The
+/// waiter keeps a sender, so a worker that died without sending hung it at 0 CPU (a band-17 mine, run
+/// `2026-10-25-held-seen`); now it fails at once on `expect`.
+fn relay<T>(f: impl FnOnce() -> T, send: impl FnOnce(Result<T, WorkerPanicked>)) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(t) => send(Ok(t)),
+        Err(p) => {
+            send(Err(WorkerPanicked));
+            std::panic::resume_unwind(p)
+        }
+    }
+}
 impl<'a> Rounds<'a> {
     fn new(scorer: &'a Scorer<'a>, prover: &'a Prover, provable: &'a [(Term, Term)], rivals: &'a hashbrown::HashMap<Term, Vec<(Term, Term)>>, cfg: &'a MinerConfig, clock: &'a Clock) -> Self {
-        let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, bool)>();
+        let (proof_tx, proof_rx) = std::sync::mpsc::channel::<(usize, Result<bool, WorkerPanicked>)>();
         Rounds {
             scorer,
             prover,
@@ -674,6 +691,7 @@ impl<'a> Rounds<'a> {
                 return b;
             }
             let (j, b) = self.proof_rx.recv().unwrap();
+            let b = b.expect("a proof thread panicked");
             self.pending.remove(&j);
             self.proofs[j] = Some(b);
         }
@@ -792,7 +810,7 @@ impl<'a> Rounds<'a> {
                     let ((), spent) = job.spent(|job| {
                         tatic::kernel::scoped(|| loop {
                             let Ok(item) = queue.lock().unwrap().recv() else { break };
-                            done_tx.send((item, score_job(job, item))).unwrap();
+                            relay(|| score_job(job, item), |r| done_tx.send((item, r)).unwrap());
                         })
                     });
                     join_workers.lock().unwrap().add(spent.join);
@@ -831,6 +849,7 @@ impl<'a> Rounds<'a> {
                     work.send((i, None)).unwrap();
                 }
                 for ((i, _), r) in done_rx.iter().take(chunk.len()) {
+                    let r = r.expect("a scoring thread panicked");
                     results[i] = Some(r);
                 }
             };
@@ -839,6 +858,7 @@ impl<'a> Rounds<'a> {
                 work.send((winner.unwrap(), Some(k))).unwrap();
             }
             for ((_, k), r) in done_rx.iter().take(gains.len()) {
+                let r = r.expect("a scoring thread panicked");
                 gains[k.unwrap()] = r.0;
             }
             (winner, gains)
@@ -934,7 +954,7 @@ impl<'a> Rounds<'a> {
         std::thread::scope(|sc| {
             let spawn = |i: usize| {
                 let (tx, rule, setup) = (tx.clone(), &provable[i], setup.clone());
-                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || tx.send((i, prover.prove(&mut Job::new(setup), rule))).unwrap()).unwrap();
+                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || relay(|| prover.prove(&mut Job::new(setup), rule), |r| tx.send((i, r)).unwrap())).unwrap();
             };
             let (mut s, mut round, mut open) = (self.state(job, vec![]), 0, Vec::<Open>::new());
             loop {
@@ -1051,4 +1071,25 @@ fn a_provers_rules_ignore_the_callers_switches() {
     let counting = job.rules().counting(true).tracing(true);
     let installed = job.with_rules(counting, |job| prover.install(job.setup()));
     assert!(installed.is(&installed.counting(false).tracing(false)), "a prover proves with both switches off");
+}
+
+/// A worker that panics fails the thread waiting for its result instead of hanging it: the waiter keeps a sender, so the
+/// channel never closes (a band-17 mine hung at 0 CPU after a join step panicked, run `2026-10-25-held-seen`).
+#[test]
+fn a_panicked_worker_fails_its_waiter() {
+    let (end_tx, end_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let waited = std::panic::catch_unwind(|| {
+            std::thread::scope(|sc| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                for i in 0..2usize {
+                    let tx = tx.clone();
+                    sc.spawn(move || relay(|| if i == 1 { panic!("worker {i}") } else { i }, |r| drop(tx.send(r))));
+                }
+                rx.iter().take(2).map(|r: Result<usize, WorkerPanicked>| r.expect("a worker panicked")).sum::<usize>()
+            })
+        });
+        let _ = end_tx.send(waited.is_err());
+    });
+    assert_eq!(end_rx.recv_timeout(std::time::Duration::from_secs(30)), Ok(true), "the waiter panics, not hangs");
 }
