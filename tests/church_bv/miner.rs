@@ -619,6 +619,9 @@ struct Rounds<'a> {
     bound_time: std::time::Duration,
     scorings: usize,
     skipped: usize,
+    /// rivals' proofs (`best_rival`), proved and failed, and their time: unlike a winner's, on this thread
+    rival_proofs: [usize; 2],
+    rival_time: std::time::Duration,
 }
 
 /// The candidates a round scores, by their gain's bound, largest first, ties to the earlier: those not chosen already. A
@@ -680,6 +683,8 @@ impl<'a> Rounds<'a> {
             bound_time: std::time::Duration::ZERO,
             scorings: 0,
             skipped: 0,
+            rival_proofs: [0; 2],
+            rival_time: std::time::Duration::ZERO,
         }
     }
 
@@ -866,7 +871,17 @@ impl<'a> Rounds<'a> {
         let Some(i) = winner else { return None };
         let g = results[i].as_ref().unwrap().0;
         // in the rivals' order, as when they were scored one after another here
-        let rival = best_rival(rivals_of(i), &rival_gains, g, chosen, |rv| self.prover.prove(job, rv));
+        let (t, mut proved) = (Instant::now(), [0usize; 2]);
+        let rival = best_rival(rivals_of(i), &rival_gains, g, chosen, |rv| {
+            let b = self.prover.prove(job, rv);
+            proved[!b as usize] += 1;
+            if !b {
+                println!("RULEMINER rival not provable: {}", rule_show(rv));
+            }
+            b
+        });
+        (self.rival_proofs[0], self.rival_proofs[1]) = (self.rival_proofs[0] + proved[0], self.rival_proofs[1] + proved[1]);
+        self.rival_time += t.elapsed();
         Some(rival.unwrap_or((provable[i], g)))
     }
 
@@ -937,6 +952,7 @@ impl<'a> Rounds<'a> {
             let p = &self.proofs;
             println!("RULEMINER lazy proofs: {} proved, {} failed", p.iter().filter(|x| **x == Some(true)).count(), p.iter().filter(|x| **x == Some(false)).count());
         }
+        println!("RULEMINER rival proofs: {} proved, {} failed, {:.1}s", self.rival_proofs[0], self.rival_proofs[1], self.rival_time.as_secs_f64());
         println!("RULEMINER time in rule-set evaluations: {:.1}s", self.state_time.as_secs_f64());
         println!("RULEMINER time bounding candidates' gains: {:.1}s", self.bound_time.as_secs_f64());
         let mut j = *scorer.join_workers.lock().unwrap();
