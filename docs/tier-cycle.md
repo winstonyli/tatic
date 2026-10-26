@@ -5873,6 +5873,19 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   25652 (-0.1%), loops better and worse about evenly at 11 and 13 and 2 to 1 at 15 and 17; exhausted laws at 17 71 to
   35. Most constants cannot be freed (827 rules lift not at all, and 284 of the 460 only free `shl1`'s unused
   argument), and where one can, reach does not move: what a rule lacks to carry is its shape, not its generality.
+- **Rules mined on laws close them but few others: their left sides are law-sized (run `2026-10-25-rule-transfer`, 10
+  min untimed).** Each arm-A loop's final rules plus the rules its held-seen mines chose (3900 over 60 mines), through
+  the held-out check of every band, against the loop's rules alone (`xfer.sh`, `xfer.py` in the run folder). Of the
+  laws the loop's rules leave unfree (machine-proved or unproved), the seen rules make free: mined on band 11, .624 of
+  band 11 (seen) but .044, .048 and .034 of bands 13, 15 and 17; mined on 17, .330 of band 17 (seen), .131 of 15, .084
+  of 13, and at band 11 they lose 144 laws (-.062): rules made for large laws break small ones. Within a mine,
+  half or more of the laws closed (.61 on 11, .50 on 17) are closed by rules that close exactly one, and closure falls
+  with the left side's size: on band 17, left sides of 1 and 2 operators close 3.32 and 2.19 laws each, 5 and 6 close
+  1.00 and 0.88; 1584 of the 2773 band-17 rules have left sides of 5 or 6 operators. A left side that size matches
+  few laws: in each band's held-out laws as written (not normal forms), 88-97% of the rules that closed one law match a
+  subterm of under 1% of the laws, as do 94-96% of a sample of 300 of the loops' own rules; rules that closed two or more
+  are smaller (3.4-3.5 operators against 4.6-4.7) and match more (mean 1.1-2.7% against 0.4-0.9%). So a mined rule is
+  mostly a fragment of the law it was mined on, and carries as far as that fragment recurs.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
