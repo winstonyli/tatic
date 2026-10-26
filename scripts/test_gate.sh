@@ -64,6 +64,24 @@ ok "a band with no CHECKED line fails the arm" "$(cat "$T/okG/s1_B/failed")" 1
 # the total and bands lines count only the arms that passed: a failed arm's files would count a salt it never finished
 ok "a passed arm counts" "$(grep -oE '^total B: M [0-9]+; held [0-9]+' "$T/okF.out")" "total B: M 5; held $((3 * (890 + 870 + 850 + 830)))"
 ok "a failed arm counts nowhere" "$(grep -E '^(total|bands) B:' "$T/okG.out" | paste -sd'|')" "total B: no arm passed|bands B: no arm passed"
+# the table alone is checked once per exe, not once per arm: F.exe logging each table check (an empty rules file),
+# two salts; each arm still gets the table's band lines
+sed "2a [ -s \"\$(cygpath -u \"\$CHECK_RULES\")\" ] || echo \"\$b\" >> \"$(cygpath -u "$T")/tablelog\"" "$T/F.exe" > "$T/F2.exe"
+for s in 1 2; do for l in 1 2 3; do mkdir -p "$T/once/s${s}_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/once/s${s}_B/cold_streams_streams_${l}_none/rules.txt"; done; done
+gate once "$(cygpath -w "$T/F2.exe")" 1 2 > /dev/null
+ok "the table alone: one check per band and exe" "$(sort -n "$(cygpath -u "$T")/tablelog" 2>/dev/null | paste -sd' ')" "11 13 15 17"
+ok "the table alone: every arm has its band lines" "$(cat "$T/once/s1_B/held_bands.txt" "$T/once/s2_B/held_bands.txt" | grep -c '^none ')" 8
+# a rule set's bands are checked at once: P.exe prints CHECKED only once all four bands of its rules file have started
+# (a barrier, waited on for up to 8 polls), so checking them one after another fails the arm
+cat > "$T/P.exe" <<EOF
+#!/bin/bash
+b=\$(head -1 "\$(cygpath -u "\$CHECK_LAWFILE")"); d="$T/bar/\$(cygpath -u "\$CHECK_RULES" | md5sum | cut -c1-8)"; mkdir -p "\$d"; touch "\$d/\$b"
+for i in 1 2 3 4 5 6 7 8; do [ \$(ls "\$d" | wc -l) -ge 4 ] && break; ping -n 2 127.0.0.1 > /dev/null; done
+[ \$(ls "\$d" | wc -l) -ge 4 ] && echo "CHECKED 990 laws kernel-checked (1 with no whole-term machine proof), 10 not proved, 0 used up the rule budget"
+EOF
+for l in 1 2 3; do mkdir -p "$T/par/s1_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/par/s1_B/cold_streams_streams_${l}_none/rules.txt"; done
+gate par "$(cygpath -w "$T/P.exe")" 1 > /dev/null
+ok "a rule set's bands are checked at once" "$(cat "$T/par/s1_B/failed")" 0
 echo fake > "$T/root/tools/runs/target/release/runs.exe"
 # B's arm is reused only where the environment it read is unchanged (the names the gate sets don't count), and only
 # under the same runs.exe and held-out laws

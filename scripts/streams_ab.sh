@@ -3,11 +3,14 @@
 # on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (every tests/church_bv/held_<band>.txt, HELD_BANDS; CHECK_FAST: the laws that still need a
-# whole-term machine proof), and under no mined rules (the table alone), per band to the arm's held_bands.txt. Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm, over its salts that passed, the totals, the
+# whole-term machine proof), and under no mined rules (the table alone, checked once per exe), per band to the arm's held_bands.txt; an arm's bands are checked at once. Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm, over its salts that passed, the totals, the
 # lookup memo's peak (CLASS_MEMO), the largest peakproc, and per band the loops' and the table's free share and M per
 # 1000 laws (`bands`; the held-out M of the totals and salt lines is the loops' over every band); per salt and per arm the work counts (the summed WORK lines,
 # spec docs/superpowers/specs/2026-10-23-work-counts-design.md). Last line: loops with the same rules, and arms that
 # failed (non-zero exit, no M, no WORK line, or a switch of its .exe.env that never took effect); exits 1 if any arm failed. Differing rules are reported, not failed.
+# Untimed gates (the verdict is counts) run JOBS=3 with ARM_CACHE=%LOCALAPPDATA%\claude-runs\tatic\arm-cache, so an unchanged arm
+# (HEAD) is copied, not rerun; JOBS=4 gave 1.85x the throughput of one at a time with the counts unchanged (docs/tier-cycle.md,
+# "Under load too"). Timed gates keep JOBS=1 and no cache.
 a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
@@ -18,18 +21,29 @@ sweep_env() { printf '%s\n' MACHINE_STATE=0 SWEEP=cold:streams "SALT=$1" "SWEEP_
 held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
 # the held-out files in band order (tests/church_bv/held_<band>.txt; the bands are HELD_BANDS in classes.rs)
 bands() { local b; for b in $(ls "$root/tests/church_bv" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$root/tests/church_bv/held_$b.txt"; done; }
-held() { # <exe> <rules file> <arm dir> <label>: held-out M over every band; per band `<label> <band> <laws> <free> <M>` to <arm dir>/held_bands.txt, the check's ABLATED and ENV lines to <arm dir>/held_lines.txt
-  local m=0 hf band out line p f n e
+held() { # <exe> <rules file> <arm dir> <label>: held-out M over every band, the bands checked at once; per band `<label> <band> <laws> <free> <M>` to <arm dir>/held_bands.txt, the check's ABLATED and ENV lines to <arm dir>/held_lines.txt
+  local m=0 hf band out line p f n e t="$3/held_out.$4"
+  rm -rf "$t"; mkdir -p "$t"
   while read -r hf; do
     band=${hf##*held_}; band=${band%.txt}
     mapfile -t e < <(held_env "$(cygpath -w "$2")" "$(cygpath -w "$hf")")
-    out=$(env "${e[@]}" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null 2>&1)
+    env "${e[@]}" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null > "$t/$band" 2>&1 &
+  done < <(bands)
+  wait
+  while read -r hf; do
+    band=${hf##*held_}; band=${band%.txt}; out=$(cat "$t/$band")
     grep -E '^(ABLATED|ENV) ' <<< "$out" >> "$3/held_lines.txt"; line=$(grep '^CHECKED ' <<< "$out")
-    [ -n "$line" ] || { echo "held: no CHECKED line for $2 band $band" >&2; echo x; return; }
+    [ -n "$line" ] || { echo "held: no CHECKED line for $2 band $band" >&2; rm -rf "$t"; echo x; return; }
     p=$(echo "$line" | sed -E 's/^CHECKED ([0-9]+) .*/\1/'); f=$(echo "$line" | sed -E 's/.*\(([0-9]+) with.*/\1/'); n=$(echo "$line" | sed -E 's/.*\), ([0-9]+) not proved.*/\1/')
     echo "$4 $band $((p + n)) $f $((p - f + n))" >> "$3/held_bands.txt"; m=$((m + p - f + n))
   done < <(bands)
-  echo $m
+  rm -rf "$t"; echo $m
+}
+table() { # <A|B> <exe>: the table alone's held-out check (no mined rules), the same in every arm of an exe, so checked
+  # once per exe into $RUN_DIR/table_<A|B> (its held_bands.txt and held_lines.txt, and `failed` holding 0 or 1)
+  local d="$RUN_DIR/table_$1"
+  rm -rf "$d"; mkdir -p "$d"; : > "$d/no_rules.txt"
+  [ "$(held "$2" "$d/no_rules.txt" "$d" none)" = x ] && echo 1 > "$d/failed" || echo 0 > "$d/failed"
 }
 work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> match=<n> op=<n>`; empty if none
   grep -rh '^WORK ' "$@" 2>/dev/null | awk '{for (i = 2; i <= NF; i++) {split($i, kv, "="); if (!(kv[1] in t)) o[++n] = kv[1]; t[kv[1]] += kv[2]}} END {for (i = 1; i <= n; i++) printf "%s%s=%.0f", (i > 1 ? " " : ""), o[i], t[o[i]]}'
@@ -134,7 +148,9 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   [ "$(cat "$o/exit")" = 0 ] && cut -f4 "$o/cold_streams.tsv" 2>/dev/null | grep -qE '^[0-9]+$' || f=1
   h=0
   for l in 1 2 3; do v=$(held "$exe" "$o/cold_streams_streams_${l}_none/rules.txt" "$o" $l); [ "$v" = x ] && f=1 || h=$((h + v)); done
-  : > "$o/no_rules.txt"; [ "$(held "$exe" "$o/no_rules.txt" "$o" none)" = x ] && f=1   # the table alone
+  # the table alone, checked once per exe (`table`)
+  cat "$RUN_DIR/table_$arm/held_bands.txt" >> "$o/held_bands.txt" 2>/dev/null; cat "$RUN_DIR/table_$arm/held_lines.txt" >> "$o/held_lines.txt" 2>/dev/null
+  [ "$(cat "$RUN_DIR/table_$arm/failed" 2>/dev/null)" = 0 ] || f=1
   echo $h > "$o/held.txt"
   grep -rqs '^WORK ' "$o" || f=1
   for v in $(untaken "$long.env" "$o"); do echo "salt $s $arm: ABLATE=$v never took effect"; f=1; done
@@ -144,6 +160,7 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
 }
 # JOBS arms at a time (default 1: an arm's job CPU is then clean enough to compare, timed runs keep it); in the order A
 # first on odd salts, B first on even ones
+table A "$a" & table B "$b" & wait
 for s in "$@"; do
   [ $((s % 2)) = 1 ] && order="A B" || order="B A"
   for x in $order; do
