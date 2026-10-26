@@ -5764,20 +5764,21 @@ M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 a
 - **What a change must move.** Mining's gain falls from 16 points at band 11 to 8 at band 17 but stays well above the
   spread between loops (salt 6: 3-4 points at 15 and 17), so the gain at the largest bands is the frontier's measure;
   no band nears 50% (decision D2 of the plan: no threshold).
-- **The baseline since 2026-10-26** is 411aacf (the three-variable pool, no lookahead; "Kept: the pool over three
-  variables" below), arm B of `2026-10-26-keep-ab`: M 1665, held-out M 23992, and per band (the table's columns
-  unchanged):
+- **The baseline since 2026-10-26** is ab6f4a7 (the three-variable pool, no lookahead, and the every-input fallback;
+  "Kept: the every-input fallback" below), arm B of `2026-10-26-everyinput-ab`: M 1562, held-out M 21905, and per band
+  (the table's columns unchanged):
 
   | band | loops' free share | gain (points) | loops' M |
   |---|---|---|---|
-  | 11 | .926 | 16.4 | 73.5 |
-  | 13 | .796 | 10.3 | 203.9 |
-  | 15 | .768 | 13.3 | 232.5 |
-  | 17 | .708 | 10.6 | 292.5 |
+  | 11 | .942 | 18.0 | 57.7 |
+  | 13 | .820 | 12.7 | 180.3 |
+  | 15 | .787 | 15.2 | 213.2 |
+  | 17 | .718 | 11.6 | 281.5 |
 
-  New levers gate against its exe, `2026-10-26-keep-exes\K.exe` (the numbers above, which 23b89fa repeats, are
-  `2026-10-26-pool3-exes\H.exe`'s). Both exes' arms for salts 1-10 are in the untimed gates' `ARM_CACHE`, so arm A
-  reruns nothing until `streams_ab.sh` or `runs.exe` changes (they are part of the cache key).
+  New levers gate against its exe, `2026-10-26-everyinput-exes\E.exe` (the numbers above, which 23b89fa repeats, are
+  `2026-10-26-pool3-exes\H.exe`'s; 411aacf's are `2026-10-26-keep-exes\K.exe`). The three exes' arms for salts 1-10
+  are in the untimed gates' `ARM_CACHE`, so arm A reruns nothing until `streams_ab.sh` or `runs.exe` changes (they are
+  part of the cache key).
 
 *Where a loop's definitions should come from (2026-10-25; v0.4 design; run `2026-10-25-held-unsettled`, about 1 min,
 throwaway scripts `defprobe.py` and `held_unsettled.sh` with their output in the run folder).* v0.4 builds
@@ -5956,6 +5957,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   2^(4k) leaves predict). False rules fail (two hand cases). The mines prove only their winners, lazily (`400 provable
   candidates of 400 proposed`, filter 0.0 s), so as `Prover`'s fallback it would cost about 0.4 s per `shr1` winner
   over three variables. It proves at width 4 only: the loops' width, not the JIT's.
+- **Kept: the every-input fallback (ab6f4a7; run `2026-10-26-everyinput-ab`, 32 min untimed, JOBS=3, arm A from
+  `ARM_CACHE`).** `prove_rule` (`rewrite.rs`) tries its routes, then, for a rule of at most `EVERY_INPUT_BITS` = 12
+  input bits (three variables at width 4), the spike's every-input proof (`every_input_law`). Against 411aacf: M 1665
+  to 1562 (-6.2%), held-out M 23992 to 21905 (-8.7%, lower on every salt; the oracle's was -8.2% on the older baseline,
+  "Even free `shr1` rules cut M by only 6%"), free share .942/.820/.787/.718 (1.0 to 2.4 points above 411aacf per band); work
+  counts (interp) 0.74x; job CPU 5206 to 3860 s; final rules 1660 to 1904, those with `shr1` 93 to 350; peak working
+  set per process 437-452 MB, unchanged. 0 of 20 arms failed. Making it the only rule prover is parked on cost
+  (`PARKED.md`, "The every-input proof as the only rule prover").
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

@@ -41,7 +41,7 @@ results, 2026-10-17 and 2026-10-23).
   as general as still proves; tried 2026-10-25, held-out M -0.1%, same section); smaller rules (the cross-side cap at 9 or 7, tried 2026-10-26,
   held-out M +31%, same section); the pool route over three variables (tried 2026-10-26, held-out M -6.9%, job CPU
   1.84x, same section; with the lookahead off and rivals taken, -6.6% at 0.74x HEAD's CPU; kept 2026-10-26, the lookahead
-  deleted); the `shr1` prover (`PARKED.md`, "A prover that knows what `shr1` means"); definitions,
+  deleted); the `shr1` prover (at width 4 an every-input fallback in `prove_rule`, kept 2026-10-26, held-out M -8.7%; wider, `PARKED.md`, "A prover that knows what `shr1` means"); definitions,
   a vocabulary the kernel grows, entering only if checked conservative (seeds: `PARKED.md`, "Proposer targets beyond
   ranking" (c) and "Boolean combinations of comparisons"). Rescoped 2026-10-25 from "Can the kernel extend its own
   vocabulary?", after the probes in that section found no reach a vocabulary gives the miner.
@@ -51,5 +51,5 @@ results, 2026-10-17 and 2026-10-23).
   and visit budget, which must be fixed: from 1000 to 5000 it moves by up to 27 of 400 laws, `docs/tier-cycle.md`,
   "Why a sound rule costs the join") by law size, against the table alone. Serving proves every law, so the share proved at all
   would always be 1. The gate prints it per arm for bands 11-17 (`docs/tier-cycle.md`, "The frontier on the gate":
-  .93 to .71 with mined rules since 2026-10-26, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
+  .94 to .72 with mined rules since 2026-10-26, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
   "The frontier past the loops' sizes").
