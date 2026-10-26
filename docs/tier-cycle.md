@@ -5829,8 +5829,17 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   `shr1` rules in its final loops against A's 31 (661 rules against 577), and M fell 1718 to 1620 (-5.7%, every salt
   4-14 lower): the unproved laws 545 to 445, the machine proofs 1173 to 1175. Held-out M 25675 to 23581 (-8.2%); free
   share 11 .923 to .938, 13 .786 to .810, 15 .747 to .765, 17 .685 to .698; job CPU 7481 to 3963 s. So 445 of the 545
-  `shr1` laws stay unproved with rules that cost nothing to prove: the miner, not the prover, is short for most of
-  them, and a `shr1` prover that only admits rules is worth at most about 100 of M at this miner.
+  `shr1` laws stay unproved with rules that cost nothing to prove, and a `shr1` prover that only admits rules is worth
+  at most about 100 of M at this miner (why: next bullet).
+- **Most of the rest is laws seen first, not laws the miner misses (run `2026-10-25-why-uncovered`, about 3 min).**
+  Batch 0 is served with no rules, so its M (803 of 1718, both arms) is out of any rule's reach; the oracle's cut is all
+  in batches 1-2, 915 to 817 (-10.7%), its `shr1` share 292 to 192 (batch 0's 253 assumed unchanged, as its M is). And a
+  served law the loop's rules miss is one the miner closes once it has seen it: arm B's 30 loops mined again on their
+  own 300 served laws under their final rules, with the oracle (`BNECK3` in the run's `probe.patch`), leave 489
+  stragglers and cover 416. Of the 73 uncovered (41 unproved with `shr1`, 31 machine-proved without, 1 machine-proved
+  with), every one has candidates matching its normal forms that prove, and no candidate closes it alone. So what M
+  measures in batches 1-2 is how far rules mined from earlier batches carry to laws not yet seen, not the miner's reach
+  on what it has seen.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
