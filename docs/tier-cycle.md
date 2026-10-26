@@ -4064,7 +4064,7 @@ stragglers (guard laws in both), then by the full gain. On this loop it changes 
 smaller half is 0 for nearly every candidate and the ranking falls back to the full gain; it only swapped the order of the first
 two `sub` rules. It targets overfitting, which this loss is not.
 
-**Lookahead on rival swaps (kept).** When a rival would replace a round's winner, the mine finishes the rest of its rounds both
+**Lookahead on rival swaps (kept; removed 2026-10-26 with the three-variable pool, "Kept: the pool over three variables").** When a rival would replace a round's winner, the mine finishes the rest of its rounds both
 ways (greedily, rivals taken, no further lookahead) and keeps the choice whose finished set has the larger value (the gain's
 measure as a total; ties to the rival). On the loop above it keeps the winner and reproduces the base run (56; 42 of 43 covered).
 Sweeps (`mines own cold pooled`), total M:
@@ -5900,8 +5900,8 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   Small rules came only from the pool route (patterns over at most two variables, a smaller equal term from the pool
   of terms up to 5 nodes), and every rule over three or more from the cross-side route, tied to one law's two sides.
   Arm B lets the pool route abstract into three variables, with `v2` in the pool (10280 terms, 1361 distinct
-  functions, against 5804 and 617); `lt` patterns stay over two, since the `lt` index over three would take about
-  3.7 GB (`pool3.patch` in `2026-10-26-pool3-exes`); the cross-side route unchanged, so the arm only adds candidates
+  functions, against 5804 and 617); `lt` patterns stay over two, on an estimate of 3.7 GB for the `lt` index over
+  three that was wrong (about 105 MB; see "Kept" below) (`pool3.patch` in `2026-10-26-pool3-exes`); the cross-side route unchanged, so the arm only adds candidates
   (about 10% more a mine). Arm A, HEAD, repeats the baseline exactly (M 1718, held 25675). B: M 1718 to 1672 (-2.7%),
   held-out M 25675 to 23897 (-6.9%, lower on every salt), free share 11 .923 to .926, 13 .786 to .797, 15 .747 to
   .768, 17 .685 to .709: the gain grows with the band, the first lever whose reach does. Rules 1738 to 1665; left
@@ -5924,6 +5924,13 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   .926/.797/.768/.709. Winner: M 1702, held-out M 24534 (+2.7%), 4119 s. So rival swaps matter and the paths that
   check them do not, here; untested: the lookahead off with the two-variable pool, where it was added ("The cold loss
   is a greedy path loss").
+- **Kept: the pool over three variables, `lt` too, and no lookahead (6078bfd, 411aacf; run `2026-10-26-keep-ab`, 38 min
+  untimed, JOBS=3).** `POOL_VARS = 3` (`Pool` in `miner.rs`); `lt` patterns over three as well (the index's working
+  set is about 105 MB: peak working set per process 334-356 MB in lookoff-ab's rival arm, 441-452 here); a round takes
+  its rival when the rival gains more and proves, else its winner. Against HEAD 23b89fa: M 1718 to 1665 (-3.1%),
+  held-out M 25675 to 23992 (-6.6%, lower on every salt), free share .926/.796/.768/.708; work counts (interp) 0.76x;
+  job CPU 6719 to 5206 s under 40-68% other load. Every mine's results equal lookoff-ab's rival arm, so `lt` over
+  three variables chose no new rule on these salts; it stays because it removes a special case.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
@@ -6711,7 +6718,7 @@ function of its key, so each worker can take the whole filtered seed, evaluate a
 memo for a union merge. It needs the memo's `Rc`s made `Arc` (or copied per worker) for about 3.4 s of a ~100 s sweep
 (PARKED.md, "The miner's serial main thread").
 
-*Lookahead cache (kept, exact).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
+*Lookahead cache (kept, exact; removed with the lookahead 2026-10-26).* A round depends only on the set of rules chosen so far (`set_extra_rules` sorts them), and the
 alternatives' greedy paths often reach the same set in another order, so the miner keeps each set's pick and finished value; the
 kept alternative's path is also the next rounds' own. Same choices on the cmp3d loop; picks 47 to 36, and 467 to 180 with three
 alternatives a round (316 to 137 s). Full sweeps reproduce every own, cold and pooled
