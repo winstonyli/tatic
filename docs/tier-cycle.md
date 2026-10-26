@@ -5819,8 +5819,18 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   replayed on each of the 90 batches of arm A under the rules that batch had (every batch's M equal to its `m.tsv`
   row), patched to name the laws it does not prove: M 1718, of which 545 are unproved and all 545 have `shr1`; only 4
   of the 1173 machine-proved laws have it. The share is the same in every batch (32%, 33%, 31% for batches 0-2):
-  mined rules cut the `shr1` laws (253, 151, 141) as fast as the rest (549, 305, 315), not faster. A prover that
-  closes `shr1` laws would cut M by up to a third; nothing in vocabulary or the miner's caps reaches them.
+  mined rules cut the `shr1` laws (253, 151, 141) as fast as the rest (549, 305, 315), not faster. Nothing in vocabulary or the
+  miner's caps reaches them; and since M counts machine proofs too, a prover lowers M only through the rules it lets
+  the miner keep (next bullet).
+- **Even free `shr1` rules cut M by only 6% (run `2026-10-25-shr1-oracle`, A/B gate, salts 1-10, 76 min untimed).**
+  Arm B is HEAD (6d3d20c) with an oracle in the miner's rule proof (`Prover::holds`): an arithmetic rule with `shr1`
+  that nothing proves is kept when it holds exhaustively at widths 1-4 over at most 5 variables (`probe.patch` in
+  `2026-10-25-shr1-oracle-exes`). Arm A (unpatched, same commit) gave the baseline's numbers salt for salt. B kept 120
+  `shr1` rules in its final loops against A's 31 (661 rules against 577), and M fell 1718 to 1620 (-5.7%, every salt
+  4-14 lower): the unproved laws 545 to 445, the machine proofs 1173 to 1175. Held-out M 25675 to 23581 (-8.2%); free
+  share 11 .923 to .938, 13 .786 to .810, 15 .747 to .765, 17 .685 to .698; job CPU 7481 to 3963 s. So 445 of the 545
+  `shr1` laws stay unproved with rules that cost nothing to prove: the miner, not the prover, is short for most of
+  them, and a `shr1` prover that only admits rules is worth at most about 100 of M at this miner.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
