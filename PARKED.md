@@ -102,8 +102,8 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   `prove_rule` falls back to that proof for rules of at most 12 input bits (ab6f4a7, held-out M -8.7%, same section,
   "Kept: the every-input fallback"); what stays parked is a `shr1` encoding for rules over 12 input bits and for widths
   past 4 (the JIT's). Trigger now: `shr1` rules over 12 input bits that the miner proposes and cannot prove cost M, or
-  a JIT program needs a `shr1` proof past width 4. Status: parked (by decision, 2026-10-23); its width-4 part done
-  2026-10-26.
+  a JIT program needs a `shr1` proof past width 4 (not met 2026-10-26: one winner in 60 mines, same section, "What it
+  leaves unproved"). Status: parked (by decision, 2026-10-23); its width-4 part done 2026-10-26.
 - **The every-input proof as the only rule prover** (`prove_rule` would keep `every_input_law` alone and delete its other
   routes: the bitwise case split, `shr_not_law`, the `shr1`-root rewriting, the carry encoding) — why parked: by
   decision, 2026-10-26, on cost: about 0.4 s a rule at 12 input bits against about 87 ms for a winner's proof on cmp3d (`miner.rs`, `play`), and

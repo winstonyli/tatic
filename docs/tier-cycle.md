@@ -5965,6 +5965,17 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   counts (interp) 0.74x; job CPU 5206 to 3860 s; final rules 1660 to 1904, those with `shr1` 93 to 350; peak working
   set per process 437-452 MB, unchanged. 0 of 20 arms failed. Making it the only rule prover is parked on cost
   (`PARKED.md`, "The every-input proof as the only rule prover").
+  - *What it leaves unproved, and what false rules cost (2026-10-26, from the same run's mine logs and the admission
+    test).* Lazy proofs of winners over the 60 mines: arm A 1664 proved and 1119 failed (554 rollbacks), arm B 1890
+    proved and 2 failed (2 rollbacks), so the fallback also removes nearly all rollbacks. Both of B's failures are
+    over four variables (16 input bits, past the cap): `sub(shr1(xor(x, y), 0), sub(z, u)) -> sub(u, sub(z,
+    xor(shr1(y, 0), shr1(x, 0))))`, true, and `and(sub(or(x, or(y, z)), u), u) -> and(sub(or(y, or(and(u, x), z)),
+    u), u)`, false at width 4 (336 of 65536 inputs, for example x 2, y 0, z 0, u 5) yet past the screen. So `shr1`
+    rules past 12 bits cost one winner in 60 mines here. Rival proofs (`best_rival`) are not logged, so their failures
+    are unmeasured. False rules are cheap to refuse: `rule_admission_refuses_wrong_rules` (465 false rules, at most four
+    variables at widths 3 and 4) takes 0.18 s with the fallback and 0.00 s without (`EVERY_INPUT_BITS` 0), about
+    0.4 ms each. The other callers of `prove_rule` (`rewrite.rs` `LawKind::Rule`, `search.rs`'s benches and tests)
+    prove rules known to hold.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
