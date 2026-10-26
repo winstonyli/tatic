@@ -5971,8 +5971,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     over four variables (16 input bits, past the cap): `sub(shr1(xor(x, y), 0), sub(z, u)) -> sub(u, sub(z,
     xor(shr1(y, 0), shr1(x, 0))))`, true, and `and(sub(or(x, or(y, z)), u), u) -> and(sub(or(y, or(and(u, x), z)),
     u), u)`, false at width 4 (336 of 65536 inputs, for example x 2, y 0, z 0, u 5) yet past the screen. So `shr1`
-    rules past 12 bits cost one winner in 60 mines here. Rival proofs (`best_rival`) are not logged, so their failures
-    are unmeasured. False rules are cheap to refuse: `rule_admission_refuses_wrong_rules` (465 false rules, at most four
+    rules past 12 bits cost one winner in 60 mines here. Rival proofs (`best_rival`, logged since b302e25; run
+    `2026-10-26-rivallog-ab`, an A/A against ab6f4a7, rules the same in 30 of 30 loops): 64 proved and none failed
+    over the 60 mines, under 0.05 s a mine. Of the 331 distinct winners whose proofs failed in either arm, 330 are
+    true at width 4 (every one with `shr1`, 4 over four variables) and one is false, the rule above: a replica of the
+    screen (`ValueMemo::screen`'s 204 inputs at widths 1-4; script `scr.py` in the rivallog run folder) passes it.
+    With 0.51% of the width-4 inputs wrong, 202 random tuples miss it with probability about 0.995^202, 35%; pool
+    candidates (up to three variables) are checked on every input (`ValueMemo::exhaustive`), cross-side candidates
+    over three or four variables only on the screen. One false winner in about 4700 proofs costs one rollback. False rules are cheap to refuse: `rule_admission_refuses_wrong_rules` (465 false rules, at most four
     variables at widths 3 and 4) takes 0.18 s with the fallback and 0.00 s without (`EVERY_INPUT_BITS` 0), about
     0.4 ms each. The other callers of `prove_rule` (`rewrite.rs` `LawKind::Rule`, `search.rs`'s benches and tests)
     prove rules known to hold.
