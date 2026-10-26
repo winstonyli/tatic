@@ -5764,6 +5764,20 @@ M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 a
 - **What a change must move.** Mining's gain falls from 16 points at band 11 to 8 at band 17 but stays well above the
   spread between loops (salt 6: 3-4 points at 15 and 17), so the gain at the largest bands is the frontier's measure;
   no band nears 50% (decision D2 of the plan: no threshold).
+- **The baseline since 2026-10-26** is 411aacf (the three-variable pool, no lookahead; "Kept: the pool over three
+  variables" below), arm B of `2026-10-26-keep-ab`: M 1665, held-out M 23992, and per band (the table's columns
+  unchanged):
+
+  | band | loops' free share | gain (points) | loops' M |
+  |---|---|---|---|
+  | 11 | .926 | 16.4 | 73.5 |
+  | 13 | .796 | 10.3 | 203.9 |
+  | 15 | .768 | 13.3 | 232.5 |
+  | 17 | .708 | 10.6 | 292.5 |
+
+  New levers gate against its exe, `2026-10-26-keep-exes\K.exe` (the numbers above, which 23b89fa repeats, are
+  `2026-10-26-pool3-exes\H.exe`'s). Both exes' arms for salts 1-10 are in the untimed gates' `ARM_CACHE`, so arm A
+  reruns nothing until `streams_ab.sh` or `runs.exe` changes (they are part of the cache key).
 
 *Where a loop's definitions should come from (2026-10-25; v0.4 design; run `2026-10-25-held-unsettled`, about 1 min,
 throwaway scripts `defprobe.py` and `held_unsettled.sh` with their output in the run folder).* v0.4 builds

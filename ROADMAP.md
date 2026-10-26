@@ -51,5 +51,5 @@ results, 2026-10-17 and 2026-10-23).
   and visit budget, which must be fixed: from 1000 to 5000 it moves by up to 27 of 400 laws, `docs/tier-cycle.md`,
   "Why a sound rule costs the join") by law size, against the table alone. Serving proves every law, so the share proved at all
   would always be 1. The gate prints it per arm for bands 11-17 (`docs/tier-cycle.md`, "The frontier on the gate":
-  .92 to .69 with mined rules, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
+  .93 to .71 with mined rules since 2026-10-26, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
   "The frontier past the loops' sizes").
