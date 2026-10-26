@@ -5854,7 +5854,9 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
 - **Laws without `shr1` take about a rule each, and at band 17 half stay out of reach even when seen (run
   `2026-10-25-held-seen`, 111 min).** For each arm-A loop, the held-out laws without `shr1` its final rules leave to a
   machine proof (run `2026-10-25-held-shr1-2`), mined under those rules as the loop mines (HEAD build): band 11, 1434 of
-  1437 covered with 1127 rules (0.79 a law); band 17 (29 of 30 loops, the 30th's mine hung after a worker panic),
+  1437 covered with 1127 rules (0.79 a law); band 17 (29 of 30 loops: the 30th's mine reached a join step 69 levels deep, past
+  `StepPath`'s 64 bits, and hung after the worker panicked; fixed in 15d7223 and c29cff1, it then covers 91 of 199
+  with 77 rules, run `2026-10-25-join-depth-repro`),
   3451 of 6892 covered (50%) with 2696 rules (0.78 a covered law), and the 400-candidate cap hit in 12 of the 29 mines
   (band 11: 139 candidates a mine). The rules are small (mean left side 4.5 and 4.3 operators) and 86% and 69% have 3+
   variables; the same rules recur across loops, as the loops see the same held-out laws (157 and 472 distinct). So a
