@@ -150,7 +150,7 @@ struct Laws {
 fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
     let max = cfg.max;
     let family = cfg.family;
-    // `add3` laws have three variables (the candidate generator below still builds patterns over at most two)
+    // `add3` laws have three variables (the pool route's patterns are over at most `POOL_VARS`)
     let (n, nv, kv) = (4usize, 2usize, family.vars());
     // stragglers under the built-in rules
     let mut stragglers: Vec<Scored> = vec![];
