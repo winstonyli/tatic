@@ -39,7 +39,8 @@ results, 2026-10-17 and 2026-10-23).
   carry worst as laws grow: about one rule per law even among laws mined together (`docs/tier-cycle.md`, "Where a
   loop's definitions should come from"). Candidate levers, each tested on that measure: rule lifting (each rule made
   as general as still proves; tried 2026-10-25, held-out M -0.1%, same section); smaller rules (the cross-side cap at 9 or 7, tried 2026-10-26,
-  held-out M +31%, same section); the `shr1` prover (`PARKED.md`, "A prover that knows what `shr1` means"); definitions,
+  held-out M +31%, same section); the pool route over three variables (tried 2026-10-26, held-out M -6.9%, job CPU
+  1.84x, same section; not yet kept); the `shr1` prover (`PARKED.md`, "A prover that knows what `shr1` means"); definitions,
   a vocabulary the kernel grows, entering only if checked conservative (seeds: `PARKED.md`, "Proposer targets beyond
   ranking" (c) and "Boolean combinations of comparisons"). Rescoped 2026-10-25 from "Can the kernel extend its own
   vocabulary?", after the probes in that section found no reach a vocabulary gives the miner.

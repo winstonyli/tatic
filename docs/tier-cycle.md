@@ -5896,6 +5896,18 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   12.8e-5 of band 11 and 7.5e-5 of band 17 each, and the 1271 rules the cap removes 7.9e-5 and 3.8e-5. But the large
   rules still free about 60% of what the rules free on every band, held-out included, so a size cap is no lever:
   what would carry is small rules the miner does not yet find, not fewer large ones.
+- **A pool route over three variables finds them: held-out M -6.9% (run `2026-10-26-pool3-ab`, 62 min untimed).**
+  Small rules came only from the pool route (patterns over at most two variables, a smaller equal term from the pool
+  of terms up to 5 nodes), and every rule over three or more from the cross-side route, tied to one law's two sides.
+  Arm B lets the pool route abstract into three variables, with `v2` in the pool (10280 terms, 1361 distinct
+  functions, against 5804 and 617); `lt` patterns stay over two, since the `lt` index over three would take about
+  3.7 GB (`pool3.patch` in `2026-10-26-pool3-exes`); the cross-side route unchanged, so the arm only adds candidates
+  (about 10% more a mine). Arm A, HEAD, repeats the baseline exactly (M 1718, held 25675). B: M 1718 to 1672 (-2.7%),
+  held-out M 25675 to 23897 (-6.9%, lower on every salt), free share 11 .923 to .926, 13 .786 to .797, 15 .747 to
+  .768, 17 .685 to .709: the gain grows with the band, the first lever whose reach does. Rules 1738 to 1665; left
+  sides of 1 to 3 operators over three or more variables 146 to 267, of 5 or 6 operators 1070 to 922 (mean 4.31 to
+  4.09 operators). The cost: job CPU 5451 to 10019 s (1.84x). Against the `shr1` oracle's ceiling (held-out M -8.2%,
+  run `2026-10-25-shr1-oracle`) this is most of that size at no new prover. Throwaway: keeping it is its own change.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
