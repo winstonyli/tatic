@@ -5915,6 +5915,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   same laws in 63 rounds against 21, and the lookahead keeps the rival in 11 against 2. Each round also scans more
   candidates (163 to 205; the gain bound skips 39% of scorings against 43%). So the cost is small rules competing with
   the law-sized fragments for the same stragglers, settled by whole greedy paths.
+- **With small rules, the lookahead buys nothing: take the rival (run `2026-10-26-lookoff-ab`, 48 min untimed).** The
+  3-variable pool with the lookahead off (`lookoff.patch` in `2026-10-26-lookoff-exes`): arm A always takes a round's
+  rival (`ABLATE=lookrival`), arm B its winner (`lookwinner`, no rival swap), against the lookahead's arm B of
+  `2026-10-26-pool3-ab` (M 1672, held-out M 23897, job CPU 10019 s). Rival: M 1665, held-out M 23992 (+0.4%), job
+  CPU 4007 s, below HEAD's 5451 (the lookahead also ran in HEAD's mines); free share .926/.796/.768/.708 against
+  .926/.797/.768/.709. Winner: M 1702, held-out M 24534 (+2.7%), 4119 s. So rival swaps matter and the paths that
+  check them do not, here; untested: the lookahead off with the two-variable pool, where it was added ("The cold loss
+  is a greedy path loss").
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
