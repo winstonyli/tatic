@@ -6000,7 +6000,16 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   272 at the cross-side cap of 13 nodes (536 candidates) and 246 at 17 (954); either way the laws fixed by rules that
   fix at least two are about the same (119 and 113), and the rest of cap 17's gain is 139 rules that fix one law each
   (61 at cap 13), 67 of them with a left side over 13 nodes. So larger size caps, the only reach an abbreviation can add, buy one-law rules here;
-  whether those carry to unseen laws is untested (a mine on half of a band, checked on the other half, would say).
+  whether those carry to unseen laws is the next bullet.
+- **They do not transfer (run `2026-10-26-xfer-split`, 30 min; `xfer_split.sh` in its folder).** Salts 1-3, loop 1,
+  bands 13/15/17: each held-out band file split into its odd and even laws, each half mined (as above, no candidate cap,
+  X.exe at cross-side caps 13 and 17) and M checked on both halves. Summed over the 18 mines per cap (base M 1951 per
+  side), the mined half's M falls to 652 at cap 13 and 219 at cap 17, but the other half's to 1614 and 1610: the same
+  transfer (337 and 341, 17%; per band 64/116/157 and 71/122/148). Of that, the rules that fixed at least two laws when
+  chosen carry 246 and 231. Cap 17's extra 433 in-sample points are one-law rules that fit their own laws only, so a
+  definition that relieves the size caps would not lower held-out M; what transfers is the multi-law rules, which cap 13
+  already reaches. Mining on half the held-out laws lowers the other half's M by 17%, rules the loops' own mines (on the
+  laws they serve) do not find.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
