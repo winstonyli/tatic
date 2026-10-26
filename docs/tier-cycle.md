@@ -5990,6 +5990,17 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   (4974 of 6400) is now machine-proved laws, 62 of them with `shr1`: the mined rules' reach on laws without `shr1`,
   not a prover, is most of what is left. The probe's sources (1) and (2) predate this split; the size-cap probes
   above (pool, cross-side caps) measured loop stragglers, not held-out laws.
+- **Rules mined on the held-out laws themselves (run `2026-10-26-held-oracle`, 51 min; `oracle.sh` in its folder).**
+  For the same 9 loops and every band, the miner as the loop runs it (`RULEMINER_FAST=1`) on the whole held-out band
+  file with the loop's final rules as base; its stragglers are exactly each loop's held-out M (478/1592/1872/2458).
+  Covered in-sample, per band 11/13/15/17: .98/.73/.61/.50, with 401/938/872/775 rules of which 338/782/710/567 fix
+  at most one law when chosen. Uncovered with `shr1`: 8/175/201/213. Bands 13-17 hit the candidate cap (400) in all 27
+  mines, which the loops' own mines never reach, so those shares are lower bounds. On one band-17 mine (salt 1, loop 1;
+  `xcap-b17` in the folder, `xsize.patch` in `2026-10-26-xcaps-exes`, reverted): with the candidate cap lifted, 174 of
+  272 at the cross-side cap of 13 nodes (536 candidates) and 246 at 17 (954); either way the laws fixed by rules that
+  fix at least two are about the same (119 and 113), and the rest of cap 17's gain is 139 rules that fix one law each
+  (61 at cap 13), 67 of them with a left side over 13 nodes. So larger size caps, the only reach an abbreviation can add, buy one-law rules here;
+  whether those carry to unseen laws is untested (a mine on half of a band, checked on the other half, would say).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
