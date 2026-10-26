@@ -2570,21 +2570,41 @@ fn join_walk_after_a_step_skips_the_subtrees_left_of_its_path() {
     assert_eq!(walked(None), want);
     // `and(x, y)` is left of the path; `x` and `y` stay, as subterms of the right side too
     want.retain(|s| s != "and(x, y)");
-    assert_eq!(walked(Some(StepPath { path: 0b01, depth: 2 })), want);
+    assert_eq!(walked(Some(StepPath { at: 5 })), want);
     // a step at the root leaves nothing to its left
-    assert_eq!(walked(Some(StepPath { path: 0, depth: 0 })).len(), want.len() + 1);
+    assert_eq!(walked(Some(StepPath { at: 0 })).len(), want.len() + 1);
 }
 
 /// A step orders the walk after it only when it did not shrink the term: then the other order's middle term is no larger
 /// than the end term, so within the cap whenever the end term is.
 #[test]
 fn a_join_step_orders_the_walk_after_it_only_when_it_did_not_shrink_the_term() {
-    let (from, path) = (parse_term("add(and(x, y), add(z, 0))"), StepPath { path: 0b1, depth: 1 });
+    let (from, path) = (parse_term("add(and(x, y), add(z, 0))"), StepPath { at: 4 });
     let step = JoinStep { from, path, eq: 0 };
-    let ordered = |to: &str| step.order(parse_term(to)).map(|p| (p.path, p.depth));
+    let ordered = |to: &str| step.order(parse_term(to)).map(|p| p.at);
     assert_eq!(ordered("add(and(x, y), z)"), None, "the step shrank the term");
-    assert_eq!(ordered("add(and(x, y), add(0, z))"), Some((0b1, 1)), "same size");
-    assert_eq!(ordered("add(and(x, y), add(z, add(0, 0)))"), Some((0b1, 1)), "grew");
+    assert_eq!(ordered("add(and(x, y), add(0, z))"), Some(4), "same size");
+    assert_eq!(ordered("add(and(x, y), add(z, add(0, 0)))"), Some(4), "grew");
+}
+
+/// A join step's path holds at any depth: band-17 mines reached depth 69 in a 1423-node term, where a 64-bit path lost
+/// its top levels and `Spine::down` walked off a leaf (run `2026-10-25-held-seen`).
+#[test]
+fn a_join_steps_path_holds_past_depth_64() {
+    // 70 levels, going left at every third one
+    let left = |i: usize| i % 3 == 0;
+    let chain = |bottom: Term| (0..70).rev().fold(bottom, |t, i| if left(i) { Term::op(ADD, t, Term::v(0)) } else { Term::op(ADD, Term::v(0), t) });
+    let from = chain(Term::v(1));
+    let (mut up, mut x) = (vec![], from);
+    while let Node::Op(o, a, b) = *x.node() {
+        let right = !left(up.len());
+        up.push((o, a, b, right));
+        x = if right { b } else { a };
+    }
+    assert!(up.len() == 70 && x == Term::v(1));
+    let (step, at) = (JoinStep::new(from, &up, 0), Term::v(2));
+    assert!(step.spine(at).make() == chain(at), "the spine rebuilds the reached term");
+    assert!(step.spine(at).is(chain(at)), "and recognises it");
 }
 
 /// `Need::skips` skips a match only when its step is over the cap, and every match over the cap for a rule that repeats
@@ -2700,30 +2720,37 @@ pub fn join_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<
     found
 }
 
-/// The path to the subterm a join step is at: `depth` children down, going right at depth `i` where bit `i` of `path`
-/// is set.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The path to the subterm a join step is at: that subterm's index in its term's preorder (0 the root, then the left
+/// child's subterms, then the right's), so it holds at any depth (a bit per level in a `u64` lost the levels past 64:
+/// run `2026-10-25-held-seen`). Going down reads the left child's size, so each step down takes the term it is in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct StepPath {
-    path: u64,
-    depth: u8,
+    at: u32,
 }
 
 impl StepPath {
     /// The path to the subterm `join_walk` is at (`up`).
     fn of(up: &JoinPlace) -> StepPath {
-        StepPath { path: up.iter().rev().fold(0, |p, e| p << 1 | e.3 as u64), depth: up.len() as u8 }
+        StepPath { at: up.iter().map(|e| if e.3 { 1 + e.1.size() as u32 } else { 1 }).sum() }
     }
-    /// One level down (`depth > 0`): whether the path goes right, and the path from that child.
-    fn down(self) -> (bool, StepPath) {
-        (self.path & 1 == 1, StepPath { path: self.path >> 1, depth: self.depth - 1 })
+    /// Whether the path ends here: the subterm is the term itself.
+    fn here(self) -> bool {
+        self.at == 0
     }
-    /// After a step at this path, `join_walk`'s path in child `right`: None (skip it) for a child left of the path, and
-    /// `Some(None)` for the rewritten subterm's children and those right of the path, which the walk takes whole.
-    fn child(self, right: bool) -> Option<Option<StepPath>> {
-        if self.depth == 0 {
+    /// One level down (`!here()`) in a term whose left child is `a`: whether the path goes right, and the path from
+    /// that child.
+    fn down(self, a: Term) -> (bool, StepPath) {
+        let left = a.size() as u32;
+        if self.at <= left { (false, StepPath { at: self.at - 1 }) } else { (true, StepPath { at: self.at - 1 - left }) }
+    }
+    /// After a step at this path, `join_walk`'s path in child `right` of a term whose left child is `a`: None (skip it)
+    /// for a child left of the path, and `Some(None)` for the rewritten subterm's children and those right of the path,
+    /// which the walk takes whole.
+    fn child(self, a: Term, right: bool) -> Option<Option<StepPath>> {
+        if self.here() {
             return Some(None);
         }
-        let (on, next) = self.down();
+        let (on, next) = self.down(a);
         if on == right { Some(Some(next)) } else { right.then_some(None) }
     }
 }
@@ -2765,15 +2792,15 @@ struct Spine {
 }
 
 impl Spine {
-    /// One level down the path (`depth > 0`): the root's operator, its child off the path, whether the path goes right,
+    /// One level down the path (`!path.here()`): the root's operator, its child off the path, whether the path goes right,
     /// and the spine from the child on it.
     fn down(self) -> (usize, Term, bool, Spine) {
         let Node::Op(o, a, b) = *self.from.node() else { unreachable!("a step's path stays in the term") };
-        let (right, path) = self.path.down();
+        let (right, path) = self.path.down(a);
         (o, if right { a } else { b }, right, Spine { from: if right { b } else { a }, path, at: self.at })
     }
     fn make(self) -> Term {
-        if self.path.depth == 0 {
+        if self.path.here() {
             return self.at;
         }
         let (o, off, right, next) = self.down();
@@ -2782,7 +2809,7 @@ impl Spine {
     }
     /// Whether `u` is this term: down `u` along the path, the children off it and then `at` compared by pointer.
     fn is(mut self, mut u: Term) -> bool {
-        while self.path.depth > 0 {
+        while !self.path.here() {
             let (o, off, right, next) = self.down();
             match *u.node() {
                 Node::Op(q, l, r) if q == o && (if right { l } else { r }) == off => u = if right { r } else { l },
@@ -2795,7 +2822,7 @@ impl Spine {
     /// Whether this is `subst_pat(p, sub)`: down the pattern and the path together, then `is_subst` or `is` where one
     /// ends.
     fn is_pat(self, p: &Term, sub: &[Option<Term>]) -> bool {
-        if self.path.depth == 0 {
+        if self.path.here() {
             return is_subst(self.at, p, sub);
         }
         match *p.node() {
@@ -2812,7 +2839,7 @@ impl Spine {
     /// or `is_pat`.
     fn is_step(mut self, up: &JoinPlace, p: &Term, sub: &[Option<Term>]) -> bool {
         for (i, &(o, a, b, right)) in up.iter().enumerate() {
-            if self.path.depth == 0 {
+            if self.path.here() {
                 return is_step(self.at, &up[i..], p, sub);
             }
             let (q, off, r, next) = self.down();
@@ -2873,7 +2900,7 @@ fn join_walk(
     }
     if let Node::Op(o, a, b) = *t.node() {
         for (right, c) in [(false, a), (true, b)] {
-            let Some(order) = order.map_or(Some(None), |p| p.child(right)) else { continue };
+            let Some(order) = order.map_or(Some(None), |p| p.child(a, right)) else { continue };
             up.push((o, a, b, right));
             let go = join_walk(c, order, table, blocked, cap - (size - c.size()), up, examined, visit);
             up.pop();
@@ -2926,10 +2953,10 @@ fn is_step(mut t: Term, up: &JoinPlace, p: &Term, sub: &[Option<Term>]) -> bool 
 /// The plan of `step.from = ` the term the step reaches.
 fn step_plan(job: &Job, step: &JoinStep) -> PlanRc {
     let (mut up, mut x, mut path) = (vec![], step.from, step.path);
-    while path.depth > 0 {
+    while !path.here() {
         let Node::Op(o, a, b) = *x.node() else { unreachable!("a step's path stays in the term") };
         let right;
-        (right, path) = path.down();
+        (right, path) = path.down(a);
         up.push((o, a, b, right));
         x = if right { b } else { a };
     }
