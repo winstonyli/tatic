@@ -5886,6 +5886,16 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   subterm of under 1% of the laws, as do 94-96% of a sample of 300 of the loops' own rules; rules that closed two or more
   are smaller (3.4-3.5 operators against 4.6-4.7) and match more (mean 1.1-2.7% against 0.4-0.9%). So a mined rule is
   mostly a fragment of the law it was mined on, and carries as far as that fragment recurs.
+- **Capping the rules small carries less in all, though more per rule (run `2026-10-25-xsize-ab`, 48 min untimed).**
+  The gate A/B with the miner's cross-side route capped (subterms and pattern of size at most 9, arm A, or 7, arm B,
+  against the hardcoded 13; `xsize7.patch` in `2026-10-25-xsize-exes`), against arm A of `2026-10-25-shr1-oracle`.
+  The two caps agree (rules the same in 29 of 30 loops): below 13 the cross-side route adds next to nothing beyond
+  the pool route. The loops keep 467 final rules against 1738; M 1718 to 2207 (+28%), held-out M 25675 to 33740
+  (+31%), free share 11 .923 to .822, 13 .786 to .725, 15 .747 to .687, 17 .685 to .637 (table alone .762, .693,
+  .635, .602); job CPU 7481 to 4090 s an arm. Per rule the small ones do carry further: above the table they free
+  12.8e-5 of band 11 and 7.5e-5 of band 17 each, and the 1271 rules the cap removes 7.9e-5 and 3.8e-5. But the large
+  rules still free about 60% of what the rules free on every band, held-out included, so a size cap is no lever:
+  what would carry is small rules the miner does not yet find, not fewer large ones.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
