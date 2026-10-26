@@ -5945,6 +5945,17 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   held-out M 25675 to 23992 (-6.6%, lower on every salt), free share .926/.796/.768/.708; work counts (interp) 0.76x;
   job CPU 6719 to 5206 s under 40-68% other load. Every mine's results equal lookoff-ab's rival arm, so `lt` over
   three variables chose no new rule on these salts; it stays because it removes a special case.
+- **At the loops' width, every-input proofs prove every `shr1` rule the oracle admitted (run `2026-10-26-blast-spike-run`,
+  81 s; spike, `blast.patch` in `2026-10-26-blast-spike`, reverted).** The loops prove at width 4 (`miner.rs`, `laws`),
+  so the oracle's exhaustive check decides a rule there; the spike turns it into a kernel proof: per output position, a
+  case split over all k x 4 input bits whose leaves the kernel checks by evaluation (`lemma_n`, a Bool claim, since the
+  split's motive is Type1 and a vector equality is Type2), joined by `cong_n` (`k_var_law_to`), any operator alike.
+  On the 219 distinct `shr1` rules in the oracle arm's final rules (`2026-10-25-shr1-oracle`): all 219 check, 199 of
+  them beyond the current `Prover` (with no mined rules); build and check per rule by variable count k: k 1, 30 rules,
+  under 0.01 s; k 2, 27, 0.02 s; k 3, 160, mean 0.41 s, max 0.74; k 4, 2, mean 7.1 s (about 16x per variable, as the
+  2^(4k) leaves predict). False rules fail (two hand cases). The mines prove only their winners, lazily (`400 provable
+  candidates of 400 proposed`, filter 0.0 s), so as `Prover`'s fallback it would cost about 0.4 s per `shr1` winner
+  over three variables. It proves at width 4 only: the loops' width, not the JIT's.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

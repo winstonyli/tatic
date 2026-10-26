@@ -96,7 +96,9 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   come from"; run `2026-10-25-uncovered`). Its size, 2026-10-25: with an oracle admitting every true `shr1` rule the
   miner proposes, M falls only 1718 to 1620 (run `2026-10-25-shr1-oracle`, same section), so a prover alone is worth
   about 100 of M; batch 0's share is out of any rule's reach, and the rest are laws first seen at serve, which the
-  miner closes once seen (run `2026-10-25-why-uncovered`, same section). Status: parked (by decision,
+  miner closes once seen (run `2026-10-25-why-uncovered`, same section). At the loops' width (4) a general
+  every-input proof already proves all 219 oracle `shr1` rules, 0.4 s each over three variables (spike 2026-10-26,
+  same section, "At the loops' width"), so a `shr1` encoding is needed only beyond width 4. Status: parked (by decision,
   2026-10-23); trigger met 2026-10-25: since then a lever of v0.4 (`ROADMAP.md`).
 - **Boolean combinations of comparisons (`lt` results under `and`/`or`/`not`)** — why: machine side is cheap (spike passed) but the gain is capped at about 17% of M in the head start and the rule side is untouched. Trigger: the cmp3d library becomes the limiting factor, or the kernel extending its own vocabulary (now milestone v0.4, `ROADMAP.md`); restart from the spike patch and a half-day `prove_rule` probe. Evidence: `docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md:47`. Status: parked.
 
