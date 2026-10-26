@@ -5982,6 +5982,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     variables at widths 3 and 4) takes 0.18 s with the fallback and 0.00 s without (`EVERY_INPUT_BITS` 0), about
     0.4 ms each. The other callers of `prove_rule` (`rewrite.rs` `LawKind::Rule`, `search.rs`'s benches and tests)
     prove rules known to hold.
+- **What held-out M is made of now (run `2026-10-26-held-now`, about 2 min; `held_now.sh` in its folder, the
+  2026-10-25 probe's script on arm B of `2026-10-26-everyinput-ab`).** Salts 1-3, loops 1-3, every band; each
+  check's M equals the gate's `held_bands.txt`. Against the same probe on the 2026-10-24 baseline ("Where a loop's
+  definitions should come from", above), per band 11/13/15/17: laws left to a whole-term machine proof 432/1286/1614/2165
+  to 385/1193/1421/1975 (-9.5% in all), laws not proved 234/631/666/675 to 93/399/451/483 (-35%). So 78% of held-out M
+  (4974 of 6400) is now machine-proved laws, 62 of them with `shr1`: the mined rules' reach on laws without `shr1`,
+  not a prover, is most of what is left. The probe's sources (1) and (2) predate this split; the size-cap probes
+  above (pool, cross-side caps) measured loop stragglers, not held-out laws.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
