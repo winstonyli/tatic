@@ -100,6 +100,14 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   every-input proof already proves all 219 oracle `shr1` rules, 0.4 s each over three variables (spike 2026-10-26,
   same section, "At the loops' width"), so a `shr1` encoding is needed only beyond width 4. Status: parked (by decision,
   2026-10-23); trigger met 2026-10-25: since then a lever of v0.4 (`ROADMAP.md`).
+- **The every-input proof as the only rule prover** (`prove_rule` would keep `every_input_law` alone and delete its other
+  routes: the bitwise case split, `shr_not_law`, the `shr1`-root rewriting, the carry encoding) — why parked: by
+  decision, 2026-10-26, on cost: about 0.4 s a rule at 12 input bits against about 87 ms for a winner's proof on cmp3d (`miner.rs`, `play`), and
+  16x per 4 bits more, so rules over 13 input bits or more (4 variables at width 4) still need the old routes, which
+  splits the prover by size anyway. Trigger: the every-input proof's cost comes within about 2x of the routes' at
+  16 input bits (a cheaper case split or kernel evaluation), or a gate shows the old routes prove nothing the
+  fallback could not. Evidence: `docs/tier-cycle.md`, "At the loops' width, every-input proofs" (2026-10-26);
+  `rewrite.rs`, `prove_rule`. Status: parked.
 - **Boolean combinations of comparisons (`lt` results under `and`/`or`/`not`)** — why: machine side is cheap (spike passed) but the gain is capped at about 17% of M in the head start and the rule side is untouched. Trigger: the cmp3d library becomes the limiting factor, or the kernel extending its own vocabulary (now milestone v0.4, `ROADMAP.md`); restart from the spike patch and a half-day `prove_rule` probe. Evidence: `docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md:47`. Status: parked.
 
 ## Kernel memos, footprint and allocation
