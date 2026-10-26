@@ -5911,10 +5911,11 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   Where the CPU goes (the mines' `RULEMINER time` lines, summed over the 60 mines of each arm): candidate generation
   stays at about 1 s; the scoring rounds take 1554 to 3136 s and the rule-set evaluations 737 to 1080 s. Rounds 7602 to
   11211, with the main path's (a winner or a rollback each) 2183 to 1981, so the lookahead's greedy paths
-  ("Preferences and rival orientations in the miner") take about 5400 to 9200: a round's winner now has a rival on the
-  same laws in 63 rounds against 21, and the lookahead keeps the rival in 11 against 2. Each round also scans more
-  candidates (163 to 205; the gain bound skips 39% of scorings against 43%). So the cost is small rules competing with
-  the law-sized fragments for the same stragglers, settled by whole greedy paths.
+  ("Preferences and rival orientations in the miner") take about 5400 to 9200: a round's winner now has a rival (another
+  right side of its own left side) that gains more in 63 rounds against 21, and the lookahead keeps the rival in 11
+  against 2. Each round also scans more candidates (163 to 205; the gain bound skips 39% of scorings against 43%). So the
+  cost is rival swaps, each checked by two whole greedy paths; more winners come with a rival likely because a small
+  pattern over three variables has several equal small terms in the pool (not measured).
 - **With small rules, the lookahead buys nothing: take the rival (run `2026-10-26-lookoff-ab`, 48 min untimed).** The
   3-variable pool with the lookahead off (`lookoff.patch` in `2026-10-26-lookoff-exes`): arm A always takes a round's
   rival (`ABLATE=lookrival`), arm B its winner (`lookwinner`, no rival swap), against the lookahead's arm B of
