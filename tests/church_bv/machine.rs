@@ -689,30 +689,6 @@ pub fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leav
     })
 }
 
-/// Build and check time of the carry-encoding proof by number of carries (n = 4, three operands).
-#[test]
-#[ignore]
-pub fn tree_proof_cost_by_carries() {
-    let job = &mut Job::new(Setup::process());
-    let v = |i: usize| Term::v(i);
-    let add = |a: Term, b: Term| Term::op(ADD, a, b);
-    let leaves = [v(0), v(1), v(2), v(0), v(1), v(2), v(0)];
-    for n in [4usize] {
-        for c in 2..=6usize {
-            let left = leaves[1..=c].iter().fold(leaves[0], |a, b| add(a, *b));
-            let right = leaves[..c].iter().rev().fold(leaves[c], |a, b| add(*b, a));
-            tatic::kernel::scoped(|| {
-                let t0 = Instant::now();
-                let (p, s) = add_tree_law(job, n, 3, &left, &right).expect("encoding");
-                let built = t0.elapsed();
-                let t1 = Instant::now();
-                let ok = job.lemmas.holds(&p, &s).is_ok();
-                println!("TREECOST n={n} carries={c}: build {built:?}, check {:?}, ok {ok}", t1.elapsed());
-            })
-        }
-    }
-}
-
 #[test]
 pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
     let job = &mut Job::new(Setup::process());

@@ -503,26 +503,6 @@ pub fn shared_carry_proof_checks_and_rejects_wrong_statements() {
     }
 }
 
-/// Section 90b: the shared-carry proof against the inlined one, same exe, alternating, n = 16, 32 (and 64 with `SHARED_N64=1`).
-#[test]
-#[ignore]
-pub fn shared_carry_scaling() {
-    let job = &Job::new(Setup::process());
-    let ns: Vec<usize> = if job.setup().flag("SHARED_N64", false) { vec![16, 32, 64] } else { vec![16, 32] };
-    for n in ns {
-        for round in 0..2 {
-            let (p, s) = add_identity_proof_shared(n, 0, false, add_shared);
-            let t0 = Instant::now();
-            job.lemmas.ck("shared", &p, &s);
-            let shared = t0.elapsed();
-            let (p, s) = add_identity_proof(n, 0, false);
-            let t1 = Instant::now();
-            job.lemmas.ck("inlined", &p, &s);
-            println!("SHARED-CARRY n={n} round={round}: shared {shared:?}, inlined {:?}", t1.elapsed());
-        }
-    }
-}
-
 #[test]
 pub fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
     // per-bit lemma, stated against its own type
@@ -570,49 +550,31 @@ pub fn add_zero_proof_size_scales_gently() {
     assert!(s64 <= 400_000, "n=64: {s64} nodes");
 }
 
-/// Size of the generated proof by width, without checking it.
-#[test]
-#[ignore]
-pub fn proof_size_scaling() {
-    for n in [16usize, 32, 64, 128, 256] {
-        let (proof, _) = add_zero_proof(n, 0);
-        println!("PROOF-SIZE n={n}: dag={}", tatic::kernel::term_sizes(&proof).0);
-    }
-}
-
-/// Growth of the universal lemma's check time with width (machine load varies; indicative only).
-#[test]
-#[ignore]
-pub fn add_zero_lemma_scaling() {
-    for n in [8usize, 16, 32, 64, 128, 256, 512] {
-        let (proof, stmt) = add_zero_proof(n, 0);
-        let t0 = Instant::now();
-        ck(&format!("n={n}"), &proof, &stmt);
-        println!("LEMMA-SCALE n={n}: {:?}", t0.elapsed());
-    }
-}
-
-/// As `add_zero_lemma_scaling`, but building and checking inside one `scoped` call, so the proof is
-/// interned as it is built (design doc section 69). Prints build and check time separately.
-#[test]
-#[ignore]
-pub fn add_zero_lemma_scaling_scoped() {
+/// Build and check time of one lemma at the widths in `env` (comma separated, else `default`), each built and checked
+/// inside one `scoped` call so the proof is interned as it is built (design doc section 69); `NO_SCOPE=1` is the
+/// unscoped control. Prints `<label> n=..: build .., check .., proof dag=..`. `scripts/experiments/lemma_times.sh`
+/// runs the callers by name.
+fn scaling_scoped(label: &str, env: &str, default: &str, build: impl Fn(usize) -> (Expr, Expr)) {
     let job = &Job::new(Setup::process());
-    for n in [8usize, 16, 32, 64, 128, 256, 512] {
+    let ns: Vec<usize> = job.setup().var(env).unwrap_or(default).split(',').map(|v| v.trim().parse().unwrap()).collect();
+    for n in ns {
         let body = || {
             let t0 = Instant::now();
-            let (proof, stmt) = add_zero_proof(n, 0);
+            let (proof, stmt) = build(n);
             let built = t0.elapsed();
             let t1 = Instant::now();
             job.lemmas.ck(&format!("n={n}"), &proof, &stmt);
-            println!(
-                "SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
-                t1.elapsed(),
-                tatic::kernel::term_sizes(&proof).0
-            );
+            println!("{label} n={n}: build {built:?}, check {:?}, proof dag={}", t1.elapsed(), tatic::kernel::term_sizes(&proof).0);
         };
-        if !job.setup().flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
+        if job.setup().flag("NO_SCOPE", false) { body() } else { tatic::kernel::scoped(body) }
     }
+}
+
+/// `add x 0 = x` (`scaling_scoped`, widths `ZERO_NS`).
+#[test]
+#[ignore]
+pub fn add_zero_lemma_scaling_scoped() {
+    scaling_scoped("SCOPED", "ZERO_NS", "8,16,32,64,128,256,512", |n| add_zero_proof(n, 0));
 }
 
 // ---- Commutativity: `add x y = add y x` for `x`, `y` with `GoodBv` witnesses.
@@ -725,52 +687,11 @@ pub fn add_is_commutative_on_symbolic_good_vectors() {
     }
 }
 
-/// One rejection check at width `COMM_N`: `COMM_CASE` is `own` (the wrong statement against its own
-/// proof) or `right` (the right proof against the wrong statement). Prints the verdict and time.
-/// For running one case under a memory watchdog (design doc section 82).
-#[test]
-#[ignore]
-pub fn add_comm_rejection_probe() {
-    let job = &Job::new(Setup::process());
-    let n: usize = job.setup().var("COMM_N").unwrap().parse().unwrap();
-    let case = job.setup().var("COMM_CASE").unwrap();
-    let body = || {
-        let (proof, _) = add_comm_proof(n, false);
-        let (wp, ws) = add_comm_proof(n, true);
-        let t0 = Instant::now();
-        let r = if case == "own" { job.lemmas.holds(&wp, &ws) } else { job.lemmas.holds(&proof, &ws) };
-        println!("REJECT n={n} {case}: rejected={} in {:?}", r.is_err(), t0.elapsed());
-    };
-    if !job.setup().flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
-}
-
-/// `add x y = add y x` built and checked inside one `scoped` call, up to the widths in the
-/// environment variable `COMM_NS` (comma separated; default 8,16,32,64). Prints build and check time
-/// separately and the proof DAG (design doc section 81).
+/// `add x y = add y x` (`scaling_scoped`, widths `COMM_NS`; design doc section 81).
 #[test]
 #[ignore]
 pub fn add_comm_scaling_scoped() {
-    let job = &Job::new(Setup::process());
-    let ns: Vec<usize> = job.setup().var("COMM_NS")
-        .unwrap_or_else(|| "8,16,32,64".into())
-        .split(',')
-        .map(|v| v.trim().parse().unwrap())
-        .collect();
-    for n in ns {
-        let body = || {
-            let t0 = Instant::now();
-            let (proof, stmt) = add_comm_proof(n, false);
-            let built = t0.elapsed();
-            let t1 = Instant::now();
-            job.lemmas.ck(&format!("n={n}"), &proof, &stmt);
-            println!(
-                "COMM-SCOPED n={n}: build {built:?}, check {:?}, proof dag={}",
-                t1.elapsed(),
-                tatic::kernel::term_sizes(&proof).0
-            );
-        };
-        if !job.setup().flag("NO_SCOPE", false) { tatic::kernel::scoped(body) } else { body() }
-    }
+    scaling_scoped("COMM-SCOPED", "COMM_NS", "8,16,32,64", |n| add_comm_proof(n, false));
 }
 
 /// Probe: `add_shared x 0 = x` (carries let-bound in the statement), original `add` kept alongside.
@@ -786,84 +707,23 @@ pub fn add_shared_zero_is_the_identity_on_a_symbolic_good_vector() {
     }
 }
 
+/// One check of the universal `add x 0 = x` lemma for profiling (`SAMPLY.md`), with no timing: width `PROFILE_N`
+/// (default 64); built and checked inside one `scoped` call with `PROFILE_SCOPED=1`; on a thread with a
+/// `PROFILE_STACK_MB` stack when set (1024 keeps `grow` from ever needing a new segment). The profiling task passes no
+/// environment, so these go in `<exe>.env` beside the profiled exe.
 #[test]
 #[ignore]
-pub fn add_shared_zero_scaling() {
-    for n in [8usize, 16, 32] {
-        let (proof, stmt) = add_identity_proof_over(n, 0, false, add_shared);
-        let t0 = Instant::now();
-        ck(&format!("n={n}"), &proof, &stmt);
-        println!("SHARED-SCALE n={n}: {:?}", t0.elapsed());
-    }
-}
-
-/// Whole-check wall time, best of 3 per width, with the machine's
-/// CPU load before and after (`LONG_RUNS.md`): the figure to compare across kernel changes.
-#[test]
-#[ignore]
-pub fn whole_check_time() {
-    for n in [32usize, 64] {
-        let (proof, stmt) = add_zero_proof(n, 0);
-        let mut best = std::time::Duration::MAX;
-        for _ in 0..3 {
-            let t0 = Instant::now();
-            ck(&format!("n={n}"), &proof, &stmt);
-            best = best.min(t0.elapsed());
-        }
-        println!("WHOLE n={n}: best of 3 = {best:?}");
-    }
-}
-
-/// One check of the universal lemma at n=64, for profiling (`SAMPLY.md`): no timing, no logging.
-#[test]
-#[ignore]
-pub fn profile_add_zero_n64() {
-    let (proof, stmt) = add_zero_proof(64, 0);
-    ck("profile n=64", &proof, &stmt);
-}
-
-/// As `profile_add_zero_n64`, at n=128.
-#[test]
-#[ignore]
-pub fn profile_add_zero_n128() {
-    let (proof, stmt) = add_zero_proof(128, 0);
-    ck("profile n=128", &proof, &stmt);
-}
-
-/// As `profile_add_zero_n64`, at n=512.
-#[test]
-#[ignore]
-pub fn profile_add_zero_n512() {
-    let (proof, stmt) = add_zero_proof(512, 0);
-    ck("profile n=512", &proof, &stmt);
-}
-
-/// Build and check the n=256 / n=512 lemma inside one `scoped` call, for profiling the scoped check
-/// alone per width (`SAMPLY.md`; the profiling task passes no environment, so one test per width).
-pub fn profile_scoped(n: usize) {
-    tatic::kernel::scoped(|| {
-        let (proof, stmt) = add_zero_proof(n, 0);
-        ck("profile scoped", &proof, &stmt);
-    })
-}
-
-/// As `profile_scoped_n512`, on a thread with a 1 GiB stack, so `grow` never needs a new segment.
-#[test]
-#[ignore]
-pub fn profile_scoped_n512_big_stack() {
-    std::thread::Builder::new().stack_size(1 << 30).spawn(|| profile_scoped(512)).unwrap().join().unwrap();
-}
-
-#[test]
-#[ignore]
-pub fn profile_scoped_n256() {
-    profile_scoped(256);
-}
-
-#[test]
-#[ignore]
-pub fn profile_scoped_n512() {
-    profile_scoped(512);
+pub fn profile_add_zero() {
+    let setup = Setup::process();
+    let (n, scoped, stack_mb) = (setup.or("PROFILE_N", 64usize), setup.flag("PROFILE_SCOPED", false), setup.or("PROFILE_STACK_MB", 0usize));
+    let run = move || {
+        let check = || {
+            let (proof, stmt) = add_zero_proof(n, 0);
+            ck(&format!("profile n={n}"), &proof, &stmt)
+        };
+        if scoped { tatic::kernel::scoped(check) } else { check() }
+    };
+    if stack_mb == 0 { run() } else { std::thread::Builder::new().stack_size(stack_mb << 20).spawn(run).unwrap().join().unwrap() }
 }
 
 /// A large check must not churn stack segments: before `check_in` ran large checks on one big
@@ -878,36 +738,6 @@ pub fn a_large_check_does_not_churn_stack_segments() {
     let switches = tatic::kernel::segment_switches() - before;
     println!("segment switches in the n=256 check: {switches}");
     assert!(switches < 100, "{switches} stack segment switches in one check");
-}
-
-/// Cost of a lookup in a pointer-keyed table against the table's size (design doc section 72):
-/// random hits in a `hashbrown` map whose entries are 40 bytes, like the instantiate memo's.
-#[test]
-#[ignore]
-pub fn table_lookup_cost_by_size() {
-    use hashbrown::HashMap;
-    let mut x = 0x9e37_79b9_7f4a_7c15u64;
-    let mut next = move || {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        x
-    };
-    for size in [1usize << 14, 1 << 16, 1 << 18, 1 << 20, 1 << 22] {
-        let mut m: HashMap<(usize, u64, u32), (usize, usize)> = HashMap::default();
-        let keys: Vec<(usize, u64, u32)> = (0..size).map(|_| (next() as usize, next(), 0)).collect();
-        for k in &keys {
-            m.insert(*k, (1, 2));
-        }
-        let probes: Vec<usize> = (0..2_000_000).map(|_| next() as usize % size).collect();
-        let t = Instant::now();
-        let mut s = 0usize;
-        for &i in &probes {
-            s += m.get(&keys[i]).unwrap().0;
-        }
-        let d = t.elapsed();
-        println!("LOOKUP size={size}: {:.0} ns per hit (sink {s})", d.as_nanos() as f64 / probes.len() as f64);
-    }
 }
 
 // ---- Division wrapper obligations (design doc section 5): D3 and the equality test it needs.
@@ -2053,22 +1883,11 @@ pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {
     (proof, stmt)
 }
 
-/// Build and check time of `add (add x y) z = add x (add y z)` at growing widths (`ASSOC_NS`, default 8,16,32,64), scoped.
+/// `add (add x y) z = add x (add y z)` (`scaling_scoped`, widths `ASSOC_NS`).
 #[test]
 #[ignore]
 pub fn add_assoc_scaling_scoped() {
-    let job = &Job::new(Setup::process());
-    let ns: Vec<usize> = job.setup().var("ASSOC_NS").unwrap_or("8,16,32,64").split(',').map(|v| v.trim().parse().unwrap()).collect();
-    for n in ns {
-        tatic::kernel::scoped(|| {
-            let t0 = Instant::now();
-            let (proof, stmt) = add_assoc_proof(n, false);
-            let built = t0.elapsed();
-            let t1 = Instant::now();
-            job.lemmas.ck(&format!("n={n}"), &proof, &stmt);
-            println!("ASSOC-SCOPED n={n}: build {built:?}, check {:?}", t1.elapsed());
-        })
-    }
+    scaling_scoped("ASSOC-SCOPED", "ASSOC_NS", "8,16,32,64", |n| add_assoc_proof(n, false));
 }
 
 #[test]

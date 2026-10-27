@@ -155,7 +155,8 @@ laws beyond 5 nodes and (c) new definitions:
 
 ### Experiment 1, kernel side (2026-10-10)
 `search::classify_proposals` gives each proposed `lhs = rhs` line a verdict (unparsed, trivial, refuted, duplicate, memorised, known or
-novel, each cheap or hard); the ignored test `proposal_yield` samples a proposer and prints a `YIELD` line (env documented on the test).
+novel, each cheap or hard); the ignored test `proposal_yield` samples a proposer and prints a `YIELD` line (env documented on the test). Both were
+deleted with the families (b63d5ed, 093ffc1); read them with `git show b63d5ed^:tests/church_bv/search.rs`.
 Baselines, 2000 samples, shuffle salt 1, default 250-law training window, no mined rules, one run each:
 
 | family | proposer | unparsed | refuted | trivial/dup/memorised | true and new to the stream |
