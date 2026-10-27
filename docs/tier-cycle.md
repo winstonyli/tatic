@@ -6040,6 +6040,16 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     against 546. Per band after the four batches: 13 521 to 392 (-25%, still falling: 437, 413, 392), 15 619 to 423
     (-32%), 17 811 to 596 (-27%, flat after the second batch: 617, 598, 596). So about 500-750 large laws per band take
     most of what this miner learns from them, in batches of 250 at 22-43 s of mining per loop and batch (all three bands).
+  - *As the loop's extras* (run `2026-10-26-bigextras-ab`, gate salts 1-3, 24 min; `bigextras.patch` and `X.exe` in
+    `2026-10-26-bigextras-exes`, reverted; A is `R.exe` from the arm cache): the first prototype of v0.5's loop change.
+    The extras' source became the first 1650 laws of bands 13/15/17 of the sequence at 4 growths, minus every held-out
+    law (salt 1: 427/653/570 per band, 108 held-out laws dropped), in place of phase 0 of the loops' 2-growth sequence;
+    slices and share unchanged (salt 1 loop 1: L 1266, n 202). Held-out M 6400 to 6087 (-4.9%; per salt -6.5%, -2.1%,
+    -6.1%), loop M 477 to 463, rules 580 to 674. Per 1000 laws by band: 11 53.1 to 61.6 (worse: the small extras it
+    replaced taught band 11), 13 177.1 to 171.5, 15 208.6 to 191.8, 17 274.8 to 253.7; bands 13-17 -6.6%, about what
+    the dose probe gave 100 laws per band (-6.4%), so the gain is the dose's, not lost to mixing with the batches. Cost:
+    job CPU 1245 to 2841 s, peak process 1.5 to 3.3 GB; the 4-growth sequence took 256-401 s per sweep (three B arms
+    at once, 64-70% other load) and the loops' wall about doubled (424 to 805 s summed).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
