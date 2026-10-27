@@ -3,10 +3,9 @@ use crate::eval::apply_term;
 use crate::samples::{
     a_pap_capturing, a_pap_non_capturing, calls_a_capturing_closure_picked_by_if, capturing_closure_loop, factorial, gcd,
     inconsistent_arity_capturing_instance, inconsistent_arity_parameter, inconsistent_arity_runtime_chosen_instance,
-    inconsistent_arity_saturating_instance, inconsistent_arity_under_applying_instance, let_bound_factorial_10, twice,
-    twice_inc_5,
+    inconsistent_arity_saturating_instance, inconsistent_arity_under_applying_instance, let_bound_factorial_10, source,
+    twice, twice_inc_5,
 };
-use crate::term::PrimOp;
 
 fn instantiate(wat: &str) -> (wasmtime::Store<()>, wasmtime::Instance) {
     let bytes = wat::parse_str(wat).expect("valid wat");
@@ -149,9 +148,8 @@ fn resetting_hp_between_calls_keeps_memory_bounded_across_many_calls() {
     // `\g. g n` rather than called directly -- so its environment is
     // allocated every iteration (a directly called one takes its
     // capture as a parameter; see `lower_wat::direct_only`). This one
-    // exercises the actual
-    // mechanism `jit.rs` relies on: `needs_hp_reset`/the exported
-    // `"hp"` global. Without resetting `hp` to 0 before every call,
+    // exercises the actual mechanism `jit.rs` relies on:
+    // `needs_hp_reset`/the exported `"hp"` global. Without resetting `hp` to 0 before every call,
     // repeatedly calling the *same* compiled instance -- exactly
     // what `jit.rs`'s cache does -- would leak every capturing
     // closure's environment forever, growing linear memory without
@@ -161,28 +159,7 @@ fn resetting_hp_between_calls_keeps_memory_bounded_across_many_calls() {
     // calls (what `jit.rs`'s `invoke` now does) keeps it bounded no
     // matter how many times the instance is called.
     let mut s = TermStore::new();
-    let y = s.var(0);
-    let acc_captured = s.var(1);
-    let sum = s.prim(PrimOp::Add, acc_captured, y);
-    let closure = s.abs(sum);
-    // `\g. g n`: inside it g = Var(0) and n = Var(2).
-    let g = s.var(0);
-    let n_in = s.var(2);
-    let g_n = s.app(g, n_in);
-    let apply_to_n = s.abs(g_n);
-    let new_acc = s.app(apply_to_n, closure);
-    let n = s.var(1);
-    let acc = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let f = s.var(2);
-    let rec_call = s.app2(f, n_minus_1, new_acc);
-    let body = s.if_(cond, acc, rec_call);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    let term = s.rec(abs);
+    let term = source(&mut s, r"rec f n acc = if n <= 0 then acc else f (n - 1) ((\g. g n) (\y. acc + y))");
 
     let frag = try_compile(&s, term).expect("should compile");
     assert!(frag.needs_hp_reset, "this term creates escaping capturing closures, so it should need a reset");
@@ -227,39 +204,19 @@ fn resetting_hp_between_calls_keeps_memory_bounded_across_many_calls() {
 
 #[test]
 fn a_self_recursive_combinator_can_also_capture_from_an_enclosing_scope() {
-    // \z. (\h. h 5) (rec f n = if n <= 0 then z else n + f (n - 1)) --
-    // `f` is both self-recursive *and* captures `z` from `g`'s own
-    // scope (two levels out: past its own `n` param and past `Rec`'s
-    // own self-binder). Regression test for a real bug found while
-    // re-deriving this indexing by hand: `build_read`'s (then
-    // `compile_var_read`'s) own
-    // capture-resolution formula didn't account for the extra slot
-    // `Rec` binds for self, so it disagreed with `free_vars`'s
-    // (which does) -- silently reading the *wrong* environment slot
-    // whenever a self-recursive combinator captured more than one
-    // outward value, or failing to resolve a genuine capture
-    // (falling back to the interpreter) with exactly one.
+    // The `rec f` is both self-recursive *and* captures `z` from the
+    // outer lambda's own scope (two levels out: past its own `n` param
+    // and past `Rec`'s own self-binder). Regression test for a real
+    // bug found while re-deriving this indexing by hand:
+    // `build_read`'s (then `compile_var_read`'s) own capture-resolution
+    // formula didn't account for the extra slot `Rec` binds for self,
+    // so it disagreed with `free_vars`'s (which does) -- silently
+    // reading the *wrong* environment slot whenever a self-recursive
+    // combinator captured more than one outward value, or failing to
+    // resolve a genuine capture (falling back to the interpreter) with
+    // exactly one.
     let mut s = TermStore::new();
-    let n = s.var(0);
-    let f_self = s.var(1);
-    let z = s.var(2);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(f_self, n_minus_1);
-    let else_branch = s.prim(PrimOp::Add, n, rec_call);
-    let body = s.if_(cond, z, else_branch);
-    let abs = s.abs(body);
-    let f_term = s.rec(abs);
-
-    let h = s.var(0);
-    let five = s.lit(5);
-    let call = s.app(h, five);
-    let h_wrapper = s.abs(call);
-
-    let applied = s.app(h_wrapper, f_term);
-    let g = s.abs(applied);
+    let g = source(&mut s, r"\z. (\h. h 5) (rec f n = if n <= 0 then z else n + f (n - 1))");
 
     let frag = try_compile(&s, g).expect("a self-recursive capturing combinator should compile");
     assert_eq!(frag.arity, 1);
@@ -276,33 +233,14 @@ fn a_self_recursive_combinator_can_also_capture_from_an_enclosing_scope() {
 
 #[test]
 fn calling_a_closure_reached_through_a_captured_free_variable_compiles() {
-    // g = \cb. \x. (\y. cb y) x -- the nested closure `\y. cb y`
-    // calls `cb`, a variable captured from g's own scope (not `y`,
-    // its own parameter) -- exercises the widened call-site support:
-    // calling a closure reached through a captured free variable,
-    // not just through one of the calling function's own parameters
-    // (see `infer_closure_arities`'s docs).
+    // The nested closure `\y. cb y` calls `cb`, a variable captured
+    // from the enclosing scope (not `y`, its own parameter) --
+    // exercises the widened call-site support: calling a closure
+    // reached through a captured free variable, not just through one
+    // of the calling function's own parameters (see
+    // `infer_closure_arities`'s docs).
     let mut s = TermStore::new();
-    let y = s.var(0);
-    // `cb` needs to skip both `y`'s own binder (1) and reach `cb`'s
-    // own slot in g's 2-var scope (1 more, since `cb` is g's outer/
-    // first-bound, hence-higher-indexed param) -- var(2), not var(1).
-    let cb_captured = s.var(2);
-    let cb_call = s.app(cb_captured, y);
-    let inner_closure = s.abs(cb_call);
-    let x = s.var(0);
-    let applied = s.app(inner_closure, x);
-    let inner = s.abs(applied);
-    let g = s.abs(inner);
-
-    // inc = \z. z + 1
-    let z = s.var(0);
-    let one = s.lit(1);
-    let z_plus_1 = s.prim(PrimOp::Add, z, one);
-    let inc = s.abs(z_plus_1);
-
-    let five = s.lit(5);
-    let top = s.app2(g, inc, five);
+    let top = source(&mut s, r"(\cb x. (\y. cb y) x) (\z. z + 1) 5");
 
     let frag = try_compile(&s, top).expect("calling a closure through a capture should compile");
     assert_eq!(frag.arity, 0);
@@ -340,17 +278,16 @@ fn inconsistent_call_arity_for_a_parameter_now_compiles_via_curried_dispatch() {
 
 #[test]
 fn a_combinator_never_reached_as_a_bare_value_gets_no_stage_chain_even_when_the_fragment_needs_generic_dispatch() {
-    // `top = (\f. (if 0<1 then f(1,2) else f(1)) + helper(3,4)) f_lit`,
-    // `f_lit = \a b. a+b`, `helper = \x y. x*y` (a *distinct* literal,
-    // so it gets its own combinator index, not `f_lit`'s -- confirmed
-    // via `Mul` vs `Add` rather than two structurally identical, and
-    // therefore hash-consing-deduplicated, bodies). `f`'s own
-    // inconsistent call sites make this whole fragment need generic
-    // dispatch (same shape as the acceptance test just above), and
-    // `f_lit` genuinely needs a stage chain -- it's passed as `top`'s
-    // own argument, a bare value. `helper`, though, is *only* ever
-    // called directly and saturated (`helper(3,4)`, never passed
-    // around, never under-applied) -- it never gets its own index
+    // `helper` (`\x y. x * y`) is a *distinct* literal from `f_lit`
+    // (`\a b. a + b`), so it gets its own combinator index, not
+    // `f_lit`'s -- confirmed via `Mul` vs `Add` rather than two
+    // structurally identical, and therefore hash-consing-deduplicated,
+    // bodies. `f`'s own inconsistent call sites make this whole
+    // fragment need generic dispatch (same shape as the acceptance test
+    // just above), and `f_lit` genuinely needs a stage chain -- it's
+    // passed as `top`'s own argument, a bare value. `helper`, though,
+    // is *only* ever called directly and saturated (`helper 3 4`, never
+    // passed around, never under-applied) -- it never gets its own index
     // packed into an `i64` anywhere in this fragment, so it should
     // never get a `stage_0` to pack instead. Regression guard for
     // `lower_wat`'s `used_as_bare_value`: reverting the `0..n` filter
@@ -358,38 +295,7 @@ fn a_combinator_never_reached_as_a_bare_value_gets_no_stage_chain_even_when_the_
     // `$s{idx}_0`/`$s{idx}_1` show up in the generated WAT even though
     // nothing ever calls through them).
     let mut s = TermStore::new();
-    let x = s.var(1);
-    let y = s.var(0);
-    let xy = s.prim(PrimOp::Mul, x, y);
-    let helper_inner = s.abs(xy);
-    let helper = s.abs(helper_inner); // \x y. x*y
-
-    let three = s.lit(3);
-    let four = s.lit(4);
-    let helper_call = s.app2(helper, three, four);
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let zero = s.lit(0);
-    let one_c = s.lit(1);
-    let cond = s.prim(PrimOp::Lt, zero, one_c);
-    let if_expr = s.if_(cond, call_2, call_1);
-
-    let main_body = s.prim(PrimOp::Add, if_expr, helper_call);
-    let main = s.abs(main_body);
-
-    let a = s.var(1);
-    let b = s.var(0);
-    let add = s.prim(PrimOp::Add, a, b);
-    let inner = s.abs(add);
-    let f_lit = s.abs(inner); // \a b. a+b
-
-    let top = s.app(main, f_lit);
+    let top = source(&mut s, r"(\f. (if 0 < 1 then f 1 2 else f 1) + (\x y. x * y) 3 4) (\a b. a + b)");
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
     assert!(frag.wat.contains("call_indirect (type $ty1)"), "f should still dispatch through the curried fallback:\n{}", frag.wat);
@@ -549,9 +455,8 @@ fn partial_application_of_a_literal_lambda_compiles() {
 
 #[test]
 fn partial_application_of_a_capturing_literal_lambda_compiles() {
-    // The literal
-    // lambda being partially applied (`\x y. x + y + z`) itself
-    // captures `z`, from the enclosing function's own scope -- exercises the trickiest
+    // The literal lambda being partially applied (`\x y. x + y + z`)
+    // itself captures `z`, from the enclosing function's own scope -- exercises the trickiest
     // part of `Lowering::pap_env`: the wrapper's own environment needs
     // both the already-supplied argument (`3`) *and* a copy of
     // `root`'s own environment (holding `z`), computed at the
@@ -597,114 +502,17 @@ fn a_pap_wrappers_own_supplied_argument_creating_more_closures_does_not_corrupt_
     // the Wasm value stack instead of round-tripping any of it
     // through a local.
     //
-    // Reproduces the exact random term `compile_fuzz.rs`'s own
-    // generator builds at seed 2117 (its `gen_tail_recursive`, whose
-    // `payload` is a `gen_closure_block` under-applying a literal
-    // lambda whose own supplied argument is itself another
-    // `gen_closure_block`) -- embedded here, self-contained, as a
-    // permanent regression rather than relying on stumbling into
-    // this seed again during a future stress run.
-    use crate::rng::SplitMix64 as Rng;
-    const MAX_LIT: i64 = 50;
-    fn random_arith_op(rng: &mut Rng) -> PrimOp {
-        [PrimOp::Add, PrimOp::Sub, PrimOp::Mul][rng.below(3) as usize]
-    }
-    fn random_cmp_op(rng: &mut Rng) -> PrimOp {
-        [PrimOp::Lt, PrimOp::Le, PrimOp::Eq][rng.below(3) as usize]
-    }
-    fn gen_leaf(rng: &mut Rng, s: &mut TermStore, scope: u32) -> Hash {
-        if scope > 0 && rng.below(2) == 0 {
-            s.var(rng.below(scope))
-        } else {
-            s.lit(rng.i64_range(-MAX_LIT, MAX_LIT))
-        }
-    }
-    fn gen_cond(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
-        let a = gen_expr(rng, s, scope, fuel);
-        let b = gen_expr(rng, s, scope, fuel);
-        let op = random_cmp_op(rng);
-        s.prim(op, a, b)
-    }
-    fn gen_expr(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
-        if fuel == 0 || rng.below(3) == 0 {
-            return gen_leaf(rng, s, scope);
-        }
-        match rng.below(4) {
-            0 => {
-                let a = gen_expr(rng, s, scope, fuel - 1);
-                let b = gen_expr(rng, s, scope, fuel - 1);
-                let op = random_arith_op(rng);
-                s.prim(op, a, b)
-            }
-            1 => {
-                let c = gen_cond(rng, s, scope, fuel - 1);
-                let t = gen_expr(rng, s, scope, fuel - 1);
-                let e = gen_expr(rng, s, scope, fuel - 1);
-                s.if_(c, t, e)
-            }
-            _ => gen_closure_block(rng, s, scope, fuel - 1),
-        }
-    }
-    fn gen_closure_block(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Hash {
-        let inner_arity = 1 + rng.below(2);
-        let inner_scope = scope + inner_arity;
-        let inner_body = gen_expr(rng, s, inner_scope, fuel);
-        let mut inner = inner_body;
-        for _ in 0..inner_arity {
-            inner = s.abs(inner);
-        }
-        let supplied = rng.below(inner_arity + 1);
-        let mut applied = inner;
-        for _ in 0..supplied {
-            let arg = gen_expr(rng, s, scope, fuel);
-            applied = s.app(applied, arg);
-        }
-        if supplied == inner_arity {
-            return applied;
-        }
-        let remaining = inner_arity - supplied;
-        let mut remaining_args = Vec::new();
-        for _ in 0..remaining {
-            remaining_args.push(gen_expr(rng, s, scope, fuel));
-        }
-        let g_var = s.var(remaining);
-        let mut call_g = g_var;
-        for i in 0..remaining {
-            let y_i = s.var(remaining - 1 - i);
-            call_g = s.app(call_g, y_i);
-        }
-        let mut caller = call_g;
-        for _ in 0..(1 + remaining) {
-            caller = s.abs(caller);
-        }
-        let mut call_caller = s.app(caller, applied);
-        for r in remaining_args {
-            call_caller = s.app(call_caller, r);
-        }
-        call_caller
-    }
-
-    let mut rng = Rng::new(0x00C0_FFEE_1E55_u64 ^ 2117);
-    let choice = rng.below(4); // gen_program's own dispatch draw -- must be consumed first to match its RNG state exactly
-    assert_eq!(choice, 1, "seed 2117 should still pick gen_tail_recursive first");
+    // The term at seed 2117 (a tail-recursive loop whose payload is a
+    // closure block under-applying a literal lambda whose own supplied
+    // argument is itself another closure block) is kept here,
+    // self-contained, as a permanent regression rather than relying on
+    // stumbling into this seed again during a future stress run.
     let mut s = TermStore::new();
-    let n = s.var(1);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let base = s.var(0);
-    let n2 = s.var(1);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n2, one);
-    let f = s.var(2);
-    let payload = gen_expr(&mut rng, &mut s, 2, 3);
-    let op = random_arith_op(&mut rng);
-    let acc2 = s.var(0);
-    let new_acc = s.prim(op, acc2, payload);
-    let rec_call = s.app2(f, n_minus_1, new_acc);
-    let body = s.if_(cond, base, rec_call);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    let h = s.rec(abs);
+    // Frozen from tests/compile_fuzz.rs's generator at seed 0x00C0_FFEE_1E55 ^ 2117 (printed with syntax::print).
+    let h = source(
+        &mut s,
+        r"rec v0 v1 v2 = if v1 <= 0 then v2 else v0 (v1 - 1) (v2 - (\v3. \v4. v3 v4) ((\v3. \v4. (\v5. if 10 <= v2 then v1 else v5) ((\v5. 35) v3)) (if -13 * v2 == (\v3. \v4. v3 v4) ((\v3. \v4. v1) v2) v2 then (\v3. \v4. v3 v4) (\v3. 46) 24 else (\v3. \v4. v3) (-42) v2)) (-28))",
+    );
 
     assert_eq!(
         apply_term(&s, h, &[10, -20]).unwrap(),
@@ -721,8 +529,8 @@ fn a_pap_wrappers_own_supplied_argument_creating_more_closures_does_not_corrupt_
 
 #[test]
 fn curried_application_is_indistinguishable_from_multi_arg_calls() {
-    // \f. \x. (f x) x -- an honest boundary, not a bug: this *looks*
-    // like `f` returning a genuine closure (from `f x`) which is then
+    // An honest boundary, not a bug: `\f x. f x x` *looks* like `f`
+    // returning a genuine closure (from `f x`) which is then
     // applied to `x` again, but curried application in this term
     // representation has no arity tag at all -- `App(App(f,x),x)` is
     // exactly the same term shape as a plain 2-ary call `f(x,x)`.
@@ -732,12 +540,7 @@ fn curried_application_is_indistinguishable_from_multi_arg_calls() {
     // as by every other part of this module (`infer_closure_arities`
     // included) too, not just an oversight in one place.
     let mut s = TermStore::new();
-    let f = s.var(1);
-    let x = s.var(0);
-    let fx = s.app(f, x);
-    let fxx = s.app(fx, x);
-    let inner = s.abs(fxx);
-    let g = s.abs(inner);
+    let g = source(&mut s, r"\f x. f x x");
     let frag = try_compile(&s, g).expect("compiles as a 2-ary call to f");
     assert_eq!(frag.arity, 2);
     assert!(frag.wat.contains("call_indirect (type $ty2)"));
@@ -745,51 +548,28 @@ fn curried_application_is_indistinguishable_from_multi_arg_calls() {
 
 #[test]
 fn an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter() {
-    // f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(x,y,z) --
-    // `f`'s own arity is 2 (`peel` stops there: its body is an `If`,
-    // not a further bare `Abs`, so the two branches don't get folded
-    // into `f`'s own combinator the way `\a b c. ..` would), and each
-    // branch is itself a fresh, arity-1 closure -- already compiled
-    // correctly today as an `If`-between-closures *value* (see
+    // `f x y z` over-applies `f`, whose own arity is 2 (`peel` stops
+    // there: its body is an `If`, not a further bare `Abs`, so the two
+    // branches don't get folded into `f`'s own combinator the way
+    // `\a b c. ..` would), and each branch is itself a fresh, arity-1
+    // closure -- already compiled correctly today as an
+    // `If`-between-closures *value* (see
     // `a_capturing_closure_compiles_and_matches_interpreter`). What's
     // new is over-applying `f` with a 3rd argument `z`: `f`'s own
     // saturated call (`f(x,y)`) is compiled, then whatever it
     // *returns* is called again through `call_indirect`, exactly like
     // calling a closure-typed variable -- see "Over-application" in
-    // `lower_wat.rs`'s module docs on the exact mechanism (evaluating the saturated call
-    // twice rather than stashing it in a local across the extra
-    // argument's own compilation). Tried at both a positive and a
-    // negative `x` so both branches -- and hence both closures
-    // registered as separate combinators -- actually get exercised.
+    // `lower_wat.rs`'s module docs on the exact mechanism (evaluating
+    // the saturated call twice rather than stashing it in a local
+    // across the extra argument's own compilation). Tried at both a
+    // positive and a negative `x` so both branches -- and hence both
+    // closures registered as separate combinators -- actually get
+    // exercised.
     let mut s = TermStore::new();
-    let c1 = s.var(0);
-    let b1 = s.var(1);
-    let a1 = s.var(2);
-    let ab1 = s.prim(PrimOp::Add, a1, b1);
-    let abc1 = s.prim(PrimOp::Add, ab1, c1);
-    let closure1 = s.abs(abc1); // \c. a+b+c
-
-    let c2 = s.var(0);
-    let b2 = s.var(1);
-    let a2 = s.var(2);
-    let amb2 = s.prim(PrimOp::Sub, a2, b2);
-    let ambc2 = s.prim(PrimOp::Add, amb2, c2);
-    let closure2 = s.abs(ambc2); // \c. a-b+c
-
-    let a_body = s.var(1);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_body);
-    let body = s.if_(cond, closure1, closure2);
-    let b_binder = s.abs(body);
-    let f = s.abs(b_binder); // \a b. if 0 < a then closure1 else closure2
+    let f_src = r"\a b. if 0 < a then (\c. a + b + c) else (\c. a - b + c)";
 
     for (a_val, b_val, c_val, expected) in [(10i64, 3i64, 100i64, 113i64), (-5, 3, 100, 92)] {
-        let xa = s.lit(a_val);
-        let yb = s.lit(b_val);
-        let zc = s.lit(c_val);
-        let fx = s.app(f, xa);
-        let fxy = s.app(fx, yb);
-        let fxyz = s.app(fxy, zc);
+        let fxyz = source(&mut s, &format!(r"({f_src}) ({a_val}) ({b_val}) ({c_val})"));
 
         let frag = try_compile(&s, fxyz).expect("an over-applied literal lambda returning a closure should compile");
         assert_eq!(frag.arity, 0);
@@ -812,6 +592,7 @@ fn an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_inter
 #[test]
 fn classify_recognizes_only_a_saturated_self_call_and_only_a_peelable_callee() {
     let mut s = TermStore::new();
+    // Hand-built: classify takes an open body (f, a, b free); the parser accepts only closed terms.
     // Inside `rec f a b = ..`: `a` is Var(1), `b` Var(0), `f` Var(2).
     let (a, b, f) = (s.var(1), s.var(0), s.var(2));
     let saturated = s.app2(f, a, b);
@@ -837,6 +618,7 @@ fn classify_recognizes_only_a_saturated_self_call_and_only_a_peelable_callee() {
 
 #[test]
 fn an_unbound_variable_is_rejected_not_a_panic() {
+    // Hand-built: the parser rejects an unbound name.
     // \x. y -- `y` (Var(3), arbitrary) is out of range for this
     // arity-1 function -- regression test for local_index's
     // then_some eagerly underflowing instead of returning None.
@@ -928,7 +710,7 @@ fn a_rejected_candidate() -> (TermStore, Hash, crate::specialise::Specialised) {
     let (s, h) = corpus("partial_application_loop");
     let mut sp = crate::specialise::specialise(&s, h);
     assert!(!sp.trace.is_empty());
-    sp.term = sp.store.lit(0); // a real term in the store, but not what the trace reaches
+    sp.term = source(&mut sp.store, "0"); // a real term in the store, but not what the trace reaches
     (s, h, sp)
 }
 

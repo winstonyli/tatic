@@ -377,8 +377,8 @@ fn tail_recursive_gcd_with_two_base_cases_gets_a_universal_proof() {
 
 #[test]
 fn non_tail_recursion_gets_a_universal_proof_now() {
-    // Factorial: the
-    // self-call is nested inside a multiplication, not tail position.
+    // Factorial: the self-call is nested inside a multiplication, not
+    // tail position.
     // Generalizing Ev/ev_rec/loop_val to leaves with an arbitrary
     // self-call count, recombined via kernel::cong_n, covers this too
     // (this was the whole point of widening past tail recursion).
@@ -394,8 +394,7 @@ fn non_tail_recursion_gets_a_universal_proof_now() {
 
 #[test]
 fn fibonacci_two_self_calls_gets_a_universal_proof() {
-    // Naive
-    // Fibonacci: two self-calls combined by one Prim, exercising
+    // Naive Fibonacci: two self-calls combined by one Prim, exercising
     // combine_i for k=2 and kernel::cong_n's actual n>1 case
     // (factorial above only needs k=1, where cong_n's loop runs once).
     let mut s = TermStore::new();
