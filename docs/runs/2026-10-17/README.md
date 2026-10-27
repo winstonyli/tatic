@@ -68,7 +68,7 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
   normalizations (the strip on the extras, the strip on both sides, two-leaf value classes on both sides) and the laws
   trivial after normalizing (`tier-cycle.md`, "One filter for every source"). Since the generator's plan, its class key
   renames before normalizing (`ckey`), as the generator's does (on the fixtures: 502 twins, against 435 renaming after);
-  `fixtures/pad_1/` holds salt 1 of `-gen-cost`'s pad arm, cmp3d (phase 1-3 served files and mine 0's extras), the input
+  `fixtures/pad_1/` (deleted 2026-10-26, its test on 2026-10-23; `git show 043d0ba:docs/runs/2026-10-17/fixtures/pad_1/...`) held salt 1 of `-gen-cost`'s pad arm, cmp3d (phase 1-3 served files and mine 0's extras), the input
   of `search::normalize_finds_the_probes_twins`. `scripts/wide_files.py <out>
   <run root>/<prefix>...` writes `gen_twin.sh` inputs from the class normalization: `<prefix>_full`, `<prefix>_class`,
   and for pad `pad_notriv` and `pad_ctl` (kept in `%LOCALAPPDATA%\claude-runs\tatic\2026-10-17-gen-wide-inputs`).

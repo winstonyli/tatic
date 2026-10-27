@@ -19,7 +19,7 @@ and libraries (43 MB) were not kept.
   below; the first two still apply cleanly to b7fde44, the third to 11e081d. `if_invariant_probe.patch` (adds
   `tests/church_bv/if_probe.rs` and widens `good_vec`'s result) applies to c2ebfbf. `conv_pair_memo_probe.patch` (a
   per-`def_eq` pair memo in `src/kernel.rs`'s `conv`) applies to f980cb2.
-- `promo/`: the re-promoted rule sets (round 1, and both rounds) under the `show()` and size-first orders.
+- `promo/` (deleted 2026-10-26 with the families it ran on; `git show 043d0ba:docs/runs/2026-10-12/promo/<order>.rules`): the re-promoted rule sets (round 1, and both rounds) under the `show()` and size-first orders.
 
 | Runs | Build | Script | Result (tier-cycle.md) |
 |---|---|---|---|
