@@ -57,10 +57,7 @@ fn main() {
     let mut jit = JitEngine::new();
 
     println!("-- syntax.rs: terms are written as source and parsed to De Bruijn terms --");
-    let parsed_fact = syntax::parse(&mut store, "rec f n = if n <= 1 then 1 else n * f (n - 1)")
-        .expect("valid source should parse");
-    println!("parsed factorial == samples::factorial (same content hash): {}", parsed_fact == fact);
-    println!("jit: factorial(10) = {}", jit.apply(&store, parsed_fact, &[10]).unwrap());
+    println!("jit: factorial(10) = {}", jit.apply(&store, fact, &[10]).unwrap());
     match syntax::parse(&mut store, "n + 1") {
         Ok(_) => unreachable!(),
         Err(e) => println!("parse error on `n + 1` (n unbound): {e}"),

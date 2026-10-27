@@ -252,7 +252,7 @@ where the inner one's body references the outer one's binding can
 desugar into a term that's genuinely *capturing* by the time `compile.rs`
 peels its inner lambda standalone — even though nothing about the source
 looks like a capturing closure (see `syntax.rs`'s own tests,
-`higher_order_let_chain_evaluates_like_the_hand_built_demo_term`). Real
+`higher_order_let_chain_evaluates_like_the_inlined_sample`). Real
 closure conversion (see `compile.rs`'s module docs) compiles this
 correctly now rather than falling back to the interpreter; it still
 doesn't get a *kernel-checked* proof, though, since `proof.rs`'s own

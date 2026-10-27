@@ -248,7 +248,7 @@ fn extra_slices_are_disjoint_and_full() {
         assert_eq!(shared[2 * l].len(), 10);
     }
     assert!(shared[0].end <= shared[2].start && shared[2].end <= shared[4].start, "{shared:?}");
-    // a scope with no laws (a family with no pool): n is 0 and the mine takes nothing
+    // a scope with no laws: n is 0 and the mine takes nothing
     assert_eq!(extra_slices(0, 1, 1, 0), Ok(vec![0..0]));
 }
 

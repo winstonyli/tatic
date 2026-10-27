@@ -797,7 +797,7 @@ mod tests {
     fn branching_recursion_gets_the_universal_theorem() {
         // Naive Fibonacci's else-branch leaf has two self-calls; the
         // universal theorem covers it. Its per-call instances are
-        // proof::tests::fibonacci_branching_leaves_get_kernel_checked_instances.
+        // proof::tests::fibonacci_branching_leaves_get_per_instance_proofs.
         let mut s = TermStore::new();
         let fibonacci = fib(&mut s);
 

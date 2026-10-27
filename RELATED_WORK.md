@@ -610,7 +610,7 @@ already concluded it is. As a side effect of inlining firing on
 *any* dishonest `None`-vs-`Clo` mismatch (not only the arity-Inconsistent
 one), it also picked up a second, previously out-of-scope shape for
 free: a parameter passed along but never actually called as a closure
-at all (`src/syntax.rs`'s own `higher_order_let_chain_evaluates_like_the_hand_built_demo_term`
+at all (`src/syntax.rs`'s own `higher_order_let_chain_evaluates_like_the_inlined_sample`
 test, a let-desugaring artifact, is the regression guard for this).
 
 **Since covered too: a recursive use, for tail recursion.** The

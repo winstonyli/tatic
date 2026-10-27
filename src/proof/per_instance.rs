@@ -225,10 +225,9 @@ impl DynBudget {
 /// Follows one concrete trace through a `Rec`-wrapped, *tail*-recursive
 /// `body` (`arity` params plus the self-reference at `Var(arity)`,
 /// matching `peel`'s own convention), starting from `frame` -- a
-/// closure-capable `classify_step` loop, reusing `classify_step` itself unchanged
-/// (it only ever needs concrete `i64`s to pick a branch or recognize a
-/// self-call, which `dyn_frame_concrete_ints` already projects `frame`
-/// down to). This is what lets `eval_dyn_direct_call` inline a `root`
+/// closure-capable `classify_step` loop (`classify_step` takes the
+/// `DynVal` frame itself and evaluates a branch's condition through
+/// `eval_concrete_dyn`). This is what lets `eval_dyn_direct_call` inline a `root`
 /// that's itself self-recursive: the *inconsistent*-arity closure
 /// parameter this whole per-instance methodology exists for is exactly
 /// as likely to be threaded, unchanged, through a tail-recursive loop as

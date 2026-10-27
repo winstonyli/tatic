@@ -919,11 +919,11 @@ mod tests {
     }
 
     #[test]
-    fn higher_order_let_chain_evaluates_like_the_hand_built_demo_term() {
-        // Mirrors main.rs's higher_order_demo: (twice inc) 5, but with
+    fn higher_order_let_chain_evaluates_like_the_inlined_sample() {
+        // Mirrors samples::twice_inc_5: (twice inc) 5, but with
         // twice/inc each bound through their own let -- a behavioral
         // check, not a hash-equality one, since let-desugaring genuinely
-        // builds a different term structure from the inlined hand-built
+        // builds a different term structure from the inlined
         // version (an extra App(Abs(..), ..) wrapper per let), not just a
         // different way of writing the same one.
         //

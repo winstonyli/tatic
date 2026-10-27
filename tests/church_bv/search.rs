@@ -705,10 +705,13 @@ fn build_sequence(salt: usize, budget: usize, levels: usize, threads: usize) -> 
     seq
 }
 
-/// The streams built on one thread and on four give one sequence (at a smaller budget than the loops').
+/// The streams built on one thread and on four give one sequence (at a smaller budget than the loops'). The four-thread
+/// build goes first, so the shared memos it reads (`VERDICTS`, `TREE_ENCS`, the class lookups) start as cold as the
+/// process allows, and an order-dependent fill would show.
 #[test]
 fn a_stream_sequence_is_the_same_on_any_thread_count() {
-    assert!(build_sequence(1, 2000, 2, 1) == build_sequence(1, 2000, 2, 4));
+    let parallel = build_sequence(1, 2000, 2, 4);
+    assert!(parallel == build_sequence(1, 2000, 2, 1));
 }
 
 /// Phase `phase`'s window of a sequence: its residue class at `STREAM_STRIDE`, `laws` of them from `skip`.
