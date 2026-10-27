@@ -47,7 +47,8 @@ files. Source text can be read, and when a term is shared, one function holds it
 test-local source term is parsed through it: one panic message ("sample `{src}` should parse: {e}") and no per-file
 wrapper.
 
-**D2. Shared shapes are pub functions in `samples.rs`, after `corpus()`.**
+**D2. Shared shapes are pub functions in `samples.rs`, after `corpus()`.** (Placement superseded 2026-10-27: they
+are `pub(crate)` in `test_corpus.rs`, since only unit tests use them; see the plan's Outcome.)
 - A header comment says they are deliberately not in the corpus.
 - Each is named for what it is.
 - Each has the same signature as the other samples, `fn(&mut TermStore) -> Hash`.

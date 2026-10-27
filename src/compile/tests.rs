@@ -1,10 +1,12 @@
 use super::*;
 use crate::eval::apply_term;
 use crate::samples::{
-    a_pap_capturing, a_pap_non_capturing, calls_a_capturing_closure_picked_by_if, capturing_closure_loop, factorial, gcd,
-    inconsistent_arity_capturing_instance, inconsistent_arity_parameter, inconsistent_arity_runtime_chosen_instance,
-    inconsistent_arity_saturating_instance, inconsistent_arity_under_applying_instance, let_bound_factorial_10, source,
-    twice, twice_inc_5,
+    a_pap_capturing, a_pap_non_capturing, capturing_closure_loop, factorial, gcd, source, twice, twice_inc_5,
+};
+use crate::test_corpus::{
+    calls_a_capturing_closure_picked_by_if, inconsistent_arity_capturing_instance, inconsistent_arity_parameter,
+    inconsistent_arity_runtime_chosen_instance, inconsistent_arity_saturating_instance,
+    inconsistent_arity_under_applying_instance, let_bound_factorial_10,
 };
 
 fn instantiate(wat: &str) -> (wasmtime::Store<()>, wasmtime::Instance) {

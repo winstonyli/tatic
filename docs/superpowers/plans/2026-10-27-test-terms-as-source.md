@@ -472,3 +472,6 @@ Rulings:
     - the cleanup plan's "keeps two terms": a dated outcome, true when written, and `test_corpus.rs`'s module doc
       holds the current count;
     - one local `let inc = inc(&mut s)` that shadows the shape function.
+- **After the plan (2026-10-27):** the twelve shapes moved from `samples.rs` to `test_corpus.rs` as `pub(crate)`,
+  superseding D2's placement: only unit tests use them, and `samples` is the module the demo, benches and
+  integration tests share.

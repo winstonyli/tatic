@@ -1,8 +1,7 @@
 //! Sample terms, written as source (`syntax`): the benchmarks' terms, the
 //! demo's, and the corpus that unit tests and `tests/golden_wat.rs` run
 //! over. One copy, so a bench, a test and the demo that name the same term
-//! build the same hash. After `corpus()`, the shapes that unit tests in
-//! several files share, outside the corpus.
+//! build the same hash. Terms only unit tests use are in `test_corpus`.
 
 use crate::syntax;
 use crate::term::{Hash, TermStore};
@@ -255,80 +254,4 @@ pub fn corpus() -> Vec<(&'static str, TermStore, Hash)> {
             (name, s, h)
         })
         .collect()
-}
-
-// Shapes that unit tests in two or three files share. Deliberately not in
-// `corpus()`: the goldens, the rule census and the corpus-wide tests read
-// the corpus, and these terms are only test inputs.
-
-/// `f` called at two arities, and nothing more: no single type fits it.
-pub fn inconsistent_arity_parameter(s: &mut TermStore) -> Hash {
-    source(s, r"\f. f 1 + f 1 2")
-}
-
-/// A parameter called at two arities, given a 2-ary literal; the live call
-/// (`f 1 2`) saturates it.
-pub fn inconsistent_arity_saturating_instance(s: &mut TermStore) -> Hash {
-    source(s, r"(\f. if 0 < 1 then f 1 2 else f 1) (\a b. a + b)")
-}
-
-/// As `inconsistent_arity_saturating_instance`, but the live call is `f 1`
-/// and the literal is 1-ary.
-pub fn inconsistent_arity_under_applying_instance(s: &mut TermStore) -> Hash {
-    source(s, r"(\f. if 1 < 0 then f 1 2 else f 1) (\a. a + 100)")
-}
-
-/// As `inconsistent_arity_saturating_instance`, with the literal capturing
-/// the outer parameter `k`.
-pub fn inconsistent_arity_capturing_instance(s: &mut TermStore) -> Hash {
-    source(s, r"\k. (\f. if 0 < 1 then f 1 2 else f 1) (\a b. k + a + b)")
-}
-
-/// As `inconsistent_arity_saturating_instance`, with the literal chosen at
-/// run time by an `if` on the outer parameter.
-pub fn inconsistent_arity_runtime_chosen_instance(s: &mut TermStore) -> Hash {
-    source(s, r"\pick. (\f. if 0 < 1 then f 1 2 else f 1) (if 0 < pick then (\a b. a + b) else (\a b. a - b))")
-}
-
-/// `iterate` with one dead call site (`g x 999`, behind `1 < 0`) that
-/// makes `g` inconsistently classified. Bare; applied, it is
-/// `inconsistent_arity_loop_carried_parameter_loop`.
-pub fn inconsistent_arity_iterate(s: &mut TermStore) -> Hash {
-    source(s, "rec f n g x = if 1 < 0 then g x 999 else if n <= 0 then x else f (n - 1) g (g x)")
-}
-
-/// A loop that creates, in its self-call argument, a closure capturing its
-/// closure-typed loop parameter `g`.
-pub fn iterate_creating_a_closure_over_g(s: &mut TermStore) -> Hash {
-    source(s, r"rec f n g x = if n <= 0 then x else f (n - 1) g (g x + (\y. g y + 1) x)")
-}
-
-/// `factorial` bound by `let` and called at 10: a self-recursive
-/// combinator used as a value.
-pub fn let_bound_factorial_10(s: &mut TermStore) -> Hash {
-    source(s, "let fact = rec f n = if n <= 1 then 1 else n * f (n - 1) in fact 10")
-}
-
-/// A literal lambda whose body picks between two closures over `x`, applied
-/// to `x`, its result passed to `\g. g 5`.
-pub fn calls_a_capturing_closure_picked_by_if(s: &mut TermStore) -> Hash {
-    source(s, r"\x. (\g. g 5) ((\x. if 0 < x then (\y. x + y) else (\y. x - y)) x)")
-}
-
-/// A self-recursive combinator partially applied (one argument of two) and
-/// completed through `\g. g 1`.
-pub fn a_pap_of_a_self_recursive_combinator(s: &mut TermStore) -> Hash {
-    source(s, r"(\g. g 1) ((rec f n acc = if n <= 0 then acc else f (n - 1) (n * acc)) 3)")
-}
-
-/// As `a_pap_of_a_self_recursive_combinator`, with the combinator capturing
-/// the outer parameter `z`.
-pub fn a_pap_of_a_capturing_self_recursive_combinator(s: &mut TermStore) -> Hash {
-    source(s, r"\z. (\g. g 1) ((rec f n acc = if n <= 0 then acc else f (n - 1) (n * acc + z)) 3)")
-}
-
-/// `over_application_if_between_closures` with its three arguments as
-/// parameters.
-pub fn over_application_if_between_closures_of_params(s: &mut TermStore) -> Hash {
-    source(s, r"\p q r. (\a b. if 0 < a then (\c. a + b + c) else (\c. a - b + c)) p q r")
 }

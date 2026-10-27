@@ -472,13 +472,14 @@ mod tests {
     }
     use super::*;
     use crate::samples::{
-        a_pap_capturing, a_pap_non_capturing, a_pap_of_a_capturing_self_recursive_combinator,
-        a_pap_of_a_self_recursive_combinator, capturing_closure_loop, closure_typed_loop_carried_parameter_loop,
-        factorial, fib, gcd, inc, inconsistent_arity_capturing_instance, inconsistent_arity_iterate,
-        inconsistent_arity_loop_carried_parameter_loop, inconsistent_arity_runtime_chosen_instance,
-        inconsistent_arity_saturating_instance, inconsistent_arity_under_applying_instance, iterate,
+        a_pap_capturing, a_pap_non_capturing, capturing_closure_loop, closure_typed_loop_carried_parameter_loop,
+        factorial, fib, gcd, inc, inconsistent_arity_loop_carried_parameter_loop, iterate, source, twice_inc_5,
+    };
+    use crate::test_corpus::{
+        a_pap_of_a_capturing_self_recursive_combinator, a_pap_of_a_self_recursive_combinator,
+        inconsistent_arity_capturing_instance, inconsistent_arity_iterate, inconsistent_arity_runtime_chosen_instance,
+        inconsistent_arity_saturating_instance, inconsistent_arity_under_applying_instance,
         iterate_creating_a_closure_over_g, let_bound_factorial_10, over_application_if_between_closures_of_params,
-        source, twice_inc_5,
     };
     use crate::term::TermStore;
 
