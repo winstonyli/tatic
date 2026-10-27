@@ -296,6 +296,8 @@ fn no_extras_without_rounds() {
 }
 
 impl LoopCfg {
+    /// One loop from the environment. Its extras come from a scope of this loop alone, so they differ from the ones it
+    /// got inside a sweep: `scope_extras` filters against every loop's served laws and slices among all of them.
     fn from_env(setup: &Setup) -> LoopCfg {
         let (b, k, offset) = (setup.or("B", 150), setup.or("K", 4), setup.or("OFFSET", 0));
         let mode = setup.var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop");

@@ -54,7 +54,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   and stay with their own entries. Trigger: none for abbreviations (a definition that adds expressiveness reopens the
   entries above). Evidence: `docs/tier-cycle.md`, "They do not transfer". Status: decided against.
 - **Search alongside execution, and laws uniform in the width (goal D)** — what: proof search running concurrently with execution and fed by what it observes (`../renno`'s gradual checks, effects and run-time hints), and laws proved for every width `n`, not one width at a time. Why: the first was never built; the second needs an induction principle over Church encodings that the kernel lacks (surveyed in §53-57, nothing built). Trigger: the belief layer (`ROADMAP.md`, goal 3) wants run-time evidence, or a law has to hold at all widths. Evidence: `docs/superpowers/specs/2026-10-01-search-execution-blend-design.md` (§6 "Open questions", question 4) and `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md` (§53, "Goal D (laws uniform in the width)"), verified 2026-10-24. Status: parked (not built).
-- **Port the loop to rings (table refactor, instance builder, metric E)** — why: estimated at 2-3 days; the spike branch `ring-spikes` (8a1df7d) is not merged. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Ring-theory spikes"). Status: parked.
+- **Port the loop to rings (table refactor, instance builder, metric E)** — why: estimated at 2-3 days; the spike branch `ring-spikes` on origin (8a1df7d) is not merged. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Ring-theory spikes"). Status: parked.
 - **Percentile difficulty band for the proposer** — why: only the fixed band was built. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Related work"). Status: parked (not built).
 - **FunSearch-style collapse control (signature-clustered sampling with a length preference) and AlphaGeometry-style traceback targets** — why: listed as ideas 3 and 4 of "Ideas to take"; not built. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Related work"). Status: parked (not built).
 - **The promoted rules' precedence (tried before run-time rules)** — why: not tested by the promotion-iteration sweep (its other open arm, pooled loops on mix3, went with the families on 2026-10-23). Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Promotion as an iterated sweep"). Status: parked (not tested).
@@ -230,7 +230,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   whole-sweep timing resolution; needs a scoped pool crate or unsafe code and a reset of task-local state ("Survey:
   reusing threads across tasks"). Trigger: none stated. Parked (not started).
   (c) *Persistent scoring workers carrying their memo*: no measurable gain, twice (before the join, job CPU 11.1 against
-  10.4 s, branch `score-pool`, 96b6e7e; with it, run `2026-10-17-join-pool`, join searches 3.4% fewer and mine time
+  10.4 s, branch `score-pool` on origin, 96b6e7e; with it, run `2026-10-17-join-pool`, join searches 3.4% fewer and mine time
   equal, `docs/runs/2026-10-17/patches/score_pool_join.patch`), since a chosen rule touches most join traces; and since
   2026-10-18 ruled out on correctness: a memo carried across a worker's candidates made the miner's choice depend on
   scheduling, so each candidate is scored from an empty memo ("The miner sees the join", the carried-memo bullet;
