@@ -292,21 +292,18 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Native Defender real-time-protection check when the service is running** — why: the `Component[2].fEnable` offset was not verified; the service is stopped on this machine, so the tool falls back to one PowerShell. Trigger: verify the offset against `Get-MpComputerStatus` on a machine with the service up (the user's call). Evidence: `docs/tier-cycle.md` ("Survey: workflow time outside the sweep"). Status: parked (untested).
 - **Sweep-worker deferred bugs: unchecked Unix `dup`/`dup2` in `stdio`; case-sensitive `process_start` prefix match; `RULE_CONFLICTS=1` leaks its map per task; a panic during flush leaves the std handle on a dropped `File`** — why: deferred as minor. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("A persistent worker for the sweep's children"). Status: parked.
 - **A shorter quiet wait before each `runs time` round (`--quiet-secs` 10 against 60)** — why: the waits were 37 of `lazy-quiet`'s 69 minutes, but an A/A at 10 s under a busier machine gave 1 clean round of 9 (run `2026-10-19-lazy-aa-q10`), which cannot be told apart from the load having changed since. Trigger: A/B wall time matters again; the test is the two waits alternating in one session (an A/A at each), comparing clean rounds per hour and the noise around each run order's mean. Evidence: `docs/tier-cycle.md`, "A shorter quiet wait before each round", verified 2026-10-19. Status: parked.
-- **Build the stream sequence lazily, only as far as it is read** — what: each sweep process builds the whole
-  `stream_sequence(salt)` (56 streams, about 58000 laws) in 81-119 s at a 1537 MB peak commit, but a sweep reads only
-  positions under about 6600 (phases 1-3's first 300 laws, phase 0's first 1650 extras, stride 4), about 11%. Make the
-  streams yield laws on demand and the sequence extend as far as callers read. The laws stay identical: `stream_laws`
-  filters (class-table normal forms, width-8 refutation) after `shuffled(laws, salt)`, so a stream's first m kept laws
-  are the full build's prefix, and the round-robin needs only prefixes; a test pins the lazy prefix against the full
-  build, so the held-out files and the A/A baseline stand. Decided over a disk cache per salt (staleness the header
-  can't see, first build still 1.5 GB), one build shared by a gate's two arms (wrong when B changes the generator) and
-  leaving it (gates about twice as slow; peakproc blind to the lookup memo, see "Bound the class table's lookup memo").
-  Why parked: by decision (2026-10-23), after phase 2's Tasks 9-10; the saving is unmeasured: growing and grouping a
-  stream's terms (`pool_conjectures`) is paid in full either way, only the filter scales with the prefix. Trigger: start
-  by profiling `search::stream_sequence_cost` (samply) to split the time; if growing dominates, that part needs its own
-  cut. Evidence: `tests/church_bv/search.rs` (`stream_laws`, `stream_sequence`); runs `2026-10-23-streams-aa-*` (the
-  `STREAMS` lines: 57928-58628 laws, 81-119 s, 30-70% of each arm's wall) and `2026-10-23-stream-sequence-mem`
-  (1537 MB alone); `docs/tier-cycle.md`, "The gate on the streams and its A/A baseline". Status: parked.
+- **Build the stream sequence lazily, only as far as it is read; memoize normal forms in its filter** — what: a sweep
+  reads only sequence positions under about 6600 of about 58000 (phases 1-3's first 300 laws, phase 0's first 1650
+  extras, stride 4). `stream_laws` filters (class-table normal forms, width-8 values) after `shuffled(laws, salt)`, so
+  lazy streams stopped at the read prefix give identical laws (cleanup plan CU17); a memo of normal forms per term in the
+  same filter was CU16. Why not: growing and grouping a stream's terms (`pool_conjectures`) is paid in full either way,
+  and since the per-tuple `verdict` loop went (CU15) the filter is 2.6% of a base sweep's samples against 5.8% for
+  grouping; the sequence as a whole fell from 109.5 to 23.3 s and is 10.6%. Either lever saves at most that 2.6%, and
+  the lazy one changes `stream_sequence`'s interface (a length per caller, or a locked lazy type). The sequence's wall
+  share (built on one thread before the mines start, 23 of 53 s) is better cut by building the 56 independent streams in
+  parallel (cleanup plan CU18). Trigger: the filter grows again (a costlier open or refutation check). Evidence: runs
+  `2026-10-26-cu14-base-prof` and `2026-10-27-cu17-base-prof` (`PROF_PARENTS` split of `stream_laws`, 2026-10-27);
+  `docs/tier-cycle.md`, "One exhaustive check for both". Status: decided against (2026-10-27).
 - **Binary formats for the sweep's text files: task results (C7's `key<TAB>value` channel), rule libraries (`rules.txt`, `laws_extra_*.txt`), law files (`laws_text`), the `m.tsv` tables** — why: each is KB-sized and written once per task, the payloads are terms already printed as text, the text is the evidence a reader greps and diffs, and a binary form needs a reader for every consumer (scripts included). The lemma cache, the one large and hot store, is already binary (`TLC1`, `tatic::kernel::bin`). Trigger: any of these files reaching MB or showing in a sweep profile (parse or format time). Evidence: the writers in `tests/church_bv/driver.rs` (`laws_extra_*`, `m.tsv`), `laws_text` in `search.rs`, the lemma cache's `TLC1` format in `lemma_cache.rs` (2026-10-21; the prefs and joinability-unit files no longer exist, checked 2026-10-27). Status: parked (by decision, C7 ruling 2026-10-21).
 
 ## Code hygiene
