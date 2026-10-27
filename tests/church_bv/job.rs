@@ -190,7 +190,13 @@ fn exe_env_is_found_from_a_short_path() {
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    std::fs::remove_dir_all(&dir).unwrap();
+    // The child has exited, but Windows can still hold its exe open for a moment, so the delete stays pending and the
+    // directory reads as not empty (os error 145, once in the 2026-10-27 review run): retry until a deadline, then
+    // leave the directory, since cleanup is not what this test checks.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::fs::remove_dir_all(&dir).is_err() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(text.lines().any(|l| l == "EXE_ENV_PROBE found"), "{text}");
 }
 
