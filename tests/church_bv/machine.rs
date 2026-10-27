@@ -457,7 +457,7 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
     let mut guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
         let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
-        shared_lemma(job, key, |job| {
+        shared_lemma(job, key, |_| {
             let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
             let body = |v: &[Expr]| {
                 let (a, b) = ab(v, None);
@@ -465,9 +465,6 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
                 if inv.is_some() { pi(hty(v), shift(&inner, 0, 1)) } else { inner }
             };
             let ty = lemma_n_ty(nv, &body);
-            if inv.is_some() && job.setup().flag("GUARDTRACE", false) {
-                eprintln!("GUARDED lemma nv={nv} tag={tag}");
-            }
             let leaf = |bits: &[bool]| {
                 let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
                 let (a, b) = ab(&lits, Some(bits));

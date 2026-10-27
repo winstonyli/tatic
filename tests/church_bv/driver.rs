@@ -10,14 +10,14 @@
 //!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
 //! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of phase SPHASE of the stream sequence at salt RULEMINER_SHUFFLE. It is
-//! served under the rules in force *before* it is mined, so M is what the stream costs when rules arrive as it does. `ref`
-//! mines once on all K batches before serving them; `loop` mines each batch after serving it (not the last, which could not
-//! change any M); `none` only serves.
+//! served under the rules in force *before* it is mined, so M is what the stream costs when rules arrive as it does. The mode
+//! picks the loop's mines (`schedule`): `ref` mines once on all K batches before serving them; `loop` mines each batch after
+//! serving it (not the last, which could not change any M); `none` only serves.
 //! Options (env, defaults in brackets): SPHASE [0], B [150], K [4], OFFSET [0], THREADS [2] (miner pool), ROUNDS [no cap],
 //! WARM_RULES=<file> (start with those rules in force), CHECK_FAST [0] (serve without proof building or kernel checks; M is
 //! unchanged), MACHINE_STATE [1] (a machine-state line at start and end, about 2 s each). Other variables pass through to the
 //! children: RULEMINER_FAST=1 (exact counts without proving every candidate, docs/tier-cycle.md "Miner speedups"),
-//! RULEMINER_SHUFFLE=<salt> (the stream sequence's salt), RULEMINER_STEPS (default 200, serving's budget).
+//! RULEMINER_SHUFFLE=<salt> (the stream sequence's salt).
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the
 //! first `STREAM_EXTRAS` laws of phase 0 that the filter keeps (`scope_extras`, a shared 16% slice per loop); off with
 //! ABLATE=gen; GEN_DRAW=d draws them from the sequence at salt + 1000 d instead.
@@ -31,7 +31,7 @@
 //! searches reached: its cost, which M does not show, and the distinct class-table replacements the batch used, each with
 //! a proof (spec decision 2: apart from M)), mine_<name>.log and serve_<skip>.log, each with a `.results` file
 //! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
-//! `mode=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
+//! `mines=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
 //! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] [SWEEP=cold:streams] <exe> driver::sweep
 //! --exact --ignored --nocapture` (`MACHINE_STATE=0` skips its two machine-state lines too). It uses `RULEMINER_FAST=1` and
@@ -168,8 +168,8 @@ fn worker() {
 
 #[derive(Clone, Default)]
 struct LoopCfg {
-    /// none|ref|loop
-    mode: String,
+    /// the loop's mines (`schedule`), in order
+    mines: Vec<Mine>,
     out: PathBuf,
     sphase: usize,
     b: usize,
@@ -181,7 +181,7 @@ struct LoopCfg {
     check_fast: bool,
     /// the extras list of this loop's scope (`scope_extras`), shared by the scope's loops
     extras: std::sync::Arc<Vec<(Term, Term)>>,
-    /// each of this loop's mines' slice of `extras`, in mining order (a ref loop's one mine, or a loop's mines 0, 1, ...)
+    /// each of `mines`' slice of `extras`
     extra_at: Vec<std::ops::Range<usize>>,
     /// further variables for the children (a sweep's RULEMINER_FAST and RULEMINER_SHUFFLE)
     env: Vec<(String, String)>,
@@ -213,14 +213,29 @@ fn filtered_drops_twins_skeletons_and_trivial_laws() {
     assert_eq!(got, [other].map(text));
 }
 
-/// Whether a mine of `cfg` takes extras: it mines (not `none`) with rule rounds, and `ABLATE=gen` is off.
+/// Whether the mines of `cfg` take extras: it has mines with rule rounds, and `ABLATE=gen` is off.
 fn takes_extras(cfg: &LoopCfg, ablated: bool) -> bool {
-    !ablated && cfg.rounds > 0 && cfg.mode != "none"
+    !ablated && cfg.rounds > 0 && !cfg.mines.is_empty()
 }
 
-/// The mines of one loop of `cfg`: a ref loop mines once, a loop after every batch but its last.
-fn mines_of(cfg: &LoopCfg) -> usize {
-    if cfg.mode == "ref" { 1 } else { cfg.k.saturating_sub(1) }
+/// One mine of a loop: once `at` batches are served, on `laws` laws from `skip`; `name` names its log and law files.
+#[derive(Clone)]
+struct Mine {
+    at: usize,
+    skip: usize,
+    laws: usize,
+    name: String,
+}
+
+/// The mines `LOOP_MODE` schedules over K batches of B from OFFSET: `none` none, `ref` one on all K batches before the first
+/// is served, `loop` one on each batch after serving it, but not the last (it could not change any M).
+fn schedule(mode: &str, offset: usize, b: usize, k: usize) -> Vec<Mine> {
+    match mode {
+        "none" => vec![],
+        "ref" => vec![Mine { at: 0, skip: offset, laws: b * k, name: "ref".into() }],
+        "loop" => (0..k.saturating_sub(1)).map(|r| Mine { at: r + 1, skip: offset + r * b, laws: b, name: r.to_string() }).collect(),
+        _ => panic!("LOOP_MODE must be none, ref or loop, got {mode}"),
+    }
 }
 
 /// A loop's mines share one n-law range, and the loops' ranges are disjoint, in order.
@@ -257,11 +272,20 @@ fn stream_phases_are_disjoint_residue_classes() {
     assert!(residue(&seq, 1, 0, 10) == phase(1)[..10] && residue(&seq, 1, 10, 10) == phase(1)[10..20]);
 }
 
+/// `ref` mines all K batches before the first is served, `loop` each batch after serving it but the last, `none` never.
+#[test]
+fn loop_modes_schedule_their_mines() {
+    let at = |mode: &str| schedule(mode, 10, 100, 3).into_iter().map(|m| (m.at, m.skip, m.laws, m.name)).collect::<Vec<_>>();
+    assert_eq!(at("ref"), [(0, 10, 300, "ref".to_string())]);
+    assert_eq!(at("loop"), [(1, 10, 100, "0".to_string()), (2, 110, 100, "1".to_string())]);
+    assert_eq!(at("none"), []);
+}
+
 /// Extras exist to be mined into rules: a mine with no rule rounds, a loop that only
 /// serves, and any mine under `ABLATE=gen` take none; loop mines and ref mines with rounds take them.
 #[test]
 fn no_extras_without_rounds() {
-    let c = |mode: &str, rounds: usize| LoopCfg { mode: mode.into(), rounds, k: 3, ..Default::default() };
+    let c = |mode: &str, rounds: usize| LoopCfg { mines: schedule(mode, 0, 100, 3), rounds, k: 3, ..Default::default() };
     assert!(takes_extras(&c("loop", usize::MAX), false));
     assert!(takes_extras(&c("ref", usize::MAX), false), "a ref mine with rounds");
     assert!(!takes_extras(&c("ref", 0), false), "a mine with no rule rounds");
@@ -272,15 +296,14 @@ fn no_extras_without_rounds() {
 
 impl LoopCfg {
     fn from_env(setup: &Setup) -> LoopCfg {
-        let mode = setup.var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop").to_string();
-        assert!(["none", "ref", "loop"].contains(&mode.as_str()), "LOOP_MODE must be none, ref or loop, got {mode}");
+        let (b, k, offset) = (setup.or("B", 150), setup.or("K", 4), setup.or("OFFSET", 0));
         let cfg = LoopCfg {
-            mode,
+            mines: schedule(setup.var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop"), offset, b, k),
             out: PathBuf::from(setup.var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
             sphase: setup.or("SPHASE", 0),
-            b: setup.or("B", 150),
-            k: setup.or("K", 4),
-            offset: setup.or("OFFSET", 0),
+            b,
+            k,
+            offset,
             threads: setup.or("THREADS", 2),
             rounds: setup.or("ROUNDS", usize::MAX),
             warm: setup.var("WARM_RULES").map(PathBuf::from),
@@ -649,7 +672,7 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     println!("GEN_LAWS streams: {} laws", source.len());
     let laws = filtered(&source, &served);
     let n = (setup.or("GEN_F", GEN_F) * laws.len() as f64) as usize;
-    let mines = mines_of(&c);
+    let mines = c.mines.len();
     let at = extra_slices(laws.len(), scope.len(), mines, n)
         .map_err(|short| format!("{}: extras list of {} laws is {short} short of {} loops x {n}", c.out.display(), laws.len(), scope.len()))?;
     println!("GEN {}: L {} n {n}", c.out.display(), laws.len());
@@ -678,10 +701,11 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
     common.extend(cfg.env.iter().cloned());
     let with = |extra: &[(&str, String)]| common.iter().cloned().chain(extra.iter().map(|(k, v)| (k.to_string(), v.clone()))).collect::<Vec<_>>();
     let count = || parse_rules(&std::fs::read_to_string(&rules).unwrap()).len();
-    let mine = |name: &str, skip: usize, laws: usize, slot: usize| {
+    // the mine `cfg.mines[slot]`
+    let mine = |slot: usize| {
+        let Mine { skip, laws, ref name, .. } = cfg.mines[slot];
         let log = out.join(format!("mine_{name}.log"));
         let mut env = with(&[
-            ("RULEMINER_PERM", s(1)),
             ("RULEMINER_THREADS", s(cfg.threads)),
             ("RULEMINER_ROUNDS", s(cfg.rounds)),
             ("RULEMINER_SKIP", s(skip)),
@@ -721,9 +745,9 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
         _ => std::fs::write(&rules, "").unwrap(),
     }
     std::fs::write(out.join("m.tsv"), "").unwrap();
-    if cfg.mode == "ref" {
-        mine("ref", cfg.offset, cfg.b * cfg.k, 0);
-    }
+    // the mines after `served` batches
+    let mines_after = |served: usize| (0..cfg.mines.len()).filter(|&i| cfg.mines[i].at == served).for_each(&mine);
+    mines_after(0);
     let (mut ms, mut exhausted, mut joined, mut reached) = (vec![], 0, 0, 0);
     for r in 0..cfg.k {
         let (skip, t0) = (cfg.offset + r * cfg.b, std::time::Instant::now());
@@ -731,12 +755,10 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
         append(&out.join("m.tsv"), &format!("{r}\t{m}\t{laws}\t{}\t{}\t{ex}\t{j}\t{rc}\t{cl}\n", count(), t0.elapsed().as_secs()));
         ms.push(m);
         (exhausted, joined, reached) = (exhausted + ex, joined + j, reached + rc);
-        if cfg.mode == "loop" && r + 1 < cfg.k {
-            mine(&r.to_string(), skip, cfg.b, r);
-        }
+        mines_after(r + 1);
     }
     let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted, joined, reached };
-    println!("mode={} B={} K={} offset={} total_M={} rules={} exhausted={} joined={} reached={}", cfg.mode, cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted, sum.joined, sum.reached);
+    println!("mines={} B={} K={} offset={} total_M={} rules={} exhausted={} joined={} reached={}", cfg.mines.len(), cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted, sum.joined, sum.reached);
     sum
 }
 
@@ -768,12 +790,13 @@ fn sweep() {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
+    let (b, k) = (100, 3);
     let base = |out: PathBuf, sphase: usize| LoopCfg {
-        mode: "loop".into(),
+        mines: schedule("loop", 0, b, k),
         out,
         sphase,
-        b: 100,
-        k: 3,
+        b,
+        k,
         offset: 0,
         // LOOP_THREADS: the scoring workers of the loops (the miner's choice does not depend on it,
         // docs/runs/2026-10-18/scripts/threads_check.sh)

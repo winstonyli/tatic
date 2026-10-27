@@ -55,26 +55,6 @@ impl Gates for GoodOps {
     }
 }
 
-/// Rules from a file, one `lhs -> rhs` per line in `Term::show` syntax (blank lines and `#` comments skipped); the format of `RULEMINER_EXTRA`.
-pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    let mut out = vec![];
-    let mut seen = hashbrown::HashSet::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let Some((l, r)) = line.split_once(" -> ") else {
-            println!("RULEMINER extra file: skipped (no ' -> '): {line}");
-            continue;
-        };
-        let parsed = std::panic::catch_unwind(|| (parse_term(l.trim()), parse_term(r.trim())));
-        match parsed {
-            Ok((l, r)) if matches!(*l.node(), Node::Op(..)) && l != r && seen.insert((l, r)) => out.push((l, r)),
-            Ok(_) => {}
-            Err(_) => println!("RULEMINER extra file: skipped (unparsable): {line}"),
-        }
-    }
-    out
-}
-
 /// `laws` reordered by a hash of the salt and each law's text (FNV-1a: deterministic across runs); salt 0 keeps the order.
 pub fn shuffled(mut laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
     if salt != 0 {
@@ -170,19 +150,6 @@ pub fn bitwise_law_proves_shift_laws_and_rejects_false_ones() {
             assert!(holds(&p, &s).is_err(), "shl x = x must fail");
         }
     })
-}
-
-/// `read_rule_file` (behind `RULEMINER_EXTRA`) parses `lhs -> rhs` lines and skips comments and blanks.
-#[test]
-pub fn extra_candidates_are_merged() {
-    let path = std::env::temp_dir().join(format!("extra_candidates_{}.txt", std::process::id()));
-    std::fs::write(&path, "# comment\n\nadd(sub(x, y), z) -> add(sub(z, y), x)\nand(x, x) -> x\n").unwrap();
-    let rules = read_rule_file(path.to_str().unwrap());
-    std::fs::remove_file(&path).ok();
-    let shown: Vec<(String, String)> = rules.iter().map(|(l, r)| (l.show(), r.show())).collect();
-    assert_eq!(shown.len(), 2, "{shown:?}");
-    assert_eq!(shown[0], (parse_term("add(sub(x, y), z)").show(), parse_term("add(sub(z, y), x)").show()));
-    assert_eq!(shown[1], (parse_term("and(x, x)").show(), parse_term("x").show()));
 }
 
 #[test]
@@ -895,9 +862,6 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
         // the CHECKED line and so M are unchanged, for exploration (the miner's RULEMINER_FAST, applied to serving)
         let fast = job.setup().flag("CHECK_FAST", false);
         job.with_rules(rules.counting(fast), |job| {
-            if job.setup().flag("RULE_CONFLICTS", false) {
-                job.conflicts = Some(Default::default());
-            }
             let (mut proved, mut free, mut none, mut exhausted, mut joined) = (0, 0, 0, 0, 0);
             let mut cost = JoinCost::default();
             for (name, t1, t2) in &laws {
@@ -934,7 +898,6 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
             for (key, v) in [("proved", proved), ("free", free), ("none", none), ("exhausted", exhausted), ("joined", joined)].map(|(k, v)| (k, u64::from(v))).into_iter().chain([("reached", cost.reached), ("classes", job.table_steps.len() as u64)]) {
                 job.setup().result(key, v);
             }
-            print_rule_conflicts(job.conflicts.as_ref());
             if fast {
                 return;
             }

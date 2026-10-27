@@ -19,22 +19,12 @@ impl Clock {
 /// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `new`), except the law window's (`RULEMINER_LAWS`,
 /// `_PHASE`, `_SKIP`), which the driver reads when it writes the law file (`driver::write_laws`).
 pub struct MinerConfig {
-    /// `RULEMINER_TRIALS`: candidate cap.
-    pub trials: usize,
-    /// `RULEMINER_PERM`: 0 strict rule order, 1 ties broken by `tie_greater`, 2 no order check.
-    pub perm: usize,
-    /// `RULEMINER_STEPS`: per-law rewrite budget once a base set is loaded.
-    pub steps: usize,
-    /// `RULEMINER_VARS`: variable cap of cross-side rules.
-    pub vars: usize,
     /// `RULEMINER_ROUNDS`: greedy rounds (default no cap: the mine stops when no candidate gains; a cap trimmed general rules,
-    /// docs/tier-cycle.md "cmp3d's library lost its general rules"; with `RULEMINER_SHOW=1`, 0 just lists the candidates).
+    /// docs/tier-cycle.md "cmp3d's library lost its general rules").
     pub rounds: usize,
     /// `RULEMINER_THREADS`: scoring threads, clamped to 1..=12.
     pub threads: usize,
-    /// `RULEMINER_ANY`, `_SHOW`, `_FAST`: switches (`Setup::flag`), off by default.
-    pub any_op: bool,
-    pub show: bool,
+    /// `RULEMINER_FAST` (switch, off by default): score without rule proofs, proving only each round's winner.
     pub fast: bool,
     /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) in force throughout (section 74).
     pub base: Option<String>,
@@ -42,36 +32,37 @@ pub struct MinerConfig {
     pub lawfile: String,
     /// `RULEMINER_GUARD=<k>`: about k machine-free laws scored with the stragglers (default 120, 0 = off).
     pub guard: usize,
-    /// `RULEMINER_EXTRA=<file>`: extra candidates (`lhs -> rhs` lines).
-    pub extra: Option<String>,
     /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
     pub no_dup_lhs: bool,
 }
 
 impl MinerConfig {
     pub fn new(s: &Setup) -> Self {
-        let flag = |k: &str| s.flag(k, false);
-        let path = |k: &str| s.var(k).map(String::from);
         MinerConfig {
-            trials: s.or("RULEMINER_TRIALS", 400),
-            perm: s.or("RULEMINER_PERM", 0),
-            steps: s.or("RULEMINER_STEPS", 200),
-            vars: s.or("RULEMINER_VARS", 4),
             rounds: s.or("RULEMINER_ROUNDS", usize::MAX),
             threads: s.or("RULEMINER_THREADS", 1).clamp(1, 12),
-            any_op: flag("RULEMINER_ANY"),
-            show: flag("RULEMINER_SHOW"),
-            fast: flag("RULEMINER_FAST"),
-            base: path("RULEMINER_BASE"),
+            fast: s.flag("RULEMINER_FAST", false),
+            base: s.var("RULEMINER_BASE").map(String::from),
             lawfile: s.var("RULEMINER_LAWFILE").expect("RULEMINER_LAWFILE: the laws to mine").to_string(),
             guard: s.or("RULEMINER_GUARD", 120),
-            extra: path("RULEMINER_EXTRA"),
             no_dup_lhs: s.flag("RULEMINER_NODUPLHS", true),
         }
     }
 }
 
+/// The most candidates a mine scores.
+const CANDIDATE_CAP: usize = 400;
+
+/// The variable cap of the cross-side rules.
+const CROSS_VARS: usize = 4;
+
 pub fn run(setup: &Arc<Setup>) {
+    mine(setup, &[]);
+}
+
+/// The mine `run` does, with `extra` candidates joining the miner's own (the rollback test's false ones): the chosen rules,
+/// as `rule_show` lines, and how many winners failed their proofs and rolled the rounds back.
+fn mine(setup: &Arc<Setup>, extra: &[(Term, Term)]) -> (Vec<String>, usize) {
     let job = &mut Job::new(setup.clone());
     tatic::kernel::scoped(|| {
         // the join store this mine feeds from its main job (`JoinStore`); the scoring workers read a copy of it
@@ -87,9 +78,9 @@ pub fn run(setup: &Arc<Setup>) {
         let base_rules = job.rules().with_mined(setup, base.clone());
         job.with_rules(base_rules, |job| {
             // base rules may loop; a step budget per law bounds them (the built-in rules never reach it)
-            let budget = if base.is_empty() { UNBOUNDED } else { cfg.steps as i64 };
+            let budget = if base.is_empty() { UNBOUNDED } else { LAW_STEPS };
             let laws = laws(job, &cfg, budget, &clock);
-            let (cands, rivals) = candidates(&laws, &cfg, &base);
+            let (cands, rivals) = candidates(&laws, &cfg, &base, extra);
             clock.phase("candidate generation");
             // keep candidates whose left side matches a subterm of some straggler's normalized terms
             let applicable = |l: &Term| {
@@ -100,14 +91,8 @@ pub fn run(setup: &Arc<Setup>) {
                     subs.iter().any(|t| matches(l, t))
                 })
             };
-            let trials = cfg.trials;
-            let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(trials).collect();
-            println!("RULEMINER {} applicable candidates (cap {trials})", cands.len());
-            if cfg.show {
-                for (l, r) in &cands {
-                    println!("RULEMINER candidate: {} -> {}", l.show(), r.show());
-                }
-            }
+            let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(CANDIDATE_CAP).collect();
+            println!("RULEMINER {} applicable candidates (cap {CANDIDATE_CAP})", cands.len());
             // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules of
             // this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
             // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
@@ -119,13 +104,11 @@ pub fn run(setup: &Arc<Setup>) {
             let scorer = Scorer::new(&laws, &cfg, base.clone());
             let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &cfg, &clock);
             // the main job's join work from here on
-            let (covered, main) = job.spent(|job| {
-                let Chosen { covered, .. } = rounds.play(job);
-                covered
-            });
+            let (Chosen { chosen, covered, .. }, main) = job.spent(|job| rounds.play(job));
             rounds.report(&covered, main.join);
-        });
-    });
+            (chosen.iter().map(rule_show).collect(), rounds.proofs.iter().filter(|p| **p == Some(false)).count())
+        })
+    })
 }
 
 /// The laws mined for: the stragglers (laws the base rules leave with a machine proof, or do not close) and a guard sample
@@ -192,22 +175,15 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
 }
 
 /// The candidate rules for the stragglers (P3, P4), one per left side, and the other right sides of each left side (`rivals`).
-fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Term, Term)>, hashbrown::HashMap<Term, Vec<(Term, Term)>>) {
+fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)], extra: &[(Term, Term)]) -> (Vec<(Term, Term)>, hashbrown::HashMap<Term, Vec<(Term, Term)>>) {
     let (n, kv, stragglers) = (laws.n, laws.kv, &laws.stragglers);
-    // RULEMINER_PERM=1: ties in the rule order are broken by `tie_greater` (reassociation rules; section 70), 2: no order check; the step budget
-    // and the same-term check in `rule_step` still back up termination, and soundness is unaffected
-    let ok_order = |l: &Term, r: &Term| match cfg.perm {
-        0 => rule_order_ok(l, r),
-        1 => rule_order_or_tie(l, r),
-        _ => true, // 2: no order check at all (the miner's own cross-side rules are not ordered either)
-    };
+    // the pool's rules go down in the rule order, ties broken by `tie_greater` (reassociation rules; section 70); the step
+    // budget and the same-term check in `rule_step` still back up termination, and soundness is unaffected
     // goal-directed candidates: abstract each arithmetic subterm of a straggler's normalized terms into a pattern over
     // at most `POOL_VARS` variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values (`Pool`)
     let mut pool = Pool::new(n);
     println!("RULEMINER pool of {} terms, {} distinct functions", pool.terms, pool.index.len());
-    // RULEMINER_ANY=1: also abstract subterms without add/sub (constant folding inside shifts and bitwise nodes)
-    let any_op = cfg.any_op;
     // patterns seen (`None`), and cross-side rules seen (`Some(rhs)`)
     let mut seen_pat: hashbrown::HashSet<(Term, Option<Term>)> = Default::default();
     let mut cands: Vec<(Term, Term)> = vec![];
@@ -215,13 +191,13 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
         let mut subs = vec![];
         st.3[0].subterms(&mut subs);
         st.3[1].subterms(&mut subs);
-        for sub in subs.iter().filter(|t| matches!(*t.node(), Node::Op(LT, ..)) || (any_op || t.uses_add()) && t.size() >= if any_op { 2 } else { 3 }) {
+        for sub in subs.iter().filter(|t| matches!(*t.node(), Node::Op(LT, ..)) || t.uses_add() && t.size() >= 3) {
             for (pat, _) in abstractions(sub, POOL_VARS) {
                 let Node::Op(..) = *pat.node() else { continue };
                 if !seen_pat.insert((pat, None)) || pat.size() > 9 {
                     continue;
                 }
-                for r in pool.equal(&pat).iter().filter(|r| ok_order(&pat, r) && (0..POOL_VARS).all(|v| !r.has_var(v) || pat.has_var(v))) {
+                for r in pool.equal(&pat).iter().filter(|r| rule_order_or_tie(&pat, r) && (0..POOL_VARS).all(|v| !r.has_var(v) || pat.has_var(v))) {
                     cands.push((pat, *r));
                 }
             }
@@ -229,7 +205,6 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
     }
     // cross-side candidates: a subterm of one normalized side and a subterm of the other with the same value, both
     // abstracted by the same cuts (up to four variables): the rule `abstract(s) -> abstract(s')`
-    let cross_cap = cfg.vars;
     for st in stragglers {
         let (mut sl, mut sr) = (vec![], vec![]);
         st.3[0].subterms(&mut sl);
@@ -240,7 +215,7 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
                     if !(1..=4).all(|w| x.plausibly_equals(y, w, kv)) {
                         continue;
                     }
-                    for (pat, cuts) in abstractions(x, cross_cap) {
+                    for (pat, cuts) in abstractions(x, CROSS_VARS) {
                         let Node::Op(..) = *pat.node() else { continue };
                         if cuts.len() <= 2 || pat.size() > 13 {
                             continue; // up to two variables is the pool route's job; at three both routes look (the pool's right sides are up to 5 nodes, these any size)
@@ -268,11 +243,7 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)]) -> (Vec<(Te
         }
     }
     // extra candidates join the miner's own before the one-per-left-side pass
-    if let Some(path) = &cfg.extra {
-        let extra = read_rule_file(path);
-        println!("RULEMINER {} extra candidates from {path}", extra.len());
-        cands.extend(extra);
-    }
+    cands.extend_from_slice(extra);
     // `RULEMINER_NODUPLHS` (default on, 0 = off): drop candidates whose left side already has a rule in force (`RULEMINER_BASE`); the one-per-left-side pass
     // below only sees this mine's candidates, so a later mine could otherwise add a second, competing rewrite for the same pattern
     if cfg.no_dup_lhs {
@@ -511,7 +482,7 @@ impl<'a> Scorer<'a> {
     fn score_laws(&self, job: &mut Job, extra: &[(Term, Term)], which: &[usize], record: bool, seed: Option<RewriteMemo>) -> (Vec<(bool, i64, Trace)>, RewriteMemo) {
         let (n, kv, cfg) = (self.laws.n, self.laws.kv, self.cfg);
         job.rw.memo = Some(seed.unwrap_or_else(|| RewriteMemo::new(kv)));
-        let steps = cfg.steps as i64;
+        let steps = LAW_STEPS;
         // counting only under `RULEMINER_FAST`, or when the caller asked for it (rivals, below). Carry-over: the old code
         // installed these rules and left them installed, which nothing read: every later rewrite on this thread
         // is another `score_laws` or a `Prover::prove`, and each installs its own
@@ -1014,4 +985,51 @@ fn a_panicked_worker_fails_its_waiter() {
         let _ = end_tx.send(waited.is_err());
     });
     assert_eq!(end_rx.recv_timeout(std::time::Duration::from_secs(30)), Ok(true), "the waiter panics, not hangs");
+}
+
+/// Laws of a stream mine (the first of `2026-10-23-cold-streams`' phase-3 mine 1) for `a_false_winner_rolls_the_rounds_back`.
+const ROLLBACK_LAWS: &str = "\
+add(and(x, add(z, -1)), and(y, add(x, -1))) = add(and(y, add(x, -1)), and(x, add(z, -1)))
+xor(shr1(-1, 0), xor(y, xor(z, -1))) = xor(xor(z, -1), xor(y, shr1(xor(x, xor(-1, x)), 0)))
+sub(x, sub(z, shr1(sub(shr1(-1, 0), y), 0))) = sub(shr1(sub(shr1(-1, 0), y), 0), sub(z, x))
+sub(y, xor(z, sub(x, shr1(x, 0)))) = sub(y, xor(z, sub(x, shr1(xor(sub(0, -1), x), 0))))
+and(add(x, and(x, z)), add(x, and(y, z))) = and(add(x, and(z, y)), add(x, and(x, and(z, x))))
+xor(x, xor(-1, and(xor(y, z), xor(x, y)))) = xor(xor(-1, y), and(xor(x, y), xor(x, z)))
+xor(-1, or(xor(and(x, y), y), xor(x, z))) = xor(x, xor(-1, and(or(z, y), or(xor(y, x), z))))
+or(y, or(z, sub(or(or(x, z), y), -1))) = or(or(z, y), sub(or(y, or(z, x)), -1))
+add(sub(x, -1), xor(z, add(y, xor(x, z)))) = sub(x, xor(z, sub(xor(x, xor(-1, z)), y)))
+add(add(y, z), and(add(x, x), add(x, y))) = add(y, add(z, and(shl1(x, 0), add(x, y))))
+xor(x, xor(xor(-1, y), shl1(xor(x, xor(y, z)), 0))) = xor(xor(-1, x), xor(y, shl1(xor(xor(x, z), y), 0)))
+sub(sub(z, x), sub(y, shl1(shl1(-1, 0), 0))) = sub(sub(z, y), sub(x, shl1(shl1(-1, 0), 0)))
+sub(0, xor(y, sub(xor(x, y), xor(y, z)))) = sub(xor(sub(-1, y), sub(xor(x, y), xor(z, y))), -1)
+or(or(x, y), shr1(or(x, or(y, z)), 0)) = or(x, or(y, or(shr1(or(z, y), 0), shr1(x, 0))))
+and(xor(y, and(z, y)), shr1(and(x, y), 0)) = and(xor(y, z), and(y, xor(z, shr1(and(y, x), 0))))
+and(sub(z, x), shr1(and(y, z), 0)) = and(shr1(y, 0), and(sub(z, x), shr1(z, 0)))
+and(and(x, shr1(z, 0)), and(y, shl1(shl1(-1, 0), 0))) = and(shr1(z, 0), and(and(y, x), shl1(shl1(-1, 0), 0)))
+or(add(y, add(add(x, -1), x)), add(y, or(y, z))) = or(add(y, or(y, z)), add(add(x, x), add(y, -1)))
+add(xor(x, z), add(y, add(-1, and(x, y)))) = add(y, add(-1, add(and(x, y), xor(x, z))))
+sub(sub(-1, z), add(x, add(x, add(x, y)))) = sub(0, add(x, add(add(x, x), add(z, sub(y, -1)))))
+sub(sub(z, x), add(-1, or(add(-1, y), sub(x, y)))) = sub(z, add(x, add(-1, or(add(y, -1), sub(x, y)))))
+and(and(x, y), xor(z, sub(y, xor(xor(x, y), -1)))) = and(x, and(y, xor(z, sub(y, sub(-1, xor(y, x))))))
+and(add(add(z, z), -1), add(x, and(y, z))) = and(add(x, and(z, and(y, z))), add(z, add(z, -1)))
+xor(x, xor(y, shl1(xor(x, xor(-1, z)), 0))) = xor(xor(y, x), shl1(xor(z, xor(-1, x)), 0))
+";
+
+/// A winner whose proof fails rolls the rounds back to its round, and the mine plays on without it (`Rounds::settle`):
+/// offered a false but attractive candidate, a `RULEMINER_FAST` mine picks it, rolls back and ends where it would have
+/// without it. Replaces `RULEMINER_EXTRA` and `docs/runs/2026-10-12/scripts/spec_rollback.sh` (CU4a).
+#[test]
+fn a_false_winner_rolls_the_rounds_back() {
+    let path = std::env::temp_dir().join(format!("rollback_laws_{}.txt", std::process::id()));
+    std::fs::write(&path, ROLLBACK_LAWS).unwrap();
+    let setup = Setup::with_env(vec![("RULEMINER_LAWFILE".into(), path.display().to_string()), ("RULEMINER_FAST".into(), "1".into())]);
+    let r = |l: &str, rhs: &str| (parse_term(l), parse_term(rhs));
+    // it collapses every `sub`, so laws whose sides differ only inside one become `0 = 0`: it wins round 0
+    let false_rule = r("sub(x, y)", "0");
+    let (plain, plain_failed) = mine(&setup, &[]);
+    let (chosen, failed) = mine(&setup, &[false_rule]);
+    std::fs::remove_file(&path).ok();
+    assert_eq!((plain_failed, failed), (0, 1), "the false rule won a round and failed its proof");
+    // the rounds after the rollback replay the plain mine's (the false rule's left side has no candidate of its own here)
+    assert_eq!(chosen, plain);
 }

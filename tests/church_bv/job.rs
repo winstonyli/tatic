@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tatic::kernel::{Expr, PExpr, Postulates, Scope};
 
-use crate::rewrite::{Conflict, JoinCost, JoinStoreUse, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
+use crate::rewrite::{JoinCost, JoinStoreUse, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
 
 /// Each name with its value and whether its read has been reported (`Setup::var`); a name the task's pairs set starts
 /// reported.
@@ -231,9 +231,6 @@ pub struct Job {
     pub join_store: Option<JoinStoreUse>,
     /// The join's cost so far, which M does not show (a joined law is free in M).
     pub join_cost: JoinCost,
-    /// `RULE_CONFLICTS=1` (experiment): while `Some`, for each (rule that rewrote a term, later rule that would also have),
-    /// how many terms; `print_rule_conflicts` lists them.
-    pub conflicts: Option<hashbrown::HashMap<Conflict, u64>>,
     /// The lemmas bound as parameters so far, and the proofs that mention them.
     pub lemmas: Lemmas,
     /// The distinct class-table replacements `classes::Classes::step` used, each with a proof (spec decision 2: counted
@@ -277,7 +274,7 @@ impl Job {
     /// A job with the built-in rules of `setup` alone, both switches off.
     pub fn new(setup: Arc<Setup>) -> Job {
         let rules = Rules::new(&setup, vec![]);
-        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), conflicts: None, lemmas: Lemmas::default(), table_steps: Default::default() }
+        Job { id: NEXT_JOB.fetch_add(1, Relaxed), setup, rules, rw: RewriteState::default(), blocked: vec![], join_store: None, join_cost: JoinCost::default(), lemmas: Lemmas::default(), table_steps: Default::default() }
     }
 
     pub fn setup(&self) -> &Arc<Setup> {

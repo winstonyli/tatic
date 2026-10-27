@@ -1142,10 +1142,8 @@ impl Rules {
     }
 }
 
-/// A rule as its two sides, and a conflict between two rules (`Job::conflicts`): the one that rewrote a term, and a later
-/// one that also matched it.
+/// A rule as its two sides.
 pub type RuleKey = (Term, Term);
-pub type Conflict = (RuleKey, RuleKey);
 
 /// `lhs -> rhs`, the spelling of rule files and logs.
 pub fn rule_show((l, r): &RuleKey) -> String {
@@ -1172,9 +1170,6 @@ impl TableRule {
     }
     fn is(&self, (l, r): &RuleKey) -> bool {
         self.lhs == *l && self.rhs == *r
-    }
-    fn key(&self) -> RuleKey {
-        (self.lhs, self.rhs)
     }
 }
 
@@ -1859,18 +1854,6 @@ pub fn subst_pat(p: &Term, sub: &[Option<Term>]) -> Term {
     }
 }
 
-/// Lists a job's rule conflicts (`Job::conflicts`), most terms first.
-pub fn print_rule_conflicts(conflicts: Option<&hashbrown::HashMap<Conflict, u64>>) {
-    if let Some(m) = conflicts {
-        let mut v: Vec<_> = m.iter().map(|((w, l), c)| (rule_show(w), rule_show(l), *c)).collect();
-        v.sort_by_key(|(w, l, c)| (std::cmp::Reverse(*c), w.clone(), l.clone()));
-        for (w, l, c) in &v {
-            println!("CONFLICT {c} {w}  WITH  {l}");
-        }
-        println!("CONFLICTS {} pairs, {} terms", v.len(), v.iter().map(|x| x.2).sum::<u64>());
-    }
-}
-
 /// The first library rule (not ablated) whose left side matches `t`: the rewritten term and the plan.
 pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
     let rules = job.rules().clone();
@@ -1909,11 +1892,6 @@ pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
         ));
     }
     let (i, sub) = first?;
-    if let Some(m) = job.conflicts.as_mut() {
-        for (_, r) in table.candidates(t).filter(|&(j, r)| j > i && fires(r).is_some()) {
-            *m.entry((all[i].key(), r.key())).or_default() += 1;
-        }
-    }
     let r = &all[i];
     if rules.trace_rules {
         println!("TRACE {} -> {}   on {}", r.lhs.show(), r.rhs.show(), t.show());
@@ -2180,8 +2158,7 @@ fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
 }
 
 /// Debug builds: a memo hit about to be replayed is redone without the memo, under the same path and budget, and must match it
-/// (the law 168 bug was a replay a fresh rewrite would have cut). Only `Job::conflicts` keeps the redo's counts. Release
-/// builds compile it too, so it cannot rot unseen.
+/// (the law 168 bug was a replay a fresh rewrite would have cut). Release builds compile it too, so it cannot rot unseen.
 fn check_replay(job: &mut Job, t: &Term, n: usize, k: usize, c: &Rewritten) {
     let memo = std::mem::take(&mut job.rw.memo);
     let trace = std::mem::take(&mut job.rw.trace);

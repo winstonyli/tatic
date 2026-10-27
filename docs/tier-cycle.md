@@ -1772,8 +1772,8 @@ salts may still overlap, equally for both arms: spec, "Risks").
   load and are not compared.
 - **Preferences deleted (2026-10-23).** With the preference phase gone nothing learned `winner  OVER  loser` lines and no
   live rules file had one, so `parse_prefs`, `Rules::with_prefs` and `rule_step`'s hop to a winner went; a rules file's
-  rules now fire most specific first (`Rules::new`) alone. `RULE_CONFLICTS=1` still counts conflicts, printed `CONFLICT <terms> <fired>  WITH
-  <later>`. The record of what they gained stays above ("Learned preferences", "Preferences and rival orientations in the miner").
+  rules now fire most specific first (`Rules::new`) alone. `RULE_CONFLICTS=1` still counted conflicts, printed `CONFLICT <terms> <fired>  WITH
+  <later>`, until it was removed (cleanup CU4e, 2026-10-27; "Conflicts that happen"). The record of what they gained stays above ("Learned preferences", "Preferences and rival orientations in the miner").
 
 *Ablations of the class table (2026-10-23/24; plan docs/superpowers/plans/2026-10-23-class-table-ablations.md; runs
 `2026-10-23-ablate-switch-check`, `-ablations-1`, `-ablations-3`, `-ablations-check-promoted-2`, `2026-10-24-promoted-untimed`).* The fixed parts the
@@ -2514,7 +2514,8 @@ hits 63 distinct pairs on phase 0 and 62 on phases 1-3, some with built-in and p
 library's own rules).
 The most frequent (252 terms on phases 1-3) is between two pooled rules with the same left side, `sub(x, sub(y, z))` rewritten to
 `add(sub(x, y), z)` or to `add(sub(z, y), x)`: pooling concatenates libraries, so it can keep two orientations of one left side,
-and then only the text tie-break picks.
+and then only the text tie-break picks. The switch was removed with nothing setting it (cleanup CU4e, 2026-10-27); read it with
+`git show b984ec2:tests/church_bv/rewrite.rs` (`print_rule_conflicts`, `rule_step`).
 
 **Learned preferences.** Lines `winner  OVER  loser` in a library (`rules.txt`; first a `RULE_PREFER=<file>` switch): where both
 rules would rewrite a term, the winner does, whatever the order. `scripts/prefer_flips.sh` learns them for a library: it collects the
@@ -3210,7 +3211,9 @@ in order. When a proof fails, the miner prints `RULEMINER rolled back to round N
 round and every later one, and resumes from the failed round's state with the winner marked unprovable. That reproduces what
 proving in turn would have chosen. Lookahead rounds and the last round settle every open round first. `RULEMINER lazy proofs:
 P proved, F failed` closes each fast mine. Rollback check (`scripts/spec_rollback.sh`: add3 ref mine offered three false,
-attractive rules through `RULEMINER_EXTRA`): it rolls back at round 0, and its chosen rules equal 514b7a2's. Pair sweep against
+attractive rules through `RULEMINER_EXTRA`): it rolls back at round 0, and its chosen rules equal 514b7a2's. Since 2026-10-27
+the test `miner::a_false_winner_rolls_the_rounds_back` is the rollback check (in process, one false rule; `RULEMINER_EXTRA` is
+gone, cleanup CU4a). Pair sweep against
 514b7a2, same load (CPU 22% at launch, RTP off, `MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/bpp_*`,
 `scripts/bp_pair.sh`): rows, preferences and all 27 rule and unit files identical on both salts; no proof failed. Wall 42 against
 46 s (salt 1) and 31 against 37 s (salt 2); cmp3d's mine 12 against 17 s and 7 against 11 s.
@@ -3659,7 +3662,7 @@ a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same
   - **Deferred:**
     - `stdio`'s Unix `dup`/`dup2` results are unchecked.
     - `process_start` matches the prefixes case-sensitively, while Windows names ignore case.
-    - `RULE_CONFLICTS=1` leaks its map once per task (bounded at about 170).
+    - `RULE_CONFLICTS=1` leaks its map once per task (bounded at about 170; moot since the switch went, 2026-10-27).
     - A panic while flushing after a task leaves the std handle pointing at a dropped `File` (the worker is exiting by then).
   - **Parked:**
     - An in-memory lemma cache. Tasks still reread `lemmas.bin`, which the per-task `PROCESS` keeps exactly as before. Surveyed below ("Survey: an in-memory lemma cache").
