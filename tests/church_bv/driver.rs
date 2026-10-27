@@ -31,7 +31,7 @@
 //! searches reached: its cost, which M does not show, and the distinct class-table replacements the batch used, each with
 //! a proof (spec decision 2: apart from M)), mine_<name>.log and serve_<skip>.log, each with a `.results` file
 //! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
-//! `mines=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
+//! `mode=.. mines=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
 //! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] [SWEEP=cold:streams] <exe> driver::sweep
 //! --exact --ignored --nocapture` (`MACHINE_STATE=0` skips its two machine-state lines too). It uses `RULEMINER_FAST=1` and
@@ -168,8 +168,9 @@ fn worker() {
 
 #[derive(Clone, Default)]
 struct LoopCfg {
-    /// the loop's mines (`schedule`), in order
+    /// the loop's mines (`schedule`), in order, and the mode they were scheduled from (for the summary line only)
     mines: Vec<Mine>,
+    mode: String,
     out: PathBuf,
     sphase: usize,
     b: usize,
@@ -297,8 +298,10 @@ fn no_extras_without_rounds() {
 impl LoopCfg {
     fn from_env(setup: &Setup) -> LoopCfg {
         let (b, k, offset) = (setup.or("B", 150), setup.or("K", 4), setup.or("OFFSET", 0));
+        let mode = setup.var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop");
         let cfg = LoopCfg {
-            mines: schedule(setup.var("LOOP_MODE").expect("set LOOP_MODE=none|ref|loop"), offset, b, k),
+            mines: schedule(mode, offset, b, k),
+            mode: mode.into(),
             out: PathBuf::from(setup.var("LOOP_OUT").expect("set LOOP_OUT=<dir>")),
             sphase: setup.or("SPHASE", 0),
             b,
@@ -758,7 +761,7 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
         mines_after(r + 1);
     }
     let sum = Summary { total: ms.iter().sum(), ms, rules: count(), exhausted, joined, reached };
-    println!("mines={} B={} K={} offset={} total_M={} rules={} exhausted={} joined={} reached={}", cfg.mines.len(), cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted, sum.joined, sum.reached);
+    println!("mode={} mines={} B={} K={} offset={} total_M={} rules={} exhausted={} joined={} reached={}", cfg.mode, cfg.mines.len(), cfg.b, cfg.k, cfg.offset, sum.total, sum.rules, sum.exhausted, sum.joined, sum.reached);
     sum
 }
 
@@ -793,6 +796,7 @@ fn sweep() {
     let (b, k) = (100, 3);
     let base = |out: PathBuf, sphase: usize| LoopCfg {
         mines: schedule("loop", 0, b, k),
+        mode: "loop".into(),
         out,
         sphase,
         b,
