@@ -484,7 +484,7 @@ mod tests {
         // unmutated trace against the claim, which is true by
         // construction and so could never fail).
         let mut tolerated = [0usize; 5];
-        for (name, s, h) in crate::test_corpus::terms() {
+        for (name, s, h) in crate::samples::corpus() {
             let sp = crate::specialise::specialise(&s, h);
             if sp.trace.is_empty() {
                 continue;

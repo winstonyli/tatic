@@ -178,7 +178,7 @@ mod tests {
     fn every_built_corpus_module_decompiles_to_its_source_hash() {
         // No false alarms on the real corpus: a correct compilation must
         // always pass the gate.
-        for (name, s, h) in crate::test_corpus::terms() {
+        for (name, s, h) in crate::samples::corpus() {
             let m = crate::compile::build(&s, h).unwrap_or_else(|| panic!("{name} builds"));
             assert!(roundtrips(&m, h), "{name} does not decompile to its source hash");
         }
@@ -494,7 +494,7 @@ mod tests {
         // the gate would accept a module that means something else.
         let mut applied = 0usize;
         let mut kinds_seen = HashSet::new();
-        for (name, s, h) in crate::test_corpus::terms() {
+        for (name, s, h) in crate::samples::corpus() {
             let m = crate::compile::build(&s, h).unwrap();
             for fi in 0..m.funcs().count() {
                 let nodes = preorder_len(&m.funcs().nth(fi).unwrap().body);
@@ -540,7 +540,7 @@ mod tests {
         // correct. The decompiler must therefore not reject the flip, or
         // the gate would reject correct code.
         let mut flipped = 0;
-        for (name, s, h) in crate::test_corpus::terms() {
+        for (name, s, h) in crate::samples::corpus() {
             let mut m = crate::compile::build(&s, h).unwrap();
             fn untail(n: &mut Node, count: &mut usize) {
                 if let Node::SelfCall { tail, .. } = n

@@ -1,4 +1,4 @@
-//! Golden WAT snapshots, one per benchmark term, plus a few `rejects_*`
+//! Golden WAT snapshots, one per `samples::corpus()` term, plus a few `rejects_*`
 //! terms the fragment must reject. A change to the lowering
 //! (`src/lower_wat.rs`) or the builder that changes emitted WAT fails here.
 //! If the change is intended, regenerate with
@@ -8,99 +8,34 @@
 //! recorded while the transitional `try_compile` asserted the IR path
 //! byte-identical to the legacy direct emitter (since retired).
 
-#[path = "../benches/common.rs"]
-mod common;
-
 use std::fs;
 use std::path::Path;
 
 use tatic::compile::try_compile;
-use tatic::term::{Hash, PrimOp, TermStore};
+use tatic::samples;
+use tatic::term::{Hash, TermStore};
 
-type Builder = Box<dyn Fn(&mut TermStore) -> Hash>;
-/// A plain (non-capturing) builder function pointer, as `test_corpus.rs`
-/// uses -- distinct from `Builder` above (`Box<dyn Fn>`), which the
-/// `rejects_*` closures need but the specialised-goldens list doesn't.
-type PlainBuilder = fn(&mut TermStore) -> Hash;
-
-fn corpus() -> Vec<(&'static str, Builder)> {
-    vec![
-        ("factorial", Box::new(common::factorial)),
-        ("fib", Box::new(common::fib)),
-        ("redundant_arithmetic_recursion", Box::new(common::redundant_arithmetic_recursion)),
-        ("gcd", Box::new(common::gcd)),
-        ("gcd_with_two_base_cases", Box::new(common::gcd_with_two_base_cases)),
-        ("capturing_closure_loop", Box::new(common::capturing_closure_loop)),
-        ("partial_application_loop", Box::new(common::partial_application_loop)),
-        ("closure_typed_loop_carried_parameter_loop", Box::new(|s: &mut TermStore| common::closure_typed_loop_carried_parameter_loop(s, 150))),
-        ("inconsistent_arity_loop_carried_parameter_loop", Box::new(|s: &mut TermStore| common::inconsistent_arity_loop_carried_parameter_loop(s, 150))),
-        ("straight_line", Box::new(common::straight_line)),
-        ("twice_inc_5", Box::new(common::twice_inc_5)),
-        ("a_capturing_closure_call", Box::new(common::a_capturing_closure_call)),
-        ("a_pap_non_capturing", Box::new(common::a_pap_non_capturing)),
-        ("a_pap_capturing", Box::new(common::a_pap_capturing)),
-        ("iterate", Box::new(common::iterate)),
-        ("non_tail_closure_carrying_recursion", Box::new(common::non_tail_closure_carrying_recursion)),
-        ("branching_non_tail_closure_carrying_recursion", Box::new(common::branching_non_tail_closure_carrying_recursion)),
-        ("over_application_if_between_closures", Box::new(common::over_application_if_between_closures)),
-        ("over_application_pap_producing_root", Box::new(common::over_application_pap_producing_root)),
-        ("tail_recursive_loop_with_if_between_closures_self_call_arg", Box::new(common::tail_recursive_loop_with_if_between_closures_self_call_arg)),
-        ("tail_recursive_loop_with_pap_producing_root_self_call_arg", Box::new(common::tail_recursive_loop_with_pap_producing_root_self_call_arg)),
-        ("rejects_a_comparison_used_as_a_value", Box::new(rejects_a_comparison_used_as_a_value)),
-        ("rejects_a_non_comparison_condition", Box::new(rejects_a_non_comparison_condition)),
-        ("rejects_a_literal_applied_as_a_function", Box::new(rejects_a_literal_applied_as_a_function)),
-        ("rejects_a_self_reference_read_as_a_value", Box::new(rejects_a_self_reference_read_as_a_value)),
-        ("rejects_a_nested_closure_capturing_self", Box::new(rejects_a_nested_closure_capturing_self)),
+/// Terms the fragment must reject, each in its own store. Nothing else
+/// pins "identical rejections" now that the legacy emitter is gone.
+fn rejects() -> Vec<(&'static str, TermStore, Hash)> {
+    [
+        // Comparisons only appear as an `If` condition.
+        ("rejects_a_comparison_used_as_a_value", r"\x. x < 1"),
+        ("rejects_a_non_comparison_condition", r"\x. if x + 1 then 1 else 2"),
+        // An application headed by neither a variable nor a lambda.
+        ("rejects_a_literal_applied_as_a_function", r"\x. 1 x"),
+        // The self-reference is only ever called.
+        ("rejects_a_self_reference_read_as_a_value", "rec f x = f"),
+        // A lifted lambda cannot capture the enclosing `Rec`'s self-reference.
+        ("rejects_a_nested_closure_capturing_self", r"rec f n = (\y. f y) n"),
     ]
-}
-
-// Terms the fragment must reject. Nothing else pins "identical
-// rejections" now that the legacy emitter is gone.
-
-/// `\x. x < 1`: comparisons only appear as an `If` condition.
-fn rejects_a_comparison_used_as_a_value(s: &mut TermStore) -> Hash {
-    let x = s.var(0);
-    let one = s.lit(1);
-    let lt = s.prim(PrimOp::Lt, x, one);
-    s.abs(lt)
-}
-
-/// `\x. if x + 1 then 1 else 2`
-fn rejects_a_non_comparison_condition(s: &mut TermStore) -> Hash {
-    let x = s.var(0);
-    let one = s.lit(1);
-    let two = s.lit(2);
-    let cond = s.prim(PrimOp::Add, x, one);
-    let body = s.if_(cond, one, two);
-    s.abs(body)
-}
-
-/// `\x. 1 x`: an application headed by neither a variable nor a lambda.
-fn rejects_a_literal_applied_as_a_function(s: &mut TermStore) -> Hash {
-    let x = s.var(0);
-    let one = s.lit(1);
-    let body = s.app(one, x);
-    s.abs(body)
-}
-
-/// `rec f x. f`: the self-reference is only ever called.
-fn rejects_a_self_reference_read_as_a_value(s: &mut TermStore) -> Hash {
-    let f = s.var(1);
-    let abs = s.abs(f);
-    s.rec(abs)
-}
-
-/// `rec f n. (\y. f y) n`: a lifted lambda cannot capture the enclosing
-/// `Rec`'s self-reference.
-fn rejects_a_nested_closure_capturing_self(s: &mut TermStore) -> Hash {
-    let y = s.var(0);
-    let f = s.var(2);
-    let fy = s.app(f, y);
-    let inner = s.abs(fy);
-    let n = s.var(0);
-    let body = s.app(inner, n);
-    let abs = s.abs(body);
-    s.rec(abs)
+    .into_iter()
+    .map(|(name, src)| {
+        let mut s = TermStore::new();
+        let h = tatic::syntax::parse(&mut s, src).unwrap();
+        (name, s, h)
+    })
+    .collect()
 }
 
 /// Compares `got` against `dir/name.wat` (CRLF-normalised), or writes it
@@ -125,9 +60,7 @@ fn every_benchmark_term_lowers_to_its_golden_wat() {
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("golden");
     let mut changed = Vec::new();
-    for (name, build) in corpus() {
-        let mut s = TermStore::new();
-        let h = build(&mut s);
+    for (name, s, h) in samples::corpus().into_iter().chain(rejects()) {
         let got = match try_compile(&s, h) {
             Some(frag) => frag.wat,
             None => "REJECTED\n".to_string(),
@@ -144,8 +77,8 @@ fn specialised_benchmark_terms_lower_to_their_golden_wat() {
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("golden");
     let mut changed = Vec::new();
-    let terms: [(&str, PlainBuilder); 2] =
-        [("partial_application_loop", common::partial_application_loop), ("capturing_closure_loop", common::capturing_closure_loop)];
+    let terms: [(&str, fn(&mut TermStore) -> Hash); 2] =
+        [("partial_application_loop", samples::partial_application_loop), ("capturing_closure_loop", samples::capturing_closure_loop)];
     for (name, build) in terms {
         let mut s = TermStore::new();
         let h = build(&mut s);

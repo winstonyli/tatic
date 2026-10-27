@@ -471,6 +471,7 @@ mod tests {
         assert!(samples.iter().any(|&a| a >= 10), "no input that iterates 10+ times");
     }
     use super::*;
+    use crate::samples::{capturing_closure_loop, factorial, fib, gcd};
     use crate::term::{PrimOp, TermStore};
 
     #[test]
@@ -676,19 +677,6 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1, "must actually exercise the compiled path, not silently fall back to the interpreter");
     }
 
-    fn factorial(s: &mut TermStore) -> Hash {
-        let n = s.var(0);
-        let f = s.var(1);
-        let one = s.lit(1);
-        let cond = s.prim(PrimOp::Le, n, one);
-        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-        let rec_call = s.app(f, n_minus_1);
-        let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-        let body = s.if_(cond, one, else_branch);
-        let abs = s.abs(body);
-        s.rec(abs)
-    }
-
     #[test]
     fn a_mismatched_arg_count_does_not_poison_the_cache_and_is_served_by_the_interpreter() {
         // `eval::apply_term` is fully generic over arg count -- under-
@@ -776,37 +764,11 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1, "should have compiled, not fallen back to the interpreter");
     }
 
-    fn gcd(s: &mut TermStore) -> Hash {
-        // rec f a b = if b == 0 then a else f(b, a mod b) -- tail
-        // recursive: compile.rs turns this into a loop, and proof.rs's
-        // relational, per-sample proof covers exactly this shape.
-        let b = s.var(0);
-        let a = s.var(1);
-        let f = s.var(2);
-        let zero = s.lit(0);
-        let cond = s.prim(PrimOp::Eq, b, zero);
-        let a_mod_b = s.prim(PrimOp::Mod, a, b);
-        let rec_call = s.app2(f, b, a_mod_b);
-        let body = s.if_(cond, a, rec_call);
-        let inner = s.abs(body);
-        let abs = s.abs(inner);
-        s.rec(abs)
-    }
-
     #[test]
     fn kernel_proof_recorded_for_straight_line_and_tail_recursive_terms() {
-        // \a b. if a < b then a * 2 else b + 1 -- straight-line, no Rec.
+        // Straight-line, no Rec.
         let mut s = TermStore::new();
-        let a = s.var(1);
-        let b = s.var(0);
-        let cond = s.prim(PrimOp::Lt, a, b);
-        let two = s.lit(2);
-        let then_branch = s.prim(PrimOp::Mul, a, two);
-        let one = s.lit(1);
-        let else_branch = s.prim(PrimOp::Add, b, one);
-        let body = s.if_(cond, then_branch, else_branch);
-        let inner = s.abs(body);
-        let straight_line = s.abs(inner);
+        let straight_line = crate::samples::straight_line(&mut s);
 
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, straight_line, &[3, 5]).unwrap(), 6);
@@ -829,22 +791,6 @@ mod tests {
         assert_eq!(jit.apply(&s, fact, &[5]).unwrap(), 120);
         assert!(jit.is_kernel_verified(fact));
         assert_eq!(jit.stats.compiled, 3);
-    }
-
-    fn fib(s: &mut TermStore) -> Hash {
-        let n = s.var(0);
-        let f = s.var(1);
-        let two = s.lit(2);
-        let cond = s.prim(PrimOp::Lt, n, two);
-        let one = s.lit(1);
-        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-        let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-        let call1 = s.app(f, n_minus_1);
-        let call2 = s.app(f, n_minus_2);
-        let else_branch = s.prim(PrimOp::Add, call1, call2);
-        let body = s.if_(cond, n, else_branch);
-        let abs = s.abs(body);
-        s.rec(abs)
     }
 
     #[test]
@@ -984,29 +930,6 @@ mod tests {
         assert_eq!(jit.stats.compiled, 1);
         jit.apply(&s, fact_b, &[7]).unwrap();
         assert_eq!(jit.stats.compiled, 1, "same hash must reuse the compiled entry");
-    }
-
-    fn capturing_closure_loop(s: &mut TermStore) -> Hash {
-        // rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)
-        // -- see compile.rs's own test of the same shape.
-        let y = s.var(0);
-        let acc_captured = s.var(1);
-        let sum = s.prim(PrimOp::Add, acc_captured, y);
-        let closure = s.abs(sum);
-        let n_ref = s.var(1);
-        let new_acc = s.app(closure, n_ref);
-        let n = s.var(1);
-        let acc = s.var(0);
-        let zero = s.lit(0);
-        let cond = s.prim(PrimOp::Le, n, zero);
-        let one = s.lit(1);
-        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-        let f = s.var(2);
-        let rec_call = s.app2(f, n_minus_1, new_acc);
-        let body = s.if_(cond, acc, rec_call);
-        let inner = s.abs(body);
-        let abs = s.abs(inner);
-        s.rec(abs)
     }
 
     #[test]
@@ -1631,7 +1554,7 @@ mod tests {
 
     #[test]
     fn a_known_partial_application_is_installed_specialised_with_a_universal_proof() {
-        let (_, s, h) = crate::test_corpus::terms().into_iter().find(|(n, ..)| *n == "partial_application_loop").unwrap();
+        let (_, s, h) = crate::samples::corpus().into_iter().find(|(n, ..)| *n == "partial_application_loop").unwrap();
         let mut jit = JitEngine::new();
         for args in [[0, 0], [1, 0], [5, 3], [100, -7]] {
             assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");

@@ -1080,7 +1080,7 @@ mod tests {
         // `capturing_closure_loop`'s `\y. acc + y` is only ever called
         // directly, so `acc` travels as a Wasm parameter and nothing in the
         // module allocates.
-        let (_, s, h) = crate::test_corpus::terms().into_iter().find(|(name, ..)| *name == "capturing_closure_loop").unwrap();
+        let (_, s, h) = crate::samples::corpus().into_iter().find(|(name, ..)| *name == "capturing_closure_loop").unwrap();
         let frag = crate::compile::try_compile(&s, h).unwrap();
         assert!(!frag.needs_hp_reset, "{}", frag.wat);
         assert!(!frag.wat.contains("$alloc"), "{}", frag.wat);

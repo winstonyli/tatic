@@ -1,6 +1,7 @@
 use super::*;
 use crate::eval;
 use crate::kernel::Ctx;
+use crate::samples::{capturing_closure_loop, factorial, fib, gcd, inc, iterate, twice};
 use crate::term::TermStore;
 
 #[test]
@@ -190,23 +191,6 @@ fn genuinely_higher_order_term_is_out_of_scope() {
     assert!(prove_pure_expr(&s, twice).is_none());
 }
 
-fn gcd(s: &mut TermStore) -> Hash {
-    // rec f a b = if b == 0 then a else f(b, a mod b) -- genuinely tail
-    // recursive: the self-call is the whole else-branch, not nested
-    // inside another operation, so compile.rs turns it into a loop.
-    let b = s.var(0);
-    let a = s.var(1);
-    let f = s.var(2);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Eq, b, zero);
-    let a_mod_b = s.prim(PrimOp::Mod, a, b);
-    let rec_call = s.app2(f, b, a_mod_b);
-    let body = s.if_(cond, a, rec_call);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    s.rec(abs)
-}
-
 #[test]
 fn tail_recursive_call_gets_a_per_execution_proof() {
     let mut s = TermStore::new();
@@ -238,34 +222,6 @@ fn tail_recursive_gcd_gets_a_universal_proof() {
         .expect("the recorded theorem should independently re-typecheck");
 }
 
-/// `rec f n g x = if n <= 0 then x else f(n-1, g, g(x))` -- "iterate a
-/// closure-typed parameter `n` times, starting at `x`", tail-recursive,
-/// threading `g` (a `Clo_1`-typed parameter, called via ordinary `App`
-/// each iteration) through the recursion unchanged -- the fragment
-/// `prove_tail_recursive_universal`'s own `param_types` extension covers: a
-/// closure-typed *parameter*, never a closure *created* inside the
-/// body. `n`=Var(2), `g`=Var(1), `x`=Var(0) inside the body (innermost
-/// parameter bound first, same convention `gcd`'s own builder above
-/// uses).
-fn iterate(s: &mut TermStore) -> Hash {
-    let x = s.var(0);
-    let g = s.var(1);
-    let n = s.var(2);
-    let f = s.var(3);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let gx = s.app(g, x);
-    let f_n1_g = s.app2(f, n_minus_1, g);
-    let rec_call = s.app(f_n1_g, gx);
-    let body = s.if_(cond, x, rec_call);
-    let g_binder = s.abs(body);
-    let n_binder = s.abs(g_binder);
-    let abs = s.abs(n_binder);
-    s.rec(abs)
-}
-
 #[test]
 fn a_closure_typed_loop_carried_parameter_gets_a_universal_proof() {
     let mut s = TermStore::new();
@@ -275,38 +231,6 @@ fn a_closure_typed_loop_carried_parameter_gets_a_universal_proof() {
     assert_eq!(proof.arity, 3);
     kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
         .expect("the recorded theorem should independently re-typecheck");
-}
-
-/// `rec f n acc = if n <= 0 then acc else f(n-1, (\y. acc+y)(n))` --
-/// tail-recursive, each iteration *creates and immediately calls* a
-/// fresh capturing closure (`\y. acc+y`, capturing `acc`) within the
-/// self-call's own argument list -- the exact shape
-/// `compile::tests::self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles`/
-/// `jit::tests::capturing_closure_loop` already exercise at the
-/// compile/JIT level. `n`=Var(1), `acc`=Var(0), `f`=Var(2) at the
-/// body's own top level -- inside the closure's own body, `acc` is
-/// Var(1) (one more binder, `y`, in the way), matching
-/// `benches/common.rs`'s own builder exactly.
-fn capturing_closure_loop(s: &mut TermStore) -> Hash {
-    let y = s.var(0);
-    let acc_captured = s.var(1);
-    let sum = s.prim(PrimOp::Add, acc_captured, y);
-    let closure = s.abs(sum);
-    let n_ref = s.var(1);
-    let new_acc = s.app(closure, n_ref);
-    let n = s.var(1);
-    let acc = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let f = s.var(2);
-    let f_n1 = s.app(f, n_minus_1);
-    let rec_call = s.app(f_n1, new_acc);
-    let body = s.if_(cond, acc, rec_call);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    s.rec(abs)
 }
 
 #[test]
@@ -853,27 +777,10 @@ fn an_instance_whose_branch_divides_by_zero_gets_no_proof() {
     }
 }
 
-/// `rec f n = if n < 2 then n else f(n-1) + f(n-2)` -- two self-calls in the recursive leaf.
-fn fib(s: &mut TermStore) -> Hash {
-    let n = s.var(0);
-    let f = s.var(1);
-    let two = s.lit(2);
-    let cond = s.prim(PrimOp::Lt, n, two);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-    let call1 = s.app(f, n_minus_1);
-    let call2 = s.app(f, n_minus_2);
-    let else_branch = s.prim(PrimOp::Add, call1, call2);
-    let body = s.if_(cond, n, else_branch);
-    let abs = s.abs(body);
-    s.rec(abs)
-}
-
 #[test]
 fn non_tail_recursion_gets_a_per_instance_proof() {
     let mut s = TermStore::new();
-    let fact = fact(&mut s);
+    let fact = factorial(&mut s);
     for n in [0, 1, 5, 10] {
         let proof = prove_closure_expr_instance(&s, fact, &[n]).unwrap_or_else(|| panic!("factorial({n}) should get a per-instance proof"));
         assert_eq!(proof.arity, 1);
@@ -902,7 +809,7 @@ fn one_functions_instance_proof_is_rejected_against_anothers_type() {
     let mut s = TermStore::new();
     let g = gcd(&mut s);
     let gcd_proof = prove_closure_expr_instance(&s, g, &[48, 18]).expect("gcd instance proof");
-    let fact = fact(&mut s);
+    let fact = factorial(&mut s);
     let fact_proof = prove_closure_expr_instance(&s, fact, &[5]).expect("factorial instance proof");
 
     assert!(
@@ -915,25 +822,6 @@ fn one_functions_instance_proof_is_rejected_against_anothers_type() {
         .is_err(),
         "gcd's instance proof should be rejected against factorial's instance type"
     );
-}
-
-/// `\f. \x. f (f x)` -- both `f` and `x` are its own parameters, no
-/// captures (same shape `compile::tests::twice` uses).
-fn twice(s: &mut TermStore) -> Hash {
-    let f = s.var(1);
-    let x = s.var(0);
-    let fx = s.app(f, x);
-    let ffx = s.app(f, fx);
-    let inner = s.abs(ffx);
-    s.abs(inner)
-}
-
-/// `\y. y + 1`.
-fn inc(s: &mut TermStore) -> Hash {
-    let y = s.var(0);
-    let one = s.lit(1);
-    let y_plus_1 = s.prim(PrimOp::Add, y, one);
-    s.abs(y_plus_1)
 }
 
 #[test]
@@ -980,22 +868,6 @@ fn twice_alone_gets_a_kernel_checked_closure_proof() {
     .expect("the recorded proof should independently re-typecheck");
 }
 
-/// `rec f n = if n <= 1 then 1 else n * f(n-1)`, factorial -- used below
-/// as a named self-recursive combinator, the same way `twice`/`inc` are
-/// used as non-recursive ones.
-fn fact(s: &mut TermStore) -> Hash {
-    let n = s.var(0);
-    let f = s.var(1);
-    let one = s.lit(1);
-    let cond = s.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(f, n_minus_1);
-    let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-    let body = s.if_(cond, one, else_branch);
-    let abs = s.abs(body);
-    s.rec(abs)
-}
-
 #[test]
 fn a_directly_called_self_recursive_combinator_gets_a_closure_proof() {
     // fact(10) -- a direct static call to a self-recursive combinator,
@@ -1004,7 +876,7 @@ fn a_directly_called_self_recursive_combinator_gets_a_closure_proof() {
     // postulated opaque either way, so widening the pattern needed no
     // new proof machinery.
     let mut s = TermStore::new();
-    let f = fact(&mut s);
+    let f = factorial(&mut s);
     let ten = s.lit(10);
     let applied = s.app(f, ten);
 
@@ -1032,7 +904,7 @@ fn a_self_recursive_combinator_used_as_a_value_gets_a_closure_proof() {
     // literal does, then called through `wrapper`'s own closure-typed
     // parameter via call_indirect.
     let mut s = TermStore::new();
-    let f = fact(&mut s);
+    let f = factorial(&mut s);
     let g = s.var(0);
     let ten = s.lit(10);
     let call_g = s.app(g, ten);
@@ -2097,8 +1969,7 @@ fn a_runtime_chosen_literal_gets_a_per_instance_proof() {
 fn a_tail_recursive_loop_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof() {
     // Same shape as jit::tests::
     // a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent
-    // (and benches/common.rs's own
-    // inconsistent_arity_loop_carried_parameter_loop): `rec f n g x =
+    // (and samples::inconsistent_arity_loop_carried_parameter_loop): `rec f n g x =
     // if 1<0 then g(x,999) else (if n<=0 then x else f(n-1,g,g(x)))`,
     // `g` baked in as `inc = \y. y+1`. The dead `g(x,999)` call site
     // makes `param_types_for(it)` classify `g` as `Inconsistent` (->

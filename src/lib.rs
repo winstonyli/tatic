@@ -7,16 +7,13 @@ pub mod kernel;
 pub(crate) mod lower_wat;
 pub mod proof;
 pub mod rng;
+pub mod samples;
 pub mod spec_check;
 pub mod specialise;
 pub mod syntax;
 pub mod term;
 pub mod typing;
 
-// Lets `test_corpus` include `benches/common.rs`, which names the crate
-// `tatic` as the benches do.
-#[cfg(test)]
-extern crate self as tatic;
 // The allocator `main.rs` ships with, so timing probes such as
 // `fib16_instance_proof_cost` measure what runs (RELATED_WORK §66). This
 // covers only the lib's own unit tests: an integration test (`tests/*.rs`) or

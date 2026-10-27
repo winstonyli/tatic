@@ -176,23 +176,8 @@ pub fn apply_term(store: &TermStore, h: Hash, args: &[i64]) -> Result<i64, EvalE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::samples::factorial;
     use crate::term::PrimOp;
-
-    fn factorial(s: &mut TermStore) -> Hash {
-        // rec f n = if n <= 1 then 1 else n * f(n - 1)
-        let n = s.var(0);
-        let f = s.var(1);
-        let one = s.lit(1);
-        let cond = s.prim(PrimOp::Le, n, one);
-        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-        let rec_call = s.app(f, n_minus_1);
-        let n2 = s.var(0);
-        let else_branch = s.prim(PrimOp::Mul, n2, rec_call);
-        let one2 = s.lit(1);
-        let body = s.if_(cond, one2, else_branch);
-        let abs = s.abs(body);
-        s.rec(abs)
-    }
 
     #[test]
     fn factorial_interprets_correctly() {
@@ -238,7 +223,7 @@ mod tests {
     #[test]
     fn deep_tail_recursion_creating_and_calling_a_fresh_closure_each_iteration_does_not_overflow() {
         // rec f n acc = if n <= 0 then acc else f(n-1, (\y. acc+y)(n)) --
-        // same shape as benches::common::capturing_closure_loop /
+        // same shape as samples::capturing_closure_loop /
         // compile::tests::self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles,
         // exercising the trampoline's App/Closure-application path (not
         // just If's own tail branch) at depth.

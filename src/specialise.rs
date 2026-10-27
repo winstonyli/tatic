@@ -418,7 +418,7 @@ mod tests {
     use crate::term::PrimOp;
 
     fn corpus(name: &str) -> (TermStore, Hash) {
-        let (_, s, h) = crate::test_corpus::terms().into_iter().find(|(n, ..)| *n == name).unwrap();
+        let (_, s, h) = crate::samples::corpus().into_iter().find(|(n, ..)| *n == name).unwrap();
         (s, h)
     }
 
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn every_corpus_term_specialises_to_something_the_checker_accepts_and_that_evaluates_the_same() {
-        for (name, s, h) in crate::test_corpus::terms() {
+        for (name, s, h) in crate::samples::corpus() {
             let sp = specialise_checked(&s, h);
             let arity = crate::compile::peel(&s, h).map_or(0, |(k, ..)| k);
             for x in [0i64, 1, 2, 5, -3] {

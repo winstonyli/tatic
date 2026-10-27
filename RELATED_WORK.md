@@ -628,7 +628,7 @@ loop-carried parameter still has no honest static type across
 iterations), a per-instance certificate only ever needs the one concrete
 closure identity each traced call actually has, which `eval_dyn` already
 computes. This closes exactly the gap
-`benches/common.rs`'s own `inconsistent_arity_loop_carried_parameter_loop`
+`samples::inconsistent_arity_loop_carried_parameter_loop`
 and `jit::tests::a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent`
 were written to document as open. One new piece of plumbing this needed:
 `eval_concrete`'s own pure-arithmetic fragment (`Var`/`Lit`/`Prim`/`If`)

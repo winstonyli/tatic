@@ -7,10 +7,8 @@ use criterion::{criterion_group, criterion_main, black_box, BatchSize, Criterion
 
 use tatic::eval;
 use tatic::jit::JitEngine;
+use tatic::samples;
 use tatic::term::{Hash, TermStore};
-
-#[path = "common.rs"]
-mod common;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -38,7 +36,7 @@ fn fib_30(c: &mut Criterion) {
     let mut group = c.benchmark_group("fib_30_non_tail_recursion");
 
     let mut store = TermStore::new();
-    let h = common::fib(&mut store);
+    let h = samples::fib(&mut store);
 
     // Naive exponential fib(30) is ~700ms interpreted -- a handful of
     // samples is enough to see the shape without an unreasonably slow run.
@@ -52,7 +50,7 @@ fn fib_30(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut store = TermStore::new();
-                let h = common::fib(&mut store);
+                let h = samples::fib(&mut store);
                 (store, h, JitEngine::new())
             },
             |(store, h, mut jit)| jit.apply(&store, h, black_box(&[30])).unwrap(),
@@ -73,7 +71,7 @@ fn gcd_large(c: &mut Criterion) {
     let mut group = c.benchmark_group("gcd_tail_recursion_to_loop");
 
     let mut store = TermStore::new();
-    let h = common::gcd(&mut store);
+    let h = samples::gcd(&mut store);
     let args: [i64; 2] = [1_000_000_007, 998_244_353]; // large coprime pair, many Euclidean steps
 
     group.bench_function("interpreter", |b| {
@@ -84,7 +82,7 @@ fn gcd_large(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut store = TermStore::new();
-                let h = common::gcd(&mut store);
+                let h = samples::gcd(&mut store);
                 (store, h, JitEngine::new())
             },
             |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),
@@ -105,7 +103,7 @@ fn factorial_10(c: &mut Criterion) {
     let mut group = c.benchmark_group("factorial_10");
 
     let mut store = TermStore::new();
-    let h = common::factorial(&mut store);
+    let h = samples::factorial(&mut store);
 
     group.bench_function("interpreter", |b| {
         b.iter(|| eval::apply_term(&store, h, black_box(&[10])).unwrap())
@@ -126,7 +124,7 @@ fn redundant_arithmetic_10(c: &mut Criterion) {
     let mut group = c.benchmark_group("redundant_arithmetic_10");
 
     let mut store = TermStore::new();
-    let h = common::redundant_arithmetic_recursion(&mut store);
+    let h = samples::redundant_arithmetic_recursion(&mut store);
 
     group.bench_function("interpreter", |b| {
         b.iter(|| eval::apply_term(&store, h, black_box(&[10])).unwrap())
@@ -145,7 +143,7 @@ fn capturing_closure_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("capturing_closure_loop");
 
     let mut store = TermStore::new();
-    let h = common::capturing_closure_loop(&mut store);
+    let h = samples::capturing_closure_loop(&mut store);
     // creates+calls 20,000 fresh capturing closures -- eval.rs's own App/If
     // handling is trampolined (see its own module docs) precisely so a
     // depth like this, or much deeper, never risks the native stack; this
@@ -162,7 +160,7 @@ fn capturing_closure_loop(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut store = TermStore::new();
-                let h = common::capturing_closure_loop(&mut store);
+                let h = samples::capturing_closure_loop(&mut store);
                 (store, h, JitEngine::new())
             },
             |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),
@@ -189,7 +187,7 @@ fn closure_typed_loop_carried_parameter_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("closure_typed_loop_carried_parameter_loop");
 
     let mut store = TermStore::new();
-    let h = common::closure_typed_loop_carried_parameter_loop(&mut store, 20_000);
+    let h = samples::closure_typed_loop_carried_parameter_loop(&mut store, 20_000);
     // The term itself is closed (n, g, x all baked in), so every call
     // passes no arguments.
     let args: [i64; 0] = [];
@@ -203,7 +201,7 @@ fn closure_typed_loop_carried_parameter_loop(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut store = TermStore::new();
-                let h = common::closure_typed_loop_carried_parameter_loop(&mut store, 20_000);
+                let h = samples::closure_typed_loop_carried_parameter_loop(&mut store, 20_000);
                 (store, h, JitEngine::new())
             },
             |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),
@@ -232,7 +230,7 @@ fn closure_typed_loop_carried_parameter_loop(c: &mut Criterion) {
 /// same function makes `g` `ArityUse::Inconsistent`, which switches the
 /// *whole* fragment (not just the dead call) to the curried,
 /// one-argument-at-a-time convention -- see
-/// `common::inconsistent_arity_loop_carried_parameter_loop`'s own docs.
+/// `samples::inconsistent_arity_loop_carried_parameter_loop`'s own docs.
 /// `jit_warm_cache_hit` against `consistent_baseline_jit_warm_cache_hit`
 /// is the number that matters: everything else about the two terms is
 /// identical, so the difference *is* the curried-dispatch overhead on an
@@ -263,7 +261,7 @@ fn inconsistent_arity_loop_carried_parameter_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("inconsistent_arity_loop_carried_parameter_loop");
 
     let mut store = TermStore::new();
-    let h = common::inconsistent_arity_loop_carried_parameter_loop(&mut store, PAIR_ITERS);
+    let h = samples::inconsistent_arity_loop_carried_parameter_loop(&mut store, PAIR_ITERS);
     let args: [i64; 0] = [];
 
     group.sample_size(20);
@@ -275,7 +273,7 @@ fn inconsistent_arity_loop_carried_parameter_loop(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut store = TermStore::new();
-                let h = common::inconsistent_arity_loop_carried_parameter_loop(&mut store, PAIR_ITERS);
+                let h = samples::inconsistent_arity_loop_carried_parameter_loop(&mut store, PAIR_ITERS);
                 (store, h, JitEngine::new())
             },
             |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),
@@ -290,7 +288,7 @@ fn inconsistent_arity_loop_carried_parameter_loop(c: &mut Criterion) {
     });
 
     let mut base_store = TermStore::new();
-    let base = common::closure_typed_loop_carried_parameter_loop(&mut base_store, PAIR_ITERS);
+    let base = samples::closure_typed_loop_carried_parameter_loop(&mut base_store, PAIR_ITERS);
     let mut base_jit = JitEngine::new();
     warm(&mut base_jit, &base_store, base, &args, true);
     group.bench_function("consistent_baseline_jit_warm_cache_hit", |b| {
@@ -304,7 +302,7 @@ fn partial_application_loop(c: &mut Criterion) {
     let mut group = c.benchmark_group("partial_application_loop");
 
     let mut store = TermStore::new();
-    let h = common::partial_application_loop(&mut store);
+    let h = samples::partial_application_loop(&mut store);
     // Same depth as capturing_closure_loop, for the same reason -- see its
     // own comment above.
     let args: [i64; 2] = [20_000, 0];
@@ -318,7 +316,7 @@ fn partial_application_loop(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut store = TermStore::new();
-                let h = common::partial_application_loop(&mut store);
+                let h = samples::partial_application_loop(&mut store);
                 (store, h, JitEngine::new())
             },
             |(store, h, mut jit)| jit.apply(&store, h, black_box(&args)).unwrap(),

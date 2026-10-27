@@ -1,53 +1,7 @@
 use super::*;
 use crate::eval::apply_term;
+use crate::samples::{factorial, gcd, inc, twice};
 use crate::term::PrimOp;
-
-fn factorial(s: &mut TermStore) -> Hash {
-    let n = s.var(0);
-    let f = s.var(1);
-    let one = s.lit(1);
-    let cond = s.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(f, n_minus_1);
-    let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-    let body = s.if_(cond, one, else_branch);
-    let abs = s.abs(body);
-    s.rec(abs)
-}
-
-fn gcd(s: &mut TermStore) -> Hash {
-    // rec f a b = if b == 0 then a else f(b, a mod b)
-    let b = s.var(0);
-    let a = s.var(1);
-    let f = s.var(2);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Eq, b, zero);
-    let a_mod_b = s.prim(PrimOp::Mod, a, b);
-    let rec_call = s.app2(f, b, a_mod_b);
-    let body = s.if_(cond, a, rec_call);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    s.rec(abs)
-}
-
-/// `\f. \x. f (f x)` -- both `f` and `x` are its own parameters, no
-/// captures.
-fn twice(s: &mut TermStore) -> Hash {
-    let f = s.var(1);
-    let x = s.var(0);
-    let fx = s.app(f, x);
-    let ffx = s.app(f, fx);
-    let inner = s.abs(ffx);
-    s.abs(inner)
-}
-
-/// `\y. y + 1`.
-fn inc(s: &mut TermStore) -> Hash {
-    let y = s.var(0);
-    let one = s.lit(1);
-    let y_plus_1 = s.prim(PrimOp::Add, y, one);
-    s.abs(y_plus_1)
-}
 
 fn instantiate(wat: &str) -> (wasmtime::Store<()>, wasmtime::Instance) {
     let bytes = wat::parse_str(wat).expect("valid wat");
@@ -1103,7 +1057,7 @@ fn build_produces_the_hand_built_ir_for_each_fixture() {
 }
 
 fn corpus(name: &str) -> (TermStore, Hash) {
-    let (_, s, h) = crate::test_corpus::terms().into_iter().find(|(n, ..)| *n == name).unwrap();
+    let (_, s, h) = crate::samples::corpus().into_iter().find(|(n, ..)| *n == name).unwrap();
     (s, h)
 }
 

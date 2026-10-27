@@ -3,10 +3,8 @@
 use std::time::Instant;
 use tatic::kernel::{self, Ctx};
 use tatic::proof::prove_tail_recursive_universal;
+use tatic::samples;
 use tatic::term::TermStore;
-
-#[path = "../benches/common.rs"]
-mod common;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -14,7 +12,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Build and re-check the gcd universal proof `reps` times; (build, check) totals.
 fn run(scoped: bool, two_base: bool, reps: u32) -> (std::time::Duration, std::time::Duration) {
     let mut s = TermStore::new();
-    let h = if two_base { common::gcd_with_two_base_cases(&mut s) } else { common::gcd(&mut s) };
+    let h = if two_base { samples::gcd_with_two_base_cases(&mut s) } else { samples::gcd(&mut s) };
     let (mut build, mut check) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     for _ in 0..reps {
         let mut body = || {
@@ -55,10 +53,10 @@ fn universal_proof_with_and_without_a_scope() {
 fn real_proofs_dag_against_tree_size() {
     type Build = fn(&mut TermStore) -> tatic::term::Hash;
     let programs: [(&str, Build); 4] = [
-        ("factorial", common::factorial),
-        ("fib", common::fib),
-        ("gcd", common::gcd),
-        ("gcd_3_leaves", common::gcd_with_two_base_cases),
+        ("factorial", samples::factorial),
+        ("fib", samples::fib),
+        ("gcd", samples::gcd),
+        ("gcd_3_leaves", samples::gcd_with_two_base_cases),
     ];
     for (name, build) in programs {
         let mut s = TermStore::new();

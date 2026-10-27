@@ -352,16 +352,7 @@ pub(crate) mod fixtures {
     /// `rec f n = if n <= 1 then 1 else n * f(n - 1)`
     pub(crate) fn factorial() -> (TermStore, Hash, Module) {
         let mut s = TermStore::new();
-        let n = s.var(0);
-        let f = s.var(1);
-        let one = s.lit(1);
-        let cond = s.prim(PrimOp::Le, n, one);
-        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-        let rec_call = s.app(f, n_minus_1);
-        let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-        let body = s.if_(cond, one, else_branch);
-        let abs = s.abs(body);
-        let h = s.rec(abs);
+        let h = crate::samples::factorial(&mut s);
         let p0 = || Node::Read(Read::Param(0));
         let m = Module {
             entry: Func {
@@ -389,7 +380,7 @@ pub(crate) mod fixtures {
     /// `\f x. f (f x)`: `f` is `Var(1)` (local `$p0`), `x` is `Var(0)` (`$p1`).
     pub(crate) fn twice() -> (TermStore, Hash, Module) {
         let mut s = TermStore::new();
-        let h = twice_term(&mut s);
+        let h = crate::samples::twice(&mut s);
         let f = || b(Node::Read(Read::Param(0)));
         let m = Module {
             entry: Func {
@@ -408,13 +399,7 @@ pub(crate) mod fixtures {
     /// directly; `inc` becomes `$c1`, passed as a closure value.
     pub(crate) fn twice_inc() -> (TermStore, Hash, Module) {
         let mut s = TermStore::new();
-        let t = twice_term(&mut s);
-        let y = s.var(0);
-        let one = s.lit(1);
-        let y1 = s.prim(PrimOp::Add, y, one);
-        let inc = s.abs(y1);
-        let five = s.lit(5);
-        let h = s.app2(t, inc, five);
+        let h = crate::samples::twice_inc_5(&mut s);
         let (_, _, twice_ir) = twice();
         let m = Module {
             entry: Func {
@@ -435,15 +420,6 @@ pub(crate) mod fixtures {
             dispatch: Dispatch::Fast,
         };
         (s, h, m)
-    }
-
-    fn twice_term(s: &mut TermStore) -> Hash {
-        let f = s.var(1);
-        let x = s.var(0);
-        let fx = s.app(f, x);
-        let ffx = s.app(f, fx);
-        let inner = s.abs(ffx);
-        s.abs(inner)
     }
 }
 

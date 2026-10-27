@@ -8,17 +8,15 @@
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
 use tatic::proof::{prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_universal};
+use tatic::samples;
 use tatic::term::TermStore;
-
-#[path = "common.rs"]
-mod common;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn straight_line_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
-    let h = common::straight_line(&mut store);
+    let h = samples::straight_line(&mut store);
     c.bench_function("straight_line_refl_proof", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_pure_expr(&store, black_box(h)).unwrap()); }))
     });
@@ -26,7 +24,7 @@ fn straight_line_proof(c: &mut Criterion) {
 
 fn per_execution_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
-    let h = common::gcd(&mut store);
+    let h = samples::gcd(&mut store);
     c.bench_function("gcd_per_execution_proof_single_call", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr_instance(&store, black_box(h), black_box(&[270, 192])).unwrap()); }))
     });
@@ -36,13 +34,13 @@ fn universal_proof(c: &mut Criterion) {
     let mut group = c.benchmark_group("universal_proof_one_time_by_leaf_count");
 
     let mut store2 = TermStore::new();
-    let h2 = common::gcd(&mut store2); // 1 base leaf, 1 tail leaf
+    let h2 = samples::gcd(&mut store2); // 1 base leaf, 1 tail leaf
     group.bench_function("gcd_2_leaves", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_universal(&store2, black_box(h2)).unwrap()); }))
     });
 
     let mut store3 = TermStore::new();
-    let h3 = common::gcd_with_two_base_cases(&mut store3); // 2 base leaves, 1 tail leaf (depth 2)
+    let h3 = samples::gcd_with_two_base_cases(&mut store3); // 2 base leaves, 1 tail leaf (depth 2)
     group.bench_function("gcd_3_leaves", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_universal(&store3, black_box(h3)).unwrap()); }))
     });
@@ -56,7 +54,7 @@ fn universal_proof(c: &mut Criterion) {
 fn per_execution_scaling_vs_universal(c: &mut Criterion) {
     let mut group = c.benchmark_group("gcd_per_execution_scaling_vs_universal");
     let mut store = TermStore::new();
-    let h = common::gcd(&mut store);
+    let h = samples::gcd(&mut store);
     let sample_points: [(i64, i64); 10] = [
         (48, 18),
         (270, 192),
@@ -98,25 +96,25 @@ fn closures_fragment_proof(c: &mut Criterion) {
     let mut group = c.benchmark_group("closures_fragment_proof");
 
     let mut store = TermStore::new();
-    let h = common::twice_inc_5(&mut store);
+    let h = samples::twice_inc_5(&mut store);
     group.bench_function("non_capturing", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store, black_box(h)).unwrap()); }))
     });
 
     let mut store2 = TermStore::new();
-    let h2 = common::a_capturing_closure_call(&mut store2);
+    let h2 = samples::a_capturing_closure_call(&mut store2);
     group.bench_function("capturing", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store2, black_box(h2)).unwrap()); }))
     });
 
     let mut store3 = TermStore::new();
-    let h3 = common::a_pap_non_capturing(&mut store3);
+    let h3 = samples::a_pap_non_capturing(&mut store3);
     group.bench_function("partial_application_non_capturing", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store3, black_box(h3)).unwrap()); }))
     });
 
     let mut store4 = TermStore::new();
-    let h4 = common::a_pap_capturing(&mut store4);
+    let h4 = samples::a_pap_capturing(&mut store4);
     group.bench_function("partial_application_capturing", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr(&store4, black_box(h4)).unwrap()); }))
     });
@@ -132,7 +130,7 @@ fn closures_fragment_proof(c: &mut Criterion) {
 /// arithmetic-only leaf-count comparison, not the closures-fragment group.
 fn closure_typed_recursion_universal_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
-    let h = common::iterate(&mut store);
+    let h = samples::iterate(&mut store);
     c.bench_function("closure_typed_loop_carried_parameter_universal_proof", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_universal(&store, black_box(h)).unwrap()); }))
     });
@@ -148,19 +146,19 @@ fn closure_typed_recursion_universal_proof(c: &mut Criterion) {
 /// trace *depth* (bounded by `DynBudget::recursion_depth`'s per-frame
 /// cost), `branching`'s with trace *size* (exponential in `n`, bounded by
 /// the same budget counting every self-call, not just the live stack
-/// depth -- see `common::branching_non_tail_closure_carrying_recursion`'s
+/// depth -- see `samples::branching_non_tail_closure_carrying_recursion`'s
 /// own doc for why its `n` is kept much smaller).
 fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
     let mut group = c.benchmark_group("non_tail_closure_recursion_instance_proof");
 
     let mut store = TermStore::new();
-    let h = common::non_tail_closure_carrying_recursion(&mut store);
+    let h = samples::non_tail_closure_carrying_recursion(&mut store);
     group.bench_function("non_tail_embedded_call", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr_instance(&store, black_box(h), &[]).unwrap()); }))
     });
 
     let mut store2 = TermStore::new();
-    let h2 = common::branching_non_tail_closure_carrying_recursion(&mut store2);
+    let h2 = samples::branching_non_tail_closure_carrying_recursion(&mut store2);
     group.bench_function("branching", |b| {
         b.iter(|| tatic::kernel::scoped(|| { black_box(prove_closure_expr_instance(&store2, black_box(h2), &[]).unwrap()); }))
     });
