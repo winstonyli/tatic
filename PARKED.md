@@ -11,7 +11,18 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 
 ## Proposer and loop
 
-- **Proposer targets beyond ranking: laws beyond 5 nodes, and new definitions** — why: the floor turned out not to be about size; (c) waits on a way to check conservative definitions. Trigger: (a) when larger laws are shown to teach rules the loops miss: met 2026-10-26, mining fresh laws of the held-out sizes (bands 13-17; the loops serve up to 13) cuts held-out M by up to 28% ("Fresh laws of the held-out sizes do as well"), so serving them is v0.5's next step (`ROADMAP.md` v0.5); (c) when conservative definitions can be checked and add expressiveness (v0.4's enumerator vocabulary did not pay: "Definitions as an enumerator vocabulary"). Evidence: `docs/tier-cycle.md` ("The proposer model's target: ranking"). Status: (a) trigger met, its loop phase not yet designed; (c) seeded v0.4's definitions lever, decided against 2026-10-26 ("Definitions as an enumerator vocabulary").
+- **Proposer targets beyond ranking: laws beyond 5 nodes, and new definitions** — why: the floor turned out not to be about size; (c) waits on a way to check conservative definitions. Trigger: (a) when larger laws are shown to teach rules the loops miss: met 2026-10-26, mining fresh laws of the held-out sizes (bands 13-17; the loops serve up to 13) cuts held-out M by up to 28% ("Fresh laws of the held-out sizes do as well"), so serving them is v0.5's next step (`ROADMAP.md` v0.5); (c) when conservative definitions can be checked and add expressiveness (v0.4's enumerator vocabulary did not pay: "Definitions as an enumerator vocabulary"). Evidence: `docs/tier-cycle.md` ("The proposer model's target: ranking"). Status: (a) taken up 2026-10-26 as v0.5's large extras (`ROADMAP.md` v0.5); (c) seeded v0.4's definitions lever, decided against 2026-10-26 ("Definitions as an enumerator vocabulary").
+- **Mine large laws after the loop (v0.5)** — what: after a loop's last batch, mine fresh laws of the held-out sizes in
+  chained batches of 250, as the probe did (-27.7% held-out M at 1000 per band). Why: a second way of feeding the miner
+  laws the loop does not serve, beside the extras, which already do that inside each mine; mixed into the mines they
+  gain what the dose predicts ("As the loop's extras"). Trigger: the extras fall short of the probe's gain at the same
+  count. Evidence: `docs/tier-cycle.md`, "Fresh laws of the held-out sizes do as well" and "As the loop's extras".
+  Status: decided against (2026-10-26).
+- **Serve laws of the held-out sizes (v0.5)** — what: grow the loops' own sequence 4 times (`STREAM_LEVELS`) so the
+  batches hold laws up to size 17. Why: bands 15 and 17 would no longer lie past the loops' sizes, so the frontier
+  (`ROADMAP.md` v0.5) would change meaning; loop M would stop comparing with history, and serving large terms costs.
+  Trigger: a frontier defined some other way. Evidence: `tests/church_bv/search.rs` (`STREAM_LEVELS`),
+  `tests/church_bv/classes.rs` (`HELD_BANDS`). Status: decided against (2026-10-26).
 - **A library of mined definitions that outlives the loop** — what: definitions one loop mines are kept and seed later
   loops (DreamCoder-style), instead of each loop mining its own and dropping them at its end. Why parked: by decision
   (2026-10-25, v0.4 design): definitions, one of v0.4's levers, were to be tested per loop

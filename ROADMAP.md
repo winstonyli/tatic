@@ -43,4 +43,8 @@ results, 2026-10-17 and 2026-10-23).
   .94 to .72 with mined rules since 2026-10-26, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
   "The frontier past the loops' sizes"). First finding (2026-10-26): the loops miss rules that transfer because they
   serve few or no laws as large as the held-out ones; mining 500-1000 fresh laws of those sizes per band cuts held-out M
-  22-28% (`docs/tier-cycle.md`, "Fresh laws of the held-out sizes do as well"). Next: a loop phase that serves them.
+  22-28% (`docs/tier-cycle.md`, "Fresh laws of the held-out sizes do as well"). Design chosen 2026-10-26: draw the
+  extras (laws a loop's mines take but it does not serve) from the sequence at 4 growths instead of 2, at every size
+  (replacing the small ones cost band 11) and minus every held-out law and its twins; the extras' count is open, being
+  measured (`docs/tier-cycle.md`, "As the loop's extras"; rejected designs in `PARKED.md`, "Mine large laws after the
+  loop" and "Serve laws of the held-out sizes").
